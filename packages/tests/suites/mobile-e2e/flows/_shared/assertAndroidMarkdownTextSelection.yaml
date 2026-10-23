@@ -1,0 +1,28 @@
+appId: ${HAPPIER_E2E_MOBILE_APP_ID}
+---
+# Native selection must survive finger release. Merely enabling selectable in JS
+# cannot catch a movement method clearing the range on ACTION_UP.
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - longPressOn:
+          text: "Wide markdown scroll repro:"
+          point: "10%,50%"
+      - assertVisible:
+          id: "android:id/copy"
+      - assertVisible:
+          id: "android:id/selectAll"
+      - tapOn:
+          id: "android:id/copy"
+
+      # The preceding horizontal swipe must still work with selection enabled.
+      - longPressOn:
+          id: markdown-code-block-scroll
+          point: "85%,50%"
+      - assertVisible:
+          id: "android:id/copy"
+      - assertVisible:
+          id: "android:id/selectAll"
+      - tapOn:
+          id: "android:id/copy"

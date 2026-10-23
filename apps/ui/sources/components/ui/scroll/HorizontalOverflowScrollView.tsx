@@ -17,8 +17,8 @@ type HorizontalOverflowScrollViewProps = Readonly<{
     contentContainerStyle?: StyleProp<ViewStyle>;
     showsHorizontalScrollIndicator?: boolean;
     /**
-     * Keep native text selection on Android. Only for content with no other copy affordance, since
-     * selection there competes with the horizontal drag (see below).
+     * Keep native text selection on Android for surfaces that support copying a selected range.
+     * Long presses select text, while horizontal drags still use the native scroll container.
      */
     keepNativeTextSelection?: boolean;
 }>;

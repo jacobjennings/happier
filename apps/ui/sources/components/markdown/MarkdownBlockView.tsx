@@ -406,6 +406,7 @@ function RenderTableBlock(props: {
       <View style={[style.tableContainer, props.first && style.first, props.last && style.last]}>
           <HorizontalOverflowScrollView
               testID="markdown-table-scroll"
+              keepNativeTextSelection={props.selectable}
               showsHorizontalScrollIndicator={true}
               style={style.tableScrollView}
           >

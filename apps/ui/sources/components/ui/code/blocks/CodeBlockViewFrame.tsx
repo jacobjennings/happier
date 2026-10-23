@@ -72,7 +72,7 @@ export const CodeBlockViewFrame = React.memo<CodeBlockViewFrameProps>(({
             ) : (
                 <HorizontalOverflowScrollView
                     testID={scrollTestID}
-                    keepNativeTextSelection={!showCopyButton}
+                    keepNativeTextSelection={selectable}
                     showsHorizontalScrollIndicator={false}
                     style={styles.scroll}
                     contentContainerStyle={contentPaddingStyle}

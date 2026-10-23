@@ -40,3 +40,7 @@ appId: ${HAPPIER_E2E_MOBILE_APP_ID}
     element:
       id: markdown-code-block-scroll
 - assertVisible: "CODE_SENTINEL_RIGHT"
+
+# Check the system selection menu after the existing scroll assertions.
+- runFlow:
+    file: _shared/assertAndroidMarkdownTextSelection.yaml
