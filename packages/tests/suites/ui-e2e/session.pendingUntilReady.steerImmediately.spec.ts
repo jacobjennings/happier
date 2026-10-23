@@ -12,6 +12,7 @@ import { createSessionFromNewSessionComposer } from '../../src/testkit/uiE2e/cre
 import { mutateUiE2eScopedAccountSettings } from '../../src/testkit/uiE2e/scopedAccountSettingsStorage';
 import { gotoDomContentLoadedWithRetries, normalizeLoopbackBaseUrl } from '../../src/testkit/uiE2e/pageNavigation';
 import { waitForDaemonMachineIdFromCliSettings } from '../../src/testkit/uiE2e/daemonMachineId';
+import { appendBrowserDiagnostics, collectBrowserDiagnostics } from '../../src/testkit/uiE2e/browserDiagnostics';
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
 
@@ -63,63 +64,72 @@ test.describe('ui e2e: Pending until ready with immediate steering', () => {
   test('steers a web message during an open Claude SDK turn with Pending until ready', async ({ page }) => {
     test.setTimeout(180_000);
     if (!server || !uiBaseUrl) throw new Error('missing server/ui fixtures');
-    const fakeClaudeLogPath = resolve(suiteDir, 'fake-claude.jsonl');
-    await page.setViewportSize({ width: 1440, height: 900 });
-    daemon = await authenticateAndStartDaemon({
-      page,
-      testDir: suiteDir,
-      cliHomeDir,
-      serverUrl: server.baseUrl,
-      uiBaseUrl,
-      extraEnv: {
-        ...process.env,
-        HOME: cliHomeDir,
-        HAPPIER_CLAUDE_PATH: fakeClaudeFixturePath(),
-        HAPPIER_E2E_FAKE_CLAUDE_LOG: fakeClaudeLogPath,
-        HAPPIER_E2E_FAKE_CLAUDE_SESSION_ID: `fake-claude-steer-${run.runId}`,
-        HAPPIER_E2E_FAKE_CLAUDE_SCENARIO: 'in-flight-steer',
-      },
-    });
-    await mutateUiE2eScopedAccountSettings({
-      page,
-      settingsPatch: {
-        sessionMessageSendMode: 'server_pending',
-        sessionBusySteerSendPolicy: 'steer_immediately',
-        claudeUnifiedTerminalEnabled: false,
-      },
-      featureToggles: { 'providers.claude.unifiedTerminal': false },
-    });
-    // Reload so the real composer consumes the persisted account settings.
-    await gotoDomContentLoadedWithRetries(page, uiBaseUrl);
-    const machineId = await waitForDaemonMachineIdFromCliSettings({ cliHomeDir, timeoutMs: 120_000 });
-    const firstPrompt = `keep this turn open ${run.runId}`;
-    const { sessionId } = await createSessionFromNewSessionComposer({ page, uiBaseUrl, machineId, prompt: firstPrompt });
-    await waitForFakeClaudeInvocation(fakeClaudeLogPath, (event) => event.mode === 'sdk');
-    await expect(page.getByTestId('transcript-chat-list')).toContainText('FAKE_CLAUDE_TURN_OPEN', { timeout: 120_000 });
+    const browserDiagnostics = collectBrowserDiagnostics({ page });
+    try {
+      const fakeClaudeLogPath = resolve(suiteDir, 'fake-claude.jsonl');
+      await page.setViewportSize({ width: 1440, height: 900 });
+      daemon = await authenticateAndStartDaemon({
+        page,
+        testDir: suiteDir,
+        cliHomeDir,
+        serverUrl: server.baseUrl,
+        uiBaseUrl,
+        extraEnv: {
+          ...process.env,
+          HOME: cliHomeDir,
+          HAPPIER_CLAUDE_PATH: fakeClaudeFixturePath(),
+          HAPPIER_E2E_FAKE_CLAUDE_LOG: fakeClaudeLogPath,
+          HAPPIER_E2E_FAKE_CLAUDE_SESSION_ID: `fake-claude-steer-${run.runId}`,
+          HAPPIER_E2E_FAKE_CLAUDE_SCENARIO: 'in-flight-steer',
+        },
+      });
+      await mutateUiE2eScopedAccountSettings({
+        page,
+        settingsPatch: {
+          sessionMessageSendMode: 'server_pending',
+          sessionBusySteerSendPolicy: 'steer_immediately',
+          claudeUnifiedTerminalEnabled: false,
+        },
+        featureToggles: { 'providers.claude.unifiedTerminal': false },
+      });
+      // Reload so the real composer consumes the persisted account settings.
+      await gotoDomContentLoadedWithRetries(page, uiBaseUrl);
+      const machineId = await waitForDaemonMachineIdFromCliSettings({ cliHomeDir, timeoutMs: 120_000 });
+      const firstPrompt = `keep this turn open ${run.runId}`;
+      const { sessionId } = await createSessionFromNewSessionComposer({ page, uiBaseUrl, machineId, prompt: firstPrompt });
+      await waitForFakeClaudeInvocation(fakeClaudeLogPath, (event) => event.mode === 'sdk');
+      await expect(page.getByTestId('transcript-chat-list')).toContainText('FAKE_CLAUDE_TURN_OPEN', { timeout: 120_000 });
 
-    const secondPrompt = `steer the running turn ${run.runId}`;
-    const enqueueResponse = page.waitForResponse((response) =>
-      response.request().method() === 'POST'
-      && new URL(response.url()).pathname === `/v2/sessions/${sessionId}/pending`,
-    );
-    const composer = page.locator('textarea[data-testid="session-composer-input"]:visible').first();
-    await composer.fill(secondPrompt);
-    await page.getByTestId('session-composer-send').click();
-    expect((await enqueueResponse).ok()).toBe(true);
-    await waitForFakeClaudeUserText(fakeClaudeLogPath, (text) => text.includes(secondPrompt));
-    await expect(page.getByTestId('transcript-chat-list')).toContainText('FAKE_CLAUDE_STEER_RECEIVED', { timeout: 120_000 });
+      const secondPrompt = `steer the running turn ${run.runId}`;
+      const enqueueResponse = page.waitForResponse((response) =>
+        response.request().method() === 'POST'
+        && new URL(response.url()).pathname === `/v2/sessions/${sessionId}/pending`,
+      );
+      const composer = page.locator('textarea[data-testid="session-composer-input"]:visible').first();
+      await composer.fill(secondPrompt);
+      await page.getByTestId('session-composer-send').click();
+      const response = await enqueueResponse;
+      expect(response.ok()).toBe(true);
+      expect(response.request().postDataJSON()).toMatchObject({
+        requestedAction: { v: 1, kind: 'steer_if_active' },
+      });
+      await waitForFakeClaudeUserText(fakeClaudeLogPath, (text) => text.includes(secondPrompt));
+      await expect(page.getByTestId('transcript-chat-list')).toContainText('FAKE_CLAUDE_STEER_RECEIVED', { timeout: 120_000 });
 
-    // The fixture emits no result until the second prompt reaches the same SDK process.
-    // A queued next-turn message cannot satisfy this scenario.
-    const events = await readFakeClaudeLogEvents(fakeClaudeLogPath);
-    const firstInputIndex = events.findIndex((event) => event.type === 'sdk_stdin' && String(event.userTextPreview).includes(firstPrompt));
-    const steerInputIndex = events.findIndex((event) => event.type === 'sdk_stdin' && String(event.userTextPreview).includes(secondPrompt));
-    expect(firstInputIndex).toBeGreaterThanOrEqual(0);
-    expect(steerInputIndex).toBeGreaterThan(firstInputIndex);
-    expect(events[steerInputIndex]?.invocationId).toBe(events[firstInputIndex]?.invocationId);
-    expect(events.slice(firstInputIndex, steerInputIndex).filter((event) =>
-      event.type === 'sdk_stdout' && event.messageType === 'result',
-    )).toHaveLength(0);
-    expect(events.filter((event) => event.type === 'sdk_stdin' && event.controlSubtype === 'interrupt')).toHaveLength(0);
+      // The fixture emits no result until the second prompt reaches the same SDK process.
+      // A queued next-turn message cannot satisfy this scenario.
+      const events = await readFakeClaudeLogEvents(fakeClaudeLogPath);
+      const firstInputIndex = events.findIndex((event) => event.type === 'sdk_stdin' && String(event.userTextPreview).includes(firstPrompt));
+      const steerInputIndex = events.findIndex((event) => event.type === 'sdk_stdin' && String(event.userTextPreview).includes(secondPrompt));
+      expect(firstInputIndex).toBeGreaterThanOrEqual(0);
+      expect(steerInputIndex).toBeGreaterThan(firstInputIndex);
+      expect(events[steerInputIndex]?.invocationId).toBe(events[firstInputIndex]?.invocationId);
+      expect(events.slice(firstInputIndex, steerInputIndex).filter((event) =>
+        event.type === 'sdk_stdout' && event.messageType === 'result',
+      )).toHaveLength(0);
+      expect(events.filter((event) => event.type === 'sdk_stdin' && event.controlSubtype === 'interrupt')).toHaveLength(0);
+    } catch (error) {
+      throw appendBrowserDiagnostics(error, browserDiagnostics());
+    }
   });
 });
