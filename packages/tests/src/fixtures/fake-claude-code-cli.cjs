@@ -848,6 +848,16 @@ async function runSdkStreamUntilEof() {
     const now = Date.now();
     turn += 1;
 
+    // Hold the first turn open until a steered prompt reaches this same SDK process.
+    // No timer ends the turn, so a next-turn-only queue cannot accidentally pass.
+    if (scenario === 'in-flight-steer') {
+      emitSdk(createAssistantMessage([{ type: 'text', text: turn === 1
+        ? 'FAKE_CLAUDE_TURN_OPEN'
+        : 'FAKE_CLAUDE_STEER_RECEIVED' }]));
+      if (turn > 1) emitSdk(createResultSuccess());
+      continue;
+    }
+
     // Persist the first rejection in the existing log so a restarted SDK child
     // accepts the continuation for the same provider session.
     if (scenario === 'usage-limit-once') {
