@@ -66,50 +66,99 @@ precompresses assets and produces an archive and checksums in
 `dist/release-assets/ui-web/`. Settings reads the Expo version, including `-jake`
 and the source commit. An explicit relay URL is embedded at build time.
 
-### Serve it from the relay (owner approval required)
+### Scripted web deployment and rollback
 
-The pinned `happierdev/relay-server` image includes upstream UI files. Its
-`HAPPIER_SERVER_UI_DIR` override allows our export to replace them without
-rebuilding the server. Copy the complete export to a stable, versioned directory
-on the relay host, outside any task workspace. Back up the existing Compose files,
-`.env`, image pin and container inspection before changing the service. Add
-`compose.override.yaml` beside `/opt/happier/relay/compose.yaml` on
-`happier.lan`:
+The fork's Linux operator command is `python3 scripts/fork/web.py deploy`.
+Run it from a task workspace based on the current `main@origin`.
+The command fetches origin, builds that main source through `harness run`, and
+uses the existing web bundle builder. Application source must be unchanged.
+The compute guest uses the same Node 22.14.0 and Yarn 1.22.22 toolchain as the
+Docker recipe above. It downloads Node with checksum verification and runs the
+existing dependency installer with the UI postinstall scope. No tests run.
+Only this operator tooling and its guide may differ from fetched main, including
+committed task changes. Modified application source is rejected before building.
 
-```yaml
-services:
-  relay:
-    environment:
-      HAPPIER_SERVER_UI_DIR: /opt/happier/fork-web
-      HAPPIER_SERVER_UI_REQUIRED: "1"
-    volumes:
-      - /opt/happier/web/681a473a08a1:/opt/happier/fork-web:ro
+Set deployment targets in your shell or private operator environment file.
+No host names or credentials are stored in the deploy script:
+
+```bash
+export HAPPIER_DEPLOY_SSH='root@your-relay.example.com'
+export HAPPIER_DEPLOY_URL='https://your-relay.example.com'
+export HAPPIER_DEPLOY_CREDENTIALS="$HOME/.happier/servers/your-server/access.key"
+export HAPPIER_BUILD_HOST=compute # HARNESS_HOSTS role, defaults to compute
+export HAPPIER_BROWSER_HOST=browser # Chromium and Node 22+ on the browser role
+# Optional: export HAPPIER_DEPLOY_ROOT=/opt/happier
+python3 scripts/fork/web.py deploy
 ```
 
-After owner approval, run on `happier.lan` from `/opt/happier/relay`:
+The build retrieves its export from the selected `HARNESS_HOSTS` role's SSH target
+in `${HARNESS_CONFIG:-$HOME/.config/harness/config.env}`. The selected relay must
+already have Docker Compose, tmux and the base relay
+installation. The authenticated access.key must belong to this relay and is read
+locally for HTTP checks. It is never passed to compute, SSH command arguments or
+logs. The build uses same-origin relay discovery and embeds the full main commit
+in `EXPO_APP_VERSION`, such as `0.2.19-jake.<40-character-commit>`.
+
+The script records all active and archived session IDs before deployment. On the
+relay, a separate tmux window in session `2` backs up the Compose directory,
+`.env`, image pin, resolved configuration and container inspection beneath
+`/opt/happier/backups/`. Backups remain root-only because they include secrets.
+The complete web export is installed beneath `/opt/happier/web/` and selected
+through `compose.override.yaml`. The base Compose file, image pin, master secret
+and data volume stay intact. Only the relay is recreated:
 
 ```bash
 docker compose --env-file ../versions.env --env-file .env \
   -f compose.yaml -f compose.override.yaml up -d --no-deps --force-recreate relay
 ```
 
-The standard `compose.override.yaml` filename is also loaded by plain
-`docker compose up`, so subsequent setup runs retain the mount. Keep the original
-image pin, relay secrets and `relay-data` volume. Verify a served JavaScript file
-contains the expected version, the login page renders, and authenticated session
-listing works before and after recreation.
+Output includes the backup path and the remote log path is
+`~/fork-<commit>-<unique-suffix>.log`. The command verifies the full commit from
+the served entry JavaScript, HTTP 200 with an app document on `/`, and
+authenticated active and archived session listings. Missing prior IDs are checked
+through the session-by-ID API because archiving may race the two listings.
+The operator readiness deadline defaults to 120 seconds and can be changed with
+`--ready-timeout SECONDS`. A failed check exits nonzero and leaves the export,
+backup and log for investigation. There is no automatic rollback.
+The command then checks the rendered login control through the harness browser
+role and saves `.project/fork-web/login.png`. This uses the browser role's isolated
+GPU configuration and a fresh Chromium profile. The observer waits for the visible
+login control, rejects unmatched routes and unreachable-server panels, and captures
+the page after fonts and layout settle. The historical `/welcome` path is not a
+login route on current main. HTTP 200 alone cannot verify this SPA route.
 
-To roll back, move `compose.override.yaml` into the deployment backup directory,
-then restore the bundled upstream web app without changing data or image:
+The harness's read-only deployment probe prints exactly one full commit hash:
 
 ```bash
-docker compose --env-file ../versions.env --env-file .env \
-  -f compose.yaml up -d --no-deps --force-recreate relay
+HAPPIER_DEPLOY_URL='https://your-relay.example.com' ./.harness-deploy
 ```
 
-Moving the override prevents a future default Compose invocation from reapplying
-it. Retain the versioned export and backup until rollback is no longer needed.
-Never use `down -v`.
+It derives identity from the JavaScript referenced by the served HTML, not the
+local checkout or a deployment metadata file. A legacy build with only a short
+commit marker fails this probe until a full-marker build is deployed.
+When `HAPPIER_DEPLOY_URL` is unset, the probe sources the operator's harness config.
+Set that variable there for scheduled deployment observations.
+
+To restore the exact previous mounted web export, choose the backup path printed
+by deployment and its expected full commit or version. First inspect the action:
+
+```bash
+python3 scripts/fork/web.py rollback \
+  --backup /opt/happier/backups/fork-<commit>-<unique-suffix> \
+  --expect '0.2.19-jake.<previous-commit>' --dry-run
+```
+
+The dry run checks the selected backup, compares the base configuration and
+validates Compose over read-only SSH. It performs no build, upload or service
+mutation. Remove `--dry-run`
+to execute. Rollback backs up the currently active configuration first, refuses
+if the base Compose file, image pin or secret environment differs from the
+selected backup, restores its override, and recreates only the relay. A backup
+without an override restores the bundled upstream UI. In that case pass the
+expected upstream version with `--expect`. It runs the same HTTP, entry-JavaScript
+and authenticated session checks. Short legacy fork versions are supported for
+rollback verification, but `.harness-deploy` still requires a full commit marker.
+Exports and backups are retained. Never use `down -v`.
 
 If a server source change is also needed, the root Dockerfile already has a
 source-backed target:

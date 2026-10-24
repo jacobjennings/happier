@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Read the identity from served JavaScript, never from local main or a sidecar.
+set -euo pipefail
+cd "$(dirname "$0")"
+if [[ -z ${HAPPIER_DEPLOY_URL:-} ]]; then
+  source "${HARNESS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/harness/config.env}"
+  export HAPPIER_DEPLOY_URL
+fi
+exec python3 scripts/fork/web.py check
