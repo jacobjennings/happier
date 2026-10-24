@@ -3,17 +3,17 @@
     {
       "name": "unit",
       "host": "compute",
-      "command": "podman run --rm --userns=keep-id --user \"$(id -u):$(id -g)\" -v \"$PWD:/repo\" -v \"$PWD/../cache:/cache\" -w /repo -e HOME=/cache/home -e XDG_CACHE_HOME=/cache/xdg -e YARN_CACHE_FOLDER=/cache/yarn -e npm_config_cache=/cache/npm docker.io/library/node:22.14.0-bookworm bash -c 'mkdir -p \"$HOME\" && yarn install --frozen-lockfile && yarn -s test'"
+      "command": "podman run --rm --network=host --userns=keep-id --user \"$(id -u):$(id -g)\" -v \"$PWD:/repo\" -v \"$PWD/../cache:/cache\" -w /repo -e HOME=/cache/home -e XDG_CACHE_HOME=/cache/xdg -e YARN_CACHE_FOLDER=/cache/yarn -e npm_config_cache=/cache/npm docker.io/library/node:22.14.0-bookworm bash -c 'mkdir -p \"$HOME\" && yarn install --frozen-lockfile && yarn -s test'"
     },
     {
       "name": "integration",
       "host": "compute",
-      "command": "podman run --rm --userns=keep-id --user \"$(id -u):$(id -g)\" -v \"$PWD:/repo\" -v \"$PWD/../cache:/cache\" -w /repo -e HOME=/cache/home -e XDG_CACHE_HOME=/cache/xdg -e YARN_CACHE_FOLDER=/cache/yarn -e npm_config_cache=/cache/npm docker.io/library/node:22.14.0-bookworm bash -c 'mkdir -p \"$HOME\" && yarn install --frozen-lockfile && yarn -s test:integration'"
+      "command": "podman run --rm --network=host --userns=keep-id --user \"$(id -u):$(id -g)\" -v \"$PWD:/repo\" -v \"$PWD/../cache:/cache\" -w /repo -e HOME=/cache/home -e XDG_CACHE_HOME=/cache/xdg -e YARN_CACHE_FOLDER=/cache/yarn -e npm_config_cache=/cache/npm docker.io/library/node:22.14.0-bookworm bash -c 'mkdir -p \"$HOME\" && yarn install --frozen-lockfile && yarn -s test:integration'"
     },
     {
       "name": "core-e2e",
       "host": "compute",
-      "command": "podman run --rm --userns=keep-id --user \"$(id -u):$(id -g)\" -v \"$PWD:/repo\" -v \"$PWD/../cache:/cache\" -w /repo -e HOME=/cache/home -e XDG_CACHE_HOME=/cache/xdg -e YARN_CACHE_FOLDER=/cache/yarn -e npm_config_cache=/cache/npm docker.io/library/node:22.14.0-bookworm bash -c 'mkdir -p \"$HOME\" && yarn install --frozen-lockfile && yarn -s test:e2e:core:pglite'"
+      "command": "podman run --rm --network=host --userns=keep-id --user \"$(id -u):$(id -g)\" -v \"$PWD:/repo\" -v \"$PWD/../cache:/cache\" -w /repo -e HOME=/cache/home -e XDG_CACHE_HOME=/cache/xdg -e YARN_CACHE_FOLDER=/cache/yarn -e npm_config_cache=/cache/npm docker.io/library/node:22.14.0-bookworm bash -c 'mkdir -p \"$HOME\" && yarn install --frozen-lockfile && yarn -s test:e2e:core:pglite'"
     }
   ]
 }
