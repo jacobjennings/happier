@@ -529,6 +529,7 @@ function NewSessionSimplePanelComposer({
                         agentPickerProbe={props.agentPickerProbe}
                         attachments={attachmentsController.agentInputAttachments}
                         onAttachmentsAdded={attachmentsController.attachmentsUploadsEnabled ? attachmentsController.addWebFiles : undefined}
+                        onNativeAttachmentsAdded={attachmentsController.attachmentsUploadsEnabled ? attachmentsController.addPickedAttachments : undefined}
                         hasSendableAttachments={attachmentsController.hasSendableAttachments}
                         permissionMode={props.permissionMode}
                         onPermissionModeChange={props.handlePermissionModeChange}

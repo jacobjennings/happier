@@ -1,3 +1,4 @@
+import type { PickedAttachment } from '@/components/sessions/attachments/AttachmentFilePicker.types';
 import * as React from 'react';
 import type { CSSProperties } from 'react';
 import { View, type TextStyle } from 'react-native';
@@ -86,6 +87,7 @@ interface MultiTextInputProps {
     submitBehavior?: MultiTextInputSubmitBehavior;
     onSubmitEditing?: () => void;
     onFilesPasted?: (files: readonly File[]) => void;
+    onNativeFilesPasted?: (files: readonly PickedAttachment[]) => void;
     onFilesDropped?: (files: readonly File[]) => void;
     onFileDragActiveChange?: (active: boolean) => void;
 }

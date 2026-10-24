@@ -15,25 +15,16 @@ function arrayFromMaybeArrayLike<T>(value: Iterable<T> | ArrayLike<T> | null | u
     return Array.from(value as Iterable<T> | ArrayLike<T>);
 }
 
-function buildFileIdentity(file: File): string {
-    return [
-        file.name,
-        String(file.size),
-        file.type,
-        String(file.lastModified || 0),
-    ].join('\u0000');
-}
-
 export function extractWebAttachmentFilesFromDataTransfer(dataTransfer: DataTransferLike): readonly File[] {
     if (!dataTransfer) return [];
 
     const files: File[] = [];
-    const seen = new Set<string>();
+    const seen = new Set<File>();
     const pushFile = (file: File | null | undefined) => {
         if (!file) return;
-        const identity = buildFileIdentity(file);
-        if (seen.has(identity)) return;
-        seen.add(identity);
+        // Clipboard images may share name, size and timestamps while containing different pixels.
+        if (seen.has(file)) return;
+        seen.add(file);
         files.push(file);
     };
 

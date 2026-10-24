@@ -1,3 +1,5 @@
+import { useAndroidImagePaste } from '@/utils/files/useAndroidImagePaste';
+import type { PickedAttachment } from '@/components/sessions/attachments/AttachmentFilePicker.types';
 import * as React from 'react';
 import {
     View,
@@ -242,8 +244,9 @@ interface MultiTextInputProps {
     onBlur?: () => void;
     submitBehavior?: MultiTextInputSubmitBehavior;
     onSubmitEditing?: () => void;
-    // Web-only: file attachments via paste or drag-and-drop.
+    // Web paste/drop and Android rich image content feed the caller's attachment owner.
     onFilesPasted?: (files: readonly File[]) => void;
+    onNativeFilesPasted?: (files: readonly PickedAttachment[]) => void;
     onFilesDropped?: (files: readonly File[]) => void;
     // Web-only: signal when a file drag is hovering over the input.
     onFileDragActiveChange?: (active: boolean) => void;
@@ -279,6 +282,7 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
     const latestNativeTextRef = React.useRef(value);
     const controlledValueRef = React.useRef(value);
     const inputRef = React.useRef<React.ElementRef<typeof TextInput> | null>(null);
+    useAndroidImagePaste(inputRef, props.editable === false ? undefined : props.onNativeFilesPasted);
     // Controlled `value` keeps the Fabric shadow tree's text in sync so native autogrow
     // measurement works (an uncontrolled `defaultValue` input never re-measures on
     // typing — the composer stops growing). Stale-echo protection lives with the value

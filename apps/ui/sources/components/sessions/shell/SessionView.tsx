@@ -6446,6 +6446,7 @@ function SessionViewLoaded({
                 agentPickerSelectedOptionId={inSessionAgentPicker.agentPickerSelectedOptionId}
                 attachments={attachmentsUploadsEnabled ? agentInputAttachments : undefined}
                 onAttachmentsAdded={attachmentsUploadsEnabled ? addAttachments : undefined}
+                onNativeAttachmentsAdded={attachmentsUploadsEnabled ? addPickedAttachments : undefined}
                 hasSendableAttachments={hasIncludedReviewCommentDrafts || (attachmentsUploadsEnabled && attachmentDrafts.length > 0)}
                 approvalRequests={openApprovalRequests}
                 canApprovePermissions={transcriptInteraction.canApprovePermissions}

@@ -1,3 +1,4 @@
+import type { PickedAttachment } from '@/components/sessions/attachments/AttachmentFilePicker.types';
 import * as React from 'react';
 import { View, Platform, useWindowDimensions, ViewStyle, Pressable, ScrollView } from 'react-native';
 import { layout } from '@/components/ui/layout/layout';
@@ -417,6 +418,7 @@ interface AgentInputProps {
     extraActionChips?: ReadonlyArray<AgentInputExtraActionChip>;
     attachments?: ReadonlyArray<AgentInputAttachment>;
     onAttachmentsAdded?: (files: readonly File[]) => void;
+    onNativeAttachmentsAdded?: (files: readonly PickedAttachment[]) => void;
     hasSendableAttachments?: boolean;
     permissionRequests?: ReadonlyArray<PendingPermissionRequest>;
     approvalRequests?: ReadonlyArray<OpenApprovalArtifactForSession>;
@@ -2923,6 +2925,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                 maxHeight={resolvedInputMaxHeight}
                 editable={!props.disabled}
                 onFilesPasted={props.onAttachmentsAdded}
+                onNativeFilesPasted={props.onNativeAttachmentsAdded}
                 onContentHeightChange={handleInputContentHeightChange}
             />
             {props.inputExpansion && shouldShowInputExpansionToggle ? (

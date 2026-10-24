@@ -582,6 +582,7 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
                                         extraActionChips={extraActionChips}
                                         attachments={agentInputAttachments}
                                         onAttachmentsAdded={attachmentsUploadsEnabled ? addWebFiles : undefined}
+                                        onNativeAttachmentsAdded={attachmentsUploadsEnabled ? addPickedAttachments : undefined}
                                         hasSendableAttachments={hasSendableAttachments}
                                         inputMaxHeight={inputMaxHeight}
                                         agentType={agentType}
