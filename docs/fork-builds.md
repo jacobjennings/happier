@@ -2,7 +2,9 @@
 
 Build from a workspace based on `main@origin` in `jacobjennings/happier`.
 These are local development builds, not upstream releases. Run commands from the
-repository root using Bash and Docker on Linux x86-64. No Expo account is needed.
+repository root using Bash and Docker on Linux x86-64. Android key generation
+also requires OpenSSL and a JDK providing `keytool` on the host. No Expo account
+is needed.
 Do not run tests here. The scheduled runner on main owns tests.
 
 ## Shared setup
@@ -71,8 +73,8 @@ The pinned `happierdev/relay-server` image includes upstream UI files. Its
 rebuilding the server. Copy the complete export to a stable, versioned directory
 on the relay host, outside any task workspace. Back up the existing Compose files,
 `.env`, image pin and container inspection before changing the service. Add
-`compose.override.yaml` beside
-`~/gh/jake-harness2/relay/compose.yaml`:
+`compose.override.yaml` beside `/opt/happier/relay/compose.yaml` on
+`happier.lan`:
 
 ```yaml
 services:
@@ -84,7 +86,7 @@ services:
       - /opt/happier/web/681a473a08a1:/opt/happier/fork-web:ro
 ```
 
-After owner approval, from that Compose directory:
+After owner approval, run on `happier.lan` from `/opt/happier/relay`:
 
 ```bash
 docker compose --env-file ../versions.env --env-file .env \
