@@ -1,0 +1,19 @@
+{
+  "suites": [
+    {
+      "name": "unit",
+      "host": "compute",
+      "command": "yarn install --frozen-lockfile && yarn -s test"
+    },
+    {
+      "name": "integration",
+      "host": "compute",
+      "command": "yarn install --frozen-lockfile && yarn -s test:integration"
+    },
+    {
+      "name": "core-e2e",
+      "host": "compute",
+      "command": "yarn install --frozen-lockfile && yarn -s test:e2e:core:pglite"
+    }
+  ]
+}
