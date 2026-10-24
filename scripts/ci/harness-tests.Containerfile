@@ -1,5 +1,5 @@
 # Scheduled-runner tools only. The checkout is mounted at execution time.
-FROM docker.io/library/node:22.14.0-bookworm
+FROM docker.io/library/node:22.23.4-bookworm
 
 # Match CI's tmux setup. Linux listener ownership uses lsof, and SQLite
 # retention fixtures invoke sqlite3 even in the broad PGlite suite.
