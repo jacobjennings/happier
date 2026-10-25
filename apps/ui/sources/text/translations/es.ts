@@ -10814,6 +10814,7 @@ settingsSession: {
   },
 
   message: {
+      automatedSender: 'Automatizado',
     sessionReferenceUnavailable: "Sesión no disponible",
     sessionReferenceOpen: ({ name }: { name: string }) => `Abrir la sesión ${name}`,
     switchedToMode: ({ mode }: { mode: string }) => `Cambiado al modo ${mode}`,

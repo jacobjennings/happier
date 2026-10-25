@@ -312,7 +312,7 @@ function mergeHistoryEntries(params: Readonly<{
     // strictly older, so appending them in array order keeps ArrowUp walking backwards in time.
     for (const row of params.remoteRows) {
         // Composer history replays prompts; agent rows share the page but never the input.
-        if (row.role !== 'user') continue;
+        if (row.role !== 'user' || row.automatedSource) continue;
         push(row.text);
         if (out.length >= params.maxEntries) return out;
     }

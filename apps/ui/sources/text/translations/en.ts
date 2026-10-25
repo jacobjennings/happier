@@ -10177,6 +10177,7 @@ settingsSession: {
     },
 
     message: {
+        automatedSender: 'Automated',
         sessionReferenceUnavailable: 'Unavailable session',
         sessionReferenceOpen: ({ name }: { name: string }) => `Open session ${name}`,
         switchedToMode: ({ mode }: { mode: string }) => `Switched to ${mode} mode`,

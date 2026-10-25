@@ -8,6 +8,7 @@ import {
 
 export type PendingMessageRow = {
     localId: string;
+    automated?: boolean;
     messageRole: import("@happier-dev/protocol").SessionMessageRole | null;
     content: PrismaJson.SessionPendingMessageContent;
     requestedAction?: PendingRequestedActionV1;
@@ -26,6 +27,7 @@ export type PendingMessageRow = {
 
 export type PendingMessageRowRaw = {
     localId: string;
+    automated?: boolean;
     messageRole?: unknown;
     content: PrismaJson.SessionPendingMessageContent;
     requestedAction?: unknown;
@@ -47,6 +49,7 @@ export function mapPendingMessageRow(row: PendingMessageRowRaw): PendingMessageR
     const requestedActionMalformed = !parsedRequestedAction.success;
     return {
         localId: row.localId,
+        automated: row.automated === true,
         messageRole: parseSessionMessageRole(row.messageRole),
         content: row.content,
         ...(parsedRequestedAction.success ? { requestedAction: parsedRequestedAction.data } : {}),

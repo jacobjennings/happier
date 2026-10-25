@@ -575,13 +575,21 @@ and `sentFrom: 'cli'`, so attribution does not select an echo-suppression path.
 The CLI Action executor accepts the optional `source` input only on its CLI
 surface, like the existing CLI-only `localId`. Shared tool schemas do not advertise it.
 
-This is additive content metadata. No relay request fields, database schema,
-storage envelope, message role, permission rules, or delivery policy change.
-Unflagged sends retain the previous record shape. The current CLI and shared
-message-meta readers preserve unknown fields through their passthrough schemas.
-Supported released-reader behavior has not been exercised for this increment.
-Older UIs may show automated traffic as owner input. UI attribution and pending
-summary exclusion remain follow-up work, not a compatibility guarantee of this increment.
+Pending enqueue also accepts one optional relay-visible `automated` boolean,
+approved by the owner on 2026-10-25. Omission and migrated historical rows mean
+ordinary input. Sender names and text remain in the existing content envelope.
+The relay maintains a separate `pendingOwnerCount` through the canonical queue
+lifecycle, while total `pendingCount` still drives runtime delivery. New clients
+use the owner summary when available, and classify hydrated pending messages
+without changing delivery state. See [encryption](./encryption.md#automated-pending-input-development).
+
+The pending-row flag and owner summary are additive. Message role, storage
+envelope, permission rules, and delivery policy do not change. Unflagged sends
+retain their prior content shape. Existing encrypted queued messages cannot be
+reclassified by the relay. Older relays may ignore the new enqueue flag and older
+UIs may show automated traffic as owner input. New clients retain total-count
+fallback against older relays that do not publish the owner summary. Supported
+released-reader runtime behavior has not been exercised for this increment.
 
 ## Migration history
 

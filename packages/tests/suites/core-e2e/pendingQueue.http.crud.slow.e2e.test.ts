@@ -198,4 +198,63 @@ describe('core e2e: pending queue v2 http CRUD', () => {
       await artifacts.dumpAll(testDir, { onlyIf: saveArtifactsOnSuccess || !passed });
     }
   });
+
+  it('keeps owner summaries distinct from total queue size through mixed queue mutations', async () => {
+    const { testDir, auth, sessionId, saveArtifactsOnSuccess } = await setup('pending-queue-v2-http-crud.owner-summary');
+    const params = { baseUrl: server!.baseUrl, token: auth.token, sessionId };
+    const artifacts = new FailureArtifacts();
+    artifacts.json('session.v2.json', () => fetchSessionV2(params.baseUrl, auth.token, sessionId));
+    artifacts.json('sessions.v2.json', () => fetchSessionsV2(params.baseUrl, auth.token));
+    artifacts.json('pending.list.json', () => listPendingQueueV2({ ...params, includeDiscarded: true }));
+    const ownerId = randomUUID();
+    const automatedId = randomUUID();
+    const ciphertext = Buffer.from('opaque-message-content', 'utf8').toString('base64');
+    const assertSummary = async (pendingCount: number, pendingOwnerCount: number) => {
+      const expected = { pendingCount, pendingOwnerCount };
+      expect(await fetchSessionV2(params.baseUrl, auth.token, sessionId)).toMatchObject(expected);
+      // A fresh list request must agree without relying on a subscribed client or pending row hydration.
+      const coldList = await fetchSessionsV2(params.baseUrl, auth.token);
+      expect(coldList.sessions.find((row) => row.id === sessionId)).toMatchObject(expected);
+    };
+    let passed = false;
+    try {
+      await assertSummary(0, 0);
+      expect((await enqueuePendingQueueV2({ ...params, localId: automatedId, ciphertext, automated: true })).status).toBe(200);
+      await assertSummary(1, 0);
+      const beforeDuplicate = await fetchSessionV2(params.baseUrl, auth.token, sessionId);
+      expect((await enqueuePendingQueueV2({ ...params, localId: automatedId, ciphertext, automated: true })).data).toMatchObject({ didWrite: false });
+      // Classification is part of enqueue identity. Neither a legacy-shaped retry
+      // nor an explicit owner retry may relabel an existing automated row.
+      for (const automated of [undefined, false]) {
+        const conflict = await enqueuePendingQueueV2({ ...params, localId: automatedId, ciphertext, automated });
+        expect(conflict.status).toBe(409);
+        expect(conflict.data).toMatchObject({ error: 'requested-action-conflict' });
+        await assertSummary(1, 0);
+      }
+      expect((await fetchSessionV2(params.baseUrl, auth.token, sessionId)).pendingVersion).toBe(beforeDuplicate.pendingVersion);
+      await assertSummary(1, 0);
+      expect((await enqueuePendingQueueV2({ ...params, localId: ownerId, ciphertext })).status).toBe(200);
+      await assertSummary(2, 1);
+      const rows = await listPendingQueueV2(params);
+      expect(rows.data.pending?.find((row) => row.localId === automatedId)).toMatchObject({ automated: true });
+      expect(rows.data.pending?.find((row) => row.localId === ownerId)?.automated ?? false).toBe(false);
+
+      expect((await discardPendingQueueV2({ ...params, localId: automatedId })).status).toBe(200);
+      await assertSummary(1, 1);
+      expect((await restorePendingQueueV2({ ...params, localId: automatedId })).status).toBe(200);
+      await assertSummary(2, 1);
+      expect((await discardPendingQueueV2({ ...params, localId: ownerId })).status).toBe(200);
+      await assertSummary(1, 0);
+      expect((await restorePendingQueueV2({ ...params, localId: ownerId })).status).toBe(200);
+      await assertSummary(2, 1);
+      expect((await deletePendingQueueV2({ ...params, localId: automatedId })).status).toBe(200);
+      await assertSummary(1, 1);
+      expect((await deletePendingQueueV2({ ...params, localId: ownerId })).status).toBe(200);
+      await assertSummary(0, 0);
+      passed = true;
+    } finally {
+      await artifacts.dumpAll(testDir, { onlyIf: saveArtifactsOnSuccess || !passed });
+    }
+  });
+
 });

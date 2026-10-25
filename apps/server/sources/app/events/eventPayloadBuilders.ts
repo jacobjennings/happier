@@ -272,6 +272,7 @@ export function buildPendingChangedUpdate(
     data: {
         sessionId: string;
         pendingVersion: number;
+        pendingOwnerCount?: number;
         pendingCount: number;
         pendingBlockedCount?: number;
         meaningfulActivityAt?: Date | null;
@@ -295,6 +296,7 @@ export function buildPendingChangedUpdate(
             sid: data.sessionId,
             sessionId: data.sessionId,
             pendingVersion: data.pendingVersion,
+            pendingOwnerCount: data.pendingOwnerCount,
             pendingCount: data.pendingCount,
             ...(typeof data.pendingBlockedCount === "number" ? { pendingBlockedCount: data.pendingBlockedCount } : {}),
             ...(typeof meaningfulActivityAt === "number" ? { meaningfulActivityAt } : {}),

@@ -1,3 +1,4 @@
+import { isAutomatedPendingMessage, readAutomatedMessageSource } from '@/sync/domains/messages/automatedMessage';
 import {
     getPendingMessageVisualState,
     isPendingMessageProviderEffectPossible,
@@ -356,14 +357,15 @@ const PENDING_QUEUE_SCROLL_MAX_HEIGHT_PX = settingsDefaults.transcriptPendingQue
 const PENDING_QUEUE_COLLAPSED_LINES = settingsDefaults.transcriptPendingMessageCollapsedLines;
 
 function estimatePendingQueueTextPx(
-    message: Pick<PendingMessage, 'text' | 'displayText'>,
+    message: Pick<PendingMessage, 'text' | 'displayText' | 'automated' | 'rawRecord'>,
     maxLines?: number,
 ): number {
     // `displayText ?? text` is the string the block renders (`PendingMessagesTranscriptBlock`); a
     // message with a distinct display form is otherwise sized from text it never paints.
     const rendered = (message.displayText ?? message.text) ?? '';
     const lines = estimateWrappedLineCount(rendered);
-    return (maxLines === undefined ? lines : Math.min(lines, maxLines)) * transcriptMarkdownTextStyle.lineHeight;
+    return (maxLines === undefined ? lines : Math.min(lines, maxLines)) * transcriptMarkdownTextStyle.lineHeight
+        + (isAutomatedPendingMessage(message) ? transcriptMarkdownTextStyle.lineHeight + 4 : 0);
 }
 
 function estimatePendingQueueRowPx(
@@ -518,7 +520,8 @@ function estimateTextBlockPx(text: string, chromePx: number): number {
 function estimateMessagePx(message: Message | null, chromeVariant: ToolCallsGroupChromeVariant): number {
     if (!message) return ESTIMATE_COMPACT_ROW_PX;
     if (message.kind === 'user-text') {
-        return estimateTextBlockPx(message.text, COMMITTED_USER_TEXT_CHROME_PX);
+        return estimateTextBlockPx(message.text, COMMITTED_USER_TEXT_CHROME_PX)
+            + (readAutomatedMessageSource(message.meta) ? transcriptMarkdownTextStyle.lineHeight + 4 : 0);
     }
     if (message.kind === 'agent-text') {
         return estimateTextBlockPx(message.text, COMMITTED_AGENT_TEXT_CHROME_PX);

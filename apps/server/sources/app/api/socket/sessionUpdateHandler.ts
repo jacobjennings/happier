@@ -1075,6 +1075,7 @@ export function sessionUpdateHandler(
                     const response = {
                         ok: true,
                         didMaterialize: false,
+                        pendingOwnerCount: result.pendingOwnerCount,
                         pendingCount: result.pendingCount,
                         pendingBlockedCount: result.pendingBlockedCount,
                         pendingVersion: result.pendingVersion,
@@ -1090,6 +1091,7 @@ export function sessionUpdateHandler(
                                 const payload = buildPendingChangedUpdate(
                                     {
                                         sessionId: sid,
+                                        pendingOwnerCount: result.pendingOwnerCount,
                                         pendingCount: result.pendingCount,
                                         pendingBlockedCount: result.pendingBlockedCount,
                                         pendingVersion: result.pendingVersion,
@@ -1117,6 +1119,7 @@ export function sessionUpdateHandler(
                     ok: true,
                     didMaterialize: true,
                     didWrite: result.didWriteMessage,
+                    pendingOwnerCount: result.pendingOwnerCount,
                     pendingCount: result.pendingCount,
                     pendingBlockedCount: result.pendingBlockedCount,
                     pendingVersion: result.pendingVersion,
@@ -1129,6 +1132,7 @@ export function sessionUpdateHandler(
                         const payload = buildPendingChangedUpdate(
                             {
                                 sessionId: sid,
+                                pendingOwnerCount: result.pendingOwnerCount,
                                 pendingCount: result.pendingCount,
                                 pendingBlockedCount: result.pendingBlockedCount,
                                 pendingVersion: result.pendingVersion,

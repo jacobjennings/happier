@@ -4,7 +4,7 @@ import { inTx } from "@/storage/inTx";
 import { mapPendingActivationAuthorization } from "@/app/session/pending/pendingActivationAuthorization";
 
 export type TimeoutPublisherResult =
-    | { status: "expired"; sessionId: string; activeAt: Date; participantCursors: readonly SessionParticipantCursor[]; activationHint?: Readonly<{ accountId: string; requestId: string; pendingCount: number; pendingBlockedCount: number; pendingVersion: number }> }
+    | { status: "expired"; sessionId: string; activeAt: Date; participantCursors: readonly SessionParticipantCursor[]; activationHint?: Readonly<{ accountId: string; requestId: string; pendingOwnerCount: number; pendingCount: number; pendingBlockedCount: number; pendingVersion: number }> }
     | { status: "stale"; sessionId: string };
 
 /** Expires only exact scanned reachability fences; Runtime Activity is deliberately not imported. */
@@ -32,6 +32,7 @@ export async function expireSessionPublisherCandidates(params: Readonly<{
                 select: {
                     accountId: true,
                     lastActiveAt: true,
+                    pendingOwnerCount: true,
                     pendingCount: true,
                     pendingBlockedCount: true,
                     pendingVersion: true,
@@ -51,6 +52,7 @@ export async function expireSessionPublisherCandidates(params: Readonly<{
                     activationHint: {
                         accountId: session.accountId,
                         requestId: authorization.requestId,
+                        pendingOwnerCount: session.pendingOwnerCount,
                         pendingCount: session.pendingCount,
                         pendingBlockedCount: session.pendingBlockedCount,
                         pendingVersion: session.pendingVersion,

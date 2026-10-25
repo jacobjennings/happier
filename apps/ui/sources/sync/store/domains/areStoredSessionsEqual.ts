@@ -75,6 +75,7 @@ export function areStoredSessionsEqual(
         && (previous.archivedAt ?? null) === (next.archivedAt ?? null)
         && (previous.pendingVersion ?? null) === (next.pendingVersion ?? null)
         && (previous.pendingCount ?? null) === (next.pendingCount ?? null)
+        && (previous.pendingOwnerCount ?? null) === (next.pendingOwnerCount ?? null)
         && (previous.pendingBlockedCount ?? null) === (next.pendingBlockedCount ?? null)
         && (previous.lastViewedSessionSeq ?? null) === (next.lastViewedSessionSeq ?? null)
         && (previous.pendingPermissionRequestCount ?? null) === (next.pendingPermissionRequestCount ?? null)

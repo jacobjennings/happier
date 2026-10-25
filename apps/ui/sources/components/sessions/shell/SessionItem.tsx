@@ -1395,7 +1395,7 @@ const SessionItemContent = React.memo(
                                     compact ? styles.pendingCountContainerCompact : null,
                                 ]}
                             >
-                                <Text style={styles.pendingCountText} numberOfLines={1}>
+                                <Text testID={`session-pending-count:${session.id}`} style={styles.pendingCountText} numberOfLines={1}>
                                     {pendingBadge}
                                 </Text>
                             </View>

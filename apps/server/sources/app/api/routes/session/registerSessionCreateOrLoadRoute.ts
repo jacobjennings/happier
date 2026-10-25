@@ -253,6 +253,7 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
                 dataEncryptionKey: resolvedSession.dataEncryptionKey
                     ? Buffer.from(resolvedSession.dataEncryptionKey).toString("base64")
                     : null,
+                pendingOwnerCount: resolvedSession.pendingOwnerCount,
                 pendingCount: resolvedSession.pendingCount,
                 pendingBlockedCount: resolvedSession.pendingBlockedCount,
                 pendingVersion: resolvedSession.pendingVersion,

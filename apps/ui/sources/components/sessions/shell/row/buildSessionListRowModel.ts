@@ -1,3 +1,4 @@
+import { countOwnerPendingMessages, isAutomatedPendingMessage, readOwnerPendingCount } from '@/sync/domains/messages/automatedMessage';
 import { readStoredSessionMessagesReadProjectionFromStateLike } from '@/sync/domains/messages/readStoredSessionMessages';
 import {
     deriveSessionListAttentionState,
@@ -75,9 +76,8 @@ function normalizeFiniteCount(value: unknown): number | null {
 
 function readPendingCount(snapshot: Partial<SessionListRowStateSnapshot>, session: SessionStatusSource): number {
     const pendingMessages = snapshot.pending?.messages;
-    if (Array.isArray(pendingMessages)) return pendingMessages.length;
-    const renderableCount = (session as SessionListRenderableSession).pendingCount;
-    return normalizeFiniteCount(renderableCount) ?? 0;
+    if (Array.isArray(pendingMessages)) return countOwnerPendingMessages(pendingMessages);
+    return readOwnerPendingCount(session);
 }
 
 function readPendingBlockedCount(snapshot: Partial<SessionListRowStateSnapshot>, session: SessionStatusSource): number {
@@ -103,6 +103,7 @@ function resolveLatestCommittedMessageCreatedAt(snapshot: Partial<SessionListRow
 function resolveLatestPendingMessageCreatedAt(snapshot: Partial<SessionListRowStateSnapshot>): number | null {
     let latest: number | null = null;
     for (const pendingMessage of snapshot.pending?.messages ?? []) {
+        if (isAutomatedPendingMessage(pendingMessage)) continue;
         const createdAt = normalizeFiniteTimestamp(pendingMessage.createdAt);
         if (createdAt === null) continue;
         latest = latest === null ? createdAt : Math.max(latest, createdAt);

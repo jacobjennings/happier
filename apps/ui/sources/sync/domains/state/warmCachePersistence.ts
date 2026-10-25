@@ -214,6 +214,7 @@ export const SessionListCacheEntryV1Schema = z.object({
     archivedAt: z.number().nullable(),
     lastViewedSessionSeq: z.number().int().nonnegative().nullable().optional(),
     pendingCount: z.number().int().nonnegative().optional(),
+    pendingOwnerCount: z.number().int().nonnegative().optional(),
     pendingBlockedCount: z.number().int().nonnegative().optional(),
     pendingVersion: z.number().int().nonnegative().optional(),
     pendingActivationAuthorization: PendingActivationAuthorizationV1Schema.nullable().optional(),

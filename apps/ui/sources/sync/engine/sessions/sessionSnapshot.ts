@@ -369,6 +369,7 @@ function buildRenderableFromRowAndCache(
         activeAt: row.activeAt,
         archivedAt: row.archivedAt ?? null,
         pendingCount: row.pendingCount,
+        pendingOwnerCount: row.pendingOwnerCount,
         pendingBlockedCount: row.pendingBlockedCount,
         pendingVersion: row.pendingVersion,
         pendingActivationAuthorization: row.pendingActivationAuthorization ?? null,

@@ -250,6 +250,7 @@ function useStableSessionInfoContentSession(session: Session | null): Session | 
         session?.active,
         session?.archivedAt,
         session?.pendingCount,
+        session?.pendingOwnerCount,
         session?.pendingPermissionRequestCount,
         session?.pendingUserActionRequestCount,
         session?.pendingRequestObservedAt,

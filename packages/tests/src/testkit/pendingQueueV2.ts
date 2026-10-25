@@ -12,6 +12,7 @@ export type PendingQueueV2Row = {
   discardedAt?: number | null;
   discardedReason?: string | null;
   authorAccountId?: string | null;
+  automated?: boolean;
 };
 
 export async function enqueuePendingQueueV2(params: {
@@ -20,13 +21,14 @@ export async function enqueuePendingQueueV2(params: {
   sessionId: string;
   localId: string;
   ciphertext: string;
+  automated?: boolean;
   timeoutMs?: number;
 }): Promise<{ status: number; data: any }> {
   const sessionId = encodeURIComponent(params.sessionId);
   return await fetchJson<any>(`${params.baseUrl}/v2/sessions/${sessionId}/pending`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ localId: params.localId, ciphertext: params.ciphertext }),
+    body: JSON.stringify({ localId: params.localId, ciphertext: params.ciphertext, automated: params.automated }),
     timeoutMs: params.timeoutMs ?? 20_000,
   });
 }

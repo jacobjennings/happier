@@ -37,6 +37,7 @@ export function registerSessionArchiveRoutes(app: Fastify) {
                 select: {
                     id: true,
                     seq: true,
+                    pendingOwnerCount: true,
                     pendingCount: true,
                     pendingBlockedCount: true,
                     lastViewedSessionSeq: true,
@@ -151,6 +152,7 @@ export function registerSessionArchiveRoutes(app: Fastify) {
                 select: {
                     id: true,
                     seq: true,
+                    pendingOwnerCount: true,
                     pendingCount: true,
                     pendingBlockedCount: true,
                     lastViewedSessionSeq: true,

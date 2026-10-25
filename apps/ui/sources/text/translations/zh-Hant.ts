@@ -8785,6 +8785,7 @@ settingsSession: {
     },
 
     message: {
+        automatedSender: '自動傳送',
         sessionReferenceUnavailable: '無法使用的工作階段',
         sessionReferenceOpen: ({ name }: { name: string }) => `開啟工作階段 ${name}`,
         switchedToMode: ({ mode }: { mode: string }) => `已切換到 ${mode} 模式`,

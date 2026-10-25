@@ -10700,6 +10700,7 @@ settingsSession: {
   },
 
   message: {
+      automatedSender: 'Автоматическое',
     sessionReferenceUnavailable: "Сессия недоступна",
     sessionReferenceOpen: ({ name }: { name: string }) => `Открыть сессию ${name}`,
     switchedToMode: ({ mode }: { mode: string }) =>

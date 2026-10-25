@@ -129,6 +129,7 @@ export type UpdateEvent = {
     type: 'pending-changed';
     sessionId: string;
     pendingVersion: number;
+    pendingOwnerCount?: number;
     pendingCount: number;
     pendingBlockedCount?: number;
     meaningfulActivityAt?: number;

@@ -1,3 +1,4 @@
+import { readOwnerPendingCount } from '@/sync/domains/messages/automatedMessage';
 import { computeHasUnreadActivity } from '@/sync/domains/messages/unread';
 import {
     readStoredSessionMessagesFromStateLike,
@@ -192,7 +193,7 @@ export function deriveActivityAttentionFlags(
 
     const hasQueuedUserInput = options?.showQueuedUserInput === false
         ? false
-        : (session.pendingCount ?? 0) > 0;
+        : readOwnerPendingCount(session) > 0;
     const hasBlockedPendingDelivery = (session.pendingBlockedCount ?? 0) > 0;
 
     return {

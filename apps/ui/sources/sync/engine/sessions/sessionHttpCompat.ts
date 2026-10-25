@@ -231,6 +231,7 @@ function coerceLegacySessionRecord(raw: unknown): V2SessionRecord | null {
                 : undefined,
         rollbackEligibleTurnStarts,
         pendingCount: readNumber(raw.pendingCount) ?? undefined,
+        pendingOwnerCount: readNumber(raw.pendingOwnerCount) ?? undefined,
         pendingBlockedCount: readNumber(raw.pendingBlockedCount) ?? undefined,
         pendingVersion: readNumber(raw.pendingVersion) ?? undefined,
         pendingActivationAuthorization: PendingActivationAuthorizationV1Schema.safeParse(raw.pendingActivationAuthorization).data,

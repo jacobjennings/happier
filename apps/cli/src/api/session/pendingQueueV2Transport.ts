@@ -145,6 +145,7 @@ type PendingQueueWriteBody = Readonly<(
     | { localId: string; ciphertext: string; messageRole?: SessionMessageRole; requestedAction: PendingRequestedActionV1 }
     | { localId: string; content: { t: 'plain'; v: unknown }; messageRole?: SessionMessageRole; requestedAction: PendingRequestedActionV1 }
 ) & Readonly<{
+    automated?: boolean;
     deliveryMode?: 'continuation_if_no_queued_user_input';
 }>>;
 

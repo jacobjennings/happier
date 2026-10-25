@@ -15,6 +15,7 @@ import { mapPendingActivationAuthorization } from "@/app/session/pending/pending
 export async function emitPendingChanged(params: {
     sessionId: string;
     changedByAccountId: string;
+    pendingOwnerCount?: number;
     pendingCount: number;
     pendingBlockedCount?: number;
     pendingVersion: number;
@@ -40,6 +41,7 @@ export async function emitPendingChanged(params: {
             const payload = buildPendingChangedUpdate(
                 {
                     sessionId: params.sessionId,
+                    pendingOwnerCount: params.pendingOwnerCount,
                     pendingCount: params.pendingCount,
                     ...(typeof params.pendingBlockedCount === "number" ? { pendingBlockedCount: params.pendingBlockedCount } : {}),
                     pendingVersion: params.pendingVersion,
@@ -75,6 +77,7 @@ export async function emitPendingChanged(params: {
 export async function emitPendingActivationHint(params: {
     sessionId: string;
     changedByAccountId: string;
+    pendingOwnerCount?: number;
     pendingCount: number;
     pendingBlockedCount?: number;
     pendingVersion: number;
@@ -89,6 +92,7 @@ export async function emitPendingActivationHint(params: {
     const payload = buildPendingChangedUpdate(
         {
             sessionId: params.sessionId,
+            pendingOwnerCount: params.pendingOwnerCount,
             pendingCount: params.pendingCount,
             ...(typeof params.pendingBlockedCount === "number"
                 ? { pendingBlockedCount: params.pendingBlockedCount }

@@ -116,7 +116,7 @@ describe('core e2e: pending queue v2 emits pending-changed socket updates', () =
     }
   });
 
-  it('broadcasts pending-changed on materialize-next via socket RPC', async () => {
+  it('preserves owner summaries across reconnect and automated materialization via socket RPC', async () => {
     const testDir = run.testDir('pending-queue-v2-socket-pending-changed.materialize');
     const saveArtifactsOnSuccess = envFlag(['HAPPIER_E2E_SAVE_ARTIFACTS', 'HAPPY_E2E_SAVE_ARTIFACTS'], false);
     const startedAt = new Date().toISOString();
@@ -163,12 +163,21 @@ describe('core e2e: pending queue v2 emits pending-changed socket updates', () =
       const localId = randomUUID();
       const ciphertext = Buffer.from('pending-materialize', 'utf8').toString('base64');
       const start0 = userSocket.getEvents().length;
-      const enqueue = await enqueuePendingQueueV2({ baseUrl: server.baseUrl, token: auth.token, sessionId, localId, ciphertext, timeoutMs: 20_000 });
+      const enqueue = await enqueuePendingQueueV2({ baseUrl: server.baseUrl, token: auth.token, sessionId, localId, ciphertext, automated: true, timeoutMs: 20_000 });
       expect(enqueue.status).toBe(200);
       await waitFor(() => {
         const body = findPendingChangedUpdateAfter({ events: userSocket.getEvents(), sessionId, afterIndex: start0 });
-        return body?.pendingCount === 1;
+        return body?.pendingCount === 1 && body.pendingOwnerCount === 0;
       }, { timeoutMs: 20_000 });
+
+      // Miss the owner enqueue while disconnected, then prove fresh hydration and
+      // subsequent live updates agree on both counters after reconnection.
+      userSocket.disconnect();
+      const ownerId = randomUUID();
+      expect((await enqueuePendingQueueV2({ baseUrl: server.baseUrl, token: auth.token, sessionId, localId: ownerId, ciphertext })).status).toBe(200);
+      userSocket.connect();
+      await waitFor(() => userSocket.isConnected(), { timeoutMs: 20_000, context: 'owner-summary socket reconnect' });
+      expect(await fetchSessionV2(server.baseUrl, auth.token, sessionId)).toMatchObject({ pendingCount: 2, pendingOwnerCount: 1 });
 
       const start1 = userSocket.getEvents().length;
       const ack = await sessionSocket.emitWithAck<any>('pending-materialize-next', {
@@ -181,7 +190,7 @@ describe('core e2e: pending queue v2 emits pending-changed socket updates', () =
       expect(ack?.didMaterialize).toBe(true);
       await waitFor(() => {
         const body = findPendingChangedUpdateAfter({ events: userSocket.getEvents(), sessionId, afterIndex: start1 });
-        return body?.pendingCount === 1;
+        return body?.pendingCount === 2 && body.pendingOwnerCount === 1;
       }, { timeoutMs: 20_000 });
 
       const start2 = userSocket.getEvents().length;
@@ -193,9 +202,29 @@ describe('core e2e: pending queue v2 emits pending-changed socket updates', () =
       expect(accepted).toMatchObject({ ok: true, didResolve: true });
       await waitFor(() => {
         const body = findPendingChangedUpdateAfter({ events: userSocket.getEvents(), sessionId, afterIndex: start2 });
-        return body?.pendingCount === 0;
+        return body?.pendingCount === 1 && body.pendingOwnerCount === 1;
       }, { timeoutMs: 20_000 });
 
+      expect(await fetchSessionV2(server.baseUrl, auth.token, sessionId)).toMatchObject({ pendingCount: 1, pendingOwnerCount: 1 });
+      const start3 = userSocket.getEvents().length;
+      const ownerAck = await sessionSocket.emitWithAck<{ ok?: boolean; message?: { localId?: string } }>('pending-materialize-next', {
+        sid: sessionId,
+        deliveryState: 'provider',
+        deliveryTiming: 'after_foreground_ready',
+        foregroundState: 'ready',
+      }, 20_000);
+      expect(ownerAck).toMatchObject({ ok: true, message: { localId: ownerId } });
+      expect(await sessionSocket.emitWithAck('pending-delivery-accepted-v1', { v: 1, sessionId, localId: ownerId }, 20_000))
+        .toMatchObject({ ok: true, didResolve: true });
+      await waitFor(() => {
+        return userSocket.getEvents().slice(start3).some((event) => {
+          if (event.kind !== 'update') return false;
+          const body = event.payload?.body;
+          return body?.t === 'pending-changed' && body.sid === sessionId
+            && body.pendingCount === 0 && body.pendingOwnerCount === 0;
+        });
+      }, { timeoutMs: 20_000, context: 'owner-summary materialization settlement after reconnect' });
+      expect(await fetchSessionV2(server.baseUrl, auth.token, sessionId)).toMatchObject({ pendingCount: 0, pendingOwnerCount: 0 });
       passed = true;
     } finally {
       await artifacts.dumpAll(testDir, { onlyIf: saveArtifactsOnSuccess || !passed });

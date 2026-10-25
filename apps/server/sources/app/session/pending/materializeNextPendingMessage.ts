@@ -56,6 +56,7 @@ export type MaterializeNextPendingMessageResult =
     | {
         ok: true;
         didMaterialize: false;
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         pendingVersion: number;
@@ -72,6 +73,7 @@ export type MaterializeNextPendingMessageResult =
         didWriteMessage: false;
         message: { id: string | null; seq: number | null; localId: string; messageRole: SessionMessageRole | null; content: PrismaJson.SessionMessageContent; requestedAction: PendingRequestedActionV1; providerAction: PendingProviderAction; createdAt: Date; updatedAt: Date };
         participantCursorsPending: ParticipantCursor[];
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         pendingVersion: number;
@@ -149,11 +151,12 @@ async function tryRejoinProviderClaimInTx(params: Readonly<{
                 if (publisherFence.count !== 1) throw new PublisherAuthorityLostError();
                 const updated = await tx.session.findUniqueOrThrow({
                     where: { id: params.sessionId },
-                    select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+                    select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
                 });
                 const participantCursorsPending = await markPendingStateChangedParticipants({
                     tx,
                     sessionId: params.sessionId,
+                    pendingOwnerCount: updated.pendingOwnerCount,
                     pendingCount: updated.pendingCount,
                     pendingBlockedCount: updated.pendingBlockedCount,
                     pendingVersion: updated.pendingVersion,
@@ -176,7 +179,7 @@ async function tryRejoinProviderClaimInTx(params: Readonly<{
             ) return { ok: false, error: "invalid-params" };
             const session = await tx.session.findUniqueOrThrow({
                 where: { id: params.sessionId },
-                select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+                select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
             });
             const content = toSessionMessageContentFromPending(
                 claimed.content as PrismaJson.SessionPendingMessageContent,
@@ -206,6 +209,7 @@ async function tryRejoinProviderClaimInTx(params: Readonly<{
                     updatedAt: claimed.updatedAt,
                 },
                 participantCursorsPending: [],
+                pendingOwnerCount: session.pendingOwnerCount,
                 pendingCount: session.pendingCount,
                 pendingBlockedCount: session.pendingBlockedCount,
                 pendingVersion: session.pendingVersion,
@@ -337,6 +341,7 @@ async function materializeNextPendingMessageInTx(
         select: {
             encryptionMode: true,
             seq: true,
+            pendingOwnerCount: true,
             pendingCount: true,
             pendingBlockedCount: true,
             pendingVersion: true,
@@ -364,13 +369,14 @@ async function materializeNextPendingMessageInTx(
             const pendingCount = await tx.sessionPendingMessage.count({
                 where: { sessionId, status: "queued" },
             });
-            if (pendingCount > 0) {
+            if (pendingCount > 0 || sessionRow.pendingOwnerCount > 0 || sessionRow.pendingBlockedCount > 0) {
                 // Retained rows exist but none is eligible for the released materializer.
                 // Let the transactional path reconcile the aggregate pending counter.
             } else {
                 return {
                     ok: true,
                     didMaterialize: false,
+                    pendingOwnerCount: sessionRow.pendingOwnerCount ?? 0,
                     pendingCount: sessionRow.pendingCount ?? 0,
                     pendingBlockedCount: sessionRow.pendingBlockedCount ?? 0,
                     pendingVersion: sessionRow.pendingVersion ?? 0,
@@ -388,6 +394,7 @@ async function materializeNextPendingMessageInTx(
                 where: { id: sessionId },
                 select: {
                     seq: true,
+                    pendingOwnerCount: true,
                     pendingCount: true,
                     pendingBlockedCount: true,
                     pendingVersion: true,
@@ -422,6 +429,7 @@ async function materializeNextPendingMessageInTx(
                 return {
                     ok: true,
                     didMaterialize: false,
+                    pendingOwnerCount: sessionBefore.pendingOwnerCount ?? 0,
                     pendingCount: sessionBefore.pendingCount ?? 0,
                     pendingBlockedCount: sessionBefore.pendingBlockedCount ?? 0,
                     pendingVersion: sessionBefore.pendingVersion ?? 0,
@@ -463,26 +471,31 @@ async function materializeNextPendingMessageInTx(
                 const pendingCount = await tx.sessionPendingMessage.count({
                     where: { sessionId, status: "queued" },
                 });
+                const pendingOwnerCount = await tx.sessionPendingMessage.count({
+                    where: { sessionId, status: "queued", automated: false },
+                });
                 const blockedCount = await tx.sessionPendingMessage.count({
                     where: { sessionId, status: "queued", deliveryState: "blocked" },
                 });
-                if ((sessionBefore.pendingCount ?? 0) !== pendingCount || (sessionBefore.pendingBlockedCount ?? 0) !== blockedCount) {
+                if ((sessionBefore.pendingOwnerCount ?? 0) !== pendingOwnerCount || (sessionBefore.pendingCount ?? 0) !== pendingCount || (sessionBefore.pendingBlockedCount ?? 0) !== blockedCount) {
                     await tx.session.updateMany({
                         where: {
                             id: sessionId,
+                            pendingOwnerCount: sessionBefore.pendingOwnerCount,
                             pendingCount: sessionBefore.pendingCount,
                             pendingBlockedCount: sessionBefore.pendingBlockedCount,
                             pendingVersion: sessionBefore.pendingVersion,
                         },
-                        data: { pendingCount, pendingBlockedCount: blockedCount, pendingVersion: { increment: 1 } },
+                        data: { pendingOwnerCount, pendingCount, pendingBlockedCount: blockedCount, pendingVersion: { increment: 1 } },
                     });
                     const latestSession = await tx.session.findUniqueOrThrow({
                         where: { id: sessionId },
-                        select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+                        select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
                     });
                     return {
                         ok: true,
                         didMaterialize: false,
+                        pendingOwnerCount: latestSession.pendingOwnerCount,
                         pendingCount: latestSession.pendingCount,
                         pendingBlockedCount: latestSession.pendingBlockedCount,
                         pendingVersion: latestSession.pendingVersion,
@@ -493,6 +506,7 @@ async function materializeNextPendingMessageInTx(
                 return {
                     ok: true,
                     didMaterialize: false,
+                    pendingOwnerCount: sessionBefore.pendingOwnerCount ?? 0,
                     pendingCount: sessionBefore.pendingCount ?? 0,
                     pendingBlockedCount: sessionBefore.pendingBlockedCount ?? 0,
                     pendingVersion: sessionBefore.pendingVersion ?? 0,
@@ -507,6 +521,7 @@ async function materializeNextPendingMessageInTx(
                 return {
                     ok: true,
                     didMaterialize: false,
+                    pendingOwnerCount: sessionBefore.pendingOwnerCount ?? 0,
                     pendingCount: sessionBefore.pendingCount ?? 0,
                     pendingBlockedCount: sessionBefore.pendingBlockedCount ?? 0,
                     pendingVersion: sessionBefore.pendingVersion ?? 0,
@@ -540,6 +555,7 @@ async function materializeNextPendingMessageInTx(
                 return {
                     ok: true,
                     didMaterialize: false,
+                    pendingOwnerCount: sessionBefore.pendingOwnerCount ?? 0,
                     pendingCount: sessionBefore.pendingCount ?? 0,
                     pendingBlockedCount: sessionBefore.pendingBlockedCount ?? 0,
                     pendingVersion: sessionBefore.pendingVersion ?? 0,
@@ -569,6 +585,7 @@ async function materializeNextPendingMessageInTx(
                     return {
                         ok: true,
                         didMaterialize: false,
+                        pendingOwnerCount: sessionBefore.pendingOwnerCount ?? 0,
                         pendingCount: sessionBefore.pendingCount ?? 0,
                         pendingBlockedCount: sessionBefore.pendingBlockedCount ?? 0,
                         pendingVersion: sessionBefore.pendingVersion ?? 0,
@@ -585,6 +602,7 @@ async function materializeNextPendingMessageInTx(
                     return {
                         ok: true,
                         didMaterialize: false,
+                        pendingOwnerCount: sessionBefore.pendingOwnerCount ?? 0,
                         pendingCount: sessionBefore.pendingCount ?? 0,
                         pendingBlockedCount: sessionBefore.pendingBlockedCount ?? 0,
                         pendingVersion: sessionBefore.pendingVersion ?? 0,
@@ -643,11 +661,12 @@ async function materializeNextPendingMessageInTx(
                 if (claimed.count === 0) {
                     const latestSession = await tx.session.findUniqueOrThrow({
                         where: { id: sessionId },
-                        select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+                        select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
                     });
                     return {
                         ok: true,
                         didMaterialize: false,
+                        pendingOwnerCount: latestSession.pendingOwnerCount,
                         pendingCount: latestSession.pendingCount,
                         pendingBlockedCount: latestSession.pendingBlockedCount,
                         pendingVersion: latestSession.pendingVersion,
@@ -664,11 +683,16 @@ async function materializeNextPendingMessageInTx(
                 const pendingCount = await tx.sessionPendingMessage.count({
                     where: { sessionId, status: "queued" },
                 });
+
+                const pendingOwnerCount = await tx.sessionPendingMessage.count({
+                    where: { sessionId, status: "queued", automated: false },
+                });
                 const pendingBlockedCount = await tx.sessionPendingMessage.count({
                     where: { sessionId, status: "queued", deliveryState: "blocked" },
                 });
                 const sessionSelect = {
                     seq: true,
+                    pendingOwnerCount: true,
                     pendingCount: true,
                     pendingBlockedCount: true,
                     pendingVersion: true,
@@ -688,7 +712,7 @@ async function materializeNextPendingMessageInTx(
                             ? { runtimeActivityRevision: BigInt(params.expectedRuntimeActivityRevision!) }
                             : {}),
                     },
-                    data: { pendingCount, pendingBlockedCount, pendingVersion: { increment: 1 } },
+                    data: { pendingOwnerCount, pendingCount, pendingBlockedCount, pendingVersion: { increment: 1 } },
                 });
                 if (sessionFence.count !== 1) throw new PublisherAuthorityLostError();
                 const session = await tx.session.findUniqueOrThrow({
@@ -700,6 +724,7 @@ async function materializeNextPendingMessageInTx(
                     tx,
                     sessionId,
                     pendingVersion: session.pendingVersion,
+                    pendingOwnerCount: session.pendingOwnerCount,
                     pendingCount: session.pendingCount,
                     pendingBlockedCount: session.pendingBlockedCount,
                     activationTarget,
@@ -721,6 +746,7 @@ async function materializeNextPendingMessageInTx(
                         updatedAt: nextPending.updatedAt,
                     },
                     participantCursorsPending,
+                    pendingOwnerCount: session.pendingOwnerCount,
                     pendingCount: session.pendingCount,
                     pendingBlockedCount: session.pendingBlockedCount,
                     pendingVersion: session.pendingVersion,
@@ -730,6 +756,7 @@ async function materializeNextPendingMessageInTx(
                         sessionBefore,
                         {
                             seq: session.seq,
+                            pendingOwnerCount: session.pendingOwnerCount,
                             pendingCount: session.pendingCount,
                             pendingBlockedCount: session.pendingBlockedCount,
                             lastViewedSessionSeq: session.lastViewedSessionSeq,
@@ -751,6 +778,7 @@ async function materializeNextPendingMessageInTx(
                 messageSeq: result.message.seq,
                 messageRole: result.message.messageRole,
                 didWriteMessage: result.didWriteMessage,
+                pendingOwnerCount: result.pendingOwnerCount,
                 pendingCount: result.pendingCount,
                 pendingBlockedCount: result.pendingBlockedCount,
                 pendingVersion: result.pendingVersion,

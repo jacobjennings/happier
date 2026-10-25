@@ -12,6 +12,7 @@ export async function blockInheritedProviderDeliveryClaims(params: Readonly<{
 }>): Promise<{
     blockedCount: number;
     pendingVersion: number;
+    pendingOwnerCount: number;
     pendingCount: number;
     pendingBlockedCount: number;
 } | null> {
@@ -35,6 +36,7 @@ export async function blockInheritedProviderDeliveryClaims(params: Readonly<{
     return {
         blockedCount: blocked.count,
         pendingVersion: state.pendingVersion,
+        pendingOwnerCount: state.pendingOwnerCount,
         pendingCount: state.pendingCount,
         pendingBlockedCount: state.pendingBlockedCount,
     };

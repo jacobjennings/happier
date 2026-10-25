@@ -5,6 +5,7 @@ export async function markPendingStateChangedParticipants(params: {
     tx: Tx;
     sessionId: string;
     pendingVersion: number;
+    pendingOwnerCount?: number;
     pendingCount: number;
     pendingBlockedCount?: number;
     meaningfulActivityAt?: Date | null;
@@ -16,6 +17,7 @@ export async function markPendingStateChangedParticipants(params: {
             : undefined;
     const hint = {
         pendingVersion: params.pendingVersion,
+        pendingOwnerCount: params.pendingOwnerCount,
         pendingCount: params.pendingCount,
         ...(typeof params.pendingBlockedCount === "number" ? { pendingBlockedCount: params.pendingBlockedCount } : {}),
         ...(typeof meaningfulActivityAt === "number" ? { meaningfulActivityAt } : {}),

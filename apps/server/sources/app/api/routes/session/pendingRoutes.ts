@@ -41,6 +41,7 @@ type SessionStoredMessageContent = z.infer<typeof SessionStoredMessageContentSch
 function toPendingJson(row: PendingMessageRow) {
     return {
         localId: row.localId,
+        automated: row.automated === true,
         ...(typeof row.messageRole === "string" ? { messageRole: row.messageRole } : {}),
         content: row.content,
         ...(row.requestedAction ? { requestedAction: row.requestedAction } : {}),
@@ -134,6 +135,7 @@ export function sessionPendingRoutes(app: Fastify) {
                         ciphertext: z.string().min(1),
                         localId: PendingLocalIdSchema,
                         messageRole: z.unknown().optional(),
+                        automated: z.boolean().optional(),
                         deliveryMode: z.union([
                             z.literal("external_handoff"),
                             z.literal("continuation_if_no_queued_user_input"),
@@ -145,6 +147,7 @@ export function sessionPendingRoutes(app: Fastify) {
                         content: SessionStoredMessageContentSchema,
                         localId: PendingLocalIdSchema,
                         messageRole: z.unknown().optional(),
+                        automated: z.boolean().optional(),
                         deliveryMode: z.union([
                             z.literal("external_handoff"),
                             z.literal("continuation_if_no_queued_user_input"),
@@ -183,6 +186,8 @@ export function sessionPendingRoutes(app: Fastify) {
                 body && typeof body === "object" && "messageRole" in body
                     ? (body as { messageRole?: unknown }).messageRole
                     : null;
+            const automated = body !== null && typeof body === "object" && "automated" in body
+                && body.automated === true;
             const requestedDeliveryMode = body && typeof body === "object" && "deliveryMode" in body
                 ? (body as { deliveryMode?: unknown }).deliveryMode
                 : undefined;
@@ -204,6 +209,7 @@ export function sessionPendingRoutes(app: Fastify) {
                       localId,
                       content,
                       messageRole,
+                      automated,
                       ...(deliveryMode ? { deliveryMode } : {}),
                       ...(admissionMode ? { admissionMode } : {}),
                       requestedAction,
@@ -216,6 +222,7 @@ export function sessionPendingRoutes(app: Fastify) {
                       localId,
                       ciphertext: ciphertext ?? "",
                       messageRole,
+                      automated,
                       ...(deliveryMode ? { deliveryMode } : {}),
                       ...(admissionMode ? { admissionMode } : {}),
                       requestedAction,
@@ -241,6 +248,7 @@ export function sessionPendingRoutes(app: Fastify) {
                 return reply.send({
                     didWrite: false,
                     suppressed: true,
+                    pendingOwnerCount: res.pendingOwnerCount,
                     pendingCount: res.pendingCount,
                     pendingBlockedCount: res.pendingBlockedCount,
                     pendingVersion: res.pendingVersion,
@@ -250,6 +258,7 @@ export function sessionPendingRoutes(app: Fastify) {
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -277,6 +286,7 @@ export function sessionPendingRoutes(app: Fastify) {
                     : res.pending.requestedAction
                         ? { requestedAction: res.pending.requestedAction }
                         : {}),
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -335,6 +345,7 @@ export function sessionPendingRoutes(app: Fastify) {
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -344,7 +355,7 @@ export function sessionPendingRoutes(app: Fastify) {
                 badgeAttentionChanged: res.badgeAttentionChanged,
                 participantCursors: res.participantCursors,
             });
-            return reply.send({ ok: true, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
+            return reply.send({ ok: true, pendingOwnerCount: res.pendingOwnerCount, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
         },
     );
 
@@ -382,6 +393,7 @@ export function sessionPendingRoutes(app: Fastify) {
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -391,7 +403,7 @@ export function sessionPendingRoutes(app: Fastify) {
                 badgeAttentionChanged: res.badgeAttentionChanged,
                 participantCursors: res.participantCursors,
             });
-            return reply.send({ ok: true, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
+            return reply.send({ ok: true, pendingOwnerCount: res.pendingOwnerCount, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
         },
     );
 
@@ -433,6 +445,7 @@ export function sessionPendingRoutes(app: Fastify) {
                 await emitPendingChanged({
                     sessionId,
                     changedByAccountId: request.userId,
+                    pendingOwnerCount: res.pendingOwnerCount,
                     pendingCount: res.pendingCount,
                     pendingBlockedCount: res.pendingBlockedCount,
                     pendingVersion: res.pendingVersion,
@@ -448,6 +461,7 @@ export function sessionPendingRoutes(app: Fastify) {
                 ok: true,
                 didUpdate: res.didUpdate,
                 requestedAction: request.body.requestedAction,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -485,6 +499,7 @@ export function sessionPendingRoutes(app: Fastify) {
                 await emitPendingChanged({
                     sessionId: request.params.sessionId,
                     changedByAccountId: request.userId,
+                    pendingOwnerCount: res.pendingOwnerCount,
                     pendingCount: res.pendingCount,
                     pendingBlockedCount: res.pendingBlockedCount,
                     pendingVersion: res.pendingVersion,
@@ -526,6 +541,7 @@ export function sessionPendingRoutes(app: Fastify) {
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -535,7 +551,7 @@ export function sessionPendingRoutes(app: Fastify) {
                 badgeAttentionChanged: res.badgeAttentionChanged,
                 participantCursors: res.participantCursors,
             });
-            return reply.send({ ok: true, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
+            return reply.send({ ok: true, pendingOwnerCount: res.pendingOwnerCount, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
         },
     );
 
@@ -568,6 +584,7 @@ export function sessionPendingRoutes(app: Fastify) {
                         await emitPendingChanged({
                             sessionId,
                             changedByAccountId: request.userId,
+                            pendingOwnerCount: res.pendingOwnerCount ?? 0,
                             pendingCount: res.pendingCount ?? 0,
                             pendingBlockedCount: res.pendingBlockedCount,
                             pendingVersion: res.pendingVersion ?? 0,
@@ -597,6 +614,7 @@ export function sessionPendingRoutes(app: Fastify) {
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -608,6 +626,7 @@ export function sessionPendingRoutes(app: Fastify) {
             });
             return reply.send({
                 ok: true,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -641,6 +660,7 @@ export function sessionPendingRoutes(app: Fastify) {
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -650,7 +670,7 @@ export function sessionPendingRoutes(app: Fastify) {
                 badgeAttentionChanged: res.badgeAttentionChanged,
                 participantCursors: res.participantCursors,
             });
-            return reply.send({ ok: true, didDismiss: res.didDismiss, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
+            return reply.send({ ok: true, didDismiss: res.didDismiss, pendingOwnerCount: res.pendingOwnerCount, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
         },
     );
 
@@ -683,6 +703,7 @@ export function sessionPendingRoutes(app: Fastify) {
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -692,7 +713,7 @@ export function sessionPendingRoutes(app: Fastify) {
                 badgeAttentionChanged: res.badgeAttentionChanged,
                 participantCursors: res.participantCursors,
             });
-            return reply.send({ ok: true, didWrite: res.didWrite, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
+            return reply.send({ ok: true, didWrite: res.didWrite, pendingOwnerCount: res.pendingOwnerCount, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
         },
     );
 
@@ -724,6 +745,7 @@ export function sessionPendingRoutes(app: Fastify) {
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -733,7 +755,7 @@ export function sessionPendingRoutes(app: Fastify) {
                 badgeAttentionChanged: res.badgeAttentionChanged,
                 participantCursors: res.participantCursors,
             });
-            return reply.send({ ok: true, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
+            return reply.send({ ok: true, pendingOwnerCount: res.pendingOwnerCount, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
         },
     );
 
@@ -760,6 +782,7 @@ export function sessionPendingRoutes(app: Fastify) {
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -769,7 +792,7 @@ export function sessionPendingRoutes(app: Fastify) {
                 badgeAttentionChanged: res.badgeAttentionChanged,
                 participantCursors: res.participantCursors,
             });
-            return reply.send({ ok: true, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
+            return reply.send({ ok: true, pendingOwnerCount: res.pendingOwnerCount, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
         },
     );
 
@@ -799,6 +822,7 @@ export function sessionPendingRoutes(app: Fastify) {
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -808,7 +832,7 @@ export function sessionPendingRoutes(app: Fastify) {
                 badgeAttentionChanged: res.badgeAttentionChanged,
                 participantCursors: res.participantCursors,
             });
-            return reply.send({ ok: true, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
+            return reply.send({ ok: true, pendingOwnerCount: res.pendingOwnerCount, pendingCount: res.pendingCount, pendingBlockedCount: res.pendingBlockedCount, pendingVersion: res.pendingVersion });
         },
     );
 

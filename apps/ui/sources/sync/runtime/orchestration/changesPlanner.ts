@@ -124,7 +124,7 @@ function hasPendingHint(change: ApiChangeEntry): boolean {
     const hint = change.hint;
     return (
         isRecord(hint)
-        && (typeof hint.pendingVersion === 'number' || typeof hint.pendingCount === 'number')
+        && (typeof hint.pendingVersion === 'number' || typeof hint.pendingCount === 'number' || typeof hint.pendingOwnerCount === 'number')
     );
 }
 

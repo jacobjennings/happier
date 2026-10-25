@@ -1,3 +1,4 @@
+import { AutomatedMessageSender } from '@/components/sessions/transcript/AutomatedMessageSender';
 import * as React from "react";
 import { View, Pressable, Platform } from 'react-native';
 import { isRecoveredHistoryTranscriptObservationProvenance } from '@happier-dev/protocol';
@@ -700,6 +701,7 @@ function UserTextBlock(props: {
             radius={TRANSCRIPT_MESSAGE_HIGHLIGHT_RADIUS}
             style={styles.structuredUserMessageContent}
           >
+            <AutomatedMessageSender meta={props.message.meta} messageId={props.message.id} />
             {structuredNode}
             {sessionMediaInlineImages.length > 0 ? (
               <SessionMediaInlineImages
@@ -824,6 +826,7 @@ function UserTextBlock(props: {
               radius={TRANSCRIPT_MESSAGE_HIGHLIGHT_RADIUS}
               style={[styles.userMessageBubble, isDiscarded ? styles.userMessageBubbleDiscarded : null]}
             >
+              <AutomatedMessageSender meta={props.message.meta} messageId={props.message.id} />
               <StructuredMessageBlock
                 message={props.message}
                 sessionId={props.sessionId}

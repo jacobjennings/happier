@@ -10145,6 +10145,7 @@ settingsSession: {
     },
 
     message: {
+        automatedSender: 'Automatisiert',
         sessionReferenceUnavailable: 'Session nicht verfügbar',
         sessionReferenceOpen: ({ name }: { name: string }) => `Session öffnen: ${name}`,
         switchedToMode: ({ mode }: { mode: string }) => `Gewechselt zu ${mode} Modus`,

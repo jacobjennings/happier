@@ -129,6 +129,7 @@ export async function admitSessionUserMessageToPendingQueue(params: Readonly<{
             localId: params.localId,
             ciphertext: content.c,
             messageRole: 'user',
+            ...(params.automatedSource ? { automated: true } : {}),
             requestedAction,
             ...(params.pendingAdmissionMode ? { deliveryMode: params.pendingAdmissionMode } : {}),
           }
@@ -136,6 +137,7 @@ export async function admitSessionUserMessageToPendingQueue(params: Readonly<{
             localId: params.localId,
             content,
             messageRole: 'user',
+            ...(params.automatedSource ? { automated: true } : {}),
             requestedAction,
             ...(params.pendingAdmissionMode ? { deliveryMode: params.pendingAdmissionMode } : {}),
           },

@@ -15,6 +15,7 @@ const TRANSCRIPT_RENDER_IRRELEVANT_SESSION_KEYS = new Set<string>([
     'latestUsage',
     'pendingVersion',
     'pendingCount',
+    'pendingOwnerCount',
     'agentStateVersion',
     'pendingPermissionRequestCount',
     'pendingUserActionRequestCount',

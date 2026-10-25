@@ -28,6 +28,7 @@ export async function publishAcceptedPendingSettlement(params: Readonly<{
         await emitPendingChanged({
             sessionId: params.sessionId,
             changedByAccountId: params.actorUserId,
+            pendingOwnerCount: result.pendingOwnerCount ?? 0,
             pendingCount: result.pendingCount ?? 0,
             pendingBlockedCount: result.pendingBlockedCount,
             pendingVersion: result.pendingVersion ?? 0,
@@ -54,6 +55,7 @@ export async function publishAcceptedPendingSettlement(params: Readonly<{
     await emitPendingChanged({
         sessionId: params.sessionId,
         changedByAccountId: params.actorUserId,
+        pendingOwnerCount: result.pendingOwnerCount,
         pendingCount: result.pendingCount,
         pendingBlockedCount: result.pendingBlockedCount,
         pendingVersion: result.pendingVersion,

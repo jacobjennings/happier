@@ -19,6 +19,7 @@ import { stopDaemonFromHomeDir } from '../../src/testkit/daemon/daemon';
 import { enqueuePendingQueueV2, listPendingQueueV2 } from '../../src/testkit/pendingQueueV2';
 import { seedCliAuthForServer } from '../../src/testkit/cliAuth';
 import { waitForRegexInFile } from '../../src/testkit/waitForRegexInFile';
+import { createUserScopedSocketCollector } from '../../src/testkit/socketClient';
 
 const run = createRunDirs({ runLabel: 'core' });
 
@@ -115,7 +116,10 @@ describe('core e2e: CLI materializes server pending queue v2', () => {
       stderrPath: resolve(join(testDir, 'cli.stderr.log')),
     });
 
+    const userSocket = createUserScopedSocketCollector(server.baseUrl, auth.token);
     try {
+      userSocket.connect();
+      await waitFor(() => userSocket.isConnected(), { timeoutMs: 20_000, context: 'CLI source-summary observer connection' });
       await waitFor(async () => {
         const snap: any = await fetchSessionV2(server!.baseUrl, auth.token, sessionId);
         return snap.active === true;
@@ -159,6 +163,11 @@ describe('core e2e: CLI materializes server pending queue v2', () => {
       // Exercise the public CLI, encrypted custody, runtime delivery and stored
       // transcript together. A source label must never trigger self-echo suppression.
       for (const source of ['harness', undefined]) {
+        await waitFor(async () => {
+          const pending = await listPendingQueueV2({ baseUrl: server!.baseUrl, token: auth.token, sessionId });
+          return pending.status === 200 && pending.data.pending?.length === 0;
+        }, { timeoutMs: 60_000, context: `previous delivery settled before ${source ?? 'owner'} source-summary observation` });
+        const enqueueEventStart = userSocket.getEvents().length;
         const localId = randomUUID();
         const text = `source-roundtrip-${source ?? 'owner'}-${localId}`;
         await runLoggedCommand({
@@ -171,6 +180,14 @@ describe('core e2e: CLI materializes server pending queue v2', () => {
           stdoutPath: resolve(join(testDir, `send-${source ?? 'owner'}.stdout.log`)),
           stderrPath: resolve(join(testDir, `send-${source ?? 'owner'}.stderr.log`)),
         });
+        // Observe the transient enqueue summary through the real public CLI path.
+        // Later materialization/settlement may already have reduced the current count.
+        await waitFor(() => userSocket.getEvents().slice(enqueueEventStart).some((event) => {
+          if (event.kind !== 'update') return false;
+          const body = event.payload.body;
+          return body?.t === 'pending-changed' && (body.sid === sessionId || body.sessionId === sessionId)
+            && body.pendingCount === 1 && body.pendingOwnerCount === (source ? 0 : 1);
+        }), { timeoutMs: 20_000, context: `CLI ${source ?? 'owner'} enqueue summary carries automated classification` });
         await waitFor(async () => {
           const events = await readFakeClaudeLogEvents(fakeClaudeLog);
           return events.some((event) => event.type === 'sdk_stdin' && event.userTextPreview === text);
@@ -193,6 +210,7 @@ describe('core e2e: CLI materializes server pending queue v2', () => {
         else expect(meta).not.toHaveProperty('automatedSource');
       }
     } finally {
+      userSocket.close();
       await proc.stop().catch(() => {});
       proc = null;
       await stopDaemonFromHomeDir(cliHome).catch(() => {});

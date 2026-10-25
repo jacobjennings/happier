@@ -127,6 +127,7 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     sid: z.string(),
     sessionId: z.string().optional(),
     pendingVersion: z.number().int().min(0),
+    pendingOwnerCount: z.number().int().min(0).optional(),
     pendingCount: z.number().int().min(0),
     pendingBlockedCount: z.number().int().min(0).optional(),
     meaningfulActivityAt: TimestampMsSchema.optional(),

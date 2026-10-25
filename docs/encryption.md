@@ -207,6 +207,24 @@ The server treats these fields as opaque strings/blobs. The client encrypts them
 
 ### Session messages
 
+#### Automated pending input (development)
+
+Queued messages may carry one relay-visible `automated` boolean. An omitted
+flag means ordinary owner input. This classification is the only additional
+unencrypted attribution field. The sender name (`meta.automatedSource`) and
+message text remain inside the existing encrypted content envelope for E2EE
+Sessions. Plaintext Sessions retain their explicitly selected storage mode.
+
+The relay uses this boolean to maintain `pendingOwnerCount`, excluding automated
+queued messages from the owner's pending indicators. The existing `pendingCount`
+still includes all queued input and remains the runtime delivery count. The
+classification is a presentation hint, not authentication, authorization, or a
+permission grant. It does not change delivery or make a message a different role.
+
+This development contract follows the owner's 2026-10-25 approval of exactly one
+relay-visible classification bit. Existing queued rows default to ordinary input
+because their encrypted attribution cannot be reconstructed by the relay.
+
 ```mermaid
 sequenceDiagram
     participant Client

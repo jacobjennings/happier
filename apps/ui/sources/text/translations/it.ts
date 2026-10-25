@@ -11130,6 +11130,7 @@ settingsSession: {
   },
 
   message: {
+      automatedSender: 'Automatico',
     sessionReferenceUnavailable: "Sessione non disponibile",
     sessionReferenceOpen: ({ name }: { name: string }) => `Apri la sessione ${name}`,
     switchedToMode: ({ mode }: { mode: string }) =>

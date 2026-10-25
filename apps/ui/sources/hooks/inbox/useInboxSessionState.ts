@@ -53,6 +53,7 @@ export function buildInboxSessionSourceSignature(session: Session): string {
         readNumber(session.latestReadyEventSeq),
         readNumber(session.lastViewedSessionSeq),
         readNumber(session.pendingCount),
+        readNumber(session.pendingOwnerCount),
         readNumber(session.pendingPermissionRequestCount),
         readNumber(session.pendingUserActionRequestCount),
         readNumber(session.pendingRequestObservedAt),

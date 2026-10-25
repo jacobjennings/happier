@@ -1,3 +1,4 @@
+import { AutomatedMessageSender } from '@/components/sessions/transcript/AutomatedMessageSender';
 import * as React from 'react';
 import { Platform, Pressable, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -940,6 +941,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                                 { backgroundColor: theme.colors.message.user.background, opacity: pressed ? 0.82 : 1 },
                             ])}
                         >
+                            <AutomatedMessageSender meta={message.rawRecord?.meta} automated={message.automated} messageId={message.id} />
                             {isExpanded ? (
                                 <MarkdownView markdown={text} textStyle={styles.transcriptMarkdownText} />
                             ) : (
@@ -1311,6 +1313,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                                 { backgroundColor: theme.colors.input.background, opacity: pressed ? 0.75 : 0.82 },
                             ])}
                         >
+                            <AutomatedMessageSender meta={message.rawRecord?.meta} automated={message.automated} messageId={message.id} />
                             <Text numberOfLines={collapsedLines} style={{ color: theme.colors.text.primary, ...Typography.default() }}>
                                 {text}
                             </Text>

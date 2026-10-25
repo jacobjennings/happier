@@ -10920,6 +10920,7 @@ settingsSession: {
   },
 
   message: {
+      automatedSender: 'Automatizado',
     sessionReferenceUnavailable: "Sessão indisponível",
     sessionReferenceOpen: ({ name }: { name: string }) => `Abrir a sessão ${name}`,
     switchedToMode: ({ mode }: { mode: string }) => `Mudou para o modo ${mode}`,

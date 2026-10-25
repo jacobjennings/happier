@@ -10081,6 +10081,7 @@ settingsSession: {
     },
 
     message: {
+        automatedSender: 'Automatitzat',
         sessionReferenceUnavailable: 'Sessió no disponible',
         sessionReferenceOpen: ({ name }: { name: string }) => `Obre la sessió ${name}`,
         switchedToMode: ({ mode }: { mode: string }) => `S'ha canviat al mode ${mode}`,

@@ -10429,6 +10429,7 @@ settingsSession: {
   },
 
   message: {
+      automatedSender: '自动发送',
     sessionReferenceUnavailable: "会话不可用",
     sessionReferenceOpen: ({ name }: { name: string }) => `打开会话 ${name}`,
     switchedToMode: ({ mode }: { mode: string }) => `已切换到 ${mode} 模式`,

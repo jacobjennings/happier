@@ -300,6 +300,7 @@ model Session {
     dataEncryptionKey Bytes?
     seq               Int                 @default(0)
     pendingVersion    Int                 @default(0)
+    pendingOwnerCount Int                 @default(0)
     pendingCount      Int                 @default(0)
     pendingBlockedCount Int               @default(0)
     pendingQueueSeq   Int                 @default(0)
@@ -699,6 +700,7 @@ model SessionPendingMessage {
 
     localId          String
     messageRole      String?
+    automated        Boolean                    @default(false)
     /// [SessionPendingMessageContent]
     content          Json
     status                SessionPendingMessageStatus @default(queued)

@@ -450,6 +450,7 @@ export interface Session {
     */
     pendingVersion?: number,
     pendingCount?: number,
+    pendingOwnerCount?: number,
     pendingBlockedCount?: number,
     pendingActivationAuthorization?: PendingActivationAuthorizationV1 | null,
     lastViewedSessionSeq?: number | null,
@@ -523,6 +524,7 @@ export type PendingDeliveryStatus =
 export type { PendingDeliveryBlockedReason };
 
 export interface PendingMessage {
+    automated?: boolean;
     id: string;
     localId: string | null;
     createdAt: number;

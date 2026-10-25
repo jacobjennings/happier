@@ -1,3 +1,4 @@
+import { readAutomatedMessageSource } from '@/sync/domains/messages/automatedMessage';
 import type { Message } from '@/sync/domains/messages/messageTypes';
 
 export type AgentInputHistoryScope = 'perSession' | 'global';
@@ -5,7 +6,7 @@ export type AgentInputHistoryScope = 'perSession' | 'global';
 export const DEFAULT_USER_MESSAGE_HISTORY_MAX_ENTRIES = 200;
 
 function isUserTextMessage(message: Message): message is Extract<Message, { kind: 'user-text' }> {
-    return message.kind === 'user-text';
+    return message.kind === 'user-text' && readAutomatedMessageSource(message.meta) === null;
 }
 
 export function collectUserMessageHistoryEntries(opts: {

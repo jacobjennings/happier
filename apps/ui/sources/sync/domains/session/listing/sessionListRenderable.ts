@@ -101,6 +101,7 @@ export interface SessionListRenderableSession {
     archivedAt?: number | null;
     pendingVersion?: number;
     pendingCount?: number;
+    pendingOwnerCount?: number;
     pendingBlockedCount?: number;
     pendingActivationAuthorization?: PendingActivationAuthorizationV1 | null;
     lastViewedSessionSeq?: number | null;
@@ -332,6 +333,7 @@ export function buildSessionListRenderableFromSession(
         archivedAt: session.archivedAt ?? null,
         pendingVersion: session.pendingVersion,
         pendingCount: session.pendingCount,
+        pendingOwnerCount: session.pendingOwnerCount,
         pendingBlockedCount: session.pendingBlockedCount,
         pendingActivationAuthorization: session.pendingActivationAuthorization ?? null,
         lastViewedSessionSeq: normalizeLastViewedSessionSeq(session.lastViewedSessionSeq),
@@ -549,6 +551,7 @@ export function areSessionListRenderablesEqual(
         && (previous.archivedAt ?? null) === (next.archivedAt ?? null)
         && (previous.pendingVersion ?? null) === (next.pendingVersion ?? null)
         && (previous.pendingCount ?? null) === (next.pendingCount ?? null)
+        && (previous.pendingOwnerCount ?? null) === (next.pendingOwnerCount ?? null)
         && (previous.pendingBlockedCount ?? null) === (next.pendingBlockedCount ?? null)
         && (previous.lastViewedSessionSeq ?? null) === (next.lastViewedSessionSeq ?? null)
         && previous.metadataVersion === next.metadataVersion
@@ -902,6 +905,7 @@ export function didSessionListRenderableWarmCacheFieldsChange(
     if ((previous.archivedAt ?? null) !== (next.archivedAt ?? null)) return true;
     if ((previous.lastViewedSessionSeq ?? null) !== (next.lastViewedSessionSeq ?? null)) return true;
     if ((previous.pendingCount ?? null) !== (next.pendingCount ?? null)) return true;
+    if ((previous.pendingOwnerCount ?? null) !== (next.pendingOwnerCount ?? null)) return true;
     if ((previous.pendingBlockedCount ?? null) !== (next.pendingBlockedCount ?? null)) return true;
     if ((previous.pendingVersion ?? null) !== (next.pendingVersion ?? null)) return true;
     if ((previous.latestTurnId ?? null) !== (next.latestTurnId ?? null)) return true;
@@ -954,6 +958,7 @@ export function isSessionListRenderableWarmCacheProgressOnlyChange(
     if (previous.thinking !== next.thinking) return false;
     if ((previous.archivedAt ?? null) !== (next.archivedAt ?? null)) return false;
     if ((previous.pendingCount ?? null) !== (next.pendingCount ?? null)) return false;
+    if ((previous.pendingOwnerCount ?? null) !== (next.pendingOwnerCount ?? null)) return false;
     if ((previous.pendingBlockedCount ?? null) !== (next.pendingBlockedCount ?? null)) return false;
     if ((previous.pendingVersion ?? null) !== (next.pendingVersion ?? null)) return false;
     if ((previous.lastViewedSessionSeq ?? null) !== (next.lastViewedSessionSeq ?? null)) return false;

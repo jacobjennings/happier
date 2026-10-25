@@ -11034,6 +11034,7 @@ settingsSession: {
   },
 
   message: {
+      automatedSender: '自動送信',
     sessionReferenceUnavailable: "利用できないセッション",
     sessionReferenceOpen: ({ name }: { name: string }) => `セッション ${name} を開く`,
     switchedToMode: ({ mode }: { mode: string }) =>

@@ -354,6 +354,7 @@ export type SessionV2 = {
   active: boolean;
   activeAt: number;
   pendingCount?: number;
+  pendingOwnerCount?: number;
   pendingBlockedCount?: number;
   pendingVersion?: number;
   pendingPermissionRequestCount?: number;
@@ -382,6 +383,7 @@ function parseSessionV2Common(value: unknown, context: string): SessionV2 {
   const active = value.active;
   const activeAt = value.activeAt;
   const pendingCount = value.pendingCount;
+  const pendingOwnerCount = value.pendingOwnerCount;
   const pendingBlockedCount = value.pendingBlockedCount;
   const pendingVersion = value.pendingVersion;
   const pendingPermissionRequestCount = value.pendingPermissionRequestCount;
@@ -412,6 +414,9 @@ function parseSessionV2Common(value: unknown, context: string): SessionV2 {
     (typeof pendingCount !== 'number' || !Number.isInteger(pendingCount) || pendingCount < 0)
   ) {
     throw new Error(`Invalid v2 session pendingCount (${context})`);
+  }
+  if (pendingOwnerCount !== undefined && (typeof pendingOwnerCount !== 'number' || !Number.isInteger(pendingOwnerCount) || pendingOwnerCount < 0)) {
+    throw new Error(`Invalid v2 session pendingOwnerCount (${context})`);
   }
   if (
     pendingBlockedCount !== undefined &&
@@ -449,6 +454,7 @@ function parseSessionV2Common(value: unknown, context: string): SessionV2 {
     active,
     activeAt,
     ...(typeof pendingCount === 'number' ? { pendingCount } : {}),
+    ...(typeof pendingOwnerCount === 'number' ? { pendingOwnerCount } : {}),
     ...(typeof pendingBlockedCount === 'number' ? { pendingBlockedCount } : {}),
     ...(typeof pendingVersion === 'number' ? { pendingVersion } : {}),
     ...(typeof pendingPermissionRequestCount === 'number' ? { pendingPermissionRequestCount } : {}),

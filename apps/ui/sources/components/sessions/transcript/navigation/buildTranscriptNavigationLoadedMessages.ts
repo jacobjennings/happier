@@ -1,3 +1,5 @@
+import { readAutomatedMessageSource } from '@/sync/domains/messages/automatedMessage';
+import { t } from '@/text';
 import { buildMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
 import type { Message } from '@/sync/domains/messages/messageTypes';
 import type { SessionMessageHistoryRemoteRow } from '@/sync/engine/sessions/fetchUserMessageHistoryPage';
@@ -21,7 +23,9 @@ function roleForMessage(message: Message): TranscriptNavigationRole {
 
 function textForMessage(message: Message): string | null {
     if (message.kind === 'user-text') {
-        return message.displayText ?? message.text;
+        const text = message.displayText ?? message.text;
+        const source = readAutomatedMessageSource(message.meta);
+        return source ? `${t('message.automatedSender')} · ${source}: ${text}` : text;
     }
     if (message.kind === 'agent-text') {
         // Thinking is never a reply preview: it is provider reasoning, not what the agent said.
@@ -103,7 +107,7 @@ export function buildTranscriptNavigationRemoteMessages(params: Readonly<{
             seq,
             transcriptBlockIndex: null,
             role: remoteRoleForRow(row),
-            text,
+            text: row.automatedSource ? `${t('message.automatedSender')} · ${row.automatedSource}: ${text}` : text,
             createdAtMs: normalizeFiniteInteger(row.createdAt),
             loaded: false,
             preNormalized: true,

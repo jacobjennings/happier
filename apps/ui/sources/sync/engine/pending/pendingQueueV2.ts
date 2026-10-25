@@ -1,3 +1,4 @@
+import { readAutomatedMessageSource } from '@/sync/domains/messages/automatedMessage';
 import { storage } from '@/sync/domains/state/storage';
 import {
     assertSafePendingIdPathSegment,
@@ -83,6 +84,7 @@ export type PendingMessageEnqueueResultV2 = Readonly<{
 }>;
 
 type PendingRow = {
+    automated?: boolean;
     localId: string;
     messageRole: 'user' | 'non_user' | null;
     content: SessionStoredMessageContent | null;
@@ -409,6 +411,7 @@ function parsePendingRows(raw: unknown): PendingRow[] | null {
 
         out.push({
             localId: parsedLocalId,
+            ...(item.automated === true ? { automated: true } : {}),
             messageRole: messageRole === 'user' ? 'user' : messageRole == null ? null : 'non_user',
             content: contentParsed.success ? contentParsed.data : null,
             ...(parsedRequestedAction.success && !requestedActionMalformed
@@ -1037,7 +1040,7 @@ async function completePendingOutboxCancellationIfRequested(params: {
 }
 
 function buildPendingDecryptFailureMessage(params: {
-    row: Pick<PendingRow, 'localId' | 'createdAt' | 'updatedAt'>;
+    row: Pick<PendingRow, 'localId' | 'createdAt' | 'updatedAt' | 'automated'>;
 }): {
     id: string;
     localId: string;
@@ -1054,6 +1057,7 @@ function buildPendingDecryptFailureMessage(params: {
     return {
         id: params.row.localId,
         localId: params.row.localId,
+        ...(params.row.automated === true ? { automated: true } : {}),
         createdAt: params.row.createdAt,
         updatedAt: params.row.updatedAt,
         source: 'server_pending',
@@ -1074,6 +1078,7 @@ function withPendingDeliveryState<T extends PendingMessage>(
     return {
         ...message,
         messageRole: row.messageRole,
+        ...(row.automated === true ? { automated: true } : {}),
         ...(pendingDeliveryStatus === 'external_handoff' ? { pendingOutboxScope: outboxScope } : {}),
         ...(row.requestedAction ? { requestedAction: row.requestedAction } : {}),
         ...(row.requestedActionMalformed ? { requestedActionMalformed: true as const } : {}),
@@ -1615,6 +1620,7 @@ async function fetchAndApplyPendingMessagesV2Owned(
             continue;
         }
         pendingMessages.push(withPendingDeliveryState(r, {
+            ...(r.automated === true ? { automated: true } : {}),
             id: r.localId,
             localId: r.localId,
             createdAt: r.createdAt,
@@ -1655,6 +1661,7 @@ async function fetchAndApplyPendingMessagesV2Owned(
             continue;
         }
         discardedMessages.push({
+            ...(r.automated === true ? { automated: true } : {}),
             id: r.localId,
             localId: r.localId,
             createdAt: r.createdAt,
@@ -1883,8 +1890,8 @@ async function enqueuePendingMessageV2Owned(params: {
                     request: {
                         v: 1,
                         body: JSON.stringify(sessionEncryptionMode === 'plain'
-                            ? { localId, content: { t: 'plain' as const, v: rawRecord! }, messageRole: 'user' as const, requestedAction, ...(params.resumeWhenAvailable === true ? { resumeWhenAvailable: true as const } : {}), ...(deliveryMode ? { deliveryMode } : {}) }
-                            : { localId, ciphertext: await sessionEncryption!.encryptRawRecord(rawRecord!), messageRole: 'user' as const, requestedAction, ...(params.resumeWhenAvailable === true ? { resumeWhenAvailable: true as const } : {}), ...(deliveryMode ? { deliveryMode } : {}) }),
+                            ? { localId, content: { t: 'plain' as const, v: rawRecord! }, messageRole: 'user' as const, ...(readAutomatedMessageSource(rawRecord!.meta) ? { automated: true } : {}), requestedAction, ...(params.resumeWhenAvailable === true ? { resumeWhenAvailable: true as const } : {}), ...(deliveryMode ? { deliveryMode } : {}) }
+                            : { localId, ciphertext: await sessionEncryption!.encryptRawRecord(rawRecord!), messageRole: 'user' as const, ...(readAutomatedMessageSource(rawRecord!.meta) ? { automated: true } : {}), requestedAction, ...(params.resumeWhenAvailable === true ? { resumeWhenAvailable: true as const } : {}), ...(deliveryMode ? { deliveryMode } : {}) }),
                     },
                 }, outboxScope));
             }
@@ -2386,8 +2393,8 @@ export async function updatePendingMessageV2(params: {
 
     const writeBody =
         sessionEncryptionMode === 'plain'
-            ? { content: { t: 'plain', v: rawRecord }, messageRole: 'user' }
-            : { ciphertext: await sessionEncryption!.encryptRawRecord(rawRecord), messageRole: 'user' };
+            ? { content: { t: 'plain', v: rawRecord }, messageRole: 'user', ...(readAutomatedMessageSource(rawRecord.meta) ? { automated: true } : {}) }
+            : { ciphertext: await sessionEncryption!.encryptRawRecord(rawRecord), messageRole: 'user', ...(readAutomatedMessageSource(rawRecord.meta) ? { automated: true } : {}) };
     const updatedAt = nowServerMs();
 
     const response = await request(pendingMessagePath(sessionId, pendingId), {
