@@ -60,6 +60,8 @@ export function createSessionMessageMetaSchema(zod: typeof z) {
   return zod
     .object({
       sentFrom: createSentFromSchema(zod).optional(),
+      /** Optional automated sender label, independent of runtime echo suppression. */
+      automatedSource: zod.string().optional(),
       /**
        * High-level origin of the message, used by agents to avoid treating
        * self-sent client traffic as a "new prompt" event.

@@ -140,6 +140,20 @@ Notes:
 - `--model` lets you target a specific model for that message when the backend supports it.
 - `--json` + explicit timeouts are recommended for scripts.
 
+### Automated sender attribution (development)
+
+Development CLI builds accept an optional automated sender name:
+
+```bash
+happier session send --source harness <session-id-or-prefix> "Worker finished"
+```
+
+The agent receives the text as ordinary input. The message stores the sender name
+in `meta.automatedSource`, inside the Session content envelope. Omit `--source`
+for a message from you. This attribution is a label, not a verified identity or a
+permission grant. Automated sender styling and exclusion from pending-message
+indicators are not implemented yet.
+
 ### Choosing one message identity (`--local-id`)
 
 Development builds let CLI coordinators choose the message's `localId` before sending:

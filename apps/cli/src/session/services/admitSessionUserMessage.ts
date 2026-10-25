@@ -54,6 +54,7 @@ export function buildSessionUserMessageRecord(params: Readonly<{
   text: string;
   permissionIntent: PermissionIntent;
   modelId?: string | null;
+  automatedSource?: string;
   /**
    * Structured input metadata from the canonical user-message request
    * (mentions, attachments, …), already sanitized by its owner. Canonical
@@ -73,6 +74,7 @@ export function buildSessionUserMessageRecord(params: Readonly<{
       // A user-authored prompt is user intent and must be delivered to the runtime
       // queue even when it is committed by the daemon.
       source: 'ui',
+      ...(params.automatedSource ? { automatedSource: params.automatedSource } : {}),
       permissionMode: params.permissionIntent,
       ...(modelId && modelId !== 'default' ? { model: modelId } : {}),
     },
@@ -88,6 +90,7 @@ export async function admitSessionUserMessageToPendingQueue(params: Readonly<{
   text: string;
   permissionIntent: PermissionIntent;
   modelId?: string | null;
+  automatedSource?: string;
   meta?: Readonly<Record<string, unknown>>;
   requestedAction?: PendingRequestedActionV1;
   pendingAdmissionMode?: 'continuation_if_no_queued_user_input';
@@ -95,6 +98,7 @@ export async function admitSessionUserMessageToPendingQueue(params: Readonly<{
   const record = buildSessionUserMessageRecord({
     text: params.text,
     permissionIntent: params.permissionIntent,
+    ...(params.automatedSource ? { automatedSource: params.automatedSource } : {}),
     ...(params.modelId === undefined ? {} : { modelId: params.modelId }),
     ...(params.meta ? { meta: params.meta } : {}),
   });

@@ -266,6 +266,7 @@ export type ActionExecutorDeps = Readonly<{
 
   // Session messaging (socket message event, server-scoped)
   sessionSendMessage: (args: Readonly<{
+    source?: string;
     sessionId: string;
     message: string;
     localId?: string;
@@ -2235,6 +2236,12 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
         if (actionId === 'session.message.send') {
           const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
           if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          // CLI-only attribution, like localId, stays out of shared tool schemas.
+          const sourceRaw = (parsed.data as Record<string, unknown>).source;
+          const source = typeof sourceRaw === 'string' ? sourceRaw.trim() : '';
+          if (sourceRaw !== undefined && (ctx.surface !== 'cli' || !source || source.startsWith('-'))) {
+            return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          }
           const localIdRaw = (parsed.data as Record<string, unknown>).localId;
           const localId = readPendingLocalId(localIdRaw);
           if (localIdRaw !== undefined && (
@@ -2257,6 +2264,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           const res = await deps.sessionSendMessage({
             sessionId,
             message: (parsed.data as any).message,
+            ...(source ? { source } : {}),
             ...(localId !== null ? { localId } : {}),
             requestedAction: PendingRequestedActionV1Schema.parse(
               parsed.data.requestedAction ?? { v: 1, kind: 'steer_if_active' },

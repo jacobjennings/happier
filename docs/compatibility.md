@@ -567,6 +567,22 @@ opt-out restores previews; users can disable them again from an updated client. 
 the flag and retain their existing reduced hints. There is no new server operation,
 migration, duplicate settings owner, or client-update requirement.
 
+### Automated CLI sender attribution (development)
+
+`happier session send --source <name>` adds `meta.automatedSource` to the
+existing user-message content. The canonical runtime origin remains `source: 'ui'`
+and `sentFrom: 'cli'`, so attribution does not select an echo-suppression path.
+The CLI Action executor accepts the optional `source` input only on its CLI
+surface, like the existing CLI-only `localId`. Shared tool schemas do not advertise it.
+
+This is additive content metadata. No relay request fields, database schema,
+storage envelope, message role, permission rules, or delivery policy change.
+Unflagged sends retain the previous record shape. The current CLI and shared
+message-meta readers preserve unknown fields through their passthrough schemas.
+Supported released-reader behavior has not been exercised for this increment.
+Older UIs may show automated traffic as owner input. UI attribution and pending
+summary exclusion remain follow-up work, not a compatibility guarantee of this increment.
+
 ## Migration history
 
 Migration source has a stricter authoring boundary than ordinary internal code:

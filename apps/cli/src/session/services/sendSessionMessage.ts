@@ -397,6 +397,8 @@ export async function sendSessionMessage(params: Readonly<{
   credentials: Credentials;
   idOrPrefix: string;
   message: string;
+  /** Automated sender attribution. Does not change runtime delivery origin. */
+  source?: string;
   wait: boolean;
   timeoutMs: number;
   localId?: string;
@@ -463,6 +465,7 @@ export async function sendSessionMessage(params: Readonly<{
     ctx: sessionTarget.ctx,
     localId,
     text: params.message,
+    ...(params.source ? { automatedSource: params.source } : {}),
     permissionIntent,
     modelId,
     requestedAction: resolveSessionUserMessageRequestedAction({

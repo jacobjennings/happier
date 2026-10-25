@@ -499,6 +499,9 @@ Wait for an agent response (useful for scripts; can time out if the agent is bus
 happier session send <session-id> "ping" --wait --timeout 60
 ```
 
+Development builds also support [automated sender attribution](/apps/cli-sessions#automated-sender-attribution-development)
+with `happier session send --source harness <session-id> "Worker finished"`.
+
 ### Status, stop, archive
 
 ```bash

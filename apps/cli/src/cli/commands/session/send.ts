@@ -28,13 +28,21 @@ export async function cmdSessionSend(
   const json = wantsJson(argv);
   const [idOrPrefix = '', message = ''] = readCommandPositionals(argv, {
     startIndex: 1,
-    valueFlags: ['--permission-mode', '--model', '--timeout', '--local-id'],
+    valueFlags: ['--permission-mode', '--model', '--timeout', '--local-id', '--source'],
   });
   const wait = hasFlag(argv, '--wait');
   const timeoutSecondsRaw = readIntFlagValue(argv, '--timeout', { min: 1 });
   const permissionModeFlag = (readFlagValue(argv, '--permission-mode') ?? '').trim();
   const modelFlagRaw = readFlagValue(argv, '--model');
   const optionTerminatorIndex = argv.indexOf('--');
+  const optionArgs = argv.slice(0, optionTerminatorIndex < 0 ? argv.length : optionTerminatorIndex);
+  const sourceFlagIndex = optionArgs.indexOf('--source');
+  const source = readFlagValue(optionArgs, '--source');
+  if (sourceFlagIndex >= 0 && (!source || source.startsWith('-'))) {
+    const err = new Error('Invalid --source: expected an automated sender name');
+    (err as Error & { code?: string }).code = 'invalid_arguments';
+    throw err;
+  }
   const localIdFlagIndex = argv.slice(0, optionTerminatorIndex < 0 ? argv.length : optionTerminatorIndex).indexOf('--local-id');
   const localIdRaw = localIdFlagIndex >= 0 ? argv[localIdFlagIndex + 1] : undefined;
   const localId = readPendingLocalId(localIdRaw);
@@ -54,7 +62,7 @@ export async function cmdSessionSend(
       : 300;
 
   if (!idOrPrefix || !message) {
-    throw new Error('Usage: happier session send <session-id-or-prefix> <message> [--local-id <id>] [--permission-mode <mode>] [--model <model-id>] [--wait] [--timeout <seconds>] [--json]');
+    throw new Error('Usage: happier session send <session-id-or-prefix> <message> [--local-id <id>] [--permission-mode <mode>] [--model <model-id>] [--wait] [--timeout <seconds>] [--json] [--source <name>]');
   }
 
   const credentials = await deps.readCredentialsFn();
@@ -86,6 +94,7 @@ export async function cmdSessionSend(
     {
       sessionId: idOrPrefix,
       message,
+      ...(source ? { source } : {}),
       ...(localId !== null ? { localId } : {}),
       ...(permissionModeOverride ? { permissionModeOverride } : {}),
       ...(modelOverride !== undefined ? { modelOverride } : {}),
