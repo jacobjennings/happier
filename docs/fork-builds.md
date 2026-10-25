@@ -302,10 +302,10 @@ No tests, device installation, or optional full relay image build ran.
 Device launch remains unverified.
 
 
-## Owner-approved web deployment
+## Recorded initial web deployment
 
-The `681a473a08a1` export is installed outside the task workspace at
-`/opt/happier/web/681a473a08a1`. The active override is
+The initial `681a473a08a1` export was installed outside the task workspace at
+`/opt/happier/web/681a473a08a1`. The override was installed at
 `/opt/happier/relay/compose.override.yaml`, with its source tracked in
 `jake-homelab/artifacts/happier/compose.override.yaml`. The base Compose file,
 image pin, master secret and data-volume mount were preserved. tmux was installed
@@ -313,13 +313,15 @@ from the relay host's apt repository, and backup and deployment ran in session `
 
 The pre-deployment backup is
 `/opt/happier/backups/hap-97q-681a473a08a1-20261024T043449Z`.
-It contains sensitive configuration and remains root-only. For rollback, move the
-active override into that backup directory and run the base-only Compose command
-above. Retain the export and backup.
+It contains sensitive configuration and remains root-only. Retain the export and
+backup. Use the scripted rollback procedure above for subsequent deployments.
+This initial backup selects the bundled upstream UI because it predates the fork
+override.
 
 Public HTTP checks returned 200 for `/` and `/welcome`. All three entry-point
 JavaScript files returned 200 and contained `0.2.19-jake.681a473a08a1`.
 Authenticated `/v2/sessions` and `/v2/sessions/archived` requests returned 200.
-All 20 pre-deployment session IDs remain in those lists, with 11 now archived.
-Browser automation was unavailable, so visual login-page confirmation is pending.
+All 20 pre-deployment session IDs remained in those lists, with 11 then archived.
+Browser automation was unavailable during this initial deployment. These HTTP
+checks did not establish that `/welcome` rendered a login page.
 No Android device was installed or changed.
