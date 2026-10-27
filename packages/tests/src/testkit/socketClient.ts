@@ -267,6 +267,9 @@ export function createSessionScopedSocketCollector(
     auth: {
       token,
       clientType: 'session-scoped' as const,
+      ...(options?.declareCurrentAccountStoredContentCompatibility
+        ? buildAccountStoredContentCompatibilitySocketAuthV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION)
+        : {}),
       sessionId,
       ...(typeof machineId === 'string' ? { machineId } : {}),
     },

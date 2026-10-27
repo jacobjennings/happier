@@ -1,5 +1,6 @@
 import { expect, type Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
+import { buildAccountStoredContentCompatibilityHttpHeadersV1, CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
 
 import { fetchJson } from '../http';
 import { repoRootDir } from '../paths';
@@ -43,6 +44,7 @@ export type SeededAttentionSession = Readonly<{
 type MessageCreateResponse = Readonly<{
   didWrite?: unknown;
   message?: Readonly<{
+    id?: unknown;
     seq?: unknown;
   }>;
 }>;
@@ -101,19 +103,20 @@ export async function connectAuthenticatedSessionPublisher(params: Readonly<{
   }
 }
 
-async function postPlainMessage(params: Readonly<{
+export async function seedAttentionMessage(params: Readonly<{
   baseUrl: string;
   token: string;
   sessionId: string;
   localId: string;
   value: unknown;
-}>): Promise<number> {
+}>): Promise<{ id: string; seq: number }> {
   const res = await fetchJson<MessageCreateResponse>(`${params.baseUrl}/v2/sessions/${params.sessionId}/messages`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${params.token}`,
       'Content-Type': 'application/json',
       'Idempotency-Key': params.localId,
+      ...buildAccountStoredContentCompatibilityHttpHeadersV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
     },
     body: JSON.stringify({
       localId: params.localId,
@@ -129,7 +132,9 @@ async function postPlainMessage(params: Readonly<{
     throw new Error(`Failed to seed message ${params.localId} (status=${res.status})`);
   }
 
-  return requireFiniteNumber(res.data?.message?.seq, `message seq for ${params.localId}`);
+  const id = res.data?.message?.id;
+  if (typeof id !== 'string' || !id) throw new Error(`Missing message id for ${params.localId}`);
+  return { id, seq: requireFiniteNumber(res.data?.message?.seq, `message seq for ${params.localId}`) };
 }
 
 export async function seedReadyMarker(params: Readonly<{
@@ -137,7 +142,7 @@ export async function seedReadyMarker(params: Readonly<{
   token: string;
   sessionId: string;
 }>): Promise<void> {
-  await postPlainMessage({
+  await seedAttentionMessage({
     ...params,
     localId: `ready-text-${randomUUID()}`,
     value: {
@@ -154,7 +159,7 @@ export async function seedReadyMarker(params: Readonly<{
       },
     },
   });
-  await postPlainMessage({
+  await seedAttentionMessage({
     ...params,
     localId: `ready-event-${randomUUID()}`,
     value: {

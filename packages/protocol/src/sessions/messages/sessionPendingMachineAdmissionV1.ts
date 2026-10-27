@@ -26,6 +26,7 @@ export const SessionPendingEnqueueByMachineFieldsV1 = {
   /** Live routing fact only. The server must not persist it in admission metadata. */
   targetMachineId: SessionPendingTargetMachineIdV1Schema,
   localId: PendingLocalIdSchema,
+  automated: z.optional(z.boolean()),
   content: SessionStoredMessageContentSchema,
   requestedAction: PendingRequestedActionV1Schema,
   requestEqualityEvidenceV1: z.optional(SessionInputRequestEqualityEvidenceV1Schema),

@@ -15433,6 +15433,7 @@ settingsSession: {
     },},
 
   message: {
+      automatedSender: 'Automatico',
 
       ...sessionMessageAccountActorTranslations['it'],
       sessionReferenceUnavailable: "Sessione non disponibile",

@@ -1,5 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
+import { buildAccountStoredContentCompatibilityHttpHeadersV1, CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+  createSessionOwnerMetadataV1, createPlainSessionOwnerMetadataEnvelopeV1, projectSessionSharedMetadataV1 } from '@happier-dev/protocol';
 
 import { fetchJson } from '../http';
 import { mutateUiE2eLocalSettings } from './localSettingsStorage';
@@ -225,24 +227,25 @@ export async function createPlainSession(params: Readonly<{
   tagPrefix: string;
 }>): Promise<string> {
   const tag = `${params.tagPrefix}-${randomUUID()}`;
+  const metadata = {
+    name: params.title, path: params.rootPath,
+    homeDir: params.rootPath.split('/').slice(0, -1).join('/') || '/',
+    host: params.machineId, machineId: params.machineId, version: '0.0.0', flavor: 'claude',
+  };
+  const owner = createSessionOwnerMetadataV1({ metadata });
+  if (!owner.ok) throw new Error('Unsupported owner metadata fixture');
   const res = await fetchJson<SessionCreateResponse>(`${params.baseUrl}/v1/sessions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${params.token}`,
       'Content-Type': 'application/json',
+      ...buildAccountStoredContentCompatibilityHttpHeadersV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
     },
     body: JSON.stringify({
       tag,
-      metadata: JSON.stringify({
-        v: 1,
-        name: params.title,
-        path: params.rootPath,
-        homeDir: params.rootPath.split('/').slice(0, -1).join('/') || '/',
-        host: params.machineId,
-        machineId: params.machineId,
-        version: '0.0.0',
-        flavor: 'claude',
-      }),
+      metadataLayoutVersion: 1,
+      sharedMetadata: { ciphertext: JSON.stringify(projectSessionSharedMetadataV1({ metadata })) },
+      ownerMetadata: createPlainSessionOwnerMetadataEnvelopeV1(owner.ownerMetadata),
       agentState: null,
       dataEncryptionKey: null,
       encryptionMode: 'plain',

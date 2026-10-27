@@ -3958,3 +3958,21 @@ native build before publishing an OTA update for this train.
 React Native's CocoaPods post-install owner marks glog's namespace-fragment
 headers textual, so Swift can import Nitro's public Fabric headers without
 Clang attempting a submodule import inside `namespace google`.
+
+### Automated sender attribution (0.3 development)
+
+`happier session send --source <name>` and its `happier send` alias bind the
+CLI label to `automatedSource`. This display-only field is separate from the
+existing plugin `source` authority object. The canonical internal Action carries
+this display field across protected Account admission, which can execute a full-Account
+CLI send under a UI surface. It is not a source-authority assertion. The host seals the label in
+`meta.automatedSource`, preserving the runtime's canonical `meta.source`, and
+sets the optional relay-visible Pending `automated` bit. No label or message text
+is added to the E2EE outer envelope. See [encryption](encryption.md#automated-sender-classification-03-development).
+
+The evolved Pending lifecycle maintains the owner-only summary through Session
+and exact Execution Run mutations without changing total runtime counts. Old
+stored messages without attribution render normally. The approved all-component
+0.3 upgrade does not require mixed 0.2/0.3 binaries or old-binary rollback. The
+optional summary accepts stored cache records that predate this development
+field, with the total count as the unclassified fallback.

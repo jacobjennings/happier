@@ -43,6 +43,7 @@ export async function loadPendingActivationPublicationInTx(tx: Tx, sessionId: st
 export async function emitPendingChanged(params: {
     sessionId: string;
     changedByAccountId: string;
+    pendingOwnerCount?: number;
     pendingCount: number;
     pendingBlockedCount?: number;
     recipient?: ParticipantExecutionRunRecipientRoutingIdentityV1;
@@ -57,6 +58,7 @@ export async function emitPendingChanged(params: {
     ]);
     if (!session) return;
     const rawProjection = {
+        pendingOwnerCount: params.pendingOwnerCount,
         pendingCount: params.pendingCount,
         ...(typeof params.pendingBlockedCount === 'number' ? { pendingBlockedCount: params.pendingBlockedCount } : {}),
         ...(params.recipient ? { recipient: params.recipient } : {}),
@@ -100,6 +102,7 @@ export async function emitPendingChanged(params: {
 export async function emitPendingActivationHint(params: {
     sessionId: string;
     changedByAccountId: string;
+    pendingOwnerCount?: number;
     pendingCount: number;
     pendingBlockedCount?: number;
     pendingVersion: number;
@@ -137,6 +140,7 @@ export async function emitPendingActivationHint(params: {
                 payload: buildPendingChangedUpdate(
                     {
                         sessionId: params.sessionId,
+                        pendingOwnerCount: params.pendingOwnerCount,
                         pendingCount: params.pendingCount,
                         ...(typeof params.pendingBlockedCount === 'number'
                             ? { pendingBlockedCount: params.pendingBlockedCount }
@@ -158,7 +162,7 @@ export async function emitPendingActivationHint(params: {
     const controllerPublication = params.activationTarget.managedControllerPublication;
     if (managedWakeTargetV1 && controllerPublication) eventRouter.emitUpdate({
         userId: controllerPublication.accountId,
-        payload: buildPendingChangedUpdate({ sessionId: params.sessionId, pendingCount: params.pendingCount,
+        payload: buildPendingChangedUpdate({ sessionId: params.sessionId, pendingOwnerCount: params.pendingOwnerCount, pendingCount: params.pendingCount,
             pendingVersion: params.pendingVersion, managedWakeTargetV1 }, controllerPublication.cursor, randomKeyNaked(12)),
         recipientFilter: { type: 'machine-only', machineId: managedWakeTargetV1.controller.machineId },
     });

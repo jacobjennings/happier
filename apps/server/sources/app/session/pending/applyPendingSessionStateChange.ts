@@ -8,11 +8,13 @@ import { acquireSessionAccountCursorLocksInTx } from "@/app/session/changeTracki
 export async function applyPendingSessionStateChange(params: {
     tx: Tx;
     sessionId: string;
+    pendingOwnerCountDelta?: number;
     pendingCountDelta?: number;
     pendingBlockedCountDelta?: number;
     meaningfulActivityAt?: Date;
     activationTarget?: Readonly<{ accountId: string; requestId: string }>;
 }): Promise<{
+    pendingOwnerCount: number;
     pendingCount: number;
     pendingBlockedCount: number;
     pendingVersion: number;
@@ -25,6 +27,9 @@ export async function applyPendingSessionStateChange(params: {
     const pendingCountDelta = typeof params.pendingCountDelta === "number" && Number.isInteger(params.pendingCountDelta)
         ? params.pendingCountDelta
         : 0;
+    const pendingOwnerCountDelta = typeof params.pendingOwnerCountDelta === "number" && Number.isInteger(params.pendingOwnerCountDelta)
+        ? params.pendingOwnerCountDelta
+        : 0;
     const pendingBlockedCountDelta = typeof params.pendingBlockedCountDelta === "number" && Number.isInteger(params.pendingBlockedCountDelta)
         ? params.pendingBlockedCountDelta
         : 0;
@@ -32,6 +37,7 @@ export async function applyPendingSessionStateChange(params: {
         where: { id: sessionId },
         select: {
             ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
+            pendingOwnerCount: true,
             pendingCount: true,
             pendingBlockedCount: true,
             pendingVersion: true,
@@ -54,10 +60,12 @@ export async function applyPendingSessionStateChange(params: {
     const session = await applyPendingCounterUpdate({
         tx,
         sessionId,
+        pendingOwnerCountDelta,
         pendingCountDelta,
         pendingBlockedCountDelta,
         data: baseData,
         initialState: {
+            pendingOwnerCount: before.pendingOwnerCount,
             pendingCount: before.pendingCount,
             pendingBlockedCount: before.pendingBlockedCount,
             pendingVersion: before.pendingVersion,
@@ -68,6 +76,7 @@ export async function applyPendingSessionStateChange(params: {
         tx,
         sessionId,
         pendingVersion: session.pendingVersion,
+        pendingOwnerCount: session.pendingOwnerCount,
         pendingCount: session.pendingCount,
         pendingBlockedCount: session.pendingBlockedCount,
         meaningfulActivityAt,
@@ -75,12 +84,14 @@ export async function applyPendingSessionStateChange(params: {
     });
 
     return {
+        pendingOwnerCount: session.pendingOwnerCount,
         pendingCount: session.pendingCount,
         pendingBlockedCount: session.pendingBlockedCount,
         pendingVersion: session.pendingVersion,
         recipientCursors,
         badgeAttentionChanged: didSessionActivityBadgeSignalChange(before, {
             ...before,
+            pendingOwnerCount: session.pendingOwnerCount,
             pendingCount: session.pendingCount,
             pendingBlockedCount: session.pendingBlockedCount,
         }),
@@ -91,6 +102,7 @@ export async function applyPendingSessionStateChange(params: {
 }
 
 type PendingCounterState = {
+    pendingOwnerCount: number;
     pendingCount: number;
     pendingBlockedCount: number;
     pendingVersion: number;
@@ -99,6 +111,7 @@ type PendingCounterState = {
 async function applyPendingCounterUpdate(params: {
     tx: Tx;
     sessionId: string;
+    pendingOwnerCountDelta: number;
     pendingCountDelta: number;
     pendingBlockedCountDelta: number;
     data: {
@@ -108,21 +121,25 @@ async function applyPendingCounterUpdate(params: {
     initialState: PendingCounterState;
 }): Promise<PendingCounterState> {
     let current = params.initialState;
+    let pendingOwnerCountDelta = params.pendingOwnerCountDelta;
     let pendingCountDelta = params.pendingCountDelta;
     let pendingBlockedCountDelta = params.pendingBlockedCountDelta;
 
     for (let attempt = 0; attempt < 4; attempt += 1) {
+        const nextPendingOwnerCount = Math.max(0, current.pendingOwnerCount + pendingOwnerCountDelta);
         const nextPendingCount = Math.max(0, current.pendingCount + pendingCountDelta);
         const nextPendingBlockedCount = Math.max(0, current.pendingBlockedCount + pendingBlockedCountDelta);
         const updated = await params.tx.session.updateMany({
             where: {
                 id: params.sessionId,
+                pendingOwnerCount: current.pendingOwnerCount,
                 pendingCount: current.pendingCount,
                 pendingBlockedCount: current.pendingBlockedCount,
                 pendingVersion: current.pendingVersion,
             },
             data: {
                 ...params.data,
+                pendingOwnerCount: nextPendingOwnerCount,
                 pendingCount: nextPendingCount,
                 pendingBlockedCount: nextPendingBlockedCount,
             },
@@ -131,14 +148,17 @@ async function applyPendingCounterUpdate(params: {
         if (updated.count > 0) {
             return params.tx.session.findUniqueOrThrow({
                 where: { id: params.sessionId },
-                select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+                select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
             });
         }
 
         current = await params.tx.session.findUniqueOrThrow({
             where: { id: params.sessionId },
-            select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+            select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
         });
+        if (params.initialState.pendingOwnerCount <= 0 && params.pendingOwnerCountDelta < 0) {
+            pendingOwnerCountDelta = 0;
+        }
         if (params.initialState.pendingCount <= 0 && params.pendingCountDelta < 0) {
             pendingCountDelta = 0;
         }
@@ -147,15 +167,17 @@ async function applyPendingCounterUpdate(params: {
         }
     }
 
+    const nextPendingOwnerCount = Math.max(0, current.pendingOwnerCount + pendingOwnerCountDelta);
     const nextPendingCount = Math.max(0, current.pendingCount + pendingCountDelta);
     const nextPendingBlockedCount = Math.max(0, current.pendingBlockedCount + pendingBlockedCountDelta);
     return params.tx.session.update({
         where: { id: params.sessionId },
         data: {
             ...params.data,
+            pendingOwnerCount: nextPendingOwnerCount,
             pendingCount: nextPendingCount,
             pendingBlockedCount: nextPendingBlockedCount,
         },
-        select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+        select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
     });
 }

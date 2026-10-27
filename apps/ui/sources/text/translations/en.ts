@@ -18534,6 +18534,7 @@ const enMachine = {
 };
 
 const enMessage = {
+  automatedSender: 'Automated',
   ...sessionMessageAccountActorTranslations['en'],
   sessionReferenceUnavailable: 'Unavailable session',
   sessionReferenceOpen: ({ name }: { name: string }) => `Open session ${name}`,

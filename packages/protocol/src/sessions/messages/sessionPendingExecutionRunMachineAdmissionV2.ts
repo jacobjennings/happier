@@ -23,6 +23,7 @@ export const SessionExecutionRunPendingEnqueueRequestV1Schema = lazyZodSchema(()
   targetMachineId: z.string().check(z.trim(), z.minLength(1), z.maxLength(256)),
   content: StrictSessionStoredMessageContentEnvelopeSchema,
   messageRole: z.optional(z.unknown()),
+  automated: z.optional(z.boolean()),
   requestedAction: z.optional(PendingRequestedActionV1Schema),
   reply: z.optional(SessionMessageReplyAdmissionV1Schema),
 }));
@@ -77,6 +78,7 @@ const targetEchoFields = {
   sidechainId: SidechainIdSchema,
 };
 const pendingCounts = {
+  pendingOwnerCount: z.optional(z.number().check(z.int(), z.nonnegative())),
   pendingCount: z.number().check(z.int(), z.nonnegative()),
   pendingBlockedCount: z.number().check(z.int(), z.nonnegative()),
   pendingVersion: z.number().check(z.int(), z.nonnegative()),

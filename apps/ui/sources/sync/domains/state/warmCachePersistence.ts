@@ -341,6 +341,7 @@ export const SessionListCacheEntryV1Schema = z.object({
     lastViewedSessionSeq: z.optional(z.nullable(z.number().check(z.int(), z.nonnegative()))),
     viewer: zMini.optional(SessionViewerProjectionV1Schema),
     pendingCount: z.optional(z.number().check(z.int(), z.nonnegative())),
+    pendingOwnerCount: z.optional(z.number().check(z.int(), z.nonnegative())),
     pendingBlockedCount: z.optional(z.number().check(z.int(), z.nonnegative())),
     pendingVersion: z.optional(z.number().check(z.int(), z.nonnegative())),
     pendingActivationAuthorization: zMini.optional(zMini.nullable(PendingActivationAuthorizationV1Schema)),

@@ -256,7 +256,7 @@ async function admitSessionFollowSourceForRunnerInTx(
             latestTurnId: true, lastRuntimeIssue: true,
             latestReadyEventSeq: true, latestReadyEventAt: true, meaningfulActivityAt: true,
             agentStateVersion: true, agentState: true, pendingPermissionRequestCount: true, pendingUserActionRequestCount: true,
-            pendingRequestObservedAt: true, pendingCount: true, pendingBlockedCount: true,
+            pendingRequestObservedAt: true, pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true,
             runtimeActivityState: true, runtimeActivityActiveCount: true,
         },
     });
@@ -323,6 +323,7 @@ export async function projectSessionFollowSourceForRunnerInTx(
             pendingPermissionRequestCount: source.pendingPermissionRequestCount,
             pendingUserActionRequestCount: source.pendingUserActionRequestCount,
             pendingRequestObservedAt: source.pendingRequestObservedAt?.getTime() ?? null,
+            pendingOwnerCount: source.pendingOwnerCount,
             pendingCount: source.pendingCount, pendingBlockedCount: source.pendingBlockedCount,
             runtimeActivityState: source.runtimeActivityState,
             runtimeActivityActiveCount: source.runtimeActivityActiveCount,

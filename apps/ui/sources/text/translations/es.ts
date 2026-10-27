@@ -15062,6 +15062,7 @@ settingsSession: {
     },},
 
   message: {
+      automatedSender: 'Automatizado',
 
       ...sessionMessageAccountActorTranslations['es'],
       sessionReferenceUnavailable: "Sesión no disponible",

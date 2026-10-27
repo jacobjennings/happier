@@ -2,6 +2,10 @@ import type { SocketCollector } from '../../src/testkit/socketClient';
 import { appendBrowserDiagnostics, collectBrowserDiagnostics } from '../../src/testkit/uiE2e/browserDiagnostics';
 import { expect, test, type WebSocketRoute } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { buildAccountStoredContentCompatibilityHttpHeadersV1, CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
+import { fetchJson } from '../../src/testkit/http';
+import { deletePendingQueueV2 } from '../../src/testkit/pendingQueueV2';
 
 import { createTestAuthMtls } from '../../src/testkit/auth';
 import { fetchSessionV2 } from '../../src/testkit/sessions';
@@ -18,6 +22,7 @@ import {
   publishRuntimeActivity,
   startPresenceKeepAlive,
   seedAttentionSession,
+  seedAttentionMessage,
   seedReadyMarker,
   sessionListAttentionTestIds,
   sessionRow,
@@ -424,5 +429,169 @@ test.describe('ui e2e: session list attention status', () => {
     }
   });
 
+
+
+  test('separates automated sender labels from owner pending indicators across live updates and reload', async ({ page }) => {
+    test.setTimeout(240_000);
+    if (!server || !token || !uiBaseUrl) throw new Error('missing session list attention fixtures');
+    const session = await seedAttentionSession({ baseUrl: server.baseUrl, token, title: 'Automated sender e2e' });
+    const params = { baseUrl: server.baseUrl, token, sessionId: session.id };
+    const browserDiagnostics = collectBrowserDiagnostics({ page });
+    const automatedId = randomUUID();
+    const ownerId = randomUUID();
+    const automatedText = 'Background harness instructions stay visible';
+    const ownerText = 'Ordinary owner instructions stay visible';
+    const automatedValue = {
+      role: 'user', content: { type: 'text', text: automatedText },
+      meta: { source: 'ui', sentFrom: 'cli', automatedSource: 'harness' },
+    };
+    const ownerValue = {
+      role: 'user', content: { type: 'text', text: ownerText },
+      meta: { source: 'ui', sentFrom: 'cli' },
+    };
+    const enqueue = async (localId: string, value: unknown, automated?: boolean) => {
+      const response = await fetchJson(`${params.baseUrl}/v2/sessions/${session.id}/pending`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${params.token}`, 'Content-Type': 'application/json',
+          ...buildAccountStoredContentCompatibilityHttpHeadersV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION) },
+        body: JSON.stringify({ localId, content: { t: 'plain', v: value }, automated }),
+      });
+      expect(response.status).toBe(200);
+    };
+    const badge = page.getByTestId(`session-pending-count:${session.id}`);
+    const pendingAutomated = page.getByTestId(`pendingMessages.message:${automatedId}`);
+    const pendingOwner = page.getByTestId(`pendingMessages.message:${ownerId}`);
+    try {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/?happier_hmr=0`, 180_000);
+      await waitForInitialAppUi({ page, timeoutMs: 180_000 });
+      await chooseSessionListDensity({ page, baseUrl: uiBaseUrl, density: 'cozy' });
+      await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/?happier_hmr=0`, 180_000);
+      await expect(sessionRow(page, session.id)).toHaveCount(1, { timeout: 120_000 });
+      await enqueue(automatedId, automatedValue, true);
+      // A total queue size of one is not an owner request requiring attention.
+      await expect.poll(() => fetchSessionV2(params.baseUrl, params.token, session.id)).toMatchObject({ pendingCount: 1, pendingOwnerCount: 0 });
+      // Reload the list before opening this session so the badge decision must use
+      // its server summary without first hydrating the session's pending messages.
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitForInitialAppUi({ page, timeoutMs: 180_000 });
+      await expect(sessionRow(page, session.id)).toHaveCount(1, { timeout: 120_000 });
+      await expect(badge).toHaveCount(0);
+      await sessionRow(page, session.id).click();
+      await expect(pendingAutomated).toContainText(automatedText, { timeout: 90_000 });
+      await expect(page.getByTestId(`automated-message-sender:${automatedId}`)).toContainText('harness');
+      await enqueue(ownerId, ownerValue);
+      await expect(pendingOwner).toContainText(ownerText, { timeout: 60_000 });
+      await expect(page.getByTestId(`automated-message-sender:${ownerId}`)).toHaveCount(0);
+      await expect(badge).toHaveText('1', { timeout: 60_000 });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await expect(pendingAutomated).toContainText(automatedText, { timeout: 90_000 });
+      await expect(pendingOwner).toContainText(ownerText);
+      await expect(badge).toHaveText('1');
+      await expect(page.getByTestId(`automated-message-sender:${automatedId}`)).toContainText('harness');
+      await page.screenshot({ path: test.info().outputPath('mixed-pending-senders.png') });
+
+      // Commit the same payloads and settle their pending rows through public APIs.
+      // No daemon/provider is needed to inspect the real committed transcript renderer.
+      const automatedMessage = await seedAttentionMessage({ ...params, localId: automatedId, value: automatedValue });
+      const ownerMessage = await seedAttentionMessage({ ...params, localId: ownerId, value: ownerValue });
+      expect((await deletePendingQueueV2({ ...params, localId: automatedId })).status).toBe(200);
+      expect((await deletePendingQueueV2({ ...params, localId: ownerId })).status).toBe(200);
+      await expect(pendingAutomated).toHaveCount(0, { timeout: 60_000 });
+      await expect(pendingOwner).toHaveCount(0);
+      await expect(badge).toHaveCount(0);
+      await expect(page.getByTestId(`automated-message-sender:${automatedMessage.id}`)).toContainText('harness', { timeout: 60_000 });
+      await expect(page.getByTestId(`automated-message-sender:${ownerMessage.id}`)).toHaveCount(0);
+      await expect(page.getByTestId('transcript-chat-list')).toContainText(automatedText);
+      await expect(page.getByTestId('transcript-chat-list')).toContainText(ownerText);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await expect(page.getByTestId(`automated-message-sender:${automatedMessage.id}`)).toContainText('harness', { timeout: 90_000 });
+      await expect(page.getByTestId(`automated-message-sender:${ownerMessage.id}`)).toHaveCount(0);
+      await expect(page.getByTestId('transcript-chat-list')).toContainText(automatedText);
+      await expect(page.getByTestId('transcript-chat-list')).toContainText(ownerText);
+      await expect(badge).toHaveCount(0);
+      await page.screenshot({ path: test.info().outputPath('committed-automated-sender.png') });
+    } catch (error) {
+      throw appendBrowserDiagnostics(error, browserDiagnostics().replaceAll(token, '[redacted]'));
+    }
+  });
+
+
+  test('falls back to total pending count when a newer legacy relay update omits owner summary', async ({ page }) => {
+    test.setTimeout(240_000);
+    if (!server || !token || !uiBaseUrl) throw new Error('missing session list attention fixtures');
+    const session = await seedAttentionSession({ baseUrl: server.baseUrl, token, title: 'Legacy pending relay e2e' });
+    const browserDiagnostics = collectBrowserDiagnostics({ page });
+    let omitOwnerSummary = false;
+    let legacyPacketsForwarded = 0;
+    let pendingHydrationReads = 0;
+    page.on('request', request => {
+      if (request.method() === 'GET' && new URL(request.url()).pathname === `/v2/sessions/${session.id}/pending`) {
+        pendingHydrationReads += 1;
+      }
+    });
+    // Released older relays omit this optional summary field. Remove it only at
+    // the transport boundary from a real newer packet, preserving the production
+    // decoder, lifecycle ordering, session store, selectors and row subscriptions.
+    await page.routeWebSocket(url => url.pathname === '/v1/updates/', route => {
+      const upstream = route.connectToServer();
+      upstream.onMessage(message => {
+        if (omitOwnerSummary && typeof message === 'string' && message.startsWith('42')) {
+          let event: unknown;
+          try { event = JSON.parse(message.slice(2)); } catch { /* Other Socket.IO packets pass through. */ }
+          if (Array.isArray(event) && event[0] === 'update') {
+            const data: unknown = event[1];
+            const body = data && typeof data === 'object' && 'body' in data ? data.body : null;
+            if (data && typeof data === 'object' && body && typeof body === 'object' && 't' in body && body.t === 'pending-changed'
+              && (('sid' in body && body.sid === session.id) || ('sessionId' in body && body.sessionId === session.id))) {
+              const legacyEvent = [...event];
+              legacyEvent[1] = { ...data, body: { ...body, pendingOwnerCount: undefined } };
+              route.send(`42${JSON.stringify(legacyEvent)}`);
+              legacyPacketsForwarded += 1;
+              return;
+            }
+          }
+        }
+        route.send(message);
+      });
+    });
+    const enqueue = async (automated: boolean) => {
+      const response = await fetchJson(`${server!.baseUrl}/v2/sessions/${session.id}/pending`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json',
+          ...buildAccountStoredContentCompatibilityHttpHeadersV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION) },
+        body: JSON.stringify({
+          localId: randomUUID(), automated,
+          content: { t: 'plain', v: {
+            role: 'user', content: { type: 'text', text: automated ? 'Safe background fixture' : 'Safe owner fixture' },
+            meta: { source: 'ui', sentFrom: 'cli', ...(automated ? { automatedSource: 'harness' } : {}) },
+          } },
+        }),
+      });
+      expect(response.status).toBe(200);
+    };
+    try {
+      await enqueue(true);
+      expect(await fetchSessionV2(server.baseUrl, token, session.id)).toMatchObject({ pendingCount: 1, pendingOwnerCount: 0 });
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/?happier_hmr=0`, 180_000);
+      await waitForInitialAppUi({ page, timeoutMs: 180_000 });
+      await chooseSessionListDensity({ page, baseUrl: uiBaseUrl, density: 'cozy' });
+      await gotoDomContentLoadedWithRetries(page, `${uiBaseUrl}/?happier_hmr=0`, 180_000);
+      await waitForInitialAppUi({ page, timeoutMs: 180_000 });
+      await expect(sessionRow(page, session.id)).toHaveCount(1, { timeout: 120_000 });
+      const badge = page.getByTestId(`session-pending-count:${session.id}`);
+      await expect(badge).toHaveCount(0);
+      omitOwnerSummary = true;
+      await enqueue(false);
+      await expect.poll(() => legacyPacketsForwarded).toBeGreaterThan(0);
+      // A missing newer summary invalidates cached modern zero. The legacy
+      // fallback is total two, not modern owner one or the stale cached zero.
+      await expect(badge).toHaveText('2', { timeout: 60_000 });
+      expect(pendingHydrationReads).toBe(0);
+    } catch (error) {
+      throw appendBrowserDiagnostics(error, browserDiagnostics().replaceAll(token, '[redacted]'));
+    }
+  });
 
 });

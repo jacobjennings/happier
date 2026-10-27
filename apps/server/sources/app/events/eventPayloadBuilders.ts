@@ -379,6 +379,7 @@ export function buildPendingChangedUpdate(
     data: {
         sessionId: string;
         pendingVersion: number;
+        pendingOwnerCount?: number;
         pendingCount: number;
         pendingBlockedCount?: number;
         recipient?: ParticipantExecutionRunRecipientRoutingIdentityV1;
@@ -403,6 +404,7 @@ export function buildPendingChangedUpdate(
             sid: data.sessionId,
             sessionId: data.sessionId,
             pendingVersion: data.pendingVersion,
+            pendingOwnerCount: data.pendingOwnerCount,
             pendingCount: data.pendingCount,
             ...(typeof data.pendingBlockedCount === "number" ? { pendingBlockedCount: data.pendingBlockedCount } : {}),
             ...(data.recipient ? { recipient: data.recipient } : {}),

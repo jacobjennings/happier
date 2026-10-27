@@ -1835,6 +1835,7 @@ export type ActionExecutorDeps = Readonly<{
     /** Caller-retained durable input identity; plugin inputs derive their own. */
     localId?: string;
     source?: PluginSessionInputSourceV1;
+    automatedSource?: string;
     /**
      * Declared Composer attachment drafts authored by the plugin caller. The
      * host qualifies their plugin id from `actionCaller` and stamps identity

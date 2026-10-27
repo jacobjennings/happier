@@ -831,6 +831,7 @@ export function projectSessionTranscriptPublicationRealtimeProjection(
 
 export type SessionTranscriptPublicationPendingProjection = Readonly<{
     pendingVersion: number;
+    pendingOwnerCount?: number;
     pendingCount: number;
     pendingBlockedCount?: number;
     recipient?: ParticipantExecutionRunRecipientRoutingIdentityV1;

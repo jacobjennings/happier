@@ -138,6 +138,7 @@ export async function runPresenceTimeoutTick(timeoutConfig: PresenceTimeoutConfi
                 await emitPendingActivationHint({
                     sessionId: result.sessionId,
                     changedByAccountId: result.activationHint.activationTarget.accountId,
+                    pendingOwnerCount: result.activationHint.pendingOwnerCount,
                     pendingCount: result.activationHint.pendingCount,
                     pendingBlockedCount: result.activationHint.pendingBlockedCount,
                     pendingVersion: result.activationHint.pendingVersion,

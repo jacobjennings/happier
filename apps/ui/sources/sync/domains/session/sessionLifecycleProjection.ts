@@ -7,7 +7,7 @@ type SessionLifecycleProjection = Pick<Session,
     | 'serverId' | 'seq' | 'updatedAt' | 'meaningfulActivityAt' | 'lastTurnCompletedAt'
     | 'active' | 'activeAt' | 'thinking' | 'thinkingAt'
     | 'latestTurnId' | 'latestTurnStatus' | 'latestTurnStatusObservedAt'
-    | 'pendingVersion' | 'pendingCount' | 'pendingBlockedCount' | 'pendingActivationAuthorization'
+    | 'pendingVersion' | 'pendingCount' | 'pendingOwnerCount' | 'pendingBlockedCount' | 'pendingActivationAuthorization'
     | 'latestReadyEventSeq' | 'latestReadyEventAt'
     | 'runtimeActivityState' | 'runtimeActivityActiveCount' | 'runtimeActivityObservedAt' | 'runtimeActivityRevision'
 >;
@@ -112,8 +112,13 @@ export function reconcileSessionLifecycleProjection<T extends SessionLifecyclePr
 
     if (isOlder(incoming.pendingVersion, previous.pendingVersion)) {
         applyPatch({ pendingVersion: previous.pendingVersion, pendingCount: previous.pendingCount,
+            pendingOwnerCount: previous.pendingOwnerCount,
             pendingBlockedCount: previous.pendingBlockedCount,
             pendingActivationAuthorization: previous.pendingActivationAuthorization });
+    }
+    if (incoming.pendingOwnerCount === undefined
+        && normalizeSessionOrderingNumber(incoming.pendingVersion) === normalizeSessionOrderingNumber(previous.pendingVersion)) {
+        applyPatch({ pendingOwnerCount: previous.pendingOwnerCount });
     }
     const previousAuthorization = previous.pendingActivationAuthorization;
     const incomingAuthorization = next.pendingActivationAuthorization;

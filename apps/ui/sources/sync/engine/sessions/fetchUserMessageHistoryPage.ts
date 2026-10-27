@@ -1,3 +1,4 @@
+import { readAutomatedMessageSource } from '@/sync/domains/messages/automatedMessage';
 import type { SessionMessageRole } from '@happier-dev/protocol';
 
 import { buildSessionMessagesPath } from '@happier-dev/protocol/sessions/messages/sessionMessagesPageV1';
@@ -42,6 +43,7 @@ export type SessionMessageHistoryRemoteRow = Readonly<{
     createdAt: number;
     role: SessionMessageHistoryRemoteRole;
     text: string;
+    automatedSource?: string;
 }>;
 
 export type FetchUserMessageHistoryPageResult =
@@ -112,7 +114,8 @@ function buildHistoryRow(message: NormalizedMessage): SessionMessageHistoryRemot
 
     if (message.role === 'user') {
         const text = readMessageDisplayText({ text: message.content.text, displayText: message.meta?.displayText });
-        return text.trim() ? { ...identity, role: 'user', text } : null;
+        const automatedSource = readAutomatedMessageSource(message.meta);
+        return text.trim() ? { ...identity, role: 'user', text, ...(automatedSource ? { automatedSource } : {}) } : null;
     }
     if (message.role === 'agent') {
         const agentText = readAgentHistoryText(message.content);

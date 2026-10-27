@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { buildAccountStoredContentCompatibilityHttpHeadersV1, CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
 
 import { fetchJson } from './http';
 import { sleep } from './timing';
@@ -29,6 +30,7 @@ async function ensureSessionScopedAccessKey(params: Readonly<{
     headers: {
       Authorization: `Bearer ${params.token}`,
       'Content-Type': 'application/json',
+      ...buildAccountStoredContentCompatibilityHttpHeadersV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
     },
     timeoutMs: params.requestTimeoutMs,
   };
@@ -119,6 +121,7 @@ export async function createMachineBoundSessionScopedSocketCollector(params: Rea
   connectTimeoutMs?: number;
   autoReconnect?: boolean;
   captureEvents?: boolean;
+  declareCurrentAccountStoredContentCompatibility?: boolean;
   requestTimeoutMs?: number;
   onProvisioningStage?: (observation: SessionSocketBindingProvisioningObservation) => void;
 }>): Promise<{ machineId: string; socket: SocketCollector }> {
@@ -138,6 +141,7 @@ export async function createMachineBoundSessionScopedSocketCollector(params: Rea
       connectTimeoutMs: params.connectTimeoutMs,
       autoReconnect: params.autoReconnect,
       captureEvents: params.captureEvents,
+      declareCurrentAccountStoredContentCompatibility: params.declareCurrentAccountStoredContentCompatibility,
     }),
   };
 }

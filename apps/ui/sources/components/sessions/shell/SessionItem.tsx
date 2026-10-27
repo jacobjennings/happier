@@ -1,3 +1,4 @@
+import { readOwnerPendingCount } from '@/sync/domains/messages/automatedMessage';
 import { useSessionArchivePending } from '@/hooks/session/useSessionArchivePending';
 import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
@@ -1319,7 +1320,7 @@ const SessionItemContent = React.memo(
             hasUnreadMessages,
             personalAttentionReason: resolvedSession.viewer?.attention.primary,
         }));
-        const pendingCount = resolvedSession.pendingCount ?? 0;
+        const pendingCount = readOwnerPendingCount(resolvedSession);
         const pendingBlockedCount = resolvedSession.pendingBlockedCount ?? 0;
         const pendingBadge = formatPendingCountBadge(pendingCount);
         const tagChipDensity: 'default' | 'compact' | 'minimal' = isMinimal ? 'minimal' : compact ? 'compact' : 'default';
@@ -1648,7 +1649,7 @@ const SessionItemContent = React.memo(
                                     compact ? styles.pendingCountContainerCompact : null,
                                 ]}
                             >
-                                <Text style={styles.pendingCountText} numberOfLines={1}>
+                                <Text testID={`session-pending-count:${resolvedSession.id}`} style={styles.pendingCountText} numberOfLines={1}>
                                     {pendingBadge}
                                 </Text>
                             </View>

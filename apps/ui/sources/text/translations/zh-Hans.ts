@@ -14705,6 +14705,7 @@ settingsSession: {
     },},
 
   message: {
+      automatedSender: '自动发送',
 
       ...sessionMessageAccountActorTranslations['zh-Hans'],
       sessionReferenceUnavailable: "会话不可用",

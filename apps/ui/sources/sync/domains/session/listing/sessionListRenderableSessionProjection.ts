@@ -199,6 +199,7 @@ export function buildSessionFromListRenderable(
         meaningfulActivityAt: renderable.meaningfulActivityAt ?? null,
         pendingVersion: renderable.pendingVersion,
         pendingCount: renderable.pendingCount,
+        pendingOwnerCount: renderable.pendingOwnerCount,
         pendingBlockedCount: renderable.pendingBlockedCount,
         pendingActivationAuthorization: renderable.pendingActivationAuthorization ?? null,
         lastViewedSessionSeq: renderable.viewer !== undefined

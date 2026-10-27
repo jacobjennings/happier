@@ -14977,6 +14977,7 @@ settingsSession: {
     },},
 
   message: {
+      automatedSender: 'Автоматическое',
 
       ...sessionMessageAccountActorTranslations['ru'],
       sessionReferenceUnavailable: "Сессия недоступна",

@@ -57,6 +57,7 @@ function toPendingJson(row: PendingMessageRow) {
     return {
         localId: row.localId,
         ...(row.recipient ? { recipient: row.recipient } : {}),
+        automated: row.automated === true,
         ...(typeof row.messageRole === "string" ? { messageRole: row.messageRole } : {}),
         content: row.content,
         ...(row.requestedAction ? { requestedAction: row.requestedAction } : {}),
@@ -102,9 +103,10 @@ function pendingAuthenticationStatus(error: string): 403 | 503 | null {
     return null;
 }
 
-function toPendingStateJson(value: { pendingCount: number; pendingBlockedCount?: number; pendingVersion: number }, runId?: string) {
+function toPendingStateJson(value: { pendingOwnerCount: number; pendingCount: number; pendingBlockedCount?: number; pendingVersion: number }, runId?: string) {
     if (runId) return { pendingVersion: value.pendingVersion, recipient: { kind: "execution_run" as const, runId } };
     return {
+        pendingOwnerCount: value.pendingOwnerCount,
         pendingCount: value.pendingCount,
         ...(typeof value.pendingBlockedCount === "number" ? { pendingBlockedCount: value.pendingBlockedCount } : {}),
         pendingVersion: value.pendingVersion,
@@ -275,6 +277,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                         reply: z.optional(SessionMessageReplyAdmissionV1Schema),
                         localId: PendingLocalIdSchema,
                         messageRole: z.optional(z.unknown()),
+                        automated: z.optional(z.boolean()),
                         deliveryMode: z.optional(z.union([
                             z.literal("external_handoff"),
                             z.literal("continuation_if_no_queued_user_input"),
@@ -290,6 +293,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                         reply: z.optional(SessionMessageReplyAdmissionV1Schema),
                         localId: PendingLocalIdSchema,
                         messageRole: z.optional(z.unknown()),
+                        automated: z.optional(z.boolean()),
                         deliveryMode: z.optional(z.union([
                             z.literal("external_handoff"),
                             z.literal("continuation_if_no_queued_user_input"),
@@ -340,6 +344,9 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                 body && typeof body === "object" && "content" in body
                     ? ((body as { content: SessionStoredMessageContent }).content ?? null)
                     : null;
+            const automated = body && typeof body === "object" && "automated" in body
+                ? (body as { automated?: boolean }).automated
+                : undefined;
             const messageRole =
                 body && typeof body === "object" && "messageRole" in body
                     ? (body as { messageRole?: unknown }).messageRole
@@ -380,6 +387,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                       ...(targetMachineId ? { targetMachineId } : {}),
                       content,
                       messageRole,
+                      automated,
                       ...(deliveryMode ? { deliveryMode } : {}),
                       ...(admissionMode ? { admissionMode } : {}),
                       requestedAction,
@@ -397,6 +405,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                       ciphertext: ciphertext ?? "",
                       ...(targetMachineId ? { targetMachineId } : {}),
                       messageRole,
+                      automated,
                       ...(deliveryMode ? { deliveryMode } : {}),
                       ...(admissionMode ? { admissionMode } : {}),
                       requestedAction,
@@ -430,6 +439,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -512,6 +522,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                 await emitPendingChanged({
                     sessionId,
                     changedByAccountId: request.userId,
+                    pendingOwnerCount: res.pendingOwnerCount,
                     pendingCount: res.pendingCount,
                     pendingBlockedCount: res.pendingBlockedCount,
                     pendingVersion: res.pendingVersion,
@@ -559,6 +570,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                 await emitPendingChanged({
                     sessionId: request.params.sessionId,
                     changedByAccountId: request.userId,
+                    pendingOwnerCount: res.pendingOwnerCount,
                     pendingCount: res.pendingCount,
                     pendingBlockedCount: res.pendingBlockedCount,
                     pendingVersion: res.pendingVersion,
@@ -581,12 +593,14 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                         replacementLocalId: z.optional(PendingLocalIdSchema),
                         replacementMutationFingerprint: z.optional(PendingMessageMutationFingerprintV1Schema),
                         messageRole: z.optional(z.unknown()),
+                        automated: z.optional(z.boolean()),
                     }),
                     mutationBody({
                         content: executionRunTarget ? StrictSessionStoredMessageContentEnvelopeSchema : SessionStoredMessageContentSchema,
                         replacementLocalId: z.optional(PendingLocalIdSchema),
                         replacementMutationFingerprint: z.optional(PendingMessageMutationFingerprintV1Schema),
                         messageRole: z.optional(z.unknown()),
+                        automated: z.optional(z.boolean()),
                     }),
                 ]),
             },
@@ -607,6 +621,9 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                 body && typeof body === "object" && "content" in body
                     ? ((body as { content: SessionStoredMessageContent }).content ?? null)
                     : null;
+            const automated = body && typeof body === "object" && "automated" in body
+                ? (body as { automated?: boolean }).automated
+                : undefined;
             const messageRole =
                 body && typeof body === "object" && "messageRole" in body
                     ? (body as { messageRole?: unknown }).messageRole
@@ -625,8 +642,8 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                     : undefined;
 
             const res = await (content
-                ? updatePendingMessage({ actorUserId: request.userId, authentication: readSessionAccessAuthenticationFromRequest(request), sessionId, ...(request.params.runId ? { targetExecutionRunId: request.params.runId } : {}), localId, content, replacementLocalId, replacementMutationFingerprint, messageRole })
-                : updatePendingMessage({ actorUserId: request.userId, authentication: readSessionAccessAuthenticationFromRequest(request), sessionId, ...(request.params.runId ? { targetExecutionRunId: request.params.runId } : {}), localId, ciphertext: ciphertext ?? "", replacementLocalId, replacementMutationFingerprint, messageRole }));
+                ? updatePendingMessage({ actorUserId: request.userId, authentication: readSessionAccessAuthenticationFromRequest(request), sessionId, ...(request.params.runId ? { targetExecutionRunId: request.params.runId } : {}), localId, content, replacementLocalId, replacementMutationFingerprint, messageRole, automated })
+                : updatePendingMessage({ actorUserId: request.userId, authentication: readSessionAccessAuthenticationFromRequest(request), sessionId, ...(request.params.runId ? { targetExecutionRunId: request.params.runId } : {}), localId, ciphertext: ciphertext ?? "", replacementLocalId, replacementMutationFingerprint, messageRole, automated }));
             if (!res.ok) {
                 const authenticationStatus = pendingAuthenticationStatus(res.error);
                 if (authenticationStatus) return reply.code(authenticationStatus).send({ error: res.error });
@@ -648,6 +665,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -698,6 +716,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -745,6 +764,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -786,6 +806,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -828,6 +849,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -876,6 +898,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -918,6 +941,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -968,6 +992,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,
@@ -1007,6 +1032,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                         await emitPendingChanged({
                             sessionId,
                             changedByAccountId: request.userId,
+                            pendingOwnerCount: res.pendingOwnerCount ?? 0,
                             pendingCount: res.pendingCount ?? 0,
                             pendingBlockedCount: res.pendingBlockedCount,
                             pendingVersion: res.pendingVersion ?? 0,
@@ -1033,6 +1059,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             await emitPendingChanged({
                 sessionId,
                 changedByAccountId: request.userId,
+                pendingOwnerCount: res.pendingOwnerCount,
                 pendingCount: res.pendingCount,
                 pendingBlockedCount: res.pendingBlockedCount,
                 pendingVersion: res.pendingVersion,

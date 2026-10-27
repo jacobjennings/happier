@@ -3,11 +3,12 @@ import { ParticipantExecutionRunRecipientRoutingIdentityV1Schema } from '@happie
 import type { PendingMessage, Session } from '@/sync/domains/state/storageTypes';
 
 export type PendingChangedSessionPatch = Pick<Session, 'pendingCount' | 'pendingVersion'>
-    & Pick<Partial<Session>, 'pendingBlockedCount' | 'meaningfulActivityAt' | 'pendingActivationAuthorization'>;
+    & Pick<Partial<Session>, 'pendingOwnerCount' | 'pendingBlockedCount' | 'meaningfulActivityAt' | 'pendingActivationAuthorization'>;
 
 export function buildPendingChangedSessionPatch(body: Readonly<{
     pendingCount: number;
     pendingVersion: number;
+    pendingOwnerCount?: unknown;
     pendingBlockedCount?: unknown;
     meaningfulActivityAt?: unknown;
     pendingActivationAuthorization?: Session['pendingActivationAuthorization'];
@@ -20,6 +21,10 @@ export function buildPendingChangedSessionPatch(body: Readonly<{
         : undefined;
     return {
         pendingCount: body.pendingCount,
+        // A newer predecessor receipt clears the cached owner count. Lifecycle reconciliation
+        // retains a known projection only when this receipt is equal or older.
+        pendingOwnerCount: typeof body.pendingOwnerCount === 'number' && Number.isFinite(body.pendingOwnerCount)
+            ? Math.max(0, Math.trunc(body.pendingOwnerCount)) : undefined,
         pendingVersion: body.pendingVersion,
         ...(pendingBlockedCount === undefined ? {} : { pendingBlockedCount }),
         ...(meaningfulActivityAt === undefined ? {} : { meaningfulActivityAt }),

@@ -2634,6 +2634,8 @@ const SessionSendUserTextInputFieldsSchema = lazyZodSchema(() => z.strictObject(
   localId: z.optional(PendingLocalIdSchema),
   idempotencyKey: z.optional(PluginSessionUserTextAuthoredFieldSchemasV1.idempotencyKey),
   source: PluginSessionUserTextAuthoredFieldSchemasV1.source,
+  /** CLI display attribution, never input authority or plugin provenance. */
+  automatedSource: z.optional(z.string().check(z.trim(), z.minLength(1))),
   attachments: PluginSessionUserTextAuthoredFieldSchemasV1.attachments,
   toolAnswerDelivery: PluginSessionUserTextAuthoredFieldSchemasV1.toolAnswerDelivery,
   permissionModeOverride: z.optional(z.string().check(z.trim(), z.minLength(1))),
@@ -2681,7 +2683,7 @@ function validateSessionSendProviderSelection(
 const SessionSendUserTextInputSchema = lazyZodSchema(() => SessionSendUserTextInputFieldsSchema.check(z.superRefine(requireSessionInputContent), z.superRefine(validateSessionSendProviderSelection)));
 
 // Public callers author text and routing intent, never plugin source or attachment authority.
-const SessionSendUserTextPublicInputSchema = lazyZodSchema(() => z.omit(SessionSendUserTextInputFieldsSchema, { idempotencyKey: true, source: true, attachments: true, toolAnswerDelivery: true }).check(z.superRefine(requireSessionInputContent), z.superRefine(validateSessionSendProviderSelection)));
+const SessionSendUserTextPublicInputSchema = lazyZodSchema(() => z.omit(SessionSendUserTextInputFieldsSchema, { idempotencyKey: true, source: true, automatedSource: true, attachments: true, toolAnswerDelivery: true }).check(z.superRefine(requireSessionInputContent), z.superRefine(validateSessionSendProviderSelection)));
 
 /** Plugin Session messages carry only host-attributed admission intent. */
 const SessionSendUserTextPluginInputV1Schema = lazyZodSchema(() => z.strictObject({

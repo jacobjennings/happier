@@ -17,6 +17,7 @@ type ExchangeResult =
     | Readonly<{ ok: false; error: 'not-found' | 'forbidden' | 'conflict' }>;
 type PendingPublication = Readonly<{
     sessionId: string;
+    pendingOwnerCount: number;
     pendingCount: number;
     pendingBlockedCount: number;
     pendingVersion: number;
@@ -73,7 +74,7 @@ export async function controlAutonomousExchange(params: Readonly<{
                 status: 'queued', OR: params.request.control === 'stop'
                     ? [{ deliveryState: null }, { deliveryState: 'blocked', deliveryBlockedReason: 'autonomous_check_in' }]
                     : [{ deliveryState: 'blocked', deliveryBlockedReason: 'autonomous_check_in' }] },
-            select: { sessionId: true, localId: true, targetExecutionRunId: true,
+            select: { sessionId: true, localId: true, targetExecutionRunId: true, automated: true,
                 deliveryState: true },
         });
         const captured = await readUnstarted();
@@ -118,7 +119,7 @@ export async function controlAutonomousExchange(params: Readonly<{
                 data: { ...target, ...(params.request.control === 'stop' ? { discardedAt: new Date() } : {}) },
             });
         }
-        const bySession = new Map<string, { total: number; blocked: number }>();
+        const bySession = new Map<string, { total: number; owner: number; blocked: number }>();
         const byRun = new Map<string, { sessionId: string; runId: string }>();
         for (const pending of unstarted) {
             if (pending.targetExecutionRunId !== null) {
@@ -126,15 +127,16 @@ export async function controlAutonomousExchange(params: Readonly<{
                     sessionId: pending.sessionId, runId: pending.targetExecutionRunId });
                 continue;
             }
-            const counts = bySession.get(pending.sessionId) ?? { total: 0, blocked: 0 };
+            const counts = bySession.get(pending.sessionId) ?? { total: 0, owner: 0, blocked: 0 };
             bySession.set(pending.sessionId, { total: counts.total + 1,
+                owner: counts.owner + (pending.automated ? 0 : 1),
                 blocked: counts.blocked + (pending.deliveryState === 'blocked' ? 1 : 0) });
         }
         const publications: PendingPublication[] = [];
         for (const [sessionId, counts] of [...bySession].sort(([left], [right]) => left.localeCompare(right))) {
             const pendingState = await applyPendingSessionStateChange({ tx, sessionId,
                 pendingBlockedCountDelta: -counts.blocked,
-                ...(params.request.control === 'stop' ? { pendingCountDelta: -counts.total } : {}) });
+                ...(params.request.control === 'stop' ? { pendingOwnerCountDelta: -counts.owner, pendingCountDelta: -counts.total } : {}) });
             publications.push({ sessionId, ...pendingState });
         }
         for (const { sessionId, runId } of [...byRun.values()].sort((left, right) =>
@@ -154,6 +156,7 @@ export async function controlAutonomousExchange(params: Readonly<{
     }, { isolationLevel: 'ReadCommitted' });
     for (const publication of outcome.publications) {
         await emitPendingChanged({ sessionId: publication.sessionId, changedByAccountId: params.actorUserId,
+            pendingOwnerCount: publication.pendingOwnerCount,
             pendingCount: publication.pendingCount, pendingBlockedCount: publication.pendingBlockedCount,
             pendingVersion: publication.pendingVersion, recipientCursors: publication.recipientCursors,
             ...(publication.recipient ? { recipient: publication.recipient } : {}) });

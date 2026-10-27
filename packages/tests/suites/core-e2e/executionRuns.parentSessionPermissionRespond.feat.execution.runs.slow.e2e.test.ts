@@ -1,9 +1,9 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
-import { ExecutionRunStartResponseSchema } from '@happier-dev/protocol';
+import { ExecutionRunStartResponseSchema, SessionExecutionRunPendingEnqueueRequestV1Schema, buildAccountStoredContentCompatibilityHttpHeadersV1, CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { createRunDirs } from '../../src/testkit/runDir';
@@ -16,8 +16,11 @@ import { waitFor } from '../../src/testkit/timing';
 import { seedCliAuthForTestAccount } from '../../src/testkit/cliAuth';
 import { fakeClaudeFixturePath } from '../../src/testkit/fakeClaude';
 import { callLegacyEncryptedSessionRpc } from '../../src/testkit/sessionRpc';
-import { decryptLegacyBase64 } from '../../src/testkit/messageCrypto';
+import { decryptLegacyBase64, encryptLegacyBase64 } from '../../src/testkit/messageCrypto';
 import { fetchSessionV2 } from '../../src/testkit/sessions';
+import { fetchJson } from '../../src/testkit/http';
+import { listPendingQueueV2 } from '../../src/testkit/pendingQueueV2';
+import { waitForDaemonMachineIdFromCliSettings } from '../../src/testkit/uiE2e/daemonMachineId';
 
 const run = createRunDirs({ runLabel: 'core' });
 
@@ -92,7 +95,7 @@ describe('core e2e: execution runs (parent-session permission response)', () => 
     await mkdir(daemonHomeDir, { recursive: true });
     await mkdir(workspaceDir, { recursive: true });
 
-    const secret = Uint8Array.from(randomBytes(32));
+    const secret = auth.accountSigningSeed;
     await seedCliAuthForTestAccount({ cliHome: daemonHomeDir, serverUrl: server.baseUrl, auth, mode: 'legacy' });
 
     const fakeClaudePath = fakeClaudeFixturePath();
@@ -145,7 +148,7 @@ describe('core e2e: execution runs (parent-session permission response)', () => 
       throw new Error('Missing sessionId from daemon spawn-session');
     }
 
-    const ui = createUserScopedSocketCollector(server.baseUrl, auth.token);
+    const ui = createUserScopedSocketCollector(server.baseUrl, auth.token, { declareCurrentAccountStoredContentCompatibility: true });
     ui.connect();
     await waitFor(() => ui.isConnected(), { timeoutMs: 20_000 });
 
@@ -197,6 +200,51 @@ describe('core e2e: execution runs (parent-session permission response)', () => 
         backendId: 'claude',
         providerRequestId: resolvedPermissionRequest.requestId,
       });
+
+      // Exercise the actual Run-target HTTP boundary while the live Run awaits
+      // permission, then remove these inputs before continuing its approval flow.
+      // Target summaries must never leak into the parent Session's main queue.
+      const targetMachineId = await waitForDaemonMachineIdFromCliSettings({ cliHomeDir: daemonHomeDir });
+      const pendingUrl = `${server.baseUrl}/v2/sessions/${sessionId}/execution-runs/${encodeURIComponent(started.runId)}/pending`;
+      const headers = { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json',
+        ...buildAccountStoredContentCompatibilityHttpHeadersV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION) };
+      const targetLocalIds: string[] = [];
+      const assertTargetSummary = async (pendingCount: number, pendingOwnerCount: number) => {
+        const target = await fetchJson<{ pending?: { localId: string; automated?: boolean }[] }>(pendingUrl, { headers });
+        expect(target.status).toBe(200);
+        expect(target.data).toMatchObject({
+          recipient: { kind: 'execution_run', runId: started.runId }, pendingCount, pendingOwnerCount,
+        });
+        expect(target.data.pending?.map(row => row.localId).sort()).toEqual([...targetLocalIds].sort());
+        expect(await fetchSessionV2(server!.baseUrl, auth.token, sessionId)).toMatchObject({ pendingCount: 0, pendingOwnerCount: 0 });
+        const mainQueue = await listPendingQueueV2({ baseUrl: server!.baseUrl, token: auth.token, sessionId });
+        expect(mainQueue.status).toBe(200);
+        expect(mainQueue.data.pending).toEqual([]);
+        return target.data;
+      };
+      await assertTargetSummary(0, 0);
+      for (const automated of [true, false]) {
+        const localId = randomUUID();
+        const content = {
+          role: 'user', content: { type: 'text', text: automated ? 'Safe automated Run follow-up' : 'Safe owner Run follow-up' },
+          meta: { source: 'ui', sentFrom: 'cli', ...(automated ? { automatedSource: 'harness' } : {}) },
+        };
+        const body = SessionExecutionRunPendingEnqueueRequestV1Schema.parse({
+          v: 1, localId, targetMachineId, automated, messageRole: 'user',
+          content: { t: 'encrypted', c: encryptLegacyBase64(content, secret) },
+        });
+        const enqueued = await fetchJson(pendingUrl, { method: 'POST', headers, body: JSON.stringify(body) });
+        expect(enqueued.status).toBe(200);
+        targetLocalIds.push(localId);
+        const target = await assertTargetSummary(targetLocalIds.length, automated ? 0 : 1);
+        expect(target.pending?.find(row => row.localId === localId)?.automated).toBe(automated);
+      }
+      for (const localId of [...targetLocalIds]) {
+        const deleted = await fetchJson(`${pendingUrl}/${encodeURIComponent(localId)}`, { method: 'DELETE', headers });
+        expect(deleted.status).toBe(200);
+        targetLocalIds.splice(targetLocalIds.indexOf(localId), 1);
+        await assertTargetSummary(targetLocalIds.length, targetLocalIds.length);
+      }
 
       const approved = await callLegacyEncryptedSessionRpc({
         ui,

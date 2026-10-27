@@ -117,6 +117,7 @@ export function createSessionMessageMetaSchema(zod: typeof z) {
        * Forward-compatible: unknown strings are allowed.
        */
       source: zod.optional(zod.union([zod.enum(['ui', 'cli']), zod.string()])),
+      automatedSource: zod.optional(zod.string()),
       permissionMode: z.optional(createSessionPermissionModeSchema(zod)),
       model: zod.optional(zod.nullable(zod.string())),
       // Preserve invalid presence as well as valid intent: the model-selection

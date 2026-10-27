@@ -1499,6 +1499,7 @@ model Session {
     materializedThroughSourceAt         BigInt?
     publishedThroughServerSeq           Int?
     pendingVersion    Int                 @default(0)
+    pendingOwnerCount Int                 @default(0)
     pendingCount      Int                 @default(0)
     pendingBlockedCount           Int                          @default(0)
     pendingQueueSeq   Int                 @default(0)
@@ -2324,6 +2325,7 @@ model SessionPendingMessage {
     /// Null selects the primary Session runtime; Runs remain daemon-owned identities.
     targetExecutionRunId String?
     messageRole      String?
+    automated        Boolean                    @default(false)
     /// [SessionPendingMessageContent]
     content          Json
     /// [PendingRequestedActionV1]

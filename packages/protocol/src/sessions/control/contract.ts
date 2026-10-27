@@ -451,6 +451,7 @@ export const V2SessionRecordSchema = lazyZodSchema(() => z.looseObject({
     pendingPermissionRequestCount: z.optional(z.number().check(z.int(), z.minimum(0))),
     pendingUserActionRequestCount: z.optional(z.number().check(z.int(), z.minimum(0))),
     pendingRequestObservedAt: z.optional(z.nullable(z.number().check(z.int(), z.nonnegative()))),
+    pendingOwnerCount: z.optional(z.number().check(z.int(), z.minimum(0))),
     pendingCount: z.optional(z.number().check(z.int(), z.minimum(0))),
     pendingBlockedCount: z.optional(z.number().check(z.int(), z.minimum(0))),
     pendingVersion: z.optional(z.number().check(z.int(), z.minimum(0))),

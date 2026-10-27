@@ -78,6 +78,7 @@ export function registerSessionArchiveRoutes(app: Fastify) {
                 select: {
                     id: true,
                     ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
+                    pendingOwnerCount: true,
                     pendingCount: true,
                     pendingBlockedCount: true,
                     pendingPermissionRequestCount: true,
@@ -196,6 +197,7 @@ export function registerSessionArchiveRoutes(app: Fastify) {
                 select: {
                     id: true,
                     ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
+                    pendingOwnerCount: true,
                     pendingCount: true,
                     pendingBlockedCount: true,
                     pendingPermissionRequestCount: true,

@@ -58,6 +58,7 @@ type MaterializeNextPendingMessageOutcome =
     | {
         ok: true;
         didMaterialize: false;
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         pendingVersion: number;
@@ -75,6 +76,7 @@ type MaterializeNextPendingMessageOutcome =
         message: { id: string | null; seq: number | null; localId: string; messageRole: SessionMessageRole | null; content: PrismaJson.SessionMessageContent; requestedAction: import("@happier-dev/protocol").PendingRequestedActionV1; providerAction: PendingProviderAction; inputAdmissionReceipt: SessionInputAdmissionReceiptV1 | null; createdAt: Date; updatedAt: Date };
         recipientCursorsMessage: RecipientCursor[];
         recipientCursorsPending: RecipientCursor[];
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         pendingVersion: number;
@@ -88,7 +90,7 @@ type MaterializeNextPendingMessageOutcome =
 
 export type MaterializeNextPendingMessageResult = MaterializeNextPendingMessageOutcome & {
     authorAccountId?: string | null;
-    sessionPendingStateForPublication?: { pendingCount: number; pendingBlockedCount: number; pendingVersion: number };
+    sessionPendingStateForPublication?: { pendingOwnerCount: number; pendingCount: number; pendingBlockedCount: number; pendingVersion: number };
 };
 
 type PendingMaterializationPublications = PendingPublicationFields<MaterializeNextPendingMessageResult>;
@@ -132,7 +134,7 @@ async function blockPendingExecutionRunTargetMismatchInTx(params: {
     if (updatedRow.count !== 1) {
         const current = await params.tx.session.findUniqueOrThrow({
             where: { id: params.sessionId },
-            select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+            select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
         });
         return {
             ok: true,
@@ -142,6 +144,9 @@ async function blockPendingExecutionRunTargetMismatchInTx(params: {
         };
     }
 
+    const pendingOwnerCount = await params.tx.sessionPendingMessage.count({
+        where: { automated: false, sessionId: params.sessionId, targetExecutionRunId: null, status: "queued" },
+    });
     const pendingCount = await params.tx.sessionPendingMessage.count({
         where: { sessionId: params.sessionId, targetExecutionRunId: null, status: "queued" },
     });
@@ -155,16 +160,17 @@ async function blockPendingExecutionRunTargetMismatchInTx(params: {
             archivedAt: null,
             lastActiveAt: params.authority.committedFence,
         },
-        data: { pendingCount, pendingBlockedCount, pendingVersion: { increment: 1 } },
+        data: { pendingOwnerCount, pendingCount, pendingBlockedCount, pendingVersion: { increment: 1 } },
     });
     if (publisherFence.count !== 1) throw new PublisherAuthorityLostError();
     const session = await params.tx.session.findUniqueOrThrow({
         where: { id: params.sessionId },
-        select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+        select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
     });
     const recipientCursorsPending = await markPendingStateChangedRecipients({
         tx: params.tx,
         sessionId: params.sessionId,
+        pendingOwnerCount: session.pendingOwnerCount,
         pendingCount: session.pendingCount,
         pendingBlockedCount: session.pendingBlockedCount,
         pendingVersion: session.pendingVersion,
@@ -204,6 +210,7 @@ async function resolvePendingProviderRejoinInTx(params: {
         select: {
             encryptionMode: true,
             seq: true,
+            pendingOwnerCount: true,
             pendingCount: true,
             pendingBlockedCount: true,
             pendingVersion: true,
@@ -259,11 +266,12 @@ async function resolvePendingProviderRejoinInTx(params: {
         if (publisherFence.count !== 1) throw new PublisherAuthorityLostError();
         const updated = await params.tx.session.findUniqueOrThrow({
             where: { id: params.sessionId },
-            select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+            select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
         });
         const recipientCursorsPending = await markPendingStateChangedRecipients({
             tx: params.tx,
             sessionId: params.sessionId,
+            pendingOwnerCount: updated.pendingOwnerCount,
             pendingCount: updated.pendingCount,
             pendingBlockedCount: updated.pendingBlockedCount,
             pendingVersion: updated.pendingVersion,
@@ -343,6 +351,7 @@ async function resolvePendingProviderRejoinInTx(params: {
         },
         recipientCursorsMessage: [],
         recipientCursorsPending: [],
+        pendingOwnerCount: session.pendingOwnerCount,
         pendingCount: session.pendingCount,
         pendingBlockedCount: session.pendingBlockedCount,
         pendingVersion: session.pendingVersion,
@@ -409,7 +418,8 @@ async function materializeNextPendingMessagePublicationsInTx(
     if (!result.ok || targetExecutionRunId === null) return result;
     // Session invalidation keeps main counters; only the exact consumer receives Run counts.
     const where = { sessionId: params.sessionId, targetExecutionRunId, status: "queued" as const };
-    const [pendingCount, pendingBlockedCount, author] = await Promise.all([
+    const [pendingOwnerCount, pendingCount, pendingBlockedCount, author] = await Promise.all([
+        params.tx.sessionPendingMessage.count({ where: { ...where, automated: false } }),
         params.tx.sessionPendingMessage.count({ where }),
         params.tx.sessionPendingMessage.count({ where: { ...where, deliveryState: "blocked" } }),
         params.tx.sessionPendingMessage.findFirst({
@@ -420,10 +430,12 @@ async function materializeNextPendingMessagePublicationsInTx(
     ]);
     return {
         ...result,
+        pendingOwnerCount,
         pendingCount,
         pendingBlockedCount,
         authorAccountId: author?.authorAccountId ?? null,
         sessionPendingStateForPublication: {
+            pendingOwnerCount: result.pendingOwnerCount,
             pendingCount: result.pendingCount,
             pendingBlockedCount: result.pendingBlockedCount,
             pendingVersion: result.pendingVersion,
@@ -473,6 +485,7 @@ async function materializePendingTargetInTx(
             accountId: true,
             encryptionMode: true,
             seq: true,
+            pendingOwnerCount: true,
             pendingCount: true,
             pendingBlockedCount: true,
             pendingVersion: true,
@@ -517,10 +530,11 @@ async function materializePendingTargetInTx(
             const pendingCount = await tx.sessionPendingMessage.count({
                 where: { sessionId, targetExecutionRunId: null, status: "queued" },
             });
-            if (pendingCount <= 0) {
+            if (pendingCount <= 0 && sessionRow.pendingOwnerCount <= 0 && sessionRow.pendingBlockedCount <= 0) {
                 return {
                     ok: true,
                     didMaterialize: false,
+                    pendingOwnerCount: sessionRow.pendingOwnerCount ?? 0,
                     pendingCount: sessionRow.pendingCount ?? 0,
                     pendingBlockedCount: sessionRow.pendingBlockedCount ?? 0,
                     pendingVersion: sessionRow.pendingVersion ?? 0,
@@ -538,6 +552,7 @@ async function materializePendingTargetInTx(
                 where: { id: sessionId },
                 select: {
                     ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
+                    pendingOwnerCount: true,
                     pendingCount: true,
                     pendingBlockedCount: true,
                     pendingVersion: true,
@@ -597,6 +612,7 @@ async function materializePendingTargetInTx(
                 return {
                     ok: true,
                     didMaterialize: false,
+                    pendingOwnerCount: sessionBefore.pendingOwnerCount,
                     pendingCount: sessionBefore.pendingCount,
                     pendingBlockedCount: sessionBefore.pendingBlockedCount,
                     pendingVersion: sessionBefore.pendingVersion,
@@ -609,29 +625,34 @@ async function materializePendingTargetInTx(
                 : null;
 
             if (!nextPending) {
+                const pendingOwnerCount = await tx.sessionPendingMessage.count({
+                    where: { automated: false, sessionId, targetExecutionRunId: null, status: "queued" },
+                });
                 const pendingCount = await tx.sessionPendingMessage.count({
                     where: { sessionId, targetExecutionRunId: null, status: "queued" },
                 });
                 const blockedCount = await tx.sessionPendingMessage.count({
                     where: { sessionId, targetExecutionRunId: null, status: "queued", deliveryState: "blocked" },
                 });
-                if ((sessionBefore.pendingCount ?? 0) !== pendingCount || (sessionBefore.pendingBlockedCount ?? 0) !== blockedCount) {
+                if ((sessionBefore.pendingOwnerCount ?? 0) !== pendingOwnerCount || (sessionBefore.pendingCount ?? 0) !== pendingCount || (sessionBefore.pendingBlockedCount ?? 0) !== blockedCount) {
                     await tx.session.updateMany({
                         where: {
                             id: sessionId,
+                            pendingOwnerCount: sessionBefore.pendingOwnerCount,
                             pendingCount: sessionBefore.pendingCount,
                             pendingBlockedCount: sessionBefore.pendingBlockedCount,
                             pendingVersion: sessionBefore.pendingVersion,
                         },
-                        data: { pendingCount, pendingBlockedCount: blockedCount, pendingVersion: { increment: 1 } },
+                        data: { pendingOwnerCount, pendingCount, pendingBlockedCount: blockedCount, pendingVersion: { increment: 1 } },
                     });
                     const repaired = await tx.session.findUniqueOrThrow({
                         where: { id: sessionId },
-                        select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+                        select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
                     });
                     return {
                         ok: true,
                         didMaterialize: false,
+                        pendingOwnerCount: repaired.pendingOwnerCount,
                         pendingCount: repaired.pendingCount,
                         pendingBlockedCount: repaired.pendingBlockedCount,
                         pendingVersion: repaired.pendingVersion,
@@ -642,6 +663,7 @@ async function materializePendingTargetInTx(
                 return {
                     ok: true,
                     didMaterialize: false,
+                    pendingOwnerCount: sessionBefore.pendingOwnerCount,
                     pendingCount: sessionBefore.pendingCount,
                     pendingBlockedCount: sessionBefore.pendingBlockedCount,
                     pendingVersion: sessionBefore.pendingVersion,
@@ -675,6 +697,7 @@ async function materializePendingTargetInTx(
                 return {
                     ok: true,
                     didMaterialize: false,
+                    pendingOwnerCount: sessionBefore.pendingOwnerCount,
                     pendingCount: sessionBefore.pendingCount,
                     pendingBlockedCount: sessionBefore.pendingBlockedCount,
                     pendingVersion: sessionBefore.pendingVersion,
@@ -750,11 +773,12 @@ async function materializePendingTargetInTx(
                 if (claimed.count === 0) {
                     const latestSession = await tx.session.findUniqueOrThrow({
                         where: { id: sessionId },
-                        select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+                        select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
                     });
                     return {
                         ok: true,
                         didMaterialize: false,
+                        pendingOwnerCount: latestSession.pendingOwnerCount,
                         pendingCount: latestSession.pendingCount,
                         pendingBlockedCount: latestSession.pendingBlockedCount,
                         pendingVersion: latestSession.pendingVersion,
@@ -768,6 +792,9 @@ async function materializePendingTargetInTx(
                     requestId: localId,
                 });
 
+                const pendingOwnerCount = await tx.sessionPendingMessage.count({
+                    where: { automated: false, sessionId, targetExecutionRunId: null, status: "queued" },
+                });
                 const pendingCount = await tx.sessionPendingMessage.count({
                     where: { sessionId, targetExecutionRunId: null, status: "queued" },
                 });
@@ -784,13 +811,14 @@ async function materializePendingTargetInTx(
                             ? { runtimeActivityRevision: BigInt(params.expectedRuntimeActivityRevision!) }
                             : {}),
                     },
-                    data: { pendingCount, pendingBlockedCount, pendingVersion: { increment: 1 } },
+                    data: { pendingOwnerCount, pendingCount, pendingBlockedCount, pendingVersion: { increment: 1 } },
                 });
                 if (sessionFence.count !== 1) throw new PublisherAuthorityLostError();
                 const session = await tx.session.findUniqueOrThrow({
                     where: { id: sessionId },
                     select: {
                         ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
+                        pendingOwnerCount: true,
                         pendingCount: true,
                         pendingBlockedCount: true,
                         pendingVersion: true,
@@ -805,6 +833,7 @@ async function materializePendingTargetInTx(
                     tx,
                     sessionId,
                     pendingVersion: session.pendingVersion,
+                    pendingOwnerCount: session.pendingOwnerCount,
                     pendingCount: session.pendingCount,
                     pendingBlockedCount: session.pendingBlockedCount,
                 });
@@ -827,6 +856,7 @@ async function materializePendingTargetInTx(
                     },
                     recipientCursorsMessage: [] as SessionRecipientPublication[],
                     recipientCursorsPending,
+                    pendingOwnerCount: session.pendingOwnerCount,
                     pendingCount: session.pendingCount,
                     pendingBlockedCount: session.pendingBlockedCount,
                     pendingVersion: session.pendingVersion,
@@ -835,6 +865,7 @@ async function materializePendingTargetInTx(
                         sessionBefore,
                         {
                             seq: session.seq,
+                            pendingOwnerCount: session.pendingOwnerCount,
                             pendingCount: session.pendingCount,
                             pendingBlockedCount: session.pendingBlockedCount,
                             pendingPermissionRequestCount: session.pendingPermissionRequestCount,
@@ -853,6 +884,7 @@ async function materializePendingTargetInTx(
                 messageSeq: result.message.seq,
                 messageRole: result.message.messageRole,
                 didWriteMessage: result.didWriteMessage,
+                pendingOwnerCount: result.pendingOwnerCount,
                 pendingCount: result.pendingCount,
                 pendingBlockedCount: result.pendingBlockedCount,
                 pendingVersion: result.pendingVersion,

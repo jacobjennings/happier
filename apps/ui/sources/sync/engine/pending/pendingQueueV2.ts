@@ -1,3 +1,4 @@
+import { readAutomatedMessageSource } from '@/sync/domains/messages/automatedMessage';
 import { loadAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
 import { settingsParse } from '@/sync/domains/settings/settings';
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
@@ -161,6 +162,7 @@ function buildPreparedPendingComposerRecord<T extends RawRecord>(
 }
 
 type PendingRow = {
+    automated?: boolean;
     autonomousExchangeRoot?: PendingMessage['pendingAutonomousExchangeRoot'];
     activationHoldReason?: PendingActivationHoldReasonV1;
     recipient?: PendingMessage['recipient'];
@@ -953,6 +955,7 @@ function parsePendingRows(raw: unknown, serverId: string): PendingRow[] | null {
             ...(activationHoldReason.success ? { activationHoldReason: activationHoldReason.data } : {}),
             ...(recipient?.success ? { recipient: recipient.data } : {}),
             localId,
+            ...(item.automated === true ? { automated: true } : {}),
             messageRole: messageRole === 'user' ? 'user' : messageRole == null ? null : 'non_user',
             content: contentParsed.success ? contentParsed.data : null,
             status: parsedStatus,
@@ -1023,6 +1026,7 @@ function withPendingDeliveryState<T extends PendingMessage>(row: PendingRow, mes
         ...(row.activationHoldReason ? { pendingActivationHoldReason: row.activationHoldReason } : {}),
         ...(row.autonomousExchangeRoot ? { pendingAutonomousExchangeRoot: row.autonomousExchangeRoot } : {}),
         messageRole: row.messageRole,
+        ...(row.automated === true ? { automated: true } : {}),
         pendingDeliveryStatus,
         ...(row.deliveryStatus.status === 'delivering' && row.deliveryStatus.detail
             ? { pendingDeliveryDetail: row.deliveryStatus.detail }
@@ -1657,6 +1661,7 @@ async function buildPendingUserMessageWriteBody(params: {
         return {
             localId: params.localId,
             content: { t: 'plain', v: params.rawRecord },
+            ...(readAutomatedMessageSource(params.rawRecord.meta) ? { automated: true } : {}),
             messageRole: 'user',
         };
     }
@@ -1666,6 +1671,7 @@ async function buildPendingUserMessageWriteBody(params: {
     return {
         localId: params.localId,
         ciphertext: await params.sessionEncryption.encryptRawRecord(params.rawRecord),
+        ...(readAutomatedMessageSource(params.rawRecord.meta) ? { automated: true } : {}),
         messageRole: 'user',
     };
 }
@@ -1692,13 +1698,14 @@ async function buildPendingEnqueueWriteBody(params: Parameters<typeof buildPendi
         localId: params.localId,
         targetMachineId: params.targetMachineId,
         content: body.content ?? { t: 'encrypted', c: body.ciphertext },
+        ...(body.automated === true ? { automated: true } : {}),
         messageRole: 'user',
         requestedAction: params.requestedAction,
     });
 }
 
 function buildPendingUndecryptedMessage(params: {
-    row: Pick<PendingRow, 'localId' | 'createdAt' | 'updatedAt'>;
+    row: Pick<PendingRow, 'localId' | 'createdAt' | 'updatedAt' | 'automated'>;
     kind: 'loading' | 'decrypt_failed';
 }) {
     const state = params.kind === 'loading'
@@ -1707,6 +1714,7 @@ function buildPendingUndecryptedMessage(params: {
     return {
         id: params.row.localId,
         localId: params.row.localId,
+        ...(params.row.automated === true ? { automated: true } : {}),
         createdAt: params.row.createdAt,
         updatedAt: params.row.updatedAt,
         source: 'server_pending' as const,
@@ -2167,6 +2175,7 @@ async function fetchAndApplyPendingMessagesV2Owned(
             continue;
         }
         discardedMessages.push({
+            ...(r.automated === true ? { automated: true } : {}),
             id: r.localId,
             localId: r.localId,
             createdAt: r.createdAt,
@@ -3136,6 +3145,7 @@ export async function updatePendingMessageV2(params: {
         : undefined;
 
     const writeBody = {
+        ...(readAutomatedMessageSource(rawRecord.meta) ? { automated: true } : {}),
         ...(
         sessionEncryptionMode === 'plain'
             ? { content: { t: 'plain', v: rawRecord }, messageRole: 'user' }

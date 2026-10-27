@@ -429,6 +429,7 @@ export function machineUpdateHandler(
                     localId: parsed.data.localId,
                     content: parsed.data.content,
                     requestedAction: parsed.data.requestedAction,
+                    automated: parsed.data.automated,
                     ...(verifiedInvocation && 'grant' in verifiedInvocation.binding ? { callerInputConstraints: {
                         models: verifiedInvocation.binding.grant.models,
                         permissionModes: verifiedInvocation.binding.grant.permissionModes,
@@ -564,7 +565,7 @@ export function machineUpdateHandler(
                 return;
             }
             if (result.didUpdate) await emitPendingChanged({ sessionId: parsed.data.sessionId,
-                changedByAccountId: userId, pendingCount: result.pendingCount,
+                changedByAccountId: userId, pendingOwnerCount: result.pendingOwnerCount, pendingCount: result.pendingCount,
                 pendingBlockedCount: result.pendingBlockedCount, pendingVersion: result.pendingVersion,
                 recipientCursors: result.recipientCursors, activationTarget: result.activationTarget });
             callback?.({ v: 1, ok: true, didUpdate: result.didUpdate });

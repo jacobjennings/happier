@@ -413,6 +413,7 @@ function coerceLegacySessionRecord(raw: unknown): V2SessionRecord | null {
                 : undefined,
         ...(readRuntimeActivityProjectionFields(raw) ?? {}),
         pendingCount: readNumber(raw.pendingCount) ?? undefined,
+        pendingOwnerCount: readNumber(raw.pendingOwnerCount) ?? undefined,
         pendingVersion: readNumber(raw.pendingVersion) ?? undefined,
         dataEncryptionKey: readNullableString(raw.dataEncryptionKey) ?? null,
         share:

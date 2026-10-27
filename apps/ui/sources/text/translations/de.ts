@@ -15183,6 +15183,7 @@ settingsSession: {
         },},
 
     message: {
+        automatedSender: 'Automatisiert',
         ...sessionMessageAccountActorTranslations['de'],
         sessionReferenceUnavailable: 'Session nicht verfügbar',
         sessionReferenceOpen: ({ name }: { name: string }) => `Session öffnen: ${name}`,

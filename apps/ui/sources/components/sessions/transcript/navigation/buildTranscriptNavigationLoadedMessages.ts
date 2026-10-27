@@ -1,3 +1,5 @@
+import { readAutomatedMessageSource } from '@/sync/domains/messages/automatedMessage';
+import { t } from '@/text';
 import { buildMessageRouteId } from "@happier-dev/session-core/messages";
 import { prepareTranscriptMessageBody } from '../messageDisplayText';
 import type { Message } from "@happier-dev/session-core/messages";
@@ -23,7 +25,9 @@ function roleForMessage(message: Message): TranscriptNavigationRole {
 
 function textForMessage(message: Message): string | null {
     if (message.kind === 'user-text') {
-        return prepareTranscriptMessageBody(message).text;
+        const text = prepareTranscriptMessageBody(message).text;
+        const source = readAutomatedMessageSource(message.meta);
+        return source && text ? `${t('message.automatedSender')} · ${source}: ${text}` : text;
     }
     if (message.kind === 'agent-text') {
         // Thinking is never a reply preview: it is provider reasoning, not what the agent said.
@@ -130,7 +134,7 @@ export function buildTranscriptNavigationRemoteMessages(params: Readonly<{
             seq,
             transcriptBlockIndex: null,
             role: remoteRoleForRow(row),
-            text,
+            text: row.automatedSource ? `${t('message.automatedSender')} · ${row.automatedSource}: ${text}` : text,
             createdAtMs: normalizeFiniteInteger(row.createdAt),
             loaded: false,
             preNormalized: true,

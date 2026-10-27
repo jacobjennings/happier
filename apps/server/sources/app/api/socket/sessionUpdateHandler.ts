@@ -204,8 +204,9 @@ function resolvePendingMaterializeForegroundState(data: unknown): "ready" | "act
         : undefined;
 }
 
-function toPendingSocketState(value: { pendingCount: number; pendingBlockedCount?: number; pendingVersion: number }) {
+function toPendingSocketState(value: { pendingOwnerCount: number; pendingCount: number; pendingBlockedCount?: number; pendingVersion: number }) {
     return {
+        pendingOwnerCount: value.pendingOwnerCount,
         pendingCount: value.pendingCount,
         ...(typeof value.pendingBlockedCount === "number" ? { pendingBlockedCount: value.pendingBlockedCount } : {}),
         pendingVersion: value.pendingVersion,
@@ -253,6 +254,7 @@ async function publishAcceptedPendingSettlement(params: Readonly<{
         await emitPublicationSafePendingChanged({
             data: {
                 sessionId: params.sessionId,
+                pendingOwnerCount: result.pendingOwnerCount ?? 0,
                 pendingCount: result.pendingCount ?? 0,
                 ...(typeof result.pendingBlockedCount === "number" ? { pendingBlockedCount: result.pendingBlockedCount } : {}),
                 pendingVersion: result.pendingVersion ?? 0,
@@ -296,6 +298,7 @@ async function publishAcceptedPendingSettlement(params: Readonly<{
     await emitPublicationSafePendingChanged({
         data: {
             sessionId: params.sessionId,
+            pendingOwnerCount: result.pendingOwnerCount,
             pendingCount: result.pendingCount,
             pendingBlockedCount: result.pendingBlockedCount,
             pendingVersion: result.pendingVersion,
@@ -342,6 +345,7 @@ async function publishPendingInputAdmissionSettlement(params: Readonly<{
     await emitPublicationSafePendingChanged({
         data: {
             sessionId: params.sessionId,
+            pendingOwnerCount: result.pendingOwnerCount,
             pendingCount: result.pendingCount,
             pendingBlockedCount: result.pendingBlockedCount,
             pendingVersion: result.pendingVersion,
@@ -1034,6 +1038,7 @@ export function sessionUpdateHandler(
                 if (session) await Promise.all(result.recipientCursors.map(async ({ accountId, cursor }) => {
                     const pendingProjection = projectSessionTranscriptPublicationPendingProjection(
                         {
+                            pendingOwnerCount: pendingState.pendingOwnerCount,
                             pendingCount: pendingState.pendingCount,
                             pendingBlockedCount: pendingState.pendingBlockedCount,
                             pendingVersion: pendingState.pendingVersion,
@@ -2467,6 +2472,7 @@ export function sessionUpdateHandler(
                         });
                         return;
                     }
+                    const acceptedState = executionRunTarget ? result.targetPendingState! : result;
                     const acceptedMessage = result.message ? serializePendingMaterializedMessage(result.message) : undefined;
                     // V1 accepted settlement predates admission receipts; the target V2 wrapper
                     // reuses that exact closed message shape. The receipt was already returned at claim.
@@ -2474,7 +2480,9 @@ export function sessionUpdateHandler(
                     respond({
                         ok: true,
                         didResolve: result.didResolve,
-                        ...toPendingSocketState(executionRunTarget ? result.targetPendingState! : result),
+                        pendingCount: acceptedState.pendingCount,
+                        pendingBlockedCount: acceptedState.pendingBlockedCount,
+                        pendingVersion: acceptedState.pendingVersion,
                         ...(acceptedMessage ? { message: acceptedMessage } : {}),
                     });
                 } catch (error) {
@@ -2596,7 +2604,8 @@ export function sessionUpdateHandler(
                             await emitPublicationSafePendingChanged({
                                 data: {
                                     sessionId: sid,
-                                    pendingCount: executionRunTarget ? result.sessionPendingStateForPublication!.pendingCount : result.pendingCount,
+                                    pendingOwnerCount: executionRunTarget ? result.sessionPendingStateForPublication!.pendingOwnerCount : result.pendingOwnerCount,
+                            pendingCount: executionRunTarget ? result.sessionPendingStateForPublication!.pendingCount : result.pendingCount,
                                     pendingBlockedCount: executionRunTarget ? result.sessionPendingStateForPublication!.pendingBlockedCount : result.pendingBlockedCount,
                                     pendingVersion: result.pendingVersion,
                                     changedByAccountId: userId,
@@ -2654,6 +2663,7 @@ export function sessionUpdateHandler(
                     await emitPublicationSafePendingChanged({
                         data: {
                             sessionId: sid,
+                            pendingOwnerCount: executionRunTarget ? result.sessionPendingStateForPublication!.pendingOwnerCount : result.pendingOwnerCount,
                             pendingCount: executionRunTarget ? result.sessionPendingStateForPublication!.pendingCount : result.pendingCount,
                             pendingBlockedCount: executionRunTarget ? result.sessionPendingStateForPublication!.pendingBlockedCount : result.pendingBlockedCount,
                             pendingVersion: result.pendingVersion,

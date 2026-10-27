@@ -9652,6 +9652,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
               ? { localId: retainedLocalId }
               : {}),
             ...(parsedSource?.success ? { source: parsedSource.data } : {}),
+            ...(typeof data.automatedSource === 'string' ? { automatedSource: data.automatedSource } : {}),
             ...(parsedAttachments?.success ? { attachments: parsedAttachments.data } : {}),
             ...(permissionModeOverride ? { permissionModeOverride } : {}),
             ...(modelOverrideRaw === null

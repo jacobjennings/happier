@@ -1,3 +1,4 @@
+import { readOwnerPendingCount } from '@/sync/domains/messages/automatedMessage';
 import type { SessionAttentionOptions } from '@/sync/domains/session/attention/sessionAttention';
 import type { Message } from "@happier-dev/session-core/messages";
 import type { Session } from '@/sync/domains/state/storageTypes';
@@ -73,7 +74,7 @@ export function buildSessionActivityAttention(params: Readonly<{
             hasPendingPermissionRequests: personalReasons.includes('permission_required'),
             hasPendingUserActionRequests: personalReasons.includes('user_action_required'),
             hasBlockedPendingDelivery: personalReasons.includes('pending_blocked'),
-            hasQueuedUserInput: admitted && (params.session.pendingCount ?? 0) > 0,
+            hasQueuedUserInput: admitted && readOwnerPendingCount(params.session) > 0,
             isThinking: operational === 'working',
         },
     };

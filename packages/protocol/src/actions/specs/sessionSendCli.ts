@@ -45,6 +45,8 @@ export const SessionSendCliInputSchema = lazyZodSchema(() => z.strictObject({
   model: z.optional(z.string().check(z.trim(), z.minLength(1))),
   providerConnection: z.optional(z.string().check(z.trim(), z.minLength(1))),
   localId: z.optional(z.string().check(z.trim(), z.minLength(1))),
+  /** Display attribution only, independent of authenticated plugin source. */
+  source: z.optional(z.string().check(z.trim(), z.minLength(1))),
   wait: z.optional(z.boolean()),
   reply: z.optional(z.enum(['none', 'wait', 'return'])),
   timeoutSeconds: z.optional(z.number().check(z.int(), z.minimum(1))),
@@ -74,6 +76,7 @@ export const SessionSendCliInputHints: ActionInputHints = {
   fields: [
     { path: 'sessionId', title: 'Session id or prefix', widget: 'text', required: true },
     { path: 'message', title: 'Message', widget: 'textarea', required: true },
+    { path: 'source', title: 'Automated sender name (optional)', widget: 'text' },
     { path: 'run', title: 'Target execution run id (optional)', widget: 'text' },
     { path: 'permissionMode', title: 'Permission mode override (optional)', widget: 'text' },
     { path: 'model', title: 'Model override, or "default" (optional)', widget: 'text' },
@@ -115,6 +118,7 @@ export function bindSessionSendCliInput(
   return {
     ...(value.sessionId === undefined ? {} : { sessionId: value.sessionId }),
     ...(value.message === undefined ? {} : { message: value.message }),
+    ...(value.source === undefined ? {} : { automatedSource: value.source }),
     ...(value.run === undefined ? {} : { recipient: { kind: 'execution_run' as const, runId: value.run } }),
     ...(permissionModeOverride ? { permissionModeOverride } : {}),
     ...(modelOverride !== undefined ? { modelOverride } : {}),

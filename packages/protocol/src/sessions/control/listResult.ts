@@ -18,6 +18,7 @@ export const SessionSummarySchema = lazyZodSchema(() => z.looseObject({
   active: z.boolean(),
   activeAt: z.number().check(z.int(), z.nonnegative()),
   archivedAt: z.optional(z.nullable(z.number().check(z.int(), z.nonnegative()))),
+  pendingOwnerCount: z.optional(z.number().check(z.int(), z.nonnegative())),
   pendingCount: z.optional(z.number().check(z.int(), z.nonnegative())),
   pendingBlockedCount: z.optional(z.number().check(z.int(), z.nonnegative())),
   tag: z.optional(z.string()),
@@ -53,7 +54,7 @@ export const SessionSummarySchema = lazyZodSchema(() => z.looseObject({
 }).check(z.superRefine(refineRuntimeActivityProjectionFields)));
 export type SessionSummary = z.infer<typeof SessionSummarySchema>;
 
-type SessionSummarySourceFieldsV1 = 'archivedAt' | 'pendingCount' | 'pendingBlockedCount' | 'effectiveAccess' | 'share'
+type SessionSummarySourceFieldsV1 = 'archivedAt' | 'pendingOwnerCount' | 'pendingCount' | 'pendingBlockedCount' | 'effectiveAccess' | 'share'
     | 'encryptionMode' | 'latestTurnId' | 'latestTurnStatus' | 'latestTurnStatusObservedAt' | 'lastRuntimeIssue'
     | 'runtimeActivityState' | 'runtimeActivityActiveCount' | 'runtimeActivityObservedAt' | 'runtimeActivityRevision'
     | 'pendingActivationAuthorization' | 'manager' | 'managedSessions';
@@ -87,6 +88,7 @@ export function projectSessionSummaryV1(input: Readonly<{
     ...(row.manager != null ? { manager: row.manager } : {}),
     ...(row.managedSessions != null ? { managedSessions: row.managedSessions } : {}),
     ...(nullableTimestamp(row.archivedAt) ? { archivedAt: row.archivedAt } : {}),
+    ...(typeof row.pendingOwnerCount === 'number' ? { pendingOwnerCount: row.pendingOwnerCount } : {}),
     ...(typeof row.pendingCount === 'number' ? { pendingCount: row.pendingCount } : {}),
     ...(typeof row.pendingBlockedCount === 'number' ? { pendingBlockedCount: row.pendingBlockedCount } : {}),
     ...(tag ? { tag } : {}), ...(title ? { title } : {}), ...(path ? { path } : {}), ...(host ? { host } : {}),

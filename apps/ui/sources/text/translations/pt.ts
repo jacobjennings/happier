@@ -15173,6 +15173,7 @@ settingsSession: {
     },},
 
   message: {
+      automatedSender: 'Automatizado',
 
       ...sessionMessageAccountActorTranslations['pt'],
       sessionReferenceUnavailable: "Sessão indisponível",

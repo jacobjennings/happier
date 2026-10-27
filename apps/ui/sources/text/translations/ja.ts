@@ -15337,6 +15337,7 @@ settingsSession: {
     },},
 
   message: {
+      automatedSender: '自動送信',
 
       ...sessionMessageAccountActorTranslations['ja'],
       sessionReferenceUnavailable: "利用できないセッション",

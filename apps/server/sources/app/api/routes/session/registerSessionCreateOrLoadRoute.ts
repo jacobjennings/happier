@@ -478,6 +478,7 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
                 ? { share: null }
                 : {}),
             dataEncryptionKey: viewerDataEncryptionKey,
+            pendingOwnerCount: resolvedSession.pendingOwnerCount,
             pendingCount: resolvedSession.pendingCount,
             pendingBlockedCount: resolvedSession.pendingBlockedCount,
             pendingVersion: resolvedSession.pendingVersion,

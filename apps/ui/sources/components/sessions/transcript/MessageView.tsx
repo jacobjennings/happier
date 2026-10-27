@@ -1,3 +1,4 @@
+import { AutomatedMessageSender } from '@/components/sessions/transcript/AutomatedMessageSender';
 import { useSessionTranscriptSource } from '@/components/sessions/transcript/source/SessionTranscriptSourceContext';
 import { workflowRunStoreKey } from '@/sync/store/domains/workflowRuns';
 import * as React from "react";
@@ -898,6 +899,7 @@ function UserTextBlock(props: {
             radius={TRANSCRIPT_MESSAGE_HIGHLIGHT_RADIUS}
             style={styles.structuredUserMessageContent}
           >
+            <AutomatedMessageSender meta={props.message.meta} messageId={props.message.id} />
             {structuredNode}
             {attachmentsMeta ? (
               <AttachmentsInlineImages
@@ -974,6 +976,7 @@ function UserTextBlock(props: {
   );
   const bubbleContent = (
           <>
+            <AutomatedMessageSender meta={props.message.meta} messageId={props.message.id} />
             <MarkdownView codeBlockStateKey={JSON.stringify([props.sessionId, props.message.id])} markdown={renderedMarkdownText} findActive={findActive} findSourceRanges={findSourceRanges} renderCacheKey={buildMessageMarkdownRenderCacheKey(props.message.id, props.messageRevision)} onOptionPress={handleOptionPress} onOptionLongPress={handleOptionLongPress} onLinkPress={handleMarkdownLinkPress} selectable={true} profile="transcript" textStyle={styles.transcriptMarkdownText} inlineReferences={inlineReferences} />
             {inlineComposition ? null : bubblePictures}
             {nonImageAttachments.length > 0 ? (

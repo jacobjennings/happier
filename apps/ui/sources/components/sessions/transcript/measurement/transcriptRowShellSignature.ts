@@ -1,3 +1,4 @@
+import { isAutomatedPendingMessage } from '@/sync/domains/messages/automatedMessage';
 import type { ChatListItem } from '@/components/sessions/chatListItems';
 import type { TranscriptTurn } from '@/components/sessions/transcript/turnGrouping/buildTranscriptTurns';
 import type { WorkflowOriginRunFold } from '@/components/sessions/transcript/turnGrouping/workflowTranscriptTurns';
@@ -541,8 +542,8 @@ function buildPaintedLinePresentationKey(line: Readonly<{ text: string; maxLines
  * this module. Fixing it needs that state threaded in, not a hardcoded clamp here, which would
  * UNDER-key the expanded message.
  */
-function buildPendingTextPresentationKey(message: Pick<PendingMessage, 'text' | 'displayText'>): string {
-    return buildTextExtentPresentationKey((message.displayText ?? message.text) ?? '', null);
+function buildPendingTextPresentationKey(message: Pick<PendingMessage, 'text' | 'displayText' | 'automated' | 'rawRecord'>): string {
+    return `${isAutomatedPendingMessage(message) ? 'automated' : 'owner'}:${buildTextExtentPresentationKey((message.displayText ?? message.text) ?? '', null)}`;
 }
 
 function buildPendingMessagePresentationKey(

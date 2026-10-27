@@ -162,7 +162,7 @@ export function registerManagedMachineRoutes(app: Fastify): void {
             if (!result.ok) return reply.code(result.error === 'session-not-found' ? 404
                 : result.error === 'forbidden' ? 403 : result.error === 'invalid-params' ? 400 : 500).send({ error: result.error });
             if (result.didFail) await emitPendingChanged({ sessionId: target.origin.session.sessionId,
-                changedByAccountId: request.userId, pendingCount: result.pendingCount,
+                changedByAccountId: request.userId, pendingOwnerCount: result.pendingOwnerCount, pendingCount: result.pendingCount,
                 pendingBlockedCount: result.pendingBlockedCount, pendingVersion: result.pendingVersion,
                 recipientCursors: result.recipientCursors });
             return { ok: true, didFail: result.didFail };

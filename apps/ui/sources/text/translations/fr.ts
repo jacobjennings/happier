@@ -14936,6 +14936,7 @@ settingsSession: {
     },},
 
   message: {
+      automatedSender: 'Automatisé',
 
       ...sessionMessageAccountActorTranslations['fr'],
       sessionReferenceUnavailable: "Session indisponible",

@@ -210,6 +210,8 @@ type SendSessionMessageParams = Readonly<{
   credentials: StoredCredentials;
   idOrPrefix: string;
   message: string;
+  /** Encrypted display attribution, independent of protected input authority. */
+  automatedSource?: string;
   wait: boolean;
   timeoutMs: number;
   localId?: string;
@@ -1555,6 +1557,7 @@ export async function sendSessionMessage(
     // A `happier session send` prompt is user intent and must be delivered to the runtime
     // queue even when it is committed by the daemon via session RPC.
     source: resolveCanonicalMessageSource({ protectedAdmission }),
+    ...(params.automatedSource ? { automatedSource: params.automatedSource } : {}),
     ...(permissionIntent ? { permissionMode: permissionIntent } : {}),
     ...(modelResolution.modelId ? { model: modelResolution.modelId } : {}),
     ...(protectedAdmission
@@ -1683,6 +1686,7 @@ export async function sendSessionMessage(
         targetMachineId,
         localId,
         content,
+        ...(params.automatedSource ? { automated: true } : {}),
         requestedAction,
         ...(nextTurnNote ? { nextTurnNote } : {}),
         ...(replyAdmission ? { reply: replyAdmission } : {}),
@@ -1774,6 +1778,7 @@ export async function sendSessionMessage(
         token: params.credentials.token, sessionId, recipient: executionRunRecipient,
         timeoutMs: params.timeoutMs,
         body: { v: 1, localId, targetMachineId, content, messageRole: 'user', requestedAction,
+          ...(params.automatedSource ? { automated: true } : {}),
           ...(replyAdmission ? { reply: replyAdmission } : {}) },
         ...(params.resolveAuthorizationHeaders
           ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
@@ -1796,6 +1801,7 @@ export async function sendSessionMessage(
               ciphertext: content.c,
               ...(targetMachineId ? { targetMachineId } : {}),
               messageRole: 'user',
+              ...(params.automatedSource ? { automated: true } : {}),
               requestedAction,
               ...(nextTurnNote ? { nextTurnNote } : {}),
               ...(protectedAdmission?.request.v === 1 && protectedAdmission.request.followDeliveryV1 ? {
@@ -1812,6 +1818,7 @@ export async function sendSessionMessage(
               content,
               ...(targetMachineId ? { targetMachineId } : {}),
               messageRole: 'user',
+              ...(params.automatedSource ? { automated: true } : {}),
               requestedAction,
               ...(nextTurnNote ? { nextTurnNote } : {}),
               ...(protectedAdmission?.request.v === 1 && protectedAdmission.request.followDeliveryV1 ? {

@@ -59,6 +59,7 @@ export type RegisterSessionPublisherResult =
         recipientCursors: readonly SessionRecipientCursor[];
         badgeAttentionChanged: boolean;
         pendingState?: Readonly<{
+            pendingOwnerCount: number;
             pendingCount: number;
             pendingBlockedCount: number;
             pendingVersion: number;
@@ -202,6 +203,7 @@ type PresenceInTxResult<T> = T | SessionRecipientPublicationResult<T>;
 
 const sessionActivityBadgeSelect = {
     ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
+    pendingOwnerCount: true,
     pendingCount: true,
     pendingBlockedCount: true,
     pendingVersion: true,
@@ -231,6 +233,7 @@ export type ExpireSessionPublisherResult =
         badgeAttentionChanged: boolean;
         activationHint?: Readonly<{
             activationTarget: PendingActivationTarget;
+            pendingOwnerCount: number;
             pendingCount: number;
             pendingBlockedCount: number;
             pendingVersion: number;
@@ -311,6 +314,7 @@ export async function expireSessionPublisherCandidates(params: Readonly<{
                                 accountId: session.accountId,
                                 requestId: authorization.requestId,
                             },
+                            pendingOwnerCount: session.pendingOwnerCount,
                             pendingCount: session.pendingCount,
                             pendingBlockedCount: session.pendingBlockedCount,
                             pendingVersion: session.pendingVersion,
@@ -410,12 +414,14 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
             data: { deliveryState: null, deliveryBlockedReason: null, providerAction: null },
         });
         let pendingState: Readonly<{
+            pendingOwnerCount: number;
             pendingCount: number;
             pendingBlockedCount: number;
             pendingVersion: number;
         }> | undefined;
         if (inherited.count > 0 || undispatched.count > 0) {
-            const [pendingCount, pendingBlockedCount] = await Promise.all([
+            const [pendingOwnerCount, pendingCount, pendingBlockedCount] = await Promise.all([
+                tx.sessionPendingMessage.count({ where: { sessionId: binding.sessionId, targetExecutionRunId: null, status: "queued", automated: false } }),
                 tx.sessionPendingMessage.count({ where: { sessionId: binding.sessionId, targetExecutionRunId: null, status: "queued" } }),
                 tx.sessionPendingMessage.count({
                     where: { sessionId: binding.sessionId, targetExecutionRunId: null, status: "queued", deliveryState: "blocked" },
@@ -423,8 +429,8 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
             ]);
             pendingState = await tx.session.update({
                 where: { id: binding.sessionId },
-                data: { pendingCount, pendingBlockedCount, pendingVersion: { increment: 1 } },
-                select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+                data: { pendingOwnerCount, pendingCount, pendingBlockedCount, pendingVersion: { increment: 1 } },
+                select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
             });
         }
 
@@ -470,6 +476,7 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
                     active: true,
                     ...(pendingState
                         ? {
+                            pendingOwnerCount: pendingState.pendingOwnerCount,
                             pendingCount: pendingState.pendingCount,
                             pendingBlockedCount: pendingState.pendingBlockedCount,
                         }

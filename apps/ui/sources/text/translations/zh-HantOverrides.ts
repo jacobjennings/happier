@@ -12132,6 +12132,7 @@ settingsSession: {
         },},
 
     message: {
+        automatedSender: '自動傳送',
 
         ...sessionMessageAccountActorTranslations['zh-Hant'],
         sessionReferenceUnavailable: '無法使用的工作階段',

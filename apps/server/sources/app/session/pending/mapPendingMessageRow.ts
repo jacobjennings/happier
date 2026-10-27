@@ -5,6 +5,7 @@ import { type SessionMessageAccountActorV1 } from '@happier-dev/protocol/session
 
 export type PendingMessageRow = {
     localId: string;
+    automated?: boolean;
     autonomousExchangeRoot?: import('@happier-dev/protocol/sessions/messages/autonomousExchangeV1').AutonomousExchangeRootV1;
     activationHoldReason?: import('@happier-dev/protocol/sessions/pending/pendingActivationAuthorizationV1').PendingActivationHoldReasonV1;
     recipient?: { kind: "execution_run"; runId: string };
@@ -33,6 +34,7 @@ export type PendingMessageRowRaw = {
     providerAction?: unknown;
     replyProgress?: unknown;
     localId: string;
+    automated?: boolean;
     targetExecutionRunId?: string | null;
     messageRole?: unknown;
     content: PrismaJson.SessionPendingMessageContent;
@@ -63,6 +65,7 @@ export function mapPendingMessageRow(row: PendingMessageRowRaw, accountActor: Se
         typeof row.deliveryBlockedReason === "string" && row.deliveryBlockedReason.length > 0 ? row.deliveryBlockedReason : null;
     return {
         localId: row.localId,
+        automated: row.automated === true,
         ...(row.targetExecutionRunId == null ? {} : {
             recipient: { kind: "execution_run" as const, runId: row.targetExecutionRunId },
         }),

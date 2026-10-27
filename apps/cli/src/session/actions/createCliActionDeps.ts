@@ -7653,6 +7653,7 @@ export function createCliActionDeps(params: Readonly<{
       idempotencyKey,
       localId,
       source,
+      automatedSource,
       attachments,
       reply,
       returnToSessionId,
@@ -8052,6 +8053,7 @@ export function createCliActionDeps(params: Readonly<{
           credentials: params.credentials,
           idOrPrefix: sessionId,
           message: admittedMessageText,
+          ...(automatedSource ? { automatedSource } : {}),
           ...(recipient ? { recipient } : {}),
           requestedAction,
           wait: normalizedWait,
@@ -8132,6 +8134,7 @@ export function createCliActionDeps(params: Readonly<{
         credentials: params.credentials,
         idOrPrefix: sessionId,
         message: admittedMessageText,
+        ...(automatedSource ? { automatedSource } : {}),
         ...(recipient ? { recipient } : {}),
         ...(messageMeta || admittedAttachmentMeta || displayText ? {
           messageMeta: { ...(messageMeta ?? {}), ...(admittedAttachmentMeta ?? {}), ...(displayText ? { displayText } : {}) },
@@ -8190,6 +8193,7 @@ export function createCliActionDeps(params: Readonly<{
         }
         const execution = await dispatchOriginalAccountAction({ actionId: 'session.message.send',
           input: { sessionId: transport.sessionId, message: admittedMessageText, requestedAction,
+            ...(automatedSource ? { automatedSource } : {}),
             ...(recipient ? { recipient } : {}), ...(executionRunLocalId ? { localId: executionRunLocalId } : localId ? { localId } : {}),
             ...(messageMeta || admittedAttachmentMeta ? { messageMeta: { ...(messageMeta ?? {}), ...(admittedAttachmentMeta ?? {}) } } : {}), ...(displayText ? { displayText } : {}),
             ...(permissionModeOverride ? { permissionModeOverride } : {}),

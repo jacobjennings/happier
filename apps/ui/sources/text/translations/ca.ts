@@ -13924,6 +13924,7 @@ settingsSession: {
         },},
 
     message: {
+        automatedSender: 'Automatitzat',
         ...sessionMessageAccountActorTranslations['ca'],
         sessionReferenceUnavailable: 'Sessió no disponible',
         sessionReferenceOpen: ({ name }: { name: string }) => `Obre la sessió ${name}`,

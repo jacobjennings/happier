@@ -164,7 +164,7 @@ function hasPendingHint(change: ApiChangeEntry): boolean {
     const hint = change.hint;
     return (
         isRecord(hint)
-        && (typeof hint.pendingVersion === 'number' || typeof hint.pendingCount === 'number')
+        && (typeof hint.pendingVersion === 'number' || typeof hint.pendingCount === 'number' || typeof hint.pendingOwnerCount === 'number')
     );
 }
 
@@ -403,6 +403,7 @@ const ROW_LEVEL_SESSION_CHANGE_HINT_KEYS = new Set([
     'lastViewedSessionSeq',
     'pendingVersion',
     'pendingCount',
+    'pendingOwnerCount',
     'pendingBlockedCount',
     'pendingExecutionRunIds',
     'meaningfulActivityAt',

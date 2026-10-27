@@ -27,6 +27,7 @@ import {
  */
 export type SessionActivityBadgeInputs = SessionTranscriptPublicationFields & Readonly<{
     seq?: number | null;
+    pendingOwnerCount?: number | null;
     pendingCount?: number | null;
     pendingBlockedCount?: number | null;
     lastViewedSessionSeq?: number | null;

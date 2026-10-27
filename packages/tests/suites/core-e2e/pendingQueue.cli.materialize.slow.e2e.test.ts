@@ -6,19 +6,20 @@ import { join, resolve } from 'node:path';
 import { createRunDirs } from '../../src/testkit/runDir';
 import { startServerLight, type StartedServer } from '../../src/testkit/process/serverLight';
 import { createTestAuth } from '../../src/testkit/auth';
-import { createSessionWithCiphertexts, fetchAllMessages, fetchSessionV2 } from '../../src/testkit/sessions';
-import { encryptLegacyBase64 } from '../../src/testkit/messageCrypto';
+import { createSessionWithCiphertexts, prepareLegacyEncryptedSessionMetadataV1, fetchAllMessages, fetchSessionV2 } from '../../src/testkit/sessions';
+import { decryptLegacyBase64, encryptLegacyBase64 } from '../../src/testkit/messageCrypto';
 import { writeCliSessionAttachFile } from '../../src/testkit/cliAttachFile';
 import { writeTestManifestForServer } from '../../src/testkit/manifestForServer';
 import { ensureCliDistBuilt } from '../../src/testkit/process/cliDist';
-import { spawnLoggedProcess, type SpawnedProcess } from '../../src/testkit/process/spawnProcess';
+import { runLoggedCommand, spawnLoggedProcess, type SpawnedProcess } from '../../src/testkit/process/spawnProcess';
 import { repoRootDir } from '../../src/testkit/paths';
 import { waitFor } from '../../src/testkit/timing';
-import { fakeClaudeFixturePath } from '../../src/testkit/fakeClaude';
+import { fakeClaudeFixturePath, readFakeClaudeLogEvents } from '../../src/testkit/fakeClaude';
 import { stopDaemonFromHomeDir } from '../../src/testkit/daemon/daemon';
 import { enqueuePendingQueueV2, listPendingQueueV2 } from '../../src/testkit/pendingQueueV2';
 import { seedCliAuthForServer, seedCliAuthForTestAccount } from '../../src/testkit/cliAuth';
 import { waitForRegexInFile } from '../../src/testkit/waitForRegexInFile';
+import { createUserScopedSocketCollector } from '../../src/testkit/socketClient';
 
 const run = createRunDirs({ runLabel: 'core' });
 
@@ -54,21 +55,20 @@ describe('core e2e: CLI materializes server pending queue v2', () => {
     const secret = auth.accountSigningSeed;
     await seedCliAuthForTestAccount({ cliHome, serverUrl: server.baseUrl, auth, mode: 'legacy' });
 
-    const metadataCiphertextBase64 = encryptLegacyBase64(
-      {
+    const metadataLayoutOne = prepareLegacyEncryptedSessionMetadataV1({
+      metadata: {
         path: workspaceDir,
         host: 'e2e',
         name: 'pending-queue-cli-materialize',
-        createdAt: Date.now(),
       },
-      secret,
-    );
+      secret: auth.accountSigningSeed,
+    });
 
     const { sessionId } = await createSessionWithCiphertexts({
       baseUrl: server.baseUrl,
       token: auth.token,
       tag: `e2e-pending-queue-cli-materialize-${randomUUID()}`,
-      metadataCiphertextBase64,
+      metadataLayoutOne,
       agentStateCiphertextBase64: null,
     });
 
@@ -92,6 +92,7 @@ describe('core e2e: CLI materializes server pending queue v2', () => {
     const fakeClaudePath = fakeClaudeFixturePath();
     const cliDistEntrypoint = await ensureCliDistBuilt({ testDir, env: { ...process.env, CI: '1' } });
 
+    const fakeClaudeLog = resolve(join(testDir, 'fake-claude.jsonl'));
     const cliEnv: NodeJS.ProcessEnv = {
       ...process.env,
       CI: '1',
@@ -102,6 +103,7 @@ describe('core e2e: CLI materializes server pending queue v2', () => {
       HAPPIER_SESSION_ATTACH_FILE: attachFile,
       HAPPIER_DISABLE_CAFFEINATE: '1',
       HAPPIER_CLAUDE_PATH: fakeClaudePath,
+      HAPPIER_E2E_FAKE_CLAUDE_LOG: fakeClaudeLog,
     };
 
     proc = spawnLoggedProcess({
@@ -113,7 +115,10 @@ describe('core e2e: CLI materializes server pending queue v2', () => {
       stderrPath: resolve(join(testDir, 'cli.stderr.log')),
     });
 
+    const userSocket = createUserScopedSocketCollector(server.baseUrl, auth.token, { declareCurrentAccountStoredContentCompatibility: true });
     try {
+      userSocket.connect();
+      await waitFor(() => userSocket.isConnected(), { timeoutMs: 20_000, context: 'CLI source-summary observer connection' });
       await waitFor(async () => {
         const snap: any = await fetchSessionV2(server!.baseUrl, auth.token, sessionId);
         return snap.active === true;
@@ -153,7 +158,58 @@ describe('core e2e: CLI materializes server pending queue v2', () => {
         const pending = await listPendingQueueV2({ baseUrl: server!.baseUrl, token: auth.token, sessionId });
         return pending.status === 200 && Array.isArray(pending.data?.pending) && pending.data.pending.length === 0;
       }, { timeoutMs: 60_000 });
+
+      // Exercise the public CLI, encrypted custody, runtime delivery and stored
+      // transcript together. A source label must never trigger self-echo suppression.
+      for (const source of ['harness', undefined]) {
+        await waitFor(async () => {
+          const pending = await listPendingQueueV2({ baseUrl: server!.baseUrl, token: auth.token, sessionId });
+          return pending.status === 200 && pending.data.pending?.length === 0;
+        }, { timeoutMs: 60_000, context: `previous delivery settled before ${source ?? 'owner'} source-summary observation` });
+        const enqueueEventStart = userSocket.getEvents().length;
+        const localId = randomUUID();
+        const text = `source-roundtrip-${source ?? 'owner'}-${localId}`;
+        await runLoggedCommand({
+          command: process.execPath,
+          args: [cliDistEntrypoint, 'session', 'send',
+            ...(source ? ['--source', source] : []),
+            sessionId, text, '--local-id', localId, '--json'],
+          cwd: repoRootDir(),
+          env: cliEnv,
+          stdoutPath: resolve(join(testDir, `send-${source ?? 'owner'}.stdout.log`)),
+          stderrPath: resolve(join(testDir, `send-${source ?? 'owner'}.stderr.log`)),
+        });
+        // Observe the transient enqueue summary through the real public CLI path.
+        // Later materialization/settlement may already have reduced the current count.
+        await waitFor(() => userSocket.getEvents().slice(enqueueEventStart).some((event) => {
+          if (event.kind !== 'update') return false;
+          const body = event.payload.body;
+          return body?.t === 'pending-changed' && (body.sid === sessionId || body.sessionId === sessionId)
+            && body.pendingCount === 1 && body.pendingOwnerCount === (source ? 0 : 1);
+        }), { timeoutMs: 20_000, context: `CLI ${source ?? 'owner'} enqueue summary carries automated classification` });
+        await waitFor(async () => {
+          const events = await readFakeClaudeLogEvents(fakeClaudeLog);
+          return events.some((event) => event.type === 'sdk_stdin' && event.userTextPreview === text);
+        }, { timeoutMs: 60_000, context: 'CLI-sent text reaches the provider unchanged' });
+        await waitFor(async () => {
+          const rows = await fetchAllMessages(server!.baseUrl, auth.token, sessionId);
+          return rows.some((row) => row.localId === localId);
+        }, { timeoutMs: 60_000, context: 'CLI-sent text is committed to the transcript' });
+        const rows = await fetchAllMessages(server.baseUrl, auth.token, sessionId);
+        const row = rows.find((candidate) => candidate.localId === localId);
+        expect(row?.content.t).toBe('encrypted');
+        if (!row || row.content.t !== 'encrypted') throw new Error('Expected encrypted transcript message');
+        const stored = decryptLegacyBase64(row.content.c, secret);
+        expect(stored).toMatchObject({
+          role: 'user', content: { type: 'text', text },
+          meta: { source: 'ui', sentFrom: 'cli' },
+        });
+        const meta = (stored as { meta: Record<string, unknown> }).meta;
+        if (source) expect(meta.automatedSource).toBe(source);
+        else expect(meta).not.toHaveProperty('automatedSource');
+      }
     } finally {
+      userSocket.close();
       await proc.stop().catch(() => {});
       proc = null;
       await stopDaemonFromHomeDir(cliHome).catch(() => {});
@@ -183,21 +239,20 @@ describe('core e2e: CLI materializes server pending queue v2', () => {
       secret,
     });
 
-    const metadataCiphertextBase64 = encryptLegacyBase64(
-      {
+    const metadataLayoutOne = prepareLegacyEncryptedSessionMetadataV1({
+      metadata: {
         path: workspaceDir,
         host: 'e2e',
         name: 'pending-queue-cli-auth-invalid',
-        createdAt: Date.now(),
       },
-      secret,
-    );
+      secret: auth.accountSigningSeed,
+    });
 
     const { sessionId } = await createSessionWithCiphertexts({
       baseUrl: server.baseUrl,
       token: auth.token,
       tag: `e2e-pending-queue-cli-auth-invalid-${randomUUID()}`,
-      metadataCiphertextBase64,
+      metadataLayoutOne,
       agentStateCiphertextBase64: null,
     });
 

@@ -409,7 +409,7 @@ export type ListPendingMessagesResult =
     | { ok: false; error: PendingSessionAccessError | "forbidden" | "invalid-params" | "internal" };
 
 export type ReadSessionPendingStateResult =
-    | { ok: true; pendingCount: number; pendingBlockedCount: number; pendingVersion: number }
+    | { ok: true; pendingOwnerCount: number; pendingCount: number; pendingBlockedCount: number; pendingVersion: number }
     | { ok: false; error: PendingSessionAccessError | "forbidden" | "invalid-params" | "internal" };
 
 export type QueuedExecutionRunPendingTarget = Readonly<{
@@ -478,11 +478,12 @@ export async function readSessionPendingState(params: {
     try {
         const session = await db.session.findUnique({
             where: { id: sessionId },
-            select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+            select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
         });
         if (!session) return { ok: false, error: "session-not-found" };
         return {
             ok: true,
+            pendingOwnerCount: session.pendingOwnerCount ?? 0,
             pendingCount: session.pendingCount ?? 0,
             pendingBlockedCount: session.pendingBlockedCount ?? 0,
             pendingVersion: session.pendingVersion ?? 0,
@@ -524,6 +525,7 @@ export async function listPendingMessages(params: {
         providerAction: true,
         content: true,
         requestedAction: true,
+        automated: true,
         status: true,
         deliveryState: true,
         deliveryBlockedReason: true,
@@ -571,6 +573,7 @@ export async function listPendingMessages(params: {
                     ok: true,
                     pending: await projectPendingMessageRows(tx, [...queued, ...discarded]),
                     targetPendingState: {
+                        pendingOwnerCount: queued.reduce((count, row) => count + (row.automated ? 0 : 1), 0),
                         pendingCount,
                         pendingBlockedCount,
                         pendingVersion: session.pendingVersion,
@@ -622,6 +625,7 @@ export type EnqueuePendingMessageResult =
         suppressed?: false;
         didWrite: boolean;
         pending: PendingMessageRow;
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         pendingVersion: number;
@@ -637,6 +641,7 @@ export type EnqueuePendingMessageResult =
         suppressed?: false;
         didWrite: false;
         message: PendingTranscriptMessage & { requestedAction: PendingRequestedActionV1 };
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         pendingVersion: number;
@@ -648,6 +653,7 @@ export type EnqueuePendingMessageResult =
         terminal?: false;
         suppressed: true;
         didWrite: false;
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         pendingVersion: number;
@@ -663,6 +669,7 @@ export type EnqueuePendingMessageResult =
     | { ok: false; error: "transaction-unavailable"; retryAfterMs: number; correlationId?: string };
 
 type EnqueuePendingMessageInput = {
+    automated?: boolean;
     nextTurnNote?: SessionInputAdmissionReceiptV1['nextTurnNote'];
     executionRunFrontier?: ExecutionRunFollowFrontierWitness;
     followSources?: SessionInputAdmissionReceiptV1['followSources'];
@@ -851,6 +858,7 @@ async function enqueuePendingMessageWithAdmission(
                     active: true,
                     archivedAt: true,
                     encryptionMode: true,
+                    pendingOwnerCount: true,
                     pendingCount: true,
                     pendingBlockedCount: true,
                     pendingVersion: true,
@@ -1054,6 +1062,7 @@ async function enqueuePendingMessageWithAdmission(
                             content: accepted.content as PrismaJson.SessionMessageContent, requestedAction,
                             inputAdmissionReceipt: readStoredSessionInputAdmissionReceipt(accepted.inputAdmissionReceipt) ?? null,
                             deliveryResolution: readStoredSessionMessageDeliveryResolutionV1(accepted.deliveryResolution) },
+                        pendingOwnerCount: session.pendingOwnerCount,
                         pendingCount: session.pendingCount, pendingBlockedCount: session.pendingBlockedCount,
                         pendingVersion: session.pendingVersion, badgeAttentionChanged: false, recipientCursors: [] } as const;
                 }
@@ -1101,6 +1110,7 @@ async function enqueuePendingMessageWithAdmission(
                     messageRole: true,
                     content: true,
                     requestedAction: true,
+                    automated: true,
                     status: true,
                     deliveryState: true,
                     deliveryBlockedReason: true,
@@ -1122,7 +1132,7 @@ async function enqueuePendingMessageWithAdmission(
                     error: "invalid-params",
                     admissionRejectionCode: "session_input_idempotency_conflict",
                 } as const;
-                if (existing.targetExecutionRunId !== targetExecutionRunId) {
+                if (existing.targetExecutionRunId !== targetExecutionRunId || existing.automated !== (params.automated === true)) {
                     return identityConflict;
                 }
                 if (
@@ -1279,6 +1289,7 @@ async function enqueuePendingMessageWithAdmission(
                             messageRole: true,
                             content: true,
                             requestedAction: true,
+                            automated: true,
                             status: true,
                             deliveryState: true,
                             deliveryBlockedReason: true,
@@ -1297,6 +1308,7 @@ async function enqueuePendingMessageWithAdmission(
                     ok: true,
                     didWrite: false,
                     pending: (await projectPendingMessageRows(tx, [pending]))[0]!,
+                    pendingOwnerCount: session.pendingOwnerCount ?? 0,
                     pendingCount: session.pendingCount ?? 0,
                     pendingBlockedCount: session.pendingBlockedCount ?? 0,
                     pendingVersion: session.pendingVersion ?? 0,
@@ -1433,6 +1445,7 @@ async function enqueuePendingMessageWithAdmission(
                         createdAt: terminalTranscript.createdAt,
                         updatedAt: terminalTranscript.updatedAt,
                     },
+                    pendingOwnerCount: session.pendingOwnerCount ?? 0,
                     pendingCount: session.pendingCount ?? 0,
                     pendingBlockedCount: session.pendingBlockedCount ?? 0,
                     pendingVersion: session.pendingVersion ?? 0,
@@ -1453,6 +1466,7 @@ async function enqueuePendingMessageWithAdmission(
                         ok: true,
                         suppressed: true,
                         didWrite: false,
+                        pendingOwnerCount: session.pendingOwnerCount ?? 0,
                         pendingCount: session.pendingCount ?? 0,
                         pendingBlockedCount: session.pendingBlockedCount ?? 0,
                         pendingVersion: session.pendingVersion ?? 0,
@@ -1515,6 +1529,7 @@ async function enqueuePendingMessageWithAdmission(
                     localId,
                     targetExecutionRunId,
                     messageRole,
+                    automated: params.automated === true,
                     content,
                     requestedAction,
                     ...(replyProgress ? { replyProgress, replyDisposition: replyProgress.disposition,
@@ -1535,6 +1550,7 @@ async function enqueuePendingMessageWithAdmission(
                     messageRole: true,
                     content: true,
                     requestedAction: true,
+                    automated: true,
                     status: true,
                     deliveryState: true,
                     deliveryBlockedReason: true,
@@ -1560,9 +1576,10 @@ async function enqueuePendingMessageWithAdmission(
                 currentAccess: access.access,
                 ...(params.resumeWhenAvailable === true ? { resumeWhenAvailable: true as const } : {}),
             }) : undefined;
-            const { pendingCount, pendingBlockedCount, pendingVersion, recipientCursors, badgeAttentionChanged, meaningfulActivityAt } = await applyPendingSessionStateChange({
+            const { pendingOwnerCount, pendingCount, pendingBlockedCount, pendingVersion, recipientCursors, badgeAttentionChanged, meaningfulActivityAt } = await applyPendingSessionStateChange({
                 tx,
                 sessionId,
+                pendingOwnerCountDelta: targetExecutionRunId === null && params.automated !== true ? 1 : 0,
                 pendingCountDelta: targetExecutionRunId === null ? 1 : 0,
                 ...(foreignDiscussionHold ? { pendingBlockedCountDelta: 1 } : {}),
                 meaningfulActivityAt: created.createdAt,
@@ -1573,6 +1590,7 @@ async function enqueuePendingMessageWithAdmission(
                 ok: true,
                 didWrite: true,
                 pending: (await projectPendingMessageRows(tx, [created]))[0]!,
+                pendingOwnerCount,
                 pendingCount,
                 pendingBlockedCount,
                 pendingVersion,
@@ -1623,6 +1641,7 @@ async function enqueuePendingMessageWithAdmission(
  * are revalidated transactionally; only the admitted exact target is retained in the receipt.
  */
 export async function enqueuePendingMessageByAuthenticatedMachine(params: Readonly<{
+    automated?: boolean;
     nextTurnNote?: SessionInputAdmissionReceiptV1['nextTurnNote'];
     followSourceApp?: Pick<Fastify, 'forwardRpcForUser'>;
     sourceAuthentication?: SessionAccessAuthentication;
@@ -1672,6 +1691,7 @@ export async function enqueuePendingMessageByAuthenticatedMachine(params: Readon
         targetExecutionRunId: params.targetExecutionRunId,
         localId: params.localId,
         messageRole: "user",
+        automated: params.automated,
         content: params.content,
         requestedAction: params.requestedAction,
         ...(params.requestEqualityEvidenceV1
@@ -1689,6 +1709,7 @@ export async function enqueuePendingMessageByAuthenticatedMachine(params: Readon
             await emitPendingChanged({
                 sessionId: params.sessionId,
                 changedByAccountId: params.accountId,
+                pendingOwnerCount: result.pendingOwnerCount,
                 pendingCount: result.pendingCount,
                 pendingBlockedCount: result.pendingBlockedCount,
                 pendingVersion: result.pendingVersion,
@@ -1733,6 +1754,7 @@ export type SettlePendingInputAdmissionResult =
         ok: true;
         result: SessionInputAdmissionResultV1;
         pendingVersion: number;
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         recipientCursorsPending: RecipientCursor[];
@@ -2117,6 +2139,7 @@ async function bindAutonomousExchangeInputRootInTx(tx: Tx, input: Readonly<{
 }
 
 type QueuedPendingInputForRejection = Readonly<{
+    automated: boolean;
     targetExecutionRunId?: string | null;
     status: string;
     deliveryState: string | null;
@@ -2184,6 +2207,7 @@ async function rejectQueuedPendingInputInTx(params: Readonly<{
     return applyPendingSessionStateChange({
         tx: params.tx,
         sessionId: params.sessionId,
+        pendingOwnerCountDelta: params.existing.targetExecutionRunId == null && !params.existing.automated ? -1 : 0,
         pendingCountDelta: params.existing.targetExecutionRunId == null ? -1 : 0,
         pendingBlockedCountDelta: params.existing.targetExecutionRunId == null && params.existing.deliveryState === "blocked" ? -1 : 0,
     });
@@ -2200,6 +2224,7 @@ export async function retireAutomationPendingInputInTx(params: Readonly<{
     const existing = await params.tx.sessionPendingMessage.findUnique({
         where: { sessionId_localId: { sessionId: params.sessionId, localId } },
         select: {
+            automated: true,
             status: true,
             deliveryState: true,
             content: true,
@@ -2220,6 +2245,7 @@ export async function retireAutomationPendingInputInTx(params: Readonly<{
         void emitPendingChanged({
             sessionId: params.sessionId,
             changedByAccountId: params.accountId,
+            pendingOwnerCount: state.pendingOwnerCount,
             pendingCount: state.pendingCount,
             pendingBlockedCount: state.pendingBlockedCount,
             pendingVersion: state.pendingVersion,
@@ -2306,6 +2332,7 @@ export async function settlePendingInputAdmission(params: Readonly<{
                 where: { sessionId_localId: { sessionId, localId } },
                 select: {
                     targetExecutionRunId: true,
+                    automated: true,
                     status: true,
                     deliveryState: true,
                     deliveryBlockedReason: true,
@@ -2646,7 +2673,7 @@ export async function settlePendingInputAdmission(params: Readonly<{
 }
 
 export type UpdatePendingMessageResult =
-    | { ok: true; localId: string; pendingVersion: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean; meaningfulActivityAt?: Date }
+    | { ok: true; localId: string; pendingVersion: number; pendingOwnerCount: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean; meaningfulActivityAt?: Date }
     | { ok: false; error: PendingSessionAccessError | "forbidden" | "invalid-params" | "not-found" | "local-id-conflict" | "pending-mutation-conflict" | "delivery-settlement-conflict" | "internal"; code?: EncryptionPolicyRejectionCode };
 
 export type UpdatePendingRequestedActionResult =
@@ -2655,6 +2682,7 @@ export type UpdatePendingRequestedActionResult =
         didUpdate: boolean;
         requestedAction: PendingRequestedActionV1;
         pendingVersion: number;
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         recipientCursors: RecipientCursor[];
@@ -2716,6 +2744,7 @@ export async function updatePendingRequestedAction(params: Readonly<{
         const existing = await db.sessionPendingMessage.findUnique({
             where: { sessionId_localId: { sessionId, localId }, targetExecutionRunId },
             select: {
+                automated: true,
                 status: true,
                 deliveryState: true,
                 deliveryBlockedReason: true,
@@ -2838,6 +2867,7 @@ export async function updatePendingRequestedAction(params: Readonly<{
                     ? await markPendingStateChangedRecipients({
                         tx,
                         sessionId,
+                        pendingOwnerCount: session.pendingOwnerCount,
                         pendingCount: session.pendingCount,
                         pendingBlockedCount: session.pendingBlockedCount,
                         pendingVersion: session.pendingVersion,
@@ -2847,6 +2877,7 @@ export async function updatePendingRequestedAction(params: Readonly<{
                     ok: true,
                     didUpdate: false,
                     requestedAction: currentAction,
+                    pendingOwnerCount: session.pendingOwnerCount,
                     pendingCount: session.pendingCount,
                     pendingBlockedCount: session.pendingBlockedCount,
                     pendingVersion: session.pendingVersion,
@@ -2878,18 +2909,20 @@ export async function updatePendingRequestedAction(params: Readonly<{
             if (targetExecutionRunId === null && !shouldArmActivation) {
                 await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
             }
+            const pendingOwnerCount = await tx.sessionPendingMessage.count({ where: { automated: false, sessionId, targetExecutionRunId: null, status: "queued" } });
             const pendingCount = await tx.sessionPendingMessage.count({ where: { sessionId, targetExecutionRunId: null, status: "queued" } });
             const pendingBlockedCount = await tx.sessionPendingMessage.count({
                 where: { sessionId, targetExecutionRunId: null, status: "queued", deliveryState: "blocked" },
             });
             const session = await tx.session.update({
                 where: { id: sessionId },
-                data: { pendingCount, pendingBlockedCount, pendingVersion: { increment: 1 } },
-                select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+                data: { pendingOwnerCount, pendingCount, pendingBlockedCount, pendingVersion: { increment: 1 } },
+                select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
             });
             const recipientCursors = await markPendingStateChangedRecipients({
                 tx,
                 sessionId,
+                pendingOwnerCount: session.pendingOwnerCount,
                 pendingCount: session.pendingCount,
                 pendingBlockedCount: session.pendingBlockedCount,
                 pendingVersion: session.pendingVersion,
@@ -2899,6 +2932,7 @@ export async function updatePendingRequestedAction(params: Readonly<{
                 ok: true,
                 didUpdate: true,
                 requestedAction: requestedActionResult.data,
+                pendingOwnerCount: session.pendingOwnerCount,
                 pendingCount: session.pendingCount,
                 pendingBlockedCount: session.pendingBlockedCount,
                 pendingVersion: session.pendingVersion,
@@ -2928,6 +2962,7 @@ export async function updatePendingMessage(params: {
      */
     replacementMutationFingerprint?: string;
     messageRole?: unknown;
+    automated?: boolean;
     authentication: SessionAccessAuthentication;
 } & (
     | Readonly<{ ciphertext: string; content?: never }>
@@ -3000,6 +3035,7 @@ export async function updatePendingMessage(params: {
                 where: { id: sessionId },
                 select: {
                     encryptionMode: true,
+                    pendingOwnerCount: true,
                     pendingCount: true,
                     pendingBlockedCount: true,
                     pendingVersion: true,
@@ -3036,6 +3072,7 @@ export async function updatePendingMessage(params: {
                 where: { sessionId_localId: { sessionId, localId }, targetExecutionRunId },
                 select: {
                     id: true,
+                    automated: true,
                     status: true,
                     deliveryState: true,
                     deliveryBlockedReason: true,
@@ -3051,6 +3088,7 @@ export async function updatePendingMessage(params: {
                 const replayed = await tx.sessionPendingMessage.findUnique({
                     where: { sessionId_localId: { sessionId, localId: replacementLocalId }, targetExecutionRunId },
                     select: {
+                        automated: true,
                         status: true,
                         deliveryState: true,
                         deliveryBlockedReason: true,
@@ -3060,6 +3098,7 @@ export async function updatePendingMessage(params: {
                 });
                 if (
                     !replayed
+                    || params.automated !== undefined && replayed.automated !== params.automated
                     || isOrdinaryPendingMutationFenced(replayed)
                     || replayed.predecessorLocalId !== localId
                     || replayed.replacementMutationFingerprint !== replacementMutationFingerprintValue
@@ -3070,11 +3109,15 @@ export async function updatePendingMessage(params: {
                     ok: true,
                     localId: replacementLocalId,
                     pendingVersion: session.pendingVersion ?? 0,
+                    pendingOwnerCount: session.pendingOwnerCount ?? 0,
                     pendingCount: session.pendingCount ?? 0,
                     pendingBlockedCount: session.pendingBlockedCount ?? 0,
                     recipientCursors: [],
                     badgeAttentionChanged: false,
                 } as const;
+            }
+            if (params.automated !== undefined && existing.automated !== params.automated) {
+                return { ok: false, error: "invalid-params" } as const;
             }
             if (existing.replyProgress !== null) return { ok: false, error: 'delivery-settlement-conflict' } as const;
             if (isOrdinaryPendingMutationFenced(existing)) {
@@ -3126,7 +3169,7 @@ export async function updatePendingMessage(params: {
                 await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
             }
 
-            const { pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
+            const { pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
                 tx,
                 sessionId,
             });
@@ -3134,6 +3177,7 @@ export async function updatePendingMessage(params: {
                 ok: true,
                 localId: replacementLocalId ?? localId,
                 pendingVersion,
+                pendingOwnerCount,
                 pendingCount,
                 pendingBlockedCount,
                 recipientCursors,
@@ -3146,7 +3190,7 @@ export async function updatePendingMessage(params: {
 }
 
 export type DeletePendingMessageResult =
-    | { ok: true; outcome?: PendingMessageWithdrawOutcomeV1; pendingVersion: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean; meaningfulActivityAt?: Date }
+    | { ok: true; outcome?: PendingMessageWithdrawOutcomeV1; pendingVersion: number; pendingOwnerCount: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean; meaningfulActivityAt?: Date }
     | { ok: false; error: PendingSessionAccessError | "forbidden" | "invalid-params" | "delivery-settlement-conflict" | "internal" };
 
 export async function deletePendingMessage(params: {
@@ -3185,7 +3229,7 @@ export async function deletePendingMessage(params: {
                 : null;
             const existing = await tx.sessionPendingMessage.findUnique({
                 where: { sessionId_localId: { sessionId, localId }, targetExecutionRunId },
-                select: { status: true, deliveryState: true, deliveryBlockedReason: true, discardedReason: true, providerAction: true, replyProgress: true },
+                select: { automated: true, status: true, deliveryState: true, deliveryBlockedReason: true, discardedReason: true, providerAction: true, replyProgress: true },
             });
             // Host admission writes the user transcript before provider acceptance.
             // Pending custody, or its terminal delivery resolution, decides withdrawal.
@@ -3200,11 +3244,12 @@ export async function deletePendingMessage(params: {
                     : null;
                 const session = await tx.session.findUnique({
                     where: { id: sessionId },
-                    select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+                    select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
                 });
                 return {
                     ok: true,
                     pendingVersion: session?.pendingVersion ?? 0,
+                    pendingOwnerCount: session?.pendingOwnerCount ?? 0,
                     pendingCount: session?.pendingCount ?? 0,
                     pendingBlockedCount: session?.pendingBlockedCount ?? 0,
                     recipientCursors: [],
@@ -3253,13 +3298,14 @@ export async function deletePendingMessage(params: {
             }
             await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
 
-            const { pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
+            const { pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
                 tx,
                 sessionId,
+                pendingOwnerCountDelta: targetExecutionRunId === null && existing.status === "queued" && !existing.automated ? -1 : 0,
                 pendingCountDelta: targetExecutionRunId === null && existing.status === "queued" ? -1 : 0,
                 pendingBlockedCountDelta: targetExecutionRunId === null && existing.status === "queued" && existing.deliveryState === "blocked" ? -1 : 0,
             });
-            return { ok: true, pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged,
+            return { ok: true, pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged,
                 ...(params.withdraw === true ? { outcome: 'removed' as const } : {}) };
         }));
     } catch {
@@ -3268,7 +3314,7 @@ export async function deletePendingMessage(params: {
 }
 
 export type MarkPendingActivationFailedResult =
-    | { ok: true; didFail: boolean; pendingCount: number; pendingBlockedCount: number; pendingVersion: number; recipientCursors: RecipientCursor[] }
+    | { ok: true; didFail: boolean; pendingOwnerCount: number; pendingCount: number; pendingBlockedCount: number; pendingVersion: number; recipientCursors: RecipientCursor[] }
     | { ok: false; error: "session-not-found" | "forbidden" | "invalid-params" | "internal" };
 
 /** Marks only the exact current waiting activation terminal-failed; stale reports are no-ops. */
@@ -3314,12 +3360,13 @@ export async function markPendingActivationFailed(params: Readonly<{
                 }
                 const current = await tx.session.findUnique({ where: { id: params.sessionId }, select: {
                     pendingActivationStatus: true, pendingActivationRequestId: true, pendingActivationRequestedAt: true,
+                    pendingOwnerCount: true,
                     pendingCount: true, pendingBlockedCount: true, pendingVersion: true,
                 } });
                 if (!current) return { ok: false, error: 'session-not-found' } as const;
                 if (current.pendingActivationStatus !== 'waiting' || current.pendingActivationRequestId !== params.requestId
                     || current.pendingActivationRequestedAt?.getTime() !== params.requestedAt) return {
-                    ok: true, didFail: false, pendingCount: current.pendingCount, pendingBlockedCount: current.pendingBlockedCount,
+                    ok: true, didFail: false, pendingOwnerCount: current.pendingOwnerCount, pendingCount: current.pendingCount, pendingBlockedCount: current.pendingBlockedCount,
                     pendingVersion: current.pendingVersion, recipientCursors: [],
                 } as const;
                 await assertManagedWakeOriginCurrentInTx(tx, { row, target, allowUnavailableObservation: true });
@@ -3337,12 +3384,13 @@ export async function markPendingActivationFailed(params: Readonly<{
             });
             const session = await tx.session.findUniqueOrThrow({
                 where: { id: params.sessionId },
-                select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+                select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
             });
             const recipientCursors = didFail
                 ? await markPendingStateChangedRecipients({
                     tx,
                     sessionId: params.sessionId,
+                    pendingOwnerCount: session.pendingOwnerCount,
                     pendingCount: session.pendingCount,
                     pendingBlockedCount: session.pendingBlockedCount,
                     pendingVersion: session.pendingVersion,
@@ -3358,13 +3406,14 @@ export async function markPendingActivationFailed(params: Readonly<{
 
 type PendingMutationState = {
     pendingVersion: number;
+    pendingOwnerCount: number;
     pendingCount: number;
     pendingBlockedCount: number;
     recipientCursors: SessionRecipientPublication[];
     badgeAttentionChanged: boolean;
 };
 
-type TargetPendingState = Pick<PendingMutationState, "pendingCount" | "pendingBlockedCount" | "pendingVersion">;
+type TargetPendingState = Pick<PendingMutationState, "pendingOwnerCount" | "pendingCount" | "pendingBlockedCount" | "pendingVersion">;
 
 /** Target ACK counts are separate from the main Session projection published after commit. */
 async function withTargetPendingStateInTx<T extends { ok: boolean; pendingVersion?: number }>(
@@ -3374,20 +3423,22 @@ async function withTargetPendingStateInTx<T extends { ok: boolean; pendingVersio
     result: T,
 ): Promise<T & { targetPendingState?: TargetPendingState }> {
     if (!result.ok || targetExecutionRunId === null || result.pendingVersion === undefined) return result;
-    const [pendingCount, pendingBlockedCount] = await Promise.all([
+    const [pendingOwnerCount, pendingCount, pendingBlockedCount] = await Promise.all([
+        tx.sessionPendingMessage.count({ where: { sessionId, targetExecutionRunId, status: "queued", automated: false } }),
         tx.sessionPendingMessage.count({ where: { sessionId, targetExecutionRunId, status: "queued" } }),
         tx.sessionPendingMessage.count({ where: { sessionId, targetExecutionRunId, status: "queued", deliveryState: "blocked" } }),
     ]);
-    return { ...result, targetPendingState: { pendingCount, pendingBlockedCount, pendingVersion: result.pendingVersion } };
+    return { ...result, targetPendingState: { pendingOwnerCount, pendingCount, pendingBlockedCount, pendingVersion: result.pendingVersion } };
 }
 
 async function readCurrentPendingMutationState(tx: Tx, sessionId: string): Promise<PendingMutationState> {
     const session = await tx.session.findUnique({
         where: { id: sessionId },
-        select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+        select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
     });
     return {
         pendingVersion: session?.pendingVersion ?? 0,
+        pendingOwnerCount: session?.pendingOwnerCount ?? 0,
         pendingCount: session?.pendingCount ?? 0,
         pendingBlockedCount: session?.pendingBlockedCount ?? 0,
         recipientCursors: [],
@@ -3400,6 +3451,7 @@ export type ResolveAcceptedPendingDeliveryResult =
         ok: true;
         targetPendingState?: TargetPendingState;
         pendingVersion: number;
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         recipientCursors: RecipientCursor[];
@@ -3417,6 +3469,7 @@ export type ResolveAcceptedPendingDeliveryResult =
         error: "session-not-found" | "forbidden" | "invalid-params" | "not-found" | "not-materialized" | "blocked-by-earlier-pending" | "transcript-conflict" | "internal";
         pendingStateChanged?: boolean;
         pendingVersion?: number;
+        pendingOwnerCount?: number;
         pendingCount?: number;
         pendingBlockedCount?: number;
         recipientCursors?: RecipientCursor[];
@@ -3425,6 +3478,7 @@ export type ResolveAcceptedPendingDeliveryResult =
     | { ok: false; error: "transaction-unavailable"; retryAfterMs: number; correlationId?: string };
 
 type PendingDeliveryResolutionInput = Readonly<{
+    automated: boolean;
     targetExecutionRunId?: string | null;
     status: string;
     deliveryState: string | null;
@@ -3522,6 +3576,7 @@ async function commitResolvedPendingDelivery(
     | {
         ok: true;
         pendingVersion: number;
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         recipientCursors: RecipientCursor[];
@@ -3539,6 +3594,7 @@ async function commitResolvedPendingDelivery(
         error: "transcript-conflict";
         pendingStateChanged: true;
         pendingVersion: number;
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         recipientCursors: RecipientCursor[];
@@ -3635,7 +3691,7 @@ async function commitResolvedPendingDelivery(
             sessionId: params.sessionId,
             requestId: params.localId,
         });
-        const { pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
+        const { pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
             tx,
             sessionId: params.sessionId,
             pendingBlockedCountDelta: params.existing.targetExecutionRunId == null ? blocked.pendingBlockedCountDelta : 0,
@@ -3645,6 +3701,7 @@ async function commitResolvedPendingDelivery(
             error: committed.error,
             pendingStateChanged: true,
             pendingVersion,
+            pendingOwnerCount,
             pendingCount,
             pendingBlockedCount,
             recipientCursors,
@@ -3703,9 +3760,10 @@ async function commitResolvedPendingDelivery(
     });
 
     const previousDeliveryStatus = readPendingDeliveryStatus(params.existing);
-    const { pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
+    const { pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
         tx,
         sessionId: params.sessionId,
+        pendingOwnerCountDelta: params.existing.targetExecutionRunId != null || previousDeliveryStatus.status === "discarded" || params.existing.automated ? 0 : -1,
         pendingCountDelta: params.existing.targetExecutionRunId != null || previousDeliveryStatus.status === "discarded" ? 0 : -1,
         pendingBlockedCountDelta: params.existing.targetExecutionRunId == null && previousDeliveryStatus.status === "blocked" ? -1 : 0,
         meaningfulActivityAt: committed.didWrite ? committed.message.createdAt : undefined,
@@ -3721,6 +3779,7 @@ async function commitResolvedPendingDelivery(
     return {
         ok: true,
         pendingVersion,
+        pendingOwnerCount,
         pendingCount,
         pendingBlockedCount,
         recipientCursors,
@@ -3790,6 +3849,7 @@ export async function resolveAcceptedPendingDelivery(params: {
                     where: { sessionId_localId: { sessionId, localId }, targetExecutionRunId },
                     select: {
                         targetExecutionRunId: true,
+                        automated: true,
                         status: true,
                         deliveryState: true,
                         deliveryBlockedReason: true,
@@ -3878,7 +3938,7 @@ export async function resolveAcceptedPendingDelivery(params: {
                         status: "queued",
                         position: { lt: existing.position },
                     },
-                    select: { status: true, targetExecutionRunId: true, deliveryState: true, deliveryBlockedReason: true,
+                    select: { automated: true, status: true, targetExecutionRunId: true, deliveryState: true, deliveryBlockedReason: true,
                         inputAdmissionReceipt: true, autonomousExchangeCause: true },
                 });
                 for (const row of earlierUnresolved) {
@@ -3927,7 +3987,7 @@ export async function resolveAcceptedPendingDelivery(params: {
 }
 
 export type BlockPendingDeliveryResult =
-    | { ok: true; targetPendingState?: TargetPendingState; pendingVersion: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean; didUpdate: boolean }
+    | { ok: true; targetPendingState?: TargetPendingState; pendingVersion: number; pendingOwnerCount: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean; didUpdate: boolean }
     | { ok: false; error: "session-not-found" | "forbidden" | "invalid-params" | "not-found" | "delivery-settlement-conflict" | "internal" };
 
 export async function blockPendingDelivery(params: {
@@ -3988,6 +4048,7 @@ export async function blockPendingDelivery(params: {
                 const existing = await tx.sessionPendingMessage.findUnique({
                     where: { sessionId_localId: { sessionId, localId }, targetExecutionRunId },
                     select: {
+                        automated: true,
                         status: true,
                         deliveryState: true,
                         deliveryBlockedReason: true,
@@ -4075,12 +4136,12 @@ export async function blockPendingDelivery(params: {
                 });
                 await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
 
-                const { pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
+                const { pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
                     tx,
                     sessionId,
                     pendingBlockedCountDelta: targetExecutionRunId !== null || readPendingDeliveryStatus(existing).status === "blocked" ? 0 : 1,
                 });
-                return { ok: true, pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged, didUpdate: true };
+                return { ok: true, pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged, didUpdate: true };
             })();
             return await withTargetPendingStateInTx(tx, sessionId, targetExecutionRunId, result);
         }));
@@ -4093,6 +4154,7 @@ export type SendPendingDeliveryAsNewResult =
     | {
         ok: true;
         pendingVersion: number;
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         recipientCursors: RecipientCursor[];
@@ -4144,6 +4206,7 @@ export async function sendPendingDeliveryAsNew(params: {
             const existing = await tx.sessionPendingMessage.findUnique({
                 where: { sessionId_localId: { sessionId, localId }, targetExecutionRunId },
                 select: {
+                    automated: true,
                     status: true,
                     deliveryState: true,
                     deliveryBlockedReason: true,
@@ -4163,7 +4226,7 @@ export async function sendPendingDeliveryAsNew(params: {
 
             const replacement = await tx.sessionPendingMessage.findUnique({
                 where: { sessionId_localId: { sessionId, localId: newLocalId } },
-                select: { targetExecutionRunId: true, status: true, deliveryState: true, messageRole: true, content: true, requestedAction: true },
+                select: { targetExecutionRunId: true, automated: true, status: true, deliveryState: true, messageRole: true, content: true, requestedAction: true },
             });
             const replacementAction = { v: 1, kind: "enqueue" } as const;
             if (existingStatus.status === "discarded" && existingStatus.reason === "resent_as_new") {
@@ -4172,6 +4235,7 @@ export async function sendPendingDeliveryAsNew(params: {
                     && replacement.targetExecutionRunId === targetExecutionRunId
                     && replacement.status === "queued"
                     && replacement.deliveryState === null
+                    && replacement.automated === existing.automated
                     && replacement.messageRole === existing.messageRole
                     && isDeepStrictEqual(replacement.content, existing.content)
                     && isDeepStrictEqual(normalizePendingRequestedActionV1(replacement.requestedAction, 'stored'), replacementAction)
@@ -4209,6 +4273,7 @@ export async function sendPendingDeliveryAsNew(params: {
                     localId: newLocalId,
                     targetExecutionRunId,
                     messageRole: existing.messageRole,
+                    automated: existing.automated,
                     content: existing.content,
                     requestedAction: replacementAction,
                     status: "queued",
@@ -4220,12 +4285,12 @@ export async function sendPendingDeliveryAsNew(params: {
                 },
             });
 
-            const { pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
+            const { pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
                 tx,
                 sessionId,
                 pendingBlockedCountDelta: targetExecutionRunId === null ? -1 : 0,
             });
-            return { ok: true, pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged, didWrite: true, newLocalId };
+            return { ok: true, pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged, didWrite: true, newLocalId };
         }));
     } catch {
         return { ok: false, error: "internal" };
@@ -4236,6 +4301,7 @@ export type MarkPendingDeliveryHandledResult =
     | {
         ok: true;
         pendingVersion: number;
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         recipientCursors: RecipientCursor[];
@@ -4253,6 +4319,7 @@ export type MarkPendingDeliveryHandledResult =
         error: PendingSessionAccessError | "forbidden" | "invalid-params" | "transcript-conflict" | "internal";
         pendingStateChanged?: boolean;
         pendingVersion?: number;
+        pendingOwnerCount?: number;
         pendingCount?: number;
         pendingBlockedCount?: number;
         recipientCursors?: RecipientCursor[];
@@ -4288,6 +4355,7 @@ export async function markPendingDeliveryHandled(params: {
             const existing = await tx.sessionPendingMessage.findUnique({
                 where: { sessionId_localId: { sessionId, localId }, targetExecutionRunId: null },
                 select: {
+                    automated: true,
                     status: true,
                     deliveryState: true,
                     deliveryBlockedReason: true,
@@ -4320,7 +4388,7 @@ export async function markPendingDeliveryHandled(params: {
 }
 
 export type DismissPendingDeliveryResult =
-    | { ok: true; didDismiss: boolean; pendingVersion: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean }
+    | { ok: true; didDismiss: boolean; pendingVersion: number; pendingOwnerCount: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean }
     | { ok: false; error: PendingSessionAccessError | "forbidden" | "invalid-params" | "not-found" | "delivery-settlement-conflict" | "internal" };
 
 export async function dismissPendingDelivery(params: {
@@ -4356,7 +4424,7 @@ export async function dismissPendingDelivery(params: {
             if (!access.ok) return { ok: false, error: projectPendingSessionAccessError(access.reason) } as const;
             const existing = await tx.sessionPendingMessage.findUnique({
                 where: { sessionId_localId: { sessionId, localId }, targetExecutionRunId },
-                select: { status: true, deliveryState: true, deliveryBlockedReason: true, discardedReason: true },
+                select: { automated: true, status: true, deliveryState: true, deliveryBlockedReason: true, discardedReason: true },
             });
             if (!existing) return { ok: false, error: "not-found" } as const;
             const status = readPendingDeliveryStatus(existing);
@@ -4382,6 +4450,7 @@ export async function dismissPendingDelivery(params: {
             const state = await applyPendingSessionStateChange({
                 tx,
                 sessionId,
+                pendingOwnerCountDelta: targetExecutionRunId === null && !existing.automated ? -1 : 0,
                 pendingCountDelta: targetExecutionRunId === null ? -1 : 0,
                 pendingBlockedCountDelta: targetExecutionRunId === null && status.status === "blocked" ? -1 : 0,
             });
@@ -4393,7 +4462,7 @@ export async function dismissPendingDelivery(params: {
 }
 
 export type DiscardPendingMessageResult =
-    | { ok: true; pendingVersion: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean; meaningfulActivityAt?: Date }
+    | { ok: true; pendingVersion: number; pendingOwnerCount: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean; meaningfulActivityAt?: Date }
     | { ok: false; error: PendingSessionAccessError | "forbidden" | "invalid-params" | "not-found" | "delivery-settlement-conflict" | "internal" };
 
 export async function discardPendingMessage(params: {
@@ -4435,7 +4504,7 @@ export async function discardPendingMessage(params: {
             if (!access.ok) return { ok: false, error: projectPendingSessionAccessError(access.reason) } as const;
             const existing = await tx.sessionPendingMessage.findUnique({
                 where: { sessionId_localId: { sessionId, localId }, targetExecutionRunId },
-                select: { status: true, deliveryState: true, deliveryBlockedReason: true, discardedReason: true },
+                select: { automated: true, status: true, deliveryState: true, deliveryBlockedReason: true, discardedReason: true },
             });
             if (!existing) return { ok: false, error: "not-found" } as const;
             // Explicit discard is a durable user cancellation, so the delivery
@@ -4446,11 +4515,12 @@ export async function discardPendingMessage(params: {
             if (readPendingDeliveryStatus(existing).status === "discarded" || !canTransitionPendingDeliveryStatus(existing, target)) {
                 const session = await tx.session.findUnique({
                     where: { id: sessionId },
-                    select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+                    select: { pendingOwnerCount: true, pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
                 });
                 return {
                     ok: true,
                     pendingVersion: session?.pendingVersion ?? 0,
+                    pendingOwnerCount: session?.pendingOwnerCount ?? 0,
                     pendingCount: session?.pendingCount ?? 0,
                     pendingBlockedCount: session?.pendingBlockedCount ?? 0,
                     recipientCursors: [],
@@ -4472,13 +4542,14 @@ export async function discardPendingMessage(params: {
             await settleUnacceptedSessionInputReplyInTx(tx, sessionId, localId, 'cancelled');
             await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
 
-            const { pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
+            const { pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
                 tx,
                 sessionId,
+                pendingOwnerCountDelta: targetExecutionRunId === null && !existing.automated ? -1 : 0,
                 pendingCountDelta: targetExecutionRunId === null ? -1 : 0,
                 pendingBlockedCountDelta: targetExecutionRunId === null && readPendingDeliveryStatus(existing).status === "blocked" ? -1 : 0,
             });
-            return { ok: true, pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged };
+            return { ok: true, pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged };
         }));
     } catch {
         return { ok: false, error: "internal" };
@@ -4486,7 +4557,7 @@ export async function discardPendingMessage(params: {
 }
 
 export type RestorePendingMessageResult =
-    | { ok: true; pendingVersion: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean; meaningfulActivityAt?: Date }
+    | { ok: true; pendingVersion: number; pendingOwnerCount: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean; meaningfulActivityAt?: Date }
     | { ok: false; error: PendingSessionAccessError | "forbidden" | "invalid-params" | "not-found" | "delivery-settlement-conflict" | "internal" }
     | { ok: false; error: "transaction-unavailable"; retryAfterMs: number };
 
@@ -4521,7 +4592,7 @@ export async function restorePendingMessage(params: {
             if (!access.ok) return { ok: false, error: projectPendingSessionAccessError(access.reason) } as const;
             const existing = await tx.sessionPendingMessage.findUnique({
                 where: { sessionId_localId: { sessionId, localId }, targetExecutionRunId },
-                select: { status: true, deliveryState: true, deliveryBlockedReason: true, discardedReason: true, replyProgress: true },
+                select: { automated: true, status: true, deliveryState: true, deliveryBlockedReason: true, discardedReason: true, replyProgress: true },
             });
             if (!existing) return { ok: false, error: "not-found" } as const;
             if (existing.replyProgress !== null && existing.status === 'discarded') return { ok: false, error: 'delivery-settlement-conflict' } as const;
@@ -4550,12 +4621,13 @@ export async function restorePendingMessage(params: {
                 });
             }
 
-            const { pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
+            const { pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
                 tx,
                 sessionId,
+                pendingOwnerCountDelta: targetExecutionRunId === null && existing.status === "discarded" && !existing.automated ? 1 : 0,
                 pendingCountDelta: targetExecutionRunId === null && existing.status === "discarded" ? 1 : 0,
             });
-            return { ok: true, pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged };
+            return { ok: true, pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged };
         }));
     } catch (error) {
         if (isTransactionAcquisitionUnavailableError(error) || isTransactionConflictExhaustedError(error)) {
@@ -4566,7 +4638,7 @@ export async function restorePendingMessage(params: {
 }
 
 export type ReorderPendingMessagesResult =
-    | { ok: true; pendingVersion: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean; meaningfulActivityAt?: Date }
+    | { ok: true; pendingVersion: number; pendingOwnerCount: number; pendingCount: number; pendingBlockedCount: number; recipientCursors: RecipientCursor[]; badgeAttentionChanged: boolean; meaningfulActivityAt?: Date }
     | { ok: false; error: PendingSessionAccessError | "forbidden" | "invalid-params" | "internal" };
 
 export async function reorderPendingMessages(params: {
@@ -4642,11 +4714,11 @@ export async function reorderPendingMessages(params: {
                 });
             }
 
-            const { pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
+            const { pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
                 tx,
                 sessionId,
             });
-            return { ok: true, pendingVersion, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged };
+            return { ok: true, pendingVersion, pendingOwnerCount, pendingCount, pendingBlockedCount, recipientCursors, badgeAttentionChanged };
         }));
     } catch {
         return { ok: false, error: "internal" };

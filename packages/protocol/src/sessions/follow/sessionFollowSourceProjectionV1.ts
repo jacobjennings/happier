@@ -48,6 +48,7 @@ export const SessionFollowSourceProjectionV1Schema = lazyZodSchema(() => z.stric
   pendingPermissionRequestCount: z.optional(z.number().check(z.int(), z.minimum(0))),
   pendingUserActionRequestCount: z.optional(z.number().check(z.int(), z.minimum(0))),
   pendingRequestObservedAt: z.optional(z.nullable(z.number().check(z.int()))),
+  pendingOwnerCount: z.optional(z.number().check(z.int(), z.minimum(0))),
   pendingCount: z.optional(z.number().check(z.int(), z.minimum(0))),
   pendingBlockedCount: z.optional(z.number().check(z.int(), z.minimum(0))),
   runtimeActivityState: z.optional(z.nullable(z.string())),

@@ -104,6 +104,7 @@ export function areStoredSessionsEqual(
         && areSessionValueEqual(previous.responsibleAccount ?? null, next.responsibleAccount ?? null)
         && (previous.pendingVersion ?? null) === (next.pendingVersion ?? null)
         && (previous.pendingCount ?? null) === (next.pendingCount ?? null)
+        && (previous.pendingOwnerCount ?? null) === (next.pendingOwnerCount ?? null)
         && JSON.stringify(previous.pendingActivationAuthorization ?? null) === JSON.stringify(next.pendingActivationAuthorization ?? null)
         && (previous.pendingBlockedCount ?? null) === (next.pendingBlockedCount ?? null)
         && (previous.lastViewedSessionSeq ?? null) === (next.lastViewedSessionSeq ?? null)

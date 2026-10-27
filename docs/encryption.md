@@ -1744,6 +1744,23 @@ owners. It never replaces them:
   `docs/api.md`. The CLI owns only its platform KDF/HTTP adapter; it does not carry
   a second envelope, verifier, proof, or approval-bypass implementation.
 
+## Automated sender classification (0.3 development)
+
+The owner approved one relay-visible `automated` boolean for queued messages on
+2026-10-25. A CLI send with `--source harness` seals the sender label as
+`meta.automatedSource` inside the ordinary message content and sends only
+`automated: true` beside that envelope. In an E2EE Session, the name and message
+text remain client-encrypted. Plain Accounts retain their explicit plaintext
+content mode. The bit is presentation classification, never authenticated sender
+identity, admission authority, or a delivery-policy override.
+
+Pending admission persists the bit through resend, materialization and queue
+recovery. The existing lifecycle maintains `pendingOwnerCount` independently of
+`pendingCount`: the latter still counts every queued input for runtime delivery.
+Run-target input uses its existing Run-specific queue projection rather than
+changing the parent Session's count. An omitted bit reads as ordinary input.
+Existing 0.2-created content with `meta.automatedSource` remains readable.
+
 ## Where storage mode is applied
 
 ```mermaid

@@ -1,3 +1,4 @@
+import { AutomatedMessageSender } from '@/components/sessions/transcript/AutomatedMessageSender';
 import * as React from 'react';
 import { readableMessageText } from '@/components/sessions/transcript/messageDisplayText';
 import { isPendingMessageForRecipient } from '@/sync/domains/pending/pendingMessageRecipient';
@@ -767,6 +768,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                                     { opacity: pressed ? motionTokens.press.opacitySubtle : 1 },
                                 ])}
                             >
+                                <AutomatedMessageSender meta={message.rawRecord?.meta} automated={message.automated} messageId={message.id} />
                                 {isHostFollowInput ? (
                                     <TranscriptEventRow event={{ type: 'message', message: text }}
                                         messageId={message.id} sessionId={props.sessionId} serverId={props.serverId} createdAt={message.createdAt} />
@@ -1135,6 +1137,7 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
                                 { opacity: pressed ? motionTokens.press.opacity : 1 },
                             ])}
                         >
+                            <AutomatedMessageSender meta={message.rawRecord?.meta} automated={message.automated} messageId={message.id} />
                             {isHostFollowInput ? <TranscriptEventRow event={{ type: 'message', message: text }}
                                 messageId={message.id} sessionId={props.sessionId} serverId={props.serverId} createdAt={message.createdAt} /> : <Text numberOfLines={collapsedLines} style={{ color: theme.colors.text.primary, ...Typography.default() }}>
                                 {text}

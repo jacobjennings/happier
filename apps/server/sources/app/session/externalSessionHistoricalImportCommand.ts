@@ -630,6 +630,7 @@ function externalLinkedAdmissionFencesMatch(
         materializedThroughSourceAt: bigint | null;
         publishedThroughServerSeq: number | null;
         pendingVersion: number;
+        pendingOwnerCount: number;
         pendingCount: number;
         pendingBlockedCount: number;
         active: boolean;
@@ -1073,6 +1074,7 @@ async function executeExternalSessionHistoricalImportCommandWithCreateRaceRetry(
                 materializedThroughSourceAt: true,
                 publishedThroughServerSeq: true,
                 pendingVersion: true,
+                pendingOwnerCount: true,
                 pendingCount: true,
                 pendingBlockedCount: true,
                 active: true,
@@ -1371,6 +1373,7 @@ async function executeExternalSessionHistoricalImportCommandWithCreateRaceRetry(
                     // Capture live queue state inside this transaction, never
                     // from a publication-filtered viewer projection.
                     pendingVersion: session.pendingVersion,
+                    pendingOwnerCount: session.pendingOwnerCount,
                     pendingCount: session.pendingCount,
                     pendingBlockedCount: session.pendingBlockedCount,
                     active: true,

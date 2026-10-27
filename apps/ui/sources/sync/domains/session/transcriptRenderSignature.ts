@@ -15,6 +15,7 @@ const TRANSCRIPT_RENDER_IGNORED_SESSION_FIELDS = new Set([
     'latestUsage',
     'pendingVersion',
     'pendingCount',
+    'pendingOwnerCount',
     'agentStateVersion',
     'pendingPermissionRequestCount',
     'pendingUserActionRequestCount',

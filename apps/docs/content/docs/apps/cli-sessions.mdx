@@ -440,6 +440,20 @@ happier session set-model <session-id-or-prefix-or-tag> <model-id>
 happier session set-permission-mode <session-id-or-prefix-or-tag> <mode>
 ```
 
+### Automated sender labels (0.3 development)
+
+Mark a harness or agent message with its sender name:
+
+```bash
+happier session send --source harness <session-id-or-prefix-or-tag> "Review is ready"
+```
+
+The app labels committed and queued input as automated and excludes it from your
+pending-message indicator. The Agent still receives the message as ordinary
+input. Omit `--source` for a normal send. In an encrypted Session the sender name
+and text remain encrypted, while the relay sees one automation-classification
+boolean. This is development-source behavior, not a released CLI guarantee.
+
 ### Choosing the model source (`--provider-connection`)
 
 A model selection names a model **and** where it comes from. `happier session create`

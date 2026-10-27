@@ -299,6 +299,7 @@ export type PendingQueueWriteBody = Readonly<(
     | { localId: string; content: { t: 'plain'; v: unknown }; messageRole?: SessionMessageRole; requestedAction: ReturnType<typeof normalizePendingRequestedActionV1> }
 ) & Readonly<{
     targetMachineId?: string;
+    automated?: boolean;
     deliveryMode?: 'continuation_if_no_queued_user_input';
     /** Host-derived only. Account/plugin authors never receive this value. */
     requestEqualityEvidenceV1?: SessionInputRequestEqualityEvidenceV1;

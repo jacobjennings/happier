@@ -167,6 +167,7 @@ export const UpdateBodySchema = lazyZodSchema(() => z.discriminatedUnion('t', [
     sid: z.string(),
     sessionId: z.optional(z.string()),
     pendingVersion: z.number().check(z.int(), z.minimum(0)),
+    pendingOwnerCount: z.optional(z.number().check(z.int(), z.minimum(0))),
     pendingCount: z.number().check(z.int(), z.minimum(0)),
     pendingBlockedCount: z.optional(z.number().check(z.int(), z.minimum(0))),
     recipient: z.optional(ParticipantExecutionRunRecipientRoutingIdentityV1Schema),

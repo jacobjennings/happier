@@ -50,6 +50,7 @@ export interface Session {
      */
     pendingVersion?: number,
     pendingCount?: number,
+    pendingOwnerCount?: number,
     pendingBlockedCount?: number,
     pendingActivationAuthorization?: PendingActivationAuthorizationV1 | null,
     lastViewedSessionSeq?: number | null,
@@ -193,6 +194,7 @@ export type PendingDeliveryStatus = 'server_queued' | 'server_delivering' | 'ext
 export type { PendingDeliveryBlockedReason };
 
 export interface PendingMessage extends TranscriptAccountActorMetadata {
+    automated?: boolean;
     recipient?: Extract<import('@happier-dev/protocol').ParticipantRecipientRoutingIdentityV1, { kind: 'execution_run' }>;
     id: string;
     localId: string | null;

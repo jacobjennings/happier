@@ -1,8 +1,12 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 import {
   buildAccountStoredContentCompatibilityHttpHeadersV1,
   CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+  createSessionOwnerMetadataV1,
+  projectSessionSharedMetadataV1,
+  sealSessionOwnerMetadataEnvelopeV1,
+  type SessionOwnerMetadataEnvelopeV1,
   SessionMetadataOwnerPatchV1Schema,
   SessionRuntimeIssueV1Schema,
   type PrimaryTurnStatusV1,
@@ -11,12 +15,41 @@ import {
 } from '@happier-dev/protocol';
 
 import { fetchJson } from './http';
+import { encryptLegacyBase64 } from './messageCrypto';
+
+export type PreparedSessionMetadataV1 = Readonly<{
+  sharedMetadataCiphertext: string;
+  ownerMetadata: SessionOwnerMetadataEnvelopeV1;
+}>;
+
+export function prepareLegacyEncryptedSessionMetadataV1(params: Readonly<{
+  metadata: Record<string, unknown>;
+  secret: Uint8Array;
+}>): PreparedSessionMetadataV1 {
+  const owner = createSessionOwnerMetadataV1({ metadata: params.metadata });
+  if (!owner.ok) throw new Error('Unsupported owner metadata fixture');
+  return {
+    sharedMetadataCiphertext: encryptLegacyBase64(projectSessionSharedMetadataV1({ metadata: params.metadata }), params.secret),
+    ownerMetadata: sealSessionOwnerMetadataEnvelopeV1({
+      material: { type: 'legacy', secret: params.secret }, ownerMetadata: owner.ownerMetadata, randomBytes,
+    }),
+  };
+}
+
+function preparedSessionMetadataBody(metadata: PreparedSessionMetadataV1) {
+  return {
+    metadataLayoutVersion: 1,
+    sharedMetadata: { ciphertext: metadata.sharedMetadataCiphertext },
+    ownerMetadata: metadata.ownerMetadata,
+  };
+}
 
 export async function createSession(
   baseUrl: string,
   token: string,
   opts?: {
     dataEncryptionKeyBase64?: string | null;
+    metadataLayoutOne?: PreparedSessionMetadataV1;
     timeoutMs?: number;
   },
 ): Promise<{ sessionId: string; tag: string }> {
@@ -32,10 +65,11 @@ export async function createSession(
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
+      ...buildAccountStoredContentCompatibilityHttpHeadersV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
     },
     body: JSON.stringify({
       tag,
-      metadata,
+      ...(opts?.metadataLayoutOne ? preparedSessionMetadataBody(opts.metadataLayoutOne) : { metadata }),
       agentState: null,
       dataEncryptionKey: typeof opts?.dataEncryptionKeyBase64 === 'string' ? opts.dataEncryptionKeyBase64 : undefined,
     }),
@@ -53,10 +87,12 @@ export async function createSessionWithCiphertexts(params: {
   baseUrl: string;
   token: string;
   tag?: string;
-  metadataCiphertextBase64: string;
   agentStateCiphertextBase64?: string | null;
   dataEncryptionKeyBase64?: string | null;
-}): Promise<{ sessionId: string; tag: string }> {
+} & (
+  | { metadataLayoutOne: PreparedSessionMetadataV1; metadataCiphertextBase64?: never }
+  | { metadataCiphertextBase64: string; metadataLayoutOne?: never }
+)): Promise<{ sessionId: string; tag: string }> {
   const tag = typeof params.tag === 'string' && params.tag.trim().length > 0 ? params.tag.trim() : `e2e-${randomUUID()}`;
 
   const res = await fetchJson<{ session?: { id?: string } }>(`${params.baseUrl}/v1/sessions`, {
@@ -64,10 +100,11 @@ export async function createSessionWithCiphertexts(params: {
     headers: {
       Authorization: `Bearer ${params.token}`,
       'Content-Type': 'application/json',
+      ...buildAccountStoredContentCompatibilityHttpHeadersV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
     },
     body: JSON.stringify({
       tag,
-      metadata: params.metadataCiphertextBase64,
+      ...(params.metadataLayoutOne ? preparedSessionMetadataBody(params.metadataLayoutOne) : { metadata: params.metadataCiphertextBase64 }),
       agentState: typeof params.agentStateCiphertextBase64 === 'string' ? params.agentStateCiphertextBase64 : null,
       dataEncryptionKey: typeof params.dataEncryptionKeyBase64 === 'string' ? params.dataEncryptionKeyBase64 : undefined,
     }),
@@ -301,7 +338,8 @@ export async function fetchMessagesPage(params: {
   }
 
   const res = await fetchJson<SessionMessagesPageResponse>(url.toString(), {
-    headers: { Authorization: `Bearer ${params.token}` },
+    headers: { Authorization: `Bearer ${params.token}`,
+      ...buildAccountStoredContentCompatibilityHttpHeadersV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION) },
     timeoutMs: 20_000,
   });
 
@@ -392,6 +430,7 @@ export type SessionV2 = {
   active: boolean;
   activeAt: number;
   pendingCount?: number;
+  pendingOwnerCount?: number;
   pendingVersion?: number;
   latestTurnStatus: PrimaryTurnStatusV1 | null;
   lastRuntimeIssue: SessionRuntimeIssueV1 | null;
@@ -418,6 +457,7 @@ function parseSessionV2Common(value: unknown, context: string): SessionV2 {
   const active = value.active;
   const activeAt = value.activeAt;
   const pendingCount = value.pendingCount;
+  const pendingOwnerCount = value.pendingOwnerCount;
   const pendingVersion = value.pendingVersion;
   const latestTurnStatus = parseLatestTurnStatus(value.latestTurnStatus, context);
   const lastRuntimeIssue = parseLastRuntimeIssue(value.lastRuntimeIssue, context);
@@ -445,6 +485,9 @@ function parseSessionV2Common(value: unknown, context: string): SessionV2 {
   ) {
     throw new Error(`Invalid v2 session pendingCount (${context})`);
   }
+  if (pendingOwnerCount !== undefined && (typeof pendingOwnerCount !== 'number' || !Number.isInteger(pendingOwnerCount) || pendingOwnerCount < 0)) {
+    throw new Error(`Invalid v2 session pendingOwnerCount (${context})`);
+  }
   if (
     pendingVersion !== undefined &&
     (typeof pendingVersion !== 'number' || !Number.isInteger(pendingVersion) || pendingVersion < 0)
@@ -465,6 +508,7 @@ function parseSessionV2Common(value: unknown, context: string): SessionV2 {
     active,
     activeAt,
     ...(typeof pendingCount === 'number' ? { pendingCount } : {}),
+    ...(typeof pendingOwnerCount === 'number' ? { pendingOwnerCount } : {}),
     ...(typeof pendingVersion === 'number' ? { pendingVersion } : {}),
     latestTurnStatus,
     lastRuntimeIssue,
