@@ -5313,6 +5313,8 @@ export const pl: TranslationStructure = {
   session: {
     inputPlaceholder: "Wpisz wiadomość...",
     transcriptNavigation: {
+            previousOwnerMessage: 'Twoja poprzednia wiadomość',
+            nextOwnerMessage: 'Twoja następna wiadomość',
       title: "Nawiguj",
       modeAll: "Wszystkie",
       modePinned: "Przypięte",

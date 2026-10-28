@@ -4967,6 +4967,8 @@ deps: {
     session: {
         inputPlaceholder: 'Escriu un missatge...',
         transcriptNavigation: {
+            previousOwnerMessage: 'Missatge teu anterior',
+            nextOwnerMessage: 'Missatge teu següent',
             title: 'Navega',
             modeAll: 'Tot',
             modePinned: 'Fixats',

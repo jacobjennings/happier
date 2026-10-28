@@ -78,6 +78,8 @@ function useAllSessionMessages(enabled: boolean): Record<string, ReadonlyArray<M
 }
 
 type RemoteHistoryState = Readonly<{
+    isLoading: boolean;
+    error: boolean;
     rows: SessionMessageHistoryRemoteRow[];
     hasMore: boolean;
     /** Paging cursor lives with the accumulated rows so paging the transcript older never resets it. */
@@ -88,6 +90,8 @@ type RemoteHistoryState = Readonly<{
 }>;
 
 const EMPTY_REMOTE_HISTORY_STATE: RemoteHistoryState = Object.freeze({
+    isLoading: false,
+    error: false,
     rows: [],
     hasMore: true,
     nextBeforeSeq: null,
@@ -96,6 +100,7 @@ const EMPTY_REMOTE_HISTORY_STATE: RemoteHistoryState = Object.freeze({
 });
 
 export type UserMessageHistoryRemoteEntriesSnapshot = RemoteHistoryState & Readonly<{
+    available: boolean;
     requestNextPage: () => void;
 }>;
 
@@ -127,6 +132,8 @@ function remoteHistoryCursorKey(beforeSeq: number | null): string {
 
 function remoteHistoryInitialState(initialBeforeSeq: number | null): RemoteHistoryState {
     return {
+        isLoading: false,
+        error: false,
         rows: [],
         hasMore: true,
         nextBeforeSeq: initialBeforeSeq,
@@ -215,6 +222,7 @@ function requestRemoteHistoryPage(params: Readonly<{
 
     const cacheKey = params.cacheKey;
     remoteHistoryInFlightCursorKeys.add(cursorKey);
+    updateRemoteHistoryState(cacheKey, (previous) => ({ ...previous, isLoading: true, error: false }));
     void sync.fetchUserMessageHistoryPage(params.sessionId, {
         limit: USER_MESSAGE_HISTORY_REMOTE_PAGE_SIZE,
         ...(params.turnProjection ? { turnProjection: true } : {}),
@@ -224,6 +232,7 @@ function requestRemoteHistoryPage(params: Readonly<{
     // rejection escape only produced an unhandled rejection.
     }).catch((): FetchUserMessageHistoryPageResult => ({ status: 'error' })).then((result) => {
         if (result.status === 'error') {
+            updateRemoteHistoryState(cacheKey, (previous) => ({ ...previous, error: true }));
             // The record is left untouched so the cursor stays retryable; only its cadence is capped.
             remoteHistoryRetryFloorMsByCursorKey.set(
                 cursorKey,
@@ -235,6 +244,8 @@ function requestRemoteHistoryPage(params: Readonly<{
 
         if (result.status === 'loaded') {
             updateRemoteHistoryState(cacheKey, (previous) => ({
+                isLoading: true,
+                error: false,
                 rows: mergeRemoteHistoryRows(previous.rows, result.rows),
                 hasMore: result.hasMore === true && result.nextBeforeSeq !== null,
                 nextBeforeSeq: result.nextBeforeSeq,
@@ -263,6 +274,7 @@ function requestRemoteHistoryPage(params: Readonly<{
         }
     }).finally(() => {
         remoteHistoryInFlightCursorKeys.delete(cursorKey);
+        updateRemoteHistoryState(cacheKey, (previous) => ({ ...previous, isLoading: false }));
     });
 }
 
@@ -377,8 +389,9 @@ export function useUserMessageHistoryRemoteEntries(opts: Readonly<{
 
     return React.useMemo(() => ({
         ...state,
+        available: cacheKey !== null,
         requestNextPage,
-    }), [requestNextPage, state]);
+    }), [cacheKey, requestNextPage, state]);
 }
 
 export function useUserMessageHistory(opts: {

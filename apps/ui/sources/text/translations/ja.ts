@@ -5566,6 +5566,8 @@ localTailscale: {
   session: {
     inputPlaceholder: "メッセージを入力...",
     transcriptNavigation: {
+            previousOwnerMessage: '自分の前のメッセージ',
+            nextOwnerMessage: '自分の次のメッセージ',
       title: "ナビゲート",
       modeAll: "すべて",
       modePinned: "ピン留め",

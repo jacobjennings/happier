@@ -5639,6 +5639,8 @@ export const it: TranslationStructure = {
   session: {
     inputPlaceholder: "Scrivi un messaggio ...",
     transcriptNavigation: {
+            previousOwnerMessage: 'Il tuo messaggio precedente',
+            nextOwnerMessage: 'Il tuo messaggio successivo',
       title: "Naviga",
       modeAll: "Tutti",
       modePinned: "Fissati",

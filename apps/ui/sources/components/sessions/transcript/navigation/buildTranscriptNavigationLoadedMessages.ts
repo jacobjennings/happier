@@ -23,7 +23,7 @@ function roleForMessage(message: Message): TranscriptNavigationRole {
 
 function textForMessage(message: Message): string | null {
     if (message.kind === 'user-text') {
-        const text = message.displayText ?? message.text;
+        const text = (message.displayText ?? message.text).trim() || t('common.message');
         const source = readAutomatedMessageSource(message.meta);
         return source ? `${t('message.automatedSender')} · ${source}: ${text}` : text;
     }
@@ -54,6 +54,7 @@ function buildLoadedMessageRow(sessionId: string, message: Message): TranscriptN
         seq: normalizeFiniteInteger(message.seq),
         transcriptBlockIndex: normalizeFiniteInteger(message.transcriptBlockIndex),
         role: roleForMessage(message),
+        automatedSource: message.kind === 'user-text' ? readAutomatedMessageSource(message.meta) : null,
         text: normalizeTranscriptNavigationTextPreview(textForMessage(message)),
         createdAtMs: normalizeFiniteInteger(message.createdAt),
         loaded: true,
@@ -98,7 +99,7 @@ export function buildTranscriptNavigationRemoteMessages(params: Readonly<{
     const messages: TranscriptNavigationLoadedMessage[] = [];
     for (const row of params.rows) {
         const seq = normalizeFiniteInteger(row.seq);
-        const text = normalizeTranscriptNavigationTextPreview(row.text);
+        const text = normalizeTranscriptNavigationTextPreview(row.text) ?? (row.role === 'user' ? t('common.message') : null);
         if (seq === null || !text) continue;
         messages.push({
             sessionId,
@@ -107,6 +108,7 @@ export function buildTranscriptNavigationRemoteMessages(params: Readonly<{
             seq,
             transcriptBlockIndex: null,
             role: remoteRoleForRow(row),
+            automatedSource: row.automatedSource ?? null,
             text: row.automatedSource ? `${t('message.automatedSender')} · ${row.automatedSource}: ${text}` : text,
             createdAtMs: normalizeFiniteInteger(row.createdAt),
             loaded: false,
@@ -306,6 +308,7 @@ function deriveSingleAppendedUserTurnEntries(
         responsePreview: null,
         createdAtMs: normalizeFiniteInteger(appendedMessage.createdAtMs),
         loaded: appendedMessage.loaded !== false,
+        automatedSource: appendedMessage.automatedSource,
         blockOrder: 0,
         transcriptBlockIndex: normalizeFiniteInteger(appendedMessage.transcriptBlockIndex),
     }, 'all', null);

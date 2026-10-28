@@ -32,6 +32,7 @@ export type TranscriptNavigationEntry = Readonly<{
     pinned: boolean;
     pinnedAtMs: number | null;
     loaded: boolean;
+    automatedSource?: string | null;
 }>;
 
 /**
@@ -48,6 +49,7 @@ export type TranscriptNavigationLoadedMessage = Readonly<{
     text: string | null;
     createdAtMs: number | null;
     loaded?: boolean;
+    automatedSource?: string | null;
     /**
      * Set by the row builders, which already normalized every field (including the clamped text
      * preview). Derivation then reuses the row as-is instead of re-running markdown stripping on

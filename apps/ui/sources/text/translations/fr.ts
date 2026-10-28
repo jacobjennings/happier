@@ -4951,6 +4951,8 @@ export const fr: TranslationStructure = {
     session: {
         inputPlaceholder: 'Sur quoi veux-tu travailler ?',
         transcriptNavigation: {
+            previousOwnerMessage: 'Votre message précédent',
+            nextOwnerMessage: 'Votre message suivant',
             title: 'Naviguer',
             modeAll: 'Tout',
             modePinned: 'Épinglés',

@@ -172,6 +172,7 @@ import { waitForNextTranscriptVisualUpdate } from '@/components/sessions/transcr
 import { TranscriptFirstPaintPlaceholder } from '@/components/sessions/transcript/TranscriptFirstPaintPlaceholder';
 import { JumpToBottomButton } from '@/components/sessions/transcript/scroll/JumpToBottomButton';
 import { ComposerKeyboardFloatingInset } from '@/components/sessions/keyboardAvoidance';
+import { OwnerMessageNavigation } from '@/components/sessions/transcript/navigation/OwnerMessageNavigation';
 import { TranscriptNavigationRail } from '@/components/sessions/transcript/navigation/TranscriptNavigationRail';
 import {
     TranscriptListShell,
@@ -2589,20 +2590,26 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
                 {showFirstPaintPlaceholder ? (
                     <TranscriptFirstPaintPlaceholder reducedMotion={reducedMotionPreferred} />
                 ) : null}
-                {jumpToBottomAffordance.isVisible ? (
-                    <ComposerKeyboardFloatingInset
+                <ComposerKeyboardFloatingInset
                         testID="transcript-jump-to-bottom-keyboard-offset"
                         baseBottom={12}
                         style={{ position: 'absolute', right: 12 }}
                     >
-                        <JumpToBottomButton
+                        <OwnerMessageNavigation
+                            key={props.sessionId}
+                            sessionId={props.sessionId}
+                            entries={props.transcriptNavigationEntries}
+                            onJump={handleTranscriptNavigationPaneEntryPress}
+                            loadOlder={loadOlder}
+                            hasMoreOlder={olderPagination.hasMore}
+                        />
+                        {jumpToBottomAffordance.isVisible ? <JumpToBottomButton
                             testID="transcript-jump-to-bottom"
                             count={jumpToBottomAffordance.count}
                             onPress={jumpToBottom}
                             presentation={jumpToBottomAffordance.presentation}
-                        />
-                    </ComposerKeyboardFloatingInset>
-                ) : null}
+                        /> : null}
+                </ComposerKeyboardFloatingInset>
               </View>
         </TranscriptMotionProvider>
         </SessionTranscriptAgentAttributionProvider>

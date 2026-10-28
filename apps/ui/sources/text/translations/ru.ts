@@ -5829,6 +5829,8 @@ export const ru: TranslationStructure = {
   session: {
     inputPlaceholder: "Введите сообщение...",
     transcriptNavigation: {
+            previousOwnerMessage: 'Ваше предыдущее сообщение',
+            nextOwnerMessage: 'Ваше следующее сообщение',
       title: "Навигация",
       modeAll: "Все",
       modePinned: "Закрепленные",

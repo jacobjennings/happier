@@ -28,6 +28,7 @@ export type UserTurnDraft = Readonly<{
     responsePreview: string | null;
     createdAtMs: number | null;
     loaded: boolean;
+    automatedSource?: string | null;
     /** Ordering surrogate only (role-ranked when the row has no block index). Never entry identity. */
     blockOrder: number;
     /** Real row block index; null when the loaded row carries none. Used for entry identity. */
@@ -220,6 +221,7 @@ function deriveLoadedUserTurns(
             responsePreview: activeAgentPreview ?? activeToolPreview,
             createdAtMs: normalizeFiniteInteger(activeUser.createdAtMs),
             loaded: activeUser.loaded !== false,
+            automatedSource: activeUser.automatedSource,
             blockOrder: normalizeBlockIndex(activeUser.transcriptBlockIndex, 'user'),
             transcriptBlockIndex: normalizeFiniteInteger(activeUser.transcriptBlockIndex),
         });
@@ -326,6 +328,7 @@ export function buildUserEntry(turn: UserTurnDraft, mode: 'all' | 'pinned', pin:
             pinned,
             pinnedAtMs,
             loaded: turn.loaded,
+            automatedSource: turn.automatedSource,
         },
     };
 }
@@ -454,7 +457,8 @@ function transcriptNavigationEntriesMatch(
         && a.createdAtMs === b.createdAtMs
         && a.pinned === b.pinned
         && a.pinnedAtMs === b.pinnedAtMs
-        && a.loaded === b.loaded;
+        && a.loaded === b.loaded
+        && a.automatedSource === b.automatedSource;
 }
 
 function shareTranscriptNavigationEntries(

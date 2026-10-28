@@ -5114,6 +5114,8 @@ export const zhHans: TranslationStructure = {
   session: {
     inputPlaceholder: "输入消息...",
     transcriptNavigation: {
+            previousOwnerMessage: '你的上一条消息',
+            nextOwnerMessage: '你的下一条消息',
       title: "导航",
       modeAll: "全部",
       modePinned: "已固定",

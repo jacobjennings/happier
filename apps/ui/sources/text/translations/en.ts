@@ -4972,6 +4972,8 @@ export const en = {
     session: {
         inputPlaceholder: 'What would you like to work on?',
         transcriptNavigation: {
+            previousOwnerMessage: 'Previous message from you',
+            nextOwnerMessage: 'Next message from you',
             title: 'Navigate',
             modeAll: 'All',
             modePinned: 'Pinned',

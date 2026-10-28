@@ -4633,6 +4633,8 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
       session: {
           inputPlaceholder: '輸入訊息...',
           transcriptNavigation: {
+            previousOwnerMessage: '你的上一則訊息',
+            nextOwnerMessage: '你的下一則訊息',
               title: '導覽',
               modeAll: '全部',
               modePinned: '已固定',
