@@ -88,6 +88,7 @@ export HAPPIER_DEPLOY_CREDENTIALS="$HOME/.happier/servers/your-server/access.key
 export HAPPIER_BUILD_HOST=compute # HARNESS_HOSTS role, defaults to compute
 export HAPPIER_BROWSER_HOST=browser # Chromium and Node 22+ on the browser role
 # Optional: export HAPPIER_DEPLOY_ROOT=/opt/happier
+# Optional: export HAPPIER_ARTIFACT_TIMEOUT_SECONDS=14400 # Explicit harness job budget
 python3 scripts/fork/web.py deploy
 ```
 
@@ -175,6 +176,44 @@ checkout. The ordinary `relay-server` target downloads signed upstream artifacts
 so it does not build our source. The optional source image command above does
 not apply the local Expo version override. Use the mounted export for the fork
 UI identity. Image building alone does not authorize live deployment.
+
+## Workstation CLI from the same source
+
+Build the CLI on the harness compute role from the same unchanged source used
+for the deployment. The package version is read from `apps/cli/package.json`.
+It can differ from the UI version, so record the full source commit as well.
+The existing npm pack pipeline bundles workspace dependencies without publishing
+anything to the npm registry:
+
+```bash
+harness run compute --keep --timeout 14400 -- bash -lc '
+  set -euo pipefail
+  export CI=1 REDISMS_DISABLE_POSTINSTALL=1
+  export TMPDIR="$PWD/.project/cli-tmp"
+  mkdir -p "$TMPDIR"
+  export HAPPIER_INSTALL_SCOPE=cli,protocol,agents,cli-common,release-runtime,transfers,connection-supervisor
+  bash scripts/ci/yarn-install-with-retry.sh --frozen-lockfile --ignore-engines --network-timeout 600000 --non-interactive
+  node scripts/pipeline/npm/release-packages.mjs --channel production --publish-cli true --publish-stack false --publish-server false --mode pack --run-tests false
+'
+```
+
+Keep CLI temporary files on the package filesystem because postpack atomically
+renames its patched archive. The harness normally removes completed run folders,
+so retain artifact-producing runs until their outputs have been retrieved.
+
+Retrieve `dist/release-assets/cli/cli-<version>.tgz` from the completed compute
+run. Jake's workstation installer lives in
+`jake-homelab/artifacts/happier/install-source-cli.sh`. Pass the full source
+commit and the local tarball path. It installs under a commit-specific prefix
+and selects its commands through `~/.local/bin` links. Existing installed
+package files remain available to the running daemon and sessions.
+
+Capture `happier daemon status` before and after installation, confirm
+`happier --version` and `happier session send --help`, and send a harmless
+message to an existing session. Installing the CLI does not require a daemon
+restart. A daemon still running from the previous install is a separate runtime
+and must be reported as such. Its existing service continues to reference that
+installation until deliberately updated.
 
 ## Android APK
 

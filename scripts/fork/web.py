@@ -36,7 +36,10 @@ def harness_artifact(role, command, marker, destination):
     hosts = run(['bash', '-eu', '-c', 'source "$1"; printf "%s" "$HARNESS_HOSTS"', 'bash', config], capture_output=True).stdout
     host = json.loads(hosts)[role]['ssh']
     artifact = None
-    with subprocess.Popen(['harness', 'run', role, '--', *command], cwd=ROOT,
+    invocation = ['harness', 'run', role, '--keep']
+    if timeout := os.environ.get('HAPPIER_ARTIFACT_TIMEOUT_SECONDS'):
+        invocation += ['--timeout', timeout]
+    with subprocess.Popen([*invocation, '--', *command], cwd=ROOT,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
         for line in process.stdout:
             print(line, end='', flush=True)
