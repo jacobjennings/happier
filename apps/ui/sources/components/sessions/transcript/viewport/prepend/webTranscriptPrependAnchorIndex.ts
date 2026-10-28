@@ -9,6 +9,7 @@ import {
 type AnchorIndexContentItem = Readonly<{
     kind: string;
     messageId?: string;
+    automatedMessageIds?: readonly string[];
     toolMessageIds?: readonly string[];
 }>;
 
@@ -21,6 +22,7 @@ type AnchorIndexItem = Readonly<{
     id: string;
     kind: string;
     messageId?: string;
+    automatedMessageIds?: readonly string[];
     toolMessageIds?: readonly string[];
     turn?: AnchorIndexTurn;
 }>;
@@ -65,7 +67,7 @@ function itemMatchesStableTarget(
     target: NonNullable<ReturnType<typeof readStableAnchorTarget>>,
 ): boolean {
     if (item.kind === 'message') {
-        return target.kind === 'message' && item.messageId === target.id;
+        return target.kind === 'message' && (item.messageId === target.id || item.automatedMessageIds?.includes(target.id) === true);
     }
     if (
         item.kind === 'tool-calls-group' ||

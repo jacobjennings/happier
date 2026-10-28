@@ -1,4 +1,5 @@
 import type { ChatListItem } from '@/components/sessions/chatListItems';
+import { groupAutomatedTranscriptMessages } from '../automated/groupAutomatedTranscriptMessages';
 import type { Message } from '@/sync/domains/messages/messageTypes';
 
 import type { TranscriptTurn } from './buildTranscriptTurns';
@@ -257,5 +258,5 @@ export function buildTranscriptTurnUnits(params: Readonly<{
         output.push(item);
     }
 
-    return output;
+    return groupAutomatedTranscriptMessages(output, params.getMessageById);
 }

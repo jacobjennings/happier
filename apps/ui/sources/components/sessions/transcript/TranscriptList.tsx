@@ -1,3 +1,6 @@
+import { groupAutomatedTranscriptMessages } from './automated/groupAutomatedTranscriptMessages';
+import { AutomatedMessageDisclosure } from './automated/AutomatedMessageDisclosure';
+import type { ChatListItem } from '@/components/sessions/chatListItems';
 import * as React from 'react';
 import { Platform, View } from 'react-native';
 import { MessageViewWithSessionCommon } from '@/components/sessions/transcript/MessageView';
@@ -33,6 +36,8 @@ export type TranscriptBottomNotice = {
     title: string;
     body: string;
 };
+
+type PublicTranscriptRow = Extract<ChatListItem, { kind: 'message' }>;
 
 const EMPTY_THINKING_EXPANSION_OVERRIDES: ReadonlyMap<string, boolean> = new Map();
 
@@ -81,7 +86,7 @@ export const TranscriptList = React.memo((props: {
     const {
         listRef,
         prepareRowLayoutMutation,
-    } = useRendererOwnedTranscriptRowLayoutMutation<Message>();
+    } = useRendererOwnedTranscriptRowLayoutMutation<PublicTranscriptRow>();
     const sessionThinkingDisplayMode = transcriptSessionCommon.messageDisplay.sessionThinkingDisplayMode;
     const sessionThinkingInlinePresentation = transcriptSessionCommon.messageDisplay.sessionThinkingInlinePresentation;
     const rendererSelection = React.useMemo(() => resolveTranscriptListRendererSelection({
@@ -120,13 +125,14 @@ export const TranscriptList = React.memo((props: {
         rendererBinding.frame.platform,
         resolveWebKeyboardScroller,
     ]);
+    const messagesById = React.useMemo(() => new Map(props.messages.map((message) => [message.id, message])), [props.messages]);
     const listData = React.useMemo(() => {
-        if (rendererBinding.frame.dataOrder === 'newest-first') {
-            // Inverted lists expect newest-first input.
-            return [...props.messages].reverse();
-        }
-        return props.messages;
-    }, [props.messages, rendererBinding.frame.dataOrder]);
+        const rows: PublicTranscriptRow[] = props.messages.map((message) => ({
+            kind: 'message', id: message.id, messageId: message.id, createdAt: message.createdAt, seq: message.seq ?? null,
+        }));
+        const grouped = groupAutomatedTranscriptMessages(rows, (id) => messagesById.get(id) ?? null);
+        return rendererBinding.frame.dataOrder === 'newest-first' ? grouped.reverse() : grouped;
+    }, [props.messages, messagesById, rendererBinding.frame.dataOrder]);
 
     const thinkingDefaultExpanded =
         sessionThinkingDisplayMode === 'inline' && sessionThinkingInlinePresentation === 'full';
@@ -174,9 +180,9 @@ export const TranscriptList = React.memo((props: {
         thinkingDefaultExpanded,
     ]);
 
-    const keyExtractor = React.useCallback((item: Message) => item.id, []);
-    const getItemType = React.useCallback((item: Message): string => item.kind, []);
-    const renderItem = React.useCallback(({ item }: { item: Message }) => {
+    const keyExtractor = React.useCallback((item: PublicTranscriptRow) => item.id, []);
+    const getItemType = React.useCallback((item: PublicTranscriptRow): string => item.automatedMessageIds ? 'automated-group' : messagesById.get(item.messageId)?.kind ?? 'message', [messagesById]);
+    const renderMessage = React.useCallback((item: Message) => {
         const controlledThinking =
             item.kind === 'agent-text' &&
             item.isThinking === true &&
@@ -207,6 +213,20 @@ export const TranscriptList = React.memo((props: {
         transcriptSessionCommon.toolRoute,
     ]);
 
+    const renderItem = React.useCallback(({ item }: { item: PublicTranscriptRow }) => {
+        const message = messagesById.get(item.messageId);
+        if (!message) return null;
+        return item.automatedMessageIds ? (
+            <AutomatedMessageDisclosure messageId={`group:${message.id}`} meta={message.meta}
+                text={message.kind === 'user-text' ? (message.displayText ?? message.text) : ''} count={item.automatedMessageIds.length}>
+                {item.automatedMessageIds.map((id) => {
+                    const member = messagesById.get(id);
+                    return member ? <React.Fragment key={id}>{renderMessage(member)}</React.Fragment> : null;
+                })}
+            </AutomatedMessageDisclosure>
+        ) : renderMessage(message);
+    }, [messagesById, renderMessage]);
+
     const transcriptListExtraData = React.useMemo(() => ({
         selectionVersion: transcriptMessageSelection.selectionVersion,
         thinkingExpandedByMessageId,
@@ -215,7 +235,7 @@ export const TranscriptList = React.memo((props: {
     return (
         <TranscriptMotionProvider key={props.datasetKey} sessionKey={props.datasetKey} config={motionConfig}>
             <TranscriptRowLayoutMutationProvider value={prepareRowLayoutMutation}>
-                <TranscriptListShell<Message>
+                <TranscriptListShell<PublicTranscriptRow>
                     key={props.datasetKey}
                     ref={listRef}
                     data={listData}

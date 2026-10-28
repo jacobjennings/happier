@@ -1,3 +1,5 @@
+import { groupAutomatedTranscriptMessages } from './automated/groupAutomatedTranscriptMessages';
+import { AutomatedMessageDisclosure } from './automated/AutomatedMessageDisclosure';
 import * as React from 'react';
 import { Platform, View, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
@@ -183,7 +185,7 @@ function findLatestThinkingMessage(messages: readonly Message[]): Extract<Messag
 /** Exact ownership: rows that render the message themselves (N2c: a tool unit owns its tool message). */
 function doesItemOwnMessageId(item: ChainTranscriptListItem, messageId: string): boolean {
     if (item.kind === 'message') {
-        return item.messageId === messageId;
+        return item.messageId === messageId || item.automatedMessageIds?.includes(messageId) === true;
     }
     if (item.kind === 'tool-group-tool') {
         return item.toolMessageId === messageId;
@@ -311,14 +313,14 @@ export const ChainTranscriptList = React.memo(function ChainTranscriptList(props
                 collapsedPreviewCount: resolveTranscriptToolCallsCollapsedPreviewCount(transcriptToolCallsCollapsedPreviewCountSetting),
             });
         }
-        return linearCache?.items ?? buildChatListItems({
+        return groupAutomatedTranscriptMessages(linearCache?.items ?? buildChatListItems({
             messageIdsOldestFirst,
             messagesById,
             pendingMessages: [],
             discardedMessages: [],
             actionDrafts: [],
             groupConsecutiveToolCalls: groupToolCalls,
-        });
+        }), (id) => messagesById[id] ?? null);
     }, [expandedToolCallsAnchorMessageIds, groupToolCalls, groupingMode, linearCache, messageIdsOldestFirst, messagesById, transcriptToolCallsCollapsedPreviewCountSetting, turnsCache]);
     const renderedItems = React.useMemo<ChainTranscriptListItem[]>(() => {
         if (shellFrame.dataOrder === 'newest-first') {
@@ -1063,6 +1065,22 @@ export const ChainTranscriptList = React.memo(function ChainTranscriptList(props
         const message = messagesById[item.messageId];
         if (!message) return null;
         const isThinking = message.kind === 'agent-text' && message.isThinking === true;
+        if (item.automatedMessageIds) {
+            return (
+                <AutomatedMessageDisclosure messageId={`group:${message.id}`} meta={message.meta}
+                    text={message.kind === 'user-text' ? (message.displayText ?? message.text) : ''} count={item.automatedMessageIds.length}>
+                    {item.automatedMessageIds.map((id) => {
+                        const member = messagesById[id];
+                        return member ? (
+                            <MessageViewWithSessionCommon key={id} message={member} metadata={props.metadata} sessionId={props.sessionId}
+                                interaction={props.interaction} forcePermissionPromptsInTranscript={props.forcePermissionPromptsInTranscript}
+                                forkCommon={transcriptSessionCommon.fork} messageDisplayCommon={transcriptSessionCommon.messageDisplay}
+                                toolChromeCommon={transcriptSessionCommon.toolChrome} toolRouteCommon={transcriptSessionCommon.toolRoute} />
+                        ) : null;
+                    })}
+                </AutomatedMessageDisclosure>
+            );
+        }
 
         return (
             <View testID={`${testIdPrefix}-${message.id}`}>

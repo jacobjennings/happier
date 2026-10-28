@@ -20,6 +20,7 @@ export type TranscriptViewportAnchorResolvableItem = Readonly<{
     id?: unknown;
     kind?: unknown;
     messageId?: unknown;
+    automatedMessageIds?: readonly string[];
     seq?: unknown;
     toolMessageId?: unknown;
     toolMessageIds?: unknown;
@@ -51,7 +52,7 @@ export function resolveTranscriptViewportAnchorFocusOffsetPx(viewportHeightPx: n
  */
 function itemOwnsMessageId(item: TranscriptViewportAnchorResolvableItem, messageId: string): boolean {
     if (item.kind === 'message') {
-        return item.messageId === messageId;
+        return item.messageId === messageId || item.automatedMessageIds?.includes(messageId) === true;
     }
     if (item.kind === 'tool-group-tool') {
         return item.toolMessageId === messageId;

@@ -69,6 +69,7 @@ export function resolveTranscriptRowItemType(params: Readonly<{
 }>): string {
     const { item } = params;
     if (item.kind === 'message') {
+        if (item.automatedMessageIds) return 'message:automated-group';
         return resolveMessageRowType(params.getMessageById(item.messageId), params.activeThinkingMessageId);
     }
     if (item.kind === 'tool-calls-group') return 'tool-group';
@@ -150,7 +151,8 @@ export function buildTranscriptRowShellSignature(params: Readonly<{
             // rows that can actually grow; `resolveMessageRowState` owns the decision.
             structuralKey: TRANSCRIPT_GROWING_ROW_STATES.has(rowState)
                 ? buildGrowingMessageShellStructuralKey(item.messageId)
-                : buildMessageShellStructuralKey(item.messageId, message, params.getMessageRevisionById(item.messageId)),
+                : (item.automatedMessageIds ?? [item.messageId]).map((id) =>
+                    buildMessageShellStructuralKey(id, params.getMessageById(id), params.getMessageRevisionById(id))).join('|'),
             expansionKey: [
                 'tools:none',
                 buildThinkingExpansionKey({

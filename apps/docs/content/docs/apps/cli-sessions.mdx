@@ -150,7 +150,11 @@ happier session send --source harness <session-id-or-prefix> "Worker finished"
 
 The agent receives the text as ordinary input. Automated messages display their
 sender label with distinct styling and do not count toward your pending-message
-indicators. Omit `--source` for a message from you.
+indicators. In development app builds, committed automated messages start as
+one-line disclosures showing the sender and first line. Consecutive automated
+messages share a counted group. Tap the group, then a message, to read its full
+text. Your messages and assistant replies stay open. Omit `--source` for a
+message from you.
 
 For encrypted Sessions, the sender name and text stay encrypted. The relay sees
 only an automated-message boolean so it can calculate your pending count without

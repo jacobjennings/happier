@@ -464,7 +464,9 @@ export function useTranscriptItemsPipeline(deps: TranscriptItemsPipelineDeps) {
             if (typeof seq === 'number' && Number.isFinite(seq)) seqs.push(Math.trunc(seq));
         };
         if (item.kind === 'message') {
-            addSeq(item.seq ?? resolveSeqForMessageId(item.messageId));
+            for (const id of item.automatedMessageIds ?? [item.messageId]) {
+                addSeq(id === item.messageId ? (item.seq ?? resolveSeqForMessageId(id)) : resolveSeqForMessageId(id));
+            }
             return seqs;
         }
         if (item.kind === 'tool-calls-group') {

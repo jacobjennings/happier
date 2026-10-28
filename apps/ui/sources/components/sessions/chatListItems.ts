@@ -16,6 +16,8 @@ export type ChatListItem =
         kind: 'message';
         id: string;
         messageId: string;
+        /** Consecutive automated user messages, including messageId as the stable anchor. */
+        automatedMessageIds?: readonly string[];
         /**
          * When rendering a forked transcript, committed messages can originate from ancestor sessions.
          * These rows should be treated as read-only context in the child session.

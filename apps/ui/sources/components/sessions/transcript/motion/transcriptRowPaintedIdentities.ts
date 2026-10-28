@@ -4,7 +4,7 @@ import { resolveTranscriptUtteranceIdentity } from './transcriptFreshnessGate';
 
 type PaintedIdentityItem =
     | Readonly<{ kind: 'pending-queue'; pendingMessages: readonly Readonly<{ localId?: string | null }>[] }>
-    | Readonly<{ kind: 'message'; messageId: string }>
+    | Readonly<{ kind: 'message'; messageId: string; automatedMessageIds?: readonly string[] }>
     | Readonly<{ kind: 'turn'; turn: Readonly<{ userMessageId?: string | null }> }>
     | Readonly<{ kind: string }>;
 
@@ -41,9 +41,11 @@ export function resolveTranscriptRowPaintedIdentities(
     }
 
     if (item.kind === 'message') {
-        const messageId = (item as Extract<PaintedIdentityItem, { kind: 'message' }>).messageId;
-        const identity = resolveTranscriptUtteranceIdentity(readUserUtteranceLocalId(getMessageById(messageId)));
-        return identity ? [identity] : null;
+        const row = item as Extract<PaintedIdentityItem, { kind: 'message' }>;
+        const identities = (row.automatedMessageIds ?? [row.messageId])
+            .map((id) => resolveTranscriptUtteranceIdentity(readUserUtteranceLocalId(getMessageById(id))))
+            .filter((id): id is string => id !== null);
+        return identities.length ? identities : null;
     }
 
     if (item.kind === 'turn') {

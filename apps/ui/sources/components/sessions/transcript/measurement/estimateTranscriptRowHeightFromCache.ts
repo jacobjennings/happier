@@ -520,8 +520,8 @@ function estimateTextBlockPx(text: string, chromePx: number): number {
 function estimateMessagePx(message: Message | null, chromeVariant: ToolCallsGroupChromeVariant): number {
     if (!message) return ESTIMATE_COMPACT_ROW_PX;
     if (message.kind === 'user-text') {
-        return estimateTextBlockPx(message.text, COMMITTED_USER_TEXT_CHROME_PX)
-            + (readAutomatedMessageSource(message.meta) ? transcriptMarkdownTextStyle.lineHeight + 4 : 0);
+        if (readAutomatedMessageSource(message.meta)) return ESTIMATE_COMPACT_ROW_PX;
+        return estimateTextBlockPx(message.text, COMMITTED_USER_TEXT_CHROME_PX);
     }
     if (message.kind === 'agent-text') {
         return estimateTextBlockPx(message.text, COMMITTED_AGENT_TEXT_CHROME_PX);
@@ -575,6 +575,7 @@ export function estimateTranscriptRowHeightFromContent(params: Readonly<{
     const { item, toolCallsGroupChromeVariant } = params;
     const unitRowHeights = resolveToolGroupUnitRowHeights(toolCallsGroupChromeVariant);
     if (item.kind === 'message') {
+        if (item.automatedMessageIds) return ESTIMATE_COMPACT_ROW_PX;
         return estimateMessagePx(params.getMessageById(item.messageId), toolCallsGroupChromeVariant);
     }
     if (item.kind === 'pending-queue') {

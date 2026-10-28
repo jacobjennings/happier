@@ -1,3 +1,4 @@
+import { AutomatedMessageDisclosure } from './automated/AutomatedMessageDisclosure';
 import * as React from 'react';
 import { View, type LayoutChangeEvent } from 'react-native';
 
@@ -40,6 +41,8 @@ import type { TranscriptEventEmphasisByMessageId } from '@/components/sessions/t
 export const ChatListMessageRow = React.memo(function ChatListMessageRow(props: {
     sessionId: string;
     messageId: string;
+    automatedMessageIds?: readonly string[];
+    getMessageById?: (messageId: string) => Message | null;
     messageOverride?: Message | null;
     originSessionId?: string;
     isReadOnlyContext?: boolean;
@@ -55,6 +58,7 @@ export const ChatListMessageRow = React.memo(function ChatListMessageRow(props: 
     interaction: TranscriptInteraction;
     eventEmphasisByMessageId?: TranscriptEventEmphasisByMessageId;
     rollbackAction?: TranscriptRollbackAction | null;
+    resolveRollbackAction?: (messageId: string) => TranscriptRollbackAction | null;
     rollbackRanges: readonly SessionRollbackRangeV1[];
     approvalRequests?: readonly OpenApprovalArtifactForSession[];
     messagePins: readonly PersistedSessionMessagePinV1[];
@@ -112,9 +116,17 @@ export const ChatListMessageRow = React.memo(function ChatListMessageRow(props: 
         />
     );
     return (
-        <View testID={`${TRANSCRIPT_WEB_MESSAGE_PREPEND_ANCHOR_TEST_ID_PREFIX}${props.messageId}`}>
-            <View testID={`transcript-message-${props.messageId}`}>
-                {messageView}
+        <View testID={props.automatedMessageIds ? undefined : `${TRANSCRIPT_WEB_MESSAGE_PREPEND_ANCHOR_TEST_ID_PREFIX}${props.messageId}`}>
+            <View testID={`${props.automatedMessageIds ? 'transcript-automated-group' : 'transcript-message'}-${props.messageId}`}>
+                {props.automatedMessageIds ? (
+                    <AutomatedMessageDisclosure messageId={`group:${message.id}`} meta={message.meta}
+                        text={message.kind === 'user-text' ? (message.displayText ?? message.text) : ''} count={props.automatedMessageIds.length}>
+                        {props.automatedMessageIds.map((messageId) => (
+                            <ChatListMessageRow {...props} key={messageId} messageId={messageId} automatedMessageIds={undefined}
+                                messageOverride={props.getMessageById?.(messageId)} rollbackAction={props.resolveRollbackAction?.(messageId) ?? null} />
+                        ))}
+                    </AutomatedMessageDisclosure>
+                ) : messageView}
             </View>
         </View>
     );

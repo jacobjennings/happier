@@ -438,6 +438,9 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
                         <ChatListMessageRow
                             sessionId={sessionId}
                             messageId={item.messageId}
+                            automatedMessageIds={item.automatedMessageIds}
+                            resolveRollbackAction={resolveRollbackActionForMessage}
+                            getMessageById={getMessageById}
                             messageOverride={item.originSessionId ? (messagesById[item.messageId] ?? null) : undefined}
                             originSessionId={item.originSessionId}
                             isReadOnlyContext={item.isReadOnlyContext}

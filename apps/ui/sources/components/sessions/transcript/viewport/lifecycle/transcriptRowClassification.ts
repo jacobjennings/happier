@@ -16,7 +16,7 @@ export function collectTranscriptNavigationMessageIdsForItem(
     };
 
     if (item.kind === 'message') {
-        add(item.messageId);
+        for (const id of item.automatedMessageIds ?? [item.messageId]) add(id);
     } else if (item.kind === 'tool-calls-group') {
         for (const messageId of item.toolMessageIds) add(messageId);
     } else if (item.kind === 'turn') {
