@@ -16,8 +16,9 @@ import { appendBrowserDiagnostics, collectBrowserDiagnostics } from '../../src/t
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
 
-test.describe('ui e2e: Pending until ready with immediate steering', () => {
-  const suiteDir = run.testDir('pending-immediate-steer-suite');
+for (const delivery of ['automatic', 'explicit'] as const) {
+test.describe(`ui e2e: Pending until ready with ${delivery} steering`, () => {
+  const suiteDir = run.testDir(`pending-${delivery}-steer-suite`);
   const cliHomeDir = resolve(join(suiteDir, 'cli-home'));
 
   let server: StartedServer | null = null;
@@ -87,7 +88,7 @@ test.describe('ui e2e: Pending until ready with immediate steering', () => {
         page,
         settingsPatch: {
           sessionMessageSendMode: 'server_pending',
-          sessionBusySteerSendPolicy: 'steer_immediately',
+          sessionBusySteerSendPolicy: delivery === 'automatic' ? 'steer_immediately' : 'server_pending',
           claudeUnifiedTerminalEnabled: false,
         },
         featureToggles: { 'providers.claude.unifiedTerminal': false },
@@ -111,8 +112,22 @@ test.describe('ui e2e: Pending until ready with immediate steering', () => {
       const response = await enqueueResponse;
       expect(response.ok()).toBe(true);
       expect(response.request().postDataJSON()).toMatchObject({
-        requestedAction: { v: 1, kind: 'steer_if_active' },
+        requestedAction: { v: 1, kind: delivery === 'automatic' ? 'steer_if_active' : 'enqueue' },
       });
+      if (delivery === 'explicit') {
+        const localId: unknown = response.request().postDataJSON().localId;
+        expect(typeof localId).toBe('string');
+        const steer = page.getByTestId(`pendingMessages.steerNow:${localId}`);
+        await expect(steer).toBeVisible();
+        const actionResponse = page.waitForResponse((candidate) =>
+          candidate.request().method() === 'PATCH'
+          && new URL(candidate.url()).pathname === `/v2/sessions/${sessionId}/pending/${localId}/action`,
+        );
+        // Use a real pointer click. The floating transcript navigation wrapper must
+        // let Pending actions receive clicks through its transparent spacing.
+        await steer.click();
+        expect((await actionResponse).ok()).toBe(true);
+      }
       await waitForFakeClaudeUserText(fakeClaudeLogPath, (text) => text.includes(secondPrompt));
       await expect(page.getByTestId('transcript-chat-list')).toContainText('FAKE_CLAUDE_STEER_RECEIVED', { timeout: 120_000 });
 
@@ -133,3 +148,4 @@ test.describe('ui e2e: Pending until ready with immediate steering', () => {
     }
   });
 });
+}
