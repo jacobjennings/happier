@@ -23,6 +23,9 @@ export function ComposerKeyboardFloatingInset(props: Readonly<{
     return (
         <Animated.View
             testID={props.testID}
+            // Only the floating controls own input. Transparent spacing must not
+            // cover transcript actions underneath the keyboard-offset wrapper.
+            pointerEvents="box-none"
             style={[props.style, { bottom: baseBottom }, animatedStyle]}
         >
             {props.children}
