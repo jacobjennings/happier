@@ -31,12 +31,14 @@ def required(name):
     return value
 
 
-def harness_artifact(role, command, marker, destination):
+def harness_artifact(role, command, marker, destination, gpu=None):
     config = os.environ.get('HARNESS_CONFIG', str(Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'harness/config.env'))
     hosts = run(['bash', '-eu', '-c', 'source "$1"; printf "%s" "$HARNESS_HOSTS"', 'bash', config], capture_output=True).stdout
     host = json.loads(hosts)[role]['ssh']
     artifact = None
     invocation = ['harness', 'run', role, '--keep']
+    if gpu:
+        invocation += ['--gpu', gpu]
     if timeout := os.environ.get('HAPPIER_ARTIFACT_TIMEOUT_SECONDS'):
         invocation += ['--timeout', timeout]
     with subprocess.Popen([*invocation, '--', *command], cwd=ROOT,
@@ -259,7 +261,7 @@ def deploy(args):
             time.sleep(2)
     harness_artifact(os.environ.get('HAPPIER_BROWSER_HOST', 'browser'),
                      ['node', 'scripts/fork/check-login.mjs', url + '/'], 'LOGIN_SCREENSHOT=',
-                     ROOT / '.project/fork-web/login.png')
+                     ROOT / '.project/fork-web/login.png', os.environ.get('HAPPIER_BROWSER_GPU'))
     print('DEPLOYED_COMMIT=' + sha, flush=True)
 
 

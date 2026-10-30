@@ -87,6 +87,7 @@ export HAPPIER_DEPLOY_URL='https://your-relay.example.com'
 export HAPPIER_DEPLOY_CREDENTIALS="$HOME/.happier/servers/your-server/access.key"
 export HAPPIER_BUILD_HOST=compute # HARNESS_HOSTS role, defaults to compute
 export HAPPIER_BROWSER_HOST=browser # Chromium and Node 22+ on the browser role
+# Optional: export HAPPIER_BROWSER_GPU=igpu # Select the configured browser GPU
 # Optional: export HAPPIER_DEPLOY_ROOT=/opt/happier
 # Optional: export HAPPIER_ARTIFACT_TIMEOUT_SECONDS=14400 # Explicit harness job budget
 python3 scripts/fork/web.py deploy
@@ -105,8 +106,9 @@ relay, a separate tmux window in session `2` backs up the Compose directory,
 `.env`, image pin, resolved configuration and container inspection beneath
 `/opt/happier/backups/`. Backups remain root-only because they include secrets.
 The complete web export is installed beneath `/opt/happier/web/` and selected
-through `compose.override.yaml`. The base Compose file, image pin, master secret
-and data volume stay intact. Only the relay is recreated:
+through `compose.override.yaml`. The generated override also sets relay log rotation
+using the `logging` block in `scripts/fork/web-remote.sh`. The base Compose file,
+image pin, master secret and data volume stay intact. Only the relay is recreated:
 
 ```bash
 docker compose --env-file ../versions.env --env-file .env \

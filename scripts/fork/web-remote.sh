@@ -48,6 +48,11 @@ services:
       HAPPIER_SERVER_UI_REQUIRED: "1"
     volumes:
       - $destination:/opt/happier/fork-web:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 YAML
   mv compose.override.yaml.next compose.override.yaml
 elif [[ "$mode" == rollback ]]; then
