@@ -345,6 +345,8 @@ export async function runPermissionModePromptLoop(opts: {
     await ensureFreshSessionSnapshotBeforeTurnBestEffort();
     if (opts.shouldExit()) return;
     overrideSync.syncFromMetadata();
+    // ensureRuntimeStarted consumes the stored resume id; a failed eager start must hand it back.
+    const resumeBeforeEagerStart = storedSessionIdForResume;
     try {
       const eagerStart = await ensureRuntimeStarted();
       if (opts.shouldExit()) return;
@@ -359,7 +361,7 @@ export async function runPermissionModePromptLoop(opts: {
       opts.messageBuffer.addMessage(message, 'status');
       opts.session.sendAgentMessage(opts.agentMessageType, { type: 'message', message });
       const resumeId = opts.runtime.getSessionId();
-      if (resumeId) storedSessionIdForResume = { value: resumeId, origin: 'restart' };
+      storedSessionIdForResume = resumeId ? { value: resumeId, origin: 'restart' } : resumeBeforeEagerStart;
       wasStarted = false;
       await opts.runtime.reset();
       await opts.onAfterReset?.();

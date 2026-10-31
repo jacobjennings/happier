@@ -648,6 +648,50 @@ describe('runPermissionModePromptLoop', () => {
     expect(runtime.sendPrompt).toHaveBeenCalledWith('APPEND\n\nhello');
   });
 
+  it('keeps the input consumer alive after a failed eager start and retries the original resume id', async () => {
+    const session = createPromptLoopSession();
+    const sendAgentMessageSpy = vi.spyOn(session, 'sendAgentMessage');
+    const queue = createModeQueue();
+    const runtime = { ...createRuntime(), getSessionId: vi.fn((): string | null => null) };
+    // Both the resume attempt and its fresh-session fallback fail while the provider server is unavailable.
+    runtime.startOrLoad
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('fetch failed'));
+    queue.push({ text: 'hello', localId: 'local-eager-failure' }, { permissionMode: 'default' });
+
+    let shouldExit = false;
+    await runPermissionModePromptLoop({
+      providerName: 'Test Provider',
+      agentMessageType: 'qwen',
+      explicitPermissionMode: undefined,
+      session,
+      messageQueue: queue,
+      permissionHandler: { setPermissionMode: vi.fn(), reset: vi.fn() } as any,
+      runtime,
+      createOverrideSynchronizer: () => ({ syncFromMetadata: () => {}, flushPendingAfterStart: async () => {} }),
+      messageBuffer: new MessageBuffer(),
+      shouldExit: () => shouldExit,
+      getAbortSignal: () => new AbortController().signal,
+      keepAlive: () => {},
+      setThinking: () => {},
+      sendReady: () => { shouldExit = true; },
+      currentPermissionModeUpdatedAt: 0,
+      setCurrentPermissionMode: () => {},
+      setCurrentPermissionModeUpdatedAt: () => {},
+      initialResumeId: 'native-session-1',
+      startRuntimeBeforeFirstPrompt: true,
+      formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+    });
+
+    expect(sendAgentMessageSpy).toHaveBeenCalledWith('qwen', {
+      type: 'message',
+      message: 'Test Provider startup failed: Error: Error: fetch failed',
+    });
+    expect(runtime.startOrLoad).toHaveBeenCalledTimes(3);
+    expect(runtime.startOrLoad).toHaveBeenNthCalledWith(3, expect.objectContaining({ resumeId: 'native-session-1' }));
+    expect(runtime.sendPrompt).toHaveBeenCalledWith('hello');
+  });
+
   it('uses sendPromptWithMeta when provided by the runtime', async () => {
     const session = createPromptLoopSession();
     const queue = createModeQueue();
