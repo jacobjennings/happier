@@ -1398,7 +1398,7 @@ export async function releaseForAuthSwitch(
 }
 
 export async function ensureSharedManagedOpenCodeServerBaseUrl(params: Readonly<{
-  probeHealth: (baseUrl: string, apiGeneration?: 'auto' | 'v2') => Promise<boolean>;
+  probeHealth: ResolveDeps['probeHealth'];
   requireBrokerLoadNonce?: boolean;
 }>): Promise<string> {
   const statePath = resolveStatePathFromEnv();

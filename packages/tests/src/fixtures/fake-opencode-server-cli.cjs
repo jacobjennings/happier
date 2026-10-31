@@ -585,7 +585,8 @@ async function handleRequest(req, res) {
 // Startup
 // ---------------------------------------------------------------------------
 
-server.listen(port, hostname, () => {
+const startupDelayMs = Number(process.env.HAPPIER_E2E_FAKE_OPENCODE_START_DELAY_MS || 0);
+setTimeout(() => server.listen(port, hostname, () => {
   const state = mutateState((current) => ({
     ...current,
     generation: (current.generation || 0) + 1,
@@ -597,7 +598,7 @@ server.listen(port, hostname, () => {
   logEvent({ type: 'serve_start', generation: state.generation, toolRunning: state.toolRunning, teardownMode });
   // Single readiness line (real opencode prints similar). Managed-server wrapper drains stdout.
   process.stdout.write(`fake-opencode serve listening on ${baseUrl} (gen=${state.generation})\n`);
-});
+}), startupDelayMs);
 
 server.on('error', (error) => {
   process.stderr.write(`fake-opencode: server error: ${error instanceof Error ? error.message : String(error)}\n`);

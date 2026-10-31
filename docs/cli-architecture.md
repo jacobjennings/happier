@@ -1354,6 +1354,16 @@ inheritance; their actual runtime selection replaces the requested tuple. This d
 pin an old server across credential/configuration changes or transfer a machine-local
 pool identity through cross-machine handoff.
 
+In development source, managed OpenCode reuse probes authenticate with the candidate
+server's retained credential before deciding whether it needs replacement. Ambient
+caller authentication cannot substitute for that credential. The shared readiness
+wait retries with bounded backoff within the managed-start deadline and includes the
+last request URL and HTTP status or transport code when it expires. An ordinary eager
+provider startup failure is reported while the Happier input consumer stays alive,
+so pending input reaches the normal prompt-start/error path. Strict resume failures
+retain their fail-closed behavior. Mutating session-creation requests are not blindly
+replayed after an ambiguous transport failure.
+
 The shared input consumer carries the prompt loop's metadata callback through each
 idle wait, including when the runner supplies an existing consumer. This lets the
 existing override synchronizers apply idle model, mode, and reasoning changes

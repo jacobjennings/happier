@@ -9,11 +9,11 @@ import {
   parseOpenCodeBrokerSelections,
 } from '@/backends/opencode/brokerPlugin';
 
-import { resolveOpenCodeServerAuthHeadersFromEnv } from './openCodeServerAuth';
+import { resolveOpenCodeServerAuthHeaders, resolveOpenCodeServerAuthHeadersFromEnv, type OpenCodeServerAuthCredential } from './openCodeServerAuth';
 import { subscribeSseJson } from './openCodeSse';
 import type { OpenCodeGlobalEvent, OpenCodeModelRef, OpenCodeSession } from './types';
 import { waitForOpenCodeServerHealth } from './waitForOpenCodeServerHealth';
-import { isOpenCodeServerReadyResponse, OPEN_CODE_AUTO_READINESS_PATHS, OPEN_CODE_V2_READINESS_PATHS } from './openCodeServerReadiness';
+import { isOpenCodeServerReadyResponse } from './openCodeServerReadiness';
 import { normalizeOpenCodeV2Event, normalizeOpenCodeV2PermissionRequest } from './openCodeV2EventAdapter';
 import {
   buildOpenCodeV2FormAnswer,
@@ -76,13 +76,13 @@ function buildUrl(baseUrl: string, path: string, query?: Record<string, string |
 function redactOpenCodeUrlForError(rawUrl: string): string {
   try {
     const url = new URL(rawUrl);
-    if (url.searchParams.has('directory')) {
-      url.searchParams.set('directory', '<redacted>');
-    }
+    url.username = '';
+    url.password = '';
+    url.hash = '';
+    for (const key of [...url.searchParams.keys()]) url.searchParams.set(key, '<redacted>');
     return url.toString();
   } catch {
-    // Best-effort redaction for non-URL strings.
-    return String(rawUrl ?? '').replace(/([?&]directory=)[^&#]*/gu, '$1<redacted>');
+    return '<invalid URL>';
   }
 }
 
@@ -142,7 +142,11 @@ async function fetchJson<T>(params: {
     if (timedOut && timeoutMs) {
       throw new Error(`OpenCode HTTP ${params.method} ${redactOpenCodeUrlForError(params.url)} timed out after ${timeoutMs}ms`);
     }
-    throw error;
+    if (params.signal?.aborted) throw error;
+    const cause = error instanceof Error ? error.cause : null;
+    const code = cause && typeof cause === 'object' && 'code' in cause && typeof cause.code === 'string'
+      ? cause.code : error instanceof Error ? error.name : 'request failed';
+    throw new Error(`OpenCode transport ${params.method} ${redactOpenCodeUrlForError(params.url)}: fetch failed (${code})`, { cause: error });
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -178,6 +182,9 @@ type ManagedServerRetryOperation =
   | 'question_list';
 
 function classifyRetryableManagedServerTransportError(error: unknown): ManagedServerTransportFailureKind | null {
+  if (error instanceof Error && error.message.startsWith('OpenCode transport ')) {
+    return classifyRetryableManagedServerTransportError(error.cause);
+  }
   const message = error instanceof Error ? error.message : String(error ?? '');
   const normalized = message.trim().toLowerCase();
   if (!normalized || normalized.startsWith('opencode http ')) return null;
@@ -596,26 +603,19 @@ export async function createOpenCodeServerRuntimeClient(params: Readonly<{
   const probeHealth = async (
     candidateBaseUrl: string,
     apiGeneration: 'auto' | 'v2' = 'auto',
+    auth?: OpenCodeServerAuthCredential | null,
   ): Promise<boolean> => {
+    // Reuse is decided before this client adopts the candidate's retained credential.
+    // Probing with ambient headers instead would turn a healthy V2 server's 401 into
+    // a replacement, interrupting sessions that are still starting on that server.
+    const probeHeaders = auth === undefined ? headers : resolveOpenCodeServerAuthHeaders(auth);
     try {
       const probeTimeoutMs = httpTimeoutMs ? Math.min(2_000, httpTimeoutMs) : 900;
-      const paths = apiGeneration === 'v2'
-          ? OPEN_CODE_V2_READINESS_PATHS
-          : OPEN_CODE_AUTO_READINESS_PATHS;
-      for (const path of paths) {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), probeTimeoutMs);
-        timer.unref?.();
-        const res = await fetch(buildUrl(candidateBaseUrl, path), { method: 'GET', headers, signal: ctrl.signal }).catch(() => null);
-        clearTimeout(timer);
-        if (res?.ok) {
-          const body = await res.json().catch(() => null) as unknown;
-          if (isOpenCodeServerReadyResponse(path, body)) {
-            return true;
-          }
-        }
-      }
-      return false;
+      await waitForOpenCodeServerHealth({
+        baseUrl: candidateBaseUrl, timeoutMs: probeTimeoutMs, pollIntervalMs: 200,
+        apiGeneration, headers: probeHeaders,
+      });
+      return true;
     } catch {
       return false;
     }

@@ -245,15 +245,12 @@ export async function startManagedOpenCodeServer(params: Readonly<{
 
   let detectedApiGeneration = launch.apiGeneration;
   await new Promise<void>((resolve, reject) => {
-    const tag = randomUUID();
-    const timer = setTimeout(() => {
-      void close().catch(() => undefined);
-      reject(new Error(`Timeout waiting for OpenCode server to start after ${timeoutMs}ms (${tag}). Log: ${logPath}. Output:\n${readStartupOutput()}`));
-    }, timeoutMs);
-    timer.unref?.();
+    // The health owner bounds requests (including response bodies) and reports the
+    // final failing endpoint. A competing timer here would erase that diagnosis.
+    const startupAbort = new AbortController();
 
     proc.on('exit', (code, signal) => {
-      clearTimeout(timer);
+      startupAbort.abort();
       void close().catch(() => undefined);
       const codeLabel = code ?? 'unknown';
       const signalLabel = signal ?? 'none';
@@ -263,13 +260,13 @@ ${readStartupOutput()}`,
       ));
     });
     proc.on('error', (error) => {
-      clearTimeout(timer);
+      startupAbort.abort();
       void close().catch(() => undefined);
       reject(error);
     });
 
     void waitForOpenCodeServerHealth({
-      signal: params.signal,
+      signal: params.signal ? AbortSignal.any([params.signal, startupAbort.signal]) : startupAbort.signal,
       baseUrl,
       timeoutMs,
       pollIntervalMs: 200,
@@ -281,11 +278,9 @@ ${readStartupOutput()}`,
       },
     })
       .then(() => {
-        clearTimeout(timer);
         resolve();
       })
       .catch((error) => {
-        clearTimeout(timer);
         void close().catch(() => undefined);
         const message = error instanceof Error ? error.message : String(error);
         reject(new Error(`OpenCode server did not become healthy: ${message}. Log: ${logPath}. Output:

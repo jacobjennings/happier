@@ -129,6 +129,55 @@ describe('core e2e: OpenCode managed-server restart during an in-flight turn (fa
     await server?.stop().catch(() => {});
   });
 
+  it.each([false, true])('keeps pending-input startup observable with a delayed listener (exhaust deadline: %s)', async (exhaustDeadline) => {
+    const testDir = run.testDir(`opencode-delayed-start-${randomUUID()}`);
+    server = await startServerLight({ testDir, dbProvider: 'sqlite' });
+    const auth = await createTestAuth(server.baseUrl);
+    daemonHomeDir = resolve(join(testDir, 'daemon-home'));
+    const workspaceDir = resolve(join(testDir, 'workspace'));
+    await mkdir(daemonHomeDir, { recursive: true });
+    await mkdir(workspaceDir, { recursive: true });
+    const secret = Uint8Array.from(randomBytes(32));
+    await seedCliAuthForServer({ cliHome: daemonHomeDir, serverUrl: server.baseUrl, token: auth.token, secret });
+    const statePath = resolve(join(testDir, 'fake-opencode-state.json'));
+    trackedStatePaths.push(statePath);
+    const daemonEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      CI: '1',
+      HAPPIER_VARIANT: 'dev',
+      HAPPIER_DISABLE_CAFFEINATE: '1',
+      HAPPIER_HOME_DIR: daemonHomeDir,
+      HAPPIER_SERVER_URL: server.baseUrl,
+      HAPPIER_WEBAPP_URL: server.baseUrl,
+      HAPPIER_E2E_PROVIDER_USE_CLI_SOURCE_ENTRYPOINT: '1',
+      ...buildFakeOpenCodeServerEnv({ statePath, teardownMode: 'stay_alive' }),
+      HAPPIER_E2E_FAKE_OPENCODE_START_DELAY_MS: '3000',
+      HAPPIER_OPENCODE_SERVER_START_TIMEOUT_MS: exhaustDeadline ? '1000' : '15000',
+    };
+    daemon = await startTestDaemon({ testDir, happyHomeDir: daemonHomeDir, env: daemonEnv });
+    const spawned = await daemonControlPostJson({
+      port: daemon.state.httpPort, path: '/spawn-session', controlToken: daemon.state.controlToken,
+      body: { directory: workspaceDir, terminal: { mode: 'plain' },
+        backendTarget: { kind: 'builtInAgent', agentId: 'opencode' }, environmentVariables: daemonEnv },
+    });
+    expect(spawned.status).toBe(200);
+    expect(spawned.data.success).toBe(true);
+    const sessionId = spawned.data.sessionId;
+    if (typeof sessionId !== 'string') throw new Error('Missing spawned session ID');
+    await enqueueSessionPromptForScenario({ baseUrl: server.baseUrl, token: auth.token,
+      sessionId, secret, text: `DELAYED_START_${randomUUID()}` });
+    if (exhaustDeadline) {
+      await waitForAssistantMessageContaining({ baseUrl: server.baseUrl, token: auth.token,
+        sessionId, secret, requiredSubstring: 'OpenCode startup failed', timeoutMs: 60_000 });
+    } else {
+      await waitForFakeOpenCodeRunningTool({ statePath, timeoutMs: 60_000 });
+      const state = await readFakeOpenCodeState(statePath);
+      expect(state?.promptCount).toBe(1);
+      expect(state?.generation).toBe(1);
+    }
+    expect((await fetchSessionV2(server.baseUrl, auth.token, sessionId))?.active).toBe(true);
+  }, 120_000);
+
   it('fixture self-check: boots and serves health, SSE, session create and the running-tool prompt lifecycle', async () => {
     const testDir = run.testDir(`opencode-fake-selfcheck-${randomUUID()}`);
     await mkdir(testDir, { recursive: true });

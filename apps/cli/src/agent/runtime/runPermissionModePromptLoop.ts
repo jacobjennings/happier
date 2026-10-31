@@ -10,6 +10,7 @@ import {
 import { waitForNextPermissionModeMessage } from '@/agent/runtime/waitForNextPermissionModeMessage';
 import type { SessionProviderInputConsumer } from '@/agent/runtime/sessionInput/types';
 import type { MessageBuffer } from '@/ui/ink/messageBuffer';
+import { logger } from '@/ui/logger';
 import type { PermissionModeQueuedPrompt } from '@/agent/runtime/permission/permissionModeQueuedPrompt';
 import type { InFlightSteerController } from '@/agent/runtime/permission/bindPermissionModeQueue';
 import { resolveProviderPromptForDispatch } from '@/agent/runtime/prompt/resolveProviderPromptForDispatch';
@@ -344,9 +345,27 @@ export async function runPermissionModePromptLoop(opts: {
     await ensureFreshSessionSnapshotBeforeTurnBestEffort();
     if (opts.shouldExit()) return;
     overrideSync.syncFromMetadata();
-    const eagerStart = await ensureRuntimeStarted();
-    if (opts.shouldExit()) return;
-    pendingFreshSessionSystemPrompt = eagerStart.startedFreshSessionForTurn;
+    try {
+      const eagerStart = await ensureRuntimeStarted();
+      if (opts.shouldExit()) return;
+      pendingFreshSessionSystemPrompt = eagerStart.startedFreshSessionForTurn;
+    } catch (error) {
+      if (opts.shouldExit()) return;
+      if (error instanceof StrictInitialResumeError || error instanceof ResumeFailClosedError) throw error;
+      // No input has been accepted yet. Keep the socket/input consumer alive so
+      // queued input can use the normal prompt-start/error path, not a dead CLI.
+      const message = `${opts.providerName} startup failed: ${opts.formatPromptErrorMessage(error)}`;
+      logger.warnFile(message);
+      opts.messageBuffer.addMessage(message, 'status');
+      opts.session.sendAgentMessage(opts.agentMessageType, { type: 'message', message });
+      const resumeId = opts.runtime.getSessionId();
+      if (resumeId) storedSessionIdForResume = { value: resumeId, origin: 'restart' };
+      wasStarted = false;
+      await opts.runtime.reset();
+      await opts.onAfterReset?.();
+      opts.setThinking(false);
+      opts.keepAlive();
+    }
   }
 
   while (!opts.shouldExit()) {
