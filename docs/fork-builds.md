@@ -217,6 +217,14 @@ restart. A daemon still running from the previous install is a separate runtime
 and must be reported as such. Its existing service continues to reference that
 installation until deliberately updated.
 
+When the task explicitly requires a daemon transition, follow the tracked
+workstation unit and transition procedure in `jake-homelab/lxc/happier.md`.
+Record active session IDs before restarting, preserve the unit's
+`KillMode=process`, and select the installed source prefix in its tracked
+`ExecStart` before reloading and restarting the service once. Confirm the new
+daemon's start time and command line, then check an existing session's reply.
+Do not restart session runners or use `--kill-sessions` for this transition.
+
 ## Android APK
 
 Use package `com.jacobjennings.happier` and scheme `happier-jake` alongside the
