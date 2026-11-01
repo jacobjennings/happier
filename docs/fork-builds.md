@@ -225,6 +225,31 @@ Record active session IDs before restarting, preserve the unit's
 daemon's start time and command line, then check an existing session's reply.
 Do not restart session runners or use `--kill-sessions` for this transition.
 
+## Explicit project grouping (fork development)
+
+The fork source supports grouping sessions from separate jj workspaces under one
+project header. This requires a CLI/daemon and web app built from source containing
+this change. Deployment and installed-runtime verification are separate steps.
+
+```bash
+happier session create --project-path /absolute/main/checkout --path /absolute/task/workspace
+happier session create --project-path /absolute/main/checkout --project-label 'My project' --path /absolute/other/workspace
+```
+
+`--project-path` is an absolute path on the session's machine. It controls list
+grouping only. The runner still uses `--path`, and session rows retain their own
+task title and path. The optional `--project-label` names the project header,
+otherwise the header uses the project path's basename. A saved custom workspace
+label takes precedence. Sessions without the flag retain folder-based grouping.
+Session folders continue to use the resulting project workspace scope.
+
+The shared `session.spawn_new` Action accepts `projectPath` and `projectLabel`.
+The daemon spawn request carries `projectGroupV1: { v: 1, path, label? }` and the
+runner writes that optional metadata at creation. Existing sessions need no
+migration. Older UIs ignore the field and continue grouping by the task path.
+Older daemons may ignore the presentation hint, so install the matching daemon
+before relying on it. This hint grants no filesystem or execution authority.
+
 ## Android APK
 
 Use package `com.jacobjennings.happier` and scheme `happier-jake` alongside the

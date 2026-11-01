@@ -34,6 +34,7 @@ export const SESSION_CREATE_USAGE = [
   '',
   'Options:',
   '  [--path <path>] [--backend <backend-target>]',
+  '  [--project-path <dir>] [--project-label <label>]',
   '  [--title <title>] [--tag <tag>]',
   '  [--prompt <text>|--message <text>]',
   `  [--model <model-id>] [--permission-mode <${SESSION_PERMISSION_INTENT_INPUTS.join('|')}>]`,
@@ -276,6 +277,8 @@ export function parseSessionCreateSpawnOptions(argv: readonly string[]): ParsedS
     ...(connectedServicesAuthIntent ? { connectedServicesAuthIntent } : {}),
     actionInput: {
       path,
+      ...(readFlagValue(argv, '--project-path') ? { projectPath: readFlagValue(argv, '--project-path') } : {}),
+      ...(readFlagValue(argv, '--project-label') ? { projectLabel: readFlagValue(argv, '--project-label') } : {}),
       ...(backendTargetKey ? { backendTargetKey } : { agentId: DEFAULT_CATALOG_AGENT_ID }),
       ...(title ? { title } : {}),
       ...(tag ? { tag } : {}),

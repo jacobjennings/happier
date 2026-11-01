@@ -1,3 +1,4 @@
+import { readProjectGroupV1 } from '@happier-dev/protocol';
 import { type MachineDisplayRenderable } from '@/sync/domains/machines/machineDisplayRenderable';
 import { resolveCanonicalMachineId } from '@/sync/domains/machines/identity/resolveCanonicalMachineId';
 import { formatPathRelativeToHome } from '@/utils/sessions/formatPathRelativeToHome';
@@ -12,6 +13,7 @@ export type SessionWorkspacePresentationMetadata = Readonly<{
     host?: unknown;
     machineId?: unknown;
     path?: unknown;
+    projectGroupV1?: unknown;
     homeDir?: unknown;
 }> | null | undefined;
 
@@ -79,6 +81,7 @@ function resolveWorkspaceBasename(path: string): string {
 
 export function resolveSessionWorkspacePresentation(params: Readonly<{
     metadata: SessionWorkspacePresentationMetadata;
+    scope?: 'session' | 'project';
     machines: Readonly<Record<string, MachineDisplayRenderable>>;
     target?: SessionWorkspacePresentationTarget;
     workspaceLabelsV1?: unknown;
@@ -94,7 +97,8 @@ export function resolveSessionWorkspacePresentation(params: Readonly<{
     const displayMachineId = canonical?.reason === 'missingReplacementTarget'
         ? rawDisplayMachineId
         : canonical?.machineId ?? rawDisplayMachineId;
-    const displayPathInput = targetPath ?? normalizeNonEmptyString(params.metadata?.path);
+    const projectGroup = params.scope === 'project' ? readProjectGroupV1(params.metadata?.projectGroupV1) : null;
+    const displayPathInput = projectGroup?.path ?? targetPath ?? normalizeNonEmptyString(params.metadata?.path);
     const directMachine = displayMachineId ? params.machines[displayMachineId] : undefined;
     const homeDir = normalizeNonEmptyString(directMachine?.metadata?.homeDir) ?? parts.homeDir;
     const pathKey = normalizeSessionPathForProjectGrouping(displayPathInput, homeDir);
@@ -104,9 +108,11 @@ export function resolveSessionWorkspacePresentation(params: Readonly<{
     const workspaceKey = `wl_${workspaceHash}`;
     const displayPath = pathKey ? formatPathRelativeToHome(pathKey, homeDir ?? undefined) : '';
     const customLabel = readWorkspaceLabel(params.workspaceLabelsV1, workspaceKey);
-    const defaultDisplayTitle = params.workspacePathDisplayModeV1 === 'path'
-        ? displayPath
-        : resolveWorkspaceBasename(displayPath || pathKey);
+    const defaultDisplayTitle = projectGroup
+        ? projectGroup.label ?? resolveWorkspaceBasename(displayPath || pathKey)
+        : params.workspacePathDisplayModeV1 === 'path'
+            ? displayPath
+            : resolveWorkspaceBasename(displayPath || pathKey);
     const displayMachine = (() => {
         if (displayMachineId) {
             return params.machines[displayMachineId] ?? makeUnknownMachine(displayMachineId);

@@ -74,6 +74,25 @@ function buildRenderable(
     };
 }
 
+describe('project grouping metadata', () => {
+    it('retains the grouping hint and invalidates structural projections when it changes', () => {
+        const session = createSessionFixture({
+            id: 'task', metadata: { path: '/tmp/task', host: 'host', machineId: 'm1',
+                projectGroupV1: { v: 1, path: '/tmp/project', label: 'Project' } },
+        });
+        const previous = buildSessionListRenderableFromSession(session);
+        expect(previous.metadata?.projectGroupV1?.path).toBe('/tmp/project');
+        const next = buildSessionListRenderableFromSession({ ...session,
+            metadata: { ...session.metadata!, projectGroupV1: { v: 1, path: '/tmp/other', label: 'Other' } },
+        });
+        expect(areSessionListRenderablesEqual(previous, next)).toBe(false);
+        expect(didSessionListRenderableStructuralFieldsChange(previous, next)).toBe(true);
+        expect(didSessionListRenderableStructuralFieldsChange(previous, { ...previous,
+            metadata: { ...previous.metadata!, projectGroupV1: { v: 1, path: '/tmp/project', label: 'Renamed' } },
+        })).toBe(true);
+    });
+});
+
 describe('derivePendingRequestFlagsFromAgentState', () => {
     it('treats legacy AskUserQuestion requests without kind as user actions', () => {
         const flags = derivePendingRequestFlagsFromAgentState({

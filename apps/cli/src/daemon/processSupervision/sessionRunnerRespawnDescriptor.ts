@@ -11,6 +11,7 @@ import {
   openAccountScopedBlobCiphertext,
   sealAccountScopedBlobCiphertext,
   SessionMcpSelectionV1Schema,
+  ProjectGroupV1Schema,
   type AccountScopedCryptoMaterial,
 } from '@happier-dev/protocol';
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
@@ -179,6 +180,7 @@ export const SessionRunnerRespawnDescriptorV1Schema = z
     windowsRemoteSessionLaunchMode: z.enum(['hidden', 'windows_terminal', 'console']).optional(),
     windowsRemoteSessionConsole: z.enum(['hidden', 'visible']).optional(),
     windowsTerminalWindowName: z.string().optional(),
+    projectGroupV1: ProjectGroupV1Schema.optional(),
     profileId: z.string().optional(),
     permissionMode: z.string().optional(),
     permissionModeUpdatedAt: z.number().int().optional(),
@@ -252,6 +254,7 @@ export function buildSessionRunnerRespawnDescriptorV1FromSpawnOptions(
     ...(spawnOptions.windowsRemoteSessionLaunchMode ? { windowsRemoteSessionLaunchMode: spawnOptions.windowsRemoteSessionLaunchMode } : {}),
     ...(spawnOptions.windowsRemoteSessionConsole ? { windowsRemoteSessionConsole: spawnOptions.windowsRemoteSessionConsole } : {}),
     ...(spawnOptions.windowsTerminalWindowName ? { windowsTerminalWindowName: spawnOptions.windowsTerminalWindowName } : {}),
+    ...(spawnOptions.projectGroupV1 ? { projectGroupV1: spawnOptions.projectGroupV1 } : {}),
     ...(typeof spawnOptions.profileId === 'string' ? { profileId: spawnOptions.profileId } : {}),
     ...(typeof spawnOptions.permissionMode === 'string' ? { permissionMode: spawnOptions.permissionMode } : {}),
     ...(typeof spawnOptions.permissionModeUpdatedAt === 'number' ? { permissionModeUpdatedAt: spawnOptions.permissionModeUpdatedAt } : {}),
@@ -306,6 +309,7 @@ export function buildSpawnSessionOptionsFromRespawnDescriptorV1(
     ...(descriptor.windowsRemoteSessionLaunchMode ? { windowsRemoteSessionLaunchMode: descriptor.windowsRemoteSessionLaunchMode } : {}),
     ...(descriptor.windowsRemoteSessionConsole ? { windowsRemoteSessionConsole: descriptor.windowsRemoteSessionConsole } : {}),
     ...(descriptor.windowsTerminalWindowName ? { windowsTerminalWindowName: descriptor.windowsTerminalWindowName } : {}),
+    ...(descriptor.projectGroupV1 ? { projectGroupV1: descriptor.projectGroupV1 } : {}),
     ...(typeof descriptor.profileId === 'string' ? { profileId: descriptor.profileId } : {}),
     ...(typeof descriptor.permissionMode === 'string' ? { permissionMode: descriptor.permissionMode as any } : {}),
     ...(typeof descriptor.permissionModeUpdatedAt === 'number' ? { permissionModeUpdatedAt: descriptor.permissionModeUpdatedAt } : {}),

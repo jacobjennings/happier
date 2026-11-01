@@ -203,6 +203,7 @@ function resolveWorkspaceForSession(
         })
         : null;
     return resolveSessionWorkspacePresentation({
+        scope: 'project',
         metadata: session.metadata ?? null,
         machines: params.machines,
         target,
@@ -295,7 +296,10 @@ function pushProjectGroupsToList(params: Readonly<{
             params.listData.push(projectHeader);
         }
 
-        const variant: 'default' | 'no-path' = hasGroupHeader ? 'no-path' : 'default';
+        // Explicit project groups can contain several execution workspaces.
+        const variant: 'default' | 'no-path' = hasGroupHeader && !group.sessions.some((session) => session.metadata?.projectGroupV1)
+            ? 'no-path'
+            : 'default';
         const folderOptions = params.sessionFolders?.enabled === true && hasGroupHeader ? params.sessionFolders : null;
         if (folderOptions) {
             if (workspace) {

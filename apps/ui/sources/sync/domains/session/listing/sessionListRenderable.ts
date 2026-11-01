@@ -47,6 +47,7 @@ export interface SessionListRenderableMetadata {
     name?: string;
     summaryText?: string | null;
     path: string;
+    projectGroupV1?: import('@happier-dev/protocol').ProjectGroupV1;
     homeDir?: string | null;
     host?: string | null;
     machineId?: string | null;
@@ -272,6 +273,7 @@ export function buildSessionListRenderableMetadata(metadata: Metadata | null | u
         name: typeof metadata.name === 'string' ? metadata.name : undefined,
         summaryText: typeof metadata.summary?.text === 'string' ? metadata.summary.text : null,
         path: typeof metadata.path === 'string' ? metadata.path : '',
+        ...(metadata.projectGroupV1 ? { projectGroupV1: metadata.projectGroupV1 } : {}),
         homeDir: typeof metadata.homeDir === 'string' ? metadata.homeDir : null,
         host: typeof metadata.host === 'string' ? metadata.host : null,
         machineId: typeof metadata.machineId === 'string' ? metadata.machineId : null,
@@ -522,6 +524,8 @@ function areSessionListRenderableMetadataEqual(
     return (previous.name ?? null) === (next.name ?? null)
         && (previous.summaryText ?? null) === (next.summaryText ?? null)
         && previous.path === next.path
+        && (previous.projectGroupV1?.path ?? null) === (next.projectGroupV1?.path ?? null)
+        && (previous.projectGroupV1?.label ?? null) === (next.projectGroupV1?.label ?? null)
         && (previous.homeDir ?? null) === (next.homeDir ?? null)
         && (previous.host ?? null) === (next.host ?? null)
         && (previous.machineId ?? null) === (next.machineId ?? null)
@@ -732,6 +736,8 @@ export function didSessionListRenderableStructuralFieldsChange(
     const prevMeta = previous.metadata;
     const nextMeta = next.metadata;
 
+    if (prevMeta?.projectGroupV1?.path !== nextMeta?.projectGroupV1?.path) return true;
+    if (prevMeta?.projectGroupV1?.label !== nextMeta?.projectGroupV1?.label) return true;
     if (String(prevMeta?.machineId ?? '') !== String(nextMeta?.machineId ?? '')) return true;
     if (String(prevMeta?.path ?? '') !== String(nextMeta?.path ?? '')) return true;
     if (String(prevMeta?.homeDir ?? '') !== String(nextMeta?.homeDir ?? '')) return true;
@@ -855,6 +861,8 @@ export function didSessionListRenderableProjectGroupingFieldsChange(
     const prevParts = resolveSessionProjectGroupingKeyParts(prevMeta ?? null);
     const nextParts = resolveSessionProjectGroupingKeyParts(nextMeta ?? null);
 
+    if (prevMeta?.projectGroupV1?.label !== nextMeta?.projectGroupV1?.label) return true;
+    if (Boolean(prevMeta?.projectGroupV1) !== Boolean(nextMeta?.projectGroupV1)) return true;
     if (prevParts.pathKey !== nextParts.pathKey) return true;
     if (prevParts.machineGroupId !== nextParts.machineGroupId) return true;
 

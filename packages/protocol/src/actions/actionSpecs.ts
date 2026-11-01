@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ProjectGroupV1Schema } from '../sessionMetadata/projectGroupV1.js';
 
 import { ActionIdSchema, type ActionId } from './actionIds.js';
 import { ActionUiPlacementSchema, type ActionUiPlacement } from './actionUiPlacements.js';
@@ -607,6 +608,8 @@ export const SessionSpawnNewInputSchema = z.object({
   title: z.string().min(1).optional(),
   path: z.string().min(1).optional(),
   directory: z.string().min(1).optional(),
+  projectPath: ProjectGroupV1Schema.shape.path.optional(),
+  projectLabel: ProjectGroupV1Schema.shape.label,
   approvedNewDirectoryCreation: z.boolean().optional(),
   host: z.string().min(1).optional(),
   machineId: z.string().min(1).optional(),
@@ -713,6 +716,9 @@ export const SessionSpawnNewInputSchema = z.object({
     }
   };
 
+  if (value.projectLabel && !value.projectPath) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'projectLabel requires projectPath', path: ['projectLabel'] });
+  }
   rejectConflictingAliases(['path', 'directory']);
   rejectConflictingAliases(['prompt', 'initialPrompt', 'initialMessage']);
   rejectConflictingTargetAliases();

@@ -229,6 +229,9 @@ export async function resolveSpawnChildEnvironment(params: {
   if (params.options.attachMetadataIdentityPolicy) {
     extraEnvForChild.HAPPIER_SESSION_ATTACH_METADATA_IDENTITY_POLICY = params.options.attachMetadataIdentityPolicy;
   }
+  extraEnvForChild.HAPPIER_SESSION_PROJECT_GROUP_JSON = params.options.projectGroupV1
+    ? JSON.stringify(params.options.projectGroupV1)
+    : '';
   if (params.options.mcpSelection) {
     extraEnvForChild.HAPPIER_SESSION_MCP_SELECTION_JSON = JSON.stringify(params.options.mcpSelection);
   }

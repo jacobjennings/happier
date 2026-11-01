@@ -1,3 +1,4 @@
+import { readProjectGroupV1 } from '@happier-dev/protocol';
 import { resolveAbsolutePath } from '@/utils/path/pathUtils';
 import { normalizeNonEmptyString } from '@/utils/strings/normalizeNonEmptyString';
 
@@ -35,13 +36,14 @@ export function resolveSessionProjectGroupingKeyParts(metadata: Readonly<{
     host?: unknown;
     machineId?: unknown;
     path?: unknown;
+    projectGroupV1?: unknown;
     homeDir?: unknown;
 }> | null | undefined): SessionProjectGroupingKeyParts {
     const host = normalizeNonEmptyString(metadata?.host);
     const machineId = normalizeNonEmptyString(metadata?.machineId);
     const homeDirRaw = normalizeNonEmptyString(metadata?.homeDir);
     const homeDir = homeDirRaw ? normalizePathForProjectGrouping(homeDirRaw) : null;
-    const pathKey = normalizeSessionPathForProjectGrouping(metadata?.path, homeDir);
+    const pathKey = normalizeSessionPathForProjectGrouping(readProjectGroupV1(metadata?.projectGroupV1)?.path ?? metadata?.path, homeDir);
     const machineGroupId = machineId ? `id:${machineId}` : 'unknown';
 
     return {

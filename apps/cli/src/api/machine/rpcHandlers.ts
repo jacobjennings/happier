@@ -34,6 +34,7 @@ import {
   SessionForkRpcParamsSchema,
   SessionInitialGoalRequestV1Schema,
   SessionMcpSelectionV1Schema,
+  ProjectGroupV1Schema,
   SessionRunnerStatusGetRequestV1Schema,
   SessionSpawnSourceContextV1Schema,
   getActionSpec,
@@ -707,6 +708,7 @@ export function registerMachineRpcHandlers(params: Readonly<{
       approvedNewDirectoryCreation,
       backendTarget,
       environmentVariables,
+      projectGroupV1,
       profileId,
       terminal,
       resume,
@@ -823,6 +825,14 @@ export function registerMachineRpcHandlers(params: Readonly<{
         errorMessage: 'Unknown backend target',
       };
     }
+    const parsedProjectGroup = ProjectGroupV1Schema.optional().safeParse(projectGroupV1);
+    if (!parsedProjectGroup.success) {
+      return {
+        type: 'error',
+        errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+        errorMessage: 'Invalid project grouping metadata',
+      };
+    }
     const normalizedMcpSelection = (() => {
       if (mcpSelection === undefined) return undefined;
       const parsed = SessionMcpSelectionV1Schema.safeParse(mcpSelection);
@@ -901,6 +911,7 @@ export function registerMachineRpcHandlers(params: Readonly<{
       machineId,
       backendTarget: normalizedBackendTarget,
       environmentVariables: normalizedEnvironmentVariables,
+      projectGroupV1: parsedProjectGroup.data,
       profileId,
       terminal,
       resume: normalizedResume,

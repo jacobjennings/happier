@@ -526,6 +526,7 @@ export type SessionHandoffMetadataV1 = {
 
 export type Metadata = {
   path: string,
+  projectGroupV1?: import('@happier-dev/protocol').ProjectGroupV1,
   host: string,
   version?: string,
   name?: string,

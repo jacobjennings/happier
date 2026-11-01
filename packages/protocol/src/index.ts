@@ -1999,6 +1999,8 @@ export {
   parseSessionPermissionModeAlias,
 } from './sessionMetadata/sessionPermissionModes.js';
 
+export { ProjectGroupV1Schema, createProjectGroupV1Schema, readProjectGroupV1, type ProjectGroupV1 } from './sessionMetadata/projectGroupV1.js';
+
 export {
   SESSION_WORKSPACE_LOCATION_METADATA_KEY,
   SessionWorkspaceLocationV1Schema,

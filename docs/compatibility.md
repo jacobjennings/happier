@@ -591,6 +591,20 @@ UIs may show automated traffic as owner input. New clients retain total-count
 fallback against older relays that do not publish the owner summary. Supported
 released-reader runtime behavior has not been exercised for this increment.
 
+### Explicit session project grouping (fork development)
+
+`projectGroupV1` is optional presentation metadata with `v: 1`, an absolute
+machine-local `path`, and an optional `label`. The spawn Action accepts
+`projectPath`/`projectLabel`, and the daemon request carries the validated metadata
+shape. Session execution and filesystem operations continue using the session's
+own path. Updated UI readers ignore malformed or unknown grouping hints and use
+the existing path grouping. Absence preserves existing sessions without migration.
+Older UIs ignore this additional metadata and retain folder grouping. An older
+daemon may strip the optional spawn hint, so project grouping requires an updated
+daemon as well as the creating CLI. No server operation or database schema changes.
+Released-runtime coexistence and deployed presentation have not yet been verified
+for this increment.
+
 ## Migration history
 
 Migration source has a stricter authoring boundary than ordinary internal code:

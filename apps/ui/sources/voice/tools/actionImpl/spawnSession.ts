@@ -7,7 +7,7 @@ import { supportsSpawnPendingFirstInput } from '@/sync/domains/session/spawn/spa
 import { buildSafeWorkspaceLabel } from '@/utils/worktree/workspaceHandles';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import type { StorageState } from '@/sync/store/types';
-import type { ActionExecutorDeps } from '@happier-dev/protocol';
+import { ProjectGroupV1Schema, type ActionExecutorDeps } from '@happier-dev/protocol';
 
 import { normalizeNonEmptyString, resolveVoiceMachineLabel } from './shared';
 import { postprocessSpawnedSession } from './spawnSessionPostProcess';
@@ -195,6 +195,9 @@ export async function spawnSessionForVoiceTool(params: SessionSpawnNewActionInpu
   const spawned = await machineSpawnNewSessionUntilResolved({
     machineId,
     directory,
+    ...(params.projectPath ? { projectGroupV1: ProjectGroupV1Schema.parse({
+      v: 1, path: params.projectPath, ...(params.projectLabel ? { label: params.projectLabel } : {}),
+    }) } : {}),
     backendTarget: { kind: 'builtInAgent', agentId: agent },
     serverId,
     userAttemptId: spawnAttempt.userAttemptId,

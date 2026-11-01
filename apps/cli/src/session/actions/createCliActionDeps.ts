@@ -1,3 +1,4 @@
+import { ProjectGroupV1Schema } from '@happier-dev/protocol';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
@@ -1380,6 +1381,8 @@ export function createCliActionDeps(params: Readonly<{
       title,
       path,
       directory,
+      projectPath,
+      projectLabel,
       approvedNewDirectoryCreation,
       host,
       machineId,
@@ -1568,6 +1571,11 @@ export function createCliActionDeps(params: Readonly<{
       try {
         created = await createSpawnedSession({
           ...normalized.createParams,
+          ...(projectPath ? { projectGroupV1: ProjectGroupV1Schema.parse({
+            v: 1,
+            path: projectPath,
+            ...(projectLabel ? { label: projectLabel } : {}),
+          }) } : {}),
           ...(typeof approvedNewDirectoryCreation === 'boolean' ? { approvedNewDirectoryCreation } : {}),
           ...(pendingFirstInput ? { pendingFirstInput } : {}),
           ...(resume ? { resume } : {}),

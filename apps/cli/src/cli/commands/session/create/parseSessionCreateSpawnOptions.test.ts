@@ -3,6 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { parseSessionCreateSpawnOptions } from './parseSessionCreateSpawnOptions';
 
 describe('parseSessionCreateSpawnOptions', () => {
+  it('keeps the grouping project separate from the execution directory', () => {
+    expect(parseSessionCreateSpawnOptions([
+      '--path', '/tmp/projA-ws1', '--project-path', '/tmp/projA', '--project-label', 'Project A',
+    ]).actionInput).toMatchObject({
+      path: '/tmp/projA-ws1', projectPath: '/tmp/projA', projectLabel: 'Project A',
+    });
+  });
+
   it.each([
     ['read_only', 'read-only'],
     ['read-only', 'read-only'],

@@ -4,6 +4,22 @@ import { resolveSpawnChildEnvironment } from './resolveSpawnChildEnvironment';
 import type { SpawnSessionOptions } from '@/rpc/handlers/registerSessionHandlers';
 
 describe('resolveSpawnChildEnvironment (mcp selection)', () => {
+  it('exports the explicit project hint and prevents inheriting one for an ungrouped child', async () => {
+    const projectGroupV1 = { v: 1 as const, path: '/tmp/projA' };
+    for (const group of [projectGroupV1, undefined]) {
+      const result = await resolveSpawnChildEnvironment({
+        options: { directory: '/tmp/projA-ws1', projectGroupV1: group },
+        profileEnvironmentVariables: { HAPPIER_SESSION_PROJECT_GROUP_JSON: 'untrusted profile override' },
+        daemonSpawnHooks: null,
+        processEnv: { HAPPIER_SESSION_PROJECT_GROUP_JSON: 'parent session hint' },
+        logDebug: () => {}, logInfo: () => {}, logWarn: () => {}, connectedServiceAuth: null,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.errorMessage);
+      expect(result.extraEnvForChild.HAPPIER_SESSION_PROJECT_GROUP_JSON).toBe(group ? JSON.stringify(group) : '');
+    }
+  });
+
   it('exports session-scoped MCP selection JSON for the spawned runner', async () => {
     const options: SpawnSessionOptions = {
       directory: '.',

@@ -158,6 +158,8 @@ export interface SpawnSessionOptions {
      * normalizes empty/reserved names and lets local env override this value.
      */
     windowsTerminalWindowName?: string;
+    /** Presentation-only project grouping, independent of directory. */
+    projectGroupV1?: import('@happier-dev/protocol').ProjectGroupV1;
     /**
      * Session-scoped profile identity for display/debugging across devices.
      * This is NOT the profile content; actual runtime behavior is still driven

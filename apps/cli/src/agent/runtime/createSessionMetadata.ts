@@ -21,6 +21,7 @@ import {
     buildAcpSessionModeOverrideV1,
     buildModelOverrideV1,
     parseSessionMcpSelectionV1Json,
+    ProjectGroupV1Schema,
 } from '@happier-dev/protocol';
 
 import type { AgentState, Metadata, PermissionMode } from '@/api/types';
@@ -88,6 +89,7 @@ function consumeSessionEnv(
     name:
         | 'HAPPIER_SESSION_CONFIG_OPTION_OVERRIDES_JSON'
         | 'HAPPIER_SESSION_MCP_SELECTION_JSON'
+        | 'HAPPIER_SESSION_PROJECT_GROUP_JSON'
         | typeof HAPPIER_SESSION_CONNECTED_SERVICE_BROKER_SELECTION_IDENTITY_ENV_KEY
         | typeof HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_ENV_KEY
         | typeof HAPPIER_SESSION_CONNECTED_SERVICES_BINDINGS_ENV_KEY,
@@ -185,7 +187,10 @@ export function createSessionMetadata(opts: CreateSessionMetadataOptions): Sessi
         agentPath: sessionPath,
     });
     const nativeAgentEnvironmentV1 = readSessionNativeEnvironment(opts.nativeAgentEnvironment);
+    const projectGroupJson = consumeSessionEnv('HAPPIER_SESSION_PROJECT_GROUP_JSON');
+    const projectGroupV1 = projectGroupJson ? ProjectGroupV1Schema.parse(JSON.parse(projectGroupJson)) : undefined;
     const metadataBase: Metadata = {
+        ...(projectGroupV1 ? { projectGroupV1 } : {}),
         ...(nativeAgentEnvironmentV1 ? { nativeAgentEnvironmentV1 } : {}),
         path: sessionPath,
         host: os.hostname(),

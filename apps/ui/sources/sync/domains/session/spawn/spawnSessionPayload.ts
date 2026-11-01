@@ -9,6 +9,7 @@ import {
 } from '@/utils/system/versionUtils';
 import type {
     AcpConfigOptionOverridesV1,
+    ProjectGroupV1,
     AgentRuntimeDescriptorV1,
     BackendTargetRefV1,
     SessionMcpSelectionV1,
@@ -25,6 +26,7 @@ export interface SpawnSessionOptions {
     machineId: string;
     serverId?: string | null;
     directory: string;
+    projectGroupV1?: ProjectGroupV1;
     transcriptStorage?: 'persisted' | 'direct';
     approvedNewDirectoryCreation?: boolean;
     backendTarget: BackendTargetRefV1;
@@ -109,6 +111,7 @@ export interface SpawnSessionOptions {
 export type SpawnHappySessionRpcParams = CodexBackendTransportFields & {
     type: 'spawn-in-directory'
     directory: string
+    projectGroupV1?: ProjectGroupV1
     transcriptStorage?: 'persisted' | 'direct'
     approvedNewDirectoryCreation?: boolean
     backendTarget: BackendTargetRefV1
@@ -235,6 +238,7 @@ function buildLegacySpawnHappySessionRpcParams(options: SpawnSessionOptions): Le
 export function buildSpawnHappySessionRpcParams(options: SpawnSessionOptions): SpawnHappySessionRpcParams {
     const {
         directory,
+        projectGroupV1,
         transcriptStorage,
         approvedNewDirectoryCreation = false,
         backendTarget,
@@ -321,6 +325,7 @@ export function buildSpawnHappySessionRpcParams(options: SpawnSessionOptions): S
             : {}),
         ...(mcpSelection ? { mcpSelection } : {}),
         ...(sourceContext ? { sourceContext } : {}),
+        ...(projectGroupV1 ? { projectGroupV1 } : {}),
         ...(typeof accountSettingsVersionHint === 'number' && Number.isInteger(accountSettingsVersionHint) && accountSettingsVersionHint >= 0
             ? { accountSettingsVersionHint }
             : {}),

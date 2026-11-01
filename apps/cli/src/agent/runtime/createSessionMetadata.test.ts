@@ -9,6 +9,21 @@ const HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_ENV_KEY =
     'HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_V1_JSON';
 
 describe('createSessionMetadata', () => {
+    it('records the grouping project without changing the runner workspace and consumes the hint', () => {
+        const projectGroupV1 = { v: 1, path: '/tmp/projA', label: 'Project A' };
+        vi.stubEnv('HAPPIER_SESSION_PROJECT_GROUP_JSON', JSON.stringify(projectGroupV1));
+        try {
+            const { metadata } = createSessionMetadata({
+                flavor: 'codex', machineId: 'machine-1', directory: '/tmp/projA-ws1',
+            });
+            expect(metadata.projectGroupV1).toEqual(projectGroupV1);
+            expect(metadata.path).toBe('/tmp/projA-ws1');
+            expect(process.env.HAPPIER_SESSION_PROJECT_GROUP_JSON).toBeUndefined();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
     it('captures only the non-secret native account directories for later resume', () => {
         vi.stubEnv('CLAUDE_CONFIG_DIR', '/accounts/ambient');
         try {

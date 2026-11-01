@@ -1,3 +1,4 @@
+import { createProjectGroupV1Schema } from '../sessionMetadata/projectGroupV1.js';
 import { z } from 'zod';
 import { PendingLocalIdSchema } from '../sessionMessages/pendingLocalId.js';
 import { PendingActivationAuthorizationV1Schema } from './pendingActivationAuthorizationV1.js';
@@ -254,6 +255,7 @@ export function createSessionMetadataSchema(zod: typeof z) {
   return zod
     .object({
       systemSessionV1: createSessionSystemSessionV1Schema(zod).optional(),
+      projectGroupV1: createProjectGroupV1Schema(zod).optional().catch(undefined),
       [SESSION_WORKSPACE_LOCATION_METADATA_KEY]: createSessionWorkspaceLocationV1Schema(zod).optional(),
       // Remote-dev does not yet have the registered session-state field catalog used by dev.
       // This metadata key is the compatible storage binding for runtime.usageLimitRecovery.

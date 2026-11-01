@@ -88,6 +88,7 @@ export type ReplaySeededSessionCreationV1 = Readonly<{
 export type CreateSpawnedSessionParams = Readonly<{
   credentials: Credentials;
   directory: string;
+  projectGroupV1?: import('@happier-dev/protocol').ProjectGroupV1;
   machineId?: string;
   backendTarget: BackendTargetRefV1;
   modelId?: string;
@@ -536,6 +537,7 @@ export async function createSpawnedSession(
       : resolveDaemonSpawnSessionByNonce);
   const spawnRequestInput = {
     directory: params.directory,
+    ...(params.projectGroupV1 ? { projectGroupV1: params.projectGroupV1 } : {}),
     spawnNonce,
     ...(exactMachineId ? { machineId: exactMachineId } : {}),
     backendTarget: params.backendTarget,

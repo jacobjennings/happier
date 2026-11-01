@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { PermissionMode, ModelMode } from "@/sync/domains/permissions/permissionTypes";
 import { 
     CliUpdateFactsSchema,
+    createProjectGroupV1Schema,
     createAgentRuntimeDescriptorV1Schema,
     createAcpConfigOptionOverridesV1Schema,
     createAcpSessionModeOverrideV1Schema,
@@ -35,6 +36,7 @@ const MetadataObjectSchema = z.object({
     // Cloud/system sessions may omit these fields; treat missing/null as empty.
     path: z.string().nullish().transform((value) => (typeof value === 'string' ? value : '')),
     host: z.string().nullish().transform((value) => (typeof value === 'string' ? value : '')),
+    projectGroupV1: createProjectGroupV1Schema(z).optional().catch(undefined),
     version: z.string().optional(),
     name: z.string().optional(),
     os: z.string().optional(),

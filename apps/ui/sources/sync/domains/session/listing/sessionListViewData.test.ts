@@ -51,6 +51,31 @@ function makeMachine(partial: Partial<Machine> & Pick<Machine, 'id'>): Machine {
 }
 
 describe('buildSessionListViewData', () => {
+    it('groups projected task sessions by project while retaining task paths and legacy groups', () => {
+        const projectGroupV1 = { v: 1 as const, path: '/tmp/projA' };
+        const sessions = Object.fromEntries([
+            { id: 'a', path: '/tmp/projA-ws1', projectGroupV1 },
+            { id: 'b', path: '/tmp/projA-ws2', projectGroupV1 },
+            { id: 'legacy', path: '/tmp/legacy' },
+        ].map(({ id, ...metadata }) => {
+            const session = makeSession({ id, active: true,
+                metadata: { ...metadata, machineId: 'm1', host: 'host' } });
+            return [id, buildSessionListRenderableFromSession(session)];
+        }));
+        const data = buildSessionListViewData(sessions, { m1: makeMachine({ id: 'm1' }) }, {
+            groupInactiveSessionsByProject: true,
+        });
+        const headers = data.filter((item): item is Extract<SessionListViewItem, { type: 'header' }> =>
+            item.type === 'header' && item.headerKind === 'project');
+        expect(headers.map((header) => header.title).sort()).toEqual(['legacy', 'projA']);
+        const rows = data.filter((item) => item.type === 'session');
+        expect(rows.find((row) => row.session.id === 'a')?.groupKey)
+            .toBe(rows.find((row) => row.session.id === 'b')?.groupKey);
+        expect(rows.find((row) => row.session.id === 'a')?.variant).toBe('default');
+        expect(rows.find((row) => row.session.id === 'a')?.session.metadata?.path).toBe('/tmp/projA-ws1');
+        expect(rows.find((row) => row.session.id === 'b')?.session.metadata?.path).toBe('/tmp/projA-ws2');
+    });
+
     it.each(['date', 'project'] as const)('projects producer-scoped workspaces for %s rows with folder view off', (grouping) => {
         const rows = ['server-a', 'server-b'].flatMap((serverId) => {
             const machineId = `${serverId}-machine`;
