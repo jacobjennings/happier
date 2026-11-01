@@ -212,6 +212,17 @@ describe('computeDaemonSpawnRequestKey', () => {
     expect(a.key).not.toBe(b.key);
   });
 
+  it('includes the explicit project grouping in the new-session key', () => {
+    const base = {
+      directory: '/tmp/projA-ws1',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+    } satisfies SpawnSessionOptions;
+    const ungrouped = computeDaemonSpawnRequestKey(base);
+    const grouped = computeDaemonSpawnRequestKey({ ...base, projectGroupV1: { v: 1, path: '/tmp/projA' } });
+    const otherProject = computeDaemonSpawnRequestKey({ ...base, projectGroupV1: { v: 1, path: '/tmp/projB' } });
+    expect(new Set([ungrouped.key, grouped.key, otherProject.key]).size).toBe(3);
+  });
+
   it('includes the Windows Terminal window name in the new-session key', () => {
     const a = computeDaemonSpawnRequestKey({
       directory: '/tmp/repo',

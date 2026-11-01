@@ -21,7 +21,8 @@ import {
     buildAcpSessionModeOverrideV1,
     buildModelOverrideV1,
     parseSessionMcpSelectionV1Json,
-    ProjectGroupV1Schema,
+    readProjectGroupV1,
+    type ProjectGroupV1,
 } from '@happier-dev/protocol';
 
 import type { AgentState, Metadata, PermissionMode } from '@/api/types';
@@ -97,6 +98,20 @@ function consumeSessionEnv(
     const raw = process.env[name];
     delete process.env[name];
     return typeof raw === 'string' && raw.trim().length > 0 ? raw : null;
+}
+
+/** Presentation-only hint: a malformed value is ignored instead of failing session startup. */
+function parseProjectGroupFromEnvironment(): ProjectGroupV1 | null {
+    const raw = consumeSessionEnv('HAPPIER_SESSION_PROJECT_GROUP_JSON');
+    if (raw === null) {
+        return null;
+    }
+
+    try {
+        return readProjectGroupV1(JSON.parse(raw));
+    } catch {
+        return null;
+    }
 }
 
 function parseSessionConfigOptionOverridesFromEnvironment(): ReturnType<typeof AcpConfigOptionOverridesV1Schema.parse> | null {
@@ -187,8 +202,7 @@ export function createSessionMetadata(opts: CreateSessionMetadataOptions): Sessi
         agentPath: sessionPath,
     });
     const nativeAgentEnvironmentV1 = readSessionNativeEnvironment(opts.nativeAgentEnvironment);
-    const projectGroupJson = consumeSessionEnv('HAPPIER_SESSION_PROJECT_GROUP_JSON');
-    const projectGroupV1 = projectGroupJson ? ProjectGroupV1Schema.parse(JSON.parse(projectGroupJson)) : undefined;
+    const projectGroupV1 = parseProjectGroupFromEnvironment();
     const metadataBase: Metadata = {
         ...(projectGroupV1 ? { projectGroupV1 } : {}),
         ...(nativeAgentEnvironmentV1 ? { nativeAgentEnvironmentV1 } : {}),

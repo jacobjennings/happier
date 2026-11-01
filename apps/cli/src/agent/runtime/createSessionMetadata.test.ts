@@ -24,6 +24,20 @@ describe('createSessionMetadata', () => {
         }
     });
 
+    it('ignores a malformed grouping hint instead of failing session creation', () => {
+        for (const raw of ['{not json', JSON.stringify({ v: 1, path: 'relative/path' })]) {
+            vi.stubEnv('HAPPIER_SESSION_PROJECT_GROUP_JSON', raw);
+            try {
+                const { metadata } = createSessionMetadata({
+                    flavor: 'codex', machineId: 'machine-1', directory: '/tmp/projA-ws1',
+                });
+                expect(metadata.projectGroupV1).toBeUndefined();
+            } finally {
+                vi.unstubAllEnvs();
+            }
+        }
+    });
+
     it('captures only the non-secret native account directories for later resume', () => {
         vi.stubEnv('CLAUDE_CONFIG_DIR', '/accounts/ambient');
         try {

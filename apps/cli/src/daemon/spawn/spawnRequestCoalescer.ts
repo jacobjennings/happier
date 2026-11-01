@@ -156,6 +156,7 @@ function buildSpawnSemanticFingerprint(options: SpawnSessionOptions): Json {
       options.sessionConfigOptionOverrides,
     ),
     ...(transcriptStorage ? { transcriptStorage } : {}),
+    ...(options.projectGroupV1 ? { projectGroupV1: toStableJson(options.projectGroupV1, new WeakSet()) } : {}),
   };
 }
 
