@@ -35,6 +35,9 @@ from pathlib import Path
 Path(os.environ['INVOCATION']).write_text(json.dumps(sys.argv[1:]))
 if os.environ['REPORT_PLACEMENT'] == 'yes':
     print('harness: CPU placement ' + json.dumps({'selected_host': os.environ['SELECTED_HOST']}))
+if os.environ['REPORT_PLACEMENT'] == 'deadline':
+    print('harness: CPU placement deadline exceeded before sync: {}')
+    sys.exit(76)
 print('BUILD_EXPORT=/remote/export.tar')
 ''')
             scp = root / 'scp'
@@ -65,6 +68,16 @@ Path(sys.argv[-1]).write_bytes(b'complete export')
                 'TRANSFER': str(root / 'unexpected-transfer'),
             }):
                 with self.assertRaises(ValueError):
+                    web.harness_artifact('cpu', ['build-command'], 'BUILD_EXPORT=', root / 'missing' / 'export.tar')
+                self.assertFalse((root / 'unexpected-transfer').exists())
+            # A queue-deadline diagnostic is not a placement and must fail as a missing artifact.
+            with patch.dict(os.environ, {
+                'PATH': str(root) + os.pathsep + os.environ['PATH'],
+                'HARNESS_CONFIG': str(config), 'SELECTED_HOST': 'browser',
+                'REPORT_PLACEMENT': 'deadline', 'INVOCATION': str(root / 'invocation'),
+                'TRANSFER': str(root / 'unexpected-transfer'),
+            }):
+                with self.assertRaisesRegex(ValueError, 'did not produce'):
                     web.harness_artifact('cpu', ['build-command'], 'BUILD_EXPORT=', root / 'missing' / 'export.tar')
                 self.assertFalse((root / 'unexpected-transfer').exists())
 

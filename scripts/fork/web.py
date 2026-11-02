@@ -46,7 +46,8 @@ def harness_artifact(role, command, marker, destination, gpu=None):
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
         for line in process.stdout:
             print(line, end='', flush=True)
-            if role == 'cpu' and line.startswith('harness: CPU placement '):
+            # The queue-deadline diagnostic shares this prefix but carries no JSON placement.
+            if role == 'cpu' and line.startswith('harness: CPU placement {'):
                 placement = json.loads(line.removeprefix('harness: CPU placement '))
                 host = configured_hosts[placement['selected_host']]['ssh']
             if line.startswith(marker):
