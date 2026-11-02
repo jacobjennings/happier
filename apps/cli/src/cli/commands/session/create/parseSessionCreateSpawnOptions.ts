@@ -19,6 +19,8 @@ import { assertSessionCommandArguments } from '../shared/assertSessionCommandArg
  */
 export type SessionCreateSpawnRequest = Readonly<{
   directory: string;
+  projectPath?: string;
+  projectLabel?: string;
   backendTargetKey: string | null;
   title?: string;
   initialInput?: Readonly<{ text: string }>;
@@ -191,7 +193,7 @@ export function parseSessionCreateSpawnOptions(argv: readonly string[]): ParsedS
     startIndex: 1,
     booleanFlags: ['--json', '--wait', '--follow', '--jsonl', '--resume-spawn-attempt'],
     valueFlags: [
-      '--path', '--title', '--message', '--prompt', '--backend', '--agent', '--model',
+      '--project-path', '--project-label', '--path', '--title', '--message', '--prompt', '--backend', '--agent', '--model',
       '--provider-connection', '--permission-mode', '--mode', '--launch-profile', '--profile',
       '--machine-id', '--server-id', '--spawn-attempt-id', '--transcript-storage', '--timeout',
       '--config-option', '--reasoning-effort', '--config-overrides-json', '--env', '--auth',
@@ -201,7 +203,7 @@ export function parseSessionCreateSpawnOptions(argv: readonly string[]): ParsedS
     ],
     maxPositionals: 1,
     inlineValueFlags: [
-      '--path', '--title', '--message', '--prompt', '--backend', '--agent', '--model',
+      '--project-path', '--project-label', '--path', '--title', '--message', '--prompt', '--backend', '--agent', '--model',
       '--provider-connection', '--permission-mode', '--mode', '--launch-profile', '--profile',
       '--machine-id', '--server-id', '--spawn-attempt-id', '--transcript-storage', '--timeout',
       '--reasoning-effort', '--config-overrides-json', '--auth', '--connected-services', '--auth-json',
@@ -214,7 +216,7 @@ export function parseSessionCreateSpawnOptions(argv: readonly string[]): ParsedS
   const [positionalInitialPrompt = ''] = readCommandPositionals(argv, {
     startIndex: 1,
     valueFlags: [
-      '--path', '--title', '--message', '--prompt', '--backend', '--agent', '--model',
+      '--project-path', '--project-label', '--path', '--title', '--message', '--prompt', '--backend', '--agent', '--model',
       '--provider-connection', '--permission-mode', '--mode', '--launch-profile', '--profile',
       '--machine-id', '--server-id', '--spawn-attempt-id', '--transcript-storage',
       '--timeout',
@@ -321,6 +323,8 @@ export function parseSessionCreateSpawnOptions(argv: readonly string[]): ParsedS
     ...(connectedServicesAuthIntent ? { connectedServicesAuthIntent } : {}),
     spawnRequest: {
       directory: path,
+      ...(readFlagValue(argv, '--project-path') ? { projectPath: readFlagValue(argv, '--project-path')! } : {}),
+      ...(readFlagValue(argv, '--project-label') ? { projectLabel: readFlagValue(argv, '--project-label')! } : {}),
       backendTargetKey,
       ...(title ? { title } : {}),
       ...(initialPrompt ? { initialInput: { text: initialPrompt } } : {}),

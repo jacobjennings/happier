@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 describe('sessionListProjectGroupingKeys', () => {
+    it('groups explicit projects while keeping managed Chats outside path groups', async () => {
+        const { resolveSessionProjectGroupingKeyPartsWithMachineMetadata: resolve } = await import('./sessionListProjectGroupingKeys');
+        const projectGroupV1 = { v: 1, path: '/repo', label: 'Project' };
+        expect(resolve({ path: '/repo-task', machineId: 'm1', projectGroupV1 }, null, '/repo-task').pathKey).toBe('/repo');
+        expect(resolve({ path: '/repo-task', projectGroupV1: { v: 2, path: '/wrong' } }, null).pathKey).toBe('/repo-task');
+        expect(resolve({ path: '/private', projectGroupV1, sessionDirectoryV1: { v: 1, kind: 'managed' } }, null).pathKey).toBe('');
+    });
     it('normalizes windows separators and expands ~ using homeDir without grouping by host', async () => {
         const { resolveSessionProjectGroupingKeyParts } = await import('./sessionListProjectGroupingKeys');
         const parts = resolveSessionProjectGroupingKeyParts({

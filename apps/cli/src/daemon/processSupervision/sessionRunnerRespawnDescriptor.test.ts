@@ -65,6 +65,14 @@ const REMOTE_DEV_NATIVE_RESPAWN_DESCRIPTOR_V1 = {
 };
 
 describe('sessionRunnerRespawnDescriptor', () => {
+  it('retains project grouping through persisted daemon restart descriptors', () => {
+    const projectGroupV1 = { v: 1 as const, path: '/repo', label: 'Project' };
+    const descriptor = buildSessionRunnerRespawnDescriptorV1FromSpawnOptions({ directory: '/repo-task', projectGroupV1,
+      backendTarget: { kind: 'backend', backendId: 'my-acp', configuredBackendId: 'my-acp', sourceKind: 'configured' } });
+    expect(descriptor).not.toBeNull();
+    const restored = SessionRunnerRespawnDescriptorV1Schema.parse(JSON.parse(JSON.stringify(writeSessionRunnerRespawnDescriptorForPersistence(descriptor!))));
+    expect(buildSpawnSessionOptionsFromRespawnDescriptorV1(restored)).toMatchObject({ directory: '/repo-task', projectGroupV1 });
+  });
   it('folds predecessor MCP selection into the canonical carrier and preserves both kinds on restart', () => {
     const mcp = { v: 1, managedServersEnabled: true, forceIncludeServerIds: ['linear'], forceExcludeServerIds: [] };
     const skills = { v: 1, forceIncludeSkillIds: ['lint'], forceExcludeSkillIds: [], excludeNativeSkillNames: ['native-review'] };

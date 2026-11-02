@@ -54,6 +54,14 @@ import * as warmCache from './warmCachePersistence';
 import { suspendServerProfilePersistenceForDemo, resumeServerProfilePersistenceForDemo } from '@/sync/domains/server/serverProfiles';
 
 describe('warmCachePersistence', () => {
+    it.each(['v1', 'v2'])('retires %s list projections while retaining unrelated data', (version) => {
+        const legacyKey = `session-list-warm-cache-${version}:server-a:account-a`;
+        store().set(legacyKey, '{}');
+        store().set('unrelated', 'retained');
+        expect(loadSessionListWarmCacheEntries('server-a', 'account-a')).toEqual({});
+        expect(store().has(legacyKey)).toBe(false);
+        expect(store().get('unrelated')).toBe('retained');
+    });
     beforeEach(async () => {
         // Nothing reads or writes the cache until its at-rest key resolves, exactly as on a device.
         await prepareWarmCacheEncryptionKey();
@@ -188,7 +196,7 @@ describe('warmCachePersistence', () => {
     it('restores nested stored runtime facts with retired fields without deleting the cache', () => {
         // Open the native encrypted cache and finish legacy plaintext retirement before seeding its bytes.
         loadSessionListWarmCacheEntries('server-a', 'account-a');
-        const key = 'session-list-warm-cache-v1:server-a:account-a';
+        const key = 'session-list-warm-cache-v3:server-a:account-a';
         store.set(key, JSON.stringify({ s1: { sessionId: 's1', metadataVersion: 1, agentStateVersion: 1,
             updatedAt: 20, createdAt: 10, active: true, activeAt: 20, archivedAt: null, path: '/repo',
             pendingActivationAuthorization: { status: 'waiting', requestId: 'request-a', requestedAt: 10, retired: true },
@@ -241,7 +249,7 @@ describe('warmCachePersistence', () => {
 
     it('persists canonical external-session agent identity without providerId', () => {
         store.set(
-            'session-list-warm-cache-v1:server-a:account-a',
+            'session-list-warm-cache-v3:server-a:account-a',
             JSON.stringify({
                 s1: {
                 sessionId: 's1',
@@ -275,7 +283,7 @@ describe('warmCachePersistence', () => {
 
     it('normalizes released external-session Codex affinity before rehydrating the cache', () => {
         store.set(
-            'session-list-warm-cache-v1:server-a:account-a',
+            'session-list-warm-cache-v3:server-a:account-a',
             JSON.stringify({
                 s1: {
                     sessionId: 's1',
@@ -312,7 +320,7 @@ describe('warmCachePersistence', () => {
 
     it('rehydrates rollback eligibility from persisted session list entries', () => {
         store.set(
-            'session-list-warm-cache-v1:server-a:account-a',
+            'session-list-warm-cache-v3:server-a:account-a',
             JSON.stringify({
                 s1: {
                     sessionId: 's1',
@@ -338,7 +346,7 @@ describe('warmCachePersistence', () => {
 
     it('drops invalid payloads safely', () => {
         store.set(
-            'session-list-warm-cache-v1:server-a:account-a',
+            'session-list-warm-cache-v3:server-a:account-a',
             JSON.stringify({ s1: { sessionId: 's1', metadataVersion: 'bad' } }),
         );
         store.set(
@@ -565,7 +573,7 @@ describe('warmCachePersistence', () => {
     });
 
     it('reuses shared empty objects when legacy persisted warm-cache payloads are empty objects', () => {
-        store.set('session-list-warm-cache-v1:server-a:account-a', '{}');
+        store.set('session-list-warm-cache-v3:server-a:account-a', '{}');
         store.set('machine-display-warm-cache-v1:server-a:account-a', '{}');
 
         const firstSessionLoad = loadSessionListWarmCacheEntries('server-a', 'account-a');
@@ -581,7 +589,7 @@ describe('warmCachePersistence', () => {
 
     it('reuses loaded warm-cache objects for repeated non-empty loads', () => {
         store.set(
-            'session-list-warm-cache-v1:server-a:account-a',
+            'session-list-warm-cache-v3:server-a:account-a',
             JSON.stringify({
                 s1: {
                     sessionId: 's1',

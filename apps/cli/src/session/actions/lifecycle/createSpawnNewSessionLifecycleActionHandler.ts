@@ -76,6 +76,7 @@ export function createSpawnNewSessionLifecycleActionHandler(params: Readonly<{
             primaryTeamId,
             teamCredentialBindings,
             environmentVariables,
+            projectGroupV1,
             profileId,
             secretReferenceOverlay,
             terminal,
@@ -217,6 +218,8 @@ export function createSpawnNewSessionLifecycleActionHandler(params: Readonly<{
             };
         }
         const normalizedSecretReferenceOverlay = parsedSecretReferenceOverlay.data;
+        const parsedProjectGroup = SessionSpawnNewInputV2Schema.shape.projectGroupV1.safeParse(projectGroupV1);
+        if (!parsedProjectGroup.success) return { type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST, errorMessage: 'Invalid project grouping metadata' };
         const parsedIdentity = SessionSpawnNewInputV2Schema.shape.identity.safeParse(identity);
         const parsedMemoryEnabled = SessionSpawnNewInputV2Schema.shape.memoryEnabled.safeParse(memoryEnabled);
         if (!parsedIdentity.success || !parsedMemoryEnabled.success) {
@@ -440,6 +443,7 @@ export function createSpawnNewSessionLifecycleActionHandler(params: Readonly<{
             spawnNonce: normalizedSpawnNonce,
             machineId: typeof machineId === 'string' ? machineId : undefined,
             environmentVariables: normalizedEnvironmentVariables,
+            projectGroupV1: parsedProjectGroup.data,
             profileId: effectiveProfileId,
             secretReferenceOverlay: effectiveSecretReferenceOverlay,
             terminal: terminal as SpawnSessionOptions['terminal'],

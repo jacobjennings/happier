@@ -1,3 +1,4 @@
+import { type ProjectGroupV1 } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 import { reconcileSessionRequestProjection } from '../sessionTupleApplyCurrentness';
 import { reconcileSessionLifecycleProjection } from '../sessionLifecycleProjection';
 import { readSessionManagerSessionIdV1 } from '@happier-dev/protocol/sessions/follow/sessionManagerV1';
@@ -69,6 +70,7 @@ import { readSessionDisplayTitleField } from '@/sync/state/selectors';
 export { derivePendingRequestFlagsFromAgentState } from '@/sync/domains/session/pending/listPendingSessionRequests';
 
 export interface SessionListRenderableMetadata {
+    projectGroupV1?: ProjectGroupV1;
     /** Process lifecycle fact, retained for the shared status presenter. */
     lifecycleState?: string;
     projectId?: string | null;

@@ -1,3 +1,4 @@
+import { ProjectGroupV1Schema } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import {
   type SpawnSessionOptions,
@@ -321,6 +322,7 @@ function canonicalizeSessionRunnerRespawnDescriptorIngress(value: unknown): unkn
 export const SessionRunnerRespawnDescriptorSchema = (<I extends z.core.$ZodType, O extends z.core.$ZodType>(input: I, output: O) => new z.ZodMiniPipe({ type: 'pipe', in: input, out: output }) as z.ZodMiniPipe<I, O>)(z.transform(canonicalizeSessionRunnerRespawnDescriptorIngress), z.looseObject({
     version: z.union([z.literal(1), z.literal(2)]),
     directory: z.string(),
+    projectGroupV1: z.optional(ProjectGroupV1Schema),
     directoryKind: z.optional(z.enum(['path', 'managed'])),
     sessionCreationTag: z.optional(SessionCreationTagV1Schema),
     agentTarget: z.optional(AgentExecutionTargetV1Schema),
@@ -572,6 +574,7 @@ export function buildSessionRunnerRespawnDescriptorV1FromSpawnOptions(
   const descriptor: SessionRunnerRespawnDescriptor = {
     version: selectedProviderConnectionId ? 2 : 1,
     directory,
+    ...(spawnOptions.projectGroupV1 ? { projectGroupV1: spawnOptions.projectGroupV1 } : {}),
     ...(spawnOptions.directoryKind ? { directoryKind: spawnOptions.directoryKind } : {}),
     ...(spawnOptions.sessionCreationTag ? { sessionCreationTag: spawnOptions.sessionCreationTag } : {}),
     ...(spawnOptions.agentTarget ? { agentTarget: spawnOptions.agentTarget } : {}),
@@ -641,6 +644,7 @@ export function buildSpawnSessionOptionsFromRespawnDescriptorV1(
 
   return {
     directory: descriptor.directory,
+    ...(descriptor.projectGroupV1 ? { projectGroupV1: descriptor.projectGroupV1 } : {}),
     ...(descriptor.directoryKind ? { directoryKind: descriptor.directoryKind } : {}),
     ...(descriptor.sessionCreationTag ? { sessionCreationTag: descriptor.sessionCreationTag } : {}),
     ...(descriptor.agentTarget ? { agentTarget: descriptor.agentTarget } : {}),

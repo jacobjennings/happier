@@ -1,3 +1,4 @@
+import { ProjectGroupV1Schema } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 import { lazyZodSchema } from '@happier-dev/protocol/lazyZodSchema';
 import { createStoredReadSchema } from '@happier-dev/protocol/json/storedReadSchema';
 import { z } from "zod/mini";
@@ -73,6 +74,7 @@ const MetadataObjectSchema = lazyZodSchema(() => z.looseObject({
     machineId: z.optional(z.string()),
     placementOrigin: z.optional(createStoredReadSchema(MachinePoolSelectionOriginV1Schema)),
     sessionWorkspaceLocationV1: z.optional(SessionWorkspaceLocationV1Schema),
+    projectGroupV1: z.catch(z.optional(ProjectGroupV1Schema), undefined),
     sessionDirectoryV1: z.catch(z.optional(SessionDirectoryV1ReadSchema), undefined),
     handoffV1: z.optional(z.object({
         v: z.literal(1),

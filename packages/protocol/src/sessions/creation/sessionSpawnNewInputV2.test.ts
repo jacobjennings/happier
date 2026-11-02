@@ -20,6 +20,11 @@ const input = {
 } as const;
 
 describe('SessionSpawnNewInputV2Schema', () => {
+  it('admits presentation grouping without changing execution and rejects relative project paths', () => {
+    const projectGroupV1 = { v: 1, path: '/project', label: 'Project' };
+    expect(SessionSpawnNewInputV2Schema.parse({ ...input, projectGroupV1 })).toMatchObject({ ...input, projectGroupV1 });
+    expect(SessionSpawnNewInputV2Schema.safeParse({ ...input, projectGroupV1: { v: 1, path: 'relative' } }).success).toBe(false);
+  });
   it('reserves a Discussion participant without admitting a prompt, trigger or source continuation', () => {
     const selected = { ...input, discussionParticipant: { discussionId: 'discussion-1', participantSlotId: 'slot-1' } };
     expect(SessionSpawnNewInputV2Schema.parse(selected)).toEqual(selected);

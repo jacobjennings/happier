@@ -30,6 +30,34 @@ function createMetadata(
 }
 
 describe('createSessionMetadata', () => {
+    it('captures project presentation once, keeps the execution path and protects owner-only paths', () => {
+        const projectGroupV1 = { v: 1, path: '/repo', label: 'Project' } as const;
+        const env = { HAPPIER_SESSION_PROJECT_GROUP_JSON: JSON.stringify(projectGroupV1) };
+        const launchControlMetadata = captureSessionLaunchControlMetadata({ processEnvironment: env });
+        expect(env).not.toHaveProperty('HAPPIER_SESSION_PROJECT_GROUP_JSON');
+        const metadata = createMetadata({ flavor: 'test-agent', machineId: 'machine-1',
+            directory: '/repo-task', launchControlMetadata }).metadata;
+        expect(metadata).toMatchObject({ path: '/repo-task', projectGroupV1 });
+        expect(buildCommittedLaunchMetadata({ options: { directory: '/repo-task', projectGroupV1 }, directory: '/repo-task' }))
+            .toMatchObject({ path: '/repo-task', projectGroupV1 });
+        expect(mergeSessionMetadataForStartup({ current: metadata,
+            next: { ...metadata, projectGroupV1: { v: 1, path: '/other' } }, mode: 'attach', nowMs: 1 }))
+            .toMatchObject({ projectGroupV1 });
+        const owner = createSessionOwnerMetadataV1({ metadata });
+        expect(owner.ok).toBe(true);
+        if (!owner.ok) throw new Error(owner.error);
+        expect(owner.ownerMetadata.workspace).toMatchObject({ projectGroupV1 });
+        const shared = projectSessionSharedMetadataV1({ metadata });
+        expect(shared).not.toHaveProperty('projectGroupV1');
+        expect(projectSessionOwnerCompatibilityViewV1({ sharedMetadata: shared, ownerMetadata: owner.ownerMetadata }))
+            .toMatchObject({ projectGroupV1 });
+        for (const raw of ['{bad', '{"v":1,"path":"relative"}']) {
+            expect(captureSessionLaunchControlMetadata({ processEnvironment: {
+                HAPPIER_SESSION_PROJECT_GROUP_JSON: raw,
+            } }).projectGroupV1).toBeUndefined();
+        }
+    });
+
     it('keeps actual checkout branch private at birth and preserves detached observations on attach', () => {
         for (const branchName of ['feature/actual', null]) {
             const correspondence = buildSessionCreationCorrespondence({

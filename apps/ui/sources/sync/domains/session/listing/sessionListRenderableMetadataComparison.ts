@@ -1,3 +1,4 @@
+import { readProjectGroupV1, areProjectGroupsV1Equal, type ProjectGroupV1 } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 import { readSessionDirectoryKind } from '@happier-dev/protocol/sessions/metadata/directory';
 import { readSessionBotV1, type SessionBotV1 } from '@happier-dev/protocol/sessions/identity/sessionBotV1';
 import type { Metadata } from '@happier-dev/session-core/state';
@@ -34,6 +35,7 @@ export type SessionListRenderableMetadataComparison = Readonly<{
     bot?: SessionBotV1;
     name: string | undefined;
     summaryText: string | null;
+    projectGroupV1?: ProjectGroupV1;
     path: string;
     homeDir: string | null;
     host: string | null;
@@ -59,6 +61,7 @@ type SessionListRenderableMetadataComparisonSnapshot = Readonly<{
     bot?: unknown;
     name?: string;
     summaryText: string | null;
+    projectGroupV1?: ProjectGroupV1;
     path: string;
     homeDir: string | null;
     host: string | null;
@@ -211,6 +214,7 @@ function isSessionListRenderableMetadataComparisonSnapshotEqual(
         && (previous.workspaceId ?? null) === (snapshot.workspaceId ?? null)
         && (readSessionBotV1(previous.bot)?.kind ?? null) === (readSessionBotV1(snapshot.bot)?.kind ?? null)
         && (previous.summaryText ?? null) === snapshot.summaryText
+        && areProjectGroupsV1Equal(previous.projectGroupV1, snapshot.projectGroupV1)
         && previous.path === snapshot.path
         && (previous.homeDir ?? null) === snapshot.homeDir
         && (previous.host ?? null) === snapshot.host
@@ -276,6 +280,7 @@ export function normalizeSessionListRenderableMetadataComparison(
         name: normalizedSnapshot.name,
         summaryText: normalizedSnapshot.summaryText,
         path: normalizedSnapshot.path,
+        ...(normalizedSnapshot.projectGroupV1 ? { projectGroupV1: normalizedSnapshot.projectGroupV1 } : {}),
         homeDir: normalizedSnapshot.homeDir,
         host: normalizedSnapshot.host,
         machineId: normalizedSnapshot.machineId,
@@ -305,6 +310,7 @@ export function readSessionListRenderableMetadataComparison(
         projectId: typeof metadata.projectId === 'string' || metadata.projectId === null ? metadata.projectId : undefined,
         workspaceId: typeof metadata.workspaceId === 'string' || metadata.workspaceId === null ? metadata.workspaceId : undefined,
         bot: metadata.bot,
+        projectGroupV1: readProjectGroupV1(metadata.projectGroupV1) ?? undefined,
         name: typeof metadata.name === 'string' ? metadata.name : undefined,
         summaryText: readRenderableSummaryText(metadata),
         path: typeof metadata.path === 'string' ? metadata.path : '',
@@ -332,6 +338,7 @@ export function readSessionListRenderableMetadataComparisonFromRenderable(
         projectId: metadata.projectId,
         workspaceId: metadata.workspaceId,
         bot: metadata.bot,
+        projectGroupV1: readProjectGroupV1(metadata.projectGroupV1) ?? undefined,
         name: metadata.name,
         summaryText: metadata.summaryText ?? null,
         path: metadata.path,
@@ -372,6 +379,7 @@ export function areSessionListRenderableMetadataComparisonsEqual(
         && (previous.workspaceId ?? null) === (next.workspaceId ?? null)
         && (previous.bot?.kind ?? null) === (next.bot?.kind ?? null)
         && (previous.summaryText ?? null) === (next.summaryText ?? null)
+        && areProjectGroupsV1Equal(previous.projectGroupV1, next.projectGroupV1)
         && previous.path === next.path
         && (previous.homeDir ?? null) === (next.homeDir ?? null)
         && (previous.host ?? null) === (next.host ?? null)

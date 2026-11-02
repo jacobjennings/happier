@@ -1,3 +1,4 @@
+import { readProjectGroupV1 } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 import { readSessionDirectoryKind } from '@happier-dev/protocol/sessions/metadata/directory';
 
 import { resolveAbsolutePath } from '@/utils/path/pathUtils';
@@ -70,6 +71,7 @@ type SessionProjectGroupingMetadata = Readonly<{
     host?: unknown;
     machineId?: unknown;
     path?: unknown;
+    projectGroupV1?: unknown;
     homeDir?: unknown;
     sessionDirectoryV1?: unknown;
 }> | null | undefined;
@@ -80,7 +82,7 @@ export function resolveSessionProjectGroupingKeyParts(metadata: SessionProjectGr
     const homeDirRaw = normalizeNonEmptyString(metadata?.homeDir);
     const homeDir = homeDirRaw ? normalizePathForProjectGrouping(homeDirRaw) : null;
     const bucket = readSessionDirectoryKind(metadata) === 'managed' ? 'managed' : 'path';
-    const pathKey = bucket === 'managed' ? '' : normalizeSessionPathForProjectGrouping(metadata?.path, homeDir);
+    const pathKey = bucket === 'managed' ? '' : normalizeSessionPathForProjectGrouping(readProjectGroupV1(metadata?.projectGroupV1)?.path ?? metadata?.path, homeDir);
     const machineGroupId = machineId ? `id:${machineId}` : 'unknown';
 
     return {
@@ -106,8 +108,9 @@ export function resolveSessionProjectGroupingKeyPartsWithMachineMetadata(
     const homeDirRaw = normalizeTrimmedString(machineMetadata?.homeDir);
     const homeDir = homeDirRaw ? normalizePathForProjectGrouping(homeDirRaw) : parts.homeDir;
     const managed = parts.bucket === 'managed';
-    const displayPath = managed ? null : normalizeTrimmedString(displayPathInput ?? metadata?.path) || null;
-    const pathKey = managed ? '' : normalizeSessionPathForProjectGrouping(displayPathInput ?? metadata?.path, homeDir);
+    const projectPath = readProjectGroupV1(metadata?.projectGroupV1)?.path;
+    const displayPath = managed ? null : normalizeTrimmedString(projectPath ?? displayPathInput ?? metadata?.path) || null;
+    const pathKey = managed ? '' : normalizeSessionPathForProjectGrouping(projectPath ?? displayPathInput ?? metadata?.path, homeDir);
     const machineGroupId = parts.machineId ? `id:${parts.machineId}` : 'unknown';
 
     return {

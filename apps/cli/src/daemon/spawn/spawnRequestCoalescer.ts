@@ -126,6 +126,7 @@ function buildSpawnSemanticFingerprint(options: SpawnSessionOptions): Json {
   return {
     machineId: normalizeNonEmptyString(options.machineId),
     directory: normalizeNonEmptyString(options.directory) ?? '',
+    projectGroupV1: options.projectGroupV1 ?? null,
     directoryKind: options.directoryKind ?? 'path',
     agentTarget: options.agentTarget === undefined
       ? null

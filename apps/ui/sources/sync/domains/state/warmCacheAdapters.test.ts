@@ -34,6 +34,19 @@ function makeWindowRenderable(id: string, meaningfulActivityAt: number): Session
 }
 
 describe('warmCacheAdapters', () => {
+    it('retains project grouping through serialization, startup, refresh projection and equality', () => {
+        const projectGroupV1 = { v: 1, path: '/repo', label: 'Project' } as const;
+        const row = createSessionListRenderableSessionFixture({ metadata: {
+            path: '/repo-task', machineId: 'm1', projectGroupV1,
+        } });
+        const entry = buildSessionListCacheEntryFromRenderable(row);
+        const saved = SessionListCacheEntryV1Schema.parse(JSON.parse(JSON.stringify(entry)));
+        expect(buildSessionListRenderableFromCacheEntry(saved).metadata).toMatchObject({ projectGroupV1 });
+        expect(buildSessionListCacheEntryFromRenderable(row, entry)).toBe(entry);
+        const changed = { ...row, metadata: { ...row.metadata!, projectGroupV1: { ...projectGroupV1, label: 'Renamed' } } };
+        expect(buildSessionListCacheEntryFromRenderable(changed, entry)).not.toBe(entry);
+    });
+
     it('compares admitted nested hydration fields without serializing unchanged rows', () => {
         const row = createSessionListRenderableSessionFixture({ rollbackEligibleTurnStarts: [1, 2] });
         const previous = buildSessionListCacheEntryFromRenderable(row);

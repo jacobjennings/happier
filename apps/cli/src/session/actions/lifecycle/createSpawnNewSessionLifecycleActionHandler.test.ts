@@ -107,6 +107,17 @@ describe('createSpawnNewSessionLifecycleActionHandler', () => {
       .toMatchObject({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST });
   });
 
+  it('forwards validated project presentation and refuses malformed hints before spawning', async () => {
+    const spawnSession = vi.fn(async (_options: SpawnSessionOptions) => ({ type: 'success' as const, sessionId: 'project-session' }));
+    const handler = createSpawnNewSessionLifecycleActionHandler({ spawnSession });
+    const projectGroupV1 = { v: 1, path: '/repo', label: 'Project' };
+    const input = { directory: '/repo-task', backendTarget: { kind: 'backend', backendId: 'test-agent', configuredBackendId: 'test-agent', sourceKind: 'configured' }, projectGroupV1 };
+    expect(await handler(input)).toMatchObject({ type: 'success' });
+    expect(spawnSession.mock.calls[0]?.[0]).toMatchObject({ directory: '/repo-task', projectGroupV1 });
+    expect(await handler({ ...input, projectGroupV1: { v: 1, path: 'relative' } })).toMatchObject({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST });
+    expect(spawnSession).toHaveBeenCalledTimes(1);
+  });
+
   it('forwards a validated tool policy to the daemon launch and rejects malformed policy before spawning', async () => {
     const spawnSession = vi.fn(async (_options: SpawnSessionOptions) => ({ type: 'success' as const, sessionId: 'policy-session' }));
     const handler = createSpawnNewSessionLifecycleActionHandler({ spawnSession });

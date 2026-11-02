@@ -1,3 +1,4 @@
+import { ProjectGroupV1Schema } from './projectGroupV1.js';
 import { lazyZodSchema } from '../../lazyZodSchema.js';
 import { AgentSessionToolPolicyShapeV1 } from '../../runtime/permissionIntentV1.js';
 import { createStoredReadSchema, defineStoredReadProjection } from '../../json/storedReadSchema.js';
@@ -511,6 +512,7 @@ const SESSION_NATIVE_VENDOR_RESUME_ID_FIELDS_V1 = Object.freeze(
 );
 
 const SessionOwnerWorkspaceV1Schema = lazyZodSchema(() => z.strictObject({
+  projectGroupV1: z.catch(z.optional(ProjectGroupV1Schema), undefined),
   path: z.optional(OptionalOwnerStringSchema),
   host: z.optional(OptionalOwnerStringSchema),
   version: z.optional(OptionalOwnerStringSchema),
@@ -1944,6 +1946,7 @@ const SHARED_ONLY_METADATA_KEYS = new Set([
   'actionConfirmationsV1',
 ]);
 const WORKSPACE_OWNER_KEYS = [
+  'projectGroupV1',
   'path',
   'host',
   'version',

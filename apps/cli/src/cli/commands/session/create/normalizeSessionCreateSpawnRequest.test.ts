@@ -42,6 +42,12 @@ function createDeps(
 }
 
 describe('normalizeSessionCreateSpawnRequest', () => {
+  it('keeps project presentation separate from execution through CLI normalization', async () => {
+    const parsed = parseSessionCreateSpawnOptions(['create', '--path', '/repo-task', '--project-path', '/repo', '--project-label', 'Project']);
+    const normalized = await normalizeSessionCreateSpawnRequest(parsed.spawnRequest, createDeps());
+    expect(normalized.input).toMatchObject({ directory: { kind: 'path', path: '/repo-task' },
+      projectGroupV1: { v: 1, path: '/repo', label: 'Project' } });
+  });
   it('resolves repeated capability names to catalog IDs and rejects missing names with not_found', async () => {
     const deps = {
       ...createDeps(),

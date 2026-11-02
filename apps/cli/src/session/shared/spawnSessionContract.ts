@@ -1,3 +1,4 @@
+import type { ProjectGroupV1 } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 import { z } from 'zod/mini';
 import type { ActionExecutorContext } from '@happier-dev/protocol';
 import { decodeBase64, encodeBase64 } from '@happier-dev/protocol/crypto/base64';
@@ -114,6 +115,7 @@ export interface SpawnSessionOptions extends SessionCreateOriginFieldsV1 {
   resumeActionContext?: ActionExecutorContext;
   machineId?: string;
   directory: string;
+  projectGroupV1?: ProjectGroupV1;
   /** Daemon-owned directory routing fact; filesystem authority comes from the allocation record. */
   directoryKind?: 'path' | 'managed';
   /** Trusted creator evidence for a fresh replay row committed before runner launch. */

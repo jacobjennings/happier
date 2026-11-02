@@ -390,6 +390,9 @@ export function mergeSessionMetadataForStartup(opts: {
     }
 
     if (mode === 'attach') {
+        // Presentation grouping belongs to the Session, including a deliberate absence.
+        if (opts.current.projectGroupV1 !== undefined) merged.projectGroupV1 = opts.current.projectGroupV1;
+        else delete merged.projectGroupV1;
         // A new runner's process defaults are not a checkout observation.
         if (opts.current.branch !== undefined) merged.branch = opts.current.branch;
         else delete merged.branch;

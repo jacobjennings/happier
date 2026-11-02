@@ -841,6 +841,8 @@ async function resolveSpawnChildEnvironmentImpl(params: {
   if (params.options.sessionConfigOptionOverrides) {
     extraEnvForChild.HAPPIER_SESSION_CONFIG_OPTION_OVERRIDES_JSON = JSON.stringify(params.options.sessionConfigOptionOverrides);
   }
+  extraEnvForChild.HAPPIER_SESSION_PROJECT_GROUP_JSON = params.options.projectGroupV1
+    ? JSON.stringify(params.options.projectGroupV1) : '';
   if (!params.options.existingSessionId && params.options.identity !== undefined) {
     extraEnvForChild.HAPPIER_SESSION_INITIAL_IDENTITY_JSON = JSON.stringify(
       SessionIdentityAdditionsV1Schema.parse(params.options.identity),

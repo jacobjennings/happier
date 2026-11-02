@@ -6,6 +6,29 @@ This document defines when Happier preserves old behavior across UI, CLI, daemon
 
 Apply this policy when a change affects a cross-component wire shape or semantic, persisted/session/settings data, schema or migration, feature/capability negotiation, installer or service state, upgrade/coexistence, or rollback. Routine internal refactors that leave these seams unchanged do not need a compatibility matrix or shim.
 
+## Explicit project grouping (0.3 fork development)
+
+The optional `projectGroupV1` presentation hint from the 0.2 predecessor is
+accepted by the strict V2 spawn input and the CLI's `--project-path` and
+`--project-label` flags. It does not change execution directories, Project
+membership, workspace targets, or access. Managed Chats retain their own bucket.
+Path groups use the explicit project path and display its optional label or
+basename. Existing saved workspace labels retain precedence.
+
+The hint lives in private owner workspace metadata in layout 1. Shared metadata
+never includes it. Legacy flat metadata remains readable, and absent or malformed
+hints retain ordinary path grouping. Older strict 0.3 spawn readers reject the new
+optional input rather than silently applying a different grouping request. No
+server route or database migration is added.
+
+The list cache writes `session-list-warm-cache-v3`, retaining the hint in its schema,
+writer, hydrator and equality checks. Older v1/v2 projections are retired on load
+without changing organization, saved labels or folders. Startup and encrypted list
+refresh already share `buildSessionListRenderableFromCacheEntry` in 0.3. This port
+uses that owner rather than recreating the predecessor's split metadata projection.
+These changes are development-only. Runtime coexistence and native persistence
+checks have not been executed for this increment.
+
 ## Baseline classes
 
 ### Hard released obligations

@@ -61,6 +61,17 @@ function makeMachine(partial: Partial<Machine> & Pick<Machine, 'id'>): Machine {
 }
 
 describe('buildSessionListViewData', () => {
+    it('groups separate task paths under an explicit project label or basename', () => {
+        for (const label of ['Project label', undefined]) {
+            const projectGroupV1 = { v: 1 as const, path: '/repo', ...(label ? { label } : {}) };
+            const sessions = Object.fromEntries(['one', 'two'].map(id => [id, makeSession({ id,
+                metadata: { path: `/repo-${id}`, host: 'host', machineId: 'm1', projectGroupV1 },
+            })]));
+            const headers = buildSessionListViewData(sessions, {}, { inactiveGroupingV1: 'project' }).filter(isProjectHeader);
+            expect(headers).toHaveLength(1);
+            expect(headers[0]?.title).toBe(label ?? 'repo');
+        }
+    });
     it('reuses a shared empty array when there are no visible sessions', () => {
         const valuesSpy = vi.spyOn(Object, 'values');
         const first = buildSessionListViewData({}, {}, {});

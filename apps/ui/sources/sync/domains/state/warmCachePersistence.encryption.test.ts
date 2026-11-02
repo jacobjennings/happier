@@ -94,7 +94,7 @@ vi.mock('react-native-mmkv', () => {
     return { MMKV };
 });
 
-const SESSION_LIST_KEY = 'session-list-warm-cache-v1:server-a:account-a';
+const SESSION_LIST_KEY = 'session-list-warm-cache-v3:server-a:account-a';
 const MACHINE_KEY = 'machine-display-warm-cache-v1:server-a:account-a';
 const UNRELATED_KEY = 'device-analytics-id-v1';
 
@@ -180,6 +180,8 @@ describe('warmCachePersistence at-rest encryption', () => {
     it('deletes warm-cache keys previous builds wrote in plaintext, and nothing else', async () => {
         const legacy = legacyPlaintextStore();
         legacy.set(SESSION_LIST_KEY, JSON.stringify({ s1: { ...SESSION_ENTRY } }));
+        legacy.set('session-list-warm-cache-v1:server-a:account-a', '{}');
+        legacy.set('session-list-warm-cache-v2:server-a:account-a', '{}');
         legacy.set(MACHINE_KEY, JSON.stringify({ m1: { host: 'leeroy-mbp' } }));
         legacy.set(UNRELATED_KEY, 'keep-me');
 

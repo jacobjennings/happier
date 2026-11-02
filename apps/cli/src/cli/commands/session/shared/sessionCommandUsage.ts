@@ -6,6 +6,7 @@ const SESSION_CREATE_HELP = [
   '',
   'Options:',
   '  [--path <path>] [--agent <agent-id>]',
+  '  [--project-path <dir>] [--project-label <label>]',
   '  [--title <text>]',
   '  [<prompt>|--prompt <text>|--message <text>]',
   '  [--model <model-id> [--provider-connection <connection-id>]]',

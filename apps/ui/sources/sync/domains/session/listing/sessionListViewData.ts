@@ -1,3 +1,4 @@
+import { readProjectGroupV1 } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 import { normalizeSessionFolderWorkspaceRef } from '@/sync/domains/session/folders/workspaceRefs';
 import type { SessionFolderWorkspaceRefV1 } from '@/sync/domains/session/folders/types';
 import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDisplayRenderable';
@@ -216,6 +217,7 @@ function groupSessionsByProject(params: Readonly<{
             groupingParts,
         ));
 
+        const projectGroup = readProjectGroupV1(groupingMetadata?.projectGroupV1);
         const existing = groups.get(key);
         if (!existing) {
             const displayMachine = displayMachineId
@@ -225,7 +227,8 @@ function groupSessionsByProject(params: Readonly<{
                 key,
                 displayPath: groupingParts.bucket === 'managed'
                     ? t('session.folderless.chats')
-                    : groupingParts.pathKey ? formatSessionPath(groupingParts.pathKey, groupingParts.homeDir ?? undefined) : '',
+                    : projectGroup ? projectGroup.label ?? groupingParts.pathKey.split('/').filter(Boolean).at(-1) ?? groupingParts.pathKey
+                        : groupingParts.pathKey ? formatSessionPath(groupingParts.pathKey, groupingParts.homeDir ?? undefined) : '',
                 bucket: groupingParts.bucket,
                 machine: displayMachine,
                 latestCreatedAt: session.createdAt,

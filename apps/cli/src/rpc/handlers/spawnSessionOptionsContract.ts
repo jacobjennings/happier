@@ -1,3 +1,4 @@
+import { ProjectGroupV1Schema } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 import { z } from 'zod/mini';
 import { AgentSessionToolPolicyShapeV1 } from '@happier-dev/protocol/runtime/permissionIntentV1';
 import { SpawnSessionTerminalSchema } from '@happier-dev/protocol/spawnSession';
@@ -188,6 +189,7 @@ function canonicalizeSpawnDaemonSessionRequestIngress(value: unknown): unknown {
 const SpawnDaemonSessionRequestCompatSchema = (<I extends z.core.$ZodType, O extends z.core.$ZodType>(input: I, output: O) => new z.ZodMiniPipe({ type: 'pipe', in: input, out: output }) as z.ZodMiniPipe<I, O>)(z.transform(canonicalizeSpawnDaemonSessionRequestIngress), z.strictObject({
   type: z.optional(z.enum(['spawn-in-directory', 'resume-session'])),
   directory: z.string(),
+  projectGroupV1: z.optional(ProjectGroupV1Schema),
   directoryKind: z.optional(z.enum(['path', 'managed'])),
   freshSessionCreation: z.optional(z.boolean()),
   managedDirectorySeed: z.optional(z.strictObject({
@@ -474,6 +476,7 @@ const SPAWN_SESSION_OPTION_KEYS = [
   'windowsTerminalWindowName',
   'profileId',
   'secretReferenceOverlay',
+  'projectGroupV1',
   'environmentVariables',
   'connectedServices',
   'connectedServicesUpdatedAt',

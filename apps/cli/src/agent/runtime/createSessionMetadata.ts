@@ -1,3 +1,4 @@
+import { readProjectGroupV1, type ProjectGroupV1 } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 /**
  * Session Metadata Factory
  *
@@ -102,6 +103,7 @@ export interface CreateSessionMetadataOptions {
 }
 
 type LaunchControlEnvKey =
+    | 'HAPPIER_SESSION_PROJECT_GROUP_JSON'
     | 'HAPPIER_SESSION_PROFILE_ID'
     | 'HAPPIER_SESSION_CONFIG_OPTION_OVERRIDES_JSON'
     | 'HAPPIER_SESSION_TOOL_POLICY_JSON'
@@ -113,6 +115,7 @@ type LaunchControlEnvKey =
     | typeof HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_ENV_KEY;
 
 const ONE_SHOT_LAUNCH_CONTROL_ENV_KEYS = [
+    'HAPPIER_SESSION_PROJECT_GROUP_JSON',
     'HAPPIER_SESSION_CONFIG_OPTION_OVERRIDES_JSON',
     'HAPPIER_SESSION_TOOL_POLICY_JSON',
     'HAPPIER_SESSION_INITIAL_IDENTITY_JSON',
@@ -124,6 +127,7 @@ const ONE_SHOT_LAUNCH_CONTROL_ENV_KEYS = [
 ] as const satisfies readonly LaunchControlEnvKey[];
 
 export type SessionLaunchControlMetadata = Readonly<{
+    projectGroupV1?: ProjectGroupV1;
     allowedTools?: readonly string[];
     unlistedTools?: 'ask' | 'deny';
     identity?: SessionIdentityAdditions;
@@ -166,8 +170,14 @@ export function captureSessionLaunchControlMetadata(params: Readonly<{
     if (memoryEnabled !== undefined && typeof memoryEnabled !== 'boolean') {
         throw new Error('Invalid initial Session memory choice');
     }
+    // Optional presentation hints must not prevent starting a Session.
+    const projectGroupV1 = (() => {
+        try { return readProjectGroupV1(JSON.parse(readNonEmpty('HAPPIER_SESSION_PROJECT_GROUP_JSON') ?? 'null')); }
+        catch { return null; }
+    })();
     const captured: SessionLaunchControlMetadata = Object.freeze({
         ...toolPolicy,
+        ...(projectGroupV1 ? { projectGroupV1 } : {}),
         ...(identity !== undefined ? { identity } : {}),
         ...(memoryEnabled !== undefined ? { memoryEnabled } : {}),
         ...(profileIdRaw !== undefined ? { profileId: profileIdRaw.trim() || null } : {}),
@@ -247,6 +257,7 @@ export function buildCommittedLaunchMetadata(input: Readonly<{
     const { options } = input;
     let metadata: SessionMetadata = {
         path: input.directory, host: os.hostname(),
+        ...(options.projectGroupV1 ? { projectGroupV1: options.projectGroupV1 } : {}),
         ...(options.machineId ? { machineId: options.machineId } : {}),
         ...(options.sessionCreationCorrespondence ? { sessionCreationCorrespondenceV1: options.sessionCreationCorrespondence } : {}),
         ...(options.sessionCreationCorrespondence?.recipe.checkout?.branchName !== undefined
@@ -339,6 +350,7 @@ export function createSessionMetadata(opts: CreateSessionMetadataOptions): Sessi
     const launchControlMetadata = opts.launchControlMetadata;
     const sessionPath = resolveRequestedSessionDirectory({ requestedDirectory: opts.directory });
     const metadataBase: Metadata = {
+        ...(launchControlMetadata.projectGroupV1 ? { projectGroupV1: launchControlMetadata.projectGroupV1 } : {}),
         path: sessionPath,
         host: os.hostname(),
         version: packageJson.version,

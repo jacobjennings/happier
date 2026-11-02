@@ -1,3 +1,4 @@
+import { ProjectGroupV1Schema } from '../metadata/projectGroupV1.js';
 import * as zMini from 'zod/mini';
 import { lazyZodSchema } from '../../lazyZodSchema.js';
 import { z } from 'zod/mini';
@@ -51,6 +52,7 @@ export type SessionSpawnNewInitialInputV1 = z.infer<typeof SessionSpawnNewInitia
  */
 export const SessionSpawnNewInputV2BaseSchema = lazyZodSchema(() => z.strictObject({
   ...SessionSpawnNewSelectionV2BaseSchema.shape,
+  projectGroupV1: z.optional(ProjectGroupV1Schema),
   creationKey: zMini.optional(SessionCreationKeyV1Schema),
   /** Host-owned identity facts persisted at ordinary Session birth. */
   identity: zMini.optional(SessionIdentityAdditionsV1Schema),

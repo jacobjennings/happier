@@ -1,3 +1,4 @@
+import { ProjectGroupV1Schema } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 import { DEFAULT_AGENT_ID } from '@happier-dev/agents';
 import { SessionSpawnNewInputV2Schema } from '@happier-dev/protocol/sessions/creation/sessionSpawnNewInputV2';
 import { buildBackendTargetKeyV2 } from '@happier-dev/protocol/backends/targets/backendTargetRefV2';
@@ -267,7 +268,11 @@ export async function normalizeSessionCreateSpawnRequest(
       return invalidSessionCreateArgument('the requested model selection is invalid.');
     }
   })();
+  const projectGroupV1 = request.projectPath
+    ? ProjectGroupV1Schema.parse({ v: 1, path: request.projectPath, ...(request.projectLabel ? { label: request.projectLabel } : {}) })
+    : undefined;
   const candidate = {
+    ...(projectGroupV1 ? { projectGroupV1 } : {}),
     executionTarget,
     directory: { kind: 'path', path: directory },
     agentTarget: resolvedAgent.agentTarget,

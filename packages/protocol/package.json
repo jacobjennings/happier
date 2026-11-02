@@ -7,6 +7,11 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./sessions/metadata/projectGroupV1": {
+      "happier-source": "./src/sessions/metadata/projectGroupV1.ts",
+      "types": "./dist/sessions/metadata/projectGroupV1.d.ts",
+      "default": "./dist/sessions/metadata/projectGroupV1.js"
+    },
     "./collections/filter/entityListFilterV1": {
       "happier-source": "./src/collections/filter/entityListFilterV1.ts",
       "types": "./dist/collections/filter/entityListFilterV1.d.ts",

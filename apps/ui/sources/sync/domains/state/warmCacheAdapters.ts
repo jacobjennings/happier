@@ -1,3 +1,4 @@
+import { areProjectGroupsV1Equal } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 import {
     hasUnreadActivityForSessionViewer,
     normalizeSessionViewerCompatibility,
@@ -150,6 +151,7 @@ function areSessionListCacheEntriesEqual(
         && areResponsibleAccountSummariesEqual(nextEntry.responsibleAccount, previousEntry.responsibleAccount)
         && nextEntry.name === previousEntry.name
         && nextEntry.summaryText === previousEntry.summaryText
+        && areProjectGroupsV1Equal(nextEntry.projectGroupV1, previousEntry.projectGroupV1)
         && nextEntry.path === previousEntry.path
         && nextEntry.homeDir === previousEntry.homeDir
         && nextEntry.host === previousEntry.host
@@ -216,6 +218,7 @@ export function buildSessionListRenderableFromCacheEntry(entry: SessionListCache
             name: entry.name,
             summaryText: entry.summaryText ?? null,
             path: entry.path,
+            ...(entry.projectGroupV1 ? { projectGroupV1: entry.projectGroupV1 } : {}),
             homeDir: entry.homeDir ?? null,
             host: entry.host ?? null,
             machineId: entry.machineId ?? null,
@@ -373,6 +376,7 @@ export function buildSessionListCacheEntryFromRenderable(
         name: preserveMetadata ? previousEntry.name : projectedMetadata?.name,
         summaryText: preserveMetadata ? previousEntry.summaryText ?? null : session.metadata?.summaryText ?? null,
         path: preserveMetadata ? previousEntry.path : projectedMetadata?.path ?? '',
+        projectGroupV1: preserveMetadata ? previousEntry.projectGroupV1 : projectedMetadata?.projectGroupV1,
         homeDir: preserveMetadata ? previousEntry.homeDir ?? null : projectedMetadata?.homeDir ?? null,
         host: preserveMetadata ? previousEntry.host ?? null : projectedMetadata?.host ?? null,
         machineId: preserveMetadata ? previousEntry.machineId ?? null : projectedMetadata?.machineId ?? null,

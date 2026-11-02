@@ -58,7 +58,7 @@ function observeSessionListWarmCacheWrites(): void {
     warmCachePersistence.saveSessionListWarmCacheEntries(getActiveServerSnapshot().serverId, 'account_a', {});
     const write = MMKV.prototype.set;
     vi.spyOn(MMKV.prototype, 'set').mockImplementation(function (this: MMKV, key, value) {
-        if (key.startsWith('session-list-warm-cache-v1:') && typeof value === 'string') {
+        if (key.startsWith('session-list-warm-cache-v3:') && typeof value === 'string') {
             warmCacheWrites(key, value, JSON.parse(value));
         }
         return write.call(this, key, value);

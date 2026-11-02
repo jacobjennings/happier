@@ -6,6 +6,22 @@ import { buildSpawnChildProcessEnv } from './buildSpawnChildProcessEnv';
 import { captureSessionLaunchControlMetadata, createSessionMetadata } from '@/agent/runtime/createSessionMetadata';
 
 describe('resolveSpawnChildEnvironment (mcp selection)', () => {
+  it('carries only the admitted project hint through protected child controls and metadata capture', async () => {
+    for (const projectGroupV1 of [{ v: 1 as const, path: '/repo' }, undefined]) {
+      const injection = { HAPPIER_SESSION_PROJECT_GROUP_JSON: '{"v":1,"path":"/wrong"}' };
+      const result = await resolveSpawnChildEnvironment({ options: { directory: '/repo-task', projectGroupV1, environmentVariables: injection },
+        processEnv: injection, profileEnvironmentVariables: injection, daemonSpawnHooks: null,
+        logDebug: () => {}, logInfo: () => {}, logWarn: () => {} });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.errorMessage);
+      const env = buildSpawnChildProcessEnv({ processEnv: injection, extraEnv: result.extraEnvForChild });
+      const launchControlMetadata = captureSessionLaunchControlMetadata({ processEnvironment: env });
+      const metadata = createSessionMetadata({ flavor: 'test-agent', machineId: 'm1', directory: '/repo-task', launchControlMetadata }).metadata;
+      expect(metadata.path).toBe('/repo-task');
+      expect(metadata.projectGroupV1).toEqual(projectGroupV1);
+      expect(env).not.toHaveProperty('HAPPIER_SESSION_PROJECT_GROUP_JSON');
+    }
+  });
   it('round-trips only admitted birth tool policy, excluding all ambient and overlay injection', async () => {
     for (const policy of [
       { allowedTools: ['mcp__wilson-intake__*'], unlistedTools: 'deny' as const },
