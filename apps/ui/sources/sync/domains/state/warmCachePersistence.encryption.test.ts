@@ -93,7 +93,8 @@ vi.mock('react-native-mmkv', () => {
     return { MMKV };
 });
 
-const SESSION_LIST_KEY = 'session-list-warm-cache-v1:server-a:account-a';
+const SESSION_LIST_KEY = 'session-list-warm-cache-v2:server-a:account-a';
+const LEGACY_SESSION_LIST_KEY = 'session-list-warm-cache-v1:server-a:account-a';
 const ORGANIZATION_KEY = 'session-organization-warm-cache-v1:server-a:account-a';
 const MACHINE_KEY = 'machine-display-warm-cache-v1:server-a:account-a';
 const LEGACY_PINNED_KEY = 'session-list-pinned-ids-warm-cache-v1:server-a:account-a';
@@ -193,7 +194,7 @@ describe('warmCachePersistence at-rest encryption', () => {
 
     it('deletes warm-cache keys previous builds wrote in plaintext, and nothing else', async () => {
         const legacy = legacyPlaintextStore();
-        legacy.set(SESSION_LIST_KEY, JSON.stringify({ s1: { ...SESSION_ENTRY } }));
+        legacy.set(LEGACY_SESSION_LIST_KEY, JSON.stringify({ s1: { ...SESSION_ENTRY } }));
         legacy.set(ORGANIZATION_KEY, JSON.stringify({ version: 0, pinnedSessionIds: ['s1'] }));
         legacy.set(MACHINE_KEY, JSON.stringify({ m1: { host: 'leeroy-mbp' } }));
         legacy.set(LEGACY_PINNED_KEY, JSON.stringify(['s1']));
@@ -222,14 +223,14 @@ describe('warmCachePersistence at-rest encryption', () => {
      */
     it('forces a full rewrite before compacting the legacy store, so deleted plaintext cannot survive as a tombstone', async () => {
         const legacy = legacyPlaintextStore();
-        legacy.set(SESSION_LIST_KEY, JSON.stringify({ s1: { ...SESSION_ENTRY } }));
+        legacy.set(LEGACY_SESSION_LIST_KEY, JSON.stringify({ s1: { ...SESSION_ENTRY } }));
 
         const persistence = await importWarmCachePersistence();
         persistence.loadSessionListWarmCacheEntries('server-a', 'account-a');
 
         const legacyOperations = storageOperations.filter((operation) => operation.includes(':mmkv.default'));
         expect(legacyOperations).toEqual([
-            `delete:mmkv.default:${SESSION_LIST_KEY}`,
+            `delete:mmkv.default:${LEGACY_SESSION_LIST_KEY}`,
             expect.stringMatching(/^set:mmkv\.default:warm-cache-plaintext-purge-compaction-v1:\d{5,}$/),
             'trim:mmkv.default',
             'delete:mmkv.default:warm-cache-plaintext-purge-compaction-v1',
@@ -250,7 +251,7 @@ describe('warmCachePersistence at-rest encryption', () => {
 
     it('purges the plaintext keys even when no key is available, since nothing will replace them', async () => {
         const legacy = legacyPlaintextStore();
-        legacy.set(SESSION_LIST_KEY, JSON.stringify({ s1: { ...SESSION_ENTRY } }));
+        legacy.set(LEGACY_SESSION_LIST_KEY, JSON.stringify({ s1: { ...SESSION_ENTRY } }));
         legacy.set(UNRELATED_KEY, 'keep-me');
 
         const persistence = await importWarmCachePersistence();
@@ -263,7 +264,7 @@ describe('warmCachePersistence at-rest encryption', () => {
         // A signed-out boot never reaches a warm-cache read, and that is precisely the boot where
         // the retired plaintext would otherwise stay on disk indefinitely.
         const legacy = legacyPlaintextStore();
-        legacy.set(SESSION_LIST_KEY, JSON.stringify({ s1: { ...SESSION_ENTRY } }));
+        legacy.set(LEGACY_SESSION_LIST_KEY, JSON.stringify({ s1: { ...SESSION_ENTRY } }));
         legacy.set(MACHINE_KEY, JSON.stringify({ m1: { host: 'leeroy-mbp' } }));
         legacy.set(UNRELATED_KEY, 'keep-me');
 

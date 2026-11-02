@@ -85,7 +85,7 @@ No host names or credentials are stored in the deploy script:
 export HAPPIER_DEPLOY_SSH='root@your-relay.example.com'
 export HAPPIER_DEPLOY_URL='https://your-relay.example.com'
 export HAPPIER_DEPLOY_CREDENTIALS="$HOME/.happier/servers/your-server/access.key"
-export HAPPIER_BUILD_HOST=compute # HARNESS_HOSTS role, defaults to compute
+export HAPPIER_BUILD_HOST=cpu # Harness selects compute or browser by load
 export HAPPIER_BROWSER_HOST=browser # Chromium and Node 22+ on the browser role
 # Optional: export HAPPIER_BROWSER_GPU=igpu # Select the configured browser GPU
 # Optional: export HAPPIER_DEPLOY_ROOT=/opt/happier
@@ -93,7 +93,10 @@ export HAPPIER_BROWSER_HOST=browser # Chromium and Node 22+ on the browser role
 python3 scripts/fork/web.py deploy
 ```
 
-The build retrieves its export from the selected `HARNESS_HOSTS` role's SSH target
+With `HAPPIER_BUILD_HOST=cpu`, the build uses `harness run cpu` and retrieves its
+export from the host named in the harness CPU placement result. Explicit configured
+roles remain supported and the default remains `compute`. The build retrieves its
+export from the selected `HARNESS_HOSTS` role's SSH target
 in `${HARNESS_CONFIG:-$HOME/.config/harness/config.env}`. The selected relay must
 already have Docker Compose, tmux and the base relay
 installation. The authenticated access.key must belong to this relay and is read
@@ -241,7 +244,11 @@ grouping only. The runner still uses `--path`, and session rows retain their own
 task title and path. The optional `--project-label` names the project header,
 otherwise the header uses the project path's basename. A saved custom workspace
 label takes precedence. Sessions without the flag retain folder-based grouping.
-Session folders continue to use the resulting project workspace scope.
+Session folders continue to use the resulting project workspace scope. The
+development warm-cache correction preserves the grouping hint across reloads and
+refreshes older session-list projections once. Organization and saved labels are
+retained. Deploy a source containing that correction before certifying reload
+behavior.
 
 The shared `session.spawn_new` Action accepts `projectPath` and `projectLabel`.
 The daemon spawn request carries `projectGroupV1: { v: 1, path, label? }` and the

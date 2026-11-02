@@ -605,6 +605,14 @@ daemon as well as the creating CLI. No server operation or database schema chang
 Released-runtime coexistence and deployed presentation have not yet been verified
 for this increment.
 
+The development session-list warm cache uses projection key
+`session-list-warm-cache-v2` and retains `projectGroupV1` through serialization,
+hydration, and equality checks. The previous v1 projection omitted the hint, so
+its account-scoped entry is retired on load and refreshed from session records.
+Session organization, saved labels, folders, and authoritative session metadata
+are separate and remain intact. Rolling back to a v1 writer can require a cold
+session-list refresh but does not change the stored session or organization.
+
 ## Migration history
 
 Migration source has a stricter authoring boundary than ordinary internal code:

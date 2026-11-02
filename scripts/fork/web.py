@@ -34,7 +34,8 @@ def required(name):
 def harness_artifact(role, command, marker, destination, gpu=None):
     config = os.environ.get('HARNESS_CONFIG', str(Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'harness/config.env'))
     hosts = run(['bash', '-eu', '-c', 'source "$1"; printf "%s" "$HARNESS_HOSTS"', 'bash', config], capture_output=True).stdout
-    host = json.loads(hosts)[role]['ssh']
+    configured_hosts = json.loads(hosts)
+    host = None if role == 'cpu' else configured_hosts[role]['ssh']
     artifact = None
     invocation = ['harness', 'run', role, '--keep']
     if gpu:
@@ -45,10 +46,13 @@ def harness_artifact(role, command, marker, destination, gpu=None):
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
         for line in process.stdout:
             print(line, end='', flush=True)
+            if role == 'cpu' and line.startswith('harness: CPU placement '):
+                placement = json.loads(line.removeprefix('harness: CPU placement '))
+                host = configured_hosts[placement['selected_host']]['ssh']
             if line.startswith(marker):
                 artifact = line.strip().removeprefix(marker)
-        if process.wait() or not artifact:
-            raise ValueError(f'Harness role {role} did not produce {marker}')
+        if process.wait() or not artifact or not host:
+            raise ValueError(f'Harness role {role} did not produce {marker} with a configured artifact host')
     destination.parent.mkdir(parents=True, exist_ok=True)
     run(['scp', '-q', host + ':' + artifact, str(destination)])
 
@@ -228,7 +232,7 @@ def deploy(args):
         run(['jj', 'git', 'fetch', '--remote', 'origin'], cwd=ROOT)
         sha = run(['jj', 'log', '-r', 'main@origin', '--no-graph', '-T', 'commit_id'], cwd=ROOT, capture_output=True).stdout.strip()
         changed = run(['jj', 'diff', '--from', 'main@origin', '--name-only'], cwd=ROOT, capture_output=True).stdout.splitlines()
-        allowed = {'.harness-deploy', 'docs/fork-builds.md', 'scripts/fork/web.py', 'scripts/fork/web-remote.sh', 'scripts/fork/check-login.mjs'}
+        allowed = {'.harness-deploy', 'docs/fork-builds.md', 'scripts/fork/web.py', 'scripts/fork/web.test.py', 'scripts/fork/web-remote.sh', 'scripts/fork/check-login.mjs'}
         if set(changed) - allowed:
             raise ValueError('Refusing to label modified application source as main: ' + ', '.join(set(changed) - allowed))
     if args.ready_timeout <= 0:

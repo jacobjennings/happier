@@ -13,6 +13,30 @@ import type { SessionListRenderableSession } from '@/sync/domains/session/listin
 import { createSessionFixture } from '@/dev/testkit';
 
 describe('warmCacheAdapters', () => {
+    it('preserves explicit project grouping through persisted cache hydration and label-only updates', () => {
+        const renderable = buildSessionListRenderableFromSession(createSessionFixture({
+            metadata: {
+                path: '/tmp/projA-ws1',
+                host: 'host',
+                projectGroupV1: { v: 1, path: '/tmp/projA', label: 'Project A' },
+            },
+        }));
+        const entry = buildSessionListCacheEntryFromRenderable(renderable);
+        const persisted = SessionListCacheEntryV1Schema.parse(JSON.parse(JSON.stringify(entry)));
+        const hydrated = buildSessionListRenderableFromCacheEntry(persisted);
+
+        expect(hydrated.metadata?.projectGroupV1).toEqual({ v: 1, path: '/tmp/projA', label: 'Project A' });
+        expect(hydrated.metadata?.path).toBe('/tmp/projA-ws1');
+        expect(buildSessionListCacheEntryFromRenderable(hydrated, persisted)).toBe(persisted);
+        const renamed = buildSessionListCacheEntryFromRenderable({
+            ...hydrated,
+            metadata: { ...hydrated.metadata!, projectGroupV1: { v: 1, path: '/tmp/projA', label: 'Renamed A' } },
+        }, persisted);
+        expect(buildSessionListRenderableFromCacheEntry(renamed).metadata?.projectGroupV1?.label).toBe('Renamed A');
+        expect(buildSessionListCacheEntryFromRenderable({ ...hydrated, metadata: null }, persisted).projectGroupV1)
+            .toEqual(persisted.projectGroupV1);
+    });
+
     it('persists resolved runtime identity through compact projection and JSON cache hydration', () => {
         const renderable = buildSessionListRenderableFromSession(createSessionFixture({
             metadata: {

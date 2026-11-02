@@ -165,6 +165,7 @@ function areSessionListCacheEntriesEqual(
         && nextEntry.canApprovePermissions === previousEntry.canApprovePermissions
         && nextEntry.name === previousEntry.name
         && nextEntry.summaryText === previousEntry.summaryText
+        && areCacheJsonValuesEqual(nextEntry.projectGroupV1 ?? null, previousEntry.projectGroupV1 ?? null)
         && nextEntry.path === previousEntry.path
         && nextEntry.homeDir === previousEntry.homeDir
         && nextEntry.host === previousEntry.host
@@ -229,6 +230,7 @@ export function buildSessionListRenderableFromCacheEntry(entry: SessionListCache
             name: entry.name,
             summaryText: entry.summaryText ?? null,
             path: entry.path,
+            ...(entry.projectGroupV1 ? { projectGroupV1: entry.projectGroupV1 } : {}),
             homeDir: entry.homeDir ?? null,
             host: entry.host ?? null,
             machineId: entry.machineId ?? null,
@@ -338,6 +340,7 @@ export function buildSessionListCacheEntryFromRenderable(
         name: preserveMetadata ? previousEntry.name : session.metadata?.name,
         summaryText: preserveMetadata ? previousEntry.summaryText ?? null : session.metadata?.summaryText ?? null,
         path: preserveMetadata ? previousEntry.path : session.metadata?.path ?? '',
+        projectGroupV1: preserveMetadata ? previousEntry.projectGroupV1 : session.metadata?.projectGroupV1,
         homeDir: preserveMetadata ? previousEntry.homeDir ?? null : session.metadata?.homeDir ?? null,
         host: preserveMetadata ? previousEntry.host ?? null : session.metadata?.host ?? null,
         machineId: preserveMetadata ? previousEntry.machineId ?? null : session.metadata?.machineId ?? null,

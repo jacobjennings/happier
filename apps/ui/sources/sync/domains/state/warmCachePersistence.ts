@@ -2,6 +2,7 @@ import { MMKV } from 'react-native-mmkv';
 import {
     parseSessionRuntimeActivityProjectionFields,
     PrimaryTurnStatusV1Schema,
+    ProjectGroupV1Schema,
     SessionOrganizationSnapshotSchema,
     SessionRuntimeActivityStateSchema,
     SessionRuntimeIssueV1Schema,
@@ -25,7 +26,10 @@ function isWebRuntime(): boolean {
     return typeof window !== 'undefined' && typeof document !== 'undefined';
 }
 
-const SESSION_LIST_WARM_CACHE_PREFIX = 'session-list-warm-cache-v1';
+// v1 omitted projectGroupV1 and could hydrate execution-folder grouping indefinitely.
+// Refresh that derived projection once, without changing organization/labels/folders.
+const SESSION_LIST_WARM_CACHE_PREFIX = 'session-list-warm-cache-v2';
+const LEGACY_SESSION_LIST_WARM_CACHE_PREFIX = 'session-list-warm-cache-v1';
 const MACHINE_DISPLAY_WARM_CACHE_PREFIX = 'machine-display-warm-cache-v1';
 const SESSION_ORGANIZATION_WARM_CACHE_PREFIX = 'session-organization-warm-cache-v1';
 /**
@@ -66,6 +70,7 @@ function sharedDefaultStorageId(storageScope: string | null): string {
  */
 const LEGACY_PLAINTEXT_WARM_CACHE_PREFIXES: readonly string[] = [
     SESSION_LIST_WARM_CACHE_PREFIX,
+    LEGACY_SESSION_LIST_WARM_CACHE_PREFIX,
     MACHINE_DISPLAY_WARM_CACHE_PREFIX,
     SESSION_ORGANIZATION_WARM_CACHE_PREFIX,
     LEGACY_SESSION_LIST_PINNED_IDS_WARM_CACHE_PREFIX,
@@ -236,6 +241,7 @@ export const SessionListCacheEntryV1Schema = z.object({
     name: z.string().optional(),
     summaryText: z.string().nullable().optional(),
     path: z.string(),
+    projectGroupV1: ProjectGroupV1Schema.optional(),
     homeDir: z.string().nullable().optional(),
     host: z.string().nullable().optional(),
     machineId: z.string().nullable().optional(),
@@ -385,6 +391,9 @@ function saveScopedRecord<T extends Record<string, unknown>>(key: string | null,
 
 export function loadSessionListWarmCacheEntries(serverId: string | null | undefined, accountId: string | null | undefined): Record<string, SessionListCacheEntryV1> {
     const key = buildScopedKey(SESSION_LIST_WARM_CACHE_PREFIX, serverId, accountId);
+    const legacyKey = buildScopedKey(LEGACY_SESSION_LIST_WARM_CACHE_PREFIX, serverId, accountId);
+    const storage = getWarmCacheStorage();
+    if (legacyKey && storage && storage.getString(legacyKey) !== undefined) storage.delete(legacyKey);
     const loaded = loadScopedRecord(key, SessionListCacheEntriesSchema);
     if (!key) return loaded ?? {};
     if (!loaded) {
