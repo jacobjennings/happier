@@ -246,7 +246,8 @@ otherwise the header uses the project path's basename. A saved custom workspace
 label takes precedence. Sessions without the flag retain folder-based grouping.
 Session folders continue to use the resulting project workspace scope. The
 development warm-cache correction preserves the grouping hint across reloads and
-refreshes older session-list projections once. Organization and saved labels are
+refreshes older v1/v2 session-list projections once. Startup and network refresh
+share the same cached-metadata projection. Organization and saved labels are
 retained. Deploy a source containing that correction before certifying reload
 behavior.
 

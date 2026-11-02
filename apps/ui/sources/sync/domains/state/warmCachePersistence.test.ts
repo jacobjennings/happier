@@ -107,9 +107,9 @@ describe('warmCachePersistence', () => {
         expect(loadSessionListWarmCacheEntries('server-a', 'account-b')).toEqual({});
     });
 
-    it('refreshes the previous projection cache instead of hydrating entries that lost project grouping', () => {
-        // The deployed 16dcfa5f cache writer used v1 and omitted projectGroupV1.
-        const previousKey = 'session-list-warm-cache-v1:server-a:account-a';
+    it.each(['v1', 'v2'])('refreshes the previous %s projection cache that lost project grouping', (version) => {
+        // 16dcfa5f omitted the hint when writing v1. 3cee9078 lost it on v2 list refresh.
+        const previousKey = `session-list-warm-cache-${version}:server-a:account-a`;
         store().set(previousKey, JSON.stringify({
             s1: { sessionId: 's1', metadataVersion: 1, agentStateVersion: 0,
                 createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
@@ -122,7 +122,7 @@ describe('warmCachePersistence', () => {
 
     it('drops invalid payloads safely', () => {
         store().set(
-            'session-list-warm-cache-v2:server-a:account-a',
+            'session-list-warm-cache-v3:server-a:account-a',
             JSON.stringify({ s1: { sessionId: 's1', metadataVersion: 'bad' } }),
         );
         store().set(
@@ -136,7 +136,7 @@ describe('warmCachePersistence', () => {
 
     it('rejects an unsafe activity revision instead of corrupting ordering', () => {
         store().set(
-            'session-list-warm-cache-v2:server-a:account-a',
+            'session-list-warm-cache-v3:server-a:account-a',
             JSON.stringify({
                 s1: {
                     sessionId: 's1',
@@ -173,7 +173,7 @@ describe('warmCachePersistence', () => {
         };
 
         store().set(
-            'session-list-warm-cache-v2:server-a:account-a',
+            'session-list-warm-cache-v3:server-a:account-a',
             JSON.stringify({
                 s1: {
                     ...baseEntry,
@@ -192,7 +192,7 @@ describe('warmCachePersistence', () => {
         }));
 
         store().set(
-            'session-list-warm-cache-v2:server-a:account-a',
+            'session-list-warm-cache-v3:server-a:account-a',
             JSON.stringify({
                 s1: {
                     ...baseEntry,

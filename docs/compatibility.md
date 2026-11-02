@@ -606,11 +606,14 @@ Released-runtime coexistence and deployed presentation have not yet been verifie
 for this increment.
 
 The development session-list warm cache uses projection key
-`session-list-warm-cache-v2` and retains `projectGroupV1` through serialization,
-hydration, and equality checks. The previous v1 projection omitted the hint, so
-its account-scoped entry is retired on load and refreshed from session records.
+`session-list-warm-cache-v3` and retains `projectGroupV1` through serialization,
+startup hydration, list refresh, and equality checks. Both startup and refresh
+use the metadata projection in `warmCacheAdapters.ts`. The previous v1 writer
+omitted the hint, and the v2 list-refresh path could drop it even when the
+metadata version matched. Those account-scoped projections are retired on load
+and refreshed from session records.
 Session organization, saved labels, folders, and authoritative session metadata
-are separate and remain intact. Rolling back to a v1 writer can require a cold
+are separate and remain intact. Rolling back to an older projection writer can require a cold
 session-list refresh but does not change the stored session or organization.
 
 ## Migration history

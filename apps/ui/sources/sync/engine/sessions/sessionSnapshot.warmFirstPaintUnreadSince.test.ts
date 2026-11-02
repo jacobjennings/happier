@@ -8,6 +8,7 @@ import {
 import { projectSessionListPlacement } from '@/sync/domains/session/listing/placement/sessionListPlacementProjection';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionListCacheEntryV1 } from '@/sync/domains/state/warmCachePersistence';
+import { buildSessionListCacheEntryFromRenderable } from '@/sync/domains/state/warmCacheAdapters';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import type { V2SessionRecord } from '@happier-dev/protocol';
 import { createSessionFixture } from '@/dev/testkit';
@@ -197,6 +198,31 @@ describe('warm first-paint session-list renderables', () => {
             expect(hydratedRenderable.metadata?.flavor).toBe('codex');
         },
     );
+
+    it('retains project grouping when an encrypted list refresh reuses matching cached metadata', async () => {
+        const projectGroupV1 = { v: 1, path: '/tmp/project', label: 'Project label' } as const;
+        const row = { ...buildUnreadPlainRow(), encryptionMode: 'e2ee' as const, metadata: 'encrypted-metadata' };
+        const renderables: SessionListRenderableSession[] = [];
+
+        await fetchAndApplySessions({
+            credentials: { token: 't', secret: 's' },
+            encryption: createEncryptionHarness(),
+            sessionDataKeys: new Map<string, Uint8Array>(),
+            request: async () => jsonResponse({ sessions: [row], nextCursor: null, hasNext: false }),
+            cachedSessionListEntries: {
+                [SESSION_ID]: { ...buildWarmCacheEntry(), path: '/tmp/project-task', projectGroupV1 },
+            },
+            awaitSessionListHydration: true,
+            applySessionListRenderables: (incoming) => { renderables.push(...incoming); },
+            applySessions: () => {},
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+        });
+
+        const refreshed = renderables.find((entry) => entry.id === SESSION_ID);
+        expect(refreshed?.metadata).toMatchObject({ path: '/tmp/project-task', projectGroupV1 });
+        expect(buildSessionListCacheEntryFromRenderable(refreshed!).projectGroupV1).toEqual(projectGroupV1);
+    });
 
     it('carries the server-materialized unreadSince onto the warm first-paint renderable', async () => {
         const { firstPaintRenderable } = await runSessionListSnapshot();

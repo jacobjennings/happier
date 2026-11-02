@@ -2,6 +2,7 @@ import type { MachineDisplayRenderable } from '@/sync/domains/machines/machineDi
 import {
     readRollbackEligibleTurnStarts,
     type SessionListRenderableSession,
+    type SessionListRenderableMetadata,
 } from '@/sync/domains/session/listing/sessionListRenderable';
 import { parseSessionRuntimeActivityProjectionFields } from '@happier-dev/protocol';
 import { resolveSessionPresence } from '@/sync/domains/session/sessionLifecycleProjection';
@@ -207,8 +208,27 @@ function countOwnEntries(record: Readonly<Record<string, unknown>> | null | unde
     return count;
 }
 
+/** Shared by startup hydration and network list refresh so cached metadata cannot drift. */
+export function buildSessionListRenderableMetadataFromCacheEntry(
+    entry: SessionListCacheEntryV1 | undefined,
+): SessionListRenderableMetadata | null {
+    if (!isSessionListCacheEntryMetadataUsable(entry)) return null;
+    return {
+        name: entry.name,
+        summaryText: entry.summaryText ?? null,
+        path: entry.path,
+        ...(entry.projectGroupV1 ? { projectGroupV1: entry.projectGroupV1 } : {}),
+        homeDir: entry.homeDir ?? null,
+        host: entry.host ?? null,
+        machineId: entry.machineId ?? null,
+        flavor: entry.flavor ?? null,
+        directSessionV1: entry.directSessionV1 ?? null,
+        hiddenSystemSession: entry.hiddenSystemSession === true,
+    };
+}
+
 export function buildSessionListRenderableFromCacheEntry(entry: SessionListCacheEntryV1): SessionListRenderableSession {
-    const metadataUsable = isSessionListCacheEntryMetadataUsable(entry);
+    const metadata = buildSessionListRenderableMetadataFromCacheEntry(entry);
     return {
         id: entry.sessionId,
         seq: normalizeNonNegativeInteger(entry.seq) ?? 0,
@@ -226,18 +246,7 @@ export function buildSessionListRenderableFromCacheEntry(entry: SessionListCache
         lastViewedSessionSeq: normalizeNonNegativeInteger(entry.lastViewedSessionSeq),
         metadataVersion: entry.metadataVersion,
         agentStateVersion: entry.agentStateVersion,
-        metadata: metadataUsable ? {
-            name: entry.name,
-            summaryText: entry.summaryText ?? null,
-            path: entry.path,
-            ...(entry.projectGroupV1 ? { projectGroupV1: entry.projectGroupV1 } : {}),
-            homeDir: entry.homeDir ?? null,
-            host: entry.host ?? null,
-            machineId: entry.machineId ?? null,
-            flavor: entry.flavor ?? null,
-            directSessionV1: entry.directSessionV1 ?? null,
-            hiddenSystemSession: entry.hiddenSystemSession === true,
-        } : null,
+        metadata,
         thinking: false,
         thinkingAt: 0,
         presence: resolveSessionPresence(entry),
@@ -264,7 +273,7 @@ export function buildSessionListRenderableFromCacheEntry(entry: SessionListCache
         // Restoring the unread entry fact is what keeps the attention lane ordered
         // by a durable server fact instead of a per-boot, per-device one.
         unreadSince: entry.unreadSince ?? null,
-        metadataUnavailable: !metadataUsable,
+        metadataUnavailable: metadata === null,
     };
 }
 

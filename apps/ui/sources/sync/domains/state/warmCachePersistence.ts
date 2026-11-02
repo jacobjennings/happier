@@ -26,10 +26,10 @@ function isWebRuntime(): boolean {
     return typeof window !== 'undefined' && typeof document !== 'undefined';
 }
 
-// v1 omitted projectGroupV1 and could hydrate execution-folder grouping indefinitely.
-// Refresh that derived projection once, without changing organization/labels/folders.
-const SESSION_LIST_WARM_CACHE_PREFIX = 'session-list-warm-cache-v2';
-const LEGACY_SESSION_LIST_WARM_CACHE_PREFIX = 'session-list-warm-cache-v1';
+// v1 omitted projectGroupV1. v2 lost it when a network refresh reused cached metadata.
+// Refresh those derived projections once, without changing organization/labels/folders.
+const SESSION_LIST_WARM_CACHE_PREFIX = 'session-list-warm-cache-v3';
+const LEGACY_SESSION_LIST_WARM_CACHE_PREFIXES = ['session-list-warm-cache-v1', 'session-list-warm-cache-v2'] as const;
 const MACHINE_DISPLAY_WARM_CACHE_PREFIX = 'machine-display-warm-cache-v1';
 const SESSION_ORGANIZATION_WARM_CACHE_PREFIX = 'session-organization-warm-cache-v1';
 /**
@@ -70,7 +70,7 @@ function sharedDefaultStorageId(storageScope: string | null): string {
  */
 const LEGACY_PLAINTEXT_WARM_CACHE_PREFIXES: readonly string[] = [
     SESSION_LIST_WARM_CACHE_PREFIX,
-    LEGACY_SESSION_LIST_WARM_CACHE_PREFIX,
+    ...LEGACY_SESSION_LIST_WARM_CACHE_PREFIXES,
     MACHINE_DISPLAY_WARM_CACHE_PREFIX,
     SESSION_ORGANIZATION_WARM_CACHE_PREFIX,
     LEGACY_SESSION_LIST_PINNED_IDS_WARM_CACHE_PREFIX,
@@ -391,9 +391,11 @@ function saveScopedRecord<T extends Record<string, unknown>>(key: string | null,
 
 export function loadSessionListWarmCacheEntries(serverId: string | null | undefined, accountId: string | null | undefined): Record<string, SessionListCacheEntryV1> {
     const key = buildScopedKey(SESSION_LIST_WARM_CACHE_PREFIX, serverId, accountId);
-    const legacyKey = buildScopedKey(LEGACY_SESSION_LIST_WARM_CACHE_PREFIX, serverId, accountId);
     const storage = getWarmCacheStorage();
-    if (legacyKey && storage && storage.getString(legacyKey) !== undefined) storage.delete(legacyKey);
+    for (const prefix of LEGACY_SESSION_LIST_WARM_CACHE_PREFIXES) {
+        const legacyKey = buildScopedKey(prefix, serverId, accountId);
+        if (legacyKey && storage && storage.getString(legacyKey) !== undefined) storage.delete(legacyKey);
+    }
     const loaded = loadScopedRecord(key, SessionListCacheEntriesSchema);
     if (!key) return loaded ?? {};
     if (!loaded) {
