@@ -212,6 +212,24 @@ test('standalone dist API waits for package leases without reserving capacity an
   } finally { release(); await holder; }
 });
 
+test('local dist compiler reuses containing admission while another capacity decision holds the mutex', { skip: process.platform !== 'linux' }, async t => {
+  const fixture = await createNativeDistBuildFixture(t);
+  await writeFile(fixture.memoryPath, '31457280 73400320\n');
+  // Hold the real native capacity mutex only at the compiler process boundary.
+  // Covered descendants need no second capacity decision or queue behind it.
+  const { binPath } = writeFakeBin({ root: fixture.packageDir, name: 'compiler-admission', content: `#!/bin/sh
+exec flock '${join(fixture.admissionRoot, 'lock')}' /bin/sh '${fixture.launcher}' "$@"
+` });
+  const boundaryPath = join(fixture.packageDir, 'compiler-boundary.mjs');
+  const boundary = await readFile(boundaryPath, 'utf8');
+  await writeFile(boundaryPath, boundary.replace(JSON.stringify(fixture.launcher), JSON.stringify(binPath)));
+  const run = fixture.start({ HAPPIER_DEV_TARGET_EXECUTION: '' });
+  assert.deepEqual(await run.exited, { status: 0, signal: null }, run.stderr());
+  assert.match(await readFile(join(fixture.packageDir, 'dist/index.js'), 'utf8'), /built/);
+  assert.deepEqual(await fixture.entries('owners'), []);
+  assert.deepEqual(await fixture.entries('waiters'), []);
+});
+
 test('private dist worker rejects absent and unrelated inherited package leases', { skip: process.platform !== 'linux' }, async t => {
   const fixture = await createNativeDistBuildFixture(t);
   const args = [fileURLToPath(new URL('./buildTypeScriptPackageDist.mjs', import.meta.url)), '--happier-dist-build-worker', JSON.stringify({ args: ['-p', 'tsconfig.json'], stdio: 'ignore' })];

@@ -4,7 +4,7 @@ import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { resolveRemoteCommandPolicy } from '../../apps/stack/scripts/utils/dev_targets/remote_commands.mjs';
-import { isWorkspaceBuildStartup } from '../../apps/stack/scripts/utils/proc/workspace_build_admission.mjs';
+import { isWorkspaceBuildStartup, resolveWorkspaceBuildAdmissionMachine } from '../../apps/stack/scripts/utils/proc/workspace_build_admission.mjs';
 
 const NATIVE_TYPESCRIPT_PACKAGE_JSON = '@typescript/native/package.json';
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -110,7 +110,7 @@ export function resolveTypeScriptCliInvocation(params) {
     return {
       command: resolve(REPO_ROOT, 'apps/stack/bin/hstack-exec'),
       argsPrefix: ['--heavyweight-admission', `--class=${admissionClass}`,
-        `--machine=${env.HAPPIER_DEV_TARGET_EXECUTION === '1' ? 'worker' : 'local'}`,
+        `--machine=${resolveWorkspaceBuildAdmissionMachine(env)}`,
         '--exec-admitted', '--', processExecPath, ...compilerArgs],
       compilerPath,
       cacheSuffix,

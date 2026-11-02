@@ -21,6 +21,14 @@ export function isWorkspaceBuildStartup({ env = process.env, devStartup = false 
   return devStartup || env.HAPPIER_WORKSPACE_BUILD_STARTUP === '1';
 }
 
+export function resolveWorkspaceBuildAdmissionMachine(env = process.env) {
+  // An admitted descendant stays on its containing host. Reintroducing the
+  // local controller floor can turn covered work into a nested escalation.
+  // This selects the request only. Native admission still authenticates it.
+  return env.HAPPIER_HEAVYWEIGHT_ADMISSION_MACHINE
+    || (env.HAPPIER_DEV_TARGET_EXECUTION === '1' ? 'worker' : 'local');
+}
+
 async function hasInheritedBuildCustody(env) {
   if (callerHoldsDependencyConsumption(env)) return true;
   return await hasInheritedPackageBuildCustody(env);
@@ -63,7 +71,7 @@ export function resolveWorkspaceBuildAdmissionInvocation({ command, args = [], l
   return process.platform === 'win32' || !admissionRequired
     ? { command: process.execPath, args: [workerPath, '--standalone', JSON.stringify(locks), launcherPath, admissionClass, '--', command, ...args] }
     : { command: '/bin/sh', args: [launcherPath, '--heavyweight-admission', `--class=${admissionClass}`,
-      `--machine=${env.HAPPIER_DEV_TARGET_EXECUTION === '1' ? 'worker' : 'local'}`,
+      `--machine=${resolveWorkspaceBuildAdmissionMachine(env)}`,
       `--workspace-locks=${JSON.stringify(locks)}`, '--', command, ...args] };
 }
 
@@ -341,13 +349,13 @@ export async function runWorkspaceBuildAdmissionWorker(argv) {
           cancellation.signal.throwIfAborted();
           const invocation = mode === '--inherited-resources' && process.platform === 'linux'
             ? { command: '/bin/sh', args: [launcherPath, '--heavyweight-admission', '--require-inherited', `--class=${admissionClass}`,
-              `--machine=${env.HAPPIER_HEAVYWEIGHT_ADMISSION_MACHINE || 'local'}`, '--', command, ...args] }
+              `--machine=${resolveWorkspaceBuildAdmissionMachine(env)}`, '--', command, ...args] }
             : standalone
             ? process.platform === 'win32'
               ? (await import('../process/resolveCommandInvocation.mjs')).resolveCommandInvocation({ command, args, env })
               : { command, args }
             : { command: '/bin/sh', args: [launcherPath, '--heavyweight-admission', '--require-inherited', `--class=${admissionClass}`,
-              `--machine=${env.HAPPIER_HEAVYWEIGHT_ADMISSION_MACHINE || 'local'}`, '--', command, ...args] };
+              `--machine=${resolveWorkspaceBuildAdmissionMachine(env)}`, '--', command, ...args] };
           result = await new Promise(resolveResult => {
             const child = spawn(invocation.command, invocation.args, { env, signal: cancellation.signal, stdio: 'inherit',
               ...(invocation.windowsVerbatimArguments !== undefined ? { windowsVerbatimArguments: invocation.windowsVerbatimArguments } : {}) });
