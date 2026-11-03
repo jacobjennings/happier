@@ -56,11 +56,11 @@ import { suspendServerProfilePersistenceForDemo, resumeServerProfilePersistenceF
 describe('warmCachePersistence', () => {
     it.each(['v1', 'v2'])('retires %s list projections while retaining unrelated data', (version) => {
         const legacyKey = `session-list-warm-cache-${version}:server-a:account-a`;
-        store().set(legacyKey, '{}');
-        store().set('unrelated', 'retained');
+        store.set(legacyKey, '{}');
+        store.set('unrelated', 'retained');
         expect(loadSessionListWarmCacheEntries('server-a', 'account-a')).toEqual({});
-        expect(store().has(legacyKey)).toBe(false);
-        expect(store().get('unrelated')).toBe('retained');
+        expect(store.has(legacyKey)).toBe(false);
+        expect(store.get('unrelated')).toBe('retained');
     });
     beforeEach(async () => {
         // Nothing reads or writes the cache until its at-rest key resolves, exactly as on a device.
