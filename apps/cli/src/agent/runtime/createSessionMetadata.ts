@@ -1,4 +1,3 @@
-import { readProjectGroupV1, type ProjectGroupV1 } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 /**
  * Session Metadata Factory
  *
@@ -12,6 +11,7 @@ import os from 'node:os';
 import { resolve } from 'node:path';
 import { z } from 'zod/mini';
 
+import { readProjectGroupV1, type ProjectGroupV1 } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 import { buildSessionWorkspaceLocationV1 } from '@happier-dev/protocol/sessions/metadata/sessionWorkspaceLocationV1';
 import { writeSessionCapabilitySelectionToMetadataV1 } from '@happier-dev/protocol/reach/sessionCapabilityMetadataV1';
 import { AgentSessionToolPolicyShapeV1 } from '@happier-dev/protocol/runtime/permissionIntentV1';

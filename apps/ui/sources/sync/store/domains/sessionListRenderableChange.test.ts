@@ -65,6 +65,36 @@ describe('resolveSessionListRenderableChangeImpact', () => {
         });
     });
 
+    it('treats an explicit project hint arriving or being relabeled at the same metadata version as a grouping change', () => {
+        const base = { path: '/repo-task', machineId: 'm1' };
+        const unhinted = makeRenderable({ id: 's1', createdAt: 1, metadata: base as any, metadataVersion: 3 });
+        const hinted = makeRenderable({
+            ...unhinted,
+            metadata: { ...base, projectGroupV1: { v: 1, path: '/repo-task' } } as any,
+        });
+        const relabeled = makeRenderable({
+            ...hinted,
+            metadata: { ...base, projectGroupV1: { v: 1, path: '/repo-task', label: 'Project' } } as any,
+        });
+        const equalCopy = makeRenderable({
+            ...relabeled,
+            metadata: { ...base, projectGroupV1: { v: 1, path: '/repo-task', label: 'Project' } } as any,
+        });
+
+        for (const [previous, next] of [[unhinted, hinted], [hinted, relabeled]] as const) {
+            expect(resolveSessionListRenderableChangeImpact(previous, next)).toMatchObject({
+                didWarmCacheRelevantRenderableChange: true,
+                needsSessionListIndexRebuild: true,
+                needsProjectManagerUpdate: true,
+            });
+        }
+        expect(resolveSessionListRenderableChangeImpact(relabeled, equalCopy)).toMatchObject({
+            didWarmCacheRelevantRenderableChange: false,
+            needsSessionListIndexRebuild: false,
+            needsProjectManagerUpdate: false,
+        });
+    });
+
     it('marks warm-cache changes without forcing list or project rebuilds', () => {
         const previous = makeRenderable({
             id: 's1',

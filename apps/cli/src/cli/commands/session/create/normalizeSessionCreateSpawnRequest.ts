@@ -268,9 +268,18 @@ export async function normalizeSessionCreateSpawnRequest(
       return invalidSessionCreateArgument('the requested model selection is invalid.');
     }
   })();
-  const projectGroupV1 = request.projectPath
-    ? ProjectGroupV1Schema.parse({ v: 1, path: request.projectPath, ...(request.projectLabel ? { label: request.projectLabel } : {}) })
-    : undefined;
+  const projectPath = nonEmptyString(request.projectPath);
+  const projectLabel = nonEmptyString(request.projectLabel);
+  if (projectLabel && !projectPath) {
+    invalidSessionCreateArgument('--project-label requires --project-path.');
+  }
+  const projectGroup = projectPath
+    ? ProjectGroupV1Schema.safeParse({ v: 1, path: projectPath, ...(projectLabel ? { label: projectLabel } : {}) })
+    : null;
+  if (projectGroup && !projectGroup.success) {
+    invalidSessionCreateArgument('--project-path must be an absolute path.');
+  }
+  const projectGroupV1 = projectGroup?.success ? projectGroup.data : undefined;
   const candidate = {
     ...(projectGroupV1 ? { projectGroupV1 } : {}),
     executionTarget,

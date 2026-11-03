@@ -48,6 +48,14 @@ describe('normalizeSessionCreateSpawnRequest', () => {
     expect(normalized.input).toMatchObject({ directory: { kind: 'path', path: '/repo-task' },
       projectGroupV1: { v: 1, path: '/repo', label: 'Project' } });
   });
+  it('refuses a project label without a project and a relative project path as invalid arguments', async () => {
+    await expect(normalizeSessionCreateSpawnRequest(
+      parseSessionCreateSpawnOptions(['create', '--path', '/repo-task', '--project-label', 'Project']).spawnRequest, createDeps(),
+    )).rejects.toThrow(/--project-label requires --project-path/);
+    await expect(normalizeSessionCreateSpawnRequest(
+      parseSessionCreateSpawnOptions(['create', '--path', '/repo-task', '--project-path', 'relative']).spawnRequest, createDeps(),
+    )).rejects.toThrow(/--project-path must be an absolute path/);
+  });
   it('resolves repeated capability names to catalog IDs and rejects missing names with not_found', async () => {
     const deps = {
       ...createDeps(),

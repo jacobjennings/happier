@@ -1,4 +1,4 @@
-import { type ProjectGroupV1 } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
+import { areProjectGroupsV1Equal, type ProjectGroupV1 } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 import { reconcileSessionRequestProjection } from '../sessionTupleApplyCurrentness';
 import { reconcileSessionLifecycleProjection } from '../sessionLifecycleProjection';
 import { readSessionManagerSessionIdV1 } from '@happier-dev/protocol/sessions/follow/sessionManagerV1';
@@ -1063,6 +1063,7 @@ export function didSessionListRenderableStructuralFieldsChange(
 
     const prevMeta = previous.metadata;
     const nextMeta = next.metadata;
+    if (!areProjectGroupsV1Equal(prevMeta?.projectGroupV1, nextMeta?.projectGroupV1)) return true;
     if (String(prevMeta?.machineId ?? '') !== String(nextMeta?.machineId ?? '')) return true;
     if (String(prevMeta?.path ?? '') !== String(nextMeta?.path ?? '')) return true;
     if (String(prevMeta?.homeDir ?? '') !== String(nextMeta?.homeDir ?? '')) return true;
@@ -1086,6 +1087,7 @@ export function didSessionListRenderableProjectGroupingFieldsChange(
     const prevParts = resolveSessionProjectGroupingKeyParts(prevMeta ?? null);
     const nextParts = resolveSessionProjectGroupingKeyParts(nextMeta ?? null);
 
+    if (!areProjectGroupsV1Equal(prevMeta?.projectGroupV1, nextMeta?.projectGroupV1)) return true;
     if (prevParts.pathKey !== nextParts.pathKey) return true;
     if (prevParts.machineGroupId !== nextParts.machineGroupId) return true;
     if (prevParts.bucket !== nextParts.bucket) return true;
@@ -1163,6 +1165,7 @@ export function didSessionListRenderableWarmCacheFieldsChange(
     if ((prevMeta?.name ?? null) !== (nextMeta?.name ?? null)) return true;
     if ((prevMeta?.summaryText ?? null) !== (nextMeta?.summaryText ?? null)) return true;
     if ((prevMeta?.bot?.kind ?? null) !== (nextMeta?.bot?.kind ?? null)) return true;
+    if (!areProjectGroupsV1Equal(prevMeta?.projectGroupV1, nextMeta?.projectGroupV1)) return true;
     if (String(prevMeta?.path ?? '') !== String(nextMeta?.path ?? '')) return true;
     if ((prevMeta?.homeDir ?? null) !== (nextMeta?.homeDir ?? null)) return true;
     if ((prevMeta?.host ?? null) !== (nextMeta?.host ?? null)) return true;
