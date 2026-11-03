@@ -270,6 +270,7 @@ const actionConfirmationTranslations = { 'zh-Hant': {
         homeUnavailable: '此核准屬於本裝置上無法使用的 Home。請重新連接該 Home 後再作決定。',
         turnedOffTitle: '操作已關閉',
         turnedOffMessage: '此操作已關閉，因此未做任何更改。你可以在「設定 → 操作」中重新開啟。',
+        turnedOffReadMessage: '此操作已關閉，因此未載入任何內容。你可以在「設定 → 操作」中重新開啟。',
         openActionSettings: '開啟操作設定',
     } } as const satisfies Pick<Record<string, ActionConfirmationTranslations>, "zh-Hant">;
 
@@ -565,15 +566,21 @@ const zhHant: typeof en = {
     descriptions: {
         conversation: ({ machine }) => `隨便問，不會打斷這個工作階段。它在 ${machine} 上並行執行；除非你傳送，否則不會傳回任何內容。`,
     },
+    placeholders: {
+        review: '審查者應重點關注什麼？',
+    },
     chips: {
         engineTitle: '由誰回答',
         addReviewer: '新增審查者',
+        reviewer: '審查者',
+        reviewerNeeded: '新增審查者後即可開始',
         removeReviewer: ({ name }) => `移除 ${name}`,
         scope: '審查範圍',
         advanced: '進階',
     },
     reportToSession: '向此工作階段回報',
     startsWhenYouSend: ({ count }) => count > 1 ? `傳送後開始 ${count} 項審查` : '傳送後開始',
+    thisFolder: '此資料夾',
     offline: ({ machine }) => `${machine} 離線。代理會在那裡啟動；草稿會保留在這裡，直到它恢復。`,
     menu: {
         askSection: '讓代理',
@@ -1041,6 +1048,7 @@ const artifactsBrowserTranslations = { 'zh-Hant': {
         },
         proposal: {
             title: '建議的修改',
+            titleBy: ({ who }) => `${who} 建議修改`,
             basedOn: ({ n }) => `基於版本 ${n}`,
             current: ({ n }) => `版本 ${n} · 目前`,
             before: '修改前',
@@ -1215,6 +1223,8 @@ const zhHant: BoardsTranslations = {
     meta: {
         needYou: ({ count }) => `${count} 項需要你`,
         items: ({ count }) => `${count} 項`,
+        itemsAtLeast: ({ count }) => `${count}+ 項`,
+        needYouAtLeast: ({ count }) => `${count}+ 項需要你`,
         handPicked: '手動挑選',
         empty: '空',
         moreSources: ({ count }) => `+ ${count}`,
@@ -1299,10 +1309,22 @@ const zhHant: BoardsTranslations = {
         empty: '沒有符合的項目。',
         noMatch: ({ query }) => `沒有符合「${query}」的內容`,
     },
+    /** Candidates an answered filter could not classify: said once under the header, qualifying every count. */
+    undetermined: {
+        sessions: ({ count }) => `${count} 個工作階段無法檢查`,
+        runs: ({ count }) => `${count} 個執行無法檢查`,
+        items: ({ count }) => `${count} 項無法檢查`,
+        projectAssociation: '它們所屬的專案尚未發布，或你看不到。',
+        filterFacts: '此篩選所需的資訊無法使用。',
+    },
     empty: {
         title: '選擇此面板顯示什麼',
         body: '手動加入工作階段、工作流程、執行或裝置，或顯示「需要你」這樣的區段。排列由你決定，面板讓它們保持即時。',
         action: '加入面板',
+        sourcedTitle: '暫時沒有內容',
+        sourcedBody: '符合此面板來源的項目一到就會顯示在這裡。你也可以手動加入。',
+        uncheckedTitle: '尚未確認任何相符項目',
+        pendingTitle: '正在檢查哪些內容相符…',
     },
     widgets: {
         group: '小工具',
@@ -1624,6 +1646,30 @@ type MachineParams = Shared_computerUseTranslations.MachineParams;
 type ComputerUseTranslations = Shared_computerUseTranslations.ComputerUseTranslations;
 
 const computerUseTranslations = { 'zh-Hant': {
+        providers: {
+            pageDescription: ({ machine }) => `代理如何查看和控制 ${machine} 的螢幕。`,
+            sectionTitle: "提供者",
+            sectionDescription: "除非代理指定其他已開啟的提供者，否則使用預設項。",
+            offlineDescription: ({ machine }) => `${machine} 目前離線，暫時無法開啟提供者。`,
+            cuaDescription: "速度快，依據螢幕內容操作。",
+            agentDesktopDescription: "依名稱操作控制項。速度較慢，耗用的 token 較少。",
+            status: {
+                checking: "正在檢查…",
+                installsOnEnable: "開啟後安裝",
+                installing: "正在安裝…",
+                installed: "已安裝",
+                missing: "未安裝",
+                failed: "無法安裝",
+                unavailable: "此機器不支援",
+            },
+            install: "安裝",
+            retry: "重試",
+            defaultTitle: "預設",
+            makeDefault: "設為預設",
+            loadFailedTitle: "無法載入電腦控制設定",
+            saveFailed: "無法儲存變更",
+            summaryPair: ({ first, second }) => `${first}、${second}`,
+        },
         approval: {
             sectionTitle: '在電腦上',
             act: {
@@ -1808,6 +1854,8 @@ const computerUseTranslations = { 'zh-Hant': {
             pressKey: ({ key }) => `已按下 ${key}`,
             press: '已按下一個鍵',
             pressRunning: '正在按鍵',
+            drag: '已拖曳',
+            wheel: '已捲動',
             mayHaveLanded: '可能已生效',
             failed: '未完成',
         },
@@ -2600,9 +2648,11 @@ const zhHant: EntityDragDropTranslations = {
         putUnderDetail: '向它回報 · 兩者都繼續執行',
         moveAbove: ({ target }) => `移到 ${target} 上方`,
         moveBelow: ({ target }) => `移到 ${target} 下方`,
+        moveBefore: ({ target }) => `移到 ${target} 之前`,
+        moveAfter: ({ target }) => `移到 ${target} 之後`,
         orderDetail: '僅變更順序',
         moveToFolder: ({ folder }) => `移到 ${folder}`,
-        folderDetail: '僅調整資料夾 · 不向任何人回報',
+        folderDetail: '仍在原處執行', leaveSectionDetail: '離開所在分區',
         moveToTopLevel: '移到最上層',
         topLevelDetail: '移出資料夾 · 其他不變',
         cantPutUnder: ({ target }) => `無法放到 ${target} 下`,
@@ -2647,7 +2697,7 @@ const zhHant: EntityDragDropTranslations = {
         foldersOff: '此 Home 已關閉資料夾',
         gone: '那個位置剛剛消失了',
         generic: '這裡無法放置',
-        otherGroup: '它屬於另一個分組',
+        otherGroup: '工作階段會留在它執行的專案中。請改為放入分區',
         cantHold: '這一列不能容納任何內容',
         fixedItem: '它不能在此列表中移動',
     },
@@ -5898,6 +5948,7 @@ const machineDetailPageTranslations = { 'zh-Hant': translated({
                 sharing: "共享",
                 agents: "代理",
                 terminal: "終端機",
+                computer: "電腦控制",
                 connection: "連線",
                 tools: "工具",
                 doctor: "診斷",
@@ -6318,8 +6369,8 @@ const machineDetailPageTranslations = { 'zh-Hant': translated({
                 },
                 customSustain: {
                     title: "持續時間",
-                    body: "任意整數分鐘，最長一週（10080）。",
-                    invalid: "請輸入 1 到 10080 之間的整數分鐘數。",
+                    body: "任意整數分鐘，最長一週（10080）。 請註明單位：ms、s、min、h 或 d。",
+                    invalid: "請輸入 1 到 10080 之間的整數分鐘數。 請註明單位：ms、s、min、h 或 d。",
                 },
                 customCpu: {
                     title: "CPU 高於",
@@ -6627,7 +6678,7 @@ const machineDetailPageTranslations = { 'zh-Hant': translated({
                     customTitle: "建議清理未使用項目的時間",
                 },
                 days: ({ days }) => `${days} 天`,
-                customDays: { body: "任意整數天數，1 或更大。", invalid: "請輸入整數天數，1 或更大。" },
+                customDays: { body: "任意整數天數，1 或更大。 請註明單位：ms、s、min、h 或 d。", invalid: "請輸入整數天數，1 或更大。 請註明單位：ms、s、min、h 或 d。" },
             },
             scope: {
                 label: "顯示範圍",
@@ -6892,8 +6943,8 @@ const machineDetailPageTranslations = { 'zh-Hant': translated({
                 milliseconds: ({ milliseconds }) => `${milliseconds} ms`,
                 customIdle: {
                     title: "閒置工具關閉時間",
-                    body: "輸入毫秒、秒、分鐘或小時；至少 1 秒。",
-                    invalid: "輸入至少 1 秒的時間長度。",
+                    body: "輸入毫秒、秒、分鐘或小時；至少 1 秒。 請註明單位：ms、s、min、h 或 d。",
+                    invalid: "輸入至少 1 秒的時間長度。 請註明單位：ms、s、min、h 或 d。",
                 },
                 customBrowsers: {
                     title: "瀏覽器並行數",
@@ -6949,7 +7000,7 @@ const machineDetailPageTranslations = { 'zh-Hant': translated({
                 sustainHelp: "構建時的短暫峰值絕不會觸發。",
                 cooldownTitle: "然後在兩步之間等待",
                 cooldownHelp: "每一步之後，Happier 會等待這麼久，並確認記憶體是否下降。",
-                customMinutes: { title: "持續時間", body: "任意整數分鐘，1 或更大，例如 3 或 90。", invalid: "請輸入整數分鐘數，1 或更大。" },
+                customMinutes: { title: "持續時間", body: "任意整數分鐘，1 或更大，例如 3 min 或 1.5 h。 請註明單位：ms、s、min、h 或 d。", invalid: "請輸入整數分鐘數，1 或更大。 請註明單位：ms、s、min、h 或 d。" },
             },
             ladder: {
                 label: "記憶體守護會做什麼",
@@ -7051,7 +7102,7 @@ const machineDetailPageTranslations = { 'zh-Hant': translated({
                 graceHelp: "給程序一點時間自行結束。",
                 atOnce: "立即",
                 seconds: ({ seconds }) => `${seconds} 秒`,
-                customGrace: { title: "等待多久", body: "秒或分鐘，例如 45 秒或 3 分鐘。", invalid: "請輸入秒數或分鐘數，0 或更大。" },
+                customGrace: { title: "等待多久", body: "秒或分鐘，例如 45 秒或 3 分鐘。 請註明單位：ms、s、min、h 或 d。", invalid: "請輸入秒數或分鐘數，0 或更大。 請註明單位：ms、s、min、h 或 d。" },
             },
             limits: {
                 title: "限制與電源",
@@ -7792,7 +7843,7 @@ return { nativePasswordTranslations };
 const Domain_navigationPlacementTranslations = (() => {
 type NavigationPlacementTranslation = Shared_navigationPlacementTranslations.NavigationPlacementTranslation;
 
-const navigationPlacementTranslations = { 'zh-Hant': { customize: '自訂…', title: '導覽', description: '選擇保持顯示、放入「更多」或隱藏的項目。拖曳以排序。儲存在此裝置上。', pinned: '固定', overflow: '更多', hidden: '隱藏', reset: '重設', appRail: '左側欄', sessionRail: '工作階段側欄', workspaceRail: '工作區側欄', sessionTabBar: '手機分頁列', phoneLauncher: '手機捷徑' } } satisfies Pick<Record<string, NavigationPlacementTranslation>, "zh-Hant">;
+const navigationPlacementTranslations = { 'zh-Hant': { customize: '自訂…', title: '導覽', description: '選擇保持顯示、放入「更多」或隱藏的項目。拖曳以排序。儲存在此裝置上。', pinned: '固定', overflow: '更多', hidden: '隱藏', reset: '重設', appRail: '左側欄', sessionRail: '工作階段側欄', workspaceRail: '工作區側欄', sessionTabBar: '手機分頁列', phoneLauncher: '手機捷徑', composer: '輸入框' } } satisfies Pick<Record<string, NavigationPlacementTranslation>, "zh-Hant">;
 
 return { navigationPlacementTranslations };
 })();
@@ -8421,7 +8472,8 @@ const Domain_pluginSettingsPresentationTranslations = (() => {
 const english = Shared_pluginSettingsPresentationTranslations.english;
 
 const pluginSettingsPresentationTranslations = { 'zh-Hant': {
-        rowStatus: { enabled: '已啟用', disabled: '已停用', incompatible: '不相容', trustRemoved: '已撤銷信任', needsAttention: '需要處理' },
+        enablement: {"account": "在你的帳戶中", "machine": "在此機器上", "description": "兩項均須啟用，此外掛程式才能在這裡執行。關閉後會保留資料和連線。", "accountScope": "你的所有機器", "accountOff": "已在你的帳戶中關閉，因此不會在你的任何機器上執行。資料和連線會保留。", "machineOff": "已在此機器上關閉。你的其他機器不受影響，資料和連線會保留。"},
+        rowStatus: { enabled: '已啟用', disabled: '已停用', incompatible: '不相容', trustRemoved: '已撤銷信任', needsAttention: '需要處理', offInAccount: '已在帳戶中關閉' },
         developmentPhase: { observing: '正在監看', preparingDependencies: '正在準備相依項目', compiling: '正在編譯', validating: '正在驗證', active: '作用中', retainedIncumbent: '上一版本仍在執行', unavailable: '無法使用' },
         developmentDiagnostic: { manifestMissing: '此資料夾中沒有外掛資訊清單。請新增 .happier-plugin/plugin.json，或選擇外掛所在的資料夾。', projectMissing: '此資料夾已不存在。請將其從開發中移除，或選擇外掛目前所在的位置。' },
         rowSource: { bundled: 'Happier 內建', npm: 'npm 套件', archive: '封存檔案', localPath: '本機資料夾', other: '已設定來源' },
@@ -9053,9 +9105,12 @@ const rolesTranslations = { 'zh-Hant': {
             sectionTitle: '角色',
             allRoles: '所有角色',
             inUse: ({ count }) => `${count} 個使用中`,
-            changed: '已變更',
-            thisSession: '此工作階段',
+            changedHere: '在此變更',
+            addedHere: '在此新增',
             reset: '重設',
+            runsInBackground: '在背景執行',
+            approvalReviewerFollowsDefault: ({ value }) => `跟隨你的預設設定 · ${value}`,
+            approvalReviewerOverride: ({ value }) => `在此設定 · 預設：${value}`,
             newRoleForSession: '為此工作階段新增角色',
             changeForSession: '僅為此工作階段變更',
             editNotes: '編輯備註',
@@ -9180,7 +9235,7 @@ const runPageTranslations = { 'zh-Hant': {
         launcher: {
             titles: { review: '請求審查', plan: '請求計畫', delegate: '委派任務' },
             descriptions: {
-                review: ({ machine }) => `每個智慧代理各自審查 ${machine} 上的變更；每個都會在這裡給出一個結果。`,
+                review: ({ folder }) => `每個智慧代理各自審查 ${folder} 中的變更；每個都會在這裡給出一個結果。`,
                 plan: ({ machine }) => `智慧代理閱讀 ${machine} 上的程式碼，並在這裡提出計畫。它不會變更任何內容。`,
                 delegate: ({ machine }) => `智慧代理依下方權限在 ${machine} 上工作，並在這裡回報。`,
             },
@@ -9278,7 +9333,7 @@ type SecretsSettingsCopy = Shared_secretsSettingsTranslations.SecretsSettingsCop
 const en = Shared_secretsSettingsTranslations.en;
 
 const zhHant: SecretsSettingsCopy = {
-    purpose: "供代理程式和 MCP 伺服器使用的 API 金鑰與權杖。儲存後不再顯示其值。",
+    purpose: "供代理程式和 MCP 伺服器使用的 API 金鑰與權杖。除非管理該密鑰的人選擇顯示，否則值保持隱藏。",
     yoursTitle: '你的密鑰',
     yoursDescription: '你儲存或擁有的密鑰。在 Happier 需要金鑰的地方選擇它們。',
     sharedWithYouTitle: '與你共用',
@@ -9307,6 +9362,27 @@ const zhHant: SecretsSettingsCopy = {
     storagePlain: '由 Home 管理',
     storagePlainDescription: '此 Home 會儲存它，並可讀取以便傳遞。',
     save: '儲存密鑰',
+    revealValue: "顯示值",
+    hideValue: "隱藏值",
+    revealConfirmTitle: ({ name }: { name: string }) => `顯示「${name}」？`,
+    revealConfirmBody: "該值會在此裝置上顯示，直到你隱藏它或離開頁面。顯示和複製都會記錄在其歷史中。",
+    revealConfirm: "顯示",
+    valueUnavailable: "已儲存。目前無法在此裝置上顯示。",
+    valueRefused: "無法顯示該值，因此未顯示任何內容。",
+    copyRefused: "無法複製該值。請重新顯示後再試。",
+    copyUnrecorded: "該值可能已在剪貼簿中，但這次複製未能記錄。",
+    historyTitle: "顯示歷史",
+    historyEmpty: "還沒有人顯示過此值。",
+    historyUnavailable: "無法載入歷史。",
+    historyRevealed: "已顯示",
+    historyRevealedCopied: "已顯示並複製",
+    historyCopyNotConfirmed: "已顯示 · 複製未確認",
+    historyNotShown: "未顯示",
+    historyUnconfirmed: "顯示未確認",
+    historyThisDevice: "此裝置",
+    historyOtherDevice: "其他裝置",
+    historyUnknownActor: "某人",
+    historyOlder: "顯示更早的記錄",
 };
 
 const secretsSettingsTranslations = { zhHant } as const;
@@ -9608,6 +9684,24 @@ const sessionBoardTranslations = { 'zh-Hant': {
                 unpin: '從此檢視取消釘選',
                 pinToBoard: '釘選到看板',
                 moveToView: ({ title }) => `移動到${title}`,
+                network: '網路存取…',
+            },
+            network: {
+                title: '網路存取',
+                hint: '此視覺內容可透過顯示它的瀏覽器存取哪些網站。',
+                reach: '可存取',
+                none: '無',
+                sites: '指定網站',
+                open: '任何網站',
+                sitesLabel: '網站',
+                sitesPlaceholder: 'https://api.example.com',
+                sitesInvalid: ({ sites }) => `不是有效的網站位址：${sites}。請使用 https://example.com。`,
+                sitesNeeded: '請至少新增一個網站。',
+                noneConsequence: '獨立執行，不會發出任何外部要求。',
+                sitesConsequence: '只能存取你列出的網站。其上的遠端程式碼與資源可能會變動。',
+                openConsequence: '可存取任何網站、向其傳送內容，並洩露檢視者的 IP 位址。遠端程式碼可能會變動。',
+                shareOffNote: '公開連結仍可在關閉網路存取的情況下分享。',
+                failed: '無法變更網路存取。請再試一次。',
             },
             moved: {
                 before: ({ title }) => `${title}已往前移動。`,
@@ -10825,6 +10919,7 @@ const zhHant: typeof en = {
         muteFailed: '無法靜音',
         truncated: "結果已縮短。",
         wokenBy: ({ count }) => (count === 1 ? '由一則更新喚醒' : `由 ${count} 則更新喚醒`),
+        updateCount: ({ count }) => (count === 1 ? '1 則更新' : `${count} 則更新`),
         notFromYou: '不是你傳送的訊息',
     },
     workerFollow: {
@@ -10863,9 +10958,10 @@ const zhHant: typeof en = {
         expandMap: '在工作階段旁開啟地圖',
     },
     map: {
-        folded: "已完成的工作已摺疊",
+        folded: ({ names }) => `已完成的工作保留在清單中：${names}`,
         backgroundRuns: ({ count }) => (count === 1 ? "1 個背景執行" : `${count} 個背景執行`),
         positionUnder: ({ position, total, parent }) => `${parent} 下的第 ${position}/${total} 項`,
+        waitingOn: ({ count }) => `等待 ${count} 項`,
     },
     actions: {
         showInTranscript: '在對話記錄中顯示',
@@ -11535,6 +11631,10 @@ const shareSheetTranslations = { 'zh-Hant': {
         remove: '移除存取權',
         confirmRemove: '確認移除',
         removedAnnouncement: ({ name }) => `${name} 已不再有存取權`,
+        removeLosesPerson: ({ name }) => `${name} 將在所有裝置上失去存取權。`,
+        removeLosesMembers: ({ name }) => `${name} 的成員將在所有裝置上失去存取權。`,
+        removeKeepsOtherAccess: "透過其他方式分享給他們的存取權會保留。",
+        removeKeepsTheirWork: "他們自己的檢出、工作階段和小工具仍歸他們所有。",
         browseAll: '瀏覽全部',
         browsePeople: '瀏覽所有人員',
         browseTeams: '瀏覽所有團隊',
@@ -12989,7 +13089,7 @@ const voiceMomentsTranslations = { 'zh-Hant': {
         setupClose: '關閉',
         needsYouEnded: '語音已結束。收件匣中仍有待核准的請求。',
         needsYouReview: '檢視請求',
-        needsYouTapToDecide: '已朗讀 · 請在此處決定，而不是用語音',
+        needsYouTapToDecide: "已朗讀 · 在這裡點按決定",
         briefMe: '給我簡報',
         briefMeA11y: '給我簡報：語音會讀出需要你處理、失敗和已就緒的內容',
         briefNeedsYou: '需要你',
@@ -12997,7 +13097,7 @@ const voiceMomentsTranslations = { 'zh-Hant': {
         briefReady: '已就緒',
         briefIncomplete: '部分工作尚未載入，這裡可能不完整。',
         briefCaughtUp: '目前沒有需要你處理的事。',
-        briefNotSpoken: '語音暫時無法朗讀。完整清單都在這裡。',
+        briefNotSpoken: "語音暫時無法朗讀。",
         briefStop: '停止',
         continueTitle: '在這裡繼續交談',
         continueDetail: ({ device }) => `你之前在 ${device} 上交談`,
@@ -13093,7 +13193,7 @@ const defineVoiceReadinessTranslation = Shared_voiceReadinessTranslations.define
 
 const voiceReadinessTranslations = { 'zh-Hant': defineVoiceReadinessTranslation({
     ready: '語音功能已就緒。',
-    permissionAnnouncement: ({ summary }) => `編碼工作階段需要以下權限：${summary}。請在工作階段介面中審核並核准或拒絕。`,
+    permissionAnnouncement: ({ summary }) => `編碼工作階段需要以下權限：${summary}。`,
     userActionAnnouncement: ({ question }) => `編碼工作階段需要你的回答。${question}`,
     userActionFallback: '編碼工作階段需要你的回答。請回答問題，以便我繼續。',
     requestedTool: '要求的工具',
@@ -13421,7 +13521,7 @@ const zhHant: VoiceSettingsPagesCopy = {
       toolsTitle: '工具名稱',
       toolsDescription: '例如「已編輯檔案」。參數和檔案路徑從不分享。',
       permissionsTitle: '權限要求',
-      permissionsDescription: '讓它告訴你什麼需要你處理。核准仍需你點按。',
+      permissionsDescription: "讓它朗讀請求，並幫你回覆。",
       devicesTitle: '你的機器和裝置',
       devicesDescription: '名稱和線上狀態，用於在你指定的位置啟動工作階段。',
       liveTitle: '你說話時',
@@ -13506,7 +13606,11 @@ const zhHant: VoiceSettingsPagesCopy = {
       itMayReadOnly: '唯讀',
       itMayReadOnlyDescription: '它讀取你的工作階段和檔案，不做任何變更。',
       itMayAsk: '先詢問',
-      itMayAskDescription: '每次變更都會先詢問你。口頭說「是」從不算核准，需要你點按。',
+      itMayAskDescription: "每次變更都會先詢問你。",
+      approvalsTitle: "核准",
+      approvalsDescription: "當工作階段在你說話時請求權限。",
+      canApproveRequestsTitle: "語音代理可以核准請求",
+      canApproveRequestsDescription: "它會朗讀每個請求，並按你說的方式回覆。關閉後，每個請求都由你點按決定。",
       itMaySafe: '安全變更',
       itMaySafeDescription: '它會自行進行安全的工作區變更，其餘會先詢問。',
       itMayAnything: '任何操作',
@@ -13623,6 +13727,7 @@ const walkthroughSettingsTranslations = { 'zh-Hant': copy({
         model: '摘要模型',
         modelDescription: '用於產生說明、變更導覽和提交建議。',
         chooseModel: '選擇模型',
+        sessionModel: '工作階段模型',
         searchModels: '搜尋模型',
         loadModels: "尋找更多模型",
         loadFailed: "無法載入已儲存的導覽。",
@@ -13638,6 +13743,7 @@ const walkthroughSettingsTranslations = { 'zh-Hant': copy({
         costPremium: "高成本",
         loadingModels: "正在載入模型…",
         noModels: "找不到模型",
+        chooseMachineForModels: "請先選擇一台機器，以查看其模型。",
         loadModelsFailed: "無法載入模型。請重試。",
         startFailure: {
             notInstalled: { title: "這台機器上未安裝", next: "請檢查其指令和工作目錄，然後重試。" },
@@ -13703,6 +13809,7 @@ const walkthroughTranslations = { 'zh-Hant': {
             saved: walkthroughSavedTranslations['zh-Hant'],
             progress: walkthroughProgressTranslations['zh-Hant'],
             eyebrow: '導讀',
+            conversationTitle: '導讀對話',
             generated: '已產生',
             generatedBy: ({ model }) => `已產生 · ${model}`,
             generatedA11y: '由模型撰寫',
@@ -13750,6 +13857,25 @@ const walkthroughTranslations = { 'zh-Hant': {
             nextStop: '下一站',
             done: '完成',
             evidence: { displayFailed: '無法顯示已儲存的程式碼。檔案仍保留在「檔案」中。', binary: '二進位檔案，根據中繼資料描述。僅顯示，未分析。', unavailable: ({ reason }) => `無法讀取（${reason}）。它仍在清單中；這裡不聲稱已審閱。` },
+            stopNumber: ({ number }) => `第 ${number} 站`,
+            receipt: {
+                wrote: '已寫好導讀',
+                updated: '已更新導讀',
+                savedAnalysis: '已儲存變更分析',
+                updatedAnalysis: '已更新變更分析',
+                stopCount: ({ count }) => (count === 1 ? '1 站' : `${count} 站`),
+                open: '開啟導讀',
+                openChanges: '開啟變更',
+                stopChanged: ({ number }) => `第 ${number} 站已變更`,
+                stopsChanged: ({ numbers }) => `第 ${numbers} 站已變更`,
+                stopsRemoved: ({ count }) => (count === 1 ? '移除了 1 站' : `移除了 ${count} 站`),
+                stopsMergedInto: ({ count, number }) => `${count} 站已合併到第 ${number} 站`,
+                titleEditKept: '保留了你編輯的標題',
+                lastChangeUndone: '已復原上一次變更',
+                undo: '復原',
+                undoing: '正在復原…',
+                undone: '已復原',
+            },
             notice: {
                 stale: '寫完後有檔案發生了變更',
                 refresh: '重新整理導讀',
@@ -14131,6 +14257,14 @@ const widgetGlanceTranslations = { 'zh-Hant': {
         servicesLoading: '正在載入本機服務',
         servicesReadFailed: '無法讀取本機服務。請再試一次。',
         noMachine: '此工作階段沒有可查詢的機器。',
+        appEmptyTitle: '沒有正在執行的服務',
+        appUnlistedTitle: '未列出服務',
+        appUnlistedOffline: ({ machine }: { machine: string }) => `${machine} 已離線。`,
+        appUnlistedMany: ({ count }: { count: number }) => `${count} 台機器無法連線。`,
+        appEmptyReason: '你在機器上執行的 Web 伺服器會顯示在這裡。',
+        machineOffline: ({ machine }: { machine: string }) => `${machine} 已離線：其服務未列出。`,
+        machineUnreadable: ({ machine }: { machine: string }) => `暫時無法讀取 ${machine} 的服務。`,
+        machinesNotListed: ({ count }: { count: number }) => `無法連線 ${count} 台機器：其服務未列出。`,
         changedCount: ({ count }) => `${count} 個已變更`,
         moreFiles: ({ count }) => `還有 ${count} 個檔案`,
         runningCount: ({ count }) => `${count} 個執行中`,
@@ -14153,6 +14287,10 @@ const zhHant: WorkStatusTranslations = {
         finished: '已完成',
         idle: '閒置',
         offline: '離線',
+    },
+    words: {
+        permission: '權限',
+        question: '問題',
     },
 };
 

@@ -122,7 +122,7 @@ describe('normalizeTranscriptScrollIngress', () => {
         });
     });
 
-    it('returns null for missing native geometry and clamps negative native live-tail distance', () => {
+    it('returns null for missing native layout geometry', () => {
         expect(normalizeTranscriptScrollIngress({
             eventNativeEvent: {
                 contentOffset: { y: 12 },
@@ -133,18 +133,6 @@ describe('normalizeTranscriptScrollIngress', () => {
             measuredLayoutHeight: 0,
             platform: 'native',
         })).toBeNull();
-
-        // Raw offsets beyond the visual bottom clamp the live-tail distance to zero.
-        expect(normalizeTranscriptScrollIngress({
-            eventNativeEvent: {
-                contentOffset: { y: 1600 },
-                contentSize: { height: 2000 },
-                layoutMeasurement: { height: 500 },
-            },
-            measuredContentHeight: 0,
-            measuredLayoutHeight: 0,
-            platform: 'native',
-        })?.distanceFromLiveTailPx).toBe(0);
     });
 
     it('falls back to the synthetic web event only when live DOM metrics are unavailable', () => {

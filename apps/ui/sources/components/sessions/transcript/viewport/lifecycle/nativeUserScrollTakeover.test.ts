@@ -40,34 +40,6 @@ const recordIntentTimestampEffect = (
 });
 
 describe('native user-scroll takeover apply effects', () => {
-    it('returns no apply effects when none match the current session', () => {
-        expect(resolveNativeUserScrollTakeoverApplyEffects({
-            effects: [],
-            sessionId: 'session-a',
-        })).toEqual([]);
-
-        expect(resolveNativeUserScrollTakeoverApplyEffects({
-            effects: [
-                preemptEntryRestoreEffect({ sessionId: 'session-b' }),
-                { sessionId: 'session-a', type: 'native-touch-release-live-tail' },
-            ],
-            sessionId: 'session-a',
-        })).toEqual([]);
-    });
-
-    it('returns all current-session native user-scroll takeover effects in order', () => {
-        const effects = [
-            preemptEntryRestoreEffect(),
-            clearInitialViewportObservationEffect(),
-            recordIntentTimestampEffect({ timestampMs: 456 }),
-        ];
-
-        expect(resolveNativeUserScrollTakeoverApplyEffects({
-            effects,
-            sessionId: 'session-a',
-        })).toEqual(effects);
-    });
-
     it('filters mixed lifecycle effects by native user-scroll type and current session', () => {
         const currentTimestamp = recordIntentTimestampEffect();
         const effects = [

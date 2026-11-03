@@ -1,6 +1,7 @@
 import * as React from 'react';
 import type { ManagedControllerV1 } from '@happier-dev/protocol/machines/managed/managedMachineV1';
 import { isMachineReplaced } from '@happier-dev/protocol/machines/identity/canonicalMachineId';
+import { supportsMachineOperationProtocolCapabilityV1 } from '@happier-dev/protocol/machines/operationProtocolCapabilitiesV1';
 
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
 import { useThisComputerMachineId } from '@/components/machines/add/useMachineAddPaths';
@@ -24,13 +25,15 @@ import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import { areAccountSettingsScopesEqual } from '@/sync/domains/settings/scope/accountSettingsScope';
 import { MACHINE_ADMINISTRATION_SELECTION_KEYS_V1, setMachineAdministrationTargetPreference } from '@/sync/domains/machines/administration/selectionPreferences';
 import { readMachineRequestReachabilityObservation } from '@/sync/domains/machines/reachability/machineReachability';
+import { readPluginAccountAvailability } from '@/sync/domains/plugins/availability/projection';
+import { useAdmittedManagedMachineAbsentEnrolledIds } from './useManagedMachineInventory';
 
 export type ManagedControllerScope = Readonly<{
   /** The machine whose installation runs provider calls: the person's choice, else the preselected default. */
   controller: ManagedControllerV1 | undefined;
   /** The chosen machine's record, for its name and presence. */
   machine: Machine | undefined;
-  /** Whether any machine in this Home can manage machines at all. */
+  /** Whether this Home has installed controller identities to show, including unavailable choices. */
   hasCandidates: boolean;
   /**
    * Whether this Home's machine list has been read: an empty `hasCandidates` before that is not
@@ -47,13 +50,19 @@ export type ManagedControllerScope = Readonly<{
  * "Managed from": which of this Home's machines with an installation runs a provisioner's calls
  * (lab `m-add` / `m-config`). It is shown through the canonical header chip
  * (`MachineAdministrationTargetSelector presentation="chip"`), offering only machines that can manage,
- * and starts on a sensible machine so the first frame is the catalog: this computer when it can
- * manage online, else a deterministic online candidate. The choice is page-local, as the
+ * and starts on an online controller admitted by the Action protocol, preferring held installed
+ * provisioners and the person's last choice. The choice is page-local, as the
  * draft it scopes is.
  */
 /** Installed controllers, including asleep ones, but never retired identities. */
 export function isManagedControllerCandidate(machine: Machine): boolean {
   return !!machine.installationId && !machine.revokedAt && !isMachineReplaced(machine);
+}
+
+/** Provisioner calls use the same operation protocol required by external Action admission. */
+function supportsManagedControllerActions(machine: Machine): boolean {
+  return typeof machine.operationProtocolCapabilitiesRevision === 'number' && machine.operationProtocolCapabilitiesRevision >= 1
+    && supportsMachineOperationProtocolCapabilityV1(machine.operationProtocolCapabilities, 'externalActionExecutionAuthorization');
 }
 
 export function useManagedControllerScope(
@@ -88,33 +97,73 @@ export function useManagedControllerScope(
     : preferredMachineId && preferredInstallationId ? input.preferred : undefined;
   const { onSelect } = input;
 
+  // The open shared chooser already demands this Home's managed inventory. Observe its
+  // admitted absence facts without opening or retaining a second list read.
+  const absentMachineIds = useAdmittedManagedMachineAbsentEnrolledIds(input.serverId, binding);
+  const controllerMachines = React.useMemo(() => (machines ?? []).filter(isManagedControllerCandidate), [machines]);
+  const controllerIds = React.useMemo(() => new Set(controllerMachines.map(machine => machine.id)), [controllerMachines]);
   const eligible = React.useMemo(
     () =>
-      (machines ?? []).filter(isManagedControllerCandidate),
-    [machines],
+      controllerMachines.filter(machine => !absentMachineIds.has(machine.id)),
+    [absentMachineIds, controllerMachines],
   );
-  const scopedRows = React.useMemo(
-    () =>
-      rows.filter(
+  const eligibleById = React.useMemo(() => new Map(eligible.map(machine => [machine.id, machine])), [eligible]);
+  const availabilityReader = React.useMemo(() => binding?.isCurrent() ? readPluginAccountAvailability(binding.scope) : null, [binding]);
+  const subscribeCapabilities = React.useCallback((notify: () => void) => availabilityReader?.subscribe(notify) ?? (() => {}), [availabilityReader]);
+  const readCapabilities = React.useCallback(() => {
+    const installed = binding?.isCurrent() ? availabilityReader?.readInstalledPlugins() : undefined;
+    if (installed?.kind !== 'available') return eligible.map(() => 'unknown').join('|');
+    const declarations = new Map<string, 'supported' | 'unknown'>();
+    for (const plugin of installed.plugins) for (const installation of plugin.installations) {
+      const materialization = installation.materialization;
+      if (!materialization.enabled || materialization.trustState !== 'trusted'
+        || !areServerProfileIdentifiersEquivalent(materialization.serverIdentityId, input.serverId)
+        || !eligibleById.has(materialization.machineId) || declarations.get(materialization.machineId) === 'supported') continue;
+      const provisioners = installation.declaration?.contributes.machineProvisioners ?? [];
+      const platform = eligibleById.get(materialization.machineId)?.metadata?.platform;
+      if (platform && provisioners.some(provisioner => provisioner.platforms.some(supported => supported === platform))) {
+        declarations.set(materialization.machineId, 'supported');
+      } else if (installation.declarationState === 'preparing' || !platform && provisioners.length > 0) {
+        declarations.set(materialization.machineId, 'unknown');
+      }
+    }
+    // A missing/preparing declaration is unknown. Only a complete admitted census can
+    // establish no installed provisioner; the primitive projection ignores cursor/heartbeat churn.
+    return eligible.map(machine => declarations.get(machine.id) === 'supported' ? 'supported'
+      : installed.completeness === 'complete' && declarations.get(machine.id) !== 'unknown' ? 'unsupported' : 'unknown').join('|');
+  }, [availabilityReader, binding, eligible, eligibleById, input.serverId]);
+  const capabilities = React.useSyncExternalStore(subscribeCapabilities, readCapabilities, readCapabilities);
+  const capabilityStates = React.useMemo(() => capabilities.split('|'), [capabilities]);
+  const installedProvisionerMachines = React.useMemo(() => new Set(eligible.filter((_machine, index) => capabilityStates[index] === 'supported').map(machine => machine.id)), [capabilityStates, eligible]);
+  const unsupportedProvisionerMachines = React.useMemo(() => new Set(eligible.filter((_machine, index) => capabilityStates[index] === 'unsupported').map(machine => machine.id)), [capabilityStates, eligible]);
+  const scopedRows = React.useMemo(() => {
+      const scoped = rows.filter(
         (row) =>
           areServerProfileIdentifiersEquivalent(row.serverId, input.serverId) &&
-          (row.candidate.target.machineId === namedRetained?.machineId || eligible.some(
-            (machine) => machine.id === row.candidate.target.machineId,
-          )),
-      ),
-    [eligible, input.serverId, namedRetained?.machineId, rows],
+          (row.candidate.target.machineId === namedRetained?.machineId || controllerIds.has(row.candidate.target.machineId)),
+      );
+      // Absence withdraws admission, not the row's stable position or chooser lifetime.
+      return scoped.map(row => absentMachineIds.has(row.candidate.target.machineId)
+        ? { ...row, candidate: { ...row.candidate, availability: 'missing' as const } } : row);
+    }, [absentMachineIds, controllerIds, input.serverId, namedRetained?.machineId, rows],
   );
+  const automaticCandidates = React.useMemo(() => {
+    const onlineIds = new Set(scopedRows.filter(row => isMachineAdministrationCandidateSelectable(row.candidate)).map(row => row.candidate.target.machineId));
+    const readScope = binding?.isCurrent() ? binding.scope : null;
+    const online = eligible.filter(machine => onlineIds.has(machine.id) && supportsManagedControllerActions(machine)
+      && !unsupportedProvisionerMachines.has(machine.id)
+      && readMachineRequestReachabilityObservation(readScope, machine.id)?.outcome !== 'failed');
+    const knownCapable = online.filter(machine => installedProvisionerMachines.has(machine.id));
+    return (knownCapable.length > 0 ? knownCapable : online).sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+  }, [binding, eligible, installedProvisionerMachines, scopedRows, unsupportedProvisionerMachines]);
   const automaticRetainedRow = !namedRetained && scopedChoice && !scopedChoice.explicit
     ? scopedRows.find((row) => row.candidate.target.machineId === scopedChoice.controller.machineId)
     : undefined;
   // An automatic pick is kept across presence churn only while its machine is still selectable; one that went
   // offline (a first frame from warm cache, a stale beat) yields to the next online controller.
   const automaticRetained = automaticRetainedRow && scopedChoice
-    && isMachineAdministrationCandidateSelectable(automaticRetainedRow.candidate)
-    && readMachineRequestReachabilityObservation(
-      binding?.isCurrent() ? binding.scope : null,
-      automaticRetainedRow.candidate.target.machineId,
-    )?.outcome !== 'failed'
+    && automaticCandidates.some(machine => machine.id === scopedChoice.controller.machineId
+      && machine.installationId === scopedChoice.controller.installationId)
     ? scopedChoice.controller
     : undefined;
   const retained = namedRetained ?? automaticRetained;
@@ -123,25 +172,14 @@ export function useManagedControllerScope(
     // A draft keeps its exact installation even when asleep, missing or replaced; fresh execution
     // admission decides whether it can run. Inventory churn must never silently redirect it.
     if (retained) return retained;
-    const online = eligible.filter((candidate) =>
-        scopedRows.some(
-          (row) =>
-            row.candidate.target.machineId === candidate.id &&
-            isMachineAdministrationCandidateSelectable(row.candidate),
-        ),
-    ).sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
-    const remembered = rememberedTarget ? online.find((candidate) => candidate.id === rememberedTarget.machineId
+    const remembered = rememberedTarget ? automaticCandidates.find((candidate) => candidate.id === rememberedTarget.machineId
       && scopedRows.some((row) => row.candidate.target.machineId === candidate.id
         && row.candidate.target.serverIdentityId === rememberedTarget.serverIdentityId)) : undefined;
-    // Otherwise a machine whose last request did not fail, so the first frame is a catalog that can be read.
-    const readScope = binding?.isCurrent() ? binding.scope : null;
-    const readable = online.filter((candidate) => readMachineRequestReachabilityObservation(readScope, candidate.id)?.outcome !== 'failed');
-    const machine = remembered ?? (readable.length > 0 ? readable : online).find((candidate) => candidate.id === thisMachineId)
-      ?? (readable.length > 0 ? readable : online)[0];
+    const machine = remembered ?? automaticCandidates.find((candidate) => candidate.id === thisMachineId) ?? automaticCandidates[0];
     return machine?.installationId
       ? { machineId: machine.id, installationId: machine.installationId }
       : undefined;
-  }, [retained?.machineId, retained?.installationId, eligible, scopedRows, thisMachineId, rememberedTarget?.machineId, rememberedTarget?.serverIdentityId]);
+  }, [retained?.machineId, retained?.installationId, automaticCandidates, scopedRows, thisMachineId, rememberedTarget?.machineId, rememberedTarget?.serverIdentityId]);
   const controllerMachineId = preferred?.machineId;
   const controllerInstallationId = preferred?.installationId;
   const controller = React.useMemo(
@@ -157,7 +195,7 @@ export function useManagedControllerScope(
 
   const selection =
     React.useMemo((): MachineAdministrationTargetSelectionV1 => {
-      const candidates = scopedRows.map((row) => row.candidate);
+      const candidates = scopedRows.map(row => row.candidate);
       const selectedTarget =
         scopedRows.find(
           (row) => row.candidate.target.machineId === controller?.machineId,
@@ -165,8 +203,9 @@ export function useManagedControllerScope(
       const matchesAccount = doesMachineAdministrationTargetMatchActiveAccount({ target: selectedTarget, activeAccountServerId: activeAccountScope?.serverId });
       const resolveExecutionTarget = (options?: MachineAdministrationExecutionTargetOptions) => {
         if (!matchesAccount || !selectedTarget || !controller || !binding?.isCurrent()) return null;
+        if (absentMachineIds.has(controller.machineId)) return null;
         const current = resolveFreshMachineAdministrationExecutionTarget(selectedTarget, { ...options, accountScope: binding.scope });
-        return current?.machine.installationId === controller.installationId ? current : null;
+        return current?.machine.installationId === controller.installationId && supportsManagedControllerActions(current.machine) ? current : null;
       };
       return {
         candidates,
@@ -204,7 +243,7 @@ export function useManagedControllerScope(
         clearTarget: () => {},
         resolveExecutionTarget,
       };
-    }, [binding, controller?.machineId, controller?.installationId, eligible, onSelect, scopedRows, activeAccountScope?.serverId, input.serverId, accountId, settingsScope]);
+    }, [absentMachineIds, binding, controller?.machineId, controller?.installationId, eligible, onSelect, scopedRows, activeAccountScope?.serverId, input.serverId, accountId, settingsScope]);
 
   const chip =
     scopedRows.length > 0 ? (
@@ -220,7 +259,7 @@ export function useManagedControllerScope(
   return {
     controller,
     machine: machines?.find((machine) => machine.id === controller?.machineId),
-    hasCandidates: eligible.length > 0,
+    hasCandidates: controllerMachines.length > 0,
     machineList: listSettled ? 'settled' : listStatus === 'error' || listStatus === 'signedOut' ? 'unavailable' : 'loading',
     chip,
     selection,

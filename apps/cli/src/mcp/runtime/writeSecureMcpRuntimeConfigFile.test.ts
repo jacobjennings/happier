@@ -1,21 +1,18 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { linkMock, renameMock } = vi.hoisted(() => ({
-  linkMock: vi.fn(),
+const { renameMock } = vi.hoisted(() => ({
   renameMock: vi.fn(),
 }));
 
 vi.mock('node:fs/promises', async () => {
   const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
-  linkMock.mockImplementation(actual.link);
   renameMock.mockImplementation(actual.rename);
   return {
     ...actual,
-    link: (...args: Parameters<typeof actual.link>) => linkMock(...args),
     rename: (...args: Parameters<typeof actual.rename>) => renameMock(...args),
   };
 });
@@ -42,6 +39,35 @@ describe('writeSecureMcpRuntimeConfigFile', () => {
       expect(renameMock).toHaveBeenCalledTimes(1);
     } finally {
       await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('writes config files with a UUID name under a 0700 tmp directory', async () => {
+    const prefix = `happier-mcp-runtime-config-writer-test-${Date.now()}`;
+
+    const configPath = await writeSecureMcpRuntimeConfigFile({
+      prefix,
+      tmpDir: null,
+      payload: { hello: 'world' },
+    });
+
+    const dir = dirname(configPath);
+    try {
+      expect(dir).not.toBe(join(tmpdir(), prefix));
+      expect(join(dir, basename(configPath))).toBe(configPath);
+
+      const name = basename(configPath);
+      expect(name).toMatch(new RegExp(`^${prefix}\\.owned\\.[0-9a-fA-F-]{36}\\.json$`));
+
+      if (process.platform !== 'win32') {
+        const fileMode = (await stat(configPath)).mode & 0o777;
+        expect(fileMode).toBe(0o600);
+
+        const dirMode = (await stat(dir)).mode & 0o777;
+        expect(dirMode).toBe(0o700);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 

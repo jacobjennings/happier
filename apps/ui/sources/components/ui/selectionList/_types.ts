@@ -34,7 +34,7 @@ export type SelectionListTextEllipsizeMode = 'head' | 'middle' | 'tail' | 'clip'
 export type SelectionListKeyboardHint = Readonly<{
     /** Stable id used for testIDs and registry mapping later. */
     id: string;
-    /** Display label as rendered in the KeyChip; e.g. '↵', '⌘N', '↑↓', 'Tab'. */
+    /** Display label as rendered in the KeyHint; e.g. '↵', '⌘N', '↑↓', 'Tab'. */
     label: string;
     /** Optional supporting text shown next to the chip in the footer. */
     description?: string;

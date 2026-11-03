@@ -4,6 +4,7 @@ import type { PluginActionInvocationSurfaceV2 } from '@happier-dev/plugin-sdk/ac
 import type { PluginUiTargetedContributionsV1 } from '@happier-dev/protocol/plugins/ui';
 import type { DaemonPluginTargetedSourceDeclarationV1, DaemonPluginUiResourceDeclarationsByPluginIdV1 } from '@happier-dev/protocol/daemon/contributionRegistryProjection';
 import { preparePluginContributionPointDeclarationsV1 } from '@happier-dev/protocol/plugins/contributions/targeted';
+import { normalizePluginJsonSchema } from '@happier-dev/protocol/plugins/actions/protocol-composable-schema';
 import {
     DaemonPluginSettingsWatchRequestSchema,
     DaemonPluginSettingsWatchResponseSchema,
@@ -13,6 +14,11 @@ import {
     type DaemonPluginSettingsWatchRequest,
     type DaemonPluginSettingsWatchResponse,
 } from '@happier-dev/protocol/rpc';
+import { DaemonContributionRegistryProjectionDescribeUnchangedResponseSchema } from '@happier-dev/protocol/daemon/contributionRegistryProjection';
+import { DaemonContributionRegistryProjectionSectionsResponseSchema, reassembleDaemonProjectionSections,
+    DaemonProjectionDeferredSectionsResponseSchema, demandedDaemonProjectionSections,
+    DAEMON_PROJECTION_SECTION_FRAME_BYTES, DAEMON_PROJECTION_SECTION_STALE_CODE,
+    type DaemonProjectionDeferredSectionsResponse } from '@happier-dev/protocol/daemon/contributionRegistryProjection';
 
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
 import { createMachineRpcReadAdmission, resetAdmittedMachineRpcReadsForTests, type MachineRpcReadAdmission, type MachineRpcReadAdmissionInput } from '@/sync/runtime/orchestration/serverScopedRpc/machineRpcReadAdmission';
@@ -20,15 +26,17 @@ import {
     isRpcMethodNotAvailableError,
     isRpcMethodNotFoundError,
     readRpcErrorCode,
+    RpcError,
 } from '@/sync/runtime/rpcErrors';
 import {
     parseDaemonContributionRegistryProjectionDescribeResponse,
     parseDaemonPluginUiTargetedContributionsReadResponse,
     type DaemonContributionRegistryProjection,
+    type DaemonContributionRegistryProjectionDescribeParsedResponse,
 } from '@/sync/api/daemon/daemonContributionRegistryProjectionProtocol';
-import { resolveNativeReactNativeHostRuntimeIdentity } from '@/components/plugins/reactNative/hostRuntimeIdentity';
-import { resolveHostedWebFrameCapability } from '@/components/plugins/hostedWeb/hostedWebFrameCapability';
-import { getPreferredLanguage } from '@/text';
+import { buildProjectionDescribeRequest, readProjectionClientContext, type ProjectionDescribeSelection } from './machineProjectionRequest';
+import { InvalidDaemonProjectionSection, readDeferredProjection, type DeferredDaemonProjection, type DaemonProjectionSectionCache } from './machineProjectionSections';
+export type { DeferredDaemonProjection, DaemonProjectionSectionCache } from './machineProjectionSections';
 import { serverAccountScopeKeySuffix, type ServerAccountScope, type ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 // The projection revision/listener registry lives in its own dependency-light
@@ -65,6 +73,7 @@ export {
 export type MachineContributionRegistryProjectionFailureReason =
     | MachinePluginTransportReason
     | 'invalid-response'
+    | 'projection-stale'
     | 'request-failed'
     | 'transport-error'
     | 'transport-unavailable'
@@ -74,16 +83,31 @@ export type MachineContributionRegistryProjectionFailureReason =
     | 'update-required'
     | 'encryption-unavailable';
 
-export type MachineContributionRegistryProjectionDescribeResult =
+export type DaemonProjectionHydrationRejection =
+    | 'manifest-admission' | 'section-json' | 'section-page' | 'section-page-position'
+    | 'included-section' | 'section-spans' | 'section-digest' | 'section-index'
+    | 'section-index-schema' | 'section-assembly' | 'section-identity'
+    | 'section-projection' | 'projection-admission';
+
+export type MachineContributionRegistryProjectionDescribeResult = (
     | Readonly<{
         supported: true;
         projection: DaemonContributionRegistryProjection;
+        projectionDigest?: string;
+        /** Byte templates only, admitted by the full response parser below. */
+        sectionBodies?: ReadonlyMap<string, readonly string[]>;
+        deferredProjection?: DeferredDaemonProjection;
+        /** This read revalidated the held projection without transferring its body. */
+        unchanged?: true;
         /** The daemon has already selected the concrete Composer renderer for every row. */
         composerSurfaceCatalog?: readonly DaemonPluginUiComposerSurfaceCatalogEntryV1[];
         /** Global current Event-automation composer facts from the same projection response. */
         automationEligibleEvents?: DaemonContributionRegistryProjectionAutomationEligibleEventsV1;
     }>
-    | Readonly<{ supported: false; reason: MachineContributionRegistryProjectionFailureReason }>;
+    | Readonly<{ supported: false; reason: MachineContributionRegistryProjectionFailureReason }>
+) & Readonly<{ /** Content-free branch name, including when a legacy full read recovered. */
+    deferredHydrationRejection?: DaemonProjectionHydrationRejection }>;
+
 
 /**
  * The current contributions to one mounted target, tagged with the daemon's
@@ -224,6 +248,8 @@ function classifyMachinePluginTransportError(error: unknown): MachinePluginTrans
 /** Projection reads expose recovery categories, never arbitrary peer codes or prose. */
 function classifyMachineProjectionReadError(error: unknown): MachineContributionRegistryProjectionFailureReason {
     switch (readRpcErrorCode(error)) {
+        case DAEMON_PROJECTION_SECTION_STALE_CODE:
+            return 'projection-stale';
         case RPC_ERROR_CODES.TRANSPORT_UNAVAILABLE:
         case RPC_ERROR_CODES.OUTCOME_UNKNOWN:
             // This is a read: losing its reply means no current projection is
@@ -270,21 +296,6 @@ function projectionReadAdmission(
         getMachineContributionRegistryProjectionRevision(scope), payload]);
 }
 
-async function readProjectionClientContext(machineId: string) {
-    const locale = getPreferredLanguage();
-    const reactNativeHostRuntimeIdentity = resolveNativeReactNativeHostRuntimeIdentity();
-    const hostedWebFrameCapability = await resolveHostedWebFrameCapability();
-    return {
-        machineId,
-        // Every projection read narrows plugin translation bundles to what this
-        // client renders: its preferred locale merged over English. Capture it
-        // before asynchronous platform probing so the request and its cache
-        // qualification refer to the same locale, including remote settings updates.
-        locale,
-        ...(reactNativeHostRuntimeIdentity ? { reactNativeHostRuntimeIdentity } : {}),
-        ...(hostedWebFrameCapability ? { hostedWebFrameCapability } : {}),
-    };
-}
 
 /**
  * The machine-wide projection transport uses the RPC owner's connection/setup
@@ -295,19 +306,25 @@ export async function machineContributionRegistryProjectionDescribe(
     opts?: Readonly<{
         serverId?: string | null;
         signal?: AbortSignal;
-        selection?: 'agents';
         /** The Account the read is for; reads are shared only within it. */
         accountLifetime?: ProjectionReadAccount | null;
-    }>,
+        /** Already-held full answer, qualified by the loader's Account and locale. */
+        knownProjection?: DaemonContributionRegistryProjectionDescribeParsedResponse & Readonly<{ projectionDigest: string }>;
+        /** Home/Account/locale-owned byte inventory supplied by the canonical loader. */
+        sectionBodies?: ReadonlyMap<string, readonly string[]>;
+        sectionCache?: DaemonProjectionSectionCache;
+        sections?: readonly string[];
+        deferredProjection?: DeferredDaemonProjection;
+        /** Current manifest, fresh authority already established; hydrate new demand only. */
+        reuseManifest?: boolean;
+        /** Captured by the loader before a cold Home inventory may be awaited. */
+        locale?: string;
+    }> & ProjectionDescribeSelection,
 ): Promise<MachineContributionRegistryProjectionDescribeResult> {
     if (opts?.signal?.aborted) return { supported: false, reason: 'aborted' };
     let payload: ReturnType<typeof DaemonContributionRegistryProjectionDescribeRequestSchema.parse>;
     try {
-        payload = DaemonContributionRegistryProjectionDescribeRequestSchema.parse(
-            opts?.selection === 'agents'
-                ? { machineId, selection: opts.selection }
-                : await readProjectionClientContext(machineId),
-        );
+        payload = await buildProjectionDescribeRequest(machineId, opts);
     } catch {
         return { supported: false, reason: 'request-failed' };
     }
@@ -315,27 +332,139 @@ export async function machineContributionRegistryProjectionDescribe(
         machineId: payload.machineId,
         serverId: opts?.serverId ?? null,
     } satisfies MachineContributionRegistryProjectionScope;
+    let hydrationRejection: DaemonProjectionHydrationRejection | undefined;
     try {
-            const response = await machineRpcWithServerScope<unknown, typeof payload>({
+            const invoke = (request: typeof payload, signal = opts?.signal) => machineRpcWithServerScope<unknown, typeof payload>({
                 machineId: payload.machineId,
                 serverId: opts?.serverId,
                 accountId: opts?.accountLifetime?.scope.accountId,
                 method: RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE,
-                payload,
+                payload: request,
                 // Projection work has no operation deadline, like capability
                 // detection. Connection/setup admission keeps its RPC budget.
                 operationTimeoutMs: null,
-                signal: opts?.signal,
-                readAdmission: projectionReadAdmission(scope, payload),
+                signal,
+                readAdmission: projectionReadAdmission(scope, request),
             });
+            const hydrate = async (manifest: DaemonProjectionDeferredSectionsResponse) => {
+                // Parallel carrier reads belong to this hydration, including
+                // its failure. A retired batch must not retain sibling reads
+                // while fallback, fresh demand or stale recovery starts.
+                const abort = new AbortController();
+                const cancel = () => abort.abort();
+                opts?.signal?.addEventListener('abort', cancel, { once: true });
+                if (opts?.signal?.aborted) cancel();
+                try {
+                    return await readDeferredProjection({
+                        manifest,
+                        sections: opts?.sections,
+                        held: opts?.sectionBodies ?? new Map(),
+                        shared: opts?.sectionCache,
+                        signal: abort.signal,
+                        read: (digest, offset, candidates) => {
+                            const includeDigests: string[] = [];
+                            const request = () => ({ ...payload, sectionRead: { digest, offset, includeDigests }, deferredSections: true as const,
+                                ...(manifest.sectionFrameVersion === 2 ? { sectionFrameVersion: 2 as const } : {}) });
+                            for (const candidate of candidates) {
+                                includeDigests.push(candidate);
+                                if (new TextEncoder().encode(JSON.stringify(request())).length > DAEMON_PROJECTION_SECTION_FRAME_BYTES) {
+                                    includeDigests.pop(); break;
+                                }
+                            }
+                            return invoke(DaemonContributionRegistryProjectionDescribeRequestSchema.parse(request()), abort.signal);
+                        },
+                    });
+                } catch (error) {
+                    cancel();
+                    throw error;
+                } finally {
+                    opts?.signal?.removeEventListener('abort', cancel);
+                }
+            };
+            const fullDescribe = async (deferredHydrationRejection: DaemonProjectionHydrationRejection): Promise<MachineContributionRegistryProjectionDescribeResult> => {
+                hydrationRejection = deferredHydrationRejection;
+                // One compatibility read, never recursive negotiation or a retry.
+                // No held digest: even an unchanged reply cannot answer this read.
+                const request = payload;
+                if (request.selection !== undefined) return { supported: false, reason: 'invalid-response', deferredHydrationRejection };
+                const { deferredSections: _deferred, sectionRead: _read, sectionFrameVersion: _version,
+                    supportedSectionFrameVersions: _versions, knownProjectionDigest: _digest,
+                    knownSectionDigests: _sections, ...fullRequest } = request;
+                const parsed = parseDaemonContributionRegistryProjectionDescribeResponse(await invoke(fullRequest));
+                return parsed ? { supported: true, ...parsed, deferredHydrationRejection }
+                    : { supported: false, reason: 'invalid-response', deferredHydrationRejection };
+            };
+            const hydrateResult = async (initialManifest: DaemonProjectionDeferredSectionsResponse): Promise<MachineContributionRegistryProjectionDescribeResult> => {
+                let manifest = initialManifest;
+                try {
+                    try { return { supported: true, ...await hydrate(manifest) }; }
+                    catch (error) {
+                        if (opts?.signal?.aborted || readRpcErrorCode(error) !== DAEMON_PROJECTION_SECTION_STALE_CODE) throw error;
+                        if (payload.selection !== undefined) throw error;
+                        // A live authority/activation change can replace the build
+                        // without advancing registry generation. Re-establish once
+                        // through current authority, without a held conditional digest.
+                        const { knownProjectionDigest: _known, ...freshRequest } = payload;
+                        const fresh = DaemonProjectionDeferredSectionsResponseSchema.safeParse(await invoke(freshRequest));
+                        if (!fresh.success) throw new InvalidDaemonProjectionSection('manifest-admission');
+                        manifest = fresh.data;
+                        return { supported: true, ...await hydrate(manifest) };
+                    }
+                }
+                catch (error) {
+                    if (opts?.signal?.aborted) return { supported: false, reason: 'aborted' };
+                    if (error instanceof InvalidDaemonProjectionSection) {
+                        if (manifest.sectionFrameVersion === undefined) return await fullDescribe(error.reason);
+                        return { supported: false, reason: 'invalid-response', deferredHydrationRejection: error.reason };
+                    }
+                    throw error;
+                }
+            };
+            if (opts?.reuseManifest && opts.deferredProjection) {
+                return await hydrateResult(opts.deferredProjection.manifest);
+            }
+            const response = await invoke(payload);
             if (isRpcMethodNotFoundResult(response)) {
                 return { supported: false, reason: 'not-supported' };
             }
-            const parsed = parseDaemonContributionRegistryProjectionDescribeResponse(response);
+            if (response && typeof response === 'object' && 'unchanged' in response) {
+                const unchanged = DaemonContributionRegistryProjectionDescribeUnchangedResponseSchema.safeParse(response);
+                if (!unchanged.success || opts?.selection || !opts?.knownProjection
+                    || unchanged.data.projectionDigest !== opts.knownProjection.projectionDigest) {
+                    return { supported: false, reason: 'invalid-response' };
+                }
+                if (opts.deferredProjection && demandedDaemonProjectionSections(opts.deferredProjection.manifest, opts.sections)
+                    .some(id => !opts.deferredProjection!.loadedSections.includes(id))) {
+                    return await hydrateResult(opts.deferredProjection.manifest);
+                }
+                return { supported: true, ...opts.knownProjection,
+                    ...(opts.deferredProjection ? { deferredProjection: opts.deferredProjection } : {}), unchanged: true };
+            }
+            if (response && typeof response === 'object' && 'deferredSections' in response) {
+                if (opts?.selection) return { supported: false, reason: 'invalid-response' };
+                const manifest = DaemonProjectionDeferredSectionsResponseSchema.safeParse(response);
+                if (!manifest.success) return await fullDescribe('manifest-admission');
+                return await hydrateResult(manifest.data);
+            }
+            let completeResponse = response;
+            let sectionBodies: ReadonlyMap<string, readonly string[]> | undefined;
+            if (response && typeof response === 'object' && 'sectioned' in response) {
+                const held = opts?.sectionCache?.bodies ?? opts?.sectionBodies;
+                if (opts?.selection || !held) return { supported: false, reason: 'invalid-response' };
+                const framed = DaemonContributionRegistryProjectionSectionsResponseSchema.safeParse(response);
+                if (!framed.success) return { supported: false, reason: 'invalid-response' };
+                const assembled = reassembleDaemonProjectionSections(framed.data, held);
+                if (!assembled) return { supported: false, reason: 'invalid-response' };
+                completeResponse = assembled.response;
+                sectionBodies = assembled.bodies;
+            }
+            const parsed = parseDaemonContributionRegistryProjectionDescribeResponse(completeResponse);
             if (!parsed) return { supported: false, reason: 'invalid-response' };
             return {
                 supported: true,
+                ...(sectionBodies ? { sectionBodies } : {}),
                 projection: parsed.projection,
+                ...(parsed.projectionDigest === undefined ? {} : { projectionDigest: parsed.projectionDigest }),
                 ...(parsed.composerSurfaceCatalog === undefined
                     ? {}
                     : { composerSurfaceCatalog: parsed.composerSurfaceCatalog }),
@@ -344,11 +473,16 @@ export async function machineContributionRegistryProjectionDescribe(
                     : { automationEligibleEvents: parsed.automationEligibleEvents }),
             };
         } catch (error) {
+            const diagnostic = hydrationRejection ? { deferredHydrationRejection: hydrationRejection } : {};
             if (isRpcMethodNotFoundError(error) || isRpcMethodNotAvailableError(error)) {
-                return { supported: false, reason: 'not-supported' };
+                return { supported: false, reason: 'not-supported', ...diagnostic };
             }
-            return { supported: false, reason: classifyMachineProjectionReadError(error) };
+            return { supported: false, reason: classifyMachineProjectionReadError(error), ...diagnostic };
         }
+}
+
+function decodeTargetedContributionsReadResponse(raw: unknown) {
+    return isRpcMethodNotFoundResult(raw) ? raw : parseDaemonPluginUiTargetedContributionsReadResponse(raw);
 }
 
 /**
@@ -383,7 +517,7 @@ export async function machinePluginUiTargetedContributionsRead(
         serverId: opts.serverId ?? null,
     } satisfies MachineContributionRegistryProjectionScope;
     try {
-            const response = await machineRpcWithServerScope<unknown, typeof payload>({
+            const response = await machineRpcWithServerScope<ReturnType<typeof decodeTargetedContributionsReadResponse>, typeof payload>({
                 machineId: payload.machineId,
                 serverId: opts.serverId,
                 accountId: opts.accountLifetime?.scope.accountId,
@@ -392,11 +526,12 @@ export async function machinePluginUiTargetedContributionsRead(
                 operationTimeoutMs: null,
                 signal: opts.signal,
                 readAdmission: projectionReadAdmission(scope, payload),
+                decodeResult: decodeTargetedContributionsReadResponse,
             });
             if (isRpcMethodNotFoundResult(response)) {
                 return { supported: false, reason: 'not-supported' };
             }
-            const parsed = parseDaemonPluginUiTargetedContributionsReadResponse(response);
+            const parsed = response;
             if (!parsed) return { supported: false, reason: 'invalid-response' };
             if (parsed.status === 'unavailable') {
                 return { supported: false, reason: 'unavailable', code: parsed.code };
@@ -913,6 +1048,7 @@ export async function machinePluginActionSchemasRead(
         payload.qualifiedActionId,
     ]);
     const pending = projectionReadAdmission({ machineId, serverId: opts.serverId ?? null }, payload);
+    let admittedResult: DaemonPluginActionSchemasReadResponse | undefined;
     try {
         const response = await machineRpcWithServerScope<unknown, typeof payload>({
             machineId, serverId: opts.serverId, method: RPC_METHODS.DAEMON_PLUGIN_ACTION_SCHEMAS_READ,
@@ -927,12 +1063,15 @@ export async function machinePluginActionSchemasRead(
                     const entry: ActionSchemaRead = matches ? incumbent : {
                         occurrenceId: payload.expectedOccurrenceId, bindingKey: input.binding.key, scope: input.binding.scope,
                     };
-                    if (entry.result) return entry.result as T;
+                    if (entry.result) {
+                        admittedResult = entry.result;
+                        return entry.result as T;
+                    }
                     actionSchemaReadsByKey.set(key, entry);
                     const forget = () => {
                         if (actionSchemaReadsByKey.get(key) === entry) actionSchemaReadsByKey.delete(key);
                     };
-                    return await pending.run({ ...input,
+                    const response = await pending.run({ ...input,
                         onPhysicalAcquire: signal => {
                             const release = input.onPhysicalAcquire(signal);
                             signal.addEventListener('abort', forget, { once: true });
@@ -948,14 +1087,28 @@ export async function machinePluginActionSchemasRead(
                                 const parsed = DaemonPluginActionSchemasReadResponseSchema.safeParse(value);
                                 input.binding.assertCurrent();
                                 if (!parsed.success || !parsed.data.ok || signal.aborted) forget();
-                                else if (actionSchemaReadsByKey.get(key) === entry) entry.result = parsed.data;
+                                else if (actionSchemaReadsByKey.get(key) === entry) entry.result = Object.freeze({
+                                    ...parsed.data,
+                                    ...(parsed.data.inputSchema === undefined ? {} : {
+                                        inputSchema: normalizePluginJsonSchema(parsed.data.inputSchema),
+                                    }),
+                                    ...(parsed.data.outputSchema === undefined ? {} : {
+                                        outputSchema: normalizePluginJsonSchema(parsed.data.outputSchema),
+                                    }),
+                                });
                                 return value;
                             } catch (error) { forget(); throw error; }
                         },
                     }) as T;
+                    admittedResult = entry.result;
+                    return response;
                 },
             },
         });
+        // The route has admitted this exact occurrence and Account binding.
+        // Re-parsing its owned answer would copy the schemas on every dispatch
+        // and defeat the compiler's lifetime-bound identity memoization.
+        if (admittedResult) return { supported: true, result: admittedResult };
         if (isRpcMethodNotFoundResult(response)) return { supported: false, reason: 'not-supported' };
         const parsed = DaemonPluginActionSchemasReadResponseSchema.safeParse(response);
         return parsed.success ? { supported: true, result: parsed.data } : { supported: false, reason: 'error' };

@@ -414,12 +414,16 @@ describe('workflow trigger Automation composition', () => {
   });
   it('moves only the exact managed inline scope binding after the resource controller changes', async () => {
     const f = fixture();
+    const selections: Parameters<typeof f.deps.automations.list>[0][] = [];
+    const automations = { ...f.deps.automations, list: async (input: Parameters<typeof f.deps.automations.list>[0]) => {
+      selections.push(input); return f.deps.automations.list(input);
+    } };
     const inline = WorkflowDefinitionV1Schema.parse({ version: 1, blocks: [{ kind: 'action', id: 'stop',
       actionId: 'machines.managed.power.set', input: {
         homeId: { kind: 'literal', value: 'home' }, managedId: { kind: 'literal', value: 'managed' },
         when: { kind: 'literal', value: 'after-idle' }, intent: { kind: 'literal', value: 'stop' },
       } }] });
-    const actions = createWorkflowTriggerActions({ ...f.deps, resolveSession: async () => ({ project, nativeGoalOwner: false }) });
+    const actions = createWorkflowTriggerActions({ ...f.deps, automations, resolveSession: async () => ({ project, nativeGoalOwner: false }) });
     const bound = await actions.sessionAdd({ sessionId: 'session-one', project: { machineId: 'controller', directory: '~' },
       target: { kind: 'inline', definition: inline }, executionTarget: { kind: 'detached_run' },
       trigger: { kind: 'sessionLifecycle', sourceSessionId: 'session-one', events: ['sessionArchived'],
@@ -428,6 +432,7 @@ describe('workflow trigger Automation composition', () => {
     f.setManagedController('new-controller');
     const machine = await f.deps.resolveManagedMachine!({ homeId: 'home', managedId: 'managed' });
     await actions.moveManagedMachineScopeBindings({ machine, isCurrent: async () => true });
+    expect(selections.at(-1)).toEqual({ managedTarget: { homeId: 'home', managedId: 'managed' }, includeUnindexedManagedTargets: true });
     expect(f.rows.get(bound.set.automationId)?.assignments.map(value => value.machineId)).toEqual(['new-controller']);
     expect(f.rows.get(unrelated.set.automationId)?.assignments.map(value => value.machineId)).toEqual(['machine-one']);
   });

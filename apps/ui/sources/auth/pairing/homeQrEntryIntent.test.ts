@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { ADD_HOME_RESTORE_PATH, parseHomeQrEntryIntentRouteParam } from './homeQrEntryIntent';
+import {
+    ADD_HOME_RESTORE_PATH,
+    HOME_QR_ENTRY_INTENT_ROUTE_PARAM,
+    parseHomeQrEntryIntentRouteParam,
+} from './homeQrEntryIntent';
 
 describe('HomeQrEntryIntent route param', () => {
     it('parses only the two explicit members of the closed intent type', () => {
@@ -18,9 +22,10 @@ describe('HomeQrEntryIntent route param', () => {
     });
 
     it('keeps the add-home settings entry point on the shared route param', () => {
-        expect(ADD_HOME_RESTORE_PATH).toBe('/restore?entryIntent=add_home');
+        const entryPoint = new URL(`https://app.test${ADD_HOME_RESTORE_PATH}`);
+        expect(entryPoint.pathname).toBe('/restore');
         expect(parseHomeQrEntryIntentRouteParam(
-            new URL(`https://app.test${ADD_HOME_RESTORE_PATH}`).searchParams.get('entryIntent') ?? undefined,
+            entryPoint.searchParams.get(HOME_QR_ENTRY_INTENT_ROUTE_PARAM) ?? undefined,
         )).toBe('add_home');
     });
 });

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 
 import React from 'react';
 import TestRenderer from 'react-test-renderer';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 type StreamingRevealModule = Readonly<{
     createStreamingRevealState: (params: Readonly<{
@@ -52,6 +52,7 @@ type WebEnrichedMarkdownTextModule = Readonly<{
 
 type WebParseMarkdownModule = Readonly<{
     preloadMarkdownRuntime: () => Promise<void>;
+    parseMarkdownSyncIfReady: (markdown: string, flags: { latexMath: boolean }) => MarkdownAstNode | null;
 }>;
 
 type InlineRendererProps = Readonly<{
@@ -490,6 +491,8 @@ describe('EnrichedMarkdownText web streaming reveal', () => {
     });
 
     it('can hide the raw markdown fallback while the web parser is cold', async () => {
+        // Earlier mounts in this file start the module-level parser runtime; a fresh module graph is genuinely cold.
+        vi.resetModules();
         const { EnrichedMarkdownText } = await loadPatchedWebEnrichedMarkdownText();
         const parser = await loadPatchedWebSourceParseMarkdown();
         const globalWithReact = globalThis as typeof globalThis & { React?: typeof React };
@@ -722,9 +725,15 @@ describe('EnrichedMarkdownText web streaming reveal', () => {
     });
 
     it('exposes a web parser warmup hook for transcript preloading', async () => {
+        vi.resetModules();
         const parser = await loadPatchedWebParseMarkdown();
-
+        const markdown = '**Preloaded text**';
+        expect(parser.parseMarkdownSyncIfReady(markdown, { latexMath: false })).toBeNull();
         await expect(parser.preloadMarkdownRuntime()).resolves.toBeUndefined();
+        expect(parser.parseMarkdownSyncIfReady(markdown, { latexMath: false })).toMatchObject({
+            type: 'Document',
+            children: [{ type: 'Paragraph', children: [{ type: 'Strong', children: [{ type: 'Text', content: 'Preloaded text' }] }] }],
+        });
     });
 
     it('keeps the single-file parser inside the owning web runtime module', () => {

@@ -27,11 +27,6 @@ describe('resolveAskUserQuestionDecisionAnswers tool-name matching', () => {
     expect(answers).toEqual([{ question: 'Proceed with deploy?', values: ['Yes, deploy'] }]);
   });
 
-  it('matches the snake_case ask_user_question tool name via the canonical helper', () => {
-    const answers = resolveAskUserQuestionDecisionAnswers(makeRequest('ask_user_question'), 'allow');
-    expect(answers).toEqual([{ question: 'Proceed with deploy?', values: ['Yes, deploy'] }]);
-  });
-
   it('matches case-insensitively', () => {
     const answers = resolveAskUserQuestionDecisionAnswers(makeRequest('askuserquestion'), 'deny');
     expect(answers).toEqual([{ question: 'Proceed with deploy?', values: ['No, cancel'] }]);

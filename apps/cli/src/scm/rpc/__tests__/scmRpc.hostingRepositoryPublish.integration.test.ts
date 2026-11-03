@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { createTestRpcManager, runGit as git } from './testRpcHarness';
 
 describe('git RPC handlers (hosting repository publish)', () => {
-    it('registers publish-target discovery as an RPC action', async () => {
+    it('answers publish-target discovery for a non-repository with an unsupported-provider remediation', async () => {
         const workspace = mkdtempSync(join(tmpdir(), 'happier-git-hosting-targets-nonrepo-'));
 
         const { call } = createTestRpcManager({ workingDirectory: workspace });
@@ -30,6 +30,7 @@ describe('git RPC handlers (hosting repository publish)', () => {
         expect(response).toMatchObject({
             success: false,
             errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED,
+            remediation: { kind: 'unsupported_provider' },
         });
     });
 

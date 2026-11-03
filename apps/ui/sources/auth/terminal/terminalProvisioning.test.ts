@@ -1,15 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import tweetnacl from 'tweetnacl';
-import {
-    openTerminalProvisioningV3Response,
-    openTerminalProvisioningV3Payload,
-} from '@happier-dev/protocol';
+import { openTerminalProvisioningV3Payload } from '@happier-dev/protocol';
 
-import {
-    buildTerminalResponseV3,
-    buildTerminalTokenOnlyResponseV3,
-} from './terminalProvisioning';
+import { buildTerminalResponseV3 } from './terminalProvisioning';
 
 describe('terminalProvisioning', () => {
     it('buildTerminalResponseV3 authenticates the response with the QR-only secret', () => {
@@ -35,28 +29,5 @@ describe('terminalProvisioning', () => {
             expiresAtMs: 61_000,
             nowMs: 2_000,
         })).toEqual(contentPrivateKey);
-    });
-
-    it('buildTerminalTokenOnlyResponseV3 carries no account E2EE material', () => {
-        const terminalSecretKey = new Uint8Array(32).fill(2);
-        const terminalPublicKey = tweetnacl.box.keyPair.fromSecretKey(terminalSecretKey).publicKey;
-        const pairingSecret = new Uint8Array(32).fill(11);
-
-        const payload = buildTerminalTokenOnlyResponseV3({
-            terminalEphemeralPublicKey: terminalPublicKey,
-            pairingSecret,
-            createdAtMs: 1_000,
-            expiresAtMs: 61_000,
-        });
-
-        expect(openTerminalProvisioningV3Response({
-            payload,
-            recipientSecretKeyOrSeed: terminalSecretKey,
-            terminalEphemeralPublicKey: terminalPublicKey,
-            pairingSecret,
-            createdAtMs: 1_000,
-            expiresAtMs: 61_000,
-            nowMs: 2_000,
-        })).toEqual({ type: 'tokenOnly' });
     });
 });

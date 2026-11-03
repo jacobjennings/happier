@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const runtimeFetchMock = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
-const readAiAutoDebugRemoteLoggingEnabledMock = vi.hoisted(() => vi.fn(() => true));
+import { AI_AUTO_DEBUG_PUBLIC_ENV_KEY } from './aiAutoDebuggingEnv';
 
 vi.mock('@/config', () => ({
   config: {
@@ -9,76 +8,38 @@ vi.mock('@/config', () => ({
   },
 }));
 
-vi.mock('@/utils/system/runtimeFetch', () => ({
-  runtimeFetch: runtimeFetchMock,
-}));
+import { monkeyPatchConsoleForRemoteLoggingForFasterAiAutoDebuggingOnlyInLocalBuilds } from './remoteLogger';
 
-vi.mock('@/utils/system/aiAutoDebuggingEnv', () => ({
-  readAiAutoDebugRemoteLoggingEnabled: readAiAutoDebugRemoteLoggingEnabledMock,
-}));
+const REMOTE_LOG_URL = 'https://example.test/logs-combined-from-cli-and-mobile-for-simple-ai-debugging';
 
 describe('remoteLogger', () => {
   afterEach(() => {
+    // Restoring the console spies also removes the patch installed on top of them.
     vi.restoreAllMocks();
-    vi.resetModules();
-    runtimeFetchMock.mockReset();
-    readAiAutoDebugRemoteLoggingEnabledMock.mockReset();
-    readAiAutoDebugRemoteLoggingEnabledMock.mockReturnValue(true);
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it('redacts voice update payloads before sending them off-device', async () => {
-    vi.spyOn(console, 'log').mockImplementation(() => {});
-    vi.spyOn(console, 'info').mockImplementation(() => {});
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.spyOn(console, 'debug').mockImplementation(() => {});
-
-    const { monkeyPatchConsoleForRemoteLoggingForFasterAiAutoDebuggingOnlyInLocalBuilds } = await import('./remoteLogger');
-
-    monkeyPatchConsoleForRemoteLoggingForFasterAiAutoDebuggingOnlyInLocalBuilds();
-    runtimeFetchMock.mockClear();
-
-    console.log('🎤 Voice: Reporting contextual update:', 'TOP_SECRET_CONTEXT');
-
-    expect(runtimeFetchMock).toHaveBeenCalledTimes(1);
-    const calls = runtimeFetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
-    const requestInit = calls[0]?.[1];
-    expect(requestInit).toBeDefined();
-    if (!requestInit) {
-      throw new Error('Expected runtimeFetch to receive request init');
+    for (const level of ['log', 'info', 'warn', 'error', 'debug'] as const) {
+      vi.spyOn(console, level).mockImplementation(() => {});
     }
-
-    const body = JSON.parse(String(requestInit.body));
-
-    expect(body.message).toContain('🎤 Voice: Reporting contextual update:');
-    expect(body.message).not.toContain('TOP_SECRET_CONTEXT');
-    expect(body.messageRawObject).toBeUndefined();
-  });
-
-  it('stores redacted voice payloads in the in-memory buffer', async () => {
-    vi.spyOn(console, 'log').mockImplementation(() => {});
-    vi.spyOn(console, 'info').mockImplementation(() => {});
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.spyOn(console, 'debug').mockImplementation(() => {});
-
-    const {
-      clearLogBuffer,
-      getLogBuffer,
-      monkeyPatchConsoleForRemoteLoggingForFasterAiAutoDebuggingOnlyInLocalBuilds,
-    } = await import('./remoteLogger');
+    vi.stubEnv(AI_AUTO_DEBUG_PUBLIC_ENV_KEY, '1');
+    // Network boundary: the real runtimeFetch resolves to the global fetch outside desktop hosts.
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('ok'));
+    vi.stubGlobal('fetch', fetchMock);
 
     monkeyPatchConsoleForRemoteLoggingForFasterAiAutoDebuggingOnlyInLocalBuilds();
-    clearLogBuffer();
-    runtimeFetchMock.mockClear();
-
     console.log('🎤 Voice: Reporting contextual update:', 'TOP_SECRET_CONTEXT');
 
-    const [entry] = getLogBuffer();
-    expect(entry?.message).toEqual([
-      '🎤 Voice: Reporting contextual update:',
-      '[voice_payload_redacted]',
-    ]);
-    expect(entry?.message).not.toContain('TOP_SECRET_CONTEXT');
+    // The initialization line and the voice line are both forwarded.
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([REMOTE_LOG_URL, REMOTE_LOG_URL]);
+    const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
+    const voiceBodies = bodies.filter((body) => String(body.message).includes('🎤 Voice: Reporting contextual update:'));
+    expect(voiceBodies).toHaveLength(1);
+    expect(voiceBodies[0]?.message).not.toContain('TOP_SECRET_CONTEXT');
+    expect(voiceBodies[0]?.messageRawObject).toBeUndefined();
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('TOP_SECRET_CONTEXT');
   });
 });

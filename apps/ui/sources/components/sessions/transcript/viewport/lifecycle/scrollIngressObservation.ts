@@ -11,7 +11,6 @@ import type {
     TranscriptLifecycleHost,
     TranscriptLifecycleHostScrollObservationPlan,
 } from './lifecycleHost';
-import type { TranscriptLifecycleScrollObservationPlanContinuationInput } from './lifecycleHostScrollObservationApplier';
 import type { TranscriptViewportTelemetryObservationReason } from '@/components/sessions/transcript/scroll/transcriptViewportTelemetry';
 import type { TranscriptBottomFollowModeState } from '@/components/sessions/transcript/scroll/transcriptBottomFollowMode';
 import type { TranscriptViewportOwner } from '../transcriptViewportTypes';
@@ -65,7 +64,7 @@ export type TranscriptScrollIngressCallbacks = Readonly<{
     applyScrollObservationPlan(
         plan: TranscriptLifecycleHostScrollObservationPlan,
         callbacks: Readonly<{
-            continueAfterEarlyEffects(input: TranscriptLifecycleScrollObservationPlanContinuationInput): void;
+            continueAfterEarlyEffects(): void;
             recordNativeScrollObservation(reason: TranscriptViewportTelemetryObservationReason): void;
         }>,
     ): boolean;
@@ -408,10 +407,7 @@ export function observeTranscriptScrollIngress(
         });
 
     const consumed = callbacks.applyScrollObservationPlan(scrollObservationPlan, {
-        continueAfterEarlyEffects({
-            hasNativeMountSettlePassiveDriftRepinObservation,
-            recentUserIntent,
-        }) {
+        continueAfterEarlyEffects() {
             callbacks.lifecycleHost.sampleMountSettle({
                 sessionId: input.sessionId,
                 nowMs: input.nowMs,

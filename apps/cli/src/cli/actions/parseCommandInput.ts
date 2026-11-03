@@ -201,7 +201,10 @@ export function composeActionCliInput(params: Readonly<{
       if (!whole.success) return failure(describeSchemaIssues(whole.error));
       callerValue = whole.data;
     } else {
-      const overlay = parsePartialInputFields(callerShape, params.parsed.callerOverlay, params.callerSchema);
+      // Only a binder can discard fields before the final canonical check.
+      // Without one, completeness refinements must see the merged JSON + flags.
+      const overlay = parsePartialInputFields(callerShape, params.parsed.callerOverlay,
+        params.bindInput ? params.callerSchema : undefined);
       if (isParseFailure(overlay)) return overlay;
       callerValue = overlay;
     }

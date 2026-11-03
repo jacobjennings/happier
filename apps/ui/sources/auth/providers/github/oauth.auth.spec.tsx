@@ -612,6 +612,8 @@ describe('/oauth/[provider] (auth flow)', () => {
 
             expect(clearPendingExternalAuthMock).toHaveBeenCalled();
             expect(replaceSpy).toHaveBeenCalledWith('/restore?provider=github&reason=provider_already_linked');
+            expect(modal.alert).not.toHaveBeenCalled();
+            expect(loginSpy).not.toHaveBeenCalled();
         } finally {
             act(() => {
                 ensuredTree.unmount();

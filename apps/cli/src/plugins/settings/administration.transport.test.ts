@@ -13,7 +13,7 @@ import { createApiSessionSocketStub, type ApiSessionSocketStub } from '@/testkit
 import { fetchServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/features/serverFeaturesClient';
 import { writeCommittedLocalPathPluginFixture } from '@/plugins/store/state.testkit';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
-import { getResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { getResolvedContributionRegistry } from '@/plugins/projection/registry/builtIn/snapshot';
 import { configuration } from '@/configuration';
 import { resetInMemoryAccountSettingsContextForTests } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import { emptyAccountSettingsHistoryCaptureResponse } from '@/settings/accountSettings/emptyAccountSettingsHistoryCapture.testkit';
@@ -86,10 +86,7 @@ vi.mock('@/persistence', async (importOriginal) => ({
   readStoredCredentials,
 }));
 
-import {
-  executePluginSettingsAdministrationAction,
-  projectAccountSettingsAdministrationSnapshot,
-} from './administration';
+import { executePluginSettingsAdministrationAction } from './administration';
 
 // Transport admission starts with the host's real bundled catalog admitted.
 // Keep its cold manifest/schema preparation in collection, not the first RPC's lifetime.
@@ -486,35 +483,22 @@ describe('Plugin Settings administration declaration defaults', () => {
     expect(daemonReply.mock.calls.filter(([request]) => request.method === RPC_METHODS.DAEMON_PLUGIN_SETTINGS_SET)).toHaveLength(1);
   });
 
-  it('gets the declared default for an absent value instead of reporting the daemon unsupported', async () => {
+  it.each([
+    ['the declared default for an absent value instead of reporting the daemon unsupported', 'retries', 3],
+    ['an explicit null rather than substituting the declared default', 'nullable', null],
+  ] as const)('gets %s', async (_contract, localId, value) => {
     await expect(executePluginSettingsAdministrationAction({
       actionId: 'plugins.settings.get',
       input: {
         pluginId: 'acme.settings',
         scope: { kind: 'daemon' as const },
         target,
-        localId: 'retries',
+        localId,
       },
     })).resolves.toMatchObject({
       ok: true,
       kind: 'plugins.settings.get',
-      data: { localId: 'retries', value: 3 },
-    });
-  });
-
-  it('gets an explicit null rather than substituting the declared default', async () => {
-    await expect(executePluginSettingsAdministrationAction({
-      actionId: 'plugins.settings.get',
-      input: {
-        pluginId: 'acme.settings',
-        scope: { kind: 'daemon' as const },
-        target,
-        localId: 'nullable',
-      },
-    })).resolves.toMatchObject({
-      ok: true,
-      kind: 'plugins.settings.get',
-      data: { localId: 'nullable', value: null },
+      data: { localId, value },
     });
   });
 });
@@ -679,6 +663,22 @@ describe('Plugin Settings Account administration explicit binding', () => {
     }
   });
 
+  it.each([
+    ['projects effective values and revision from one snapshot while hiding the backing map', true, 'https://fallback.example'],
+    ['lists the declared default when the same snapshot has no own value', false, 'https://declared.example'],
+  ] as const)('%s', async (_contract, hasOwnEndpoint, endpoint) => {
+    if (!hasOwnEndpoint) values = Object.fromEntries(Object.entries(values).filter(([key]) => key !== 'endpoint'));
+    const listed = await executePluginSettingsAdministrationAction({ actionId: 'plugins.settings.list', happyHomeDir,
+      input: { pluginId: input.pluginId, scope: input.scope, target: input.target } });
+
+    expect(listed).toMatchObject({ ok: true, kind: 'plugins.settings.list', data: { revision: '7' } });
+    expect(listed.ok && listed.kind === 'plugins.settings.list' ? listed.data.fields : null).toEqual([
+      { localId: 'endpoint', title: 'Endpoint', secret: false, value: endpoint },
+      { localId: 'other', title: 'Other', secret: false, value: true },
+      { localId: 'token', title: 'Token', secret: true },
+    ]);
+  });
+
   it('reads an exact server binding, explicit fallback, and omitted legacy fallback distinctly', async () => {
     for (const [routing, value] of [
       [{ bindingServerIdentityId: 'srv_selected_1' }, 'https://selected.example'],
@@ -754,62 +754,5 @@ describe('Plugin Settings Account administration explicit binding', () => {
       .resolves.toMatchObject({ ok: false });
     expect(axiosPost).not.toHaveBeenCalled();
     expect(values.other).toBe(true);
-  });
-});
-
-describe('Plugin Settings Account administration snapshot projection', () => {
-  const descriptors = [
-    {
-      id: 'endpoint',
-      title: 'Endpoint',
-      target: { kind: 'plugin' as const },
-      scope: 'account' as const,
-      schema: { type: 'string' as const },
-      default: 'https://default.example',
-    },
-    {
-      id: 'endpointByServer',
-      title: 'Endpoint by server',
-      target: { kind: 'plugin' as const },
-      scope: 'account' as const,
-      schema: { type: 'object' as const },
-    },
-  ];
-
-  it('projects revision and effective values from one snapshot while hiding backing maps', () => {
-    expect(projectAccountSettingsAdministrationSnapshot({
-      descriptors,
-      hiddenFieldIds: new Set(['endpointByServer']),
-      snapshot: {
-        scope: { kind: 'account' },
-        revision: '41',
-        values: {
-          endpoint: 'https://snapshot.example',
-          endpointByServer: { srv_one: 'https://hidden.example' },
-        },
-      },
-    })).toEqual({
-      scope: { kind: 'account' },
-      revision: '41',
-      fields: [{
-        localId: 'endpoint',
-        title: 'Endpoint',
-        secret: false,
-        value: 'https://snapshot.example',
-      }],
-    });
-  });
-
-  it('uses the declaration default only when the same snapshot has no own value', () => {
-    expect(projectAccountSettingsAdministrationSnapshot({
-      descriptors,
-      hiddenFieldIds: new Set(['endpointByServer']),
-      snapshot: { scope: { kind: 'account' }, revision: '42', values: {} },
-    }).fields).toEqual([{
-      localId: 'endpoint',
-      title: 'Endpoint',
-      secret: false,
-      value: 'https://default.example',
-    }]);
   });
 });

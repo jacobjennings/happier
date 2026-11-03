@@ -29,6 +29,8 @@ import { ActionsSettingsV1Schema } from '@happier-dev/protocol/actions/actionSet
 import type { CurrentUiContextReader } from '@/components/appShell/currentUiContext/CurrentUiContextProvider';
 import type { PluginUiContributionOriginV1 } from '@/sync/domains/plugins/ui/projectionOrigins';
 import { createSessionReadBatchHttpBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
+import { createSessionMetadataHttpBoundary } from '@/dev/testkit/harness/sessionMetadataHttpBoundary';
+import { createEmptyAccountBootstrapHttpResponse } from '@/dev/testkit/fixtures/accountBootstrapHttpBoundary';
 
 const navigation = vi.hoisted(() => ({ push: vi.fn(), segments: [] as string[], sessionId: '' }));
 // The cross-package daemon dispatcher can import Socket before the UI installs
@@ -85,6 +87,22 @@ beforeEach(async () => {
   answerDaemonRpc = () => { throw Object.assign(new Error('RPC method not available'), { code: 'RPC_METHOD_NOT_AVAILABLE' }); };
   await homes.reset();
   serverId = await homes.addHome({ name: 'Home', serverUrl: 'https://relay.test', accountId: 'relay-account' });
+  // Let the real Sync bootstrap settle against the same external Session facts
+  // used by the tests; an unclaimed active census is not an older Home here.
+  const sessions = createSessionMetadataHttpBoundary(() => Object.fromEntries(
+    Object.entries(storage.getState().sessions).filter(([, session]) => session.serverId === serverId)));
+  for (const path of ['/v2/sessions', '/v2/sessions/active', '/v2/session-organization']) {
+    homes.answer(serverId, `GET ${path}`, { select: async () => {
+      const response = sessions.handle(new URL(path, 'https://relay.test'));
+      if (!response) throw new Error(`Missing Session bootstrap fixture: ${path}`);
+      return { status: response.status, body: await response.json() };
+    } });
+  }
+  homes.answer(serverId, 'GET /v2/sessions/metadata-upgrades', { select: async () => {
+    const response = createEmptyAccountBootstrapHttpResponse('/v2/sessions/metadata-upgrades');
+    if (!response) throw new Error('Missing metadata-upgrade bootstrap fixture');
+    return { body: await response.json() };
+  } });
   connection = await restoreServerAccountForTest({ serverUrl: 'https://relay.test', accountId: 'relay-account', request: homes.request });
   installHomeGovernanceBoundaries(homes);
   const features = createRootLayoutFeaturesResponse();
@@ -104,6 +122,58 @@ afterEach(async () => {
 });
 
 describe('admitted app Actions and daemon-to-app continuations', () => {
+  it.each(['cli', 'agent'] as const)('changes the answering device Administration target through the %s reverse-dispatch path', async surface => {
+    const target = { serverIdentityId: 'srv_administration_destination', machineId: 'chosen-machine' };
+    const sibling = { serverIdentityId: 'srv_other_destination', machineId: 'other-machine' };
+    storage.setState(state => ({ settings: { ...state.settings,
+      machineAdministrationTargetsLocalV1: { preserved: sibling } } }));
+    const { captureActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
+    const lifetime = captureActiveServerAccountScopeLifetime();
+    if (!lifetime) throw new Error('Restored Account lifetime is unavailable');
+    const receive = createUiClientActionReverseHandler({ serverId, accountId: 'relay-account', isCurrent: lifetime.isCurrent });
+    const { selectRpcTarget } = await import('../../../../../server/sources/app/api/socket/rpc/rpcTargetSelection');
+    let multipleClients = true;
+    let unrelatedEffects = 0;
+    // Only the daemon-to-App network hop is synthetic. Placement, strict envelopes,
+    // receiving Account admission and the device preference owner remain real.
+    const reverse = createClientActionReverseDispatcher(() => ({
+      hasConnectedClientRpcHandler: method => method === RPC_METHODS.UI_ACTION_EXECUTE,
+      callConnectedClientRpc: async (method, payload, options) => {
+        expect(method).toBe(RPC_METHODS.UI_ACTION_EXECUTE);
+        expect(options.answeringClient).toMatchObject({ requireSingle: true });
+        const target = { id: 'chosen-app', timeout: () => ({ emitWithAck: async () => await receive(JSON.parse(JSON.stringify(payload)),
+          { signal: options.signal ?? new AbortController().signal }) }) };
+        const unrelated = { id: 'other-app', timeout: () => ({ emitWithAck: async () => {
+          unrelatedEffects++; throw new Error('Unselected client executed an Action');
+        } }) };
+        const selection = selectRpcTarget({ targets: multipleClients ? [target, unrelated] : [target], answeringClient: options.answeringClient });
+        if (selection.type === 'ambiguous') return { ok: false, errorCode: 'RPC_CLIENT_AMBIGUOUS', answeringClients: selection.clients };
+        if (selection.type !== 'target') return { ok: false, errorCode: 'RPC_CLIENT_NOT_AVAILABLE' };
+        options.onIssued();
+        return { ok: true, result: await selection.target.timeout(0).emitWithAck(SOCKET_RPC_EVENTS.REQUEST, payload) };
+      },
+    }));
+    const caller = createActionExecutor({ clientActionExecute: reverse });
+    const context = { surface, authority: 'account_automation',
+      ...(surface === 'agent' ? { defaultSessionId: 'background-agent-session' } : {}) } as const;
+    const input = { anchor: 'machines.administrationTarget', key: 'agents', value: target, clientId: 'chosen-app' };
+    expect(await caller.execute('settings.get', { anchor: input.anchor, key: input.key }, context))
+      .toMatchObject({ ok: false, errorCode: 'client_ambiguous', details: {
+        clients: [{ id: 'chosen-app', deviceLabel: null }, { id: 'other-app', deviceLabel: null }],
+        recovery: { inputField: 'clientId' },
+      } });
+    expect(await caller.execute('settings.set', input, context)).toEqual({ ok: true, result: { anchor: input.anchor, value: target } });
+    expect(storage.getState().settings.machineAdministrationTargetsLocalV1).toEqual({ preserved: sibling, agents: target });
+    expect(await caller.execute('settings.get', { anchor: input.anchor, key: input.key, clientId: input.clientId }, context))
+      .toEqual({ ok: true, result: { anchor: input.anchor, value: target } });
+    expect(await caller.execute('settings.set', { ...input, value: null }, context))
+      .toEqual({ ok: true, result: { anchor: input.anchor, value: null } });
+    expect(storage.getState().settings.machineAdministrationTargetsLocalV1).toEqual({ preserved: sibling });
+    multipleClients = false;
+    expect(await caller.execute('settings.get', { anchor: input.anchor, key: input.key }, context))
+      .toEqual({ ok: true, result: { anchor: input.anchor, value: null } });
+    expect(unrelatedEffects).toBe(0);
+  });
   it('delivers unbound empty Next and All-Machines search through a connected app without an availability hint', async () => {
     const { ClientActionReverseRuntime } = await import('@/components/appShell/runtime/ClientActionReverseRuntime');
     const { NextPendingNavigationHost } = await import('@/components/sessions/pendingNavigation/NextPendingNavigationHost');
@@ -152,6 +222,12 @@ describe('admitted app Actions and daemon-to-app continuations', () => {
       React.createElement(ClientActionReverseRuntime), React.createElement(NextPendingNavigationHost)));
     try {
       expect([...registered].some(method => method.includes('.session.'))).toBe(false);
+      homes.answer(serverId, '/v2/sessions/lookup-by-tags', { body: { sessions: [] } });
+      const backgroundAgent = { ...context, defaultSessionId: 'background-agent-session' };
+      expect(await caller.execute('ui.voice_global.history.search', { refresh: true }, backgroundAgent))
+        .toEqual({ ok: true, result: { sessionId: null, loadedRowCount: 0, hasMore: null, rows: [] } });
+      const voice = await caller.execute('ui.voice_global.get', {}, backgroundAgent);
+      expect(voice).toMatchObject({ ok: true, result: { voice: { status: 'disconnected', attemptId: null } } });
       expect(await caller.execute('session.pending.next', {}, context)).toEqual({ ok: true, result: { status: 'none' } });
       const result = await caller.execute('search.conversations', {
         query: { v: 1, query: 'owned-phrase', scope: { type: 'global' }, mode: 'deep' }, mode: 'indexed',
@@ -164,6 +240,8 @@ describe('admitted app Actions and daemon-to-app continuations', () => {
     } finally { await runtime.unmount(); }
     expect(await caller.execute('session.pending.next', {}, context))
       .toEqual({ ok: true, result: { status: 'unavailable', reason: 'noClient' } });
+    expect(await caller.execute('ui.voice_global.history.search', {}, { ...context, defaultSessionId: 'background-agent-session' }))
+      .toMatchObject({ ok: false, errorCode: 'unavailable', details: { reason: 'client_unavailable' } });
   });
   it('keeps reverse binding renders and in-flight Actions independent of executable-only AppShell publications', async () => {
     const { ClientActionReverseRuntime } = await import('@/components/appShell/runtime/ClientActionReverseRuntime');
@@ -411,6 +489,116 @@ describe('admitted app Actions and daemon-to-app continuations', () => {
     } finally { await runtime.unmount(); }
     expect(await caller.execute('ui.find', { op: 'read' }, context)).toEqual({ ok: true, result: { status: 'unavailable', reason: 'noClient' } });
     expect(foreignEffects).toBe(0);
+  });
+  it('keeps Usage view, period and filter switches at zero binding mounts and registrations across 46 Machines', async () => {
+    const { ClientActionReverseRuntime } = await import('@/components/appShell/runtime/ClientActionReverseRuntime');
+    const { currentUiContextCommandClientRpcMethod } = await import('@happier-dev/protocol/actions/clientDispatchV1');
+    const { renderMountedCurrentUiContext } = await import('@/dev/testkit/harness/mountedCurrentUiContext');
+    const { useUsageWidgetPageContext, usePublishUsageWidgetPageContext } = await import('@/components/settings/usage/useUsageWidgetPageContext');
+    const { useOptionalCurrentUiContextReader } = await import('@/components/appShell/currentUiContext/CurrentUiContextProvider');
+    const { captureActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
+    const { executeCurrentUiContextAction } = await import('@/components/appShell/currentUiContext/currentUiContextActionRuntime');
+    const { getUsagePeriodDefinition } = await import('@/sync/api/account/usagePeriods');
+    const { t } = await import('@/text');
+    // P03-WEB-PERF observed about 46 selectable Machines in the affected Account.
+    const machines = Array.from({ length: 46 }, (_, index) => createMachineFixture({
+      id: `usage-command-machine-${index}`, activeAt: Date.now(), storageMode: 'plain', dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER,
+    }));
+    await act(async () => { storage.setState(state => ({ profile: { ...state.profile!, id: 'relay-account' },
+      machines: Object.fromEntries(machines.map(machine => [machine.id, machine])), machineListByServerId: {} })); });
+    const authority = captureActiveServerAccountScopeLifetime();
+    let reader: CurrentUiContextReader | null = null;
+    let page: ReturnType<typeof useUsageWidgetPageContext> | undefined;
+    let selectView: ((view: string) => void) | undefined;
+    let addFilter: (() => void) | undefined;
+    let removeFilter: (() => void) | undefined;
+    let latestInvocation = '';
+    function UsageCommands(): React.ReactElement {
+      const [layoutId, setLayoutId] = React.useState('costs');
+      const [extraFilter, setExtraFilter] = React.useState(false);
+      // The full-page route echoes page-owned filters back through its URL params.
+      const [initialFilters, setInitialFilters] = React.useState<Parameters<typeof useUsageWidgetPageContext>[0]['initialFilters']>();
+      selectView = setLayoutId;
+      addFilter = () => setExtraFilter(true);
+      removeFilter = () => setExtraFilter(false);
+      page = useUsageWidgetPageContext({ authority, nowMs: 1_790_000_000_000, initialFilters, onFiltersChange: setInitialFilters });
+      usePublishUsageWidgetPageContext({ authority, page, layoutId, costBasisOptions: ['auto', 'reported'],
+        layouts: [{ id: 'costs', name: 'Costs' }, { id: 'plans', name: 'Plans' }],
+        selectLayout: next => { setLayoutId(next); return true; },
+        filterCommands: [{ field: 'agents', id: 'codex', title: 'Agent: Codex',
+          invoke: () => { latestInvocation = layoutId; return true; } },
+          ...(extraFilter ? [
+            { field: 'agents', id: 'claude', title: 'Agent: Claude', invoke: () => true },
+            { field: 'agents', id: 'gemini', title: 'Agent: Gemini', invoke: () => true },
+          ] : [])] });
+      reader = useOptionalCurrentUiContextReader();
+      return React.createElement(ClientActionReverseRuntime);
+    }
+    const registrations = vi.spyOn(apiSocket, 'registerMachineScopedRpcHandler');
+    releases.push(() => registrations.mockRestore());
+    const socket = clientSockets.slice().reverse().find(candidate => candidate.listeners(SOCKET_RPC_EVENTS.REQUEST).length > 0);
+    if (!socket) throw new Error('Account reverse receiver absent');
+    const emissions = vi.spyOn(socket, 'emit');
+    releases.push(() => emissions.mockRestore());
+    const unregisteredMethods = () => emissions.mock.calls.flatMap(([event, payload]) =>
+      event === SOCKET_RPC_EVENTS.UNREGISTER && payload && typeof payload === 'object'
+        && 'method' in payload && typeof payload.method === 'string' && payload.method.startsWith('usage-command-machine-')
+        ? [payload.method] : []);
+    const runtime = await renderMountedCurrentUiContext(React.createElement(UsageCommands));
+    const machineIds = new Set(machines.map(machine => machine.id));
+    // Count the runtime's actual descendants, independent of component names or props.
+    const bindingNodes = () => runtime.findByType(ClientActionReverseRuntime).children;
+    const initialBindings = new Set(bindingNodes());
+    expect(initialBindings.size, 'RPC registration must not mount React bindings').toBe(0);
+    expect(new Set(registrations.mock.calls.map(([machineId]) => machineId))).toEqual(machineIds);
+    const originalCommands = reader!.readCurrentUiContext()!.commands;
+    const originalIds = originalCommands.map(command => command.id);
+    const commandPairs = (ids: readonly string[]) => machines.flatMap(machine =>
+      ids.map(id => `${machine.id}:${currentUiContextCommandClientRpcMethod(id)}`));
+    expect(registrations.mock.calls.map(([machineId, method]) => `${machineId}:${method}`))
+      .toEqual(expect.arrayContaining(commandPairs(originalIds)));
+    const filterId = originalCommands.find(command => command.title === 'Agent: Codex')!.id;
+    const originalSignal = reader!.resolveCurrentUiCommand(filterId)!.retirementSignal;
+    const invoke = (commandId: string) => executeCurrentUiContextAction({ actionId: 'ui.current_context.command.invoke',
+      input: { commandId }, context: { surface: 'ui' } });
+    try {
+      for (const switchContext of [() => selectView?.('plans'), () => page?.setPeriod('today'),
+        () => page?.setScope({ agents: ['codex'] })]) {
+        registrations.mockClear();
+        emissions.mockClear();
+        await act(async () => { switchContext(); });
+        expect.soft(reader!.readCurrentUiContext()!.commands.map(command => command.id)).toEqual(originalIds);
+        expect.soft(bindingNodes().filter(node => !initialBindings.has(node)), 'unchanged command set mounts no bindings').toHaveLength(0);
+        expect.soft(registrations.mock.calls, 'unchanged command set registers no methods').toHaveLength(0);
+        expect.soft(unregisteredMethods(), 'unchanged command set withdraws no methods').toHaveLength(0);
+      }
+      expect(reader!.readCurrentUiContext()!.entity?.summary).toBe(t(getUsagePeriodDefinition('today').translationKey));
+      expect(originalSignal.aborted).toBe(false);
+      await act(async () => { expect(await invoke(filterId)).toMatchObject({ ok: true }); });
+      expect(latestInvocation).toBe('plans');
+      registrations.mockClear();
+      emissions.mockClear();
+      await act(async () => { addFilter?.(); });
+      const added = reader!.readCurrentUiContext()!.commands.filter(command => !originalIds.includes(command.id));
+      expect(added).toHaveLength(2);
+      const addedPairs = commandPairs(added.map(command => command.id));
+      expect(registrations.mock.calls).toHaveLength(addedPairs.length);
+      expect(new Set(registrations.mock.calls.map(([machineId, method]) => `${machineId}:${method}`)))
+        .toEqual(new Set(addedPairs));
+      expect(unregisteredMethods()).toHaveLength(0);
+      expect(bindingNodes().filter(node => !initialBindings.has(node)), 'new commands reuse mounted Machine bindings').toHaveLength(0);
+      registrations.mockClear();
+      emissions.mockClear();
+      await act(async () => { removeFilter?.(); });
+      expect(registrations.mock.calls).toHaveLength(0);
+      expect(unregisteredMethods()).toHaveLength(addedPairs.length);
+      expect(new Set(unregisteredMethods())).toEqual(new Set(addedPairs));
+      for (const command of added) expect(reader!.resolveCurrentUiCommand(command.id)).toBeNull();
+      expect(reader!.resolveCurrentUiCommand(filterId)?.retirementSignal.aborted).toBe(false);
+      await act(async () => { storage.getState().clearProfileScope(); });
+      expect(originalSignal.aborted).toBe(true);
+      expect(await invoke(filterId)).toMatchObject({ ok: false });
+    } finally { await runtime.unmount(); }
   });
   it('keeps reverse registrations stable across fresh current-UI snapshots and retires replaced commands', async () => {
     const insertionUpdates: Error[] = [];
@@ -931,6 +1119,8 @@ describe('admitted app Actions and daemon-to-app continuations', () => {
       codexBackendMode: 'appServer', codexSessionId: 'teleport-root-thread' };
     const carrierMetadata = { ...metadata,
       codexSessionId: 'teleport-carrier-thread',
+      // Reuse requires the carrier's admitted permission to match the Voice recipe.
+      permissionMode: 'read-only' as const,
       systemSessionV1: { v: 1 as const, key: 'voice_conversation', hidden: true },
       voiceConversationScopeV1: { v: 1 as const, kind: 'session_root' as const, sessionRootId: rootId },
     };
@@ -939,6 +1129,8 @@ describe('admitted app Actions and daemon-to-app continuations', () => {
       createSessionFixture({ id: carrierId, serverId, metadata: carrierMetadata }),
     ]);
     let carrier = createPlainSessionCurrentProjectionRecordFixture({ id: carrierId, metadata: carrierMetadata });
+    const root = createPlainSessionCurrentProjectionRecordFixture({ id: rootId, metadata });
+    homes.answer(serverId, `GET /v2/sessions/${rootId}${buildSessionDetailAccessProjectionQuery(serverId)}`, { body: { session: root } });
     const carrierPath = `/v2/sessions/${carrierId}`;
     homes.answer(serverId, `GET ${carrierPath}${buildSessionDetailAccessProjectionQuery(serverId)}`, { select: () => ({ body: { session: carrier } }) });
     const sessionBatch = createSessionReadBatchHttpBoundary(request => request.path === '/v2/sessions/read-batch' ? undefined

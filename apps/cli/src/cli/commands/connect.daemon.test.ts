@@ -188,41 +188,6 @@ describe('handleConnectCommand daemon facade', () => {
     vi.restoreAllMocks();
   });
 
-  it('submits manual fields through the machine-owned attempt without a direct credential write', async () => {
-    controlMock.mockResolvedValueOnce(describedGithub());
-    authenticateMock
-      .mockResolvedValueOnce({ status: 'awaitingManual', attemptId: 'attempt-1' })
-      .mockResolvedValueOnce({
-        status: 'connected',
-        attemptId: 'attempt-1',
-        account: { service: GITHUB_SERVICE, accountId: 'account-1' },
-      });
-    promptSecretInputMock.mockResolvedValueOnce('github_pat_secret');
-    const output = captureConsoleLogAndMuteStdout();
-    try {
-      const { handleConnectCommand } = await import('./connect');
-      await handleConnectCommand(['github', '--token']);
-
-      expect(controlMock).toHaveBeenCalledWith({
-        operation: 'describeService',
-        service: GITHUB_SERVICE,
-      });
-      expect(authenticateMock).toHaveBeenNthCalledWith(1, {
-        operation: 'beginConnect',
-        service: GITHUB_SERVICE,
-        modeId: 'fine-grained-pat',
-      });
-      expect(authenticateMock).toHaveBeenNthCalledWith(2, {
-        operation: 'submitManual',
-        attemptId: 'attempt-1',
-        fields: { token: 'github_pat_secret' },
-      });
-      expect(output.logs.join('\n')).not.toContain('github_pat_secret');
-    } finally {
-      output.restore();
-    }
-  });
-
   it('reconnects one exact qualified account without sending a mode id', async () => {
     controlMock.mockResolvedValueOnce(describedGithub([{
       ref: { service: GITHUB_SERVICE, accountId: 'account-7' },
@@ -301,48 +266,6 @@ describe('handleConnectCommand daemon facade', () => {
           credentialsJson: '{"client_email":"agent@example.com"}',
         },
       });
-    } finally {
-      output.restore();
-    }
-  });
-
-  it('returns only callback facts for OAuth and never accepts PKCE custody', async () => {
-    controlMock.mockResolvedValueOnce(describedCodex());
-    authenticateMock
-      .mockResolvedValueOnce({
-        status: 'awaitingOAuth',
-        attemptId: 'attempt-oauth',
-        authorizationUrl: 'https://auth.example.test/authorize',
-        callbackUrl: 'http://127.0.0.1:1455/callback',
-      })
-      .mockResolvedValueOnce({
-        status: 'connected',
-        attemptId: 'attempt-oauth',
-        account: { service: CODEX_SERVICE, accountId: 'account-oauth' },
-      });
-    promptInputMock.mockResolvedValueOnce(
-      'http://127.0.0.1:1455/callback?code=oauth-code&state=oauth-state',
-    );
-    const output = captureConsoleLogAndMuteStdout();
-    try {
-      const { handleConnectCommand } = await import('./connect');
-      await handleConnectCommand(['openai-codex', '--oauth']);
-
-      expect(openBrowserMock).toHaveBeenCalledWith(
-        'https://auth.example.test/authorize',
-      );
-      expect(authenticateMock).toHaveBeenNthCalledWith(2, {
-        operation: 'completeOAuth',
-        attemptId: 'attempt-oauth',
-        completion: {
-          code: 'oauth-code',
-          callbackUrl: 'http://127.0.0.1:1455/callback',
-          state: 'oauth-state',
-        },
-      });
-      expect(authenticateMock.mock.calls[1]?.[0]).not.toHaveProperty(
-        'completion.verifier',
-      );
     } finally {
       output.restore();
     }

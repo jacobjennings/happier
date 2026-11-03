@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { View } from 'react-native';
 import {
     buildWorkBoardItemKeyV1, buildWorkBoardWidgetKeyV1, createWorkBoardV1, WorkBoardActionInputSchemasV1,
@@ -114,7 +114,7 @@ function boardStore(board: WorkBoardV1) {
 
 function workCard(): BoardCard {
     return { key: buildWorkBoardItemKeyV1(work), ref: work, picked: true, availability: 'ready', title: 'checkout',
-        status: { bucket: 'working', tone: 'neutral', word: 'working' }, body: { kind: 'none' } };
+        status: { state: 'working', attentionType: null, bucket: 'working', tone: 'neutral', word: 'working' }, body: { kind: 'none' } };
 }
 
 function canvasWidgets(board: WorkBoardV1): readonly BoardCanvasWidget[] {
@@ -349,6 +349,8 @@ describe('WorkBoard widgets', () => {
         const agentC = placement(copy('agent-c', NOTES));
         const old = placement(copy('old', NOTES));
         const b = boardStore(boardWith([old]));
+        const releaseView = b.store.retainView(() => () => {}, 'board:b1');
+        onTestFinished(releaseView);
         await b.store.refresh();
         const ownAdds = new Set(['mine']);
         const hook = await renderHook(() => {

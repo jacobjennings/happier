@@ -8,7 +8,7 @@ const restoreHarnessModuleLoader = await warmLocalVoiceEngineHarnessGraph();
 afterAll(() => restoreHarnessModuleLoader());
 
 describe('local direct voice adapter', () => {
-  registerLocalVoiceEngineHarnessHooks({ resetModulesBetweenTests: false });
+  registerLocalVoiceEngineHarnessHooks();
   let adapter: ReturnType<typeof import('./localDirectAdapter')['createLocalDirectVoiceAdapter']>;
   beforeEach(async () => {
     await loadLocalVoiceEngineWithCompatState();

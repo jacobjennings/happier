@@ -23,56 +23,21 @@ describe('native passive scroll policy', () => {
         })).toBe(0);
     });
 
-    it('ignores native negative offsets without orientation or content metrics', () => {
-        expect(shouldIgnoreNativeInvalidScrollObservation({
-            distanceFromBottom: 996655,
-            isWeb: false,
-            offsetY: -972759,
-        })).toBe(true);
-
-        expect(shouldIgnoreNativeInvalidScrollObservation({
-            distanceFromBottom: -972759,
-            isWeb: false,
-            offsetY: -972759,
-        })).toBe(true);
-
-        expect(shouldIgnoreNativeInvalidScrollObservation({
-            distanceFromBottom: 0,
-            isWeb: false,
-            offsetY: -32,
-        })).toBe(true);
-
-        expect(shouldIgnoreNativeInvalidScrollObservation({
-            distanceFromBottom: 996655,
-            isWeb: true,
-            offsetY: -972759,
-        })).toBe(false);
-    });
-
-    it('keeps non-negative native offsets observable after rejecting negative raw bottom-bounce offsets', () => {
-        expect(shouldIgnoreNativeInvalidScrollObservation({
-            distanceFromBottom: 0,
-            isWeb: false,
-            offsetY: -20,
-        })).toBe(true);
-
-        expect(shouldIgnoreNativeInvalidScrollObservation({
-            distanceFromBottom: 0,
-            isWeb: false,
-            offsetY: -681,
-        })).toBe(true);
-
-        expect(shouldIgnoreNativeInvalidScrollObservation({
-            distanceFromBottom: 249,
-            isWeb: false,
-            offsetY: 249,
-        })).toBe(false);
-
-        expect(shouldIgnoreNativeInvalidScrollObservation({
-            distanceFromBottom: 0,
-            isWeb: true,
-            offsetY: -681,
-        })).toBe(false);
+    it.each([
+        // Negative native offsets carry no trustworthy orientation or content metrics.
+        { distanceFromBottom: 996655, isWeb: false, offsetY: -972759, ignored: true },
+        { distanceFromBottom: -972759, isWeb: false, offsetY: -972759, ignored: true },
+        { distanceFromBottom: 0, isWeb: false, offsetY: -32, ignored: true },
+        // Raw bottom-bounce offsets.
+        { distanceFromBottom: 0, isWeb: false, offsetY: -20, ignored: true },
+        { distanceFromBottom: 0, isWeb: false, offsetY: -681, ignored: true },
+        // Non-negative native offsets stay observable.
+        { distanceFromBottom: 249, isWeb: false, offsetY: 249, ignored: false },
+        // Web is exempt.
+        { distanceFromBottom: 996655, isWeb: true, offsetY: -972759, ignored: false },
+        { distanceFromBottom: 0, isWeb: true, offsetY: -681, ignored: false },
+    ])('ignores only negative native offsets (isWeb $isWeb, offsetY $offsetY, distance $distanceFromBottom)', ({ ignored, ...observation }) => {
+        expect(shouldIgnoreNativeInvalidScrollObservation(observation)).toBe(ignored);
     });
 
     it('records passive unpinned movement only after native content and viewport ownership are established', () => {

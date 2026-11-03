@@ -2,10 +2,16 @@ import { describe, expect, it } from 'vitest';
 
 import { projectLegacySessionAccessCapabilitiesV1 } from '../access/sessionEffectiveAccessV1.js';
 import { V2SessionRecordSchema } from '../control/contract.js';
-import { SessionCurrentProjectionRecordV1Schema, SessionListQueryResponseV1Schema, SessionRuntimeManagedSubtreeListResponseV1Schema } from './response.js';
+import { SessionCurrentProjectionRecordV1Schema, SessionListQueryResponseV1Schema, SessionRuntimeManagedSubtreeListResponseV1Schema, SessionRuntimeManagedSubtreeSnapshotRecordV1Schema } from './response.js';
 import { createSessionOwnerMetadataV1, createPlainSessionOwnerMetadataEnvelopeV1, projectSessionSharedMetadataV1 } from '../metadata/sessionMetadataSchemasV1.js';
 
 describe('SessionListQueryResponseV1Schema', () => {
+  const compact = (row: Record<string, unknown>) => {
+    const { metadata: _metadata, ownerMetadata: _ownerMetadata, agentState: _agentState, ...scalars } = row;
+    const owner = row.share === null;
+    return { ...scalars, documents: 'omitted', metadataAudience: owner ? 'owner' : 'shared',
+      agentStateDocument: owner ? 'omitted' : 'redacted' };
+  };
   const RESPONSE = {
     sessions: [],
     nextCursor: null,
@@ -89,16 +95,19 @@ describe('SessionListQueryResponseV1Schema', () => {
     expect(V2SessionRecordSchema.parse(row)).toMatchObject(expected);
     const parsed = boundary === 'current row'
       ? SessionCurrentProjectionRecordV1Schema.parse(row)
-      : SessionListQueryResponseV1Schema.parse({ ...RESPONSE, sessions: [row] }).sessions[0];
+      : SessionListQueryResponseV1Schema.parse({ ...RESPONSE, sessions: [compact(row)] }).sessions[0];
     expect(parsed).toMatchObject(expected);
     expect(row.lastRuntimeIssue.usageLimit.connectedService.serviceId).toBe('openai-codex');
     expect(row.lastRuntimeIssue.usageLimit.quotaSnapshotRef.serviceId).toBe('openai-codex');
   });
 
-  const responseWith = (sessions: readonly unknown[]) => ({ ...RESPONSE, sessions });
+  const responseWith = (sessions: readonly Record<string, unknown>[]) => ({ ...RESPONSE, sessions: sessions.map(compact) });
 
   it('keeps the restricted runtime page distinct from Account-private query rows', () => {
     const { viewer: _viewer, ...sharedSession } = session;
+    expect(SessionRuntimeManagedSubtreeSnapshotRecordV1Schema.safeParse(sharedSession).success).toBe(true);
+    expect(SessionRuntimeManagedSubtreeSnapshotRecordV1Schema.safeParse(session).success).toBe(false);
+    expect(SessionRuntimeManagedSubtreeSnapshotRecordV1Schema.safeParse({ ...sharedSession, agentState: 'private' }).success).toBe(false);
     expect(SessionRuntimeManagedSubtreeListResponseV1Schema.safeParse(responseWith([sharedSession])).success).toBe(true);
     expect(SessionListQueryResponseV1Schema.safeParse(responseWith([sharedSession])).success).toBe(false);
     expect(SessionRuntimeManagedSubtreeListResponseV1Schema.safeParse(responseWith([session])).success).toBe(false);
@@ -166,7 +175,7 @@ describe('SessionListQueryResponseV1Schema', () => {
     const parsed = boundary === 'current row'
       ? SessionCurrentProjectionRecordV1Schema.parse(legacySession)
       : SessionListQueryResponseV1Schema.parse(responseWith([legacySession])).sessions[0];
-    expect(parsed).toEqual(normalized);
+    expect(parsed).toEqual(boundary === 'current row' ? normalized : compact(normalized));
     expect(legacySession.lastRuntimeIssue.usageLimit.connectedService.serviceId).toBe('openai-codex');
     expect(legacySession.lastRuntimeIssue.usageLimit.quotaSnapshotRef.serviceId).toBe('openai-codex');
   });

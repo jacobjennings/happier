@@ -2,7 +2,7 @@ import { z } from 'zod/mini';
 import { BUILT_IN_ROLE_IDS_V1, BUILT_IN_ROLES_V1, type BuiltInRoleIdV1 } from '@happier-dev/protocol/prompts/roles/builtInRolesV1';
 import { t } from '@/text';
 import { RoleActionEntryV1Schema } from '@happier-dev/protocol/prompts/roles/roleActionsV1';
-import { resolveRoleSelectionV1 } from '@happier-dev/protocol/prompts/roles/resolveRoleSelectionV1';
+import { resolveRoleDefinitionV1, resolveRoleSelectionV1 } from '@happier-dev/protocol/prompts/roles/resolveRoleSelectionV1';
 import { sameStrictJsonValue } from '@happier-dev/protocol/json/strictJsonValue';
 import type { ResolvedRoleV1, RoleInstructionsOverrideV1, WorkflowRoleV1 } from '@happier-dev/protocol/prompts/roles/rolesV1';
 import type { RoleArtifactV1 } from '@happier-dev/protocol/prompts/roles/roleArtifactV1';
@@ -29,7 +29,7 @@ export type RoleSourceKind = 'built_in' | 'user' | 'shared' | 'plugin';
 
 /**
  * A role as the reader's Settings layer shows it: the listed document with the reader's own
- * `rolesV1` override applied by the one resolver (`resolveRoleSelectionV1`).
+ * `rolesV1` override applied by the definition resolver (`resolveRoleDefinitionV1`).
  */
 export type RoleCatalogEntry = Readonly<{
     roleId: string;
@@ -73,10 +73,6 @@ function classify(item: RolesListItem): Readonly<{ source: RoleSourceKind; plugi
     return { source: item.shared ? 'shared' : 'user' };
 }
 
-function asResolved(roleId: string, role: RoleArtifactV1): ResolvedRoleV1 {
-    return { ...role, roleId };
-}
-
 /** Built-ins first (in their catalog order), then the reader's roles, shared roles, plugin roles. */
 const SOURCE_ORDER: Readonly<Record<RoleSourceKind, number>> = { built_in: 0, user: 1, shared: 2, plugin: 3 };
 
@@ -93,24 +89,25 @@ export function createRoleCatalogProjection(): (input: RoleCatalogInput) => Read
     return (input) => {
         if (lastInput?.items === input.items && lastInput.overrides === input.overrides) return entries;
         const next = new Map<string, Readonly<{ item: RolesListItem; override: RoleInstructionsOverrideV1 | undefined; entry: RoleCatalogEntry }>>();
-        const ordered = input.items.map((item, index) => {
+        const ordered = input.items.flatMap((item, index) => {
             const { source, pluginId } = classify(item);
             const override = source === 'user' ? undefined : input.overrides[item.roleId];
             const stored = previous.get(item.roleId);
             if (stored && sameStrictJsonValue(stored.item, item) && sameStrictJsonValue(stored.override, override)) {
                 next.set(item.roleId, stored);
-                return { entry: stored.entry, index };
+                return [{ entry: stored.entry, index }];
             }
-            const resolved = resolveRoleSelectionV1({
+            const resolved = resolveRoleDefinitionV1({
                 roleId: item.roleId,
                 settingsRoles: { [item.roleId]: item.role },
                 settingsOverrides: override ? { [item.roleId]: override } : {},
                 ...(pluginId ? { pluginRoles: [{ pluginId, localId: item.roleId.slice(`plugin:${pluginId}/`.length), role: item.role }] } : {}),
             });
+            if (!resolved.ok) return [];
             const entry: RoleCatalogEntry = {
                 roleId: item.roleId,
                 source,
-                role: resolved.ok ? resolved.selection : asResolved(item.roleId, item.role),
+                role: resolved.selection,
                 ...(override ? { override } : {}),
                 viewOnly: item.viewOnly,
                 migratedFromV0_2: item.migratedFromV0_2,
@@ -119,7 +116,7 @@ export function createRoleCatalogProjection(): (input: RoleCatalogInput) => Read
                 ...(item.pluginDisplayName ? { pluginDisplayName: item.pluginDisplayName } : {}),
             };
             next.set(item.roleId, { item, override, entry });
-            return { entry, index };
+            return [{ entry, index }];
         });
         const incoming = ordered
             .sort((a, b) => (SOURCE_ORDER[a.entry.source] - SOURCE_ORDER[b.entry.source]) || (a.index - b.index))

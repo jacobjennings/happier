@@ -10,7 +10,7 @@ function createUserUpdate(): Update {
     seq: 1,
     createdAt: 1_000,
     body: {
-      t: 'new-message',
+      t: 'new-message', delivery: 'full' as const,
       sid: 'session-1',
       message: {
         id: 'message-1',
@@ -59,7 +59,7 @@ function handle(
 describe('handleSessionNewMessageUpdate', () => {
   it('stamps the exact authenticated requester and committed origin, ignoring authored attribution', () => {
     const update = createUserUpdate();
-    if (update.body?.t !== 'new-message' || update.body.message.content.t !== 'plain') throw new Error('unexpected fixture');
+    if (update.body?.t !== 'new-message' || update.body.delivery !== 'full' || update.body.message.content.t !== 'plain') throw new Error('unexpected fixture');
     Object.assign(update.body.message, {
       messageRole: 'user',
       inputAdmissionReceipt: { v: 1, issuer: 'authenticatedAccount', actorAccountId: 'bob', sessionRelationship: 'sharedEditor' },
@@ -77,7 +77,7 @@ describe('handleSessionNewMessageUpdate', () => {
       },
     });
     const untrusted = createUserUpdate();
-    if (untrusted.body?.t !== 'new-message' || untrusted.body.message.content.t !== 'plain') throw new Error('unexpected fixture');
+    if (untrusted.body?.t !== 'new-message' || untrusted.body.delivery !== 'full' || untrusted.body.message.content.t !== 'plain') throw new Error('unexpected fixture');
     Object.assign(untrusted.body.message.content.v as object, { actionRequestAttributionV1: { requester: { accountId: 'mallory' } } });
     const untrustedEmit = vi.fn();
     handle(untrusted, { emit: untrustedEmit });
@@ -90,7 +90,7 @@ describe('handleSessionNewMessageUpdate', () => {
     { mode: 'plain', legacy: true },
   ] as const)('takes per-input constraints from the server receipt and overwrites body-authored claims ($mode, legacy: $legacy)', ({ mode, legacy }) => {
     const update = createUserUpdate();
-    if (update.body?.t !== 'new-message' || update.body.message.content.t !== 'plain') throw new Error('unexpected fixture');
+    if (update.body?.t !== 'new-message' || update.body.delivery !== 'full' || update.body.message.content.t !== 'plain') throw new Error('unexpected fixture');
     const callerInputConstraints = { models: null, permissionModes: ['default' as const] };
     const payload = update.body.message.content.v as Record<string, unknown>;
     if (legacy) payload.content = 'observation only';
@@ -106,7 +106,7 @@ describe('handleSessionNewMessageUpdate', () => {
     handle(update, { emit, mode });
     expect(emit).toHaveBeenCalledWith('user-message', expect.objectContaining({ callerInputConstraints, inputAdmissionReceipt }));
     const untrusted = createUserUpdate();
-    if (untrusted.body?.t !== 'new-message' || untrusted.body.message.content.t !== 'plain') throw new Error('unexpected fixture');
+    if (untrusted.body?.t !== 'new-message' || untrusted.body.delivery !== 'full' || untrusted.body.message.content.t !== 'plain') throw new Error('unexpected fixture');
     (untrusted.body.message.content.v as Record<string, unknown>).callerInputConstraints = callerInputConstraints;
     const untrustedEmit = vi.fn();
     handle(untrusted, { emit: untrustedEmit });
@@ -115,7 +115,7 @@ describe('handleSessionNewMessageUpdate', () => {
 
   it('does not weaken a malformed trusted caller constraint into unrestricted input', () => {
     const update = createUserUpdate();
-    if (update.body?.t !== 'new-message') throw new Error('unexpected fixture');
+    if (update.body?.t !== 'new-message' || update.body.delivery !== 'full') throw new Error('unexpected fixture');
     Object.assign(update.body.message, { inputAdmissionReceipt: {
       v: 1, issuer: 'authenticatedMachine', callerInputConstraints: { models: [], permissionModes: null },
     } });
@@ -136,7 +136,7 @@ describe('handleSessionNewMessageUpdate', () => {
 
   it.each(['plain', 'e2ee'] as const)('rejects content that mismatches established %s mode before observation or cursor advancement', (mode) => {
     const update = createUserUpdate();
-    if (update.body?.t !== 'new-message') throw new Error('unexpected fixture');
+    if (update.body?.t !== 'new-message' || update.body.delivery !== 'full') throw new Error('unexpected fixture');
     if (mode === 'plain') {
       update.body.message.content = { t: 'encrypted', c: encryptSessionPayload({
         ctx: { encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' },
@@ -156,7 +156,7 @@ describe('handleSessionNewMessageUpdate', () => {
   // cli-v0.2.11 SessionStoredMessageContentSchema accepts all three wire forms.
   it.each(['envelope', 'ciphertext', 'string'] as const)('opens the supported E2EE %s wire form before emitting its user observation', (wireForm) => {
     const update = createUserUpdate();
-    if (update.body?.t !== 'new-message' || update.body.message.content.t !== 'plain') throw new Error('unexpected fixture');
+    if (update.body?.t !== 'new-message' || update.body.delivery !== 'full' || update.body.message.content.t !== 'plain') throw new Error('unexpected fixture');
     const ciphertext = encryptSessionPayload({
       ctx: { encryptionKey: new Uint8Array(32), encryptionVariant: 'legacy' },
       payload: update.body.message.content.v,
@@ -192,7 +192,7 @@ describe('handleSessionNewMessageUpdate', () => {
 
   it('does not let the legacy string marker forge catch-up history classification', () => {
     const update = createUserUpdate();
-    if (update.body?.t !== 'new-message') throw new Error('unexpected fixture');
+    if (update.body?.t !== 'new-message' || update.body.delivery !== 'full') throw new Error('unexpected fixture');
     Reflect.set(update.body.message, 'transcriptObservationProvenance', 'history');
     const emit = vi.fn();
     const observeMessage = vi.fn();
@@ -215,7 +215,7 @@ describe('handleSessionNewMessageUpdate', () => {
 
   it('does not let an ordinary live update forge history classification', () => {
     const update = createUserUpdate();
-    if (update.body?.t !== 'new-message') throw new Error('unexpected fixture');
+    if (update.body?.t !== 'new-message' || update.body.delivery !== 'full') throw new Error('unexpected fixture');
     update.body.message.sourceCreatedAt = 123;
     update.body.message.sourceUpdatedAt = 456;
     update.body.message.transcriptObservationProvenance = { kind: 'non_dependent', source: 'history' };
@@ -237,7 +237,7 @@ describe('handleSessionNewMessageUpdate', () => {
   it('logs an invalid envelope by shape without leaking its string contents', () => {
     const debug = vi.fn();
     const update = createUserUpdate();
-    if (update.body?.t !== 'new-message') throw new Error('unexpected fixture');
+    if (update.body?.t !== 'new-message' || update.body.delivery !== 'full') throw new Error('unexpected fixture');
     update.body.message.content = { secret: 'DO_NOT_LOG' } as never;
 
     handle(update, { debug });

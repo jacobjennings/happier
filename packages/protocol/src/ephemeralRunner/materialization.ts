@@ -4,6 +4,7 @@ import { RunnerResourceIdSchema, RunnerSha256CommitmentSchema } from './activati
 import { RunnerConsentV1Schema } from './consent.js';
 import { RunnerReadinessV1Schema } from './readiness.js';
 import { SessionOwnerMetadataEnvelopeV1Schema } from '../sessions/metadata/sessionMetadataSchemasV1.js';
+import { SessionDisplayProjectionV1Schema } from '../sessions/metadata/sessionDisplaySchemasV1.js';
 import { SessionOrganizationPlacementV1Schema } from '../sessions/creation/sessionSpawnNewResultV1.js';
 import { SessionInitialAccessMaterializedV1Schema } from '../sessions/access/sessionInitialAccessDraftV1.js';
 import { SessionTeamCredentialBindingIntentsV1Schema } from '../teams/credentials/sessionBindingIntentV1.js';
@@ -19,6 +20,7 @@ export const RunnerSessionMaterializationInputV1Schema = z.strictObject({
   tag: z.string().check(z.trim(), z.minLength(1), z.maxLength(191)),
   metadata: BoundedStoredStringSchema,
   ownerMetadata: SessionOwnerMetadataEnvelopeV1Schema,
+  displayProjectionV1: z.optional(z.nullable(SessionDisplayProjectionV1Schema)),
   agentState: z.nullable(BoundedStoredStringSchema),
   dataEncryptionKey: z.nullable(z.string().check(z.minLength(1), z.maxLength(4096))),
   requestedEncryptionMode: z.enum(['plain', 'e2ee']),

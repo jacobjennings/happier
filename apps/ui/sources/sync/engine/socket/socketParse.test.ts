@@ -2,6 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseEphemeralUpdate, parseUpdateContainer } from './socketParse';
 
 describe('socketParse', () => {
+    it('rejects contradictory legacy Session identity aliases without rejecting supported envelopes', () => {
+        // server-v0.2.16 22ac8263cfdbcdb845441b9044ff18199cf7652e
+        // buildUpdateSessionUpdate writes id and its compatibility sid alias identically.
+        const body = { t: 'update-session', id: 'same-session', active: true, activeAt: 1 };
+        const envelope = { id: 'identity-alias', seq: 1, createdAt: 1, body };
+        expect(parseUpdateContainer(envelope)).not.toBeNull();
+        expect(parseUpdateContainer({ ...envelope, body: { ...body, sid: body.id } })).not.toBeNull();
+        expect(parseUpdateContainer({ ...envelope, body: { ...body, sid: 'different-session' } })).toBeNull();
+    });
     it.each(['new-session', 'update-session'])('rejects malformed explicit viewers before %s ingestion can use legacy tracking', (type) => {
         const viewer = {
             latestFailureSeq: null,
@@ -29,6 +38,7 @@ describe('socketParse', () => {
             createdAt: 1000,
             body: {
                 t: 'new-message',
+                delivery: 'full' as const,
                 sid: 's1',
                 message: {
                     id: 'm1',
@@ -76,6 +86,7 @@ describe('socketParse', () => {
     it('returns null for a non-container non-sharing update body', () => {
         const res = parseUpdateContainer({
             t: 'new-message',
+            delivery: 'full' as const,
             sid: 's1',
             message: { id: 'm1' },
         });

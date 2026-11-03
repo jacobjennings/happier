@@ -23,7 +23,9 @@ type FakeLocator = {
     count: () => Promise<number>;
     click: ReturnType<typeof vi.fn>;
     hover?: ReturnType<typeof vi.fn>;
+    waitFor?: (options: Readonly<{ state: string }>) => Promise<void>;
     getByTestId?: (testId: string) => FakeLocator;
+    locator?: (selector: string) => FakeLocator;
     getByRole?: (role: string, options: Readonly<{ name: RegExp }>) => FakeLocator;
 };
 
@@ -33,6 +35,10 @@ describe('openSessionListRowMenu', () => {
 
         const trigger: FakeLocator = {
             count: async () => (hoverActive ? 1 : 0),
+            waitFor: async (options) => {
+                expect(options.state).toBe('visible');
+                expect(hoverActive).toBe(true);
+            },
             click: vi.fn(async () => {}),
         };
 
@@ -47,9 +53,16 @@ describe('openSessionListRowMenu', () => {
             hover: vi.fn(async () => {
                 hoverActive = true;
             }),
-            getByTestId: (testId: string) => {
-                expect(testId).toBe('session-item-more-menu');
-                return trigger;
+            // The navigation target and hover controls are siblings in the row.
+            locator: () => {
+                return {
+                    count: async () => 1,
+                    click: vi.fn(),
+                    getByTestId: (testId: string) => {
+                        expect(testId).toBe('session-item-more-menu');
+                        return trigger;
+                    },
+                };
             },
             getByRole: (role: string, options: Readonly<{ name: RegExp }>) => {
                 expect(role).toBe('button');

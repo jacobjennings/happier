@@ -3,6 +3,11 @@ import { t } from '@/text';
 import { projectOpenRefusalPresentation } from './projectOpenRefusalPresentation';
 
 describe('Project Open refusal presentation', () => {
+    it('distinguishes missing clone support from an unavailable Source hosting provider', () => {
+        expect(projectOpenRefusalPresentation('FEATURE_UNSUPPORTED', null)).not.toEqual(projectOpenRefusalPresentation('BACKEND_UNAVAILABLE', null));
+        expect(projectOpenRefusalPresentation('FEATURE_UNSUPPORTED', null)).toEqual({ title: t('projects.open.cloneUnsupported') });
+        expect(projectOpenRefusalPresentation('BACKEND_UNAVAILABLE', null)).toEqual({ title: t('projects.open.hostingProviderUnavailable') });
+    });
     it('offers target recovery without claiming the machine is offline or incapable', () => {
         expect(projectOpenRefusalPresentation('target_mismatch', null)).toEqual({
             title: t('projects.open.targetMismatch'), description: t('projects.open.targetMismatchHint'),

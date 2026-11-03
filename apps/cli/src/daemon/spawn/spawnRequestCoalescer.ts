@@ -154,6 +154,7 @@ function buildSpawnSemanticFingerprint(options: SpawnSessionOptions): Json {
     manager: options.manager ?? null,
     identity: options.identity ?? null,
     memoryEnabled: options.memoryEnabled ?? null,
+    authoringOriginHash: options.authoringOrigin === undefined ? null : sha256Hex(stableJsonStringify(options.authoringOrigin)),
     initialSessionRolesHash: options.initialSessionRolesV1 === undefined
       ? null
       : sha256Hex(stableJsonStringify(options.initialSessionRolesV1)),

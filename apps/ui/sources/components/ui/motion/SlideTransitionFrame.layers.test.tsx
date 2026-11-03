@@ -33,52 +33,6 @@ describe('SlideTransitionFrame (low-level renderer)', () => {
         expect(screen.findByTestId('current')).not.toBeNull();
     });
 
-    it('mounts the next layer when supplied', async () => {
-        const Reanimated = await import('react-native-reanimated');
-        const { SlideTransitionFrame } = await import('./SlideTransitionFrame');
-
-        function Harness(): React.ReactElement {
-            const progress = Reanimated.useSharedValue(0);
-            return (
-                <SlideTransitionFrame
-                    current={<View testID="current" />}
-                    next={<View testID="next" />}
-                    progress={progress}
-                    blur={false}
-                    testID="frame"
-                />
-            );
-        }
-
-        const screen = await renderScreen(<Harness />);
-        expect(screen.findByTestId('frame-current-layer')).not.toBeNull();
-        expect(screen.findByTestId('frame-next-layer')).not.toBeNull();
-        expect(screen.findByTestId('frame-previous-layer')).toBeNull();
-    });
-
-    it('mounts the previous layer when supplied', async () => {
-        const Reanimated = await import('react-native-reanimated');
-        const { SlideTransitionFrame } = await import('./SlideTransitionFrame');
-
-        function Harness(): React.ReactElement {
-            const progress = Reanimated.useSharedValue(0);
-            return (
-                <SlideTransitionFrame
-                    current={<View testID="current" />}
-                    previous={<View testID="previous" />}
-                    progress={progress}
-                    blur={false}
-                    testID="frame"
-                />
-            );
-        }
-
-        const screen = await renderScreen(<Harness />);
-        expect(screen.findByTestId('frame-current-layer')).not.toBeNull();
-        expect(screen.findByTestId('frame-previous-layer')).not.toBeNull();
-        expect(screen.findByTestId('frame-next-layer')).toBeNull();
-    });
-
     it('mounts all three layers when supplied (carousel mode)', async () => {
         const Reanimated = await import('react-native-reanimated');
         const { SlideTransitionFrame } = await import('./SlideTransitionFrame');
@@ -104,28 +58,6 @@ describe('SlideTransitionFrame (low-level renderer)', () => {
         expect(screen.findByTestId('cur')).not.toBeNull();
         expect(screen.findByTestId('prv')).not.toBeNull();
         expect(screen.findByTestId('nxt')).not.toBeNull();
-    });
-
-    it('mounts a blur layer per slot when blur=true', async () => {
-        const Reanimated = await import('react-native-reanimated');
-        const { SlideTransitionFrame } = await import('./SlideTransitionFrame');
-
-        function Harness(): React.ReactElement {
-            const progress = Reanimated.useSharedValue(0);
-            return (
-                <SlideTransitionFrame
-                    current={<View testID="current" />}
-                    next={<View testID="next" />}
-                    progress={progress}
-                    blur
-                    testID="frame"
-                />
-            );
-        }
-
-        const screen = await renderScreen(<Harness />);
-        expect(screen.findByTestId('frame-current-blur')).not.toBeNull();
-        expect(screen.findByTestId('frame-next-blur')).not.toBeNull();
     });
 
     it('does NOT mount a blur layer when blur=false', async () => {

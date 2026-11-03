@@ -1,10 +1,9 @@
 /**
  * The gap between stacked CARDS, at every column count.
  *
- * `SelectionListColumnRow.cardSpacing.test.tsx` proves the gap exists on a
- * multi-column row. It cannot see the defect this file exists for: the gap was
- * a property of the multi-column WRAPPER, and there is no wrapper at one
- * column, so cards sat flush wherever the pane is narrow — every phone — and on
+ * A unit render of the multi-column row cannot see the defect this file exists
+ * for: the gap was a property of the multi-column WRAPPER, and there is no
+ * wrapper at one column, so cards sat flush wherever the pane is narrow — every phone — and on
  * every frame before a pane has been measured, since the resolver falls to one
  * column until then. The user's report ("no margin between the cards") was that
  * state.
@@ -128,6 +127,8 @@ type RenderParams = Readonly<{
     /** Omit to render a list that never asked for columns at all. */
     columns?: boolean;
     virtualization?: 'force';
+    /** The caller's own gutter, sized into the column resolver. */
+    columnGapPx?: number;
 }>;
 
 async function renderList(params: RenderParams): Promise<Screen> {
@@ -140,7 +141,13 @@ async function renderList(params: RenderParams): Promise<Screen> {
         disableTransitions: true,
         testID: 'sl',
         optionPresentation: params.presentation,
-        ...(params.columns === false ? {} : { columns: { max: 2, minColumnWidthPx: 250 } }),
+        ...(params.columns === false ? {} : {
+            columns: {
+                max: 2,
+                minColumnWidthPx: 250,
+                ...(params.columnGapPx === undefined ? {} : { columnGapPx: params.columnGapPx }),
+            },
+        }),
     };
     const screen = await renderScreen(<SelectionList {...props} />);
     if (params.widthPx !== undefined) await measureContainer(screen, params.widthPx);
@@ -181,17 +188,6 @@ describe('SelectionList cards — the row gap survives a single column', () => {
                     .toBe(secondRowLeadingGapPx(narrow, 'm-1'));
             });
 
-            it('leads the popup with a flush first card', async () => {
-                const screen = await renderList({
-                    presentation: 'card',
-                    widthPx: ONE_COLUMN_WIDTH_PX,
-                    virtualization,
-                });
-                // Nothing above it to separate from; a margin here would push
-                // every card down and open a hole under the search header.
-                expect(wrapperStyle(screen, 'm-0').marginTop).toBeUndefined();
-            });
-
             it('spaces the cards on the first frame, before the pane is measured', async () => {
                 const screen = await renderList({ presentation: 'card', virtualization });
                 // The resolver falls to one column until a width arrives, so an
@@ -213,11 +209,13 @@ describe('SelectionList cards — the row gap survives a single column', () => {
                 expect(wrapperStyle(screen, 'm-3').marginTop).toBe(SELECTION_LIST_CARD_ROW_GAP_PX);
             });
 
-            it('lets the visual row own the gap once there are two columns', async () => {
+            it('lets the visual row own the gap once there are two columns, beside the caller gutter', async () => {
+                // 2 × 250 + 32 still fits the pane, so the caller's gutter is what sized the columns.
                 const screen = await renderList({
                     presentation: 'card',
                     widthPx: TWO_COLUMN_WIDTH_PX,
                     virtualization,
+                    columnGapPx: 32,
                 });
                 // A card that is a CELL takes no margin of its own: its row
                 // already carries one, and a second would double the gap.
@@ -228,6 +226,9 @@ describe('SelectionList cards — the row gap survives a single column', () => {
                     .toBeUndefined();
                 expect(flattenStyle(columnRows(screen)[1]?.props.style).marginTop)
                     .toBe(SELECTION_LIST_CARD_ROW_GAP_PX);
+                // The caller's gutter beats the tighter card default, and the vertical gap is not a
+                // caller concern: it survives the override.
+                expect(columnRows(screen).map((row) => flattenStyle(row.props.style).columnGap)).toEqual([32, 32]);
             });
         });
     }

@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { getActionSpec } from '@happier-dev/protocol/actions/actionSpecs';
@@ -62,8 +63,8 @@ import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerS
 import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
 import { useSessionHandoffSourceReachability } from '@/sync/domains/sessionHandoff/useSessionHandoffSourceReachability';
 import { useSessionReachableMachineTarget } from '@/components/sessions/model/useSessionMachineReachability';
-import { resolveSessionDeleteWarning } from '@/components/sessions/actions/sessionActionPresentation';
-import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
+import { confirmSessionDelete } from '@/components/sessions/actions/confirmSessionDelete';
+import { selectSessionViewShellSessionForRouteState, useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
@@ -276,7 +277,7 @@ function buildSessionInfoMoveTargets(
 }
 
 function SessionInfoContent({
-  session,
+  session: shellSession,
   serverId: sessionServerId,
   presentation,
   onRequestClose,
@@ -286,6 +287,17 @@ function SessionInfoContent({
   presentation: SessionInfoPresentation;
   onRequestClose: () => void;
 }>) {
+  // The shared shell deliberately retains its Session across read-state updates.
+  // Info consumes the viewer/cursor itself: never invalidate the whole shell or
+  // subscribe this detail surface to unrelated Sessions or transcript arrivals.
+  const readStateInputs = storage(useShallow((state) => {
+    const current = selectSessionViewShellSessionForRouteState(state, shellSession.id, sessionServerId) ?? shellSession;
+    return [current.viewer, current.lastViewedSessionSeq] as const;
+  }));
+  const session = React.useMemo(
+    () => selectSessionViewShellSessionForRouteState(storage.getState(), shellSession.id, sessionServerId) ?? shellSession,
+    [shellSession, sessionServerId, readStateInputs],
+  );
   const contentUnavailable = isSessionInfoContentUnavailable(session);
   const metadata = contentUnavailable
     ? null
@@ -896,7 +908,6 @@ function SessionInfoContent({
                 scope,
                 sessionId: session.id,
                 tags: [...tags],
-                executeAction: sessionActions.execute,
               });
             },
           },
@@ -1133,46 +1144,26 @@ function SessionInfoContent({
     await performArchive();
   }, [performArchive]);
 
-  const [deletingSession, performDelete] = useHappyAction(async () => {
+  const [deletingSession, performDelete] = useHappyAction(async (target: typeof sessionActionTarget) => {
     await executeSessionAction({
       actionId: SESSION_ACTION_DELETE_ID,
-      target: sessionActionTarget,
-      context: { presentUserConfirmation: { actionId: 'session.delete' } },
+      target,
+      context: { confirmed: true },
     });
     handleExitAfterSessionMutation();
   });
 
   const handleDeleteSession = React.useCallback(async () => {
-    const confirmed = await Modal.confirm(
-      t('sessionInfo.deleteSession'),
-      resolveSessionDeleteWarning({
-        metadata,
-        machineOnline:
-          currentExecutionMachinePresence.reachability === 'unknown'
-            ? null
-            : currentExecutionMachinePresence.reachability === 'reachable',
-        defaultWarning: t('sessionInfo.deleteSessionWarning'),
-        offlineManagedWarning: t('sessionDirectoryRecovery.offlineDelete', {
-          machine:
-            currentExecutionMachineLabel ??
-            metadata?.host ??
-            t('status.unknown'),
-        }),
-      }),
-      {
-        cancelText: t('common.cancel'),
-        confirmText: t('sessionInfo.deleteSession'),
-        destructive: true,
-      },
-    );
+    const deleteTarget = sessionActionTarget;
+    const confirmed = await confirmSessionDelete({
+      metadata,
+      machineOnline: currentExecutionMachinePresence.reachability === 'unknown'
+        ? null : currentExecutionMachinePresence.reachability === 'reachable',
+      machineLabel: currentExecutionMachineLabel ?? metadata?.host ?? null,
+    });
     if (!confirmed) return;
-    await performDelete();
-  }, [
-    currentExecutionMachinePresence.reachability,
-    currentExecutionMachineLabel,
-    metadata,
-    performDelete,
-  ]);
+    await performDelete(deleteTarget);
+  }, [currentExecutionMachinePresence.reachability, currentExecutionMachineLabel, metadata, performDelete, sessionActionTarget]);
 
   const [, handleRenameSession] = useHappyAction(async () => {
     if (!canRenameSession) return;

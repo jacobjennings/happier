@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-ARG NODE_VERSION=22
+ARG NODE_VERSION=24
 ARG BUILDPLATFORM
 
 # Shared deps (alpine) for website/docs/webapp builds
@@ -22,6 +22,7 @@ RUN node scripts/ci/setup-pnpm.mjs
 RUN --mount=type=cache,target=/pnpm/store,sharing=locked \
     pnpm install --frozen-lockfile --store-dir /pnpm/store --prefer-offline
 COPY apps/cli/scripts/build-owned/bundledPluginMembership.ts ./apps/cli/scripts/build-owned/bundledPluginMembership.ts
+COPY apps/cli/scripts/build-owned/bundledPlugins/projectionPaths.mjs ./apps/cli/scripts/build-owned/bundledPlugins/projectionPaths.mjs
 COPY apps/cli/scripts/buildPublication.mjs ./apps/cli/scripts/buildPublication.mjs
 COPY apps/stack/bin/hstack-exec ./apps/stack/bin/hstack-exec
 COPY apps/stack/scripts/utils ./apps/stack/scripts/utils
@@ -47,6 +48,7 @@ RUN node scripts/ci/setup-pnpm.mjs
 RUN --mount=type=cache,target=/pnpm/store,sharing=locked \
     pnpm install --frozen-lockfile --store-dir /pnpm/store --prefer-offline
 COPY apps/cli/scripts/build-owned/bundledPluginMembership.ts ./apps/cli/scripts/build-owned/bundledPluginMembership.ts
+COPY apps/cli/scripts/build-owned/bundledPlugins/projectionPaths.mjs ./apps/cli/scripts/build-owned/bundledPlugins/projectionPaths.mjs
 COPY apps/cli/scripts/buildPublication.mjs ./apps/cli/scripts/buildPublication.mjs
 COPY apps/stack/bin/hstack-exec ./apps/stack/bin/hstack-exec
 COPY apps/stack/scripts/utils ./apps/stack/scripts/utils
@@ -71,6 +73,7 @@ RUN node scripts/ci/setup-pnpm.mjs
 RUN --mount=type=cache,target=/pnpm/store,sharing=locked \
     pnpm install --frozen-lockfile --store-dir /pnpm/store --prefer-offline
 COPY apps/cli/scripts/build-owned/bundledPluginMembership.ts ./apps/cli/scripts/build-owned/bundledPluginMembership.ts
+COPY apps/cli/scripts/build-owned/bundledPlugins/projectionPaths.mjs ./apps/cli/scripts/build-owned/bundledPlugins/projectionPaths.mjs
 COPY apps/cli/scripts/buildPublication.mjs ./apps/cli/scripts/buildPublication.mjs
 COPY apps/stack/bin/hstack-exec ./apps/stack/bin/hstack-exec
 COPY apps/stack/scripts/utils ./apps/stack/scripts/utils

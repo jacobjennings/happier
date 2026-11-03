@@ -1,5 +1,6 @@
 import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
 import * as React from 'react';
+import { useSessionListAgentTargetDemand } from './useSessionListAgentTargetDemand';
 import { featureRequiresServerSnapshot, type FeatureId } from '@happier-dev/protocol/features/catalog';
 import type { SessionListQueryV1 } from '@happier-dev/protocol/sessions/listing/query';
 
@@ -313,6 +314,7 @@ export function buildSessionListQueryHomeIndex(input: Readonly<{
  * authoritative empty one.
  */
 type SessionListQueryInput = Readonly<{
+    agentTargetDemand?: boolean;
     enabled: boolean;
     homes: readonly SessionListQueryHomeInput[];
     emptySelectionComplete?: boolean;
@@ -682,6 +684,7 @@ export function useSessionListQuerySourceState(input: SessionListQueryInput): Se
         [input.enabled, layer.homes],
     );
     const rowsByServerId = useSessionListRowsByServerId(homeServerIds);
+    useSessionListAgentTargetDemand(homeServerIds, input.enabled && input.agentTargetDemand === true);
     const machineListsByServerId = useMachineListByServerId(input.enabled);
     const activeGroupingV1 = useSetting('sessionListActiveGroupingV1');
     const inactiveGroupingV1 = useSetting('sessionListInactiveGroupingV1');

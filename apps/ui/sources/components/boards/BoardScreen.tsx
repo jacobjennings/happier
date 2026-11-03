@@ -10,7 +10,7 @@ import { HappierSurfaceStateFrame } from '@happier-dev/plugin-ui/presentation';
 import { useCompactAppDestinations } from '@/components/appShell/destinations/compactAppDestinationCatalog';
 import { useAppShellPluginUiProjection } from '@/components/appShell/plugins/AppShellPluginUiProjection';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
-import { readWidgetDescriptor } from '@/components/widgets/widgetCatalog';
+import { readWidgetDescriptor, resolveWidgetInstanceTitle } from '@/components/widgets/widgetCatalog';
 import { useWidgetInstanceDescriptors } from '@/components/widgets/surface/useWidgetInstanceDescriptor';
 import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { EmptyState } from '@/components/ui/empty/EmptyState';
@@ -33,7 +33,7 @@ import { useDeviceType } from '@/utils/platform/responsive';
 
 import { BoardByStatus } from './byStatus/BoardByStatus';
 import { BoardCanvas, type BoardCanvasLayoutSnapshot, type BoardCanvasWidget, type BoardCanvasWidgetRender } from './canvas/BoardCanvas';
-import { BoardWidgetCard, describeBoardWidgetTitle } from './cards/BoardWidgetCard';
+import { BoardWidgetCard } from './cards/BoardWidgetCard';
 import { AddToBoardButton, AddToBoardPopover } from './header/AddToBoardPopover';
 import { BoardSettingsButton } from './header/BoardSettingsPopover';
 import { countBoardCardsNeedingYou, hasWorkBoardContent, type BoardCard } from './model/boardCards';
@@ -264,7 +264,7 @@ const BoardBody = React.memo(function BoardBody(props: Readonly<{ board: WorkBoa
     const widgetDescriptors = useWidgetInstanceDescriptors(widgetSurface, widgetInstances, installedCandidates);
     const canvasWidgets = React.useMemo((): readonly BoardCanvasWidget[] => widgets.map((placement, index) => ({
         key: buildWorkBoardWidgetKeyV1(placement.ref),
-        title: describeBoardWidgetTitle(placement, widgetDescriptors[index]),
+        title: resolveWidgetInstanceTitle(placement.instance, widgetDescriptors[index]),
         size: normalizeWidgetSizeForSurfaceV1('workBoard', placement.size, widgetDescriptors[index]?.sizeDeclaration),
         placement,
     })), [widgetDescriptors, widgets]);

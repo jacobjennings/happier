@@ -1,4 +1,6 @@
 import * as React from 'react';
+import { PluginVoicePresence, PluginVoiceMark, PluginVoiceStatusLine, PluginVoiceTransport, usePluginVoiceAttempt } from './PluginVoicePresence';
+import type { VoicePresenceProps, VoiceMarkProps, VoiceStatusLineProps, VoiceTransportProps } from '@happier-dev/plugin-ui';
 import { usePaneHeaderScrollSink } from '@/components/appShell/panes/paneHeaderScroll';
 import { COMPANION_WEB_POINTER_BINDING } from '@/components/companion/interaction/useCompanionPointerDragSession';
 import { NativeFloatingFrame } from '@/components/companion/interaction/NativeFloatingFrame';
@@ -14,11 +16,11 @@ import {
     Platform,
     StyleSheet,
     View,
-    useWindowDimensions,
     type StyleProp,
     type ViewStyle,
 } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
+import { usePresentationWindowDimensions } from '@/utils/platform/responsive';
 
 import {
     normalizeHappierCodeLanguage,
@@ -41,6 +43,7 @@ import { resolveInlineDiffVirtualizedMaxHeight } from '@/components/ui/code/diff
 import { resolveInlineDiffVirtualizedViewportStyle } from '@/components/ui/code/diff/resolveInlineDiffVirtualizedViewportStyle';
 import { useInlineDiffVirtualizationThresholds } from '@/components/ui/code/diff/useInlineDiffVirtualizationThresholds';
 import { Icon } from '@/components/ui/icons/Icon';
+import { DisclosureCaret } from '@/components/ui/lists/DisclosureCaret';
 import { Avatar } from '@/components/ui/avatar/Avatar';
 import { VoiceMarkArt } from '@/components/voice/presence/VoiceMark';
 import { SceneArt } from '@/components/ui/surfaces/SceneArt';
@@ -62,6 +65,7 @@ import { reanimatedCollectionMotion } from '@/components/ui/motion/reanimatedCol
 import { Popover } from '@/components/ui/popover/Popover';
 import { renderThemeMaterialSurface } from '@/components/ui/glass/GlassSurface';
 import { MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS } from '@/components/ui/popover/modalAwareFloatingPopoverPortalOptions';
+import { POPOVER_PREFERRED_ROOM_PX } from '@/components/ui/popover/popoverPreferredRoom';
 import { Text } from '@/components/ui/text/Text';
 import {
     resolvePluginUiIconName,
@@ -73,7 +77,7 @@ import type { PluginUiSessionPartPresentation, PluginUiWidgetAreaPresentation } 
 import type { FindSurfaceRegistrationHost } from '@happier-dev/plugin-ui/advanced';
 import { createPluginUiPrivateFocusPresentation } from './pluginUiPrivateFocusPresentation';
 import type { DragSourceProps, DropTargetProps, ItemProps, NavigationListDestination } from '@happier-dev/plugin-ui';
-import type { HappierPageChrome, HappierStateSize, HappierLiveStreamProps } from '@happier-dev/plugin-ui/presentation';
+import type { HappierDisclosureCaretDensity, HappierPageChrome, HappierStateSize, HappierLiveStreamProps } from '@happier-dev/plugin-ui/presentation';
 import type { DetailsPaneSlotBinding } from '@/components/appShell/panes/details/DetailsPaneSlot';
 import type { usePaneHeaderSlotBinding } from '@/components/appShell/panes/paneHeaderSlot';
 import { readPluginUiHostTypography } from '@/components/plugins/surfaces/pluginUiThemeProjection';
@@ -115,7 +119,8 @@ function resolvePluginUiPopoverPresentation(input: Readonly<{
     // choice opens: its width is the popover's minimum, not its width (a 60 px Views button must not make
     // a 60 px menu that wraps one letter per line).
     if (input.width === 'content' && (input.presentation === 'dropdown' || input.presentation === 'popover' || input.presentation === undefined)) {
-        return { portal: CONTENT_SIZED_PLUGIN_POPOVER_PORTAL_OPTIONS, maxWidthCap: 1024 } as const;
+        return { portal: CONTENT_SIZED_PLUGIN_POPOVER_PORTAL_OPTIONS, maxWidthCap: 1024,
+            ...(input.presentation === 'dropdown' ? { placementMinSpace: POPOVER_PREFERRED_ROOM_PX } : {}) } as const;
     }
     switch (input.presentation) {
         case 'menu':
@@ -125,12 +130,15 @@ function resolvePluginUiPopoverPresentation(input: Readonly<{
             return {
                 portal: MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS,
                 maxWidthCap: 320,
+                placementMinSpace: POPOVER_PREFERRED_ROOM_PX,
             } as const;
         case 'dropdown':
-            // Preserve the existing DropdownMenu matching-width contract and cap.
+            // Preserve the existing DropdownMenu matching-width contract, cap and the room at which it
+            // still opens below its trigger (a field in a short dialog keeps its label in view).
             return {
                 portal: MATCHING_PLUGIN_POPOVER_PORTAL_OPTIONS,
                 maxWidthCap: 1024,
+                placementMinSpace: POPOVER_PREFERRED_ROOM_PX,
             } as const;
         case 'popover':
         default:
@@ -217,7 +225,9 @@ export type PluginUiPrivatePresentationHostOptions = Readonly<{
     /** The navigation chrome the mount sits in (title shown, back control, content column). */
     pageChrome?: PluginUiPrivatePageChrome;
     /** The container's state size (`SurfaceStateSizeProvider`): a plugin's unsized states take it. */
-    stateSize?: HappierStateSize;
+    stateSize?: HappierStateSize | 'line';
+    /** The container's state actions (`SurfaceStateSizeProvider`): `quiet` in a widget card. */
+    stateActions?: 'quiet';
     /** The page's app details pane, when the mount sits in a page that has one (`DetailsPaneSlotHost`). */
     detailsPane?: DetailsPaneSlotBinding;
     /** The pane header of the tab the mount fills (the session sidebar, a phone surface), when it has one. */
@@ -311,7 +321,7 @@ function PluginUiPrivateDiffViewer(props: Extract<HappierDiffViewerRequest, { un
     const configuredWrapLines = useSetting('wrapLinesInDiffs');
     const configuredLineNumbers = useSetting('showLineNumbers');
     const thresholds = useInlineDiffVirtualizationThresholds();
-    const { height: windowHeight } = useWindowDimensions();
+    const { height: windowHeight } = usePresentationWindowDimensions();
     const virtualized = resolveInlineDiffVirtualization({
         unifiedDiff: props.unifiedDiff,
         oldText: null,
@@ -367,6 +377,11 @@ function createPluginUiPrivatePresentationRenderers(direction?: PluginUiIconDire
         // Only explicit art props: no live energy acquisition or attempt data.
         return <VoiceMarkArt {...input} still={input.still ?? true} presentationOnly />;
     },
+    renderVoicePresence: (input: VoicePresenceProps) => <PluginVoicePresence {...input} />,
+    useVoiceAttempt: usePluginVoiceAttempt,
+    renderVoiceMark: (input: VoiceMarkProps) => <PluginVoiceMark {...input} />,
+    renderVoiceStatusLine: (input: VoiceStatusLineProps) => <PluginVoiceStatusLine {...input} />,
+    renderVoiceTransport: (input: VoiceTransportProps) => <PluginVoiceTransport {...input} />,
     renderScene(input: HappierSceneRenderRequest) {
         return <SceneArt {...input} />;
     },
@@ -446,6 +461,7 @@ function createPluginUiPrivatePresentationRenderers(direction?: PluginUiIconDire
                 // owner, including its modal-aware web target and native host.
                 portal={presentation.portal}
                 maxWidthCap={presentation.maxWidthCap}
+                {...('placementMinSpace' in presentation ? { placementMinSpace: presentation.placementMinSpace } : {})}
                 onRequestClose={input.onRequestClose}
                 // A requested sheet is the shared phone bottom sheet (its title, close and pinned footer).
                 {...(input.sheet === undefined ? {} : {
@@ -479,6 +495,10 @@ function createPluginUiPrivatePresentationRenderers(direction?: PluginUiIconDire
             />
         );
     },
+    /** The disclosure caret of core's own rows: the app's caret icon on the shared turn, at the asked density. */
+    renderDisclosureCaret(input: Readonly<{ expanded: boolean; density?: HappierDisclosureCaretDensity }>) {
+        return <DisclosureCaret expanded={input.expanded} density={input.density ?? 'row'} />;
+    },
     renderQRCode(input: Readonly<{ data: string; size: number; testID?: string }>) {
         return <PluginUiPrivateQRCode data={input.data} size={input.size} testID={input.testID} />;
     },
@@ -507,7 +527,8 @@ export type PluginUiPrivatePresentationHost = Readonly<
         panelSizing?: import('@happier-dev/plugin-ui/advanced').PluginUiPresentationHost['panelSizing'];
         find?: FindSurfaceRegistrationHost;
         pageChrome?: PluginUiPrivatePageChrome;
-        stateSize?: HappierStateSize;
+        stateSize?: HappierStateSize | 'line';
+        stateActions?: 'quiet';
         detailsPane?: DetailsPaneSlotBinding;
         paneHeader?: NonNullable<ReturnType<typeof usePaneHeaderSlotBinding>>;
         renderDestinationRow?: (input: PluginDestinationRowInput) => React.ReactNode;
@@ -684,6 +705,7 @@ export function createPluginUiPrivatePresentationHost(
         ...(options?.resolveMaterialColor === undefined ? {} : { resolveMaterialColor: options.resolveMaterialColor }),
         ...(options?.pageChrome === undefined ? {} : { pageChrome: options.pageChrome }),
         ...(options?.stateSize === undefined ? {} : { stateSize: options.stateSize }),
+        ...(options?.stateActions === undefined ? {} : { stateActions: options.stateActions }),
         ...(options?.detailsPane === undefined ? {} : { detailsPane: options.detailsPane }),
         ...(options?.paneHeader === undefined ? {} : { paneHeader: options.paneHeader }),
         ...(options?.renderDestinationRow === undefined ? {} : { renderDestinationRow: options.renderDestinationRow }),

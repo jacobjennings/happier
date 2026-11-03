@@ -2,6 +2,7 @@ import type { Session } from '../../domains/state/storageTypes';
 import { readSessionManagerSessionIdV1 } from '@happier-dev/protocol/sessions/follow/sessionManagerV1';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import { SESSION_OWNER_METADATA_PROJECTION } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { SESSION_LIST_DOCUMENT_ADMISSION, areSessionListDocumentAdmissionsEqual } from '@/sync/domains/session/sessionDocumentAdmission';
 
 function arePlainObjectValuesEqual(
     previous: Record<string, unknown>,
@@ -76,6 +77,11 @@ export function areStoredSessionsEqual(
     next: Session,
 ): boolean {
     if (!previous) return false;
+    if (!areSessionListDocumentAdmissionsEqual(previous[SESSION_LIST_DOCUMENT_ADMISSION], next[SESSION_LIST_DOCUMENT_ADMISSION])) return false;
+    if (previous[SESSION_LIST_DOCUMENT_ADMISSION]?.openedMetadataVersion !== next[SESSION_LIST_DOCUMENT_ADMISSION]?.openedMetadataVersion) return false;
+    if (previous[SESSION_LIST_DOCUMENT_ADMISSION]?.openedAgentStateVersion !== next[SESSION_LIST_DOCUMENT_ADMISSION]?.openedAgentStateVersion) return false;
+    if (previous[SESSION_LIST_DOCUMENT_ADMISSION]?.observedMetadataVersion !== next[SESSION_LIST_DOCUMENT_ADMISSION]?.observedMetadataVersion) return false;
+    if (previous[SESSION_LIST_DOCUMENT_ADMISSION]?.observedAgentStateVersion !== next[SESSION_LIST_DOCUMENT_ADMISSION]?.observedAgentStateVersion) return false;
     if ((previous[SESSION_OWNER_METADATA_PROJECTION] ?? null) !== (next[SESSION_OWNER_METADATA_PROJECTION] ?? null)) return false;
 
     const activeAtMatches =

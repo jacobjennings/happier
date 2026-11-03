@@ -66,7 +66,6 @@ describe('resolveRepoScmSessionRequest', () => {
                     updatedAt: 100,
                     metadata: {
                         machineId: 'machine-a',
-                        path: '~/repo',
                         host: 'mbp.local',
                     },
                 },
@@ -75,7 +74,7 @@ describe('resolveRepoScmSessionRequest', () => {
                 ? {
                     key: {
                         machineId: 'machine-a',
-                        path: '/Users/tester/repo',
+                        rootPath: '/Users/tester/repo',
                     },
                 }
                 : null,

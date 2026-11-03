@@ -1,4 +1,4 @@
-import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createSessionAccessFixture, createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { describe, expect, it } from 'vitest';
 
 import { buildSessionListRenderableFromSession, type SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
@@ -45,6 +45,24 @@ function createOwnedRawSession(overrides: Partial<Session> = {}): Session {
 }
 
 describe('session action availability', () => {
+    it('uses readable archived owner-row metadata without weakening explicit terminal preservation', () => {
+        const row = createSessionListRenderableSessionFixture({ archivedAt: 42, active: false,
+            metadataLayoutVersion: 1, metadata: { path: '/repo', host: 'tester.local' } });
+        const target = createSessionActionTarget({ session: row, serverId: 'home', isConnected: false });
+        expect(target.canDelete).toBe(true);
+        expect(listVisibleSessionActionIds({ target, surface: 'rowMenu' })).toContain(SESSION_ACTION_DELETE_ID);
+        expect(createSessionActionTarget({ session: { ...row, metadata: { ...row.metadata, path: '/repo',
+            terminalControlServiceabilityV1: { v: 1, state: 'recoverable_unservable', observedAt: 123 },
+        } }, serverId: 'home', isConnected: false }).canDelete).toBe(false);
+    });
+
+    it.each(['rowMenu', 'nativeContextMenu'] as const)('offers Delete only for eligible archived sessions on %s', (surface) => {
+        const session = createOwnedRawSession({ archivedAt: 42 });
+        const target = createSessionActionTarget({ session, serverId: 'home', isConnected: false });
+        expect(listVisibleSessionActionIds({ target, surface })).toContain(SESSION_ACTION_DELETE_ID);
+        expect(listVisibleSessionActionIds({ target: { ...target, isArchived: false }, surface })).not.toContain(SESSION_ACTION_DELETE_ID);
+        expect(listVisibleSessionActionIds({ target: { ...target, canDelete: false }, surface })).not.toContain(SESSION_ACTION_DELETE_ID);
+    });
     it('offers Make coordinator on a plain session, and Edit/Stop greyed with reasons on one that only manages', () => {
         const coordinatorIds = (session: Session) => listVisibleSessionActionIds({
             target: createSessionActionTarget({ session, serverId: 'home', isConnected: true }), surface: 'rowMenu',

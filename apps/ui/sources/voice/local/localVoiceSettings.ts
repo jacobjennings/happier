@@ -49,10 +49,6 @@ export function readLocalConversationSettingsFromAccountSettings(settings: any) 
   return readLocalConversationVoiceSettings(voiceSettingsParse(settings?.voice));
 }
 
-export function readLocalDirectSettingsFromAccountSettings(settings: any) {
-  return readLocalDirectVoiceSettings(voiceSettingsParse(settings?.voice));
-}
-
 export function isLocalVoiceProviderSelected(settings: any): boolean {
   const providerId = resolveVoiceProviderIdFromSettings(voiceSettingsParse(settings?.voice));
   return providerId === 'local_direct' || providerId === 'local_conversation';
@@ -108,11 +104,6 @@ export function resolveLocalVoiceRecognitionLanguage(
 export function isHandsFreeDeviceSttEnabled(settings: any): boolean {
   const { config } = resolveLocalVoiceAdapterSettings(settings);
   return resolveLocalSttProvider(settings) === 'device' && config?.handsFree?.enabled === true;
-}
-
-export function isHandsFreeLocalNeuralSttEnabled(settings: any): boolean {
-  const { config } = resolveLocalVoiceAdapterSettings(settings);
-  return resolveLocalSttProvider(settings) === 'local_neural' && config?.handsFree?.enabled === true;
 }
 
 export function isVoiceBargeInEnabled(settings: any): boolean {

@@ -20,7 +20,11 @@ import { buildSessionOrganizationAssignmentSnapshotHttpRequestV1, SessionOrganiz
 import { SESSION_ORGANIZATION_MAX_SCOPED_SNAPSHOT_IDS } from '@happier-dev/protocol/sessions/organization/constants';
 import { normalizeSessionCreationOrganizationPlacementV1 } from '@happier-dev/protocol/sessions/creation/sessionCreationCorrespondenceV1';
 import { SessionListQueryResponseV1Schema, SessionCurrentProjectionRecordV1Schema,
-  SessionRuntimeManagedSubtreeListResponseV1Schema, type SessionRuntimeManagedSubtreeListResponseV1 } from '@happier-dev/protocol/sessions/listing/response';
+  SessionRuntimeManagedSubtreeListResponseV1Schema, SessionRuntimeManagedSubtreeSnapshotRecordV1Schema,
+  type SessionRuntimeManagedSubtreeListResponseV1 } from '@happier-dev/protocol/sessions/listing/response';
+import { SessionReadBatchRequestV1Schema, SessionReadBatchResponseV1Schema,
+  type SessionReadBatchResponseV1 } from '@happier-dev/protocol/sessions/read/sessionReadBatchV1';
+import { createServerHttpRequestBodyItemBudgetV1 } from '@happier-dev/protocol/server/http/requestBodyBoundsV1';
 import { buildSessionListServerQueryV1, SessionListUnavailableQueryV1Schema } from '@happier-dev/protocol/sessions/listing/query';
 import { SessionAttentionSetResultV1Schema, buildSessionAttentionStandingHttpPath } from '@happier-dev/protocol/sessions/organization/attentionAction';
 import { SetSessionPinRequestSchema, SetSessionPinResponseSchema, type SetSessionPinRequest, type SetSessionPinResponse } from '@happier-dev/protocol/sessions/organization/mutations';
@@ -52,6 +56,7 @@ import { configuration } from '@/configuration';
 import { resolveServerHttpBaseUrl } from './serverHttpBaseUrl';
 import { buildSessionMetadataEnvelopeCreateFields } from '@/session/metadata/buildSessionMetadataEnvelopeCreateFields';
 import {
+  addSessionInitialAccessTeamShareStatement,
   buildSessionInitialAccessCreateFields,
   materializeSessionInitialAccessCreateFields,
   prepareSessionInitialAccessDataKeyEnvelopes,
@@ -166,7 +171,9 @@ export async function setSessionAttentionStanding(params: Readonly<{
   if (!result.success) throw new Error('Unexpected attention standing response shape');
   return result.data;
 }
-export type RawSessionListRow = V2SessionListResponse['sessions'][number];
+/** Opened-list consumers require full snapshots; compact wire rows have a separate type. */
+export type RawSessionListRow = RawSessionRecord;
+export type RawCompactSessionListRow = V2SessionListResponse['sessions'][number];
 export type SessionLookupByTagsHttpResult =
   | Readonly<{
       state: 'available';
@@ -1162,7 +1169,8 @@ export async function applySessionAgentTransitionCutover(params: Readonly<{
   return { ok: false, effect: 'unknown', error: 'transport' };
 }
 
-export async function fetchSessionsPage(params: Readonly<{
+/** Scalar-only inventory read. Omitted documents are never full-snapshot replacements. */
+export async function fetchSessionListPage(params: Readonly<{
   token: string;
   resolveAuthorizationHeaders?: (request: Readonly<{
     method: 'GET'; path: string;
@@ -1173,7 +1181,7 @@ export async function fetchSessionsPage(params: Readonly<{
   archivedOnly?: boolean;
   signal?: AbortSignal;
 }>): Promise<Readonly<{
-  sessions: RawSessionListRow[];
+  sessions: RawCompactSessionListRow[];
   nextCursor: string | null;
   hasNext: boolean;
   metadataUpgradeRequiredCount?: number;
@@ -1249,6 +1257,113 @@ export async function fetchSessionsPage(params: Readonly<{
     : { ...page, ...attentionContinuation };
 }
 
+export type CompactSessionListPageV1 = Awaited<ReturnType<typeof fetchSessionListPage>>;
+
+type SessionListDocumentAuthorization = (request: Readonly<{
+  method: 'GET' | 'POST'; path: string; body?: unknown;
+}>) => Readonly<Record<string, string>> | null;
+
+type SessionSnapshotBatchParams = Readonly<{
+  token: string;
+  serverUrl?: string;
+  sessionIds: readonly string[];
+  underSessionId?: string;
+  accessProjectionVersion?: 1;
+  signal?: AbortSignal;
+  resolveAuthorizationHeaders?: SessionListDocumentAuthorization;
+}>;
+
+type SessionReadBatchPart = SessionReadBatchResponseV1['results'][number];
+
+function invalidSessionReadBatchResponse(): Error & { code: string } {
+  return Object.assign(new Error('Invalid Session batch response'), { code: 'session_read_batch_invalid_response' });
+}
+
+/** Existing read-batch transport; one request per real HTTP-body-budget chunk. */
+export async function fetchSessionSnapshotsBatch(params: SessionSnapshotBatchParams): Promise<ReadonlyMap<string, SessionReadBatchPart>> {
+  params.signal?.throwIfAborted();
+  const serverUrl = params.serverUrl ?? resolveServerHttpBaseUrl();
+  const emptyBody = SessionReadBatchRequestV1Schema.parse({ sessionIds: [], includeSnapshot: true,
+    includeTurns: false, includeMessages: false, accessProjectionVersion: params.accessProjectionVersion,
+    ...(params.underSessionId === undefined ? {} : { underSessionId: params.underSessionId }) });
+  const chunks: string[][] = [];
+  let chunk: string[] = [];
+  let budget = createServerHttpRequestBodyItemBudgetV1(emptyBody);
+  for (const id of new Set(params.sessionIds)) {
+    if (!budget.tryAdmit(id)) {
+      if (!chunk.length) throw new Error('Session id exceeds the HTTP request body limit');
+      chunks.push(chunk);
+      chunk = [];
+      budget = createServerHttpRequestBodyItemBudgetV1(emptyBody);
+      if (!budget.tryAdmit(id)) throw new Error('Session id exceeds the HTTP request body limit');
+    }
+    chunk.push(id);
+  }
+  if (chunk.length) chunks.push(chunk);
+  const parts = new Map<string, SessionReadBatchPart>();
+  const path = '/v2/sessions/read-batch';
+  for (const sessionIds of chunks) {
+    params.signal?.throwIfAborted();
+    const body = SessionReadBatchRequestV1Schema.parse({ ...emptyBody, sessionIds });
+    const authorizationHeaders = params.resolveAuthorizationHeaders?.({ method: 'POST', path, body })
+      ?? (params.resolveAuthorizationHeaders ? null : { Authorization: `Bearer ${params.token}` });
+    if (!authorizationHeaders) throw new Error('External Action authorization unavailable');
+    const response = await axios.post(`${serverUrl}${path}`, body, {
+      headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), ...authorizationHeaders,
+        'Content-Type': 'application/json' },
+      ...(params.signal ? { signal: params.signal } : {}),
+      timeout: configuration.sessionControlHttpTimeoutMs,
+      validateStatus: () => true,
+    });
+    params.signal?.throwIfAborted();
+    if (isAuthenticationStatus(response.status)) throwAuthenticationStatusError(response.status);
+    if (response.status !== 200) throwUnexpectedStatusError(path, response.status);
+    const parsed = SessionReadBatchResponseV1Schema.safeParse(response.data);
+    if (!parsed.success) throw invalidSessionReadBatchResponse();
+    const expected = new Set(sessionIds);
+    for (const part of parsed.data.results) {
+      if (!expected.delete(part.sessionId) || !part.detail
+        || (part.detail.status === 200 && part.detail.body.session.id !== part.sessionId)) {
+        throw invalidSessionReadBatchResponse();
+      }
+      parts.set(part.sessionId, part);
+    }
+    if (expected.size) throw invalidSessionReadBatchResponse();
+  }
+  return parts;
+}
+
+async function readSessionListDocuments(params: Omit<SessionSnapshotBatchParams, 'sessionIds'> & Readonly<{
+  rows: readonly RawCompactSessionListRow[];
+}>): Promise<RawSessionRecord[]> {
+  const parts = await fetchSessionSnapshotsBatch({ ...params, sessionIds: params.rows.map(row => row.id) });
+  return params.rows.map(row => {
+    const detail = parts.get(row.id)?.detail;
+    if (!detail) throw invalidSessionReadBatchResponse();
+    if (detail.status !== 200) {
+      const code = 'code' in detail.body && typeof detail.body.code === 'string' ? detail.body.code
+        : 'error' in detail.body ? detail.body.error : detail.body.kind;
+      throw Object.assign(createHttpStatusError(detail.status, 'Session document read unavailable', code),
+        { sessionId: row.id, part: 'detail', failure: detail.body });
+    }
+    return detail.body.session;
+  });
+}
+
+/**
+ * Full-document list facade for CLI display, attach, private locality and daemon recovery.
+ * These consumers have no admitted display document yet, so gather their genuine demand once.
+ * Scalar-only readers use fetchSessionListPage instead.
+ */
+export async function fetchSessionsPage(params: Omit<Parameters<typeof fetchSessionListPage>[0], 'resolveAuthorizationHeaders'> & Readonly<{
+  resolveAuthorizationHeaders?: SessionListDocumentAuthorization;
+}>) {
+  const serverUrl = resolveServerHttpBaseUrl();
+  const page = await fetchSessionListPage(params);
+  const sessions = await readSessionListDocuments({ ...params, serverUrl, rows: page.sessions });
+  return { ...page, sessions };
+}
+
 export type SessionListPageV1 = Awaited<ReturnType<typeof fetchSessionsPage>>;
 
 /**
@@ -1268,9 +1383,7 @@ export type SessionListAttentionContinuationV1 = Readonly<{
 type SessionListQueryHttpParams = Readonly<{
   token: string;
   query: SessionListQueryV1;
-  resolveAuthorizationHeaders?: (request: Readonly<{
-    method: 'POST'; path: string; body: SessionListQueryV1;
-  }>) => Readonly<Record<string, string>> | null;
+  resolveAuthorizationHeaders?: SessionListDocumentAuthorization;
   signal?: AbortSignal;
 }>;
 
@@ -1313,15 +1426,39 @@ async function fetchSessionsQueryPagePayload(params: SessionListQueryHttpParams)
   return response.data;
 }
 
-export async function fetchSessionsQueryPage(params: SessionListQueryHttpParams): Promise<SessionListQueryResponseV1> {
+export async function fetchSessionListQueryPage(params: SessionListQueryHttpParams): Promise<SessionListQueryResponseV1> {
   return parseOrThrow(SessionListQueryResponseV1Schema, await fetchSessionsQueryPagePayload(params),
     'Unexpected /v2/sessions/query response shape');
 }
 
+export type FullSessionListQueryPageV1 = Omit<SessionListQueryResponseV1, 'sessions'> & Readonly<{ sessions: RawSessionRecord[] }>;
+
+/** Full-document query facade; preserve both independent continuation frontiers. */
+export async function fetchSessionsQueryPage(params: Omit<SessionListQueryHttpParams, 'resolveAuthorizationHeaders'> & Readonly<{
+  resolveAuthorizationHeaders?: SessionListDocumentAuthorization;
+}>): Promise<FullSessionListQueryPageV1> {
+  const serverUrl = resolveServerHttpBaseUrl();
+  const page = await fetchSessionListQueryPage(params);
+  const sessions = await readSessionListDocuments({ ...params, serverUrl, rows: page.sessions, accessProjectionVersion: 1,
+    ...(params.query.underSessionId === undefined ? {} : { underSessionId: params.query.underSessionId }) });
+  return { ...page, sessions };
+}
+
 /** Restricted runtimes cannot substitute their hosting Account's required viewer projection. */
-export async function fetchSessionRuntimeManagedSubtreeQueryPage(params: SessionListQueryHttpParams): Promise<SessionRuntimeManagedSubtreeListResponseV1> {
-  return parseOrThrow(SessionRuntimeManagedSubtreeListResponseV1Schema, await fetchSessionsQueryPagePayload(params),
+export async function fetchSessionRuntimeManagedSubtreeQueryPage(params: SessionListQueryHttpParams): Promise<
+  Omit<SessionRuntimeManagedSubtreeListResponseV1, 'sessions'> & Readonly<{ sessions: RawSessionRecord[] }>
+> {
+  const serverUrl = resolveServerHttpBaseUrl();
+  const page = parseOrThrow(SessionRuntimeManagedSubtreeListResponseV1Schema, await fetchSessionsQueryPagePayload(params),
     'Unexpected restricted /v2/sessions/query response shape');
+  const fullSessions = await readSessionListDocuments({ ...params, serverUrl, rows: page.sessions, accessProjectionVersion: 1,
+    ...(params.query.underSessionId === undefined ? {} : { underSessionId: params.query.underSessionId }) });
+  const sessions = fullSessions.map(session => {
+    const parsed = SessionRuntimeManagedSubtreeSnapshotRecordV1Schema.safeParse(session);
+    if (!parsed.success) throw invalidSessionReadBatchResponse();
+    return parsed.data;
+  });
+  return { ...page, sessions };
 }
 
 export type SessionListQueryPageV1 = Awaited<ReturnType<typeof fetchSessionsQueryPage>>;
@@ -1601,7 +1738,7 @@ export async function getOrCreateSessionByTag(params: Readonly<import('@happier-
   } = encryptionModeResolution;
 
   const initialAccessFields = buildSessionInitialAccessCreateFields(params, serverFeaturesSnapshot);
-  const creationMetadata = params.metadata;
+  const creationMetadata = addSessionInitialAccessTeamShareStatement(params.metadata, initialAccessFields, desiredSessionEncryptionMode);
   const sessionEncryptionContext =
     desiredSessionEncryptionMode === 'e2ee'
       ? resolveSessionEncryptionContext(params.credentials)
@@ -1716,10 +1853,8 @@ export async function getOrCreateSessionByTag(params: Readonly<import('@happier-
     fields: initialAccessFields,
     sessionId: parsed.session.id,
     sessionEncryptionMode: returnedMode,
-    resolveSessionDataKey: () => {
-      const context = resolveSessionEncryptionContextFromCredentials(params.credentials, parsed.session);
-      return context?.encryptionVariant === 'dataKey' ? context.encryptionKey : null;
-    },
+    credentials: params.credentials,
+    session: parsed.session,
     token: params.credentials.token,
     serverHttpBaseUrl: serverUrl,
     ...(params.shouldCommit ? { isScopeCurrent: params.shouldCommit } : {}),

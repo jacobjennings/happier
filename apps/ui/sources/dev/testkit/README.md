@@ -52,6 +52,9 @@ changing that budget requires evidence that the additional work has a consumer.
 - Prefer `renderSettingsView` or `renderScreen` over file-local `findByTestId` helpers.
 - Prefer `renderHook` and `flushHookEffects` over local `renderer.create` hook harnesses and bespoke promise loops.
 - Prefer canonical mock factories for `@/text`, `@/modal`, `expo-router`, `react-native`, `react-native-unistyles`, and `@/sync/domains/state/storage`.
+- Keep the global setup light. A module whose process-global state must not leak between tests registers its own
+  reset when it loads (`dev/vitestTestResets.ts`; `machineReachability.ts` is the example). Never import or
+  `vi.importActual` a module from `dev/vitestSetup.ts` only to reset it: that cold-loads its graph on every file's first test.
 
 ## Transport boundary import order
 

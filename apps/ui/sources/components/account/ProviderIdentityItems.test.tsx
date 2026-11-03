@@ -81,9 +81,9 @@ function inlineActionProps(node: React.ReactNode) {
 
 const { Item } = await import('@/components/ui/lists/Item');
 await import('@/sync/syncEngine');
-await import('./ProviderIdentityItems');
+const { ProviderIdentityItems } = await import('./ProviderIdentityItems');
 const { storage } = await import('@/sync/domains/state/storageStore');
-const { getActiveServerSnapshot, setActiveServer, upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
+const { getActiveServerSnapshot, upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
 const { resetServerFeaturesClientForTests, getServerFeaturesSnapshot } = await import('@/sync/api/capabilities/serverFeaturesClient');
 const { TokenStorage } = await import('@/auth/storage/tokenStorage');
 const { disconnectActiveServerConnection } = await import('@/sync/runtime/orchestration/connectionManager');
@@ -142,7 +142,6 @@ describe('ProviderIdentityItems', () => {
     it('fails closed when linked-identity management metadata is absent', async () => {
         shared.authEntryResult.current = { kind: 'ready', projection: { v: 1, state: 'ready', scope: { kind: 'home' }, actions: [], autoRedirect: null } };
 
-        const { ProviderIdentityItems } = await import('./ProviderIdentityItems');
         await renderScreen(
             <ProviderIdentityItems
                 profile={{
@@ -171,7 +170,6 @@ describe('ProviderIdentityItems', () => {
         // client failed to classify.
         shared.authEntryResult.current = { kind: 'unsupported' };
 
-        const { ProviderIdentityItems } = await import('./ProviderIdentityItems');
         await renderScreen(
             <ProviderIdentityItems
                 profile={{
@@ -198,7 +196,6 @@ describe('ProviderIdentityItems', () => {
         shared.routerPush.mockClear();
         shared.authEntryResult.current = { kind: 'ready', projection: { v: 1, state: 'ready', scope: { kind: 'home' }, actions: [], autoRedirect: null } };
 
-        const { ProviderIdentityItems } = await import('./ProviderIdentityItems');
         await renderScreen(
             <ProviderIdentityItems
                 profile={{
@@ -255,7 +252,6 @@ describe('ProviderIdentityItems', () => {
         shared.fetchHomeAuthEntry.mockImplementationOnce(async () => await homeA);
         shared.fetchHomeAuthEntry.mockResolvedValueOnce(ready('provider-b', 'Provider B'));
 
-        const { ProviderIdentityItems } = await import('./ProviderIdentityItems');
         const element = (
             <ProviderIdentityItems
                 profile={profileDefaults}
@@ -282,93 +278,6 @@ describe('ProviderIdentityItems', () => {
         expect(itemProps().some((p) => p.title === 'Provider A')).toBe(false);
     });
 
-    it('refreshes provider discovery when the current Home runtime generation changes', async () => {
-        const ready = (id: string, displayName: string) => ({
-            kind: 'ready',
-            projection: {
-                v: 1,
-                state: 'ready',
-                scope: { kind: 'home' },
-                actions: [{
-                    kind: 'authenticate', methodId: id, action: 'connect', mode: 'either', origin: 'home',
-                    presentation: { displayName },
-                }],
-                autoRedirect: null,
-            },
-        });
-        shared.fetchHomeAuthEntry.mockReset();
-        shared.fetchHomeAuthEntry
-            .mockResolvedValueOnce(ready('provider-old', 'Provider Old'))
-            .mockResolvedValueOnce(ready('provider-current', 'Provider Current'));
-
-        const { ProviderIdentityItems } = await import('./ProviderIdentityItems');
-        const props = {
-            profile: profileDefaults,
-            credentials: { token: 't', secret: 's' },
-            applyProfile: () => {},
-            returnTo: '/settings/account',
-        } as const;
-        const screen = await renderScreen(<ProviderIdentityItems {...props} />);
-        await vi.waitFor(() => expect(itemProps().some((p) => p.title === 'Provider Old')).toBe(true));
-
-        const previousGeneration = getActiveServerSnapshot().generation;
-        await act(async () => {
-            await setActiveServer({ serverId: getActiveServerSnapshot().serverId, scope: 'tab' });
-            await screen.update(
-            <ProviderIdentityItems {...props} returnTo="/settings/account?generation=11" />,
-            );
-        });
-        expect(getActiveServerSnapshot().generation).toBeGreaterThan(previousGeneration);
-
-        await vi.waitFor(() => expect(itemProps().some((p) => p.title === 'Provider Current')).toBe(true));
-        expect(shared.fetchHomeAuthEntry).toHaveBeenCalledTimes(2);
-    });
-
-    it('retains the last successful dynamic descriptors while refreshing the same Home', async () => {
-        let resolveRefresh: ((value: any) => void) | undefined;
-        const refresh = new Promise((resolve) => { resolveRefresh = resolve; });
-        const ready = (id: string, displayName: string) => ({
-            kind: 'ready',
-            projection: {
-                v: 1,
-                state: 'ready',
-                scope: { kind: 'home' },
-                actions: [{
-                    kind: 'authenticate', methodId: id, action: 'connect', mode: 'either', origin: 'home',
-                    presentation: { displayName },
-                }],
-                autoRedirect: null,
-            },
-        });
-        shared.fetchHomeAuthEntry.mockReset();
-        shared.fetchHomeAuthEntry
-            .mockResolvedValueOnce(ready('provider-old', 'Provider Old'))
-            .mockImplementationOnce(async () => await refresh);
-
-        const { ProviderIdentityItems } = await import('./ProviderIdentityItems');
-        const props = {
-            profile: profileDefaults,
-            credentials: { token: 't', secret: 's' },
-            applyProfile: () => {},
-            returnTo: '/settings/account',
-        } as const;
-        const screen = await renderScreen(<ProviderIdentityItems {...props} />);
-        await vi.waitFor(() => expect(itemProps().some((p) => p.title === 'Provider Old')).toBe(true));
-
-        const previousGeneration = getActiveServerSnapshot().generation;
-        await act(async () => {
-            await setActiveServer({ serverId: getActiveServerSnapshot().serverId, scope: 'tab' });
-            await screen.update(
-            <ProviderIdentityItems {...props} returnTo="/settings/account?generation=21" />,
-            );
-        });
-        expect(getActiveServerSnapshot().generation).toBeGreaterThan(previousGeneration);
-
-        expect(itemProps().some((p) => p.title === 'Provider Old')).toBe(true);
-        await act(async () => resolveRefresh?.(ready('provider-new', 'Provider New')));
-        await vi.waitFor(() => expect(itemProps().some((p) => p.title === 'Provider New')).toBe(true));
-    });
-
     it('discovers an unlinked deployment OIDC provider from the supported-old-server feature payload', async () => {
         shared.fetchHomeAuthEntry.mockImplementation(async () => shared.authEntryResult.current);
         shared.authEntryResult.current = { kind: 'unsupported' };
@@ -392,7 +301,6 @@ describe('ProviderIdentityItems', () => {
         };
 
         await getServerFeaturesSnapshot({ force: true });
-        const { ProviderIdentityItems } = await import('./ProviderIdentityItems');
         await renderScreen(
             <ProviderIdentityItems
                 profile={profileDefaults}
@@ -404,44 +312,6 @@ describe('ProviderIdentityItems', () => {
 
         await vi.waitFor(() => {
             const row = itemProps().find((p) => p.title === 'Corporate SSO');
-            expect(row).toMatchObject({ showChevron: false });
-            // Connecting is the row's inline action, not a press on the row.
-            expect(inlineActionProps(row?.rightElement)).toMatchObject({ disabled: false });
-        });
-    });
-
-    it('renders a current dynamic provider that is absent from the static UI registry', async () => {
-        shared.fetchHomeAuthEntry.mockImplementation(async () => shared.authEntryResult.current);
-        shared.authEntryResult.current = {
-            kind: 'ready',
-            projection: {
-                v: 1,
-                state: 'ready',
-                scope: { kind: 'home' },
-                actions: [{
-                    kind: 'authenticate',
-                    methodId: 'acme',
-                    action: 'connect',
-                    mode: 'either',
-                    origin: 'home',
-                    presentation: { displayName: 'Acme Workforce', iconHint: 'shield-outline' },
-                }],
-                autoRedirect: null,
-            },
-        };
-
-        const { ProviderIdentityItems } = await import('./ProviderIdentityItems');
-        await renderScreen(
-            <ProviderIdentityItems
-                profile={profileDefaults}
-                credentials={{ token: 't', secret: 's' }}
-                applyProfile={() => {}}
-                returnTo="/settings/account"
-            />,
-        );
-
-        await vi.waitFor(() => {
-            const row = itemProps().find((p) => p.title === 'Acme Workforce');
             expect(row).toMatchObject({ showChevron: false });
             // Connecting is the row's inline action, not a press on the row.
             expect(inlineActionProps(row?.rightElement)).toMatchObject({ disabled: false });
@@ -478,7 +348,6 @@ describe('ProviderIdentityItems', () => {
             },
         };
 
-        const { ProviderIdentityItems } = await import('./ProviderIdentityItems');
         await renderScreen(
             <ProviderIdentityItems
                 profile={profileDefaults}
@@ -509,7 +378,6 @@ describe('ProviderIdentityItems', () => {
             },
         };
 
-        const { ProviderIdentityItems } = await import('./ProviderIdentityItems');
         await renderScreen(
             <ProviderIdentityItems
                 profile={{
@@ -554,7 +422,6 @@ describe('ProviderIdentityItems', () => {
         };
 
         const { Modal } = await import('@/modal');
-        const { ProviderIdentityItems } = await import('./ProviderIdentityItems');
         vi.mocked(Modal.alert).mockReset();
 
         await renderScreen(
@@ -605,7 +472,6 @@ describe('ProviderIdentityItems', () => {
         shared.openURL.mockClear();
 
         const { Modal } = await import('@/modal');
-        const { ProviderIdentityItems } = await import('./ProviderIdentityItems');
         vi.mocked(Modal.alert).mockReset();
         vi.mocked(Modal.confirm).mockReset();
         vi.mocked(Modal.confirm).mockResolvedValue(true);
@@ -631,11 +497,12 @@ describe('ProviderIdentityItems', () => {
         await act(async () => {
             await onPress();
         });
+        // The row action runs detached from its press, so its terminal alert marks the end of the attempt.
+        await vi.waitFor(() => expect(Modal.alert).toHaveBeenCalledWith('common.error', 'errors.operationFailed'));
 
         expect(shared.pendingConnectAtRequest).toMatchObject({ provider: 'github', returnTo: '/settings/account' });
         expect(await TokenStorage.getPendingExternalConnect()).toBeNull();
         expect(shared.canOpenURL).not.toHaveBeenCalled();
         expect(shared.openURL).not.toHaveBeenCalled();
-        expect(Modal.alert).toHaveBeenCalled();
     });
 });

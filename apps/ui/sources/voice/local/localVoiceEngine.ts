@@ -15,6 +15,7 @@ import {
 } from '@/voice/runtime/input/recordedAudioTranscriptionController';
 import { VOICE_AGENT_GLOBAL_SESSION_ID } from '@/voice/agent/voiceAgentGlobalSessionId';
 import { voiceAgentSessions } from '@/voice/agent/voiceAgentSessions';
+import { VoiceRunStopUnconfirmedError } from '@/voice/runtime/execution/voiceRunStopReconciliation';
 import { speakAssistantText } from '@/voice/output/speakAssistantText';
 import { resolveVoiceNetworkTimeoutMs } from '@/voice/runtime/fetchWithTimeout';
 import { createVoicePlaybackController } from '@/voice/runtime/playback/VoicePlaybackController';
@@ -60,7 +61,6 @@ import {
 } from '@/voice/runtime/levels/voiceRuntimeLevelStore';
 import { voiceConversationBindingResolver } from '@/voice/binding/VoiceConversationBindingResolver';
 import { voiceSessionBindingManager } from '@/voice/binding/voiceConversationBindingRuntime';
-import { resetVoiceAgentPersistenceState } from '@/voice/persistence/resetVoiceAgentPersistenceState';
 import { appendVoiceConversationAssistantText } from '@/voice/transcript/voiceConversationTranscript';
 import { markVoiceConversationAssistantTurnInterrupted } from '@/voice/transcript/voiceTurnInterruption';
 import { createTtsPlaybackClock } from '@/voice/output/ttsPlaybackTiming';
@@ -554,6 +554,7 @@ async function ensureLocalConversationBindingForSession(
       requestedTargetServerId: requestedTargetSessionAddress?.serverId,
       signal: preparationController.signal,
     });
+    await voiceAgentSessions.prepareAgentSelection(controlSessionId, preparationController.signal);
   } catch (error) {
     if (!localVoicePreparationAttemptGuard.isCurrent(attempt)) {
       return false;
@@ -593,6 +594,7 @@ function isEndpointDrivenCaptureProvider(provider: LocalVoiceCaptureProvider): p
 }
 
 async function maybeRearmHandsFreeCapture(
+  origin: LocalVoiceCaptureAdmission,
   followUp: Readonly<{
     kind: 'none';
   } | {
@@ -602,6 +604,12 @@ async function maybeRearmHandsFreeCapture(
   }>,
 ): Promise<boolean> {
   if (followUp.kind !== 'rearm_capture') {
+    return false;
+  }
+  // The requesting turn can outlive its capture admission: End (or Account
+  // retirement) aborts and releases it while that turn settles. Only the
+  // admission which produced the utterance may reopen capture.
+  if (!isCaptureAdmissionCurrent(origin) || origin.captureAbortController.signal.aborted) {
     return false;
   }
 
@@ -1020,7 +1028,7 @@ async function stopSttAndSend(
     if (voiceConversationRuntimeMachine.getSnapshot().error) {
       return;
     }
-    if (await maybeRearmHandsFreeCapture(endpointDecision.followUp)) {
+    if (await maybeRearmHandsFreeCapture(admission, endpointDecision.followUp)) {
       return;
     }
     transitionVoiceRuntimeToIdle({ controlSessionId: sessionId });
@@ -1042,7 +1050,7 @@ async function stopSttAndSend(
     }),
   );
 
-  if (await maybeRearmHandsFreeCapture(endpointDecision.followUp)) {
+  if (await maybeRearmHandsFreeCapture(admission, endpointDecision.followUp)) {
     return;
   }
 }
@@ -1051,12 +1059,6 @@ export async function stopLocalVoiceAgent(sessionId: string): Promise<void> {
   localVoiceCaptureOwner.clearHandsFree({ sessionId, provider: 'device' });
   localVoiceCaptureOwner.clearHandsFree({ sessionId, provider: 'local_neural' });
   await voiceAgentSessions.stop(sessionId);
-}
-
-export async function resetLocalVoiceAgentPersistence(): Promise<void> {
-  await resetVoiceAgentPersistenceState({
-    stop: async () => await stopLocalVoiceAgent(VOICE_AGENT_GLOBAL_SESSION_ID),
-  });
 }
 
 export function isLocalVoiceAgentActive(sessionId: string): boolean {
@@ -1504,8 +1506,10 @@ export async function stopLocalVoiceSession(reason?: 'continued_elsewhere', sign
     let captureCleanupError: unknown = null;
     // Capture the admitted run before native cleanup yields across a Home/Account switch.
     let agentCleanupError: unknown = null;
+    let unconfirmedStop: VoiceRunStopUnconfirmedError | null = null;
     const agentStop = voiceAgentSessions.stop(activeSessionId, reason, signal).catch(error => {
-      if (signal) agentCleanupError = error;
+      if (error instanceof VoiceRunStopUnconfirmedError) unconfirmedStop = error;
+      else if (signal) agentCleanupError = error;
     });
 
     if (activeTurnAbortController && activeTurnAbortSessionId === activeSessionId) {
@@ -1551,6 +1555,16 @@ export async function stopLocalVoiceSession(reason?: 'continued_elsewhere', sign
       throw captureCleanupError;
     }
     if (agentCleanupError) throw agentCleanupError;
+    if (unconfirmedStop) {
+      // Local capture is released. Keep remote uncertainty visible as recovery,
+      // rather than either claiming a remote Stop or retaining a Start barrier.
+      transitionVoiceRuntimeToIdle({ controlSessionId: activeSessionId,
+        reason: 'voice_previous_session_stop_failed', kind: 'provider_error', cause: unconfirmedStop });
+    } else if (voiceConversationRuntimeMachine.getSnapshot().error?.reason === 'voice_previous_session_stop_failed') {
+      // A later acknowledged Stop (or a confirmed gone target) retires the
+      // retained uncertainty rather than preserving a stale recovery prompt.
+      voiceConversationRuntimeMachine.transitionToDisconnected({ controlSessionId: activeSessionId, error: null });
+    }
   }).finally(() => {
     releaseCaptureAdmission(activeSessionId);
   });

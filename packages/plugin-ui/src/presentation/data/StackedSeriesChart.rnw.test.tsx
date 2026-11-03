@@ -2,7 +2,7 @@ import { act, Profiler, type ReactNode } from 'react';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { mountThroughReactNativeWeb } from '../../rnwMount.testSupport.js';
 import { createSurfaceContextFixture, SURFACE_CONTEXT_THEME_FIXTURE as theme } from '../../../../plugin-sdk/src/ui/surfaceContext.fixture.js';
-import { StackedSeriesChart } from './StackedSeriesChart.js';
+import { StackedSeriesChart, type StackedSeriesChartProps } from './StackedSeriesChart.js';
 import { HappierUiEnvironmentProvider, HappierUiPlatformProvider } from '../../environment/context.js';
 import { projectHappierUiEnvironment } from '../../environment/projectEnvironment.js';
 import { View } from 'react-native';
@@ -105,6 +105,42 @@ describe('neutral series dataset', () => {
       expect(find(mount.container, 'dense-readout').textContent).toContain('Used · 0');
     } finally { mount.unmount(); }
   }, 180_000);
+  it('names one dense history image by its range, its latest reading in the caller\'s units and its threshold', () => {
+    // A range that has only begun: its start is a gap, and the newest sample is before its trailing gap.
+    const points = Array.from({ length: 400 }, (_, x) => ({ id: `p${x}`, x, y: x === 0 || x === 399 ? null : x === 398 ? 41.5 : x / 10 }));
+    const mount = mountThroughReactNativeWeb(<StackedSeriesChart theme={theme} label="Memory used" width={160}
+      series={[{ id: 'used', label: 'Used', points }]} coordinateFormatter={x => `time ${x}`} valueFormatter={value => `${value.toFixed(1)} GB`} formattedReadings
+      threshold={{ value: 60, label: 'Critical', tone: 'error' }} variant="line" size="tile" testID="named" />);
+    try {
+      const image = find(mount.container, 'named');
+      expect(image.getAttribute('role')).toBe('img');
+      const name = image.getAttribute('aria-label')!;
+      expect(name).toContain('time 0');
+      expect(name).toContain('time 399');
+      expect(name).toContain('time 398');
+      expect(name).toContain('Used 41.5 GB');
+      expect(name).toContain('Critical 60.0 GB');
+      expect(name).not.toContain('Used —');
+      // The plot control keeps the exact sample it reads.
+      const control = find(mount.container, 'named-history-control');
+      act(() => control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true })));
+      expect(control.getAttribute('aria-label')).toContain('Used —');
+      expect(image.getAttribute('aria-label')).toBe(name);
+      // Walking the keyboard says each reading in the caller's units, as the image and the lens do.
+      act(() => control.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })));
+      act(() => control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })));
+      expect(control.getAttribute('aria-label')).toContain('Used 41.5 GB');
+    } finally { mount.unmount(); }
+  });
+  it('names a dense history image without a threshold as an image too', () => {
+    const points = Array.from({ length: 400 }, (_, x) => ({ id: `p${x}`, x, y: x % 7 }));
+    const mount = mountThroughReactNativeWeb(<StackedSeriesChart theme={theme} label="CPU busy" width={160}
+      series={[{ id: 'mean', label: 'Mean', points }]} valueFormatter={value => `${value}%`} variant="area" size="tile" testID="plain" />);
+    try {
+      expect(find(mount.container, 'plain').getAttribute('role')).toBe('img');
+      expect(find(mount.container, 'plain').getAttribute('aria-label')).toContain(`Mean ${399 % 7}%`);
+    } finally { mount.unmount(); }
+  });
   it('keeps every dense exact fact in Details, including an unavailable sample, zero and an older tiny value', () => {
     const points = Array.from({ length: 400 }, (_, x) => ({ id: `p${x}`, x,
       y: x === 0 ? 0.00004 : x === 1 ? null : x === 2 ? 0 : x }));
@@ -137,7 +173,9 @@ describe('neutral series dataset', () => {
       const values = find(mount.container, 'native-dense-values');
       expect(values.querySelectorAll('button')).toHaveLength(400);
       const last = find(values, 'native-dense-bucket-p399');
-      expect(last.style.minHeight).toBe('48px');
+      // A stacked exact-value row is drawn as a row, and its hit area stays on it.
+      expect(last.style.minHeight).toBe('');
+      expect(last.querySelector(':scope > [data-happier-hit-area="true"]')).toBeNull();
       expect(last.getAttribute('aria-label')).toContain('Used 399');
     } finally { mount.unmount(); }
   });
@@ -377,6 +415,27 @@ describe('neutral series dataset', () => {
       else Reflect.deleteProperty(Element.prototype, 'animate');
     }
   });
+  it('names a live chart\'s range by the two ends the plot itself shows, not by two clock times that can drop the date', async () => {
+    // A caller's time reading may elide today's date, so "Oct 26, 10:00 AM – 10:00 AM" cannot say the range spans a day.
+    const clock = (x: number) => x === 0 ? 'Oct 26, 10:00 AM' : '10:00 AM';
+    const points = [0, 1].map((x) => ({ id: String(x), x, y: 20 + x * 20 }));
+    const render = (axisTicks?: StackedSeriesChartProps['axisTicks']) => <StackedSeriesChart theme={theme} label="CPU busy"
+      series={[{ id: 'cpu', label: 'CPU', points }]} variant="line" size="tile" width={200} viewportHeight={100} plotInset={0}
+      minimumMaximum={100} testID="range" coordinateFormatter={clock} showAxis={false} {...(axisTicks ? { axisTicks } : {})}
+      reducedMotion liveMotion={{ sampleKey: 1, stepPx: 10, durationMs: 100 }} />;
+    const mount = mountThroughReactNativeWeb(render(['24 h ago', 'now']));
+    try {
+      const name = () => find(mount.container, 'range').getAttribute('aria-label') ?? '';
+      expect(name()).toContain('CPU busy, 24 h ago – now; ');
+      expect(name()).not.toContain('Oct 26');
+      expect(name()).toContain('CPU 40');
+      // Ticks that are not the plot's two ends do not name its range: the chart's own readings do.
+      await mount.render(render([{ label: 'early', bucket: 0 }, { label: 'mid', bucket: 0 }]));
+      expect(name()).toContain('CPU busy, Oct 26, 10:00 AM – 10:00 AM; ');
+      await mount.render(render());
+      expect(name()).toContain('CPU busy, Oct 26, 10:00 AM – 10:00 AM; ');
+    } finally { mount.unmount(); }
+  });
   it('renders a source pattern on bars and area ribbons while retaining distinct exact series values', async () => {
     const input = [
       { id: 'onsite', label: 'Onsite orders', color: theme.colors.accent, points: [{ id: 'mon', x: 0, y: 12 }] },
@@ -483,8 +542,9 @@ describe('neutral series dataset', () => {
       act(() => find(mount.container, 'orders-values-toggle').click());
       expect(mount.container.querySelectorAll('[data-testid^="orders-bucket-"]')).toHaveLength(40);
       const first = find(mount.container, 'orders-bucket-0');
-      expect(first.style.minWidth).toBe('48px');
-      expect(first.style.minHeight).toBe('48px');
+      expect(first.style.minWidth).toBe('');
+      expect(first.style.minHeight).toBe('');
+      expect(first.querySelector(':scope > [data-happier-hit-area="true"]')).toBeNull();
       expect(first.textContent).toContain('Orders 0.00004');
       act(() => first.click());
       expect(find(mount.container, 'orders-readout').textContent).toContain('0.00004');

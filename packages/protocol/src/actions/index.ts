@@ -59,7 +59,7 @@ export {
 } from './actionCompletion.js';
 export { createWorkflowActionExecutor, normalizeWorkflowActionThrownError, type WorkflowRunActionOwner } from './executor/workflowAccountActions.js';
 export { bindMachineAccessActionHttpRequestV1 } from './machineAccessActionFamily.js';
-export { MACHINE_ACCESS_ACTION_IDS, MachineAccessActionIdSchema, machineAccessTrustedOsDisclosure, type MachineAccessActionId } from './specs/machineAccess.js';
+export { MACHINE_ACCESS_ACTION_IDS, MachineAccessActionIdSchema, machineAccessTrustedOsDisclosure, type MachineAccessActionId } from './specs/machine/access.js';
 export { createWorkflowTriggerActions, removeWorkflowTriggersForDefinition, type WorkflowTriggerActions, type WorkflowTriggerActionsDependencies, type WorkflowTriggerAutomationOperations } from './executor/workflowTriggerActions.js';
 export { createAccountWorkflowTriggerActions, type WorkflowTriggerAccountHostParams } from './executor/workflowTriggerAccountHost.js';
 export { assertControllerDominates, createWorkflowAccountRunActionOwner, type WorkflowAccountRunActionDeps, type WorkflowAccountRunEncryption } from './executor/workflowRunActions.js';
@@ -589,7 +589,7 @@ export {
   SessionListCliInputSchema,
   bindSessionListCliInput,
   type SessionListCliInput,
-} from './specs/sessionListCli.js';
+} from './specs/session/listCli.js';
 export {
   DiscussionCreateCliInputSchema,
   DiscussionPostCliInputSchema,

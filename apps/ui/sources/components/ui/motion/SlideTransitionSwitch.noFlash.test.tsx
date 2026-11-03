@@ -22,10 +22,6 @@ vi.mock('react-native', async () => {
     return createReactNativeWebMock();
 });
 
-vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
-    useReducedMotionPreference: () => false,
-}));
-
 const reanimatedControls = vi.hoisted(() => ({
     fireSpringCallback: false,
     progressResetsFromWorklet: 0,

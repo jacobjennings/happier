@@ -62,7 +62,7 @@ export const MachineResourcesAskBlock = React.memo(
     // Observe the reports the tabs already hold; Ask never creates sampling demand.
     const storage = useMachineStorageSummary({ serverId: props.serverId, machineId: props.machineId, enabled: false });
     const processes = useMachineProcesses({ serverId: props.serverId, machineId: props.machineId,
-      scope: 'happier', view: 'tree', active: false });
+      scope: 'happier', view: 'owners', active: false });
     const automations = useAutomationsSupport({ scopeKind: 'spawn', serverId: props.serverId });
     const happierStorageBytes = storage.summary ? readHappierStorageBytes(storage.summary) : null;
     const leftBehindCount = processes.answer?.state === 'live'

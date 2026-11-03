@@ -142,7 +142,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 0,
@@ -189,7 +188,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 5_000,
@@ -231,7 +229,6 @@ describe('serverScopedRpcSocketPool', () => {
                     observedReachability = params;
                 },
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 0,
@@ -269,7 +266,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 60_000,
@@ -312,7 +308,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 0,
@@ -342,7 +337,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 0,
@@ -371,7 +365,6 @@ describe('serverScopedRpcSocketPool', () => {
 	            reachability: {
 	                waitForReachable: async () => {},
 	                startReachability: async () => {},
-	                reportUnreachable: () => {},
 	                subscribeNetworkAllowed: () => () => {},
 	            },
 	            readIdleDisconnectMs: () => 5_000,
@@ -408,7 +401,6 @@ describe('serverScopedRpcSocketPool', () => {
 	            reachability: {
 	                waitForReachable: async () => {},
 	                startReachability: async () => {},
-	                reportUnreachable: () => {},
 	                subscribeNetworkAllowed: (listener: (allowed: boolean) => void) => {
 	                    capturedListener = listener;
 	                    return () => {
@@ -438,34 +430,6 @@ describe('serverScopedRpcSocketPool', () => {
 	        pool.resetForTests();
 	    });
 
-    it('does not report unreachable when an intentional disconnect emits asynchronously', async () => {
-        vi.useFakeTimers();
-        const ioSpy = vi.fn();
-        const { socket } = createFakeSocket({ disconnectEventDelayMs: 0 });
-        ioSpy.mockReturnValue(socket);
-        const reportUnreachableSpy = vi.fn();
-
-        const pool = createServerScopedRpcSocketPool({
-            createSocket: () => ioSpy(),
-            reachability: {
-                waitForReachable: async () => {},
-                startReachability: async () => {},
-                reportUnreachable: reportUnreachableSpy,
-                subscribeNetworkAllowed: () => () => {},
-            },
-            readIdleDisconnectMs: () => 5_000,
-        });
-
-        const c1: ScopedSocketClient = await pool.acquire({ serverUrl: 'https://server.example.test', token: 't', timeoutMs: 1000 });
-        c1.disconnect();
-
-        await pool.stopAll();
-        await vi.runAllTimersAsync();
-        expect(reportUnreachableSpy).not.toHaveBeenCalled();
-
-        pool.resetForTests();
-    });
-
     it('exposes raw socket event subscription on acquired scoped clients', async () => {
         const { socket, trigger } = createFakeSocket();
         const pool = createServerScopedRpcSocketPool({
@@ -473,7 +437,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 5_000,
@@ -514,7 +477,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 0,
@@ -574,7 +536,6 @@ describe('serverScopedRpcSocketPool', () => {
                 acquireReachability: async () => ({ release: releaseSpy }),
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 0,
@@ -630,7 +591,6 @@ describe('serverScopedRpcSocketPool', () => {
                 acquireReachability: async () => ({ release: releaseSpy }),
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 5_000,
@@ -672,7 +632,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 0,
@@ -725,7 +684,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 5_000,
@@ -775,7 +733,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 5_000,
@@ -831,7 +788,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 5_000,
@@ -889,7 +845,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 0,
@@ -956,7 +911,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 0,
@@ -989,7 +943,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 0,
@@ -1025,7 +978,6 @@ describe('serverScopedRpcSocketPool', () => {
             reachability: {
                 waitForReachable: async () => {},
                 startReachability: async () => {},
-                reportUnreachable: () => {},
                 subscribeNetworkAllowed: () => () => {},
             },
             readIdleDisconnectMs: () => 0,

@@ -1,3 +1,4 @@
+import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { unexpectedProjectNativeAdapterResolution } from "@/plugins/testkit/unexpectedProjectNativeAdapterResolution";
 import { unexpectedCaptureSourceResolution } from "@/plugins/testkit/unexpectedCaptureSourceResolution";
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -40,6 +41,7 @@ import { startManagedProviderConsumerApplication } from '@/providers/broker/mana
 import { createProviderManagedRuntimeBindingFingerprintV1 } from '@happier-dev/protocol/providers/contributions';
 import { createManagedProviderExplicitStartCustody } from './publicManagedRuntimeStart';
 import { createProviderConnectionService } from './service';
+import { providerBrokerRetainedCurrentnessAffected, type ProviderBrokerRetainedCurrentnessInvalidation } from '@/providers/broker/brokerRetainedCurrentnessInvalidation';
 import { resolveProviderConnectionForMachine } from '@/providers/registry';
 import { createMachineSharedProviderGatewayResolver } from '@/daemon/machine/bootstrapMachineSyncRuntime';
 import { waitForProcessExit } from '@/testkit/process/spawn';
@@ -117,6 +119,63 @@ it.each(['cold', 'activated'] as const)('acquires connected-account broker custo
       expect(diagnostic).toHaveBeenCalledWith(expect.any(String), {
         reasonCode: 'resource_unavailable', providerCode: 'provider_authorization_changed',
       });
+    } finally { await fixture.cleanup(); }
+  });
+});
+
+it('revalidates only the exact broker claim and Home consumer before retiring its process', async () => {
+  await withConfiguredDaemonTestHome({ prefix: 'broker-exact-currentness-' }, async ({ homeDir }) => {
+    const controller = createPluginReloadController();
+    const fixture = await createManagedRunLaunchFixture({ directory: join(homeDir, 'fixture'), happyHomeDir: homeDir,
+      controller, physicalGateway: true });
+    const gateway = fixture.gateway!;
+    const custody = createManagedProviderExplicitStartCustody({ machineId: fixture.machineId, happyHomeDir: homeDir, controller });
+    const currentConsumers = new Set(['ended', 'unrelated-stale', 'unrelated-live']);
+    const homeReads = new Map<string, number>();
+    const request = (sessionId: string) => ({
+      identity: gateway.identity,
+      contributionKey: `${gateway.identity.pluginId}/${gateway.identity.localId}`,
+      request: { reason: 'explicitStartLocal' as const, endpointTemplateIds: ['api'] },
+      purposeBindings: gateway.purposeBindings,
+      operationClaim: { kind: 'providerBroker' as const, operation: { kind: 'session' as const, sessionId } },
+      signal: new AbortController().signal,
+      isAuthorizationCurrent: () => true,
+      revalidateAuthorization: async () => true,
+      // Home's consumer-binding read is the external currentness boundary.
+      revalidateRetainedCurrentness: async (_signal?: AbortSignal, invalidation?: ProviderBrokerRetainedCurrentnessInvalidation) => {
+        if (invalidation && !providerBrokerRetainedCurrentnessAffected(invalidation, { facts: ['teams'] })) return true;
+        homeReads.set(sessionId, (homeReads.get(sessionId) ?? 0) + 1);
+        return currentConsumers.has(sessionId);
+      },
+    });
+    try {
+      const claims = new Map<string, { projection: NonNullable<Awaited<ReturnType<typeof custody.acquire>>>; pid: number }>();
+      for (const sessionId of currentConsumers) {
+        const projection = await custody.acquire(request(sessionId));
+        if (!projection) throw new Error('Expected retained operation custody');
+        claims.set(sessionId, { projection, pid: Number(await readFile(join(gateway.directory, 'gateway-started'), 'utf8')) });
+      }
+      currentConsumers.delete('ended');
+      currentConsumers.delete('unrelated-stale');
+      homeReads.clear();
+      expect(await custody.revalidateRetainedClaims(undefined, undefined, { facts: ['saved-secrets'] })).toBe(0);
+      expect(homeReads.size).toBe(0);
+      for (const claim of claims.values()) expect(process.kill(claim.pid, 0)).toBe(true);
+      expect(await custody.revalidateRetainedClaims(undefined, request('ended'))).toBe(1);
+      expect(homeReads).toEqual(new Map([['ended', 1]]));
+      expect(await waitForProcessExit(claims.get('ended')!.pid)).toBe(true);
+      expect(claims.get('ended')!.projection.isCurrent()).toBe(false);
+      for (const sessionId of ['unrelated-stale', 'unrelated-live']) {
+        const claim = claims.get(sessionId)!;
+        expect(claim.projection.isCurrent()).toBe(true);
+        expect(process.kill(claim.pid, 0)).toBe(true);
+      }
+      expect(await custody.revalidateRetainedClaims(undefined, request('missing'))).toBe(0);
+      expect(homeReads).toEqual(new Map([['ended', 1]]));
+      expect(await custody.revalidateRetainedClaims(undefined, undefined, { facts: ['all'] })).toBe(1);
+      expect(homeReads).toEqual(new Map([['ended', 1], ['unrelated-stale', 1], ['unrelated-live', 1]]));
+      expect(await waitForProcessExit(claims.get('unrelated-stale')!.pid)).toBe(true);
+      expect(process.kill(claims.get('unrelated-live')!.pid, 0)).toBe(true);
     } finally { await fixture.cleanup(); }
   });
 });
@@ -439,7 +498,7 @@ function managedServices(): ManagedServices {
   });
 }
 
-function runtimeRegistry(input: Readonly<{
+async function runtimeRegistry(input: Readonly<{
   pluginId: string;
   localId: string;
   runtime: ManagedProviderRuntime;
@@ -453,8 +512,11 @@ function runtimeRegistry(input: Readonly<{
   runManagedProviderExplicitStart?: (
     operation: ManagedProviderExplicitStartJoinInput,
   ) => Promise<ManagedProviderExplicitStartJoinResult>;
-}>): ResolvedExecutablePluginRuntimeRegistry {
+}>): Promise<ResolvedExecutablePluginRuntimeRegistry> {
+  const base = await resolveExecutablePluginRuntimeRegistry({ pluginIds: [], contributes: createResolvedContributionRegistry({}) });
+  onTestFinished(() => base.dispose());
   return {
+    ...base,
     declarationContributes: createResolvedContributionRegistry({}),
     claimReleaseLessDeclarations: async () => undefined,
     projectManagedServices: createManagedServicesOwner({
@@ -463,6 +525,7 @@ function runtimeRegistry(input: Readonly<{
       resolveScope: () => null,
     }),
     contributes: {
+      backupDestinations: [],
       agents: Object.freeze([]),
       voiceProviders: Object.freeze([]),
       connectedAccountDescriptorsById: new Map(),
@@ -598,7 +661,7 @@ describe('public managed Provider explicit-start production operation', () => {
         await disposable.dispose();
       }
     });
-    const registry = runtimeRegistry({
+    const registry = await runtimeRegistry({
       pluginId,
       localId,
       runtime,
@@ -762,7 +825,7 @@ describe('public managed Provider explicit-start production operation', () => {
       runtimeDisposables.push(disposable);
       return disposable;
     });
-    const registry = runtimeRegistry({
+    const registry = await runtimeRegistry({
       pluginId,
       localId,
       runtime: acquiredRuntime.runtime,
@@ -862,7 +925,7 @@ describe('public managed Provider explicit-start production operation', () => {
       runtimeDisposables.push(disposable);
       return disposable;
     });
-    const registry = runtimeRegistry({
+    const registry = await runtimeRegistry({
       pluginId,
       localId,
       runtime: acquiredRuntime.runtime,
@@ -921,7 +984,7 @@ describe('public managed Provider explicit-start production operation', () => {
   it('uses the admitted registry lease instead of reacquiring a replacement generation', async () => {
     const pluginId = 'acme.provider.generation-atomic';
     const localId = 'managed';
-    const createGeneration = (generation: string) => {
+    const createGeneration = async (generation: string) => {
       const serviceDispose = vi.fn(async () => undefined);
       const service = managedServiceHandle(serviceDispose);
       const start = vi.fn<ManagedProviderRuntime['start']>(async () => Object.freeze({
@@ -957,7 +1020,7 @@ describe('public managed Provider explicit-start production operation', () => {
         disposables.push(disposable);
         return disposable;
       });
-      const registry = runtimeRegistry({
+      const registry = await runtimeRegistry({
         pluginId,
         localId,
         runtime,
@@ -977,8 +1040,8 @@ describe('public managed Provider explicit-start production operation', () => {
       return { registry, start };
     };
 
-    const admitted = createGeneration('G');
-    const replacement = createGeneration('H');
+    const admitted = await createGeneration('G');
+    const replacement = await createGeneration('H');
     const controller = createPluginReloadController();
     await controller.adoptPreparedRuntimeRegistry({
       registry: admitted.registry,
@@ -1024,7 +1087,7 @@ describe('public managed Provider explicit-start production operation', () => {
   it('maps a permanently unavailable managed runtime to the existing restore-plugin Provider outcome', async () => {
     const pluginId = 'acme.provider.missing-runtime';
     const localId = 'managed';
-    const registry = runtimeRegistry({
+    const registry = await runtimeRegistry({
       pluginId,
       localId,
       runtime: Object.freeze({ start: vi.fn() }),
@@ -1115,7 +1178,7 @@ describe('public managed Provider explicit-start production operation', () => {
       authorizationCurrent = false;
       return disposable;
     });
-    const registry = runtimeRegistry({
+    const registry = await runtimeRegistry({
       pluginId,
       localId,
       runtime: acquiredRuntime.runtime,

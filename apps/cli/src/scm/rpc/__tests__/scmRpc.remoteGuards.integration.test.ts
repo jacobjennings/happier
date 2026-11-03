@@ -1,21 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
-import { createTestRpcManager, runGit as git } from './testRpcHarness';
+import { createGitWorkspace, createTestRpcManager, runGit as git } from './testRpcHarness';
 
 describe('git RPC handlers', () => {
     it('blocks push from detached HEAD with a deterministic error', async () => {
         const remote = mkdtempSync(join(tmpdir(), 'happier-git-rpc-remote-'));
         git(remote, ['init', '--bare']);
 
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);
@@ -43,10 +40,7 @@ describe('git RPC handlers', () => {
         const remote = mkdtempSync(join(tmpdir(), 'happier-git-rpc-remote-'));
         git(remote, ['init', '--bare']);
 
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);
@@ -78,10 +72,7 @@ describe('git RPC handlers', () => {
         const remote = mkdtempSync(join(tmpdir(), 'happier-git-rpc-remote-'));
         git(remote, ['init', '--bare']);
 
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);
@@ -119,10 +110,7 @@ describe('git RPC handlers', () => {
         const remote = mkdtempSync(join(tmpdir(), 'happier-git-rpc-remote-'));
         git(remote, ['init', '--bare']);
 
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);
@@ -150,10 +138,7 @@ describe('git RPC handlers', () => {
         const remote = mkdtempSync(join(tmpdir(), 'happier-git-rpc-remote-'));
         git(remote, ['init', '--bare']);
 
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);
@@ -175,10 +160,7 @@ describe('git RPC handlers', () => {
         const remote = mkdtempSync(join(tmpdir(), 'happier-git-rpc-remote-'));
         git(remote, ['init', '--bare']);
 
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);

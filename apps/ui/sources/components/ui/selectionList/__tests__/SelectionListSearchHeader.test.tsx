@@ -1,8 +1,8 @@
 import * as React from 'react';
-import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { t } from '@/text';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -46,7 +46,7 @@ describe('SelectionListSearchHeader', () => {
         expect(onChangeText).toHaveBeenCalledWith('foo');
     });
 
-    it('exposes an explicit accessible name without normal-mode web focus chrome', async () => {
+    it('exposes the placeholder as the explicit accessible name of the input', async () => {
         const { SelectionListSearchHeader } = await import('../SelectionListSearchHeader');
         const screen = await renderScreen(
             <SelectionListSearchHeader
@@ -57,31 +57,7 @@ describe('SelectionListSearchHeader', () => {
                 testID="hdr"
             />,
         );
-        const input = screen.findByTestId('hdr:input');
-        expect(input?.props.accessibilityLabel).toBe('Search external sessions');
-
-        const readWrapStyle = () => Object.assign(
-            {},
-            ...((Array.isArray(screen.findByTestId('hdr:input-wrap')?.props.style)
-                ? screen.findByTestId('hdr:input-wrap')!.props.style.flat(Infinity)
-                : [screen.findByTestId('hdr:input-wrap')?.props.style]).filter(Boolean)),
-        );
-        expect(readWrapStyle().boxShadow).toBeUndefined();
-
-        await act(async () => {
-            input?.props.onFocus?.({});
-        });
-        expect(readWrapStyle().boxShadow).toBeUndefined();
-        const focusedInputStyle = Object.assign(
-            {},
-            ...((Array.isArray(input?.props.style) ? input.props.style.flat(Infinity) : [input?.props.style]).filter(Boolean)),
-        );
-        expect(focusedInputStyle.boxShadow).toBeUndefined();
-
-        await act(async () => {
-            input?.props.onBlur?.({});
-        });
-        expect(readWrapStyle().boxShadow).toBeUndefined();
+        expect(screen.findByTestId('hdr:input')?.props.accessibilityLabel).toBe('Search external sessions');
     });
 
     it('renders the search-icon leading slot when canPop is false', async () => {
@@ -113,40 +89,14 @@ describe('SelectionListSearchHeader', () => {
                 testID="hdr"
             />,
         );
-        expect(screen.findByTestId('hdr:leading:back-chip')).not.toBeNull();
+        const chip = screen.findByTestId('hdr:leading:back-chip');
+        expect(chip).not.toBeNull();
         expect(screen.findByTestId('hdr:leading:search-icon')).toBeNull();
+        // The chip names its destination for sight and for assistive tech.
+        expect(screen.getTextContent()).toContain('Worktrees');
+        expect(chip?.props.accessibilityRole).toBe('button');
+        expect(chip?.props.accessibilityLabel).toBe(t('selectionList.backTo', { label: 'Worktrees' }));
         screen.pressByTestId('hdr:leading:back-chip');
         expect(onPopStep).toHaveBeenCalled();
-    });
-
-    it('does not import LayoutAnimation (leading-slot swap uses a local Animated wrapper instead)', async () => {
-        // Sanity: the module file must not import LayoutAnimation at the named-import level.
-        // Mentions inside comments are allowed and expected (the file documents why we avoid it).
-        const fs = await import('node:fs/promises');
-        const src = await fs.readFile(
-            new URL('../SelectionListSearchHeader.tsx', import.meta.url),
-            'utf-8',
-        );
-        // The named import / usage pattern: `import { ... LayoutAnimation ... }` or
-        // `LayoutAnimation.<something>(...)`. Comments contain the word but never these forms.
-        expect(src).not.toMatch(/import\s*\{[^}]*LayoutAnimation/);
-        expect(src).not.toMatch(/\bLayoutAnimation\s*\./);
-    });
-
-    it('renders as a single persistent input element across canPop transitions (text input not remounted)', async () => {
-        const { SelectionListSearchHeader } = await import('../SelectionListSearchHeader');
-        const harness = await renderScreen(
-            <SelectionListSearchHeader value="" onChangeText={() => {}} placeholder="x" canPop={false} testID="hdr" />,
-        );
-        const before = harness.findByTestId('hdr:input');
-        await harness.update(
-            <SelectionListSearchHeader value="" onChangeText={() => {}} placeholder="y" canPop testID="hdr" backLabel="b" onPopStep={() => {}} />,
-        );
-        const after = harness.findByTestId('hdr:input');
-        // Both renders must surface the same testID; pluggable structure means the
-        // input element identity is preserved across the canPop swap.
-        expect(after).not.toBeNull();
-        expect(after?.props.placeholder).toBe('y');
-        expect(before).not.toBeNull();
     });
 });

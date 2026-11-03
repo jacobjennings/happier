@@ -76,7 +76,7 @@ afterEach(() => {
 });
 
 describe('WebCryptoStartupGate', () => {
-    it('renders an unsupported screen when SubtleCrypto is unavailable', async () => {
+    it('renders an unsupported screen and hides the splash screen when SubtleCrypto is unavailable', async () => {
         // Use a minimal window-like shape; cast is intentional for test-only DOM fixtures.
         setGlobalWindow({ location: { origin: 'http://192.168.1.50:8081' } } as any);
         setGlobalDocument({});
@@ -90,19 +90,6 @@ describe('WebCryptoStartupGate', () => {
 
         expect(screen.findByTestId('webcrypto-unsupported')).toBeTruthy();
         expect(screen.findByTestId('gate-ok')).toBeNull();
-    });
-
-    it('hides the splash screen when SubtleCrypto is unavailable', async () => {
-        setGlobalWindow({ location: { origin: 'http://192.168.1.50:8081' } } as any);
-        setGlobalDocument({});
-        setGlobalCrypto({});
-
-        await renderScreen(
-            <WebCryptoStartupGate>
-                {React.createElement('View', { testID: 'gate-ok' })}
-            </WebCryptoStartupGate>,
-        );
-
         expect(vi.mocked(SplashScreen.hideAsync)).toHaveBeenCalled();
     });
 

@@ -276,7 +276,7 @@ export type TranscriptViewportLifecycleTransition = Readonly<{
 export type TranscriptViewportLifecycleEvent =
     | Readonly<{
         entryDistanceFromLiveTailPx?: number | null;
-        platform?: 'native' | 'web';
+        platform: 'native' | 'web';
         sessionId: string;
         shouldFollowLiveTail: boolean;
         type: 'session-entry';
@@ -376,7 +376,7 @@ type MutableLifecycleState = {
     sessionId: string | null;
 };
 
-export function resolveSessionEntryCommandControllerReset(params: Readonly<{
+function resolveSessionEntryCommandControllerReset(params: Readonly<{
     platform: 'native' | 'web';
     shouldFollowLiveTail: boolean;
 }>): SessionEntryCommandControllerReset {
@@ -1082,75 +1082,71 @@ function sessionEntryViewportEffects(
             type: 'session-entry-viewport',
         },
     ];
-    if (event.platform) {
-        effects.push({
-            sessionId: event.sessionId,
-            type: 'session-entry-web-dom-observation-reset',
-        });
-        effects.push({
-            sessionId: event.sessionId,
-            type: 'session-entry-native-gesture-momentum-mirror-reset',
-        });
-        effects.push({
-            sessionId: event.sessionId,
-            type: 'session-entry-activity-key-baseline-reset',
-        });
-        effects.push({
-            sessionId: event.sessionId,
-            type: 'session-entry-older-pagination-reset',
-        });
-    }
+    effects.push({
+        sessionId: event.sessionId,
+        type: 'session-entry-web-dom-observation-reset',
+    });
+    effects.push({
+        sessionId: event.sessionId,
+        type: 'session-entry-native-gesture-momentum-mirror-reset',
+    });
+    effects.push({
+        sessionId: event.sessionId,
+        type: 'session-entry-activity-key-baseline-reset',
+    });
+    effects.push({
+        sessionId: event.sessionId,
+        type: 'session-entry-older-pagination-reset',
+    });
     if (event.platform === 'native') {
         effects.push({
             sessionId: event.sessionId,
             type: 'session-entry-native-session-viewport-reset',
         });
     }
-    if (event.platform) {
-        effects.push({
-            sessionId: event.sessionId,
-            type: 'session-entry-entry-restore-active-refs-reset',
-        });
-        effects.push({
-            sessionId: event.sessionId,
-            type: 'session-entry-entry-restore-local-state-reset',
-        });
-        effects.push({
-            sessionId: event.sessionId,
-            type: 'session-entry-entry-restore-timeout-cleanup',
-        });
-        effects.push({
-            sessionId: event.sessionId,
-            type: 'session-entry-native-prepend-transaction-invalidation',
-        });
-        effects.push({
-            sessionId: event.sessionId,
-            type: 'session-entry-native-explicit-jump-confirmation-reset',
-        });
-        effects.push({
-            sessionId: event.sessionId,
-            shouldArmConfirmation:
-                event.platform === 'native' &&
-                shouldFollowLiveTail,
-            type: 'session-entry-native-entry-settle-confirmation-reset',
-        });
-        effects.push({
-            sessionId: event.sessionId,
-            type: 'session-entry-native-index-scroll-command-cache-reset',
-        });
-        effects.push({
-            sessionId: event.sessionId,
-            type: 'session-entry-entry-restore-anchor-lookup-reset',
-        });
-        effects.push({
-            ...resolveSessionEntryCommandControllerReset({
-                platform: event.platform,
-                shouldFollowLiveTail,
-            }),
-            sessionId: event.sessionId,
-            type: 'session-entry-command-controller-reset',
-        });
-    }
+    effects.push({
+        sessionId: event.sessionId,
+        type: 'session-entry-entry-restore-active-refs-reset',
+    });
+    effects.push({
+        sessionId: event.sessionId,
+        type: 'session-entry-entry-restore-local-state-reset',
+    });
+    effects.push({
+        sessionId: event.sessionId,
+        type: 'session-entry-entry-restore-timeout-cleanup',
+    });
+    effects.push({
+        sessionId: event.sessionId,
+        type: 'session-entry-native-prepend-transaction-invalidation',
+    });
+    effects.push({
+        sessionId: event.sessionId,
+        type: 'session-entry-native-explicit-jump-confirmation-reset',
+    });
+    effects.push({
+        sessionId: event.sessionId,
+        shouldArmConfirmation:
+            event.platform === 'native' &&
+            shouldFollowLiveTail,
+        type: 'session-entry-native-entry-settle-confirmation-reset',
+    });
+    effects.push({
+        sessionId: event.sessionId,
+        type: 'session-entry-native-index-scroll-command-cache-reset',
+    });
+    effects.push({
+        sessionId: event.sessionId,
+        type: 'session-entry-entry-restore-anchor-lookup-reset',
+    });
+    effects.push({
+        ...resolveSessionEntryCommandControllerReset({
+            platform: event.platform,
+            shouldFollowLiveTail,
+        }),
+        sessionId: event.sessionId,
+        type: 'session-entry-command-controller-reset',
+    });
     effects.push({
         sessionId: event.sessionId,
         type: 'session-entry-measurement-reset',

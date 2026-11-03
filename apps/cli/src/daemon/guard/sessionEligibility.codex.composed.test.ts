@@ -5,6 +5,7 @@ import { withCodexNativeAttachFixture } from '../../../../../packages/plugins/co
 import { RuntimeDescriptorV1Schema } from '@happier-dev/protocol/sessions/metadata/runtime-descriptor';
 import { createSessionOwnerMetadataV1, SessionOwnerMetadataV1Schema } from '@happier-dev/protocol/sessions/metadata/sessionMetadataEnvelopesV1';
 import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/services/unavailable';
+import { createPluginInvocationLogger } from '@/plugins/runtime/invocation/services/logger';
 import { createNativeAgentRuntimeSessionPlanFixture, createNativeSessionClientTestPort,
   createSessionHostServiceOwners } from '@/agent/runtime/registry/engineRegistry/nativeAgentSession.testkit';
 import { resolveBackendEngineAdapterResolution } from '@/agent/runtime/registry/engineRegistry';
@@ -38,6 +39,16 @@ it.skipIf(process.platform === 'win32')('persists fresh Codex native identity, a
       const resolution = await resolveBackendEngineAdapterResolution('codex', { runtimeRegistry: fixture.registry });
       const lease = fixture.registry.agentRuntimesByAgentId.get('codex');
       if (!resolution || !lease) throw new Error('Admitted Codex declaration unavailable');
+      const services = { ...createUnavailablePluginServices(), exec,
+        logger: createPluginInvocationLogger({
+          seed: { plugin: { id: lease.pluginId, version: lease.pluginVersion },
+            contribution: { id: 'codex', qualifiedId: `${lease.pluginId}/agents/codex` },
+            occurrenceId: lease.occurrenceId, correlationId: sessionId, surface: 'agent',
+            signal: lease.retirementSignal, isOccurrenceCurrent: lease.isCurrent },
+          // Log output is an IO boundary; retain the real invocation logger.
+          sink: { write() {} },
+        }),
+      };
       const session = createNativeSessionClientTestPort(sessionId);
       await session.updateMetadata(metadata => ({ ...metadata, path: directory, machineId: 'machine-1', flavor: 'codex' }));
       const nativePlan = await createNativeAgentRuntimeSessionPlanFixture({
@@ -45,7 +56,7 @@ it.skipIf(process.platform === 'win32')('persists fresh Codex native identity, a
         lease, backend: resolution.backend, agent: resolution.agent,
         createSessionHostServiceOwners,
         // The process/native IPC boundary is the canonical Codex socket fixture.
-        createInvocationServices: async () => ({ ...createUnavailablePluginServices(), exec }),
+        createInvocationServices: async () => services,
         sessionInput: buildPluginSessionBindingInput({ credentials, directory,
           backendTarget: { kind: 'backend', backendId: 'codex' },
           environmentVariables: { CODEX_HOME: directory },
@@ -127,7 +138,7 @@ it.skipIf(process.platform === 'win32')('persists fresh Codex native identity, a
             configuration: { mode: { value: null, updatedAtMs: 0 }, model: { value: 'fixture-model', updatedAtMs: 1 },
               permissionIntent: { value: 'read-only', updatedAtMs: 1 }, options: {} }, mcpServers: {},
           }, { signal: new AbortController().signal,
-            services: { ...createUnavailablePluginServices(), exec }, session: { id: sessionId, services: {} },
+            services, session: { id: sessionId, services: {} },
             ui: { title: { set: async () => undefined } },
           } as never);
           try {

@@ -1,63 +1,16 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
+import { initializeAuthRouteRuntimeForTests } from '@/dev/testkit/harness/authRouteRuntimeHarness';
 
-const stableApplyLocalSettings = vi.fn();
-
-vi.mock('@/sync/sync', () => ({
-    syncSwitchServer: vi.fn(async () => {}),
-}));
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => ({ serverId: '', serverUrl: '', generation: 0 }),
-    subscribeActiveServer: () => () => {},
-}));
-vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
-    switchConnectionToActiveServer: vi.fn(async () => null),
-}));
-vi.mock('@/sync/runtime/orchestration/concurrentSessionCache', () => ({
-    startConcurrentSessionCacheSync: vi.fn(),
-    stopConcurrentSessionCacheSync: vi.fn(),
-}));
-vi.mock('@/sync/runtime/orchestration/authCredentialsInvalidation', () => ({
-    subscribeAuthCredentialsInvalidation: () => () => {},
-}));
-vi.mock('@/sync/domains/state/persistence', () => ({
-    loadLocalSettings: () => ({}),
-    saveLocalSettings: vi.fn(),
-}));
-vi.mock('@/sync/domains/state/persistenceLifecycle', () => ({
-    clearPersistence: vi.fn(),
-}));
-vi.mock('@/sync/domains/settings/localSettings', () => ({
-    localSettingsDefaults: {},
-}));
-vi.mock('@/sync/store/settingsWriters', () => ({
-    useApplyLocalSettings: () => stableApplyLocalSettings,
-}));
-vi.mock('@/track', () => ({
-    trackLogout: vi.fn(),
-}));
-vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
-    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
-    return createTokenStorageModuleMock({
-        importOriginal,
-        tokenStorage: {
-            setCredentials: vi.fn(async () => true),
-            removeCredentials: vi.fn(async () => true),
-        },
-    });
-});
-
-import { AuthProvider, useAuth } from './AuthContext';
+// Real Auth/Sync owners over the harness network and socket boundaries.
+await initializeAuthRouteRuntimeForTests();
+const { AuthProvider, useAuth } = await import('./AuthContext');
 
 type AuthValue = ReturnType<typeof useAuth>;
 
 describe('AuthContext provider value identity', () => {
-    beforeEach(() => {
-        stableApplyLocalSettings.mockClear();
-    });
-
     it('keeps the provider value identity stable across unrelated provider re-renders', async () => {
         const identities: AuthValue[] = [];
         let bump: () => void = () => {};

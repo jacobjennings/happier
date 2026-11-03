@@ -31,6 +31,12 @@ import { useActionApprovalContinuation } from '@/components/approvals/useActionA
 import { buildApprovalHref } from '@/components/approvals/approvalNavigation';
 import type { NewSessionLaunchApprovalNoticeState } from '@/components/sessions/new/components/NewSessionLaunchApprovalNotice';
 import { useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { readNewSessionDraftFromRepository } from '@/components/sessions/composer/newSessionDraftRepositoryAdapter';
+import { persistCreatedSessionAuthoringOrigin } from '@/components/sessions/new/modules/newSessionAuthoringOrigin';
+import { readSpawnAttemptCustodyState } from '@/sync/domains/session/spawn/spawnAttemptNonceStore';
+import { sync } from '@/sync/sync';
+import { captureLazyActionAccountContext, type LazyActionAccountContext } from '@/sync/ops/actions/actionAccountContext';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 
 type NewSessionReentryRouter = Readonly<{
     replace(path: unknown, options?: unknown): void;
@@ -63,56 +69,80 @@ async function settleCreatedNewSessionLaunch(input: Readonly<{
     disableDraftPersistence: () => void;
 }>): Promise<boolean> {
     const { sessionId, destinationServerId, draftScope, requestId, initialInputLocalId, capturedFirstTurnText } = input;
-    const presentation = await presentCreatedNewSession({
-        sessionId,
-        serverId: destinationServerId,
-        accountId: draftScope.accountId,
-        requestId: input.operation?.snapshot.requestId ?? requestId,
-        router: input.router,
-        isStillActive: input.isStillActive,
-        ...(input.operation ? { operation: input.operation } : {}),
-        prepareDestination: capturedFirstTurnText
-            ? () => {
-                if (initialInputLocalId) {
-                    projectAcceptedNewSessionFirstTurn({
-                        sessionId,
-                        localId: initialInputLocalId,
-                        text: capturedFirstTurnText,
-                    });
-                    return;
-                }
-                preserveCreatedSessionDraftAfterUnacceptedFirstTurn({
-                    scope: {
-                        serverId: destinationServerId,
-                        accountId: draftScope.accountId,
-                    },
-                    sessionId,
-                    draftText: capturedFirstTurnText,
-                });
-            }
-            : undefined,
-    });
-    if (presentation !== 'opened') {
-        if (presentation === 'unavailable') {
-            throw new Error(CREATED_SESSION_NOT_AVAILABLE_LOCALLY_ERROR);
+    const draft = readNewSessionDraftFromRepository({ scope: draftScope, draftId: input.draftId });
+    const sourceOriginAccount = draft?.authoringOrigin ? await captureLazyActionAccountContext(draftScope.serverId) : null;
+    const isStillActive = () => input.isStillActive() && sourceOriginAccount?.accountLifetime.isCurrent() !== false;
+    try {
+        if (!isStillActive()) return false;
+        if (draft?.authoringOrigin) {
+            sourceOriginAccount?.assertCurrent();
+            if (draft.authoringOrigin.accountId !== draftScope.accountId || sourceOriginAccount?.accountId !== draftScope.accountId) throw Object.assign(new Error('Authoring origin Account retired'), {
+                code: 'authoring_origin_scope_changed', phase: 'authoring_origin',
+            });
+            const custodyState = readSpawnAttemptCustodyState({ serverId: destinationServerId,
+                accountId: input.operation?.snapshot.scope.accountId ?? draftScope.accountId });
+            const matching = custodyState.status === 'valid' ? Object.values(custodyState.attempts).filter(
+                attempt => attempt.userAttemptId === requestId && attempt.machineId === input.operation?.snapshot.scope.machineId,
+            ) : [];
+            await persistCreatedSessionAuthoringOrigin({ sessionId, serverId: destinationServerId,
+                origin: draft.authoringOrigin,
+                originPersistence: (matching.length === 1 ? matching[0]?.authoringOriginPersistence : undefined) ?? 'unknown',
+                shouldContinue: isStillActive, updateSessionMetadataWithRetry: sync.patchSessionMetadataWithRetry,
+            });
         }
-        return false;
-    }
-    input.disableDraftPersistence();
-    await clearCapturedNewSessionDraftAfterLaunch({
-        scope: draftScope,
-        draftId: input.draftId,
-        launchUserAttemptId: requestId,
-    });
-    await settleSpawnAttemptCustodyFromActionOperation({
-        scope: {
+        if (!isStillActive()) return false;
+        const presentation = await presentCreatedNewSession({
+            sessionId,
             serverId: destinationServerId,
-            accountId: draftScope.accountId,
-        },
-        userAttemptId: requestId,
-        createdSessionId: sessionId,
-    });
-    return true;
+            accountId: input.operation?.snapshot.scope.accountId ?? draftScope.accountId,
+            requestId: input.operation?.snapshot.requestId ?? requestId,
+            router: input.router,
+            isStillActive,
+            ...(input.operation ? { operation: input.operation } : {}),
+            prepareDestination: capturedFirstTurnText
+                ? () => {
+                    if (initialInputLocalId) {
+                        projectAcceptedNewSessionFirstTurn({
+                            sessionId,
+                            localId: initialInputLocalId,
+                            text: capturedFirstTurnText,
+                        });
+                        return;
+                    }
+                    preserveCreatedSessionDraftAfterUnacceptedFirstTurn({
+                        scope: {
+                            serverId: destinationServerId,
+                            accountId: input.operation?.snapshot.scope.accountId ?? draftScope.accountId,
+                        },
+                        sessionId,
+                        draftText: capturedFirstTurnText,
+                    });
+                }
+                : undefined,
+        });
+        if (presentation !== 'opened') {
+            if (presentation === 'unavailable') {
+                throw new Error(CREATED_SESSION_NOT_AVAILABLE_LOCALLY_ERROR);
+            }
+            return false;
+        }
+        if (!isStillActive()) return false;
+        input.disableDraftPersistence();
+        await clearCapturedNewSessionDraftAfterLaunch({
+            scope: draftScope,
+            draftId: input.draftId,
+            launchUserAttemptId: requestId,
+        });
+        await settleSpawnAttemptCustodyFromActionOperation({
+            scope: {
+                serverId: destinationServerId,
+                accountId: input.operation?.snapshot.scope.accountId ?? draftScope.accountId,
+            },
+            userAttemptId: requestId,
+            createdSessionId: sessionId,
+        });
+        return true;
+    } finally { sourceOriginAccount?.dispose(); }
 }
 
 function readAcceptedInitialInputLocalId(initialInput: SessionSpawnNewInitialInputDispositionV1 | null | undefined): string | null {
@@ -131,24 +161,49 @@ export function useNewSessionActionOperationReconciliation(params: Readonly<{
     onOperationFailure?: (failure: ActionOperationFailureV1) => void;
     router: NewSessionReentryRouter;
 }>): Readonly<{ isCreatingFromOperation: boolean; launchApproval: NewSessionLaunchApproval }> {
-    const readOperation = () => params.draftScope && params.requestId
-        ? readManualSessionSpawnOperation(params.draftScope, params.requestId)
+    const draft = params.draftScope ? readNewSessionDraftFromRepository({ scope: params.draftScope, draftId: params.draftId }) : null;
+    const executionServerId = draft?.executionTarget?.kind === 'machine' ? draft.executionTarget.target.serverId
+        : draft?.targetServerId ?? params.draftScope?.serverId;
+    const crossHome = Boolean(executionServerId && params.draftScope
+        && !areServerProfileIdentifiersEquivalent(executionServerId, params.draftScope.serverId));
+    const [targetAccount, setTargetAccount] = React.useState<LazyActionAccountContext | null>(null);
+    React.useEffect(() => {
+        if (!crossHome || !executionServerId || !params.requestId || params.localCreationInFlight) { setTargetAccount(null); return; }
+        const cancellation = new AbortController();
+        let captured: LazyActionAccountContext | null = null;
+        void captureLazyActionAccountContext(executionServerId, cancellation.signal).then(account => {
+            captured = account;
+            if (cancellation.signal.aborted) { account.dispose(); return; }
+            account.assertCurrent();
+            setTargetAccount(account);
+        }).catch(error => {
+            if (!cancellation.signal.aborted) captureExceptionIfEnabled(error, {
+                tags: { area: 'new_session', action: 'reconcile_target_account' },
+            });
+        });
+        return () => { cancellation.abort(); captured?.dispose(); };
+    }, [crossHome, executionServerId, params.draftScope?.accountId, params.draftScope?.serverId, params.requestId, params.localCreationInFlight]);
+    const executionScope = crossHome ? targetAccount?.accountLifetime.isCurrent()
+        && areServerProfileIdentifiersEquivalent(targetAccount.serverId, executionServerId ?? '')
+        ? targetAccount.accountLifetime.scope : null : params.draftScope;
+    const readOperation = () => executionScope && params.requestId
+        ? readManualSessionSpawnOperation(executionScope, params.requestId)
         : null;
     const operation = React.useSyncExternalStore(actionOperationStore.subscribe, readOperation, readOperation);
     const handledTerminalOperationIdRef = React.useRef<string | null>(null);
 
     React.useEffect(() => {
-        if (!params.requestId || !params.draftScope) return;
+        if (!params.requestId || !params.draftScope || !executionScope) return;
         for (const requestId of [params.requestId, buildManualSessionCreationKey(params.requestId)]) {
             actionOperationPresentationCoordinator.register({
-                serverId: params.draftScope.serverId,
-                accountId: params.draftScope.accountId,
+                serverId: executionScope.serverId,
+                accountId: executionScope.accountId,
                 requestId,
                 onStart: 'current',
                 origin: createNewSessionActionOperationOrigin(params.draftScope, params.draftId),
             });
         }
-    }, [params.draftId, params.draftScope, params.requestId]);
+    }, [params.draftId, params.draftScope, params.requestId, executionScope]);
 
     React.useEffect(() => {
         if (
@@ -172,6 +227,7 @@ export function useNewSessionActionOperationReconciliation(params: Readonly<{
             params.localCreationInFlight
             || !params.requestId
             || !params.draftScope
+            || !executionScope
             || !operation
             || operation.actionId !== 'session.spawn_new'
             || operation.state !== 'succeeded'
@@ -192,12 +248,13 @@ export function useNewSessionActionOperationReconciliation(params: Readonly<{
 
         void (async () => {
             try {
-                const settled = await readManualSessionSpawnOperationDetails(draftScope, operation, () => !cancelled);
+                const settled = await readManualSessionSpawnOperationDetails(executionScope, operation,
+                    () => !cancelled && (!crossHome || targetAccount?.accountLifetime.isCurrent() === true));
                 if (!settled) return;
                 const sessionId = readActionOperationDestinationSessionId(settled);
                 if (!sessionId) return;
-                const destinationServerId = readActionOperationDestinationServerId(settled, draftScope.serverId)
-                    ?? draftScope.serverId;
+                const destinationServerId = readActionOperationDestinationServerId(settled, executionScope.serverId)
+                    ?? executionScope.serverId;
                 const initialInputLocalId = readAcceptedInitialInputLocalId(readActionOperationSessionSpawnNewInitialInput(settled));
                 completed = await settleCreatedNewSessionLaunch({
                     sessionId,
@@ -208,8 +265,8 @@ export function useNewSessionActionOperationReconciliation(params: Readonly<{
                     initialInputLocalId,
                     capturedFirstTurnText,
                     router: params.router,
-                    isStillActive: () => !cancelled,
-                    operation: qualifyActionOperationSnapshot(draftScope.serverId, settled),
+                    isStillActive: () => !cancelled && (!crossHome || targetAccount?.accountLifetime.isCurrent() === true),
+                    operation: qualifyActionOperationSnapshot(executionScope.serverId, settled),
                     disableDraftPersistence: params.disableDraftPersistence,
                 });
             } catch (error) {
@@ -240,6 +297,9 @@ export function useNewSessionActionOperationReconciliation(params: Readonly<{
         params.draftScope,
         params.localCreationInFlight,
         params.router,
+        executionScope,
+        targetAccount,
+        crossHome,
     ]);
 
     // Retain the originating creation owner's continuation. Its result resumes that same

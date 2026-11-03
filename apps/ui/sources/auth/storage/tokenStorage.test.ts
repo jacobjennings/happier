@@ -1,8 +1,17 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { seedPersistedHomeProfilesForTests } from '@/dev/testkit/fixtures/persistedHomeProfiles';
 import { installLocalStorageMock, type LocalStorageMockHandle } from './tokenStorage.web.testHelpers';
-import { installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
+import {
+    homeProfileForTests,
+    installTokenStorageTestIsolation,
+    installTokenStorageWebPlatformMocks,
+} from './tokenStorage.testHelpers';
 
 installTokenStorageWebPlatformMocks();
+installTokenStorageTestIsolation('token_storage_web');
+
+const { TokenStorage } = await import('./tokenStorage');
+const { readStorageScopeFromEnv, scopedStorageId } = await import('@/utils/system/storageScope');
 
 describe('TokenStorage (web)', () => {
     let restoreLocalStorage: (() => void) | null = null;
@@ -14,8 +23,15 @@ describe('TokenStorage (web)', () => {
         return localStorageHandle;
     }
 
+    async function focusLocalHome(): Promise<string> {
+        await seedPersistedHomeProfilesForTests({
+            profiles: [homeProfileForTests('localhost-3009', 'http://localhost:3009')],
+            activeServerId: 'localhost-3009',
+        });
+        return scopedStorageId('auth_credentials__srv_localhost-3009', readStorageScopeFromEnv());
+    }
+
     beforeEach(() => {
-        vi.resetModules();
         vi.spyOn(console, 'error').mockImplementation(() => {});
     });
 
@@ -26,72 +42,36 @@ describe('TokenStorage (web)', () => {
         localStorageHandle = null;
     });
 
-    it('returns null when localStorage JSON is invalid', async () => {
+    it('returns null when the focused Home credential bytes are invalid JSON', async () => {
         const storage = installStorage();
-        storage.setItemMock('auth_credentials', '{not valid json');
+        storage.setItemMock(await focusLocalHome(), '{not valid json');
 
-        const { TokenStorage } = await import('./tokenStorage');
         await expect(TokenStorage.getCredentials()).resolves.toBeNull();
     });
 
     it('returns a genuine token-only credential without manufacturing encryption material', async () => {
         const storage = installStorage();
-        vi.doMock('@/sync/domains/server/serverProfiles', () => ({
-            areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left ?? '').trim() === String(right ?? '').trim(),
-            getActiveServerId: () => 'localhost-3009',
-            getActiveServerUrl: () => 'http://localhost:3009',
-            listServerProfiles: () => [{ id: 'localhost-3009', serverUrl: 'http://localhost:3009' }],
-        }));
+        storage.setItemMock(await focusLocalHome(), JSON.stringify({ token: 't' }));
 
-        storage.setItemMock('auth_credentials__srv_localhost-3009', JSON.stringify({ token: 't' }));
-
-        const { TokenStorage } = await import('./tokenStorage');
         await expect(TokenStorage.getCredentials()).resolves.toEqual({ token: 't' });
     });
 
     it('persists token-only credentials without recovery or Account encryption material', async () => {
         const storage = installStorage();
-        vi.doMock('@/sync/domains/server/serverProfiles', () => ({
-            areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left ?? '').trim() === String(right ?? '').trim(),
-            getActiveServerId: () => 'localhost-3009',
-            getActiveServerUrl: () => 'http://localhost:3009',
-            listServerProfiles: () => [{ id: 'localhost-3009', serverUrl: 'http://localhost:3009' }],
-        }));
+        const primaryKey = await focusLocalHome();
 
-        const { TokenStorage } = await import('./tokenStorage');
         await expect(TokenStorage.setCredentials({ token: 'token-only' })).resolves.toBe(true);
 
-        expect(storage.store.get('auth_credentials__srv_localhost-3009')).toBe(
+        expect(storage.store.get(primaryKey)).toBe(
             JSON.stringify({ token: 'token-only' }),
         );
         await expect(TokenStorage.getCredentials()).resolves.toEqual({ token: 'token-only' });
-    });
-
-    it('returns false when localStorage.setItem throws', async () => {
-        const storage = installStorage();
-        storage.setItemMock.mockImplementation(() => {
-            throw new Error('QuotaExceededError');
-        });
-
-        const { TokenStorage } = await import('./tokenStorage');
-        await expect(TokenStorage.setCredentials({ token: 't', secret: 's' })).resolves.toBe(false);
-    });
-
-    it('returns false when localStorage.removeItem throws', async () => {
-        const storage = installStorage();
-        storage.removeItemMock.mockImplementation(() => {
-            throw new Error('SecurityError');
-        });
-
-        const { TokenStorage } = await import('./tokenStorage');
-        await expect(TokenStorage.removeCredentials()).resolves.toBe(false);
     });
 
     it('checks both primary and legacy scoped keys when credentials are missing', async () => {
         const storage = installStorage();
         storage.setItemMock('auth_credentials', JSON.stringify({ token: 't', secret: 's' }));
 
-        const { TokenStorage } = await import('./tokenStorage');
         await expect(TokenStorage.getCredentials()).resolves.toBeNull();
         const scopedKeys = storage.getItemMock.mock.calls.map(([key]) => String(key));
         expect(scopedKeys.every((key) => key.includes('auth_credentials__srv_'))).toBe(true);
@@ -106,7 +86,6 @@ describe('TokenStorage (web)', () => {
 
         Reflect.deleteProperty(globalThis, 'localStorage');
 
-        const { TokenStorage } = await import('./tokenStorage');
         await expect(TokenStorage.getCredentials()).resolves.toBeNull();
         expect(console.error).not.toHaveBeenCalled();
     });

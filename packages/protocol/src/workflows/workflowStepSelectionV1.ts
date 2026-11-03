@@ -1,5 +1,5 @@
 import { parseQualifiedPluginContributionKey } from '../plugins/contributionIdentity.js';
-import { resolveConnectedServiceBindingsForChild } from '../connect/connectedServiceBindings.js';
+import { AgentStartBaselineSelectionErrorV1, resolveAgentStartBaselineSelectionV1 } from '../actions/executor/agentStartBaselineSelectionV1.js';
 import { BackendTargetKeyV2Schema, buildBackendTargetKeyV2, parseBackendTargetKeyV2 } from '../backends/targets/backendTargetRefV2.js';
 import { resolveRoleSelectionV1, type ResolveRoleSelectionV1Input, type RoleSelectionRefusalV1 } from '../prompts/roles/resolveRoleSelectionV1.js';
 import type { ResolvedRoleV1 } from '../prompts/roles/rolesV1.js';
@@ -10,14 +10,17 @@ import { sameStrictJsonValue } from '../json/strictJsonValue.js';
 import type { WorkflowMaterializedLeafV1 } from './workflowDefinitionV1.js';
 import { normalizeExecutableParticipantSelectionV1 } from '../discussions/executableParticipants.js';
 import type { WorkflowStepExecutionSelection, WorkflowStepSelectionV1, WorkflowLeafExecutionTargetV1 } from './workflowV1.js';
+import type { ConnectedServiceBindingsV2 } from '../connect/connectedServiceBindings.js';
 export { WorkflowLeafExecutionTargetV1Schema, WorkflowEngineSelectionV1Schema, WorkflowStepSelectionV1Schema,
   type WorkflowLeafExecutionTargetV1, type WorkflowEngineSelectionV1, type WorkflowStepSelectionV1 } from './workflowV1.js';
 
-export type WorkflowResolvedStepSelectionV1 = Omit<WorkflowStepSelectionV1, 'engine' | 'participant' | 'executionTarget'>;
+export type WorkflowResolvedStepSelectionV1 = Omit<WorkflowStepSelectionV1, 'engine' | 'participant' | 'executionTarget' | 'connectedServices'>
+  & Readonly<{ connectedServices?: ConnectedServiceBindingsV2 | null }>;
 
 /** Host context for the default engine; bindings stay in the existing leaf selection. */
 export type WorkflowRoleSelectionContextV1 = Omit<ResolveRoleSelectionV1Input, 'roleId'> & Readonly<{
-  defaultConnectedServices?: WorkflowStepExecutionSelection['connectedServices'];
+  defaultProfileId?: string;
+  defaultConnectedServices?: ConnectedServiceBindingsV2 | null;
 }>;
 
 export type ResolveWorkflowStepSelectionV1Input = Readonly<{
@@ -36,7 +39,7 @@ export type ResolveWorkflowStepSelectionV1Result = Readonly<{
   executionTarget?: WorkflowLeafExecutionTargetV1;
   role?: ResolvedRoleV1;
 }>;
-export type WorkflowStepSelectionRefusalV1 = RoleSelectionRefusalV1 | Readonly<{ code: 'invalid_input' }>;
+export type WorkflowStepSelectionRefusalV1 = RoleSelectionRefusalV1 | Readonly<{ code: 'invalid_input' | 'execution_run_child_choice_required' }>;
 
 export class WorkflowStepSelectionErrorV1 extends Error {
   readonly code: WorkflowStepSelectionRefusalV1['code'];
@@ -193,13 +196,23 @@ export function resolveWorkflowStepSelectionV1(input: ResolveWorkflowStepSelecti
   // Agent came from a Role, a literal engine or an input-bound engine. Freeze
   // it here so Session and detached leaves consume the same admitted choice.
   if (input.purpose !== 'authoring') {
-    const connectedServices = resolveConnectedServiceBindingsForChild({
-      explicitSelection: selection.connectedServices,
-      resolvedTargetKey: selection.agentTarget ? buildBackendTargetKeyV2(selection.agentTarget) : undefined,
-      originTargetKey: input.roleSelection?.defaultEngine?.agentTargetKey,
-      originBindings: input.roleSelection?.defaultConnectedServices,
-    });
-    if (connectedServices !== selection.connectedServices) selection = { ...selection, connectedServices };
+    const parentTarget = input.roleSelection?.defaultEngine?.agentTargetKey;
+    try {
+      const inherited = resolveAgentStartBaselineSelectionV1({
+        targetKey: selection.agentTarget ? buildBackendTargetKeyV2(selection.agentTarget) : undefined,
+        profileId: selection.profileId, connectedServices: selection.connectedServices, modelSelection: selection.modelSelection,
+      }, {
+        ...(parentTarget ? { agentTarget: parseBackendTargetKeyV2(parentTarget) } : {}),
+        profileId: input.roleSelection?.defaultProfileId,
+        connectedServices: input.roleSelection?.defaultConnectedServices,
+      });
+      if (inherited.connectedServices !== selection.connectedServices || inherited.profileId !== selection.profileId)
+        selection = { ...selection, ...inherited };
+    } catch (error) {
+      if (error instanceof AgentStartBaselineSelectionErrorV1)
+        throw new WorkflowStepSelectionErrorV1({ code: error.code });
+      throw error;
+    }
   }
 
   const runTarget = input.runExecutionTarget ?? defaultTarget;

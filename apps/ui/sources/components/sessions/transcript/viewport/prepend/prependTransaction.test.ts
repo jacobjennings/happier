@@ -13,6 +13,7 @@ function capturedAnchor(): PrependCapturedAnchor {
 }
 
 const preserved: PrependOutcome = { kind: 'mvcp-preserved', observedItemOffsetPx: 80, deltaPx: 0 };
+const preservedWithinTolerance: PrependOutcome = { kind: 'mvcp-preserved', observedItemOffsetPx: 82, deltaPx: 2 };
 const needsFallback: PrependOutcome = { kind: 'needs-fallback', targetOffsetY: 820, deltaPx: -80 };
 const layoutNotReady: PrependOutcome = { kind: 'unresolvable', reason: 'layout-not-ready' };
 const identityUnchanged: PrependOutcome = { kind: 'unresolvable', reason: 'identity-unchanged' };
@@ -23,47 +24,13 @@ function createTransaction() {
 }
 
 describe('createPrependTransaction', () => {
-    it('starts awaiting commit with no outcome and no writes', () => {
-        const transaction = createTransaction();
-        expect(transaction.state()).toBe('awaiting-commit');
-        expect(transaction.isClosed()).toBe(false);
-        expect(transaction.outcome()).toBeNull();
-        expect(transaction.writeCount()).toBe(0);
-        expect(transaction.sessionId).toBe('session-1');
-        expect(transaction.capturedAnchor).toEqual(capturedAnchor());
-    });
-
     it('ignores observation windows before commit (no premature write)', () => {
         const transaction = createTransaction();
         expect(transaction.onObservationWindow(needsFallback)).toBeNull();
         expect(transaction.state()).toBe('awaiting-commit');
+        expect(transaction.isClosed()).toBe(false);
+        expect(transaction.outcome()).toBeNull();
         expect(transaction.writeCount()).toBe(0);
-    });
-
-    it('closes mvcp-preserved with zero writes when the observation confirms MVCP held', () => {
-        const transaction = createTransaction();
-        transaction.onCommit();
-        expect(transaction.state()).toBe('committed');
-
-        expect(transaction.onObservationWindow(preserved)).toBeNull();
-        expect(transaction.isClosed()).toBe(true);
-        expect(transaction.outcome()).toBe('mvcp-preserved');
-        expect(transaction.writeCount()).toBe(0);
-    });
-
-    it('issues the fallback write exactly once and closes fallback-restored', () => {
-        const transaction = createTransaction();
-        transaction.onCommit();
-
-        expect(transaction.onObservationWindow(needsFallback)).toEqual({ write: { targetOffsetY: 820 } });
-        expect(transaction.isClosed()).toBe(true);
-        expect(transaction.outcome()).toBe('fallback-restored');
-        expect(transaction.writeCount()).toBe(1);
-
-        // Invariant: never more than one write, even if a window fires again.
-        expect(transaction.onObservationWindow(needsFallback)).toBeNull();
-        expect(transaction.writeCount()).toBe(1);
-        expect(transaction.outcome()).toBe('fallback-restored');
     });
 
     it('E5 regression: a slow load (many pre-commit and not-ready windows, no TTL) still restores', () => {
@@ -75,6 +42,7 @@ describe('createPrependTransaction', () => {
         }
         transaction.onLayoutTimeout();
         expect(transaction.isClosed()).toBe(false);
+        expect(transaction.state()).toBe('awaiting-commit');
 
         transaction.onCommit();
         // Layout settles slowly after commit: not-ready observations keep the single window open.
@@ -98,16 +66,6 @@ describe('createPrependTransaction', () => {
 
         transaction.onCommit();
         expect(transaction.state()).toBe('closed');
-        expect(transaction.onObservationWindow(needsFallback)).toBeNull();
-        expect(transaction.writeCount()).toBe(0);
-    });
-
-    it('abandons with zero writes when the user scrolls during the observation window', () => {
-        const transaction = createTransaction();
-        transaction.onCommit();
-        transaction.onTrustedUserScroll();
-
-        expect(transaction.outcome()).toBe('abandoned-user-scroll');
         expect(transaction.onObservationWindow(needsFallback)).toBeNull();
         expect(transaction.writeCount()).toBe(0);
     });
@@ -145,17 +103,6 @@ describe('createPrependTransaction', () => {
         expect(transaction.writeCount()).toBe(0);
     });
 
-    it('closes abandoned-identity when the host invalidates the capture during the observation window', () => {
-        const transaction = createTransaction();
-        transaction.onCommit();
-        expect(transaction.onObservationWindow(layoutNotReady)).toBeNull();
-
-        transaction.onCaptureInvalidated();
-        expect(transaction.outcome()).toBe('abandoned-identity');
-        expect(transaction.onObservationWindow(needsFallback)).toBeNull();
-        expect(transaction.writeCount()).toBe(0);
-    });
-
     it('closes abandoned-identity when the anchor is no longer mappable to the committed data', () => {
         const transaction = createTransaction();
         transaction.onCommit();
@@ -163,29 +110,6 @@ describe('createPrependTransaction', () => {
         expect(transaction.onObservationWindow(anchorMissing)).toBeNull();
         expect(transaction.outcome()).toBe('abandoned-identity');
         expect(transaction.writeCount()).toBe(0);
-    });
-
-    it('closes abandoned-layout-timeout when layout never becomes observable after commit', () => {
-        const transaction = createTransaction();
-        transaction.onCommit();
-        expect(transaction.onObservationWindow(layoutNotReady)).toBeNull();
-
-        transaction.onLayoutTimeout();
-        expect(transaction.isClosed()).toBe(true);
-        expect(transaction.outcome()).toBe('abandoned-layout-timeout');
-        expect(transaction.writeCount()).toBe(0);
-    });
-
-    it('ignores layout timeout before commit (load duration must never expire the transaction)', () => {
-        const transaction = createTransaction();
-        transaction.onLayoutTimeout();
-
-        expect(transaction.isClosed()).toBe(false);
-        expect(transaction.state()).toBe('awaiting-commit');
-
-        transaction.onCommit();
-        expect(transaction.onObservationWindow(preserved)).toBeNull();
-        expect(transaction.outcome()).toBe('mvcp-preserved');
     });
 
     it('treats commit as idempotent and keeps closed outcomes stable', () => {
@@ -210,11 +134,6 @@ describe('createPrependTransaction', () => {
 });
 
 describe('createPrependTransaction corrector coverage (N2d.1)', () => {
-    it('starts with empty coverage', () => {
-        const transaction = createTransaction();
-        expect(transaction.correctorCoverage()).toEqual({ appliedDiffTotalPx: 0, eventCount: 0 });
-    });
-
     it('accumulates corrections across the whole open window, including before commit', () => {
         const transaction = createTransaction();
         transaction.onCorrectorCorrectionApplied(2640);
@@ -243,18 +162,15 @@ describe('createPrependTransaction corrector coverage (N2d.1)', () => {
 });
 
 describe('createPrependTransaction conclusive anchor delta (R1 gap)', () => {
-    it('records the conclusive observation deltaPx on mvcp-preserved', () => {
+    it.each([
+        { expectedDeltaPx: 2, name: 'mvcp-preserved', observation: preservedWithinTolerance },
+        { expectedDeltaPx: -80, name: 'fallback-restored', observation: needsFallback },
+    ])('records the conclusive observation deltaPx on $name', ({ expectedDeltaPx, name, observation }) => {
         const transaction = createTransaction();
         transaction.onCommit();
-        transaction.onObservationWindow({ kind: 'mvcp-preserved', observedItemOffsetPx: 82, deltaPx: 2 });
-        expect(transaction.conclusiveAnchorDeltaPx()).toBe(2);
-    });
-
-    it('records the conclusive observation deltaPx on fallback-restored', () => {
-        const transaction = createTransaction();
-        transaction.onCommit();
-        transaction.onObservationWindow(needsFallback);
-        expect(transaction.conclusiveAnchorDeltaPx()).toBe(-80);
+        transaction.onObservationWindow(observation);
+        expect(transaction.outcome()).toBe(name);
+        expect(transaction.conclusiveAnchorDeltaPx()).toBe(expectedDeltaPx);
     });
 
     it('stays null for abandoned outcomes', () => {

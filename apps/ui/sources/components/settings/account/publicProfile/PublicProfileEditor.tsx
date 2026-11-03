@@ -1,13 +1,8 @@
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
-import {
-  HAPPIER_PAGE_METRICS,
-  HappierPublicProfile,
-  type HappierPublicProfileHeroGeometry,
-  type HappierPublicProfileLabels,
-  type HappierPublicProfileUsageHost,
-} from '@happier-dev/plugin-ui/presentation';
+import { HappierPublicProfile } from '@happier-dev/plugin-ui/components';
+import { HAPPIER_PAGE_METRICS, type HappierPublicProfileHeroGeometry, type HappierPublicProfileLabels, type HappierPublicProfileUsageHost } from '@happier-dev/plugin-ui/presentation';
 import type { PublicProfileLocalPreviewViewV1 } from '@happier-dev/protocol/account/publicProfilePublication';
 
 import { CorePluginUiPresentationScope } from '@/components/plugins/surfaces/CorePluginUiPresentationScope';
@@ -45,6 +40,8 @@ export type PublicProfileEditorProps = Readonly<{
   unavailable?: Readonly<{ reason: string; onRetry: () => void }> | null;
   /** The outcome of the last Publish, Apply or consent request. */
   notice: string | null;
+  /** Undo for an acknowledged Apply: the notice then reports success and offers it. */
+  noticeAction?: Readonly<{ label: string; onPress: () => void }> | null;
   submitting: boolean;
   /** A pending or unavailable private-area copy cannot Apply an older local layout. */
   canSubmit?: boolean;
@@ -92,10 +89,11 @@ export function PublicProfileEditor(
   const notice = props.notice ? (
     <SurfaceStateCard
       testID="public-profile-editor-notice"
-      kind="warning"
+      kind={props.noticeAction ? 'success' : 'warning'}
       layout="inline"
       size="line"
       title={props.notice}
+      {...(props.noticeAction ? { action: { ...props.noticeAction, testID: 'public-profile-editor-undo' } } : {})}
     />
   ) : null;
   const toolbar = (

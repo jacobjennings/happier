@@ -404,9 +404,9 @@ describe('buildSessionListRowViewModels', () => {
         const first = buildSessionListRowViewModels({ ...input,
             rowRenderableByKey: new Map(listItems.map((item, index) => [rowKey(item), sessions[index]!])),
         });
-        const updatedSession: SessionListRenderableSession = { ...sessions[100]!, workState: {
-            v: 1, backendId: 'codex', updatedAt: 900,
-            items: [{ id: 'current', kind: 'task', origin: 'happier', status: 'paused', title: 'Review migration', updatedAt: 900 }],
+        const updatedSession: SessionListRenderableSession = { ...sessions[100]!, workDisplay: {
+            v: 1, hasActiveGoal: false,
+            primaryItem: { id: 'current', kind: 'task', status: 'paused', title: 'Review migration' },
         } };
         const second = buildSessionListRowViewModels({ ...input,
             rowRenderableByKey: new Map(listItems.map((item, index) => [rowKey(item), index === 100 ? updatedSession : sessions[index]!])),
@@ -416,7 +416,7 @@ describe('buildSessionListRowViewModels', () => {
         expect(second.filter((row, index) => row === first[index])).toHaveLength(199);
     });
 
-    it('derives animated working text for working rows by default', async () => {
+    it('derives the canonical working text for working rows', async () => {
         const { t } = await import('@/text');
         const item = {
             type: 'session',
@@ -438,41 +438,6 @@ describe('buildSessionListRowViewModels', () => {
             }]]),
             relativeNowMs: 1000,
             runtimeNowMs: 1000,
-            hasMultipleMachines: false,
-            pinnedSessionKeys: new Set(),
-            sessionTags: {},
-            selectedSessionId: null,
-            showServerBadge: false,
-            showPinnedServerBadge: false,
-        });
-
-        expect(rows[0]?.sessionStatus?.state).toBe('thinking');
-        expect(rows[0]?.sessionStatus?.statusText).not.toBe(t('status.working'));
-    });
-
-    it('derives static working text for working rows when requested', async () => {
-        const { t } = await import('@/text');
-        const item = {
-            type: 'session',
-            sessionId: 'sess_row_vm_static_working',
-            serverId: 'server_a',
-            storageKind: 'persisted',
-            groupKey: 'group-a',
-            groupKind: 'date',
-        } satisfies SessionListIndexItem;
-        const session = createRenderableSession(item.sessionId);
-        const rows = buildSessionListRowViewModels({
-            listItems: [item],
-            reachableSessionDisplayById: new Map(),
-            rowRenderableByKey: new Map([[rowKey(item), {
-                ...session,
-                active: true,
-                thinking: true,
-                thinkingAt: 900,
-            }]]),
-            relativeNowMs: 1000,
-            runtimeNowMs: 1000,
-            workingTextMode: 'static',
             hasMultipleMachines: false,
             pinnedSessionKeys: new Set(),
             sessionTags: {},

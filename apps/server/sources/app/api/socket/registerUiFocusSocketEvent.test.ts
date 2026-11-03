@@ -3,6 +3,24 @@ import { describe, expect, it, vi } from "vitest";
 import { registerUiFocusSocketEvent } from "@/app/api/socket/registerUiFocusSocketEvent";
 
 describe("ui-focus admission", () => {
+    it('records focus transitions on the existing push without refreshing repeated facts or blur', () => {
+        let onFocus!: (input: unknown) => void;
+        const fixture = { connected: true, data: { clientType: 'user-scoped', clientPurpose: 'sync' } as Record<string, unknown>,
+            on: (_event: string, listener: typeof onFocus) => { onFocus = listener; } };
+        registerUiFocusSocketEvent(fixture as unknown as Socket);
+        const clock = vi.spyOn(Date, 'now');
+        try {
+            clock.mockReturnValue(10);
+            onFocus({ computer: true, focused: true });
+            expect(fixture.data.uiLastFocusedAt).toBe(10);
+            clock.mockReturnValue(20);
+            onFocus({ computer: true, focused: true });
+            onFocus({ computer: true, focused: false });
+            expect(fixture.data.uiLastFocusedAt).toBe(10);
+            onFocus({ computer: true, focused: true });
+            expect(fixture.data.uiLastFocusedAt).toBe(20);
+        } finally { clock.mockRestore(); }
+    });
     it.each(["ready", "revoked", "disconnected"] as const)("waits for final authentication admission: %s", async (outcome) => {
         let finishAdmission!: (admitted: boolean) => void;
         const admission = new Promise<boolean>((resolve) => { finishAdmission = resolve; });

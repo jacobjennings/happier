@@ -9,6 +9,14 @@ import {
 const SHARE_ALL = { shareFilePaths: true, shareSessionSummary: true, sharePermissionRequests: true } as const;
 
 describe('redactVoiceToolResultValue', () => {
+  it.each(['approval_request_list', 'approval_request_get', 'approval.request.list', 'approval.request.get'])(
+    'withholds Account request details from %s when request sharing is off', toolName => {
+      const request = { ok: true, items: [{ artifactId: 'own-request', summary: 'PRIVATE REQUEST', actionId: 'settings.set' }] };
+      expect(redactVoiceToolResultForProvider(toolName, request, { ...SHARE_ALL, sharePermissionRequests: false }))
+        .toMatchObject({ ok: false, errorCode: 'privacy_disabled' });
+      expect(redactVoiceToolResultForProvider(toolName, request, SHARE_ALL)).toEqual(request);
+    },
+  );
   it('keeps admitted inventory labels and owner paging while omitting private connection details', () => {
     const result = redactVoiceToolResultForProvider('listAgentModels', {
       items: [{ modelId: 'model', label: 'Model', uiConnectedService: 'private', flavorAliases: ['alias'] }],

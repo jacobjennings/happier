@@ -26,7 +26,7 @@ export type JourneyReelItem = Readonly<{
 
 export type JourneyReelItemKeys = Pick<JourneyReelItem, 'titleKey' | 'bodyKey'>;
 
-export function journeyReelItemKeys(id: JourneyReelFeatureId): JourneyReelItemKeys {
+function journeyReelItemKeys(id: JourneyReelFeatureId): JourneyReelItemKeys {
     return {
         titleKey: `journey.reel.features.${id}.title`,
         bodyKey: `journey.reel.features.${id}.body`,

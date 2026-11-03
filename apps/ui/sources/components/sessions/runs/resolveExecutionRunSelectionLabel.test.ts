@@ -3,11 +3,18 @@ import { describe, expect, it } from 'vitest';
 import { ProviderConnectionIdSchema } from '@happier-dev/protocol';
 
 import { t } from '@/text';
-import { resolveExecutionRunSelectionLabel, resolveRunNativeModelLabel } from './resolveExecutionRunSelectionLabel';
+import { resolveExecutionRunSelectionLabel, resolveRunAnsweringEngine, resolveRunNativeModelLabel } from './resolveExecutionRunSelectionLabel';
 import { buildScmDiffSummaryModelProfiles } from '@happier-dev/protocol/actions/settings/scmDiffSummaryModels';
 import { readBackendTargetRefV2 } from '@happier-dev/protocol/backends/targets/backendTargetRefV2';
+import { resolveExecutionRunTitle } from './resolveExecutionRunTitle';
 
 describe('resolveExecutionRunSelectionLabel', () => {
+  it('names the walkthrough conversation and recipient while retaining the parent tool title', () => {
+    const run = { intent: 'scm_diff_summary', display: { title: 'Change summary' } };
+    expect(resolveExecutionRunTitle(run, 'conversation')).toBe(t('walkthrough.conversationTitle'));
+    expect(resolveExecutionRunTitle(run, 'recipient')).toBe(t('walkthrough.eyebrow'));
+    expect(resolveExecutionRunTitle(run)).toBe('Change summary');
+  });
   const label = (connectionId: string) =>
     connectionId === 'pc_gateway' ? 'Main gateway' : null;
 
@@ -98,6 +105,20 @@ describe('resolveExecutionRunSelectionLabel', () => {
         expectedResourceRevision: 2, deliveryMode: 'brokered', agentTargetKey: 'agent:claude', modelId: 'claude-haiku-4-5',
       },
     }, label, 'Work Team', catalog)).toBe(`${t('runPage.menu.selectionInherited')} · Work Team · claude-haiku-4-5`);
+  });
+
+  // The Session composer asking a walkthrough has no admitted Machine catalog, but the Session already lists its own
+  // Agent's models: the fixed chip names the Run's model by that title ("GPT-6-Luna"), never its id.
+  it('names the answering model from the Session model list of the same Agent, and only that Agent', () => {
+    const sessionModels = { agentId: 'codex', metadata: { sessionModelsV1: {
+      v: 1 as const, agentId: 'codex', updatedAt: 1, currentModelId: 'gpt-6-luna',
+      availableModels: [{ id: 'gpt-6-luna', name: 'GPT-6-Luna' }],
+    } } };
+    const codex = { kind: 'builtInAgent' as const, agentId: 'codex' };
+    expect(resolveRunAnsweringEngine({ backendTarget: codex, modelId: 'gpt-6-luna', sessionModels }))
+      .toEqual({ label: 'GPT-6-Luna', agentId: 'codex' });
+    expect(resolveRunAnsweringEngine({ backendTarget: { kind: 'builtInAgent', agentId: 'claude' }, modelId: 'gpt-6-luna', sessionModels })?.label)
+      .toBe('gpt-6-luna');
   });
 
   it('names a Team resource from its recipient-safe identity', () => {

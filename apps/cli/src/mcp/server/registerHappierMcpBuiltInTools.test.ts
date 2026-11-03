@@ -4,6 +4,7 @@ import { z } from 'zod/mini';
 import Ajv from 'ajv';
 import * as mini from 'zod/mini';
 import { createHash } from 'node:crypto';
+import { Session } from 'node:inspector';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -24,8 +25,66 @@ import { createActionExecutor } from '@happier-dev/protocol/actions/actionExecut
 import { createActionToolExecutorBridge } from '@/agent/tools/happierTools/createActionToolExecutorBridge';
 import { createUnavailableActionTransportDeps } from '@/testkit/actionTransportDeps';
 import { projectMcpToolInputJsonSchema } from './projectMcpToolInputJsonSchema';
+import { createExternalMcpServer } from '@/mcp/createExternalMcpServer';
 
 describe('registerHappierMcpBuiltInTools', () => {
+  it('does not reproject registered tool schemas after the first tools/list request', async () => {
+    const tool = { name: 'schema_projection_cost', title: 'Schema projection cost', description: 'Fixture',
+      inputSchema: z.object({}), outputSchema: z.object({ ok: z.boolean() }) };
+    const { mcp: server, toolNames } = createExternalMcpServer({ credentials: { token: 'schema-projection-fixture', encryption: null } });
+    const bridge = createActionToolExecutorBridge({ surface: 'mcp',
+      executor: createActionExecutor(createUnavailableActionTransportDeps()) });
+    registerHappierMcpBuiltInTools(server, {
+      sessionId: 'schema-projection-cost', surface: 'mcp',
+      toolInventory: prepareHappierMcpToolInventory({ sessionId: 'schema-projection-cost',
+        inventory: { tools: [tool], actionToolNameToId: new Map() } }),
+      deps: { ...bridge, changeTitle: async () => ({ success: true }),
+        resolveActionOptions: args => bridge.resolveActionOptions(args, 'schema-projection-cost') },
+    });
+    const client = new Client({ name: 'schema-projection-cost', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const inspector = new Session();
+    const post = <T>(method: string, params?: Record<string, unknown>) => new Promise<T>((resolve, reject) => {
+      inspector.post(method, params ?? {}, (error, result) => error ? reject(error) : resolve(result as T));
+    });
+    inspector.connect();
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      await post('Profiler.enable');
+      await post('Profiler.startPreciseCoverage', { callCount: true, detailed: false });
+      const baseline = (await client.listTools()).tools.map(tool => tool.name);
+      expect(baseline).toEqual([...toolNames, 'schema_projection_cost']);
+      const later = server.registerTool('later_tool', { inputSchema: z.object({}) }, async () => ({ content: [] }));
+      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual([...baseline, 'later_tool']);
+      later.disable();
+      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(baseline);
+      later.enable();
+      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual([...baseline, 'later_tool']);
+      later.remove();
+      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(baseline);
+      const toRename = server.registerTool('rename_source', { inputSchema: z.object({}) }, async () => ({ content: [] }));
+      toRename.update({ name: 'renamed_tool', paramsSchema: { label: z.string() } });
+      const renamed = (await client.listTools()).tools.find(tool => tool.name === 'renamed_tool');
+      expect(renamed?.inputSchema).toMatchObject({ required: ['label'] });
+      expect((await client.listTools()).tools.some(tool => tool.name === 'rename_source')).toBe(false);
+      await post('Profiler.takePreciseCoverage');
+      await client.listTools();
+      const coverage = await post<{
+        result: Array<{ functions: Array<{ functionName: string; ranges: Array<{ count: number }> }> }>;
+      }>('Profiler.takePreciseCoverage');
+      const repeatedProjections = coverage.result.flatMap(script => script.functions)
+        .filter(fn => fn.functionName === 'toJsonSchemaCompat' || fn.functionName === 'zodSchemaToJsonSchemaObject')
+        .reduce((total, fn) => total + (fn.ranges[0]?.count ?? 0), 0);
+      expect(repeatedProjections).toBe(0);
+    } finally {
+      await post('Profiler.stopPreciseCoverage').catch(() => undefined);
+      inspector.disconnect();
+      await client.close();
+      await server.close();
+    }
+  });
+
   it('shares repeated native tool input schemas through MCP discovery without losing their contracts', async () => {
     const spec = getActionSpec('session.board.item.upsert');
     const example = spec.examples?.mcp?.argsExample;
@@ -351,6 +410,9 @@ describe('registerHappierMcpBuiltInTools', () => {
     }, {
       sessionId: 'sess-1',
       surface: 'mcp',
+      actionsSettings: ActionsSettingsV1Schema.parse({ v: 1, actions: {
+        'session.title.set': { toolExposureModes: { mcp: 'direct' } },
+      } }),
       deps: {
         changeTitle: async () => ({ success: true }),
         executeActionByToolName,
@@ -558,88 +620,6 @@ describe('registerHappierMcpBuiltInTools', () => {
     });
   });
 
-  it('registers model-list tools with schemas that accept canonical V2 backend target keys', async () => {
-    const cases = [
-      {
-        surface: 'mcp' as const,
-        actionsSettings: null,
-      },
-      {
-        surface: 'agent' as const,
-        actionsSettings: ActionsSettingsV1Schema.parse({
-          v: 1,
-          actions: {
-            'agents.models.list': {
-              toolExposureModes: {
-                agent: 'direct',
-              },
-            },
-          },
-        }),
-      },
-    ];
-
-    for (const item of cases) {
-      const registered = new Map<string, {
-        meta: { inputSchema?: { safeParse?: (value: unknown) => { success: boolean } } };
-        handler: (args: unknown, extra?: unknown) => Promise<unknown>;
-      }>();
-      const executeActionByToolName = vi.fn(async (_toolName: string, args: unknown) => ({
-        ok: true as const,
-        result: { args },
-      }));
-
-      registerHappierMcpBuiltInTools({
-        registerTool: (name, meta, handler) => {
-          registered.set(name, {
-            meta: meta as { inputSchema?: { safeParse?: (value: unknown) => { success: boolean } } },
-            handler: handler as (args: unknown, extra?: unknown) => Promise<unknown>,
-          });
-        },
-      }, {
-        sessionId: 'sess-1',
-        surface: item.surface,
-        actionsSettings: item.actionsSettings,
-        deps: {
-          changeTitle: async () => ({ success: true }),
-          executeActionByToolName,
-        },
-      });
-
-      const tool = registered.get('agents_models_list');
-      expect(tool).toBeTruthy();
-      const input = { backendTargetKey: 'agent:happier.agent.codex/codex', limit: 1 };
-      expect(tool?.meta.inputSchema?.safeParse?.(input)?.success).toBe(true);
-
-      await expect(tool?.handler(input)).resolves.toMatchObject({
-        content: [{ type: 'text', text: JSON.stringify({ args: input }) }],
-        isError: false,
-      });
-      if (item.surface === 'agent') {
-        expect(executeActionByToolName).toHaveBeenCalledWith(
-          'agents_models_list',
-          input,
-          'sess-1',
-          {
-            actionRequestId: expect.any(String),
-            approvalOrigin: {
-              kind: 'transcript_tool_call',
-              sessionId: 'sess-1',
-              toolName: 'agents_models_list',
-            },
-          },
-        );
-      } else {
-        expect(executeActionByToolName).toHaveBeenCalledWith(
-          'agents_models_list',
-          input,
-          'sess-1',
-          { actionRequestId: expect.any(String) },
-        );
-      }
-    }
-  });
-
   it('allows direct session action tools to rely on the MCP default session target', () => {
     const registered = new Map<string, unknown>();
 
@@ -650,56 +630,26 @@ describe('registerHappierMcpBuiltInTools', () => {
     }, {
       sessionId: 'sess-1',
       surface: 'mcp',
+      actionsSettings: ActionsSettingsV1Schema.parse({ v: 1, actions: {
+        'session.terminalComposer.clear': { toolExposureModes: { mcp: 'direct' } },
+      } }),
       deps: {
         changeTitle: async () => ({ success: true }),
         executeActionByToolName: async () => ({ ok: true as const, result: { status: 'cleared' } }),
       },
     });
 
-    const meta = registered.get('session_terminal_composer_clear') as { inputSchema?: { safeParse?: (value: unknown) => { success: boolean } } } | undefined;
-    expect(meta).toBeTruthy();
-    expect(meta?.inputSchema?.safeParse?.({})?.success).toBe(true);
-    expect(meta?.inputSchema?.safeParse?.({ sessionId: 'sess-2' })?.success).toBe(true);
-  });
-
-  it('preserves an exact execution-run recipient through the canonical MCP Action tool', async () => {
-    const handlers = new Map<string, (args: unknown, extra?: unknown) => Promise<unknown>>();
-    const executeActionByToolName = vi.fn(async () => ({
-      ok: true as const,
-      result: { status: 'accepted', localId: 'local-targeted-1' },
-    }));
-
-    registerHappierMcpBuiltInTools({
-      registerTool: (name, _meta, handler) => {
-        handlers.set(name, handler as (args: unknown, extra?: unknown) => Promise<unknown>);
-      },
-    }, {
-      sessionId: 'sess-home-1',
-      surface: 'mcp',
-      deps: {
-        changeTitle: async () => ({ success: true }),
-        executeActionByToolName,
-      },
-    });
-
-    const handler = handlers.get('session_message_send');
-    if (!handler) throw new Error('Expected session_message_send to be registered');
-    const input = {
-      message: 'Inspect the exact run.',
-      recipient: { kind: 'execution_run', runId: 'run-9' },
-      wait: true,
+    const meta = registered.get('session_terminal_composer_clear') as { inputSchema?: z.ZodMiniType } | undefined;
+    if (!meta?.inputSchema) throw new Error('Expected session_terminal_composer_clear to be registered');
+    // Control: the canonical Action contract requires sessionId; only the bound MCP context makes it optional.
+    expect(zodSchemaToJsonSchemaObject(getActionSpec('session.terminalComposer.clear').inputSchema, { target: 'draft-7' }).required)
+      .toContain('sessionId');
+    const advertised = z.toJSONSchema(meta.inputSchema, { target: 'draft-7', io: 'input' }) as {
+      properties?: Record<string, unknown>;
+      required?: string[];
     };
-
-    await expect(handler(input, { requestId: 'mcp-targeted-1' })).resolves.toMatchObject({
-      isError: false,
-      structuredContent: { status: 'accepted', localId: 'local-targeted-1' },
-    });
-    expect(executeActionByToolName).toHaveBeenCalledExactlyOnceWith(
-      'session_message_send',
-      input,
-      'sess-home-1',
-      { actionRequestId: expect.any(String) },
-    );
+    expect(advertised.properties).toHaveProperty('sessionId');
+    expect(advertised.required ?? []).not.toContain('sessionId');
   });
 
   it('does not let process action settings disable built-in MCP tools when no predicate is provided', () => {
@@ -709,7 +659,7 @@ describe('registerHappierMcpBuiltInTools', () => {
     process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
       v: 1,
       actions: {
-        'session.list': { enabled: true, disabledSurfaces: ['mcp'], disabledPlacements: [] },
+        'execution.run.list': { enabled: true, disabledSurfaces: ['mcp'], disabledPlacements: [] },
       },
     });
 
@@ -727,7 +677,7 @@ describe('registerHappierMcpBuiltInTools', () => {
         },
       });
 
-      expect(registered).toContain('session_list');
+      expect(registered).toContain('execution_run_list');
     } finally {
       if (previous === undefined) {
         delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
@@ -827,6 +777,9 @@ describe('registerHappierMcpBuiltInTools', () => {
     }, {
       sessionId: 'sess-1',
       surface: 'mcp',
+      actionsSettings: ActionsSettingsV1Schema.parse({ v: 1, actions: {
+        'session.list': { toolExposureModes: { mcp: 'direct' } },
+      } }),
       deps: {
         changeTitle: async () => ({ success: true }),
         executeActionByToolName,

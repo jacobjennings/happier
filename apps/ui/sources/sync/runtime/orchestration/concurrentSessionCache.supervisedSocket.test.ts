@@ -112,6 +112,7 @@ describe('concurrent session cache supervised sockets', () => {
     });
 
     it('withdraws secondary-Home presence until fresh ingress for that exact Account and Machine', async () => {
+        h.setMachines(h.homeB, [{ ...h.machine(h.homeB, 'presence-machine'), active: true, activeAt: Date.now() }]);
         await h.start(); await h.ready();
         const reachability = await import('@/sync/domains/machines/reachability/machineReachability');
         disposers.push(() => reachability.clearMachineRequestReachabilityForTest());
@@ -124,12 +125,24 @@ describe('concurrent session cache supervised sockets', () => {
         expect(reachability.isMachineReachable(scope, machine)).toBe(false);
         socket.trigger('ephemeral', { type: 'machine-activity', id: 'another-machine', active: true, activeAt: Date.now() });
         expect(reachability.resolveMachineReachability(scope, machine)).toBe('unknown');
+        const machineReads = h.requests('/v1/machines').length;
+        socket.trigger('ephemeral', { type: 'machine-activity', id: machine.id, active: true, activeAt: Date.now() });
+        expect(reachability.resolveMachineReachability(scope, machine)).toBe('reachable');
+        expect(reachability.resolveMachineReachability(scope, { ...machine, id: 'not-observed' })).toBe('unknown');
+        const offlineAt = Date.now() + 1;
+        socket.trigger('ephemeral', { type: 'machine-activity', id: machine.id, active: false, activeAt: offlineAt });
+        const { readMachineActivity } = await import('@/sync/domains/machines/machineActivity');
+        expect(readMachineActivity(machines()!.find(row => row.id === machine.id)!)).toMatchObject({ active: false, activeAt: offlineAt });
+        expect(h.requests('/v1/machines')).toHaveLength(machineReads);
+        reachability.recordMachineRequestFailed({ ...scope, machineId: machine.id });
+        reachability.recordMachineRequestFailed({ ...scope, accountId: 'another-account', machineId: machine.id });
         const offline = { ...h.machine(h.homeB, machine.id), active: false, activeAt: 1 };
         h.setMachines(h.homeB, [offline]);
         socket.trigger('connect');
         await h.refresh();
+        expect(reachability.readMachineRequestReachabilityObservation(scope, machine.id)).toBeNull();
         expect(reachability.resolveMachineReachability(scope, { ...machine, active: false, activeAt: 1 })).toBe('unreachable');
-        expect(reachability.resolveMachineReachability({ ...scope, accountId: 'another-account' }, machine)).toBe('reachable');
+        expect(reachability.readMachineRequestReachabilityObservation({ ...scope, accountId: 'another-account' }, machine.id)?.outcome).toBe('failed');
     });
     it('recovers a retired Service watch when a daemon reconnects without reconnecting its Home', async () => {
         await h.start(); await h.ready();

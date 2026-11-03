@@ -26,6 +26,7 @@ describe('buildPatchFromSelectedDiffLines', () => {
         expect(patch).toContain('@@ -1,3 +1,4 @@');
         expect(patch).toContain(' old-line');
         expect(patch).toContain('+new-line');
+        expect(patch).not.toContain('\n-old-line\n');
     });
 
     it('builds a valid remove-only patch hunk for selected - lines', () => {
@@ -45,13 +46,6 @@ describe('buildPatchFromSelectedDiffLines', () => {
 
         const hunkCount = (patch?.match(/^@@/gm) ?? []).length;
         expect(hunkCount).toBe(1);
-    });
-
-    it('converts unselected deletions to context when only additions are selected', () => {
-        const patch = buildPatchFromSelectedDiffLines(sampleDiff, new Set(['additions:2']));
-        expect(patch).toContain('+new-line');
-        expect(patch).toContain(' old-line');
-        expect(patch).not.toContain('\n-old-line\n');
     });
 
     it('drops unselected deletions for unstage mode when only additions are selected', () => {

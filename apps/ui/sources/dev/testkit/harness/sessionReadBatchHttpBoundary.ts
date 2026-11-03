@@ -2,6 +2,90 @@ import { SessionReadBatchRequestV1Schema } from '@happier-dev/protocol/sessions/
 import { buildSessionMessagesPath } from '@happier-dev/protocol/sessions/messages/sessionMessagesPageV1';
 import type { ServedHomeRequest } from './actionHomesHttpHarness';
 import type { RuntimeFetch } from '@/utils/system/runtimeFetch';
+import { V2SessionListRowSchema, V2SessionRecordSchema, type V2SessionRecord, type V2SessionListRow } from '@happier-dev/protocol/sessions/control/contract';
+
+/** Full external source facts, retained until the HTTP boundary projects the list wire. */
+export function createSessionListSourceFixture<T extends Readonly<{ sessions: readonly V2SessionRecord[] }>>(page: T): Omit<T, 'sessions'> & { sessions: V2SessionRecord[] } {
+    return { ...page, sessions: page.sessions.map(row => V2SessionRecordSchema.parse(row)) };
+}
+
+/** Project external full-document fixtures into the current list wire. */
+export function createCompactSessionListRowFixture(record: V2SessionRecord): V2SessionListRow {
+    return V2SessionListRowSchema.parse(compactSessionListRow(record));
+}
+
+function compactSessionListRow(record: V2SessionRecord) {
+    const { metadata: _metadata, ownerMetadata: _ownerMetadata, agentState: _agentState, ...facts } = record;
+    const shared = facts.effectiveAccess !== undefined && facts.effectiveAccess.level !== 'owner';
+    return { ...facts, documents: 'omitted',
+        metadataLayoutVersion: facts.metadataLayoutVersion ?? 0,
+        metadataAudience: shared ? 'shared' : 'owner', agentStateDocument: shared ? 'redacted' : 'omitted',
+        agentStateVersion: facts.agentStateVersion ?? 0 };
+}
+
+/**
+ * Only HTTP fixtures retain full source documents. The consumer sees compact
+ * lists and obtains demanded documents through the real read-batch parser.
+ * Return undefined for unhandled routes; explicit batch responses are preserved.
+ */
+export function createCompactSessionListFetchBoundary(
+    request: (path: string, init: RequestInit) => Promise<Response | undefined>,
+    options?: Readonly<{ preferExactSnapshot?: boolean }>,
+): RuntimeFetch;
+export function createCompactSessionListFetchBoundary(
+    request: (path: string, init: RequestInit) => Promise<Response | null | undefined>,
+    options?: Readonly<{ preferExactSnapshot?: boolean }>,
+): (...args: Parameters<RuntimeFetch>) => Promise<Response | null>;
+export function createCompactSessionListFetchBoundary(
+    request: (path: string, init: RequestInit) => Promise<Response | null | undefined>,
+    options: Readonly<{ preferExactSnapshot?: boolean }> = {},
+): (...args: Parameters<RuntimeFetch>) => Promise<Response | null> {
+    const sources = new Map<string, Map<string, V2SessionRecord>>();
+    const scope = (path: string, init: RequestInit) => `${new URL(path, 'https://session-fixture.test').origin}:${new Headers(init.headers).get('authorization') ?? ''}`;
+    return async (input, requestInit) => {
+        const path = input instanceof Request ? input.url : String(input);
+        const init: RequestInit = input instanceof Request
+            ? { method: input.method, headers: input.headers, signal: input.signal,
+                ...(input.body ? { body: await input.clone().text() } : {}), ...requestInit }
+            : requestInit ?? {};
+        const url = new URL(path, 'https://session-fixture.test');
+        if (url.pathname === '/v2/sessions/read-batch' && init.method === 'POST') {
+            const explicit = await request(path, init);
+            if (explicit) return explicit;
+            const batch = createSessionReadBatchFetchBoundary(async (input, componentInit) => {
+                const componentUrl = new URL(String(input));
+                const match = /^\/v2\/sessions\/([^/]+)$/.exec(componentUrl.pathname);
+                const source = match ? sources.get(scope(path, init))?.get(decodeURIComponent(match[1]!)) : undefined;
+                if (source && !options.preferExactSnapshot) return Response.json({ session: source });
+                const response = await request(path.startsWith('/') ? `${componentUrl.pathname}${componentUrl.search}` : componentUrl.href, componentInit ?? {});
+                if (response) return response;
+                return source ? Response.json({ session: source }) : undefined;
+            });
+            const response = await batch(url.href, init);
+            if (!response) throw new Error('[testkit] Missing synthesized Session batch response');
+            return response;
+        }
+        const response = await request(path, init);
+        if (response === null) return null;
+        if (!response) return Response.json({ error: 'not_found' }, { status: 404 });
+        if (!response.ok || !['/v2/sessions', '/v2/sessions/active', '/v2/sessions/archived', '/v2/sessions/query'].includes(url.pathname)) return response;
+        const body: unknown = await response.clone().json().catch(() => null);
+        if (!body || typeof body !== 'object' || !('sessions' in body) || !Array.isArray(body.sessions)) return response;
+        const captured = sources.get(scope(path, init)) ?? new Map<string, V2SessionRecord>();
+        sources.set(scope(path, init), captured);
+        const sessions = body.sessions.map((row: unknown) => {
+            // Explicit current-wire claims belong to the tested parser, even if malformed.
+            if (row && typeof row === 'object' && ('documents' in row || 'metadataAudience' in row || 'agentStateDocument' in row)) return row;
+            const parsed = V2SessionRecordSchema.safeParse(row);
+            if (!parsed.success) return row;
+            const compact = V2SessionListRowSchema.safeParse(compactSessionListRow(parsed.data));
+            if (!compact.success) return row;
+            captured.set(parsed.data.id, parsed.data);
+            return compact.data;
+        });
+        return new Response(JSON.stringify({ ...body, sessions }), { status: response.status, statusText: response.statusText, headers: response.headers });
+    };
+}
 
 /** HTTP fixture adapter: single and batch transports use the same external Session facts. */
 export function createSessionReadBatchHttpBoundary(route: (request: ServedHomeRequest) => Response | undefined | Promise<Response | undefined>) {

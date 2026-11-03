@@ -15,10 +15,10 @@ describe('auth command error presentation', () => {
     await expect(handleAuthWait([])).rejects.toMatchObject({ code: 'AUTH_WAIT_INVALID_ARGUMENT' });
   });
   it.each([
-    { args: ['wait', '--json'], code: 'AUTH_WAIT_INVALID_ARGUMENT' },
-    { args: ['wait', '--json', '--public-key', 'invalid'], code: 'AUTH_WAIT_INVALID_ARGUMENT' },
-    { args: ['wait', '--json', '--secrets-json-stdin'], code: 'AUTH_WAIT_FAILED' },
-  ])('projects wait validation failures as typed JSON ($code)', async ({ args, code }) => {
+    { args: ['wait', '--json'], code: 'AUTH_WAIT_INVALID_ARGUMENT', exitCode: 2 },
+    { args: ['wait', '--json', '--public-key', 'invalid'], code: 'AUTH_WAIT_INVALID_ARGUMENT', exitCode: 2 },
+    { args: ['wait', '--json', '--secrets-json-stdin'], code: 'AUTH_WAIT_FAILED', exitCode: 1 },
+  ])('projects wait validation failures as typed JSON ($code, exit $exitCode)', async ({ args, code, exitCode }) => {
     // Stdin/stdout and process exit are OS boundaries; dispatch and wait stay real.
     vi.spyOn(process.stdin, Symbol.asyncIterator).mockImplementation(async function* () { throw new Error('private-input'); });
     const chunks: string[] = [];
@@ -28,8 +28,9 @@ describe('auth command error presentation', () => {
       return true;
     });
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('test_exit'); });
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('test_exit'); });
     await expect(handleAuthCliCommand({ args: ['auth', ...args], rawArgv: [], terminalRuntime: null })).rejects.toThrow('test_exit');
+    expect(exit).toHaveBeenCalledWith(exitCode);
     expect(JSON.parse(chunks.join(''))).toMatchObject({ v: 1, ok: false, kind: 'auth_wait', error: { code, category: 'auth_error' } });
     expect(chunks.join('')).not.toContain('private-input');
   });

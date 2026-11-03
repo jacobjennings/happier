@@ -1,12 +1,48 @@
 import { describe, expect, it } from 'vitest';
 import { ActionIdSchema } from './actionIds.js';
-import { ActionSpecSchema, getActionSpec } from './actionSpecs.js';
+import { ActionSpecSchema, getActionSpec, PUBLIC_ACTION_OUTPUT_SCHEMAS, resolveActionExecutionPlacementForInput } from './actionSpecs.js';
 import { resolveActionApprovalRouting } from './actionApprovalPolicy.js';
 import { ActionsSettingsV1Schema } from './actionSettings.js';
 import { PROJECT_ACTION_INPUT_SCHEMAS_V1 } from './projectActionFamily.js';
 import { describeApprovalActionFields } from './actionApprovalPresentation.js';
+import { createActionExecutor } from './actionExecutor.js';
+import { freezeActionCompletionContractV1 } from './actionCompletion.js';
+import { readCompleteActionSpecV1 } from './actionSpecSections.js';
 
 describe('Project preparation Action contracts', () => {
+  it.each([true, false])('returns the Project Script spec and complete completion contract through action.spec.get (output schema: %s)', async includeOutputSchema => {
+    const executor = createActionExecutor({});
+    const discovered = await readCompleteActionSpecV1({
+      actionId: 'projects.script.run',
+      read: async input => {
+        const result = await executor.execute('action.spec.get', { ...input, includeOutputSchema }, { surface: 'mcp' });
+        expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+        if (!result.ok) throw new Error(result.errorCode);
+        return PUBLIC_ACTION_OUTPUT_SCHEMAS['action.spec.get'].parse(result.result);
+      },
+    });
+    expect(discovered.id).toBe('projects.script.run');
+    expect(discovered.completion).toEqual(freezeActionCompletionContractV1(getActionSpec('projects.script.run').completion!));
+    expect(discovered.completion?.awaits).toBe('action_operations');
+    expect(discovered.outputSchema !== undefined).toBe(includeOutputSchema);
+  });
+
+  it('keeps remembered setup consent human-owned while exposing a retained request on agent, MCP and CLI', () => {
+    const spec = getActionSpec('projects.prepare');
+    const input = { workspace: { serverId: 'home', workspaceId: 'workspace', machineId: 'machine', rootPath: '/repo' },
+      phase: 'setup', heldOperationId: 'held', expectedEffectDigest: 'reviewed', consentScope: 'untilChanged' };
+    expect(spec.inputSchema.parse(input)).toEqual(input);
+    expect(spec.inputSchema.safeParse({ ...input, heldOperationId: undefined }).success).toBe(false);
+    expect(spec.inputSchema.safeParse({ ...input, skipForInvocation: true }).success).toBe(false);
+    expect(resolveActionExecutionPlacementForInput(spec, input)).toBe('account');
+    expect(resolveActionExecutionPlacementForInput(spec, { ...input, consentScope: 'thisTime' })).toBe('machine');
+    for (const surface of ['agent', 'mcp', 'cli'] as const) {
+      expect(spec.surfaces[surface]).toBe(true);
+      expect(resolveActionApprovalRouting({ actionId: spec.id, spec, input, context: { surface, authority: 'account_automation' },
+        settings: ActionsSettingsV1Schema.parse({ v: 1, approvalWaivedSurfaces: { 'projects.prepare': [surface] } }),
+      })).toMatchObject({ required: true, flow: 'deferred' });
+    }
+  });
   it.each([
     { kind: 'named', name: 'fresh' },
     { kind: 'native', source: { kind: 'native', tool: 'make', file: 'Makefile', target: 'fresh' } },

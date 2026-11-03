@@ -1,13 +1,11 @@
-import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import { resolveLocalPathPluginSource } from './localPath';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
-
-const BUNDLED_PLUGIN_ROOT = resolve(import.meta.dirname, '../../../../../../packages/plugins/codex');
 
 async function writePluginManifest(rootDir: string, manifestOverrides?: Record<string, unknown>): Promise<string> {
   const manifestDir = join(rootDir, '.happier-plugin');
@@ -77,50 +75,6 @@ describe('resolveLocalPathPluginSource', () => {
     expect(result.sourceSpec).not.toHaveProperty('resolvedDigest');
   });
 
-  it('keeps a plugin this checkout bundles external when resolving its local source', async () => {
-    const manifest = JSON.parse(
-      await readFile(join(BUNDLED_PLUGIN_ROOT, '.happier-plugin', 'plugin.json'), 'utf8'),
-    ) as Readonly<{ id: string }>;
-    expect(manifest.id.startsWith('happier.')).toBe(true);
-
-    const result = await resolveLocalPathPluginSource({ locator: BUNDLED_PLUGIN_ROOT });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.manifest.id).toBe(manifest.id);
-    expect(result.manifestAuthority).toBe('external');
-  });
-
-  it('reports external authority for an ordinary local plugin root', async () => {
-    const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-source-external-'));
-    await writePluginManifest(pluginRoot);
-
-    const result = await resolveLocalPathPluginSource({ locator: pluginRoot });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.manifestAuthority).toBe('external');
-  });
-
-  it('lets a local working tree develop a reserved happier.* id without granting it first-party authority', async () => {
-    const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-source-local-reserved-'));
-    await writePluginManifest(pluginRoot, { id: 'happier.agent.codex' });
-    await writeFile(
-      join(pluginRoot, 'package.json'),
-      JSON.stringify({ name: '@happier-dev/plugins-codex', private: true }),
-      'utf8',
-    );
-
-    const result = await resolveLocalPathPluginSource({ locator: pluginRoot });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.manifest.id).toBe('happier.agent.codex');
-    // Provenance scoped the *namespace* rule; it did not promote the root to
-    // the bundled first-party custody authority managed services read.
-    expect(result.manifestAuthority).toBe('external');
-  });
-
   it.each(['package', 'marketplace', 'archive'] as const)(
     'still refuses a %s artifact that claims the reserved happier namespace',
     async (installedSourceKind) => {
@@ -135,9 +89,12 @@ describe('resolveLocalPathPluginSource', () => {
           })],
         }),
       );
-      // Same bytes, same path: only the record's provenance decided the rule.
-      expect(await resolveLocalPathPluginSource({ locator: pluginRoot, installedSourceKind: 'path' }))
-        .toEqual(expect.objectContaining({ ok: true }));
+      // Same bytes, same path: only the record's provenance decided the rule. A working tree
+      // (a recorded path install, or a path the person names with no record) may develop the id.
+      for (const workingTreeKind of ['path', undefined] as const) {
+        expect(await resolveLocalPathPluginSource({ locator: pluginRoot, installedSourceKind: workingTreeKind }))
+          .toEqual(expect.objectContaining({ ok: true, manifest: expect.objectContaining({ id: 'happier.agent.codex' }) }));
+      }
     },
   );
 

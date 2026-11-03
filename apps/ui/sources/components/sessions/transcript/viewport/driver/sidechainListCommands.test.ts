@@ -23,12 +23,12 @@ describe('performSidechainIndexCommand', () => {
         expect(scrollToOffset).not.toHaveBeenCalled();
     });
 
-    it('falls back to the estimated offset when index materialization rejects', async () => {
+    it.each([false, true])('falls back to the estimated offset when index materialization rejects (animated %s)', async (animated) => {
         const scrollToIndex = vi.fn(() => Promise.reject(new Error('missing layout')));
         const scrollToOffset = vi.fn();
 
         expect(performSidechainIndexCommand({
-            animated: false,
+            animated,
             estimatedItemSizePx: 88,
             listRef: { scrollToIndex, scrollToOffset },
             targetIndex: 2,
@@ -38,7 +38,7 @@ describe('performSidechainIndexCommand', () => {
 
         expect(scrollToOffset).toHaveBeenCalledWith({
             offset: 176,
-            animated: false,
+            animated,
         });
     });
 

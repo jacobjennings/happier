@@ -68,8 +68,9 @@ export function createAccountConnectionManagedConsumerSourceOpen(input: AccountC
     if (catalog.status !== 'ready') return null;
     const readSource = async () => await input.withRegistry(async registry => {
       const snapshot = input.getAccountSettingsSnapshot();
-      if (!snapshot || snapshot.scopeKey !== scopeKey || snapshot.scopeKey !== input.expectedAccountSettingsScopeKey
-        || snapshot.providerConnectionsCatalog?.status !== 'ready') return null;
+      if (!snapshot || snapshot.scopeKey !== scopeKey || snapshot.scopeKey !== input.expectedAccountSettingsScopeKey) return null;
+      // The catalog reader throws for loading/unreadable authority. Preserve
+      // that unknown through shared custody; only a ready row can prove loss.
       const resolved = resolveProviderConnectionForMachine({
         connectionId: payload.source.connectionId, machineId: input.machineId,
         providerSettings: readProviderSettingsForCli(snapshot).settings, registry, dnsEvidenceByEndpointUrl: new Map(),
@@ -123,7 +124,6 @@ export function createAccountConnectionManagedConsumerSourceOpen(input: AccountC
         && pluginJsonValuesEqual(row.application, payload.application)))) return null;
     const isSourceCurrent = async (currentSignal: AbortSignal): Promise<boolean> => {
       currentSignal.throwIfAborted();
-      if (!await input.admitConsumer(payload, currentSignal)) return false;
       const current = await readSource();
       return current !== null && current.securityFingerprint === source.securityFingerprint
         && current.grantFingerprint === source.grantFingerprint && current.purposeBasis === source.purposeBasis
@@ -136,12 +136,21 @@ export function createAccountConnectionManagedConsumerSourceOpen(input: AccountC
       sharedGateway: { homeId: input.homeId, accountId: input.accountId, connectionId: payload.source.connectionId,
         machineId: input.machineId, consumerId: JSON.stringify(payload.consumer) },
       isSourceCurrent, revalidateOperationAuthorization: async currentSignal => await input.admitConsumer(payload, currentSignal),
+      retainedCurrentnessScope: {
+        facts: ['teams', 'provider-connections', 'saved-secrets', 'connected-services', 'connected-catalog'],
+        connectedServiceRefs: source.purposeBindings.bindings.map(binding => (
+          binding.target.kind === 'account' ? binding.target.account.service : binding.target.service
+        )),
+      },
       callerSignal: signal,
     });
-    if (!opened) return null;
+    if (!opened || 'unavailable' in opened) return null;
     return {
       access: opened.projection.access,
-      revalidate: opened.revalidateAuthorization,
+      revalidate: async (currentSignal = signal) => {
+        if (currentSignal.aborted || !await input.admitConsumer(payload, currentSignal)) return false;
+        return await opened.revalidateAuthorization(currentSignal);
+      },
       cleanup: async () => await opened.projection.cleanup(),
       retire: async () => { await opened.retire(); await opened.projection.cleanup(); },
     };

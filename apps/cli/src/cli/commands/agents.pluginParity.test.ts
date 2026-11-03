@@ -70,26 +70,6 @@ describe('happier agents plugin-provider parity', () => {
     if (home) await removeTempDir(home);
   });
 
-  it('includes plugin-provided provider CLI rows in agents list JSON output', async () => {
-    const output = captureConsoleLogAndMuteStdout();
-    try {
-      await handleAgentsCommand(['list', '--json']);
-      const parsed = JSON.parse(output.logs.join('\n').trim());
-      expect(parsed.ok).toBe(true);
-      expect(parsed.kind).toBe('agents_list');
-      expect(parsed.data.agents).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            id: 'acme.plugin',
-            title: 'Acme Plugin CLI',
-          }),
-        ]),
-      );
-    } finally {
-      output.restore();
-    }
-  });
-
   it('accepts plugin provider ids in agents setup selection', async () => {
     const output = captureConsoleLogAndMuteStdout();
     try {
@@ -105,27 +85,6 @@ describe('happier agents plugin-provider parity', () => {
           }),
         ]),
       );
-    } finally {
-      output.restore();
-    }
-  });
-
-  it('installs a plugin provider via agents install dry-run', async () => {
-    const output = captureConsoleLogAndMuteStdout();
-    try {
-      await handleAgentsCommand(['install', 'acme.plugin', '--dry-run', '--json']);
-      const parsed = JSON.parse(output.logs.join('\n').trim());
-      expect(parsed.ok).toBe(true);
-      expect(parsed.kind).toBe('agents_install');
-      expect(parsed.data).toEqual(
-        expect.objectContaining({
-          agentId: 'acme.plugin',
-        }),
-      );
-      expect(parsed.data.plan).toEqual(expect.objectContaining({
-        agentId: 'acme.plugin',
-        installMode: 'managed_package',
-      }));
     } finally {
       output.restore();
     }

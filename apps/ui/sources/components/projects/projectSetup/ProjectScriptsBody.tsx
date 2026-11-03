@@ -22,6 +22,8 @@ import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { WidgetGlanceRow } from '@/components/widgets/glance/WidgetGlanceRow';
+
 import {
   ItemGroupColumn,
   ItemGroupColumns,
@@ -36,7 +38,11 @@ import { Typography } from '@/constants/Typography';
 import { useLayoutMaxWidth, useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
 import { renderPageHeaderText } from '@/components/ui/layout/PageHeader';
 import { projectSetupReadinessLine } from './projectSetupReadinessLine';
+import { describeScriptEnvironmentRefusal, nativeEnvironmentNameFor } from './projectEnvironmentPresentation';
 import { useDeviceType } from '@/utils/platform/responsive';
+import { ActionApprovalPendingNotice } from '@/components/approvals/ActionApprovalPendingNotice';
+import { buildApprovalHref } from '@/components/approvals/approvalNavigation';
+import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { useServerCredentialAccountScopeBindings } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 import { useServerScopedMachine } from '@/sync/store/hooks';
@@ -65,7 +71,8 @@ import {
 } from './projectScriptRuns';
 import { ProjectScriptRow } from './ProjectScriptRow';
 import { ProjectSetupReview } from './ProjectSetupReview';
-import { useProjectSetupMachine } from './useProjectSetupMachine';
+import { ProjectSetupReviewPage, useProjectSetupReviewDecision } from './ProjectSetupReviewPage';
+import { useRestoreFocusToTrigger, type FocusReturnTarget } from '@/keyboard/focusReturn';
 import { ProjectSetupAuthoredLine } from './ProjectSetupReturn';
 import { WorkspaceAdHocCommandsItem } from '@/components/projects/workers/WorkspaceAdHocCommandsItem';
 import { ProjectAgentGuidanceDisclosure } from '@/components/projects/workers/ProjectAgentGuidanceDisclosure';
@@ -82,14 +89,21 @@ export type ProjectScriptsBodyProps = Readonly<{
   workspace: WorkspaceAddressV1;
   /** Exact Project/native selectors, when the caller has a controller-qualified handoff. */
   initialManagedConfiguration?: ManagedMachineConfigurationContinuation;
-  /** The Scripts page leads with its header and editor; the rail and widget keep the compact list. */
-  presentation?: 'page' | 'widget';
+  /**
+   * The Scripts page leads with its header and editor; the rail keeps the compact runnable list with
+   * each script's source file beside its name. The Overview widget reads like its sibling widgets: one
+   * glance row per script (its run mark, name and how it last went), with no sheet and no Run control.
+   */
+  presentation?: 'page' | 'rail' | 'widget';
   /** Services found here are reviewed on the Services page, never appended to the finite list. */
   onOpenServices?: () => void;
   /** The host's pane scope whose bottom terminal shows script output; absent where the host has none. */
   outputScopeId?: string | null;
   testID?: string;
 }>;
+
+/** The phone's way into the pushed review page: opens it, and hands back the entry that focus returns to. */
+type PhoneSetupReview = Readonly<{ open: () => void; entryTarget: React.MutableRefObject<FocusReturnTarget> }>;
 
 type EditorState = Readonly<{
   key: string;
@@ -127,11 +141,34 @@ export function ProjectScriptsBody({
       .map(([name]) => projectScriptRowKey(workspace, name)) : [];
   }, [read, workspace]);
   const controller = useProjectScriptsController(workspace, retry, binding, { runChoiceKeys });
+  const router = useRouter();
   const [editor, setEditor] = React.useState<EditorState>(null);
   // Workers settings open in place, like the editor: Scripts › Workers and Run on › Worker settings….
   const [workersKey, setWorkersKey] = React.useState<string | null>(null);
   const page = presentation === 'page';
+  const glance = presentation === 'widget';
   const phone = useDeviceType() === 'phone';
+  // On a phone the held setup review is a page of its own (lab SETUPp); the choice made there survives Back.
+  const [reviewPageOpen, setReviewPageOpen] = React.useState(false);
+  const reviewEntryTarget = React.useRef<FocusReturnTarget>(null);
+  const reviewFocusPending = React.useRef(false);
+  const restoreReviewEntryFocus = useRestoreFocusToTrigger(reviewEntryTarget);
+  const setupRun = useProjectSetupRun(workspace, controller.accountId);
+  const setupReview = useProjectSetupReviewDecision(workspace, controller, setupRun);
+  const { setScope: setReviewScope } = setupReview;
+  React.useLayoutEffect(() => {
+    if (reviewPageOpen || !reviewFocusPending.current) return;
+    reviewFocusPending.current = false;
+    restoreReviewEntryFocus();
+  }, [reviewPageOpen, restoreReviewEntryFocus]);
+  // Back keeps the choice made on the page; a review that is decided (anywhere) ends it with the page.
+  const closeReviewPage = React.useCallback(() => {
+    reviewFocusPending.current = true;
+    setReviewPageOpen(false);
+  }, []);
+  React.useEffect(() => {
+    if (!setupReview.reviewing) { setReviewPageOpen(false); setReviewScope(null); }
+  }, [setupReview.reviewing, setReviewScope]);
   // Scripts are read on the checkout's machine: while it isn't answering, the last-known list stays and
   // the read waits with it (said once by the page above) instead of failing on its own.
   const reachability = useCheckoutReachability(workspace);
@@ -156,7 +193,7 @@ export function ProjectScriptsBody({
   ) : null);
 
   let content: React.ReactNode;
-  let ownsPhoneScroll = false;
+  let ownsScroll = false;
   if (waiting && !(read && read.key === key && 'value' in read)) {
     content = waiting;
   } else if (!read || read.key !== key) {
@@ -169,6 +206,17 @@ export function ProjectScriptsBody({
     );
   } else if (!('value' in read)) {
     content = inspectionFailure;
+  } else if (page && phone && reviewPageOpen && setupReview.reviewing && read.value.definition.document?.status === 'valid') {
+    ownsScroll = true;
+    content = (
+      <ProjectSetupReviewPage
+        testID={`${testID}.setup.reviewPage`}
+        manifest={read.value.definition.document.manifest}
+        review={setupReview}
+        onBack={closeReviewPage}
+        onViewFile={() => { closeReviewPage(); setEditor({ key, seed: false, mode: 'raw' }); }}
+      />
+    );
   } else if (page && workersKey === key) {
     const document = read.value.definition.document;
     const manifestScripts = document?.status === 'valid' ? Object.entries(document.manifest.scripts ?? {}) : [];
@@ -181,7 +229,8 @@ export function ProjectScriptsBody({
       />
     );
   } else if (page && editor?.key === key && accountId && controller.client) {
-    ownsPhoneScroll = phone;
+    // The editor is a page of its own on every layout: the JSON view fills it below its header.
+    ownsScroll = true;
     content = (
       <ProjectManifestEditor
         key={`${key}:${accountId}`}
@@ -209,21 +258,25 @@ export function ProjectScriptsBody({
         inspection={read.value}
         controller={controller}
         page={page}
+        glance={glance}
         testID={testID}
         onEdit={page ? openEditor : null}
         onOpenWorkers={page ? () => setWorkersKey(key) : null}
+        phoneReview={page && phone ? { open: () => setReviewPageOpen(true), entryTarget: reviewEntryTarget } : null}
         onOpenServices={onOpenServices}
         onRetry={retry}
       />
     );
   }
 
-  const approval = controller.approvalId ? (
-    <AttentionBanner
+  // What waits on the person, with its one way in: the same notice every Action-approval page carries.
+  const approval = controller.approvalId && controller.approvalPending ? (
+    <ActionApprovalPendingNotice
+      presentation="banner"
       testID={`${testID}.approval`}
-      tone="neutral"
-      title={t('approvals.title')}
-      description={t('approvals.status.open')}
+      message={t('approvals.waitingForYou')}
+      description={controller.approvalSummary}
+      onOpenApproval={() => router.push(buildApprovalHref(controller.approvalId!, workspace.serverId))}
     />
   ) : null;
   if (!page)
@@ -236,7 +289,7 @@ export function ProjectScriptsBody({
         </View>
       </ProjectCommandOutputHost>
     );
-  if (ownsPhoneScroll) return (
+  if (ownsScroll) return (
     <ProjectCommandOutputHost scopeId={outputScopeId}>
       <View testID={testID} style={styles.phoneEditor}>
         {approval}
@@ -281,28 +334,45 @@ export function ProjectScriptsContent(
     inspection: ProjectDefinitionInspection;
     controller: ScriptsController;
     page: boolean;
+    /** The Overview widget: scripts as glance rows (name and status), not the runnable sheet. */
+    glance?: boolean;
     testID: string;
     onEdit: ((seed: boolean, mode?: 'form' | 'raw') => void) | null;
     /** Opens this checkout's Workers settings; null where the host has no room for the page. */
     onOpenWorkers?: (() => void) | null;
+    phoneReview?: PhoneSetupReview | null;
     onOpenServices?: () => void;
     onRetry: () => void;
   }>,
 ) {
   const { definition, detection } = props.inspection;
   const document = definition.document;
-  const partial =
-    detection.coverage === 'partial' ? (
-      <AttentionBanner
-        testID={`${props.testID}.partial`}
-        tone="warning"
-        title={t('projects.scripts.definition.partial')}
-        details={detection.diagnostics.map(
-          (diagnostic) => `${diagnostic.file}: ${diagnostic.code}`,
-        )}
-        action={{ label: t('common.retry'), onPress: props.onRetry }}
-      />
-    ) : null;
+  // Nix/devenv definitions are read once the environment is evaluated; that is a fact about the
+  // environment, not a failed read, and Retry cannot change it.
+  const unreadable = detection.diagnostics.filter((diagnostic) => diagnostic.code !== 'unevaluated_nix');
+  const unevaluated = unreadable.length < detection.diagnostics.length;
+  const partial = detection.coverage === 'partial' ? (
+    <>
+      {unreadable.length > 0 || !unevaluated ? (
+        <AttentionBanner
+          testID={`${props.testID}.partial`}
+          tone="warning"
+          title={t('projects.scripts.definition.partial')}
+          details={unreadable.map(
+            (diagnostic) => `${diagnostic.file}: ${diagnostic.code}`,
+          )}
+          action={{ label: t('common.retry'), onPress: props.onRetry }}
+        />
+      ) : null}
+      {unevaluated ? (
+        <AttentionBanner
+          testID={`${props.testID}.unevaluated`}
+          tone="neutral"
+          title={t('projects.scripts.environment.unevaluated')}
+        />
+      ) : null}
+    </>
+  ) : null;
   if (document === null) {
     return (
       <>
@@ -365,9 +435,11 @@ function DeclaredScripts(
     inspection: ProjectDefinitionInspection;
     controller: ScriptsController;
     page: boolean;
+    glance?: boolean;
     testID: string;
     onEdit: ((seed: boolean, mode?: 'form' | 'raw') => void) | null;
     onOpenWorkers?: (() => void) | null;
+    phoneReview?: PhoneSetupReview | null;
     /** Sections that continue the list (found scripts and services), before the settings sections. */
     children?: React.ReactNode;
   }>,
@@ -441,6 +513,45 @@ function DeclaredScripts(
     ) : null}
     {/* After setup authoring: which Session last wrote the project file (lab `s-setup` RESULT). */}
     <ProjectSetupAuthoredLine workspace={props.workspace} compact={!props.page} />
+    {props.glance ? (
+      // The Overview widget: Setup keeps its own row (it gates the rest); scripts follow as glance rows.
+      <>
+        {hasSetup ? (
+          <ItemGroup surface="none">
+            <SetupRow
+              workspace={props.workspace}
+              manifest={props.manifest}
+              controller={props.controller}
+              operation={setupRun}
+              readiness={setupReadiness}
+              compact
+              phoneReview={null}
+              testID={`${props.testID}.setup`}
+              onViewFile={null}
+            />
+          </ItemGroup>
+        ) : null}
+        {scripts.length === 0 ? (
+          <WidgetGlanceRow variant="fact" title={t('projects.scripts.noScripts')} testID={`${props.testID}.empty`} />
+        ) : scripts.map(([name, declaration]) => (
+          <DeclaredScriptRow
+            key={name}
+            testID={`${props.testID}.script:${name}`}
+            workspace={props.workspace}
+            name={name}
+            manifest={props.manifest}
+            declaration={declaration}
+            invocation={findProjectInvocation(props.inspection, declaration.source)}
+            controller={props.controller}
+            compact
+            glance
+            preference={preference}
+            idleText={setupReady ? t('projects.scripts.run.notRun') : props.controller.consent ? t('projects.scripts.run.waitsForSetup') : ''}
+            showDivider={false}
+          />
+        ))}
+      </>
+    ) : (
     <ItemGroup>
       {hasSetup ? (
         <SetupRow
@@ -450,6 +561,7 @@ function DeclaredScripts(
           operation={setupRun}
           readiness={setupReadiness}
           compact={!props.page}
+          phoneReview={props.phoneReview ?? null}
           testID={`${props.testID}.setup`}
           onViewFile={props.onEdit ? () => props.onEdit?.(false, 'raw') : null}
         />
@@ -468,20 +580,23 @@ function DeclaredScripts(
             testID={`${props.testID}.script:${name}`}
             workspace={props.workspace}
             name={name}
+            manifest={props.manifest}
             declaration={declaration}
             invocation={findProjectInvocation(props.inspection, declaration.source)}
             controller={props.controller}
             compact={!props.page}
+            glance={false}
             preference={preference}
             memoryDemand={resolveProjectMemoryDemandV1(declaration.memoryDemand, props.manifest.workspace?.memoryDemand)}
             initialManagedConfiguration={props.initialManagedConfiguration}
             onOpenWorkerSettings={props.onOpenWorkers ?? undefined}
-            idleText={setupReady ? t('projects.scripts.run.notRun') : ''}
+            idleText={setupReady ? t('projects.scripts.run.notRun') : props.controller.consent ? t('projects.scripts.run.waitsForSetup') : ''}
             showDivider={index < scripts.length - 1}
           />
         ))
       )}
     </ItemGroup>
+    )}
     {props.children}
     {props.page && hasPortable && props.onOpenWorkers ? (
       <WorkersSummarySection
@@ -556,10 +671,13 @@ function DeclaredScriptRow(
     testID: string;
     workspace: WorkspaceAddressV1;
     name: string;
+    manifest: ProjectManifestV1;
     declaration: NonNullable<ProjectManifestV1['scripts']>[string];
     invocation: ReturnType<typeof findProjectInvocation>;
     controller: ScriptsController;
     compact: boolean;
+    /** The Overview widget's glance row (name and status, no source and no Run control). */
+    glance: boolean;
     idleText: string;
     showDivider: boolean;
     preference: WorkspaceWorkerPreferenceV1 | null;
@@ -585,13 +703,16 @@ function DeclaredScriptRow(
       testID={props.testID}
       workspace={props.workspace}
       name={props.name}
-      badge={source.badge}
+      badge={props.glance ? null : source.badge}
+      glance={props.glance}
       command={source.command ?? (source.target === props.name ? null : source.target)}
       portable={props.declaration.execution === 'portable'}
       operation={operation}
       idleText={props.idleText}
       pending={props.controller.pendingKeys[rowKey] === true}
       failureCode={failure}
+      failureText={describeScriptEnvironmentRefusal(failure, props.manifest, props.declaration.source)}
+      environmentName={nativeEnvironmentNameFor(props.manifest)}
       compact={props.compact}
       showDivider={props.showDivider}
       defaultChoice={resolvedChoice.status === 'resolved' ? resolvedChoice.choice : null}
@@ -627,31 +748,40 @@ function SetupRow(
     operation: ReturnType<typeof useProjectSetupRun>;
     readiness: ProjectDefinitionInspection['setupReadiness'];
     compact: boolean;
+    phoneReview: PhoneSetupReview | null;
     onViewFile: (() => void) | null;
   }>,
 ) {
   const { theme } = useUnistyles();
+  const phone = useDeviceType() === 'phone';
   const steps = props.manifest.workspace?.setup?.length ?? 0;
-  const consent = props.controller.consent;
-  const reviewTarget = consent?.operation?.snapshot.domainRef ?? props.operation?.snapshot.domainRef;
-  const reviewMachine = useProjectSetupMachine(
-    reviewTarget?.kind === 'projectCommand' ? reviewTarget.serverId : props.workspace.serverId,
-    reviewTarget?.kind === 'projectCommand' ? reviewTarget.machineId : props.workspace.machineId,
-  );
+  const review = useProjectSetupReviewDecision(props.workspace, props.controller, props.operation);
+  const reviewMachine = review.machine;
   const stop = props.controller.setupStop;
   const output = useProjectCommandOutputOpener();
+  const environmentName = nativeEnvironmentNameFor(props.manifest);
   const presentation = presentProjectRun(
     props.operation,
     reviewMachine.machineName,
     t('projects.scripts.setup.steps', { count: steps }),
+    environmentName,
   );
-  const reviewing =
-    consent !== null || Boolean(props.operation?.snapshot.setupReview);
+  const reviewing = review.reviewing;
   const failed = props.operation?.snapshot.state === 'failed';
   const stopping = stop.pending || stop.stopRequested;
   const stepCount = t('projects.scripts.setup.steps', { count: steps });
-  const subtitle = reviewing
-    ? t('projects.scripts.setup.pending')
+  // The review is the approval prompt: while it is on screen, held or opened by the person, Setup waits for them.
+  const [open, setOpen] = React.useState(false);
+  const expanded = props.compact
+    ? props.controller.setupReviewOpen
+    : props.controller.setupReviewOpen || reviewing || open;
+  const showsOutput = !reviewing && Boolean(props.operation) && !props.compact;
+  // While the review is on screen it owns Run: the row keeps only its disclosure caret, never a second Run.
+  const inReview = reviewing || (expanded && !showsOutput && !presentation.live);
+  const subtitle = inReview
+    ? environmentName
+      ? t('projects.scripts.environment.pending')
+      : t('projects.scripts.setup.pending')
     : stopping
       ? t('projects.scripts.run.stopping')
       : failed
@@ -659,8 +789,8 @@ function SetupRow(
         : props.readiness?.kind === 'current'
           ? `${projectSetupReadinessLine(props.readiness)} · ${stepCount}`
           // Setup states once what the script rows below wait for; the rows themselves stay quiet.
-          : projectSetupReadinessLine(props.readiness ?? null) ?? presentation.text;
-  const pending = props.controller.pendingKeys.setup === true;
+          : projectSetupReadinessLine(props.readiness ?? null, environmentName) ?? presentation.text;
+  const pending = review.pending;
   const attachment = props.operation?.snapshot.domainRef?.kind === 'projectCommand' ? props.operation.snapshot.domainRef : null;
   const openOutput = () => {
     if (props.operation)
@@ -668,10 +798,8 @@ function SetupRow(
         name: t('projects.scripts.setup.title') });
   };
   // The review opens from the row or from a preparation that needs consent; it never runs anything.
-  const [open, setOpen] = React.useState(false);
-  const expanded = props.compact
-    ? props.controller.setupReviewOpen
-    : props.controller.setupReviewOpen || reviewing || open;
+  // On a phone the held review is a page of its own: the card keeps the waiting line and one way in.
+  const phoneReview = reviewing ? props.phoneReview : null;
   // Run and Stop share one slot: a live setup can be stopped from its own row (lab `s-scripts` PAGE).
   const control = presentation.live ? (
     <RoundButton
@@ -701,9 +829,6 @@ function SetupRow(
     />
   );
   // After a run the row opens into that run's output; a pending review (or no run yet) opens the review.
-  const showsOutput = !reviewing && Boolean(props.operation) && !props.compact;
-  // While the review is on screen it owns Run: the row keeps only its disclosure caret, never a second Run.
-  const inReview = reviewing || (expanded && !showsOutput && !presentation.live);
   const header = (headerProps?: Readonly<Record<string, unknown>>) => (
     <Item
       {...headerProps}
@@ -713,7 +838,7 @@ function SetupRow(
           name="wrench"
           size={18}
           color={
-            reviewing
+            inReview
               ? theme.colors.state.attention.foreground
               : theme.colors.text.secondary
           }
@@ -721,15 +846,25 @@ function SetupRow(
       }
       title={t('projects.scripts.setup.title')}
       // Waiting for the person's approval: the row head carries the attention tint (lab SETUP).
-      style={reviewing ? { backgroundColor: theme.colors.state.attention.background } : undefined}
+      pressableStyle={inReview ? { backgroundColor: theme.colors.state.attention.background } : undefined}
       subtitle={subtitle}
       subtitleStyle={failed && !stopping ? { color: theme.colors.status.error } : undefined}
-      subtitleLines={1}
+      // The approval line names the environment and must not be cut on a phone.
+      subtitleLines={inReview ? 2 : 1}
       showChevron={false}
       rightElementOutsidePressable
       accessoryLayout="inline"
       rightElement={
-        inReview ? (
+        phoneReview ? (
+          <RoundButton
+            size="small"
+            display="secondary"
+            testID={`${props.testID}.reviewEntry`}
+            title={t('projects.scripts.setup.review')}
+            controlRef={(target) => { phoneReview.entryTarget.current = target; }}
+            onPress={phoneReview.open}
+          />
+        ) : inReview ? (
           <Icon name={expanded ? 'caret-up' : 'caret-down'} size={14} color={theme.colors.text.tertiary} />
         ) : (
           <View style={styles.setupTail}>
@@ -740,6 +875,7 @@ function SetupRow(
       }
     />
   );
+  if (phoneReview) return header({ onPress: phoneReview.open });
   return (
     <>
       <ExpandableItem
@@ -759,6 +895,7 @@ function SetupRow(
             {attachment?.terminalId ? (
               <ProjectCommandOutputPane
                 operation={props.operation}
+                ownerStatesExit
                 title={t('projects.scripts.setup.title')}
                 {...(output.opensInTerminal ? { onOpenInTerminal: openOutput } : { onOpenDetail: openOutput })}
               />
@@ -778,18 +915,13 @@ function SetupRow(
             machineName={reviewMachine.machineName}
             sharedRunAs={reviewMachine.sharedRunAs}
             pending={pending}
-            reviewedEffect={consent?.reviewedEffect ?? props.operation?.snapshot.setupReview?.reviewedEffect}
-            initialScope={consent?.consentScope ?? props.operation?.snapshot.setupReview?.consentScope}
-            onRun={(scope) => {
-              void props.controller.prepare(
-                consent?.reviewedEffectDigest ??
-                  props.operation?.snapshot.setupReview?.reviewedEffectDigest,
-                scope,
-              );
-            }}
+            reviewedEffect={review.reviewedEffect}
+            scope={review.scope}
+            onScopeChange={review.setScope}
+            onRun={review.run}
             onNotNow={() => {
               setOpen(false);
-              props.controller.dismissConsent();
+              review.dismiss();
             }}
             onViewFile={() => props.onViewFile?.()}
           />

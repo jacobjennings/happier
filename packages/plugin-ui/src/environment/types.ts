@@ -129,6 +129,11 @@ export type HappierUiPalette = Readonly<{
   /** The low elevation the chosen segment stands on; absent, it sits flat. */
   segmentThumbLift?: HappierPortableStyle;
   /**
+   * The cast shadow an anchored menu or a field's choices stands on: the host's menu step. Absent, it floats
+   * flat. Floating bars that carry their own elevation (find, selection actions) do not read it.
+   */
+  menuLift?: HappierPortableStyle;
+  /**
    * A navigation column's open row (the plane's selected chip) and a row under the pointer. The
    * column's plane itself is the host's (`appShellColumnSurface`); a column never paints its own.
    */
@@ -147,6 +152,14 @@ export type HappierUiPalette = Readonly<{
    */
   versionControlAdded?: string;
   versionControlRemoved?: string;
+  /**
+   * Find's two marks in content a surface draws itself (a CI log): every match as a soft tint that keeps the
+   * text's own colour, the current match as the solid fill with its own ink. Absent (no host facts), the
+   * snapshot's control fill and accent stand in.
+   */
+  findMatch?: string;
+  findMatchCurrent?: string;
+  findMatchCurrentForeground?: string;
   /** Same-realm compact search radius; unhosted search uses its public theme's control radius. */
   searchFieldRadiusPx?: number;
   /** The raised edge of the compact search field (drawn on `sheetBorder`); absent, it draws flat. */

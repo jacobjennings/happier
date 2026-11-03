@@ -16,6 +16,8 @@ import type { TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protoc
 import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { buildRolesRailPickerOption, ROLES_RAIL_PICKER_OPTION_ID } from '@/components/roles/rail/buildRolesRailPickerOption';
 import type { RoleRailItem } from '@/components/roles/rail/rolesRailTypes';
+import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { leafFolderName } from '@/utils/path/pathUtils';
 import { useRoleRailCatalog } from '@/components/roles/rail/useRoleRailItems';
 import { useMachineCapabilitiesCache } from '@/hooks/server/useMachineCapabilitiesCache';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
@@ -181,6 +183,10 @@ const stylesheet = StyleSheet.create((theme) => ({
         justifyContent: 'flex-end',
         paddingHorizontal: theme.space.s16,
     },
+    // Alone on a page there is no transcript above to anchor to: the start sits in the middle.
+    rootCentered: {
+        justifyContent: 'center',
+    },
     lead: {
         gap: theme.space.s6,
         paddingHorizontal: theme.space.s8,
@@ -239,6 +245,13 @@ export const SessionInteractiveExecutionRunDraftView = React.memo((props: Readon
      * can still change it from the start's Role chip or engine popover.
      */
     roleId?: string | null;
+    /** What the tab calls this start ("Second opinion"); the heading says the same, never a second name. */
+    heading?: string | null;
+    /**
+     * Where the start sits in its space. The Details pane keeps it on the composer's edge, below the
+     * conversation it belongs to; as a page of its own, with nothing above it, it is centered.
+     */
+    placement?: 'bottom' | 'center';
 }>) => {
     const intent = props.intent ?? null;
     const optionsIntent: ExecutionRunIntent = intent ?? 'delegate';
@@ -369,7 +382,7 @@ export const SessionInteractiveExecutionRunDraftView = React.memo((props: Readon
         inheritedSelection: options.inheritedDraftTeamCredentialModel,
         onSelectionChange: () => setError(null),
     });
-    const machine = useExecutionRunMachineName(session?.metadata ?? (props.workspace ? { machineId: props.workspace.machineId } : null));
+    const machine = useExecutionRunMachineName(session, serverId, props.workspace?.machineId);
     const childChoice = useExecutionRunChildChoice();
     const runIdRef = React.useRef<string | null>(null);
     const notifiedRunIdRef = React.useRef<string | null>(null);
@@ -712,15 +725,12 @@ export const SessionInteractiveExecutionRunDraftView = React.memo((props: Readon
     const editable = phase === 'idle';
     const canSendMessages = props.sessionId === null ? accountLifetime?.isCurrent() === true
         : session !== null && deriveTranscriptInteractionFromSession(session).canSendMessages;
-    const hasTarget = intent === 'review'
-        ? options.selectedBackendTargetKeys.length > 0
-        : options.selectedBackendChoice !== null;
     const unavailable = exactSettings === null
         || !profileCatalogReady
         || (props.sessionId !== null && !session)
         || !canSendMessages
         || canLaunchExecutionRuns !== true
-        || !hasTarget
+        || options.targetRequirement !== null
         || !secretOverlayState.readiness.ok
         || !teamCredential.available
         || (options.selectedProfileId !== '' && (
@@ -988,13 +998,15 @@ export const SessionInteractiveExecutionRunDraftView = React.memo((props: Readon
                     },
                 }));
             }
+            // The chip that needs a choice says so: with no reviewer Send cannot start anything, and
+            // the missing reviewer reads here rather than as a dead Send.
             chips.push(createExecutionRunStartContentChip({
                 key: 'execution-run-start-reviewers-add',
                 icon: 'plus',
-                label: t('agentStart.chips.addReviewer'),
+                label: options.targetRequirement ? t('agentStart.chips.reviewerNeeded') : t('agentStart.chips.reviewer'),
+                requirement: options.targetRequirement,
                 title: t('agentStart.chips.addReviewer'),
                 testID: 'execution-run-start-reviewers-add-chip',
-                iconOnly: true,
                 disabled,
                 revision: chipRevision,
                 renderContent: () => renderOptions(['backends']),
@@ -1090,7 +1102,7 @@ export const SessionInteractiveExecutionRunDraftView = React.memo((props: Readon
             }));
         }
         return chips;
-    }, [props.sessionId, actionInput.changeType, chipRevision, editable, routeChoice, routeFollowed, routeInFoot, intent, onPatch, onSelectBackend, roleItem?.name, roleValue, rolesRail, rolesStatus, options.backendChoices, options.fields, options.profileChoices.length, options.selectedBackendTargetKeys, options.selectedPermissionMode, options.targetMatchesParent, options.visiblePermissionModeOptions, renderOptions, reportToSession, teamCredential.picker, exactModelSubtitle, exactModelPresentation.accessibilityLabel, demandRouteModel, chooseDraftModel]);
+    }, [props.sessionId, actionInput.changeType, chipRevision, editable, routeChoice, routeFollowed, routeInFoot, intent, onPatch, onSelectBackend, roleItem?.name, roleValue, rolesRail, rolesStatus, options.backendChoices, options.fields, options.profileChoices.length, options.selectedBackendTargetKeys, options.selectedPermissionMode, options.targetMatchesParent, options.targetRequirement, options.visiblePermissionModeOptions, renderOptions, reportToSession, teamCredential.picker, exactModelSubtitle, exactModelPresentation.accessibilityLabel, demandRouteModel, chooseDraftModel]);
 
     // Why it can't start yet, said above the kept draft (lab `convo-ST` "Machine offline"): still
     // reading what the machine offers, or the reason agents can't start in this Session.
@@ -1114,6 +1126,9 @@ export const SessionInteractiveExecutionRunDraftView = React.memo((props: Readon
     const leadAgentIds = intent === 'review'
         ? options.backendChoices.filter((choice) => options.selectedBackendTargetKeys.includes(choice.targetKey)).map((choice) => choice.agentId)
         : selectedChoice ? [selectedChoice.agentId] : [];
+    // A review is about the changes in this folder (the scope chip says which), not about the machine.
+    const reviewFolder = leafFolderName(props.workspace?.cwd ?? (session ? readSessionOwnerMetadataView(session)?.path : null))
+        ?? t('agentStart.thisFolder');
     const startCount = intent === 'review' ? Math.max(1, options.selectedBackendTargetKeys.length) : 1;
     const startsWhenYouSend = t('agentStart.startsWhenYouSend', { count: startCount });
 
@@ -1129,7 +1144,7 @@ export const SessionInteractiveExecutionRunDraftView = React.memo((props: Readon
         : null;
 
     return (
-        <View style={styles.root}>
+        <View style={[styles.root, props.placement === 'center' ? styles.rootCentered : null]}>
             {/* What this start is, right above the composer where the answer will appear (lab S1/S3).
                 An Ask Agent draft leads with the lead and the selected context instead (collab lab R1). */}
             {props.launchOrigin && selectionContext ? (
@@ -1150,10 +1165,12 @@ export const SessionInteractiveExecutionRunDraftView = React.memo((props: Readon
                         </View>
                     ) : null}
                     <Text accessibilityRole="header" style={styles.title}>
-                        {intent ? t(`runPage.launcher.titles.${intent}` as const) : t('agentStart.titles.conversation')}
+                        {props.heading ?? (intent ? t(`runPage.launcher.titles.${intent}` as const) : t('agentStart.titles.conversation'))}
                     </Text>
                     <Text style={styles.description}>
-                        {intent
+                        {intent === 'review'
+                            ? t('runPage.launcher.descriptions.review', { folder: reviewFolder })
+                            : intent
                             ? t(`runPage.launcher.descriptions.${intent}` as const, { machine: machine.name })
                             : t('agentStart.descriptions.conversation', { machine: machine.name })}
                     </Text>
@@ -1190,6 +1207,7 @@ export const SessionInteractiveExecutionRunDraftView = React.memo((props: Readon
                 workspace={props.workspace}
                 serverId={serverId}
                 canSendMessages={canSendMessages}
+                placeholder={intent === 'review' ? t('agentStart.placeholders.review') : undefined}
                 disabled={!editable}
                 isSendDisabled={unavailable || !editable}
                 recipient={null}

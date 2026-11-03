@@ -123,6 +123,27 @@ describe('plugin page anatomy through the shared page owners', () => {
     } finally { mount.unmount(); }
   });
 
+  it('measures a narrow page row\'s detail in the type it draws, so a time that cannot fit beside the label moves beneath instead of wrapping', () => {
+    const value = 'Oct 22, 2026, 12:23 PM';
+    const mount = mountPage(<PublicUi.ItemGroup title="Incoming messages">
+      <PublicUi.Item testID="time-row" title="Support group" subtitle="Could not deliver to the Session" detail={value} />
+    </PublicUi.ItemGroup>);
+    try {
+      const row = mount.container.querySelector<HTMLElement>('[data-testid="time-row"]')!;
+      const handler = (node: Element) => (node as unknown as { __reactLayoutHandler?: (event: HappierLayoutChangeEvent) => void }).__reactLayoutHandler;
+      act(() => handler(row)!({ nativeEvent: { layout: { x: 0, y: 0, width: 358, height: 52 } } }));
+      const measured = Array.from(row.querySelectorAll<HTMLElement>('[aria-hidden="true"]'))
+        .find(node => handler(node) && node.textContent === value)!;
+      const drawn = Array.from(row.querySelectorAll<HTMLElement>('div'))
+        .find(node => node.textContent === value && node.children.length === 0 && !node.closest('[aria-hidden="true"]'))!;
+      const measuredText = measured.querySelector<HTMLElement>('div') ?? measured;
+      // The rendered elements' own declarations (RNW's inline style), not jsdom's partial cascade.
+      expect(drawn.style.fontSize).not.toBe('');
+      expect(measuredText.style.fontSize).toBe(drawn.style.fontSize);
+      expect(measuredText.style.lineHeight).toBe(drawn.style.lineHeight);
+    } finally { mount.unmount(); }
+  });
+
   it('keeps a compact identity glyph on the same title edge as a standard page-row glyph', () => {
     const mount = mountPage(
       <ItemGroup title="Devices">
@@ -146,7 +167,7 @@ describe('plugin page anatomy through the shared page owners', () => {
     } finally { mount.unmount(); }
   });
 
-  it('starts each row seam at its text and stops it at the trailing row inset (P7-R2)', () => {
+  it('starts each row seam at its text and runs it to the sheet trailing edge (P7-R2)', () => {
     const mount = mountPage(
       <ItemGroup title="Devices">
         <Item title="Laptop" icon={<View style={{ width: 16, height: 16 }} />} />
@@ -161,7 +182,7 @@ describe('plugin page anatomy through the shared page owners', () => {
       });
       const inset = HAPPIER_PAGE_METRICS.rowPaddingHorizontalPx;
       const text = inset + HAPPIER_PAGE_METRICS.rowLeadingColumnPx + HAPPIER_PAGE_METRICS.rowLeadingGapPx;
-      expect(seams).toEqual([[`${text}px`, `${inset}px`], [`${inset}px`, `${inset}px`]]);
+      expect(seams).toEqual([[`${text}px`, '0px'], [`${inset}px`, '0px']]);
     } finally { mount.unmount(); }
   });
 

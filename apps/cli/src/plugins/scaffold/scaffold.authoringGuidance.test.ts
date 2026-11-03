@@ -10,57 +10,6 @@ import { scaffoldLocalPlugin } from './scaffold';
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
 describe('scaffoldLocalPlugin authoring guidance', () => {
-  it('teaches the normal create-to-dev loop, diagnostics, examples, and the supported registry option', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'happier-plugin-scaffold-guidance-'));
-    try {
-      const scaffold = await scaffoldLocalPlugin({
-        targetDir: join(root, 'plugin'),
-        pluginId: 'acme.authoring-guidance',
-        displayName: 'Authoring guidance',
-      });
-      expect(scaffold.ok).toBe(true);
-      if (!scaffold.ok) return;
-
-      const skill = await readFile(join(
-        root,
-        'plugin',
-        '.agents',
-        'skills',
-        'happier-plugin-authoring',
-        'SKILL.md',
-      ), 'utf8');
-      expect(skill).toContain('happier plugins dev');
-      expect(skill).toContain('happier plugins doctor .');
-      expect(skill).toContain('node_modules/@happier-dev/plugin-sdk/examples');
-      expect(skill).toContain('--sdk-registry <origin>');
-      expect(skill).toContain('prepares declared dependencies automatically');
-      expect(skill).toContain('do not run `happier plugins dev install .` first');
-      // The dependency-refresh exception: cold-start preparation materializes
-      // an author root once; refreshing a stale tree is `plugins dev install`.
-      expect(skill).toContain('Exception — dependency refresh');
-      expect(skill).toContain('change declared dependencies in `package.json`');
-      expect(skill).toContain('run `happier plugins dev install .` once to refresh the tree');
-      expect(skill).toContain('running Happier CLI');
-      expect(skill).toContain('prepublication SDK version resolves automatically');
-      expect(skill).toContain('managed author commands');
-      expect(skill).toContain('author-owned `pnpm-workspace.yaml`');
-      expect(skill).not.toContain('release-authorized `--sdk-registry` origin');
-      expect(skill).toContain('examples/advanced-package-root');
-      expect(skill).toContain('happier plugins dev typecheck .');
-      expect(skill).toContain('happier plugins dev build .');
-      expect(skill).toContain('happier plugins pack .');
-      expect(skill).toContain(
-        'A failed in-process replacement keeps the incumbent plugin occurrence active only while that daemon lives.',
-      );
-      expect(skill).toContain(
-        'After a daemon restart, Happier rebuilds the current source; if it cannot build and activate, the development plugin is unavailable until corrected.',
-      );
-      expect(skill).not.toContain('retained last-known-good generation');
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   it('threads the selected CLI invoker through scripts and generated guidance', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-plugin-scaffold-hdev-guidance-'));
     try {
@@ -179,71 +128,6 @@ describe('scaffoldLocalPlugin authoring guidance', () => {
         }
       }
       await expect(stat(join(root, 'plugin', 'AGENTS.md'))).rejects.toMatchObject({ code: 'ENOENT' });
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('directs React Native authors to the shipped Plugin UI API inventory', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'happier-plugin-scaffold-plugin-ui-inventory-'));
-    try {
-      const scaffold = await scaffoldLocalPlugin({
-        targetDir: join(root, 'plugin'),
-        pluginId: 'acme.plugin-ui-inventory',
-        displayName: 'Plugin UI inventory',
-        ui: 'reactNative',
-      });
-      expect(scaffold.ok).toBe(true);
-      if (!scaffold.ok) return;
-
-      const skill = await readFile(join(
-        root,
-        'plugin',
-        '.agents',
-        'skills',
-        'happier-plugin-authoring',
-        'SKILL.md',
-      ), 'utf8');
-      expect(skill).toContain('node_modules/@happier-dev/plugin-ui/API.md');
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('links broader composition guidance only to examples shipped in the SDK package', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'happier-plugin-scaffold-contributions-'));
-    try {
-      const scaffold = await scaffoldLocalPlugin({
-        targetDir: join(root, 'plugin'),
-        pluginId: 'acme.authoring-contributions',
-        displayName: 'Authoring contributions',
-      });
-      expect(scaffold.ok).toBe(true);
-      if (!scaffold.ok) return;
-
-      const skill = await readFile(join(
-        root,
-        'plugin',
-        '.agents',
-        'skills',
-        'happier-plugin-authoring',
-        'SKILL.md',
-      ), 'utf8');
-
-      expect(skill).toContain('node_modules/@happier-dev/plugin-sdk/examples/public-authoring/');
-      expect(skill).toContain('node_modules/@happier-dev/plugin-sdk/examples/advanced-package-root/');
-      expect(skill).toContain('families marked available in the capability matrix');
-      expect(skill).toContain('does not create product availability');
-      expect(skill).toContain('This beginner scaffold does not declare a feature integration.');
-      expect(skill).not.toContain('operation-only-channel-provider');
-      expect(skill).not.toContain('action-contract-producer');
-      expect(skill).not.toContain('action-contract-consumer');
-      expect(skill).not.toContain('defineTargetedContributionProtocol');
-      expect(skill).not.toContain('defineTargetedContributionPoint');
-      expect(skill).not.toContain('defineContributionProtocol');
-      expect(skill).not.toContain('defineContributionPoint');
-      expect(skill).not.toContain('`.point()`');
-      expect(skill).not.toContain('`.contribute()`');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

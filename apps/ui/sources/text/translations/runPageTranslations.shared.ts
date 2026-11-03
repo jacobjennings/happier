@@ -100,7 +100,7 @@ export type RunPageTranslations = Readonly<{
     launcher: Readonly<{
         titles: Readonly<{ review: string; plan: string; delegate: string }>;
         descriptions: Readonly<{
-            review: (params: Machine) => string;
+            review: (params: Readonly<{ folder: string }>) => string;
             plan: (params: Machine) => string;
             delegate: (params: Machine) => string;
         }>;
@@ -215,7 +215,7 @@ export const runPageTranslationsEnglish = { en: {
         launcher: {
             titles: { review: 'Ask for a review', plan: 'Ask for a plan', delegate: 'Hand off a task' },
             descriptions: {
-                review: ({ machine }) => `Each agent reviews the changes on ${machine} on its own; you get one result from each, here.`,
+                review: ({ folder }) => `Each agent reviews the changes in ${folder} on its own; you get one result from each, here.`,
                 plan: ({ machine }) => `The agent reads the code on ${machine} and proposes a plan here. It doesn’t change anything.`,
                 delegate: ({ machine }) => `The agent works on ${machine} with the permissions below and reports back here.`,
             },

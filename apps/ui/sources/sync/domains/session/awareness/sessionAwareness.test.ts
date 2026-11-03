@@ -4,8 +4,36 @@ import { createSessionFixture, createSessionListRenderableSessionFixture } from 
 import { buildSessionListRenderableFromSession } from '../listing/sessionListRenderable';
 import { projectUiSessionAwareness } from './sessionAwareness';
 import { SessionUsageLimitRecoveryV1Schema } from '@happier-dev/protocol/sessions/state/valueSchemas/usageLimitRecovery';
+import { readSessionWorkStateV1FromMetadata } from '@happier-dev/protocol/sessions/work/state/sessionWorkStateV1';
 
 describe('UI Session awareness acquisition adapter', () => {
+    it('keeps canonical current work in the compact row without retaining work history', () => {
+        const task = { id: 'task', kind: 'task' as const, origin: 'happier' as const,
+            status: 'blocked' as const, statusReason: 'blocked' as const, title: 'Current task', updatedAt: 100 };
+        const goal = { id: 'goal', kind: 'goal' as const, origin: 'happier' as const,
+            status: 'active' as const, title: 'Active goal', updatedAt: 100 };
+        const history = { id: 'history', kind: 'task' as const, origin: 'happier' as const,
+            status: 'complete' as const, title: 'Private completed history', updatedAt: 100 };
+        const session = createSessionFixture({ encryptionMode: 'plain', metadata: {
+            path: '/work', host: 'host', sessionWorkStateV1: { v: 1, backendId: 'codex', updatedAt: 100,
+                primaryItemId: task.id, items: [goal, task, history] },
+        } });
+        const row = buildSessionListRenderableFromSession(session, undefined, []);
+        expect(row).toHaveProperty('workDisplay', { v: 1, primaryItem: {
+            id: task.id, kind: task.kind, title: task.title, status: task.status, statusReason: task.statusReason,
+        }, hasActiveGoal: true });
+        expect(row).not.toHaveProperty('workState');
+        expect(JSON.stringify(row)).not.toContain(history.title);
+        expect(projectUiSessionAwareness(row, 1_000).currentWork)
+            .toEqual(projectUiSessionAwareness(session, 1_000).currentWork);
+        const changedHistory = createSessionFixture({ ...session, metadata: { ...session.metadata!,
+            sessionWorkStateV1: { v: 1, backendId: 'codex', updatedAt: 200,
+                primaryItemId: task.id, items: [goal, task, { ...history, title: 'Changed private history', updatedAt: 200 }] },
+        } });
+        expect(buildSessionListRenderableFromSession(changedHistory, row, [])).toBe(row);
+        expect(readSessionWorkStateV1FromMetadata(session.metadata)?.items).toHaveLength(3);
+    });
+
     it('carries issue-bound recovery once through the keyed row and preserves unchanged row identity', () => {
         const recovery = SessionUsageLimitRecoveryV1Schema.parse({ v: 1, status: 'waiting',
             issueFingerprint: 'usage-limit:codex:turn-a:1000:5000', armedAtMs: 1_000,
@@ -13,7 +41,7 @@ describe('UI Session awareness acquisition adapter', () => {
             lastProbeError: null, selectedAuth: { kind: 'native' },
         });
         const session = createSessionFixture({ encryptionMode: 'plain', active: true, presence: 'online', activeAt: 1_000,
-            latestTurnStatus: 'failed', metadata: { path: '/work', sessionUsageLimitRecoveryV1: recovery },
+            latestTurnStatus: 'failed', metadata: { path: '/work', host: 'local', sessionUsageLimitRecoveryV1: recovery },
             lastRuntimeIssue: { v: 1, scope: 'primary_session', status: 'failed', source: 'usage_limit', code: 'usage_limit',
                 agentId: 'codex', agentTurnId: 'turn-a', occurredAt: 1_000,
                 usageLimit: { v: 1, resetAtMs: 5_000, retryAfterMs: null, quotaScope: 'account', recoverability: 'wait' } },

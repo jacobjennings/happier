@@ -81,6 +81,9 @@ async function readProjectSetupAgentGuidanceCurrent(input: ProjectSetupAgentGuid
                 execution, scriptName: name, sourceMachineId: input.workspace.machineId, preference: availability,
             }) };
         }) : document === null ? [] : null;
+        const services = document?.status === 'valid'
+            ? Object.entries(document.manifest.services ?? {}).map(([name, declaration]) => ({ name, ...declaration }))
+            : document === null ? [] : null;
         const configured = preferences.ok && preferences.value.status === 'ready' ? preferences.value.preference.destination : undefined;
         const destination = configured ? {
             configured,
@@ -101,6 +104,7 @@ async function readProjectSetupAgentGuidanceCurrent(input: ProjectSetupAgentGuid
                 ...(inspection.value.tools ? { tools: inspection.value.tools } : {}) } : {}),
             workerPreferences: preferences.ok ? preferences.value : preferences,
             scripts,
+            services,
             destination: destination ? { configured: destination.configured,
                 observation: destination.observation.ok ? destination.observation.value : destination.observation }
                 : preferences.ok && preferences.value.status === 'ready' ? null
@@ -125,14 +129,16 @@ function describeSetupAuthoringFacts(guidance: ProjectSetupAgentGuidance): strin
     const entries = guidance.detection?.entries ?? [];
     const scripts = entries.filter(entry => entry.usage === 'script');
     const services = entries.filter(entry => entry.usage === 'service');
+    const serviceSources = services.length > 0 ? services.map(entry => entry.source)
+        : (guidance.services ?? []).map(service => service.source);
     const scriptSources = scripts.length > 0 ? scripts.map(entry => entry.source) : (guidance.scripts ?? []).map(script => script.source);
-    const files = joinProjectFiles([...scriptSources, ...services.map(entry => entry.source)]
+    const files = joinProjectFiles([...scriptSources, ...serviceSources]
         .map(source => describeProjectCommandSource(source).file)
         .filter(file => file !== null));
     return [
         // A zero count is not an observation the agent needs; an empty checkout seeds the request alone.
         [...(scriptSources.length > 0 ? [t('projects.authoring.scriptsCount', { count: scriptSources.length })] : []),
-            ...(services.length > 0 ? [t('projects.authoring.servicesCount', { count: services.length })] : []),
+            ...(serviceSources.length > 0 ? [t('projects.authoring.servicesCount', { count: serviceSources.length })] : []),
             ...(files ? [t('projects.scripts.foundIn', { files })] : [])].join(' · '),
         ...(guidance.detection?.coverage === 'partial' ? [t('projects.scripts.definition.partial')] : []),
         ...('status' in guidance.workerPreferences && guidance.workerPreferences.status === 'ready'

@@ -11,6 +11,7 @@ import { hunkReviewTranslations } from './hunkReviewTranslations.shared';
 import { capabilityKitTranslations } from './capabilityKitTranslations';
 
 import { workspaceTabKeyboardTranslations } from './workspaceTabTranslations.shared';
+import { sessionListSpacesKeyboardTranslations } from './sessionListSpacesKeyboardTranslations.shared';
 import { reviewKeyboardTranslations } from './reviewKeyboardTranslations.shared';
 import { paneArrangementTranslations, paneKeyboardTranslations, paneRegionLabels } from './paneKeyboardTranslations';
 import { mediaKeyboardTranslations } from './mediaKeyboardTranslations';
@@ -1818,6 +1819,7 @@ export const ja: TranslationStructure = {
             codeProblemNext: '次の問題',
             codeProblemPrevious: '前の問題',
     ...workspaceTabKeyboardTranslations,
+    ...sessionListSpacesKeyboardTranslations['ja'],
     ...reviewKeyboardTranslations['ja'],
     ...paneKeyboardTranslations['ja'].commands,
     ...mediaKeyboardTranslations['ja'],
@@ -4674,6 +4676,8 @@ localTailscale: {
       poolAccounts: ({ count }: { count: number }) => `${count} 件のアカウント`,
       poolAccountsInUse: ({ accounts, account }: { accounts: string; account: string }) => `${accounts} · 使用中: ${account}`,
       requiredPrompt: 'アカウントまたはグループを選択',
+    signInToChoose: 'アカウントを選択するには、この Home にサインインしてください',
+    requiredAccountPrompt: 'アカウントを選択',
       notSet: '未設定',
       ownSignIn: ({ agent }: { agent: string }) => `${agent} 自身のサインイン`,
       legacyUnavailable: 'このサーバーではまだ接続済みアカウントの対象を表示できません',
@@ -4992,7 +4996,7 @@ localTailscale: {
       },
     },
     oauthPaste: {
-      invalidConfig: "接続済みサービスの設定が無効です。",
+      invalidConfig: "サインインページに表示されたコードまたはアドレスではありません。もう一度コピーしてここに貼り付けてください。",
       connectWebGroupTitle: "接続（Web）",
       connectWebDescription:
         "認可URLを開き、ブラウザでOAuthを完了したら、最終的にリダイレクトされたURLをコピーしてHappierに貼り付けてください。",
@@ -6379,6 +6383,23 @@ localTailscale: {
           bannerTitle: 'このマシンはオフラインです',
           bannerDescription: '最後に確認した状態を表示しています。再接続するまでマシンの操作はできません。',
       },
+      idleCompaction: {
+          title: 'アイドル時に圧縮',
+          description: 'プロンプトキャッシュの期限が切れる前に長い会話を圧縮し、次のメッセージをすばやく低コストで始められるようにします。',
+          whenTitle: '圧縮するタイミング',
+          whenOverTokens: ({ tokens }: { tokens: string }) => `${tokens} トークン超`,
+          whenAnySize: 'サイズを問わない',
+          minContextTokens: '会話の最小サイズ',
+          minContextTokensDescription: 'これより短い会話は圧縮されません。',
+          minContextTokensNone: '最小値なし',
+          tokensUnit: 'トークン',
+          cacheWindowOverrideMs: 'キャッシュ期間',
+          cacheWindowDescription: '自動はプロバイダーに従います。選んだ期間がそれに優先します。',
+          cacheWindowAutomatic: '自動',
+          cacheWindowCustom: 'カスタム',
+          cacheWindowCustomOption: 'カスタム…',
+          minutesUnit: '分',
+      },
       detailPage: {
           kindCodingAgent: 'コーディングエージェント',
           usedByNewSessions: '新しいセッションで使用',
@@ -7336,6 +7357,8 @@ localTailscale: {
     connectionTimeout: "接続がタイムアウトしました",
     authenticationFailed: "認証に失敗しました",
     permissionDenied: "権限がありません",
+    machineAdminAccessRequired: 'このマシンの管理者アクセスを設定してから、ドメインの追加をもう一度お試しください。',
+    machineManagedCliUnavailable: "このマシンに Happier をインストールまたは更新してから、ドメインの追加をもう一度試してください。",
     permissionDeniedReadOnlyMode: "読み取り専用モードにより拒否されました（書き込み操作は拒否されます）。",
     permissionCanceled: "権限がキャンセルされました",
     permissionCanceledSessionInactive: "セッションが非アクティブのため、この権限リクエストは承認できません。",
@@ -8177,6 +8200,7 @@ localTailscale: {
       },
     },
         pendingActivation: {
+    held: { title: "あなたが停止しました", body: "このセッションを再開するまで、メッセージはキューに保持されます。" },
             waiting_offline: { title: 'このマシン用にメッセージをキューへ保存しました', body: 'このマシンとデーモンがオンラインに戻ると処理されます。' },
             waiting: { title: '再開を待っています', body: 'デーモンがこのセッションを再開する間、メッセージは安全にキューへ保存されています。' },
             failed: { title: 'セッションを再開できませんでした', body: 'メッセージは引き続き安全にキューへ保存されています。準備ができたら再試行してください。' },
@@ -8206,8 +8230,11 @@ localTailscale: {
         provider_endpoint_unavailable: "プロバイダーのエンドポイントを利用できません。Gateway とそのマシンへの接続を確認してから、セッションを再試行してください。",
         plugin_mcp_preparation_unavailable: "プラグインの MCP 準備を利用できません。対象のマシンを確認してから、セッションを再試行してください。",
         agent_runtime_daemon_service_generation_not_current: "ランナーのエージェント世代が最新ではありません。対象のマシンでセッションを再試行してください。",
+        plugin_disabled: "このエージェントのプラグインは無効です。「プラグイン」で再度有効にすると、このセッションを再開できます。",
         native_agent_privileged_effect_authority_unavailable: "ランナーの daemon 権限を利用できません。対象のマシンを確認してから、セッションを再試行してください。",
         native_agent_privileged_effect_outcome_unknown: "ランナーの daemon の準備を確認できませんでした。再試行する前に、セッションと対象のマシンを確認してください。",
+        daemon_draining: "対象のマシンは新しい作業を一時的に停止しています。準備ができたらセッションを再試行してください。",
+        daemon_shutting_down: "対象のマシンで Happier を終了しています。そのマシンで再起動してから、セッションを再試行してください。",
         skills_unavailable: "スキルの配信を利用できません。対象のマシンを確認してから、セッションを再試行してください。",
         team_credential_provider_selection_not_current: "選択した Team のプロバイダーを利用できません。Team のモデル選択を確認してから、セッションを再試行してください。",
         teamCredential: "共有された Team の認証情報がリクエストを拒否しました。",
@@ -8517,6 +8544,32 @@ localTailscale: {
           askedFromHere: 'ここから質問',
           openQuestion: '質問を開く',
           questionUnavailable: '質問を読み込めませんでした',
+          showMore: 'さらに表示',
+          showLess: '折りたたむ',
+        },
+        askRecord: {
+          asked: '質問先：',
+          sentTo: '送信先：',
+          groupAsked: 'このセッションの質問先：',
+          groupSentTo: 'このセッションの送信先：',
+          answered: '回答済み',
+          passed: 'パス',
+          cancelled: 'キャンセル',
+          noAnswer: '回答なし',
+          noAnswerYet: 'まだ回答なし',
+          sent: '送信済み',
+          waitsForYou: 'あなたを待っています',
+          notSent: '未送信',
+          notAnswered: '回答できませんでした',
+          unsure: '送信されたか不明',
+          unavailable: '確認できませんでした',
+          selectorFallback: 'セッション',
+          retryHint: '届かなかったものだけを再試行するには、入力欄からもう一度送信してください。',
+          summaryAnswered: ({ count }: { count: number }) => `回答${count}件`,
+          summaryPassed: ({ count }: { count: number }) => `パス${count}件`,
+          summaryFailed: ({ count }: { count: number }) => `未配信${count}件`,
+          summarySent: ({ count }: { count: number }) => `送信${count}件`,
+          summaryWaiting: ({ count }: { count: number }) => `待機${count}件`,
         },
         subagents: {
           messages: {
@@ -8674,6 +8727,7 @@ localTailscale: {
           blocked: 'ブロック済み',
           delivering: '配信中',
           queuedInClaude: 'Claude でキュー待ち',
+          nextTurn: '次のターンを待機中',
         },
         queuedReasons: {
           waitingForForegroundTurn: '現在のターンの完了を待っています',
@@ -9097,6 +9151,7 @@ localTailscale: {
   voiceSurface: {
     reviewCredentials: '認証情報を確認',
     connectAgent: '接続',
+    setUpAgent: ({ agent }: { agent: string }) => `${agent} を設定`,
     installAgentRuntime: 'インストール',
     updateAgentRuntime: '更新',
     reconnect: '再接続',
@@ -9112,6 +9167,7 @@ localTailscale: {
     orbExpand: "音声を展開",
     orbCollapse: "音声を折りたたむ",
     delegatedWorking: "作業中…",
+    earlierTurnsLeftOut: "モデルの記憶に収まるよう、この会話の前半部分を省きました。",
     composerStartHint: "このセッションについて音声会話を開始します。",
     composerGlobalStartHint: "どのセッションにも紐づかない音声会話を開始します。",
     composerEndHint: "音声会話を終了します。すでに開始したコーディング作業は続行されます。",
@@ -9657,6 +9713,9 @@ localTailscale: {
     thinking: "思考中",
     thinkingSince: "思考開始時刻",
     thinkingLevel: "思考レベル",
+    peerReportFrom: ({ name }: { name: string }) => `${name} からのレポート`,
+    peerMessageFrom: ({ name }: { name: string }) => `${name} からのメッセージ`,
+    peerUnnamedSender: "別のエージェント",
     cliVersion: "CLIバージョン",
     cliVersionOutdated: "CLIの更新が必要",
     cliVersionOutdatedMessage: ({
@@ -9672,6 +9731,8 @@ localTailscale: {
     deleteSession: "セッションを削除",
     deleteSessionSubtitle: "このセッションを完全に削除",
     deleteSessionConfirm: "セッションを完全に削除しますか？",
+    stopAndDeleteSession: "停止して削除",
+    stopAndDeleteSessionWarning: "セッションを停止し、すべてのメッセージとデータを完全に削除します。この操作は取り消せません。",
     deleteSessionWarning:
       "この操作は取り消せません。このセッションに関連するすべてのメッセージとデータが完全に削除されます。",
     failedToDeleteSession: "セッションの削除に失敗しました",
@@ -9755,6 +9816,18 @@ localTailscale: {
       people: 'メンバー',
     },
     suggestionTypeMoreToNarrow: 'さらに入力して絞り込む',
+    commands: {
+        compact: '会話を圧縮',
+        clear: '会話をクリア',
+        help: '利用できるコマンドを表示',
+        reset: 'セッションをリセット',
+        export: '会話をエクスポート',
+        debug: 'デバッグ情報を表示',
+        status: '接続状態を表示',
+        stop: '現在の操作を停止',
+        abort: '現在の操作を中断',
+        cancel: '現在の操作をキャンセル',
+    },
     stopCodingTurn: "コーディングターンを停止",
       nonSteerableSend: {
         title: 'エージェントは処理中です',
@@ -11110,6 +11183,9 @@ localTailscale: {
       emptyTitle: 'ローカルサービスが検出されません',
       errorTitle: 'ローカルサービスのスキャンに注意が必要です',
       scanCause: {
+        rootDenied: ({ path }: { path: string }) => `${path} を読み取る権限がありません`,
+        rootMissing: ({ path }: { path: string }) => `${path} が見つかりません`,
+        rootUnreadable: ({ path }: { path: string }) => `${path} を読み取れませんでした`,
         workspacesUnavailable: 'このマシンで開いているプロジェクトを読み取れなかったため、一部のサービスが表示されない場合があります。',
         partial: 'このマシンでスキャンが時間切れになったため、実行中のサービスの一部が表示されない場合があります。',
         failed: 'このマシンは実行中のプロセスを一覧できなかったため、実行中のサービスを見つけられません。',
@@ -11183,6 +11259,9 @@ localTailscale: {
       waitingAddress: '起動しました。アドレスを待っています。',
       noAddress: 'アドレスなし',
       failed: 'サービスを起動できませんでした。',
+      reviewOutput: '出力を確認',
+      address: 'アドレス',
+      addressOpensHere: 'ローカルサービス経由でこのスマートフォンで開きます',
     },
     session: {
       thisSessionTitle: 'このセッション',
@@ -11342,10 +11421,36 @@ localTailscale: {
             runScriptA11y: '新しいターミナルタブでスクリプトを実行',
             failure: {
                 title: '操作が完了しませんでした',
-                refused: 'マシンがこの操作を拒否しました。このマシンのローカルサービスの権限を確認してから、もう一度お試しください。',
+                refused: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "マシンがこの操作を拒否しました。"
+                  : 'マシンがこの操作を拒否しました。このマシンのローカルサービスの権限を確認してから、もう一度お試しください。',
                 unavailable: 'この操作は、このマシンのこのサービスでは利用できません。',
-                incomplete: '操作が最後まで進みませんでした。もう一度お試しいただけます。',
-                outcomeUnknown: '操作結果を確認できません。再試行する前に、選択したマシンでこのサービスを確認してください。',
+                incomplete: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "操作が最後まで進みませんでした。"
+                  : '操作が最後まで進みませんでした。もう一度お試しいただけます。',
+                serviceNotRunning: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "このサービスは停止しています。"
+                  : 'このサービスは停止しているため、「サービス」を確認してください。',
+                namedServiceNotRunning: ({ service, servicesActionOffered = false }: { service: string; servicesActionOffered?: boolean }) => servicesActionOffered
+                  ? `${service} は停止しています。`
+                  : `${service} は停止しているため、「サービス」を確認してください。`,
+                previewNotReady: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "このサービスはまだ開けません。"
+                  : 'このサービスはまだ開けません。「サービス」を確認してください。',
+                browserViewUnavailable: "Happier がアプリ内ブラウザビューを開けませんでした。しばらくしてからもう一度お試しください。",
+                startFailedTitle: "サービスを起動できませんでした",
+                startFailed: "サービスは準備が整う前に停止しました。",
+                namedStartFailed: ({ service }: { service: string }): string => `${service}は準備が整う前に停止しました。`,
+                previewFailed: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "プレビューを開けませんでした。"
+                  : 'プレビューを開けませんでした。「サービス」を確認して再試行してください。',
+                previewUnavailable: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "プレビューにアクセスできません。"
+                  : 'プレビューにアクセスできません。「サービス」を確認してください。',
+                namedReason: ({ service, reason }: { service: string; reason: string }) => `${service}：${reason}`,
+                outcomeUnknown: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "操作結果を確認できません。"
+                  : '操作結果を確認できません。再試行する前に、選択したマシンでこのサービスを確認してください。',
       portInUse: ({ port }: { port: number }) => `ポート ${port} は使用中です。既存のサービスを停止するか、別のポートを選んでください。`,
       portInUseSameProject: ({ port }: { port: number }) => `このプロジェクトはポート ${port} を使用中です。実行中のサービスを使うか、別のポートを選んでください。`,
       processExit: ({ code }: { code: string }) => `サービスはコード ${code} で終了しました。再試行する前に詳細を確認してください。`,
@@ -11568,14 +11673,21 @@ localTailscale: {
       previewElsewhere: `このデバイスからは直接開けません。サービスからリンクを共有すると、ここで開けます。`,
       previewEndedTitle: `このプレビューは終了しました`,
       previewEnded: `サービスの共有が停止したか、リンクが取り消されました。サービスからもう一度開いてください。`,
-      previewEndedLastPage: ({ page }: { page: string }) => `最後のページは ${page} でした。サービスの共有が停止したか、リンクが取り消されました。サービスからもう一度開いてください。`,
+      previewEndedLastPageDetail: ({ page }: { page: string }) => `最後のページ：${page}`,
+      previewEndedStopped: `サービスの共有が停止したか、リンクが取り消されました。`,
+      previewEndedServiceStopped: ({ service }: { service: string }) => `${service} は停止しました。`,
       previewEndedRunning: `サービスは実行中なので、ここでもう一度開けます。`,
-      previewEndedRunningLastPage: ({ page }: { page: string }) => `最後のページは ${page} でした。サービスは実行中なので、ここでもう一度開けます。`,
+      previewEndedNamed: ({ service }: { service: string }) => `${service} の共有が停止したか、リンクが取り消されました。サービスからもう一度開いてください。`,
+      previewEndedStoppedNamed: ({ service }: { service: string }) => `${service} の共有が停止したか、リンクが取り消されました。`,
+      previewEndedRunningNamed: ({ service }: { service: string }) => `${service} は実行中なので、ここでもう一度開けます。`,
       openAgain: `もう一度開く`,
       openServices: `サービスへ移動`,
       previewTransportUnavailableTitle: `このプレビューに接続できません`,
-      previewTransportUnavailable: `実行しているマシンが現在応答していません。再読み込みしてもう一度お試しください。`,
+      previewTransportUnavailable: `実行しているマシンが現在応答していません。`,
       closeTab: `タブを閉じる`,
+      previewTransportUnavailableNamed: ({ machine }: { machine: string }) => `${machine} は現在このプレビューに応答していません。`,
+      startService: ({ service }: { service: string }) => `${service} を起動`,
+      startAgain: `もう一度起動`,
       desktopEngineUnavailable: "このマシンでは組み込みブラウザーエンジンを利用できません。",
       desktopWebView: "このマシンでは組み込みブラウザーエンジンを利用できません。このページはシステムブラウザーで開けます。",
       desktopWebViewUnsupportedPlatform: "このプラットフォームでは組み込みブラウジングをまだ利用できません。",
@@ -12962,6 +13074,9 @@ settingsSession: {
       retry: '再試行',
       roleYou: 'あなた',
       roleAssistant: 'アシスタント',
+      recoveryDescription: '送信した内容の一部は、届いたことを確認できませんでした。あなたが決めるまで、再送も破棄もされません。',
+      recoveryTitle: '保留中のメッセージを確認',
+      recoveryOpenFailed: '音声会話を開けませんでした。もう一度お試しください。',
     },
     dictation: {
       title: '音声入力',
@@ -13968,6 +14083,7 @@ settingsSession: {
         tts_failed: "音声合成に失敗しました。",
         turn_aborted: "音声ターンが中止されました。",
         authentication_required: "音声を使用するには、選択したエージェントを接続してください。",
+        agent_signed_out: ({ agent, machine }: { agent: string; machine: string }) => `${agent} にはデフォルトの接続済みアカウントがなく、${machine} でもサインインしていません。`,
         session_unavailable: "選択したセッションは音声では利用できなくなりました。",
         unsupported_runtime: "音声を使用するには、選択したエージェントのランタイムをインストールしてください。",
         update_required: "音声を使用するには、選択したエージェントのランタイムを更新してください。",
@@ -13975,6 +14091,7 @@ settingsSession: {
         mic_unavailable: 'マイクが見つかりません。接続してからもう一度お試しください。',
         speech_recognition_unavailable: 'ここでは音声認識を利用できません。別の音声認識エンジンを選んでください。',
         previous_session_stop_failed: '前の音声セッションを停止できませんでした。',
+        agent_selection_unavailable: '選択したエージェントを利用できません。音声設定でエージェントを選択してください。',
       },},
     privacy: {
       title: "コンテキストの共有",
@@ -14322,7 +14439,7 @@ settingsSession: {
     onboardingShowcase: {
         details: {
             ...PRODUCT_STORY_DETAILS_ENGLISH,
-            voice: { ...PRODUCT_STORY_DETAILS_ENGLISH.voice, body: "セッションについて聞き、次の変更を声に出して相談できます。権限リクエストの承認にはタップが必要です。" },
+            voice: { ...PRODUCT_STORY_DETAILS_ENGLISH.voice, body: "セッションについて聞き、音声でメッセージを送れます。音声エージェントにリクエストの承認を任せることも、Voice の設定で無効にすることもできます。" },
             handoff: {
                 wideTitle: "実行中のセッションを\n別のマシンへ。",
                 body: "実行中のセッションをデスクトップ、VPS、開発用マシンに引き継いで、中断したところから続けられます。作業ツリーも、全体のスナップショットまたは変更分だけを一緒に移せます。上書きせずに同じ階層にコピーを作成し、無視対象のファイルは指定しない限り転送しません。",
@@ -14344,7 +14461,7 @@ settingsSession: {
                         "existingTitle": "既存のセッションも、そのまま表示",
                         "existingBody": "あなたのマシンで動いているClaude、Codex、OpenCodeのセッションを、Happierでライブに開けます。",
                         "voiceTitle": "一緒に考えられる音声アシスタント",
-                        "voiceBody": "エージェントの状況を聞き、音声でメッセージを送れます。権限リクエストはタップで承認します。",
+                        "voiceBody": "セッションについて聞き、音声でメッセージを送れます。音声エージェントにリクエストの承認を任せることも、Voice の設定で無効にすることもできます。",
                         "reviewTitle": "diffをレビューしてコメント",
                         "reviewBody": "ファイルやdiffの特定行をマークし、送るメモを選び、そのままエージェントに渡せます。",
                         "subagentsTitle": "プロバイダー横断のsubagents",
@@ -14563,6 +14680,7 @@ settingsSession: {
   },
 
   terminalEmbedded: {
+    inputRecovery: "入力が届いたか確認できません。入力をコピーし、ターミナルを確認してから続けてください。",
     nativeAccessibility: {
       terminalLabel: 'ターミナル',
       fallbackValue: 'ネイティブターミナルの内容を利用できません。アクセシブルなターミナル内容には xterm WebView を使用してください。',
@@ -15370,6 +15488,12 @@ settingsSession: {
     runtimeConfigOutcomeRequiresInteractiveControl: 'ターミナルでの操作が必要',
     runtimeConfigOutcomeUnsupported: '未対応',
     runtimeConfigOutcomeFailed: '適用できませんでした',
+    contextCompactionIdleStarted: 'アイドル中に圧縮しています…',
+    contextCompactionIdleCompleted: 'アイドル中に圧縮しました',
+    contextCompactionIdleDetail: 'プロンプトキャッシュの期限切れ前',
+    contextCompactionIdleDetailCounts: ({ before, after }: { before: string; after: string }) => `${before} → ${after} トークン · プロンプトキャッシュの期限切れ前`,
+    contextCompactionIdleFailed: 'アイドル中に圧縮できませんでした',
+    contextCompactionIdleFailedDetail: '会話は元のサイズのままです。',
     contextCompactionStarted: "コンテキストを圧縮中...",
     contextCompactionCompleted: "コンテキストを圧縮しました",
     contextCompactionFailed: "コンテキストの圧縮に失敗しました",
@@ -17058,6 +17182,8 @@ settingsSession: {
         targetMismatchHint: "マシンを選び直してください。問題が続く場合は、このHomeにマシンを再接続して再試行してください。選択内容は保持されます。",
         invalidFolder: "このチェックアウト内のフォルダーを選んでください。",
         unsupported: "このマシンではこのプロジェクトを準備できません。",
+        cloneUnsupported: "このマシンではリポジトリをクローンできません。",
+        hostingProviderUnavailable: "このSourceのホスティングプロバイダーは、このマシンでは利用できません。",
         setupFailed: ({ project }: { project: string }) => `${project} を開きましたが、セットアップに失敗しました。`,
         filesKept: "チェックアウトは保持されます。セットアップを修正するか、スクリプトを開いて再試行してください。",
         openScripts: "スクリプトを開く",
@@ -17117,6 +17243,18 @@ settingsSession: {
         agentWaitedFor: ({ name }: { name: string }) => `${name} を待機しました`,
         agentAccepted: "受け付け済み",
         agentOn: ({ machine }: { machine: string }) => `${machine} 上`,
+        environment: {
+            host: "ホスト環境",
+            empty: "ネイティブ環境は検出されませんでした",
+            checking: "利用可能なツールを確認しています…",
+            pending: "この環境の評価の承認を待っています",
+            preparing: ({ tool, machine }: { tool: string; machine: string }) => `${machine} で ${tool} を準備しています…`,
+            unavailable: ({ tool }: { tool: string }) => `${tool} はこのマシンで利用できません`,
+            failed: "ネイティブ環境の準備に失敗しました。出力を表示してください。",
+            changed: "環境の入力が変更されました。もう一度確認してください。",
+            unevaluated: "Nix の定義は、この環境が評価された後に読み込まれます。",
+            noFallback: "ホスト環境では何も実行されませんでした",
+        },
         definition: {
             inspecting: "プロジェクトのコマンドを探しています…",
             partial: "一部の定義を読み取れませんでした",
@@ -17130,6 +17268,7 @@ settingsSession: {
         },
         run: {
             notRun: "このチェックアウトではまだ実行されていません",
+            waitsForSetup: "セットアップを待機中",
             accepted: "受け付けました。開始を待っています。",
             running: ({ machine }: { machine: string }) => `${machine} で実行中`,
             completed: ({ time }: { time: string }) => `完了 ${time}`,
@@ -17160,6 +17299,7 @@ settingsSession: {
             values: "値",
             valuesNote: "名前のみ。値は実行時に入ります。",
             stepsUnavailable: "セットアップの手順を読み取れませんでした。",
+            review: "セットアップを確認",
             from: "出典",
             viewFile: "ファイルを表示",
             sharedScope: ({ osUser, machine }: { osUser: string; machine: string }) => `${machine} で ${osUser} として実行されます。このプロジェクトへの承認は、セットアップが変わるまで有効です。`,
@@ -17169,6 +17309,10 @@ settingsSession: {
             consequenceThisTime: "今すぐセットアップを実行します。次回は Happier が改めて確認します。",
             consequenceSkip: "今回のセットアップをスキップします。準備完了にはなりません。",
             consequenceUntilChanged: "コマンド、ツール、プロジェクトファイルが変わるまで、チームメイトの共有マシンを含むすべてのマシンでこのプロジェクトに適用されます。チームメイトは各自で承認します。",
+            agentAsksRememberedTitle: "セットアップを実行して、このプロジェクトで記憶しますか？",
+            agentAsksRemembered: "エージェントがこのセットアップの記憶を求めています",
+            agentAsksRememberedBody: "承認すると、セットアップを今すぐ実行し、コマンド、ツール、プロジェクトファイルが変わるまで、あなたのすべてのマシンでこのプロジェクトのこの確認を省略します。",
+            agentAsksRememberedRow: "このセットアップの記憶を求めています",
             readySince: ({ time }: { time: string }) => `${time} からこの入力で準備完了`,
             notRunYet: "このバージョンのセットアップはまだ実行されていません",
             needsReview: "セットアップが変更されました。スクリプトで確認してください",
@@ -17207,10 +17351,10 @@ settingsSession: {
             environment: "環境",
             environmentBody: "このプロジェクトのエージェント、ターミナル、スクリプト、サービスはすべてこの中で起動します。ファイルを読んで検出しており、セットアップが承認されるまで何も評価されません。",
             toolsFrom: "ツールの提供元",
-            hostTools: "このマシンのツール",
             toolAvailable: ({ machine }: { machine: string }) => `${machine} で利用可能`,
             toolUnavailable: ({ machine }: { machine: string }) => `${machine} に未インストール`,
             toolUnresolved: ({ machine }: { machine: string }) => `${machine} で未確認`,
+            toolsCount: ({ available, total, machine }: { available: number; total: number; machine: string }) => `${machine} で ${total} 個中 ${available} 個が利用可能`,
             toolRequested: ({ version, file }: { version: string; file: string }) => `${file} で ${version} を指定`,
             alsoFound: ({ names }: { names: string }) => `ほかに見つかったもの: ${names}`,
             setup: "セットアップ",
@@ -17254,6 +17398,7 @@ settingsSession: {
             title: "出力",
             ranOn: "実行先",
             openInTerminal: "ターミナルで開く",
+            earlierNotKept: "以前の出力はもう保持されていません",
             purpose: {
                 setup: "セットアップ",
                 teardown: "後片付け",
@@ -17389,6 +17534,7 @@ settingsSession: {
         rowsLoadingTitle: "プロジェクトを読み込んでいます",
         rowsUnavailableTitle: "プロジェクトを読み込めませんでした。",
         rowsUnavailableBody: "何も削除されていません。少ししてからもう一度お試しください。",
+        rowsStaleReason: "プロジェクトを更新できませんでした。",
         openInvalidTitle: "このリンクは 1 つのチェックアウトを指していません。",
         openInvalidBody: "代わりにプロジェクトから開いてください。",
         backToProjects: "プロジェクトに戻る",
@@ -17774,6 +17920,8 @@ settingsSession: {
     marketplaceInstallReviewBody: ({ identity, verification, executableRealms, contributions, uiArtifacts, requiredAccess, optionalAccess, compatibility }: { identity: string; verification: string; executableRealms: string; contributions: string; uiArtifacts: string; requiredAccess: string; optionalAccess: string; compatibility: string }) => `識別情報:\n${identity}\n\n検証シグナル:\n${verification}\n\n実行可能コード: ${executableRealms}\nコントリビューション: ${contributions}\nUI アーティファクト: ${uiArtifacts}\n\n信頼されたデーモンおよび React Native コードは、アプリまたはプロセスの権限で実行され、ファイル、ネットワーク、環境、プロセスを直接使用できます。以下のホストアクセスは Happier が仲介するサービスを示すものであり、実行可能なプラグインコードのサンドボックスではありません。\n\n必須の開示と協調サービス:\n${requiredAccess}\n\n任意のホスト所有リソース（既定ではオフ）:\n${optionalAccess}\n\n互換性と更新:\n${compatibility}`,
     marketplaceInstallDecisionFailed: ({ outcome }: { outcome: string }) => `プラグインはインストールされませんでした（${outcome}）。`,
     marketplaceChangeDecisionFailed: ({ action, outcome }: { action: string; outcome: string }) => `${action}に失敗しました（${outcome}）。`,
+    marketplaceInstallRefused: ({ reason }: { reason: string }) => `プラグインはインストールされませんでした。\n\n${reason}`,
+    marketplaceChangeRefused: ({ action, reason }: { action: string; reason: string }) => `${action}に失敗しました。\n\n${reason}`,
     pluginChangeConfirmBody: ({ action, name, machine, server }: { action: string; name: string; machine: string; server: string }) => `${server} の ${machine} 上の ${name} に対する「${action}」を確認してください。`,
     pluginChangeConfirmTarget: ({ machine, server }: { machine: string; server: string }) => `対象は ${server} の ${machine} です。`,
     forgetTrust: "信頼を解除",
@@ -18102,7 +18250,7 @@ settingsSession: {
         transportUnavailable: "Happier はこのビューの取得元に接続できませんでした。接続を確認して、もう一度お試しください。",
         sourceUnavailable: "選択したプラグインビューのファイルを利用できません。もう一度読み込んでください。",
         viewNotCurrent: "選択したプラグインビューは最新ではありません。ページを開き直すか、実行先のマシンでプラグインを更新するか、別のマシンを選択してください。",
-        unavailableGeneric: 'まだ起動中の可能性があります。しばらくしてからもう一度お試しください。',
+        unavailableGeneric: 'まだ起動中の可能性があります。',
         crashLoop: 'クラッシュが繰り返されたため、プラグインを停止しました。',
         disabledByPolicy: '現在の設定または互換性により、このプラグインビューは無効になっています。',
         hostedWebUnavailableTitle: 'ホストされたプラグインビューは利用できません',
@@ -18131,8 +18279,9 @@ settingsSession: {
         alwaysRemembered: '常に記憶:',
         searchable: '検索可能:',
         countsUnavailable: '件数を読み込めませんでした',
-        countsNeedMachine: '件数はマシンのメモリインデックスから取得されます。',
-        searchNeedMachine: '検索はマシンのメモリインデックスで実行されます。',
+        countsNeedMachine: '件数を読み込むマシンを選んでください。',
+        countsOff: 'オフです。メモリをオンにすると件数が表示されます。',
+        searchNeedMachine: 'メモリを検索するマシンを選んでください。',
         factCount: ({ count }: { count: number }) => `${count} 件`,
         topicsLabel: 'トピック:',
         showAll: ({ count }: { count: number }) => `${count} 件すべて表示`,
@@ -18411,6 +18560,7 @@ settingsSession: {
         policyScope: "エージェントによるプロンプトライブラリの編集（すべてのセッション）",
         changedBy: (params: { name: string }) => `${params.name} が変更`,
         approvedBy: (params: { name: string }) => `${params.name} が承認`,
+        approvedByVoice: (params: { name: string }) => `${params.name} の代理として Voice エージェントが承認`,
         detachHelp: 'ドキュメントはプロンプトライブラリに残ります。',
         chooseDocument: 'ドキュメントを選択',
         openInLibrary: 'プロンプトライブラリで開く',

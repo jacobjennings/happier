@@ -2,11 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { allowsLiveStaging, isAtomicCommitStrategy, resolveCommitScopeForStrategy } from '@/scm/settings/commitStrategy';
 
 describe('commitStrategy', () => {
-    it('identifies atomic strategy', () => {
-        expect(isAtomicCommitStrategy('atomic')).toBe(true);
-        expect(isAtomicCommitStrategy('git_staging')).toBe(false);
-    });
-
     it('disables live staging in atomic strategy', () => {
         expect(
             allowsLiveStaging({

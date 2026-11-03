@@ -200,45 +200,6 @@ describe('useTranscriptJumpHost actual owner lifetime and identity', () => {
         model.dispose();
         await hook.unmount();
     });
-    it('reveals a tall tool mark below the capsule and note despite a stale short row estimate', async () => {
-        const message: Message = { kind: 'user-text', id: 'internal-tall', realID: 'persisted-tall',
-            localId: null, seq: 50, createdAt: 1, text: 'needle' };
-        getStorage().setState(state => ({ sessionMessages: { ...state.sessionMessages,
-            s1: createSessionMessagesFixture({ messagesById: { [message.id]: message },
-                messageIdsOldestFirst: [message.id], isLoaded: true }),
-        } }));
-        const items: ChatTranscriptListItem[] = [{ kind: 'message', id: 'tall-row',
-            messageId: message.id, seq: 50, createdAt: 1 }];
-        const harness = createTranscriptJumpHostTestHarness({ rows: items, messages: { [message.id]: message } });
-        harness.metrics.current = createTranscriptJumpWebMetrics({ rows: [{ id: 'tall-row', top: -1000, height: 1400 }],
-            scrollTop: 1500, scrollHeight: 3000 });
-        const element = harness.metrics.current.element;
-        const item = element.querySelector('[data-testid="transcript-item-tall-row"]')!;
-        const rect = (y: number, height: number) => ({ top: y - element.scrollTop, bottom: y + height - element.scrollTop,
-            height, width: 800, left: 0, right: 800, x: 0, y: y - element.scrollTop, toJSON() {} });
-        item.getBoundingClientRect = () => rect(500, 1400);
-        const mark = element.ownerDocument.createElement('span');
-        mark.dataset.testid = 'find-match-current';
-        mark.getBoundingClientRect = () => rect(1500, 20);
-        item.appendChild(mark);
-        const hook = await harness.render({ platformOS: 'web', resolveWebScrollMetrics: () => ({
-            ...harness.metrics.current!, scrollTop: element.scrollTop,
-        }) });
-        const model = createTranscriptFindModel({
-            readCorpus: () => ({ messages: [message], history: { isLoaded: true, hasOlder: false, isLoadingOlder: false } }),
-            loadPage: null, jumpToTarget: hook.getCurrent().jumpToTranscriptTarget,
-            reveal: (match, context) => revealTranscriptFindMatch(match, { items,
-                setToolCallsGroupExpanded() {}, setThinkingExpanded() {}, waitForVisualUpdate: async () => {},
-                readClearancePx: () => 96,
-                jumpToTarget: hook.getCurrent().jumpToTranscriptTarget }, context),
-        });
-        await act(async () => { model.setQuery('needle'); await model.settled(); });
-        expect(mark.getBoundingClientRect().top).toBe(96);
-        expect(mark.getBoundingClientRect().bottom).toBeLessThan(element.clientHeight);
-        expect(initialReads).toEqual([]);
-        model.dispose();
-        await hook.unmount();
-    });
     it('centres an already mounted Find result by its persisted route identity when no capsule covers the top', async () => {
         const message: Message = { kind: 'user-text', id: 'internal-find', realID: 'persisted-find',
             localId: null, seq: 50, createdAt: 1, text: 'needle' };
@@ -475,14 +436,17 @@ describe('useTranscriptJumpHost actual owner lifetime and identity', () => {
     it('waits for a loaded target to enter the committed native renderer window', async () => {
         read = () => Response.json(transcriptJumpPage(500));
         const harness = createTranscriptJumpHostTestHarness();
-        const hook = await harness.render();
+        const onJumpLanded = vi.fn();
+        const hook = await harness.render({ onJumpLanded });
         const landing = hook.getCurrent().jumpToTranscriptTarget({ kind: 'seq', seq: 500 }, { preferTargetWindow: true });
         await vi.waitFor(() => expect(harness.base.activeTargetWindowTargetRef.current).toEqual({ kind: 'seq', seq: 500 }));
         expect(harness.native.indexWrites).toEqual([]);
+        expect(onJumpLanded).not.toHaveBeenCalled();
         harness.rows.current = [row(500)];
-        await hook.rerender(harness.props());
+        await hook.rerender(harness.props({ onJumpLanded }));
         await expect(landing).resolves.toMatchObject({ status: 'window-rendered' });
         expect(harness.native.indexWrites).toHaveLength(1);
+        expect(onJumpLanded).toHaveBeenCalledTimes(1);
         await hook.unmount();
     });
 

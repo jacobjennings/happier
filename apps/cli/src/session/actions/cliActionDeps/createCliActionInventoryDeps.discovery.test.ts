@@ -12,8 +12,31 @@ import { AgentModelsProbeObservationSchema, AgentConfigOptionsProbeObservationSc
 import { createCliCapabilitiesService } from '@/rpc/handlers/capabilities';
 import { z } from 'zod/mini';
 import { configuration } from '@/configuration';
+import { RpcError } from '@happier-dev/protocol/rpcErrors';
+import { createUnavailableActionTransportDeps } from '@/testkit/actionTransportDeps';
 
 describe('native Action configuration discovery', () => {
+  it.each([
+    ['filesystem_identity_custody_unavailable', false],
+    ['agent_isolation_unavailable', false],
+    ['provider_endpoint_unreachable', true],
+    ['connected_service_credential_reconnect_required', false],
+  ] as const)('retains thrown %s and retryability through inventory and the public Action', async (errorCode, retryable) => {
+    // The selected Machine RPC is the boundary; inventory and Action admission run unchanged.
+    const inventory = createCliActionInventoryDeps({ token: 'fixture-token', sessionId: '', mode: 'plain', ctx: null,
+      callMachineAction: async () => { throw Object.assign(new RpcError('private transport diagnostic', errorCode), {
+        details: { retryable },
+      }); },
+    });
+    const executor = createActionExecutor({ ...createUnavailableActionTransportDeps(), ...inventory });
+    for (const actionId of ['agents.models.list', 'agents.config_options.list'] as const) {
+      const result = await executor.execute(actionId, { agentId: 'codex', machineId: 'worker', probe: { cwd: '/repo' } },
+        { surface: 'cli', authority: 'present_user' });
+      expect(result).toMatchObject({ ok: false, errorCode, details: { retryable } });
+      expect(JSON.stringify(result)).not.toContain('private transport diagnostic');
+    }
+  });
+
   it('uses the selected Machine producer for ordinary model and config reads and preserves its failures', async () => {
     const agentId = 'acme.discovery/assistant';
     const backendTargetKey = `agent:${agentId}`;
@@ -143,10 +166,10 @@ describe('native Action configuration discovery', () => {
           expect.objectContaining({ id: 'small', description: 'model-probe-1' }),
         ]) });
       const unavailable = await inventory.agentsConfigOptionsList!({ agentId, backendTargetKey, modelId: 'small', machineId: 'other-machine' });
-      expect(unavailable).toMatchObject({ items: [], source: 'unavailable' });
+      expect(unavailable).toMatchObject({ ok: false, errorCode: 'agent_inventory_probe_failed' });
       const foreignHome = await inventory.agentsConfigOptionsList!({ agentId, backendTargetKey, modelId: 'small',
         machineId: 'machine', serverId: 'other-home' });
-      expect(foreignHome).toMatchObject({ items: [], source: 'unavailable' });
+      expect(foreignHome).toMatchObject({ ok: false, errorCode: 'agent_inventory_probe_failed' });
     } finally { await fixture.dispose(); }
   });
 });

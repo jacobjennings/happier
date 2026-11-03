@@ -8,6 +8,14 @@ import { createDeferred } from '@/testkit/async/deferred';
 import { mkdir, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { withTempDir } from '@/testkit/fs/tempDir';
+import { AgentRuntimeJsonValueV1Schema } from '@happier-dev/protocol/runtime/agentSessionV1';
+import { createSessionClientExecutionRunService } from '@/api/session/client/executionRuns/createSessionClientExecutionRunService';
+
+const { callSessionRpc } = vi.hoisted(() => ({ callSessionRpc: vi.fn() }));
+
+// The real Session execution-run service retains normalization and wait parsing;
+// only its network transport is replaced.
+vi.mock('@/session/transport/rpc/sessionRpc', () => ({ callSessionRpc }));
 
 function completed(answer: unknown): ExecutionRunGetResponse {
     return {
@@ -55,6 +63,131 @@ function harness(enabled = true) {
 }
 
 describe('BasePermissionHandler approval reviewer', () => {
+    it.each(['wait', 'claim'] as const)('escalates and releases any claim when a JSON child becomes a Date during %s', async phase => {
+        const { session, handler } = harness();
+        const input: { command: string; metadata: unknown } = { command: 'pwd', metadata: {} };
+        let changed = false;
+        const mutate = () => { input.metadata = new Date(0); changed = true; };
+        Object.assign(session, { executionRuns: createSessionClientExecutionRunService({
+            token: 'test-token', sessionId: session.sessionId, serverUrl: 'https://home.example.test',
+            getStoredContentCryptoContext: () => ({ mode: 'plain', ctx: null }),
+        }) });
+        callSessionRpc.mockReset();
+        callSessionRpc.mockResolvedValueOnce({ runId: 'review-run', callId: 'review-call', sidechainId: 'review-chain' });
+        callSessionRpc.mockImplementationOnce(async () => {
+            if (phase === 'wait') mutate();
+            return { ok: true, status: 'succeeded', result: completed({ decision: 'allow_once' }) };
+        });
+        // Simulate a real argument change while the persistence boundary ACKs
+        // acquisition, preserving the actual claim/store implementation.
+        const update = session.updateAgentState.bind(session);
+        session.updateAgentState = updater => {
+            update(updater);
+            if (phase === 'claim' && session.state.requests?.changed?.permissionResponseClaimV1) mutate();
+        };
+        const pending = handler.request('changed', 'Bash', input);
+        try {
+            await expect(handler.respondAsApprovalReviewer('changed')).resolves.toBe('escalate');
+            expect(changed).toBe(true);
+            expect(session.state.requests?.changed).toBeDefined();
+            expect(session.state.requests?.changed).not.toHaveProperty('permissionResponseClaimV1');
+            expect(session.state.completedRequests?.changed).toBeUndefined();
+            expect(session.claims).toHaveLength(phase === 'claim' ? 1 : 0);
+        } finally {
+            await handler.reset();
+            await pending.catch(() => undefined);
+        }
+    });
+
+    it.each([
+        ['undefined', undefined], ['NaN', NaN], ['infinity', Infinity],
+        ['Date', new Date(0)], ['Map', new Map([['key', 1]])],
+    ])('escalates non-JSON %s at the review snapshot without starting a model', async (_label, value) => {
+        const { session, handler } = harness();
+        const pending = handler.request('invalid-json', 'Bash', { command: 'pwd', metadata: { value } });
+        try {
+            await expect(handler.respondAsApprovalReviewer('invalid-json')).resolves.toBe('escalate');
+            expect(session.executionRuns.start).not.toHaveBeenCalled();
+            expect(session.claims).toEqual([]);
+            expect(session.state.requests?.['invalid-json']).toBeDefined();
+            expect(session.state.completedRequests?.['invalid-json']).toBeUndefined();
+        } finally {
+            await handler.reset();
+            await pending.catch(() => undefined);
+        }
+    });
+
+    it.each([
+        ['finite number', 1, 1 + Number.EPSILON],
+        ['large number', 9007199254740991, 9007199254740992],
+        ['Unicode normalization', '\u00e9', 'e\u0301'],
+        ['Unicode lookalike', 'a', '\u0430'],
+        ['lone surrogate', '\ud800', '\ud801'],
+        ['undefined member', {}, { value: undefined }],
+    ])('keeps %s changes distinct at reviewer currentness', async (_label, before, after) => {
+        const { session, handler } = harness();
+        const input: { command: string; metadata: unknown } = { command: 'pwd', metadata: before };
+        Object.assign(session, { executionRuns: createSessionClientExecutionRunService({
+            token: 'test-token', sessionId: session.sessionId, serverUrl: 'https://home.example.test',
+            getStoredContentCryptoContext: () => ({ mode: 'plain', ctx: null }),
+        }) });
+        callSessionRpc.mockReset();
+        callSessionRpc.mockResolvedValueOnce({ runId: 'review-run', callId: 'review-call', sidechainId: 'review-chain' });
+        callSessionRpc.mockImplementationOnce(async () => {
+            input.metadata = after;
+            return { ok: true, status: 'succeeded', result: completed({ decision: 'allow_once' }) };
+        });
+        const pending = handler.request('distinct', 'Bash', input);
+        try {
+            await expect(handler.respondAsApprovalReviewer('distinct')).resolves.toBe('escalate');
+            expect(session.claims).toEqual([]);
+            expect(session.state.requests?.distinct).toBeDefined();
+            expect(session.state.completedRequests?.distinct).toBeUndefined();
+        } finally {
+            await handler.reset();
+            await pending.catch(() => undefined);
+        }
+    });
+
+    it('applies a terminal reviewer answer through the real run service for runtime-admitted tool input', async () => {
+        const { session, handler } = harness();
+        Object.assign(session, { executionRuns: createSessionClientExecutionRunService({
+            token: 'test-token', sessionId: session.sessionId, serverUrl: 'https://home.example.test',
+            getStoredContentCryptoContext: () => ({ mode: 'plain', ctx: null }),
+        }) });
+        callSessionRpc.mockReset();
+        callSessionRpc.mockResolvedValueOnce({ runId: 'review-run', callId: 'review-call', sidechainId: 'review-chain' });
+        callSessionRpc.mockResolvedValueOnce({ ok: true, status: 'succeeded',
+            result: completed({ decision: 'allow_once', reason: 'pwd only prints the current working directory.' }) });
+        // The public runtime JSON owner snapshots plugin/native arguments into
+        // immutable null-prototype records before the permission handler sees them.
+        const input = AgentRuntimeJsonValueV1Schema.parse({ command: 'pwd',
+            metadata: { count: 1 + Number.EPSILON, unicode: 'e\u0301', loneSurrogate: '\ud800' } });
+        const pending = handler.request('runtime-pwd', 'Bash', input);
+        const settled = vi.fn();
+        void pending.then(settled, () => undefined);
+        try {
+            await expect(handler.respondAsApprovalReviewer('runtime-pwd')).resolves.toBe('allow_once');
+            await expect(pending).resolves.toEqual({ decision: 'approved' });
+            expect(settled).toHaveBeenCalledOnce();
+            expect(session.state.requests?.['runtime-pwd']).toBeUndefined();
+            expect(session.state.completedRequests?.['runtime-pwd']).toMatchObject({
+                decision: 'approved', permissionDecisionClaimV1: {
+                    version: 1, origin: 'approvalReviewer', decision: 'approved', scope: 'request',
+                }, permissionDecisionActorV1: { kind: 'approvalReviewer' },
+            });
+            // A settled request has no new model run, wait or terminal write.
+            await expect(handler.respondAsApprovalReviewer('runtime-pwd')).resolves.toBe('escalate');
+            expect(callSessionRpc.mock.calls.map(([request]) => request.method)).toEqual([
+                `${session.sessionId}:execution.run.start`, `${session.sessionId}:execution.run.wait`,
+            ]);
+            expect(settled).toHaveBeenCalledOnce();
+        } finally {
+            await handler.reset();
+            await pending.catch(() => undefined);
+        }
+    });
+
     it('leaves role engine, Launch Profile and instructions binding to the run admission owner', async () => {
         const session = new SessionBoundary();
         const handler = new Handler(session as unknown as ApiSessionClient, {

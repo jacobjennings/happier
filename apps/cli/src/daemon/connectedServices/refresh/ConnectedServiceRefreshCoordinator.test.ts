@@ -40,7 +40,7 @@ import {
   ConnectedServiceRefreshCoordinator,
   type QualifiedConnectedAccountRefreshRuntime,
 } from './ConnectedServiceRefreshCoordinator';
-import { getResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { getResolvedContributionRegistry } from '@/plugins/projection/registry/builtIn/snapshot';
 import { resolveQualifiedPurposeBindingSnapshotForAgentSpawn } from '../requestAuth/prepareConnectedAccountRequestAuthForSpawn';
 import { DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1 } from '../accountGroups/selection/selectConnectedServiceAuthGroupCandidate';
 import { resolveFirstPartyLegacyConnectedServiceIdForQualifiedServiceKey } from '@/plugins/projection/registry/connectedAccountPurposeCompatibility';
@@ -59,20 +59,6 @@ beforeAll(async () => {
       contributes: getResolvedContributionRegistry(),
       pluginIds: ['happier.agent.codex', 'happier.agent.claude'],
       resolveDevelopmentSourceAuthority: ({ pluginId, rootPath }) => ({ kind: 'development', registeredRootId: `refresh-fixture:${pluginId}`, canonicalRoot: rootPath, observedRevision: 1 }),
-      networkDependencies: {
-        resolveNetworkAddresses: async () => ['8.8.8.8'],
-        openPinnedStream: async (request) => {
-          const response = await globalThis.fetch(request.url, {
-            method: request.method, headers: request.headers,
-            body: request.body ? new TextDecoder().decode(request.body) : undefined,
-            signal: request.signal,
-          });
-          const body = new Uint8Array(await response.arrayBuffer());
-          let delivered = false;
-          return { status: response.status, headers: Object.fromEntries(response.headers.entries()), contentLength: body.length,
-            read: async () => { if (delivered) return null; delivered = true; return body; }, cancel() {} };
-        },
-      },
     }),
   });
 });
@@ -758,14 +744,13 @@ describe('ConnectedServiceRefreshCoordinator', () => {
         providerEmail: null,
       },
     });
-    let reads = 0;
+    let persisted = false;
     const updateConnectedServiceCredentialHealth = vi.fn(async () => undefined);
     const api = {
       getAccountEncryptionMode: vi.fn(async () => 'plain' as const),
       getConnectedServiceCredentialPlain: vi.fn(async () => {
-        reads += 1;
         return {
-          credentialRevision: reads <= 2 ? sourceRevision : supersedingRevision,
+          credentialRevision: persisted ? supersedingRevision : sourceRevision,
           content: { t: 'plain' as const, v: record },
         };
       }),
@@ -777,6 +762,9 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       })),
       registerConnectedServiceCredentialPlain: vi.fn(async (params: { content: { v: typeof record } }) => {
         record = params.content.v;
+        // A replacement commits after this refresh's write, retaining its token
+        // values but advancing the canonical revision before adoption.
+        persisted = true;
         return { success: true as const, credentialRevision: mintedRevision };
       }),
       updateConnectedServiceCredentialHealth,
@@ -810,7 +798,7 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     });
 
     expect(result).toBeNull();
-    expect(reads).toBeGreaterThanOrEqual(3);
+    expect(persisted).toBe(true);
     expect(updateConnectedServiceCredentialHealth).not.toHaveBeenCalled();
   });
 
@@ -3064,7 +3052,12 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     expect(JSON.stringify(onCredentialHealthNotification.mock.calls)).not.toContain('secret-refresh-token');
   });
 
-  it('revision-guards expired qualified credential health against a superseding credential', async () => {
+  it('revision-guards final rejected refresh health against a superseding credential', async () => {
+    installGlobalFetchMock(vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: 'invalid_grant' }),
+    })));
     const now = 1_000_000;
     const leasedRevision = 'csr_abcdefghijklmnopqrstuv';
     const credentials: Credentials = {
@@ -3130,13 +3123,14 @@ describe('ConnectedServiceRefreshCoordinator', () => {
       profileId: 'work',
     });
 
-    expect(result.status).toBe('blocked_by_credential_health');
+    expect(result.status).toBe('lease_not_acquired');
+    expect(updateConnectedServiceCredentialHealth).toHaveBeenCalledOnce();
     expect(updateConnectedServiceCredentialHealth).toHaveBeenCalledWith(expect.objectContaining({
       expectedCredentialRevision: leasedRevision,
       health: expect.objectContaining({
-        status: 'refresh_failed_retryable',
-        reconnectRequired: false,
-        providerErrorCode: 'openai_codex_access_token_expired',
+        status: 'needs_reauth',
+        reconnectRequired: true,
+        providerErrorCode: 'openai_codex_oauth_rejected',
       }),
     }));
     expect(onCredentialHealthNotification).not.toHaveBeenCalled();
@@ -3248,8 +3242,9 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     await coordinator.tickOnce();
 
     expect(api.listConnectedServiceProfiles).not.toHaveBeenCalled();
+    expect(api.updateConnectedServiceCredentialHealth).toHaveBeenCalledOnce();
     expect(api.updateConnectedServiceCredentialHealth).toHaveBeenCalledWith(expect.objectContaining({
-      expectedCredentialRevision: 'csr_aaaaaaaaaaaaaaaaaaaaaa',
+      expectedCredentialRevision: 'csr_bbbbbbbbbbbbbbbbbbbbbb',
       health: expect.objectContaining({ status: 'connected', reconnectRequired: false }),
     }));
     expect(api.acquireConnectedServiceRefreshLease).toHaveBeenCalledTimes(1);
@@ -3291,8 +3286,9 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     }));
 
     expect(api.listConnectedServiceProfiles).not.toHaveBeenCalled();
+    expect(api.updateConnectedServiceCredentialHealth).toHaveBeenCalledOnce();
     expect(api.updateConnectedServiceCredentialHealth).toHaveBeenCalledWith(expect.objectContaining({
-      expectedCredentialRevision: 'csr_aaaaaaaaaaaaaaaaaaaaaa',
+      expectedCredentialRevision: 'csr_bbbbbbbbbbbbbbbbbbbbbb',
       health: expect.objectContaining({ status: 'connected', reconnectRequired: false }),
     }));
     expect(api.acquireConnectedServiceRefreshLease).toHaveBeenCalledTimes(1);
@@ -3348,8 +3344,9 @@ describe('ConnectedServiceRefreshCoordinator', () => {
     });
     expect(result.diagnostic.category).toBeUndefined();
     expect(api.listConnectedServiceProfiles).not.toHaveBeenCalled();
+    expect(api.updateConnectedServiceCredentialHealth).toHaveBeenCalledOnce();
     expect(api.updateConnectedServiceCredentialHealth).toHaveBeenCalledWith(expect.objectContaining({
-      expectedCredentialRevision: 'csr_aaaaaaaaaaaaaaaaaaaaaa',
+      expectedCredentialRevision: 'csr_bbbbbbbbbbbbbbbbbbbbbb',
       health: expect.objectContaining({ status: 'connected', reconnectRequired: false }),
     }));
     expect(api.acquireConnectedServiceRefreshLease).toHaveBeenCalledTimes(1);

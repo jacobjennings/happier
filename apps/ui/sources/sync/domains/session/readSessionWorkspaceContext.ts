@@ -4,9 +4,9 @@ import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePl
 
 type SessionWorkspaceContextState = Readonly<{
     sessions?: Record<string, {
-        metadata?: Session['metadata'];
+        metadata?: unknown;
         metadataLayoutVersion?: Session['metadataLayoutVersion'];
-        ownerMetadataView?: Session['ownerMetadataView'];
+        ownerMetadataView?: unknown;
     }>;
     getProjectForSession?: (sessionId: string) => { key?: { machineId?: string | null; rootPath?: string | null } } | null;
 }>;

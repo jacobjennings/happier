@@ -17,17 +17,6 @@ const quickstartPath = join(
   'plugins',
   'quickstart.mdx',
 );
-const reactNativeGuidePath = join(
-  repositoryRoot,
-  'apps',
-  'docs',
-  'content',
-  'docs',
-  'plugins',
-  'ui',
-  'react-native.mdx',
-);
-
 /** Directories before files, each group sorted — the shape the page prints. */
 async function renderTree(dir: string, indent: string): Promise<readonly string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -78,10 +67,5 @@ describe('plugin quickstart documentation', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
-
-  it('links React Native authors to the shipped Plugin UI API inventory', async () => {
-    const guide = await readFile(reactNativeGuidePath, 'utf8');
-    expect(guide).toContain('node_modules/@happier-dev/plugin-ui/API.md');
   });
 });

@@ -1,3 +1,6 @@
+import { MachineInstallationPublicKeySchema } from '../identity/installationKeySchemas.js';
+import { ManagedMachineEnrollmentIdentityV1Schema } from './enrollmentIdentityV1.js';
+import { MachineSetupV1Schema } from './machineSetupV1.js';
 import * as z from 'zod/mini';
 import { lazyDefinition } from '../../lazyZodSchema.js';
 import { asProtocolZod } from '../../plugins/actions/internalProtocolZodAdapter.js';
@@ -9,6 +12,10 @@ import { createManagedConfigurationFactsV1Schema } from './managedConfigurationV
 import { ManagedNativeOperationReferenceV1Schema, ManagedRecoveryHintV1Schema, ProviderObservationV1Schema, SharedSavedSecretRefV1Schema, SupportedNativeIntentSchema } from './providerFactsV1.js';
 import { DevcontainerChildProjectionV1Schema, DevcontainerNativeObservationV1Schema, deriveManagedDevcontainerChildProjectionV1, managedDevcontainerChildProjectionsEqualV1 } from './devcontainerV1.js';
 import { MachineEnvironmentV1Schema } from './machineEnvironmentV1.js';
+
+export { ManagedMachineEnrollmentIdentityV1Schema, resolveManagedMachineEnrollmentAdminAccessV1, matchesManagedMachineEnrollmentAdminAccessV1,
+  MANAGED_MACHINE_CREATION_CHILD_ACTION_IDS_V1, resolveManagedMachineEnrollmentAgentIsolationV1, matchesManagedMachineEnrollmentAgentIsolationV1,
+  type ManagedMachineEnrollmentIdentityV1 } from './enrollmentIdentityV1.js';
 
 const id = () => z.string().check(z.trim(), z.minLength(1));
 /** Setup belongs to the immutable admitted preset snapshot, independently of Join. */
@@ -77,6 +84,8 @@ export function createManagedMachineV1Schema<Launch extends z.core.$ZodType, Nat
       devcontainerObservation: z.optional(DevcontainerNativeObservationV1Schema) })),
     devcontainerChild: z.optional(DevcontainerChildProjectionV1Schema),
     enrolledMachineId: z.optional(id()), desired: SupportedNativeIntentSchema,
+    /** Successful CLI installation on the retained resource; absence is unknown. */
+    bootstrapInstalled: z.optional(z.literal(true)),
     desiredWhen: z.enum(['now', 'after-idle']), desiredAfterMs: z.optional(z.number().check(z.gt(0))),
     intentRevision: z.int().check(z.gte(0)), archivedAt: z.optional(z.number().check(z.gte(0))),
     submittedNativeEffect: z.optional(SubmittedNativeEffectV1Schema),
@@ -115,3 +124,17 @@ export type RetentionV1 = z.infer<typeof RetentionV1Schema>;
 export type ManagedControllerV1 = z.infer<typeof ManagedControllerV1Schema>;
 export type ValidatedLaunchSnapshotV1 = z.infer<typeof ValidatedLaunchSnapshotV1Schema>;
 export type RetainedManagedLaunchSnapshotV1 = z.infer<typeof RetainedManagedLaunchSnapshotV1Schema>;
+
+export const ManagedControllerAccessV1Schema = lazyDefinition(() => z.strictObject({
+  installationPublicKey: MachineInstallationPublicKeySchema,
+  custodian: z.strictObject({ accountId: id() }),
+}));
+
+export const ManagedMachineSetupV1Schema = lazyDefinition(() => z.strictObject({
+  setup: MachineSetupV1Schema,
+  state: z.enum(['pending', 'running', 'succeeded', 'failed', 'skipped']),
+  operation: z.optional(z.strictObject({ operationId: id() })),
+  errorCode: z.optional(id()),
+}).check(z.superRefine((value, context) => {
+  if (value.state !== 'failed' && value.errorCode !== undefined) context.addIssue({ code: 'custom', path: ['errorCode'], message: 'Only failed setup retains an error.' });
+})));

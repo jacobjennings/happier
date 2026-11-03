@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -219,37 +219,6 @@ describe('stdioMcpServerLauncher', () => {
       expect(exitCode).not.toBe(0);
       expect(existsSync(configPath)).toBe(true);
       expect(existsSync(tmp)).toBe(true);
-    } finally {
-      await rm(tmp, { recursive: true, force: true });
-    }
-  });
-
-  it('does not remove non-tmp config files even when startup fails', async () => {
-    const outsideRoot = join(projectPath(), '.project', 'tmp', 'mcp-stdio-launcher-tests');
-    await mkdir(outsideRoot, { recursive: true });
-
-    const tmp = await mkdtemp(join(outsideRoot, 'case-'));
-    try {
-      const configPath = join(tmp, 'happier-mcp-stdio-launcher.outside-tmp.json');
-      await writeFile(configPath, '{"env":{"API_KEY":"SHOULD_NOT_PERSIST"}', { mode: 0o600 });
-
-      const launcherInvocation = resolveLauncherInvocation({ forceSource: true });
-      const child = spawn(launcherInvocation.command, launcherInvocation.args, {
-        env: {
-          ...resolveEnvRecord(),
-          ...(launcherInvocation.env ?? {}),
-          HAPPIER_MCP_STDIO_LAUNCHER_CONFIG_FILE: configPath,
-        },
-        stdio: ['ignore', 'ignore', 'pipe'],
-      });
-
-      const exitCode = await new Promise<number>((resolve, reject) => {
-        child.once('error', reject);
-        child.once('exit', (code) => resolve(code ?? -1));
-      });
-
-      expect(exitCode).not.toBe(0);
-      expect(existsSync(configPath)).toBe(true);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

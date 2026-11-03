@@ -1,4 +1,5 @@
 /** @moduleRealm daemon */
+import type { ManagedServiceResponse } from './managed-services/contract.js';
 import { AgentExternalSessionTranscriptRawRecordSchema as canonicalAgentExternalSessionTranscriptRawRecordSchema } from '@happier-dev/protocol/sessions/messages/agentExternalSessionTranscriptRawRecord';
 import { HAPPIER_BASE_SYSTEM_PROMPT_ATTACHMENTS_V1 as canonicalHappierBaseSystemPromptAttachmentsV1, HAPPIER_BASE_SYSTEM_PROMPT_LINKED_WORKSPACE_FILES_V1 as canonicalHappierBaseSystemPromptLinkedWorkspaceFilesV1, HAPPIER_BASE_SYSTEM_PROMPT_OPTIONS_V1 as canonicalHappierBaseSystemPromptOptionsV1, HAPPIER_BASE_SYSTEM_PROMPT_SESSION_TITLE_INITIAL_V1 as canonicalHappierBaseSystemPromptSessionTitleInitialV1 } from '@happier-dev/protocol/prompts/systemPromptBaseV1';
 import {
@@ -102,7 +103,7 @@ export type AgentExternalSessionsManagedEndpointReadResponse = Readonly<{
     status: number;
     statusText: string;
     headers: Readonly<Record<string, string>>;
-    body: ReadableStream<Uint8Array> | null;
+    body: ManagedServiceResponse['body'];
 }>;
 
 export type AgentExternalSessionsManagedEndpointRead = (
@@ -407,6 +408,18 @@ export type AgentExternalSessionsListCandidatesResult = Readonly<{
     preparation?: AgentExternalSessionsCandidatePreparation;
 }>;
 
+/** Optional display enrichment for an already selected, source-admitted page.
+ * Preserve count, order, identity and every fact except title/cwd/messageCount.
+ */
+export type AgentExternalSessionsHydrateCandidatesRequest = AgentExternalSessionsInvocation & Readonly<{
+    maxSerializedBytes: number;
+    source: AgentExternalSessionSource;
+    candidates: readonly AgentExternalSessionCandidate[];
+}>;
+export type AgentExternalSessionsHydrateCandidatesResult = Readonly<{
+    candidates: readonly AgentExternalSessionCandidate[];
+}>;
+
 export type AgentExternalSessionsResolveLinkIdentityRequest = AgentExternalSessionsInvocation & Readonly<{
     source: AgentExternalSessionSource;
     remoteSessionId: string;
@@ -512,6 +525,10 @@ export type AgentExternalSessionsContribution = Readonly<{
         request: AgentExternalSessionsListCandidatesRequest,
     ): AgentExternalSessionsResult<AgentExternalSessionsListCandidatesResult>
         | Promise<AgentExternalSessionsResult<AgentExternalSessionsListCandidatesResult>>;
+    hydrateCandidates?(
+        request: AgentExternalSessionsHydrateCandidatesRequest,
+    ): AgentExternalSessionsResult<AgentExternalSessionsHydrateCandidatesResult>
+        | Promise<AgentExternalSessionsResult<AgentExternalSessionsHydrateCandidatesResult>>;
     resolveLinkIdentity(
         request: AgentExternalSessionsResolveLinkIdentityRequest,
     ): AgentExternalSessionsResult<AgentExternalSessionsResolvedIdentity>

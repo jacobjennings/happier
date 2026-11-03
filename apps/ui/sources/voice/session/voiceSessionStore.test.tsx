@@ -12,10 +12,7 @@ installDisconnectedServerSocketBoundary();
 // Warm the real Account/lifecycle graph during collection, outside behavior
 // deadlines; each case still constructs and retires its own actual owners.
 await loadSyncSingletonForTests();
-await Promise.all([
-  import('./voiceSessionLifecycleController'),
-  import('@/voice/adapters/localDirect/localDirectAdapter'),
-]);
+await import('./voiceSessionLifecycleController');
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -94,11 +91,14 @@ describe('voiceSessionStore', () => {
     store.setVoiceSessionSnapshot(snapshot);
     const first = store.getVoiceSessionSnapshot();
     const inUseVoice = { providerContributionId: 'happier.openai/realtime', settingFieldPath: 'voice', value: 'coral', displayName: 'Coral' };
-    store.setVoiceSessionSnapshot({ ...snapshot, inUseVoice });
+    const preparedInstructionsFor = { serverId: 'home', sessionId: 'bound' };
+    store.setVoiceSessionSnapshot({ ...snapshot, inUseVoice, preparedInstructionsFor });
     expect(store.getVoiceSessionSnapshot()).not.toBe(first);
     expect(store.getVoiceSessionSnapshot()).toHaveProperty('inUseVoice', inUseVoice);
-    store.setVoiceSessionSnapshot({ ...snapshot, inUseVoice, status: 'disconnected', canStop: false });
+    expect(store.getVoiceSessionSnapshot()).toHaveProperty('preparedInstructionsFor', preparedInstructionsFor);
+    store.setVoiceSessionSnapshot({ ...snapshot, inUseVoice, preparedInstructionsFor, status: 'disconnected', canStop: false });
     expect(store.getVoiceSessionSnapshot().inUseVoice).toBeUndefined();
+    expect(store.getVoiceSessionSnapshot().preparedInstructionsFor).toBeUndefined();
   });
   it('retains the last ended exact conversation independently of later binding removal or route changes', async () => {
     const store = await import('./voiceSessionStore');
@@ -380,30 +380,6 @@ describe('voiceSessionStore', () => {
       setVoiceSessionLifecycleController(null);
       await controller.dispose();
     });
-  });
-
-  it('resets the voice session runtime globals between specs', async () => {
-    const voiceSessionStoreModule = await import('./voiceSessionStore');
-    const { getVoiceSessionSnapshot, setVoiceSessionSnapshot } = voiceSessionStoreModule;
-    const { getVoiceSessionLifecycleController, setVoiceSessionLifecycleController } = await import('./voiceSessionLifecycleControllerStore');
-    const { createVoiceSessionLifecycleController } = await import('./voiceSessionLifecycleController');
-    const { getVoiceAdapterRegistry, registerVoiceAdapters } = await import('./voiceAdapterRegistry');
-    const { createLocalDirectVoiceAdapter } = await import('@/voice/adapters/localDirect/localDirectAdapter');
-    registerVoiceAdapters([createLocalDirectVoiceAdapter()]);
-    const activeSnapshot = { adapterId: 'local_direct', sessionId: 'runtime-session',
-      status: 'connected' as const, mode: 'listening' as const, canStop: true };
-    setVoiceSessionSnapshot(activeSnapshot);
-    const controller = createVoiceSessionLifecycleController();
-    setVoiceSessionSnapshot({ adapterId: null, sessionId: null, status: 'disconnected', mode: 'idle', canStop: false });
-    setVoiceSessionLifecycleController(controller);
-    expect(getVoiceSessionSnapshot()).toEqual(activeSnapshot);
-    expect(getVoiceSessionLifecycleController()).toBe(controller);
-    expect(getVoiceAdapterRegistry().list()).toHaveLength(1);
-    await voiceSessionStoreModule.resetVoiceSessionRuntimeStateForTests();
-    expect(getVoiceSessionLifecycleController()).toBeNull();
-    expect(getVoiceAdapterRegistry().list()).toHaveLength(0);
-    expect(getVoiceSessionSnapshot()).toEqual({ adapterId: null, sessionId: null,
-      status: 'disconnected', mode: 'idle', canStop: false });
   });
 });
 

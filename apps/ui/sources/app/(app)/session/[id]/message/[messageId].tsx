@@ -2,15 +2,15 @@ import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorks
 import * as React from 'react';
 import { useLocalSearchParams, useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { View } from 'react-native';
-import type { StyleProp, ViewStyle } from 'react-native';
+import type { ViewStyle } from 'react-native';
 import { storage, useMessage, useTranscriptApprovalArtifactsForSession, useResolvedSessionMessageRouteId, useSession, useSessionTranscriptIds } from "@/sync/domains/state/storage";
 import { resolveSessionMessageRouteId } from '@happier-dev/session-core/messages';
 import { sync } from '@/sync/sync';
 import { Deferred } from "@/components/ui/forms/Deferred";
 import { resolveToolHeaderTextPresentation } from '@/components/tools/shell/presentation/resolveToolHeaderTextPresentation';
 import { normalizeToolCallForRendering } from '@happier-dev/session-core/tools';
-import { useDestinationFocus, useDestinationInstanceKey, useDestinationPageTitle } from '@/components/appShell/workspace/DestinationInstanceHost';
-import { DefaultBackButton } from '@/components/navigation/Header';
+import { useDestinationInstanceKey, useDestinationPageTitle } from '@/components/appShell/workspace/DestinationInstanceHost';
+import { usePageBackControl } from '@/components/ui/layout/usePageBackControl';
 import { NavigationBackChromeProvider, useNavigationBackControl } from '@/components/ui/layout/NavigationBackChrome';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { readDeclinedApprovalAtToolCall, useToolApprovalRequestsIndex } from '@/components/tools/shell/views/toolApprovalPromptMatching';
@@ -135,15 +135,12 @@ function SessionMessageRouteLoaded(props: { sessionId: string; messageId: string
     // A call's page is opened from its Session: Back returns there, even on a deep link with no history. A hosted
     // destination puts it on the page header's title line (the phone bar or the page's own gutter), as a Run does.
     const hosted = useDestinationInstanceKey() !== null;
-    const focused = useDestinationFocus();
     const inheritedBack = useNavigationBackControl();
     const { routeScope, sessionId } = props;
     const goBack = React.useCallback(() => {
         safeRouterBack({ router, fallbackHref: routeScope.buildHref(sessionId) });
     }, [routeScope, router, sessionId]);
-    const pageBack = React.useCallback(({ style }: Readonly<{ style: StyleProp<ViewStyle> }>) => (
-        focused ? <View style={style}><DefaultBackButton testID="tool-details-back" tintColor={theme.colors.text.primary} onPress={goBack} /></View> : null
-    ), [focused, goBack, theme.colors.text.primary]);
+    const pageBack = usePageBackControl('tool-details-back', goBack);
 
     // Trigger session visibility when component mounts
     React.useEffect(() => {

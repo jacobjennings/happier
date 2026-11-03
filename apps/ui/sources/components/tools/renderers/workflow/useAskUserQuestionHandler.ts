@@ -1,3 +1,4 @@
+import * as React from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { SessionQuestionHandlerV1 } from '@happier-dev/protocol/sessions/permissions/v1';
 import type { SessionQuestionContextV1 } from '@happier-dev/protocol/sessions/permissions/questionV1';
@@ -13,14 +14,22 @@ import { readSessionWorkerQuestionHandlingProjection } from '@/sync/domains/sess
 import { useKnownAccountActor } from '@/components/account/useKnownAccountActor';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { createSessionListPresentationSource } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
+import { hasAuthoritativeSessionRouteData, isHydratedSessionCurrentForListState } from '@/sync/domains/session/hasAuthoritativeSessionRouteData';
+import { readSessionFullPublicationUpdatedAt } from '@/sync/domains/session/sessionRuntimeObservation';
+import { isSessionAccessRecipient } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
+import { useHydrateSession } from '@/hooks/session/useHydrateSessionForRoute';
+import { useSessionDisplayNameSource } from '@/sync/store/hooks';
 import { resolveAskUserQuestionAnsweredByLabel, type AskUserQuestionHandler } from './askUserQuestionCardState';
 
 /** Uses only the applied Home's already-authorized Account/profile projection. */
 export function useAskUserQuestionAnsweredByLabel(answeredBy: SessionQuestionHandlerV1 | undefined, serverId: string | null): string | null {
-  const session = useAskUserQuestionHandler(answeredBy, serverId);
+  // A completed answer needs only its actor's display name, never role/stop metadata.
+  const session = useSessionDisplayNameSource(answeredBy?.kind === 'session' && serverId ? answeredBy.sessionId : '', serverId);
   const { viewerScope, actor } = useKnownAccountActor(serverId, answeredBy?.kind === 'person' ? answeredBy.accountId : undefined);
   return resolveAskUserQuestionAnsweredByLabel({ answeredBy, serverId: viewerScope?.serverId ?? serverId, viewerScope, answeringAccountActor: actor,
-    answeringSession: answeredBy?.kind === 'session' && session ? { sessionId: answeredBy.sessionId, name: session.name } : undefined });
+    answeringSession: answeredBy?.kind === 'session' && session
+      ? { sessionId: answeredBy.sessionId, name: getSessionName(session, serverId ?? undefined) } : undefined });
 }
 
 /**
@@ -37,22 +46,40 @@ export function useAskUserQuestionHandler(
   useServerProfilesGeneration();
   const resolveScopeId = captureServerProfileScopeResolver();
   const activeServerId = useActiveServerSnapshot(Boolean(serverId)).serverId;
-  return getStorage()(useShallow((state): AskUserQuestionHandler | null => {
+  const manager = getStorage()(useShallow((state) => {
     if (!serverId) return null;
-    const sourceSession = explainUnavailableManager
-      ? readSessionListRowForServerId(state.sessionListRowsByServerId, serverId, source.sessionId, resolveScopeId)
-        ?? selectHomeQualifiedSession(state, source.sessionId, serverId, activeServerId)
-      : null;
+    const sourceRow = explainUnavailableManager
+      ? readSessionListRowForServerId(state.sessionListRowsByServerId, serverId, source.sessionId, resolveScopeId) : null;
+    const sourceFull = explainUnavailableManager
+      ? selectHomeQualifiedSession(state, source.sessionId, serverId, activeServerId) : null;
+    const sourceSession = sourceRow ? createSessionListPresentationSource(sourceRow, {
+      serverId, baseSession: sourceFull ?? undefined,
+    }).relations : sourceFull;
     const handlerSessionId = handler?.kind === 'session' ? handler.sessionId : readSessionManagerSessionIdV1(sourceSession);
     if (!handlerSessionId) return null;
     const row = readSessionListRowForServerId(state.sessionListRowsByServerId, serverId, handlerSessionId, resolveScopeId);
-    const liveSession = row ? null : selectHomeQualifiedSession(state, handlerSessionId, serverId, activeServerId);
-    const session = row ?? liveSession;
-    if (!session) return null;
-    const handling = row?.workerQuestionHandling
-      ?? (liveSession ? readSessionWorkerQuestionHandlingProjection(readSessionOwnerMetadataView(liveSession)) : null);
-    const availability = handling?.explicitlyStopped ? 'stopped' : session.presence === 'online' ? 'online' : 'offline';
-    if (explainUnavailableManager && (!handling?.answersWorkerQuestions || availability === 'online')) return null;
-    return { name: getSessionName(session, serverId), availability };
+    const held = selectHomeQualifiedSession(state, handlerSessionId, serverId, activeServerId);
+    const admitted = row ? createSessionListPresentationSource(row, { serverId, baseSession: held ?? undefined }).baseSession : held;
+    const full = admitted && hasAuthoritativeSessionRouteData(admitted)
+      && (!row || isHydratedSessionCurrentForListState(admitted, () => row,
+        readSessionFullPublicationUpdatedAt(admitted))) ? admitted : null;
+    // Display custody and retained row presentation cannot establish private
+    // role/stop facts. Only the current genuine full publication can do that.
+    const handling = full ? readSessionWorkerQuestionHandlingProjection(readSessionOwnerMetadataView(full)) : null;
+    const session = row ?? full;
+    const recipient = isSessionAccessRecipient(session?.access, session?.accessLevel);
+    const availability: AskUserQuestionHandler['availability'] = handling?.explicitlyStopped
+      ? 'stopped' : session?.presence === 'online' ? 'online' : 'offline';
+    return { sessionId: handlerSessionId, needsFull: !full && !recipient,
+      name: session ? getSessionName(session, serverId) : null, availability,
+      show: Boolean(session && (handling || recipient)
+        && (!explainUnavailableManager || (handling?.answersWorkerQuestions && availability !== 'online'))) };
   }));
+  // This is metadata demand, not a visible transcript or live-content subscription.
+  useHydrateSession(manager?.needsFull ? manager.sessionId : '', 'question-card.manager', {
+    ...(serverId ? { serverId } : {}), hydrateMessages: false, includeTurnsProjection: false,
+  });
+  return React.useMemo(() => manager?.show && manager.name !== null
+    ? { name: manager.name, availability: manager.availability } : null,
+  [manager?.show, manager?.name, manager?.availability]);
 }

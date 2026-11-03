@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
+import { seedPersistedHomeProfilesForTests } from '@/dev/testkit/fixtures/persistedHomeProfiles';
+import {
+    homeProfileForTests,
+    installTokenStorageTestIsolation,
+    installTokenStorageWebPlatformMocks,
+} from './tokenStorage.testHelpers';
 
 /**
  * Cold boot blocks on the credential read, and on native every scope probe is a keychain round trip.
@@ -9,23 +14,25 @@ import { installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers'
 const secureStoreState = vi.hoisted(() => {
     const values = new Map<string, string>();
     const readOrder: string[] = [];
+    const readWithLatency = async (key: string) => {
+        readOrder.push(key);
+        state.inFlightReads += 1;
+        state.maxConcurrentReads = Math.max(state.maxConcurrentReads, state.inFlightReads);
+        try {
+            await new Promise((resolve) => setTimeout(resolve, state.readLatencyMs));
+            return values.get(key) ?? null;
+        } finally {
+            state.inFlightReads -= 1;
+        }
+    };
     const state = {
         values,
         readOrder,
         inFlightReads: 0,
         maxConcurrentReads: 0,
         readLatencyMs: 5,
-        getItemAsync: vi.fn(async (key: string) => {
-            readOrder.push(key);
-            state.inFlightReads += 1;
-            state.maxConcurrentReads = Math.max(state.maxConcurrentReads, state.inFlightReads);
-            try {
-                await new Promise((resolve) => setTimeout(resolve, state.readLatencyMs));
-                return values.get(key) ?? null;
-            } finally {
-                state.inFlightReads -= 1;
-            }
-        }),
+        readWithLatency,
+        getItemAsync: vi.fn(readWithLatency),
         setItemAsync: vi.fn(async (key: string, value: string) => {
             values.set(key, value);
         }),
@@ -51,23 +58,23 @@ installTokenStorageWebPlatformMocks({
     },
     secureStore: async () => secureStoreState,
 });
+installTokenStorageTestIsolation('token_storage_credential_lookup');
+
+const { TokenStorage, setHomeCredentialsWithRollbackUnderMutationAuthority } = await import('./tokenStorage');
+const { withHomeMutationAuthority } = await import('@/sync/domains/server/homeMutationLock');
 
 const SERVER_URL = 'https://api.example.test';
 
-function installServerProfilesMockWithLegacyScopes(): void {
-    vi.doMock('@/sync/domains/server/serverProfiles', () => ({
-        getActiveServerId: () => 'srv-identity',
-        getActiveServerUrl: () => SERVER_URL,
-        listServerProfiles: () => [
-            {
-                id: 'srv-legacy-a',
-                serverIdentityId: 'srv-identity',
-                serverUrl: SERVER_URL,
-                legacyServerIds: ['srv-legacy-b'],
-            },
-        ],
-        areServerProfileIdentifiersEquivalent: () => true,
-    }));
+/**
+ * One focused Home whose stable identity retains two older profile ids as legacy credential scopes.
+ * Identities use the canonical `srv_` form; the profile owner drops any other serverIdentityId.
+ */
+async function seedHomeWithLegacyScopes(): Promise<void> {
+    const home = homeProfileForTests('srv-legacy-a', SERVER_URL, {
+        serverIdentityId: 'srv_identity',
+        legacyServerIds: ['srv-legacy-b'],
+    });
+    await seedPersistedHomeProfilesForTests({ profiles: [home], activeServerId: home.id });
 }
 
 /**
@@ -75,47 +82,41 @@ function installServerProfilesMockWithLegacyScopes(): void {
  * and one that moved its canonical URL while retaining the old alias. The anonymous
  * URL-hash credential stored under that URL belongs to neither identity in particular.
  */
-function installServerProfilesMockWithSharedUrl(): void {
-    vi.doMock('@/sync/domains/server/serverProfiles', () => ({
-        getActiveServerId: () => 'srv-identity',
-        getActiveServerUrl: () => SERVER_URL,
-        listServerProfiles: () => [
-            {
-                id: 'srv-legacy-a',
-                serverIdentityId: 'srv-identity',
-                serverUrl: SERVER_URL,
-                canonicalServerUrl: SERVER_URL,
-                legacyServerIds: ['srv-legacy-b'],
-            },
-            {
-                id: 'srv-moved',
-                serverIdentityId: 'srv-moved-identity',
-                serverUrl: SERVER_URL,
-                canonicalServerUrl: 'https://moved.example.test',
-            },
-        ],
-        areServerProfileIdentifiersEquivalent: (left: string, right: string) => left === right,
-    }));
+async function seedHomesSharingUrl(): Promise<void> {
+    const current = homeProfileForTests('srv-legacy-a', SERVER_URL, {
+        serverIdentityId: 'srv_identity',
+        canonicalServerUrl: SERVER_URL,
+        legacyServerIds: ['srv-legacy-b'],
+    });
+    const moved = homeProfileForTests('srv-moved', SERVER_URL, {
+        serverIdentityId: 'srv_moved_identity',
+        canonicalServerUrl: 'https://moved.example.test',
+    });
+    await seedPersistedHomeProfilesForTests({ profiles: [current, moved], activeServerId: current.id });
 }
 
-function installServerProfilesMockWithoutProfiles(): void {
-    vi.doMock('@/sync/domains/server/serverProfiles', () => ({
-        getActiveServerId: () => null,
-        getActiveServerUrl: () => SERVER_URL,
-        listServerProfiles: () => [],
-        areServerProfileIdentifiersEquivalent: () => false,
-    }));
+/**
+ * Discovers a target's scope layout from a cold miss (a miss is never cached), so a test can
+ * seed keychain bytes the way a previous app run left them, with nothing in this module's read cache.
+ */
+async function readScopeLayout(read: () => Promise<unknown>): Promise<Readonly<{ primaryKey: string; legacyKeys: string[] }>> {
+    await expect(read()).resolves.toBeNull();
+    const [primaryKey, ...legacyKeys] = [...secureStoreState.readOrder];
+    expect(primaryKey).toBeDefined();
+    secureStoreState.readOrder.length = 0;
+    secureStoreState.maxConcurrentReads = 0;
+    secureStoreState.getItemAsync.mockClear();
+    return { primaryKey: primaryKey!, legacyKeys };
 }
 
 describe('TokenStorage credential lookup (native keychain)', () => {
     beforeEach(() => {
-        vi.resetModules();
         secureStoreState.values.clear();
         secureStoreState.readOrder.length = 0;
         secureStoreState.inFlightReads = 0;
         secureStoreState.maxConcurrentReads = 0;
         secureStoreState.readLatencyMs = 5;
-        secureStoreState.getItemAsync.mockClear();
+        secureStoreState.getItemAsync.mockReset().mockImplementation(secureStoreState.readWithLatency);
         secureStoreState.setItemAsync.mockClear();
         secureStoreState.deleteItemAsync.mockClear();
         vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -124,16 +125,17 @@ describe('TokenStorage credential lookup (native keychain)', () => {
     afterEach(() => {
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
-    it('probes every legacy scope concurrently instead of one keychain round trip at a time', async () => {
-        installServerProfilesMockWithLegacyScopes();
-        const { TokenStorage } = await import('./tokenStorage');
+    it.each([
+        ['the focused Home', () => TokenStorage.getCredentials()],
+        ['an explicitly requested server URL', () => TokenStorage.getCredentialsForServerUrl(SERVER_URL, { serverId: 'srv_identity' })],
+    ] as const)('probes every legacy scope of %s concurrently instead of one keychain round trip at a time', async (_target, read) => {
+        await seedHomeWithLegacyScopes();
 
         // Nothing is stored anywhere: the lookup has to probe the primary scope and then every
         // legacy scope, which is the worst case that used to serialise on the boot gate.
-        await expect(TokenStorage.getCredentials()).resolves.toBeNull();
+        await expect(read()).resolves.toBeNull();
 
         const legacyReadCount = secureStoreState.getItemAsync.mock.calls.length - 1;
         expect(legacyReadCount).toBeGreaterThan(1);
@@ -141,31 +143,21 @@ describe('TokenStorage credential lookup (native keychain)', () => {
     });
 
     it('does not probe legacy scopes at all when the primary scope answers', async () => {
-        installServerProfilesMockWithLegacyScopes();
-        const { TokenStorage } = await import('./tokenStorage');
+        await seedHomeWithLegacyScopes();
+        const { primaryKey, legacyKeys } = await readScopeLayout(() => TokenStorage.getCredentials());
+        expect(primaryKey).toContain('auth_credentials');
+        expect(legacyKeys.length).toBeGreaterThan(1);
+        secureStoreState.values.set(primaryKey, JSON.stringify({ token: 'token-1', secret: 'secret-1' }));
 
-        await expect(TokenStorage.setCredentials({ token: 'token-1', secret: 'secret-1' })).resolves.toBe(true);
-        const primaryKey = [...secureStoreState.values.keys()].find((key) => key.includes('auth_credentials'));
-        expect(primaryKey).toBeDefined();
-
-        vi.resetModules();
-        secureStoreState.readOrder.length = 0;
-        secureStoreState.getItemAsync.mockClear();
-        installServerProfilesMockWithLegacyScopes();
-        const { TokenStorage: FreshTokenStorage } = await import('./tokenStorage');
-
-        await expect(FreshTokenStorage.getCredentials()).resolves.toEqual({ token: 'token-1', secret: 'secret-1' });
+        await expect(TokenStorage.getCredentials()).resolves.toEqual({ token: 'token-1', secret: 'secret-1' });
         expect(secureStoreState.readOrder).toEqual([primaryKey]);
     });
 
     it('shares concurrent identical cold scoped reads at the Home authority', async () => {
-        installServerProfilesMockWithLegacyScopes();
-        const { TokenStorage } = await import('./tokenStorage');
-        await TokenStorage.setCredentials({ token: 'before' });
-        vi.resetModules();
-        installServerProfilesMockWithLegacyScopes();
-        const { TokenStorage: Fresh } = await import('./tokenStorage');
-        secureStoreState.readOrder.length = 0;
+        await seedHomeWithLegacyScopes();
+        const options = { serverId: 'srv_identity', storageReadFailure: 'surface' as const };
+        const { primaryKey } = await readScopeLayout(() => TokenStorage.getCredentialsForServerUrl(SERVER_URL, options));
+        secureStoreState.values.set(primaryKey, JSON.stringify({ token: 'before' }));
         // Web Locks are the cross-tab Home mutation authority. Its queue is
         // also used when this native-host fixture has a browser coordinator.
         let tail: Promise<unknown> = Promise.resolve();
@@ -175,27 +167,21 @@ describe('TokenStorage credential lookup (native keychain)', () => {
             return result;
         });
         vi.stubGlobal('navigator', { locks: { request } });
-        const reads = Array.from({ length: 12 }, () => Fresh.getCredentialsForServerUrl(SERVER_URL, {
-            serverId: 'srv-identity', storageReadFailure: 'surface',
-        }));
+        const reads = Array.from({ length: 12 }, () => TokenStorage.getCredentialsForServerUrl(SERVER_URL, options));
         expect(await Promise.all(reads)).toEqual(Array(12).fill({ token: 'before' }));
         expect(secureStoreState.readOrder).toHaveLength(1);
         expect(request).toHaveBeenCalledTimes(1);
         // Settlement releases the share; the native owner's existing raw cache
         // is independent of this one-operation queue sharing.
-        expect(await Fresh.getCredentialsForServerUrl(SERVER_URL, {
-            serverId: 'srv-identity', storageReadFailure: 'surface',
-        })).toEqual({ token: 'before' });
+        expect(await TokenStorage.getCredentialsForServerUrl(SERVER_URL, options)).toEqual({ token: 'before' });
         expect(request).toHaveBeenCalledTimes(2);
     });
 
     it('does not let a post-mutation read join an older scoped read still in flight', async () => {
-        installServerProfilesMockWithLegacyScopes();
-        const { TokenStorage } = await import('./tokenStorage');
-        await TokenStorage.setCredentials({ token: 'before' });
-        vi.resetModules();
-        installServerProfilesMockWithLegacyScopes();
-        const { TokenStorage: Fresh } = await import('./tokenStorage');
+        await seedHomeWithLegacyScopes();
+        const options = { serverId: 'srv_identity', storageReadFailure: 'surface' as const };
+        const { primaryKey } = await readScopeLayout(() => TokenStorage.getCredentialsForServerUrl(SERVER_URL, options));
+        secureStoreState.values.set(primaryKey, JSON.stringify({ token: 'before' }));
         let release!: () => void;
         const gate = new Promise<void>(resolve => { release = resolve; });
         let started = false;
@@ -205,11 +191,10 @@ describe('TokenStorage credential lookup (native keychain)', () => {
             await gate;
             return captured;
         });
-        const options = { serverId: 'srv-identity', storageReadFailure: 'surface' as const };
-        const before = Fresh.getCredentialsForServerUrl(SERVER_URL, options);
+        const before = TokenStorage.getCredentialsForServerUrl(SERVER_URL, options);
         await vi.waitFor(() => expect(started).toBe(true));
-        const mutation = Fresh.setCredentialsForServerUrl(SERVER_URL, options, { token: 'after' });
-        const after = Fresh.getCredentialsForServerUrl(SERVER_URL, options);
+        const mutation = TokenStorage.setCredentialsForServerUrl(SERVER_URL, options, { token: 'after' });
+        const after = TokenStorage.getCredentialsForServerUrl(SERVER_URL, options);
         release();
         expect(await before).toEqual({ token: 'before' });
         expect(await mutation).toBe(true);
@@ -217,13 +202,10 @@ describe('TokenStorage credential lookup (native keychain)', () => {
     });
 
     it('interrupts sharing when a profile-adoption writer already holds its Home authority', async () => {
-        installServerProfilesMockWithLegacyScopes();
-        const { TokenStorage } = await import('./tokenStorage');
-        await TokenStorage.setCredentials({ token: 'before' });
-        vi.resetModules();
-        installServerProfilesMockWithLegacyScopes();
-        const { TokenStorage: Fresh, setHomeCredentialsWithRollbackUnderMutationAuthority } = await import('./tokenStorage');
-        const { withHomeMutationAuthority } = await import('@/sync/domains/server/homeMutationLock');
+        await seedHomeWithLegacyScopes();
+        const options = { serverId: 'srv_identity', storageReadFailure: 'surface' as const };
+        const { primaryKey } = await readScopeLayout(() => TokenStorage.getCredentialsForServerUrl(SERVER_URL, options));
+        secureStoreState.values.set(primaryKey, JSON.stringify({ token: 'before' }));
         // Native adoption has a composed authority but no browser Web Lock.
         // Node's optional Web Locks must not turn this case into a lock deadlock.
         vi.stubGlobal('navigator', {});
@@ -237,11 +219,10 @@ describe('TokenStorage credential lookup (native keychain)', () => {
                 await gate;
                 return captured;
             });
-            const options = { serverId: 'srv-identity', storageReadFailure: 'surface' as const };
-            const before = Fresh.getCredentialsForServerUrl(SERVER_URL, options);
+            const before = TokenStorage.getCredentialsForServerUrl(SERVER_URL, options);
             await vi.waitFor(() => expect(started).toBe(true));
             const mutation = setHomeCredentialsWithRollbackUnderMutationAuthority(authority, SERVER_URL, options, { token: 'after' });
-            const after = Fresh.getCredentialsForServerUrl(SERVER_URL, options);
+            const after = TokenStorage.getCredentialsForServerUrl(SERVER_URL, options);
             release();
             expect(await before).toEqual({ token: 'before' });
             expect(await mutation).not.toBeNull();
@@ -250,99 +231,66 @@ describe('TokenStorage credential lookup (native keychain)', () => {
     });
 
     it('keeps legacy scope precedence and still migrates the winner onto the primary scope', async () => {
-        installServerProfilesMockWithLegacyScopes();
-        const { TokenStorage } = await import('./tokenStorage');
-
-        // Discover the scope layout by asking for a lookup with nothing stored.
-        await TokenStorage.getCredentials();
-        const [primaryKey, ...legacyKeys] = [...secureStoreState.readOrder];
-        expect(primaryKey).toBeDefined();
+        await seedHomeWithLegacyScopes();
+        const { primaryKey, legacyKeys } = await readScopeLayout(() => TokenStorage.getCredentials());
         expect(legacyKeys.length).toBeGreaterThan(1);
 
         secureStoreState.values.set(legacyKeys[0]!, JSON.stringify({ token: 'legacy-first', secret: 's1' }));
         secureStoreState.values.set(legacyKeys[1]!, JSON.stringify({ token: 'legacy-second', secret: 's2' }));
 
-        vi.resetModules();
-        installServerProfilesMockWithLegacyScopes();
-        const { TokenStorage: FreshTokenStorage } = await import('./tokenStorage');
-
-        await expect(FreshTokenStorage.getCredentials()).resolves.toEqual({ token: 'legacy-first', secret: 's1' });
-        expect(secureStoreState.values.get(primaryKey!)).toBe(JSON.stringify({ token: 'legacy-first', secret: 's1' }));
+        await expect(TokenStorage.getCredentials()).resolves.toEqual({ token: 'legacy-first', secret: 's1' });
+        expect(secureStoreState.values.get(primaryKey)).toBe(JSON.stringify({ token: 'legacy-first', secret: 's1' }));
         expect(secureStoreState.values.has(legacyKeys[0]!)).toBe(false);
         // Losing legacy scopes are left alone; only the migrated one is retired.
         expect(secureStoreState.values.has(legacyKeys[1]!)).toBe(true);
     });
 
     it('does not overwrite or misattribute a primary credential written during legacy migration', async () => {
-        installServerProfilesMockWithLegacyScopes();
-        const { TokenStorage } = await import('./tokenStorage');
-        await TokenStorage.getCredentials();
-        const [primaryKey, legacyKey] = [...secureStoreState.readOrder];
-        expect(primaryKey).toBeDefined();
+        await seedHomeWithLegacyScopes();
+        const { primaryKey, legacyKeys: [legacyKey] } = await readScopeLayout(() => TokenStorage.getCredentials());
         expect(legacyKey).toBeDefined();
         const legacyRaw = JSON.stringify({ token: 'legacy-token', secret: 'legacy-secret' });
         const concurrentRaw = JSON.stringify({ token: 'concurrent-token', secret: 'concurrent-secret' });
         secureStoreState.values.set(legacyKey!, legacyRaw);
 
-        vi.resetModules();
-        installServerProfilesMockWithLegacyScopes();
         let primaryReads = 0;
         secureStoreState.getItemAsync.mockImplementation(async (key: string) => {
             if (key === primaryKey && ++primaryReads === 2) {
-                secureStoreState.values.set(primaryKey!, concurrentRaw);
+                secureStoreState.values.set(primaryKey, concurrentRaw);
             }
             return secureStoreState.values.get(key) ?? null;
         });
-        const { TokenStorage: FreshTokenStorage } = await import('./tokenStorage');
 
-        await expect(FreshTokenStorage.getCredentials()).resolves.toEqual({
+        await expect(TokenStorage.getCredentials()).resolves.toEqual({
             token: 'concurrent-token',
             secret: 'concurrent-secret',
         });
-        expect(secureStoreState.values.get(primaryKey!)).toBe(concurrentRaw);
+        expect(secureStoreState.values.get(primaryKey)).toBe(concurrentRaw);
         expect(secureStoreState.values.get(legacyKey!)).toBe(legacyRaw);
         expect(secureStoreState.setItemAsync).not.toHaveBeenCalledWith(primaryKey, legacyRaw);
     });
 
     it('never promotes an anonymous URL-hash credential into an identity that shares that URL with another Home', async () => {
-        installServerProfilesMockWithoutProfiles();
-        const { TokenStorage } = await import('./tokenStorage');
+        // With no Home profile at the URL, an explicit URL-only target resolves to the anonymous URL-hash scope.
+        const { primaryKey: urlHashKey } = await readScopeLayout(() => TokenStorage.getCredentialsForServerUrl(SERVER_URL, {}));
+        secureStoreState.values.set(urlHashKey, JSON.stringify({ token: 'anonymous-url', secret: 'anon' }));
 
-        await expect(TokenStorage.setCredentialsForServerUrl(
-            SERVER_URL,
-            {},
-            { token: 'anonymous-url', secret: 'anon' },
-        )).resolves.toBe(true);
-        const [urlHashKey] = [...secureStoreState.values.keys()];
-        expect(urlHashKey).toBeDefined();
-
-        vi.resetModules();
+        await seedHomesSharingUrl();
         secureStoreState.readOrder.length = 0;
-        installServerProfilesMockWithSharedUrl();
-        const { TokenStorage: SharedUrlTokenStorage } = await import('./tokenStorage');
 
         // Ownership of the anonymous scope is ambiguous, so it is neither read as
         // this identity's credential nor migrated into (and deleted from) it.
         await expect(
-            SharedUrlTokenStorage.getCredentialsForServerUrl(SERVER_URL, { serverId: 'srv-identity' }),
+            TokenStorage.getCredentialsForServerUrl(SERVER_URL, { serverId: 'srv_identity' }),
         ).resolves.toBeNull();
         expect(secureStoreState.readOrder).not.toContain(urlHashKey);
         expect(secureStoreState.values.get(urlHashKey)).toBe(
             JSON.stringify({ token: 'anonymous-url', secret: 'anon' }),
         );
         expect([...secureStoreState.values.keys()]).toEqual([urlHashKey]);
-    });
 
-    it('applies the same lookup to an explicitly requested server URL', async () => {
-        installServerProfilesMockWithLegacyScopes();
-        const { TokenStorage } = await import('./tokenStorage');
-
-        await expect(
-            TokenStorage.getCredentialsForServerUrl(SERVER_URL, { serverId: 'srv-identity' }),
-        ).resolves.toBeNull();
-
-        const legacyReadCount = secureStoreState.getItemAsync.mock.calls.length - 1;
-        expect(legacyReadCount).toBeGreaterThan(1);
-        expect(secureStoreState.maxConcurrentReads).toBe(legacyReadCount);
+        // Positive control: without the shared-URL ambiguity the same bytes are a readable credential.
+        await seedPersistedHomeProfilesForTests({ profiles: [], activeServerId: '' });
+        await expect(TokenStorage.getCredentialsForServerUrl(SERVER_URL, {})).resolves.toEqual({ token: 'anonymous-url', secret: 'anon' });
     });
 });

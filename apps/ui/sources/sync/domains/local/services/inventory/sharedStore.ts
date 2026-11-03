@@ -5,6 +5,7 @@ import { subscribeMachineRpcRecovery } from '@/sync/runtime/orchestration/server
 import { subscribeHomeCredentialChange } from '@/sync/runtime/orchestration/homeAccountChange';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { resolveAuthCredentialsScopeKey } from '@/auth/storage/resolveAuthCredentialsScopeKey';
+import { invalidateLocalServicePreviewStore } from '../preview/sharedStore';
 import {
     type LocalServiceInventorySnapshotClientInput,
     type LocalServiceInventorySnapshotClientResult,
@@ -21,6 +22,8 @@ import {
     applyLocalServiceInventoryRefreshStarted,
     applyLocalServiceInventorySnapshot,
     applyLocalServiceInventorySummary,
+    applyLocalServiceInventoryMachineSummary,
+    readLocalServiceInventoryMachineSummarySource,
     createLocalServiceInventoryState,
     type LocalServiceInventorySnapshot,
     type LocalServiceInventoryState,
@@ -109,6 +112,7 @@ const store = createSharedSubscriptionStore<
         applyLocalServiceInventoryRefreshStarted(state, input.machineId)
     ),
     refresh: async ({ input, state, snapshotClient, signal }) => {
+        const receivedAt = state.generatedAt;
         const result = await snapshotClient({
             machineId: input.machineId,
             serverId: input.serverId,
@@ -117,9 +121,9 @@ const store = createSharedSubscriptionStore<
             refresh: true,
             signal,
         });
-        return result.ok
-            ? applyLocalServiceInventorySnapshot(state, result.snapshot)
-            : applyLocalServiceInventoryRefreshFailed(state, input.machineId);
+        return (current: LocalServiceInventoryState) => result.ok
+            ? applyLocalServiceInventorySnapshot(current, result.snapshot)
+            : current.generatedAt !== receivedAt ? current : applyLocalServiceInventoryRefreshFailed(current, input.machineId);
     },
     failRefresh: (state, input) => (
         applyLocalServiceInventoryRefreshFailed(state, input.machineId)
@@ -128,12 +132,16 @@ const store = createSharedSubscriptionStore<
     subscribeRecovery: (input, recover) => subscribeMachineRpcRecovery({ ...input, expectedAccountId: input.accountId }, recover),
     applySnapshot: (state, snapshot) => {
         if (!('summary' in snapshot)) return applyLocalServiceInventorySnapshot(state, snapshot);
-        const next = applyLocalServiceInventorySummary(state, snapshot.summary);
-        return 'machineSummarySource' in snapshot && snapshot.machineSummarySource !== state.machineSummarySource
-            ? { ...next, machineSummarySource: snapshot.machineSummarySource ?? null } : next;
+        return 'machineSummarySource' in snapshot
+            ? applyLocalServiceInventoryMachineSummary(state, snapshot.summary, snapshot.machineSummarySource ?? null)
+            : applyLocalServiceInventorySummary(state, snapshot.summary);
     },
     defaultWatchClient,
     watchAfterRefresh: true,
+    // Preview membership shares this Machine watch. Its canonical snapshot must
+    // be re-read even if a launcher projection never observed the registration.
+    // One notification per shared watch, not one per Session/launcher consumer.
+    onWatchSnapshot: (input) => invalidateLocalServicePreviewStore(input),
     // Freshness comes from the daemon: one parked watch per subscribed machine, re-armed on each
     // answer. `sinceGeneratedAt` closes the window between this store's snapshot read and its
     // first watch so a service that starts in between is not missed.
@@ -176,19 +184,27 @@ export function observeLocalServiceInventorySummary(input: LocalServiceInventory
 }
 
 export function publishLocalServiceInventorySummary(input: LocalServiceInventoryStoreKeyInput, summary: LocalServiceMachineSummaryV1): void {
+    publishSummary(input, { summary });
+}
+
+function publishSummary(input: LocalServiceInventoryStoreKeyInput,
+    snapshot: Readonly<{ summary: LocalServiceMachineSummaryV1; machineSummarySource?: object | null }>): void {
+    // A new ready observation can arrive without a transport reconnect (for example
+    // after a Service restarts). Revalidate failed detail demand, not passive scalar
+    // consumers, so the fresh inventory restores its watch and derived launcher rows.
+    const recover = snapshot.summary.state === 'ready' && store.getState(input).refreshState === 'error';
     const release = store.observe(input, () => {});
-    store.publish(input, { summary }, { resumeWatch: false });
+    store.publish(input, snapshot, { resumeWatch: false });
+    if (recover) store.invalidate(input);
     release();
 }
 
 /** Untyped Machine daemon-state content enters the inventory summary owner once per receipt. */
 export function publishLocalServiceInventoryMachineSummary(input: LocalServiceInventoryStoreKeyInput, received: unknown): void {
-    if (typeof received === 'object' && received !== null && received === store.getState(input).machineSummarySource) return;
+    if (typeof received === 'object' && received !== null && received === readLocalServiceInventoryMachineSummarySource(store.getState(input))) return;
     const parsed = LocalServiceMachineSummaryV1Schema.safeParse(received);
     const source = parsed.success && typeof received === 'object' && received !== null ? received : null;
-    const release = store.observe(input, () => {});
-    store.publish(input, { summary: parsed.success ? parsed.data : { v: 1, state: 'unknown' }, machineSummarySource: source }, { resumeWatch: false });
-    release();
+    publishSummary(input, { summary: parsed.success ? parsed.data : { v: 1, state: 'unknown' }, machineSummarySource: source });
 }
 
 /** Owned by the mounted Session address; repeated calls share its single allowance. */
@@ -199,10 +215,11 @@ export function createLocalServiceInventoryCountAcquisition(input: LocalServiceI
     return store.acquireReadOnce(input, input.sessionId ?? '', async signal => {
         if (getLocalServiceInventoryRunningCount(input) !== null) return;
         const previous = store.getState(input);
+        const previousSource = readLocalServiceInventoryMachineSummarySource(previous);
         const summary = await fetchLocalServiceInventorySummaryViaMachineRpc({ ...input, signal });
         const current = store.getState(input);
         if (!signal.aborted && summary && current.summary === previous.summary
-            && current.machineSummarySource === previous.machineSummarySource && current.generatedAt === previous.generatedAt) {
+            && readLocalServiceInventoryMachineSummarySource(current) === previousSource && current.generatedAt === previous.generatedAt) {
             publishLocalServiceInventorySummary(input, summary);
         }
     });

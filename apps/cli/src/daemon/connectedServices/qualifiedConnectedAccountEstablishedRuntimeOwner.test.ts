@@ -20,7 +20,7 @@ import { createConnectedAccountHostRuntimeInvoker } from '@/plugins/runtime/conn
 import {
   createConnectedAccountConfigurationOwner,
   type ConnectedAccountConfigurationRecord,
-} from '@/plugins/runtime/connectedAccounts/configurationOwner';
+} from '@happier-dev/cli-common/connectedAccounts';
 import type {
   ConnectedAccountHostRuntimeInvoker,
   ConnectedAccountRuntimeEstablishedInvocation,
@@ -205,7 +205,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
         createLoggerAndEventsAvailablePluginInvocationServiceBinding('authority-generation', 'producer', []) }),
       // This native leaf uses no platform services; all credential/currentness owners stay real.
       createServices: () => ({}) as PluginInvocationContext['services'],
-      registerRawForRedaction() {}, resolveHostOwnedConfiguredEndpoints: () => [],
+      registerRawForRedaction() {},
     });
     const contributions = createConnectedAccountContributionRegistry({
       descriptors: kind === 'host' ? [] : [{ provenance: 'external', source: { kind: 'package' }, pluginId: ref.pluginId, definition }],
@@ -640,7 +640,6 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       // No platform service is used by this provider leaf; the real invoker owns its context.
       createServices: () => ({}) as PluginInvocationContext['services'],
       registerRawForRedaction() {},
-      resolveHostOwnedConfiguredEndpoints: () => [],
     });
     const registry = {
       resolveConnectedAccountRuntime: async () => runtimeLease,
@@ -1090,7 +1089,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
     });
 
     await expect(owner.readCredentialRevision({ account })).rejects
-      .toThrow('credential snapshot is unfenced');
+      .toMatchObject({ code: 'credential_snapshot_unfenced' });
     expect(readCredential).toHaveBeenCalledWith({ token: 'token-1', ref: account });
     expect(acquireRuntimeRegistry).not.toHaveBeenCalled();
   });
@@ -1124,6 +1123,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
         token: null,
       }),
       metadata: { providerIdentity: { accountId: 'provider-user', organizationId: 'org-a' }, scopes: [] },
+      health: { v: 1, status: 'connected', reconnectRequired: false },
     };
     const configurationSnapshot: QualifiedConnectedAccountConfigurationSnapshotV4 = {
       target: { kind: 'account', ref: account },
@@ -1238,6 +1238,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       },
       basis: {
         credentialRevision: 'credential-1',
+        credentialHealth: { v: 1, status: 'connected', reconnectRequired: false },
         credentialConfigurationRevision: 'configuration-1',
         runtimeConfigurationRevision: 'configuration-1',
         occurrenceId: 'generation-1',
@@ -1259,6 +1260,7 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       authenticationModeId: 'oauth',
       metadata: { providerIdentity: { accountId: 'provider-user', organizationId: 'org-a' }, scopes: [] },
     });
+    expect(replacement.metadata).not.toHaveProperty('health');
     const changedContext = await receipt.basis.prepareCredentialReplacement({
       set: { accessToken: 'access-new-context' },
       delete: [],
@@ -1832,7 +1834,6 @@ describe('createQualifiedConnectedAccountEstablishedRuntimeOwner', () => {
       .resolves.toEqual([{
         origin: 'https://eu.example.test',
         base: 'https://eu.example.test',
-        grantTargetKind: 'connectedAccountOrigin',
       }]);
     expect(invokeEstablished).not.toHaveBeenCalled();
   });

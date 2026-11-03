@@ -46,7 +46,7 @@ export function resolveSidechainJumpToMessageTarget<TItem>(params: Readonly<{
     return { ok: false };
 }
 
-export function applySidechainJumpToMessage(params: Readonly<{
+function applySidechainJumpToMessage(params: Readonly<{
     estimatedItemSizePx: number;
     listRef: SidechainJumpToMessageListRef | null | undefined;
     targetIndex: number;

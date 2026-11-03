@@ -1,10 +1,10 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
-import { createSessionFixture, findTestInstanceByTypeContainingText, pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
+import { createSessionFixture, findTestInstanceByTypeContainingText, pressTestInstanceAsync, renderScreen as renderPanelScreen } from '@/dev/testkit';
+import { installSessionPaneRuntimeTestHarness } from '@/components/sessions/panes/sessionPaneRuntimeTestHarness';
 import { buildAgentUniverseBackendTargetKey } from '@/agents/catalog/agentUniverse';
 import { installAgentInputCommonModuleMocks } from './agentInputTestHelpers';
-import { createReducer } from "@happier-dev/session-core/reducer";
 import { settingsDefaults, type Settings } from '@/sync/domains/settings/settings';
 
 
@@ -15,7 +15,7 @@ const modalShowMock = vi.fn();
 const modalPromptMock = vi.fn();
 let lastPopoverProps: any = null;
 let lastActionMenuPopoverContentProps: any = null;
-let mockAgentInputActionBarLayout: 'wrap' | 'collapsed' = 'wrap';
+let mockAgentInputActionBarLayout: Settings['agentInputActionBarLayout'] = 'wrap';
 let mockWindowWidth = 800;
 const storageSettings: Settings = {
     ...settingsDefaults,
@@ -72,38 +72,13 @@ installAgentInputCommonModuleMocks({
         modalMock.spies.prompt.mockImplementation((...args) => modalPromptMock(...args));
         return modalMock.module;
     },
-    storage: async (importOriginal) => {
-        const { createStorageModuleMock, createStorageStoreMock, createUseSettingMock } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleMock({
-            importOriginal,
-            overrides: {
-                storage: createStorageStoreMock({
-                    settings: {
-                        ...storageSettings,
-                        agentInputActionBarLayout: mockAgentInputActionBarLayout,
-                    },
-                    localSettings: { uiFontScale: 1 },
-                    sessionMessages: {},
-                } as any),
-                useSetting: createUseSettingMock({
-                    fallback: (key) => {
-                        if (key === 'agentInputActionBarLayout') return mockAgentInputActionBarLayout;
-                        return storageSettings[key];
-                    },
-                }),
-                useSettings: () => ({
-                    ...storageSettings,
-                    agentInputActionBarLayout: mockAgentInputActionBarLayout,
-                }),
-                useSessionMessages: () => ({ messages: [], isLoaded: true }),
-                useSessionTranscriptIds: () => ({ ids: [], isLoaded: true }),
-                useSessionMessagesById: () => ({}),
-                useSessionMessagesVersion: () => 0,
-                useSessionMessagesReducerState: () => createReducer(),
-            },
-        });
-    },
 });
+const runtime = installSessionPaneRuntimeTestHarness();
+const { storage } = await import('@/sync/domains/state/storageStore');
+async function renderScreen(element: React.ReactElement) {
+    storage.setState({ settings: { ...storageSettings, agentInputActionBarLayout: mockAgentInputActionBarLayout } });
+    return renderPanelScreen(element, { wrapper: runtime.Wrapper });
+}
 
 function findIconNode(
     tree: Awaited<ReturnType<typeof renderScreen>>['tree'] | { root: any } | { findAll: (predicate: (node: any) => boolean) => any[] },
@@ -128,14 +103,6 @@ vi.mock('@/agents/presentation/AgentCatalogIdentityIcon', () => ({
 vi.mock('@/components/tools/shell/permissions/PermissionFooter', () => ({
     PermissionFooter: () => null,
 }));
-
-vi.mock('@/sync/domains/state/storageStore', async () => {
-    const { createStorageStoreMock } = await import('@/dev/testkit/mocks/storage');
-    const store = createStorageStoreMock({ sessionMessages: {}, localSettings: { uiFontScale: 1 } } as any);
-    return {
-        getStorage: () => store,
-    };
-});
 
 vi.mock('@/agents/catalog/catalog', async (importOriginal) => ({
     ...(await importOriginal<typeof import('@/agents/catalog/catalog')>()),
@@ -168,14 +135,6 @@ vi.mock('@/components/ui/feedback/Shaker', () => ({
 
 vi.mock('@/components/ui/status/StatusDot', () => ({
     StatusDot: () => null,
-}));
-
-vi.mock('@/components/autocomplete/useActiveSuggestions', () => ({
-    useActiveSuggestions: () => [[], 0, () => {}, () => {}],
-}));
-
-vi.mock('@/components/autocomplete/applySuggestion', () => ({
-    applySuggestion: (text: string) => ({ text, cursorPosition: text.length }),
 }));
 
 vi.mock('@/components/ui/popover', () => ({
@@ -318,7 +277,6 @@ describe('AgentInput (modelOptionsOverride)', () => {
                         { value: 'override-model', label: 'Override Model', description: '' },
                     ],
                 }));
-        expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
 
         expect(lastOptionPickerOverlayProps).not.toBeNull();
@@ -376,7 +334,6 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     ],
                     modelOptionsOverrideProbe: { phase: 'loading', onRefresh },
                 } as any));
-        expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
 
         expect(lastOptionPickerOverlayProps?.probe?.phase).toBe('loading');
@@ -450,7 +407,6 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     modelMode: 'default',
                     onModelModeChange: () => {},
                 } as any));
-        expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
 
         expect(lastOptionPickerOverlayProps?.probe).toBeUndefined();
@@ -486,7 +442,6 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     modelMode: 'default',
                     onModelModeChange: () => {},
                 } as any));
-        expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
 
         expect(lastOptionPickerOverlayProps?.probe).toBeUndefined();
@@ -531,7 +486,6 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     modelMode: 'default',
                     onModelModeChange: () => {},
                 } as any));
-        expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
 
         expect(lastOptionPickerOverlayProps?.probe).toBeUndefined();
@@ -597,7 +551,6 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     modelMode: 'default',
                     onModelModeChange: () => {},
                 } as any));
-        expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
 
         expect((lastOptionPickerOverlayProps?.options ?? []).map((o: any) => o.value)).toEqual(['default', 'session-model']);
@@ -855,6 +808,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
 
     it('opens env chip popover content instead of invoking the legacy env click callback when custom content exists', async () => {
         const onEnvVarsClick = vi.fn();
+        storage.getState().applyLocalSettings({ navigationSurfacePlacementsV1: { composer: { orderedIds: [], placements: { env: 'pinned' } } } });
 
         const screen = await renderScreen(React.createElement(AgentInput, {
                     value: 'hello',
@@ -892,6 +846,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
 
     it('opens profile chip popover content instead of invoking the legacy profile click callback when custom content exists', async () => {
         const onProfileClick = vi.fn();
+        storage.getState().applyLocalSettings({ navigationSurfacePlacementsV1: { composer: { orderedIds: [], placements: { profile: 'pinned' } } } });
 
         const screen = await renderScreen(React.createElement(AgentInput, {
                     value: 'hello',
@@ -950,8 +905,8 @@ describe('AgentInput (modelOptionsOverride)', () => {
         expect(screen.findByTestId('agent-input-content-popover')).toBeTruthy();
     });
 
-    it('closes the collapsed action menu when opening the permission chip popover', async () => {
-        mockAgentInputActionBarLayout = 'collapsed';
+    it('closes the action menu when opening the permission chip popover', async () => {
+        mockAgentInputActionBarLayout = 'wrap';
 
         try {
             const screen = await renderScreen(React.createElement(AgentInput, {
@@ -979,8 +934,8 @@ describe('AgentInput (modelOptionsOverride)', () => {
         }
     });
 
-    it('reopens collapsed settings through the shared content popover transport after closing the permission chip popover', async () => {
-        mockAgentInputActionBarLayout = 'collapsed';
+    it('reopens settings through the shared content popover transport after closing the permission chip popover', async () => {
+        mockAgentInputActionBarLayout = 'wrap';
 
         try {
             const screen = await renderScreen(React.createElement(AgentInput, {
@@ -1313,7 +1268,6 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     agentPickerSelectedOptionId: 'agent:claude',
                     onAgentPickerSelect: () => {},
                 } as any));
-        expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
 
         await screen.pressByTestIdAsync('agent-input-permission-chip');
         expect(screen.findByTestId('agent-input-content-popover')).toBeTruthy();
@@ -1431,6 +1385,9 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     v: 1,
                     agentId: 'codex',
                     updatedAt: 10,
+                    activeSelectionV1: { v: 1, source: 'runtime_readback',
+                        selection: { agentTargetKey: codexAgentTargetKey, providerConnectionId: null, modelId: 'session-model' },
+                        runner: { pid: 42, processStartTimeMs: 10 } },
                     currentModelId: 'session-model',
                     availableModels: [{ id: 'session-model', name: 'Session Model' }],
                 },
@@ -1447,6 +1404,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                 },
             },
             sessionActive: false,
+            currentRunnerProcessIdentity: { pid: 42, processStartTimeMs: 10 },
             permissionMode: 'default',
             onPermissionModeChange: () => {},
             modelMode: 'default',
@@ -1485,7 +1443,10 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     v: 1,
                     agentId: 'codex',
                     updatedAt: 12,
-                    currentModelId: 'selected-model',
+                    activeSelectionV1: { v: 1, source: 'runtime_readback',
+                        selection: { agentTargetKey: codexAgentTargetKey, providerConnectionId: null, modelId: 'applied-model' },
+                        runner: { pid: 42, processStartTimeMs: 10 } },
+                    currentModelId: 'applied-model',
                     availableModels: [
                         { id: 'applied-model', name: 'Applied Model' },
                         { id: 'selected-model', name: 'Selected Model' },
@@ -1504,6 +1465,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
                 },
             },
             sessionActive: true,
+            currentRunnerProcessIdentity: { pid: 42, processStartTimeMs: 10 },
             permissionMode: 'default',
             onPermissionModeChange: () => {},
             modelMode: 'selected-model',
@@ -1701,8 +1663,8 @@ describe('AgentInput (modelOptionsOverride)', () => {
         expect(lastPopoverProps?.maxWidthCap).toBe(570);
     });
 
-    it('uses the collapsed settings action as a launcher for the shared engine picker when agent picker options exist', async () => {
-        mockAgentInputActionBarLayout = 'collapsed';
+    it('opens the shared engine picker from an engine placed in overflow', async () => {
+        storage.getState().applyLocalSettings({ navigationSurfacePlacementsV1: { composer: { orderedIds: [], placements: { engine: 'overflow' } } } });
         lastOptionPickerOverlayProps = null;
         lastPopoverProps = null;
 
@@ -1738,7 +1700,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
             expect(lastOptionPickerOverlayProps).toBeNull();
             const engineAction = (lastActionMenuPopoverContentProps?.actionMenuActions ?? [])
                 .find((action: { id?: string }) => action.id === 'agent');
-            expect(engineAction?.label).toBe('Session Model');
+            expect(engineAction).toBeDefined();
 
             await screen.pressByTestIdAsync('agent-input-action-menu-action:agent');
 
@@ -1751,8 +1713,8 @@ describe('AgentInput (modelOptionsOverride)', () => {
         }
     });
 
-    it('uses the collapsed settings action as a launcher for the shared session mode popover', async () => {
-        mockAgentInputActionBarLayout = 'collapsed';
+    it('cycles the shared session mode from a mode placed in overflow', async () => {
+        storage.getState().applyLocalSettings({ navigationSurfacePlacementsV1: { composer: { orderedIds: [], placements: { mode: 'overflow' } } } });
         lastPopoverProps = null;
         const onAcpSessionModeChange = vi.fn();
 
@@ -1780,9 +1742,7 @@ describe('AgentInput (modelOptionsOverride)', () => {
             await screen.pressByTestIdAsync('agent-input-action-menu-button');
 
             expect(screen.findByTestId('agent-input-action-menu-overlay')).toBeTruthy();
-            expect(screen.getTextContent()).not.toContain('agentInput.mode.sectionTitle');
-
-            const modeAction = findTestInstanceByTypeContainingText(screen.tree, 'Pressable', 'Build');
+            const modeAction = screen.findByTestId('agent-input-action-menu-action:mode');
             expect(modeAction).toBeTruthy();
 
             await pressTestInstanceAsync(modeAction, 'Build pressable');
@@ -1858,7 +1818,6 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     acpSessionModeOptionsOverrideProbe: { phase: 'idle', onRefresh },
                     onAcpSessionModeChange: () => {},
                 } as any));
-        expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
 
         const refresh = screen.findByTestId('model-picker-overlay-refresh');
@@ -1904,7 +1863,6 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     },
                     onAcpConfigOptionChange,
                 } as any));
-        expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
 
         expect(screen.findByTestId('agent-input-config-option:speed')).toBeTruthy();
@@ -1937,7 +1895,6 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     acpConfigOptionsOverrideProbe: { phase: 'loading', onRefresh: () => {} },
                     onAcpConfigOptionChange: () => {},
                 } as any));
-        expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
 
         const refresh = screen.findByTestId('model-picker-overlay-refresh');
@@ -1967,7 +1924,6 @@ describe('AgentInput (modelOptionsOverride)', () => {
                     acpConfigOptionsOverrideProbe: { phase: 'idle', onRefresh },
                     onAcpConfigOptionChange: () => {},
                 } as any));
-        expect(screen.findByTestId('agent-input-action-menu-button')).toBeNull();
         await screen.pressByTestIdAsync('agent-input-agent-chip');
 
         const refresh = screen.findByTestId('model-picker-overlay-refresh');

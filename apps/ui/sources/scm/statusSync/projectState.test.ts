@@ -1,35 +1,31 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { buildScmDiffSnapshotSignature } from '../diffCache/scmDiffCacheKey';
+import { buildScmDiffSnapshotSignature, buildScmFileDiffSnapshotSignature } from '../diffCache/scmDiffCacheKey';
 
-import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { getCachedRepositoryDirectoryEntries, setCachedRepositoryDirectoryEntries } from '@/sync/domains/input/repositoryDirectory';
+import { registerSuggestionFileSearchCacheClearer } from '@/sync/domains/input/suggestionFileCacheInvalidation';
+import { storage } from '@/sync/domains/state/storage';
+import type { Session, ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import { buildSnapshotSignature, clearSearchCacheForProject, getRepoScopeSessionIds } from './projectState';
-
-const getStateMock = vi.hoisted(() => vi.fn());
-const clearSuggestionFileSearchCacheMock = vi.hoisted(() => vi.fn());
-const clearCachedRepositoryDirectoryEntriesMock = vi.hoisted(() => vi.fn());
-
-vi.mock('@/sync/domains/state/storage', async () => {
-    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-    return createStorageModuleStub({
-    storage: {
-    getState: getStateMock,
-  },
-});
-});
 
 vi.mock('@/sync/domains/input/suggestionFile', () => {
     throw new Error('projectState must not load the full file-search suggestion module when clearing caches');
 });
 
-vi.mock('@/sync/domains/input/suggestionFileCacheInvalidation', () => ({
-    clearSuggestionFileSearchCache: (sessionId: string) => clearSuggestionFileSearchCacheMock(sessionId),
-}));
+const initialState = storage.getState();
+afterEach(() => {
+    storage.setState(initialState, true);
+});
 
-vi.mock('@/sync/domains/input/repositoryDirectory', () => ({
-    clearCachedRepositoryDirectoryEntries: (input: { sessionId: string }) =>
-        clearCachedRepositoryDirectoryEntriesMock(input),
-}));
+// The real store and project registry read these sessions; metadata stays as partial as the scenario needs.
+function sessionsState(sessions: Record<string, Partial<Session>>): Record<string, Session> {
+    return Object.fromEntries(Object.entries(sessions).map(([id, session]) => [id, createSessionFixture({ id, ...session })]));
+}
+function metadata(value: Record<string, unknown>): Session['metadata'] {
+    return value as Session['metadata'];
+}
 
 function makeSnapshot(
   partial: Partial<ScmWorkingSnapshot> & Pick<ScmWorkingSnapshot, 'repo'>
@@ -61,6 +57,33 @@ function makeSnapshot(
 }
 
 describe('buildSnapshotSignature', () => {
+  it('projects a file revision without visiting unrelated changes, retaining repository and refresh invalidation', () => {
+    const entry: ScmWorkingSnapshot['entries'][number] = {
+      path: 'asset.png', previousPath: null, kind: 'modified', includeStatus: ' ', pendingStatus: 'M',
+      hasIncludedDelta: false, hasPendingDelta: true,
+      stats: { includedAdded: 0, includedRemoved: 0, pendingAdded: 1, pendingRemoved: 0, isBinary: true },
+    };
+    let unrelatedPathReads = 0;
+    const unrelated = Array.from({ length: 54_849 }, (_, index) => ({ ...entry,
+      get path() { unrelatedPathReads++; return `unrelated/${index}.txt`; },
+    }));
+    const base = makeSnapshot({ repo: { isRepo: true, rootPath: '/repo' }, entries: [entry, ...unrelated] });
+    const signature = buildScmFileDiffSnapshotSignature(base, entry);
+    expect(unrelatedPathReads).toBe(0);
+    expect(signature).toBe(buildScmDiffSnapshotSignature({ ...base, entries: [entry] }));
+    for (const changed of [
+      { ...base, fetchedAt: 2 },
+      { ...base, repo: { ...base.repo, defaultBranch: 'release' } },
+      { ...base, branch: { ...base.branch, headOid: 'new-head' } },
+      { ...base, operationState: { kind: 'merge' as const, sourceRef: 'main', canContinue: true, canAbort: true } },
+    ]) expect(buildScmFileDiffSnapshotSignature(changed, entry)).not.toBe(signature);
+    expect(buildScmFileDiffSnapshotSignature(base, { ...entry, stats: { ...entry.stats, pendingAdded: 2 } })).not.toBe(signature);
+    expect(buildScmFileDiffSnapshotSignature(base, null)).not.toBe(signature);
+    expect(unrelatedPathReads).toBe(0);
+    // Whole-review invalidation still covers every changed file.
+    expect(buildScmDiffSnapshotSignature(base)).not.toBe(buildScmDiffSnapshotSignature({ ...base, entries: [entry] }));
+  });
+
   it('keeps diff acquisition fresh when status shape is unchanged', () => {
     const base = makeSnapshot({ repo: { isRepo: true, rootPath: '/repo', backendId: 'git', mode: '.git', worktrees: [], remotes: [] } });
     expect(buildScmDiffSnapshotSignature({ ...base, fetchedAt: 1 })).not.toBe(
@@ -141,38 +164,60 @@ describe('buildSnapshotSignature', () => {
 
     expect(buildSnapshotSignature(withDifferentOperationState)).not.toBe(buildSnapshotSignature(base));
   });
+
+  it('changes when HEAD or upstream object ids move without a status shape change', () => {
+    const base = makeSnapshot({ repo: { isRepo: true, rootPath: '/repo' } });
+    const observed = { ...base, branch: { ...base.branch, headOid: 'a'.repeat(40), upstreamOid: 'b'.repeat(40) } };
+    expect(buildSnapshotSignature({ ...observed, branch: { ...observed.branch, headOid: 'c'.repeat(40) } })).not.toBe(buildSnapshotSignature(observed));
+    expect(buildSnapshotSignature({ ...observed, branch: { ...observed.branch, upstreamOid: 'd'.repeat(40) } })).not.toBe(buildSnapshotSignature(observed));
+  });
 });
 
 
 describe('clearSearchCacheForProject', () => {
-  it('clears matching session caches without loading the full file-search module', async () => {
-    clearSuggestionFileSearchCacheMock.mockClear();
-    clearCachedRepositoryDirectoryEntriesMock.mockClear();
+  it('clears the search caches of the given sessions only, without loading the full file-search module', async () => {
+    const machine = createMachineFixture({ id: 'clear-machine' });
+    storage.setState({
+      machines: { [machine.id]: machine },
+      // The workspace caches are keyed by the Session's Home, carried on the active Session entity.
+      sessions: sessionsState({
+        'clear-s1': { serverId: 'clear-home', metadata: metadata({ machineId: machine.id, path: '/clear-a' }) },
+        'clear-s2': { serverId: 'clear-home', metadata: metadata({ machineId: machine.id, path: '/clear-b' }) },
+        'clear-s3': { serverId: 'clear-home', metadata: metadata({ machineId: machine.id, path: '/clear-a/apps/ui' }) },
+      }),
+    });
+    const entries = [{ name: 'README.md', type: 'file' as const }];
+    for (const sessionId of ['clear-s1', 'clear-s2', 'clear-s3']) {
+      setCachedRepositoryDirectoryEntries({ sessionId, directoryPath: '', entries });
+      expect(getCachedRepositoryDirectoryEntries({ sessionId, directoryPath: '' })).toEqual(entries);
+    }
+    const clearedSuggestionSessions: Array<string | undefined> = [];
+    const unregister = registerSuggestionFileSearchCacheClearer((sessionId) => clearedSuggestionSessions.push(sessionId));
+    try {
+      await clearSearchCacheForProject([
+        { sessionId: 'clear-s1', serverId: null },
+        { sessionId: 'clear-s3', serverId: null },
+      ]);
+    } finally {
+      unregister();
+    }
 
-    await clearSearchCacheForProject(new Map([
-      ['s1', 'project-a'],
-      ['s2', 'project-b'],
-      ['s3', 'project-a'],
-    ]), 'project-a');
-
-    expect(clearSuggestionFileSearchCacheMock).toHaveBeenCalledTimes(2);
-    expect(clearSuggestionFileSearchCacheMock).toHaveBeenNthCalledWith(1, 's1');
-    expect(clearSuggestionFileSearchCacheMock).toHaveBeenNthCalledWith(2, 's3');
-    expect(clearCachedRepositoryDirectoryEntriesMock).toHaveBeenCalledTimes(2);
-    expect(clearCachedRepositoryDirectoryEntriesMock).toHaveBeenNthCalledWith(1, { sessionId: 's1' });
-    expect(clearCachedRepositoryDirectoryEntriesMock).toHaveBeenNthCalledWith(2, { sessionId: 's3' });
+    expect(clearedSuggestionSessions).toEqual(['clear-s1', 'clear-s3']);
+    expect(getCachedRepositoryDirectoryEntries({ sessionId: 'clear-s1', directoryPath: '' })).toBeNull();
+    expect(getCachedRepositoryDirectoryEntries({ sessionId: 'clear-s2', directoryPath: '' })).toEqual(entries);
+    expect(getCachedRepositoryDirectoryEntries({ sessionId: 'clear-s3', directoryPath: '' })).toBeNull();
   });
 });
 
 describe('getRepoScopeSessionIds', () => {
   it('does not group repo sessions by host when machine identity is missing', () => {
-    getStateMock.mockReturnValue({
-      sessions: {
-        s1: { id: 's1', metadata: { host: 'devbox', path: '/repo' } },
-        s2: { id: 's2', metadata: { host: 'devbox', path: '/repo/apps/ui' } },
-        s3: { id: 's3', metadata: { host: 'other', path: '/repo/apps/ui' } },
-        s4: { id: 's4', metadata: { machineId: 'machine-a', path: '/repo/apps/ui' } },
-      },
+    storage.setState({
+      sessions: sessionsState({
+        s1: { metadata: metadata({ host: 'devbox', path: '/repo' }) },
+        s2: { metadata: metadata({ host: 'devbox', path: '/repo/apps/ui' }) },
+        s3: { metadata: metadata({ host: 'other', path: '/repo/apps/ui' }) },
+        s4: { metadata: metadata({ machineId: 'machine-a', path: '/repo/apps/ui' }) },
+      }),
     });
 
     const scoped = getRepoScopeSessionIds('s1', '/repo').sort();
@@ -180,12 +225,12 @@ describe('getRepoScopeSessionIds', () => {
   });
 
   it('groups repo sessions by normalized host scope when machineId is missing', () => {
-    getStateMock.mockReturnValue({
-      sessions: {
-        s1: { id: 's1', metadata: { host: 'DEVBOX.local', path: '/repo' } },
-        s2: { id: 's2', metadata: { host: 'devbox', path: '/repo/apps/ui' } },
-        s3: { id: 's3', metadata: { host: 'other.local', path: '/repo/apps/ui' } },
-      },
+    storage.setState({
+      sessions: sessionsState({
+        s1: { metadata: metadata({ host: 'DEVBOX.local', path: '/repo' }) },
+        s2: { metadata: metadata({ host: 'devbox', path: '/repo/apps/ui' }) },
+        s3: { metadata: metadata({ host: 'other.local', path: '/repo/apps/ui' }) },
+      }),
     });
 
     const scoped = getRepoScopeSessionIds('s1', '/repo').sort();
@@ -193,70 +238,64 @@ describe('getRepoScopeSessionIds', () => {
   });
 
   it('groups layout-v1 repo sessions by owner workspace scope instead of shared metadata', () => {
-    getStateMock.mockReturnValue({
-      sessions: {
+    storage.setState({
+      sessions: sessionsState({
         s1: {
-          id: 's1',
           metadataLayoutVersion: 1,
-          metadata: { v: 1, host: 'shared-decoy', path: '/shared-decoy' },
-          ownerMetadataView: { host: 'DEVBOX.local', path: '/repo' },
+          metadata: metadata({ v: 1, host: 'shared-decoy', path: '/shared-decoy' }),
+          ownerMetadataView: metadata({ host: 'DEVBOX.local', path: '/repo' }),
         },
         s2: {
-          id: 's2',
           metadataLayoutVersion: 1,
-          metadata: { v: 1, host: 'other-shared-decoy', path: '/other-shared-decoy' },
-          ownerMetadataView: { host: 'devbox', path: '/repo/apps/ui' },
+          metadata: metadata({ v: 1, host: 'other-shared-decoy', path: '/other-shared-decoy' }),
+          ownerMetadataView: metadata({ host: 'devbox', path: '/repo/apps/ui' }),
         },
         s3: {
-          id: 's3',
           metadataLayoutVersion: 1,
-          metadata: { v: 1, host: 'shared-decoy', path: '/shared-decoy' },
-          ownerMetadataView: { host: 'other.local', path: '/repo/apps/server' },
+          metadata: metadata({ v: 1, host: 'shared-decoy', path: '/shared-decoy' }),
+          ownerMetadataView: metadata({ host: 'other.local', path: '/repo/apps/server' }),
         },
-      },
+      }),
     });
 
     expect(getRepoScopeSessionIds('s1', '/repo').sort()).toEqual(['s1', 's2']);
   });
 
   it('returns only the reference session when scope is unknown', () => {
-    getStateMock.mockReturnValue({
-      sessions: {
-        s1: { id: 's1', metadata: { path: '/repo' } },
-        s2: { id: 's2', metadata: { host: '', path: '/repo/apps/ui' } },
-      },
+    storage.setState({
+      sessions: sessionsState({
+        s1: { metadata: metadata({ path: '/repo' }) },
+        s2: { metadata: metadata({ host: '', path: '/repo/apps/ui' }) },
+      }),
     });
 
     expect(getRepoScopeSessionIds('s1', '/repo')).toEqual(['s1']);
   });
 
   it('includes sessions using project workspace fallback when metadata path is missing', () => {
-    getStateMock.mockReturnValue({
-      sessions: {
-        s1: { id: 's1', metadata: { machineId: 'machine-a', path: null } },
-        s2: { id: 's2', metadata: { machineId: 'machine-a', path: '/repo/apps/ui' } },
-        s3: { id: 's3', metadata: { machineId: 'machine-b', path: '/repo/apps/server' } },
-      },
-      getProjectForSession: (sessionId: string) => {
-        if (sessionId === 's1') {
-          return { key: { machineId: 'machine-a', path: '/repo' } };
-        }
-        if (sessionId === 's2') {
-          return { key: { machineId: 'machine-a', path: '/repo/apps/ui' } };
-        }
-        return null;
-      },
-    });
+    const workspaces = {
+      'fallback-reference': { machineId: 'machine-a', path: '/repo' },
+      'fallback-member': { machineId: 'machine-a', path: '/repo/apps/ui' },
+      'fallback-other-machine': { machineId: 'machine-b', path: '/repo/apps/server' },
+      'fallback-outside': { machineId: 'machine-a', path: '/elsewhere' },
+    };
+    const withPaths = (pathFor: (path: string) => string) => sessionsState(Object.fromEntries(Object.entries(workspaces)
+      .map(([id, workspace]) => [id, { metadata: metadata({ machineId: workspace.machineId, path: pathFor(workspace.path) }) }])));
+    // The project registry observes each workspace before the path leaves the session metadata.
+    storage.setState({ sessions: withPaths((path) => path) });
+    for (const [id, workspace] of Object.entries(workspaces)) {
+      expect(storage.getState().getProjectForSession(id)?.key.rootPath).toBe(workspace.path);
+    }
+    storage.setState({ sessions: withPaths(() => '') });
 
-    expect(getRepoScopeSessionIds('s1', '/repo').sort()).toEqual(['s1', 's2']);
+    expect(getRepoScopeSessionIds('fallback-reference', '/repo').sort()).toEqual(['fallback-member', 'fallback-reference']);
   });
 
   it('groups direct-session repo scopes by the linked direct machine id', () => {
-    getStateMock.mockReturnValue({
-      sessions: {
+    storage.setState({
+      sessions: sessionsState({
         s1: {
-          id: 's1',
-          metadata: {
+          metadata: metadata({
             path: '/repo',
             externalSessionV1: {
               v: 1,
@@ -265,11 +304,10 @@ describe('getRepoScopeSessionIds', () => {
               remoteSessionId: 'remote-1',
               source: { kind: 'codexHome', home: 'user' },
             },
-          },
+          }),
         },
         s2: {
-          id: 's2',
-          metadata: {
+          metadata: metadata({
             path: '/repo/apps/ui',
             externalSessionV1: {
               v: 1,
@@ -278,11 +316,10 @@ describe('getRepoScopeSessionIds', () => {
               remoteSessionId: 'remote-2',
               source: { kind: 'codexHome', home: 'user' },
             },
-          },
+          }),
         },
         s3: {
-          id: 's3',
-          metadata: {
+          metadata: metadata({
             path: '/repo/apps/server',
             externalSessionV1: {
               v: 1,
@@ -291,9 +328,9 @@ describe('getRepoScopeSessionIds', () => {
               remoteSessionId: 'remote-3',
               source: { kind: 'codexHome', home: 'user' },
             },
-          },
+          }),
         },
-      },
+      }),
     });
 
     const scoped = getRepoScopeSessionIds('s1', '/repo').sort();

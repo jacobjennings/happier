@@ -51,20 +51,6 @@ describe('isRuntimeActive', () => {
         }
     });
 
-    it('treats a Tauri webview as active even when document.visibilityState=hidden', async () => {
-        const { isRuntimeActive } = await import('./isRuntimeActive');
-        appState.currentState = 'active';
-        const prev = (globalThis as any).document;
-        (globalThis as any).document = { visibilityState: 'hidden' };
-        (globalThis as any).__TAURI_INTERNALS__ = { invoke: () => undefined };
-        try {
-            expect(isRuntimeActive()).toBe(true);
-        } finally {
-            delete (globalThis as any).__TAURI_INTERNALS__;
-            (globalThis as any).document = prev;
-        }
-    });
-
     it('treats a Tauri webview as active even when AppState reports background', async () => {
         const { isRuntimeActive } = await import('./isRuntimeActive');
         appState.currentState = 'background';

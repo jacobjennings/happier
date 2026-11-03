@@ -1,14 +1,26 @@
+import { MACHINE_ADD_SSH_ACTION_IDS, MACHINE_PAGE_ACTION_IDS } from './machineConnectionActionIdsV1.js';
+export { MACHINE_ADD_SSH_ACTION_IDS, MACHINE_PAGE_ACTION_IDS, MACHINE_MANAGED_INSTALLATION_ACTION_IDS } from './machineConnectionActionIdsV1.js';
 import { lazyZodSchema } from '../../lazyZodSchema.js';
 import { z } from 'zod/mini';
 import type { PreNormalizedActionSpec } from '../actionSpecs.js';
 import { StrictJsonValueSchema } from '../../json/strictJsonValue.js';
 import { InstallableCapabilityIdSchema } from '../../installables/descriptor.js';
+import { ManagedMachineBootstrapApprovalPromptV1Schema } from '../operations/v1.js';
+import { redactObservationInputPaths } from './observationRedaction.js';
 export { MachineTerminalOpenInputSchema, MachineTerminalListInputSchema } from './machineTerminal.js';
 
 const id = z.string().check(z.trim(), z.minLength(1));
-export const MACHINE_PAGE_ACTION_IDS = ['machines.metadata.update', 'machines.daemon.stop', 'machines.remove', 'machines.capabilities.install', 'machines.replacement.set', 'machines.replacement.clear'] as const;
 export type MachinePageActionId = typeof MACHINE_PAGE_ACTION_IDS[number];
 const machineTarget = { serverId: z.optional(id), machineId: id };
+export const MachineManagedInstallationRespondInputSchema = lazyZodSchema(() => {
+  const correlation = { serverId: id, homeId: id, managedId: id, operationId: id, taskId: id };
+  return z.discriminatedUnion('purpose', [
+    z.strictObject({ ...correlation, purpose: z.literal('approve'),
+      prompt: ManagedMachineBootstrapApprovalPromptV1Schema, approved: z.boolean() }),
+    z.strictObject({ ...correlation, purpose: z.literal('establish'), promptId: id,
+      password: z.string().check(z.minLength(1)) }),
+  ]);
+});
 export const MachineMetadataUpdateInputSchema = lazyZodSchema(() => z.strictObject({
   ...machineTarget,
   expectedVersion: z.optional(z.number().check(z.int(), z.nonnegative())),
@@ -85,8 +97,8 @@ export const MachineAddCommandInputSchema = lazyZodSchema(() => z.discriminatedU
 ]));
 export const MachineAddCommandOutputSchema = lazyZodSchema(() => z.strictObject({ command: id, descriptorFileRequired: z.boolean() }));
 export const MachinePairingCreateInputSchema = lazyZodSchema(() => z.strictObject({ serverId: id }));
+export const MachineAddLocalStartInputSchema = lazyZodSchema(() => z.strictObject({ serverId: id, reconsiderCli: z.optional(z.boolean()) }));
 export const MachinePairingCreateOutputSchema = lazyZodSchema(() => z.strictObject({ pairId: id, link: id, expiresAtMs: z.number().check(z.int(), z.nonnegative()) }));
-export const MACHINE_ADD_SSH_ACTION_IDS = ['machines.add.ssh.start', 'machines.add.ssh.status', 'machines.add.ssh.respond', 'machines.add.ssh.cancel'] as const;
 export type MachineAddSshActionId = typeof MACHINE_ADD_SSH_ACTION_IDS[number];
 export const MachineAddSshStartInputSchema = lazyZodSchema(() => z.union([z.strictObject({ serverId: id, host: id, username: z._default(z.string(), ''),
   port: z.optional(z.number().check(z.int(), z.minimum(1), z.maximum(65535))), authMode: z._default(z.enum(['agent', 'keyfile', 'password']), 'agent'),
@@ -120,10 +132,12 @@ export const MACHINE_ADD_SSH_INPUT_SCHEMAS = {
   'machines.add.ssh.respond': MachineAddSshRespondInputSchema, 'machines.add.ssh.cancel': MachineAddSshCancelInputSchema,
 } as const;
 
-const clientSurfaces = { ui: true, voice: false, agent: true, mcp: true, cli: false, rpc: false } as const;
+const clientSurfaces = { ui: true, voice: false, agent: true, mcp: true, cli: true, rpc: false } as const;
+// SSH and setup-command Actions run in the client's SSH bridge / web command; the CLI adds Machines through its own native installer (58d §D3).
+const setupClientSurfaces = { ...clientSurfaces, cli: false } as const;
 export const MACHINE_CONNECTION_ACTION_SPECS = [
   {
-    id: 'machines.metadata.update', approval: {result: 'required'}, title: 'Update machine details',
+    id: 'machines.metadata.update', approvalPolicy: { agentDefault: 'authority', requiredSurfaces: ['mcp', 'plugin'] }, approval: {result: 'required'}, title: 'Update machine details',
     description: 'Change the machine name or Windows session launch mode through versioned Machine metadata.',
     safety: 'safe', sideEffectClass: 'write', executionPlacement: 'client', placements: [],
     surfaces: { ui: true, cli: true, agent: true, mcp: true, voice: false, rpc: false },
@@ -149,6 +163,7 @@ export const MACHINE_CONNECTION_ACTION_SPECS = [
   },
   {
     id: 'machines.remove', approval: {result: 'required'}, title: 'Remove machine',
+    irreversible: true,
     description: 'Revoke the machine from its Home and clean up its Provider state.',
     safety: 'danger', sideEffectClass: 'danger', executionPlacement: 'account', placements: [],
     surfaces: { ui: true, cli: true, agent: true, mcp: true, voice: false, rpc: false },
@@ -203,9 +218,19 @@ export const MACHINE_CONNECTION_ACTION_SPECS = [
     inputHints: { fields: [{ path: 'serverId', title: 'Home ID', widget: 'text' }, { path: 'machineId', title: 'Machine ID', widget: 'text', required: true }] },
   },
   {
+    id: 'machines.add.local.start', approval: { result: 'required' }, title: 'Set up this computer',
+    description: 'Set up the answering desktop computer on its focused signed-in Home. Native setup inputs and Account-move consent remain private to that App.',
+    safety: 'danger', sideEffectClass: 'danger', executionPlacement: 'client', placements: [], surfaces: clientSurfaces, cli: { commands: [] },
+    bindings: { mcpToolName: 'machines_add_local_start' },
+    toolExposure: { agent: 'discoverable_only', mcp: 'discoverable_only' },
+    inputSchema: MachineAddLocalStartInputSchema, outputSchema: MachineAddSshTaskOutputSchema,
+    inputHints: { fields: [{ path: 'serverId', title: 'Home ID', widget: 'text', required: true },
+      { path: 'reconsiderCli', title: 'Ask who manages the command line again', widget: 'boolean' }] },
+  },
+  {
     id: 'machines.add.ssh.start', approval: {result: 'required'}, title: 'Add machine over SSH',
     description: 'Start SSH setup on the focused signed-in Home using a target or saved host. Credentials stay in private task custody or are resolved from the captured saved host; they are never Action arguments.',
-    safety: 'danger', sideEffectClass: 'danger', executionPlacement: 'client', placements: [], surfaces: clientSurfaces,
+    safety: 'danger', sideEffectClass: 'danger', executionPlacement: 'client', placements: [], surfaces: setupClientSurfaces,
     bindings: { mcpToolName: 'machines_add_ssh_start' }, inputSchema: MachineAddSshStartInputSchema, outputSchema: MachineAddSshTaskOutputSchema,
     inputHints: { fields: [{ path: 'serverId', title: 'Home ID', widget: 'text', required: true }, { path: 'host', title: 'SSH host', widget: 'text' },
       { path: 'savedHostId', title: 'Saved host ID', widget: 'text' }, { path: 'expectedHostRevision', title: 'Saved host catalog revision', widget: 'text' },
@@ -214,33 +239,33 @@ export const MACHINE_CONNECTION_ACTION_SPECS = [
   },
   {
     id: 'machines.add.ssh.status', approval: {result: 'required'}, title: 'Read SSH machine setup', description: 'Read the retained SSH setup task and its current prompt. Task success is not proof of Home feed arrival.',
-    safety: 'safe', sideEffectClass: 'read', executionPlacement: 'client', placements: [], surfaces: clientSurfaces,
+    safety: 'safe', sideEffectClass: 'read', executionPlacement: 'client', placements: [], surfaces: setupClientSurfaces,
     bindings: { mcpToolName: 'machines_add_ssh_status' }, inputSchema: MachineAddSshTaskInputSchema, outputSchema: MachineAddSshStatusOutputSchema,
     inputHints: { fields: [{ path: 'taskId', title: 'Task ID', widget: 'text', required: true }] },
   },
   {
     id: 'machines.add.ssh.respond', approval: {result: 'required'}, title: 'Answer SSH setup prompt', description: 'Answer the exact current SSH setup prompt; trust and service changes are never accepted implicitly.',
-    safety: 'danger', sideEffectClass: 'danger', executionPlacement: 'client', placements: [], surfaces: clientSurfaces,
+    safety: 'danger', sideEffectClass: 'danger', executionPlacement: 'client', placements: [], surfaces: setupClientSurfaces,
     bindings: { mcpToolName: 'machines_add_ssh_respond' }, inputSchema: MachineAddSshRespondInputSchema, outputSchema: MachineAddSshTaskOutputSchema,
     inputHints: { fields: [{ path: 'taskId', title: 'Task ID', widget: 'text', required: true }, { path: 'answer', title: 'Prompt answer', widget: 'json', required: true }] },
   },
   {
     id: 'machines.add.ssh.cancel', approval: {result: 'required'}, title: 'Cancel SSH machine setup', description: 'Cancel the retained SSH task through its existing system-task owner. Omit taskId to cancel its pending native start.',
-    safety: 'safe', sideEffectClass: 'write', executionPlacement: 'client', placements: [], surfaces: clientSurfaces,
+    safety: 'safe', sideEffectClass: 'write', executionPlacement: 'client', placements: [], surfaces: setupClientSurfaces,
     bindings: { mcpToolName: 'machines_add_ssh_cancel' }, inputSchema: MachineAddSshCancelInputSchema, outputSchema: MachineAddSshCancelOutputSchema,
     inputHints: { fields: [{ path: 'taskId', title: 'Task ID', widget: 'text' }] },
   },
   {
     id: 'homes.reconnect', approval: { result: 'required' }, title: 'Retry the focused Home connection',
     description: 'Retry the current Home through its existing connection recovery owner. This does not switch device focus to another Home.',
-    safety: 'safe', sideEffectClass: 'write', executionPlacement: 'client', placements: [], surfaces: clientSurfaces,
+    safety: 'safe', sideEffectClass: 'write', executionPlacement: 'client', placements: [], surfaces: clientSurfaces, cli: { commands: [] },
     bindings: { mcpToolName: 'homes_reconnect' }, inputSchema: HomeReconnectInputSchema, outputSchema: HomeReconnectOutputSchema,
     inputHints: { fields: [{ path: 'serverId', title: 'Focused Home ID', widget: 'text', required: true }] },
   },
   {
     id: 'homes.connect', approval: { result: 'required' }, title: 'Connect a Home by address',
     description: 'Check and save a Home address, returning the canonical connection outcome. Device focus stays with the current Home.',
-    safety: 'safe', sideEffectClass: 'write', executionPlacement: 'client', placements: [], surfaces: clientSurfaces,
+    safety: 'safe', sideEffectClass: 'write', executionPlacement: 'client', placements: [], surfaces: clientSurfaces, cli: { commands: [] },
     bindings: { mcpToolName: 'homes_connect' }, inputSchema: HomeConnectInputSchema, outputSchema: HomeConnectOutputSchema,
     inputHints: { fields: [{ path: 'address', title: 'Home address', widget: 'text', required: true },
       { path: 'displayName', title: 'Home name', widget: 'text' },
@@ -250,7 +275,7 @@ export const MACHINE_CONNECTION_ACTION_SPECS = [
   {
     id: 'machines.add.command', approval: {result: 'required'}, title: 'Prepare machine setup command',
     description: 'Get the existing SSH or another-computer setup command for a saved Home. This does not install or connect the machine.',
-    safety: 'safe', sideEffectClass: 'read', executionPlacement: 'client', placements: [], surfaces: clientSurfaces,
+    safety: 'safe', sideEffectClass: 'read', executionPlacement: 'client', placements: [], surfaces: setupClientSurfaces,
     bindings: { mcpToolName: 'machines_add_command' }, inputSchema: MachineAddCommandInputSchema, outputSchema: MachineAddCommandOutputSchema,
     inputHints: { fields: [{ path: 'serverId', title: 'Home ID', widget: 'text', required: true },
       { path: 'method', title: 'Setup method', widget: 'select', required: true, options: [{ value: 'another_computer', label: 'Another computer' }, { value: 'ssh', label: 'SSH' }] },
@@ -261,11 +286,73 @@ export const MACHINE_CONNECTION_ACTION_SPECS = [
   {
     id: 'machines.pairing.create', approval: {result: 'required'}, title: 'Create link to add another computer',
     description: 'Issue a short-lived Home pairing link through the trusted device enrollment lifecycle. Keep this client running until the computer joins.',
-    safety: 'danger', sideEffectClass: 'danger', executionPlacement: 'client', placements: [], surfaces: clientSurfaces,
+    safety: 'danger', sideEffectClass: 'danger', executionPlacement: 'client', placements: [], surfaces: clientSurfaces, cli: { commands: [] },
     bindings: { mcpToolName: 'machines_pairing_create' }, inputSchema: MachinePairingCreateInputSchema, outputSchema: MachinePairingCreateOutputSchema,
     projectObservationOutput: () => ({ redacted: true }),
     approvalResultCustody: 'live_only',
     inputHints: { description: 'Make a link that adds another computer to a Home. It works for a short time; keep this device open until the computer has joined.',
       fields: [{ path: 'serverId', title: 'Home ID', widget: 'text', required: true }] },
+  },
+  {
+    id: 'machines.managed.bootstrap.respond', approval: { result: 'required' }, title: 'Answer managed machine installation prompt',
+    description: 'Answer the current installation question for one managed machine through an answering client. The current resource, controller, task and exact question are rechecked before delivery.',
+    safety: 'danger', sideEffectClass: 'danger', executionPlacement: 'client', placements: [], surfaces: clientSurfaces, cli: { commands: [] },
+    bindings: { mcpToolName: 'machines_managed_bootstrap_respond' },
+    inputSchema: MachineManagedInstallationRespondInputSchema, outputSchema: MachineAddSshTaskOutputSchema,
+    approvalInputCustody: 'live_only', projectObservationInput: redactObservationInputPaths('password'),
+    approvalPresentation: {
+      projectInput: (value: unknown) => {
+        const input = MachineManagedInstallationRespondInputSchema.parse(value);
+        const { serverId, homeId, managedId, operationId, taskId, purpose } = input;
+        return { serverId, homeId, managedId, operationId, taskId, purpose,
+          ...(input.purpose === 'establish' ? { promptId: input.promptId } : {
+            question: input.prompt.message, approved: input.approved,
+            ...(input.prompt.kind === 'ssh.trustHost' || input.prompt.kind === 'ssh.replaceHostKey' ? {
+              host: input.prompt.host, fingerprint: input.prompt.fingerprint,
+              ...(input.prompt.existingFingerprint ? { existingFingerprint: input.prompt.existingFingerprint } : {}),
+            } : {}),
+          }),
+        };
+      },
+      inputSchema: lazyZodSchema(() => z.strictObject({
+        serverId: id, homeId: id, managedId: id, operationId: id, taskId: id,
+        purpose: z.enum(['approve', 'establish']), question: z.optional(z.string()),
+        approved: z.optional(z.boolean()), host: z.optional(z.string()), fingerprint: z.optional(z.string()),
+        existingFingerprint: z.optional(z.string()), promptId: z.optional(id),
+      })),
+      inputHints: { fields: [
+        { path: 'serverId', title: 'Home profile', widget: 'text', required: true },
+        { path: 'homeId', title: 'Home identity', widget: 'text', required: true },
+        { path: 'operationId', title: 'Creation operation ID', widget: 'text', required: true },
+        { path: 'taskId', title: 'Installation task ID', widget: 'text', required: true },
+        { path: 'purpose', title: 'Response purpose', widget: 'text', required: true },
+        { path: 'promptId', title: 'Administrator prompt', widget: 'text' },
+        { path: 'managedId', title: 'Machine', widget: 'text', required: true },
+        { path: 'question', title: 'Installation question', widget: 'text' },
+        { path: 'host', title: 'Host', widget: 'text' },
+        { path: 'fingerprint', title: 'Fingerprint', widget: 'text' },
+        { path: 'existingFingerprint', title: 'Previous fingerprint', widget: 'text' },
+        { path: 'approved', title: 'Approve this installation step', widget: 'boolean' },
+      ] },
+      technicalInputPaths: ['serverId', 'homeId', 'operationId', 'taskId', 'purpose', 'promptId', 'approved'],
+      summary: () => 'Answer managed machine installation prompt.',
+    },
+    inputHints: { fields: [
+      { path: 'serverId', title: 'Home profile', widget: 'text', required: true },
+      { path: 'homeId', title: 'Home identity', widget: 'text', required: true },
+      { path: 'managedId', title: 'Managed machine ID', widget: 'text', required: true },
+      { path: 'operationId', title: 'Creation operation ID', widget: 'text', required: true },
+      { path: 'taskId', title: 'Installation task ID', widget: 'text', required: true },
+      { path: 'purpose', title: 'Response purpose', widget: 'select', required: true,
+        options: [{ value: 'approve', label: 'Approve installation step' }, { value: 'establish', label: 'Establish administrator' }] },
+      { path: 'prompt', title: 'Current installation question', widget: 'json', required: true,
+        visibleWhen: { op: 'eq', path: 'purpose', value: 'approve' } },
+      { path: 'approved', title: 'Approve this installation step', widget: 'boolean', required: true,
+        visibleWhen: { op: 'eq', path: 'purpose', value: 'approve' } },
+      { path: 'promptId', title: 'Current administrator prompt', widget: 'text', required: true,
+        visibleWhen: { op: 'eq', path: 'purpose', value: 'establish' } },
+      { path: 'password', title: 'New administrator password', widget: 'secret', required: true,
+        visibleWhen: { op: 'eq', path: 'purpose', value: 'establish' } },
+    ] },
   },
 ] as const satisfies readonly PreNormalizedActionSpec[];

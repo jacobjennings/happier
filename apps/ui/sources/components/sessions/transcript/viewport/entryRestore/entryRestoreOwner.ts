@@ -177,7 +177,6 @@ export type EntryRestoreOwner = Readonly<{
     matchesNativePaintReleaseHandle(params: Readonly<{ issuedAtMs: number; sessionId: string }>): boolean;
     nativePaintReleaseHandle(params: Readonly<{ sessionId: string }>): Readonly<{ issuedAtMs: number }> | null;
     markInitialCommandFailed(params: Readonly<{ sessionId: string }>): readonly EntryRestoreOwnerEffect[];
-    observeNative(params: EntryRestoreOwnerObservationInput): readonly EntryRestoreOwnerEffect[];
     observeNativeHostFacts(params: EntryRestoreOwnerNativeHostFactsInput): readonly EntryRestoreOwnerEffect[];
     observeWeb(params: EntryRestoreOwnerObservationInput): readonly EntryRestoreOwnerEffect[];
     observeWebHostFacts(params: EntryRestoreOwnerWebHostFactsInput): readonly EntryRestoreOwnerEffect[];
@@ -563,7 +562,6 @@ export function createEntryRestoreOwner(): EntryRestoreOwner {
         matchesNativePaintReleaseHandle,
         nativePaintReleaseHandle,
         markInitialCommandFailed,
-        observeNative,
         observeNativeHostFacts,
         observeWeb,
         observeWebHostFacts,

@@ -4,10 +4,18 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
-import {
-  capturePackedAuthorCandidateArtifacts,
-  loadPackedAuthorCandidateManifest,
-} from '../../../../packages/tests/scripts/plugin-platform/run-packed-author-ui-compat.mjs';
+
+// Only suite execution needs the packed-author harness. Importing it statically made every
+// release-validate plan load the whole protocol package (2,254 of 2,500 modules, measured
+// 2026-10-26), so planning resolves it on first use instead.
+/** @returns {Promise<typeof import('../../../../packages/tests/scripts/plugin-platform/run-packed-author-ui-compat.mjs')>} */
+export async function loadPackedAuthorHarness() {
+  return await import('../../../../packages/tests/scripts/plugin-platform/run-packed-author-ui-compat.mjs');
+}
+
+/** @type {typeof import('../../../../packages/tests/scripts/plugin-platform/run-packed-author-ui-compat.mjs').capturePackedAuthorCandidateArtifacts} */
+export const capturePackedAuthorCandidateArtifactsOnDemand = async (candidate, options) =>
+  await (await loadPackedAuthorHarness()).capturePackedAuthorCandidateArtifacts(candidate, options);
 
 /**
  * @param {NodeJS.ProcessEnv} baseEnv
@@ -103,11 +111,11 @@ export async function prepareInstallersSmokeCandidateAssets({
   platform,
   candidateManifestPath,
 }, {
-  loadCandidateImpl = async (manifestPath) => await loadPackedAuthorCandidateManifest(
+  loadCandidateImpl = async (manifestPath) => await (await loadPackedAuthorHarness()).loadPackedAuthorCandidateManifest(
     ['--candidate', manifestPath],
     { cwd: repoRoot },
   ),
-  captureCandidateImpl = capturePackedAuthorCandidateArtifacts,
+  captureCandidateImpl = capturePackedAuthorCandidateArtifactsOnDemand,
   prepareMinisignEnvImpl = prepareReleaseValidationMinisignEnv,
   readFileImpl = readFile,
   removeCapturedRootImpl = async (root) => await rm(root, { recursive: true, force: true }),

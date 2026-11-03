@@ -1,15 +1,7 @@
 import {
-    encodeTerminalPasteInput,
-    TERMINAL_BRACKETED_PASTE_END,
-    TERMINAL_BRACKETED_PASTE_START,
-} from '@happier-dev/protocol/terminal/inputEncoding';
-
-import {
     DEFAULT_TERMINAL_INTERACTION_POLICY,
     type TerminalInteractionPolicy,
 } from './model';
-
-export { DEFAULT_TERMINAL_INTERACTION_POLICY };
 
 const utf8Encoder = new TextEncoder();
 
@@ -30,12 +22,6 @@ function buildPasteInput(text: string, policy: TerminalInteractionPolicy): Reado
         bracketed: policy.bracketedPaste === 'preserve',
     };
 }
-
-export {
-    TERMINAL_BRACKETED_PASTE_END,
-    TERMINAL_BRACKETED_PASTE_START,
-    encodeTerminalPasteInput,
-};
 
 export function resolveTerminalPasteAction(
     text: string,

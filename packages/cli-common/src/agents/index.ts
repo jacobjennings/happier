@@ -42,6 +42,12 @@ export type {
   ManagedAgentCliResolution,
 } from './prepareForRuntime.js';
 export { prepareAgentCliForRuntime } from './prepareForRuntime.js';
+export { resolveManagedToolsRoot } from './managedToolsRoot.js';
+export {
+  resolveGhNativeToken, resolveGhSelection, resolveSystemGhBinPath, resolveManagedGhBinPath,
+  runGhCommand, ghInstallDir, ghBinPath,
+  type GhNativeTokenResult, type GhCommandDeps, type GhCommandParams, type GhCommandResult,
+} from './gh.js';
 export {
   isAgentCliPathRunnable,
   readBackendCliSourcePreferenceForAgent,
@@ -72,6 +78,7 @@ export {
   resolveJavaScriptRuntimeCommand,
   resolveExplicitJavaScriptRuntimeCommand,
   resolveExistingManagedJavaScriptRuntimeCommand,
+  resolveDirectJavaScriptRuntimeCommand,
 } from './managedJavaScriptRuntime.js';
 export { AgentCliDownloadError, downloadGitHubReleaseAsset } from './downloadGitHubReleaseAsset.js';
 export { extractGitHubReleaseAsset } from './extractGitHubReleaseAsset.js';

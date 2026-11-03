@@ -1,4 +1,4 @@
-import { readSessionWorkStatePrimaryItemV1 } from '../work/state/sessionWorkStatePrimary.js';
+import { projectSessionWorkDisplayV1, type SessionWorkDisplayV1 } from '../work/state/sessionWorkStatePrimary.js';
 import type { SessionWorkStateV1 } from '../work/state/sessionWorkStateV1.js';
 import type { SessionWorkflowActivityHeadlineV1 } from '../work/workflow/sessionWorkflowActivityHeadlineV1.js';
 import { normalizeAwarenessTextV1 } from './inputV1.js';
@@ -14,7 +14,7 @@ import type { SessionAwarenessWorkHeadlineV1 } from './projectionV1.js';
  */
 export function projectSessionAwarenessWorkHeadlineV1(
   params: Readonly<{
-    work?: SessionWorkStateV1 | null;
+    work?: SessionWorkStateV1 | SessionWorkDisplayV1 | null;
     workflowHeadline?: SessionWorkflowActivityHeadlineV1 | null;
     contentReadable: boolean;
     workEvidenceUnavailable?: boolean;
@@ -26,8 +26,7 @@ export function projectSessionAwarenessWorkHeadlineV1(
 
   const activeWorkflowRunCount = params.workflowHeadline?.activeRuns.length ?? 0;
 
-  const items = params.work?.items ?? [];
-  const primaryItem = readSessionWorkStatePrimaryItemV1(items, params.work?.primaryItemId);
+  const primaryItem = projectSessionWorkDisplayV1(params.work)?.primaryItem;
   const primaryTitle = normalizeAwarenessTextV1(primaryItem?.title);
   if (primaryItem && primaryTitle) {
     return {

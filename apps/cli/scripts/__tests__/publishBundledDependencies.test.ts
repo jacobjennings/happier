@@ -1,40 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { resolveWorkspaceBundlesFromPackageJson } from '../../../../packages/cli-common/src/workspaces/index.js';
+import { readBundledPluginPackageNames } from '../build-owned/bundledPluginMembership.ts';
 
 describe('apps/cli package publish contract', () => {
   const cliRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const repoRoot = resolve(cliRoot, '..', '..');
-
-  function readBundledPluginWorkspacePackageNames(): readonly string[] {
-    const pluginsRoot = resolve(repoRoot, 'packages', 'plugins');
-    if (!existsSync(pluginsRoot)) return [];
-
-    const packageNames: string[] = [];
-    for (const dirent of readdirSync(pluginsRoot, { withFileTypes: true })) {
-      if (!dirent.isDirectory()) continue;
-      // Template/scaffold workspaces are not shipped in published artifacts.
-      if (dirent.name.startsWith('_')) continue;
-      const pluginId = dirent.name;
-      const pkgJsonPath = resolve(pluginsRoot, pluginId, 'package.json');
-      if (!existsSync(pkgJsonPath)) continue;
-
-      const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf8')) as {
-        name?: unknown;
-        happier?: { pluginScaffold?: { shipping?: unknown } };
-      };
-      if (pkgJson.happier?.pluginScaffold?.shipping === 'reservation_only') continue;
-      const expectedPackageName = `@happier-dev/plugins-${pluginId}`;
-      expect(pkgJson.name).toBe(expectedPackageName);
-      packageNames.push(expectedPackageName);
-    }
-
-    packageNames.sort((a, b) => a.localeCompare(b));
-    return packageNames;
-  }
 
   it('declares npm bin entrypoints for the published CLI', () => {
     const cliPackageJsonPath = resolve(cliRoot, 'package.json');
@@ -59,21 +32,12 @@ describe('apps/cli package publish contract', () => {
       ? cliPackageJson.bundledDependencies.map((v) => String(v))
       : [];
 
-    expect(bundled).toContain('@happier-dev/agents');
-    expect(bundled).toContain('@happier-dev/cli-common');
-    expect(bundled).toContain('@happier-dev/connection-supervisor');
-    expect(bundled).toContain('@happier-dev/plugin-sdk');
-    // Inspector's shipped UI entry imports this workspace at runtime. It is not
-    // a host-runtime external: each plugin artifact owns its bundled instance,
-    // while the CLI must still publish the dependency closure that lets the
-    // bundled Inspector package resolve its declared import.
-    expect(bundled).toContain('@happier-dev/plugin-ui');
-    expect(cliPackageJson.dependencies?.['@happier-dev/plugin-ui']).toBe('0.0.0');
-    expect(bundled).toContain('@happier-dev/peer-mediation');
-    expect(bundled).toContain('@happier-dev/protocol');
-    expect(bundled).toContain('@happier-dev/transfers');
+    // The internal workspace closure itself (every reachable workspace bundled, and the
+    // canonical resolver agreeing with this manifest) is owned by sourceDevBundledPluginClosure.test.ts.
     expect(bundled).not.toContain('@happier-dev/bundled-voice-runtime-contract');
-    expect(bundled).toContain('@happier-dev/release-runtime');
+    // The daemon imports this workspace at runtime (apiMachine.ts) and no other bundled
+    // workspace requires it, so the closure guard cannot notice it leaving the bundle.
+    expect(bundled).toContain('@happier-dev/transfers');
     expect(bundled).toContain('proper-lockfile');
     expect(bundled).toContain('tweetnacl');
 
@@ -81,7 +45,7 @@ describe('apps/cli package publish contract', () => {
       expect(cliPackageJson.dependencies?.[packageName]).toBeTruthy();
     }
 
-    for (const pluginPackageName of readBundledPluginWorkspacePackageNames()) {
+    for (const pluginPackageName of readBundledPluginPackageNames(repoRoot)) {
       expect(bundled).toContain(pluginPackageName);
       // Bundled dependencies should also be declared as dependencies so local tooling and
       // type/build steps can resolve the workspace packages deterministically.
@@ -113,78 +77,6 @@ describe('apps/cli package publish contract', () => {
 
   });
 
-  it('ships the Inspector plugin UI runtime dependency closure', () => {
-    const cliPackageJson = JSON.parse(
-      readFileSync(resolve(cliRoot, 'package.json'), 'utf8'),
-    ) as {
-      bundledDependencies?: unknown;
-      dependencies?: Record<string, string> | undefined;
-    };
-    const inspectorPackageJson = JSON.parse(
-      readFileSync(resolve(repoRoot, 'packages', 'plugins', 'inspector', 'package.json'), 'utf8'),
-    ) as {
-      dependencies?: Record<string, string> | undefined;
-    };
-    const bundled = Array.isArray(cliPackageJson.bundledDependencies)
-      ? cliPackageJson.bundledDependencies.map((value) => String(value))
-      : [];
-
-    // The Inspector runtime declares this package; the published CLI must carry
-    // that internal workspace to keep the installed bundle self-contained.
-    expect(inspectorPackageJson.dependencies?.['@happier-dev/plugin-ui']).toBe('0.0.0');
-    expect(cliPackageJson.dependencies?.['@happier-dev/plugin-ui']).toBe('0.0.0');
-    expect(bundled).toContain('@happier-dev/plugin-ui');
-  });
-
-  it('ships Telegram Channels protocol through the bundled workspace closure', () => {
-    const cliPackageJson = JSON.parse(
-      readFileSync(resolve(cliRoot, 'package.json'), 'utf8'),
-    ) as {
-      bundledDependencies?: unknown;
-      dependencies?: Record<string, string> | undefined;
-    };
-    const telegramPackageJson = JSON.parse(
-      readFileSync(resolve(repoRoot, 'packages', 'plugins', 'channel-telegram', 'package.json'), 'utf8'),
-    ) as {
-      dependencies?: Record<string, string> | undefined;
-    };
-    const bundled = Array.isArray(cliPackageJson.bundledDependencies)
-      ? cliPackageJson.bundledDependencies.map((value) => String(value))
-      : [];
-
-    // Telegram imports its shared Channels protocol at runtime. Publishing
-    // the plugin alone would leave that internal workspace unresolved on install.
-    expect(telegramPackageJson.dependencies?.['@happier-dev/channels-protocol']).toBe('0.0.0');
-    expect(cliPackageJson.dependencies?.['@happier-dev/channels-protocol']).toBe('0.0.0');
-    expect(bundled).toContain('@happier-dev/channels-protocol');
-  });
-
-  it('contains the complete first-party runtime workspace closure', () => {
-    const cliPackageJson = JSON.parse(
-      readFileSync(resolve(cliRoot, 'package.json'), 'utf8'),
-    ) as {
-      bundledDependencies?: unknown;
-      dependencies?: Record<string, string> | undefined;
-    };
-    const bundled = new Set(
-      Array.isArray(cliPackageJson.bundledDependencies)
-        ? cliPackageJson.bundledDependencies.map((value) => String(value))
-        : [],
-    );
-    const workspaceBundles = resolveWorkspaceBundlesFromPackageJson({
-      repoRoot,
-      hostPackageDir: cliRoot,
-    });
-    const bundledWorkspaceNames = [...bundled]
-      .filter((packageName) => packageName.startsWith('@happier-dev/'))
-      .sort();
-
-    expect(workspaceBundles.map((bundle) => bundle.packageName).sort()).toEqual(bundledWorkspaceNames);
-    for (const packageName of bundledWorkspaceNames) {
-      expect(cliPackageJson.dependencies?.[packageName]).toBeTruthy();
-    }
-  });
-
   it('keeps React external so Ink and bundled plugins share the host singleton', () => {
     const cliPackageJson = JSON.parse(
       readFileSync(resolve(cliRoot, 'package.json'), 'utf8'),
@@ -200,7 +92,7 @@ describe('apps/cli package publish contract', () => {
     expect(bundled).not.toContain('react');
 
     const pluginsRoot = resolve(repoRoot, 'packages', 'plugins');
-    for (const pluginPackageName of readBundledPluginWorkspacePackageNames()) {
+    for (const pluginPackageName of readBundledPluginPackageNames(repoRoot)) {
       const pluginId = pluginPackageName.slice('@happier-dev/plugins-'.length);
       const pluginPackageJson = JSON.parse(
         readFileSync(resolve(pluginsRoot, pluginId, 'package.json'), 'utf8'),

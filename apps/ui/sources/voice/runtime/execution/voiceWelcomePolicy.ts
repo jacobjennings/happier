@@ -3,11 +3,13 @@ import type { VoiceAgentHandle } from '@/voice/agent/types';
 import { isVoiceAgentNotFoundError } from '@/voice/agent/voiceAgentErrorGuards';
 import {
     persistVoiceAgentWelcomedEpoch,
+    resolveBoundTargetSessionAddress,
 } from '@/voice/agent/voiceAgentRunState';
+import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import { readVoiceAgentRunMetadataFromSession } from '@/voice/persistence/voiceAgentRunMetadata';
-import { readLocalConversationSettingsFromAccountSettings } from '@/voice/local/localVoiceSettings';
 import { voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
 import { preloadVoiceWelcomeText, resolveVoiceWelcomeText } from '@/voice/agent/voiceWelcomeText';
+import { voiceConversationRuntimeMachine } from '@/voice/runtime/machine/VoiceConversationRuntimeMachine';
 
 function readPersistedWelcomedEpoch(metadataSessionId: string | null, serverId: string): number | undefined {
     if (!metadataSessionId) return undefined;
@@ -24,9 +26,15 @@ export function createVoiceWelcomePolicy(args: Readonly<{
     return {
         ensureRunningAndMaybeWelcome: async (sessionId: string) => {
             const settings = storage.getState().settings;
-            const agentCfg = readLocalConversationSettingsFromAccountSettings(settings).agent;
+            const boundTarget = resolveBoundTargetSessionAddress(sessionId);
+            const targetKey = boundTarget ? sessionAddressKey(boundTarget) : null;
             const handle = await args.getVoiceAgentHandle(sessionId);
-            if (!handle.accountLifetime.isCurrent()) return null;
+            const isCurrent = () => {
+                const currentTarget = resolveBoundTargetSessionAddress(sessionId);
+                return handle.accountLifetime.isCurrent() && !handle.signal?.aborted
+                    && (currentTarget ? sessionAddressKey(currentTarget) : null) === targetKey;
+            };
+            if (!isCurrent()) return null;
             const policy = handle.voicePolicy ?? voiceSettingsParse(settings.voice);
             const welcomeCfg = policy.welcome;
             const welcomeEnabled = welcomeCfg?.enabled === true;
@@ -35,8 +43,7 @@ export function createVoiceWelcomePolicy(args: Readonly<{
                 return null;
             }
 
-            const epochRaw = Number(agentCfg?.transcript?.epoch ?? 0);
-            const epoch = Number.isFinite(epochRaw) && epochRaw >= 0 ? Math.floor(epochRaw) : 0;
+            const epoch = handle.transcriptEpoch;
 
             const metadataSessionId = handle.metadataSessionId;
             const persistedWelcomedEpoch =
@@ -49,7 +56,7 @@ export function createVoiceWelcomePolicy(args: Readonly<{
 
             try {
                 await preloadVoiceWelcomeText(policy.assistantLanguage);
-                if (!handle.accountLifetime.isCurrent()) return null;
+                if (!isCurrent()) return null;
                 const welcomeText = welcomeCfg && 'text' in welcomeCfg && typeof welcomeCfg.text === 'string'
                     ? welcomeCfg.text
                     : resolveVoiceWelcomeText(policy.assistantLanguage);
@@ -58,6 +65,11 @@ export function createVoiceWelcomePolicy(args: Readonly<{
                     voiceAgentId: handle.voiceAgentId,
                     ...(typeof welcomeText === 'string' ? { welcomeText } : {}),
                 });
+                if (!isCurrent()) return null;
+                if (res.preparedInstructionsFor) {
+                    voiceConversationRuntimeMachine.setPreparedInstructionsFor({ controlSessionId: sessionId,
+                        preparedInstructionsFor: res.preparedInstructionsFor });
+                }
                 const assistantText = String(res?.assistantText ?? '').trim();
                 if (!assistantText) return null;
                 if (handle.backend === 'daemon') {

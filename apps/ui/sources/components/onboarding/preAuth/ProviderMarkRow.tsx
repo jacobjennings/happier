@@ -17,12 +17,8 @@ export type ProviderMarkRowProps = Readonly<{
      *   future on-light placement.
      */
     tone?: 'on-dark' | 'on-light';
-    /** Glyph size in pixels. Default 18. */
-    size?: number;
     /** Row alignment. Default 'flex-start' (desktop); use 'center' for mobile hero. */
     justify?: 'flex-start' | 'center';
-    /** Override the root testID. Default 'provider-mark-row'. */
-    testID?: string;
 }>;
 
 /**
@@ -36,7 +32,6 @@ export type ProviderMarkRowProps = Readonly<{
 export const ProviderMarkRow = React.memo(function ProviderMarkRow(props: ProviderMarkRowProps) {
     const { theme } = useUnistyles();
     const tone: 'on-dark' | 'on-light' = props.tone ?? 'on-dark';
-    const size = props.size ?? 18;
     const justify: 'flex-start' | 'center' = props.justify ?? 'flex-start';
 
     const tintColor = tone === 'on-dark'
@@ -50,7 +45,7 @@ export const ProviderMarkRow = React.memo(function ProviderMarkRow(props: Provid
     return (
         <View
             style={[styles.root, { justifyContent: justify }]}
-            testID={props.testID ?? 'provider-mark-row'}
+            testID="provider-mark-row"
             accessibilityRole="image"
             accessibilityLabel={t('welcome.providerMarkRowAccessibilityLabel')}
         >
@@ -60,12 +55,14 @@ export const ProviderMarkRow = React.memo(function ProviderMarkRow(props: Provid
                     style={[styles.cell, { opacity: cellOpacity }]}
                     testID={`provider-mark-${agentId}`}
                 >
-                    <AgentIcon agentId={agentId} size={size} color={tintColor} />
+                    <AgentIcon agentId={agentId} size={PROVIDER_MARK_SIZE} color={tintColor} />
                 </View>
             ))}
         </View>
     );
 });
+
+const PROVIDER_MARK_SIZE = 18;
 
 const styles = StyleSheet.create(() => ({
     root: {

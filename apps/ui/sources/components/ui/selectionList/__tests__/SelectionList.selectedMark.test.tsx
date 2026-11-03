@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 
@@ -34,6 +34,10 @@ function stubHardwareKeyboard() {
 // K1 picker anatomy: the current choice of a single-choice picker carries a check, drawn once by the
 // row owner so every picker (machine, path, profile, resume, server, …) marks it the same way.
 describe('SelectionList current-choice mark', () => {
+    // Unstub after every test, failing ones included, so a stubbed keyboard never leaks into the next.
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
     it('marks only the current choice of a single-choice list', async () => {
         const screen = await renderScreen(
             <SelectionList
@@ -156,7 +160,6 @@ describe('SelectionList current-choice mark', () => {
 
         const touch = await render(false);
         expect(touch.findByTestId('sl:root:option-enter-mark:macbook')).toBeFalsy();
-        vi.unstubAllGlobals();
     });
 
     // The ⌘K palette draws its commands as menu rows (inset, rounded); the row the keyboard is on
@@ -177,6 +180,5 @@ describe('SelectionList current-choice mark', () => {
         );
         expect(screen.findByTestId('sl:root:option-enter-mark:macbook')).toBeTruthy();
         expect(screen.findByTestId('sl:root:option-enter-mark:devbox')).toBeFalsy();
-        vi.unstubAllGlobals();
     });
 });

@@ -70,6 +70,11 @@ export function createSessionClientUpdateRuntime(
                 }
 
                 const body = data.body;
+                if ((body.t === 'new-message' || body.t === 'message-updated')
+                    && body.sid === deps.sessionId && body.delivery !== 'full') {
+                    logger.warnLocalFile('[SOCKET] Session runtime requires full message delivery');
+                    return;
+                }
                 const bodyRecord = body && typeof body === 'object' && !Array.isArray(body)
                     ? body as Record<string, unknown>
                     : null;

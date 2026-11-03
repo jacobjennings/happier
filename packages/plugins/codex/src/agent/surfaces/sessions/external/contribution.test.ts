@@ -101,7 +101,7 @@ function createThreadListingExec(
     updatedAt: 1_768_000_100,
     cwd: '/repo/native',
   }],
-  nativeHistory?: { items: Record<string, unknown>[]; onLaunch?: (spec: unknown) => void; readFailure?: Error },
+  nativeHistory?: { items: Record<string, unknown>[]; onLaunch?: (spec: unknown) => void; readFailure?: Error; onThreadRead?: (threadId: string, includeTurns: unknown) => void; threadReadFailure?: Error; threadReadResult?: unknown },
 ): ExecService {
   const never = new Promise<PluginProcessResult>(() => undefined);
   const client: PluginJsonRpcClient = {
@@ -121,6 +121,12 @@ function createThreadListingExec(
           ? JSON.stringify({ index: page.at(-1)!.index, inclusive: false }) : null,
           backwardsCursor: page.length ? JSON.stringify({ index: page[0]!.index, inclusive: true }) : null };
       }
+      if (method === 'thread/read') {
+        const input = value as { threadId: string; includeTurns?: boolean };
+        nativeHistory?.onThreadRead?.(input.threadId, input.includeTurns);
+        if (nativeHistory?.threadReadFailure) throw nativeHistory.threadReadFailure;
+        return nativeHistory?.threadReadResult ?? { thread: threads.find((thread) => thread.id === input.threadId) ?? { id: input.threadId } };
+      }
       if (method === 'thread/list') {
         return { data: threads };
       }
@@ -128,6 +134,7 @@ function createThreadListingExec(
     },
     async notify() {},
     onNotification: () => ({ dispose: () => undefined }),
+    onNotificationReceived: () => ({ dispose: () => undefined }),
     onRequest: () => ({ dispose: () => undefined }),
     dispose: async () => undefined,
   };
@@ -184,6 +191,71 @@ function invocation(overrides: Readonly<{
 }
 
 describe('Codex public Agent External Sessions contribution', () => {
+  it('hydrates only selected native names through one existing proxy and falls back freshly after failure', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'codex-selected-native-names-'));
+    try {
+      const source = { kind: 'codexHome' as const, home: 'user' as const, homePath: home };
+      const threads = Array.from({ length: 120 }, (_, index) => ({ id: `thread-${index}`, name: `Native ${index}`,
+        createdAt: 1_768_000_000, updatedAt: 1_768_000_100, cwd: '/repo/native' }));
+      const candidates = [threads[119]!, threads[117]!].map((thread) => ({ remoteSessionId: thread.id,
+        title: `Fallback ${thread.id}`, updatedAtMs: thread.updatedAt * 1000, linkData: { source } }));
+      const requests: string[] = [];
+      const launches: unknown[] = [];
+      const reads: string[] = [];
+      const boundary = { items: [] as Record<string, unknown>[], onLaunch: (spec: unknown) => launches.push(spec),
+        onThreadRead: (id: string, includeTurns: unknown) => { expect(includeTurns).toBe(false); reads.push(id); },
+        threadReadFailure: undefined as Error | undefined, threadReadResult: undefined as unknown };
+      const exec = createThreadListingExec(requests, threads, boundary);
+      const contribution = createCodexExternalSessionsContribution({ env: { CODEX_HOME: home } });
+      expect(contribution.hydrateCandidates).toBeTypeOf('function');
+      const request = { ...invocation({ exec }), source, candidates };
+      await expect(contribution.hydrateCandidates!(request)).resolves.toMatchObject({ ok: true, value: {
+        candidates: [{ ...candidates[0], title: 'Native 119' }, { ...candidates[1], title: 'Native 117' }],
+      } });
+      expect(launches).toHaveLength(1);
+      expect(launches[0]).toMatchObject({ kind: 'jsonRpc', framing: 'webSocket', launch: { args: ['app-server', 'proxy'] } });
+      expect(reads).toEqual(['thread-119', 'thread-117']);
+      expect(requests.filter((method) => method === 'initialize')).toHaveLength(1);
+      expect(requests).not.toContain('thread/list');
+      threads[119]!.name = 'Renamed native session';
+      await expect(contribution.hydrateCandidates!(request)).resolves.toMatchObject({ ok: true, value: {
+        candidates: [{ title: 'Renamed native session' }, { title: 'Native 117' }],
+      } });
+      boundary.threadReadFailure = new Error('private native failure');
+      await expect(contribution.hydrateCandidates!(request)).resolves.toEqual({ ok: true, value: { candidates } });
+      boundary.threadReadFailure = undefined;
+      boundary.threadReadResult = { thread: { id: 'foreign', name: 'Must not substitute' } };
+      await expect(contribution.hydrateCandidates!(request)).resolves.toEqual({ ok: true, value: { candidates } });
+      boundary.threadReadResult = { thread: { id: candidates[0]!.remoteSessionId, name: '   ' } };
+      await expect(contribution.hydrateCandidates!({ ...request, candidates: candidates.slice(0, 1) })).resolves.toEqual({
+        ok: true, value: { candidates: candidates.slice(0, 1) },
+      });
+      contentReadClock.nativeProxyAvailable = false;
+      const before = launches.length;
+      await expect(contribution.hydrateCandidates!(request)).resolves.toEqual({ ok: true, value: { candidates } });
+      expect(launches).toHaveLength(before);
+    } finally {
+      contentReadClock.nativeProxyAvailable = true;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('stops selected native-name reads when the containing invocation is cancelled', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'codex-selected-native-cancel-'));
+    try {
+      const controller = new AbortController();
+      const reads: string[] = [];
+      const source = { kind: 'codexHome' as const, home: 'user' as const, homePath: home };
+      const exec = createThreadListingExec([], [], { items: [], onThreadRead: (id) => { reads.push(id); controller.abort(); } });
+      const contribution = createCodexExternalSessionsContribution({ env: { CODEX_HOME: home } });
+      expect(contribution.hydrateCandidates).toBeTypeOf('function');
+      await expect(contribution.hydrateCandidates!({ ...invocation({ exec, signal: controller.signal }), source,
+        candidates: [{ remoteSessionId: 'first', updatedAtMs: 1, title: 'Fallback first' },
+          { remoteSessionId: 'second', updatedAtMs: 1, title: 'Fallback second' }] })).resolves.toMatchObject({ ok: false, code: 'cancelled' });
+      expect(reads).toEqual(['first']);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
 
   it('reports an absent native proxy without launching it and keeps complete rollouts readable', async () => {
     const home = await mkdtemp(join(tmpdir(), 'codex-proxy-unavailable-'));
@@ -273,6 +345,55 @@ describe('Codex public Agent External Sessions contribution', () => {
         .toMatchObject({ ok: false, code: 'agent_unavailable', retryable: true });
       expect(launches).toHaveLength(beforeUnavailable);
     } finally { contentReadClock.nativeProxyAvailable = true; await rm(home, { recursive: true, force: true }); }
+  });
+
+  it('pages and follows native web searches, image views and sleeps without losing tool rows', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'codex-native-tools-plugin-'));
+    try {
+      const results = [{ title: 'Fusion benchmark', url: 'https://example.invalid/bench', snippet: 'Compared.' }];
+      const tools = [
+        { id: 'search', type: 'webSearch', query: 'fused kernels', action: { type: 'search', query: 'fused kernels', queries: null }, results },
+        { id: 'view', type: 'imageView', path: '/repo/plot.png' },
+        { id: 'sleep', type: 'sleep', durationMs: 30_000 },
+      ].map(item => ({ turnId: 'turn-tools', startedAtMs: 1000, completedAtMs: 2000, item }));
+      const history = { items: tools };
+      const contribution = createCodexExternalSessionsContribution({ env: { CODEX_HOME: home } });
+      const request = { ...invocation({ exec: createThreadListingExec([], [], history) }),
+        source: { kind: 'codexHome', home: 'user' }, remoteSessionId: 'native-thread', maxItems: 1 };
+      const items: Array<{ id: string; raw: unknown }> = [];
+      let cursor: string | undefined;
+      let tail: string | null = null;
+      do {
+        const page = await contribution.pageTranscript({ ...request, direction: 'older', cursor });
+        if (!page.ok) throw new Error(JSON.stringify(page));
+        items.unshift(...page.value.items);
+        tail ??= page.value.tailCursor;
+        cursor = page.value.nextCursor ?? undefined;
+      } while (cursor);
+      expect(items.map(item => item.raw)).toMatchObject([
+        { content: { data: { type: 'tool-call', name: 'WebSearch', input: { query: 'fused kernels' } } } },
+        { content: { data: { type: 'tool-call-result', output: { results } } } },
+        { content: { data: { type: 'tool-call', name: 'view_image', input: { path: '/repo/plot.png' } } } },
+        { content: { data: { type: 'tool-call-result' } } },
+        { content: { data: { type: 'tool-call', name: 'sleep', input: { durationMs: 30_000 } } } },
+        { content: { data: { type: 'tool-call-result' } } },
+      ]);
+      expect(new Set(items.map(item => item.id)).size).toBe(6);
+      history.items.push({ ...tools[0]!, item: { ...tools[0]!.item, id: 'search-follow' } });
+      const followed: unknown[] = [];
+      let followCursor = tail!;
+      do {
+        const page = await contribution.readAfterTranscript({ ...request, cursor: followCursor });
+        if (!page.ok || page.value.outcome !== 'advanced') throw new Error(JSON.stringify(page));
+        followed.push(...page.value.items.map(item => item.raw));
+        followCursor = page.value.nextCursor;
+        if (!page.value.hasMore) break;
+      } while (true);
+      expect(followed).toMatchObject([
+        { content: { data: { type: 'tool-call', name: 'WebSearch' } } },
+        { content: { data: { type: 'tool-call-result', output: { results } } } },
+      ]);
+    } finally { await rm(home, { recursive: true, force: true }); }
   });
 
   it('preserves partial native command rows and empty native follow continuations', async () => {

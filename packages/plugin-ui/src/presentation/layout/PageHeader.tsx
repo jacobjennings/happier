@@ -65,8 +65,15 @@ export type HappierPageHeaderProps = Readonly<{
   leading?: ReactNode;
   /** At most one primary page action plus context controls (e.g. a machine chip). */
   actions?: ReactNode;
-  /** Prefer the title row, but wrap controls beneath rather than squeeze the title. */
-  actionsLayout?: 'wrap' | 'inline';
+  /**
+   * `wrap` (default): prefer the title row, but wrap controls beneath rather than squeeze the title.
+   * `inline`: controls stay on the title row, pushed to its end, and the description sits under the
+   * title beside them (an editor header with a status line under the actions).
+   * `hang`: `inline`, with the mark and the controls hanging from the title's line, and the
+   * description, details and facts running beneath both at the identity's full width (an entity page
+   * whose sentence is long).
+   */
+  actionsLayout?: 'wrap' | 'inline' | 'hang';
   /**
    * The title line keeps a control's height even while it has no controls, for a page whose controls
    * arrive after its title (a plugin page's Run on chip), so their arrival never moves the title.
@@ -262,7 +269,8 @@ export function HappierPageHeader(props: HappierPageHeaderProps) {
 
   const columnMaxWidthPx = props.columnMaxWidthPx ?? Number.POSITIVE_INFINITY;
   const centered = props.compactPresentation === 'centered' && paneWidthPx !== null && paneWidthPx < HAPPIER_PAGE_METRICS.rowStackBelowWidthPx;
-  const inlineActions = !centered && props.actionsLayout === 'inline';
+  const hangsFromTitle = !centered && props.actionsLayout === 'hang';
+  const inlineActions = hangsFromTitle || (!centered && props.actionsLayout === 'inline');
   // The header's own measurement wins; until it arrives, the split's detail width places back.
   const backPlacement = resolveHappierPageBackPlacement({ paneWidthPx: paneWidthPx ?? detailWidthPx, columnMaxWidthPx, backShown: showsBack });
 
@@ -412,7 +420,11 @@ export function HappierPageHeader(props: HappierPageHeaderProps) {
             ? <View style={{ position: 'absolute', left: 0, top: 0 }}>{renderBack({})}</View>
             : null}
           {props.leading ? (
-            <View onLayout={handleLeadingLayout} style={{ flexShrink: 0, position: 'relative' }}>
+            <View
+              onLayout={handleLeadingLayout}
+              // Hanging, the mark hangs from the title's line: centred on it, its overflow inside the header's padding.
+              style={[{ flexShrink: 0, position: 'relative' }, hangsFromTitle && showTitle ? { height: titleLineHeight, justifyContent: 'center' } : null]}
+            >
               {wrapPart ? wrapPart('mark', props.leading) : props.leading}
               {gutterBack}
             </View>
@@ -434,7 +446,7 @@ export function HappierPageHeader(props: HappierPageHeaderProps) {
                 >
                   {props.leading ? null : gutterBack}
                   {splitTitleLine ? <View onLayout={handleTitleNaturalLayout} style={{ alignSelf: 'flex-start', maxWidth: '100%' }}>{titleLine}</View> : titleLine}
-                  {splitTitleLine ? null : textBelowTitle}
+                  {splitTitleLine || hangsFromTitle ? null : textBelowTitle}
                 </View>
                 {actionsBlock ? (
                   <View
@@ -456,7 +468,7 @@ export function HappierPageHeader(props: HappierPageHeaderProps) {
                   </View>
                 ) : null}
               </View>
-              {splitTitleLine ? textBelowTitle : null}
+              {splitTitleLine || hangsFromTitle ? textBelowTitle : null}
           </View>
         </View>
         {/* The controls keep their title-line parent even while drawn below the whole identity row.

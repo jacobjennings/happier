@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { findAllHostTestInstances, renderScreen } from '@/dev/testkit';
 
-import type { SelectionListOption, SelectionListProps, SelectionListStep } from '../_types';
+import type { SelectionListProps, SelectionListStep } from '../_types';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -116,18 +116,6 @@ describe('SelectionList accessibility contract (Phase 2.10)', () => {
         expect(matchingHostIds).toHaveLength(1);
     });
 
-    it('exposes role=listbox on the body container with an id consumed by the input combobox', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps()} />);
-        const body = screen.findByTestId('sl:body');
-        expect(body).not.toBeNull();
-        expect(body!.props.role).toBe('listbox');
-        expect(typeof body!.props.id).toBe('string');
-        // The id should be the canonical 'sl:listbox' wiring used by the header's
-        // aria-controls binding.
-        expect(body!.props.id).toBe('sl:listbox');
-    });
-
     it('keeps an empty result message inside the listbox group structure', async () => {
         const { SelectionList } = await import('../SelectionList');
         const screen = await renderScreen(<SelectionList {...defaultProps({
@@ -142,7 +130,7 @@ describe('SelectionList accessibility contract (Phase 2.10)', () => {
         expect(findAllHostTestInstances(screen.root, (node) => node.props?.role === 'group')).toHaveLength(1);
     });
 
-    it('exposes role=combobox + aria-controls + aria-expanded on the focused input element (web)', async () => {
+    it('exposes role=combobox + aria-controls + aria-expanded on the focused input element, controlling the listbox body (web)', async () => {
         const { SelectionList } = await import('../SelectionList');
         const screen = await renderScreen(<SelectionList {...defaultProps()} />);
         // Per Phase 2.10: the combobox role MUST live on the input, not the wrapper,
@@ -151,6 +139,10 @@ describe('SelectionList accessibility contract (Phase 2.10)', () => {
         expect(input).not.toBeNull();
         expect(input!.props.role).toBe('combobox');
         expect(input!.props['aria-controls']).toBe('sl:listbox');
+        // …and the id it controls is the listbox body's own.
+        const body = screen.findByTestId('sl:body');
+        expect(body?.props.role).toBe('listbox');
+        expect(body?.props.id).toBe(input!.props['aria-controls']);
         expect(input!.props['aria-expanded']).toBe(true);
         expect(input!.props['aria-haspopup']).toBe('listbox');
         // The header wrapper must NOT also claim combobox semantics.
@@ -199,7 +191,7 @@ describe('SelectionList accessibility contract (Phase 2.10)', () => {
                                 id: 'native',
                                 label: 'Backend native auth',
                                 accessibilityLabel: 'Anthropic · Backend native auth',
-                            } as unknown as SelectionListOption],
+                            }],
                         }],
                     },
                 })}

@@ -21,6 +21,7 @@ import type { ActivityAttentionSource } from './activityAttentionSourceTypes';
 import { buildMachineWorkingCounts, machineWorkingKey } from '@/components/machines/work/machineWorkingCounts';
 import { readActivitySessionRulePolicies } from './readActivitySessionRulePolicies';
 import { projectSessionFollowFactsV1 } from '@happier-dev/protocol/sessions/follow/accountFollow';
+import { buildInboxSessionPresentation } from '@/activity/presentation/buildInboxSessionPresentation';
 import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization';
 
 function pendingAgentState(kind: 'permission' | 'user_action', createdAt = 950) {
@@ -1231,7 +1232,7 @@ describe('buildActivityOverviewFromSource', () => {
             attentionState: 'permission_required',
             route: `/session/${canonicalSession.id}?serverId=server-a`,
         });
-        expect(pendingOverview.candidates[0]!.session.agentState).toBeNull();
+        expect(buildInboxSessionPresentation({ overview: pendingOverview }).sessionsNeedingAttention[0]?.pendingPermissions).toEqual([]);
 
         const clearedOverview = buildActivityOverviewFromSource({
             source: {

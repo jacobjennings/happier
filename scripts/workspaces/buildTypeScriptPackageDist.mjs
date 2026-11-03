@@ -27,6 +27,8 @@ import { runWorkspaceBuildAdmission } from '../../apps/stack/scripts/utils/proc/
 
 import { assertNoMissingLocalImports } from './distLocalImports.mjs';
 import { copyDirectoryContents } from './copyDirectoryContents.mjs';
+import { pruneRetiredCompilerOutputs, readTypeScriptBuildInputFileNames } from './pruneRetiredCompilerOutputs.mjs';
+export { readTypeScriptBuildInputFileNames } from './pruneRetiredCompilerOutputs.mjs';
 import {
   WORKSPACE_PACKAGE_BUILD_INPUT_RECORD,
   collectPackageBuildOutputTargets,
@@ -432,16 +434,6 @@ function isDescendantPath(parentPath, candidatePath) {
   );
 }
 
-function isTypeScriptSourcePath(path) {
-  return /\.(?:cts|mts|tsx?|json)$/u.test(path);
-}
-
-export function readTypeScriptBuildInputFileNames(tsBuildInfoFile) {
-  const buildInfo = JSON.parse(readFileSync(tsBuildInfoFile, 'utf8'));
-  if (!Array.isArray(buildInfo?.fileNames)) throw new Error('Invalid TypeScript compiler input inventory');
-  return buildInfo.fileNames;
-}
-
 function compilerCacheNeedsReset({
   packageDir,
   packageJson,
@@ -479,26 +471,10 @@ function compilerCacheNeedsReset({
     return true;
   }
 
-  let fileNames;
   try {
-    fileNames = readTypeScriptBuildInputFileNames(tsBuildInfoFile);
+    readTypeScriptBuildInputFileNames(tsBuildInfoFile);
   } catch {
     return true;
-  }
-
-  const sourcePathBases = [
-    dirname(tsBuildInfoFile),
-    dirname(projectPath),
-    packageDir,
-  ];
-  for (const fileName of fileNames) {
-    if (typeof fileName !== 'string' || !isTypeScriptSourcePath(fileName)) continue;
-    const localCandidates = [...new Set(sourcePathBases
-      .map((basePath) => resolve(basePath, fileName))
-      .filter((candidatePath) => isDescendantPath(packageDir, candidatePath)))];
-    if (localCandidates.length > 0 && localCandidates.every((candidatePath) => !existsSync(candidatePath))) {
-      return true;
-    }
   }
   return false;
 }
@@ -806,6 +782,7 @@ export async function buildTypeScriptPackageDist({
 
       if (checkOnly) return { outputDir: stagedDistDir, promoted: false, checked: true };
 
+      await pruneRetiredCompilerOutputs({ packageDir: resolvedPackageDir, compilerWorkTree, compilerArgs });
       await copyDirectoryContents(compilerWorkTree.outputDir, stagedDistDir);
       // HAPPIER_WORKSPACE_DIST_OUTPUT_DIR is an outer publisher's temporary
       // destination. Its tree is renamed into `dist`, so source-map paths must

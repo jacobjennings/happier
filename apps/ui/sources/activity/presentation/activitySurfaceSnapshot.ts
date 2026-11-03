@@ -15,7 +15,7 @@ import {
 } from '@/activity/selection/activitySurfaceSelectionTypes';
 import { resolveActivitySurfaceSlots } from '@/activity/selection/resolveActivitySurfaceSlots';
 import { resolvePrimaryActivitySurfaceTarget } from '@/activity/presentation/buildActivitySurfaceViewModel';
-import type { Session } from '@/sync/domains/state/storageTypes';
+import type { SessionPresentationRecord as Session } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { t } from '@/text';
 
 export type ActivitySurfaceSnapshotLabels = Readonly<{

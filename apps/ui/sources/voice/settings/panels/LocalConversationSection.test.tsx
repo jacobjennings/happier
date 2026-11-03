@@ -344,7 +344,7 @@ describe('LocalConversationSection', () => {
     expect(getAcpCatalogSnapshot(scope)?.catalog.status).toBe(status === 'ready' ? 'ready' : 'partial');
     const { VoiceAgentMemorySection } = await import('./VoiceAgentMemorySection');
     const voice = createLocalConversationVoice({ agent: { agentSource: 'agent', agentId: 'claude',
-      agentTargetKey: 'backend:claude:configured:claude', transcript: { persistenceMode: 'persistent', epoch: 0 } } });
+      agentTargetKey: 'backend:claude:configured:claude', transcript: { persistenceMode: 'persistent' } } });
     expect(readLocalConversationVoiceSettings(voice).agent).toMatchObject({
       agentSource: 'agent', agentId: 'claude', agentTargetKey: 'backend:claude:configured:claude', resumabilityMode: 'replay',
     });
@@ -515,7 +515,7 @@ describe('LocalConversationSection', () => {
       expect(models?.props.items.map((item: { id: string }) => item.id)).toContain('model-a');
       act(() => picker?.props.onSelect('agent:com.a.voice/agent'));
       expect(readLocalConversationVoiceSettings(setVoice.mock.calls[0]?.[0]).agent).toMatchObject({
-        agentIdentity: { pluginId: 'com.a.voice', localId: 'agent' }, agentProjectionGeneration: 10,
+        agentIdentity: { pluginId: 'com.a.voice', localId: 'agent' },
       });
     }
   });
@@ -529,7 +529,6 @@ describe('LocalConversationSection', () => {
         agentId: 'com.acme.voice.agent',
         agentTargetKey: 'agent:com.acme.voice/agent',
         agentIdentity: { pluginId: 'com.acme.voice', localId: 'agent' },
-        agentProjectionGeneration: 7,
       },
     });
     const render = () => <LocalConversationSection voice={voice} setVoice={setVoice} />;
@@ -600,7 +599,6 @@ describe('LocalConversationSection', () => {
     expect(readLocalConversationVoiceSettings(nextVoice).agent).toMatchObject({
       agentTargetKey: 'agent:com.acme.voice/agent',
       agentIdentity: { pluginId: 'com.acme.voice', localId: 'agent' },
-      agentProjectionGeneration: 7,
     });
     await expect(resolveVoiceConfiguredAgentTarget({
       machineId: 'machine-1',
@@ -630,7 +628,6 @@ describe('LocalConversationSection', () => {
         agentId: 'com.acme.voice.agent',
         agentTargetKey: 'agent:com.acme.voice/agent',
         agentIdentity: { pluginId: 'com.acme.voice', localId: 'agent' },
-        agentProjectionGeneration: 7,
       },
     });
 
@@ -649,7 +646,6 @@ describe('LocalConversationSection', () => {
       agentId: 'codex',
       agentTargetKey: 'agent:happier.agent.codex/codex',
       agentIdentity: null,
-      agentProjectionGeneration: null,
     });
     await expect(resolveVoiceConfiguredAgentTarget({
       machineId: 'machine-1',
@@ -671,7 +667,6 @@ describe('LocalConversationSection', () => {
         agentId: 'com.acme.voice.agent',
         agentTargetKey: 'agent:com.acme.voice/agent',
         agentIdentity: { pluginId: 'com.acme.voice', localId: 'agent' },
-        agentProjectionGeneration: 7,
       },
     });
     const screen = await renderSettingsView(<LocalConversationSection voice={voice} setVoice={setVoice} />);
@@ -687,7 +682,6 @@ describe('LocalConversationSection', () => {
       agentId: 'claude',
       agentTargetKey: null,
       agentIdentity: null,
-      agentProjectionGeneration: null,
     });
     await expect(resolveVoiceConfiguredAgentTarget({ machineId: 'machine-1', selection })).resolves.toMatchObject({
       ok: true,
@@ -732,7 +726,6 @@ describe('LocalConversationSection', () => {
         agentId: 'com.acme.voice.agent',
         agentTargetKey: 'agent:com.acme.voice/agent',
         agentIdentity: { pluginId: 'com.acme.voice', localId: 'agent' },
-        agentProjectionGeneration: 7,
       },
     });
     const screen = await renderSettingsView(<LocalConversationSection voice={voice} setVoice={setVoice} />);
@@ -746,7 +739,6 @@ describe('LocalConversationSection', () => {
       agentId: 'com.acme.voice.agent',
       agentTargetKey: 'agent:com.acme.voice/agent',
       agentIdentity: { pluginId: 'com.acme.voice', localId: 'agent' },
-      agentProjectionGeneration: 7,
     });
   });
 
@@ -772,7 +764,6 @@ describe('LocalConversationSection', () => {
         agentId: 'com.acme.voice.agent',
         agentTargetKey: 'agent:com.acme.voice/agent',
         agentIdentity: { pluginId: 'com.acme.voice', localId: 'agent' },
-        agentProjectionGeneration: 7,
         providerChat: {
           status: 'needs_selection',
           providerConnectionId: ProviderConnectionIdSchema.parse('voice-openai-compatible-chat'),
@@ -817,7 +808,6 @@ describe('LocalConversationSection', () => {
       agentId: 'opencode',
       agentTargetKey: 'agent:happier.agent.opencode/opencode',
       agentIdentity: null,
-      agentProjectionGeneration: null,
       providerChat: {
         status: 'configured',
         chat: {
@@ -928,14 +918,19 @@ describe('LocalConversationSection', () => {
     },
   );
 
-  it('offers the default session Agent model catalog while following the current session', async () => {
+  it('does not probe a substitute Agent for The session when no Session target is admitted', async () => {
     const LocalConversationSection = await loadLocalConversationSection();
     const voice = createLocalConversationVoice({
       conversationMode: 'agent',
       agent: {
         agentSource: 'session',
+        agentId: 'codex',
+        machineTargetMode: 'fixed',
+        machineTargetId: 'machine-1',
         chatModelSource: 'custom',
+        chatModelId: 'saved-model',
         commitModelSource: 'custom',
+        commitModelId: 'saved-commit',
       },
     });
 
@@ -945,12 +940,14 @@ describe('LocalConversationSection', () => {
       t('settingsVoice.local.conversation.chatModelId.title'),
     );
 
-    await waitForTestEvent(screen.subscribe, () => chatModel?.props.items,
-      items => items?.some((item: { id: string }) => item.id === 'm1') === true);
-    expect(chatModel?.props.items).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'm1' }),
-      expect.objectContaining({ id: '__custom__' }),
-    ]));
+    await flushHookEffects({ cycles: 1, turns: 6, frames: 1 });
+    expect(capabilitiesInvoke.mock.calls.filter(([, request]) => request.method === 'probeModels')).toEqual([]);
+    expect(chatModel?.props.items).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: 'm1' })]));
+    expect(chatModel?.props.items).toEqual(expect.arrayContaining([expect.objectContaining({ id: '__custom__' })]));
+    expect(chatModel?.props.selectedId).toBe('saved-model');
+    openAdvancedAgent(screen);
+    expect(findDropdownByItemTriggerTitle(screen, t('settingsVoice.local.conversation.commitModelId.title'))?.props.selectedId)
+      .toBe('saved-commit');
   });
 
   it('does not crash when providerId toggles away from local_conversation', async () => {

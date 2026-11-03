@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const nativeBoundary = vi.hoisted(() => ({
     current: null as Record<string, unknown> | null,
-    ensureApplicationEndpoint: vi.fn(),
 }));
 
 vi.mock('react-native', async () => {
@@ -20,7 +19,6 @@ vi.mock('@happier-dev/iroh-native', async (importOriginal) => {
     return {
         ...actual,
         getOptionalHappierIrohNativeModule: () => nativeBoundary.current,
-        ensureIrohApplicationEndpoint: (...args: unknown[]) => nativeBoundary.ensureApplicationEndpoint(...args),
     };
 });
 
@@ -38,6 +36,14 @@ import {
 
 const ENDPOINT_ID = 'b'.repeat(64);
 
+/** The native createEndpoint boundary; the real shared application-endpoint owner runs beneath it. */
+function createSharedEndpoint() {
+    return vi.fn(async (_configuration: Record<string, unknown>) => ({
+        endpointHandle: 'shared-mobile-endpoint',
+        endpointId: ENDPOINT_ID,
+    }));
+}
+
 function setRuntimeAppState(state: string): void {
     (AppState as unknown as { currentState: string }).currentState = state;
 }
@@ -49,7 +55,6 @@ describe('machine Iroh lifecycle availability and application endpoint ownership
     beforeEach(() => {
         setRuntimeAppState('active');
         nativeBoundary.current = null;
-        nativeBoundary.ensureApplicationEndpoint.mockReset();
         delete (globalThis as Record<string, unknown>).__TAURI_INTERNALS__;
         (globalThis as Record<string, unknown>).navigator = { userAgent: 'test-mobile' };
     });
@@ -63,7 +68,7 @@ describe('machine Iroh lifecycle availability and application endpoint ownership
     it('reports mobile unavailable when the registered module engine is absent', async () => {
         nativeBoundary.current = {
             getAvailability: () => ({ available: false }),
-            createEndpoint: vi.fn(),
+            createEndpoint: createSharedEndpoint(),
             startMachineTunnel: vi.fn(),
             stopMachineTunnel: vi.fn(),
         };
@@ -92,7 +97,7 @@ describe('machine Iroh lifecycle availability and application endpoint ownership
     it('uses the shared mobile application endpoint owner for machine identity and tunnel startup', async () => {
         const native = {
             getAvailability: () => ({ available: true }),
-            createEndpoint: vi.fn(),
+            createEndpoint: createSharedEndpoint(),
             startMachineTunnel: vi.fn(async () => ({
                 machineTunnelId: 'machine-1',
                 localPort: 48123,
@@ -100,10 +105,6 @@ describe('machine Iroh lifecycle availability and application endpoint ownership
             stopMachineTunnel: vi.fn(async () => undefined),
         };
         nativeBoundary.current = native;
-        nativeBoundary.ensureApplicationEndpoint.mockResolvedValue({
-            endpointHandle: 'shared-mobile-endpoint',
-            endpointId: ENDPOINT_ID,
-        });
 
         await expect(getIrohApplicationEndpoint({
             policy: 'disabled',
@@ -123,15 +124,11 @@ describe('machine Iroh lifecycle availability and application endpoint ownership
             release: expect.any(Function),
         });
 
-        expect(nativeBoundary.ensureApplicationEndpoint).toHaveBeenCalledTimes(2);
-        expect(nativeBoundary.ensureApplicationEndpoint).toHaveBeenNthCalledWith(1, native, {
-            policy: 'disabled',
-            relayUrls: [],
-        });
-        expect(nativeBoundary.ensureApplicationEndpoint).toHaveBeenNthCalledWith(2, native, {
-            policy: 'disabled',
-            relayUrls: [],
-        });
+        // Both calls resolve through the one shared owner: same native endpoint identity, same applied configuration.
+        expect(native.createEndpoint).toHaveBeenCalledTimes(2);
+        for (const [configuration] of native.createEndpoint.mock.calls) {
+            expect(configuration).toEqual({ relayPolicy: 'disabled', relayUrls: [] });
+        }
         expect(native.startMachineTunnel).toHaveBeenCalledWith(expect.objectContaining({
             endpointHandle: 'shared-mobile-endpoint',
             capProfile: 'machineBulk',
@@ -143,13 +140,12 @@ describe('machine Iroh lifecycle availability and application endpoint ownership
         const terminal = new Promise<void>((resolve) => { close = resolve; });
         const native = {
             getAvailability: () => ({ available: true }),
-            createEndpoint: vi.fn(),
+            createEndpoint: createSharedEndpoint(),
             startMachineTunnel: vi.fn(async () => ({ machineTunnelId: 'preview-lease', localPort: 48127 })),
             stopMachineTunnel: vi.fn(async () => undefined),
             waitMachineTunnelClosed: vi.fn(() => terminal),
         };
         nativeBoundary.current = native;
-        nativeBoundary.ensureApplicationEndpoint.mockResolvedValue({ endpointHandle: 'shared-mobile-endpoint', endpointId: ENDPOINT_ID });
         const nativeHttpLease = { openJson: '{"signed":"preview-mux-open"}' };
         const lease = await startIrohMachineTransferTunnel({
             endpointId: 'a'.repeat(64), handshakeJson: '{}', nativeHttpLease,
@@ -200,12 +196,11 @@ describe('machine Iroh lifecycle availability and application endpoint ownership
         const stopped: string[] = [];
         nativeBoundary.current = {
             getAvailability: () => ({ available: true }),
-            createEndpoint: vi.fn(),
+            createEndpoint: createSharedEndpoint(),
             startMachineTunnel: vi.fn(async () => { throw new Error('raw carrier cannot serve HTTP'); }),
             startMachineHttpTunnel: async () => ({ machineTunnelId: 'http-mobile-1', localPort: 48127, localCapability: capability }),
             stopMachineTunnel: async (leaseId: string) => { stopped.push(leaseId); },
         };
-        nativeBoundary.ensureApplicationEndpoint.mockResolvedValue({ endpointHandle: 'shared-mobile-endpoint', endpointId: ENDPOINT_ID });
 
         // The native module is the genuine process boundary; the lifecycle and
         // its suspension/cleanup custody run unchanged beneath it.
@@ -236,7 +231,7 @@ describe('machine Iroh finite-transfer listener cleanup custody', () => {
         let startedTunnels = 0;
         const native = {
             getAvailability: () => ({ available: true }),
-            createEndpoint: vi.fn(),
+            createEndpoint: createSharedEndpoint(),
             startMachineTunnel: vi.fn(input.startMachineTunnel ?? (async () => {
                 startedTunnels += 1;
                 return {
@@ -247,10 +242,6 @@ describe('machine Iroh finite-transfer listener cleanup custody', () => {
             stopMachineTunnel: vi.fn(input.stopMachineTunnel),
         };
         nativeBoundary.current = native;
-        nativeBoundary.ensureApplicationEndpoint.mockResolvedValue({
-            endpointHandle: 'shared-mobile-endpoint',
-            endpointId: ENDPOINT_ID,
-        });
         return native;
     }
 
@@ -264,7 +255,6 @@ describe('machine Iroh finite-transfer listener cleanup custody', () => {
     beforeEach(() => {
         setRuntimeAppState('active');
         nativeBoundary.current = null;
-        nativeBoundary.ensureApplicationEndpoint.mockReset();
         delete (globalThis as Record<string, unknown>).__TAURI_INTERNALS__;
         (globalThis as Record<string, unknown>).navigator = { userAgent: 'test-mobile' };
     });
@@ -359,7 +349,7 @@ describe('machine Iroh finite-transfer listener cleanup custody', () => {
             code: 'unavailable',
             message: 'iroh_home_tunnel_suspended',
         });
-        expect(nativeBoundary.ensureApplicationEndpoint).not.toHaveBeenCalled();
+        expect(native.createEndpoint).not.toHaveBeenCalled();
         expect(native.startMachineTunnel).not.toHaveBeenCalled();
     });
 

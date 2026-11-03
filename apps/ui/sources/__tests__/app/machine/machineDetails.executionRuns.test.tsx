@@ -44,7 +44,9 @@ installHomeGovernanceBoundaries(homes);
 let runs: readonly DaemonExecutionRunEntry[] = [];
 let pendingRuns: Promise<unknown> | undefined;
 let releaseRuns: (() => void) | undefined;
-const rpcRequests = installSessionActionRpcBoundary(request => {
+const rpcServerUrls: (string | undefined)[] = [];
+const rpcRequests = installSessionActionRpcBoundary((request, { serverUrl }) => {
+    rpcServerUrls[rpcRequests.length - 1] = serverUrl;
     if (request.method === RPC_METHODS.DAEMON_EXECUTION_RUNS_LIST || request.method.endsWith(`:${RPC_METHODS.DAEMON_EXECUTION_RUNS_LIST}`)) {
         return pendingRuns ?? { runs };
     }
@@ -106,7 +108,7 @@ beforeEach(async () => {
     releaseLocks = installBrowserStorageLockBoundary();
     await homes.reset();
     getStorage().setState(initialState, true);
-    runs = []; pendingRuns = undefined; releaseRuns = undefined; rpcRequests.length = 0;
+    runs = []; pendingRuns = undefined; releaseRuns = undefined; rpcRequests.length = 0; rpcServerUrls.length = 0;
     routerPush.mockClear(); breadcrumb.mockClear();
     globalThis.__HAPPIER_SENTRY_INIT__ = true;
     globalThis.__HAPPIER_CRASH_REPORTS_OPTOUT__ = false;
@@ -142,8 +144,6 @@ describe('MachineDetailScreen (execution runs section)', () => {
         runs = [createExecutionRun({ runId: 'run-1' })];
         const screen = await renderRuns();
         await flushHookEffects();
-        // No row leads away to it: the machine's work is on the Overview itself (plan 10 MPG-8).
-        expect(screen.findByTestId('machine-page-row-work')).toBeNull();
         const titles = groupTitles(screen);
         const workAt = titles.indexOf('projectWorkers.workSection');
         expect(workAt).toBeGreaterThanOrEqual(0);
@@ -155,7 +155,6 @@ describe('MachineDetailScreen (execution runs section)', () => {
         const screen = await renderRuns();
         await flushHookEffects();
         expect(runGroups(screen)).toHaveLength(0);
-        expect(screen.findByTestId('machine-runs-loading')).toBeNull();
         await act(async () => { releaseRuns?.(); });
         await flushHookEffects();
         expect(runGroups(screen)).toHaveLength(0);
@@ -168,24 +167,33 @@ describe('MachineDetailScreen (execution runs section)', () => {
         const screen = await renderScreen(<MachineSubPageScreen />);
         await flushHookEffects();
         expect(screen.findByTestId('machine-sub-page-header-work')).toBeNull();
+        const { Redirect } = await import('expo-router');
+        const redirects = screen.findAllByType(Redirect);
+        expect(redirects).toHaveLength(1);
+        expect(String(redirects[0]!.props.href)).toContain('machine-1');
+        expect(String(redirects[0]!.props.href)).not.toContain('work');
     });
     it('does not leave the runs section loading when the machine goes offline before they arrive', async () => {
-        runs = [createExecutionRun({ runId: 'run-1' })];
+        runs = [createExecutionRun({ runId: 'run-1' }), createExecutionRun({ runId: 'run-done', callId: 'call-2', sidechainId: 'side-2', status: 'succeeded', finishedAtMs: 1_700_000_000_000 })];
         const screen = await renderRuns();
         await flushHookEffects();
         expect(runGroups(screen)).toHaveLength(1);
+        const filterDisabled = () => finishedFilters(screen)[0]!.props.rightElement.props.disabled;
+        expect(filterDisabled()).toBe(false);
         pendingRuns = new Promise(resolve => { releaseRuns = () => resolve({ runs: [] }); });
         const scrollView = screen.findAll(node => Boolean(node.props.refreshControl))[0];
         await act(async () => { void scrollView!.props.refreshControl.props.onRefresh(); });
         await flushHookEffects();
         // The refresh keeps the runs it shows rather than swapping them for a loading line.
         expect(runRows(screen, 'run-1')).toHaveLength(1);
+        expect(filterDisabled()).toBe(true);
         await act(async () => {
             const machine = createMachineFixture({ active: false, activeAt: 0 });
             getStorage().setState({ machines: { [machine.id]: machine }, machineListByServerId: { [serverA]: [machine], [serverB]: [machine] } });
         });
         await flushHookEffects();
-        expect(screen.findByTestId('machine-runs-loading')).toBeNull();
+        expect(filterDisabled()).toBe(false);
+        expect(runRows(screen, 'run-1')).toHaveLength(1);
     });
     it('wraps pull-to-refresh in refresh diagnostics', async () => {
         const screen = await renderRuns();
@@ -203,15 +211,10 @@ describe('MachineDetailScreen (execution runs section)', () => {
         await renderRuns();
         await flushHookEffects();
         expect(getActiveServerSnapshot().serverId).toBe(serverB);
-        expect(listRequests().length).toBeGreaterThan(0);
+        const listedOn = rpcRequests.flatMap((request, index) => listRequests().includes(request) ? [rpcServerUrls[index]] : []);
+        expect(listedOn.length).toBeGreaterThan(0);
+        expect(new Set(listedOn)).toEqual(new Set(['https://machine-runs-b.test']));
         expect(machineRequests().some(request => request.serverId === serverB)).toBe(true);
-    });
-    it('renders an execution runs group when enabled', async () => {
-        runs = [createExecutionRun({ runId: 'run-1' })];
-        const screen = await renderRuns();
-        await flushHookEffects();
-        expect(runGroups(screen)).toHaveLength(1);
-        expect(runRows(screen, 'run-1')).toHaveLength(1);
     });
     it('opens every former inline section from This machine, inside the door the page is in', async () => {
         route.params = { id: 'machine-1' };

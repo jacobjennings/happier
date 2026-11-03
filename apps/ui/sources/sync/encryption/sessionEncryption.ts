@@ -15,6 +15,10 @@ import { decryptBase64Payloads } from './decryptBase64Payloads';
 
 type EncryptedApiMessage = SessionMessageV1 & { content: { t: 'encrypted'; c: string } };
 
+export type AgentStateOpenResult =
+    | Readonly<{ status: 'available'; value: AgentState | null }>
+    | Readonly<{ status: 'unavailable' }>;
+
 function isEncryptedApiMessage(message: SessionMessageV1): message is EncryptedApiMessage {
     const content: any = (message as any)?.content;
     return Boolean(content && content.t === 'encrypted' && typeof content.c === 'string');
@@ -33,8 +37,8 @@ export class SessionEncryption {
     private encryptor: Encryptor & Decryptor;
     private cache: EncryptionCache;
     private readonly metadataPayloadDecryptInFlight = new Map<string, Promise<{ payload: unknown; authenticationFailed: boolean }>>();
-    private readonly agentStateDecryptInFlight = new Map<string, Promise<AgentState>>();
-    private readonly snapshotStateDecryptInFlight = new Map<string, Promise<{ metadata: Metadata | null; agentState: AgentState; metadataAuthenticationFailed: boolean }>>();
+    private readonly agentStateDecryptInFlight = new Map<string, Promise<AgentStateOpenResult>>();
+    private readonly snapshotStateDecryptInFlight = new Map<string, Promise<{ metadata: Metadata | null; agentState: AgentStateOpenResult; metadataAuthenticationFailed: boolean }>>();
 
     /**
      * The secret this Session's content is sealed with. It never leaves the
@@ -404,14 +408,19 @@ export class SessionEncryption {
      * Decrypt agent state using session-specific encryption
      */
     async decryptAgentState(version: number, encrypted: string | null | undefined): Promise<AgentState> {
-        if (!this.isCurrent() || !encrypted) {
-            return {};
-        }
+        const result = await this.decryptAgentStateResult(version, encrypted);
+        return result.status === 'available' ? result.value ?? {} : {};
+    }
+
+    /** A missing document or failed open is distinct from an authoritative empty state. */
+    async decryptAgentStateResult(version: number, encrypted: string | null | undefined): Promise<AgentStateOpenResult> {
+        if (!this.isCurrent() || encrypted === undefined) return { status: 'unavailable' };
+        if (encrypted === null) return { status: 'available', value: null };
 
         // Check cache first
         const cached = this.cache.getCachedAgentState(this.sessionId, version);
         if (cached) {
-            return cached;
+            return { status: 'available', value: cached };
         }
 
         const key = this.buildDedupeKey('agentState', version, encrypted);
@@ -430,23 +439,22 @@ export class SessionEncryption {
         );
     }
 
-    private async decryptAgentStateUncached(version: number, encrypted: string): Promise<AgentState> {
+    private async decryptAgentStateUncached(version: number, encrypted: string): Promise<AgentStateOpenResult> {
         // Decrypt if not cached
         const decrypted = await decryptBase64Payloads(this.encryptor, [encrypted], {
             decryptName: 'sync.encryption.decryptAgentState',
             decryptFields: { items: 1 },
         });
-        if (!this.isCurrent() || !decrypted[0]) {
-            return {};
-        }
-        const parsed = AgentStateSchema.safeParse(decrypted[0]);
-        if (!parsed.success) {
-            return {};
-        }
+        if (!this.isCurrent()) return { status: 'unavailable' };
+        return this.readAgentStatePayload(version, decrypted[0]);
+    }
 
-        // Cache the result
+    private readAgentStatePayload(version: number, payload: unknown): AgentStateOpenResult {
+        if (payload === null || payload === undefined) return { status: 'unavailable' };
+        const parsed = AgentStateSchema.safeParse(payload);
+        if (!parsed.success) return { status: 'unavailable' };
         this.cache.setCachedAgentState(this.sessionId, version, parsed.data);
-        return parsed.data;
+        return { status: 'available', value: parsed.data };
     }
 
     private buildDedupeKey(
@@ -464,7 +472,23 @@ export class SessionEncryption {
         encryptedAgentState: string | null | undefined,
         options: DecryptOptions = {},
     ): Promise<{ metadata: Metadata | null; agentState: AgentState }> {
-        if (!this.isCurrent()) return { metadata: null, agentState: {} };
+        const result = await this.decryptSessionSnapshotStateResult(
+            metadataVersion, encryptedMetadata, agentStateVersion, encryptedAgentState, options,
+        );
+        return {
+            metadata: result.metadata,
+            agentState: result.agentState.status === 'available' ? result.agentState.value ?? {} : {},
+        };
+    }
+
+    async decryptSessionSnapshotStateResult(
+        metadataVersion: number,
+        encryptedMetadata: string,
+        agentStateVersion: number,
+        encryptedAgentState: string | null | undefined,
+        options: DecryptOptions = {},
+    ): Promise<{ metadata: Metadata | null; agentState: AgentStateOpenResult }> {
+        if (!this.isCurrent()) return { metadata: null, agentState: { status: 'unavailable' } };
         const key = this.buildSnapshotStateDedupeKey(
             metadataVersion,
             encryptedMetadata,
@@ -489,7 +513,7 @@ export class SessionEncryption {
                 encryptedAgentState,
             ),
         );
-        if (!this.isCurrent()) return { metadata: null, agentState: {} };
+        if (!this.isCurrent()) return { metadata: null, agentState: { status: 'unavailable' } };
         if (result.metadataAuthenticationFailed) options.onAuthenticationFailure?.(0);
         return { metadata: result.metadata, agentState: result.agentState };
     }
@@ -499,25 +523,27 @@ export class SessionEncryption {
         encryptedMetadata: string,
         agentStateVersion: number,
         encryptedAgentState: string | null | undefined,
-    ): Promise<{ metadata: Metadata | null; agentState: AgentState; metadataAuthenticationFailed: boolean }> {
+    ): Promise<{ metadata: Metadata | null; agentState: AgentStateOpenResult; metadataAuthenticationFailed: boolean }> {
         const cachedMetadata = this.cache.getCachedMetadata(this.sessionId, metadataVersion);
-        const cachedAgentState = encryptedAgentState
+        const cachedAgentState = typeof encryptedAgentState === 'string'
             ? this.cache.getCachedAgentState(this.sessionId, agentStateVersion)
-            : {};
+            : null;
         const metadataNeedsDecrypt = !cachedMetadata;
-        const agentStateNeedsDecrypt = !cachedAgentState && Boolean(encryptedAgentState);
+        const agentStateNeedsDecrypt = !cachedAgentState && typeof encryptedAgentState === 'string';
         const decodeTaskCount = (metadataNeedsDecrypt ? 1 : 0) + (agentStateNeedsDecrypt ? 1 : 0);
 
         const tasks: Array<{ kind: 'metadata' | 'agentState'; encrypted: string }> = [];
         if (metadataNeedsDecrypt) {
             tasks.push({ kind: 'metadata', encrypted: encryptedMetadata });
         }
-        if (agentStateNeedsDecrypt && encryptedAgentState) {
+        if (agentStateNeedsDecrypt && typeof encryptedAgentState === 'string') {
             tasks.push({ kind: 'agentState', encrypted: encryptedAgentState });
         }
 
         let metadata: Metadata | null = cachedMetadata;
-        let agentState: AgentState | null = cachedAgentState;
+        let agentState: AgentStateOpenResult = cachedAgentState
+            ? { status: 'available', value: cachedAgentState }
+            : encryptedAgentState === null ? { status: 'available', value: null } : { status: 'unavailable' };
         let metadataAuthenticationFailed = false;
 
         if (tasks.length > 0) {
@@ -546,7 +572,7 @@ export class SessionEncryption {
                 } },
             );
             if (!this.isCurrent()) {
-                return { metadata: null, agentState: {}, metadataAuthenticationFailed: false };
+                return { metadata: null, agentState: { status: 'unavailable' }, metadataAuthenticationFailed: false };
             }
 
             tasks.forEach((task, index) => {
@@ -560,17 +586,13 @@ export class SessionEncryption {
                     return;
                 }
 
-                const parsed = AgentStateSchema.safeParse(value);
-                agentState = parsed.success ? parsed.data : {};
-                if (parsed.success) {
-                    this.cache.setCachedAgentState(this.sessionId, agentStateVersion, parsed.data);
-                }
+                agentState = this.readAgentStatePayload(agentStateVersion, value);
             });
         }
 
         return {
             metadata,
-            agentState: agentState ?? {},
+            agentState,
             metadataAuthenticationFailed,
         };
     }
@@ -581,9 +603,9 @@ export class SessionEncryption {
         agentStateVersion: number,
         encryptedAgentState: string | null | undefined,
     ): string {
-        const agentStateFingerprint = encryptedAgentState
+        const agentStateFingerprint = typeof encryptedAgentState === 'string'
             ? computeCiphertextFingerprint(encryptedAgentState)
-            : 'none';
+            : encryptedAgentState === null ? 'null' : 'omitted';
         return [
             'snapshotState',
             this.sessionId,

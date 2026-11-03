@@ -10,7 +10,7 @@ import { createTestRpcManager } from '@/scm/rpc/__tests__/testRpcHarness';
 import { withTempDir } from '@/testkit/fs/tempDir';
 
 describe('registered SCM target scope', () => {
-    it('refuses a Machine-denied project root before optional-cwd dispatch, preserving valid and raw defaults', async () => {
+    it('refuses a misbound envelope and a Machine-denied or project-escaping root before dispatch, preserving valid and raw defaults', async () => {
         await withTempDir('scm-target-scope-', async directory => {
             const machineId = 'scm-scope-machine';
             const workingDirectory = join(directory, 'daemon');
@@ -34,6 +34,17 @@ describe('registered SCM target scope', () => {
                 expect.soft(response, `denied root with ${JSON.stringify(input)}`)
                     .toMatchObject({ success: false, errorCode: 'INVALID_PATH' });
             }
+
+            // The envelope names its receiving Machine; a misbound one is refused
+            // outright. An allowed project root confines a Machine-allowed cwd.
+            const misbound = { kind: 'machine' as const, machineId: 'different-machine',
+                project: { machineId: 'different-machine', directory: projectDirectory } };
+            expect(ScmStatusSnapshotResponseSchema.parse(await receiver.call(RPC_METHODS.SCM_STATUS_SNAPSHOT,
+                createTargetedActionRpcRequestV1({ cwd: projectDirectory }, misbound))))
+                .toMatchObject({ success: false, errorCode: 'INVALID_REQUEST' });
+            expect(ScmStatusSnapshotResponseSchema.parse(await receiver.call(RPC_METHODS.SCM_STATUS_SNAPSHOT,
+                createTargetedActionRpcRequestV1({ cwd: workingDirectory }, target(projectDirectory)))))
+                .toMatchObject({ success: false, errorCode: 'INVALID_PATH' });
 
             // Other optional-cwd reads and mutations share the receiving registrar.
             // An empty real registry cannot mutate any repository if dispatch leaks.

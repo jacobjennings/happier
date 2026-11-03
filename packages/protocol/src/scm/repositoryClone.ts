@@ -11,6 +11,7 @@ import {
 import {
   ScmHostingProviderRefSchema,
   ScmHostingProviderKindSchema,
+  resolveLegacyScmHostingProviderId,
 } from './pullRequests.js';
 import {
   ScmHostingRepositoryAuthSummarySchema,
@@ -60,7 +61,8 @@ function isCredentialFreeRepositoryLocator(value: string): boolean {
 
 export const ScmCredentialFreeRepositorySelectorV1Schema = lazyZodSchema(() => z.strictObject({
   provider: z.strictObject({
-    id: z.string().check(z.minLength(1)), kind: ScmHostingProviderKindSchema, displayName: z.string().check(z.minLength(1)),
+    id: z.string().check(z.minLength(1), z.overwrite(id => resolveLegacyScmHostingProviderId(id) ?? id)),
+    kind: ScmHostingProviderKindSchema, displayName: z.string().check(z.minLength(1)),
     baseUrl: z.string().check(z.url(), z.refine(isCredentialFreeRepositoryLocator)),
   }),
   repository: (<T extends z.ZodMiniObject>(schema: T) => z.core.clone(schema, { ...schema._zod.def, catchall: z.never() }) as z.ZodMiniObject<T['shape'], z.core.$strict>)(z.extend(z.pick(ScmRepositoryCloneRepositorySelectorSchema, {

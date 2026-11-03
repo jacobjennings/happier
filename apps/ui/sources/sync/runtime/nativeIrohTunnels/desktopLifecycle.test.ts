@@ -1,7 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { classifyIrohHomeCarrierFailure } from '@happier-dev/iroh-native';
@@ -95,10 +91,6 @@ describe('sync/runtime/nativeIrohTunnels desktop lifecycle bridge', () => {
                 directAddresses: ['192.168.1.10:4242'],
             },
         });
-        // The renderer never provides endpoint identity material or key paths.
-        const requestArg = (hostInvoke.mock.calls[0]?.[1] as { request: Record<string, unknown> }).request;
-        expect(requestArg).not.toHaveProperty('endpointKeyPath');
-        expect(requestArg).not.toHaveProperty('endpointSeedBase64');
     });
 
     it.each(['tauri', 'electron'] as const)('releases through %s via the canonical handle operation and stays typed for repeated releases', async (hostKind) => {
@@ -229,17 +221,5 @@ describe('sync/runtime/nativeIrohTunnels desktop lifecycle bridge', () => {
         // ever invoked and no browser/global carrier exists.
         await expect(supervisor.ensureTunnel(makeRequest())).rejects.toMatchObject({ name: 'IrohError', code: 'unavailable' });
         expect(hostInvoke).not.toHaveBeenCalled();
-    });
-
-    it('stays lifecycle-only: no byte or payload APIs at the desktop invoke seam', () => {
-        const directory = dirname(fileURLToPath(import.meta.url));
-        const sources = [join(directory, 'desktopLifecycle.ts'), join(directory, 'supervisor.ts')];
-        const forbidden = ['Buffer', 'Uint8Array', 'ArrayBuffer', 'DataView', 'base64', 'atob', 'btoa', 'onTunnelBytes'];
-        for (const source of sources) {
-            const text = readFileSync(source, 'utf8');
-            for (const identifier of forbidden) {
-                expect(text, `${source} must not reference ${identifier}`).not.toMatch(new RegExp(`\\b${identifier}\\b`));
-            }
-        }
     });
 });

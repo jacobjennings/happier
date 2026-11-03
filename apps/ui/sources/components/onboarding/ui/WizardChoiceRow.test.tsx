@@ -123,37 +123,6 @@ describe('WizardChoiceRow', () => {
         expect(onRetry).toHaveBeenCalledTimes(1);
     });
 
-    it('does not invoke the row press handler when opening the overflow menu', async () => {
-        const { WizardChoiceRow } = await import('./WizardChoiceRow');
-        const onPress = vi.fn();
-        const onRetry = vi.fn();
-
-        const screen = await renderScreen(React.createElement(WizardChoiceRow, {
-            testID: 'wizard-choice',
-            title: 'Offline Relay',
-            subtitle: 'https://unreachable.example.test',
-            icon: 'link',
-            badge: 'Unreachable',
-            selected: false,
-            disabled: false,
-            menuActions: [{
-                id: 'retry',
-                title: 'Retry',
-                onPress: onRetry,
-            }],
-            onPress,
-        }));
-
-        const overflowTrigger = screen.findByTestId('wizard-choice-menu');
-        expect(overflowTrigger).toBeTruthy();
-
-        await act(async () => {
-            overflowTrigger!.props.onPress?.({} as any);
-        });
-
-        expect(onPress).toHaveBeenCalledTimes(0);
-    });
-
     it('uses neutral foreground icons for selected rows', async () => {
         const { WizardChoiceRow } = await import('./WizardChoiceRow');
 

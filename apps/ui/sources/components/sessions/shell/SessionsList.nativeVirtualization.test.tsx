@@ -332,7 +332,8 @@ vi.mock('@/components/ui/status/StatusDot', () => ({
     StatusDot: 'StatusDot',
 }));
 
-vi.mock('@/utils/platform/responsive', () => ({
+vi.mock('@/utils/platform/responsive', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/platform/responsive')>(),
     useIsTablet: () => false,
     useDeviceType: () => 'phone',
     getDeviceType: () => 'phone',
@@ -833,9 +834,9 @@ describe('SessionsList (native virtualization)', () => {
                     { type: 'header', title: 'Another group', headerKind: 'date', groupKey: addedGroupKey, serverId: 'srv_server_a' },
                     { type: 'session', session: added, groupKey: addedGroupKey, groupKind: 'date', serverId: 'srv_server_a' },
                 ]) ?? [];
-                await act(async () => realStorage.getState().applyServerScopedSessionListRows('srv_server_a', [added],
-                    { source: 'ordinary', mode: 'append' }));
                 items = [...items, ...addedItems];
+                await act(async () => { realStorage.getState().applyServerScopedSessionListRows('srv_server_a', [added],
+                    { source: 'ordinary', mode: 'append' }); });
                 await screen.update(<NativeSessionsListView paneState={{ ...paneState,
                     summary: { sessionsReady: true, sessionCount: 3 + arrival }, visibleSessionListIndex: items,
                 }} />);
@@ -862,9 +863,9 @@ describe('SessionsList (native virtualization)', () => {
                 await flushHookEffects({ advanceTimersMs: 1_000, cycles: 1, turns: 2 });
             }
             expect(derive.mock.calls.filter(([input]) => ['sess_a', 'sess_b'].includes(input.item.sessionId))).toHaveLength(0);
-            await act(async () => realStorage.getState().applyServerScopedSessionListRows('srv_server_a', [{
+            await act(async () => { realStorage.getState().applyServerScopedSessionListRows('srv_server_a', [{
                 ...sessionA, createdAt: Date.now() - 59_000,
-            }], { source: 'ordinary', mode: 'append' }));
+            }], { source: 'ordinary', mode: 'append' }); });
             derive.mockClear();
             await flushHookEffects({ advanceTimersMs: 1_000, cycles: 1, turns: 2 });
             expect(derive.mock.calls.map(([input]) => input.item.sessionId)).toEqual(['sess_a']);

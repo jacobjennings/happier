@@ -1,3 +1,4 @@
+import type { ManagedServiceResponse } from '@happier-dev/plugin-sdk/managed-services';
 import { ProviderContributionV1Schema } from '@happier-dev/protocol/providers/contributions';
 
 import type { ResolvedProviderContribution } from '@/plugins/projection/registry/types';
@@ -19,7 +20,7 @@ export function createBrokerProviderRegistry(): ProviderContributionRegistryView
     })),
     catalog: { source: 'manual', manualModelPolicy: 'allowed' },
     managedRuntime: {
-      kind: 'managed', endpointTemplateIds: endpointTemplates.map((endpoint) => endpoint.id),
+      kind: 'managed', sourceEnvelopeTransport: 'cpx-v1', endpointTemplateIds: endpointTemplates.map((endpoint) => endpoint.id),
       connectedAccounts: [
         { purpose: 'openai-upstream', service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' },
           title: { key: 'managedPurpose.openai.title', fallback: 'Use OpenAI upstream account' }, required: false,
@@ -33,4 +34,20 @@ export function createBrokerProviderRegistry(): ProviderContributionRegistryView
     identity, pluginId: identity.pluginId, definition, provenance: 'external', source: { kind: 'path' },
   };
   return { providersByContributionKey: new Map([[`${identity.pluginId}/${identity.localId}`, provider]]) };
+}
+
+export async function readProviderBrokerResponseBody(body: ManagedServiceResponse['body']): Promise<Uint8Array<ArrayBuffer>> {
+  if (!body) return Buffer.alloc(0);
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks);
 }

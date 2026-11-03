@@ -25,16 +25,6 @@ const stageSurfaceLifecycle = vi.hoisted(() => ({
 
 const suspendedSurfacePromise = new Promise<never>(() => undefined);
 
-const stageSnapshotBoundary = vi.hoisted(() => ({
-    captureRef: vi.fn(async () => 'data:image/png;base64,stage-freeze'),
-    releaseCapture: vi.fn(),
-}));
-
-vi.mock('react-native-view-shot', () => ({
-    captureRef: stageSnapshotBoundary.captureRef,
-    releaseCapture: stageSnapshotBoundary.releaseCapture,
-}));
-
 vi.mock('./stageSurfaces', async () => {
     const ReactModule = await import('react');
     const reactNativeModule = await import('react-native');
@@ -88,8 +78,6 @@ function resetStageSurfaceLifecycle(): void {
     stageSurfaceLifecycle.failLoad = false;
     stageSurfaceLifecycle.preloadStageSurfaces.mockClear();
     stageSurfaceLifecycle.resetStageSurfaceComponent.mockClear();
-    stageSnapshotBoundary.captureRef.mockClear();
-    stageSnapshotBoundary.releaseCapture.mockClear();
 }
 
 type Rect = Readonly<{ x: number; y: number; width: number; height: number }>;
@@ -410,36 +398,6 @@ describe('DemoStage', () => {
         expect(stageSurfaceLifecycle.listenerCount).toBe(1);
     });
 
-    it('never rasterizes a stage frame for a freeze this layout can never display', async () => {
-        vi.useFakeTimers();
-        try {
-            const screen = await renderScreen(
-                <DemoStage
-                    frames={demoFrames}
-                    activeFrameId="session-view.hero"
-                    reducedMotion={false}
-                />,
-                {
-                    flushOptions: { cycles: 2 },
-                    createNodeMock: (element) => {
-                        const testID = (element as { props?: { testID?: string } }).props?.testID;
-                        return testID?.endsWith('-capture-source') ? {} : null;
-                    },
-                },
-            );
-
-            await act(async () => {
-                vi.advanceTimersByTime(30_000);
-            });
-
-            expect(stageSnapshotBoundary.captureRef).not.toHaveBeenCalled();
-            expect(screen.findByTestId('demo-stage-camera-frozen-outer')).toBeNull();
-            expect(screen.findByTestId('demo-stage-camera-frozen-frame')).toBeNull();
-        } finally {
-            vi.useRealTimers();
-        }
-    });
-
     it('does not mount a duplicate outgoing surface for reduced-motion same-surface frame changes', async () => {
         const sameSurfaceFrames = [
             { id: 'session-view.hero', surface: 'session-view', device: 'desktop', zoom: 1, dim: 0 },
@@ -467,7 +425,6 @@ describe('DemoStage', () => {
         expect(screen.findAllByTestId('mock-stage-device:desktop')).toHaveLength(1);
         expect(stageSurfaceLifecycle.liveMountCount).toBe(1);
         expect(stageSurfaceLifecycle.listenerCount).toBe(1);
-        expect(screen.findByTestId('demo-stage-camera-frozen-frame')).toBeNull();
     });
 
     it('keeps the outgoing surface mounted in the visible layer during a reduced-motion frame change', async () => {
@@ -558,8 +515,6 @@ describe('DemoStage', () => {
             );
         });
 
-        // The four-rect cutout is superseded by a single lerped halo (D19 / spec §4).
-        expect(screen.findByTestId('demo-stage-spotlight-cutout-top')).toBeNull();
         const haloStyle = StyleSheet.flatten(screen.findByTestId('demo-stage-spotlight-halo')?.props.style) as {
             left: number; top: number; width: number; height: number; boxShadow?: string;
         };

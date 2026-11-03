@@ -73,10 +73,6 @@ import {
 
 import * as realtimeMicSession from '@/voice/runtime/mic/createRealtimeMicSession';
 import { createVoiceHistoryConsumer } from '@/voice/history/voiceHistoryConsumer';
-import {
-  createDefaultVoiceHistoryConsumerFromRuntime,
-  type DefaultVoiceHistoryRuntime,
-} from '@/voice/history/defaultVoiceHistoryConsumer';
 import type { VoiceProviderRegistry } from '@/voice/registry/providerRegistry';
 import { getVoiceAdapterRegistry } from '@/voice/session/voiceAdapterRegistry';
 import { VoiceSessionRuntime } from '@/voice/session/VoiceSessionRuntime';
@@ -439,6 +435,8 @@ function removeOpenAiSavedSecret(): void {
   }) as never);
 }
 
+const CONNECTED_ACCOUNT_CREDENTIAL_SUITE = 'with a Connected Account credential source';
+
 describe('realtime_openai source-composed WebRTC gate', () => {
   let environment: Awaited<ReturnType<typeof createOpenAiVoiceRuntimeEnvironment>>;
   const openAiEntry = () => environment.entry;
@@ -450,10 +448,12 @@ describe('realtime_openai source-composed WebRTC gate', () => {
   let allowedTranscriptMessageUrls: Set<string>;
   let accountConnection: Awaited<ReturnType<typeof createOpenAiVoiceRuntimeEnvironment>>['accountConnection'];
   let purposes: Awaited<ReturnType<typeof createOpenAiVoiceRuntimeEnvironment>>['purposes'];
+  // Connected Account credential tests live in the nested suite below; every other
+  // case composes the approved SavedSecret source.
   beforeEach(async context => {
-    environment = await createOpenAiVoiceRuntimeEnvironment({ credentialSource:
-      context.task.name.startsWith('keeps the exact minted OpenAI authority')
-      || context.task.name.startsWith('fails typed before OpenAI signaling') ? 'connectedAccount' : 'savedSecret' });
+    environment = await createOpenAiVoiceRuntimeEnvironment({
+      credentialSource: context.task.suite?.name === CONNECTED_ACCOUNT_CREDENTIAL_SUITE ? 'connectedAccount' : 'savedSecret',
+    });
     ({ transcriptRequest, sessionHttp, homeRequest, allowedTranscriptMessageUrls, accountConnection, purposes } = environment);
   });
   afterEach(async () => { await environment?.dispose(); });
@@ -1043,16 +1043,155 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     },
   );
 
-  it.each([
-    ['switches', 'account-b' as string | null],
-    ['deletes', null],
-  ] as const)(
-    'keeps the exact minted OpenAI authority when its Connected Account %s during a forced reconnect and applies the change only to the next Start',
-    async (_change, nextBinding) => {
-      await environment.installConnectedAccountSettings();
+  describe(CONNECTED_ACCOUNT_CREDENTIAL_SUITE, () => {
+    it.each([
+      ['switches', 'account-b' as string | null],
+      ['deletes', null],
+    ] as const)(
+      'keeps the exact minted OpenAI authority when its Connected Account %s during a forced reconnect and applies the change only to the next Start',
+      async (_change, nextBinding) => {
+        await environment.installConnectedAccountSettings();
+        await environment.selectConnectedAccount('account-a');
+        let binding: string | null = 'account-a';
+        const requestBindings: Array<string | null> = [];
+        const request = vi.fn(async (packet: Parameters<OpenAiMintTransport>[0]) => {
+          const admittedBinding = readMintRequestAccount(packet);
+          requestBindings.push(admittedBinding);
+          return Object.freeze({
+            status: 200,
+            finalUrl: 'https://api.openai.com/v1/realtime/client_secrets',
+            headers: Object.freeze({}),
+            body: new TextEncoder().encode(JSON.stringify(
+              createOpenAiClientAuthProviderResponse(
+                `ek_${admittedBinding}`,
+                Math.floor(Date.now() / 1_000) + 60,
+              ),
+            )),
+          });
+        });
+        const callAuthorizations: string[] = [];
+        vi.mocked(globalThis.fetch).mockImplementation(async (
+          input: URL | RequestInfo,
+          init?: RequestInit,
+        ) => {
+          const url = String(input);
+          if (!url.endsWith('/v1/realtime/calls')) {
+            throw new Error(`unexpected OpenAI fetch: ${url}`);
+          }
+          callAuthorizations.push(new Headers(init?.headers).get('authorization') ?? '');
+          return new Response('v=0\r\na=openai-answer\r\n', { status: 201 });
+        });
+        const releaseNextOffer = createDeferredVoid();
+        let peerNumber = 0;
+        const browser = installVoiceWebRtcBrowserBoundary({ onCreatePeer: peer => {
+          peerNumber += 1;
+          if (peerNumber === 3) peer.createOffer.mockImplementation(async () => {
+            await releaseNextOffer.promise;
+            return { type: 'offer', sdp: 'v=0\r\na=next-attempt-offer\r\n' };
+          });
+        } });
+        const composed = await environment.createRuntime(browser, {
+          respondToDaemonAccountOperation: request,
+        });
+
+        try {
+          const firstStart = composed.runtime.adapter.start({
+            sessionId: '',
+            requestedTargetSessionAddress: null,
+            initialContext: '',
+          });
+          await Promise.resolve(browser.peerCreated().then(peer => peer.dataChannelCreated)).then(() => expect(
+            browser.peer.createDataChannel,
+          ).toHaveBeenCalledWith('oai-events'));
+          browser.peer.channel.open();
+          await firstStart;
+          const firstPeer = browser.peer;
+          const firstTrack = browser.micTrack;
+          const firstStream = browser.micStream;
+
+          expect(requestBindings).toEqual(['account-a']);
+          expect(callAuthorizations).toEqual(['Bearer ek_account-a']);
+          binding = nextBinding;
+          await environment.selectConnectedAccount(binding);
+          const reconnect = composed.requestReconnect();
+          await Promise.resolve(browser.peerCreated(1)).then(() => expect(browser.peers).toHaveLength(2));
+          const reconnectPeer = browser.peers[1]!;
+          await Promise.resolve(reconnectPeer.dataChannelCreated).then(() => expect(
+            reconnectPeer.createDataChannel,
+          ).toHaveBeenCalledWith('oai-events'));
+          expect(reconnectPeer).not.toBe(firstPeer);
+          await reconnectPeer.remoteDescriptionSet;
+          expect(reconnectPeer.channel).not.toBe(firstPeer.channel);
+          expect(firstPeer.close).toHaveBeenCalledOnce();
+          expect(requestBindings).toEqual(['account-a']);
+          expect(callAuthorizations).toEqual([
+            'Bearer ek_account-a',
+            'Bearer ek_account-a',
+          ]);
+          reconnectPeer.channel.open();
+          await expect(reconnect).resolves.toBe(true);
+          await waitForTestEvent(composed.runtime.adapter.subscribe!, () => expect(
+            composed.runtime.adapter.getSnapshot().status,
+          ).toBe('connected'));
+
+          await composed.runtime.adapter.stop({
+            sessionId: composed.controlSessionId,
+          });
+          expect(firstTrack.readyState).toBe('ended');
+          const nextStart = composed.runtime.adapter.start({
+            sessionId: '',
+            requestedTargetSessionAddress: null,
+            initialContext: '',
+          }).then(
+            () => null,
+            (error: unknown) => error,
+          );
+          if (nextBinding === null) {
+            await expect(nextStart).resolves.toBeNull();
+            expect(requestBindings).toEqual(['account-a']);
+            expect(callAuthorizations).toEqual([
+              'Bearer ek_account-a',
+              'Bearer ek_account-a',
+            ]);
+            expect(composed.runtime.adapter.getSnapshot()).toMatchObject({
+              status: 'error',
+              errorCode: 'provider_auth_invalid',
+            });
+          } else {
+            await waitForTestEvent(environment.subscribeNetwork, () => expect(requestBindings).toEqual([
+              'account-a',
+              'account-b',
+            ]));
+            await Promise.resolve(browser.peerCreated(2)).then(() => expect(browser.peers).toHaveLength(3));
+            expect(browser.micStream).not.toBe(firstStream);
+            expect(browser.micTrack).not.toBe(firstTrack);
+            expect(browser.micTrack.readyState).toBe('live');
+            expect(requestBindings).toEqual(['account-a', 'account-b']);
+            expect(callAuthorizations).toEqual([
+              'Bearer ek_account-a',
+              'Bearer ek_account-a',
+            ]);
+            const stopping = composed.runtime.adapter.stop({
+              sessionId: composed.controlSessionId,
+            });
+            releaseNextOffer.resolve();
+            await Promise.all([nextStart, stopping]);
+          }
+        } finally {
+          releaseNextOffer.resolve();
+          await composed.runtime.dispose();
+          composed.hostLease.revoke();
+          browser.restore();
+        }
+      },
+    );
+
+    it('fails typed before OpenAI signaling when admitted auth expires during offer creation and requires a new Start', async () => {
+      const initialNow = 1_800_000_000_000;
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(initialNow);
       await environment.selectConnectedAccount('account-a');
-      let binding: string | null = 'account-a';
-      const requestBindings: Array<string | null> = [];
+      let binding = 'account-a';
+      const requestBindings: string[] = [];
       const request = vi.fn(async (packet: Parameters<OpenAiMintTransport>[0]) => {
         const admittedBinding = readMintRequestAccount(packet);
         requestBindings.push(admittedBinding);
@@ -1063,7 +1202,7 @@ describe('realtime_openai source-composed WebRTC gate', () => {
           body: new TextEncoder().encode(JSON.stringify(
             createOpenAiClientAuthProviderResponse(
               `ek_${admittedBinding}`,
-              Math.floor(Date.now() / 1_000) + 60,
+              Math.floor((Date.now() + 60_000) / 1_000),
             ),
           )),
         });
@@ -1080,14 +1219,20 @@ describe('realtime_openai source-composed WebRTC gate', () => {
         callAuthorizations.push(new Headers(init?.headers).get('authorization') ?? '');
         return new Response('v=0\r\na=openai-answer\r\n', { status: 201 });
       });
-      const releaseNextOffer = createDeferredVoid();
-      let peerNumber = 0;
+      let resolveOffer!: (offer: { type: 'offer'; sdp: string }) => void;
+      const delayedOffer = new Promise<{ type: 'offer'; sdp: string }>((resolve) => {
+        resolveOffer = resolve;
+      });
+      let resolveNextOffer!: (offer: { type: 'offer'; sdp: string }) => void;
+      const nextOffer = new Promise<{ type: 'offer'; sdp: string }>((resolve) => {
+        resolveNextOffer = resolve;
+      });
+      let offerNumber = 0;
+      const offerEntered = createDeferredVoid();
       const browser = installVoiceWebRtcBrowserBoundary({ onCreatePeer: peer => {
-        peerNumber += 1;
-        if (peerNumber === 3) peer.createOffer.mockImplementation(async () => {
-          await releaseNextOffer.promise;
-          return { type: 'offer', sdp: 'v=0\r\na=next-attempt-offer\r\n' };
-        });
+        offerNumber += 1;
+        const offer = offerNumber === 1 ? delayedOffer : nextOffer;
+        peer.createOffer.mockImplementation(async () => { offerEntered.resolve(); return await offer; });
       } });
       const composed = await environment.createRuntime(browser, {
         respondToDaemonAccountOperation: request,
@@ -1099,44 +1244,30 @@ describe('realtime_openai source-composed WebRTC gate', () => {
           requestedTargetSessionAddress: null,
           initialContext: '',
         });
-        await Promise.resolve(browser.peerCreated().then(peer => peer.dataChannelCreated)).then(() => expect(
-          browser.peer.createDataChannel,
-        ).toHaveBeenCalledWith('oai-events'));
-        browser.peer.channel.open();
-        await firstStart;
-        const firstPeer = browser.peer;
-        const firstTrack = browser.micTrack;
-        const firstStream = browser.micStream;
-
+        await offerEntered.promise;
+        expect(browser.peer.createOffer).toHaveBeenCalledTimes(1);
+        const failedPeer = browser.peer;
+        const failedStream = browser.micStream;
+        const failedTrack = browser.micTrack;
         expect(requestBindings).toEqual(['account-a']);
-        expect(callAuthorizations).toEqual(['Bearer ek_account-a']);
-        binding = nextBinding;
+        expect(callAuthorizations).toEqual([]);
+
+        binding = 'account-b';
         await environment.selectConnectedAccount(binding);
-        const reconnect = composed.requestReconnect();
-        await Promise.resolve(browser.peerCreated(1)).then(() => expect(browser.peers).toHaveLength(2));
-        const reconnectPeer = browser.peers[1]!;
-        await Promise.resolve(reconnectPeer.dataChannelCreated).then(() => expect(
-          reconnectPeer.createDataChannel,
-        ).toHaveBeenCalledWith('oai-events'));
-        expect(reconnectPeer).not.toBe(firstPeer);
-        await reconnectPeer.remoteDescriptionSet;
-        expect(reconnectPeer.channel).not.toBe(firstPeer.channel);
-        expect(firstPeer.close).toHaveBeenCalledOnce();
-        expect(requestBindings).toEqual(['account-a']);
-        expect(callAuthorizations).toEqual([
-          'Bearer ek_account-a',
-          'Bearer ek_account-a',
-        ]);
-        reconnectPeer.channel.open();
-        await expect(reconnect).resolves.toBe(true);
-        await waitForTestEvent(composed.runtime.adapter.subscribe!, () => expect(
-          composed.runtime.adapter.getSnapshot().status,
-        ).toBe('connected'));
+        nowSpy.mockReturnValue(initialNow + 59_500);
+        browser.peer.channel.open();
+        resolveOffer({ type: 'offer', sdp: 'v=0\r\na=delayed-offer\r\n' });
 
-        await composed.runtime.adapter.stop({
-          sessionId: composed.controlSessionId,
+        await expect(firstStart).rejects.toMatchObject({ code: 'voice_auth_expired' });
+        expect(failedPeer.close).toHaveBeenCalledOnce();
+        expect(failedTrack.readyState).toBe('ended');
+        expect(requestBindings).toEqual(['account-a']);
+        expect(callAuthorizations).toEqual([]);
+        expect(composed.runtime.adapter.getSnapshot()).toMatchObject({
+          status: 'error',
+          errorCode: 'voice_auth_expired',
         });
-        expect(firstTrack.readyState).toBe('ended');
+
         const nextStart = composed.runtime.adapter.start({
           sessionId: '',
           requestedTargetSessionAddress: null,
@@ -1145,215 +1276,30 @@ describe('realtime_openai source-composed WebRTC gate', () => {
           () => null,
           (error: unknown) => error,
         );
-        if (nextBinding === null) {
-          await expect(nextStart).resolves.toBeNull();
-          expect(requestBindings).toEqual(['account-a']);
-          expect(callAuthorizations).toEqual([
-            'Bearer ek_account-a',
-            'Bearer ek_account-a',
-          ]);
-          expect(composed.runtime.adapter.getSnapshot()).toMatchObject({
-            status: 'error',
-            errorCode: 'provider_auth_invalid',
-          });
-        } else {
-          await waitForTestEvent(environment.subscribeNetwork, () => expect(requestBindings).toEqual([
-            'account-a',
-            'account-b',
-          ]));
-          await Promise.resolve(browser.peerCreated(2)).then(() => expect(browser.peers).toHaveLength(3));
-          expect(browser.micStream).not.toBe(firstStream);
-          expect(browser.micTrack).not.toBe(firstTrack);
-          expect(browser.micTrack.readyState).toBe('live');
-          expect(requestBindings).toEqual(['account-a', 'account-b']);
-          expect(callAuthorizations).toEqual([
-            'Bearer ek_account-a',
-            'Bearer ek_account-a',
-          ]);
-          const stopping = composed.runtime.adapter.stop({
-            sessionId: composed.controlSessionId,
-          });
-          releaseNextOffer.resolve();
-          await Promise.all([nextStart, stopping]);
-        }
+        await waitForTestEvent(environment.subscribeNetwork, () => expect(requestBindings).toEqual([
+          'account-a',
+          'account-b',
+        ]));
+        await Promise.resolve(browser.peerCreated(1)).then(() => expect(browser.peers).toHaveLength(2));
+        expect(browser.peer).not.toBe(failedPeer);
+        expect(browser.peer.channel).not.toBe(failedPeer.channel);
+        expect(browser.micStream).not.toBe(failedStream);
+        expect(browser.micTrack).not.toBe(failedTrack);
+        expect(browser.micTrack.readyState).toBe('live');
+        expect(requestBindings).toEqual(['account-a', 'account-b']);
+        expect(callAuthorizations).toEqual([]);
+        const stopping = composed.runtime.adapter.stop({
+          sessionId: composed.controlSessionId,
+        });
+        resolveNextOffer({ type: 'offer', sdp: 'v=0\r\na=cancelled-next-offer\r\n' });
+        await Promise.all([nextStart, stopping]);
       } finally {
-        releaseNextOffer.resolve();
+        resolveNextOffer({ type: 'offer', sdp: 'v=0\r\na=cleanup-next-offer\r\n' });
         await composed.runtime.dispose();
         composed.hostLease.revoke();
         browser.restore();
       }
-    },
-  );
-
-  it('fails typed before OpenAI signaling when admitted auth expires during offer creation and requires a new Start', async () => {
-    const initialNow = 1_800_000_000_000;
-    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(initialNow);
-    await environment.selectConnectedAccount('account-a');
-    let binding = 'account-a';
-    const requestBindings: string[] = [];
-    const request = vi.fn(async (packet: Parameters<OpenAiMintTransport>[0]) => {
-      const admittedBinding = readMintRequestAccount(packet);
-      requestBindings.push(admittedBinding);
-      return Object.freeze({
-        status: 200,
-        finalUrl: 'https://api.openai.com/v1/realtime/client_secrets',
-        headers: Object.freeze({}),
-        body: new TextEncoder().encode(JSON.stringify(
-          createOpenAiClientAuthProviderResponse(
-            `ek_${admittedBinding}`,
-            Math.floor((Date.now() + 60_000) / 1_000),
-          ),
-        )),
-      });
     });
-    const callAuthorizations: string[] = [];
-    vi.mocked(globalThis.fetch).mockImplementation(async (
-      input: URL | RequestInfo,
-      init?: RequestInit,
-    ) => {
-      const url = String(input);
-      if (!url.endsWith('/v1/realtime/calls')) {
-        throw new Error(`unexpected OpenAI fetch: ${url}`);
-      }
-      callAuthorizations.push(new Headers(init?.headers).get('authorization') ?? '');
-      return new Response('v=0\r\na=openai-answer\r\n', { status: 201 });
-    });
-    let resolveOffer!: (offer: { type: 'offer'; sdp: string }) => void;
-    const delayedOffer = new Promise<{ type: 'offer'; sdp: string }>((resolve) => {
-      resolveOffer = resolve;
-    });
-    let resolveNextOffer!: (offer: { type: 'offer'; sdp: string }) => void;
-    const nextOffer = new Promise<{ type: 'offer'; sdp: string }>((resolve) => {
-      resolveNextOffer = resolve;
-    });
-    let offerNumber = 0;
-    const offerEntered = createDeferredVoid();
-    const browser = installVoiceWebRtcBrowserBoundary({ onCreatePeer: peer => {
-      offerNumber += 1;
-      const offer = offerNumber === 1 ? delayedOffer : nextOffer;
-      peer.createOffer.mockImplementation(async () => { offerEntered.resolve(); return await offer; });
-    } });
-    const composed = await environment.createRuntime(browser, {
-      respondToDaemonAccountOperation: request,
-    });
-
-    try {
-      const firstStart = composed.runtime.adapter.start({
-        sessionId: '',
-        requestedTargetSessionAddress: null,
-        initialContext: '',
-      });
-      await offerEntered.promise;
-      expect(browser.peer.createOffer).toHaveBeenCalledTimes(1);
-      const failedPeer = browser.peer;
-      const failedStream = browser.micStream;
-      const failedTrack = browser.micTrack;
-      expect(requestBindings).toEqual(['account-a']);
-      expect(callAuthorizations).toEqual([]);
-
-      binding = 'account-b';
-      await environment.selectConnectedAccount(binding);
-      nowSpy.mockReturnValue(initialNow + 59_500);
-      browser.peer.channel.open();
-      resolveOffer({ type: 'offer', sdp: 'v=0\r\na=delayed-offer\r\n' });
-
-      await expect(firstStart).rejects.toMatchObject({ code: 'voice_auth_expired' });
-      expect(failedPeer.close).toHaveBeenCalledOnce();
-      expect(failedTrack.readyState).toBe('ended');
-      expect(requestBindings).toEqual(['account-a']);
-      expect(callAuthorizations).toEqual([]);
-      expect(composed.runtime.adapter.getSnapshot()).toMatchObject({
-        status: 'error',
-        errorCode: 'voice_auth_expired',
-      });
-
-      const nextStart = composed.runtime.adapter.start({
-        sessionId: '',
-        requestedTargetSessionAddress: null,
-        initialContext: '',
-      }).then(
-        () => null,
-        (error: unknown) => error,
-      );
-      await waitForTestEvent(environment.subscribeNetwork, () => expect(requestBindings).toEqual([
-        'account-a',
-        'account-b',
-      ]));
-      await Promise.resolve(browser.peerCreated(1)).then(() => expect(browser.peers).toHaveLength(2));
-      expect(browser.peer).not.toBe(failedPeer);
-      expect(browser.peer.channel).not.toBe(failedPeer.channel);
-      expect(browser.micStream).not.toBe(failedStream);
-      expect(browser.micTrack).not.toBe(failedTrack);
-      expect(browser.micTrack.readyState).toBe('live');
-      expect(requestBindings).toEqual(['account-a', 'account-b']);
-      expect(callAuthorizations).toEqual([]);
-      const stopping = composed.runtime.adapter.stop({
-        sessionId: composed.controlSessionId,
-      });
-      resolveNextOffer({ type: 'offer', sdp: 'v=0\r\na=cancelled-next-offer\r\n' });
-      await Promise.all([nextStart, stopping]);
-    } finally {
-      resolveNextOffer({ type: 'offer', sdp: 'v=0\r\na=cleanup-next-offer\r\n' });
-      await composed.runtime.dispose();
-      composed.hostLease.revoke();
-      browser.restore();
-    }
-  });
-
-  it('persists standalone SavedSecret finals through canonical session-message storage', async () => {
-    const browser = installVoiceWebRtcBrowserBoundary();
-    const composed = await environment.createRuntime(browser);
-
-    try {
-      const starting = composed.runtime.adapter.start({
-        sessionId: '',
-        requestedTargetSessionAddress: null,
-        initialContext: '',
-      });
-      await Promise.resolve(browser.peerCreated().then(peer => peer.dataChannelCreated)).then(() => expect(
-        browser.peer.createDataChannel,
-      ).toHaveBeenCalledWith('oai-events'));
-      browser.peer.channel.open();
-      await starting;
-
-      const binding = voiceSessionBindingStore.getState().getByControlSessionId(
-        composed.controlSessionId,
-      );
-      expect(binding).not.toBeNull();
-
-      browser.peer.channel.message(JSON.stringify({
-        type: 'conversation.item.input_audio_transcription.completed',
-        event_id: 'saved-secret-durable-user-final',
-        item_id: 'saved-secret-durable-user',
-        content_index: 0,
-        transcript: 'persist me without a daemon',
-        usage: { type: 'duration', seconds: 1 },
-      }));
-      await waitForTestEvent(storage.subscribe, () => expect(
-        readCanonicalVoiceTranscriptSnapshot(binding!.conversationSessionId),
-      ).toEqual([
-        expect.objectContaining({
-          role: 'user',
-          text: 'persist me without a daemon',
-        }),
-      ]));
-
-      await waitForTestEvent(storage.subscribe, () => {
-        const state = storage.getState();
-        const storedMessages = Object.keys(state.sessionMessages)
-          .flatMap((sessionId) => readStoredSessionMessages(state, sessionId));
-        expect(storedMessages).toEqual(expect.arrayContaining([
-          expect.objectContaining({
-            kind: 'user-text',
-            text: 'persist me without a daemon',
-          }),
-        ]));
-      });
-    } finally {
-      await composed.runtime.dispose();
-      composed.hostLease.revoke();
-      browser.restore();
-    }
   });
 
   it('persists both finals of a turn whose payloads carry fields the adapter never reads', async () => {
@@ -2086,112 +2032,6 @@ describe('realtime_openai source-composed WebRTC gate', () => {
         composed.controlSessionId,
       )).toBeNull();
     } finally {
-      await composed.runtime.dispose();
-      composed.hostLease.revoke();
-      browser.restore();
-    }
-  });
-
-  it('serializes same-device carrier acquisition behind an in-flight whole-history clear', async () => {
-    const browser = installVoiceWebRtcBrowserBoundary();
-    const composed = await environment.createRuntime(browser);
-    const recreatedSessionId = 'voice-history-openai-recreated';
-    const deleteStarted = createDeferredVoid();
-    const releaseDelete = createDeferredVoid();
-    let deleteFinished = false;
-    let discoveredSessionId: string | null = OPENAI_HISTORY_SESSION_ID;
-    const scope = {
-      serverId: getActiveServerSnapshot().serverId,
-      accountId: 'openai-composed-account',
-    } as const satisfies ServerAccountScope;
-    const ensureHistorySession = vi.fn(async (init: RequestInit) => {
-        const sessionId = deleteFinished
-          ? recreatedSessionId
-          : OPENAI_HISTORY_SESSION_ID;
-        return sessionHttp.createSessionFromPost(sessionId, init);
-      });
-    environment.historySessionPost = ensureHistorySession;
-    const deleteSession = vi.fn(async () => {
-      deleteStarted.resolve();
-      await releaseDelete.promise;
-      deleteFinished = true;
-      discoveredSessionId = null;
-      return { success: true };
-    });
-    const runtime: DefaultVoiceHistoryRuntime = {
-      readActiveScope: () => scope,
-      captureAuthority: (capturedScope) =>
-        captureServerRequestAuthorityForServerAccountScope({
-          scope: capturedScope,
-          activeRequest: (path, init, options) => apiSocket.request(path, init, options),
-        }),
-      lookupByTags: async () => (
-        discoveredSessionId ? [{ id: discoveredSessionId }] : []
-      ),
-      hydrateSession: async (sessionId) => ({ kind: 'available', sessionId }),
-      readHydratedSession: (sessionId) =>
-        storage.getState().sessions[sessionId] ?? null,
-      refreshSessionMessages: async () => undefined,
-      loadOlderMessages: async () => ({
-        loaded: 0,
-        hasMore: false,
-        status: 'no_more',
-      }),
-      readMessages: (sessionId) =>
-        readStoredSessionMessages(storage.getState(), sessionId),
-      readMessagesRevision: (sessionId) =>
-        storage.getState().sessionMessages[sessionId]?.messagesVersion ?? 0,
-      subscribeMessages: (listener) => storage.subscribe(() => { listener(); }),
-      deleteSession,
-      retireLocalSession: (sessionId) =>
-        storage.getState().deleteSession(sessionId),
-    };
-    const providerRegistry = {
-      list: () => [],
-      get: () => null,
-    } as unknown as VoiceProviderRegistry;
-    const consumer = createDefaultVoiceHistoryConsumerFromRuntime(
-      runtime,
-      providerRegistry,
-    );
-
-    try {
-      voiceSessionBindingStore.getState().unbind(OPENAI_HISTORY_SESSION_ID);
-      await consumer.open();
-
-      const clearing = consumer.clear();
-      await deleteStarted.promise;
-      const acquiring = composed.hostLease.host.acquireDirectMediaConversation({
-        adapterId: 'happier.voice.openai/realtime-openai',
-        controlSessionId: composed.controlSessionId,
-        requestedTargetSessionAddress: null,
-      });
-
-      expect(ensureHistorySession).not.toHaveBeenCalled();
-      expect(voiceSessionBindingStore.getState().getByControlSessionId(
-        composed.controlSessionId,
-      )).toBeNull();
-
-      releaseDelete.resolve();
-      await expect(clearing).resolves.toEqual({ cleared: true });
-      await expect(acquiring).resolves.toEqual({
-        conversationSessionId: recreatedSessionId,
-      });
-      expect(ensureHistorySession).toHaveBeenCalledTimes(1);
-      expect(voiceSessionBindingStore.getState().getByControlSessionId(
-        composed.controlSessionId,
-      )?.conversationSessionId).toBe(recreatedSessionId);
-      expect(storage.getState().sessions[OPENAI_HISTORY_SESSION_ID])
-        .toBeUndefined();
-      expect(storage.getState().sessions[recreatedSessionId]).toBeDefined();
-    } finally {
-      releaseDelete.resolve();
-      const binding = voiceSessionBindingStore.getState().getByControlSessionId(
-        composed.controlSessionId,
-      );
-      if (binding) {
-        voiceSessionBindingStore.getState().unbind(binding.conversationSessionId);
-      }
       await composed.runtime.dispose();
       composed.hostLease.revoke();
       browser.restore();

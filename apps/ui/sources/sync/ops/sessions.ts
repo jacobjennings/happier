@@ -13,7 +13,7 @@ import { publishDisplayTitleToMetadata } from '@/sync/state/displayTitlePublish'
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import { createRpcCallError, isRpcMethodNotAvailableError, readRpcErrorCode as readSessionRpcErrorCode } from '../runtime/rpcErrors';
 import { assertRpcResponseWithSuccess } from '../runtime/assertRpcResponseWithSuccess';
-import { buildResumeHappySessionRpcParams, type ResumeHappySessionRpcParams } from '../domains/session/resume/resumeSessionPayload';
+import { buildResumeHappySessionRpcParams, ResumeSessionInputValidationError, type ResumeHappySessionRpcParams } from '../domains/session/resume/resumeSessionPayload';
 import { resolveTerminalSpawnOptions } from '../domains/settings/terminalSettings';
 import { readAccountSettingsForScope } from '../domains/state/accountSettingsPersistence';
 import { readSpawnSessionRpcTimeoutMsFromEnv } from '../domains/session/spawn/spawnSessionRpcTimeout';
@@ -69,6 +69,7 @@ import { RPC_ERROR_CODES, RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/
 import { normalizeSpawnSessionResult } from './_shared';
 import { isAccountSettingsScopeChangedDuringSpawnPreparationError } from '@/sync/engine/settings/accountSettingsSpawnPreparationError';
 import { isSocketIoAckTimeoutError, readRpcRequestDisposition } from '@happier-dev/sync-client';
+import { readRpcFailureCode } from './actions/rpcFailureCode';
 import { isMachineRpcTimeoutError, MACHINE_RPC_TIMEOUT_ERROR_CODE } from '@/sync/runtime/orchestration/serverScopedRpc/machineRpcTimeoutError';
 import { readMachineControlTargetForSession } from './sessionMachineTarget';
 import { stopSessionUsingCanonicalStrategy } from './sessionStopStrategy';
@@ -207,10 +208,13 @@ interface SessionRipgrepResponse {
 }
 
 // Response types for spawn session
-// Resume's in-process callers can retain the typed transport refusal without
+// Resume's in-process callers retain a typed launch or transport refusal without
 // changing the established spawn wire envelope or exposing private error prose.
 export type ResumeSessionResult = Exclude<SpawnSessionResult, { type: 'error' }>
-    | (Extract<SpawnSessionResult, { type: 'error' }> & Readonly<{ rpcErrorCode?: string }>);
+    | (Omit<Extract<SpawnSessionResult, { type: 'error' }>, 'errorCode'> & Readonly<{
+        errorCode: Extract<SpawnSessionResult, { type: 'error' }>['errorCode'] | 'plugin_disabled';
+        rpcErrorCode?: string;
+    }>);
 /** Local pending-input projection, not a daemon spawn acknowledgement. */
 export type PendingInputRuntimeEnsureResult = ResumeSessionResult | Readonly<{ type: 'pending' }>;
 
@@ -535,7 +539,11 @@ async function runResumeSession(
                 storage.getState().armSessionResumingFallback(sessionId);
             }
         }
-        return normalizedResult;
+        return normalizedResult.type === 'error'
+            && normalizedResult.errorDetail?.kind === 'launch_error'
+            && normalizedResult.errorDetail.code === 'plugin_disabled'
+            ? { ...normalizedResult, errorCode: 'plugin_disabled' }
+            : normalizedResult;
     } catch (error) {
         if (shouldPresentAsResuming && canProjectResumePresentation()) {
             storage.getState().clearSessionResuming(options.sessionId);
@@ -560,7 +568,15 @@ async function runResumeSession(
                     `The daemon may be stopped, still starting, or not connected to the server.`,
             };
         }
-        if (isSocketIoAckTimeoutError(error) || isMachineRpcTimeoutError(error)) {
+        if (error instanceof ResumeSessionInputValidationError) {
+            return {
+                type: 'error',
+                errorCode: SPAWN_SESSION_ERROR_CODES.INVALID_REQUEST,
+                errorMessage: error.message,
+            };
+        }
+        const rpcErrorCode = readRpcFailureCode(error);
+        if (rpcErrorCode !== RPC_ERROR_CODES.OUTCOME_UNKNOWN && (isSocketIoAckTimeoutError(error) || isMachineRpcTimeoutError(error))) {
             return {
                 type: 'error',
                 errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT,
@@ -571,7 +587,7 @@ async function runResumeSession(
             type: 'error',
             errorCode: SPAWN_SESSION_ERROR_CODES.UNEXPECTED,
             errorMessage: error instanceof Error ? error.message : 'Failed to resume session',
-            ...(readSessionRpcErrorCode(error) ? { rpcErrorCode: readSessionRpcErrorCode(error) } : {}),
+            ...(rpcErrorCode ? { rpcErrorCode } : {}),
         };
     }
 }
@@ -984,7 +1000,7 @@ function applySessionThinkingDecisionRecovery(
     storage.getState().clearSessionOptimisticThinking(sessionId);
     storage.getState().clearSessionThinkingGrace(sessionId);
     if (!session || session.thinking !== true) return;
-    storage.getState().applySessions([{ ...session, thinking: false, updatedAt: nowServerMs() }]);
+    storage.getState().applySessions([{ ...session, thinking: false, updatedAt: nowServerMs() }], 'projection');
 }
 
 export async function sessionAbort(sessionId: string, options?: Readonly<{ serverId?: string; signal?: AbortSignal }>): Promise<void> {
@@ -1040,7 +1056,7 @@ export async function sessionAbort(sessionId: string, options?: Readonly<{ serve
 export async function sessionRespondToPermission(
     sessionId: string,
     params: Omit<SessionPermissionRespondRpcParamsV1, 'answers'>,
-    options?: Readonly<{ serverId?: string; signal?: AbortSignal }>,
+    options?: Readonly<{ serverId?: string; signal?: AbortSignal; onIssued?: () => void }>,
 ): Promise<void> {
     if (params.decision !== 'abort') {
         await sendSessionPermissionResponse(sessionId, params, options);
@@ -1054,7 +1070,7 @@ export async function sessionRespondToPermission(
     try {
         await withActionAccountRequestSignal(account, options?.signal, async (signal) => {
             account.assertCurrent();
-            await sendSessionPermissionResponse(sessionId, params, { serverId, signal });
+            await sendSessionPermissionResponse(sessionId, params, { serverId, signal, onIssued: options?.onIssued });
             account.assertCurrent();
             await sessionAbort(sessionId, { serverId, signal });
         });
@@ -1105,7 +1121,7 @@ function assertSessionInteractionResponseApplied(result: unknown): void {
 async function sendSessionPermissionResponse(
     sessionId: string,
     params: Omit<SessionPermissionRespondRpcParamsV1, 'answers'>,
-    options?: Readonly<{ serverId?: string; signal?: AbortSignal }> | ScopedSessionPermissionResponseOptions,
+    options?: Readonly<{ serverId?: string; signal?: AbortSignal; onIssued?: () => void }> | ScopedSessionPermissionResponseOptions,
 ): Promise<void> {
     const exactScope = options && 'scope' in options ? options : null;
     const serverId = options && 'serverId' in options ? options.serverId : undefined;
@@ -1125,6 +1141,7 @@ async function sendSessionPermissionResponse(
         // The permission owner settles the admitted answer. Connection setup
         // stays bounded; the generic RPC cutoff cannot declare its effect failed.
         timeoutMs: null,
+        ...(options?.onIssued ? { onIssued: options.onIssued } : {}),
     };
     const result = exactScope
         ? await sessionRpcWithServerAccountScope<unknown, SessionPermissionRespondRpcParamsV1>({
@@ -1228,13 +1245,14 @@ export async function sessionAllowWithAnswers(
 export async function sessionRespondToUserAction(
     sessionId: string,
     params: SessionUserActionAnswerRpcParamsV1,
-    options?: Readonly<{ serverId?: string; signal?: AbortSignal }>,
+    options?: Readonly<{ serverId?: string; signal?: AbortSignal; onIssued?: () => void }>,
 ): Promise<unknown> {
     const result = await sessionRpcWithPreferredSessionScope<unknown, SessionUserActionAnswerRpcParamsV1>({
         sessionId,
         ...(options?.serverId !== undefined ? { serverId: options.serverId } : {}),
         method: RPC_METHODS.SESSION_USER_ACTION_ANSWER,
         ...(options?.signal ? { signal: options.signal } : {}),
+        ...(options?.onIssued ? { onIssued: options.onIssued } : {}),
         payload: 'disposition' in params ? params : { ...params, answeringClientCategory: readAnsweringClientCategory() },
     });
     assertSessionInteractionResponseApplied(result);
@@ -1551,7 +1569,7 @@ async function applyArchivedAtToLocalSession(capturedAddress: SessionAddress, ar
     const session = state.sessions[address.sessionId];
     if (!session || !areServerProfileIdentifiersEquivalent(address.serverId, getActiveServerSnapshot().serverId)
         || (session.serverId && !areServerProfileIdentifiersEquivalent(session.serverId, address.serverId))) return;
-    state.applySessions([{ ...session, archivedAt, updatedAt }]);
+    state.applySessions([{ ...session, archivedAt, updatedAt }], 'projection');
 }
 
 export async function sessionArchiveWithServerScope(

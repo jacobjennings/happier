@@ -195,8 +195,10 @@ describe('retained execution-run current work', () => {
         const idle = project(false);
         expect(idle.counts.live).toBe(1);
         expect(idle.sorted[0]?.runId).toBe('z-busy');
-        expect(idle.subagents[0]).toMatchObject({ status: 'running', isActive: false, capabilities: { canSend: true, canStop: true } });
-        expect(resolveSessionAgentActivityPresentation({ entry: idle.merged.entries[0]!, subagent: idle.subagents[0] }))
+        const idleSubagent = idle.subagents.find((subagent) => subagent.runRef?.runId === 'a-idle');
+        const idleEntry = idle.merged.entries.find((entry) => entry.runId === 'a-idle');
+        expect(idleSubagent).toMatchObject({ status: 'running', isActive: false, capabilities: { canSend: true, canStop: true } });
+        expect(resolveSessionAgentActivityPresentation({ entry: idleEntry!, subagent: idleSubagent }))
             .toMatchObject({ phase: 'idle', startedAtMs: null, atMs: null, statusShownByActivity: false });
         expect(project(true).counts.live).toBe(2);
         expect(project(false).counts.live).toBe(1);

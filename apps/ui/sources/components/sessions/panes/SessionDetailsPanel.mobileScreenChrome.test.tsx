@@ -136,8 +136,6 @@ describe('SessionDetailsPanel (mobile screen chrome)', () => {
             throw new Error('Expected close button to render');
         }
         expect(closeButton.props.accessibilityLabel).toBe('common.back');
-        // The 34px shared IconButton plus 8px hit slop on each edge keeps a 50px touch target.
-        expect(closeButton.props.hitSlop).toBe(8);
         expect(getStyleValue(closeButton, 'borderWidth')).toBeUndefined();
         expect(getStyleValue(closeButton, 'backgroundColor')).toBeUndefined();
         expect(findTestInstanceByTypeWithProps(closeButton, 'Icon', {
@@ -168,8 +166,19 @@ describe('SessionDetailsPanel (mobile screen chrome)', () => {
         );
 
         expect(screen.findByTestId('session-details-close')).toBeNull();
-        expect(screen.findByTestId('session-details-focus-toggle')).toBeNull();
         expect(screen.findByTestId('session-details-open-browser')).not.toBeNull();
+    });
+
+    it.each([
+        [true, 'offers'],
+        [false, 'hides'],
+    ])('%s: %s the right-pane toggle in a pane presentation', async (showHeaderActions) => {
+        const { SessionDetailsPanel } = await import('./SessionDetailsPanel');
+        const screen = await renderScreen(
+            <SessionDetailsPanel sessionId="s1" scopeId="session:s1" showHeaderActions={showHeaderActions} />,
+        );
+
+        expect(screen.findByTestId('session-details-right-pane-toggle') !== null).toBe(showHeaderActions);
     });
 
     it('keeps the browser opener discoverable on native screen presentations', async () => {

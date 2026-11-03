@@ -1,11 +1,18 @@
 import {
     createPlainSessionOwnerMetadataEnvelopeV1,
     createSessionOwnerMetadataV1,
+    openSessionOwnerDisplayEnvelopeV1,
+    openSessionSharedDisplayEnvelopeV1,
     projectSessionSharedMetadataV1,
+    SessionDisplayProjectionV1Schema,
 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import tweetnacl from 'tweetnacl';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
+import { decodeBase64 } from '@/encryption/base64';
+import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 import type {
     ServerAccountRequestAuthority,
 } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
@@ -23,11 +30,12 @@ function encodeBytes(bytes: Uint8Array): string {
 }
 
 function createDataKeyCredentials(token = 'token'): AuthCredentials {
+    const contentKeyPair = tweetnacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(12));
     return {
         token,
         encryption: {
-            publicKey: encodeBytes(new Uint8Array(32).fill(11)),
-            machineKey: encodeBytes(new Uint8Array(32).fill(12)),
+            publicKey: encodeBytes(contentKeyPair.publicKey),
+            machineKey: encodeBytes(contentKeyPair.secretKey),
         },
     };
 }
@@ -190,6 +198,13 @@ describe('createHostedSystemSessionEnsurer', () => {
                 ownerMetadata: createPlainSessionOwnerMetadataEnvelopeV1(
                     createdOwner.ownerMetadata,
                 ),
+                displayProjectionV1: {
+                    v: 1,
+                    sourceMetadataVersion: 0,
+                    metadataLayoutVersion: 1,
+                    shared: { t: 'plain', v: { v: 1, audience: 'shared', purpose: 'session_shared_display', display: { v: 1 } } },
+                    owner: { t: 'plain', v: { v: 1, audience: 'owner', purpose: 'session_owner_display', display: { v: 1, hiddenSystemSession: true } } },
+                },
                 agentState: null,
                 dataEncryptionKey: null,
                 encryptionMode: 'plain',
@@ -233,9 +248,11 @@ describe('createHostedSystemSessionEnsurer', () => {
     it('uses a per-session data key for data-key credentials and hydrates the canonical race winner', async () => {
         const encryption = createEncryptionFixture();
         const credentials = createDataKeyCredentials();
-        const dataKey = new Uint8Array(32).map((_, index) => index + 1);
         const request = vi.fn(async (_path: string, init?: RequestInit) => {
             const body = JSON.parse(String(init?.body));
+            const dataKey = encryption.encryptEncryptionKey.mock.calls[0]?.[0];
+            expect(dataKey).toBeInstanceOf(Uint8Array);
+            if (!dataKey) throw new Error('Expected canonical resource data key');
             expect(body.encryptionMode).toBe('e2ee');
             expect(body.metadataLayoutVersion).toBe(1);
             expect(body.sharedMetadata).toEqual({
@@ -271,10 +288,7 @@ describe('createHostedSystemSessionEnsurer', () => {
         }));
         const ensurer = createHostedSystemSessionEnsurer({
             fetchAccountEncryptionCurrentness: vi.fn(async () => ({ mode: 'e2ee' as const })),
-            randomBytes: vi.fn((length: number) =>
-                length === dataKey.length
-                    ? dataKey
-                    : new Uint8Array(length).fill(8)),
+            randomBytes: vi.fn((length: number) => new Uint8Array(length).fill(8)),
             request,
             hydrate,
             isScopeCurrent: vi.fn(() => true),
@@ -292,28 +306,55 @@ describe('createHostedSystemSessionEnsurer', () => {
             },
         })).resolves.toEqual({ sessionId: 'history-race-winner' });
 
+        const dataKey = encryption.encryptEncryptionKey.mock.calls[0]?.[0];
+        expect(dataKey).toBeInstanceOf(Uint8Array);
         expect(encryption.openEncryption).toHaveBeenCalledWith(dataKey);
-        expect(encryption.encryptEncryptionKey).toHaveBeenCalledWith(dataKey);
         expect(hydrate).toHaveBeenCalledWith(
             'history-race-winner',
             ACCOUNT_A_AUTHORITY,
         );
     });
 
-    it('preserves legacy e2ee account encryption without inventing a session data key', async () => {
-        const encryption = createEncryptionFixture();
+    it.each(['legacy', 'dataKey'] as const)('creates transferable fresh display envelopes for restored %s credentials without a Session ID', async (credentialType) => {
+        const credentials = credentialType === 'legacy' ? createLegacyCredentials() : createDataKeyCredentials();
+        const encryption = await createEncryptionFromAuthCredentials(credentials);
+        const restoredEncryption = await createEncryptionFromAuthCredentials(credentials);
         const request = vi.fn(async (_path: string, init?: RequestInit) => {
             const body = JSON.parse(String(init?.body));
-            expect(body).toMatchObject({
-                encryptionMode: 'e2ee',
-                dataEncryptionKey: null,
-            });
+            expect(body.encryptionMode).toBe('e2ee');
+            expect(body.dataEncryptionKey).toEqual(expect.any(String));
+            const openedDataKey = await restoredEncryption.decryptEncryptionKey(
+                body.dataEncryptionKey,
+            );
+            expect(openedDataKey).toBeInstanceOf(Uint8Array);
+            expect(openedDataKey).toHaveLength(32);
+            if (!openedDataKey) throw new Error('Expected the created Session content key');
+            const display = SessionDisplayProjectionV1Schema.parse(body.displayProjectionV1);
+            expect(display).toMatchObject({ sourceMetadataVersion: 0, metadataLayoutVersion: 1,
+                shared: { t: 'encrypted' }, owner: { t: 'encrypted' } });
+            const sessionEncryptor = await restoredEncryption.openEncryption(openedDataKey);
+            expect(await openSessionSharedDisplayEnvelopeV1({
+                sessionMode: 'e2ee', envelope: display.shared,
+                decryptPayload: async (ciphertext) => (await sessionEncryptor
+                    .decrypt([decodeBase64(ciphertext, 'base64')]))[0],
+            })).toEqual({ ok: true, display: { v: 1, summaryText: 'Shared title' } });
+            expect(openSessionOwnerDisplayEnvelopeV1({
+                accountMode: 'e2ee', envelope: display.owner,
+                material: resolveAccountScopedCryptoMaterialFromCredentials(credentials),
+            })).toEqual({ ok: true, display: { v: 1, path: '/private/project', host: 'owner-host',
+                homeDir: '/private/home', name: 'Private name', hiddenSystemSession: true } });
+            expect(openSessionOwnerDisplayEnvelopeV1({
+                accountMode: 'e2ee', envelope: display.owner,
+                material: { type: 'legacy', secret: openedDataKey },
+            })).toMatchObject({ ok: false });
+            expect(body).not.toHaveProperty('sessionId');
+            expect(body).not.toHaveProperty('id');
             return sessionResponse({
                 id: 'history-legacy-e2ee',
                 metadata: body.sharedMetadata.ciphertext,
                 ownerMetadata: body.ownerMetadata,
                 encryptionMode: 'e2ee',
-                dataEncryptionKey: null,
+                dataEncryptionKey: body.dataEncryptionKey,
             });
         });
         const ensurer = createHostedSystemSessionEnsurer({
@@ -329,18 +370,42 @@ describe('createHostedSystemSessionEnsurer', () => {
 
         await ensurer.ensure({
             scopeKey: 'server-a/account-a',
-            credentials: createLegacyCredentials(),
+            credentials,
             encryption,
             serverBasis: SERVER_BASIS,
             authority: ACCOUNT_A_AUTHORITY,
             tag: 'system:voice-transcript-history:v1',
             metadata: {
                 systemSessionV1: { v: 1, key: 'voice_transcript_history', hidden: true },
+                path: '/private/project', host: 'owner-host', homeDir: '/private/home', name: 'Private name',
+                summary: { text: 'Shared title', updatedAt: 1 },
             },
         });
 
-        expect(encryption.openEncryption).toHaveBeenCalledWith(null);
-        expect(encryption.encryptEncryptionKey).not.toHaveBeenCalled();
+    });
+
+    it('does not create an E2EE hosted session when the owner envelope cannot be sealed', async () => {
+        const encryption = {
+            ...createEncryptionFixture(),
+            encryptEncryptionKey: vi.fn(async () => null),
+        };
+        const request = vi.fn();
+
+        await expect(createSessionCreateOrLoad({
+            credentials: createLegacyCredentials(),
+            accountMode: 'e2ee',
+            encryption,
+            tag: 'system:voice-transcript-history:v1',
+            metadata: {
+                systemSessionV1: { v: 1, key: 'voice_transcript_history', hidden: true },
+            },
+            randomBytes: (length: number) => new Uint8Array(length).fill(9),
+            request,
+            assertCurrent: () => undefined,
+        })).rejects.toThrow('Account encryption material is required');
+
+        expect(encryption.openEncryption).not.toHaveBeenCalled();
+        expect(request).not.toHaveBeenCalled();
     });
 
     it('loads a current layout-one session whose fixed transcript mode differs from Account mode', async () => {

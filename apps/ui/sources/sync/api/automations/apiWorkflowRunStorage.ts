@@ -64,6 +64,7 @@ export function createWorkflowRunAccountStorage(params: Readonly<{
                     body: JSON.stringify(operation),
                     ...(options?.signal ? { signal: options.signal } : {}),
                 }, { includeAuth: false,
+                    recoveryRead: read || UNSHARED_OBSERVATIONS.has(operationName) ? 'unbounded' : false,
                     ...(operation.operation === 'delete' && options?.onTransportIssued ? { onIssued: options.onTransportIssued } : {}),
                 });
                 const result = await readAutomationJsonOrThrow(response);

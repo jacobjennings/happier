@@ -60,6 +60,12 @@ import type { AgentExecutionRunEvent } from './executionRun.js';
 import type { AgentAcpToolNameInference } from './acpTypes.js';
 import type { JsonValue } from '../identity.js';
 
+export type {
+  AgentSessionCompactionCapability,
+  AgentSessionCompactionIdleCapability,
+  PluginAgentSessionCompactionCapabilityV2,
+} from './session.js';
+
 /** @realm any */
 export { buildAgentAccountUsageRecordId } from './accountUsage.js';
 /**
@@ -943,3 +949,5 @@ export type RuntimeOutboundTranscriptToolNormalizationV1 = Readonly<{
 /** Canonical terminal paste framing; Agent runtimes must not copy escape sequences. */
 export const TERMINAL_BRACKETED_PASTE_START: string = canonicalTerminalBracketedPasteStart;
 export const TERMINAL_BRACKETED_PASTE_END: string = canonicalTerminalBracketedPasteEnd;
+
+export { OPENAI_GPT56_PROMPT_CACHE_QUALIFICATION, PROMPT_CACHE_DURATIONS } from '@happier-dev/protocol/usage/coach/coachVendorFacts';

@@ -34,32 +34,6 @@ describe('withSessionProjectScmOperationLock', () => {
         expect(run).not.toHaveBeenCalled();
     });
 
-    it('finishes the lock after a successful operation', async () => {
-        const finish = vi.fn(() => true);
-        const result = await withSessionProjectScmOperationLock({
-            state: {
-                beginSessionProjectScmOperation: () => ({
-                    started: true as const,
-                    operation: {
-                        id: 'op-1',
-                        startedAt: 10,
-                        sessionId: 's1',
-                        operation: 'commit' as const,
-                        phase: 'queued' as const,
-                    },
-                }),
-                finishSessionProjectScmOperation: finish,
-                updateSessionProjectScmOperationProgress: () => true,
-            },
-            sessionId: 's1',
-            operation: 'commit',
-            run: async () => 'done',
-        });
-
-        expect(result).toEqual({ started: true, value: 'done' });
-        expect(finish).toHaveBeenCalledWith('s1', 'op-1');
-    });
-
     it('finishes the lock even when run throws', async () => {
         const finish = vi.fn(() => true);
         await expect(

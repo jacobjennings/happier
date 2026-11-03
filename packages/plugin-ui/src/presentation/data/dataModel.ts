@@ -20,14 +20,16 @@ export type HappierDataColumn = Readonly<{
 }>;
 
 /**
- * A number in the reader's locale with grouping ("1,284"); strings and booleans as they are. Fifteen
- * significant digits is what a double holds exactly, so binary noise ("0.30000000000000004") reads as the
- * value it stands for ("0.3") while every meaningful digit the source sent stays.
+ * A number in the reader's locale with grouping ("1,284"); strings and booleans as they are. Integers
+ * retain every digit. Fractional readings keep the existing fifteen-significant-digit suppression of
+ * binary accumulation noise ("0.30000000000000004" reads as "0.3").
  */
 export function formatHappierDataValue(value: HappierDataValue, locale?: string): string {
   if (typeof value !== 'number') return String(value);
   try {
-    return new Intl.NumberFormat(locale === undefined ? undefined : [locale], { maximumSignificantDigits: 15 }).format(value);
+    return new Intl.NumberFormat(locale === undefined ? undefined : [locale], Number.isInteger(value)
+      ? { maximumFractionDigits: 0 }
+      : { maximumSignificantDigits: 15 }).format(value);
   } catch {
     return String(value);
   }
@@ -237,12 +239,13 @@ export function resolveHappierSeriesGeometry(series: readonly HappierSeries[], o
 /**
  * How exact values read a numeric coordinate. `formatCoordinate` is the caller's own reading of its x
  * (a time bucket in its calendar and unit, read as a date): a chart's coordinates are the caller's
- * encoding, so only the caller can say them in words.
+ * encoding, so only the caller can say them in words. `formatValue` is the caller's own reading of a value
+ * (its unit and display precision); without one a value reads with every meaningful digit.
  */
-export type HappierSeriesReadingOptions = Readonly<{ formatCoordinate?: (x: number) => string; locale?: string }>;
+export type HappierSeriesReadingOptions = Readonly<{ formatCoordinate?: (x: number) => string; formatValue?: (value: number) => string; locale?: string }>;
 
 /**
- * Never round the accessible numerical fact, even when the caller abbreviates visible ink: a label that
+ * Unless the caller gives its own `formatValue`, never round the accessible numerical fact, even when the caller abbreviates visible ink: a label that
  * shortens its coordinate ("Tue", "Noon") is followed by the exact one, in the caller's reading when it
  * gives one, so a timestamp reads as a date and never as an epoch number.
  */
@@ -254,7 +257,7 @@ export function describeHappierSeriesCoordinate(bucket: HappierSeriesBucket, opt
 }
 
 export function describeHappierSeriesBucket(bucket: HappierSeriesBucket, unknownLabel: string, options: HappierSeriesReadingOptions = {}): string {
-  return `${describeHappierSeriesCoordinate(bucket, options)}${bucket.annotation ? ` · ${bucket.annotation}` : ''}: ${bucket.values.map((entry) => `${entry.label} ${entry.value === null ? unknownLabel : formatHappierDataValue(entry.value, options.locale)}`).join(', ')}`;
+  return `${describeHappierSeriesCoordinate(bucket, options)}${bucket.annotation ? ` · ${bucket.annotation}` : ''}: ${bucket.values.map((entry) => `${entry.label} ${entry.value === null ? unknownLabel : options.formatValue ? options.formatValue(entry.value) : formatHappierDataValue(entry.value, options.locale)}`).join(', ')}`;
 }
 
 /**

@@ -666,7 +666,6 @@ export function regularFilesMayAlias(params: {
 
 export async function bundlePluginDaemonRuntime(
   projectRootInput: string,
-  deps: Readonly<{ build?: typeof EsbuildBuild }> = {},
 ): Promise<void> {
   const projectRoot = await realpath(resolve(projectRootInput));
   const runtimeSource = await evaluatePluginAuthorRuntimeStagingSource({
@@ -681,8 +680,6 @@ export async function bundlePluginDaemonRuntime(
         stagedRootPath: projectRoot,
         daemonEntrypoint,
         sessionRunnerFactories: runtimeSource.sessionRunnerFactories,
-      }, {
-        ...(deps.build ? { build: deps.build } : {}),
       })
     : { outputRelativePaths: [] as readonly string[] };
   const generatedManifestPath = join(projectRoot, GENERATED_PLUGIN_MANIFEST_RELATIVE_PATH);

@@ -38,6 +38,17 @@ describe('terminalConnectWebBootstrap', () => {
         expect(history.replaceState).toHaveBeenCalledWith(null, '', '/terminal/connect');
     });
 
+    it('takes custody of a descriptor (v4) terminal-connect hash the same way', () => {
+        const sessionStorage = createMemorySessionStorage();
+        const history = { replaceState: vi.fn() } as unknown as History;
+        const url = new URL('https://web.happier.dev/terminal/connect#v4=eyJ2Ijo0fQ');
+
+        bootstrapTerminalConnectWebHash({ url, sessionStorage, history });
+
+        expect(sessionStorage.getItem(TERMINAL_CONNECT_WEB_BOOTSTRAP_STORAGE_KEY)).toBe(url.hash);
+        expect(history.replaceState).toHaveBeenCalledWith(null, '', '/terminal/connect');
+    });
+
     it('keeps the hash visible when session storage cannot take custody', () => {
         const sessionStorage = createMemorySessionStorage();
         vi.spyOn(sessionStorage, 'setItem').mockImplementation(() => { throw new Error('storage denied'); });

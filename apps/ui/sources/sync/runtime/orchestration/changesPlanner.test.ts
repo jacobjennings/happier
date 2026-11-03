@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
     ChangeEntrySchema,
     ChangeKindSchema,
+    buildConnectedServicesAccountChangeV1,
     PROVIDER_ACCOUNT_USAGE_ACCOUNT_CHANGE_ENTITY_ID_V1,
     TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1,
 } from '@happier-dev/protocol/changes';
@@ -176,6 +177,55 @@ function buildChange(params: {
 }
 
 describe('planSyncActionsFromChanges', () => {
+    it('publishes private trigger demand only for definition, source or access changes', () => {
+        const unrelated = [
+            buildChange({ cursor: 1, kind: 'machine', entityId: 'machine-one' }),
+            buildChange({ cursor: 2, kind: 'account', entityId: 'workflow-run:run-one' }),
+            buildChange({ cursor: 3, kind: 'account', entityId: PROVIDER_ACCOUNT_USAGE_ACCOUNT_CHANGE_ENTITY_ID_V1 }),
+            buildChange({ cursor: 4, kind: 'kv', entityId: 'self', hint: { keys: ['todo:one'] } }),
+            buildChange({ cursor: 5, kind: 'pluginDomain', entityId: 'pluginDomain/example.tasks/data-kv',
+                hint: { pluginDomain: 'dataKv', pluginId: 'example.tasks', keys: ['status'] } }),
+        ];
+        expect(changePlanner.plannedChangesAffectWorkflowTriggers(planSyncActionsFromChanges(unrelated))).toBe(false);
+        for (const changed of [
+            buildChange({ cursor: 6, kind: 'automation', entityId: 'automation-one' }),
+            buildChange({ cursor: 7, kind: 'artifact', entityId: 'workflow-one' }),
+            buildChange({ cursor: 8, kind: 'account', entityId: 'self' }),
+            buildChange({ cursor: 9, kind: 'machineRecipientAccess', entityId: 'machine-one' }),
+            buildChange({ cursor: 10, kind: 'pluginDomain', entityId: 'pluginDomain/example.tasks/availability',
+                hint: { pluginDomain: 'availability', pluginId: 'example.tasks' } }),
+        ]) {
+            expect(changePlanner.plannedChangesAffectWorkflowTriggers(planSyncActionsFromChanges([...unrelated, changed]))).toBe(true);
+        }
+        expect(changePlanner.accountChangeKindsAffectWorkflowTriggers(['machine', 'session', 'kv'])).toBe(false);
+        for (const kinds of [undefined, [], ['account'], ['pluginDomain'], ['future-kind']]) {
+            expect(changePlanner.accountChangeKindsAffectWorkflowTriggers(kinds)).toBe(true);
+        }
+    });
+
+    it('refreshes connected-service currentness without waking encrypted Settings and retains the next settings-only fast path', () => {
+        const serviceChanges = [
+            buildConnectedServicesAccountChangeV1({ pluginId: 'acme.accounts', localId: 'service-a' }),
+            buildConnectedServicesAccountChangeV1({ pluginId: 'acme.accounts', localId: 'service-b' }),
+            buildConnectedServicesAccountChangeV1(),
+            { kind: 'account' as const, entityId: 'self', hint: { connectedServices: true } },
+        ];
+        for (const [index, change] of serviceChanges.entries()) {
+            const planned = planSyncActionsFromChanges([buildChange({ cursor: index + 1, ...change })]);
+            expect(planned.invalidate.savedSecretResources, change.entityId).toBe(true);
+            expect(planned.invalidate.profile, change.entityId).toBe(true);
+            expect(planned.invalidate.settings, change.entityId).toBe(change.entityId === 'self');
+            expect(plannedChangesAffectSessionListQuery(planned), change.entityId).toBe(true);
+            expect(plannedChangesAffectUsageQuery(planned), change.entityId).toBe(true);
+        }
+        const settings = planSyncActionsFromChanges([buildChange({
+            cursor: 5, kind: 'account', entityId: 'self', hint: { settingsVersion: 8 },
+        })]);
+        expect(settings.invalidate.settings).toBe(true);
+        expect(settings.invalidate.savedSecretResources).toBe(false);
+        expect(plannedChangesAffectSessionListQuery(settings)).toBe(false);
+    });
+
     it('routes private Profile rows and controls only to their demanded catalog wake', () => {
         for (const entityId of [buildProfilePhysicalKey('profile-a'), PROFILE_REFERENCE_GUARD_ACCOUNT_KV_KEY, PROFILE_TRANSFER_ACCOUNT_KV_KEY]) {
             const planned = planSyncActionsFromChanges([buildChange({ cursor: 1, kind: 'account', entityId, hint: { profiles: true } })]);
@@ -246,6 +296,18 @@ describe('planSyncActionsFromChanges', () => {
             buildChange({ cursor: 3, kind: 'account', entityId: 'self', hint: { settingsVersion: 8 } }),
             buildChange({ cursor: 4, kind: 'session', entityId: 'session-a' }),
         ]) expect(plannedChangesAffectUsageQuery(planSyncActionsFromChanges([machine, change]))).toBe(true);
+    });
+
+    it('routes recipient-access Machine changes through the Machine projection owner', () => {
+        const planned = planSyncActionsFromChanges([
+            buildChange({ cursor: 1, kind: 'machineRecipientAccess', entityId: 'machine-a' }),
+        ]);
+
+        expect(planned.invalidate.machines).toBe(true);
+        expect(planned.unsupportedChanges).toEqual([]);
+        expect(classifyChangeForCheckpoint(planned.changes[0]!, {
+            isSessionMessagesLoaded: () => false,
+        })).toMatchObject({ plannerOwner: 'machines', snapshotDomain: 'machines' });
     });
 
     it('ignores unrelated domain pages without suppressing a material Usage change on the same page', () => {

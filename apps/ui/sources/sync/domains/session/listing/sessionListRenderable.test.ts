@@ -618,6 +618,7 @@ describe('buildSessionListRenderableFromSession', () => {
         expect(renderable.metadata).toEqual({
             name: undefined,
             summaryText: 'Shared title',
+            sessionWorkspaceLocationV1: null,
             path: '',
             homeDir: null,
             host: null,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveSessionWorkStatePrimaryItemId } from './sessionWorkStatePrimary.js';
+import { projectSessionWorkDisplayV1, resolveSessionWorkStatePrimaryItemId, SessionWorkDisplayV1Schema } from './sessionWorkStatePrimary.js';
 import type { SessionWorkStateWriteItemV1 } from './sessionWorkStateV1.js';
 
 function item(partial: Partial<SessionWorkStateWriteItemV1> & Readonly<{ id: string; kind: string; status: string }>): SessionWorkStateWriteItemV1 {
@@ -11,6 +11,36 @@ function item(partial: Partial<SessionWorkStateWriteItemV1> & Readonly<{ id: str
         ...partial,
     } as SessionWorkStateWriteItemV1;
 }
+
+describe('projectSessionWorkDisplayV1', () => {
+    it('retains the stored primary and active-goal fact without work history or private item payloads', () => {
+        const snapshot = {
+            primaryItemId: 'blocked',
+            items: [
+                { id: 'goal', kind: 'goal' as const, status: 'active' as const, title: 'Goal' },
+                { id: 'blocked', kind: 'task' as const, status: 'blocked' as const, title: 'Current work',
+                    statusReason: 'usageLimited' as const, summary: 'Private summary', providerData: { secret: 'private' } },
+                { id: 'history', kind: 'task' as const, status: 'complete' as const, title: 'Private completed history' },
+            ],
+        };
+        const display = projectSessionWorkDisplayV1(snapshot);
+        expect(display).toEqual({ v: 1, primaryItem: { id: 'blocked', kind: 'task', status: 'blocked',
+            title: 'Current work', statusReason: 'usageLimited' }, hasActiveGoal: true });
+        expect(SessionWorkDisplayV1Schema.parse(display)).toEqual(display);
+        expect(JSON.stringify(display)).not.toContain('Private');
+        expect(SessionWorkDisplayV1Schema.safeParse({ ...display, items: snapshot.items }).success).toBe(false);
+        expect(projectSessionWorkDisplayV1(display)).toBe(display);
+    });
+
+    it('uses the canonical fallback only for an absent primary and distinguishes unavailable from empty work', () => {
+        expect(projectSessionWorkDisplayV1(null)).toBeNull();
+        expect(projectSessionWorkDisplayV1({ items: [] })).toEqual({ v: 1, primaryItem: null, hasActiveGoal: false });
+        expect(projectSessionWorkDisplayV1({ primaryItemId: 'missing', items: [
+            { id: 'goal', kind: 'goal', status: 'active', title: 'Goal' },
+            { id: 'task', kind: 'task', status: 'active', title: 'Task' },
+        ] })?.primaryItem?.id).toBe('task');
+    });
+});
 
 describe('resolveSessionWorkStatePrimaryItemId', () => {
     it('returns null for an empty set', () => {

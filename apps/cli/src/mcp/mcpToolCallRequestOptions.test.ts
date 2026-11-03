@@ -1,16 +1,14 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { reloadConfiguration } from '@/configuration';
+import { DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS, reloadConfiguration } from '@/configuration';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 
 import {
-  DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS,
   callMcpToolWithResolvedTimeout,
-  resolveMcpToolCallRequestOptions,
   resolveMcpToolCallRequestTimeoutMs,
 } from './mcpToolCallRequestOptions';
 
-describe('resolveMcpToolCallRequestOptions', () => {
+describe('resolveMcpToolCallRequestTimeoutMs', () => {
   const envKeys = [
     'HAPPIER_MCP_TOOL_CALL_TIMEOUT_MS',
     'HAPPIER_MCP_EXECUTION_RUN_WAIT_TIMEOUT_GRACE_MS',
@@ -27,9 +25,7 @@ describe('resolveMcpToolCallRequestOptions', () => {
     delete process.env.HAPPIER_MCP_EXECUTION_RUN_WAIT_TIMEOUT_GRACE_MS;
     reloadConfiguration();
 
-    expect(resolveMcpToolCallRequestOptions({ toolName: 'get_status', args: {} })).toEqual({
-      timeout: DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS,
-    });
+    expect(resolveMcpToolCallRequestTimeoutMs({ toolName: 'get_status', args: {} })).toBe(DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS);
     expect(DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS).toBeGreaterThan(60_000);
   });
 
@@ -43,22 +39,12 @@ describe('resolveMcpToolCallRequestOptions', () => {
     })).toBe(240_000);
   });
 
-  it('aligns execution_run_wait timeout with timeoutSeconds plus configured grace', async () => {
+  it.each(['execution_run_wait', 'mcp__happier__execution_run_wait'])('aligns %s timeout with timeoutSeconds plus configured grace', async (toolName) => {
     process.env.HAPPIER_MCP_EXECUTION_RUN_WAIT_TIMEOUT_GRACE_MS = '45000';
     reloadConfiguration();
 
     expect(resolveMcpToolCallRequestTimeoutMs({
-      toolName: 'execution_run_wait',
-      args: { runId: 'run_123', timeoutSeconds: 120 },
-    })).toBe(165_000);
-  });
-
-  it('also recognizes provider-prefixed execution_run_wait tool names', async () => {
-    process.env.HAPPIER_MCP_EXECUTION_RUN_WAIT_TIMEOUT_GRACE_MS = '45000';
-    reloadConfiguration();
-
-    expect(resolveMcpToolCallRequestTimeoutMs({
-      toolName: 'mcp__happier__execution_run_wait',
+      toolName,
       args: { runId: 'run_123', timeoutSeconds: 120 },
     })).toBe(165_000);
   });
@@ -77,26 +63,6 @@ describe('callMcpToolWithResolvedTimeout', () => {
   afterEach(() => {
     envScope.restore();
     envScope = createEnvKeyScope(envKeys);
-  });
-
-  it('passes SDK request options when calling the MCP client', async () => {
-    process.env.HAPPIER_MCP_EXECUTION_RUN_WAIT_TIMEOUT_GRACE_MS = '45000';
-    reloadConfiguration();
-
-    const callTool = vi.fn().mockResolvedValue({ content: [] });
-    const client = { callTool } as unknown as Pick<Client, 'callTool'>;
-
-    await callMcpToolWithResolvedTimeout({
-      client,
-      toolName: 'execution_run_wait',
-      args: { runId: 'run_123', timeoutSeconds: 120 },
-    });
-
-    expect(callTool).toHaveBeenCalledWith(
-      { name: 'execution_run_wait', arguments: { runId: 'run_123', timeoutSeconds: 120 } },
-      undefined,
-      { timeout: 165_000 },
-    );
   });
 
   it('carries execution_run_start start-and-wait timeout through the MCP client while keeping immediate starts at the default', async () => {

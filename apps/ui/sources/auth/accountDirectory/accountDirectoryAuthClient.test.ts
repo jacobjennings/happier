@@ -1,105 +1,143 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installTokenStorageTestIsolation, installTokenStorageWebPlatformMocks } from '@/auth/storage/tokenStorage.testHelpers';
+import { installLocalStorageMock, installWebLockManagerMock, type LocalStorageMockHandle } from '@/auth/storage/tokenStorage.web.testHelpers';
+import {
+    ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY,
+    PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY,
+    TokenStorage,
+} from '@/auth/storage/tokenStorage';
+import { createDeferred } from '@/dev/testkit';
 import { buildServerFeaturesResponse } from '@/hooks/server/serverFeaturesTestUtils';
+import { adoptHomeProfile, setActiveServerId } from '@/sync/domains/server/serverProfiles';
+import { createDirectoryHttpFixture } from '@/sync/ops/accountDirectory/accountDirectoryTestFixtures';
+import { checkAccountServiceEndpoint } from '@/sync/ops/accountDirectory/selectAccountServiceEndpoint';
 
-const pendingSet = vi.hoisted(() => vi.fn(async (_value: unknown) => true));
-const pendingClear = vi.hoisted(() => vi.fn(async () => true));
-const directoryCredentialsSet = vi.hoisted(() => vi.fn(async () => true));
-const getCredentialsMock = vi.hoisted(() => vi.fn(async () => null));
-const activeServerSnapshotMock = vi.hoisted(() => vi.fn(() => ({
-    serverId: 'focused-home',
-    serverUrl: 'https://focused.example.test',
-    generation: 1,
-})));
-const authGetTokenAtEndpointMock = vi.hoisted(() => vi.fn(async () => ({ token: 'restricted-directory-token' })));
-const probeServerFeaturesAtUrlMock = vi.hoisted(() => vi.fn());
-const fetchHomeAuthEntryMock = vi.hoisted(() => vi.fn());
-
-vi.mock('@/auth/entry/authEntryClient', () => ({ fetchHomeAuthEntry: fetchHomeAuthEntryMock }));
-
-vi.mock('@/auth/flows/getToken', () => ({
-    authGetTokenAtEndpoint: authGetTokenAtEndpointMock,
+// The network and browser storage are the boundaries. Feature probing and decoding, the auth-entry
+// client, the key challenge, the OAuth provider and TokenStorage custody all run their real owners.
+installTokenStorageWebPlatformMocks();
+installTokenStorageTestIsolation('account_directory_auth_client');
+type Route = (endpoint: string, path: string, init?: RequestInit) => Response | Promise<Response>;
+const network = vi.hoisted(() => ({
+    calls: [] as Array<{ endpoint: string; path: string; init?: RequestInit }>,
+    routes: new Map<string, Route>(),
+    fallback: null as Route | null,
+}));
+function routeRequest(endpoint: string, path: string, init?: RequestInit): Promise<Response> {
+    network.calls.push({ endpoint, path, init });
+    const route = network.routes.get(path.split('?')[0]!) ?? network.fallback;
+    if (!route) throw new Error(`Unexpected request ${endpoint}${path}`);
+    return Promise.resolve(route(endpoint, path, init));
+}
+vi.mock('@/utils/system/runtimeFetch', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/system/runtimeFetch')>(),
+    runtimeFetch: (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        return routeRequest(url.origin, `${url.pathname}${url.search}`, init);
+    },
 }));
 
-vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
-    probeServerFeaturesAtUrl: probeServerFeaturesAtUrlMock,
-}));
+import { accountDirectoryAuthClient, createVerifiedAccountServiceAuthority } from './accountDirectoryAuthClient';
 
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: activeServerSnapshotMock,
-}));
-
-vi.mock('@/auth/storage/tokenStorage', async () => {
-    const actual = await vi.importActual<typeof import('@/auth/storage/tokenStorage')>('@/auth/storage/tokenStorage');
-    return {
-        ...actual,
-        TokenStorage: {
-            ...actual.TokenStorage,
-            getCredentials: getCredentialsMock,
-            accountDirectoryAuthCredentials: {
-                ...actual.TokenStorage.accountDirectoryAuthCredentials,
-                set: directoryCredentialsSet,
-            },
-            setPendingAccountDirectoryAuth: pendingSet,
-            clearPendingAccountDirectoryAuth: pendingClear,
-        },
-    };
+const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
+    status, headers: { 'Content-Type': 'application/json' },
 });
 
-import { accountDirectoryAuthClient as loadedAccountDirectoryAuthClient } from './accountDirectoryAuthClient';
-
-function supportedFeatures(serverIdentityId = 'directory-1') {
+/** The `/v1/features` payload an Account Service answers with. */
+function accountServiceFeatures(serverIdentityId = 'srv_directory_1') {
     const features = buildServerFeaturesResponse();
     return {
-        status: 'ready' as const,
-        serverIdentityId,
-        features: {
-            ...features,
-            capabilities: {
-                ...features.capabilities,
-                accountDirectory: {
-                    version: 1 as const,
-                    homeDirectory: true,
-                    homeEnrollment: true,
-                    homeLoginAssertion: {
-                        keyId: 'a'.repeat(64),
-                        publicKeyBase64Url: 'A'.repeat(43),
-                    },
+        ...features,
+        capabilities: {
+            ...features.capabilities,
+            accountDirectory: {
+                version: 1 as const,
+                homeDirectory: true,
+                homeEnrollment: true,
+                homeLoginAssertion: {
+                    keyId: 'a'.repeat(64),
+                    publicKeyBase64Url: 'A'.repeat(43),
                 },
-                server: { canonicalServerUrl: 'https://canonical-directory.example.test' },
-                serverIdentity: { serverIdentityId },
-                auth: {
-                    ...features.capabilities.auth,
-                    methods: [
-                        { id: 'key_challenge', actions: [
-                            { id: 'provision' as const, enabled: true, mode: 'keyed' as const },
-                            { id: 'login' as const, enabled: true, mode: 'keyed' as const },
-                        ] },
-                        { id: 'github', actions: [{ id: 'provision' as const, enabled: true, mode: 'keyed' as const }] },
-                        { id: 'email_password', actions: [{ id: 'login' as const, enabled: true, mode: 'keyless' as const }] },
-                    ],
-                    keyChallenge: { v2: true },
-                    signup: { methods: [] },
-                    login: { methods: [], requiredProviders: [] },
-                    recovery: { providerReset: { providers: [] } },
-                    ui: { autoRedirect: { enabled: false, providerId: null } },
-                    providers: {},
-                    misconfig: [],
-                },
-                oauth: { providers: { github: { configured: true, enabled: true } } },
             },
+            server: { canonicalServerUrl: 'https://canonical-directory.example.test' },
+            serverIdentity: { serverIdentityId },
+            auth: {
+                ...features.capabilities.auth,
+                methods: [
+                    { id: 'key_challenge', actions: [
+                        { id: 'provision' as const, enabled: true, mode: 'keyed' as const },
+                        { id: 'login' as const, enabled: true, mode: 'keyed' as const },
+                    ] },
+                    { id: 'github', actions: [{ id: 'provision' as const, enabled: true, mode: 'keyed' as const }] },
+                    { id: 'email_password', actions: [{ id: 'login' as const, enabled: true, mode: 'keyless' as const }] },
+                ],
+                keyChallenge: { v2: true },
+                signup: { methods: [] },
+                login: { methods: [], requiredProviders: [] },
+                recovery: { providerReset: { providers: [] } },
+                ui: { autoRedirect: { enabled: false, providerId: null } },
+                providers: {},
+                misconfig: [],
+            },
+            oauth: { providers: { github: { configured: true, enabled: true } } },
         },
+    };
+}
+type AccountServiceFeatures = ReturnType<typeof accountServiceFeatures>;
+function withCapabilities(
+    features: AccountServiceFeatures,
+    capabilities: Partial<Record<keyof AccountServiceFeatures['capabilities'], unknown>>,
+) {
+    return { ...features, capabilities: { ...features.capabilities, ...capabilities } };
+}
+function serveFeatures(features: unknown) {
+    network.routes.set('/v1/features', () => json(features));
+}
+function serveAuthEntry(projection: unknown) {
+    network.routes.set('/v1/auth/entry', () => json(projection));
+}
+function oauthParamsRoute(service: Readonly<{ endpointUrl: string; serverIdentityId: string; canonicalServerUrl: string }>, onUrl?: (path: string) => void): Route {
+    return (_endpoint, path) => {
+        onUrl?.(path);
+        return json({
+            url: 'https://oauth.example.test/authorize',
+            purpose: 'account_directory',
+            credentialTarget: 'account_directory',
+            endpointUrl: service.endpointUrl,
+            endpointServerIdentityId: service.serverIdentityId,
+            canonicalServerUrl: service.canonicalServerUrl,
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        });
     };
 }
 
 describe('accountDirectoryAuthClient', () => {
-    it('does not expose a competing directory reconciliation operation', () => {
-        expect(loadedAccountDirectoryAuthClient).not.toHaveProperty('reconcileHomes');
+    let storage: LocalStorageMockHandle;
+    let restoreLocks: () => void;
+    let directory: ReturnType<typeof createDirectoryHttpFixture>;
+    const storedDirectoryKeys = () => [...storage.store.keys()].filter((key) => (
+        key.includes(ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY) || key.includes(PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY)
+    ));
+
+    beforeEach(() => {
+        storage = installLocalStorageMock();
+        restoreLocks = installWebLockManagerMock().restore;
+        directory = createDirectoryHttpFixture();
+        network.calls.length = 0;
+        network.routes.clear();
+        network.fallback = directory.request;
+        serveFeatures(accountServiceFeatures());
+        // Older Account Services have no auth-entry projection; discovery then reads the features catalog.
+        network.routes.set('/v1/auth/entry', () => json({ error: 'not_found' }, 404));
+    });
+    afterEach(() => {
+        restoreLocks();
+        storage.restore();
     });
 
     it('constructs authority only from supported identity-checked discovery fields', async () => {
-        const { createVerifiedAccountServiceAuthority } = await import('./accountDirectoryAuthClient');
-        const snapshot = supportedFeatures('directory-authority');
-        const discovery = await loadedAccountDirectoryAuthClient.discoverAuthenticationMethods({
+        const features = accountServiceFeatures('srv_directory_authority');
+        serveFeatures(features);
+        const discovery = await accountDirectoryAuthClient.discoverAuthenticationMethods({
             endpointUrl: 'https://accounts.example.test',
         });
         expect(discovery.kind).toBe('supported_account_service');
@@ -107,46 +145,21 @@ describe('accountDirectoryAuthClient', () => {
 
         expect(createVerifiedAccountServiceAuthority(discovery)).toEqual({
             endpointUrl: 'https://accounts.example.test',
-            serverIdentityId: 'directory-1',
+            serverIdentityId: 'srv_directory_authority',
             canonicalServerUrl: 'https://canonical-directory.example.test',
-            capability: snapshot.features.capabilities.accountDirectory,
+            capability: features.capabilities.accountDirectory,
             snapshot: discovery.snapshot,
         });
     });
 
-    beforeEach(() => {
-        pendingSet.mockClear();
-        pendingClear.mockClear();
-        directoryCredentialsSet.mockClear();
-        directoryCredentialsSet.mockResolvedValue(true);
-        getCredentialsMock.mockClear();
-        activeServerSnapshotMock.mockClear();
-        activeServerSnapshotMock.mockReturnValue({
-            serverId: 'focused-home',
-            serverUrl: 'https://focused.example.test',
-            generation: 1,
-        });
-        authGetTokenAtEndpointMock.mockClear();
-        probeServerFeaturesAtUrlMock.mockReset();
-        probeServerFeaturesAtUrlMock.mockResolvedValue(supportedFeatures());
-        fetchHomeAuthEntryMock.mockReset();
-        fetchHomeAuthEntryMock.mockResolvedValue({ kind: 'unsupported' });
-        authGetTokenAtEndpointMock.mockResolvedValue({ token: 'restricted-directory-token' });
-        vi.unstubAllGlobals();
-    });
-
     it('discovers explicit endpoint methods with another Home focused without active credential or focus dependence', async () => {
-        const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
-        const activeSnapshot = vi.mocked(getActiveServerSnapshot);
-        activeSnapshot.mockReturnValue({
-            serverId: 'focused-home-a',
-            serverUrl: 'https://home-a.example.test',
-            generation: 8,
+        const focused = await adoptHomeProfile({
+            descriptor: { v: 1, homeServerIdentityId: 'srv_home_a', canonicalServerUrl: 'https://home-a.example.test', revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://home-a.example.test' }] },
+            source: 'manual', descriptorAuthority: 'current_connection_observation',
         });
-        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
-        const getActiveCredentials = vi.mocked(TokenStorage.getCredentials);
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce(supportedFeatures('directory-b'));
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
+        await setActiveServerId(focused.id, { scope: 'device' });
+        serveFeatures(accountServiceFeatures('srv_directory_b'));
 
         await expect(accountDirectoryAuthClient.discoverAuthenticationMethods({
             endpointUrl: 'https://accounts-b.example.test/',
@@ -154,7 +167,7 @@ describe('accountDirectoryAuthClient', () => {
         })).resolves.toMatchObject({
             kind: 'supported_account_service',
             endpointUrl: 'https://accounts-b.example.test',
-            serverIdentityId: 'directory-b',
+            serverIdentityId: 'srv_directory_b',
             canonicalServerUrl: 'https://canonical-directory.example.test',
             keyLoginAvailable: true,
             oauthProviderIds: ['github'],
@@ -184,36 +197,31 @@ describe('accountDirectoryAuthClient', () => {
             ],
         });
 
-        expect(probeServerFeaturesAtUrlMock).toHaveBeenCalledWith({
-            endpointUrl: 'https://accounts-b.example.test',
-            force: true,
-        });
-        expect(activeSnapshot).not.toHaveBeenCalled();
-        expect(getActiveCredentials).not.toHaveBeenCalled();
-        expect(directoryCredentialsSet).not.toHaveBeenCalled();
-        expect(pendingSet).not.toHaveBeenCalled();
+        // Only the explicit endpoint is asked, never the focused Home, and nothing is stored.
+        expect(network.calls.map(({ endpoint, path }) => `${endpoint}${path}`)).toEqual([
+            'https://accounts-b.example.test/v1/features',
+            'https://accounts-b.example.test/v1/auth/entry',
+        ]);
+        expect(storedDirectoryKeys()).toEqual([]);
     });
 
     it('uses the Account Service auth-entry projection for dynamic methods', async () => {
-        fetchHomeAuthEntryMock.mockResolvedValueOnce({
-            kind: 'ready',
-            projection: {
-                v: 1,
-                state: 'ready',
-                scope: { kind: 'home' },
-                actions: [{
-                    kind: 'authenticate',
-                    methodId: 'acme',
-                    action: 'provision',
-                    mode: 'keyed',
-                    origin: 'home',
-                    presentation: { displayName: 'Acme Workforce' },
-                }],
-                autoRedirect: null,
-            },
+        serveAuthEntry({
+            v: 1,
+            state: 'ready',
+            scope: { kind: 'home' },
+            actions: [{
+                kind: 'authenticate',
+                methodId: 'acme',
+                action: 'provision',
+                mode: 'keyed',
+                origin: 'home',
+                presentation: { displayName: 'Acme Workforce' },
+            }],
+            autoRedirect: null,
         });
 
-        await expect(loadedAccountDirectoryAuthClient.discoverAuthenticationMethods({
+        await expect(accountDirectoryAuthClient.discoverAuthenticationMethods({
             endpointUrl: 'https://accounts.example.test',
         })).resolves.toMatchObject({
             kind: 'supported_account_service',
@@ -224,33 +232,28 @@ describe('accountDirectoryAuthClient', () => {
                 execution: { kind: 'oauth', providerId: 'acme', mode: 'keyed' },
             })],
         });
-        expect(fetchHomeAuthEntryMock).toHaveBeenCalledWith(expect.objectContaining({
-            purpose: 'account_service',
-            endpointUrl: 'https://accounts.example.test',
-            serverId: 'directory-1',
-        }));
+        const entryRequest = network.calls.find(({ path }) => path === '/v1/auth/entry');
+        expect(entryRequest?.endpoint).toBe('https://accounts.example.test');
+        expect(JSON.parse(String(entryRequest?.init?.body))).toMatchObject({ purpose: 'account_service' });
     });
 
     it('offers email and password sign-in and creation on an account service, never attaching it to an existing Account', async () => {
-        fetchHomeAuthEntryMock.mockResolvedValueOnce({
-            kind: 'ready',
-            projection: {
-                v: 1,
-                state: 'ready',
-                scope: { kind: 'home' },
-                actions: [
-                    { kind: 'authenticate', methodId: 'email_password', action: 'login', mode: 'either', origin: 'home',
-                        passwordReset: 'email', presentation: { displayName: 'Email and password' } },
-                    { kind: 'authenticate', methodId: 'email_password', action: 'provision', mode: 'keyed', origin: 'home',
-                        recommendedProvisionMode: 'e2ee', presentation: { displayName: 'Email and password' } },
-                    { kind: 'authenticate', methodId: 'email_password', action: 'connect', mode: 'either', origin: 'home',
-                        presentation: { displayName: 'Email and password' } },
-                ],
-                autoRedirect: null,
-            },
+        serveAuthEntry({
+            v: 1,
+            state: 'ready',
+            scope: { kind: 'home' },
+            actions: [
+                { kind: 'authenticate', methodId: 'email_password', action: 'login', mode: 'either', origin: 'home',
+                    passwordReset: 'email', presentation: { displayName: 'Email and password' } },
+                { kind: 'authenticate', methodId: 'email_password', action: 'provision', mode: 'keyed', origin: 'home',
+                    recommendedProvisionMode: 'e2ee', presentation: { displayName: 'Email and password' } },
+                { kind: 'authenticate', methodId: 'email_password', action: 'connect', mode: 'either', origin: 'home',
+                    presentation: { displayName: 'Email and password' } },
+            ],
+            autoRedirect: null,
         });
 
-        const discovered = await loadedAccountDirectoryAuthClient.discoverAuthenticationMethods({
+        const discovered = await accountDirectoryAuthClient.discoverAuthenticationMethods({
             endpointUrl: 'https://accounts.example.test',
         });
         expect(discovered).toMatchObject({ kind: 'supported_account_service' });
@@ -261,53 +264,52 @@ describe('accountDirectoryAuthClient', () => {
         ]);
     });
 
-    it('discovers explicit endpoint methods before any Home profile exists', async () => {
-        const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
-        const activeSnapshot = vi.mocked(getActiveServerSnapshot);
-        activeSnapshot.mockImplementation(() => { throw new Error('active Home must not be required'); });
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce(supportedFeatures('directory-b'));
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
-
-        const result = await accountDirectoryAuthClient.discoverAuthenticationMethods({
-            endpointUrl: 'https://accounts-b.example.test',
-            requestedMethod: { kind: 'key' },
-        });
-
-        expect(result.kind).toBe('supported_account_service');
-        expect(probeServerFeaturesAtUrlMock).toHaveBeenCalledWith({
-            endpointUrl: 'https://accounts-b.example.test',
-            force: true,
-        });
-        expect(activeSnapshot).not.toHaveBeenCalled();
-    });
-
     it('threads exact transport and cancellation into discovery without storing them in authority', async () => {
-        const controller = new AbortController();
+        const viaOrigin = await accountDirectoryAuthClient.discoverAuthenticationMethods({
+            endpointUrl: 'https://accounts-b.example.test',
+            runtimeOrigin: 'http://127.0.0.1:43123',
+        });
+        expect(viaOrigin.kind).toBe('supported_account_service');
+        expect(viaOrigin).not.toHaveProperty('runtimeOrigin');
+        expect(network.calls.map(({ endpoint, path }) => `${endpoint}${path}`)).toEqual([
+            'http://127.0.0.1:43123/v1/features',
+            'http://127.0.0.1:43123/v1/auth/entry',
+        ]);
+
+        network.calls.length = 0;
+        const carried: string[] = [];
         const homeCarrier = {
             endpointId: 'iroh-directory',
             readObservedPath: () => 'relay' as const,
-            request: async () => new Response(),
+            request: async (url: string, init: RequestInit) => {
+                const parsed = new URL(url);
+                carried.push(`${parsed.origin}${parsed.pathname}`);
+                return await network.routes.get(parsed.pathname)!(parsed.origin, parsed.pathname, init);
+            },
             createWebSocket: () => ({}),
         };
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
-
-        const result = await accountDirectoryAuthClient.discoverAuthenticationMethods({
+        const viaCarrier = await accountDirectoryAuthClient.discoverAuthenticationMethods({
             endpointUrl: 'https://accounts-b.example.test',
-            runtimeOrigin: 'http://127.0.0.1:43123',
             homeCarrier,
+        });
+        expect(viaCarrier.kind).toBe('supported_account_service');
+        expect(viaCarrier).not.toHaveProperty('homeCarrier');
+        expect(carried).toEqual([
+            'https://accounts-b.example.test/v1/features',
+            'https://accounts-b.example.test/v1/auth/entry',
+        ]);
+        expect(network.calls).toEqual([]);
+
+        const pendingFeatures = createDeferred<Response>();
+        network.routes.set('/v1/features', () => pendingFeatures.promise);
+        const controller = new AbortController();
+        const cancelled = accountDirectoryAuthClient.discoverAuthenticationMethods({
+            endpointUrl: 'https://accounts-c.example.test',
             signal: controller.signal,
         });
-
-        expect(result.kind).toBe('supported_account_service');
-        expect(probeServerFeaturesAtUrlMock).toHaveBeenCalledWith({
-            endpointUrl: 'https://accounts-b.example.test',
-            runtimeOrigin: 'http://127.0.0.1:43123',
-            homeCarrier,
-            signal: controller.signal,
-            force: true,
-        });
-        expect(result).not.toHaveProperty('runtimeOrigin');
-        expect(result).not.toHaveProperty('homeCarrier');
+        controller.abort();
+        await expect(cancelled).resolves.toMatchObject({ kind: 'endpoint_unavailable' });
+        pendingFeatures.resolve(json(accountServiceFeatures()));
     });
 
     it.each([
@@ -317,8 +319,6 @@ describe('accountDirectoryAuthClient', () => {
         'https://user:pass@accounts.example.test',
         'https://accounts.example.test?tenant=other',
     ])('fails a malformed explicit endpoint closed before probing: %j', async (endpointUrl) => {
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
-
         await expect(accountDirectoryAuthClient.discoverAuthenticationMethods({
             endpointUrl,
         })).resolves.toMatchObject({
@@ -326,15 +326,14 @@ describe('accountDirectoryAuthClient', () => {
             endpointUrl: '',
             reason: 'invalid_endpoint',
         });
-        expect(probeServerFeaturesAtUrlMock).not.toHaveBeenCalled();
+        expect(network.calls).toEqual([]);
     });
 
     it.each([
-        ['endpoint_unavailable', { status: 'error', reason: 'network' }],
-        ['endpoint_unavailable', { status: 'unsupported', reason: 'endpoint_missing' }],
-    ])('returns %s for an unreachable or unsupported endpoint', async (kind, snapshot) => {
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce(snapshot);
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
+        ['endpoint_unavailable', 'network failure', () => { throw new TypeError('network down'); }],
+        ['endpoint_unavailable', 'missing features endpoint', () => json({ error: 'not_found' }, 404)],
+    ] as const)('returns %s for an unreachable or unsupported endpoint (%s)', async (kind, _label, route) => {
+        network.routes.set('/v1/features', route);
 
         await expect(accountDirectoryAuthClient.discoverAuthenticationMethods({
             endpointUrl: 'https://accounts.example.test',
@@ -342,82 +341,47 @@ describe('accountDirectoryAuthClient', () => {
     });
 
     it('returns identity_mismatch before exposing methods when a pinned endpoint observes a different identity', async () => {
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce(supportedFeatures('directory-other'));
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
+        serveFeatures(accountServiceFeatures('srv_directory_other'));
 
         await expect(accountDirectoryAuthClient.discoverAuthenticationMethods({
             endpointUrl: 'https://accounts.example.test',
-            expectedServerIdentityId: 'directory-1',
+            expectedServerIdentityId: 'srv_directory_1',
         })).resolves.toMatchObject({
             kind: 'identity_mismatch',
             endpointUrl: 'https://accounts.example.test',
-            expectedServerIdentityId: 'directory-1',
-            observedServerIdentityId: 'directory-other',
+            expectedServerIdentityId: 'srv_directory_1',
+            observedServerIdentityId: 'srv_directory_other',
         });
-        expect(probeServerFeaturesAtUrlMock).toHaveBeenCalledWith({
-            endpointUrl: 'https://accounts.example.test',
-            serverId: 'directory-1',
-            force: true,
-        });
-        expect(directoryCredentialsSet).not.toHaveBeenCalled();
-        expect(pendingSet).not.toHaveBeenCalled();
+        expect(network.calls.map(({ path }) => path)).toEqual(['/v1/features']);
+        expect(storedDirectoryKeys()).toEqual([]);
     });
 
     it('returns not_account_service when endpoint capabilities lack Account Directory support', async () => {
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
-            ...supportedFeatures(),
-            features: {
-                ...supportedFeatures().features,
-                capabilities: {
-                    ...supportedFeatures().features.capabilities,
-                    accountDirectory: undefined,
-                },
-            },
-        });
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
+        serveFeatures(withCapabilities(accountServiceFeatures(), { accountDirectory: undefined }));
 
         await expect(accountDirectoryAuthClient.discoverAuthenticationMethods({
             endpointUrl: 'https://home-only.example.test',
         })).resolves.toMatchObject({
             kind: 'not_account_service',
             endpointUrl: 'https://home-only.example.test',
-            serverIdentityId: 'directory-1',
+            serverIdentityId: 'srv_directory_1',
         });
     });
 
     it('offers direct Home connection for a verified Home entered as an Account Service', async () => {
-        const features = supportedFeatures('home-only');
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
-            ...features,
-            features: {
-                ...features.features,
-                capabilities: { ...features.features.capabilities, accountDirectory: undefined },
-            },
-        });
-        const { checkAccountServiceEndpoint } = await import('@/sync/ops/accountDirectory/selectAccountServiceEndpoint');
+        serveFeatures(withCapabilities(accountServiceFeatures('srv_home_only'), { accountDirectory: undefined }));
 
         await expect(checkAccountServiceEndpoint('https://home-only.example.test', {
             signal: new AbortController().signal,
         })).resolves.toEqual({
             kind: 'home_endpoint',
-            homeServerIdentityId: 'home-only',
+            homeServerIdentityId: 'srv_home_only',
             homeUrl: 'https://canonical-directory.example.test',
         });
     });
 
     it('requires an advertised canonical URL for a supported Account Service', async () => {
-        const features = supportedFeatures();
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
-            ...features,
-            features: {
-                ...features.features,
-                capabilities: {
-                    ...features.features.capabilities,
-                    server: { canonicalServerUrl: null },
-                },
-            },
-        });
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
+        serveFeatures(withCapabilities(accountServiceFeatures(), { server: {} }));
 
         await expect(accountDirectoryAuthClient.discoverAuthenticationMethods({
             endpointUrl: 'https://accounts.example.test',
@@ -427,67 +391,54 @@ describe('accountDirectoryAuthClient', () => {
         });
     });
 
-    it('projects only structured methods backed by an Account Directory execution provider', async () => {
-        const features = supportedFeatures();
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
-            ...features,
-            features: {
-                ...features.features,
-                capabilities: {
-                    ...features.features.capabilities,
-                    auth: {
-                        ...features.features.capabilities.auth,
-                        methods: [
-                            { id: 'github', actions: [{ id: 'provision', enabled: true, mode: 'keyed' }] },
-                            { id: 'gitlab', actions: [{ id: 'provision', enabled: true, mode: 'keyed' }] },
-                            { id: 'google', actions: [{ id: 'login', enabled: true, mode: 'keyless' }] },
-                            { id: 'oidc', actions: [{ id: 'provision', enabled: true, mode: 'either' }] },
-                        ],
-                    },
-                    oauth: {
-                        providers: {
-                            github: { configured: true, enabled: true },
-                            gitlab: { configured: false, enabled: true },
-                            google: { configured: true, enabled: true },
-                            oidc: { configured: true, enabled: false },
-                        },
-                    },
+    it('projects structured OAuth methods over legacy configured flags and drops methods without a Directory execution', async () => {
+        const features = accountServiceFeatures();
+        serveFeatures(withCapabilities(features, {
+            auth: {
+                ...features.capabilities.auth,
+                methods: [
+                    { id: 'github', actions: [{ id: 'provision', enabled: true, mode: 'keyed' }] },
+                    { id: 'gitlab', actions: [{ id: 'provision', enabled: true, mode: 'keyed' }] },
+                    { id: 'google', actions: [{ id: 'login', enabled: true, mode: 'keyless' }] },
+                    { id: 'oidc', actions: [{ id: 'provision', enabled: true, mode: 'either' }] },
+                    { id: 'mtls', actions: [{ id: 'login', enabled: true, mode: 'keyless' }] },
+                ],
+            },
+            oauth: {
+                providers: {
+                    github: { configured: true, enabled: true },
+                    gitlab: { configured: false, enabled: true },
+                    google: { configured: true, enabled: true },
+                    oidc: { configured: true, enabled: false },
                 },
             },
-        });
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
+        }));
 
-        await expect(accountDirectoryAuthClient.discoverAuthenticationMethods({
+        const discovered = await accountDirectoryAuthClient.discoverAuthenticationMethods({
             endpointUrl: 'https://accounts.example.test',
-        })).resolves.toMatchObject({
+        });
+        expect(discovered).toMatchObject({
             kind: 'supported_account_service',
             oauthProviderIds: ['github', 'gitlab', 'google', 'oidc'],
             preferredProvisionProviderId: 'github',
         });
+        if (discovered.kind !== 'supported_account_service') return;
+        expect(discovered.authenticationActions.map(({ method }) => method.id)).not.toContain('mtls');
     });
 
     it('uses the provenance-bounded legacy adapter when structured methods are absent', async () => {
-        const features = supportedFeatures();
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
-            ...features,
-            features: {
-                ...features.features,
-                capabilities: {
-                    ...features.features.capabilities,
-                    auth: {
-                        keyChallenge: { v2: false },
-                        signup: { methods: [{ id: 'github', enabled: true }] },
-                        login: { methods: [], requiredProviders: [] },
-                        recovery: { providerReset: { providers: [] } },
-                        ui: { autoRedirect: { enabled: false, providerId: null } },
-                        providers: {},
-                        misconfig: [],
-                    },
-                    oauth: { providers: { github: { configured: true, enabled: true } } },
-                },
+        serveFeatures(withCapabilities(accountServiceFeatures(), {
+            auth: {
+                keyChallenge: { v2: false },
+                signup: { methods: [{ id: 'github', enabled: true }] },
+                login: { methods: [], requiredProviders: [] },
+                recovery: { providerReset: { providers: [] } },
+                ui: { autoRedirect: { enabled: false, providerId: null } },
+                providers: {},
+                misconfig: [],
             },
-        });
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
+            oauth: { providers: { github: { configured: true, enabled: true } } },
+        }));
 
         await expect(accountDirectoryAuthClient.discoverAuthenticationMethods({
             endpointUrl: 'https://accounts.example.test',
@@ -499,29 +450,20 @@ describe('accountDirectoryAuthClient', () => {
             oauthProviderIds: ['github'],
             preferredProvisionProviderId: 'github',
         });
-        expect(directoryCredentialsSet).not.toHaveBeenCalled();
-        expect(pendingSet).not.toHaveBeenCalled();
+        expect(storedDirectoryKeys()).toEqual([]);
     });
 
     it('does not resurrect legacy methods from an explicitly empty structured catalog', async () => {
-        const features = supportedFeatures();
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
-            ...features,
-            features: {
-                ...features.features,
-                capabilities: {
-                    ...features.features.capabilities,
-                    auth: {
-                        ...features.features.capabilities.auth,
-                        methods: [],
-                        keyChallenge: { v2: false },
-                        signup: { methods: [{ id: 'github', enabled: true }] },
-                    },
-                    oauth: { providers: { github: { configured: true, enabled: true } } },
-                },
+        const features = accountServiceFeatures();
+        serveFeatures(withCapabilities(features, {
+            auth: {
+                ...features.capabilities.auth,
+                methods: [],
+                keyChallenge: { v2: false },
+                signup: { methods: [{ id: 'github', enabled: true }] },
             },
-        });
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
+            oauth: { providers: { github: { configured: true, enabled: true } } },
+        }));
 
         await expect(accountDirectoryAuthClient.discoverAuthenticationMethods({
             endpointUrl: 'https://accounts.example.test',
@@ -534,142 +476,112 @@ describe('accountDirectoryAuthClient', () => {
         });
     });
 
+    function serveDirectoryKeyChallenge() {
+        const { service } = directory;
+        network.routes.set('/v1/auth/account-directory/challenge', () => json({
+            challengeId: 'directory-challenge', nonce: 'nonce', issuedAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            audience: { origin: service.canonicalServerUrl, serverIdentityId: service.serverIdentityId },
+        }));
+        network.routes.set('/v1/auth/account-directory', () => json({ token: 'restricted-directory-token' }));
+    }
+
     it('logs in by key through the restricted endpoint routes and stores only Directory credentials', async () => {
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
-        const secret = new Uint8Array(32).fill(11);
-        const verifiedServerFeaturesSnapshot = supportedFeatures('directory-1');
+        const { service } = directory;
+        serveDirectoryKeyChallenge();
 
         await expect(accountDirectoryAuthClient.loginWithKey({
-            endpointUrl: 'https://accounts.example.test/',
-            endpointServerIdentityId: 'directory-1',
-            canonicalServerUrl: 'https://canonical-directory.example.test/',
-            secret,
-            verifiedServerFeaturesSnapshot,
+            endpointUrl: `${service.endpointUrl}/`,
+            endpointServerIdentityId: service.serverIdentityId,
+            canonicalServerUrl: `${service.canonicalServerUrl}/`,
+            secret: new Uint8Array(32).fill(11),
+            verifiedServerFeaturesSnapshot: service.snapshot,
         })).resolves.toEqual({ token: 'restricted-directory-token' });
 
-        expect(authGetTokenAtEndpointMock).toHaveBeenCalledWith({
-            endpointUrl: 'https://accounts.example.test',
-            canonicalServerUrl: 'https://canonical-directory.example.test',
-            serverId: 'directory-1',
-            serverIdentityId: 'directory-1',
-            secret,
-            requireKeyChallengeV2: true,
-            credentialTarget: 'account_directory',
-            verifiedServerFeaturesSnapshot,
-        });
-        expect(directoryCredentialsSet).toHaveBeenCalledWith(
-            {
-                endpoint: 'https://accounts.example.test',
-                serverIdentityId: 'directory-1',
-            },
-            { token: 'restricted-directory-token' },
-        );
-        expect(pendingSet).not.toHaveBeenCalled();
+        // The verified discovery snapshot is reused: only the restricted Directory key routes are called.
+        expect(network.calls.map(({ endpoint, path }) => `${endpoint}${path}`)).toEqual([
+            `${service.endpointUrl}/v1/auth/account-directory/challenge`,
+            `${service.endpointUrl}/v1/auth/account-directory`,
+        ]);
+        const target = { endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId };
+        await expect(TokenStorage.accountDirectoryAuthCredentials.get(target))
+            .resolves.toEqual({ token: 'restricted-directory-token' });
+        await expect(TokenStorage.getPendingAccountDirectoryAuth(target)).resolves.toBeNull();
     });
 
     it('fails key login when restricted credential persistence fails', async () => {
-        directoryCredentialsSet.mockResolvedValueOnce(false);
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
+        const { service } = directory;
+        serveDirectoryKeyChallenge();
+        storage.setItemMock.mockImplementation((key, value) => {
+            if (key.includes(ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY)) throw new Error('credential storage unavailable');
+            storage.store.set(key, value);
+        });
 
         await expect(accountDirectoryAuthClient.loginWithKey({
-            endpointUrl: 'https://accounts.example.test',
-            endpointServerIdentityId: 'directory-1',
-            canonicalServerUrl: 'https://canonical-directory.example.test',
+            endpointUrl: service.endpointUrl,
+            endpointServerIdentityId: service.serverIdentityId,
+            canonicalServerUrl: service.canonicalServerUrl,
             secret: new Uint8Array(32).fill(12),
-            verifiedServerFeaturesSnapshot: supportedFeatures('directory-1'),
+            verifiedServerFeaturesSnapshot: service.snapshot,
         })).rejects.toThrow('persist Account Service credentials');
     });
 
     it('starts OAuth against the explicit known-identity endpoint and persists only Directory pending state', async () => {
-        const now = Date.now();
-        const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-            const url = String(input);
-            expect(url).toContain('https://accounts.example.test/v1/auth/external/github/params?');
-            expect(url).toContain('mode=keyless');
-            expect(url).toContain('proofHash=');
-            expect(url).toContain('purpose=account_directory');
-            expect(url).toContain('canonicalServerUrl=https%3A%2F%2Fcanonical-directory.example.test');
-            return new Response(JSON.stringify({
-                url: 'https://oauth.example.test/authorize',
-                purpose: 'account_directory',
-                credentialTarget: 'account_directory',
-                endpointUrl: 'https://accounts.example.test',
-                endpointServerIdentityId: 'directory-1',
-                canonicalServerUrl: 'https://canonical-directory.example.test',
-                expiresAt: new Date(now + 60_000).toISOString(),
-            }), {
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-            });
-        });
-        vi.stubGlobal('fetch', fetchMock);
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
+        const { service } = directory;
+        const paramsPaths: string[] = [];
+        network.routes.set('/v1/auth/external/github/params', oauthParamsRoute(service, (path) => paramsPaths.push(path)));
 
         const result = await accountDirectoryAuthClient.startOAuth({
-            endpointUrl: 'https://accounts.example.test',
-            endpointServerIdentityId: 'directory-1',
-            canonicalServerUrl: 'https://canonical-directory.example.test',
+            endpointUrl: service.endpointUrl,
+            endpointServerIdentityId: service.serverIdentityId,
+            canonicalServerUrl: service.canonicalServerUrl,
             providerId: 'github',
             mode: 'keyless',
             entryIntent: { kind: 'refresh' },
             returnTo: '/settings/account',
         });
+        expect(network.calls.map(({ endpoint }) => endpoint)).toEqual([service.endpointUrl]);
+        expect(paramsPaths).toHaveLength(1);
+        const params = new URL(`https://params.test${paramsPaths[0]}`).searchParams;
+        expect(params.get('mode')).toBe('keyless');
+        expect(params.get('proofHash')).toBeTruthy();
+        expect(params.get('purpose')).toBe('account_directory');
+        expect(params.get('canonicalServerUrl')).toBe(service.canonicalServerUrl);
         expect(result).toMatchObject({
             url: 'https://oauth.example.test/authorize',
             pending: {
-                endpoint: 'https://accounts.example.test',
-                serverIdentityId: 'directory-1',
+                endpoint: service.endpointUrl,
+                serverIdentityId: service.serverIdentityId,
                 provider: 'github',
                 purpose: 'account_directory',
                 credentialTarget: 'account_directory',
                 entryIntent: { kind: 'refresh' },
-                canonicalServerUrl: 'https://canonical-directory.example.test',
+                canonicalServerUrl: service.canonicalServerUrl,
                 proof: expect.any(String),
                 returnTo: '/settings/account',
             },
         });
 
-        expect(pendingSet).toHaveBeenCalledWith(expect.objectContaining({
-            endpoint: 'https://accounts.example.test',
-            serverIdentityId: 'directory-1',
-            provider: 'github',
-            purpose: 'account_directory',
-            entryIntent: { kind: 'refresh' },
-            canonicalServerUrl: 'https://canonical-directory.example.test',
-            proof: expect.any(String),
-            returnTo: '/settings/account',
-        }));
-        expect(pendingSet).toHaveBeenCalledWith(result.pending);
-        const persisted = pendingSet.mock.calls[0]?.[0];
+        const persisted = await TokenStorage.getPendingAccountDirectoryAuth({
+            endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId,
+        });
+        expect(persisted).toEqual(result.pending);
         expect(persisted).not.toHaveProperty('secret');
         expect(persisted).not.toHaveProperty('pending');
+        await expect(TokenStorage.accountDirectoryAuthCredentials.get({
+            endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId,
+        })).resolves.toBeNull();
     });
 
     it('starts keyed Account Directory creation with a bound local signing key', async () => {
-        const now = Date.now();
-        const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-            const url = String(input);
-            expect(url).toContain('mode=keyed');
-            expect(url).toContain('publicKey=');
-            expect(url).toContain('canonicalServerUrl=https%3A%2F%2Fcanonical-directory.example.test');
-            expect(url).not.toContain('proofHash=');
-            return new Response(JSON.stringify({
-                url: 'https://oauth.example.test/authorize',
-                purpose: 'account_directory',
-                credentialTarget: 'account_directory',
-                endpointUrl: 'https://accounts.example.test',
-                endpointServerIdentityId: 'directory-1',
-                canonicalServerUrl: 'https://canonical-directory.example.test',
-                expiresAt: new Date(now + 60_000).toISOString(),
-            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-        });
-        vi.stubGlobal('fetch', fetchMock);
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
+        const { service } = directory;
+        const paramsPaths: string[] = [];
+        network.routes.set('/v1/auth/external/github/params', oauthParamsRoute(service, (path) => paramsPaths.push(path)));
 
         await expect(accountDirectoryAuthClient.startOAuth({
-            endpointUrl: 'https://accounts.example.test',
-            endpointServerIdentityId: 'directory-1',
-            canonicalServerUrl: 'https://canonical-directory.example.test',
+            endpointUrl: service.endpointUrl,
+            endpointServerIdentityId: service.serverIdentityId,
+            canonicalServerUrl: service.canonicalServerUrl,
             providerId: 'github',
             mode: 'keyed',
             entryIntent: { kind: 'enter', target: { kind: 'automatic' } },
@@ -678,37 +590,31 @@ describe('accountDirectoryAuthClient', () => {
             url: 'https://oauth.example.test/authorize',
             pending: {
                 mode: 'keyed',
-                canonicalServerUrl: 'https://canonical-directory.example.test',
+                canonicalServerUrl: service.canonicalServerUrl,
                 secret: expect.any(String),
             },
         });
+        const params = new URL(`https://params.test${paramsPaths[0]}`).searchParams;
+        expect(params.get('mode')).toBe('keyed');
+        expect(params.get('publicKey')).toBeTruthy();
+        expect(params.get('canonicalServerUrl')).toBe(service.canonicalServerUrl);
+        expect(params.has('proofHash')).toBe(false);
 
-        expect(pendingSet).toHaveBeenCalledWith(expect.objectContaining({
-            mode: 'keyed',
-            canonicalServerUrl: 'https://canonical-directory.example.test',
-            secret: expect.any(String),
-        }));
-        expect(pendingSet.mock.calls[0]?.[0]).not.toHaveProperty('proof');
+        const persisted = await TokenStorage.getPendingAccountDirectoryAuth({
+            endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId,
+        });
+        expect(persisted).toMatchObject({ mode: 'keyed', canonicalServerUrl: service.canonicalServerUrl, secret: expect.any(String) });
+        expect(persisted).not.toHaveProperty('proof');
     });
 
     it('persists the captured authenticated Home identity intent without credential or descriptor material', async () => {
-        const now = Date.now();
-        const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-            url: 'https://oauth.example.test/authorize',
-            purpose: 'account_directory',
-            credentialTarget: 'account_directory',
-            endpointUrl: 'https://accounts.example.test',
-            endpointServerIdentityId: 'directory-1',
-            canonicalServerUrl: 'https://canonical-directory.example.test',
-            expiresAt: new Date(now + 60_000).toISOString(),
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-        vi.stubGlobal('fetch', fetchMock);
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
+        const { service } = directory;
+        network.routes.set('/v1/auth/external/github/params', oauthParamsRoute(service));
 
         await expect(accountDirectoryAuthClient.startOAuth({
-            endpointUrl: 'https://accounts.example.test',
-            endpointServerIdentityId: 'directory-1',
-            canonicalServerUrl: 'https://canonical-directory.example.test',
+            endpointUrl: service.endpointUrl,
+            endpointServerIdentityId: service.serverIdentityId,
+            canonicalServerUrl: service.canonicalServerUrl,
             providerId: 'github',
             mode: 'keyed',
             entryIntent: { kind: 'link', homeServerIdentityId: 'srv_home_a' },
@@ -720,29 +626,32 @@ describe('accountDirectoryAuthClient', () => {
             },
         });
 
-        expect(pendingSet).toHaveBeenCalledWith(expect.objectContaining({
-            endpoint: 'https://accounts.example.test',
-            serverIdentityId: 'directory-1',
-            canonicalServerUrl: 'https://canonical-directory.example.test',
+        const persisted = await TokenStorage.getPendingAccountDirectoryAuth({
+            endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId,
+        });
+        expect(persisted).toMatchObject({
+            endpoint: service.endpointUrl,
+            serverIdentityId: service.serverIdentityId,
+            canonicalServerUrl: service.canonicalServerUrl,
             linkHomeServerIdentityId: 'srv_home_a',
-        }));
-        const persisted = pendingSet.mock.calls[0]?.[0] as Record<string, unknown>;
-        expect(Object.keys(persisted)).not.toContain('credentials');
-        expect(Object.keys(persisted)).not.toContain('connectionDescriptor');
+        });
+        expect(Object.keys(persisted ?? {})).not.toContain('credentials');
+        expect(Object.keys(persisted ?? {})).not.toContain('connectionDescriptor');
     });
 
     it('refuses to start Account Directory OAuth without a known endpoint identity', async () => {
-        const { accountDirectoryAuthClient } = await import('./accountDirectoryAuthClient');
+        const { service } = directory;
 
         await expect(accountDirectoryAuthClient.startOAuth({
-            endpointUrl: 'https://accounts.example.test',
+            endpointUrl: service.endpointUrl,
             endpointServerIdentityId: ' ',
             returnTo: '/setup/wizard',
-            canonicalServerUrl: 'https://canonical-directory.example.test',
+            canonicalServerUrl: service.canonicalServerUrl,
             providerId: 'github',
             mode: 'keyless',
             entryIntent: { kind: 'enter', target: { kind: 'automatic' } },
         })).rejects.toThrow('requires a known endpoint identity');
-        expect(pendingSet).not.toHaveBeenCalled();
+        expect(network.calls).toEqual([]);
+        expect(storedDirectoryKeys()).toEqual([]);
     });
 });

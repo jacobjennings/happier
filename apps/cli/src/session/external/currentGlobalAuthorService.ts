@@ -17,7 +17,7 @@ import { createExternalSessionSourceKeyOwnerFromAgentProjection } from '@/plugin
 import {
   getActiveAccountSettingsSnapshot,
   resolveActiveAccountConfiguredExternalSessionSourceRevision,
-  subscribeActiveAccountSettingsSnapshot,
+  subscribeActiveAccountConfiguredExternalSessionSourceRevision,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import type { ExternalSessionPluginTakeoverStart } from '@/session/actions/externalSessions/pluginExternalSessionAdmissionOwner';
 
@@ -462,6 +462,7 @@ function readProviderOps(runtime: CurrentAgentRuntime | null) {
   return Object.freeze({
     validateSource: surface.validateSource,
     listCandidates: surface.listCandidates,
+    ...(surface.hydrateCandidates ? { hydrateCandidates: surface.hydrateCandidates } : {}),
     pageTranscript: surface.pageTranscript,
     readAfterTranscript: surface.readAfterTranscript,
     ...(surface.resolveLinkIdentity
@@ -646,10 +647,10 @@ export async function createCurrentGlobalExternalSessionsAuthorService(
       params.agents.flatMap(agent => agent.richDefinition?.definition.surfaces?.externalSession.sources ?? []),
       params.activeServerId ?? null,
     ),
-    subscribeAccountRevision: (listener) => subscribeActiveAccountSettingsSnapshot(
-      (_previous, next) => listener(resolveActiveAccountConfiguredExternalSessionSourceRevision(next,
-        params.agents.flatMap(agent => agent.richDefinition?.definition.surfaces?.externalSession.sources ?? []),
-        params.activeServerId ?? null)),
+    subscribeAccountRevision: (listener) => subscribeActiveAccountConfiguredExternalSessionSourceRevision(
+      listener,
+      params.agents.flatMap(agent => agent.richDefinition?.definition.surfaces?.externalSession.sources ?? []),
+      params.activeServerId ?? null,
     ),
     isCurrent: params.isCurrent,
     resolveAgentOccurrence: (agentId) => {

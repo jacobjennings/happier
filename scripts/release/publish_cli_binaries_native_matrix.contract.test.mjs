@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
+import { collectPublisherExternalActionUses } from './workflowSecurityTestkit.mjs';
 
 const repoRootPath = fileURLToPath(new URL('../../', import.meta.url));
 const workflowPath = new URL('../../.github/workflows/publish-cli-binaries.yml', import.meta.url);
@@ -179,54 +180,10 @@ function usesPinnedPublishAction(step, actionName) {
   return step?.uses === `${actionName}@${PINNED_PUBLISH_ACTIONS[actionName]}`;
 }
 
-function assertPathWithinRepository(repositoryRoot, candidatePath, use) {
-  const relativePath = relative(repositoryRoot, candidatePath);
-  if (
-    relativePath === '..'
-    || relativePath.startsWith(`..${sep}`)
-    || isAbsolute(relativePath)
-  ) {
-    throw new Error(`local action path is outside the repository: ${use}`);
-  }
-}
-
-async function collectPublisherExternalActionUses(workflow, {
-  repositoryRoot = repoRootPath,
-} = {}) {
-  const pendingUses = Object.values(workflow.jobs ?? {}).flatMap((job) => [
-    job?.uses,
-    ...(job?.steps ?? []).map((step) => step?.uses),
-  ]);
-  const inspectedLocalActions = new Set();
-  const externalUses = [];
-
-  while (pendingUses.length > 0) {
-    const use = pendingUses.pop();
-    if (typeof use !== 'string') continue;
-    if (!use.startsWith('./')) {
-      externalUses.push(use);
-      continue;
-    }
-    const repositoryLocalUse = use.startsWith('./.release-control/')
-      ? `./${use.slice('./.release-control/'.length)}`
-      : use;
-    const localActionPath = resolve(repositoryRoot, repositoryLocalUse, 'action.yml');
-    assertPathWithinRepository(repositoryRoot, localActionPath, use);
-    const [canonicalRepositoryRoot, canonicalLocalActionPath] = await Promise.all([
-      realpath(repositoryRoot),
-      realpath(localActionPath),
-    ]);
-    assertPathWithinRepository(canonicalRepositoryRoot, canonicalLocalActionPath, use);
-    if (inspectedLocalActions.has(canonicalLocalActionPath)) continue;
-    inspectedLocalActions.add(canonicalLocalActionPath);
-    const localAction = YAML.parse(await readFile(canonicalLocalActionPath, 'utf8'));
-    pendingUses.push(...(localAction.runs?.steps ?? []).map((step) => step?.uses));
-  }
-
-  return externalUses;
-}
-
-function assertPublisherExternalActionsPinned(externalUses) {
+test('privileged CLI binary publishing pins every external action to its reviewed full commit SHA', async () => {
+  const raw = await readFile(workflowPath, 'utf8');
+  const workflow = YAML.parse(raw);
+  const externalUses = await collectPublisherExternalActionUses(workflow);
   const observedActions = new Set();
 
   for (const use of externalUses) {
@@ -243,101 +200,10 @@ function assertPublisherExternalActionsPinned(externalUses) {
     );
   }
 
-  return observedActions;
-}
-
-test('publisher action recursion rejects local action paths outside the repository', async () => {
-  const workspace = await mkdtemp(join(tmpdir(), 'publisher-action-escape-'));
-  const repositoryRoot = join(workspace, 'repo');
-  const outsideActionDir = join(workspace, 'outside');
-  await mkdir(repositoryRoot, { recursive: true });
-  await mkdir(outsideActionDir, { recursive: true });
-  await writeFile(join(outsideActionDir, 'action.yml'), YAML.stringify({
-    runs: { using: 'composite', steps: [] },
-  }));
-  await symlink(
-    outsideActionDir,
-    join(repositoryRoot, 'linked-action'),
-    process.platform === 'win32' ? 'junction' : 'dir',
-  );
-
-  try {
-    await assert.rejects(
-      collectPublisherExternalActionUses({
-        jobs: { publish: { steps: [{ uses: './../outside' }] } },
-      }, { repositoryRoot }),
-      /outside the repository/,
-    );
-    await assert.rejects(
-      collectPublisherExternalActionUses({
-        jobs: { publish: { steps: [{ uses: './linked-action' }] } },
-      }, { repositoryRoot }),
-      /outside the repository/,
-    );
-  } finally {
-    await rm(workspace, { recursive: true, force: true });
-  }
-});
-
-test('publisher action recursion visits aliased local-action cycles once', async () => {
-  const repositoryRoot = await mkdtemp(join(tmpdir(), 'publisher-action-cycle-'));
-  await mkdir(join(repositoryRoot, 'actions', 'a'), { recursive: true });
-  await mkdir(join(repositoryRoot, 'actions', 'b'), { recursive: true });
-  await writeFile(join(repositoryRoot, 'actions', 'a', 'action.yml'), YAML.stringify({
-    runs: {
-      using: 'composite',
-      steps: [
-        { uses: 'example/a@1111111111111111111111111111111111111111' },
-        { uses: './actions/b' },
-      ],
-    },
-  }));
-  await writeFile(join(repositoryRoot, 'actions', 'b', 'action.yml'), YAML.stringify({
-    runs: {
-      using: 'composite',
-      steps: [
-        { uses: 'example/b@2222222222222222222222222222222222222222' },
-        { uses: './actions/../actions/a' },
-      ],
-    },
-  }));
-
-  try {
-    const externalUses = await collectPublisherExternalActionUses({
-      jobs: { publish: { steps: [{ uses: './actions/a' }] } },
-    }, { repositoryRoot });
-    assert.deepEqual(externalUses.sort(), [
-      'example/a@1111111111111111111111111111111111111111',
-      'example/b@2222222222222222222222222222222222222222',
-    ]);
-  } finally {
-    await rm(repositoryRoot, { recursive: true, force: true });
-  }
-});
-
-test('privileged CLI binary publishing pins every external action to its reviewed full commit SHA', async () => {
-  const raw = await readFile(workflowPath, 'utf8');
-  const workflow = YAML.parse(raw);
-  const externalUses = await collectPublisherExternalActionUses(workflow);
-  const observedActions = assertPublisherExternalActionsPinned(externalUses);
-
   assert.deepEqual(
     [...observedActions].sort(),
     Object.keys(PINNED_PUBLISH_ACTIONS).sort(),
     'the pin inventory must cover every external action used by the privileged publisher',
-  );
-});
-
-test('privileged CLI binary action policy rejects mutable and unapproved action refs', () => {
-  assert.throws(
-    () => assertPublisherExternalActionsPinned(['actions/setup-node@v4']),
-    /full commit SHA/,
-  );
-  assert.throws(
-    () => assertPublisherExternalActionsPinned([
-      'unapproved/setup-node@1111111111111111111111111111111111111111',
-    ]),
-    /reviewed release commit/,
   );
 });
 

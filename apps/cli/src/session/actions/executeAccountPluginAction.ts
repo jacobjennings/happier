@@ -1,4 +1,5 @@
-import { createActionExecutor, type ActionExecutorContext, type ActionExecutorDeps, type ActionId } from '@happier-dev/protocol';
+import { createActionExecutor, type ActionExecutorContext, type ActionExecutorDeps } from '@happier-dev/protocol/actions/actionExecutor';
+import type { ActionId } from '@happier-dev/protocol';
 import { parseQualifiedPluginActionId } from '@happier-dev/protocol/plugins/actions/qualifiedActionId';
 import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
@@ -11,7 +12,7 @@ import { ensureCliActionPolicySettings } from './ensureCliActionPolicySettings';
 import type { createCliActionExecutorHarness } from './createCliActionExecutorHarness';
 import axios from 'axios';
 import { readCurrentAccountPluginExecutionSelection } from '@/plugins/runtime/accountPluginActivationSource';
-import { getResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { getResolvedContributionRegistry } from '@/plugins/projection/registry/builtIn/snapshot';
 
 /** Selects Account custody for the incumbent runtime and invocation owners. */
 export async function executeAccountPluginAction(params: Readonly<{

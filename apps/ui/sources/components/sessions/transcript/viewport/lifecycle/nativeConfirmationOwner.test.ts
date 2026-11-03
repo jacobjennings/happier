@@ -41,6 +41,23 @@ describe('native confirmation owner', () => {
             entrySettleEffects: [],
             explicitJumpEffects: [],
         });
+
+        // The spent reconfirm keeps ownership: the later bottom arrival is still adopted.
+        expect(owner.observeScroll({
+            ...baseObservation,
+            contentHeight: 1700,
+            distanceFromBottom: 40,
+        })).toEqual({
+            consumed: true,
+            entrySettleEffects: [],
+            explicitJumpEffects: [
+                {
+                    distanceFromBottom: 40,
+                    sessionId: 'session-1',
+                    type: 'adopt-live-tail-arrival',
+                },
+            ],
+        });
     });
 
     it('clears explicit jump pending state after bottom-threshold arrival', () => {

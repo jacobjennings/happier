@@ -54,6 +54,8 @@ import { settingsDefaults, applySettings, settingsParse, type Settings } from '@
 import { localSettingsDefaults, applyLocalSettings } from '@/sync/domains/settings/localSettings';
 import * as desktopHostBoundary from '@/utils/platform/desktopHost';
 import { createSettingsDeclarationAction, resolveSettingsDeclarationOperationApprovalPolicy } from './settingsDeclarationAction';
+import { changeComputerUseSettings } from '@/sync/domains/computer/computerProviderSettings';
+import { readComputerUseSettingsForMachine } from '@happier-dev/protocol/computer/v1';
 import { UI_FONT_SCALE_PRESETS } from '@/components/ui/text/uiFontScale';
 import { readSettingsPageGate } from '@/components/settings/catalog/pageCatalog';
 import { ActionsSettingsV1Schema, createActionExecutor, FeaturesResponseSchema, getModelPackCatalogEntry, isApprovalRequiredByActionsSettings, VoiceProviderContributionSchema, type ActionsSettingsV1, type AutomationV3Settings } from '@happier-dev/protocol';
@@ -66,6 +68,7 @@ import { normalizeVoiceSettingsLocalDelta } from '@/sync/domains/settings/voiceS
 import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { activateStorageAccountScope } from '@/dev/testkit/mocks/storage';
 import type { Machine } from '@/sync/domains/state/storageTypes';
+import { PluginManifestV2Schema } from '@happier-dev/protocol/plugins/manifest';
 import { projectBundledVoiceManifestContributions } from '@/voice/registry/bundledVoiceManifestProjection';
 import { resolveVoiceConversationLanguageSetting } from '@/voice/settings/voiceSettingsDeclarations';
 import { t } from '@/text';
@@ -95,6 +98,33 @@ import * as systemTaskRuntimeBoundary from '@/components/systemTasks/systemTasks
 import { createManualSystemTaskRunner } from '@/dev/testkit/harness/manualSystemTaskRunner';
 import { publishLocalDaemonStatus, readLocalDaemonSharedState } from '@/components/settings/machines/localControl/localDaemonSharedState';
 import type { LocalDaemonStatusData } from '@/components/settings/machines/localControl/useLocalDaemonControl';
+
+describe('personal list Settings approval defaults', () => {
+    it.each([
+        ['agents.idleCompaction', 'sessionIdleCompactionEnabledByTargetKey', false],
+        ['agents.idleCompaction.minContextTokens', 'sessionIdleCompactionMinContextTokensByTargetKey', 0],
+        ['agents.idleCompaction.cacheWindowOverrideMs', 'sessionIdleCompactionCacheWindowOverrideMsByTargetKey', 2_147_483_647],
+    ] as const)('sets, reads and resets one Agent target through %s', async (anchor, key, value) => {
+        const target = 'agent:happier.agent.claude/claude';
+        const sibling = 'agent:happier.agent.codex/codex';
+        const initial = settingsParse({ sessionIdleCompactionEnabledByTargetKey: { [sibling]: true },
+            sessionIdleCompactionMinContextTokensByTargetKey: { [sibling]: 25 },
+            sessionIdleCompactionCacheWindowOverrideMsByTargetKey: { [sibling]: 60_000 } });
+        const owner = createOwner(undefined, true, true, initial);
+        const executor = throughActionExecutor(owner.action, () => owner.account().actionsSettingsV1);
+        const context = { surface: 'agent', authority: 'account_automation' } as const;
+        expect(await executor.execute('settings.set', { anchor, value: { agentTargetKey: target, value } }, context)).toMatchObject({ ok: true });
+        expect(await executor.execute('settings.get', { anchor }, context)).toMatchObject({ ok: true,
+            result: { value: { ...initial[key], [target]: value } } });
+        expect(await executor.execute('settings.reset', { anchor, key: target }, context)).toMatchObject({ ok: true });
+        expect(owner.account()[key]).toEqual(initial[key]);
+        for (const map of ['sessionIdleCompactionEnabledByTargetKey', 'sessionIdleCompactionMinContextTokensByTargetKey',
+            'sessionIdleCompactionCacheWindowOverrideMsByTargetKey'] as const) expect(owner.account()[map]).toEqual(initial[map]);
+        const before = owner.account();
+        expect(await executor.execute('settings.set', { anchor, value: { agentTargetKey: target, value: -1 } }, context)).toMatchObject({ ok: false, errorCode: 'invalid_setting_value' });
+        expect(owner.account()).toEqual(before);
+    });
+});
 
 describe('Track device-local Settings declaration', () => {
     it('lets an agent read and write Track with SCM writes disabled without changing Account settings', async () => {
@@ -542,7 +572,7 @@ const { prepareSpeechEndpointSettingChange } = await import('@/voice/settings/pa
 
 function throughActionExecutor(settingsDeclarationAction: ReturnType<typeof createSettingsDeclarationAction>,
     readActionsSettings?: () => ActionsSettingsV1,
-    approvalTransport?: Pick<ActionExecutorDeps, 'approvalsCreate' | 'approvalsGet' | 'approvalsUpdate' | 'approvalsWaitForDecision' | 'isApprovalExecutionOriginCurrent'>) {
+    approvalTransport?: Pick<ActionExecutorDeps, 'approvalsCreate' | 'approvalsGet' | 'approvalsUpdate' | 'approvalsWaitForDecision' | 'isApprovalExecutionOriginCurrent' | 'machinePageAction'>) {
     const approvalPolicy: Pick<Parameters<typeof createActionExecutor>[0], 'isActionApprovalRequired'> = readActionsSettings
         ? { isActionApprovalRequired: (actionId, context, input) => {
             const anchor = input && typeof input === 'object' && 'anchor' in input && typeof input.anchor === 'string' ? input.anchor : '';
@@ -1166,6 +1196,56 @@ describe('navigation placement Settings Actions', () => {
         expect(Object.hasOwn(map, '__proto__')).toBe(false);
         expect(Object.getPrototypeOf(map)).toBe(initialPrototype);
     });
+    it.each([true, false])('installs a newly enabled computer provider before saving its preference: %s', async installed => {
+        const owner = createOwner(undefined, true, true);
+        const installations: unknown[] = [];
+        const executor = throughActionExecutor(owner.action, () => owner.account().actionsSettingsV1, {
+            // Machine installation transport is outside the UI process. Action admission and settings remain real.
+            machinePageAction: async args => {
+                expect(owner.account().computerUseByMachineId).toEqual({});
+                installations.push(args);
+                return { supported: true, response: installed ? { ok: true } : { ok: false, error: { code: 'install_failed', message: 'Install failed' } } };
+            },
+        });
+        const context = { surface: 'ui', authority: 'present_user', serverId: 'home', bypassApprovals: true } as const;
+        const next = { enabledProviders: ['cua', 'agent-desktop'], defaultProvider: 'agent-desktop' } as const;
+        const result = await changeComputerUseSettings({
+            execute: (id, input) => executor.execute(id, input, context), machineId: 'machine', serverId: 'home',
+            current: readComputerUseSettingsForMachine(owner.account(), 'machine'), next,
+        });
+        expect(installations).toEqual([expect.objectContaining({ actionId: 'machines.capabilities.install', input: {
+            machineId: 'machine', serverId: 'home', capabilityId: 'dep.computer-agent-desktop', method: 'install',
+        } })]);
+        expect(result.ok).toBe(installed);
+        expect(owner.account().computerUseByMachineId).toEqual(installed ? { machine: next } : {});
+    });
+    it('changes the default among enabled providers without installing again', async () => {
+        const current = { enabledProviders: ['cua', 'agent-desktop'], defaultProvider: 'cua' } as const;
+        const owner = createOwner(undefined, true, true, settingsParse({ computerUseByMachineId: { machine: current } }));
+        const executor = throughActionExecutor(owner.action);
+        const next = { ...current, defaultProvider: 'agent-desktop' } as const;
+        const result = await changeComputerUseSettings({
+            execute: (id, input) => executor.execute(id, input, { surface: 'ui', authority: 'present_user', serverId: 'home', bypassApprovals: true }),
+            machineId: 'machine', serverId: 'home', current, next,
+        });
+        expect(result.ok).toBe(true);
+        expect(owner.account().computerUseByMachineId.machine).toEqual(next);
+    });
+    it('changes computer-use providers for one Machine through the settings Action owner', async () => {
+        const owner = createOwner(undefined, true, true, settingsParse({ computerUseByMachineId: {
+            peer: { enabledProviders: ['cua'], defaultProvider: 'cua' },
+        } }));
+        const executor = throughActionExecutor(owner.action, () => owner.account().actionsSettingsV1);
+        const context = { surface: 'ui', authority: 'present_user', bypassApprovals: true } as const;
+        const anchor = 'machines.computerUse.providers';
+        const value = { enabledProviders: ['cua', 'agent-desktop'], defaultProvider: 'agent-desktop' };
+        expect(await executor.execute('settings.set', { anchor, key: 'machine', value }, context)).toMatchObject({ ok: true });
+        expect(await executor.execute('settings.get', { anchor, key: 'machine' }, context)).toMatchObject({ ok: true, result: { value } });
+        expect(owner.account().computerUseByMachineId.peer).toEqual({ enabledProviders: ['cua'], defaultProvider: 'cua' });
+        expect(await executor.execute('settings.set', { anchor, key: 'machine', value: {
+            enabledProviders: ['cua'], defaultProvider: 'agent-desktop',
+        } }, context)).toMatchObject({ ok: false, errorCode: 'invalid_setting_value' });
+    });
     it('changes one installable policy through a keyed Account setting without replacing siblings', async () => {
         const owner = createOwner(undefined, true, true, settingsParse({ ...settingsDefaults,
             installablesPolicyByMachineId: { machine: { other: { autoUpdateMode: 'notify' } }, peer: { tool: { autoInstallWhenNeeded: true } } },
@@ -1444,7 +1524,7 @@ describe('declared settings owner', () => {
         onTestFinished(() => { vi.unstubAllGlobals(); });
         const { PLUGIN_MANIFEST } = await import('../../../../../../packages/plugins/elevenlabs/src/manifest');
         const { VOICE_PROVIDER_PRESENTATIONS } = await import('../../../../../../packages/plugins/elevenlabs/src/ui/voice/entries');
-        const registry = createVoiceProviderRegistry({ bundledContributions: projectBundledVoiceManifestContributions(PLUGIN_MANIFEST), bundledPresentations: VOICE_PROVIDER_PRESENTATIONS });
+        const registry = createVoiceProviderRegistry({ bundledContributions: projectBundledVoiceManifestContributions(PluginManifestV2Schema.parse(PLUGIN_MANIFEST)), bundledPresentations: VOICE_PROVIDER_PRESENTATIONS });
         const providerId = 'happier.voice.elevenlabs/realtime-elevenlabs';
         const entry = registry.get(providerId);
         if (!entry?.providerSettings) throw new Error('Missing real catalog provider');
@@ -2007,7 +2087,7 @@ describe('declared settings owner', () => {
     it('uses one coupled language declaration and canonical state without concealing an unsupported retained choice', async () => {
         const { PLUGIN_MANIFEST } = await import('../../../../../../packages/plugins/elevenlabs/src/manifest');
         const { VOICE_PROVIDER_PRESENTATIONS } = await import('../../../../../../packages/plugins/elevenlabs/src/ui/voice/entries');
-        const registry = createVoiceProviderRegistry({ bundledContributions: projectBundledVoiceManifestContributions(PLUGIN_MANIFEST), bundledPresentations: VOICE_PROVIDER_PRESENTATIONS });
+        const registry = createVoiceProviderRegistry({ bundledContributions: projectBundledVoiceManifestContributions(PluginManifestV2Schema.parse(PLUGIN_MANIFEST)), bundledPresentations: VOICE_PROVIDER_PRESENTATIONS });
         const providerId = 'happier.voice.elevenlabs/realtime-elevenlabs';
         const entry = registry.get(providerId);
         if (!entry) throw new Error('Missing real coupled provider');
@@ -2107,24 +2187,23 @@ describe('declared settings owner', () => {
             .toMatchObject({ errorCode: 'setting_value_unavailable' });
         expect(owner.account().voice.providers[providerId]?.config).toMatchObject({ baseUrl: 'https://speech.example/v1/' });
     });
-    it('routes a private credential operation to the incumbent human control without reading or writing secrets', async () => {
+    it('declares the saved credential reference operation and refuses missing input without reading or writing secrets', async () => {
         const owner = createOwner(undefined, true);
         const anchor = 'voiceConversations.provider.happier.voice.openai/realtime-openai.credential';
         const before = owner.account();
         expect(await owner.action({ actionId: 'settings.list', input: { pageId: 'voiceConversations' } }))
             .toMatchObject({ items: expect.arrayContaining([expect.objectContaining({
                 anchor, sensitive: true, readable: false, writable: false,
-                operation: { actionId: 'settings.invoke', requiresHumanInteraction: true },
+                operation: { actionId: 'settings.invoke', requiresHumanInteraction: false, requiresApproval: true },
             })]) });
         expect(await owner.action({ actionId: 'settings.invoke', input: { anchor } }))
-            .toEqual({ anchor, status: 'interaction_opened' });
-        expect(owner.openedInteractions).toEqual([`/settings/voice/conversations?setting=${encodeURIComponent(anchor)}`]);
+            .toEqual({ anchor, status: 'unavailable', reason: 'operation_input_required' });
+        expect(owner.openedInteractions).toEqual([]);
         expect(owner.account()).toBe(before);
         expect(await owner.action({ actionId: 'settings.get', input: { anchor } })).toMatchObject({ errorCode: 'setting_sensitive' });
-        const unavailableOwner = createOwner(undefined, true, false);
-        expect(await unavailableOwner.action({ actionId: 'settings.invoke', input: { anchor } }))
-            .toMatchObject({ errorCode: 'setting_not_bound' });
-        expect(unavailableOwner.openedInteractions).toEqual([]);
+        expect(await owner.action({ actionId: 'settings.set', input: { anchor, value: 'must-not-be-saved' } }))
+            .toMatchObject({ errorCode: 'setting_sensitive' });
+        expect(owner.account()).toBe(before);
     });
     it('requests real human opt-in for the exact contributed moving-alias mutation', async () => {
         storage.setState({ settingsScope: { serverId: 'fixture-home', accountId: 'fixture-account' } });
@@ -2164,8 +2243,9 @@ describe('declared settings owner', () => {
         const owner = createOwner(undefined, true);
         expect(await owner.action({ actionId: 'settings.set', input: { anchor: 'voiceConversations.agent', value: 'codex' } })).toEqual({ anchor: 'voiceConversations.agent', value: 'codex' });
         expect(owner.account().voice.providers.local_conversation?.config).toMatchObject({ agent: {
-            agentId: 'codex', agentTargetKey: expect.any(String), agentIdentity: null, agentProjectionGeneration: null,
+            agentId: 'codex', agentTargetKey: expect.any(String), agentIdentity: null,
         } });
+        expect(readLocalConversationVoiceSettings(owner.account().voice).agent).not.toHaveProperty('agentProjectionGeneration');
     });
     it('discovers an admitted contribution field before selection and writes only its declared strict config', async () => {
         const pluginId = 'fixture.voice';
@@ -2372,30 +2452,33 @@ describe('declared settings owner', () => {
         expect(owner.local().uiItemDensity).toBe(before);
     });
 
-    it('does not open an incumbent human control after its invocation is cancelled', async () => {
+    it('does not write a Voice setting after its human opt-in is cancelled', async () => {
+        storage.setState({ settingsScope: { serverId: 'fixture-home', accountId: 'fixture-account' } });
         let release!: () => void;
         let entered!: () => void;
         const gate = new Promise<void>((resolve) => { release = resolve; });
         const entering = new Promise<void>((resolve) => { entered = resolve; });
-        const opened: string[] = [];
-        // The external navigation boundary delays readiness, as router module loading can.
-        const owner = createOwner(undefined, true, true, settingsDefaults, async (href, signal) => {
+        // Consent is an external modal boundary; the declared mutation and its
+        // cancellation/currentness checks remain the real Voice owners.
+        humanConfirmation.confirm.mockImplementationOnce(async () => {
             entered();
             await gate;
-            signal?.throwIfAborted();
-            opened.push(href);
             return true;
         });
+        const owner = createOwner(undefined, true);
+        const before = owner.account();
         const controller = new AbortController();
-        const pending = owner.action({ actionId: 'settings.invoke', input: {
-            anchor: 'voiceConversations.provider.happier.voice.openai/realtime-openai.credential',
+        const pending = owner.action({ actionId: 'settings.set', input: {
+            anchor: 'voiceConversations.provider.happier.voice.xai/realtime-grok.model',
+            value: JSON.stringify({ kind: 'moving_alias', id: 'grok-voice-latest' }),
         }, context: { signal: controller.signal } });
         void pending.catch(() => undefined);
         await entering;
         controller.abort();
         release();
         await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-        expect(opened).toEqual([]);
+        expect(owner.openedInteractions).toEqual([]);
+        expect(owner.account()).toBe(before);
     });
 
     it('discovers and changes both Delegation defaults through Account settings', async () => {

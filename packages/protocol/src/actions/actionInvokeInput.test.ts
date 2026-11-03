@@ -7,6 +7,11 @@ const messageActionReference = { v: 1, sessionId: 'session', messageId: 'message
 const action = { pluginId: 'acme.client', localId: 'draft' };
 
 describe('contributed Message Action reference custody', () => {
+  it('keeps exact client choice outside contributed business input', () => {
+    expect(ActionInvokeInputSchema.parse({ action, input: { name: 'draft' }, clientId: 'app-b' }))
+      .toEqual({ action, input: { name: 'draft' }, clientId: 'app-b' });
+    expect(ActionInvokeInputSchema.safeParse({ action, clientId: '' }).success).toBe(false);
+  });
   it('preserves the opaque reference outside author input through Action and reverse-client admission', () => {
     const invoked = ActionInvokeInputSchema.parse({ action, input: {}, messageActionReference });
     expect(invoked).toEqual({ action, input: {}, messageActionReference });

@@ -5,6 +5,7 @@ import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { createSessionListRenderableSessionFixture } from '@/dev/testkit';
 import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { createHomeGovernanceHarness, installHomeGovernanceBoundaries } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { installDisconnectedServerSocketBoundary } from '@/dev/testkit/harness/serverAccountConnectionHarness';
@@ -22,6 +23,7 @@ installDisconnectedServerSocketBoundary();
 
 const routerPushSpy = vi.hoisted(() => vi.fn());
 const routeState = vi.hoisted(() => ({ pathname: '/projects' }));
+const boundaryRowRenders = vi.hoisted(() => new Map<string, number>());
 
 let serverId: string;
 let machinesMock: Machine[] = [];
@@ -31,7 +33,12 @@ vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
         View: React.forwardRef((props: any, ref: any) => React.createElement('View', { ...props, ref }, props.children)),
-        Pressable: (props: any) => React.createElement('Pressable', props, props.children),
+        Pressable: (props: Record<string, unknown> & { children?: React.ReactNode; testID?: string }) => {
+            if (props.testID?.startsWith('projects-column:tree-row-')) {
+                boundaryRowRenders.set(props.testID, (boundaryRowRenders.get(props.testID) ?? 0) + 1);
+            }
+            return React.createElement('Pressable', props, props.children);
+        },
         Platform: { OS: 'web' },
     });
 });
@@ -70,6 +77,7 @@ const { storage } = await import('@/sync/domains/state/storage');
 const { localSettingsDefaults } = await import('@/sync/domains/settings/localSettings');
 
 beforeEach(async () => {
+    boundaryRowRenders.clear();
     await homes.reset();
     await loadSyncSingletonForTests();
     serverId = await homes.addHome({ name: 'Projects Home', serverUrl: 'https://projects-column.test',
@@ -133,6 +141,80 @@ function workspaceRef(id: string, machineId: string, rootPath: string): Workspac
 }
 
 describe('ProjectsColumn', () => {
+    it('keeps 150 unchanged Project rows quiet when a refresh failure re-renders the real column', async () => {
+        machinesMock = [createMachine({ id: 'machine', host: 'Machine', activeAt: Date.now() })];
+        workspaceRefsV1Mock = Array.from({ length: 150 }, (_, index) => ({
+            id: `ref-${index}`, serverId, machineId: 'machine', rootPath: `/repo-${index}`,
+            projectKey: `project-${index}`, createdAtMs: 1,
+        }));
+        const { ProjectsColumn } = await import('./ProjectsColumn');
+        const screen = await renderProjects(<ProjectsColumn />);
+        expect(boundaryRowRenders.size).toBe(150);
+        const originalMenu = screen.root.findAll(node => node.props.workspaceRef?.id === 'ref-27'
+            && typeof node.props.onRename === 'function' && 'pinAction' in node.props)[0]!;
+        const { onRename, workspaceRef: originalRef } = originalMenu.props;
+        const renameFromMountedMenu = () => onRename(originalRef);
+        boundaryRowRenders.clear();
+        await act(async () => storage.getState().setProjectAccountRowsStatusForScope(storage.getState().profileScope!, 'error'));
+        expect(screen.findByTestId('projects-column:stale')).not.toBeNull();
+        expect([...boundaryRowRenders]).toEqual([]);
+
+        const previousRefs = storage.getState().projectAccountRows!.workspaceRefs;
+        const renamed = workspaceRefsV1Mock.map((ref, index) => index === 27 ? { ...ref, label: 'Renamed Project' } : ref);
+        const response = createPlainProjectAccountRowListFixture({ workspaceRefs: renamed });
+        if (response.status !== 'listed') throw new Error('expected a listed census fixture');
+        for (const row of response.rows) {
+            if (row.key.kind === 'workspace-ref' && row.key.id === 'ref-27') row.revision = 1;
+        }
+        homes.answer(serverId, 'POST /v1/account/project-rows/list', { body: response });
+        const { createDefaultActionExecutor } = await import('@/sync/ops/actions/defaultActionExecutor');
+        await act(async () => {
+            expect((await createDefaultActionExecutor().execute('projects.list', { serverId })).ok).toBe(true);
+        });
+        expect(storage.getState().projectAccountRows!.workspaceRefs.filter((ref, index) => ref !== previousRefs[index])).toHaveLength(1);
+        expect(screen.findByTestId('projects-column:tree-row-project-27')!.findAll(node => node.props.children === 'Renamed Project').length).toBeGreaterThan(0);
+        expect([...boundaryRowRenders]).toEqual([['projects-column:tree-row-project-27', 1]]);
+        const { Modal } = await import('@/modal');
+        vi.mocked(Modal.prompt).mockClear();
+        await act(async () => { await renameFromMountedMenu(); });
+        expect(Modal.prompt).toHaveBeenLastCalledWith(expect.any(String), undefined,
+            expect.objectContaining({ defaultValue: 'Renamed Project' }));
+        boundaryRowRenders.clear();
+        const menusFor = (id: string) => screen.root.findAll(node => node.props.workspaceRef?.id === id
+            && typeof node.props.onTogglePinned === 'function' && 'pinAction' in node.props);
+        expect(menusFor('ref-27').some(menu => menu.props.pinAction === 'pin')).toBe(true);
+        await act(async () => storage.setState({ pinnedWorkspaceRefIds: ['ref-27'] }));
+        expect(menusFor('ref-27').every(menu => menu.props.pinAction === 'unpin')).toBe(true);
+        expect(menusFor('ref-28').every(menu => menu.props.pinAction === 'pin')).toBe(true);
+        expect([...boundaryRowRenders]).toEqual([]);
+        await act(async () => storage.setState({ pinnedWorkspaceRefIds: [] }));
+        expect(menusFor('ref-27').every(menu => menu.props.pinAction === 'pin')).toBe(true);
+        expect([...boundaryRowRenders]).toEqual([]);
+    });
+
+    it('PF3 keeps the production column quiet for five unrelated Session arrivals with 150 Projects', async () => {
+        machinesMock = [createMachine({ id: 'machine', host: 'Machine', activeAt: Date.now() })];
+        workspaceRefsV1Mock = Array.from({ length: 150 }, (_, index) => ({
+            id: `ref-${index}`, serverId, machineId: 'machine', rootPath: `/repo-${index}`,
+            projectKey: `project-${index}`, createdAtMs: 1,
+        }));
+        const { ProjectsColumn } = await import('./ProjectsColumn');
+        let commits = 0;
+        const screen = await renderProjects(<React.Profiler id="projects-column" onRender={() => { commits += 1; }}>
+            <ProjectsColumn />
+        </React.Profiler>);
+        expect(screen.findByTestId('projects-column:tree-row-project-149')).not.toBeNull();
+        commits = 0;
+        for (let index = 0; index < 5; index += 1) {
+            const row = createSessionListRenderableSessionFixture({ id: 'unrelated', active: true,
+                activeAt: Date.now(), thinking: Boolean(index % 2),
+                metadata: { machineId: 'machine', path: '/outside-the-tree' } });
+            await act(async () => storage.setState({ sessionListRowsByServerId: { [serverId]: { unrelated: row } },
+                sessionListRenderableDelta: { revision: index + 1, changedSessionIds: ['unrelated'], removedSessionIds: [], rebuiltSessionListIndex: false } }));
+        }
+        expect(commits).toBe(0);
+    });
+
     it('does not call a Source "not open" until the Project rows have loaded', async () => {
         // While the census is still loading, every Source would look unopened; the saved group waits with the tree.
         workspaceRefsV1Mock = [];
@@ -217,6 +299,23 @@ describe('ProjectsColumn', () => {
         expect(screen.findAllByTestId('projects-column:rows-retry')).toHaveLength(0);
         await act(async () => { storage.getState().setProjectAccountRowsStatusForScope(accountScope, 'error'); });
         expect(screen.findAllByTestId('projects-column:rows-retry').length).toBeGreaterThan(0);
+    });
+
+    it('keeps the cached tree under a stale line when a refresh fails, and Retry reads the census again', async () => {
+        const { ProjectsColumn } = await import('./ProjectsColumn');
+        const screen = await renderProjects(<ProjectsColumn />);
+        const accountScope = storage.getState().profileScope!;
+        expect(screen.findAllByTestId('projects-column:stale')).toHaveLength(0);
+        await act(async () => { storage.getState().setProjectAccountRowsStatusForScope(accountScope, 'error'); });
+        // Rows stay at full strength; the line says they may be old and offers the one Retry.
+        expect(rowIds(screen)).toContain('projects-column:tree-row-ref-a');
+        expect(screen.findAllByTestId('projects-column:stale').length).toBeGreaterThan(0);
+        const reads = () => homes.requestsFor('/v1/account/project-rows/list').length;
+        const before = reads();
+        await act(async () => { screen.findAllByTestId('projects-column:stale-retry')[0]?.props.onPress(); });
+        await vi.waitFor(() => expect(reads()).toBeGreaterThan(before));
+        await vi.waitFor(() => expect(screen.findAllByTestId('projects-column:stale')).toHaveLength(0));
+        expect(rowIds(screen)).toContain('projects-column:tree-row-ref-a');
     });
 
     it('waits for the Machines before naming any row, never calling a Machine unlisted while they load', async () => {

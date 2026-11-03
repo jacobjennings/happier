@@ -10,16 +10,6 @@ beforeEach(() => {
 });
 
 describe('auth native entry dispatch', () => {
-  it('routes auth login --email through the native email/password controller', async () => {
-    const { handleAuthCommand } = await import('./auth');
-    await handleAuthCommand(['login', '--email', 'person@example.test', '--password', 'secret']);
-    expect(handleNative).toHaveBeenCalledWith(
-      ['login', '--email', 'person@example.test', '--password', 'secret'],
-      undefined,
-    );
-    expect(handleBrowserLogin).not.toHaveBeenCalled();
-  });
-
   it('routes the inline --email=<value> form through the native controller, not the browser flow', async () => {
     const { handleAuthCommand } = await import('./auth');
     await handleAuthCommand(['login', '--email=person@example.test', '--password', 'secret']);

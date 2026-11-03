@@ -10,6 +10,8 @@ import { WorkflowActionError } from './workflowActionError';
 import type { ServerAccountScope, ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { throwIfAborted } from '@/utils/runtime/abortSignals';
+import { workflowTriggerQueryKey } from './workflowTriggerQuery';
+import { readManagedMachineTriggerAction } from '@happier-dev/protocol/actions/executor/workflowTriggerActions';
 
 /**
  * The trigger client: `workflow.trigger.list | add | update | remove` (03 §5.3–§5.5) and the
@@ -53,18 +55,20 @@ function invalidateTriggerListPublications(scope: ServerAccountScope, automation
     if (written?.target && !written.scopeSessionId) {
         queries.add(written.target.kind === 'workflow' ? `workflow:${written.target.ref}` : 'account_inline');
     }
+    const managed = written?.target && readManagedMachineTriggerAction(written.target);
+    if (managed) queries.add(workflowTriggerQueryKey({ managedTarget: managed.input }));
     const state = getStorage().getState();
     if (state.profileScope && sameTriggerAccountScope(state.profileScope, scope)) {
         for (const [query, ids] of Object.entries(state.workflowTriggerSetIdsByQuery)) {
             if (ids.includes(automationId)) queries.add(query);
         }
     }
-    const requestKeys = new Set([...queries].flatMap(query => query.startsWith('workflow:')
-        ? [JSON.stringify({ workflow: query.slice('workflow:'.length) })]
-        : query === 'account_all' || query === 'account_inline' ? [JSON.stringify({ scope: query })] : []));
     for (const [lifetime, publications] of triggerListPublications) {
         if (!sameTriggerAccountScope(lifetime.scope, scope)) continue;
-        for (const key of requestKeys) {
+        for (const key of publications.keys()) {
+            // A non-focused Home has no store memberships to name the old target
+            // after retarget/removal. Fence its pending exact reads too.
+            if (!queries.has(key) && !key.startsWith('managed:')) continue;
             for (const publication of publications.get(key) ?? []) publication.current = false;
             publications.delete(key);
         }
@@ -114,8 +118,9 @@ async function callTriggerAction<TResult>(
     // A deliberate retained-template review is a private draft, not an Account list observation.
     if (actionId === 'workflow.trigger.list' && 'review' in request && request.review === true) return result;
     const sessionId = 'sessionId' in request && typeof request.sessionId === 'string' ? request.sessionId : null;
-    const queryKey = sessionId ? `session:${sessionId}` : workflow ? `workflow:${workflow}`
-        : 'scope' in request && request.scope === 'account_all' ? 'account_all' : 'account_inline';
+    const queryKey = actionId.endsWith('.list') && actionId === 'workflow.trigger.list'
+        ? workflowTriggerQueryKey(WorkflowTriggerListRequestV1Schema.parse(request))
+        : sessionId ? `session:${sessionId}` : workflow ? `workflow:${workflow}` : 'account_inline';
     if (actionId.endsWith('.list')) {
         if (options.isTriggerListCurrent?.() === false) return result;
         const page = WorkflowTriggerListResultV1Schema.shape.sets.parse(
@@ -149,7 +154,7 @@ export async function listWorkflowTriggerSets(
     // A list result may predate a successful local write. Keep that publication
     // fence while every caller enters its own Action admission and cancellation.
     throwIfAborted(options.signal);
-    const key = JSON.stringify(parsed);
+    const key = workflowTriggerQueryKey(parsed);
     const publication: TriggerListPublication = { current: true };
     let publications = lifetime ? triggerListPublications.get(lifetime) : undefined;
     if (lifetime && !publications) { publications = new Map(); triggerListPublications.set(lifetime, publications); }

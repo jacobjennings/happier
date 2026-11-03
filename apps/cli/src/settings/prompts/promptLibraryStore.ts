@@ -1,4 +1,5 @@
-import axios from 'axios';
+import axios from '@/api/client/credentialAxios';
+import { recordPromptPreparationFailure } from '@/agent/prompts/library/homeReadPreparationError';
 import { loadPromptLibraryCatalogV1, readPromptLibraryCatalogRecordV1, type PromptLibraryCatalogSnapshotV1 } from '@happier-dev/protocol/prompts/library/promptLibraryCatalogV1';
 import { applyRoleOverrideMutationV1, type RoleOverrideMutationV1 } from '@happier-dev/protocol/prompts/roles/roleOverrideRecordV1';
 import { PROMPT_LIBRARY_ROWS_ROUTE_V1, PromptLibraryRowsListResponseV1Schema, PromptLibraryRowMutationV1Schema,
@@ -88,11 +89,17 @@ export function createCliPromptLibraryStore(input: Readonly<{
   const readStorageContext = async (usage: 'identity' | 'fresh-authority' = 'fresh-authority') => {
     await assertCredentialCurrent();
     const context = await resolveCliAccountStorageContext({ credentials: input.credentials, serverBaseUrl: base, usage,
-      signal: input.signal, shouldContinue: () => { assertCurrent(); return true; }, authorizationHeaders: headers });
+      signal: input.signal, shouldContinue: () => { assertCurrent(); return true; }, authorizationHeaders: headers }).catch(error => {
+      recordPromptPreparationFailure('prompt-library.storage', error);
+      throw error;
+    });
     await assertCredentialCurrent();
     return context;
   };
-  const readRows = async () => PromptLibraryRowsListResponseV1Schema.parse(await request(PROMPT_LIBRARY_ROWS_ROUTE_V1));
+  const readRows = async () => {
+    try { return PromptLibraryRowsListResponseV1Schema.parse(await request(PROMPT_LIBRARY_ROWS_ROUTE_V1)); }
+    catch (error) { recordPromptPreparationFailure('prompt-library.read', error); throw error; }
+  };
   const preparePromptLibraryCatalog = async (onReady?: (catalog: PromptLibraryCatalogSnapshotV1) => void | Promise<void>,
     options?: Readonly<{ maintainSource?: false }>) => {
     const context = await readStorageContext('identity');

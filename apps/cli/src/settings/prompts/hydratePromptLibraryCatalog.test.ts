@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { logger } from '@/ui/logger';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { accountSettingsParse } from '@happier-dev/protocol/account/settings/accountSettings';
 import { emptyPromptLibraryRecordV1, loadPromptLibraryCatalogV1, readPromptLibraryCatalogRecordV1 } from '@happier-dev/protocol/prompts/library/promptLibraryCatalogV1';
@@ -62,6 +63,7 @@ describe('CLI prompt catalog acknowledged mutation publication', () => {
   });
   it('retains confirmed database rollback through prompt catalog hydration', async () => {
     const credentials = seedAccount('prompt-read-rollback');
+    const logs = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
     vi.spyOn(axios, 'get').mockImplementation(async url => {
       if (new URL(String(url)).pathname === '/v1/account/encryption/currentness') return { status: 200, data: {
         mode: 'plain', version: 1, settingsVersion: 7, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1 } };
@@ -69,6 +71,9 @@ describe('CLI prompt catalog acknowledged mutation publication', () => {
     });
     expect(await refreshActivePromptLibraryCatalog({ credentials })).toMatchObject({
       status: 'unavailable', reason: 'database_transaction_conflict_exhausted' });
+    expect(logs).toHaveBeenCalledWith('[Session] Prompt preparation failed', expect.objectContaining({
+      step: 'prompt-library.read', errorCode: 'database_transaction_conflict_exhausted', errorClass: 'Error',
+    }));
   });
   it.each([
     { status: 500, body: { error: 'database_transaction_conflict_exhausted' }, code: 'outcome_unknown' },

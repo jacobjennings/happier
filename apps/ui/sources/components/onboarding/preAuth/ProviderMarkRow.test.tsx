@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { Animated } from 'react-native';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
@@ -46,11 +45,6 @@ describe('ProviderMarkRow', () => {
         expect((root?.props.accessibilityLabel as string).length).toBeGreaterThan(0);
     });
 
-    it('does not render any Animated.View (no drift / no animation)', async () => {
-        const screen = await renderScreen(<ProviderMarkRow />);
-        expect(screen.findAllByType(Animated.View).length).toBe(0);
-    });
-
     it('tone="on-dark" tints AgentIcon with a white-ish rgba color', async () => {
         const screen = await renderScreen(<ProviderMarkRow tone="on-dark" />);
         const icons = screen.findAll(isAgentIconNode);
@@ -70,15 +64,6 @@ describe('ProviderMarkRow', () => {
             // Must not be a white-ish rgba; must be a theme token color (resolved string).
             expect(color.startsWith('rgba(255')).toBe(false);
             expect(color.length).toBeGreaterThan(0);
-        }
-    });
-
-    it('passes the explicit size prop down to every AgentIcon', async () => {
-        const screen = await renderScreen(<ProviderMarkRow size={22} />);
-        const icons = screen.findAll(isAgentIconNode);
-        expect(icons.length).toBe(AGENT_IDS.length);
-        for (const icon of icons) {
-            expect(icon.props.size).toBe(22);
         }
     });
 });

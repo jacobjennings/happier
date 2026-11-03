@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import ts from 'typescript';
+import { createSdkSourceProgram } from '../test-support/sourceProgram.js';
 import * as z from 'zod/mini';
 
 import {
@@ -139,6 +140,12 @@ import type {
 type CurrentVoiceProvidersRegistrationApi = VoiceProvidersRegistrationApi;
 
 const APPROVED_ROOT_VOICE_PROJECTION_EXPORTS = [
+    'VoiceAttemptFailureKind',
+    'VoiceAttemptFailureKindSchema',
+    'VoiceAttemptRecoveryAction',
+    'VoiceAttemptRecoveryActionSchema',
+    'VoiceAttemptPresentation',
+    'VoiceAttemptPresentationSchema',
     'ConnectedAccountHttpHeadersRequest',
     'VOICE_SPEECH_OUTPUT_MAX_BYTES',
     'VoiceAccountOperationService',
@@ -198,6 +205,18 @@ const VOICE_COMPOSITION_EXPORTS = [
 ] as const;
 
 const PROTOCOL_OWNED_VOICE_DTO_PROJECTIONS = [
+    ...[
+        'VoiceAttemptFailureKind',
+        'VoiceAttemptFailureKindSchema',
+        'VoiceAttemptRecoveryAction',
+        'VoiceAttemptRecoveryActionSchema',
+        'VoiceAttemptPresentation',
+        'VoiceAttemptPresentationSchema',
+    ].map(publicName => ({
+        publicName,
+        ownerModule: '@happier-dev/protocol/voice/attemptPresentation',
+        ownerName: publicName,
+    })),
     {
         publicName: 'ConnectedAccountHttpHeadersRequest',
         ownerModule: '@happier-dev/protocol',
@@ -294,20 +313,13 @@ type VoiceFieldPresenceBranches =
     | Readonly<{ kind: 'response'; response?: unknown }>;
 type VoiceToolParameters = Readonly<Record<string, VoiceRealtimeJsonValue>>;
 
-function createSdkProgram(): ts.Program {
-    const configPath = fileURLToPath(new URL('../../tsconfig.json', import.meta.url));
-    const parsed = ts.getParsedCommandLineOfConfigFile(configPath, {}, {
-        ...ts.sys,
-        onUnRecoverableConfigFileDiagnostic(diagnostic) {
-            throw new Error(ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'));
-        },
-    });
-    if (!parsed) throw new Error(`Unable to parse ${configPath}`);
-    return ts.createProgram({
-        rootNames: parsed.fileNames,
-        options: parsed.options,
-        projectReferences: parsed.projectReferences,
-    });
+// These read-only publication assertions inspect the same graph. Building it
+// per assertion repeatedly blocks the worker's runner-message delivery.
+let sdkProgram: ts.Program | undefined;
+function readSdkProgram(): ts.Program {
+    if (sdkProgram) return sdkProgram;
+    sdkProgram = createSdkSourceProgram();
+    return sdkProgram;
 }
 
 function sourceFile(program: ts.Program, relativePath: string): ts.SourceFile {
@@ -405,7 +417,7 @@ function assignedVoiceSdkEntrypoint(publicName: string): string {
 
 describe('Voice package-local publication projection', () => {
     it('projects every Voice DTO through its assigned SDK boundary', () => {
-        const program = createSdkProgram();
+        const program = readSdkProgram();
         for (const projection of PROTOCOL_OWNED_VOICE_DTO_PROJECTIONS) {
             const owner = exportedSymbol(
                 program,
@@ -421,7 +433,7 @@ describe('Voice package-local publication projection', () => {
     }, 120_000);
 
     it('keeps the materialization request at the Connected Accounts public owner', () => {
-        const program = createSdkProgram();
+        const program = readSdkProgram();
         expect(exportedSymbol(
             program,
             'src/connectedAccounts.ts',
@@ -434,7 +446,7 @@ describe('Voice package-local publication projection', () => {
     }, 120_000);
 
     it('contains the approved root /voice projection plus native Mini composition', () => {
-        const program = createSdkProgram();
+        const program = readSdkProgram();
         const approved = [
             ...APPROVED_ROOT_VOICE_PROJECTION_EXPORTS,
             ...VOICE_COMPOSITION_EXPORTS,
@@ -663,7 +675,7 @@ describe('Voice package-local publication projection', () => {
     });
 
     it('leaves Connected Account materialization exclusively on /connected-accounts', () => {
-        const program = createSdkProgram();
+        const program = readSdkProgram();
         const projectionNames = new Set(moduleExportNames(program, 'src/voice/projections.ts'));
         const barrelNames = new Set(moduleExportNames(program, 'src/voice/index.ts'));
         const connectedAccountNames = new Set(

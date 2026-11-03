@@ -14,6 +14,7 @@ import { createDaemonExternalActionTargetResolver } from '@/daemon/externalActio
 import { createCliActionExecutorHarness } from '@/session/actions/createCliActionExecutorHarness';
 import { createClientActionReverseDispatcher } from '@/session/actions/clientActionReverseDispatch';
 import { configuration } from '@/configuration';
+import { adoptServerProfileHomeConnectionDescriptor, getServerProfile } from '@/server/serverProfiles';
 import { writeStoredCredentialsForServerId } from '@/persistence';
 import { createExternalMcpServer } from './createExternalMcpServer';
 
@@ -54,6 +55,8 @@ describe('standalone MCP client Action admission', () => {
     await writeStoredCredentialsForServerId(configuration.activeServerId, credentials);
     let clientAvailable = connected;
     let primarySessionId: string | null = 'canonical-session';
+    const portableHomeId = 'srv_mcp_cursor';
+    let primaryServerId = portableHomeId;
     // The Home HTTP service is a network boundary. Session parsing, Account
     // mode and daemon locality resolution use their real canonical owners.
     const home = createServer((request, response) => {
@@ -77,6 +80,11 @@ describe('standalone MCP client Action admission', () => {
     await once(home, 'listening');
     const homeAddress = home.address();
     if (!homeAddress || typeof homeAddress === 'string') throw new Error('Missing Home address');
+    const previousProfile = await getServerProfile(configuration.activeServerId).catch(() => null);
+    await adoptServerProfileHomeConnectionDescriptor({ expectedProfileId: configuration.activeServerId,
+      createIfMissing: true, observation: 'exact', descriptor: { v: 1, homeServerIdentityId: portableHomeId,
+        canonicalServerUrl: `http://127.0.0.1:${homeAddress.port}`, revision: (previousProfile?.homeConnectionDescriptor?.revision ?? 0) + 1,
+        endpoints: [{ kind: 'https', url: `http://127.0.0.1:${homeAddress.port}` }] } });
     // The connected-client RPC is the network boundary. Admission, placement,
     // reverse dispatch, daemon HTTP and MCP SDK execution remain real.
     const clientActionExecute = createClientActionReverseDispatcher(() => ({
@@ -94,8 +102,8 @@ describe('standalone MCP client Action admission', () => {
           : request.actionId === 'session.pending.next' ? { status: 'none' }
           : request.actionId === 'usage.coach.dismiss' ? coachResult
           : request.actionId === 'session.target.primary.set' ? { ok: true, status: 'ok',
-            sessionId: primarySessionId, serverId: primarySessionId ? configuration.activeServerId : null,
-            address: primarySessionId ? { sessionId: primarySessionId, serverId: configuration.activeServerId } : null } : workspace;
+            sessionId: primarySessionId, serverId: primarySessionId ? primaryServerId : null,
+            address: primarySessionId ? { sessionId: primarySessionId, serverId: primaryServerId } : null } : workspace;
         return { ok: true, result: { v: 1, execution: { ok: true, result } } };
       },
     }));
@@ -132,12 +140,12 @@ describe('standalone MCP client Action admission', () => {
     await mcp.connect(serverTransport);
     await client.connect(clientTransport);
     try {
-      for (const [name, args, connectedResult, absentResult] of [
-        ['ui_find', { op: 'read' }, { status: 'idle' }, { status: 'unavailable', reason: 'noClient' }],
-        ['session_pending_next', {}, { status: 'none' }, { status: 'unavailable', reason: 'noClient' }],
-        ['workspace_tabs_list', {}, workspace, { errorCode: 'unsupported_action', error: 'unsupported_action:workspace.tabs.list' }],
+      for (const [actionId, input, connectedResult, absentResult] of [
+        ['ui.find', { op: 'read' }, { status: 'idle' }, { status: 'unavailable', reason: 'noClient' }],
+        ['session.pending.next', {}, { status: 'none' }, { status: 'unavailable', reason: 'noClient' }],
+        ['workspace.tabs.list', {}, workspace, { errorCode: 'unsupported_action', error: 'unsupported_action:workspace.tabs.list' }],
       ] as const) {
-        const response = CallToolResultSchema.parse(await client.callTool({ name, arguments: args }));
+        const response = CallToolResultSchema.parse(await client.callTool({ name: 'action_execute', arguments: { actionId, input } }));
         const text = response.content.find(entry => entry.type === 'text');
         if (!text || text.type !== 'text') throw new Error('Missing MCP text result');
         expect(JSON.parse(text.text)).toEqual(connected ? connectedResult : absentResult);
@@ -165,7 +173,7 @@ describe('standalone MCP client Action admission', () => {
       expect(admitted).toHaveLength(connected ? 4 : 0);
 
       const dismissCoach = async () => {
-        const response = CallToolResultSchema.parse(await client.callTool({ name: 'usage_coach_dismiss', arguments: coachInput }));
+        const response = CallToolResultSchema.parse(await client.callTool({ name: 'action_execute', arguments: { actionId: 'usage.coach.dismiss', input: coachInput } }));
         const text = response.content.find(entry => entry.type === 'text');
         if (!text || text.type !== 'text') throw new Error('Missing Coach dismissal result');
         return JSON.parse(text.text) as unknown;
@@ -199,25 +207,34 @@ describe('standalone MCP client Action admission', () => {
         expect(getUsageQueryKey(UsageCoachDismissInputSchema.parse(request.input).query)).toBe(getUsageQueryKey(coachQuery));
       }
       if (connected) {
-        const selected = CallToolResultSchema.parse(await client.callTool({ name: 'session_target_primary_set', arguments: {
+        const selected = CallToolResultSchema.parse(await client.callTool({ name: 'action_execute', arguments: { actionId: 'session.target.primary.set', input: {
           sessionId: 'requested-session', serverId: configuration.activeServerId,
-        } }));
+        } } }));
         expect(selected.isError).not.toBe(true);
         expect(admitted.at(-1)).toMatchObject({ actionId: 'session.target.primary.set', context: { defaultSessionId: 'requested-session' } });
-        await client.callTool({ name: 'ui_find', arguments: { op: 'read' } });
+        await client.callTool({ name: 'action_execute', arguments: { actionId: 'ui.find', input: { op: 'read' } } });
         expect(admitted.at(-1)).toMatchObject({ actionId: 'ui.find', context: { defaultSessionId: 'canonical-session' } });
+        primarySessionId = 'foreign-session';
+        primaryServerId = 'srv_foreign';
+        await client.callTool({ name: 'action_execute', arguments: { actionId: 'session.target.primary.set', input: {
+          sessionId: 'foreign-session', serverId: configuration.activeServerId,
+        } } });
+        await client.callTool({ name: 'action_execute', arguments: { actionId: 'ui.find', input: { op: 'read' } } });
+        expect(admitted.at(-1)).toMatchObject({ actionId: 'ui.find', context: { defaultSessionId: 'canonical-session' } });
+        primarySessionId = 'canonical-session';
+        primaryServerId = portableHomeId;
         clientAvailable = false;
-        await client.callTool({ name: 'session_target_primary_set', arguments: {
+        await client.callTool({ name: 'action_execute', arguments: { actionId: 'session.target.primary.set', input: {
           sessionId: 'unaccepted-session', serverId: configuration.activeServerId,
-        } });
+        } } });
         clientAvailable = true;
-        await client.callTool({ name: 'ui_find', arguments: { op: 'read' } });
+        await client.callTool({ name: 'action_execute', arguments: { actionId: 'ui.find', input: { op: 'read' } } });
         expect(admitted.at(-1)).toMatchObject({ actionId: 'ui.find', context: { defaultSessionId: 'canonical-session' } });
         primarySessionId = null;
-        await client.callTool({ name: 'session_target_primary_set', arguments: { sessionId: null } });
+        await client.callTool({ name: 'action_execute', arguments: { actionId: 'session.target.primary.set', input: { sessionId: null } } });
         expect(admitted.at(-1)).toMatchObject({ actionId: 'session.target.primary.set' });
         expect(UiActionDispatchRequestV1Schema.parse(admitted.at(-1)).context).not.toHaveProperty('defaultSessionId');
-        await client.callTool({ name: 'ui_find', arguments: { op: 'read' } });
+        await client.callTool({ name: 'action_execute', arguments: { actionId: 'ui.find', input: { op: 'read' } } });
         expect(UiActionDispatchRequestV1Schema.parse(admitted.at(-1)).context).not.toHaveProperty('defaultSessionId');
       }
     } finally {
@@ -233,10 +250,11 @@ describe('standalone MCP client Action admission', () => {
     const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
     await mcp.connect(serverTransport); await client.connect(clientTransport);
     try {
-      const response = CallToolResultSchema.parse(await client.callTool({ name: 'ui_find', arguments: { op: 'read' } }));
+      const response = CallToolResultSchema.parse(await client.callTool({ name: 'action_execute', arguments: { actionId: 'ui.find', input: { op: 'read' } } }));
       const text = response.content.find(entry => entry.type === 'text');
       if (!text || text.type !== 'text') throw new Error('Missing MCP text result');
       expect(JSON.parse(text.text)).toEqual({ errorCode: 'daemon_unavailable', error: 'daemon_unavailable' });
+      expect(response.isError).toBe(true);
     } finally { await client.close(); await mcp.close(); }
   });
 
@@ -261,7 +279,7 @@ describe('standalone MCP client Action admission', () => {
     const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
     await mcp.connect(serverTransport); await client.connect(clientTransport);
     try {
-      const response = CallToolResultSchema.parse(await client.callTool({ name: 'ui_find', arguments: { op: 'read' } }));
+      const response = CallToolResultSchema.parse(await client.callTool({ name: 'action_execute', arguments: { actionId: 'ui.find', input: { op: 'read' } } }));
       const text = response.content.find(entry => entry.type === 'text');
       if (!text || text.type !== 'text') throw new Error('Missing MCP text result');
       expect(JSON.parse(text.text)).toEqual({ errorCode: 'daemon_unavailable', error: 'daemon_unavailable' });

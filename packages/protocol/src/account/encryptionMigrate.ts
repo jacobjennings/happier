@@ -64,6 +64,7 @@ import {
 } from '../plugins/data/collectionsV1.js';
 import { computeAccountEncryptionMigrateKeyFingerprintV1 } from './encryptionKeyFingerprintV1.js';
 import { StoredJsonContentEnvelopeSchema } from '../storage/storedJsonContentEnvelope.js';
+import { SessionOwnerDisplayEnvelopeV1Schema, type SessionOwnerDisplayEnvelopeV1, validateSessionOwnerDisplayEnvelopeForAccountModeV1 } from '../sessions/metadata/sessionDisplaySchemasV1.js';
 import {
   SESSION_METADATA_LAYOUT_VERSION_V1,
   SessionOwnerMetadataEnvelopeV1Schema,
@@ -540,6 +541,7 @@ export const AccountEncryptionMigrateSessionItemSchema = lazyZodSchema(() => z.s
     expectedAgentStateVersion: NonNegativeSafeIntegerSchema,
     expectedOwnerMetadata: SessionOwnerMetadataEnvelopeV1Schema,
     ownerMetadata: SessionOwnerMetadataEnvelopeV1Schema,
+    ownerDisplay: z.optional(SessionOwnerDisplayEnvelopeV1Schema),
   }));
 export type AccountEncryptionMigrateSessionItem = z.infer<
   typeof AccountEncryptionMigrateSessionItemSchema
@@ -665,6 +667,7 @@ function refineAccountEncryptionMigrateRequest(
       items?: Array<{
         expectedOwnerMetadata: { t: string };
         ownerMetadata: { t: string };
+        ownerDisplay?: SessionOwnerDisplayEnvelopeV1;
       }>;
     };
     artifacts?: {
@@ -837,6 +840,12 @@ function refineAccountEncryptionMigrateRequest(
             path: ['sessions', 'items', index, 'ownerMetadata'],
             message:
               'Session target owner metadata must match the target account encryption mode',
+          });
+        }
+        if (item.ownerDisplay && !validateSessionOwnerDisplayEnvelopeForAccountModeV1({ envelope: item.ownerDisplay, accountMode: request.toMode }).ok) {
+          context.addIssue({
+            code: 'custom', path: ['sessions', 'items', index, 'ownerDisplay'],
+            message: 'Session target owner display must match the target account encryption mode',
           });
         }
       });

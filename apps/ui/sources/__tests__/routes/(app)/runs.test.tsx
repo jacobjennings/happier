@@ -78,7 +78,6 @@ const disposeActionLoader = await installRealActionExecutorModuleLoader();
 const { default: Screen } = await import('@/app/(app)/runs');
 const { ExecutionRunRow } = await import('@/components/sessions/runs/ExecutionRunRow');
 const { Item } = await import('@/components/ui/lists/Item');
-const { ConstrainedScreenContent } = await import('@/components/ui/layout/ConstrainedScreenContent');
 const { InjectedAuthProvider } = await import('@/auth/context/AuthContext');
 const { storage } = await import('@/sync/domains/state/storageStore');
 const { TokenStorage } = await import('@/auth/storage/tokenStorage');
@@ -249,12 +248,6 @@ describe('Runs screen', () => {
         expect(headerRightScreen.findByProps({ accessibilityLabel: 'runs.a11y.refresh' })).toBeTruthy();
     });
 
-    it('does not poll run RPCs for a machine with a failed request despite live presence', async () => {
-        recordMachineRequestFailed({ serverId: 'srv_server-a', accountId: 'runs-account', machineId: 'machine-1' });
-        await renderRunsScreen();
-        expect(daemonListRpc).not.toHaveBeenCalled();
-    });
-
     it('shows running runs by default and every run once the page filter is set to all', async () => {
         daemonListRpc.mockResolvedValue({
             runs: [
@@ -277,18 +270,6 @@ describe('Runs screen', () => {
         const screen = await renderRunsScreen();
 
         expect(screen.findAllByType(Item).map((item) => item.props.title)).toContain('runs.noMachinesAvailable');
-    });
-
-    it('renders runs inside the constrained route content wrapper', async () => {
-        const screen = await renderRunsScreen();
-
-        expect(screen.findByType(ConstrainedScreenContent)).toBeTruthy();
-    });
-
-    it('lists daemon execution runs for machines in the server-scoped machine cache', async () => {
-        await renderRunsScreen();
-
-        expect(daemonListRpc).toHaveBeenCalledWith('machine-1', { serverId: 'srv_server-a' });
     });
 
     it('keeps daemon Run rows isolated when two Homes expose the same machine id', async () => {

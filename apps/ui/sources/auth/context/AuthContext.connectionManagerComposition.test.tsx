@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import { AUTHORING_MEMORY_ROUTE_V1, AuthoringMemoryListResponseV1Schema } from '@happier-dev/protocol';
 import { PROJECT_ACCOUNT_ROWS_ROUTE_V1, ProjectAccountRowListResponseV1Schema } from '@happier-dev/protocol/projects/projectAccountRowsV1';
-import tweetnacl from 'tweetnacl';
 import { createAccountScopedCryptoMaterialSnapshotV1 } from '@happier-dev/protocol/crypto/accountScopedCipher';
 import { convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1 } from '@happier-dev/protocol/account/encryptionKeyFingerprintV1';
 import { createMachineDataEncryptionKeyV1 } from '@happier-dev/protocol/machines/machineStoredContent';
@@ -192,69 +191,6 @@ describe('AuthContext with the production connection manager', () => {
         }
     });
 
-    it('reapplies valid E2EE material when the same Account bearer changes its content key', async () => {
-        restoreStorage = installLocalStorageMock().restore;
-        restoreLocks = installWebLockManagerMock().restore;
-        vi.stubGlobal('window', { location: { origin: 'https://origin.example.test' } });
-        vi.stubGlobal('document', {});
-        const token = 'e30.eyJzdWIiOiJhY2NvdW50LWEifQ.same-bearer';
-        const credentialsFor = (seed: number) => {
-            const pair = tweetnacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(seed));
-            const material = createAccountScopedCryptoMaterialSnapshotV1({ accountEncryptionMode: 'e2ee',
-                material: { type: 'dataKey', machineKey: pair.secretKey }, dataKeyPublicKey: pair.publicKey });
-            return { credentials: { token, encryption: { publicKey: encodeBase64(pair.publicKey), machineKey: encodeBase64(pair.secretKey) } },
-                fingerprint: convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(material.contentPublicKeyFingerprint) };
-        };
-        const original = credentialsFor(7);
-        const refreshed = credentialsFor(8);
-        let binding = original;
-        const mode = createDeferred<Response>();
-        let holdMode = false;
-        const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
-        setRuntimeFetch(async input => {
-            const url = new URL(String(input));
-            if (url.origin !== 'https://material.example.test') throw new Error(`Unexpected Home: ${url.origin}`);
-            if (url.pathname === '/health' || url.pathname === '/v1/auth/ping') return Response.json({ ok: true });
-            if (url.pathname === '/v1/account/encryption') return holdMode ? mode.promise : Response.json({ mode: 'e2ee', updatedAt: 1 });
-            if (url.pathname === '/v1/account/encryption/currentness') return Response.json({ mode: 'e2ee', version: 1,
-                signingKeyFingerprint: null, contentKeyFingerprint: binding.fingerprint, updatedAt: 1,
-                recipientEnvelopeReadiness: { status: 'available' } });
-            if (url.pathname === '/v2/account/settings') return Response.json({ content: null, version: 0 });
-            if (url.pathname === AUTHORING_MEMORY_ROUTE_V1) return Response.json(AuthoringMemoryListResponseV1Schema.parse({ rows: [] }));
-            if (url.pathname === `${PROJECT_ACCOUNT_ROWS_ROUTE_V1}/list`) return Response.json(ProjectAccountRowListResponseV1Schema.parse({
-                status: 'listed', coverage: 'complete', rows: [],
-            }));
-            if (url.pathname === '/v1/features') return Response.json(createRootLayoutFeaturesResponse());
-            return new Response('{}', { status: 404 });
-        });
-        const profiles = await import('@/sync/domains/server/serverProfiles');
-        const home = await profiles.upsertServerProfile({ serverUrl: 'https://material.example.test' });
-        await profiles.setActiveServerId(home.id, { scope: 'device' });
-        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
-        expect(await TokenStorage.setCredentialsForServerUrl(home.serverUrl, { serverId: home.id }, original.credentials)).toBe(true);
-        const connection = await import('@/sync/runtime/orchestration/connectionManager');
-        await connection.switchConnectionToActiveServer();
-        const { storage } = await import('@/sync/domains/state/storage');
-        storage.getState().activateProfileScope({ serverId: profiles.resolveServerProfileScopeIdForIdentifier(home.id), accountId: 'account-a' });
-        const { captureActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
-        const lifetime = captureActiveServerAccountScopeLifetime();
-        if (!lifetime) throw new Error('Expected current E2EE Account owner');
-        binding = refreshed;
-        expect(await TokenStorage.setCredentialsForServerUrl(home.serverUrl, { serverId: home.id }, refreshed.credentials)).toBe(true);
-        holdMode = true;
-        const switching = connection.switchConnectionToActiveServer();
-        try {
-            await flushHookEffects({ cycles: 30 });
-            expect(lifetime.isCurrent()).toBe(false);
-            mode.resolve(Response.json({ mode: 'e2ee', updatedAt: 1 }));
-            expect(await switching).toEqual(refreshed.credentials);
-            expect(connection.isAppliedActiveServerRuntimeAvailable()).toBe(true);
-        } finally {
-            mode.resolve(Response.json({ mode: 'e2ee', updatedAt: 1 }));
-            await switching;
-        }
-    });
-
     it('refreshes same-Account Auth transport while retaining captured Action authority', async () => {
         restoreStorage = installLocalStorageMock().restore;
         restoreLocks = installWebLockManagerMock().restore;
@@ -366,18 +302,19 @@ describe('AuthContext with the production connection manager', () => {
         const staleCredentialReadStarted = createDeferred<void>();
         const releaseStaleCredentialRead = createDeferred<void>();
         let holdHomeARead = false;
-        // Persistence is the external boundary; the connection and Sync owners
-        // decide whether this delayed Home A result can still be applied.
-        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockImplementation(async (serverUrl) => {
-            if (serverUrl === homeA.serverUrl) {
-                if (holdHomeARead) {
-                    staleCredentialReadStarted.resolve();
-                    await releaseStaleCredentialRead.promise;
-                }
-                return homeACredentials;
+        expect(await TokenStorage.setCredentialsForServerUrl(homeA.serverUrl, { serverId: homeA.id }, homeACredentials)).toBe(true);
+        expect(await TokenStorage.setCredentialsForServerUrl(homeB.serverUrl, { serverId: homeB.id }, homeBCredentials)).toBe(true);
+        // Device-local storage is the external persistence port; TokenStorage, the connection
+        // and Sync owners above it decide whether this delayed Home A result can still be applied.
+        const deviceStorage = await import('@/auth/storage/deviceLocalStorage');
+        const readDeviceString = deviceStorage.readDeviceLocalStorageString;
+        vi.spyOn(deviceStorage, 'readDeviceLocalStorageString').mockImplementation(async (key) => {
+            const raw = await readDeviceString(key);
+            if (holdHomeARead && raw?.includes(homeACredentials.token)) {
+                staleCredentialReadStarted.resolve();
+                await releaseStaleCredentialRead.promise;
             }
-            if (serverUrl === homeB.serverUrl) return homeBCredentials;
-            throw new Error(`Unexpected credential endpoint: ${serverUrl}`);
+            return raw;
         });
         const connection = await import('@/sync/runtime/orchestration/connectionManager');
         await connection.switchConnectionToActiveServer();

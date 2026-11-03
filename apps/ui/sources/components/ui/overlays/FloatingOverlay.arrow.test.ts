@@ -1,7 +1,11 @@
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react-test-renderer';
 import { renderScreen } from '@/dev/testkit';
+import { ListPresentationProvider, useListPresentation } from '@/components/ui/lists/listPresentation';
+import { usePopoverScrollSourceRef } from '@/components/ui/popover/PopoverScrollSource';
 import { FLOATING_OVERLAY_METRICS } from './floatingOverlayMetrics';
+import { FloatingOverlay } from './FloatingOverlay';
 
 (
     globalThis as typeof globalThis & {
@@ -14,17 +18,18 @@ const shared = vi.hoisted(() => ({
     platformOS: 'web' as 'web' | 'ios' | 'android',
 }));
 
+// Platform and theme are read when a test renders, so one module graph serves every scenario.
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-    return createReactNativeWebMock(
-        {
-                    Platform: {
-                        OS: shared.platformOS,
-                    },
-                    ScrollView: (props: Record<string, unknown> & { children?: React.ReactNode }) =>
-                        React.createElement('ScrollView', props, props.children),
-                }
-    );
+    return createReactNativeWebMock({
+        Platform: {
+            get OS() {
+                return shared.platformOS;
+            },
+        },
+        ScrollView: (props: Record<string, unknown> & { children?: React.ReactNode }) =>
+            React.createElement('ScrollView', props, props.children),
+    });
 });
 
 vi.mock('react-native-unistyles', async () => {
@@ -33,6 +38,18 @@ vi.mock('react-native-unistyles', async () => {
     const base = await createUnistylesMock();
     const rt = createThemeRuntimeFixture();
     const resolveTheme = () => createThemeFixture(shared.themeOverride);
+    // A themed stylesheet resolves against the current theme on each read, like the runtime's.
+    const themedStyles = (factory: (theme: unknown, runtime: unknown) => unknown) => {
+        const read = () => factory(resolveTheme(), rt) as Record<PropertyKey, unknown>;
+        return new Proxy({}, {
+            get: (_target, key) => read()[key],
+            has: (_target, key) => key in read(),
+            ownKeys: () => Reflect.ownKeys(read()),
+            getOwnPropertyDescriptor: (_target, key) => (key in read()
+                ? { value: read()[key], enumerable: true, configurable: true, writable: false }
+                : undefined),
+        });
+    };
     return {
         ...base,
         useUnistyles: () => ({ theme: resolveTheme(), rt }),
@@ -40,7 +57,7 @@ vi.mock('react-native-unistyles', async () => {
             ...base.StyleSheet,
             create: (input: unknown) =>
                 typeof input === 'function'
-                    ? (input as (theme: unknown, runtime: unknown) => unknown)(resolveTheme(), rt)
+                    ? themedStyles(input as (theme: unknown, runtime: unknown) => unknown)
                     : input,
         },
     };
@@ -63,28 +80,16 @@ vi.mock('react-native-reanimated', async () => {
     };
 });
 
-vi.mock('@/components/ui/scroll/ScrollEdgeFades', () => ({
-    ScrollEdgeFades: () => React.createElement('ScrollEdgeFades'),
+// The platform gradient is a native renderer boundary; the scroll-edge hook, fades and indicators stay real.
+vi.mock('expo-linear-gradient', () => ({
+    LinearGradient: (props: Record<string, unknown>) => React.createElement('LinearGradient', props),
 }));
 
-vi.mock('@/components/ui/scroll/ScrollEdgeIndicators', () => ({
-    ScrollEdgeIndicators: () => React.createElement('ScrollEdgeIndicators'),
-}));
-
-vi.mock('@/components/ui/scroll/useScrollEdgeFades', () => ({
-    useScrollEdgeFades: () => ({
-        canScrollX: false,
-        canScrollY: false,
-        visibility: { top: false, bottom: false, left: false, right: false },
-        onViewportLayout: () => {},
-        onContentSizeChange: () => {},
-        onScroll: () => {},
-        onMomentumScrollEnd: () => {},
-    }),
-}));
+function Child() {
+    return null;
+}
 
 async function renderOverlay(props: Record<string, unknown>) {
-    const { FloatingOverlay } = await import('./FloatingOverlay');
     return renderScreen(
         React.createElement(FloatingOverlay, {
             ...props,
@@ -103,71 +108,41 @@ function flattenStyle(style: unknown): Record<string, unknown> {
 
 type RenderedOverlayScreen = Awaited<ReturnType<typeof renderOverlay>>;
 
-function findAnimatedViewStyles(screen: RenderedOverlayScreen): ReadonlyArray<Readonly<{
-    rawStyle: unknown;
-    style: Record<string, unknown>;
-}>> {
-    return screen.findAllByType('AnimatedView' as never).map((candidate) => ({
-        rawStyle: candidate.props.style,
-        style: flattenStyle(candidate.props.style),
-    }));
-}
-
-function findOverlayFrame(screen: RenderedOverlayScreen): Readonly<{
-    rawStyle: unknown;
-    style: Record<string, unknown>;
-}> {
-    const node = findAnimatedViewStyles(screen).find(({ style }) => (
-        style.borderRadius === FLOATING_OVERLAY_METRICS.radiusPx
-        && style.overflow !== 'hidden'
-        && style.maxHeight !== undefined
-    ));
-    if (!node) throw new Error('expected floating overlay shadow frame to exist');
-    return node;
-}
-
 function findOverlayFrameStyle(screen: RenderedOverlayScreen): Record<string, unknown> {
-    return findOverlayFrame(screen).style;
-}
-
-function findOverlayFrameRawStyle(screen: RenderedOverlayScreen): unknown {
-    return findOverlayFrame(screen).rawStyle;
-}
-
-function findOverlayClipSurface(screen: RenderedOverlayScreen): Readonly<{
-    rawStyle: unknown;
-    style: Record<string, unknown>;
-}> {
-    // The clipped material is a platform View/BlurView, while only the shadow
-    // frame animates. Inspect its public geometry without fixing the renderer tier.
-    const candidate = screen.tree.root.findAll((node) => typeof node.type === 'string').find((node) => (
-        flattenStyle(node.props.style).overflow === 'hidden'
-        && flattenStyle(node.props.style).borderRadius === FLOATING_OVERLAY_METRICS.radiusPx
-    ));
-    const node = candidate ? { rawStyle: candidate.props.style, style: flattenStyle(candidate.props.style) } : undefined;
-    if (!node) throw new Error('expected floating overlay clipped surface to exist');
-    return node;
+    const style = screen.findAllByType('AnimatedView' as never)
+        .map((candidate) => flattenStyle(candidate.props.style))
+        .find((candidate) => (
+            candidate.borderRadius === FLOATING_OVERLAY_METRICS.radiusPx
+            && candidate.overflow !== 'hidden'
+            && candidate.maxHeight !== undefined
+        ));
+    if (!style) throw new Error('expected floating overlay shadow frame to exist');
+    return style;
 }
 
 function findOverlayClipStyle(screen: RenderedOverlayScreen): Record<string, unknown> {
-    return findOverlayClipSurface(screen).style;
+    // The clipped material is a platform View/BlurView, while only the shadow
+    // frame animates. Inspect its public geometry without fixing the renderer tier.
+    const style = screen.tree.root.findAll((node) => typeof node.type === 'string')
+        .map((node) => flattenStyle(node.props.style))
+        .find((candidate) => (
+            candidate.overflow === 'hidden'
+            && candidate.borderRadius === FLOATING_OVERLAY_METRICS.radiusPx
+        ));
+    if (!style) throw new Error('expected floating overlay clipped surface to exist');
+    return style;
 }
-
-function findOverlayClipRawStyle(screen: RenderedOverlayScreen): unknown {
-    return findOverlayClipSurface(screen).rawStyle;
-}
-
 
 function hasShadow(style: Record<string, unknown>): boolean {
     return style.boxShadow !== undefined || style.shadowOpacity !== undefined || style.elevation !== undefined;
 }
 
-function Child() {
-    return null;
+// The suite setup renders icons as `Icon` hosts.
+function countIcons(screen: RenderedOverlayScreen, name: string): number {
+    return screen.findAll((node) => String(node.type) === 'Icon' && node.props.name === name).length;
 }
 
 afterEach(() => {
-    vi.resetModules();
     shared.themeOverride = {};
     shared.platformOS = 'web';
 });
@@ -182,14 +157,36 @@ describe('FloatingOverlay', () => {
         expect(screen.findByTestId('floating-overlay-arrow')).toBeTruthy();
     });
 
-    it('renders edge indicators when enabled without edge fades', async () => {
+    it('renders edge indicators for the scrolled-past edges when enabled without edge fades', async () => {
         const screen = await renderOverlay({
             maxHeight: 200,
             edgeIndicators: true,
             edgeFades: false,
         });
+        expect(countIcons(screen, 'caret-up') + countIcons(screen, 'caret-down')).toBe(0);
 
-        expect(screen.findByType('ScrollEdgeIndicators')).toBeTruthy();
+        const scroller = screen.findAllByType('AnimatedScrollView' as never)[0]!;
+        await act(async () => {
+            scroller.props.onScroll({ nativeEvent: {
+                contentOffset: { x: 0, y: 100 },
+                layoutMeasurement: { width: 200, height: 100 },
+                contentSize: { width: 200, height: 500 },
+            } });
+        });
+        expect(countIcons(screen, 'caret-up')).toBeGreaterThan(0);
+        expect(countIcons(screen, 'caret-down')).toBeGreaterThan(0);
+
+        await act(async () => {
+            scroller.props.onScroll({ nativeEvent: {
+                contentOffset: { x: 0, y: 0 },
+                layoutMeasurement: { width: 200, height: 100 },
+                contentSize: { width: 200, height: 500 },
+            } });
+        });
+        expect(countIcons(screen, 'caret-up')).toBe(0);
+        expect(countIcons(screen, 'caret-down')).toBeGreaterThan(0);
+        // Indicators alone: no fade gradient is drawn over the content.
+        expect(screen.findAllByType('LinearGradient' as never)).toHaveLength(0);
     });
 
     it('keeps themed overlay shadow even when the floating border and its edge are transparent', async () => {
@@ -246,7 +243,6 @@ describe('FloatingOverlay', () => {
         };
 
         for (const surfaceChrome of ['modal', 'theme'] as const) {
-            vi.resetModules();
             const screen = await renderOverlay({
                 maxHeight: 200,
                 surfaceChrome,
@@ -258,37 +254,55 @@ describe('FloatingOverlay', () => {
             expect(hasShadow(frameStyle)).toBe(true);
             expect(clipStyle.overflow).toBe('hidden');
             expect(hasShadow(clipStyle)).toBe(false);
+            // The clip bounds the content to the rounded surface; the frame keeps the same bound.
+            expect(clipStyle.maxHeight).toBe(200);
+            expect(frameStyle.maxHeight).toBe(200);
         }
     });
+});
 
-    it('keeps themed surface chrome split between a shadow frame and clipped content surface', async () => {
-        shared.themeOverride = {
-            colors: {
-                border: { modal: 'rgba(0,0,0,0.08)' },
-                edge: { modal: 'rgba(0,0,0,0.117)' },
-            },
-        };
+// I1: a menu or picker opened from a configuration page keeps its grouped look. The overlay is the
+// one owner of that reset, on both the plain and the arrowed frame.
+function PresentationProbe() {
+    return React.createElement('Probe', { presentation: useListPresentation() });
+}
 
-        const screen = await renderOverlay({
-            maxHeight: 200,
-            surfaceChrome: 'theme',
-        });
+describe('FloatingOverlay list presentation (I1)', () => {
+    it.each([
+        ['without an arrow', {}],
+        ['with an arrow', { arrow: { placement: 'bottom' } }],
+    ])('resets page presentation to grouped for its content %s', async (_label, props) => {
+        const screen = await renderScreen(
+            React.createElement(
+                ListPresentationProvider,
+                { value: 'page', children: null },
+                React.createElement(PresentationProbe),
+                React.createElement(FloatingOverlay, {
+                    maxHeight: 200,
+                    ...props,
+                    children: React.createElement(PresentationProbe),
+                } as React.ComponentProps<typeof FloatingOverlay>),
+            ),
+        );
+        const probes = screen.findAllByType('Probe' as never).map((node) => node.props.presentation);
+        // The page content outside the overlay stays page; the overlay content is grouped.
+        expect(probes).toEqual(['page', 'grouped']);
+    });
+});
 
-        const frameRawStyle = findOverlayFrameRawStyle(screen);
-        expect(Array.isArray(frameRawStyle)).toBe(true);
-        const frameStyleEntries = frameRawStyle as readonly unknown[];
-        expect(frameStyleEntries[0]).toMatchObject({
-            borderRadius: FLOATING_OVERLAY_METRICS.radiusPx,
-        });
-        expect(flattenStyle(frameStyleEntries[0]).overflow).toBeUndefined();
-        expect(frameStyleEntries[1]).toEqual({ maxHeight: 200 });
-
-        const clipRawStyle = findOverlayClipRawStyle(screen);
-        expect(flattenStyle(clipRawStyle)).toMatchObject({
-            borderRadius: FLOATING_OVERLAY_METRICS.radiusPx,
-            overflow: 'hidden',
-            borderWidth: 0,
-            maxHeight: 200,
-        });
+// L77: a list inside an overlay (Home's Sections popover) autoscrolls the overlay's own scroller, never the page behind it.
+describe('FloatingOverlay scroll source', () => {
+    it('registers its scroller as the scroll source of its content, and still hands the same node to scrollViewRef', async () => {
+        const scroller = { scroller: true };
+        let seen: React.RefObject<unknown> | null = null;
+        function SourceProbe() { seen = usePopoverScrollSourceRef(); return null; }
+        const external = React.createRef<unknown>();
+        await renderScreen(
+            React.createElement(FloatingOverlay, { maxHeight: 200, scrollViewRef: external as never, children: React.createElement(SourceProbe) }),
+            { createNodeMock: (element) => (element.type === 'AnimatedScrollView' ? scroller : null) },
+        );
+        expect(seen).not.toBeNull();
+        expect(seen!.current).toBe(scroller);
+        expect(external.current).toBe(scroller);
     });
 });

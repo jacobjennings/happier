@@ -1,130 +1,166 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { act, renderHook } from '@/dev/testkit';
+
 import type {
     EditorViewportWindowRect,
     LinkBubbleState,
     MarkdownEditorCommand,
     MarkdownEditorController,
 } from '../../markdownEditorTypes';
+import { useMarkdownLinkBubble } from '../useMarkdownLinkBubble';
 
 /**
- * Minimal controller fixture for the link-bubble host hook.
- *
- * Mirrors the slash-menu host hook test pattern: collects `runCommand` calls so
- * we can assert that the right `MarkdownEditorCommand` was dispatched, exposes
- * helpers to fire link-bubble + viewport-layout callbacks the hook subscribes
- * to, and surfaces the spies as `vi.fn()` so unsubscribe behavior is verifiable.
+ * Fake controller at the editor-surface boundary: records dispatched commands
+ * and lets the test fire the link-bubble and viewport-layout callbacks the hook
+ * subscribes to.
  */
-function createMockController(): MarkdownEditorController & {
+function createFakeController(options: {
+    measuredViewport?: EditorViewportWindowRect | null;
+} = {}): MarkdownEditorController & {
+    commands: MarkdownEditorCommand[];
     fireBubble: (state: LinkBubbleState | null) => void;
     fireViewportLayout: (rect: EditorViewportWindowRect | null) => void;
-    runCommandSpy: ReturnType<typeof vi.fn>;
+    hasBubbleSubscriber: () => boolean;
 } {
     let bubbleCb: ((state: LinkBubbleState | null) => void) | null = null;
     let viewportCb: ((rect: EditorViewportWindowRect | null) => void) | null = null;
-    const runCommandSpy = vi.fn();
+    const commands: MarkdownEditorCommand[] = [];
 
     return {
-        runCommand: (command: MarkdownEditorCommand) => runCommandSpy(command),
-        subscribeSelection: vi.fn(() => () => {}),
-        subscribeLinkBubble: vi.fn((cb) => {
+        commands,
+        runCommand: (command) => {
+            commands.push(command);
+        },
+        subscribeSelection: () => () => {},
+        subscribeLinkBubble: (cb) => {
             bubbleCb = cb;
             return () => {
                 bubbleCb = null;
             };
-        }),
-        subscribeEditorViewportLayout: vi.fn((cb) => {
+        },
+        subscribeEditorViewportLayout: (cb) => {
             viewportCb = cb;
             return () => {
                 viewportCb = null;
             };
-        }),
-        measureEditorViewportInWindow: vi.fn(() => Promise.resolve(null)),
+        },
+        measureEditorViewportInWindow: vi.fn(() => Promise.resolve(options.measuredViewport ?? null)),
         fireBubble: (state) => bubbleCb?.(state),
         fireViewportLayout: (rect) => viewportCb?.(rect),
-        runCommandSpy,
+        hasBubbleSubscriber: () => bubbleCb !== null,
     };
 }
 
+const LINK: LinkBubbleState = {
+    href: 'https://github.com',
+    caretRect: { left: 100, top: 200, height: 18 },
+};
+
 describe('useMarkdownLinkBubble', () => {
-    it('module exports useMarkdownLinkBubble', async () => {
-        const mod = await import('../useMarkdownLinkBubble');
-        expect(mod.useMarkdownLinkBubble).toBeDefined();
-        expect(typeof mod.useMarkdownLinkBubble).toBe('function');
+    it('dispatches openLink, unlink and a trimmed setLink through the controller', async () => {
+        const controller = createFakeController();
+        const hook = await renderHook(() => useMarkdownLinkBubble(controller));
+
+        hook.getCurrent().onOpenLink();
+        hook.getCurrent().onUnlink();
+        hook.getCurrent().onSetLink('  https://example.com  ');
+
+        expect(controller.commands).toEqual([
+            { kind: 'openLink' },
+            { kind: 'unlink' },
+            { kind: 'setLink', href: 'https://example.com' },
+        ]);
+
+        await hook.unmount();
     });
 
-    it('controller-level command dispatch routes setLink/unlink/openLink', async () => {
-        // The hook returns onSetLink / onUnlink / onOpenLink that dispatch
-        // through controller.runCommand. We verify the contract by simulating
-        // the same dispatch shape the hook uses internally.
-        const controller = createMockController();
+    it('treats a blank href in onSetLink as unlink instead of writing an empty link', async () => {
+        const controller = createFakeController();
+        const hook = await renderHook(() => useMarkdownLinkBubble(controller));
 
-        controller.runCommand({ kind: 'openLink' });
-        expect(controller.runCommandSpy).toHaveBeenCalledWith({ kind: 'openLink' });
+        hook.getCurrent().onSetLink('   ');
 
-        controller.runCommand({ kind: 'unlink' });
-        expect(controller.runCommandSpy).toHaveBeenCalledWith({ kind: 'unlink' });
+        expect(controller.commands).toEqual([{ kind: 'unlink' }]);
 
-        controller.runCommand({ kind: 'setLink', href: 'https://example.com' });
-        expect(controller.runCommandSpy).toHaveBeenCalledWith({
-            kind: 'setLink',
-            href: 'https://example.com',
+        await hook.unmount();
+    });
+
+    it('opens on the link under the caret, closes when it leaves, and clears on unmount', async () => {
+        const controller = createFakeController();
+        const hook = await renderHook(() => useMarkdownLinkBubble(controller));
+        expect(hook.getCurrent().open).toBe(false);
+        expect(hook.getCurrent().href).toBe('');
+
+        await act(async () => {
+            controller.fireBubble(LINK);
         });
+        expect(hook.getCurrent().open).toBe(true);
+        expect(hook.getCurrent().href).toBe('https://github.com');
+
+        await act(async () => {
+            controller.fireBubble(null);
+        });
+        expect(hook.getCurrent().open).toBe(false);
+
+        await hook.unmount();
+        expect(controller.hasBubbleSubscriber()).toBe(false);
     });
 
-    it('subscribeLinkBubble fires the callback with link state', () => {
-        const controller = createMockController();
-        const received: Array<LinkBubbleState | null> = [];
-        const unsubscribe = controller.subscribeLinkBubble!((state) => {
-            received.push(state);
+    it('translates the caret rect into window coordinates with the subscribed viewport offset', async () => {
+        const controller = createFakeController();
+        const hook = await renderHook(() => useMarkdownLinkBubble(controller));
+
+        await act(async () => {
+            controller.fireViewportLayout({ left: 50, top: 80, width: 800, height: 600 });
+            controller.fireBubble(LINK);
         });
 
-        controller.fireBubble({
-            href: 'https://github.com',
-            caretRect: { left: 10, top: 20, height: 16 },
+        expect(hook.getCurrent().anchor).toEqual({ kind: 'rect', rect: { left: 150, top: 280, height: 18 } });
+
+        await hook.unmount();
+    });
+
+    it('falls back to a one-shot viewport measurement before any layout event arrives', async () => {
+        const controller = createFakeController({
+            measuredViewport: { left: 7, top: 9, width: 320, height: 480 },
         });
-        expect(received).toHaveLength(1);
-        expect(received[0]?.href).toBe('https://github.com');
+        const hook = await renderHook(() => useMarkdownLinkBubble(controller));
 
-        controller.fireBubble(null);
-        expect(received).toHaveLength(2);
-        expect(received[1]).toBeNull();
+        await act(async () => {
+            controller.fireBubble(LINK);
+        });
 
-        unsubscribe();
+        expect(controller.measureEditorViewportInWindow).toHaveBeenCalled();
+        expect(hook.getCurrent().anchor).toEqual({ kind: 'rect', rect: { left: 107, top: 209, height: 18 } });
+
+        await hook.unmount();
     });
 
-    it('viewport offset translation matches expected screen coordinates', () => {
-        // The hook adds viewportRect.left/top to caretRect.left/top. Verify the
-        // math here so the hook contract is documented + tested deterministically.
-        const caretRect = { left: 100, top: 200, height: 18 };
-        const viewportRect: EditorViewportWindowRect = {
-            left: 50, top: 80, width: 800, height: 600,
-        };
+    it('stays dismissed after onRequestClose until the caret moves to a different link', async () => {
+        const controller = createFakeController();
+        const hook = await renderHook(() => useMarkdownLinkBubble(controller));
 
-        const screen = {
-            left: caretRect.left + viewportRect.left,
-            top: caretRect.top + viewportRect.top,
-            height: caretRect.height,
-        };
+        await act(async () => {
+            controller.fireBubble(LINK);
+        });
+        await act(async () => {
+            hook.getCurrent().onRequestClose();
+        });
+        expect(hook.getCurrent().open).toBe(false);
 
-        expect(screen).toEqual({ left: 150, top: 280, height: 18 });
-    });
+        // Same link again (e.g. the caret moved within it): still dismissed.
+        await act(async () => {
+            controller.fireBubble({ ...LINK, caretRect: { left: 120, top: 200, height: 18 } });
+        });
+        expect(hook.getCurrent().open).toBe(false);
 
-    it('empty href in onSetLink is treated as unlink', () => {
-        // The hook trims and falls back to unlink for empty strings.
-        // Simulate the same branch the hook takes.
-        const controller = createMockController();
+        await act(async () => {
+            controller.fireBubble({ ...LINK, href: 'https://example.com' });
+        });
+        expect(hook.getCurrent().open).toBe(true);
+        expect(hook.getCurrent().href).toBe('https://example.com');
 
-        const onSetLink = (next: string) => {
-            const trimmed = next.trim();
-            if (trimmed.length === 0) {
-                controller.runCommand({ kind: 'unlink' });
-                return;
-            }
-            controller.runCommand({ kind: 'setLink', href: trimmed });
-        };
-
-        onSetLink('   ');
-        expect(controller.runCommandSpy).toHaveBeenCalledWith({ kind: 'unlink' });
+        await hook.unmount();
     });
 });

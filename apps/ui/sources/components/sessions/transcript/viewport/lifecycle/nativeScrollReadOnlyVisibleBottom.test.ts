@@ -6,83 +6,47 @@ import {
 } from './nativeScrollReadOnlyVisibleBottom';
 
 describe('native scroll read-only visible-bottom decision', () => {
+    const releasedVisibleBottom = {
+        bottomFollowMode: 'released' as const,
+        distanceFromLiveTailPx: 0,
+        followIntentIsPinned: true,
+        followIntentWantsPinned: true,
+        isTrusted: false,
+        pinnedOffsetThresholdPx: 72,
+    };
+
     it('records passive native visible-bottom observations while released', () => {
-        expect(resolveNativeScrollReadOnlyVisibleBottomDecision({
-            bottomFollowMode: 'released',
-            distanceFromLiveTailPx: 0,
-            followIntentIsPinned: true,
-            followIntentWantsPinned: true,
-            isNative: true,
-            isTrusted: false,
-            pinnedOffsetThresholdPx: 72,
-        })).toEqual({
+        expect(resolveNativeScrollReadOnlyVisibleBottomDecision(releasedVisibleBottom)).toEqual({
             distanceFromLiveTailPx: 0,
             pinnedOffsetThresholdPx: 72,
             type: 'record-visible-bottom',
         });
     });
 
-    it('ignores trusted observations', () => {
-        expect(resolveNativeScrollReadOnlyVisibleBottomDecision({
-            bottomFollowMode: 'released',
-            distanceFromLiveTailPx: 0,
-            followIntentIsPinned: true,
-            followIntentWantsPinned: true,
-            isNative: true,
-            isTrusted: true,
-            pinnedOffsetThresholdPx: 72,
-        })).toEqual({
-            reason: 'trusted-observation',
-            type: 'ignore',
-        });
-    });
-
-    it('ignores observations while already following', () => {
-        expect(resolveNativeScrollReadOnlyVisibleBottomDecision({
-            bottomFollowMode: 'following',
-            distanceFromLiveTailPx: 0,
-            followIntentIsPinned: true,
-            followIntentWantsPinned: true,
-            isNative: true,
-            isTrusted: false,
-            pinnedOffsetThresholdPx: 72,
-        })).toEqual({
-            reason: 'already-following',
-            type: 'ignore',
-        });
-    });
-
-    it('ignores observations when the resolved intent is not visibly pinned', () => {
-        expect(resolveNativeScrollReadOnlyVisibleBottomDecision({
-            bottomFollowMode: 'released',
-            distanceFromLiveTailPx: 96,
-            followIntentIsPinned: false,
-            followIntentWantsPinned: true,
-            isNative: true,
-            isTrusted: false,
-            pinnedOffsetThresholdPx: 72,
-        })).toEqual({
+    it.each([
+        { case: 'trusted observations', overrides: { isTrusted: true }, reason: 'trusted-observation' },
+        { case: 'observations while already following', overrides: { bottomFollowMode: 'following' as const }, reason: 'already-following' },
+        {
+            case: 'observations when the resolved intent is not visibly pinned',
+            overrides: { distanceFromLiveTailPx: 96, followIntentIsPinned: false },
             reason: 'not-visible-live-tail',
-            type: 'ignore',
-        });
-    });
-
-    it('ignores observations when the resolved intent does not want the live tail', () => {
-        expect(resolveNativeScrollReadOnlyVisibleBottomDecision({
-            bottomFollowMode: 'released',
-            distanceFromLiveTailPx: 0,
-            followIntentIsPinned: true,
-            followIntentWantsPinned: false,
-            isNative: true,
-            isTrusted: false,
-            pinnedOffsetThresholdPx: 72,
-        })).toEqual({
+        },
+        {
+            case: 'observations when the resolved intent does not want the live tail',
+            overrides: { followIntentWantsPinned: false },
             reason: 'not-wants-pinned',
+        },
+    ])('ignores $case', ({ overrides, reason }) => {
+        expect(resolveNativeScrollReadOnlyVisibleBottomDecision({
+            ...releasedVisibleBottom,
+            ...overrides,
+        })).toEqual({
+            reason,
             type: 'ignore',
         });
     });
 
-    it('creates a session-scoped generic read-only visible-bottom effect for record decisions', () => {
+    it('creates a session-scoped generic read-only visible-bottom effect only for record decisions', () => {
         expect(resolveNativeScrollReadOnlyVisibleBottomGenericEffects({
             distanceFromLiveTailPx: 3.5,
             pinnedOffsetThresholdPx: 72,
@@ -104,9 +68,6 @@ describe('native scroll read-only visible-bottom decision', () => {
             },
             type: 'apply-generic-read-only-visible-bottom-state',
         }]);
-    });
-
-    it('creates no effects for ignored decisions', () => {
         expect(resolveNativeScrollReadOnlyVisibleBottomGenericEffects({
             reason: 'trusted-observation',
             type: 'ignore',

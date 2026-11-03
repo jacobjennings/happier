@@ -35,6 +35,7 @@ export const MachineOperationProtocolCapabilitiesV1Schema = lazyZodSchema(() => 
     sessionPendingResetStart: z.optional(MachineOperationProtocolCapabilityV1Schema),
     sessionSpawn: z.optional(MachineOperationProtocolCapabilityThroughV2Schema),
     sessionSpawnPlacementOrigin: z.optional(MachineOperationProtocolCapabilityV1Schema),
+    sessionSpawnAuthoringOrigin: z.optional(MachineOperationProtocolCapabilityV1Schema),
     pluginWebhookClaim: z.optional(MachineOperationProtocolCapabilityV1Schema),
     /** Exact parent-PAT plus installation-signed downstream request support. */
     externalActionExecutionAuthorization: z.optional(MachineOperationProtocolCapabilityV1Schema),

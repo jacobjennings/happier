@@ -767,20 +767,20 @@ describe('voiceSettings', () => {
     });
   });
 
-  it('drops malformed or oversized provider envelopes while preserving neighboring valid entries', () => {
+  it('drops malformed provider envelopes while retaining valid JSON beyond the retired Voice-local budget', () => {
     const malformedProviderId = 'acme.voice/malformed';
-    const oversizedProviderId = 'acme.voice/oversized';
+    const largeProviderId = 'acme.voice/large';
     const validProviderId = 'acme.voice/valid-unknown';
     const parsed = voiceSettingsParse({
       providers: {
         [malformedProviderId]: { schemaVersion: 0, config: { nope: true } },
-        [oversizedProviderId]: { schemaVersion: 1, config: { value: 'x'.repeat(70_000) } },
+        [largeProviderId]: { schemaVersion: 1, config: { value: 'x'.repeat(70_000) } },
         [validProviderId]: { schemaVersion: 1, config: { kept: true } },
       },
     });
 
     expect(parsed.providers[malformedProviderId]).toBeUndefined();
-    expect(parsed.providers[oversizedProviderId]).toBeUndefined();
+    expect(parsed.providers[largeProviderId]).toEqual({ schemaVersion: 1, config: { value: 'x'.repeat(70_000) } });
     expect(parsed.providers[validProviderId]).toEqual({ schemaVersion: 1, config: { kept: true } });
   });
 
@@ -837,7 +837,7 @@ describe('voiceSettings', () => {
     expect(voiceSettingsDefaults.welcome.mode).toBe('immediate');
     expect(agent?.commitIsolation).toBe(false);
     expect(agent?.transcript?.persistenceMode).toBe('ephemeral');
-    expect(agent?.transcript?.epoch).toBe(0);
+    expect(agent.transcript).not.toHaveProperty('epoch');
   });
 
   it('defaults include hands-free endpointing settings for local voice', () => {

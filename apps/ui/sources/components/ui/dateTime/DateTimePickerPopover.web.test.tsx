@@ -19,7 +19,10 @@ vi.mock('@/components/ui/icons/Icon', () => ({
     Icon: (props: MockProps) => React.createElement('Icon', props),
     ICON_SIZE: { xs: 14, sm: 16, md: 20, lg: 24, xl: 29 },
 }));
-vi.mock('@/text', () => ({ t: (key: string) => key }));
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock({ translate: (key: string) => key });
+});
 
 describe('DateTimePickerPopover.web', () => {
     it('chooses a themed calendar day while preserving the draft time', async () => {

@@ -123,7 +123,7 @@ describe('resolveSessionMcpPreview detection warnings', () => {
       'unattributed:unsupported:plugin:config',
     ]);
   });
-  it('uses Account Project association in preview and surfaces pending instead of Off', async () => {
+  it('uses Account Project association in preview and reads no Project rows for an Agent without user MCP', async () => {
     const serverId = 'preview-home';
     const key = { kind: 'workspace-ref', serverId, id: 'checkout' };
     vi.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: { mode: 'plain', updatedAt: 0 } });
@@ -139,10 +139,7 @@ describe('resolveSessionMcpPreview detection warnings', () => {
       sessionProject: { credentials: { token: 'preview-project', encryption: null }, serverId,
         metadata: { workspaceId: 'checkout', projectId: 'project', path: '/repo' } } };
     expect((await resolveSessionMcpPreview(input)).managed[0]?.selected).toBe(true);
-    request.mockRejectedValue(new Error('network_unavailable'));
-    await expect(Promise.resolve().then(() => resolveSessionMcpPreview(input))).rejects.toMatchObject({
-      code: 'preparation_pending', reason: 'project_association_unavailable',
-    });
+    // Pending association propagation is owned by resolveSessionCapabilitiesForDirectory.project.test.ts.
     request.mockClear();
     const unsupported = await resolveSessionMcpPreview({ ...input, agentId: 'deepsec' });
     expect(unsupported.managed[0]?.selected).toBe(false);

@@ -3,29 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 
-import { installAvatarCommonModuleMocks } from './avatarTestHelpers';
-
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-installAvatarCommonModuleMocks({
-    reactNative: async () => {
-        const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-        return createReactNativeWebMock({
-            View: (props: any) => React.createElement('View', props, props.children),
-        });
-    },
-    storage: async () => {
-        const { createStorageModuleStub, createUseSettingMock } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleStub({
-            useSetting: createUseSettingMock({
-                values: {
-                    avatarStyle: 'gradient',
-                    showFlavorIcons: true,
-                },
-            }),
-        });
-    },
-});
 
 vi.mock('expo-image', () => ({
     Image: (props: any) => React.createElement('Image', props, props.children),

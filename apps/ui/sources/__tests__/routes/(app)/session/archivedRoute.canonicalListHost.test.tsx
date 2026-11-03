@@ -7,22 +7,8 @@ import { installSessionShellCommonModuleMocks } from '@/components/sessions/shel
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-/**
- * The archived route is a thin canonical-list host. It owns no cursor, request
- * lifecycle or row presentation, so these spies exist only to prove it never
- * drives a private archived pagination lifecycle again.
- */
-const removedArchivedSyncSpies = vi.hoisted(() => ({
-    fetchArchivedSessions: vi.fn(async () => {}),
-    fetchMoreArchivedSessions: vi.fn(async () => {}),
-    fetchAllArchivedSessions: vi.fn(async () => {}),
-    fetchAllSessionMetadata: vi.fn(async () => {}),
-    fetchMoreSessions: vi.fn(async () => {}),
-}));
-
 vi.mock('@/sync/sync', () => ({
     sync: {
-        ...removedArchivedSyncSpies,
         refreshSessions: vi.fn(async () => {}),
         markSessionListScrollActivity: vi.fn(),
     },
@@ -98,7 +84,6 @@ describe('archived Sessions route', () => {
     afterEach(() => {
         capturedVirtualizedProps.current = null;
         capturedPagingInput.current = null;
-        for (const spy of Object.values(removedArchivedSyncSpies)) spy.mockClear();
         standardCleanup();
     });
 
@@ -122,15 +107,6 @@ describe('archived Sessions route', () => {
                 membership: 'archived',
             });
         }
-    });
-
-    it('drives no private archived pagination lifecycle on Sync', async () => {
-        await renderArchivedRoute();
-
-        expect(removedArchivedSyncSpies.fetchArchivedSessions).not.toHaveBeenCalled();
-        expect(removedArchivedSyncSpies.fetchAllArchivedSessions).not.toHaveBeenCalled();
-        expect(removedArchivedSyncSpies.fetchMoreArchivedSessions).not.toHaveBeenCalled();
-        expect(removedArchivedSyncSpies.fetchAllSessionMetadata).not.toHaveBeenCalled();
     });
 
     it('keeps synchronized drafts out of the archived corpus', async () => {

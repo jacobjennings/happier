@@ -1,9 +1,6 @@
 import { beforeEach, vi } from 'vitest';
-import type { Settings } from '@/sync/domains/settings/settings';
-import { createUseSettingMock, createUseSettingMutableMockFromReader } from '@/dev/testkit/mocks/storage';
 
 type MachineDetailsModuleFactory = () => unknown | Promise<unknown>;
-type MachineDetailsStorageFactory = (importOriginal: <T>() => Promise<T>) => unknown | Promise<unknown>;
 
 type InstallMachineDetailsCommonModuleMocksOptions = Readonly<{
     reactNative?: MachineDetailsModuleFactory;
@@ -11,7 +8,6 @@ type InstallMachineDetailsCommonModuleMocksOptions = Readonly<{
     unistyles?: MachineDetailsModuleFactory;
     text?: MachineDetailsModuleFactory;
     modal?: MachineDetailsModuleFactory;
-    storage?: MachineDetailsStorageFactory;
 }>;
 
 const machineDetailsModuleState = vi.hoisted(() => ({
@@ -73,18 +69,6 @@ export function installMachineDetailsCommonModuleMocks(
         return createUnistylesMock();
     });
 
-    vi.mock('@/constants/Typography', async (importOriginal) => {
-        const actual = await importOriginal<typeof import('@/constants/Typography')>();
-        return {
-            ...actual,
-            Typography: {
-                ...actual.Typography,
-                default: () => ({}),
-                mono: () => ({}),
-            },
-        };
-    });
-
     vi.mock('@/text', async () => {
         const activeOptions = machineDetailsModuleState.options;
         if (activeOptions.text) {
@@ -108,26 +92,5 @@ export function installMachineDetailsCommonModuleMocks(
                 show: vi.fn(),
             },
         }).module;
-    });
-
-    vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
-        const activeOptions = machineDetailsModuleState.options;
-        if (activeOptions.storage) {
-            return await activeOptions.storage(importOriginal);
-        }
-
-        const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleMock({
-            importOriginal,
-            overrides: {
-                storage: { getState: () => ({}) } as any,
-                useSessions: () => [],
-                useAllMachines: () => [],
-                useMachine: () => null,
-                useSetting: createUseSettingMock({ fallback: () => false }),
-                useSettingMutable: createUseSettingMutableMockFromReader(() => [null, vi.fn()]),
-                useSettings: () => ({ schemaVersion: 1 } as Settings),
-            },
-        });
     });
 }

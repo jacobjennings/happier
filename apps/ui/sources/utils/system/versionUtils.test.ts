@@ -48,17 +48,14 @@ describe('versionUtils', () => {
             expect(isVersionSupported('1.0.0', '0.10.0')).toBe(true);
         });
 
-        it('should handle undefined version', () => {
-            expect(isVersionSupported(undefined, '0.10.0')).toBe(false);
-        });
-
         it('should use default minimum version', () => {
             // Default minimum version should allow the current dev CLI baseline (0.1.0).
             expect(isVersionSupported('0.1.0')).toBe(true);
             expect(isVersionSupported('0.0.9')).toBe(false);
         });
 
-        it('returns false for invalid version input', () => {
+        it('returns false for missing or invalid version input', () => {
+            expect(isVersionSupported(undefined, '0.10.0')).toBe(false);
             expect(isVersionSupported('invalid', MINIMUM_CLI_VERSION)).toBe(false);
         });
 

@@ -3,31 +3,20 @@ import { describe, expect, it, vi } from 'vitest';
 import { applyInitialAppStateConnectivityGate } from './appStateConnectivityGate';
 
 describe('applyInitialAppStateConnectivityGate', () => {
-    it('disables network and pauses when not foreground', () => {
+    it.each([
+        { isForeground: false, networkAllowed: false, pauseCalls: 1 },
+        { isForeground: true, networkAllowed: true, pauseCalls: 0 },
+    ])('foreground=$isForeground sets network allowed=$networkAllowed and pauses $pauseCalls time(s)', ({ isForeground, networkAllowed, pauseCalls }) => {
         const pause = vi.fn();
         const setNetworkAllowed = vi.fn();
 
         applyInitialAppStateConnectivityGate({
-            isForeground: false,
+            isForeground,
             pauseController: { pause },
             setNetworkAllowed,
         });
 
-        expect(setNetworkAllowed).toHaveBeenCalledWith(false);
-        expect(pause).toHaveBeenCalledTimes(1);
-    });
-
-    it('enables network and does not pause when foreground', () => {
-        const pause = vi.fn();
-        const setNetworkAllowed = vi.fn();
-
-        applyInitialAppStateConnectivityGate({
-            isForeground: true,
-            pauseController: { pause },
-            setNetworkAllowed,
-        });
-
-        expect(setNetworkAllowed).toHaveBeenCalledWith(true);
-        expect(pause).not.toHaveBeenCalled();
+        expect(setNetworkAllowed).toHaveBeenCalledWith(networkAllowed);
+        expect(pause).toHaveBeenCalledTimes(pauseCalls);
     });
 });

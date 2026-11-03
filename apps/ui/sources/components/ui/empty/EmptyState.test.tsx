@@ -18,9 +18,10 @@ vi.mock('react-native-unistyles', async () => {
     return createUnistylesMock();
 });
 
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: (props: any) => React.createElement('Text', props, props.children),
-}));
+vi.mock('@/components/ui/text/Text', async () => {
+    const { createUiTextModuleMock } = await import('@/dev/testkit/mocks/uiText');
+    return createUiTextModuleMock();
+});
 
 /** Host-element placeholder so passed-in icon/action nodes carry a discoverable testID. */
 const Stub = (props: { testID?: string }) => React.createElement('Stub', props);

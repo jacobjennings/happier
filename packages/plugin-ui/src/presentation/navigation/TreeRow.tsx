@@ -8,6 +8,7 @@ import { HAPPIER_COLLECTION_LIST_METRICS, HAPPIER_COLLECTION_LIST_TEXT } from '.
 import { resolveHappierTextStepStyle } from '../layout/pageText.js';
 import { happierFocusRingStyle } from '../interaction/focusVisible.js';
 import { HappierPressable } from '../interaction/Pressable.js';
+import type { HappierHitReach } from '../../environment/interactiveTarget.js';
 import {
   HAPPIER_PRESS_FEEDBACK_V1,
   happierPressTransitionStyle,
@@ -27,8 +28,6 @@ export const HAPPIER_TREE_ROW_METRICS = Object.freeze({
   minHeightPx: Object.freeze({ precise: 28, touch: 36 }),
   /** A tree drawn as a table (Code folder pages): each row carries a column, so it takes a list row's rhythm. */
   tableMinHeightPx: Object.freeze({ precise: 36, touch: 52 }),
-  /** A phone-narrow tree (lab c-art Tp): every row at a finger's height, whatever the pointer. */
-  compactMinHeightPx: 48,
   basePaddingPx: 10,
   indentStepPx: 14,
   maxIndentDepth: 6,
@@ -49,6 +48,13 @@ export function resolveHappierTreeRowIndentPx(
     Math.min(HAPPIER_TREE_ROW_METRICS.maxIndentDepth, Math.max(0, depth)) * step
   );
 }
+
+const DISCLOSURE_HIT_REACH: HappierHitReach = Object.freeze({
+  top: 0,
+  bottom: 0,
+  left: HAPPIER_TREE_ROW_METRICS.glyphGapPx / 2,
+  right: HAPPIER_TREE_ROW_METRICS.glyphGapPx / 2,
+});
 
 /**
  * A tree row's disclosure column. A branch with `onPress` has its own target: pressing it opens or closes the
@@ -72,6 +78,12 @@ export function HappierTreeDisclosure(
      * column than one whose chevron is its own target.
      */
     columnPx?: number;
+    /**
+     * How far the chevron's hit area may reach past its box under a finger. It sits inside its row's own
+     * target, so by default it reaches only half the glyph gap sideways and stays on its box vertically;
+     * a row passes the room to its own edges.
+     */
+    hitReach?: HappierHitReach;
     testID?: string;
   }>,
 ) {
@@ -103,6 +115,7 @@ export function HappierTreeDisclosure(
       accessibilityLabel={props.accessibilityLabel}
       tabIndex={-1}
       hitSlop={4}
+      hitReach={props.hitReach ?? DISCLOSURE_HIT_REACH}
       style={{
         width: box,
         height: box,
@@ -135,6 +148,8 @@ export type HappierTreeRowProps = Readonly<{
   selectionMark?: ReactNode;
   /** A compact fact immediately after the title (for example, a changed-file count). */
   titleAccessory?: ReactNode;
+  /** A second line under the title (a phone Code row's latest commit subject); the title column keeps the room. */
+  subtitle?: ReactNode;
   /** One quiet fact at the trailing edge ("2 days"). */
   meta?: ReactNode;
   /** The row's own controls after the meta (an author's menu). */
@@ -237,15 +252,16 @@ export function HappierTreeRow(props: HappierTreeRowProps) {
     props.presentation === 'table'
       ? HAPPIER_TREE_ROW_METRICS.tableMinHeightPx
       : HAPPIER_TREE_ROW_METRICS.minHeightPx;
-  const lineHeight = Math.max(
-    props.touch ? heights.touch : heights.precise,
-    props.compact ? HAPPIER_TREE_ROW_METRICS.compactMinHeightPx : 0,
-  );
+  // A phone-narrow tree (lab c-art Tp) takes the touch rhythm whatever the pointer; a row is its own hit
+  // area, so no finger floor grows it (DESIGN.md → touch targets are hit areas, not drawn sizes).
+  const lineHeight = props.touch || props.compact ? heights.touch : heights.precise;
   return (
     <HappierPressable
       testID={props.testID}
       accessibilityRole="button"
       webRole="treeitem"
+      // Tree rows stack flush: the row's own box is its hit area, never reaching over the next row.
+      hitReach={0}
       accessibilityLevel={node.depth + 1}
       accessibilityLabel={props.title}
       expanded={branch ? node.expanded : undefined}
@@ -326,6 +342,12 @@ export function HappierTreeRow(props: HappierTreeRowProps) {
               disabled={node.disabled}
               accessibilityLabel={props.disclosure?.accessibilityLabel}
               reducedMotion={props.reducedMotion}
+              hitReach={{
+                top: Math.max(0, (lineHeight - HAPPIER_TREE_ROW_METRICS.disclosureBoxPx) / 2),
+                bottom: Math.max(0, (lineHeight - HAPPIER_TREE_ROW_METRICS.disclosureBoxPx) / 2),
+                left: HAPPIER_TREE_ROW_METRICS.glyphGapPx / 2,
+                right: HAPPIER_TREE_ROW_METRICS.glyphGapPx / 2,
+              }}
               testID={props.disclosure?.testID}
             />
             {props.selection ?? null}
@@ -350,26 +372,35 @@ export function HappierTreeRow(props: HappierTreeRowProps) {
               </View>
             ) : (
               <>
-                <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: HAPPIER_TREE_ROW_METRICS.glyphGapPx }}>
-                  {/* One title size for every row (lab `.ca-row .t`), the reading step on a phone; a branch is the bolder line. */}
-                  <HappierText
-                    numberOfLines={1}
-                    ellipsizeMode={branch ? 'middle' : 'tail'}
-                    style={{
-                      ...(props.compact
-                        ? resolveHappierTypeRoleStyle('reading', theme, typography, branch ? 'semiBold' : undefined)
-                        : resolveHappierTextStepStyle(
-                          HAPPIER_COLLECTION_LIST_TEXT[branch ? 'rowTitleSelected' : 'rowTitle'],
-                          typography,
-                        )),
-                      flexShrink: 1,
-                      minWidth: 0,
-                      color: theme.colors.text,
-                    }}
-                  >
-                    {props.title}
-                  </HappierText>
-                  {props.titleAccessory ?? null}
+                <View style={{ flex: 1, minWidth: 0, justifyContent: 'center' }}>
+                  <View style={{ minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: HAPPIER_TREE_ROW_METRICS.glyphGapPx }}>
+                    {/* One title size for every row (lab `.ca-row .t`), the reading step on a phone; a branch is the bolder line. */}
+                    <HappierText
+                      numberOfLines={1}
+                      ellipsizeMode={branch ? 'middle' : 'tail'}
+                      style={{
+                        ...(props.compact
+                          ? resolveHappierTypeRoleStyle('reading', theme, typography, branch ? 'semiBold' : undefined)
+                          : resolveHappierTextStepStyle(
+                            HAPPIER_COLLECTION_LIST_TEXT[branch ? 'rowTitleSelected' : 'rowTitle'],
+                            typography,
+                          )),
+                        flexShrink: 1,
+                        minWidth: 0,
+                        color: theme.colors.text,
+                      }}
+                    >
+                      {props.title}
+                    </HappierText>
+                    {props.titleAccessory ?? null}
+                  </View>
+                  {props.subtitle ? (
+                    typeof props.subtitle === 'string' ? (
+                      <HappierText variant="meta" numberOfLines={1} style={{ color: theme.colors.mutedText }}>
+                        {props.subtitle}
+                      </HappierText>
+                    ) : props.subtitle
+                  ) : null}
                 </View>
                 {typeof props.meta === 'string' || typeof props.meta === 'number' ? (
                   <HappierText

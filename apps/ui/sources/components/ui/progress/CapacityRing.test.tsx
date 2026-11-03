@@ -1,13 +1,8 @@
 import * as React from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
-const motionState = vi.hoisted(() => ({ reduced: false }));
 const withTimingSpy = vi.hoisted(() => vi.fn());
-
-vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
-    useReducedMotionPreference: () => motionState.reduced,
-}));
 
 vi.mock('react-native-reanimated', async () => {
     const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
@@ -22,18 +17,10 @@ vi.mock('react-native-reanimated', async () => {
 });
 
 import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { setReducedMotionPreferenceOverride } from '@/hooks/ui/useReducedMotionPreference';
 import { CapacityRing } from './CapacityRing';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-
-vi.mock('react-native-svg', () => ({
-    Svg: (props: Record<string, unknown> & { children?: React.ReactNode }) =>
-        React.createElement('Svg', props, props.children),
-    Circle: (props: Record<string, unknown>) => React.createElement('Circle', props, null),
-    Defs: (props: { children?: React.ReactNode }) => React.createElement('Defs', null, props.children),
-    Pattern: (props: Record<string, unknown> & { children?: React.ReactNode }) => React.createElement('Pattern', props, props.children),
-    Path: (props: Record<string, unknown>) => React.createElement('Path', props, null),
-}));
 
 function renderRing(element: React.ReactElement): ReactTestRenderer {
     let tree: ReactTestRenderer | null = null;
@@ -59,8 +46,12 @@ function readDashOffset(tree: ReactTestRenderer, testID: string): number {
 
 describe('CapacityRing', () => {
     beforeEach(() => {
-        motionState.reduced = false;
+        setReducedMotionPreferenceOverride(false);
         withTimingSpy.mockClear();
+    });
+
+    afterEach(() => {
+        setReducedMotionPreferenceOverride(null);
     });
 
     it('renders the centered content and accessibility label', () => {
@@ -115,7 +106,9 @@ describe('CapacityRing', () => {
             expect.objectContaining({ duration: motionTokens.durationMs.base }),
         );
 
-        motionState.reduced = true;
+        act(() => {
+            setReducedMotionPreferenceOverride(true);
+        });
         withTimingSpy.mockClear();
         act(() => {
             tree.update(<CapacityRing ratio={0.4} color="#0a0" progressTestID="p" />);

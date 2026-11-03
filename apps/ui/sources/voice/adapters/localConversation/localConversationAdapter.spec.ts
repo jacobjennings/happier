@@ -39,7 +39,7 @@ function admittedProviderText() {
 }
 
 describe('local conversation voice adapter', () => {
-  registerLocalVoiceEngineHarnessHooks({ resetModulesBetweenTests: false });
+  registerLocalVoiceEngineHarnessHooks();
   let adapter: ReturnType<typeof import('./localConversationAdapter')['createLocalConversationVoiceAdapter']>;
   beforeEach(async () => {
     await loadLocalVoiceEngineWithCompatState();
@@ -146,6 +146,18 @@ describe('local conversation voice adapter', () => {
       .toEqual(adapter.resolveSurfaceCapabilities?.(selected));
   });
 
+  it('publishes the fixed Agent\'s exact runtime identity, and none when the Voice Agent follows the session', async () => {
+    const storage = await getStorage();
+    const selected = storage.getState().settings.voice;
+    const config = readLocalConversationVoiceSettings(selected);
+    const withAgent = (agent: Partial<typeof config.agent>) => ({ ...selected, providers: { ...selected.providers,
+      local_conversation: { schemaVersion: 1, config: { ...config, agent: { ...config.agent, ...agent } } } } });
+    expect(adapter.resolveSurfaceCapabilities?.(withAgent({ agentSource: 'agent', agentId: 'codex' })))
+      .toMatchObject({ agentRuntime: { pluginId: 'happier.agent.codex', localId: 'codex' } });
+    expect(adapter.resolveSurfaceCapabilities?.(withAgent({ agentSource: 'session', agentId: 'codex' })))
+      .not.toHaveProperty('agentRuntime');
+  });
+
   it('another surface toggle finishes the active capture without retiring its global conversation', async () => {
     const storage = await getStorage();
     const current = storage.getState();
@@ -216,7 +228,8 @@ describe('local conversation voice adapter', () => {
       })).toBe(true);
       await briefAdmitted.promise;
       expect(admittedProviderText()).toContain('INBOX BRIEF');
-      expect(admittedProviderText()).toContain('Approvals are tap-only');
+      expect(admittedProviderText()).toContain('Voice approvals are enabled');
+      expect(admittedProviderText()).toContain('Native Codex Realtime cannot decide requests');
     } finally {
       await adapter.stop({ sessionId: VOICE_AGENT_GLOBAL_SESSION_ID });
       setVoiceSessionSnapshot(adapter.getSnapshot());

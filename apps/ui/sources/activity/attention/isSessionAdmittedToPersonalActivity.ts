@@ -1,9 +1,9 @@
-import type { Session } from '@/sync/domains/state/storageTypes';
+import type { SessionPresentationRecord } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { isSessionPersonallyTrackedForViewer } from '@/sync/domains/session/readState/sessionViewer';
 import type { FollowPolicyV1 } from '@happier-dev/protocol/sessions/follow/sessionFollowPolicyV1';
 
 /** Access-scoped sync supplies rows; retained archived rows never enter active surfaces. */
-export function isSessionAdmittedToPersonalActivity(session: Session, rulePolicies: readonly FollowPolicyV1[] = []): boolean {
+export function isSessionAdmittedToPersonalActivity(session: SessionPresentationRecord, rulePolicies: readonly FollowPolicyV1[] = []): boolean {
     if (session.archivedAt != null) return false;
     if (rulePolicies.length > 0) return true;
     if (session.viewer !== undefined) {

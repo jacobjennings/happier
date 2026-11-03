@@ -310,7 +310,6 @@ export {
   readExternalAgentObservationSessionState,
   writeExternalAgentObservationSessionState,
   isProviderBoundSessionMetadata,
-  readActiveSessionModelSelectionFromMetadata,
   resolveAmbientProviderConnectionForModelIntent,
   resolveModelSelectionIntentFromSessionMetadata,
   readSessionModelSelectionV2FromMetadata,
@@ -355,6 +354,8 @@ export {
 export {
   UNSUPPORTED_AGENT_SESSION_CAPABILITIES,
   evaluateAgentSessionCapabilitySupport,
+  evaluateAgentSessionCompactionCapability,
+  readEffectiveAgentSessionCompactionCapability,
   getAgentSessionCapabilities,
   getAgentSessionCapability,
   isAgentSessionCapabilitySupported,

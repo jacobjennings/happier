@@ -570,6 +570,39 @@ describe('ExpandableItem', () => {
         expect(heightTargets().length).toBe(0);
     });
 
+    it('keeps a collapse driving to zero when the body swaps content and a pre-collapse layout arrives', async () => {
+        // The Scripts Setup card closes over a decided review while its body swaps to the run's output; the
+        // swap reports a new natural height that must never re-arm the closing reveal (stuck at opacity 0).
+        animationControls.autoFinish = false;
+        const { ExpandableItem } = await import('./ExpandableItem');
+        const header = (s: import('./ExpandableItem').ExpandableItemHeaderState) => (
+            <HeaderProbe testID="hdr" expanded={s.expanded} {...s.headerProps} />
+        );
+        const screen = await renderScreen(
+            <ExpandableItem testID="acct" expanded onExpandedChange={() => {}} header={header}>
+                <View testID="body-content" />
+            </ExpandableItem>,
+        );
+        fireBodyLayout(screen.findByTestId('acct:body'), 300);
+        animationControls.finishPending();
+        const layoutBeforeCollapse = screen.findByTestId('acct:body')
+            ?.findAll((node) => typeof node.props?.onLayout === 'function')[0]?.props.onLayout;
+        if (typeof layoutBeforeCollapse !== 'function') throw new Error('body onLayout handler not found');
+
+        animationControls.timingCalls = [];
+        await screen.update(
+            <ExpandableItem testID="acct" expanded={false} onExpandedChange={() => {}} header={header}>
+                <View testID="body-content" />
+            </ExpandableItem>,
+        );
+        act(() => {
+            layoutBeforeCollapse({ nativeEvent: { layout: { height: 46 } } });
+        });
+
+        expect(heightTargets()).not.toContain(46);
+        expect(heightTargets().at(-1)).toBe(0);
+    });
+
     it('collapse still unmounts the body and drives height to zero', async () => {
         const { ExpandableItem } = await import('./ExpandableItem');
         const header = (s: import('./ExpandableItem').ExpandableItemHeaderState) => (

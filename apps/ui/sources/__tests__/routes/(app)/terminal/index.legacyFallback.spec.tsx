@@ -39,20 +39,9 @@ describe('TerminalScreen legacy deep-link fallback', () => {
         localSearchParamsMock.mockReturnValue({ server: 'https://example.test' });
     });
 
-    it('does not treat known params like server as a legacy public key', async () => {
-        const Screen = (await import('@/app/(app)/terminal/index')).default;
-        routerMock.state.params = localSearchParamsMock();
-
-        const screen = await renderTerminalRoute(Screen);
-        await act(async () => {});
-
-        expect(screen.getTextContent()).toContain('terminal.invalidConnectionLink');
-    });
-
     it('uses legacy fallback when exactly one unknown search param key is present', async () => {
         localSearchParamsMock.mockReturnValue({ abcdefghijklmnop: '' });
         const Screen = (await import('@/app/(app)/terminal/index')).default;
-        routerMock.state.params = localSearchParamsMock();
 
         const screen = await renderTerminalRoute(Screen);
         await act(async () => {});
@@ -65,7 +54,6 @@ describe('TerminalScreen legacy deep-link fallback', () => {
     it('rejects partial authenticated-pairing parameters through the canonical parser', async () => {
         localSearchParamsMock.mockReturnValue({ key: 'abc', pairingSecret: 'secret' });
         const Screen = (await import('@/app/(app)/terminal/index')).default;
-        routerMock.state.params = localSearchParamsMock();
 
         const screen = await renderTerminalRoute(Screen);
         await act(async () => {});

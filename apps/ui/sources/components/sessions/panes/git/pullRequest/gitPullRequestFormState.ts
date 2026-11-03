@@ -69,11 +69,6 @@ export function useGitPullRequestFormState(sessionId: string, serverId?: string 
     return React.useSyncExternalStore(subscribe, read, read);
 }
 
-export function resetGitPullRequestFormsForTests(): void {
-    states.clear();
-    listeners.clear();
-}
-
 /** A phone's Details is a pushed route, so the form always opens there; elsewhere the user's setting decides. */
 export function resolveGitPullRequestFormPlacement(input: Readonly<{
     setting: 'sidebar' | 'details' | undefined | null;

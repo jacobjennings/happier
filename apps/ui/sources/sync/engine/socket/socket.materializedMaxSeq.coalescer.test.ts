@@ -96,6 +96,7 @@ async function buildNewMessageUpdate(params: {
         createdAt: 1_000 + params.messageSeq,
         body: {
             t: 'new-message',
+            delivery: 'full' as const,
             sid: params.sessionId,
             message: {
                 id: params.messageId,
@@ -117,6 +118,7 @@ function buildPlainNewMessageUpdate(params: { sessionId: string; messageId: stri
         createdAt: 1_000 + params.messageSeq,
         body: {
             t: 'new-message',
+            delivery: 'full' as const,
             sid: params.sessionId,
             message: {
                 id: params.messageId,
@@ -137,6 +139,7 @@ function buildPlainAuthSwitchUpdate(params: { sessionId: string; messageId: stri
         createdAt: 1_000 + params.messageSeq,
         body: {
             t: 'new-message',
+            delivery: 'full' as const,
             sid: params.sessionId,
             message: {
                 id: params.messageId,
@@ -175,6 +178,7 @@ function buildPlainMessageUpdatedUpdate(params: { sessionId: string; messageId: 
         createdAt: 1_000 + params.messageSeq,
         body: {
             t: 'message-updated',
+            delivery: 'full' as const,
             sid: params.sessionId,
             message: {
                 id: params.messageId,
@@ -308,6 +312,130 @@ describe('socket new-message + coalescer: materialized max seq', () => {
         } finally {
             unsubscribe();
         }
+    });
+
+    it('drops a queued primary body when the same-id transcript carrier moves to another Home', async () => {
+        const sessionId = 's1';
+        const session = createSessionFixture({ id: sessionId, serverId: account.serverId, encryptionMode: 'plain' });
+        storage.getState().applySessions([session]);
+        storage.getState().applyMessagesLoaded(sessionId);
+        markSessionSurfaceVisible(sessionId, account.serverId);
+        storage.setState(prev => ({ settings: { ...prev.settings, transcriptStreamingCoalesceEnabled: true,
+            transcriptStreamingCoalesceWindowMs: 900, transcriptStreamingCoalesceMaxBatchSize: 1_000 } }));
+        const socketOwner = runtime as unknown as {
+            handleUpdate(update: unknown): Promise<void>;
+            readSessionMessagesCatchUpAfterSeq(sessionId: string): number;
+        };
+        await socketOwner.handleUpdate(buildPlainNewMessageUpdate({
+            sessionId, messageId: 'primary-leading', messageSeq: 1, text: 'already applied',
+        }));
+        await socketOwner.handleUpdate(buildPlainNewMessageUpdate({
+            sessionId, messageId: 'primary-held', messageSeq: 2, text: 'must not cross Home',
+        }));
+        expect(socketOwner.readSessionMessagesCatchUpAfterSeq(sessionId)).toBe(1);
+        storage.getState().applySessions([{ ...session, serverId: 'secondary-home' }]);
+        const foreignTranscript = storage.getState().sessionMessages[sessionId];
+        await vi.advanceTimersByTimeAsync(900);
+        expect(getActiveServerSnapshot().serverId).toBe(account.serverId);
+        expect(storage.getState().sessionMessages[sessionId]).toBe(foreignTranscript);
+        expect(socketOwner.readSessionMessagesCatchUpAfterSeq(sessionId)).toBe(1);
+    });
+
+    it('projects a primary late hint only to its Home row without changing a foreign same-id transcript marker', async () => {
+        const { UpdateContainerSchema } = await import('@happier-dev/protocol/updates');
+        const sessionId = 's1';
+        const primary = createSessionFixture({ id: sessionId, serverId: account.serverId, encryptionMode: 'plain', seq: 1,
+            createdAt: 1, updatedAt: 1, activeAt: 1, meaningfulActivityAt: 1, latestTurnStatusObservedAt: 1 });
+        const foreign = { ...primary, serverId: 'secondary-home' };
+        storage.getState().applySessions([primary]);
+        storage.getState().applySessions([foreign]);
+        storage.getState().applyMessagesLoaded(sessionId);
+        markSessionSurfaceVisible(sessionId, account.serverId);
+        markSessionSurfaceVisible(sessionId, foreign.serverId);
+        storage.setState(prev => ({ settings: { ...prev.settings, transcriptStreamingCoalesceEnabled: false } }));
+        const socketOwner = runtime as unknown as {
+            handleUpdate(update: unknown): Promise<void>;
+            sessionMaterializedMaxSeqById: Record<string, number>;
+            sessionReceivedMessages: Map<string, Map<string, number>>;
+            deferredTranscriptState: import('@/sync/domains/session/realtime/deferredTranscriptState').DeferredTranscriptState;
+        };
+        await runtime.consumeSessionRealtimeUpdateForHome({ serverId: foreign.serverId, encryption: null,
+            credentials: { token: 'secondary-boundary-token' }, isCurrent: () => true,
+            update: buildPlainNewMessageUpdate({ sessionId, messageId: 'foreign-message', messageSeq: 1, text: 'foreign body' }),
+        });
+        const before = structuredClone({ materialized: socketOwner.sessionMaterializedMaxSeqById[sessionId],
+            deferred: socketOwner.deferredTranscriptState, received: socketOwner.sessionReceivedMessages });
+        const foreignTranscript = storage.getState().sessionMessages[sessionId];
+        for (const [index, event] of (['new-message', 'message-updated'] as const).entries()) {
+            const seq = 9 + index;
+            await socketOwner.handleUpdate(UpdateContainerSchema.parse({ id: `primary-hint-${seq}`, seq, createdAt: seq,
+                body: { t: event, sid: sessionId, delivery: 'hint', message: { id: `primary-message-${seq}`, seq,
+                    localId: null, messageRole: 'agent', createdAt: seq, updatedAt: seq,
+                    attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true },
+                } },
+            }));
+        }
+        // Drain the existing scalar-row coalescer's own window, not background Sync retry timers.
+        const { loadSyncTuning } = await import('@/sync/runtime/syncTuning');
+        await vi.advanceTimersByTimeAsync(loadSyncTuning().activityUpdateDebounceMs);
+        expect(storage.getState().sessions[sessionId]?.serverId).toBe(foreign.serverId);
+        expect(storage.getState().sessionMessages[sessionId]).toBe(foreignTranscript);
+        expect(socketOwner.sessionMaterializedMaxSeqById[sessionId]).toBe(before.materialized);
+        expect(socketOwner.deferredTranscriptState).toEqual(before.deferred);
+        expect(socketOwner.sessionReceivedMessages).toEqual(before.received);
+        expect(storage.getState().sessionListRowsByServerId[account.serverId]?.[sessionId]?.seq).toBe(10);
+    });
+
+    it('retains each Home callback authority for interleaved different-id trailing batches', async () => {
+        const { UpdateContainerSchema } = await import('@happier-dev/protocol/updates');
+        const { createMachineFixture } = await import('@/dev/testkit/fixtures/machineFixtures');
+        const { resolveWorkspaceTargetForSession } = await import('@/sync/domains/session/resolveWorkspaceTargetForSession');
+        const { scmDiffCache } = await import('@/scm/diffCache/scmDiffCacheSingleton');
+        const homes = [account.serverId, 'secondary-home'];
+        const ids = ['primary-queued', 'secondary-queued'];
+        const machines = ids.map(id => createMachineFixture({ id: `${id}-machine` }));
+        storage.setState({ machines: { [machines[0]!.id]: machines[0]! },
+            machineListByServerId: Object.fromEntries(homes.map((home, index) => [home, [machines[index]!]])) });
+        for (const [index, id] of ids.entries()) {
+            storage.getState().applySessions([createSessionFixture({ id, serverId: homes[index]!, encryptionMode: 'plain',
+                metadata: { path: `/repo-${index}`, host: 'host', machineId: machines[index]!.id } })]);
+            storage.getState().applyMessagesLoaded(id);
+            markSessionSurfaceVisible(id, homes[index]!);
+        }
+        const keys = ids.map((id, index) => {
+            const target = resolveWorkspaceTargetForSession({ serverId: homes[index]!, sessionId: id });
+            if (!target) throw new Error('Expected the admitted Home workspace');
+            return { sessionId: target.workspaceCacheKey, snapshotSignature: 'queued-edit',
+                diffArea: 'pending' as const, path: `/repo-${index}/file.ts` };
+        });
+        for (const key of keys) scmDiffCache.set(key, 'before edit');
+        storage.setState(prev => ({ settings: { ...prev.settings, transcriptStreamingCoalesceEnabled: true,
+            transcriptStreamingCoalesceWindowMs: 900, transcriptStreamingCoalesceMaxBatchSize: 1_000 } }));
+        const socketOwner = runtime as unknown as { handleUpdate(update: unknown): Promise<void>;
+            readSessionMessagesCatchUpAfterSeq(sessionId: string): number };
+        const update = (index: number, seq: number) => UpdateContainerSchema.parse({ id: `${ids[index]}-${seq}`, seq, createdAt: seq,
+            body: { t: 'new-message', sid: ids[index], delivery: 'full', message: { id: `${ids[index]}-${seq}`, seq,
+                localId: null, createdAt: seq, updatedAt: seq, content: { t: 'plain', v: seq === 1
+                    ? { role: 'user', content: { type: 'text', text: 'leading' } }
+                    : { role: 'agent', content: { type: 'output', data: { type: 'assistant', uuid: `${ids[index]}-edit`,
+                        message: { role: 'assistant', content: [{ type: 'tool_use', id: `${ids[index]}-tool`, name: 'Edit',
+                            input: { file_path: keys[index]!.path, old_string: 'a', new_string: 'b' } }] } } } },
+                } } } });
+        try {
+            await socketOwner.handleUpdate(update(0, 1));
+            await socketOwner.handleUpdate(update(0, 2));
+            for (const seq of [1, 2]) await runtime.consumeSessionRealtimeUpdateForHome({
+                serverId: homes[1]!, encryption: null, credentials: { token: 'secondary-boundary-token' },
+                isCurrent: () => true, update: update(1, seq),
+            });
+            await vi.advanceTimersByTimeAsync(900);
+            for (const id of ids) {
+                expect(Object.values(storage.getState().sessionMessages[id]?.messagesById ?? {}).map(message => message.seq)).toEqual([1, 2]);
+                expect(socketOwner.readSessionMessagesCatchUpAfterSeq(id)).toBe(2);
+            }
+            await vi.advanceTimersByTimeAsync(201);
+            for (const key of keys) expect(scmDiffCache.get(key)).toBeNull();
+        } finally { for (const key of keys) scmDiffCache.invalidateSession(key.sessionId); }
     });
 
     it('defers the first off-screen new-message session projection until the coalescing window flushes', async () => {
@@ -1349,7 +1477,7 @@ it('does not mark cache-only renderables unread or meaningful when a hidden dura
         expect(applyMessages).toHaveBeenCalledTimes(1);
 
         shouldContinue = false;
-        await vi.runAllTimersAsync();
+        await vi.advanceTimersByTimeAsync(storage.getState().settings.transcriptStreamingCoalesceWindowMs);
 
         expect(applyMessages).toHaveBeenCalledTimes(1);
     });
@@ -1423,6 +1551,7 @@ it('does not mark cache-only renderables unread or meaningful when a hidden dura
                 createdAt: 1_001,
                 body: {
                     t: 'new-message',
+                    delivery: 'full' as const,
                     sid: 's1',
                     message: {
                         id: 'm1',
@@ -1446,6 +1575,7 @@ it('does not mark cache-only renderables unread or meaningful when a hidden dura
                 createdAt: 1_002,
                 body: {
                     t: 'new-message',
+                    delivery: 'full' as const,
                     sid: 's1',
                     message: {
                         id: 'm2',
@@ -1472,6 +1602,7 @@ it('does not mark cache-only renderables unread or meaningful when a hidden dura
                 createdAt: 1_003,
                 body: {
                     t: 'message-updated',
+                    delivery: 'full' as const,
                     sid: 's1',
                     message: {
                         id: 'm2',
@@ -1489,7 +1620,7 @@ it('does not mark cache-only renderables unread or meaningful when a hidden dura
         expect(appliedTexts.get('m2')).toBe('fresh text');
         expect(sessionReceivedMessages.get('s1')?.get('m2')).toBe(1_003);
 
-        await vi.runAllTimersAsync();
+        await vi.advanceTimersByTimeAsync(storage.getState().settings.transcriptStreamingCoalesceWindowMs);
 
         expect(appliedTexts.get('m2')).toBe('fresh text');
         expect(sessionReceivedMessages.get('s1')?.get('m2')).toBe(1_003);

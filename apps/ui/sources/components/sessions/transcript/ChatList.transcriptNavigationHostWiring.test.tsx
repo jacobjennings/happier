@@ -153,12 +153,10 @@ vi.mock('@/components/sessions/transcript/navigation/TranscriptNavigationRail', 
 
 vi.mock('./viewport/performTranscriptViewportCommand', () => ({
     performTranscriptViewportCommand: performTranscriptViewportCommandMock,
-    resolveIndexScrollWriter: () => 'web-dom-restore',
 }));
 
 vi.mock('@/components/sessions/transcript/viewport/performTranscriptViewportCommand', () => ({
     performTranscriptViewportCommand: performTranscriptViewportCommandMock,
-    resolveIndexScrollWriter: () => 'web-dom-restore',
 }));
 
 vi.mock('./ChatFooter', () => ({

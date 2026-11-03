@@ -157,6 +157,48 @@ describe('a card that owns its row', () => {
 });
 
 describe('a card whose definition has not arrived', () => {
+    it.each(['home', 'board'] as const)('settles an unnamed Artifact title after the %s body read fails, without another read', async (host) => {
+        await import('@/sync/syncEngine');
+        const { createHomeHubArtifactHttpBoundary } = await import('@/dev/testkit/harness/homeHubArtifactHttpBoundary');
+        const { restoreServerAccountForTest } = await import('@/dev/testkit/harness/serverAccountConnectionHarness');
+        const { WidgetFrame } = await import('@/components/widgets/frame/WidgetFrame');
+        const { BoardWidgetCard } = await import('@/components/boards/cards/BoardWidgetCard');
+        const { InjectedAuthProvider } = await import('@/auth/context/AuthContext');
+        const http = createHomeHubArtifactHttpBoundary('title-viewer');
+        let release: (() => void) | undefined;
+        const pendingResponse = new Promise<void>(resolve => { release = resolve; });
+        let reads = 0;
+        const connection = await restoreServerAccountForTest({
+            serverUrl: `https://widget-title-${host}.test`, accountId: 'title-viewer',
+            request: async (input, init) => {
+                if (new URL(String(input)).pathname === '/v1/artifacts/missing-title') {
+                    reads++;
+                    await pendingResponse;
+                }
+                return http.request(input, init);
+            },
+        });
+        try {
+            const unnamed: WidgetInstanceV1 = { v: 1, id: 'private-instance-id',
+                definition: { kind: 'artifact', artifactId: 'missing-title' }, bindings: {} };
+            const scope = { serverId: connection.home.id, accountId: 'title-viewer', owner: { kind: 'workBoard' as const, boardId: 'board' } };
+            const screen = await renderScreen(<InjectedAuthProvider credentials={connection.credentials}><Projection>
+                {host === 'home' ? <HubWidgetSection instance={unnamed} frameStyle="card" menu={null} tracker={null} testID="terminal-title" />
+                    : <BoardWidgetCard boardId="board" placement={{ kind: 'widget', ref: { surface: scope, instanceId: unnamed.id }, instance: unnamed, size: 'medium' }}
+                        scope={scope} descriptor={null} size="medium" index={0} count={1} dispatch={async () => { throw new Error('Title reads must not mutate the Board'); }} active testID="terminal-title" />}
+            </Projection></InjectedAuthProvider>);
+            const frame = () => screen.findAllByType(WidgetFrame)[0]!;
+            await vi.waitFor(() => expect(reads).toBe(1));
+            expect(React.isValidElement(frame().props.title)).toBe(true);
+            await act(async () => { release!(); });
+            await vi.waitFor(() => expect(frame().props.title).toBe('composerReferences.kindWidget'));
+            await flushHookEffects({ cycles: 3 });
+            expect(reads).toBe(1);
+            expect(screen.getTextContent()).not.toContain(unnamed.id);
+            await screen.unmount();
+        } finally { release?.(); await connection.dispose(); }
+    });
+
     const frameTitle = async (node: React.ReactElement) => {
         const screen = await renderScreen(node);
         const frame = screen.root.findAll(node => node.props.testID === 'home-pending.frame' && 'title' in node.props)[0]!;
@@ -177,7 +219,7 @@ describe('a card whose definition has not arrived', () => {
         expect(settled.title).toBe('Notes');
         // With the plugin unknown to the app there is no name to wait for: the generic word, not a skeleton.
         boundary.projection = null;
-        expect((await frameTitle(<Projection>{pending({})}</Projection>)).title).toBe('boards.widgets.kind');
+        expect((await frameTitle(<Projection>{pending({})}</Projection>)).title).toBe('sessionBoard.item.pluginUnavailable.title');
         expect((await frameTitle(<Projection>{pending({}, { ...instance, definition: { kind: 'artifact', artifactId: 'definition-1' } })}</Projection>)).title)
             .toSatisfy((title: unknown) => React.isValidElement(title));
         expect((await frameTitle(pending({ widget }))).title).toBe('Notes status');

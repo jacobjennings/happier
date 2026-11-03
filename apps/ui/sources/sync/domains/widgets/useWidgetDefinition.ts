@@ -38,7 +38,13 @@ export function useWidgetDefinition(scope: WidgetSurfaceRefV1, reference: Widget
             return { definition: null, state: 'unavailable', reasonCode: 'widget_definition_unavailable' };
         }
     }, [artifact, artifactId, scope.accountId, body.state]);
-    if (!current) return { definition: null, state: 'unavailable', reasonCode: 'widget_scope_unavailable' };
+    if (!current) {
+        // A saved definition is its owner's private Artifact: another Account's viewer on a live Home never
+        // reads it, a durable access fact and not a Home that is still being applied.
+        const privateToOwner = enabled && reference.kind === 'artifact' && !!lifetime?.isCurrent() && !!viewer
+            && areServerProfileIdentifiersEquivalent(viewer.serverId, scope.serverId) && viewer.accountId !== scope.accountId;
+        return { definition: null, state: 'unavailable', reasonCode: privateToOwner ? 'widget_definition_unavailable' : 'widget_scope_unavailable' };
+    }
     if (reference.kind === 'inline') return { definition: reference.definition, state: 'available' };
     return opened;
 }

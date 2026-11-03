@@ -99,14 +99,8 @@ export function createTerminalQaSession(input: Readonly<{
     }>;
     rendererRef: MutableRefObject<EmbeddedTerminalRendererHandle | null>;
     now?: () => number;
-    schedule?: (callback: () => void, delayMs: number) => TerminalQaTimer;
-    cancel?: (timer: TerminalQaTimer) => void;
 }>): TerminalQaSession {
     const now = input.now ?? Date.now;
-    const schedule: (callback: () => void, delayMs: number) => TerminalQaTimer = input.schedule
-        ?? ((callback, delayMs) => setTimeout(callback, delayMs));
-    const cancel: (timer: TerminalQaTimer) => void = input.cancel
-        ?? ((timer) => clearTimeout(timer));
     const listeners = new Set<() => void>();
     const queue: PendingFrame[] = [];
     let eventId = 0;
@@ -148,7 +142,7 @@ export function createTerminalQaSession(input: Readonly<{
 
     function scheduleRetry() {
         if (disposed || retryTimer !== null) return;
-        retryTimer = schedule(() => {
+        retryTimer = setTimeout(() => {
             retryTimer = null;
             pump();
         }, RETRY_DELAY_MS);
@@ -366,14 +360,14 @@ export function createTerminalQaSession(input: Readonly<{
         },
         retry: () => {
             if (retryTimer !== null) {
-                cancel(retryTimer);
+                clearTimeout(retryTimer);
                 retryTimer = null;
             }
             pump();
         },
         dispose: () => {
             disposed = true;
-            if (retryTimer !== null) cancel(retryTimer);
+            if (retryTimer !== null) clearTimeout(retryTimer);
             retryTimer = null;
             listeners.clear();
             queue.splice(0);

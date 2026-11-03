@@ -34,6 +34,14 @@ describe('shared SCM policy', () => {
         expect(resolved.remote.push).toEqual(declared.remote.push);
         expect(resolved.freshness).toEqual(declared.freshness);
         expect(declared.read.status?.support).toBe('experimental');
+
+        const observed = resolveScmBackendCapabilities({
+            declaredCapabilities: declared,
+            mode: '.git',
+            freshness: { state: { source: 'live-local', observedAt: 100 }, refreshPolicy: 'cache-first' },
+        });
+        expect(observed.freshness).toEqual({ state: { source: 'live-local', observedAt: 100 }, refreshPolicy: 'cache-first' });
+        expect(declared.freshness).toEqual({ state: { source: 'cached-local', observedAt: 1 } });
     });
 
     it('uses the preview convention for native targets and rejects forbidden nested names', () => {

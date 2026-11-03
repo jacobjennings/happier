@@ -712,6 +712,7 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
       try {
         await params.operations.compactContext({
           compactionId: request.compactionId,
+          trigger: request.trigger,
         });
         return { status: 'admitted' };
       } catch (error) {
@@ -752,20 +753,24 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
           'OpenCode runtime was disposed while provider input custody was unresolved.',
         );
       }
-      activeSkillsReaderBinding?.dispose();
-      unsubscribeOperations();
-      listeners.clear();
-      for (const wake of Array.from(terminalWaiters)) wake();
-      terminalWaiters.clear();
-      modelListeners.clear();
-      modelsBinding?.dispose();
-      modesBinding?.dispose();
-      modeListeners.clear();
-      active = false;
-      activeTurnId = null;
-      disposingPendingSend?.deferredRuntimeEvents.dispose();
-      if (pendingSend === disposingPendingSend) pendingSend = null;
-      await params.disposeOperations();
+      try {
+        // Operation disposal settles pending compaction through the public watcher.
+        await params.disposeOperations();
+      } finally {
+        activeSkillsReaderBinding?.dispose();
+        unsubscribeOperations();
+        listeners.clear();
+        for (const wake of Array.from(terminalWaiters)) wake();
+        terminalWaiters.clear();
+        modelListeners.clear();
+        modelsBinding?.dispose();
+        modesBinding?.dispose();
+        modeListeners.clear();
+        active = false;
+        activeTurnId = null;
+        disposingPendingSend?.deferredRuntimeEvents.dispose();
+        if (pendingSend === disposingPendingSend) pendingSend = null;
+      }
     },
   };
 }

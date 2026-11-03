@@ -1,11 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
-import { installCardCommonModuleMocks } from './cardTestHelpers';
-
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-installCardCommonModuleMocks();
 
 const SAMPLE_ENTRIES = [
     { label: 'Theme', value: 'Dark' },

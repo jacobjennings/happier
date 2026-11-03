@@ -13,8 +13,17 @@ describe('machine presence reconnect evidence', () => {
 });
 
 describe('updates transcript vNext payloads', () => {
+  it('admits bodyless durable hints while rejecting content and unclassified delivery', () => {
+    const message = { id: 'm1', seq: 1, localId: null, createdAt: 100, updatedAt: 101,
+      attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true } };
+    const body = { t: 'new-message', sid: 's', delivery: 'hint', message };
+    expect(UpdateBodySchema.safeParse(body).success).toBe(true);
+    expect(UpdateBodySchema.safeParse({ ...body, message: { ...message, content: { t: 'encrypted', c: 'secret' } } }).success).toBe(false);
+    expect(UpdateBodySchema.safeParse({ ...body, message: { ...message, accountActor: null } }).success).toBe(false);
+    expect(UpdateBodySchema.safeParse({ ...body, delivery: undefined }).success).toBe(false);
+  });
   it('validates the derived Follow delivery projection on message revisions', () => {
-    const body = { t: 'message-updated', sid: 'destination', message: {
+    const body = { t: 'message-updated', delivery: 'full' as const, sid: 'destination', message: {
       id: 'batch', seq: 2, localId: 'session-follow-wake:batch',
       content: { t: 'encrypted', c: 'cipher' },
       createdAt: 100, updatedAt: 101,
@@ -28,7 +37,7 @@ describe('updates transcript vNext payloads', () => {
 
   it('parses message-updated payload', () => {
     const parsed = UpdateBodySchema.safeParse({
-      t: 'message-updated',
+      t: 'message-updated', delivery: 'full' as const,
       sid: 'sess_1',
       message: {
         id: 'm1',
@@ -48,7 +57,7 @@ describe('updates transcript vNext payloads', () => {
 
   it('parses new-message payloads with sidechainId', () => {
     const parsed = UpdateBodySchema.safeParse({
-      t: 'new-message',
+      t: 'new-message', delivery: 'full' as const,
       sid: 'sess_1',
       message: {
         id: 'm1',
@@ -70,7 +79,7 @@ describe('updates transcript vNext payloads', () => {
 
   it('parses source chronology and strict transcript observation provenance separately from ingestion time', () => {
     const parsed = UpdateBodySchema.parse({
-      t: 'new-message',
+      t: 'new-message', delivery: 'full' as const,
       sid: 'sess_1',
       message: {
         id: 'm1',
@@ -95,7 +104,7 @@ describe('updates transcript vNext payloads', () => {
 
   it('parses minimal manual-handled delivery provenance and rejects expanded shapes', () => {
     const base = {
-      t: 'new-message' as const,
+      t: 'new-message' as const, delivery: 'full' as const,
       sid: 'sess_1',
       message: {
         id: 'm1',
@@ -119,7 +128,7 @@ describe('updates transcript vNext payloads', () => {
 
   it('parses new-message payloads with trusted message attention impact', () => {
     const parsed = UpdateBodySchema.safeParse({
-      t: 'new-message',
+      t: 'new-message', delivery: 'full' as const,
       sid: 'sess_1',
       message: {
         id: 'm1',
@@ -147,7 +156,7 @@ describe('updates transcript vNext payloads', () => {
 
   it('rejects new-message payloads with malformed message attention impact', () => {
     const parsed = UpdateBodySchema.safeParse({
-      t: 'new-message',
+      t: 'new-message', delivery: 'full' as const,
       sid: 'sess_1',
       message: {
         id: 'm1',
@@ -169,7 +178,7 @@ describe('updates transcript vNext payloads', () => {
 
   it('rejects new-message payloads with unsupported messageRole values', () => {
     const parsed = UpdateBodySchema.safeParse({
-      t: 'new-message',
+      t: 'new-message', delivery: 'full' as const,
       sid: 'sess_1',
       message: {
         id: 'm1',
@@ -187,7 +196,7 @@ describe('updates transcript vNext payloads', () => {
 
   it('parses new-message payloads with unknown additional fields (rolling upgrade safety)', () => {
     const parsed = UpdateBodySchema.safeParse({
-      t: 'new-message',
+      t: 'new-message', delivery: 'full' as const,
       sid: 'sess_1',
       message: {
         id: 'm1',
@@ -248,6 +257,14 @@ describe('updates transcript vNext payloads', () => {
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
     expect(parsed.data.type).toBe('execution-run-updated');
+  });
+
+  it('accepts content-free exact Machine Run invalidation without projecting a Session', () => {
+    const hint = { type: 'execution-run-updated', machineId: 'machine', runId: 'run' };
+    expect(EphemeralUpdateSchema.parse(hint)).toEqual(hint);
+    expect(EphemeralUpdateSchema.safeParse({ ...hint, sessionId: 'session' }).success).toBe(false);
+    expect(EphemeralUpdateSchema.safeParse({ ...hint, run: { content: 'not an invalidation' } }).success).toBe(false);
+    expect(EphemeralUpdateSchema.safeParse({ type: hint.type, runId: hint.runId }).success).toBe(false);
   });
 
   it('parses the released 0.2.11 Action operation ephemeral envelope', () => {
@@ -508,6 +525,7 @@ describe('updates transcript authenticated Account actor projection', () => {
     for (const t of ['new-message', 'message-updated'] as const) {
       const parsed = UpdateBodySchema.parse({
         t,
+        delivery: 'full',
         sid: 'sess_1',
         message: {
           ...baseMessage,
@@ -518,7 +536,7 @@ describe('updates transcript authenticated Account actor projection', () => {
           },
         },
       });
-      if (parsed.t !== 'new-message' && parsed.t !== 'message-updated') throw new Error('unexpected');
+      if ((parsed.t !== 'new-message' && parsed.t !== 'message-updated') || parsed.delivery !== 'full') throw new Error('unexpected');
       expect(parsed.message.accountActor).toEqual({
         v: 1,
         accountId: 'acc_alice',
@@ -529,15 +547,15 @@ describe('updates transcript authenticated Account actor projection', () => {
 
   it('distinguishes explicit null retraction from an older producer omission', () => {
     const retracted = UpdateBodySchema.parse({
-      t: 'new-message',
+      t: 'new-message', delivery: 'full' as const,
       sid: 'sess_1',
       message: { ...baseMessage, accountActor: null },
     });
-    if (retracted.t !== 'new-message') throw new Error('unexpected');
+    if (retracted.t !== 'new-message' || retracted.delivery !== 'full') throw new Error('unexpected');
     expect(retracted.message.accountActor).toBeNull();
 
     const omitted = UpdateBodySchema.parse({
-      t: 'new-message',
+      t: 'new-message', delivery: 'full' as const,
       sid: 'sess_1',
       message: baseMessage,
     });
@@ -547,7 +565,7 @@ describe('updates transcript authenticated Account actor projection', () => {
 
   it('rejects a message whose actor discloses admission relationship or a malformed profile', () => {
     expect(UpdateBodySchema.safeParse({
-      t: 'new-message',
+      t: 'new-message', delivery: 'full' as const,
       sid: 'sess_1',
       message: {
         ...baseMessage,
@@ -555,7 +573,7 @@ describe('updates transcript authenticated Account actor projection', () => {
       },
     }).success).toBe(false);
     expect(UpdateBodySchema.safeParse({
-      t: 'new-message',
+      t: 'new-message', delivery: 'full' as const,
       sid: 'sess_1',
       message: {
         ...baseMessage,

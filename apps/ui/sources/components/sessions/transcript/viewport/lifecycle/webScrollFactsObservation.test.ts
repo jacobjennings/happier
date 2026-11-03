@@ -1,88 +1,25 @@
 import { describe, expect, it } from 'vitest';
 
 import { createTranscriptViewportLifecycle } from './lifecycle';
-import {
-    resolveWebScrollFactsObservationEvent,
-    resolveWebScrollFactsObservationEffects,
-} from './webScrollFactsObservation';
-
-describe('web scroll facts observation event', () => {
-    it('dispatches web genuine away movement with release authority', () => {
-        expect(resolveWebScrollFactsObservationEvent({
-            distanceFromLiveTailPx: 180.9,
-            movedAwayFromLiveTail: true,
-            movedTowardLiveTail: true,
-            pinThresholdPx: 72.6,
-            sessionId: 'session-a',
-            webObservedUserScrollMovement: true,
-        })).toEqual({
-            distanceFromLiveTailPx: 180,
-            movement: 'away-from-live-tail',
-            pinThresholdPx: 72,
-            releaseAuthority: 'web-genuine-movement',
-            sessionId: 'session-a',
-            source: 'web-scroll',
-            trustedUserMovement: false,
-            type: 'facts-observed',
-        });
-    });
-
-    it('dispatches web toward movement without release authority', () => {
-        expect(resolveWebScrollFactsObservationEvent({
-            distanceFromLiveTailPx: 12,
-            movedAwayFromLiveTail: false,
-            movedTowardLiveTail: true,
-            pinThresholdPx: 72,
-            sessionId: 'session-a',
-            webObservedUserScrollMovement: false,
-        })).toEqual({
-            distanceFromLiveTailPx: 12,
-            movement: 'toward-live-tail',
-            pinThresholdPx: 72,
-            sessionId: 'session-a',
-            source: 'web-scroll',
-            trustedUserMovement: false,
-            type: 'facts-observed',
-        });
-    });
-
-    it('dispatches web no-movement facts with normalized non-negative distance', () => {
-        expect(resolveWebScrollFactsObservationEvent({
-            distanceFromLiveTailPx: -4,
-            movedAwayFromLiveTail: false,
-            movedTowardLiveTail: false,
-            pinThresholdPx: 72,
-            sessionId: 'session-a',
-            webObservedUserScrollMovement: false,
-        })).toEqual({
-            distanceFromLiveTailPx: 0,
-            movement: 'none',
-            pinThresholdPx: 72,
-            sessionId: 'session-a',
-            source: 'web-scroll',
-            trustedUserMovement: false,
-            type: 'facts-observed',
-        });
-    });
-});
+import { resolveWebScrollFactsObservationEffects } from './webScrollFactsObservation';
 
 describe('web scroll facts observation effects', () => {
     it('emits web release effects for genuine upward movement', () => {
         const lifecycle = createTranscriptViewportLifecycle();
         lifecycle.dispatch({
             sessionId: 'session-a',
+            platform: 'web',
             shouldFollowLiveTail: true,
             type: 'session-entry',
         });
 
         expect(resolveWebScrollFactsObservationEffects({
             dispatch: lifecycle.dispatch,
-            distanceFromLiveTailPx: 180,
+            distanceFromLiveTailPx: 180.9,
             movedAwayFromLiveTail: true,
-            movedTowardLiveTail: false,
+            movedTowardLiveTail: true,
             pinThresholdPx: 72,
             sessionId: 'session-a',
-            webObservedUserScrollMovement: true,
         })).toEqual([
             {
                 distanceFromLiveTailPx: 180,
@@ -97,6 +34,7 @@ describe('web scroll facts observation effects', () => {
         const lifecycle = createTranscriptViewportLifecycle();
         lifecycle.dispatch({
             sessionId: 'session-a',
+            platform: 'web',
             shouldFollowLiveTail: true,
             type: 'session-entry',
         });
@@ -104,11 +42,10 @@ describe('web scroll facts observation effects', () => {
         expect(resolveWebScrollFactsObservationEffects({
             dispatch: lifecycle.dispatch,
             distanceFromLiveTailPx: 180,
-            movedAwayFromLiveTail: true,
+            movedAwayFromLiveTail: false,
             movedTowardLiveTail: false,
             pinThresholdPx: 72,
             sessionId: 'session-a',
-            webObservedUserScrollMovement: false,
         })).toEqual([
             {
                 distanceFromLiveTailPx: 180,
@@ -126,6 +63,7 @@ describe('web scroll facts observation effects', () => {
         const lifecycle = createTranscriptViewportLifecycle();
         lifecycle.dispatch({
             sessionId: 'session-a',
+            platform: 'web',
             shouldFollowLiveTail: false,
             type: 'session-entry',
         });
@@ -137,7 +75,6 @@ describe('web scroll facts observation effects', () => {
             movedTowardLiveTail: true,
             pinThresholdPx: 72,
             sessionId: 'session-a',
-            webObservedUserScrollMovement: false,
         })).toEqual([
             {
                 distanceFromLiveTailPx: 12,
@@ -153,5 +90,27 @@ describe('web scroll facts observation effects', () => {
                 type: 'drain-deferred-newer',
             },
         ]);
+    });
+
+    it('treats a fractional web distance within the pin threshold as reaching the tail', () => {
+        const lifecycle = createTranscriptViewportLifecycle();
+        lifecycle.dispatch({
+            sessionId: 'session-a',
+            platform: 'web',
+            shouldFollowLiveTail: false,
+            type: 'session-entry',
+        });
+
+        const effects = resolveWebScrollFactsObservationEffects({
+            dispatch: lifecycle.dispatch,
+            distanceFromLiveTailPx: 72.6,
+            movedAwayFromLiveTail: false,
+            movedTowardLiveTail: true,
+            pinThresholdPx: 72,
+            sessionId: 'session-a',
+        });
+
+        expect(effects.map((effect) => effect.type)).toEqual(['viewport-change', 'drain-deferred-newer']);
+        expect(lifecycle.getState().bottomFollowState.mode).toBe('following');
     });
 });

@@ -1,8 +1,5 @@
-import { z } from 'zod/mini';
-import { PendingActivationAuthorizationV1Schema } from '@happier-dev/protocol/sessions/pending/pendingActivationAuthorizationV1';
-import { SessionAccessAccountSummaryV1Schema } from '@happier-dev/protocol/sessions/access/sessionAccessPrincipalV1';
 import { SessionListQueryResponseV1Schema } from '@happier-dev/protocol/sessions/listing/response';
-import { V2SessionListResponseSchema, V2SessionRecordSchema, V2SessionByIdNotFoundSchema, type V2SessionListResponse } from '@happier-dev/protocol/sessions/control/contract';
+import { V2SessionListResponseSchema, V2SessionRecordSchema, V2SessionByIdNotFoundSchema, type V2SessionListResponse, type V2SessionRecord } from '@happier-dev/protocol/sessions/control/contract';
 import { parseSessionRuntimeActivityProjectionFields } from '@happier-dev/protocol/sessions/runtime/activity/sessionRuntimeActivity';
 import { buildSessionListServerQueryV1, type SessionListQueryV1 } from '@happier-dev/protocol/sessions/listing/query';
 import { withSessionOwnerMetadataCiphertextValidationReuseV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
@@ -38,7 +35,6 @@ export function resolveSessionListRequestPath(params: Readonly<{
         ? params.sessionListPath.trim()
         : DEFAULT_SESSION_LIST_PATH;
 }
-type V2SessionRecord = V2SessionListResponse['sessions'][number];
 type SessionListRequestHeadersOptions = Readonly<{
     includeSessionListTiming?: boolean;
 }>;
@@ -125,42 +121,13 @@ function hasExplicitCurrentOrResponsibilitySessionListProjection(value: unknown)
         && value.sessions.some(entry => hasCurrentSessionRecordMarker(entry) || hasResponsibilityProjectionClaim(entry));
 }
 
-function readNumber(value: unknown): number | null {
-    return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
 function readNonNegativeInteger(value: unknown): number | undefined {
     return typeof value === 'number' && Number.isFinite(value)
         ? Math.max(0, Math.trunc(value))
         : undefined;
 }
 
-function readNullableNumber(value: unknown): number | null | undefined {
-    if (value == null) return null;
-    return readNumber(value);
-}
-
-function readNonNegativeNumberArray(value: unknown): number[] | undefined {
-    if (!Array.isArray(value)) return undefined;
-    const numbers: number[] = [];
-    for (const entry of value) {
-        const number = readNumber(entry);
-        if (number == null || number < 0) continue;
-        numbers.push(Math.trunc(number));
-    }
-    return numbers;
-}
-
-function readOptionalBoolean(value: unknown): boolean | undefined {
-    return typeof value === 'boolean' ? value : undefined;
-}
-
 function readOptionalString(value: unknown): string | undefined {
-    return typeof value === 'string' ? value : undefined;
-}
-
-function readNullableString(value: unknown): string | null | undefined {
-    if (value == null) return null;
     return typeof value === 'string' ? value : undefined;
 }
 
@@ -215,43 +182,6 @@ function mergeCompatSessionAdditiveFields(session: V2SessionRecord, raw: unknown
     } as V2SessionRecord;
 }
 
-function mergeCompatSessionListAdditiveFields(
-    response: V2SessionListResponse,
-    raw: unknown,
-): V2SessionListResponse {
-    if (!isRecord(raw)) return response;
-    const rawSessions = raw.sessions;
-    if (!Array.isArray(rawSessions)) return response;
-    let changed = false;
-    const sessions = response.sessions.map((session, index) => {
-        const merged = mergeCompatSessionAdditiveFields(session, rawSessions[index]);
-        if (merged !== session) changed = true;
-        return merged;
-    });
-    const attentionNextCursor = readNullableString(raw.attentionNextCursor);
-    const attentionHasNext = readOptionalBoolean(raw.attentionHasNext);
-    if (
-        attentionNextCursor !== undefined
-        && attentionNextCursor !== response.attentionNextCursor
-    ) {
-        changed = true;
-    }
-    if (
-        attentionHasNext !== undefined
-        && attentionHasNext !== response.attentionHasNext
-    ) {
-        changed = true;
-    }
-    return changed
-        ? {
-            ...response,
-            sessions,
-            ...(attentionNextCursor !== undefined ? { attentionNextCursor } : {}),
-            ...(attentionHasNext !== undefined ? { attentionHasNext } : {}),
-        }
-        : response;
-}
-
 function parseServerTimingDurationMs(value: string): number | null {
     const match = /(?:^|;)\s*dur=([0-9]+(?:\.[0-9]+)?)/.exec(value);
     if (!match?.[1]) return null;
@@ -277,160 +207,6 @@ function readV2SessionsServerTimingFields(response: Response): Record<string, nu
     return fields;
 }
 
-function coerceStringPayload(value: unknown): string | null {
-    if (typeof value === 'string') return value;
-    if (value == null) return null;
-    if (!isRecord(value) && !Array.isArray(value)) return null;
-    try {
-        return JSON.stringify(value);
-    } catch {
-        return null;
-    }
-}
-
-function coerceLegacySessionRecord(raw: unknown): V2SessionRecord | null {
-    if (!isRecord(raw)) return null;
-    if (
-        (
-            raw.metadataLayoutVersion !== undefined
-            && raw.metadataLayoutVersion !== 0
-        )
-        || raw.ownerMetadata !== undefined
-        // An explicit private projection is never a legacy row. In particular,
-        // malformed Follow/read facts cannot fall through and revive shared reads.
-        || raw.viewer !== undefined
-        // Marked access is current authority, never a candidate for legacy coercion.
-        || raw.effectiveAccess !== undefined
-    ) {
-        return null;
-    }
-
-    const id = readOptionalString(raw.id);
-    const seq = readNumber(raw.seq);
-    const createdAt = readNumber(raw.createdAt);
-    const updatedAt = readNumber(raw.updatedAt);
-    const active = raw.active;
-    const activeAt = readNumber(raw.activeAt);
-    const metadataVersion = readNumber(raw.metadataVersion);
-    const metadata = coerceStringPayload(raw.metadata);
-    const agentStateVersion = readNumber(raw.agentStateVersion);
-
-    if (
-        !id
-        || seq == null
-        || createdAt == null
-        || updatedAt == null
-        || typeof active !== 'boolean'
-        || activeAt == null
-        || metadataVersion == null
-        || metadata == null
-        || agentStateVersion == null
-    ) {
-        return null;
-    }
-
-    const topLevelAccessLevel = readOptionalString(raw.accessLevel);
-    const topLevelCanApprovePermissions = readOptionalBoolean(raw.canApprovePermissions);
-    const shareRecord = isRecord(raw.share) ? raw.share : null;
-    const shareAccessLevel = readOptionalString(shareRecord?.accessLevel) ?? topLevelAccessLevel;
-    const shareCanApprovePermissions = readOptionalBoolean(shareRecord?.canApprovePermissions) ?? topLevelCanApprovePermissions;
-    const pendingActivationAuthorization = PendingActivationAuthorizationV1Schema.safeParse(
-        raw.pendingActivationAuthorization,
-    );
-    // Absence is the released pre-mode Session shape and remains a supported
-    // E2EE compatibility input. An explicit unknown value is different: it is
-    // a malformed current producer claim and must not be collapsed into that
-    // legacy omission merely because a key-shaped field is also present.
-    if (Object.prototype.hasOwnProperty.call(raw, 'encryptionMode')
-        && raw.encryptionMode !== 'plain'
-        && raw.encryptionMode !== 'e2ee') {
-        return null;
-    }
-
-    const coerced: V2SessionRecord = {
-        id,
-        seq,
-        createdAt,
-        updatedAt,
-        meaningfulActivityAt: readNumber(raw.meaningfulActivityAt) ?? undefined,
-        active,
-        activeAt,
-        archivedAt: readNullableNumber(raw.archivedAt),
-        encryptionMode: raw.encryptionMode === 'plain' ? 'plain' : raw.encryptionMode === 'e2ee' ? 'e2ee' : undefined,
-        metadata,
-        metadataVersion,
-        // The guard above already rejected anything other than absent/0, so a coerced
-        // record is a layout-0 record by construction; state that rather than leaving it absent.
-        metadataLayoutVersion: 0,
-        agentState: coerceStringPayload(raw.agentState),
-        agentStateVersion,
-        lastViewedSessionSeq: readNullableNumber(raw.lastViewedSessionSeq),
-        unreadSince: readNullableNumber(raw.unreadSince),
-        pendingPermissionRequestCount: readNumber(raw.pendingPermissionRequestCount) ?? undefined,
-        pendingUserActionRequestCount: readNumber(raw.pendingUserActionRequestCount) ?? undefined,
-        // Attention EDGE facts. Dropping these does not fail loudly: the placement key
-        // silently falls back to `updatedAt`, which moves on every message to an
-        // already-promoted session. Carried through the file's existing nullable readers.
-        pendingRequestObservedAt: readNullableNumber(raw.pendingRequestObservedAt),
-        latestTurnId: readNullableString(raw.latestTurnId) ?? null,
-        latestReadyEventSeq: readNullableNumber(raw.latestReadyEventSeq),
-        latestReadyEventAt: readNullableNumber(raw.latestReadyEventAt),
-        thinking: readOptionalBoolean(raw.thinking),
-        thinkingAt: readNullableNumber(raw.thinkingAt),
-        currentStorageState: readExternalSessionStorageState(raw.currentStorageState),
-        acceptedThroughServerSeq: readNullableNumber(raw.acceptedThroughServerSeq),
-        materializedThroughSourceAt: readNullableNumber(raw.materializedThroughSourceAt),
-        publishedThroughServerSeq: readNullableNumber(raw.publishedThroughServerSeq),
-        transcriptShareable: readOptionalBoolean(raw.transcriptShareable),
-        ...(pendingActivationAuthorization.success
-            ? { pendingActivationAuthorization: pendingActivationAuthorization.data }
-            : {}),
-        // Absent stays absent: a legacy record that never carried responsibility
-        // must not be coerced into an authoritative "unassigned".
-        ...(Object.prototype.hasOwnProperty.call(raw, 'responsibleAccountId')
-            ? { responsibleAccountId: raw.responsibleAccountId as string | null }
-            : {}),
-        // The paired summary is projected at read time; it is omitted exactly
-        // when the id is omitted and never persisted as a second source.
-        ...(Object.prototype.hasOwnProperty.call(raw, 'responsibleAccount')
-            ? {
-                responsibleAccount: z.nullable(SessionAccessAccountSummaryV1Schema).parse(raw.responsibleAccount),
-              }
-            : {}),
-        latestTurnStatus: raw.latestTurnStatus === 'in_progress'
-            || raw.latestTurnStatus === 'completed'
-            || raw.latestTurnStatus === 'cancelled'
-            || raw.latestTurnStatus === 'failed'
-                ? raw.latestTurnStatus
-                : raw.latestTurnStatus === null
-                    ? null
-                    : undefined,
-        latestTurnStatusObservedAt: readNullableNumber(raw.latestTurnStatusObservedAt),
-        rollbackEligibleTurnStarts: readNonNegativeNumberArray(raw.rollbackEligibleTurnStarts),
-        lastRuntimeIssue: raw.lastRuntimeIssue === null
-            || (raw.lastRuntimeIssue && typeof raw.lastRuntimeIssue === 'object')
-                ? raw.lastRuntimeIssue as V2SessionRecord['lastRuntimeIssue']
-                : undefined,
-        ...(readRuntimeActivityProjectionFields(raw) ?? {}),
-        pendingCount: readNumber(raw.pendingCount) ?? undefined,
-        pendingOwnerCount: readNumber(raw.pendingOwnerCount) ?? undefined,
-        pendingVersion: readNumber(raw.pendingVersion) ?? undefined,
-        dataEncryptionKey: readNullableString(raw.dataEncryptionKey) ?? null,
-        share:
-            shareAccessLevel && typeof shareCanApprovePermissions === 'boolean'
-                ? {
-                    accessLevel: shareAccessLevel === 'view' || shareAccessLevel === 'edit' || shareAccessLevel === 'admin'
-                        ? shareAccessLevel
-                        : 'view',
-                    canApprovePermissions: shareCanApprovePermissions,
-                }
-                : null,
-    };
-    const merged = mergeCompatSessionAdditiveFields(coerced, raw);
-    const parsed = V2SessionRecordSchema.safeParse(merged);
-    return parsed.success ? parsed.data : null;
-}
-
 function parseCompatSessionListResponse(raw: unknown, telemetryFields?: SyncPerformanceTelemetryFields): V2SessionListResponse | null {
     return syncPerformanceTelemetry.measure(
         'sync.sessions.snapshot.fetchPage.responseSchema',
@@ -441,24 +217,7 @@ function parseCompatSessionListResponse(raw: unknown, telemetryFields?: SyncPerf
 
 function parseCompatSessionListResponseValue(raw: unknown): V2SessionListResponse | null {
     const parsed = V2SessionListResponseSchema.safeParse(raw);
-    if (parsed.success) {
-        return mergeCompatSessionListAdditiveFields(parsed.data, raw);
-    }
-
-    if (!isRecord(raw) || !Array.isArray(raw.sessions)) {
-        return null;
-    }
-
-    const sessions = raw.sessions.map((row) => coerceLegacySessionRecord(row));
-    if (sessions.some((row) => row === null)) {
-        return null;
-    }
-
-    return mergeCompatSessionListAdditiveFields({
-        sessions: sessions as V2SessionRecord[],
-        nextCursor: typeof raw.nextCursor === 'string' ? raw.nextCursor : null,
-        hasNext: raw.hasNext === true,
-    }, raw);
+    return parsed.success ? parsed.data : null;
 }
 
 function hasUnsupportedExplicitSessionMetadataLayout(raw: unknown): boolean {
@@ -484,14 +243,9 @@ function hasExplicitNonLegacySessionMetadataEnvelope(raw: unknown): boolean {
 
 export function parseCompatSessionByIdResponse(raw: unknown): { session: V2SessionRecord } | null {
     if (isRecord(raw) && isRecord(raw.session)) {
-        const parsed = V2SessionListResponseSchema.safeParse({ sessions: [raw.session] });
-        if (parsed.success && parsed.data.sessions[0]) {
-            return { session: mergeCompatSessionAdditiveFields(parsed.data.sessions[0], raw.session) };
-        }
-
-        const coerced = coerceLegacySessionRecord(raw.session);
-        if (coerced) {
-            return { session: coerced };
+        const parsed = V2SessionRecordSchema.safeParse(raw.session);
+        if (parsed.success) {
+            return { session: mergeCompatSessionAdditiveFields(parsed.data, raw.session) };
         }
     }
 
@@ -521,24 +275,6 @@ function throwSessionListHttpError(status: number, routeLabel: string, body?: un
         kind: status >= 500 ? 'server' : 'network',
         ...(code ? { code } : {}),
     });
-}
-
-function looksLikeMissingV2SessionsListRoute(status: number, body: unknown): boolean {
-    if (status === 404 || status === 405 || status === 501) {
-        return true;
-    }
-    if (!body || typeof body !== 'object') {
-        return false;
-    }
-
-    const record = body as Record<string, unknown>;
-    const error = typeof record.error === 'string' ? record.error : '';
-    const path = typeof record.path === 'string' ? record.path : '';
-    const message = typeof record.message === 'string' ? record.message : '';
-    if (error !== 'Not found') {
-        return false;
-    }
-    return path.includes('/v2/sessions') || message.includes('/v2/sessions');
 }
 
 export function looksLikeCurrentV2SessionNotFound404(body: unknown): boolean {
@@ -572,11 +308,6 @@ export async function fetchSessionListPageCompat(params: Readonly<{
 }> {
     const source = params.source;
     const isQuery = source?.kind === 'query';
-    const allowLegacyV1Fallback = isQuery
-        ? false
-        : source?.kind === 'ordinary'
-            ? source.allowV1Fallback
-            : params.allowLegacyV1Fallback !== false;
     const sessionListPath = resolveSessionListRequestPath(params);
     const requestPath = (() => {
         if (isQuery) return '/v2/sessions/query';
@@ -698,47 +429,7 @@ export async function fetchSessionListPageCompat(params: Readonly<{
         if (hasExplicitCurrentOrResponsibilitySessionListProjection(v2Body)) {
             throw new HappyError('Invalid current Session projection', false, { code: 'invalid_response' });
         }
-        if (!allowLegacyV1Fallback) {
-            throw new HappyError('Invalid /v2/sessions response for session-by-id lookup', false, { code: 'invalid_response' });
-        }
-    } else if (isQuery || !looksLikeMissingV2SessionsListRoute(v2Response.status, v2Body)) {
-        throwSessionListHttpError(v2Response.status, requestPath, v2Body);
+        throw new HappyError('Invalid /v2/sessions response', false, { code: 'invalid_response' });
     }
-
-    if (!allowLegacyV1Fallback) {
-        throw new Error('Legacy /v1/sessions fallback is not exhaustive enough for session-by-id lookup');
-    }
-
-    const legacyResponse = await params.request('/v1/sessions', {
-        headers: buildSessionRequestHeaders(params.token),
-        cache: 'no-store',
-    });
-    let legacyResponseChars: number | undefined;
-    const legacyBody = await readJsonSafe(legacyResponse, {
-        telemetryNamePrefix: 'sync.sessions.snapshot.fetchPage',
-        fields: params.telemetryFields,
-        onResponseChars: (responseChars) => {
-            legacyResponseChars = responseChars;
-        },
-    });
-    if (!legacyResponse.ok) {
-        throwSessionListHttpError(legacyResponse.status, '/v1/sessions', legacyBody);
-    }
-    const legacyParseFields = typeof legacyResponseChars === 'number'
-        ? { ...(params.telemetryFields ?? {}), responseChars: legacyResponseChars }
-        : params.telemetryFields;
-    const parsedLegacy = parseCompatSessionListResponse(legacyBody, legacyParseFields);
-    if (!parsedLegacy) {
-        throw new HappyError('Invalid /v1/sessions response', false, { code: 'invalid_response' });
-    }
-
-    return {
-        sessions: parsedLegacy.sessions,
-        nextCursor: null,
-        hasNext: false,
-        attentionNextCursor: null,
-        attentionHasNext: false,
-        metadataUpgradeRequiredCount: 0,
-        source: 'v1',
-    };
+    throwSessionListHttpError(v2Response.status, requestPath, v2Body);
 }

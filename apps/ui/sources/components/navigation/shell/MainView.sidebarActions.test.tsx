@@ -178,10 +178,6 @@ vi.mock('@/components/navigation/shell/FriendsView', () => ({
     FriendsView: 'FriendsView',
 }));
 
-vi.mock('@/components/settings/shell/SettingsViewWrapper', () => ({
-    SettingsViewWrapper: 'SettingsViewWrapper',
-}));
-
 vi.mock('@/components/projects/ProjectsListView', () => ({
     ProjectsListView: 'ProjectsListView',
 }));
@@ -204,10 +200,6 @@ vi.mock('@/components/navigation/Header', () => ({
 
 vi.mock('@/components/ui/navigation/HeaderLogo', () => ({
     HeaderLogo: 'HeaderLogo',
-}));
-
-vi.mock('@/components/voice/surface/VoiceSurface', () => ({
-    VoiceSurface: 'VoiceSurface',
 }));
 
 vi.mock('@/components/ui/status/StatusDot', () => ({
@@ -268,19 +260,23 @@ describe('MainView sidebar actions', () => {
         expect(() => findPressableByLabel(screen.tree as renderer.ReactTestRenderer, 'Open automations')).toThrow();
     });
 
-    it('leaves new sessions to the tab bar\'s glass "+" on the phone: no second "+" in the header', async () => {
+    it('folds the phone Sessions bar into the list\'s nav row, leaving new sessions to the tab bar\'s glass "+"', async () => {
         platformState.isTablet = false;
+        mainAppTabStateMock.activeTab = 'sessions';
 
-        let tree: renderer.ReactTestRenderer | null = null;
-        tree = (await renderScreen(<MainView variant="phone" />)).tree;
+        const tree = (await renderScreen(<MainView variant="phone" />)).tree;
 
-        const header = tree!.findByType('Header');
-        const renderedHeaderTitle = await renderScreen(header.props.title);
-        expect(renderedHeaderTitle.findByType('ConnectionStatusControl').props.variant).toBe('header');
-        const renderedHeaderRight = await renderScreen(header.props.headerRight());
-        expect(renderedHeaderRight.findAllByProps({ testID: 'main-header-start-new-session' })).toHaveLength(0);
-        // The header keeps its other sessions actions.
-        expect(renderedHeaderRight.findAllByProps({ testID: 'main-header-action-operations' }).length).toBeGreaterThan(0);
+        // No separate brand bar above My work (lab `clviews:recentP`): the list draws the shell's line.
+        expect(tree.findAllByType('Header')).toHaveLength(0);
+        expect(tree.root.findAllByProps({ testID: 'main-header-home-logo' })).toHaveLength(0);
+        const { PhoneTabNavRowProvider } = await import('./phoneTabNavRow');
+        const navRow = tree.root.findByType(PhoneTabNavRowProvider);
+        const leading = await renderScreen(<>{navRow.props.leading}</>);
+        expect(leading.findByType('ConnectionStatusControl').props.variant).toBe('header');
+        const trailing = await renderScreen(<>{navRow.props.trailing}</>);
+        expect(trailing.findAllByProps({ testID: 'main-header-start-new-session' })).toHaveLength(0);
+        expect(trailing.findAllByProps({ testID: 'main-header-action-operations' }).length).toBeGreaterThan(0);
+        expect(navRow.findByType('SessionsListWrapper' as never)).toBeDefined();
     });
 
     it('pins the retained phone sessions surface to the root pathname across route changes', async () => {

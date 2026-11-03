@@ -1,7 +1,7 @@
 import * as React from 'react';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
 import { createStorageModuleStub } from '@/dev/testkit/mocks/storage';
 
@@ -18,13 +18,14 @@ const paneScopeMock = vi.hoisted(() => ({
     setActiveDetailsTab: vi.fn(),
     setRightTab: vi.fn(),
     setRightTabState: vi.fn(),
-    openRight: vi.fn(),
     closeRight: vi.fn(),
     scopeState: { details: { isOpen: false, tabs: [] } },
 }));
 
+let routeParams: Record<string, string | string[]> = { id: ['s1', 's2'], path: 'src/a.txt', serverId: 'home-b' };
+
 const routerMock = createExpoRouterMock({
-    params: { id: ['s1', 's2'], path: 'src/a.txt', serverId: 'home-b' },
+    params: () => routeParams,
     router: {
         push: vi.fn(),
         back: vi.fn(),
@@ -78,9 +79,8 @@ vi.mock('@/sync/domains/state/storage', () => storageMock);
 describe('session file route', () => {
     beforeEach(() => {
         openDetailsTabSpy.mockClear();
-        paneScopeMock.openRight.mockClear();
-        paneScopeMock.setRightTab.mockClear();
         routerReplaceSpy.mockClear();
+        routeParams = { id: ['s1', 's2'], path: 'src/a.txt', serverId: 'home-b' };
     });
 
     afterEach(() => {
@@ -105,11 +105,33 @@ describe('session file route', () => {
             expect.objectContaining({ intent: 'preview' }),
         );
         expect(capturedScopeIdRef.current).toBe('session:address:home-b:s1');
-        expect(paneScopeMock.openRight).not.toHaveBeenCalled();
-        expect(paneScopeMock.setRightTab).not.toHaveBeenCalled();
         expect(routerReplaceSpy).toHaveBeenCalledWith({
             pathname: '/session/[id]/details',
-            params: expect.objectContaining({ id: 's1' }),
+            params: expect.objectContaining({ id: 's1', serverId: 'home-b', details: 'file', path: 'src/a.txt' }),
+        });
+    });
+
+    it('re-opens details when the file path param changes on the same native screen instance', async () => {
+        const { default: FileRoute } = await import('@/app/(app)/session/[id]/file');
+        routeParams = { id: 's1', path: 'a.txt', serverId: 'home-b' };
+
+        const screen = await renderScreen(<FileRoute />);
+        expect(openDetailsTabSpy).toHaveBeenCalledTimes(1);
+        expect(routerReplaceSpy).toHaveBeenCalledTimes(1);
+
+        routeParams = { id: 's1', path: 'b.txt', serverId: 'home-b' };
+        await screen.update(<FileRoute />);
+        await flushHookEffects();
+
+        expect(openDetailsTabSpy).toHaveBeenCalledTimes(2);
+        expect(routerReplaceSpy).toHaveBeenCalledTimes(2);
+        expect(routerReplaceSpy).toHaveBeenNthCalledWith(1, {
+            pathname: '/session/[id]/details',
+            params: expect.objectContaining({ id: 's1', details: 'file', path: 'a.txt' }),
+        });
+        expect(routerReplaceSpy).toHaveBeenNthCalledWith(2, {
+            pathname: '/session/[id]/details',
+            params: expect.objectContaining({ id: 's1', details: 'file', path: 'b.txt' }),
         });
     });
 });

@@ -5,7 +5,7 @@ import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
-import { renderScreen } from '@/dev/testkit';
+import { createSessionFixture, renderScreen } from '@/dev/testkit';
 import { VoiceEnergyProvider } from '@/components/voice/light/useVoiceEnergy';
 import { VoiceComposerPlanetMount } from '@/components/voice/composer/VoiceComposerPlanetMount';
 import { VoiceTopBarPresence } from '@/components/voice/presence/VoiceTopBarPresence';
@@ -166,6 +166,30 @@ describe('one Voice announcer for the whole app shell', () => {
             await screen.unmount();
             resetVoiceDiagnosticsRuntimeStatusForTests();
         }
+    });
+
+    it('announces attention on appearance without replacing or repeating the call phase', async () => {
+        const session = createSessionFixture({ id: 'voice-session-1', active: true,
+            activeAt: Date.now(), updatedAt: Date.now(), pendingPermissionRequestCount: 0,
+            pendingUserActionRequestCount: 0, pendingRequestObservedAt: Date.now() });
+        getStorage().setState(state => ({ sessions: { ...state.sessions, [session.id]: session } }));
+        const screen = await renderScreen(<VoiceAnnouncer />);
+        const announcement = () => screen.findByTestId(VOICE_ANNOUNCER_TEST_ID)?.props.children?.props.children;
+        const attention = (count: number) => getStorage().setState(state => ({ sessions: { ...state.sessions,
+            [session.id]: { ...session, pendingPermissionRequestCount: count } } }));
+        try {
+            await act(async () => { attention(1); });
+            expect(announcement()).toBe(tLoose('workStatus.buckets.needs_you'));
+            await act(async () => { setVoiceSessionSnapshot({ ...getVoiceSessionSnapshot(), mode: 'speaking' }); });
+            expect(announcement()).toBe(tLoose('voiceAssistant.speaking'));
+            await act(async () => { attention(0); });
+            expect(announcement()).toBe(tLoose('voiceAssistant.speaking'));
+            await act(async () => { attention(1); });
+            expect(announcement()).toBe(tLoose('workStatus.buckets.needs_you'));
+            await act(async () => { setVoiceSessionSnapshot({ ...getVoiceSessionSnapshot(), mode: 'listening' }); });
+            expect(announcement()).toBe(tLoose('voiceAssistant.listening'));
+            expect(screen.tree.root.findAllByProps({ accessibilityLiveRegion: 'polite' })).toHaveLength(1);
+        } finally { await screen.unmount(); }
     });
 
     it('projects microphone, mute, and recovery facts into the one app announcer', async () => {

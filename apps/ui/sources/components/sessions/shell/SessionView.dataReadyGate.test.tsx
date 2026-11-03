@@ -64,7 +64,8 @@ vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
             : state;
     },
 }));
-vi.mock('@/components/plugins/actions/pluginContributedActionComposerChips', () => ({
+vi.mock('@/components/plugins/actions/pluginContributedActionComposerChips', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/components/plugins/actions/pluginContributedActionComposerChips')>(),
     createPluginContributedActionComposerChips: (input: unknown) => {
         composerChipFactorySpy(input);
         return [];
@@ -351,7 +352,8 @@ vi.mock('@/components/sessions/attachments/AttachmentFilePicker', () => ({
     AttachmentFilePicker: () => null,
 }));
 
-vi.mock('@/utils/platform/responsive', () => ({
+vi.mock('@/utils/platform/responsive', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/platform/responsive')>(),
     getDeviceType: () => 'tablet',
     useDeviceType: () => deviceTypeState.value,
     useHeaderHeight: () => 0,
@@ -414,6 +416,15 @@ let previousStorage: ReturnType<typeof canonicalStorage.getState>;
 let foregroundDraftRead: ReturnType<typeof createDeferred<void>> | null = null;
 let foregroundDraftReadStarted = false;
 let accountDraftListRead: ReturnType<typeof createDeferred<void>>;
+
+/** Daemon projection inputs as the canonical adapter publishes them (selection facts, UI projection). */
+async function publishedDaemonInputs(raw: Readonly<{ pluginProjectionV2: unknown; composerSurfaceCatalog?: readonly unknown[] }>) {
+    const { publishDaemonMergedProjectionInputs } = await import('@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters');
+    return { ...publishDaemonMergedProjectionInputs({
+        projection: raw.pluginProjectionV2 as Parameters<typeof publishDaemonMergedProjectionInputs>[0]['projection'],
+        composerSurfaceCatalog: raw.composerSurfaceCatalog as Parameters<typeof publishDaemonMergedProjectionInputs>[0]['composerSurfaceCatalog'],
+    }) };
+}
 
 async function renderScreen(...args: Parameters<typeof renderCanonicalScreen>) {
     if (isSessionDraftsReadyState) accountDraftListRead.resolve();
@@ -924,8 +935,7 @@ describe('SessionView (data ready gating)', () => {
     it('projects admitted composer controls and before/after regions from the one current daemon snapshot', async () => {
         daemonMergedProjectionState.value = {
             phase: 'ready',
-            inputs: {
-                pluginProjectionById: {},
+            inputs: await publishedDaemonInputs({
                 pluginProjectionV2: {
                     v: 2,
                     generation: 7,
@@ -988,7 +998,7 @@ describe('SessionView (data ready gating)', () => {
                     diagnostics: [],
                 },
                 composerSurfaceCatalog: [],
-            },
+            }),
         };
         const { SessionView } = await sessionViewModulePromise;
 
@@ -1397,8 +1407,7 @@ describe('SessionView (data ready gating)', () => {
         });
         daemonMergedProjectionState.value = {
             phase: 'ready',
-            inputs: {
-                pluginProjectionById: {},
+            inputs: await publishedDaemonInputs({
                 pluginProjectionV2: {
                     v: 2,
                     generation: 7,
@@ -1429,7 +1438,7 @@ describe('SessionView (data ready gating)', () => {
                     catalogEntry(beforeRegion.identity, 'region', 'before-renderer'),
                     catalogEntry(afterRegion.identity, 'region', 'after-renderer'),
                 ],
-            },
+            }),
         };
         const { SessionView } = await sessionViewModulePromise;
 
@@ -1562,8 +1571,7 @@ describe('SessionView (data ready gating)', () => {
         };
         daemonMergedProjectionState.value = {
             phase: 'ready',
-            inputs: {
-                pluginProjectionById: {},
+            inputs: await publishedDaemonInputs({
                 pluginProjectionV2: {
                     v: 2,
                     generation: 7,
@@ -1645,7 +1653,7 @@ describe('SessionView (data ready gating)', () => {
                         points: [],
                     },
                 }],
-            },
+            }),
         };
         const { SessionView } = await sessionViewModulePromise;
 

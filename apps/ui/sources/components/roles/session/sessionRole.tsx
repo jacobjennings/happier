@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { readSessionRoleIdV1, readSessionRolesV1 } from '@happier-dev/protocol/prompts/roles/sessionRolesSnapshot';
 import { resolveRoleSelectionV1 } from '@happier-dev/protocol/prompts/roles/resolveRoleSelectionV1';
 import type { ResolvedRoleV1 } from '@happier-dev/protocol/prompts/roles/rolesV1';
+import type { RoleEngineV1 } from '@happier-dev/protocol/prompts/roles/roleArtifactV1';
 import { resolvedRoleToArtifact } from '@/sync/domains/roles/roleCatalog';
 import { joinHappierFacts } from '@happier-dev/plugin-ui/presentation';
 
@@ -24,6 +25,7 @@ import {
 } from '@/sync/domains/session/resolveSessionActionDefaultBackend';
 import { useSessionSelector } from '@/sync/domains/state/storage';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { readSessionModelSelectionIntentFromMetadata } from '@/sync/domains/models/readSessionModelSelectionIntent';
 import { roleActions } from '@/sync/ops/roles/roleActions';
 import { t } from '@/text';
 import type { Session } from '@/sync/domains/state/storageTypes';
@@ -48,9 +50,9 @@ export function useSessionRoleId(sessionId: string, serverId?: string | null): s
 
 /**
  * The Agent target this session runs on, as a primitive, through the session-action default owner
- * (the same resolvers the composer uses). Read only by an open Role popover: a role on another Agent
- * explains that its engine applies when starting the role. The session already runs on its Agent,
- * so no enabled-Agents filter.
+ * (the same resolvers the composer uses). Role details use it to resolve unspecified engines and
+ * explain when another Agent applies on start. The session already runs on its Agent, so no
+ * enabled-Agents filter.
  */
 function useSessionAgentTargetKey(sessionId: string, serverId?: string | null): string | null {
     return useSessionSelector(sessionId, serverId, (session) => {
@@ -59,6 +61,18 @@ function useSessionAgentTargetKey(sessionId: string, serverId?: string | null): 
         }));
         return target ? resolveBackendTargetKeyV2(target) : null;
     });
+}
+
+/** The Session engine default, through the canonical target and persisted model intent readers. */
+export function useSessionRoleDefaultEngine(sessionId: string, serverId?: string | null): RoleEngineV1 | undefined {
+    const agentTargetKey = useSessionAgentTargetKey(sessionId, serverId);
+    const modelId = useSessionSelector(sessionId, serverId, session => {
+        if (!session || !agentTargetKey) return null;
+        return readSessionModelSelectionIntentFromMetadata(readSessionOwnerMetadataView(session), agentTargetKey)?.selection?.modelId ?? null;
+    });
+    return React.useMemo(() => agentTargetKey
+        ? { agentTargetKey, ...(modelId ? { modelId } : {}) }
+        : undefined, [agentTargetKey, modelId]);
 }
 
 type SessionRoleWriteResult = Readonly<{ ok: boolean; errorCode?: string; error?: string }>;
@@ -72,6 +86,7 @@ type SessionRoleWriteResult = Readonly<{ ok: boolean; errorCode?: string; error?
 export function describeSessionRoleRefusal(result: SessionRoleWriteResult): Readonly<{ title: string; message: string }> {
     switch (result.errorCode) {
         case 'session_role_runtime_unavailable':
+        case 'target_unavailable':
             return { title: t('roles.session.refusal.runtimeUnavailableTitle'), message: t('roles.session.refusal.runtimeUnavailableBody') };
         case 'role_policy_unenforceable':
             return { title: t('roles.session.refusal.unenforceableTitle'), message: t('roles.session.refusal.unenforceableBody') };
@@ -212,17 +227,22 @@ export function SessionRolePopover(props: Readonly<{
             maxHeightCap={560}
             edgePadding={ROLE_POPOVER_EDGE_PADDING}
             autoFocusOnOpen
+            // On a phone the picker is the shared bottom sheet, as the composer pickers are (lab P2).
+            phonePresentation="sheet"
+            // The rail leads with its own "Role" title and effective line: the sheet adds no second one.
+            sheetHeader="none"
+            accessibilityLabel={t('roles.rail.title')}
             onRequestClose={props.onRequestClose}
             // The row sits in a right-hand pane: the popover keeps its right edge on the row's and
             // grows toward the transcript, never past the window edge.
             portal={{ web: true, native: true, matchAnchorWidth: false, anchorAlign: 'end' }}
         >
-            {({ maxHeight, maxWidth }) => (
+            {({ maxHeight, maxWidth, presentation }) => (
                 <FloatingOverlay role="panel" maxHeight={maxHeight} scrollEnabled={false} surfaceChrome="theme">
                     {/* A fixed frame, so the rail's grid scrolls inside it and its footer stays at the foot.
                         The Popover's bounds include its own edge padding, so the frame is that much smaller;
                         at the full bounds the right column and "Manage roles" were clipped at the edge. */}
-                    <View testID="session-role-popover" style={[styles.rolePopover, {
+                    <View testID="session-role-popover" style={[styles.rolePopover, presentation === 'sheet' ? null : {
                         height: Math.max(0, maxHeight - 2 * ROLE_POPOVER_EDGE_PADDING.vertical),
                         width: Math.max(0, maxWidth - 2 * ROLE_POPOVER_EDGE_PADDING.horizontal),
                     }]}>
@@ -260,6 +280,8 @@ export const SessionRoleValueRow = React.memo(function SessionRoleValueRow(props
     sessionId: string;
     serverId?: string | null;
     testID?: string;
+    /** A row among glyph-led rows (Session Info's Setup) carries the same glyph column. */
+    icon?: React.ReactNode;
 }>) {
     const { sessionId } = props;
     const roleId = useSessionRoleId(sessionId, props.serverId);
@@ -283,6 +305,7 @@ export const SessionRoleValueRow = React.memo(function SessionRoleValueRow(props
                 <Item
                     testID={testID}
                     title={t('roles.rail.title')}
+                    icon={props.icon}
                     detail={value}
                     density="compact"
                     accessibilityLabel={t('sessionWork.role.a11y', { role: value })}

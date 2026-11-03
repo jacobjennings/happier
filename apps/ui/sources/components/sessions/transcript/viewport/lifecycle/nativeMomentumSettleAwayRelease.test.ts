@@ -13,16 +13,16 @@ const releaseEffect = (overrides: Partial<NativeMomentumSettleAwayReleaseInputEf
 });
 
 describe('native momentum settle-away release', () => {
-    it('maps a matching release effect to released viewport and scroll-pin state', () => {
+    it.each([true, false])('maps a matching release effect to released viewport and scroll-pin state (pin enabled: %s)', (pinEnabled) => {
         expect(resolveNativeMomentumSettleAwayReleaseStateEffects({
             effects: [releaseEffect()],
-            pinEnabled: true,
+            pinEnabled,
             sessionId: 'session-a',
             wantsPinned: true,
         })).toEqual([{
             distanceFromLiveTailPx: 18.75,
             scrollPinEvent: {
-                enabled: true,
+                enabled: pinEnabled,
                 offsetY: 18.75,
                 pinnedOffsetThresholdPx: 0,
                 type: 'scroll',
@@ -46,30 +46,15 @@ describe('native momentum settle-away release', () => {
         })).toEqual([]);
     });
 
-    it('does not emit release state for a stale session', () => {
+    it.each([
+        { case: 'for a stale session', effects: [releaseEffect({ sessionId: 'session-b' })] },
+        { case: 'without a release effect', effects: [] },
+    ])('does not emit release state $case', ({ effects }) => {
         expect(resolveNativeMomentumSettleAwayReleaseStateEffects({
-            effects: [releaseEffect({ sessionId: 'session-b' })],
+            effects,
             pinEnabled: true,
             sessionId: 'session-a',
             wantsPinned: true,
         })).toEqual([]);
-    });
-
-    it('does not emit release state without a release effect', () => {
-        expect(resolveNativeMomentumSettleAwayReleaseStateEffects({
-            effects: [],
-            pinEnabled: true,
-            sessionId: 'session-a',
-            wantsPinned: true,
-        })).toEqual([]);
-    });
-
-    it('copies disabled pin state into the scroll-pin event', () => {
-        expect(resolveNativeMomentumSettleAwayReleaseStateEffects({
-            effects: [releaseEffect()],
-            pinEnabled: false,
-            sessionId: 'session-a',
-            wantsPinned: true,
-        })[0]?.scrollPinEvent.enabled).toBe(false);
     });
 });

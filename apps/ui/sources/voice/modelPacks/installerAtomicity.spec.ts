@@ -326,9 +326,11 @@ describe('modelPacks installer (native) atomicity', () => {
     expect(survivingModel, 'live model file must survive a failed update').toBeDefined();
     expect(Array.from(survivingModel!)).toEqual(Array.from(oldBytes));
 
-    // No staging/backup leftovers should remain in the packs root.
+    // No backup, promotion intent or native transfer leftovers remain. The
+    // scratch partial store is intentionally retained for a resumed retry.
     const leftovers = Array.from(files.keys()).filter(
-      (k) => k.includes('.staging-') || k.includes('.backup-'),
+      (k) => k.includes('/.example.backup/') || k.includes('/.example.downloads/')
+        || k.endsWith('/.example.promote-intent'),
     );
     expect(leftovers).toEqual([]);
   });
@@ -406,9 +408,10 @@ describe('modelPacks installer (native) atomicity', () => {
     expect(model).toBeDefined();
     expect(Array.from(model!)).toEqual(Array.from(newBytes));
 
-    // No staging/backup leftovers after a successful swap.
+    // No scratch, backup, promotion intent or native transfer leftovers after a successful swap.
     const leftovers = Array.from(files.keys()).filter(
-      (k) => k.includes('.staging-') || k.includes('.backup-'),
+      (k) => k.includes('/.example.scratch/') || k.includes('/.example.backup/')
+        || k.includes('/.example.downloads/') || k.endsWith('/.example.promote-intent'),
     );
     expect(leftovers).toEqual([]);
   });

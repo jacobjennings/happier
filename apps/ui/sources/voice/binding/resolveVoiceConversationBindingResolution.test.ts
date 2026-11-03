@@ -13,6 +13,12 @@ import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLo
 import { waitForTestEvent } from '@/dev/testkit';
 import type { BuiltinVoiceAdapterAssembly } from '@/voice/adapters/registerBuiltinVoiceAdapters';
 import { SessionResumeRequestV1Schema } from '@happier-dev/protocol/sessions/control/sessionResumeRequestV1';
+import { createConnectedPurposeCatalogHttpBoundary } from '@/dev/testkit/harness/connectedAccountCatalogBoundary';
+import { readLocalConversationVoiceSettings } from '@/sync/domains/settings/voiceSettings';
+import { SessionCurrentProjectionRecordV1Schema } from '@happier-dev/protocol/sessions/listing/response';
+import { SessionOwnerCompatibilityViewV1Schema } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
+import { createStoredReadSchema } from '@happier-dev/protocol/json/storedReadSchema';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 const nativeAlertCalls = vi.hoisted(() => {
   const calls: Parameters<typeof import('react-native')['Alert']['alert']>[] = [];
@@ -54,6 +60,8 @@ const { clearVoiceAgentRecoveryReplaySource, readVoiceAgentRecoveryReplaySource 
 const { useVoiceTargetStore } = await import('@/voice/runtime/voiceTargetStore');
 const { clearDaemonMergedProjectionCacheForTests } = await import('@/agents/backendCatalog/loadDaemonMergedProjectionInputs');
 const { voiceSessionBindingStore } = await import('./voiceConversationBindingStore');
+const { voiceSessionBindingManager } = await import('./voiceConversationBindingRuntime');
+const { writeVoiceConversationBindingMetadata } = await import('./voiceConversationBindingMetadata');
 const { RPC_METHODS } = await import('@happier-dev/protocol/rpc');
 
 const localSettings = (stayInVoiceHome = false) => settingsParse({ lastUsedAgent: 'codex', voice: {
@@ -67,6 +75,7 @@ describe('ensureVoiceConversationBindingResolution', () => {
   let assembly: BuiltinVoiceAdapterAssembly;
   let connection: Awaited<ReturnType<typeof restoreServerAccountForTest>>;
   let metadata: ReturnType<typeof createSessionMetadataHttpBoundary>;
+  let sessionDetailReads: string[];
   let machineRows: ReturnType<typeof createPlainMachineRowFixture>[];
   const address = (sessionId: string) => ({ serverId: connection.home.id, sessionId });
 
@@ -74,6 +83,7 @@ describe('ensureVoiceConversationBindingResolution', () => {
     return createSessionFixture({ id, serverId: connection.home.id, active: true, updatedAt,
       metadata: writeVoiceConversationScopeMetadata({ path: rootId ? `/project/${rootId}` : '/Users/tester/.happy-dev/voice-agent',
         host: 'tester.local', machineId, flavor: 'codex',
+        permissionMode: readLocalConversationVoiceSettings(localSettings().voice).agent.permissionIntent,
         ...buildSystemSessionMetadataV1({ key: VOICE_CONVERSATION_SYSTEM_SESSION_KEY, hidden: true }),
       }, rootId ? { kind: 'session_root', sessionRootId: rootId } : { kind: 'voice_home' }),
     });
@@ -89,7 +99,11 @@ describe('ensureVoiceConversationBindingResolution', () => {
     const home = await network.addHome('https://voice-binding.example.test', 'account-binding');
     machineRows = [createPlainMachineRowFixture({ id: 'machine-1', accountId: 'account-binding' })];
     metadata = createSessionMetadataHttpBoundary(() => storage.getState().sessions);
+    sessionDetailReads = [];
+    const purposes = createConnectedPurposeCatalogHttpBoundary();
     network.setRpcAckResponder(async request => {
+      if (request.method === 'session.agentRealtime.inspect')
+        return { ok: true, result: { ok: true, status: 'available', transport: 'webrtc' } };
       if (request.method === RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE)
         return { ok: false, error: 'RPC method not found', errorCode: 'RPC_METHOD_NOT_FOUND' };
       if (request.method === RPC_METHODS.SPAWN_HAPPY_SESSION || request.method === RPC_METHODS.SPAWN_HAPPY_SESSION_PROVIDER_SAFE) {
@@ -99,7 +113,10 @@ describe('ensureVoiceConversationBindingResolution', () => {
       throw new Error(`Unexpected daemon effect: ${request.method}`);
     });
     const request = createSessionReadBatchFetchBoundary(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response | null> => {
+      const purposeResponse = await purposes.handle(input, init);
+      if (purposeResponse) return purposeResponse;
       const path = new URL(String(input)).pathname;
+      if ((init?.method ?? 'GET') === 'GET' && /^\/v2\/sessions\/[^/]+$/.test(path)) sessionDetailReads.push(path);
       if (path === '/health') return Response.json({});
       if (path === '/v1/account/encryption') return Response.json({ mode: 'plain', updatedAt: 0 });
       if (path === '/v1/account/encryption/currentness') return Response.json(createPlainAccountEncryptionCurrentnessFixture());
@@ -146,6 +163,83 @@ describe('ensureVoiceConversationBindingResolution', () => {
       .toEqual(rootId ? { kind: 'session_root', sessionRootId: rootId } : { kind: 'voice_home' });
     expect(network.requests.some(request => request.method === RPC_METHODS.SESSION_SPAWN_NEW)).toBe(false);
   }
+
+  function seedCarrierBinding(conversationSessionId: string, targetSessionAddress: SessionAddress | null, withoutScope = false) {
+    const session = storage.getState().sessions[conversationSessionId]!;
+    const sessionMetadata = { ...session.metadata! };
+    if (withoutScope) delete sessionMetadata.voiceConversationScopeV1;
+    storage.setState(current => ({ sessions: { ...current.sessions, [conversationSessionId]: {
+      ...session, metadata: writeVoiceConversationBindingMetadata(sessionMetadata, {
+        adapterId: 'local_conversation', controlSessionId: '__voice_agent__', conversationSessionId,
+        conversationSessionAddress: address(conversationSessionId), transcriptMode: 'native_session',
+        targetSessionAddress, updatedAt: 1,
+      }),
+    } } }));
+    metadata.replaceSession(conversationSessionId);
+  }
+
+  async function readPersistedBinding(conversationSessionId: string) {
+    const response = metadata.handle(new URL(`/v2/sessions/${conversationSessionId}`, connection.home.serverUrl));
+    if (!response) throw new Error('Missing persisted carrier');
+    const payload: unknown = await response.json();
+    if (!payload || typeof payload !== 'object' || !('session' in payload)) throw new Error('Missing Session response');
+    const record = SessionCurrentProjectionRecordV1Schema.parse(payload.session);
+    if (record.ownerMetadata?.t !== 'plain') throw new Error('Expected persisted Plain owner metadata');
+    return createStoredReadSchema(SessionOwnerCompatibilityViewV1Schema.shape.voiceConversationBindingV1)
+      .parse(record.ownerMetadata.v.system?.voiceConversationBindingV1);
+  }
+
+  it.each([
+    { name: 'global null', carrierId: 'voice-home', storedTarget: null, expectedTarget: null },
+    { name: 'global ordinary target', carrierId: 'voice-home', storedTarget: 's2', expectedTarget: 's2' },
+    { name: 'cleared scoped target', carrierId: 'voice-root-s1', storedTarget: null, expectedTarget: null },
+    { name: 'poisoned global self target after restart', carrierId: 'voice-home', storedTarget: 'voice-home', expectedTarget: null },
+    { name: 'poisoned scoped self target after restart', carrierId: 'voice-root-s1', storedTarget: 'voice-root-s1', expectedTarget: 's1' },
+    { name: 'different carrier for downstream refusal', carrierId: 'voice-root-s1', storedTarget: 'voice-home', expectedTarget: 'voice-home' },
+    { name: 'same id in another Home', carrierId: 'voice-home', storedTarget: 'voice-home', expectedTarget: 'voice-home', targetServerId: 'another-home' },
+  ])('native Start persists the logical target for $name before execution', async testCase => {
+    const targetServerId = testCase.targetServerId ?? connection.home.id;
+    seedCarrierBinding(testCase.carrierId, testCase.storedTarget
+      ? { serverId: targetServerId, sessionId: testCase.storedTarget } : null);
+
+    const binding = await voiceSessionBindingManager.ensureBound({ adapterId: 'happier.agent.codex/realtime-codex',
+      controlSessionId: testCase.carrierId, requestedTargetSessionId: testCase.carrierId,
+      requestedTargetServerId: connection.home.id });
+
+    const expectedAddress = testCase.expectedTarget ? { serverId: targetServerId, sessionId: testCase.expectedTarget } : null;
+    expect(binding).toMatchObject({ conversationSessionAddress: address(testCase.carrierId), transcriptMode: 'native_session',
+      targetSessionAddress: expectedAddress });
+    expect(await readPersistedBinding(testCase.carrierId)).toMatchObject({
+      targetSessionId: testCase.expectedTarget, targetServerId: expectedAddress?.serverId ?? null,
+    });
+    expect(network.requests.filter(request => request.method === 'session.agentRealtime.inspect'))
+      .toEqual([expect.objectContaining({ targetId: testCase.carrierId })]);
+    expect(network.requests.some(request => request.method === 'session.agentRealtime.start')).toBe(false);
+  });
+
+  it.each(['voice-home', 'voice-root-s1'])('generic continuation repairs %s self target using the same scope owner', async carrierId => {
+    seedCarrierBinding(carrierId, address(carrierId));
+    const binding = await voiceSessionBindingManager.ensureBound({ adapterId: 'local_conversation', controlSessionId: '__voice_agent__',
+      requestedTargetSessionId: carrierId, requestedTargetServerId: connection.home.id });
+    expect(binding?.targetSessionAddress).toEqual(carrierId === 'voice-home' ? null : address('s1'));
+    expect(await readPersistedBinding(carrierId)).toMatchObject({ targetSessionId: carrierId === 'voice-home' ? null : 's1' });
+  });
+
+  it('refuses a poisoned hidden self binding without a canonical recovery scope', async () => {
+    seedCarrierBinding('voice-home', address('voice-home'), true);
+    await expect(voiceSessionBindingManager.ensureBound({ adapterId: 'happier.agent.codex/realtime-codex',
+      controlSessionId: 'voice-home', requestedTargetSessionId: 'voice-home', requestedTargetServerId: connection.home.id }))
+      .rejects.toMatchObject({ code: 'session_unavailable' });
+    expect(metadata.writes).toEqual([]);
+  });
+
+  it('keeps an ordinary native coding Session as its own target', async () => {
+    storage.setState(current => ({ sessions: { ...current.sessions, s1: { ...current.sessions.s1!, active: true } } }));
+    const binding = await voiceSessionBindingManager.ensureBound({ adapterId: 'happier.agent.codex/realtime-codex',
+      controlSessionId: 's1', requestedTargetSessionId: 's1', requestedTargetServerId: connection.home.id });
+    expect(binding).toMatchObject({ conversationSessionAddress: address('s1'), targetSessionAddress: address('s1') });
+    expect(await readPersistedBinding('s1')).toMatchObject({ targetSessionId: 's1', targetServerId: connection.home.id });
+  });
 
   it('does not create a generic shadow session for direct-media realtime providers', async () => {
     expect(await ensureVoiceConversationBindingResolution({ providerId: 'happier.voice.elevenlabs/realtime-elevenlabs',
@@ -278,7 +372,11 @@ describe('ensureVoiceConversationBindingResolution', () => {
     storage.setState({ settings });
     storage.getState().applySessions(['s2', 'voice-root-s2'].map(id => {
       const session = storage.getState().sessions[id]!;
-      return { ...session, metadata: { ...session.metadata!, flavor: 'opencode' } };
+      return { ...session, metadata: { ...session.metadata!, flavor: 'opencode',
+        // Fixed-Agent carriers record the same explicit native default that
+        // R41's immutable recipe matcher receives from canonical creation.
+        ...(id === 'voice-root-s2' ? { connectedServices: { v: 2 as const, bindingsByServiceId: {} } } : {}),
+      } };
     }));
     metadata.replaceSession('s2');
     metadata.replaceSession('voice-root-s2');
@@ -298,16 +396,20 @@ describe('ensureVoiceConversationBindingResolution', () => {
     expectCarrier('voice-root-s9', 's9');
   });
 
-  it('delegates an exact provider-owned binding without creating a shadow session', async () => {
+  it.each(['codex-session-1', 'unloaded-target'])('delegates an exact provider-owned binding targeting %s without creating a shadow session', async requestedTargetSessionId => {
     registerVoiceAdapters([...assembly.adapters, { ...assembly.adapters[0]!, id: 'native_session_provider',
       resolveConversationBinding: async ({ controlSessionId, requestedTargetSessionAddress }) => ({
         conversationSessionAddress: address(controlSessionId), transcriptMode: 'native_session', targetSessionAddress: requestedTargetSessionAddress,
       }) }]);
     expect(await ensureVoiceConversationBindingResolution({ providerId: 'native_session_provider', controlSessionId: 'codex-session-1',
-      requestedTargetSessionId: 'codex-session-1', settings: {} })).toEqual({ conversationSessionId: 'codex-session-1',
-      conversationSessionAddress: address('codex-session-1'), controlSessionId: 'codex-session-1', transcriptMode: 'native_session', targetSessionAddress: address('codex-session-1') });
+      requestedTargetSessionId, settings: {} })).toEqual({ conversationSessionId: 'codex-session-1',
+      conversationSessionAddress: address('codex-session-1'), controlSessionId: 'codex-session-1', transcriptMode: 'native_session', targetSessionAddress: address(requestedTargetSessionId) });
     expect(metadata.writes).toEqual([]);
     expect(network.requests).toEqual([]);
+    if (requestedTargetSessionId !== 'codex-session-1') {
+      expect(sessionDetailReads.filter(path => path === `/v2/sessions/${requestedTargetSessionId}`))
+        .toEqual([]);
+    }
   });
 
   it('returns null for providers without a hidden voice conversation session', async () => {

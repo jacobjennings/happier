@@ -13,7 +13,7 @@ import { useWidgetDefinitionFlows } from '@/components/widgets/definitions/useWi
 import { useWidgetInputsEditor } from '@/components/widgets/surface/useWidgetInputsEditor';
 import { useWidgetInstanceDescriptor } from '@/components/widgets/surface/useWidgetInstanceDescriptor';
 import { widgetProvidedContext, type WidgetSurfaceContext } from '@/components/widgets/surface/widgetSurfaceSetup';
-import { readWidgetDescriptor } from '@/components/widgets/widgetCatalog';
+import { readWidgetDescriptor, resolveWidgetInstanceTitle } from '@/components/widgets/widgetCatalog';
 import { useIsNearViewport, type NearViewportSpan, type NearViewportTracker } from '@/components/widgets/nearViewport';
 import type { WidgetInputBindingsV1, WidgetInstanceV1, WidgetSurfaceRefV1 } from '@happier-dev/protocol/widgets';
 import { t } from '@/text';
@@ -127,7 +127,7 @@ function InstanceItemFrame(props: SessionCompanionItemFrameProps & Readonly<{ co
     const installed = React.useMemo(() => readWidgetDescriptor(projection, instance.definition), [instance.definition, projection]);
     const candidate = useWidgetInstanceDescriptor(scope, instance, installed);
     const inputs = useWidgetInputsEditor({ instance, candidate, scope, context, audience: 'personal', setInputs, testID: props.testID });
-    const title = instance.displayName ?? candidate?.title ?? props.label;
+    const title = resolveWidgetInstanceTitle(instance, candidate, { fallbackTitle: props.label });
     // Rename stays optional (lab dbind N1): an empty name, or the widget's own, goes back to it.
     const renaming = useWidgetFrameRename({
         title,

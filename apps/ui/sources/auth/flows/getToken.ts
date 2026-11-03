@@ -5,7 +5,6 @@ import { encodeBase64 } from '@/encryption/base64';
 import { Encryption } from '@/sync/encryption/encryption';
 import sodium from '@/encryption/libsodium.lib';
 import {
-    getServerFeaturesSnapshot,
     probeServerFeaturesAtUrl,
     type ServerFeaturesSnapshot,
 } from '@/sync/api/capabilities/serverFeaturesClient';
@@ -17,10 +16,7 @@ import { signAccountContentKeyBindingV1 } from '@happier-dev/protocol/crypto/acc
 import type { TeamInvitationAccountAdmissionV1 } from '@happier-dev/protocol';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { HappyError } from '@/utils/errors/errors';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
-import { throwIfAborted } from '@/utils/runtime/abortSignals';
 
 type AuthRequest = (
     path: string,
@@ -96,25 +92,6 @@ function readNestedBoolean(
         current = (current as Record<string, unknown>)[segment];
     }
     return typeof current === 'boolean' ? current : undefined;
-}
-
-/**
- * `anchorUrl` is the focused Home's address captured *before* this authentication
- * probed it. A Home's own feature response can carry a connection descriptor that
- * rewrites the profile's canonical URL, so reading that URL afterwards would let
- * the endpoint under judgement choose the address it is judged against.
- */
-function resolveSelectedKeyChallengeV2Audience(anchorUrl: string): Readonly<{
-    origin: string;
-    serverIdentityId: string;
-}> {
-    const active = getActiveServerSnapshot();
-    const profile = getServerProfileById(active.serverId);
-    const origin = canonicalizeKeyChallengeV2AudienceOrigin(anchorUrl);
-    if (!origin || !profile?.serverIdentityId) {
-        throw new Error('Authentication failed: selected server identity is unavailable for key-challenge v2.');
-    }
-    return { origin, serverIdentityId: profile.serverIdentityId };
 }
 
 async function throwAuthenticationFailure(response: Pick<Response, 'status' | 'json'>, target: AuthCredentialTarget): Promise<never> {
@@ -284,48 +261,6 @@ async function authGetTokenCore(params: AuthTokenCoreParams): Promise<AuthCreden
     }
     const payload: unknown = await response.json();
     return { token: readAuthToken(payload) };
-}
-
-/**
- * Authenticate against the focused Home. This compatibility wrapper retains
- * the historical string return and focused-server feature probe; all protocol
- * and signing decisions live in `authGetTokenCore`.
- */
-export async function authGetToken(
-    secret: Uint8Array,
-    options?: Readonly<{
-        expectedAccountId?: string;
-        signal?: AbortSignal;
-    }>,
-): Promise<string> {
-    throwIfAborted(options?.signal);
-    const addressAnchorUrl = getActiveServerSnapshot().serverUrl;
-    const credentials = await authGetTokenCore({
-        secret,
-        ...(options?.expectedAccountId ? { expectedAccountId: options.expectedAccountId } : {}),
-        requireKeyChallengeV2: Boolean(options?.expectedAccountId),
-        credentialTarget: 'ordinary_home',
-        request: async (path, init, requestOptions) => {
-            throwIfAborted(options?.signal);
-            const response = await serverHttp.serverFetch(path, { ...init, signal: options?.signal }, requestOptions);
-            throwIfAborted(options?.signal);
-            return response;
-        },
-        probe: async () => {
-            const snapshot = await getServerFeaturesSnapshot({
-                // Always refresh the assertion scheme before login. A stale v1
-                // snapshot must not keep an upgraded server on replayable v1.
-                force: true,
-                signal: options?.signal,
-            });
-            // Cancellation must not become a released-v1 fallback observation.
-            throwIfAborted(options?.signal);
-            return snapshot;
-        },
-        resolveAudience: () => resolveSelectedKeyChallengeV2Audience(addressAnchorUrl),
-    });
-    throwIfAborted(options?.signal);
-    return credentials.token;
 }
 
 export type AuthGetTokenAtEndpointParams = Readonly<{

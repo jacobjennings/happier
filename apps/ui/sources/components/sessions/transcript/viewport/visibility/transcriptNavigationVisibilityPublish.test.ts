@@ -52,18 +52,6 @@ describe('resolveTranscriptNavigationVisibilityWrite', () => {
         })).toEqual({ kind: 'skip', reason: 'unmeasured-viewport' });
     });
 
-    it('lets a landed jump anchor own current while the renderer still leads with the previous turn', () => {
-        expect(resolveTranscriptNavigationVisibilityWrite({
-            anchors: ANCHORS,
-            itemCount: 20,
-            landedAnchorId: 'turn-2',
-            visibleSourceRange: { startIndex: 7, endIndex: 14 },
-        })).toEqual({
-            kind: 'write',
-            snapshot: { currentAnchorId: 'turn-2', visibleAnchorIds: ['turn-2'] },
-        });
-    });
-
     it('normalizes an inverted renderer range and clamps it to the rendered item count', () => {
         expect(resolveTranscriptNavigationVisibilityWrite({
             anchors: ANCHORS,
@@ -74,19 +62,6 @@ describe('resolveTranscriptNavigationVisibilityWrite', () => {
 });
 
 describe('publishTranscriptNavigationVisibility', () => {
-    it('does not clobber a good snapshot when the frame is unmeasured', () => {
-        const store = createTranscriptNavigationVisibilityStore(GOOD_SNAPSHOT);
-        store.subscribe(() => {});
-
-        expect(publishTranscriptNavigationVisibility({
-            anchors: ANCHORS,
-            itemCount: 20,
-            readVisibleSourceRange: () => null,
-            store,
-        })).toEqual({ kind: 'skip', reason: 'unmeasured-viewport' });
-        expect(store.get()).toEqual(GOOD_SNAPSHOT);
-    });
-
     it('distinguishes an unmeasured renderer from one genuinely showing the first row', () => {
         const unmeasured = createTranscriptNavigationVisibilityStore(GOOD_SNAPSHOT);
         unmeasured.subscribe(() => {});

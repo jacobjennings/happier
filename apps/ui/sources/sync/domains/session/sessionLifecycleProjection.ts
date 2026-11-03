@@ -3,7 +3,7 @@ import { resolveMergedSessionRuntimeActivityProjectionFields } from '@/sync/engi
 import { hasTerminalPrimaryTurnStatus } from './attention/runtimePresentation';
 import { areServerProfileIdentifiersEquivalent } from '../server/serverProfiles';
 
-type SessionLifecycleProjection = Pick<Session,
+export type SessionLifecycleProjection = Pick<Session,
     | 'serverId' | 'seq' | 'updatedAt' | 'meaningfulActivityAt' | 'lastTurnCompletedAt'
     | 'active' | 'activeAt' | 'thinking' | 'thinkingAt'
     | 'latestTurnId' | 'latestTurnStatus' | 'latestTurnStatusObservedAt'

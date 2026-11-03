@@ -1,4 +1,3 @@
-import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import type { BadgeGridItem } from '../BadgeGrid';
@@ -27,12 +26,6 @@ vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
     return createUnistylesMock();
 });
-
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: (
-        { children, ...props }: { children?: React.ReactNode } & Record<string, unknown>,
-    ) => React.createElement('Text', props, children),
-}));
 
 const SAMPLE_ITEMS = [
     { id: 'resume', label: 'Resume', status: 'positive' as const },

@@ -11,7 +11,6 @@ import { executeAutomationSettingDeclaration } from '@happier-dev/protocol/actio
 import type { FeatureId } from '@happier-dev/protocol/features/catalog';
 import type { ActionExecutorContext } from '@happier-dev/protocol/actions/executor/types';
 import type { ActionApprovalRequestCreatedResult } from '@happier-dev/protocol/actions/actionExecutionResult';
-import { isAccountSettingActionSurfaceAllowedV1 } from '@happier-dev/protocol/actions/accountSettingDeclarations';
 
 import { getSettingsPageDeclarations } from '@/components/settings/catalog/settingsPageDeclarations';
 import { buildSettingHref, readBuiltInAccountSettingUiRef, settingRendersOnHost, settingTargetKinds, SETTING_VALUE_UNAVAILABLE, type SettingRef, type SettingsHost, type SettingsMutationServices } from '@/components/settings/catalog/settingDeclarations';
@@ -37,7 +36,8 @@ import { MachineInstallablePolicyKeySchema, MachineInstallablePolicyChangeSchema
     readMachineInstallablePolicySetting, buildMachineInstallablePolicySettingMutation } from '@happier-dev/protocol/actions/settings/machineInstallablePolicySetting';
 import { MachineOfflineAlertSettingKeySchema, MachineOfflineAlertSettingChangeSchema,
     readMachineOfflineAlertSetting, buildMachineOfflineAlertSettingMutation } from '@happier-dev/protocol/actions/settings/machineOfflineAlertSetting';
-import { machineDirectConnectionStorage } from '@happier-dev/protocol/actions/settings/accountSettingBindings';
+import { ComputerUseSettingsV1Schema, readComputerUseSettingsForMachine } from '@happier-dev/protocol/computer/v1';
+import { machineDirectConnectionStorage, readPortableAccountSettingBindingV1 } from '@happier-dev/protocol/actions/settings/accountSettingBindings';
 import { BUILT_IN_SETTINGS_DECLARATIONS_V1, readBuiltInSettingDeclarationV1, resolveBuiltInAccountSettingResetValueV1, resolveSettingsDeclarationOperationApprovalPolicyV1 } from '@happier-dev/protocol/actions/settings/settingsDeclarations';
 import type { AccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 import { ProjectAtmosphereSchema } from '@happier-dev/protocol/account/settings/accountSettings';
@@ -148,7 +148,6 @@ export function createSettingsDeclarationAction(owner: SettingsDeclarationOwner)
             : ref.storage.access === 'read_only' ? 'read_only'
             : undefined;
         const readable = unavailableReason === undefined || unavailableReason === 'read_only';
-        const surfaceAllowsMutation = isAccountSettingActionSurfaceAllowedV1('settings.set', { anchor: ref.anchor }, context?.surface);
         return {
             anchor: ref.anchor,
             pageId,
@@ -156,12 +155,12 @@ export function createSettingsDeclarationAction(owner: SettingsDeclarationOwner)
             ...(ref.description ? { description: ref.description } : ref.descriptionKey ? { description: String(t(ref.descriptionKey)) } : {}),
             sensitive,
             readable,
-            writable: unavailableReason === undefined && surfaceAllowsMutation,
+            writable: unavailableReason === undefined,
             ...(ref.storage?.scope === 'account' || ref.storage?.scope === 'local' ? { storageScope: ref.storage.scope } : {}),
             ...(settingTargetKinds(ref.storage, ref.anchor).length ? { targetKinds: [...settingTargetKinds(ref.storage, ref.anchor)], targetRequired: ref.storage?.scope === 'team' || ref.storage?.scope === 'project' } : {}),
             ...(readable && ref.storage?.allowedValues ? { allowedValues: [...ref.storage.allowedValues] } : {}),
             ...(unavailableReason ? { unavailableReason } : {}),
-            ...(surfaceAllowsMutation && ref.operation && (!ref.contribution || owner.canUseRuntimeContributions?.() === true)
+            ...(ref.operation && (!ref.contribution || owner.canUseRuntimeContributions?.() === true)
                 && (unavailableReason === undefined || unavailableReason === 'sensitive' || unavailableReason === 'not_bound' || unavailableReason === 'read_only')
                 ? { operation: { actionId: 'settings.invoke' as const, requiresHumanInteraction: ref.operation.requiresHumanInteraction,
                     ...(ref.operation.kind === 'invoke' ? { requiresApproval: ref.operation.requiresApproval !== false } : {}) } } : {}),
@@ -346,6 +345,35 @@ export function createSettingsDeclarationAction(owner: SettingsDeclarationOwner)
             }
             return { anchor: parsed.anchor, value: change.data };
         }
+        if (parsed.anchor === 'machines.computerUse.providers') {
+            if (actionId !== 'settings.get' && actionId !== 'settings.set') return refuse('setting_reset_unsupported');
+            if (!currentOwner()) return refuse('setting_not_bound');
+            if ('target' in parsed && parsed.target) return refuse('setting_target_mismatch');
+            const key = 'key' in parsed ? parsed.key : undefined;
+            if (!key) return refuse('setting_key_required');
+            if (actionId === 'settings.get') {
+                return { anchor: parsed.anchor, value: readComputerUseSettingsForMachine(await owner.readAccountSettings(), key) };
+            }
+            const requested = SettingsDeclarationActionInputSchemasV1['settings.set'].parse(input);
+            const change = ComputerUseSettingsV1Schema.safeParse(requested.value);
+            if (!change.success) return refuse('invalid_setting_value');
+            try {
+                await owner.mutateAccountSettings(raw => {
+                    throwIfAborted(context?.signal);
+                    if (!currentOwner()) throw new RejectedSettingMutation();
+                    const current = settingsParse(raw).computerUseByMachineId;
+                    const next = ACCOUNT_SETTING_DEFINITIONS.computerUseByMachineId.parseMutationValue({ ...current, [key]: change.data });
+                    if (!next.success) throw new RejectedSettingMutation();
+                    const admitted = ACCOUNT_SETTING_DEFINITIONS.computerUseByMachineId.schema.parse(next.data);
+                    if (!Object.hasOwn(admitted, key)) throw new RejectedSettingMutation();
+                    return { ...raw, computerUseByMachineId: admitted };
+                });
+            } catch (error) {
+                if (error instanceof RejectedSettingMutation) return refuse('invalid_setting_value');
+                throw error;
+            }
+            return { anchor: parsed.anchor, value: change.data };
+        }
         if (parsed.anchor === 'machines.installables.policy') {
             if (actionId !== 'settings.get' && actionId !== 'settings.set') return refuse('setting_reset_unsupported');
             const key = MachineInstallablePolicyKeySchema.safeParse('key' in parsed ? parsed.key : undefined);
@@ -374,7 +402,8 @@ export function createSettingsDeclarationAction(owner: SettingsDeclarationOwner)
             }
             return { anchor: parsed.anchor, value: change.data };
         }
-        if ('key' in parsed && parsed.key !== undefined) return refuse('setting_key_unsupported');
+        if ('key' in parsed && parsed.key !== undefined && !(actionId === 'settings.reset'
+            && readPortableAccountSettingBindingV1(readBuiltInSettingDeclarationV1(parsed.anchor) ?? {})?.reset)) return refuse('setting_key_unsupported');
         const page = declarations.find((candidate) => Object.values(candidate.settings).some((ref) => ref.anchor === parsed.anchor));
         // A mounted compound editor is an invocation, not a searchable scalar control.
         // Its private binding is acquired only for the captured host intent after admission.
@@ -389,7 +418,7 @@ export function createSettingsDeclarationAction(owner: SettingsDeclarationOwner)
         const versionedRead = actionId === 'settings.get' && SettingsDeclarationActionInputSchemasV1['settings.get'].parse(input).includeVersion === true;
         const settingWrite = actionId === 'settings.set' ? SettingsDeclarationActionInputSchemasV1['settings.set'].parse(input) : undefined;
         const resetRequest = actionId === 'settings.reset' ? SettingsDeclarationActionInputSchemasV1[actionId].parse(input) : undefined;
-        const { expected: resetExpected, ...resetInput } = resetRequest ?? {};
+        const { expected: resetExpected, key: resetKey, ...resetInput } = resetRequest ?? {};
         const conditionalWrite = resetExpected !== undefined || settingWrite?.expectedSettingsVersion !== undefined || settingWrite?.reversal !== undefined;
         if ((versionedRead || conditionalWrite) && (ref.storage?.scope !== 'account'
             || !('key' in ref.storage || 'kind' in ref.storage && ref.storage.kind === 'owner'))) {
@@ -447,7 +476,7 @@ export function createSettingsDeclarationAction(owner: SettingsDeclarationOwner)
                                 invertBoolean: binding.invertBoolean, allowedValues: binding.allowedValues },
                         } : readBuiltInSettingDeclarationV1(ref.anchor);
                         if (!declaration) return refuse('setting_reset_unsupported');
-                        const reset = resolveBuiltInAccountSettingResetValueV1(declaration);
+                        const reset = resolveBuiltInAccountSettingResetValueV1(declaration, resetKey);
                         if (!reset.success) return refuse('setting_reset_unsupported');
                         resetValue = reset.value;
                     }

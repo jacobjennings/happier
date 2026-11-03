@@ -201,7 +201,7 @@ export function resolveStoryDeckImageSources(
     return buildImageSources(resolvedMedia, 'localAssetKey', resolveStoryDeckMediaSources(resolvedMedia), options);
 }
 
-export function resolveStoryDeckPosterSources(
+function resolveStoryDeckPosterSources(
     media: unknown,
     options?: ResolveMediaSourceOptions,
 ): StoryDeckResolvedMediaSources {

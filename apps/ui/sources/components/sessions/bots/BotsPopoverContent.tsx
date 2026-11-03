@@ -47,7 +47,8 @@ import { useSessionListQueryHomeSupportByServerId, useSessionListQuerySourceStat
 import { buildSessionListIndexNodeId, type SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import { storage, useLocalSetting, useSessionListRowRenderablesForItems } from '@/sync/domains/state/storage';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
-import type { Session } from '@/sync/domains/state/storageTypes';
+import { readSessionPresentationRecord, readSessionPresentationServerId, readSessionPresentationInputDisplay,
+  readSessionPresentationInputRelations, type SessionRelationRecord } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { t } from '@/text';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
@@ -217,7 +218,7 @@ export function BotsPopoverContent(
   }, [listedBotItems, listedBotRows]);
   const selectDescendants = React.useMemo(() => {
     let previous: Pick<ReturnType<typeof storage.getState>, 'sessions' | 'sessionListRowsByServerId'> | null = null;
-    let records: Record<string, Session> = {};
+    let records: Record<string, SessionRelationRecord> = {};
     return (state: ReturnType<typeof storage.getState>) => {
       // Store notifications also carry unrelated settings and transcript updates. Only
       // relationship inputs can change these rows; useShallow alone skips renders, not scans.
@@ -227,7 +228,7 @@ export function BotsPopoverContent(
       for (const item of botItems) {
         if (collapsed[buildSessionListIndexNodeId(item)] !== false) continue;
         for (const session of selectSessionReportSubtree(state.sessions, item.sessionId, item.serverId ?? null, state.sessionListRowsByServerId)) {
-          records[buildSessionListIndexNodeId({ type: 'session', serverId: item.serverId, sessionId: session.id })] = session;
+          records[buildSessionListIndexNodeId({ type: 'session', serverId: item.serverId, sessionId: readSessionPresentationRecord(session).id })] = session;
         }
       }
       return records;
@@ -236,8 +237,8 @@ export function BotsPopoverContent(
   const descendants = storage(useShallow(selectDescendants));
   const items = React.useMemo(() => {
     const byHome = new Map<string, Map<string, SessionIndexItem>>();
-    const records = new Map<string, SessionListRenderableSession>();
-    const add = (item: SessionIndexItem, session: SessionListRenderableSession | null) => {
+    const records = new Map<string, NonNullable<ReturnType<Parameters<typeof nestSessionListReports>[1]>>>();
+    const add = (item: SessionIndexItem, session: ReturnType<Parameters<typeof nestSessionListReports>[1]>) => {
       const home = item.serverId ?? '';
       const group = byHome.get(home) ?? new Map<string, SessionIndexItem>();
       const key = buildSessionListIndexNodeId(item);
@@ -248,7 +249,10 @@ export function BotsPopoverContent(
     botItems.forEach((item, index) => add(item, botRows[index]!.session));
     for (const [key, session] of Object.entries(descendants)) {
       if (records.has(key)) continue;
-      add({ type: 'session', sessionId: session.id, serverId: session.serverId }, session);
+      const record = readSessionPresentationRecord(session);
+      const display = readSessionPresentationInputDisplay(session);
+      add({ type: 'session', sessionId: record.id, serverId: readSessionPresentationServerId(session) },
+        { ...readSessionPresentationInputRelations(session), metadata: display.metadata });
     }
     const source = [...byHome.values()].flatMap(group => [...group.values()]);
     return filterCollapsedSessionListItems(nestSessionListReports(source, (serverId, sessionId) => records.get(

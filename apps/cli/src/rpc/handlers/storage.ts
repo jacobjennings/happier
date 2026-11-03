@@ -169,7 +169,7 @@ export function registerDaemonStorageRpcHandlers(rpc: RpcHandlerRegistrar, optio
         const assertLocal = effect ? access.assertLocalAuthority : access.assertCurrent;
         const refreshSessionCustody = async () => {
             await assertLocal();
-            if (sessionIds) {
+            if (effect && sessionIds) {
                 const current = await options.readOwnSessionIds(access.accountId);
                 await assertLocal();
                 // Keep the owner's readonly view, but refresh Session custody
@@ -237,8 +237,9 @@ export function registerDaemonStorageRpcHandlers(rpc: RpcHandlerRegistrar, optio
             const actor = await readActor(access, context);
             const service = await options.getService(access.target!);
             await access.assertCurrent();
-            // First demand warms the same owner cache; parking never starts a sizing timer.
-            const first = await service.summary({ actor, signal: context?.signal });
+            // Warm only the owner snapshot. The actor projection is disclosed
+            // below and must gather fresh protection there, never while parking.
+            const first = await service.summary({ signal: context?.signal });
             await access.assertCurrent();
             const cursor = request.sinceRevision ?? first.revision;
             const parked = await parkWatch({ isNewer: () => service.revision() !== cursor,

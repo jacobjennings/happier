@@ -13,6 +13,7 @@ import { resolveRuntimeFeatureDecisionOrThrow } from '@/sync/domains/features/fe
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { runTasksWithLimit } from '@/sync/runtime/orchestration/runTasksWithLimit';
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
+import type { AutomationDefinitionListResponse } from '@happier-dev/protocol/automations/automationApiV3';
 
 /** Only a proven source-status change can omit the retained Run-window refresh. */
 export type AutomationRefreshOptions = Readonly<{ summariesOnly: true }>;
@@ -43,6 +44,8 @@ export async function fetchAndApplyAutomations(params: {
     /** The incumbent Sync binding supplies both HTTP and feature identity. */
     requestContext?: AutomationRequestContext;
     shouldContinue?: () => boolean;
+    /** One startup continuation may consume this feature-admitted response, never a default store snapshot. */
+    onDefinitionsRead?: (page: AutomationDefinitionListResponse) => void;
 }): Promise<{ nextCursor: string | null; traversalToken: number | null }> {
     const shouldContinue = params.shouldContinue ?? (() => true);
     if (!params.credentials) {
@@ -64,6 +67,7 @@ export async function fetchAndApplyAutomations(params: {
         ...(params.cursor ? { cursor: params.cursor } : {}),
     }, params.requestContext);
     if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
+    params.onDefinitionsRead?.(result);
     const automations = result.automations.map(createAutomationDefinitionSummary);
     if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
     let traversalToken: number | null;

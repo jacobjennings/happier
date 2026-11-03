@@ -1,3 +1,4 @@
+import { ProviderBindingAuthorizationTicketV1Schema } from '../providers/grants/v1.js';
 import { z } from 'zod/mini';
 
 import { lazyZodSchema } from '../lazyZodSchema.js';
@@ -20,6 +21,8 @@ import {
 import { ProviderBrokerApplicationBindingV1Schema } from '../providers/brokerRouteGrantV1.js';
 import { ProviderCredentialTransportV1Schema } from '../providers/credentials/v1.js';
 import { ProviderEndpointUrlSyntaxSchema } from '../providers/endpointUrlSchema.js';
+import { ProviderPublicHeadersV1Schema } from '../providers/publicHeadersSchema.js';
+import { ProviderEndpointPolicyV1Shape } from '../providers/endpointPolicyV1.js';
 import { ProviderModelDescriptorV1Schema } from '../models/descriptor.js';
 import {
   ProviderConnectionSummaryHealthV1Schema,
@@ -40,7 +43,7 @@ import {
 import { PROVIDER_CATALOG_LIMITS_V1 } from '../providers/catalog/limits.js';
 import { ProviderCatalogProbeModelsV1Schema } from '../providers/catalog/merge.js';
 import { QualifiedConnectedAccountPurposeBindingV1Schema, QualifiedConnectedAccountPurposeBindingTargetV1Schema } from '../connect/connectedAccountPurposeBindings.js';
-import { PROVIDER_SETTINGS_LIMITS_V1 } from '../providers/settings/v1.js';
+import { PROVIDER_SETTINGS_LIMITS_V1, ProviderManualModelInputV1Schema } from '../providers/settings/v1.js';
 import {
   ProviderDiscoveryCandidateIdV1Schema,
   ProviderDiscoveryCandidateV1Schema,
@@ -348,11 +351,17 @@ export type DaemonProviderContributionAuthoringPreviewV1 = z.infer<typeof Daemon
 export const DaemonProviderConnectionEndpointViewV1Schema = lazyZodSchema(() => z.strictObject({
   endpointTemplateId: z.string().check(z.trim(), z.minLength(1), z.maxLength(128)),
   protocol: ProviderWireProtocolSchema,
-  baseUrl: ProviderRpcDisplayEndpointUrlV1Schema,
+  baseUrl: z.nullable(ProviderRpcDisplayEndpointUrlV1Schema),
   effectiveSource: z.enum(['template', 'accountOverride', 'machineOverride']),
   defaultBaseUrl: z._default(z.nullable(ProviderRpcDisplayEndpointUrlV1Schema), null),
   accountOverrideBaseUrl: z._default(z.nullable(ProviderRpcDisplayEndpointUrlV1Schema), null),
   machineOverrideBaseUrl: z._default(z.nullable(ProviderRpcDisplayEndpointUrlV1Schema), null),
+  publicHeaders: z._default(ProviderPublicHeadersV1Schema, {}),
+  defaultPublicHeaders: z._default(ProviderPublicHeadersV1Schema, {}),
+  accountOverridePublicHeaders: z._default(z.nullable(ProviderPublicHeadersV1Schema), null),
+  machineOverridePublicHeaders: z._default(z.nullable(ProviderPublicHeadersV1Schema), null),
+  publicHeaderSources: z._default(z.record(z.string(), z.enum(['template', 'accountOverride', 'machineOverride'])), {}),
+  ...ProviderEndpointPolicyV1Shape,
 }));
 
 const DaemonProviderAgentCompatibilitySummaryBaseV1Schema = lazyZodSchema(() => z.object({
@@ -448,6 +457,7 @@ export const DaemonProviderConnectionViewV1Schema = lazyZodSchema(() => z.strict
     accountBound: z.boolean(),
     boundMachineIds: z.array(ProviderMachineIdSchema),
     keyUrl: z.optional(ProviderHttpsUrlSchema),
+    authorityDescription: z.optional(PluginLocalizedStringV2Schema),
   })),
   /**
    * Exact, content-free witness accepted by Team credential resource creation.
@@ -541,10 +551,8 @@ export const DaemonProviderConnectionMutationRequestV1Schema = lazyZodSchema(() 
     template: CustomProviderTemplateV1Schema,
     savedSecretId: z.nullable(z.string().check(z.trim(), z.minLength(1), z.maxLength(256))),
     enable: z.boolean(),
-    manualModels: z._default(z.array(z.strictObject({
-      id: ProviderModelIdSchema,
-      name: z.optional(z.string().check(z.trim(), z.minLength(1), z.maxLength(256))),
-    })).check(z.maxLength(PROVIDER_CATALOG_LIMITS_V1.maxModelsPerConnection)), []),
+    manualModels: z._default(z.array(ProviderManualModelInputV1Schema)
+      .check(z.maxLength(PROVIDER_SETTINGS_LIMITS_V1.manualModelsPerConnection)), []),
   })).check(z.superRefine((value, ctx) => {
     const ids = new Set<string>();
     value.manualModels.forEach((model, index) => {
@@ -1100,15 +1108,11 @@ export function admitTeamCredentialSourceModelRowsV1(response: unknown):
 }
 
 const ProviderModelSettingsMutationBaseV1Schema = lazyZodSchema(() => z.object({ machineId: ProviderMachineIdSchema }));
-const ProviderManualModelMutationInputV1Schema = lazyZodSchema(() => z.strictObject({
-  id: ProviderModelIdSchema,
-  name: z.optional(z.string().check(z.trim(), z.minLength(1), z.maxLength(256))),
-}));
 export const DaemonProviderModelSettingsMutationRequestV1Schema = lazyZodSchema(() => z.discriminatedUnion('action', [
   (<T extends z.ZodMiniObject>(schema: T) => z.core.clone(schema, { ...schema._zod.def, catchall: z.never() }) as z.ZodMiniObject<T['shape'], z.core.$strict>)(z.extend(ProviderModelSettingsMutationBaseV1Schema, {
     action: z.literal('manualAdd'), connectionId: ProviderConnectionIdSchema,
     expectedConnectionRevision: z.number().check(z.int(), z.nonnegative()),
-    models: z.array(ProviderManualModelMutationInputV1Schema).check(z.minLength(1), z.maxLength(PROVIDER_SETTINGS_LIMITS_V1.manualModelsPerConnection)),
+    models: z.array(ProviderManualModelInputV1Schema).check(z.minLength(1), z.maxLength(PROVIDER_SETTINGS_LIMITS_V1.manualModelsPerConnection)),
   })).check(z.superRefine((value, ctx) => {
     const seen = new Set<string>();
     value.models.forEach((model, index) => {
@@ -1277,3 +1281,15 @@ export const DaemonProviderProfileMigrationConflictConfirmResponseV1Schema = laz
 export type DaemonProviderProfileMigrationConflictConfirmResponseV1 = z.infer<
   typeof DaemonProviderProfileMigrationConflictConfirmResponseV1Schema
 >;
+
+export const DaemonProviderNativeSourceV1Schema = lazyZodSchema(() => z.strictObject({
+  authorizationTicket: ProviderBindingAuthorizationTicketV1Schema,
+  providerTicket: z.string().check(z.regex(/^[A-Za-z0-9_-]{43}$/)),
+  endpoint: z.strictObject({
+    endpointTemplateId: z.string().check(z.trim(), z.minLength(1), z.maxLength(128)),
+    normalizedUrl: ProviderHttpsUrlSchema,
+    protocol: ProviderWireProtocolSchema,
+    publicHeaders: ProviderPublicHeadersV1Schema,
+  }),
+  credentialTransport: ProviderCredentialTransportV1Schema,
+}));

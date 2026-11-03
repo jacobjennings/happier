@@ -1,4 +1,7 @@
 import { fetchAccountEncryptionCurrentness } from '@/api/client/connectedServiceCredentialApi';
+import { randomBytes } from 'node:crypto';
+import { backfillAutomationManagedTargetsV1 } from '@happier-dev/protocol/actions/executor/workflowTriggerAccountHost';
+import { listAutomationDefinitions, getAutomationDefinition, updateAutomationDefinition } from '@/api/automations';
 import {
   createAutomationAccountEncryptionMaterialSnapshotV1,
   resolveValidatedAutomationAccountEncryptionV1,
@@ -21,7 +24,7 @@ import type {
   AutomationClaimRunResponse,
 } from './automationTypes';
 import type { Update } from '@/api/types';
-import { readStoredCredentials, type StoredCredentials } from '@/persistence';
+import { readStoredCredentials, sameStoredCredentials, type StoredCredentials } from '@/persistence';
 import { DEFAULT_AUTOMATION_V3_MAX_ACTIVE_RUNS_PER_MACHINE } from '@happier-dev/protocol/automations/automationApiV3';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import { invalidateActiveAutomationRun } from './automationRunInvalidation';
@@ -119,6 +122,7 @@ export function startAutomationWorker(params: {
   const assignments = createAutomationAssignmentCache();
 
   let stopped = false;
+  const managedTargetBackfillCancellation = new AbortController();
   let paused = false;
   // These values govern only the one claim request loop. A per-Run executor
   // failure is already reflected in that Run's server-owned lifecycle and
@@ -344,6 +348,7 @@ export function startAutomationWorker(params: {
   const stopWorker = (reason: 'manual') => {
     if (stopped) return;
     stopped = true;
+    managedTargetBackfillCancellation.abort();
     unsubscribeAdmission?.();
     sourceObservers.clear();
     for (const active of activeExecutions.values()) {
@@ -655,6 +660,46 @@ export function startAutomationWorker(params: {
     if (params.admissionDrain?.isQuiescing()) { clearClaimTimer(); return; }
     if (pendingQueuedWake) scheduleClaimSoon('admission-reopened');
     else rescheduleClaim('admission-reopened', true);
+  });
+
+  // This retained-row migration belongs to this admitted startup, never to
+  // assignment refresh, socket catch-up or the worker's claim/retry loop.
+  const assertBackfillAccountCurrent = async () => {
+    managedTargetBackfillCancellation.signal.throwIfAborted();
+    const current = await readStoredCredentials();
+    managedTargetBackfillCancellation.signal.throwIfAborted();
+    if (!sameStoredCredentials(params.credentials, current)) {
+      managedTargetBackfillCancellation.abort();
+      managedTargetBackfillCancellation.signal.throwIfAborted();
+    }
+  };
+  void backfillAutomationManagedTargetsV1({
+    signal: managedTargetBackfillCancellation.signal,
+    isCurrent: () => !stopped,
+    randomBytes,
+    resolveEncryption: async () => {
+      await assertBackfillAccountCurrent();
+      const current = await resolveAutomationWorkerAccountEncryption({ token: params.token,
+        credentials: params.credentials, signal: managedTargetBackfillCancellation.signal });
+      await assertBackfillAccountCurrent();
+      if (current.kind !== 'available') throw Object.assign(new Error('content_unavailable'), { code: 'content_unavailable' });
+      return current;
+    },
+    automations: {
+      list: async input => { await assertBackfillAccountCurrent(); return await listAutomationDefinitions({ ...input, token: params.token,
+        signal: managedTargetBackfillCancellation.signal }); },
+      get: async automationId => { await assertBackfillAccountCurrent(); return await getAutomationDefinition({ token: params.token, automationId,
+        signal: managedTargetBackfillCancellation.signal }); },
+      patch: async (automationId, input, beforeWrite) => {
+        await beforeWrite?.();
+        await assertBackfillAccountCurrent();
+        return await updateAutomationDefinition({ token: params.token, automationId, input,
+          signal: managedTargetBackfillCancellation.signal });
+      },
+    },
+  }).catch(error => {
+    if (!managedTargetBackfillCancellation.signal.aborted) logAutomationWarn('Automation managed target startup backfill unavailable', error,
+      { machineId: params.machineId });
   });
 
   // Seed the first bounded reconciliation before the initial read so a transient

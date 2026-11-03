@@ -1,7 +1,41 @@
 import { describe, expect, it } from 'vitest';
+import { once } from 'node:events';
 import * as processHelpers from './spawn';
 
 describe('process spawn helpers', () => {
+  it('waits for a complete newline-delimited PID across stdout chunks', async () => {
+    const child = processHelpers.spawnInlineNodeTestProcess(`
+      process.stdout.write('12');
+      process.stdin.once('data', () => process.stdout.write('345\\n'));
+      setTimeout(() => process.exit(0), 2000);
+    `, { stdio: ['pipe', 'pipe', 'ignore'] });
+    let resolved = false;
+    const pid = processHelpers.readTestProcessPid(child).then(value => { resolved = true; return value; });
+    try {
+      await once(child.stdout!, 'data');
+      expect(resolved).toBe(false);
+      child.stdin!.end('finish line');
+      await expect(pid).resolves.toBe(12345);
+    } finally {
+      child.kill();
+      await processHelpers.waitForProcessExit(child.pid!);
+    }
+  });
+
+  it('rejects malformed, process-group and unsafe PID lines', async () => {
+    for (const line of ['0', '1', '', 'NaN', '123oops', '9007199254740992']) {
+      const child = processHelpers.spawnInlineNodeTestProcess(`process.stdout.write(${JSON.stringify(line + '\n')});`, {
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      try {
+        await expect(processHelpers.readTestProcessPid(child)).rejects.toThrow('invalid child pid');
+      } finally {
+        child.kill();
+        await processHelpers.waitForProcessExit(child.pid!);
+      }
+    }
+  });
+
   it('spawns a child process and exposes its pid', async () => {
     const child = processHelpers.spawnTestProcess(process.execPath, ['-e', 'process.exit(0)'], {
       stdio: 'ignore',

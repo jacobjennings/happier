@@ -11,6 +11,7 @@ import { hunkReviewTranslations } from './hunkReviewTranslations.shared';
 import { capabilityKitTranslations } from './capabilityKitTranslations';
 
 import { workspaceTabKeyboardTranslations } from './workspaceTabTranslations.shared';
+import { sessionListSpacesKeyboardTranslations } from './sessionListSpacesKeyboardTranslations.shared';
 import { reviewKeyboardTranslations } from './reviewKeyboardTranslations.shared';
 import { paneArrangementTranslations, paneKeyboardTranslations, paneRegionLabels } from './paneKeyboardTranslations';
 import { mediaKeyboardTranslations } from './mediaKeyboardTranslations';
@@ -1649,6 +1650,7 @@ export const zhHans: TranslationStructure = {
             codeProblemNext: '下一个问题',
             codeProblemPrevious: '上一个问题',
     ...workspaceTabKeyboardTranslations,
+    ...sessionListSpacesKeyboardTranslations['zh-Hans'],
     ...reviewKeyboardTranslations['zh-Hans'],
     ...paneKeyboardTranslations['zh-Hans'].commands,
     ...mediaKeyboardTranslations['zh-Hans'],
@@ -4105,6 +4107,8 @@ export const zhHans: TranslationStructure = {
       poolAccounts: ({ count }: { count: number }) => `${count} 个账户`,
       poolAccountsInUse: ({ accounts, account }: { accounts: string; account: string }) => `${accounts} · 正在使用 ${account}`,
       requiredPrompt: '选择帐户或群组',
+    signInToChoose: '登录此 Home 以选择帐户',
+    requiredAccountPrompt: '选择帐户',
       notSet: '未设置',
       ownSignIn: ({ agent }: { agent: string }) => `${agent} 自己的登录`,
       legacyUnavailable: '此服务器暂时无法显示已连接帐户目标',
@@ -4418,7 +4422,7 @@ export const zhHans: TranslationStructure = {
       },
     },
     oauthPaste: {
-      invalidConfig: "已连接服务配置无效。",
+      invalidConfig: "这不是登录页面显示的代码或地址。请重新复制并粘贴到这里。",
       connectWebGroupTitle: "连接（网页）",
       connectWebDescription:
         "打开授权 URL，在浏览器中完成 OAuth，然后将最终重定向的 URL 复制并粘贴回 Happier。",
@@ -5782,6 +5786,23 @@ export const zhHans: TranslationStructure = {
       bannerTitle: '此设备已离线',
       bannerDescription: '正在显示最后已知状态。设备重新连接前，设备操作不可用。',
     },
+    idleCompaction: {
+      title: '空闲时压缩',
+      description: '在提示缓存过期前压缩较长的对话，让你的下一条消息启动更快、花费更少。',
+      whenTitle: '何时压缩',
+      whenOverTokens: ({ tokens }: { tokens: string }) => `超过 ${tokens} 个 token`,
+      whenAnySize: '任意大小',
+      minContextTokens: '最小对话大小',
+      minContextTokensDescription: '更短的对话不会被压缩。',
+      minContextTokensNone: '无最小值',
+      tokensUnit: 'token',
+      cacheWindowOverrideMs: '缓存时长',
+      cacheWindowDescription: '“自动”跟随提供商。你选择的时长会覆盖它。',
+      cacheWindowAutomatic: '自动',
+      cacheWindowCustom: '自定义',
+      cacheWindowCustomOption: '自定义…',
+      minutesUnit: '分钟',
+    },
     detailPage: {
       kindCodingAgent: '编码智能体',
       usedByNewSessions: '新会话使用',
@@ -6747,6 +6768,8 @@ export const zhHans: TranslationStructure = {
     connectionTimeout: "连接超时",
     authenticationFailed: "认证失败",
     permissionDenied: "权限被拒绝",
+    machineAdminAccessRequired: '请为这台机器配置管理员访问权限，然后重新尝试添加域名。',
+    machineManagedCliUnavailable: "请在此机器上安装或更新 Happier，然后重试添加域名。",
     permissionDeniedReadOnlyMode: "被只读模式拒绝（写入操作被拒绝）。",
     permissionCanceled: "权限已取消",
     permissionCanceledSessionInactive: "会话处于非活动状态 — 无法批准此权限请求。",
@@ -7557,6 +7580,7 @@ export const zhHans: TranslationStructure = {
       },
     },
         pendingActivation: {
+    held: { title: "已由你停止", body: "在你恢复此会话之前，消息会一直保留在队列中。" },
             waiting_offline: { title: '消息已加入此机器的队列', body: '这台机器及其守护进程恢复在线后，消息将被处理。' },
             waiting: { title: '等待恢复', body: '守护进程恢复此会话时，你的消息会安全地保留在队列中。' },
             failed: { title: '无法恢复会话', body: '你的消息仍安全地保留在队列中。准备好后请重试。' },
@@ -7586,8 +7610,11 @@ export const zhHans: TranslationStructure = {
         provider_endpoint_unavailable: "提供商端点不可用。请检查 Gateway 及其与机器的连接，然后重试会话。",
         plugin_mcp_preparation_unavailable: "插件 MCP 准备不可用。请检查目标机器，然后重试会话。",
         agent_runtime_daemon_service_generation_not_current: "运行器的智能体代次已不是最新。请在目标机器上重试会话。",
+        plugin_disabled: "此智能体插件已禁用。在“插件”中重新启用它以恢复此会话。",
         native_agent_privileged_effect_authority_unavailable: "运行器的 daemon 授权不可用。请检查目标机器，然后重试会话。",
         native_agent_privileged_effect_outcome_unknown: "无法确认运行器 daemon 的准备情况。重试前请检查会话和目标机器。",
+        daemon_draining: "目标机器正在暂时暂停新任务。准备就绪后，请重试会话。",
+        daemon_shutting_down: "Happier 正在目标机器上关闭。请在该机器上重新启动，然后重试会话。",
         skills_unavailable: "技能分发不可用。请检查目标机器，然后重试会话。",
         team_credential_provider_selection_not_current: "所选的 Team 提供商不可用。请检查 Team 的模型选择，然后重试会话。",
         teamCredential: "共享的 Team 凭据拒绝了该请求。",
@@ -7894,6 +7921,32 @@ export const zhHans: TranslationStructure = {
         askedFromHere: '从这里提问',
         openQuestion: '打开问题',
         questionUnavailable: '无法加载问题',
+        showMore: '显示更多',
+        showLess: '显示更少',
+      },
+      askRecord: {
+        asked: '已询问',
+        sentTo: '已发送给',
+        groupAsked: '此会话已询问',
+        groupSentTo: '此会话已发送给',
+        answered: '已回答',
+        passed: '已跳过',
+        cancelled: '已取消',
+        noAnswer: '无回答',
+        noAnswerYet: '尚无回答',
+        sent: '已发送',
+        waitsForYou: '等你处理',
+        notSent: '未发送',
+        notAnswered: '无法回答',
+        unsure: '不确定是否已发送',
+        unavailable: '无法检查',
+        selectorFallback: '会话',
+        retryHint: '从输入框再次发送，即可只重试未送达的。',
+        summaryAnswered: ({ count }: { count: number }) => `${count} 个已回答`,
+        summaryPassed: ({ count }: { count: number }) => `${count} 个已跳过`,
+        summaryFailed: ({ count }: { count: number }) => `${count} 个未送达`,
+        summarySent: ({ count }: { count: number }) => `${count} 个已发送`,
+        summaryWaiting: ({ count }: { count: number }) => `${count} 个等待中`,
       },
       subagents: {
         messages: {
@@ -8050,6 +8103,7 @@ export const zhHans: TranslationStructure = {
           blocked: '已阻止',
           delivering: '正在递送',
           queuedInClaude: '已在 Claude 中排队',
+          nextTurn: '等待下一轮',
         },
         queuedReasons: {
           waitingForForegroundTurn: '正在等待当前轮次结束',
@@ -8465,6 +8519,7 @@ export const zhHans: TranslationStructure = {
   voiceSurface: {
     reviewCredentials: '检查凭据',
     connectAgent: '连接',
+    setUpAgent: ({ agent }: { agent: string }) => `设置 ${agent}`,
     installAgentRuntime: '安装',
     updateAgentRuntime: '更新',
     reconnect: '重新连接',
@@ -8480,6 +8535,7 @@ export const zhHans: TranslationStructure = {
     orbExpand: "展开语音",
     orbCollapse: "收起语音",
     delegatedWorking: "正在处理…",
+    earlierTurnsLeftOut: "为适应模型的记忆，此对话较早的部分已被省略。",
     composerStartHint: "开始关于此会话的语音对话。",
     composerGlobalStartHint: "开始不属于任何会话的语音对话。",
     composerEndHint: "结束语音对话。已经开始的编码工作会继续运行。",
@@ -9013,6 +9069,9 @@ export const zhHans: TranslationStructure = {
     thinking: "思考中",
     thinkingSince: "思考开始时间",
     thinkingLevel: "思考级别",
+    peerReportFrom: ({ name }: { name: string }) => `来自${name}的报告`,
+    peerMessageFrom: ({ name }: { name: string }) => `来自${name}的消息`,
+    peerUnnamedSender: "另一个代理",
     cliVersion: "CLI 版本",
     cliVersionOutdated: "需要更新 CLI",
     cliVersionOutdatedMessage: ({
@@ -9027,6 +9086,8 @@ export const zhHans: TranslationStructure = {
     deleteSession: "删除会话",
     deleteSessionSubtitle: "永久删除此会话",
     deleteSessionConfirm: "永久删除会话？",
+    stopAndDeleteSession: "停止并删除",
+    stopAndDeleteSessionWarning: "这将停止会话，并永久删除其所有消息和数据。此操作无法撤销。",
     deleteSessionWarning:
       "此操作无法撤销。与此会话相关的所有消息和数据将被永久删除。",
     failedToDeleteSession: "删除会话失败",
@@ -9105,6 +9166,18 @@ export const zhHans: TranslationStructure = {
       people: '成员',
     },
     suggestionTypeMoreToNarrow: '输入更多以缩小范围',
+    commands: {
+        compact: '压缩对话',
+        clear: '清除对话',
+        help: '显示可用命令',
+        reset: '重置会话',
+        export: '导出对话',
+        debug: '显示调试信息',
+        status: '显示连接状态',
+        stop: '停止当前操作',
+        abort: '中止当前操作',
+        cancel: '取消当前操作',
+    },
     stopCodingTurn: "停止编码轮次",
       nonSteerableSend: {
         title: '智能体正忙',
@@ -10446,6 +10519,9 @@ export const zhHans: TranslationStructure = {
       emptyTitle: '未检测到本地服务',
       errorTitle: '本地服务扫描需要关注',
       scanCause: {
+        rootDenied: ({ path }: { path: string }) => `没有读取 ${path} 的权限`,
+        rootMissing: ({ path }: { path: string }) => `找不到 ${path}`,
+        rootUnreadable: ({ path }: { path: string }) => `无法读取 ${path}`,
         workspacesUnavailable: '无法读取此机器上打开了哪些项目，部分服务可能未显示。',
         partial: '此机器上的扫描超时，部分正在运行的服务可能未显示。',
         failed: '此机器无法列出正在运行的进程，因此找不到正在运行的服务。',
@@ -10519,6 +10595,9 @@ export const zhHans: TranslationStructure = {
       waitingAddress: '已启动，正在等待地址。',
       noAddress: '无地址',
       failed: '服务无法启动。',
+      reviewOutput: '查看输出',
+      address: '地址',
+      addressOpensHere: '通过本地服务在此手机上打开',
     },
     session: {
       thisSessionTitle: '此会话',
@@ -10678,10 +10757,36 @@ export const zhHans: TranslationStructure = {
             runScriptA11y: '在新终端标签页中运行脚本',
             failure: {
                 title: '操作未完成',
-                refused: '机器拒绝了此操作。请检查此机器的本地服务权限后重试。',
+                refused: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "机器拒绝了此操作。"
+                  : '机器拒绝了此操作。请检查此机器的本地服务权限后重试。',
                 unavailable: '此操作不适用于此机器上的该服务。',
-                incomplete: '操作没有完成，你可以再试一次。',
-                outcomeUnknown: '操作结果未知。重试前，请在所选机器上检查此服务。',
+                incomplete: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "操作没有完成。"
+                  : '操作没有完成，你可以再试一次。',
+                serviceNotRunning: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "此服务已停止运行。"
+                  : '此服务已停止运行，请查看“服务”。',
+                namedServiceNotRunning: ({ service, servicesActionOffered = false }: { service: string; servicesActionOffered?: boolean }) => servicesActionOffered
+                  ? `${service} 已停止运行。`
+                  : `${service} 已停止运行，请查看“服务”。`,
+                previewNotReady: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "此服务尚未准备好打开。"
+                  : '此服务尚未准备好打开，请查看“服务”。',
+                browserViewUnavailable: "Happier 无法打开应用内浏览器视图，请稍后再试。",
+                startFailedTitle: "服务未能启动",
+                startFailed: "服务在就绪前已停止。",
+                namedStartFailed: ({ service }: { service: string }): string => `${service}在就绪前已停止。`,
+                previewFailed: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "无法打开预览。"
+                  : '无法打开预览，请检查“服务”后重试。',
+                previewUnavailable: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "无法访问预览。"
+                  : '无法访问预览，请查看“服务”。',
+                namedReason: ({ service, reason }: { service: string; reason: string }) => `${service}：${reason}`,
+                outcomeUnknown: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "操作结果未知。"
+                  : '操作结果未知。重试前，请在所选机器上检查此服务。',
       portInUse: ({ port }: { port: number }) => `端口 ${port} 已被占用。请停止现有服务或选择其他端口。`,
       portInUseSameProject: ({ port }: { port: number }) => `此项目已在使用端口 ${port}。请使用正在运行的服务或选择其他端口。`,
       processExit: ({ code }: { code: string }) => `服务已退出，代码为 ${code}。重试前请查看详情。`,
@@ -10904,14 +11009,21 @@ export const zhHans: TranslationStructure = {
       previewElsewhere: `此设备无法直接打开它。在“服务”中分享链接即可在这里打开。`,
       previewEndedTitle: `此预览已结束`,
       previewEnded: `它的服务已停止分享，或链接已被撤销。请从“服务”重新打开。`,
-      previewEndedLastPage: ({ page }: { page: string }) => `最后一页是 ${page}。它的服务已停止分享，或链接已被撤销。请从“服务”重新打开。`,
+      previewEndedLastPageDetail: ({ page }: { page: string }) => `最后一页：${page}`,
+      previewEndedStopped: `它的服务已停止分享，或链接已被撤销。`,
+      previewEndedServiceStopped: ({ service }: { service: string }) => `${service} 已停止。`,
       previewEndedRunning: `它的服务正在运行，可以在这里重新打开。`,
-      previewEndedRunningLastPage: ({ page }: { page: string }) => `最后一页是 ${page}。它的服务正在运行，可以在这里重新打开。`,
+      previewEndedNamed: ({ service }: { service: string }) => `${service} 已停止分享，或链接已被撤销。请从“服务”重新打开。`,
+      previewEndedStoppedNamed: ({ service }: { service: string }) => `${service} 已停止分享，或链接已被撤销。`,
+      previewEndedRunningNamed: ({ service }: { service: string }) => `${service} 正在运行，可以在这里重新打开。`,
       openAgain: `重新打开`,
       openServices: `前往服务`,
       previewTransportUnavailableTitle: `无法连接到此预览`,
-      previewTransportUnavailable: `运行它的机器当前没有响应。重新加载以再试一次。`,
+      previewTransportUnavailable: `运行它的机器当前没有响应。`,
       closeTab: `关闭标签页`,
+      previewTransportUnavailableNamed: ({ machine }: { machine: string }) => `${machine} 当前没有响应此预览。`,
+      startService: ({ service }: { service: string }) => `启动 ${service}`,
+      startAgain: `重新启动`,
       desktopEngineUnavailable: "此设备上的内置浏览器引擎不可用。",
       desktopWebView: "此设备上的内置浏览器引擎不可用。你仍可以在系统浏览器中打开此页面。",
       desktopWebViewUnsupportedPlatform: "此平台暂不支持内置浏览。",
@@ -12260,6 +12372,9 @@ settingsSession: {
       retry: '重试',
       roleYou: '你',
       roleAssistant: '助手',
+      recoveryDescription: '你说的部分内容无法确认已送达。在你决定之前，不会重新发送或丢弃任何内容。',
+      recoveryTitle: '查看暂存的消息',
+      recoveryOpenFailed: '无法打开语音对话。请重试。',
     },
     dictation: {
       title: '听写',
@@ -13200,6 +13315,7 @@ settingsSession: {
         tts_failed: "语音合成失败。",
         turn_aborted: "语音轮次已取消。",
         authentication_required: "连接所选代理以使用语音。",
+        agent_signed_out: ({ agent, machine }: { agent: string; machine: string }) => `${agent} 没有默认的已连接账户，也没有在 ${machine} 上登录。`,
         session_unavailable: "所选会话已无法用于语音。",
         unsupported_runtime: "安装所选代理运行时以使用语音。",
         update_required: "更新所选代理运行时以使用语音。",
@@ -13207,6 +13323,7 @@ settingsSession: {
         mic_unavailable: '未找到麦克风。请连接麦克风后重试。',
         speech_recognition_unavailable: '这里无法使用语音识别。请选择其他语音识别引擎。',
         previous_session_stop_failed: '无法停止上一个语音会话。',
+        agent_selection_unavailable: '所选智能体不可用。请在语音设置中选择智能体。',
       },},
     privacy: {
       title: "上下文共享",
@@ -13546,7 +13663,7 @@ settingsSession: {
     onboardingShowcase: {
         details: {
             ...PRODUCT_STORY_DETAILS_ENGLISH,
-            voice: { ...PRODUCT_STORY_DETAILS_ENGLISH.voice, body: "询问会话情况并讨论下一步修改。权限请求仍需你点按批准。" },
+            voice: { ...PRODUCT_STORY_DETAILS_ENGLISH.voice, body: "询问会话情况并通过语音发送消息。让语音代理代你批准请求，或在语音设置中关闭此选项。" },
             handoff: {
                 wideTitle: "把运行中的会话\n移到另一台机器。",
                 body: "将运行中的会话交接到桌面电脑、VPS 或开发机器，从停下的地方继续。工作树也可以一起转移，可以是完整快照，也可以只带上更改。Happier 会创建同级副本而不覆盖现有内容；除非你明确指定，否则不会转移被忽略的文件。",
@@ -13568,7 +13685,7 @@ settingsSession: {
                         "existingTitle": "已有会话，已经在那里",
                         "existingBody": "任何在你机器上运行的 Claude、Codex 或 OpenCode 会话，都可以在 Happier 中实时打开。",
                         "voiceTitle": "可以一起头脑风暴的语音助手",
-                        "voiceBody": "询问代理的工作情况并通过语音发送消息。权限请求需要点按批准。",
+                        "voiceBody": "询问会话情况并通过语音发送消息。让语音代理代你批准请求，或在语音设置中关闭此选项。",
                         "reviewTitle": "审查 diff 并留下评论",
                         "reviewBody": "在文件或 diff 的具体行上做标记，选择要发送的备注，并直接交给代理。",
                         "subagentsTitle": "跨 provider 的 subagents",
@@ -13786,6 +13903,7 @@ settingsSession: {
   },
 
   terminalEmbedded: {
+    inputRecovery: "无法确认输入是否已送达。请复制输入并检查终端，然后再继续。",
     nativeAccessibility: {
       terminalLabel: '终端',
       fallbackValue: '原生终端内容不可用。请使用 xterm WebView 访问无障碍终端内容。',
@@ -14737,6 +14855,12 @@ settingsSession: {
     runtimeConfigOutcomeRequiresInteractiveControl: '需要在终端中操作',
     runtimeConfigOutcomeUnsupported: '不支持',
     runtimeConfigOutcomeFailed: '无法应用',
+    contextCompactionIdleStarted: '正在空闲时压缩…',
+    contextCompactionIdleCompleted: '已在空闲时压缩',
+    contextCompactionIdleDetail: '在提示缓存过期前',
+    contextCompactionIdleDetailCounts: ({ before, after }: { before: string; after: string }) => `${before} → ${after} 个 token · 在提示缓存过期前`,
+    contextCompactionIdleFailed: '无法在空闲时压缩',
+    contextCompactionIdleFailedDetail: '对话保持完整大小。',
     contextCompactionStarted: "正在压缩上下文...",
     contextCompactionCompleted: "上下文已压缩",
     contextCompactionFailed: "上下文压缩失败",
@@ -16755,6 +16879,8 @@ settingsSession: {
         targetMismatchHint: "请重新选择机器。如果问题持续，请将它重新连接到此Home后重试。你的选择会保留。",
         invalidFolder: "请选择此检出内的文件夹。",
         unsupported: "此机器无法准备此项目。",
+        cloneUnsupported: "此机器无法克隆仓库。",
+        hostingProviderUnavailable: "此 Source 的代码托管服务在此机器上不可用。",
         setupFailed: ({ project }: { project: string }) => `${project} 已打开，但设置失败。`,
         filesKept: "检出已保留。修复设置或打开“脚本”后重试。",
         openScripts: "打开脚本",
@@ -16814,6 +16940,18 @@ settingsSession: {
         agentWaitedFor: ({ name }: { name: string }) => `已等待 ${name}`,
         agentAccepted: "已接受",
         agentOn: ({ machine }: { machine: string }) => `在 ${machine} 上`,
+        environment: {
+            host: "主机环境",
+            empty: "未检测到原生环境",
+            checking: "正在检查可用工具…",
+            pending: "正在等待批准以评估此环境",
+            preparing: ({ tool, machine }: { tool: string; machine: string }) => `正在 ${machine} 上准备 ${tool}…`,
+            unavailable: ({ tool }: { tool: string }) => `${tool} 在这台机器上不可用`,
+            failed: "原生环境准备失败。查看输出。",
+            changed: "环境输入已更改。请重新审查。",
+            unevaluated: "Nix 定义会在评估此环境后读取。",
+            noFallback: "未在主机环境中运行任何内容",
+        },
         definition: {
             inspecting: "正在查找项目命令…",
             partial: "部分定义无法读取",
@@ -16827,6 +16965,7 @@ settingsSession: {
         },
         run: {
             notRun: "尚未在此检出中运行",
+            waitsForSetup: "等待设置",
             accepted: "已接受，等待开始。",
             running: ({ machine }: { machine: string }) => `正在 ${machine} 上运行`,
             completed: ({ time }: { time: string }) => `已完成 ${time}`,
@@ -16857,6 +16996,7 @@ settingsSession: {
             values: "值",
             valuesNote: "仅名称；值在运行时填入。",
             stepsUnavailable: "无法读取设置步骤。",
+            review: "查看设置",
             from: "来自",
             viewFile: "查看文件",
             sharedScope: ({ osUser, machine }: { osUser: string; machine: string }) => `以 ${osUser} 身份在 ${machine} 上运行。你对此项目的批准在设置变更前一直有效。`,
@@ -16866,6 +17006,10 @@ settingsSession: {
             consequenceThisTime: "立即运行设置。下次 Happier 会再次询问。",
             consequenceSkip: "仅本次跳过设置，不会标记为就绪。",
             consequenceUntilChanged: "在任意机器上（包括队友的共享机器）覆盖此项目，直到命令、工具或项目文件发生变更。队友需自行批准。",
+            agentAsksRememberedTitle: "运行设置并为此项目记住它？",
+            agentAsksRemembered: "代理请求记住此设置",
+            agentAsksRememberedBody: "批准后将立即运行设置，并在命令、工具或项目文件发生变更之前，在你的所有机器上为你跳过此项目的这项审核。",
+            agentAsksRememberedRow: "请求记住此设置",
             readySince: ({ time }: { time: string }) => `自 ${time} 起对这些输入已就绪`,
             notRunYet: "此版本尚未运行设置",
             needsReview: "设置已更改。请在脚本中查看",
@@ -16904,10 +17048,10 @@ settingsSession: {
             environment: "环境",
             environmentBody: "此项目的每个代理、终端、脚本和服务都在其中启动。通过读取文件检测；在设置获批前不会评估任何内容。",
             toolsFrom: "工具来源",
-            hostTools: "这台机器的工具",
             toolAvailable: ({ machine }: { machine: string }) => `${machine} 上可用`,
             toolUnavailable: ({ machine }: { machine: string }) => `${machine} 上未安装`,
             toolUnresolved: ({ machine }: { machine: string }) => `${machine} 上未确认`,
+            toolsCount: ({ available, total, machine }: { available: number; total: number; machine: string }) => `${machine} 上 ${total} 个中有 ${available} 个可用`,
             toolRequested: ({ version, file }: { version: string; file: string }) => `${file} 要求 ${version}`,
             alsoFound: ({ names }: { names: string }) => `还找到：${names}`,
             setup: "设置",
@@ -16951,6 +17095,7 @@ settingsSession: {
             title: "输出",
             ranOn: "运行于",
             openInTerminal: "在终端中打开",
+            earlierNotKept: "较早的输出已不再保留",
             purpose: {
                 setup: "设置",
                 teardown: "清理",
@@ -17086,6 +17231,7 @@ settingsSession: {
         rowsLoadingTitle: "正在加载你的项目",
         rowsUnavailableTitle: "你的项目未能加载。",
         rowsUnavailableBody: "没有删除任何内容。请稍后重试。",
+        rowsStaleReason: "你的项目未能刷新。",
         openInvalidTitle: "此链接没有指向唯一的检出。",
         openInvalidBody: "请改为从“项目”打开该项目。",
         backToProjects: "返回项目",
@@ -17471,6 +17617,8 @@ settingsSession: {
     marketplaceInstallReviewBody: ({ identity, verification, executableRealms, contributions, uiArtifacts, requiredAccess, optionalAccess, compatibility }: { identity: string; verification: string; executableRealms: string; contributions: string; uiArtifacts: string; requiredAccess: string; optionalAccess: string; compatibility: string }) => `身份：\n${identity}\n\n验证信号：\n${verification}\n\n可执行代码：${executableRealms}\n贡献：${contributions}\n界面构件：${uiArtifacts}\n\n受信任的守护程序和 React Native 代码会以应用或进程的权限运行，并可直接使用文件、网络、环境和进程。下面列出的主机访问权限描述由 Happier 中介的服务；它不是可执行插件代码的沙箱。\n\n必需的披露和协作服务：\n${requiredAccess}\n\n可选的主机资源（默认关闭）：\n${optionalAccess}\n\n兼容性和更新：\n${compatibility}`,
     marketplaceInstallDecisionFailed: ({ outcome }: { outcome: string }) => `插件未安装（${outcome}）。`,
     marketplaceChangeDecisionFailed: ({ action, outcome }: { action: string; outcome: string }) => `${action}失败（${outcome}）。`,
+    marketplaceInstallRefused: ({ reason }: { reason: string }) => `插件未安装。\n\n${reason}`,
+    marketplaceChangeRefused: ({ action, reason }: { action: string; reason: string }) => `${action}失败。\n\n${reason}`,
     pluginChangeConfirmBody: ({ action, name, machine, server }: { action: string; name: string; machine: string; server: string }) => `确认在 ${server} 的 ${machine} 上对 ${name} 执行“${action}”。`,
     pluginChangeConfirmTarget: ({ machine, server }: { machine: string; server: string }) => `此操作作用于 ${server} 的 ${machine}。`,
     forgetTrust: "忘记信任",
@@ -17799,7 +17947,7 @@ settingsSession: {
         transportUnavailable: "Happier 无法连接到此视图的来源。请检查连接后重试。",
         sourceUnavailable: "所选插件视图的文件不可用。请尝试重新加载。",
         viewNotCurrent: "所选插件视图已不是当前版本。请重新打开页面、在运行它的机器上更新插件，或选择另一台机器。",
-        unavailableGeneric: '可能仍在启动。请稍后重试。',
+        unavailableGeneric: '可能仍在启动。',
         crashLoop: '插件因反复崩溃已被停止。',
         disabledByPolicy: '当前设置或兼容性已禁用此插件视图。',
         hostedWebUnavailableTitle: '托管插件视图不可用',
@@ -17828,8 +17976,9 @@ settingsSession: {
         alwaysRemembered: '始终记住:',
         searchable: '可搜索:',
         countsUnavailable: '无法加载数量',
-        countsNeedMachine: '数量来自某台机器的记忆索引。',
-        searchNeedMachine: '搜索会在某台机器的记忆索引上运行。',
+        countsNeedMachine: '请选择一台机器来加载数量。',
+        countsOff: '已关闭。开启记忆后会显示数量。',
+        searchNeedMachine: '请选择一台机器来搜索记忆。',
         factCount: ({ count }: { count: number }) => `${count} 条事实`,
         topicsLabel: '主题:',
         showAll: ({ count }: { count: number }) => `显示全部 ${count} 条`,
@@ -18108,6 +18257,7 @@ settingsSession: {
         policyScope: "代理对提示词库的编辑，适用于所有会话",
         changedBy: (params: { name: string }) => `由 ${params.name} 更改`,
         approvedBy: (params: { name: string }) => `由 ${params.name} 批准`,
+        approvedByVoice: (params: { name: string }) => `由 Voice 智能体代表 ${params.name} 批准`,
         detachHelp: '文档仍保留在提示词库中。',
         chooseDocument: '选择文档',
         openInLibrary: '在提示词库中打开',

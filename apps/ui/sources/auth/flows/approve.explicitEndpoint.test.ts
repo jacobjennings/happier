@@ -28,7 +28,23 @@ describe('authApproveAtEndpoint explicit target', () => {
         mocks.createServerFetchAtEndpoint.mockImplementation(() => mocks.endpointFetch);
     });
 
-    it('posts the token-only response to the explicit endpoint with the supplied token and no focused-Home use', async () => {
+    it('refuses approval when the requesting client is cancelled during the status read', async () => {
+        const controller = new AbortController();
+        mocks.endpointFetch.mockImplementationOnce(async () => {
+            controller.abort();
+            return jsonResponse({ status: 'pending', supportsV2: true });
+        });
+        await expect(authApproveAtEndpoint(Object.assign({ endpointUrl: 'https://requester-home.test',
+            token: 'requester-bearer', publicKeyBase64: 'guest-public-key', responseBase64: 'sealed-requester-response',
+            responseKind: 'tokenOnly' as const }, { signal: controller.signal }))).rejects.toMatchObject({ name: 'AbortError' });
+        expect(mocks.endpointFetch.mock.calls.map(([path]) => String(path).split('?')[0])).toEqual(['/v1/auth/request/status']);
+    });
+
+    it.each([
+        { responseKind: 'tokenOnly' as const, responseBase64: 'opaque-response-b64' },
+        // The declared kind is forwarded, never hard-coded to tokenOnly.
+        { responseKind: 'dataKey' as const, responseBase64: 'opaque-datakey-response-b64' },
+    ])('posts the $responseKind response to the explicit endpoint with the supplied token and no focused-Home use', async ({ responseKind, responseBase64 }) => {
         mocks.endpointFetch
             .mockResolvedValueOnce(jsonResponse({ status: 'pending', supportsV2: true }))
             .mockResolvedValueOnce(jsonResponse({ success: true }));
@@ -38,8 +54,8 @@ describe('authApproveAtEndpoint explicit target', () => {
             serverId: 'srv_home_b',
             token: 'home-b-bearer',
             publicKeyBase64: 'pub-key-b64',
-            responseBase64: 'opaque-response-b64',
-            responseKind: 'tokenOnly',
+            responseBase64,
+            responseKind,
         })).resolves.toBe('approved');
 
         expect(mocks.createServerFetchAtEndpoint).toHaveBeenCalledWith(expect.objectContaining({
@@ -56,38 +72,19 @@ describe('authApproveAtEndpoint explicit target', () => {
         expect((init.headers as Record<string, string>).Authorization).toBe('Bearer home-b-bearer');
         expect(JSON.parse(String(init.body))).toEqual({
             publicKey: 'pub-key-b64',
-            response: 'opaque-response-b64',
-            responseKind: 'tokenOnly',
+            response: responseBase64,
+            responseKind,
             authorizeUnattendedTeamAccess: true,
         });
         expect(postCall?.[2]).toMatchObject({ includeAuth: false });
     });
 
-    it('posts dataKey responses with their declared kind to the explicit endpoint', async () => {
+    it.each([
+        { status: 'authorized', result: 'already_authorized' },
+        { status: 'not_found', result: 'not_found' },
+    ])('reports $result without posting when the request status is $status', async ({ status, result }) => {
         mocks.endpointFetch
-            .mockResolvedValueOnce(jsonResponse({ status: 'pending', supportsV2: true }))
-            .mockResolvedValueOnce(jsonResponse({ success: true }));
-
-        await expect(authApproveAtEndpoint({
-            endpointUrl: 'http://127.0.0.1:3005',
-            token: 'home-b-bearer',
-            publicKeyBase64: 'pub-key-b64',
-            responseBase64: 'opaque-datakey-response-b64',
-            responseKind: 'dataKey',
-        })).resolves.toBe('approved');
-
-        const postCall = mocks.endpointFetch.mock.calls[1];
-        expect(JSON.parse(String((postCall?.[1] as RequestInit).body))).toEqual({
-            publicKey: 'pub-key-b64',
-            response: 'opaque-datakey-response-b64',
-            responseKind: 'dataKey',
-            authorizeUnattendedTeamAccess: true,
-        });
-    });
-
-    it('reports already_authorized without posting when the request is already authorized', async () => {
-        mocks.endpointFetch
-            .mockResolvedValueOnce(jsonResponse({ status: 'authorized', supportsV2: true }));
+            .mockResolvedValueOnce(jsonResponse({ status, supportsV2: true }));
 
         await expect(authApproveAtEndpoint({
             endpointUrl: 'http://127.0.0.1:3005',
@@ -95,23 +92,8 @@ describe('authApproveAtEndpoint explicit target', () => {
             publicKeyBase64: 'pub-key-b64',
             responseBase64: 'opaque-response-b64',
             responseKind: 'tokenOnly',
-        })).resolves.toBe('already_authorized');
+        })).resolves.toBe(result);
 
-        expect(mocks.endpointFetch).toHaveBeenCalledTimes(1);
-    });
-
-    it('reports not_found without posting when the request expired', async () => {
-        mocks.endpointFetch
-            .mockResolvedValueOnce(jsonResponse({ status: 'not_found', supportsV2: true }));
-
-        await expect(authApproveAtEndpoint({
-            endpointUrl: 'http://127.0.0.1:3005',
-            token: 'home-b-bearer',
-            publicKeyBase64: 'pub-key-b64',
-            responseBase64: 'opaque-response-b64',
-            responseKind: 'tokenOnly',
-        })).resolves.toBe('not_found');
-
-        expect(mocks.endpointFetch).toHaveBeenCalledTimes(1);
+        expect(mocks.endpointFetch.mock.calls.map(([path]) => String(path).split('?')[0])).toEqual(['/v1/auth/request/status']);
     });
 });

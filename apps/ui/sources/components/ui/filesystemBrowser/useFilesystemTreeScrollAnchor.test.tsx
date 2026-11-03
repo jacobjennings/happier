@@ -22,4 +22,16 @@ describe('filesystem tree scroll anchor', () => {
         await hook.rerender({ nodes: original, scopeKey: 'other-workspace' });
         expect(scrollToIndex).not.toHaveBeenCalled();
     });
+
+    it('does not scroll when the anchored path itself leaves the tree', async () => {
+        const scrollToIndex = vi.fn();
+        const listRef = { current: { scrollToIndex } };
+        const original = [{ path: 'a.ts' }, { path: 'b.ts' }, { path: 'c.ts' }];
+        const hook = await renderHook(({ nodes, scopeKey }) => useFilesystemTreeScrollAnchor({ nodes, scopeKey, listRef }), {
+            initialProps: { nodes: original, scopeKey: 'one' },
+        });
+        await act(async () => { hook.getCurrent()([original[1], original[2]]); });
+        await hook.rerender({ nodes: [{ path: 'a.ts' }], scopeKey: 'one' });
+        expect(scrollToIndex).not.toHaveBeenCalled();
+    });
 });

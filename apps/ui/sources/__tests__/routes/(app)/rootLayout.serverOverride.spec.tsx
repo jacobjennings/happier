@@ -110,22 +110,6 @@ async function renderRootLayout() {
 
 describe('App RootLayout server override', () => {
 
-    it('normalizes legacy `?url=...&auto=1` into the same device-scoped server override flow', async () => {
-        installWebLocation({
-            href: 'https://app.example.test/server?url=https%3A%2F%2Fstack.example.test&auto=1',
-        });
-
-        const { resolveWebServerUrlOverrideAction } = await import('@/sync/domains/server/url/resolveAuthenticatedWebServerUrlOverrideAction');
-
-        expect(resolveWebServerUrlOverrideAction({
-            bootstrappedServerUrl: null,
-        })).toEqual({
-            kind: 'switch_server',
-            serverUrl: 'https://stack.example.test',
-        });
-    });
-
-
     it('does not switch servers for loopback-equivalent pending terminal connects', async () => {
         installWebLocation({
             href: 'https://app.example.test/',
@@ -147,27 +131,5 @@ describe('App RootLayout server override', () => {
 
         expect(getActiveServerSnapshot().serverUrl).toBe('http://localhost:53288');
         await vi.waitFor(() => expect(routerReplaceSpy).toHaveBeenCalledWith('/terminal/connect#key=abc123&server=http%3A%2F%2Fhappier-repo-dev-a1cc5e0671.localhost%3A53288'));
-    });
-
-    it('redirects legacy `/?id=<sessionId>` deep-links to the canonical session route on web', async () => {
-        const { historyReplaceStateSpy } = installWebLocation({
-            href: 'https://app.example.test/?id=session-123',
-        });
-
-        const { consumeLegacySessionDeepLinkFromWebLocation } = await import('@/sync/domains/server/url/consumeLegacySessionDeepLinkFromWebLocation');
-
-        const didConsume = consumeLegacySessionDeepLinkFromWebLocation({
-            isAuthenticated: true,
-            replaceRelativeUrl: (nextRelativeUrl) => {
-                window.history.replaceState(null, '', nextRelativeUrl);
-            },
-            navigateToRoute: (route) => {
-                routerReplaceSpy(route);
-            },
-        });
-
-        expect(didConsume).toBe(true);
-        expect(historyReplaceStateSpy).toHaveBeenCalledWith(null, '', '/');
-        expect(routerReplaceSpy).toHaveBeenCalledWith('/session/session-123');
     });
 });

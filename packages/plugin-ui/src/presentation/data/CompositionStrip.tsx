@@ -29,7 +29,12 @@ export type CompositionStripProps = Readonly<{
   /** Compact static/export legend; amounts remain exact in accessibility even when hidden in ink. */
   appearance?: Readonly<{ legend: 'compact'; height?: number; textStyle?: HappierPortableStyle; allowFontScaling?: boolean;
     /** What each compact legend entry shows beside its name: its share (default) or its amount (`valueFormatter`). */
-    figure?: 'share' | 'value' }>;
+    figure?: 'share' | 'value';
+    /**
+     * `flow` (default): entries run on and wrap. `key`: one entry per line, its figure right-aligned in one tabular
+     * column, the key a ring or bar stands beside (a Storage widget, lab `rw` ST).
+     */
+    layout?: 'flow' | 'key' }>;
 }>;
 /** A supplied whole, never an inferred sum: overlapping categories remain exact rows. */
 export function CompositionStrip(props: CompositionStripProps) {
@@ -75,14 +80,13 @@ export function CompositionStrip(props: CompositionStripProps) {
         const exact = segment.value === null || !Number.isFinite(segment.value) ? props.unknownLabel ?? 'Unknown' : formatHappierDataValue(segment.value, text.locale);
         const spokenShare = share === null ? undefined : formatHappierDataShare(share, text.locale);
         const spoken = props.valueKind === 'share' ? [segment.label, spokenShare ?? exact] : [segment.label, exact, props.basis, spokenShare];
-        const visual = <View role="listitem" accessible accessibilityLabel={spoken.filter(Boolean).join(', ')}
-          style={{ flexDirection: 'row', alignItems: 'center', gap: props.theme.spacing.xsmall }}>
-          {segment.pattern === 'hatched' ? <View style={{ width: 8, height: 8, borderRadius: props.theme.radii.small, overflow: 'hidden', borderWidth: 1,
-            borderColor: segment.color ?? props.theme.colors.accent }}><HappierDataHatch theme={props.theme} color={segment.color ?? props.theme.colors.accent} /></View>
-            : <View style={{ width: 8, height: 8, borderRadius: props.theme.radii.small, backgroundColor: segment.color ?? props.theme.colors.accent }} />}
-          {segment.mark ? <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">{segment.mark}</View> : null}
-          {segment.label ? <HappierText allowFontScaling={props.appearance?.allowFontScaling} style={{ ...text.caption, ...props.appearance?.textStyle, flexShrink: 1 }}>{segment.label}</HappierText> : null}
-          {props.appearance?.figure === 'value' ? segment.value === null || !Number.isFinite(segment.value) ? null
+        const swatchColor = segment.color ?? props.theme.colors.accent;
+        const swatch = segment.pattern === 'hatched' ? <View style={{ width: 8, height: 8, borderRadius: props.theme.radii.small, overflow: 'hidden', borderWidth: 1,
+          borderColor: swatchColor }}><HappierDataHatch theme={props.theme} color={swatchColor} /></View>
+          : <View style={{ width: 8, height: 8, borderRadius: props.theme.radii.small, backgroundColor: swatchColor }} />;
+        const mark = segment.mark ? <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">{segment.mark}</View> : null;
+        const label = segment.label ? <HappierText allowFontScaling={props.appearance?.allowFontScaling} style={{ ...text.caption, ...props.appearance?.textStyle, flexShrink: 1 }}>{segment.label}</HappierText> : null;
+        const figure = props.appearance?.figure === 'value' ? segment.value === null || !Number.isFinite(segment.value) ? null
             : <HappierText allowFontScaling={props.appearance.allowFontScaling} style={{ ...text.captionStrong, ...props.appearance.textStyle }} tabularNumbers>
               {props.valueFormatter?.(segment.value) ?? exact}
             </HappierText>
@@ -92,10 +96,31 @@ export function CompositionStrip(props: CompositionStripProps) {
           </HappierText> : <View style={{ borderRadius: props.theme.radii.small, paddingHorizontal: props.theme.spacing.xsmall,
             backgroundColor: props.theme.colors.control }}><HappierText style={{ ...text.captionStrong, color: segment.color ?? props.theme.colors.accent }} tabularNumbers>
             {props.shareFormatter?.(share) ?? formatHappierDataShare(share, text.locale)}
-          </HappierText></View>}
-          {props.appearance ? null : <HappierText style={{ ...text.caption, marginLeft: 'auto' }} tabularNumbers>{segment.value !== null && Number.isFinite(segment.value) ? props.valueFormatter?.(segment.value) ?? exact : exact}</HappierText>}
+          </HappierText></View>;
+        // A compact legend sits in narrow hosts (a rail, a small widget): name and figure are one text group beside the swatch, so when they do not fit one line the figure
+        // drops under the name (flush with its left edge) and the swatch stays on the first line instead of the entry clipping.
+        const lineHeight = Math.max(props.appearance?.textStyle?.lineHeight ?? text.caption.lineHeight ?? props.theme.typography.caption.lineHeight, text.captionStrong.lineHeight ?? 0);
+        const keyed = props.appearance?.layout === 'key';
+        const visual = keyed ? <View role="listitem" accessible accessibilityLabel={spoken.filter(Boolean).join(', ')}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: props.theme.spacing.xsmall }}>
+          <View style={{ height: lineHeight, justifyContent: 'center' }}>{swatch}</View>
+          {mark}
+          <View style={{ flex: 1, minWidth: 0 }}>{label}</View>
+          {figure}
+        </View> : props.appearance ? <View role="listitem" accessible accessibilityLabel={spoken.filter(Boolean).join(', ')}
+          style={{ flexDirection: 'row', alignItems: mark ? 'center' : 'flex-start', gap: props.theme.spacing.xsmall }}>
+          <View style={{ height: lineHeight, justifyContent: 'center' }}>{swatch}</View>
+          {mark}
+          <View style={{ flexShrink: 1, minWidth: 0, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: props.theme.spacing.xsmall }}>{label}{figure}</View>
+        </View> : <View role="listitem" accessible accessibilityLabel={spoken.filter(Boolean).join(', ')}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: props.theme.spacing.xsmall }}>
+          {swatch}
+          {mark}
+          {label}
+          {figure}
+          <HappierText style={{ ...text.caption, marginLeft: 'auto' }} tabularNumbers>{segment.value !== null && Number.isFinite(segment.value) ? props.valueFormatter?.(segment.value) ?? exact : exact}</HappierText>
         </View>;
-        return <View key={segment.id} style={props.appearance ? undefined : { width: props.size === 'inline' ? '100%' : '50%', paddingRight: props.theme.spacing.small }}>
+        return <View key={segment.id} style={keyed ? { width: '100%' } : props.appearance ? { maxWidth: '100%' } : { width: props.size === 'inline' ? '100%' : '50%', paddingRight: props.theme.spacing.small }}>
           {props.renderSegment?.(segment, visual, share) ?? visual}
         </View>;
       })}

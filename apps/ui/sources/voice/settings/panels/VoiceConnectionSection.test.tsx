@@ -34,23 +34,25 @@ describe('VoiceConnectionSection', () => {
     expect(screen.findByTestId(`${fieldId}.decrement`)!.props.disabled).toBe(true);
   });
 
-  it('edits the request timeout in seconds without a sixty-second ceiling', async () => {
+  it.each(['local_conversation', 'local_direct'] as const)('edits the request timeout in seconds without a sixty-second ceiling for %s', async (providerId) => {
+    const voice = { ...voiceSettingsDefaults, providerId };
+    const read = providerId === 'local_direct' ? readLocalDirectVoiceSettings : readLocalConversationVoiceSettings;
     const setVoice = vi.fn();
-    const screen = await renderScreen(<VoiceConnectionSection voice={voiceSettingsDefaults} setVoice={setVoice} />);
+    const screen = await renderScreen(<VoiceConnectionSection voice={voice} setVoice={setVoice} />);
     const field = () => screen.findByTestId('settings.voice.local.networkTimeoutMs.field');
-    expect(field()?.props.value).toBe(String(readLocalConversationVoiceSettings(voiceSettingsDefaults).networkTimeoutMs / 1000));
+    expect(field()?.props.value).toBe(String(read(voice).networkTimeoutMs / 1000));
 
     await act(async () => { field()!.props.onChangeText('90'); });
     await act(async () => { field()!.props.onBlur(); });
-    expect(readLocalConversationVoiceSettings(setVoice.mock.lastCall![0] as VoiceSettings).networkTimeoutMs).toBe(90000);
+    expect(read(setVoice.mock.lastCall![0] as VoiceSettings).networkTimeoutMs).toBe(90000);
 
     const admittedMaximumMs = MAX_VOICE_TIMER_DELAY_MS;
     await act(async () => { field()!.props.onChangeText(String(Math.ceil(admittedMaximumMs / 1000) + 1)); });
     await act(async () => { field()!.props.onBlur(); });
-    expect(readLocalConversationVoiceSettings(setVoice.mock.lastCall![0] as VoiceSettings).networkTimeoutMs).toBe(admittedMaximumMs);
+    expect(read(setVoice.mock.lastCall![0] as VoiceSettings).networkTimeoutMs).toBe(admittedMaximumMs);
 
     await act(async () => { field()!.props.onChangeText('7'); });
     await act(async () => { field()!.props.onBlur(); });
-    expect(readLocalConversationVoiceSettings(setVoice.mock.lastCall![0] as VoiceSettings).networkTimeoutMs).toBe(7000);
+    expect(read(setVoice.mock.lastCall![0] as VoiceSettings).networkTimeoutMs).toBe(7000);
   });
 });

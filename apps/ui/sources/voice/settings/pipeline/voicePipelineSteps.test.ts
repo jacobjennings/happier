@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { Platform } from 'react-native';
 import type { LocalNeuralExecution } from '@happier-dev/protocol';
 
@@ -10,6 +10,7 @@ import {
     writeLocalDirectVoiceSettings,
 } from '@/sync/domains/settings/voiceSettings';
 import type { VoiceRoleReadiness } from '@/voice/registry/readiness';
+import * as voiceSettings from '@/sync/domains/settings/voiceSettings';
 import { getLocalSttProviderSpec } from '@/voice/settings/panels/localStt/providers/registry';
 import { getLocalTtsProviderSpec } from '@/voice/settings/panels/localTts/providers/registry';
 
@@ -22,6 +23,20 @@ const blocked: VoiceRoleReadiness = {
 };
 
 describe('local Voice pipeline', () => {
+    it('projects speech engine labels in the current locale after module initialization', async () => {
+        const { t, getPreferredLanguage, preloadTranslations, setPreferredLanguageFromSettings } = await import('@/text');
+        const original = getPreferredLanguage();
+        await preloadTranslations('fr');
+        setPreferredLanguageFromSettings('en');
+        const stt = getLocalSttProviderSpec('local_neural');
+        const tts = getLocalTtsProviderSpec('local_neural');
+        try {
+            setPreferredLanguageFromSettings('fr');
+            expect(stt?.title).toBe(t('settingsVoice.local.localNeuralStt.provider.title'));
+            expect(tts?.title).toBe(t('settingsVoice.local.localNeuralTts.provider.title'));
+        } finally { setPreferredLanguageFromSettings(original); }
+    });
+
     it('gets explicit neural execution placement from the selected speech specs', () => {
         for (const spec of [getLocalSttProviderSpec('local_neural'), getLocalTtsProviderSpec('local_neural')]) {
             expect(spec?.resolvePreferredExecution?.('daemon')).toBe('daemon');
@@ -62,6 +77,9 @@ describe('local Voice pipeline', () => {
 
     it('puts the supplied Think prerequisite and recovery on its step while retaining speech facts', () => {
         const voice = { ...voiceSettingsDefaults, providerId: 'local_conversation' };
+        // Multiple readiness consumers share an already-normalized Voice setting.
+        const normalize = vi.spyOn(voiceSettings, 'voiceSettingsParse');
+        onTestFinished(() => normalize.mockRestore());
         const think: VoiceRoleReadiness = {
             ...blocked, role: 'conversation_stt', code: 'server_feature_disabled',
             status: 'unavailable', reasonKey: 'voice.readiness.server_feature_disabled', recoveryAction: 'switch_provider',
@@ -73,6 +91,7 @@ describe('local Voice pipeline', () => {
         });
         expect(result?.pipeline.steps.map(step => step.readiness)).toEqual([hear, think, null]);
         expect(result?.cardReadiness).toEqual(think);
+        expect(normalize).not.toHaveBeenCalled();
     });
 
     it('does not fill explicitly withheld speech facts from aggregate readiness', () => {
@@ -123,7 +142,9 @@ describe('realtime service pipeline', () => {
     it('draws the service step with the identity mark its presentation declares', async () => {
         const { projectBundledVoiceManifestContributions } = await import('@/voice/registry/bundledVoiceManifestProjection');
         const { createVoiceProviderRegistry } = await import('@/voice/registry/providerRegistry');
-        const { PLUGIN_MANIFEST } = await import('../../../../../../packages/plugins/elevenlabs/src/manifest');
+        const { PLUGIN_MANIFEST: authoredManifest } = await import('../../../../../../packages/plugins/elevenlabs/src/manifest');
+        const { PluginManifestV2Schema } = await import('@happier-dev/protocol/plugins/manifest');
+        const PLUGIN_MANIFEST = PluginManifestV2Schema.parse(authoredManifest);
         const { VOICE_PROVIDER_PRESENTATIONS } = await import('../../../../../../packages/plugins/elevenlabs/src/ui/voice/entries');
         const registry = createVoiceProviderRegistry({ bundledContributions: projectBundledVoiceManifestContributions(PLUGIN_MANIFEST), bundledPresentations: VOICE_PROVIDER_PRESENTATIONS });
         const providerId = 'happier.voice.elevenlabs/realtime-elevenlabs';

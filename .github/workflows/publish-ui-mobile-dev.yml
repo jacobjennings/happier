@@ -73,6 +73,7 @@ concurrency:
 env:
   EAS_CLI_VERSION: "18.0.1"
   EXPO_UNSTABLE_WEB_MODAL: "1"
+  RELEASE_MESSAGE: ${{ inputs.release_message }}
 
 jobs:
   trusted_ref_guard:
@@ -146,7 +147,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22.x
+          node-version-file: .node-version
       - name: Install candidate preparation dependencies
         env:
           npm_config_production: "false"
@@ -202,7 +203,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22.x
+          node-version-file: .node-version
       - name: Install trusted OTA publisher dependencies
         env:
           npm_config_production: "false"
@@ -266,7 +267,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -305,7 +306,7 @@ jobs:
             --build-json "/tmp/eas_build.json" \
             --out-dir "dist/ui-mobile" \
             --eas-cli-version "${EAS_CLI_VERSION}" \
-            --release-message "${{ inputs.release_message }}" \
+            --release-message "$RELEASE_MESSAGE" \
             --secrets-source env
 
       - name: Install Dagger (local Android builds)
@@ -336,7 +337,7 @@ jobs:
             --build-json "/tmp/eas_build.json" \
             --out-dir "dist/ui-mobile" \
             --eas-cli-version "${EAS_CLI_VERSION}" \
-            --release-message "${{ inputs.release_message }}" \
+            --release-message "$RELEASE_MESSAGE" \
             --secrets-source env
 
       - name: Note
@@ -391,7 +392,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .testflight-preflight-control/.node-version
 
       - name: Validate configured external TestFlight groups
         working-directory: .testflight-preflight-control
@@ -438,7 +439,7 @@ jobs:
             --out-dir "dist/ui-mobile" \
             --eas-cli-version "${EAS_CLI_VERSION}" \
             --testflight-distribution-mode deferred \
-            --release-message "${{ inputs.release_message }}" \
+            --release-message "$RELEASE_MESSAGE" \
             --secrets-source env
 
       - name: Dispatch exact TestFlight reconciliation
@@ -501,7 +502,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .testflight-preflight-control/.node-version
 
       - name: Validate configured external TestFlight groups
         working-directory: .testflight-preflight-control
@@ -554,7 +555,7 @@ jobs:
             --out-dir "dist/ui-mobile" \
             --eas-cli-version "${EAS_CLI_VERSION}" \
             --testflight-distribution-mode deferred \
-            --release-message "${{ inputs.release_message }}" \
+            --release-message "$RELEASE_MESSAGE" \
             --secrets-source env
 
       - name: Dispatch exact TestFlight reconciliation

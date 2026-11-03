@@ -51,7 +51,7 @@ function wrapUnistylesSecret(secret: any, uiFontScale: number): any {
  * Identity is preserved when nothing changes so the shared traversal can keep
  * returning the caller's original style reference.
  */
-export const scaleUnistylesTextStyleEntry: TextStyleEntryTransform = (entry, uiFontScale) => {
+const scaleUnistylesTextStyleEntry: TextStyleEntryTransform = (entry, uiFontScale) => {
     const secretKeys = Object.keys(entry).filter((key) => key.startsWith(UNISTYLES_SECRET_KEY_PREFIX));
     if (secretKeys.length === 0) return entry;
 

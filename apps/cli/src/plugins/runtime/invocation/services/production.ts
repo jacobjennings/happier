@@ -90,14 +90,8 @@ import {
     createStableDeclaredPluginSecretsHost,
 } from '../../context/secrets';
 import type { PluginSecretDeclaration } from '../../context/declaredPluginSecrets';
-import {
-    createAccountSettingsBackedSettingsRecordStore,
-    createPluginStorageBackedSettingsRecordStore,
-    createRoutedPluginSettingsRecordStore,
-    createStablePluginSettingsHost,
-    type PluginAccountSettingsRecordAdapter,
-} from './settings';
-import { createAccountPluginSettingsRecordStorage } from '../../context/accountPluginSettingsRecordStorage';
+import type { PluginAccountSettingsRecordAdapter } from './settings';
+import { createProductionPluginSettingsHostFactory } from './settingsHost';
 import {
     createStablePluginConnectedAccountsHost,
     type StablePluginConnectedAccountsOwner,
@@ -206,7 +200,9 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         systemToolsForPlugin?: (pluginId: string) => ExecSystemToolServiceV1;
         resolveExecutable: ResolvePluginExecutable;
         resolvePath: Parameters<typeof createStablePluginExecService>[0]['resolvePath'];
-    }>;
+
+agentIsolation?: import('@/daemon/agentIsolation/agentIsolationLaunchPolicy').HostAgentIsolationLaunchContext;
+}>;
     managedServices?: ManagedServicesInvocationOwner;
     providers?: PluginProviderOperationsSource;
     managedServiceCredentialFiles?: ManagedServiceCredentialFileOwner;
@@ -271,6 +267,8 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         pluginId: string,
         signal?: AbortSignal,
     ): Promise<import('@happier-dev/protocol').PluginMachineExecutionOriginV1 | null>;
+
+healthChecks?: import('./unavailable').PluginInvocationServicesFactoryParams['healthChecks'];
 }>) {
     const attachCurrentPluginCallerResolvers = (
         seed: PluginInvocationServicesSeed,
@@ -393,55 +391,16 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         activePluginIds: params?.activePluginIds ?? new Set<string>(),
     });
     const accountCredentialAuthority = params?.accountCredentialAuthority;
-    const accountSettingsRecordAdapter = accountCredentialAuthority
-        ? Object.freeze({
-                isAvailable: () => false,
-                async bindOperation() {
-                    return Object.freeze({
-                        async readRecord() {
-                            return Object.freeze({ status: 'unavailable' as const });
-                        },
-                        async writeRecord() {
-                            return Object.freeze({ status: 'unavailable' as const });
-                        },
-                    });
-                },
-                watchRecord() {
-                    return () => {};
-                },
-            })
-        : params?.accountSettingsRecordAdapter
-            ?? createAccountPluginSettingsRecordStorage();
     const storagePaths = params?.storagePaths;
-    const createSettingsHost = (
-        declarations: readonly Readonly<{
-            pluginId: string;
-            contribution: PluginSettingsContributionV2;
-        }>[],
-    ) => createStablePluginSettingsHost({
-            declarations,
-            ...(params?.onPluginSettingsUnavailable
-                ? { onPluginSettingsUnavailable: params.onPluginSettingsUnavailable }
-                : {}),
-            recordStore: createRoutedPluginSettingsRecordStore([
-                ...(storagePaths
-                    ? [createPluginStorageBackedSettingsRecordStore({
-                        storageForPlugin(pluginId) {
-                            return createPluginStorageOwner({
-                                pluginId,
-                                paths: storagePaths,
-                            }).daemon;
-                        },
-                    })]
-                    : []),
-                createAccountSettingsBackedSettingsRecordStore(accountSettingsRecordAdapter),
-            ]),
-            broker,
-        });
+    const createSettingsHost = createProductionPluginSettingsHostFactory({
+        accountScoped: !!accountCredentialAuthority,
+        ...(params?.accountSettingsRecordAdapter ? { accountSettingsRecordAdapter: params.accountSettingsRecordAdapter } : {}),
+        ...(storagePaths ? { storagePaths } : {}),
+        ...(params?.onPluginSettingsUnavailable ? { onPluginSettingsUnavailable: params.onPluginSettingsUnavailable } : {}),
+        broker,
+    });
     const settingsHost = params?.settingsDeclarations
-        ? createSettingsHost(params.settingsDeclarations.filter((entry) => (
-            !accountCredentialAuthority || entry.contribution.scope !== 'account'
-        )))
+        ? createSettingsHost(params.settingsDeclarations)
         : null;
     const accountSecretCustody = createAccountPluginSecretCustodyRouter(
         accountCredentialAuthority
@@ -499,6 +458,8 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         });
     const connectedAccountsHost = params?.connectedAccounts ? createConnectedAccountsHost(params.connectedAccounts) : null;
     const createServicesFactory = createPluginInvocationServicesFactory({
+...(params?.healthChecks ? { healthChecks: params.healthChecks } : {}),
+
         loggerSink,
         resolveLogger: resolveInvocationLogger,
         secretRedactor,
@@ -678,6 +639,8 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
                 })
                 : admittedConnectedAccountsHost;
         return createPluginInvocationServicesFactory({
+...(params?.healthChecks ? { healthChecks: params.healthChecks } : {}),
+
             loggerSink,
             resolveLogger: resolveInvocationLogger,
             secretRedactor,
@@ -690,6 +653,8 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
             filesystemRoots: roots,
             ...(params?.exec ? {
                 exec: {
+...(params.exec.agentIsolation ? { agentIsolation: params.exec.agentIsolation } : {}),
+
                     readSpawnFailureLimits: params.exec.readSpawnFailureLimits,
                     ...(params.exec.agentCli ? { agentCli: params.exec.agentCli } : {}),
                     ...(systemTools
@@ -1054,16 +1019,10 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
             throw new PluginError({ code: 'background_service_process_managed_runtime_unavailable', message: 'Managed provider custody cannot be transferred to a background service child' });
         }
         const roots = operation?.filesystemRoots ?? filesystemRoots ?? params?.resolveFilesystemRoots?.(seed.plugin.id) ?? undefined;
-        const { id, occurrenceId, availability, unavailableDiagnostics, filesystemScopes, filesystemRequestIds,
-            processExecutables, processEnvKeys, processRequestIds, environmentRequestIds,
-            networkOrigins, networkHostSuffixes, networkRequestIds, networkScopes,
-            networkClientOrigins, networkClientHostSuffixes, networkClientRequestIds, networkClientScopes } = binding;
+        const { id, occurrenceId, processEnvKeys } = binding;
         const environment = operation ? operation.environment ?? {} : process.env;
         const localPolicy: BackgroundServiceProcessLocalPolicy = {
-            binding: { id, occurrenceId, availability, unavailableDiagnostics, filesystemScopes, filesystemRequestIds,
-                processExecutables, processEnvKeys, processRequestIds, environmentRequestIds,
-                networkOrigins, networkHostSuffixes, networkRequestIds, networkScopes,
-                networkClientOrigins, networkClientHostSuffixes, networkClientRequestIds, networkClientScopes },
+            binding: { id, occurrenceId },
             ...(roots ? { filesystemRoots: { pluginData: roots.pluginData, workspace: roots.workspace, projects: [...roots.projects] } } : {}),
             environment: Object.fromEntries((processEnvKeys ?? []).flatMap((key) => {
                 const value = environment[key];
@@ -1072,7 +1031,8 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         };
         const systemTools = operation?.systemTools ?? params?.exec?.systemToolsForPlugin?.(seed.plugin.id);
         const http = params?.http;
-        if (binding.availability.http === 'available' && !http?.bindWithAdapter) {
+        const bindHttpAdapter = http?.prepareAdapterBinding?.(seed, binding, operation?.httpBinding);
+        if (http && !bindHttpAdapter) {
             throw new PluginError({ code: 'background_service_process_http_policy_unavailable', message: 'HTTP policy owner cannot place its physical transport in this child' });
         }
         return {
@@ -1112,9 +1072,14 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
                     seed.retainCleanup?.({ async dispose() { release(); } });
                     return { ...resolved, release };
                 } } : {}),
-                ...(http?.bindWithAdapter ? { http: {
-                    request: (input, options, adapter) => http.bindWithAdapter!(seed, binding, adapter, operation?.httpBinding).request(input, options),
-                    openWebSocket: (input, options, adapter) => http.bindWithAdapter!(seed, binding, adapter, operation?.httpBinding).openWebSocket(input, options),
+                ...(bindHttpAdapter ? { http: {
+                    request: (input, options, adapter) => bindHttpAdapter(adapter).request(input, options),
+                    requestStream: (input, options, adapter) => bindHttpAdapter(adapter).requestStream(input, options),
+                    prepareRead: (input, options, adapter) => {
+                        const boundHttp = bindHttpAdapter(adapter);
+                        return boundHttp.prepareRead(input, options);
+                    },
+                    openWebSocket: (input, options, adapter) => bindHttpAdapter(adapter).openWebSocket(input, options),
                 } } : {}),
             } },
         };
@@ -1173,6 +1138,12 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
                 signal: seed.signal,
                 isOccurrenceCurrent: seed.isOccurrenceCurrent,
             }) ?? null;
+        },
+        containsRegisteredDiagnosticValue(
+            scope: Readonly<{ pluginId: string; occurrenceId: string; correlationId: string }>,
+            value: string,
+        ): boolean {
+            return secretRedactor.containsRegisteredValue(scope, value);
         },
         redactDiagnosticText(
             scope: Readonly<{ pluginId: string; occurrenceId: string; correlationId: string }>,

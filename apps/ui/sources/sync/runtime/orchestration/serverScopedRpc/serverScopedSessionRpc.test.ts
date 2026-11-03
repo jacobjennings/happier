@@ -62,8 +62,19 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
   },
 }));
 
-vi.mock('@/auth/encryption/createEncryptionFromAuthCredentials', () => ({
-  createEncryptionFromAuthCredentials: (...args: unknown[]) => createEncryptionSpy(...args),
+// Envelope-only doubles still join the shared Account encryption owner (3b75c5855f), which
+// binds, scopes and retires the instance it receives; the real Encryption implements these.
+vi.mock('@/auth/encryption/createEncryptionFromAuthCredentials', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/auth/encryption/createEncryptionFromAuthCredentials')>(),
+  createEncryptionFromAuthCredentials: async (...args: unknown[]) => {
+    const encryption = await createEncryptionSpy(...args);
+    if (!encryption || typeof encryption !== 'object') return encryption;
+    return Object.assign(encryption, {
+      configureNativeCryptoWorker: (encryption as { configureNativeCryptoWorker?: unknown }).configureNativeCryptoWorker ?? (() => {}),
+      bindAccountMaterialCurrentness: (encryption as { bindAccountMaterialCurrentness?: unknown }).bindAccountMaterialCurrentness ?? (() => {}),
+      retireAccountMaterial: (encryption as { retireAccountMaterial?: unknown }).retireAccountMaterial ?? (() => {}),
+    });
+  },
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
@@ -74,6 +85,7 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
 });
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
+  subscribeActiveServer: () => () => {},
   getActiveServerSnapshot: () => getActiveServerSnapshotSpy(),
 }));
 
@@ -335,6 +347,8 @@ describe('sessionRpcWithServerScope', () => {
       params: { sessionId: 'session-1' },
       authorization: { kind: 'session.write', sessionId: 'session-1' },
       timeoutMs: null,
+      // Ordinary calls carry a diagnostic-only trace id (f3e31f32da).
+      traceId: expect.any(String),
     });
     expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
   });
@@ -353,7 +367,7 @@ describe('sessionRpcWithServerScope', () => {
     const client = new DaemonVoiceAgentClient({ serverId: 'server-a', accountId: 'account-a' });
     const handle: VoiceAgentHandle = {
       client, accountLifetime, metadataSessionId: 'session-1', backend: 'daemon',
-      voiceAgentId: 'run-a', rpcSessionId: 'session-1', agentBackendId: 'claude',
+      voiceAgentId: 'run-a', rpcSessionId: 'session-1', agentBackendId: 'claude', transcriptEpoch: 0,
     };
     const handles = new Map([['session-1', handle]]);
     const recovery = createVoiceRunRecovery({
@@ -502,6 +516,7 @@ describe('sessionRpcWithServerScope', () => {
       method: 'session-1:method-test',
       params: { value: 4 },
       timeoutMs: 5000,
+      traceId: expect.any(String),
     });
     expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
   });
@@ -631,6 +646,7 @@ describe('sessionRpcWithServerScope', () => {
       method: 'session-1:method-test',
       params: { value: 5 },
       timeoutMs: 5000,
+      traceId: expect.any(String),
     });
     expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
     expect(calls).toEqual(['timeout-emitter', 'issued', 'emit']);
@@ -750,6 +766,7 @@ describe('sessionRpcWithServerScope', () => {
       method: 'session-1:method-test',
       params: expect.any(String),
       timeoutMs: 5000,
+      traceId: expect.any(String),
     });
     expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
   });
@@ -917,6 +934,7 @@ describe('sessionRpcWithServerScope', () => {
       method: 'session-1:method-test',
       params: { value: 3 },
       timeoutMs: 5000,
+      traceId: expect.any(String),
     });
     expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
   });
@@ -967,6 +985,7 @@ describe('sessionRpcWithServerScope', () => {
       params: { id: 'permission-b', approved: true },
       authorization: { kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE, sessionId: 'session-1' },
       timeoutMs: 5000,
+      traceId: expect.any(String),
     });
   });
 

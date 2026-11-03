@@ -7,13 +7,10 @@ import { rmSync } from 'fs';
 import { SCM_OPERATION_ERROR_CODES, SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
-import { createTestRpcManager, runGit as git } from './testRpcHarness';
+import { createGitWorkspace, createTestRpcManager, runGit as git } from './testRpcHarness';
 
 function initGitWorkspace(): { workspace: string; head: string } {
-    const workspace = mkdtempSync(join(tmpdir(), 'happier-git-branches-rpc-'));
-    git(workspace, ['init']);
-    git(workspace, ['config', 'user.email', 'test@example.com']);
-    git(workspace, ['config', 'user.name', 'Test User']);
+    const workspace = createGitWorkspace('happier-git-branches-rpc-');
     writeFileSync(join(workspace, 'a.txt'), 'base-1\nbase-2\nbase-3\n');
     git(workspace, ['add', 'a.txt']);
     git(workspace, ['commit', '-m', 'base']);

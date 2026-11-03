@@ -31,13 +31,8 @@ const mockState = vi.hoisted(() => ({
         draftServerId?: string;
         draftAccountId?: string;
     },
-    guidanceModelListeners: new Set<() => void>(),
-    guidanceKind: 'connect_machine' as 'connect_machine' | 'select_session',
     shouldBlockNewSession: true,
-    guidanceHookCalls: 0,
-    newSessionBlockHookCalls: 0,
     wizardRenders: 0,
-    portalScopeRenders: 0,
     draftReadScopes: [] as Array<{ serverId: string; accountId: string }>,
     draftDeleteCalls: [] as Array<Readonly<{
         scope: { serverId: string; accountId: string };
@@ -64,36 +59,8 @@ vi.mock('react-native', async () => {
 vi.mock('@/components/sessions/guidance/SessionGettingStartedGuidance', () => ({
     SessionGettingStartedGuidance: 'SessionGettingStartedGuidance',
 }));
-vi.mock('@/components/sessions/guidance/useSessionGettingStartedGuidanceBaseModel', () => ({
-    useSessionGettingStartedGuidanceBaseModel: () => {
-        mockState.guidanceHookCalls += 1;
-
-        const serverId = React.useSyncExternalStore(
-            (listener) => {
-                mockState.guidanceModelListeners.add(listener);
-                return () => {
-                    mockState.guidanceModelListeners.delete(listener);
-                };
-            },
-            () => mockState.serverId,
-            () => mockState.serverId,
-        );
-
-        return {
-            kind: mockState.guidanceKind,
-            targetLabel: 'Test server',
-            serverId,
-            serverName: 'Test',
-            serverUrl: 'https://api.happier.dev',
-            showServerSetup: false,
-        };
-    },
-}));
 vi.mock('@/components/sessions/guidance/useShouldBlockNewSessionWithGettingStartedGuidance', () => ({
-    useShouldBlockNewSessionWithGettingStartedGuidance: () => {
-        mockState.newSessionBlockHookCalls += 1;
-        return mockState.shouldBlockNewSession;
-    },
+    useShouldBlockNewSessionWithGettingStartedGuidance: () => mockState.shouldBlockNewSession,
 }));
 
 vi.mock('@/components/sessions/new/hooks/serverTarget/useNewSessionServerTargetState', () => ({
@@ -218,10 +185,7 @@ vi.mock('@/components/sessions/new/components/NewSessionWizard', () => ({
 }));
 
 vi.mock('@/components/sessions/new/navigation/newSessionContainedModalScreen', () => ({
-    NewSessionScreenPortalScope: ({ children }: { children: React.ReactNode }) => {
-        mockState.portalScopeRenders += 1;
-        return React.createElement(React.Fragment, null, children);
-    },
+    NewSessionScreenPortalScope: ({ children }: { children: React.ReactNode }) => React.createElement(React.Fragment, null, children),
 }));
 
 vi.mock('@/components/ui/popover', async (importOriginal) => {
@@ -289,9 +253,7 @@ afterEach(async () => {
     publishAppliedActiveServerRuntimeAvailability(false);
     storage.getState().clearProfileScope();
     mockState.tempData = null;
-    mockState.guidanceModelListeners.clear();
     mockState.serverId = 's1';
-    mockState.guidanceKind = 'connect_machine';
     mockState.shouldBlockNewSession = true;
     mockState.resolvedTargetServerId = undefined;
     for (const key of Object.keys(mockState.localSearchParams)) {
@@ -301,10 +263,7 @@ afterEach(async () => {
         dataId: 'draft-data-id',
         draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
     });
-    mockState.guidanceHookCalls = 0;
-    mockState.newSessionBlockHookCalls = 0;
     mockState.wizardRenders = 0;
-    mockState.portalScopeRenders = 0;
     mockState.draftReadScopes = [];
     mockState.draftDeleteCalls = [];
     mockState.routerPush.mockReset();
@@ -349,89 +308,18 @@ async function seedConflictingDraft(draftId: string) {
 }
 
 describe('/new (blocking guidance)', () => {
-    it('hard-stops with connect-machine guidance when no machines exist', async () => {
+    it.each([
+        { intent: 'worktree draft', tempData: { workspaceId: 'workspace-1', workspaceLocationId: 'location-1',
+            checkoutCreationDraft: { kind: 'git_worktree', displayName: 'feature-x', baseRef: 'main' } } },
+        { intent: 'machine', tempData: { machineId: 'machine-1' } },
+    ])('keeps the wizard path when temp data seeds a $intent intent', async ({ tempData }) => {
         setMockServerId('s1');
-        mockState.tempData = null;
-        mockState.shouldBlockNewSession = true;
-
-        const screen = await renderScreen(React.createElement(Screen));
-
-        expect(() => screen.findByType('SessionGettingStartedGuidance')).not.toThrow();
-        expect(() => screen.findByType('NewSessionWizard')).toThrow();
-        expect(mockState.portalScopeRenders).toBe(0);
-    });
-
-    it('keeps the new-session panel out of full getting-started model invalidations', async () => {
-        setMockServerId('s1');
-        mockState.tempData = null;
-        mockState.guidanceKind = 'select_session';
-        mockState.shouldBlockNewSession = false;
-
-        const screen = await renderScreen(React.createElement(Screen));
-
-        expect(screen.findByType('NewSessionWizard')).toBeTruthy();
-        const initialRenders = { wizard: mockState.wizardRenders, portal: mockState.portalScopeRenders,
-            blockingHook: mockState.newSessionBlockHookCalls };
-        expect(initialRenders.wizard).toBeGreaterThan(0);
-        expect(initialRenders.portal).toBeGreaterThan(0);
-        expect(mockState.guidanceHookCalls).toBe(0);
-
-        for (const listener of mockState.guidanceModelListeners) {
-            listener();
-        }
-
-        expect(mockState.wizardRenders).toBe(initialRenders.wizard);
-        expect(mockState.portalScopeRenders).toBe(initialRenders.portal);
-        expect(mockState.newSessionBlockHookCalls).toBe(initialRenders.blockingHook);
-        expect(mockState.guidanceHookCalls).toBe(0);
-    });
-
-    it('hands the wizard its layout settings (list or dropdown per step, two columns)', async () => {
-        setMockServerId('s1');
-        mockState.tempData = null;
-        mockState.shouldBlockNewSession = false;
-
-        const screen = await renderScreen(React.createElement(Screen));
-
-        const wizard = screen.findByType('NewSessionWizard');
-        expect(wizard.props.sectionPresentation).toEqual({ machines: 'list' });
-        expect(wizard.props.useColumnLayout).toBe(true);
-    });
-
-    it('keeps the wizard path when temp data seeds a worktree draft intent', async () => {
-        setMockServerId('s1');
-        mockState.tempData = {
-            workspaceId: 'workspace-1',
-            workspaceLocationId: 'location-1',
-            checkoutCreationDraft: {
-                kind: 'git_worktree',
-                displayName: 'feature-x',
-                baseRef: 'main',
-            },
-        };
+        mockState.tempData = tempData;
 
         const screen = await renderScreen(React.createElement(Screen));
 
         expect(() => screen.findByType('NewSessionWizard')).not.toThrow();
         expect(() => screen.findByType('SessionGettingStartedGuidance')).toThrow();
-    });
-
-    it('does not subscribe to getting-started guidance when temp data seeds a machine intent', async () => {
-        setMockServerId('s1');
-        mockState.tempData = {
-            machineId: 'machine-1',
-        };
-
-        await renderScreen(React.createElement(Screen));
-
-        expect(mockState.guidanceHookCalls).toBe(0);
-        const initialRenders = mockState.wizardRenders;
-        expect(initialRenders).toBeGreaterThan(0);
-
-        setMockServerId('s2');
-
-        expect(mockState.guidanceHookCalls).toBe(0);
-        expect(mockState.wizardRenders).toBe(initialRenders);
     });
 
     it('opens a materialized draft without duplicate context copy and places conflict plus actions beside the composer', async () => {

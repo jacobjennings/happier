@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { projectProviderModelGenerationSettings } from '@happier-dev/protocol/models/descriptor';
 import { lookup } from 'node:dns/promises';
 
 import { PROVIDER_ENDPOINT_SAFETY_LIMITS } from '@happier-dev/protocol/providers/safety/limits';
@@ -15,7 +16,9 @@ import type { ProviderConnectionsCatalogSnapshotV1 } from '@happier-dev/protocol
 import { configuration } from '@/configuration';
 import { readStoredCredentials } from '@/persistence';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
-import { createAccountScopedProviderCatalogReader, createAccountScopedProviderModelProjectionReader } from '@/providers/modelManagement/remoteProjection';
+import { createAccountScopedProviderCatalogReader, createAccountScopedProviderModelProjectionReader, type AccountScopedProviderReadInput } from '@/providers/modelManagement/remoteProjection';
+import { createAccountConnectionModelProjectionRequest } from '@/providers/broker/applicationProjection';
+import { isRemoteProviderGatewayPlacement } from '@/providers/managed/gatewayPlacement';
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
 import { readProviderModelNameCatalog, resolveProviderContributionRegistryView } from '@/providers/registry/contributions';
 import {
@@ -136,8 +139,8 @@ function catalogAdmissionError(catalog: ProviderConnectionsCatalogSnapshotV1, id
 export type RuntimeProviderOperationScope = ProviderProbeOperationScope & Readonly<{
   /** Exact executable-registry generation admitted for this operation. */
   resolveContributedCatalogParsers?: ResolveContributedProviderCatalogParsers;
-  getAccountSettingsSnapshot?: () => ActiveAccountSettingsSnapshot | null;
-  resolveManagedPurposeBindingIntent?: ResolveManagedProviderPurposeBindingIntent;
+  /** Null is explicit Account custody without an issued transport reader. */
+  accountReadScope?: AccountScopedProviderReadInput | null;
 }>;
 
 /** Exact Account settings basis for one bulk presentation pass. */
@@ -490,6 +493,9 @@ export function createRuntimeProviderServices(input: Readonly<{
     if (!isProviderFeatureEnabled()) {
       return { ok: false as const, error: providerFeatureDisabled(identity).error };
     }
+    if (scope.isAccountCurrent && !await scope.isAccountCurrent()) {
+      return { ok: false as const, error: createProviderErrorV1('provider_authorization_changed', identity) };
+    }
     const readSnapshot = scope.getAccountSettingsSnapshot ?? getSnapshot;
     let snapshot = settingsBasis ? null : readSnapshot();
     if (!isProviderFeatureEnabled()) {
@@ -499,6 +505,8 @@ export function createRuntimeProviderServices(input: Readonly<{
       return { ok: false as const, error: createProviderErrorV1('provider_connection_not_found', identity) };
     }
     if (!settingsBasis && snapshot?.providerConnectionsCatalog?.status !== 'ready') {
+      if (scope.getAccountSettingsSnapshot) return { ok: false as const,
+        error: createProviderErrorV1('provider_catalog_unavailable', identity) };
       if (!snapshot?.scopeKey) return { ok: false as const, error: createProviderErrorV1('provider_settings_invalid', identity) };
       let catalog;
       try {
@@ -641,13 +649,17 @@ export function createRuntimeProviderServices(input: Readonly<{
       value: {
         connection: resolution.record,
         readSnapshot,
+        accountReadScope: scope.accountReadScope,
+        isAccountCurrent: scope.isAccountCurrent,
+        savedSecretOperationContext: scope.savedSecretOperationContext,
+        managedRuntimeAccount: scope.managedRuntimeAccount,
         snapshot,
         providerSettings,
         settingsRead,
         accountSettings,
         savedSecretResources: settingsBasis ? settingsBasis.savedSecretResources : snapshot?.savedSecretResources,
         resolveManagedPurposeBindingIntent: settingsBasis?.resolveManagedPurposeBindingIntent
-          ?? scope.resolveManagedPurposeBindingIntent ?? input.resolveManagedPurposeBindingIntent,
+          ?? scope.resolveManagedPurposeBindingIntent ?? (scope.getAccountSettingsSnapshot ? undefined : input.resolveManagedPurposeBindingIntent),
         registry,
         dnsEvidenceByEndpointUrl,
         ...(admittedAccountSettingsBasis
@@ -1056,6 +1068,7 @@ export function createRuntimeProviderServices(input: Readonly<{
           snapshot,
           getAccountSettingsSnapshot: scope.getAccountSettingsSnapshot ?? getSnapshot,
           lifetime: scope.lifetime,
+          ...(scope.getAccountSettingsSnapshot ? { operationContext: scope.savedSecretOperationContext ?? null } : {}),
         });
     if (!admission.ok) return admission;
     try {
@@ -1189,31 +1202,40 @@ export function createRuntimeProviderServices(input: Readonly<{
   ): Promise<T | Readonly<{ status: 'error'; error: ProviderErrorV1 }> | null> {
     const { connection } = context;
     const placement = connection.connection.gatewayPlacement;
-    if (connection.deployment.kind !== 'managedLocal' || placement?.kind !== 'machine'
-      || placement.machineId === identity.machineId) return null;
+    if (connection.deployment.kind !== 'managedLocal'
+      || !isRemoteProviderGatewayPlacement(placement, identity.machineId)) return null;
     if (!connection.authorization.authorized) return {
       status: 'error', error: createProviderErrorV1(connection.authorization.errorCode, identity),
     };
     if (connection.deployment.managedRuntime.sharing !== 'connectionMachine') return {
       status: 'error', error: createProviderErrorV1('provider_connection_invalid', identity),
     };
-    const lifetimeToken = getActiveAccountSettingsSnapshotLifetimeToken();
+    if (context.accountReadScope === null) return {
+      status: 'error', error: createProviderErrorV1('provider_authorization_changed', identity),
+    };
     const admittedScope = {
       lifetime: context.lifetime, registry: context.registry,
       accountSettingsBasis: context.accountSettingsBasis,
       dnsEvidenceByConnectionId: new Map([[identity.connectionId, context.dnsEvidenceByEndpointUrl]]),
       getAccountSettingsSnapshot: context.readSnapshot,
+      accountReadScope: context.accountReadScope,
       resolveManagedPurposeBindingIntent: context.resolveManagedPurposeBindingIntent,
+      isAccountCurrent: context.isAccountCurrent,
+      savedSecretOperationContext: context.savedSecretOperationContext,
+      managedRuntimeAccount: context.managedRuntimeAccount,
     };
     // Resolve the hub's source from the peer's admitted catalog, including the
     // hub grant, through the same owner that authorizes a local probe.
     const hub = await resolveSaved({ ...identity, machineId: placement.machineId }, 'catalog', admittedScope);
     if (!hub.ok) return { status: 'error', error: hub.error };
-    const readerInput = {
-      serverUrl: resolveServerHttpBaseUrl(), readCredentials: readStoredCredentials,
-      readAccountSettingsSnapshot: async () => context.readSnapshot(),
-      isCurrent: () => isProviderFeatureEnabled() && getActiveAccountSettingsSnapshotLifetimeToken() === lifetimeToken,
-    };
+    const readerInput = context.accountReadScope ?? (() => {
+      const lifetimeToken = getActiveAccountSettingsSnapshotLifetimeToken();
+      return {
+        serverUrl: resolveServerHttpBaseUrl(), readCredentials: readStoredCredentials,
+        readAccountSettingsSnapshot: async () => context.readSnapshot(),
+        isCurrent: () => isProviderFeatureEnabled() && getActiveAccountSettingsSnapshotLifetimeToken() === lifetimeToken,
+      };
+    })();
     const reader = { ...createAccountScopedProviderCatalogReader(readerInput),
       project: createAccountScopedProviderModelProjectionReader(readerInput) };
     let result: T;
@@ -1269,7 +1291,13 @@ export function createRuntimeProviderServices(input: Readonly<{
     const context = await resolveConnectionContext(identity, scope);
     if (!context.ok) return { status: 'error', error: context.error };
     return readPlacedGatewayCatalog(identity, context.value, (reader, target, signal) => reader.project({
-      ...request, machineId: target.machineId,
+      ...createAccountConnectionModelProjectionRequest({ machineId: target.machineId,
+        connectionId: context.value.connection.connectionId,
+        expectedConnectionSecurityFingerprint: context.value.connection.connectionSecurityFingerprint,
+        agentTargetKey: request.agentTargetKey, refreshPolicy: request.refreshPolicy }),
+      sourceCatalog: true, ...(request.forceRefresh ? { forceRefresh: true } : {}),
+      ...(request.currentSelection ? { currentSelection: request.currentSelection } : {}),
+      ...(request.favoriteSelections ? { favoriteSelections: request.favoriteSelections } : {}),
     }, signal));
   };
 
@@ -1390,9 +1418,10 @@ export function createRuntimeProviderServices(input: Readonly<{
         ?? new Map([[identity.connectionId, catalog.value.dnsEvidenceByEndpointUrl]]);
       const resolvedAccountSettingsBasis = operationScope.accountSettingsBasis
         ?? catalog.value.accountSettingsBasis;
-      if (!await hasFreshExactCatalogObservation(catalog.value.request)) {
+      if (trigger === 'manual_refresh' || !await hasFreshExactCatalogObservation(catalog.value.request)) {
         if (!isProviderFeatureEnabled()) return providerFeatureDisabled(identity).error;
         const admittedScope: RuntimeProviderOperationScope = {
+          ...operationScope,
           registry: catalog.value.registry,
           ...(operationScope.resolveContributedCatalogParsers
             ? { resolveContributedCatalogParsers: operationScope.resolveContributedCatalogParsers }
@@ -1430,6 +1459,7 @@ export function createRuntimeProviderServices(input: Readonly<{
       if (await hasFreshExactHealthObservation(health.value.request)) return null;
       if (!isProviderFeatureEnabled()) return null;
       const admittedScope: RuntimeProviderOperationScope = {
+        ...operationScope,
         registry: health.value.registry,
         ...(operationScope.resolveContributedCatalogParsers
           ? { resolveContributedCatalogParsers: operationScope.resolveContributedCatalogParsers }
@@ -1525,6 +1555,7 @@ export function createRuntimeProviderServices(input: Readonly<{
     const models = [
       ...projected.rows.map(({ row, catalog: rowCatalog, loadState }) => ({
         id: row.descriptor.id,
+        descriptor: projectProviderModelGenerationSettings(row.descriptor, context.connection.connection.modelSettings?.[row.descriptor.id]),
         ...(row.descriptor.name ? { name: row.descriptor.name } : {}),
         source: sourceForRow(row),
         stale: rowCatalog.stale
@@ -1536,6 +1567,7 @@ export function createRuntimeProviderServices(input: Readonly<{
       })),
       ...projected.staleRows.map(({ row, loadState }) => ({
         id: row.descriptor.id,
+        descriptor: projectProviderModelGenerationSettings(row.descriptor, context.connection.connection.modelSettings?.[row.descriptor.id]),
         ...(row.descriptor.name ? { name: row.descriptor.name } : {}),
         source: sourceForRow(row),
         stale: true,
@@ -1643,6 +1675,11 @@ export function createRuntimeProviderServices(input: Readonly<{
           const settingsRead = { settings: input.providerSettings, diagnostics: [] };
           return resolveSavedFromConnectionContext(identity, {
             connection: input.resolution.record,
+            // A point-in-time description carries no Account custody; the ordinary settings path applies.
+            accountReadScope: undefined,
+            isAccountCurrent: undefined,
+            savedSecretOperationContext: undefined,
+            managedRuntimeAccount: undefined,
             snapshot: null,
             providerSettings: settingsRead.settings,
             settingsRead,

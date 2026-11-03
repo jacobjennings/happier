@@ -2,7 +2,7 @@ import * as React from 'react';
 import { createLayoutChangeEvent } from '@/dev/testkit/fixtures/nativeEventFixtures';
 import { View } from 'react-native';
 import renderer, { act } from 'react-test-renderer';
-import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TermuxTerminalSurface } from './surface.native';
 import type { EmbeddedTerminalWriteBytesResult } from '@/components/terminal/embedded/embeddedTerminalRendererHandle';
@@ -48,10 +48,6 @@ describe('TermuxTerminalSurface', () => {
         nativeModuleMock.writeBytes.mockReset();
         getOptionalNativeModuleMock.mockReset();
         getOptionalNativeViewManagerMock.mockReset();
-    });
-
-    it('projects the native testID prop through its wrapper contract', () => {
-        expectTypeOf<React.ComponentProps<typeof TermuxTerminalSurface>['testID']>().toEqualTypeOf<string | undefined>();
     });
 
     it('reports native-module-missing when the Expo module or view manager is unavailable', async () => {

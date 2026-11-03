@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import axios from 'axios';
+import fastify from 'fastify';
+import { PluginAvailabilityActionHttpPathsV1, PluginAvailabilityIntentsListActionInputV1Schema } from '@happier-dev/protocol/plugins/availability';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc/methods';
 import { AcpBackendDefinitionV1Schema } from '@happier-dev/protocol/acp/catalog/settingsV1';
 import { CUSTOM_ACP_AGENT_CONTRIBUTION_IDENTITY_V1 } from '@happier-dev/protocol/agents/executionTargetV1';
@@ -7,44 +8,65 @@ import { DaemonAgentInstallStartResponseSchema } from '@happier-dev/protocol/dae
 import type { RpcHandler, RpcHandlerContext } from '../rpc/types';
 import { createAgentInstallJobOwner } from '@/capabilities/installJobs/agentInstallJobOwner';
 import { registerMachineAgentInstallJobRpcHandlers } from './rpcHandlers.agentInstallJobs';
-import * as persistence from '@/persistence';
-import { accountSettingsParse } from '@happier-dev/protocol/account/settings/accountSettings';
-import { resolveAccountSettingsScopeKey } from '@/settings/accountSettings/accountSettingsScopeKey';
-import { resetActiveAccountSettingsSnapshotForTests, setActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { resetActiveAccountSettingsSnapshotForTests } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { getResolvedContributionRegistry, readCurrentBundledPluginEnablement } from '@/plugins/projection/registry/builtIn/snapshot';
+import { publishServerHttpRuntimeOrigin } from '@/api/client/serverHttpBaseUrl';
+import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
+import { fetchGitHubReleaseByTag } from '@happier-dev/release-runtime/github';
+import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 
 afterEach(() => { vi.restoreAllMocks(); resetActiveAccountSettingsSnapshotForTests(); });
 
-it('preserves the reviewed version precondition through the real registered START handler', async () => {
+it('admits qualified bundled Codex installs through the published Home carrier and machine RPC, sharing the routing-id job', async () => {
+  const home = await createTempDir('happier-codex-install-identity-');
   const handlers = new Map<string, RpcHandler>();
-  const definition = AcpBackendDefinitionV1Schema.parse({ id: 'reviewed-agent', name: 'reviewed-agent', title: 'Reviewed Agent',
-    launch: { kind: 'npm', package: '@fixture/reviewed-agent', version: '2.0.0' }, createdAt: 1, updatedAt: 2 });
-  const credentials = { token: `e30.${Buffer.from(JSON.stringify({ sub: 'alice' })).toString('base64url')}.fixture`, encryption: null };
-  setActiveAccountSettingsSnapshot({ source: 'network', settings: accountSettingsParse({}), rawSettings: {}, settingsVersion: 1,
-    loadedAtMs: 1, settingsSecretsReadKeys: [], scopeKey: resolveAccountSettingsScopeKey(credentials) });
-  vi.spyOn(persistence, 'readStoredCredentials').mockResolvedValue(credentials);
-  vi.spyOn(axios, 'get').mockImplementation(async url => {
-    const path = new URL(String(url)).pathname;
-    if (path === '/v1/account/encryption/currentness') return { status: 200, data: { mode: 'plain', version: 1,
-      signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1 } };
-    if (path === '/v1/account/entity-rows/acp') return { status: 200, data: { status: 'present', revision: 2,
-      content: { t: 'plain', v: { v: 1, definitions: [definition] } } } };
-    throw new Error(`Unexpected Account read: ${path}`);
+  let finishFetch!: (response: Response) => void;
+  const response = new Promise<Response>(resolve => { finishFetch = resolve; });
+  const app = fastify();
+  app.post(PluginAvailabilityActionHttpPathsV1['account.plugins.availability.intents.list'], async request => {
+    const ids = PluginAvailabilityIntentsListActionInputV1Schema.parse(request.body).knownPluginIds ?? [];
+    return { availabilityCursor: 1, pluginIds: ids, failedPluginIds: [], intentReads: ids.map(pluginId => ({ pluginId,
+      response: { availabilityCursor: 1, hostingCapability: { enabled: false }, intent: null,
+        release: null, uiArtifacts: [], packageAssets: [] },
+    })) };
   });
-  const owner = createAgentInstallJobOwner({ accountId: 'alice', readTrackedSessions: () => [],
-    readRegistry: () => ({ agents: [{ id: 'custom-acp', pluginId: CUSTOM_ACP_AGENT_CONTRIBUTION_IDENTITY_V1.pluginId,
-      identity: CUSTOM_ACP_AGENT_CONTRIBUTION_IDENTITY_V1 }] }),
-    readAcpCatalog: () => ({ status: 'ready', record: { v: 1, definitions: [definition] }, revision: 2 }) });
-  registerMachineAgentInstallJobRpcHandlers({ owner,
-    rpcHandlerManager: { registerHandler: (method, handler) => { handlers.set(method, handler); } } });
-  const context: RpcHandlerContext = { signal: new AbortController().signal, verifyMachineAdmissionCurrent: async () => true,
-    machineAdmission: { actorAccountId: 'alice', custodianAccountId: 'alice', machineId: 'machine', installationId: 'installation',
-      role: 'manage', encryptionMode: 'plain' } };
+  await app.ready();
+  const restoreHttp = installAxiosFastifyAdapter({ app, origin: 'http://codex-install-carrier.test' });
+  const unpublish = publishServerHttpRuntimeOrigin('http://codex-install-carrier.test', 'iroh');
+  const registry = getResolvedContributionRegistry({ pluginEnablementById: await readCurrentBundledPluginEnablement({
+    machineEnabledById: {}, accountStorageDependencies: { readCredentials: async () => ({ token: 'fixture', encryption: null }) },
+  }) });
+  const owner = createAgentInstallJobOwner({ readRegistry: () => registry,
+    readTrackedSessions: () => [], env: { HOME: home, HAPPIER_HOME_DIR: home, PATH: '' },
+    // Account/GitHub HTTP and stored credentials are boundary fixtures; bundled
+    // admission, identity projection, installer, settlement and RPC stay real.
+    installerDeps: { fetchGitHubReleaseByTag: params => fetchGitHubReleaseByTag({ ...params,
+      fetchImpl: async () => response,
+    }) },
+  });
+  registerMachineAgentInstallJobRpcHandlers({ owner, rpcHandlerManager: { registerHandler: (method, handler) => { handlers.set(method, handler); } } });
   try {
-    const response = await handlers.get(RPC_METHODS.DAEMON_AGENTS_INSTALL_START)!({ agentId: 'custom-acp',
-      definitionId: definition.id, expectedDefinitionVersion: '1.0.0', intent: 'install', consent: { vendorRecipe: false } }, context);
-    expect(DaemonAgentInstallStartResponseSchema.parse(response)).toMatchObject({ ok: false, errorCode: 'definition_version_changed' });
-    expect(owner.list('alice')).toEqual({ ok: true, jobs: [] });
-  } finally { await owner.shutdown(); }
+    const start = handlers.get(RPC_METHODS.DAEMON_AGENTS_INSTALL_START)!;
+    const request = { agentId: 'happier.agent.codex/codex', intent: 'install', consent: { vendorRecipe: false } };
+    const started = DaemonAgentInstallStartResponseSchema.parse(await start(request));
+    expect(started).toMatchObject({ ok: true, jobId: expect.any(String) });
+    if (!started.ok) return;
+    expect(await start({ ...request, agentId: 'codex' })).toEqual(started);
+    expect(await start({ ...request, agentId: 'other.plugin/codex' })).toMatchObject({ ok: false, errorCode: 'install_unavailable' });
+    expect(await handlers.get(RPC_METHODS.DAEMON_AGENTS_INSTALL_LIST)!({})).toMatchObject({ ok: true,
+      jobs: [{ jobId: started.jobId, agentId: 'codex', done: false }],
+    });
+    finishFetch(new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }));
+    await vi.waitFor(async () => expect(await handlers.get(RPC_METHODS.DAEMON_AGENTS_INSTALL_READ)!({ jobId: started.jobId, cursor: 0 }))
+      .toMatchObject({ ok: true, done: true, outcome: { kind: 'failed', code: 'rate_limited' } }));
+  } finally {
+    finishFetch(new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }));
+    await owner.shutdown();
+    unpublish();
+    restoreHttp();
+    await app.close();
+    await removeTempDir(home);
+  }
 });
 
 it('refuses a requester Account definition before resolving the custodian catalog and leaves built-in target admission available', async () => {

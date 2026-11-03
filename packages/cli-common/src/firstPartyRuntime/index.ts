@@ -19,7 +19,9 @@ export type {
 
 export {
   assertValidFirstPartyVersionId,
+  FIRST_PARTY_INSTALL_HOME_ENV_KEY,
   InvalidFirstPartyVersionIdError,
+  resolveFirstPartyInstallHomeDir,
   resolveFirstPartyInstallLayout,
   resolveFirstPartyVersionInstallPath,
 } from './installLayout.js';
@@ -370,3 +372,5 @@ export type {
 } from './ensureHappierCliPathExposure.js';
 export { FirstPartyAcquisitionError, readAcquisitionFailureCause, redactAcquisitionDiagnostic } from './acquisitionProgress.js';
 export type { FirstPartyAcquisitionOptions } from './acquisitionProgress.js';
+export * from './resolveSelfContainedCliRuntimeRoot.js';
+export * from './runtimePaths.js';

@@ -1,5 +1,7 @@
 import { SessionRuntimeActivitySnapshotSchema, type SessionRuntimeActivitySnapshot } from '@happier-dev/protocol/sessions/runtime/activity/sessionRuntimeActivity';
 import { SessionPublisherGenerationV1Schema } from '@happier-dev/protocol/sessions/control/machineSessionTerminalV1';
+import { SessionInputMachineTargetV1Schema } from '@happier-dev/protocol/sessions/messages/sessionInputAdmission';
+import { createStoredReadSchema } from '@happier-dev/protocol/json/storedReadSchema';
 import { type SessionMetadataPublisherPreconditionV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import { type PrimaryTurnStatusV1, type SessionRuntimeIssueV1 } from '@happier-dev/protocol/sessions/control/runtimeIssueV1';
 
@@ -9,6 +11,8 @@ import {
 } from "@/app/activity/accountActivityBadge";
 import { hasCurrentSessionScopedMachineAccessInTx } from "@/app/api/socket/sessionScopedBinding";
 import { readCurrentSessionInputMachineTargetInTx } from "@/app/session/messages/sessionInputAdmission";
+import { resolveMachineAdmissionInTx } from '@/app/machines/machineAccess';
+import { readCurrentServerIdentityId } from '@/app/serverIdentity/serverIdentity';
 import { getActivePrismaRuntime } from "@/storage/db";
 import { markSessionProjectionRecipientsChanged, type SessionRecipientCursor } from "@/app/session/changeTracking/markSessionProjectionRecipientsChanged";
 import { sessionRecipientPublicationResult, type SessionRecipientPublicationResult } from "@/app/session/changeTracking/sessionRecipientPublicationResult";
@@ -33,6 +37,7 @@ import { scheduleSessionActivityRemoteAlerts } from '@/app/activity/remoteAlerts
 import { isServerFeatureEnabledForHome } from '@/app/features/catalog/serverFeatureGate';
 import type { InTxOptions, ResolvedTransactionResult, Tx } from "@/storage/inTx";
 import { AsyncLock } from "@/utils/runtime/lock";
+import { publishSessionProviderBrokerConsumersChangedInTx, readSessionProviderBrokerCustodianAccountIdsInTx } from '@/app/providers/brokerConsumerChanges';
 import { recordWebLatencyPhase, timeWebLatencyPhase } from '@/utils/webLatencyTrace';
 import {
     mapPendingActivationAuthorization,
@@ -47,6 +52,26 @@ export interface SessionPublisherBinding {
     readonly accountId: string;
     readonly machineId: string;
     readonly sessionId: string;
+}
+
+type InstalledMachineTerminalCustody = Readonly<{ installationId: string }>;
+
+/** Process-terminal facts follow committed placement, not the requester's current grant. */
+async function hasInstalledMachineTerminalCustodyInTx(tx: Tx, params: Readonly<{
+    binding: SessionPublisherBinding;
+    installedMachineCustody: InstalledMachineTerminalCustody;
+    session: Readonly<{ accountId: string; runtimeMachineTarget: unknown }>;
+}>): Promise<boolean> {
+    const target = createStoredReadSchema(SessionInputMachineTargetV1Schema).safeParse(params.session.runtimeMachineTarget);
+    if (!target.success || target.data.accountId !== params.session.accountId
+        || target.data.sessionId !== params.binding.sessionId || target.data.machineId !== params.binding.machineId
+        || target.data.installationId !== params.installedMachineCustody.installationId
+        || target.data.homeId !== await readCurrentServerIdentityId(process.env, tx)) return false;
+    const admission = await resolveMachineAdmissionInTx(tx, {
+        actorAccountId: params.binding.accountId, machineId: params.binding.machineId,
+    });
+    return admission.kind === 'admitted' && admission.custodianAccountId === params.binding.accountId
+        && admission.installationId === params.installedMachineCustody.installationId;
 }
 
 export type RegisterSessionPublisherResult =
@@ -250,7 +275,10 @@ export async function expireSessionPublisherCandidates(params: Readonly<{
 }>): Promise<readonly ExpireSessionPublisherResult[]> {
     if (params.candidates.length === 0) return [];
     return await inTx(async (tx) => {
-        await acquireSessionAccountCursorLocksInTx(tx, params.candidates.map(candidate => candidate.sessionId));
+        await acquireSessionAccountCursorLocksInTx(tx, params.candidates.map(candidate => candidate.sessionId), [], {
+            readAdditionalAccountIdsInTx: currentTx => readSessionProviderBrokerCustodianAccountIdsInTx(currentTx,
+                params.candidates.map(candidate => candidate.sessionId)),
+        });
         const results: PresenceInTxResult<ExpireSessionPublisherResult>[] = [];
         for (const candidate of params.candidates) {
             const session = await tx.session.findUnique({
@@ -281,6 +309,7 @@ export async function expireSessionPublisherCandidates(params: Readonly<{
                 continue;
             }
 
+            await publishSessionProviderBrokerConsumersChangedInTx(tx, candidate.sessionId);
             const recipientCursors = await markSessionProjectionRecipientsChanged({ tx, sessionId: candidate.sessionId });
             // This successful existing CAS is custody of the original stalled
             // transition. Never append a synthetic Message or advance a Follow cursor.
@@ -603,9 +632,13 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
         authority: PublisherCloseAuthority;
         mutationId: string;
         settleLatestTurn?: boolean;
+        installedMachineCustody?: InstalledMachineTerminalCustody;
     }>): Promise<CloseSessionPublisherResult> => await inTx(async (tx): Promise<PresenceInTxResult<CloseSessionPublisherResult>> => {
         await acquireSessionAccountCursorLocksInTx(tx, [params.binding.sessionId], [], {
             includeLifecyclePublications: params.settleLatestTurn !== false,
+            ...(params.settleLatestTurn === false ? {
+                readAdditionalAccountIdsInTx: (currentTx: Tx) => readSessionProviderBrokerCustodianAccountIdsInTx(currentTx, [params.binding.sessionId]),
+            } : {}),
         });
         const session = await tx.session.findUnique({
             where: { id: params.binding.sessionId },
@@ -614,13 +647,19 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
                 lastActiveAt: true,
                 publisherGeneration: true,
                 publisherGenerationLastActiveAt: true,
+                runtimeMachineTarget: true,
             },
         });
         if (!session) return { status: "rejected", reason: "not_found" };
-        if (session.accountId !== params.binding.accountId) {
+        const hasInstalledCustody = params.installedMachineCustody !== undefined
+            && await hasInstalledMachineTerminalCustodyInTx(tx, {
+                binding: params.binding, installedMachineCustody: params.installedMachineCustody, session,
+            });
+        if (!hasInstalledCustody && session.accountId !== params.binding.accountId) {
             return { status: "rejected", reason: "unauthorized" };
         }
-        const hasCurrentBinding = await hasCurrentSessionScopedMachineAccessInTx({ tx, ...params.binding });
+        const hasCurrentBinding = hasInstalledCustody
+            || await hasCurrentSessionScopedMachineAccessInTx({ tx, ...params.binding });
         const runnerBindingState = hasCurrentBinding
             ? await readMaterializedEphemeralRunnerBindingStateInTx(tx, params.binding)
             : session.active
@@ -695,6 +734,7 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
             },
         });
         if (updated.count !== 1) return { status: "superseded" };
+        await publishSessionProviderBrokerConsumersChangedInTx(tx, params.binding.sessionId);
         if (runnerBindingState === "current") {
             await revokeMaterializedEphemeralRunnerBindingInTx(tx, params.binding);
         }
@@ -744,8 +784,9 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
         });
     });
 
-    const captureExplicitMachineStop = async (params: Readonly<{
+    const captureMachineStop = async (params: Readonly<{
         binding: SessionPublisherBinding;
+        installedMachineCustody?: InstalledMachineTerminalCustody;
     }>): Promise<CaptureExplicitMachineStopResult> => await inReadSnapshot(async (tx): Promise<CaptureExplicitMachineStopResult> => {
         const session = await tx.session.findUnique({
             where: { id: params.binding.sessionId },
@@ -755,10 +796,16 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
                 lastActiveAt: true,
                 publisherGeneration: true,
                 publisherGenerationLastActiveAt: true,
+                accountId: true,
+                runtimeMachineTarget: true,
             },
         });
         if (!session) return { status: "rejected", reason: "not_found" };
-        if (!await hasCurrentSessionScopedMachineAccessInTx({ tx, ...params.binding })) {
+        const hasInstalledCustody = params.installedMachineCustody !== undefined
+            && await hasInstalledMachineTerminalCustodyInTx(tx, {
+                binding: params.binding, installedMachineCustody: params.installedMachineCustody, session,
+            });
+        if (!hasInstalledCustody && !await hasCurrentSessionScopedMachineAccessInTx({ tx, ...params.binding })) {
             return { status: "rejected", reason: "machine_control_unavailable" };
         }
         if (session.archivedAt !== null) return { status: "rejected", reason: "archived" };
@@ -787,7 +834,8 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
         };
     });
 
-    const captureMachineSessionTerminal = captureExplicitMachineStop;
+    const captureExplicitMachineStop = (params: Readonly<{ binding: SessionPublisherBinding }>) => captureMachineStop(params);
+    const captureMachineSessionTerminal = captureMachineStop;
 
     const finalizeExplicitMachineStop = async (params: Readonly<{
         target: ExplicitMachineStopTarget;
@@ -801,6 +849,7 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
 
     const finalizeMachineSessionTerminal = async (params: Readonly<{
         target: MachineSessionTerminalTarget;
+        installedMachineCustody?: InstalledMachineTerminalCustody;
     }>): Promise<CloseSessionPublisherResult> => await closeBinding({
         binding: params.target.binding,
         authority: params.target.authority,
@@ -808,6 +857,7 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
             ? `machine-session-terminal:generation:${params.target.authority.publisherGeneration}`
             : `machine-session-terminal:legacy-heartbeat:${params.target.authority.committedFence.getTime()}`,
         settleLatestTurn: false,
+        installedMachineCustody: params.installedMachineCustody,
     });
 
     const closePublisher = (params: Readonly<{ socket: object }>): Promise<CloseSessionPublisherResult> => {

@@ -12,6 +12,15 @@ const input = {
 } as const;
 
 describe('host agent-start snapshots', () => {
+  it('preserves applied native authentication in the Session baseline instead of reopening Account defaults', () => {
+    const context = resolveCliAgentStartContextV1({ ...input, metadata: { connectedServices: {
+      v: 2, bindingsByServiceId: { 'example.accounts/service': { source: 'connected', profileId: 'pending' } },
+    } }, appliedChildSelection: { status: 'applied', backendTarget, modelId: 'native-model',
+      modelSelection: { agentTargetKey: buildBackendTargetKeyV2(backendTarget), providerConnectionId: null, modelId: 'native-model' },
+      connectedServices: null } });
+    expect(context?.baseline.configuration?.connectedServices).toBeNull();
+  });
+
   it('leaves applied Team custody to host child admission instead of projecting a native role route', () => {
     const context = resolveCliAgentStartContextV1({ ...input, appliedChildSelection: {
       status: 'applied', backendTarget, modelId: 'team-model', connectedServices: null,
@@ -33,7 +42,7 @@ describe('host agent-start snapshots', () => {
     });
     expect(context?.baseline.configuration?.modelSelection).toEqual(applied);
     expect(context?.roles.reviewer.engine).toMatchObject({ modelId: 'applied-model' });
-    expect(context?.baseline.configuration?.connectedServices).toBeUndefined();
+    expect(context?.baseline.configuration?.connectedServices).toBeNull();
     const binding = ConnectedServiceBindingsV2Schema.parse({ v: 2,
       bindingsByServiceId: { 'example.accounts/service': { source: 'connected', profileId: 'applied' } } });
     const connected = resolveCliAgentStartContextV1({ ...input,

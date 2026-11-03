@@ -11,7 +11,11 @@ export function registerUiFocusSocketEvent(socket: Socket, admission?: Promise<b
             const parsed = UiFocusStateSchema.safeParse(input);
             const allowed = admitted && socket.connected
                 && data.clientType === "user-scoped" && data.clientPurpose === "sync";
-            if (allowed && parsed.success) data.uiFocus = parsed.data;
+            if (allowed && parsed.success) {
+                const previous = data.uiFocus;
+                if (parsed.data.focused && (!previous || previous.focused !== true)) data.uiLastFocusedAt = Date.now();
+                data.uiFocus = parsed.data;
+            }
             if (typeof ack === "function") ack({ ok: allowed && parsed.success });
         };
         if (admission) {

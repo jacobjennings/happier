@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'vitest';
 import { buildFixtureHappierUrl, createFixtureStore, createCredentialIssuer, createLeadChat,
-  projectFixtureErrorResponse } from './fixture.mjs';
+  projectFixtureErrorLog, projectFixtureErrorResponse } from './fixture.mjs';
 import { actionSchemas } from './leads-fixture/contracts.mjs';
 import { activate, manifest } from './leads-fixture/index.ts';
 import { createPluginTestkit } from '@happier-dev/plugin-sdk/testing';
@@ -150,13 +150,43 @@ test('lead initialization reports a typed SDK failure with its retained Session 
   await assert.rejects(createLeadChat({ happier, store, userId: 'other-salesperson', leadId: 'northstar' }), /lead_forbidden/);
 });
 
+test('fixture failure diagnostics project only typed issue paths and codes', () => {
+  const response = projectFixtureErrorResponse(Object.assign(new Error('private input value'), {
+    code: 'invalid_parameters',
+    details: [
+      { path: ['organizationPlacement', 'sectionId'], code: 'invalid_type', message: 'private input value' },
+      { path: ['organizationPlacement'], code: 'unrecognized_keys', keys: ['folderId'] },
+    ],
+  }));
+  assert.deepEqual(response, {
+    status: 400,
+    body: { error: 'invalid_parameters', issues: [
+      { path: ['organizationPlacement', 'sectionId'], code: 'invalid_type' },
+      { path: ['organizationPlacement'], code: 'unrecognized_keys' },
+    ] },
+  });
+  assert.doesNotMatch(JSON.stringify(response), /private input value|folderId/);
+  assert.deepEqual(projectFixtureErrorLog(Object.assign(new Error('private input value'), {
+    code: 'invalid_parameters', details: response.body.issues,
+  })), {
+    status: 400, error: 'invalid_parameters', issues: response.body.issues,
+  });
+  assert.deepEqual(projectFixtureErrorLog(new Error('private input value')), {
+    status: 400, error: 'fixture_error',
+  });
+});
+
 test('lead creation projects a typed SDK spawn failure without exception text', async () => {
   const store = createFixtureStore();
   const happier = {
     embed: { async createSession() {
       throw Object.assign(new Error('sensitive spawn detail'), {
+        code: 'invalid_parameters',
+        details: { issues: [
+          { path: ['organizationPlacement', 'sectionId'], code: 'invalid_type', message: 'sensitive spawn detail' },
+        ] },
         session: { id: leadSessionId },
-        result: { type: 'error', code: 'spawn_failed', retryable: false },
+        result: { type: 'error', code: 'invalid_parameters', retryable: false },
       });
     } },
     sessions: { get() { throw new Error('Unexpected retained Session'); } },
@@ -166,7 +196,8 @@ test('lead creation projects a typed SDK spawn failure without exception text', 
     .then(() => null, (error) => error);
   assert.deepEqual(projectFixtureErrorResponse(failure), {
     status: 400,
-    body: { error: 'spawn_failed', sessionId: leadSessionId },
+    body: { error: 'invalid_parameters', sessionId: leadSessionId,
+      issues: [{ path: ['organizationPlacement', 'sectionId'], code: 'invalid_type' }] },
   });
   assert.doesNotMatch(JSON.stringify(projectFixtureErrorResponse(failure)), /sensitive spawn detail/);
   assert.equal(store.listLeads('salesperson')[0].sessionId, null);

@@ -2,10 +2,14 @@ import { parseSessionMessageRole } from "@/app/session/messageRole/resolveSessio
 import { normalizePendingDeliveryStatusV1, type PendingDeliveryStatusV1, type PendingDeliveryRecoveryV1 } from '@happier-dev/protocol/sessions/messages/pendingDeliveryStatusV1';
 import { PendingRequestedActionV1Schema, PendingRequestedActionV1StoredSchema, type PendingRequestedActionV1 } from '@happier-dev/protocol/sessions/pending/pendingRequestedActionV1';
 import { type SessionMessageAccountActorV1 } from '@happier-dev/protocol/sessions/messages/sessionMessageAccountActorV1';
+import { readStoredSessionInputAdmissionReceipt } from '@/app/session/messages/sessionInputAdmission';
+import type { SessionFollowInputV1 } from '@happier-dev/protocol/sessions/follow/sessionFollowInputV1';
 
 export type PendingMessageRow = {
     localId: string;
     automated?: boolean;
+    /** Public original only; private rule/permission witnesses stay in admission custody. */
+    hostFollowInput?: SessionFollowInputV1;
     autonomousExchangeRoot?: import('@happier-dev/protocol/sessions/messages/autonomousExchangeV1').AutonomousExchangeRootV1;
     activationHoldReason?: import('@happier-dev/protocol/sessions/pending/pendingActivationAuthorizationV1').PendingActivationHoldReasonV1;
     recipient?: { kind: "execution_run"; runId: string };
@@ -32,7 +36,7 @@ export type PendingMessageRowRaw = {
     autonomousExchangeRootLocalId?: string | null;
     inputAdmissionReceipt?: unknown;
     providerAction?: unknown;
-    replyProgress?: unknown;
+    replyProgress: unknown;
     localId: string;
     automated?: boolean;
     targetExecutionRunId?: string | null;
@@ -63,9 +67,11 @@ export function mapPendingMessageRow(row: PendingMessageRowRaw, accountActor: Se
     const deliveryState = typeof row.deliveryState === "string" && row.deliveryState.length > 0 ? row.deliveryState : null;
     const deliveryBlockedReason =
         typeof row.deliveryBlockedReason === "string" && row.deliveryBlockedReason.length > 0 ? row.deliveryBlockedReason : null;
+    const receipt = readStoredSessionInputAdmissionReceipt(row.inputAdmissionReceipt);
     return {
         localId: row.localId,
         automated: row.automated === true,
+        ...(receipt?.admittedTarget && receipt.followDeliveryV1 ? { hostFollowInput: receipt.followDeliveryV1 } : {}),
         ...(row.targetExecutionRunId == null ? {} : {
             recipient: { kind: "execution_run" as const, runId: row.targetExecutionRunId },
         }),

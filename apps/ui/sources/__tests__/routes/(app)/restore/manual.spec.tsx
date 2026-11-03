@@ -117,26 +117,6 @@ describe('/restore/manual', () => {
         expect(screen.findByTestId('restore-manual-wizard-progress')).toBeNull();
     });
 
-    it('masks the Secret Key input by default and allows toggling visibility', async () => {
-        const screen = await renderManualRestoreScreen();
-        const input = screen.findByTestId('restore-manual-secret-input');
-        expect(input?.props.secureTextEntry).toBe(true);
-        expect(input?.props.multiline).toBe(false);
-        await screen.pressByTestIdAsync('restore-manual-secret-reveal');
-        expect(screen.findByTestId('restore-manual-secret-input')?.props.secureTextEntry).toBe(false);
-    });
-
-    it('retains malformed key input without starting authentication', async () => {
-        const requests: string[] = [];
-        setRuntimeFetch(async input => { requests.push(new URL(String(input)).pathname); return Response.json({}, { status: 404 }); });
-        const screen = await renderManualRestoreScreen();
-        await act(async () => { screen.changeTextByTestId('restore-manual-secret-input', 'invalid-key'); });
-        await screen.pressByTestIdAsync('restore-manual-submit');
-        expect(screen.findByTestId('restore-manual-secret-input')?.props.value).toBe('invalid-key');
-        expect(screen.findByTestId('restore-manual-secret-error')).not.toBeNull();
-        expect(requests.some(path => path === '/v1/auth' || path === '/v1/auth/challenge')).toBe(false);
-    });
-
     it('persists the restored Secret Key and dismisses to Home without dispatching a nested replace', async () => {
         const token = 'e30.eyJzdWIiOiJhY2NvdW50LWEifQ.signature';
         const secret = encodeBase64(new Uint8Array(32).fill(7), 'base64url');

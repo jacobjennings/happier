@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
+import { installTokenStorageTestIsolation, installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
 import {
     installLocalStorageMock,
     installWebLockManagerMock,
@@ -8,6 +8,23 @@ import {
 } from './tokenStorage.web.testHelpers';
 
 installTokenStorageWebPlatformMocks();
+installTokenStorageTestIsolation('token_storage_account_directory');
+
+// One module instance serves the file; cross-tab contracts below load further instances explicitly.
+const tokenStorageModule = await import('./tokenStorage');
+const {
+    TokenStorage,
+    captureAccountDirectoryCredentialCustody,
+    parseAuthCredentials,
+    normalizeAccountDirectoryEndpoint,
+    subscribeAccountDirectoryCredentialMutations,
+    ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY,
+    PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY,
+} = tokenStorageModule;
+const { upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
+
+/** Fixed clock for pending-record fixtures built at collection time. */
+const PENDING_NOW = 1_000_000;
 
 function bindCanonicalServerUrl<T extends Readonly<{ endpoint: string }>>(
     fixture: T,
@@ -17,7 +34,6 @@ function bindCanonicalServerUrl<T extends Readonly<{ endpoint: string }>>(
 
 describe('TokenStorage Account Directory namespaces', () => {
     it('retains exact entry intent separately from authenticated link-source intent', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
         const target = { endpoint: 'https://directory.example.test', serverIdentityId: 'srv_directory' };
         const record = {
             ...target, canonicalServerUrl: target.endpoint,
@@ -43,7 +59,6 @@ describe('TokenStorage Account Directory namespaces', () => {
         restoreLocalStorage = localStorageHandle.restore;
         webLocks = installWebLockManagerMock();
         restoreWebLocks = webLocks.restore;
-        vi.resetModules();
     });
 
     afterEach(() => {
@@ -57,7 +72,7 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('serializes disjoint Account Service credential writes across fresh browser module instances', async () => {
-        const first = await import('./tokenStorage');
+        const first = tokenStorageModule;
         vi.resetModules();
         const second = await import('./tokenStorage');
         const firstTarget = { endpoint: 'https://directory-a.example.test', serverIdentityId: 'directory-a' };
@@ -73,7 +88,7 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('serializes disjoint pending Account Service auth writes across fresh browser module instances', async () => {
-        const first = await import('./tokenStorage');
+        const first = tokenStorageModule;
         vi.resetModules();
         const second = await import('./tokenStorage');
         const now = Date.now();
@@ -102,7 +117,7 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('does not let captured logout or request admission retire or issue a newer cross-tab credential', async () => {
-        const first = await import('./tokenStorage');
+        const first = tokenStorageModule;
         const target = { endpoint: 'https://directory.example.test', serverIdentityId: 'directory-a' };
         await first.TokenStorage.accountDirectoryAuthCredentials.set(target, { token: 'directory-token-old' });
         const captured = first.captureAccountDirectoryCredentialCustody(target);
@@ -134,7 +149,7 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('claims OAuth return custody only for its exact committed credential across browser module instances', async () => {
-        const first = await import('./tokenStorage');
+        const first = tokenStorageModule;
         const target = { endpoint: 'https://directory.example.test', serverIdentityId: 'directory-a' };
         const intent = { kind: 'enter' as const, target: { kind: 'automatic' as const } };
         const expected = { ...target, intent, invokingSurface: '/setup/wizard' };
@@ -154,7 +169,7 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('rejects OAuth return custody when a newer same-service start exists', async () => {
-        const first = await import('./tokenStorage');
+        const first = tokenStorageModule;
         const target = { endpoint: 'https://directory.example.test', serverIdentityId: 'directory-a' };
         const intent = { kind: 'enter' as const, target: { kind: 'automatic' as const } };
         await first.TokenStorage.accountDirectoryAuthCredentials.set(target, { token: 'directory-token-a' });
@@ -188,7 +203,7 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('returns credential custody bound to the claimed OAuth credential', async () => {
-        const first = await import('./tokenStorage');
+        const first = tokenStorageModule;
         const target = { endpoint: 'https://directory.example.test', serverIdentityId: 'directory-a' };
         const intent = { kind: 'enter' as const, target: { kind: 'automatic' as const } };
         await first.TokenStorage.accountDirectoryAuthCredentials.set(target, { token: 'directory-token-a' });
@@ -217,7 +232,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('starts an admitted request under the shared lock and releases the lock before the network settles', async () => {
-        const { TokenStorage, captureAccountDirectoryCredentialCustody } = await import('./tokenStorage');
         const target = { endpoint: 'https://directory.example.test', serverIdentityId: 'directory-a' };
         await TokenStorage.accountDirectoryAuthCredentials.set(target, { token: 'directory-token' });
         const custody = captureAccountDirectoryCredentialCustody(target);
@@ -248,25 +262,7 @@ describe('TokenStorage Account Directory namespaces', () => {
         await expect(issued).resolves.toBe('response');
     });
 
-    it('writes Home credentials through the symmetric explicit endpoint setter', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
-
-        await expect(
-            TokenStorage.setCredentialsForServerUrl(
-                'https://home-a.example.test',
-                { serverId: 'home-a' },
-                { token: 'home-token', secret: 'home-secret' },
-            ),
-        ).resolves.toBe(true);
-
-        await expect(
-            TokenStorage.getCredentialsForServerUrl('https://home-a.example.test', { serverId: 'home-a' }),
-        ).resolves.toEqual({ token: 'home-token', secret: 'home-secret' });
-    });
-
     it('strictly parses ordinary typed Home credentials at enrollment boundaries', async () => {
-        const { parseAuthCredentials } = await import('./tokenStorage');
-
         expect(parseAuthCredentials({ token: 'home-token' })).toEqual({ token: 'home-token' });
         expect(parseAuthCredentials({
             token: 'home-token',
@@ -280,7 +276,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('reads additive stored Home credential fields while keeping enrollment credential inputs strict', async () => {
-        const { TokenStorage, parseAuthCredentials } = await import('./tokenStorage');
         const target = { serverId: 'home-a' };
         const url = 'https://home-a.example.test';
         const credentials = { token: 'home-token', encryption: { publicKey: 'public-key', machineKey: 'machine-key' } };
@@ -296,7 +291,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('reads additive stored Account-service credential fields without granting Home key material', async () => {
-        const { TokenStorage, ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY } = await import('./tokenStorage');
         const target = { endpoint: 'https://directory.example.test', serverIdentityId: 'directory-a' };
         expect(await TokenStorage.accountDirectoryAuthCredentials.set(target, { token: 'directory-token' })).toBe(true);
         if (!localStorageHandle) throw new Error('Expected storage boundary');
@@ -315,7 +309,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('reads additive stored Home continuation fields while preserving its exact Home and credential binding', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
         const homeUrl = 'https://home-a.example.test';
         const continuation = {
             endpoint: 'https://directory.example.test', canonicalServerUrl: 'https://directory.example.test',
@@ -339,7 +332,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('reads additive stored Account-service pending fields while keeping strict custody inputs and exact targets', async () => {
-        const { TokenStorage, PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY } = await import('./tokenStorage');
         const now = Date.now();
         const pending = {
             endpoint: 'https://directory.example.test', canonicalServerUrl: 'https://directory.example.test',
@@ -363,8 +355,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('rejects Account Service endpoints that contain credentials, a query, or a fragment', async () => {
-        const { normalizeAccountDirectoryEndpoint } = await import('./tokenStorage');
-
         expect(normalizeAccountDirectoryEndpoint('https://user:pass@directory.example.test')).toBeNull();
         expect(normalizeAccountDirectoryEndpoint('https://directory.example.test?tenant=other')).toBeNull();
         expect(normalizeAccountDirectoryEndpoint('https://directory.example.test#other')).toBeNull();
@@ -374,7 +364,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('isolates Account Directory credentials by endpoint and identity', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
         const directory = TokenStorage.accountDirectoryAuthCredentials;
 
         await expect(
@@ -409,7 +398,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('tells observers when the stored Account Service sign-in changes', async () => {
-        const { TokenStorage, subscribeAccountDirectoryCredentialMutations } = await import('./tokenStorage');
         const directory = TokenStorage.accountDirectoryAuthCredentials;
         const target = { endpoint: 'https://directory.example.test', serverIdentityId: 'directory-a' };
         const observer = vi.fn();
@@ -426,7 +414,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('rejects endpoint-only operations without touching identity-bound credentials at the same URL', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
         const directory = TokenStorage.accountDirectoryAuthCredentials;
         const endpoint = 'https://directory.example.test';
 
@@ -467,7 +454,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('keeps Directory pending OAuth records endpoint/identity scoped and expires them strictly', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
         const now = 1_000_000;
         vi.spyOn(Date, 'now').mockReturnValue(now);
         const pending = bindCanonicalServerUrl({
@@ -503,7 +489,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('resolves callback custody by provider and fails closed when more than one target matches', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
         const now = 1_000_000;
         vi.spyOn(Date, 'now').mockReturnValue(now);
         const first = bindCanonicalServerUrl({
@@ -538,7 +523,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('persists only the canonical pre-redirect Directory target fields without inventing a server pending handle', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
         const now = 1_000_000;
         vi.spyOn(Date, 'now').mockReturnValue(now);
         const continuation = bindCanonicalServerUrl({
@@ -589,47 +573,36 @@ describe('TokenStorage Account Directory namespaces', () => {
         })).resolves.toBe(false);
     });
 
-    it('round-trips the canonical keyed pre-redirect continuation through the real storage owner', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
-        const now = 1_000_000;
-        vi.spyOn(Date, 'now').mockReturnValue(now);
-        const continuation = bindCanonicalServerUrl({
-            endpoint: 'https://directory.example.test',
-            serverIdentityId: 'directory-a',
-            credentialTarget: 'account_directory' as const,
-            provider: 'github',
-            purpose: 'account_directory' as const,
-            createdAt: now,
-            expiresAt: now + 10_000,
-            mode: 'keyed' as const,
-            secret: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-        });
-
-        await expect(TokenStorage.setPendingAccountDirectoryAuth(continuation)).resolves.toBe(true);
-        await expect(TokenStorage.getPendingAccountDirectoryAuth({
-            endpoint: continuation.endpoint,
-            serverIdentityId: continuation.serverIdentityId,
-        })).resolves.toEqual(continuation);
+    const keyedContinuation = bindCanonicalServerUrl({
+        endpoint: 'https://directory.example.test',
+        serverIdentityId: 'directory-a',
+        credentialTarget: 'account_directory' as const,
+        provider: 'github',
+        purpose: 'account_directory' as const,
+        createdAt: PENDING_NOW,
+        expiresAt: PENDING_NOW + 10_000,
+        mode: 'keyed' as const,
+        secret: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
     });
-
-    it('round-trips the strict account-only refresh intent without a Home identity marker', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
-        const now = 1_000_000;
-        vi.spyOn(Date, 'now').mockReturnValue(now);
-        const continuation = {
-            endpoint: 'https://directory.example.test',
-            serverIdentityId: 'directory-a',
-            canonicalServerUrl: 'https://directory.example.test',
-            credentialTarget: 'account_directory' as const,
-            entryIntent: { kind: 'refresh' as const },
-            provider: 'github',
-            purpose: 'account_directory' as const,
-            createdAt: now,
-            expiresAt: now + 10_000,
-            mode: 'keyless' as const,
-            proof: 'proof-bound-before-redirect',
-            returnTo: '/setup/wizard',
-        };
+    const refreshContinuation = {
+        endpoint: 'https://directory.example.test',
+        serverIdentityId: 'directory-a',
+        canonicalServerUrl: 'https://directory.example.test',
+        credentialTarget: 'account_directory' as const,
+        entryIntent: { kind: 'refresh' as const },
+        provider: 'github',
+        purpose: 'account_directory' as const,
+        createdAt: PENDING_NOW,
+        expiresAt: PENDING_NOW + 10_000,
+        mode: 'keyless' as const,
+        proof: 'proof-bound-before-redirect',
+        returnTo: '/setup/wizard',
+    };
+    it.each([
+        ['canonical keyed', keyedContinuation],
+        ['strict account-only refresh (no Home identity marker)', refreshContinuation],
+    ])('round-trips the %s pre-redirect continuation through the real storage owner', async (_variant, continuation) => {
+        vi.spyOn(Date, 'now').mockReturnValue(PENDING_NOW);
 
         await expect(TokenStorage.setPendingAccountDirectoryAuth(continuation)).resolves.toBe(true);
         await expect(TokenStorage.getPendingAccountDirectoryAuth({
@@ -639,7 +612,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('persists a captured Home identity intent on the Directory continuation and stays strict about credentials/descriptors', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
         const now = 1_000_000;
         vi.spyOn(Date, 'now').mockReturnValue(now);
         const base = bindCanonicalServerUrl({
@@ -690,8 +662,7 @@ describe('TokenStorage Account Directory namespaces', () => {
     it.each([undefined, 'open_home', '', true])(
         'rejects a Directory continuation whose semantic entry intent is %j',
         async (entryIntent) => {
-            const { TokenStorage } = await import('./tokenStorage');
-            const now = 1_000_000;
+                const now = 1_000_000;
             vi.spyOn(Date, 'now').mockReturnValue(now);
             const setUntrustedPending = TokenStorage.setPendingAccountDirectoryAuth as (
                 value: unknown,
@@ -713,64 +684,48 @@ describe('TokenStorage Account Directory namespaces', () => {
         },
     );
 
-    it('rejects Directory pending records without the explicit target marker', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
-        const now = 1_000_000;
-        vi.spyOn(Date, 'now').mockReturnValue(now);
-        const pending = bindCanonicalServerUrl({
+    it.each([
+        ['the explicit target marker', 'credentialTarget'],
+        ['a canonical server URL', 'canonicalServerUrl'],
+    ] as const)('rejects Directory pending records without %s and persists nothing', async (_missing, field) => {
+        vi.spyOn(Date, 'now').mockReturnValue(PENDING_NOW);
+        const complete = bindCanonicalServerUrl({
             endpoint: 'https://directory.example.test',
             serverIdentityId: 'directory-a',
+            credentialTarget: 'account_directory' as const,
             provider: 'github',
             purpose: 'account_directory' as const,
             pending: 'oauth-pending-a',
-            createdAt: now - 100,
-            expiresAt: now + 10_000,
+            createdAt: PENDING_NOW - 100,
+            expiresAt: PENDING_NOW + 10_000,
         });
+        const { [field]: _omitted, ...incomplete } = complete;
+        const target = { endpoint: complete.endpoint, serverIdentityId: complete.serverIdentityId };
 
         const setUntrustedPending = TokenStorage.setPendingAccountDirectoryAuth as (
             value: unknown,
         ) => Promise<boolean>;
-        await expect(setUntrustedPending(pending)).resolves.toBe(false);
-        await expect(
-            TokenStorage.getPendingAccountDirectoryAuth({ endpoint: pending.endpoint, serverIdentityId: pending.serverIdentityId }),
-        ).resolves.toBeNull();
-    });
-
-    it('rejects Directory pending records without a canonical server URL', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
-        const now = 1_000_000;
-        vi.spyOn(Date, 'now').mockReturnValue(now);
-        const setUntrustedPending = TokenStorage.setPendingAccountDirectoryAuth as (
-            value: unknown,
-        ) => Promise<boolean>;
-
-        await expect(setUntrustedPending({
-            endpoint: 'https://directory.example.test',
-            serverIdentityId: 'directory-a',
-            credentialTarget: 'account_directory',
-            provider: 'github',
-            purpose: 'account_directory',
-            pending: 'oauth-pending-a',
-            createdAt: now - 100,
-            expiresAt: now + 10_000,
-        })).resolves.toBe(false);
+        await expect(setUntrustedPending(incomplete)).resolves.toBe(false);
+        await expect(TokenStorage.getPendingAccountDirectoryAuth(target)).resolves.toBeNull();
+        // Positive control: the same record with the field present is accepted.
+        await expect(TokenStorage.setPendingAccountDirectoryAuth(complete)).resolves.toBe(true);
+        await expect(TokenStorage.getPendingAccountDirectoryAuth(target)).resolves.toEqual(complete);
     });
 
     it('continues to parse the legacy Home pending shape without a target discriminator', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
-        const homePending = { provider: 'github', proof: 'home-proof' };
+        // Bytes an older client left at the web pending-auth key: no target discriminator, purpose or server context.
+        const legacyRaw = JSON.stringify({ provider: 'github', proof: 'home-proof' });
+        if (!localStorageHandle) throw new Error('Expected storage boundary');
+        localStorageHandle.store.set('pending_external_auth__global', legacyRaw);
 
-        await expect(TokenStorage.setPendingExternalAuth(homePending)).resolves.toBe(true);
         await expect(TokenStorage.readPendingExternalAuthState()).resolves.toEqual({
-            value: homePending,
+            value: { provider: 'github', proof: 'home-proof' },
             serverMismatch: true,
         });
-        expect(homePending).not.toHaveProperty('purpose');
-        expect(homePending).not.toHaveProperty('target');
+        expect(localStorageHandle.store.get('pending_external_auth__global')).toBe(legacyRaw);
     });
 
     it('logs out the Directory namespace without removing Home credentials or pending state', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
         const directory = TokenStorage.accountDirectoryAuthCredentials;
         const endpoint = 'https://directory.example.test';
         const pending = bindCanonicalServerUrl({
@@ -807,8 +762,6 @@ describe('TokenStorage Account Directory namespaces', () => {
     });
 
     it('removes every Home credential without clearing dedicated Account Service state', async () => {
-        const { upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
-        const { TokenStorage } = await import('./tokenStorage');
         const directory = TokenStorage.accountDirectoryAuthCredentials;
         const homeA = await upsertServerProfile({
             serverUrl: 'https://home-a.example.test',

@@ -1,7 +1,6 @@
 import * as React from 'react';
 import type { TeamAddress } from '@/sync/domains/teams/teamAddress';
 import { useRouter } from '@/components/appShell/workspace/destinationRoute';
-import { Platform } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
@@ -10,7 +9,7 @@ import { ItemLoadStateRows } from '@/components/ui/lists/ItemLoadStateRows';
 import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
-import { VirtualizedList } from '@/components/ui/lists/virtualized';
+import { VirtualizedItemList } from '@/components/ui/lists/VirtualizedItemList';
 import { TeamRow } from '@/components/settings/teams/TeamRow';
 import { teamDetailPath, teamsCreatePath } from '@/components/settings/teams/teamsRoutes';
 import { useTeamsDirectory } from '@/hooks/teams/useTeamsDirectory';
@@ -286,18 +285,12 @@ const HomeTeams = React.memo(function HomeTeams(
     const renderRow = React.useCallback(({ item }: Readonly<{ item: HomeTeamsVirtualizedRow }>) => item.render(), []);
 
     return (
-        <VirtualizedList
+        <VirtualizedItemList
             testID="home-teams-virtualized-list"
             data={rows}
             keyExtractor={(item) => item.key}
             renderItem={renderRow}
             ListHeaderComponent={props.header == null ? null : <>{props.header}</>}
-            style={{
-                flex: 1,
-                backgroundColor: theme.colors.surface.base,
-                ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
-            }}
-            contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
             initialNumToRender={6}
             maxToRenderPerBatch={4}
             windowSize={7}

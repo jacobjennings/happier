@@ -88,9 +88,10 @@ describe('workspaceSyncEngineReadinessStore', () => {
         });
     });
 
-    it('scopes readiness per machine and notifies only that machine subscribers', () => {
-        const first = { serverId: 'server-1', machineId: 'machine-1' } as const;
-        const second = { serverId: 'server-1', machineId: 'machine-2' } as const;
+    it.each([
+        ['machine', { serverId: 'server-1', machineId: 'machine-1' }, { serverId: 'server-1', machineId: 'machine-2' }],
+        ['Home', { serverId: 'server-1', machineId: 'machine-1' }, { serverId: 'server-2', machineId: 'machine-1' }],
+    ] as const)('scopes readiness per %s and notifies only that scope subscribers', (_scope, first, second) => {
         const firstListener = vi.fn();
         const secondListener = vi.fn();
         const unsubscribeFirst = subscribeWorkspaceSyncEngineReadiness(first, firstListener);

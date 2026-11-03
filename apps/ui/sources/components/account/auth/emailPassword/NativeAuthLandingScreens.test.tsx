@@ -361,27 +361,6 @@ it('uses the verification-scoped entry after a fresh-document invitation link an
     expect(boundary.replace).toHaveBeenCalledWith(`/settings/teams/${SAVED_HOME_IDENTITY}/team-a`);
 });
 
-it('routes a bound password-enrollment proof to Account Security with the exact bearer', async () => {
-    boundary.scopeKind = 'bound';
-    boundary.preview.mockResolvedValueOnce({
-        v: 1,
-        valid: true,
-        maskedDestination: 'p***@example.test',
-        continuation: 'password_enrollment',
-    });
-    screen = await renderScreen(<NativeAuthEmailVerifyScreen token="enrollment-bearer" homeTarget={SAVED_HOME_IDENTITY} />);
-
-    await vi.waitFor(() => expect(screen?.findByTestId('native-auth-verify-password-enrollment')).not.toBeNull());
-    await screen.pressByTestIdAsync('native-auth-verify-password-enrollment');
-
-    expect(boundary.openAccountSecurityForHome).toHaveBeenCalledWith({
-        serverId: savedHomeProfileId,
-        router: { replace: boundary.replace },
-        refreshAuth: boundary.refreshFromActiveServer,
-        verificationToken: 'enrollment-bearer',
-    });
-});
-
 it('signs in to the carried Home before continuing password enrollment with the same bearer', async () => {
     boundary.preview.mockResolvedValueOnce({
         v: 1,
@@ -418,13 +397,6 @@ it('fails closed without a portable Home target and never previews the bearer ag
 
     await vi.waitFor(() => expect(screen?.findByTestId('native-auth-verify-invalid')).not.toBeNull());
     expect(boundary.preview).not.toHaveBeenCalled();
-});
-
-it('previews a password-reset bearer only against the Home carried by the link', async () => {
-    screen = await renderScreen(<NativeAuthPasswordResetScreen token="reset-bearer" homeTarget={SAVED_HOME_IDENTITY} />);
-
-    await vi.waitFor(() => expect(screen?.findByTestId('native-auth-reset-password')).not.toBeNull());
-    expect(boundary.resetPreview).toHaveBeenCalledWith(boundary.request, 'reset-bearer');
 });
 
 it('fails a password-reset landing closed when the Home profile cannot be resolved', async () => {
@@ -501,6 +473,7 @@ it('makes a previous verification preview inert while a replacement bearer is be
 it('makes the old reset form inert while a replacement bearer is being checked', async () => {
     screen = await renderScreen(<NativeAuthPasswordResetScreen token="old-reset-bearer" homeTarget={SAVED_HOME_IDENTITY} />);
     await vi.waitFor(() => expect(screen?.findByTestId('native-auth-reset-password')).not.toBeNull());
+    expect(boundary.resetPreview).toHaveBeenCalledWith(boundary.request, 'old-reset-bearer');
 
     let finishReplacementPreview!: (value: unknown) => void;
     boundary.resetPreview.mockReturnValueOnce(new Promise((resolve) => { finishReplacementPreview = resolve; }));
@@ -799,14 +772,14 @@ it('keeps a verified password-enrollment continuation retryable when its Home ca
 
     await screen.pressByTestIdAsync('native-auth-verify-destination-home-retry');
 
-    // The bearer travels to Account Security unchanged; retry never re-mints it.
-    expect(boundary.openAccountSecurityForHome).toHaveBeenCalledTimes(2);
-    expect(boundary.openAccountSecurityForHome).toHaveBeenLastCalledWith({
+    // The bearer travels to Account Security unchanged, first time and on retry; retry never re-mints it.
+    const activation = {
         serverId: savedHomeProfileId,
         router: { replace: boundary.replace },
         refreshAuth: boundary.refreshFromActiveServer,
         verificationToken: 'enrollment-bearer',
-    });
+    };
+    expect(boundary.openAccountSecurityForHome.mock.calls).toEqual([[activation], [activation]]);
 });
 
 it('shows the reset submission as working until the Home answers', async () => {

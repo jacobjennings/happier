@@ -169,6 +169,18 @@ const FIELD_GUIDANCE_BY_ACTION_ID: Readonly<Record<string, Readonly<Record<strin
 });
 
 const WORKFLOW_NOTES_BY_ACTION_ID: Readonly<Record<string, readonly VoiceGuidanceNote[]>> = Object.freeze({
+  'settings.list': [{
+    text: 'For Happier preferences, use settings_list to discover the displayed setting and its exact anchor, then settings_get to read it. Use settings_set for a writable value or settings_invoke for a declared operation. Perform these through Happier tools rather than forwarding the request to a coding session',
+    requiresActionIds: ['settings.list', 'settings.get', 'settings.set', 'settings.invoke'],
+  }],
+  'approval.request.list': [{
+    text: 'For Inbox approval requests, use approval_request_list with status open, then approval_request_get with the returned artifactId. Account requests are separate from native Session permission requests and need not appear in coding-session updates',
+    requiresActionIds: ['approval.request.list', 'approval.request.get'],
+  }],
+  'approval.request.decide': [{
+    text: 'Use approval_request_decide with the discovered artifactId for an Account request. For a native Session permission request, use session_permission_respond with its sessionId and requestId. Read the request and ask the person before deciding; the Voice delegation preference and canonical permission policy still apply',
+    requiresActionIds: ['approval.request.list', 'approval.request.get', 'approval.request.decide', 'session.permission.respond'],
+  }],
   'review.start': [{ text: 'Use listReviewEngines before guessing engineIds from engine names', requiresActionIds: ['review.engines.list'] }],
   'subagents.plan.start': [{ text: 'Use listAgentBackends before choosing provider/backend targets in backendTargetKeys internally', requiresActionIds: ['agents.backends.list'] }],
   'subagents.delegate.start': [{ text: 'Use listAgentBackends before choosing provider/backend targets in backendTargetKeys internally', requiresActionIds: ['agents.backends.list'] }],

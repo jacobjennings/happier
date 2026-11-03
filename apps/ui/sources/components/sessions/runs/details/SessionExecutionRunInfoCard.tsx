@@ -4,7 +4,7 @@ import { parsePermissionIntentAlias } from '@happier-dev/agents/permissions';
 import type { AcpCatalogSnapshotV1 } from '@happier-dev/protocol/acp/catalog/catalogRowsV1';
 import * as React from 'react';
 import { View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { formatRunDiscussionOriginLabel } from '@/components/sessions/agents/presentation/useSessionAgentRowOriginLabels';
 import {
@@ -15,12 +15,13 @@ import {
 import { ExecutionRunAgentMark } from '@/components/sessions/runs/ExecutionRunAgentMark';
 import { resolveExecutionRunBackendLabel } from '@/components/sessions/runs/resolveExecutionRunBackendLabel';
 import { resolveExecutionRunTitle } from '@/components/sessions/runs/resolveExecutionRunTitle';
-import { resolveExecutionRunSelectionLabel, resolveRunNativeModelLabel, type RunNativeModelCatalog } from '@/components/sessions/runs/resolveExecutionRunSelectionLabel';
+import { readExecutionRunModelId, resolveExecutionRunSelectionLabel, resolveRunAnsweringEngine, resolveRunNativeModelLabel, type RunNativeModelCatalog, type RunSessionModels } from '@/components/sessions/runs/resolveExecutionRunSelectionLabel';
 import { useExecutionRunSourceLabel } from '@/components/sessions/runs/useExecutionRunSourceLabel';
 import { useProviderSettingsForServer } from '@/providers/hooks/useProviderSettings';
 import { ExecutionRunActionsMenu, type ExecutionRunMenuFact } from '@/components/sessions/runs/details/ExecutionRunActionsMenu';
 import { DetailsTabHeader, type DetailsTabHeaderMetaFact } from '@/components/appShell/panes/details/header/DetailsTabHeader';
 import { StatusPill } from '@/components/ui/status/StatusPill';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { HEADER_BAND_SUBTITLE_TEXT } from '@/components/ui/layout/headerBand';
@@ -115,11 +116,15 @@ export const SessionExecutionRunInfoCard = React.memo((props: Readonly<{
     run: ExecutionRunPublicState;
     serverId?: string | null;
     nativeModelCatalog?: RunNativeModelCatalog;
+    /** The host Session's own Agent and model list, which names the model before the catalog arrives. */
+    sessionModels?: RunSessionModels;
     acpCatalogSnapshot?: AcpCatalogSnapshotV1;
     hostSessionId?: string | null;
     daemonProcessLine?: string | null;
     /** The title of the conversation this Run was started from, when known. */
     originTitle?: string | null;
+    /** The machine the Run works on, by name. A walkthrough conversation names it beside its model (lab WT3-D3). */
+    machineName?: string | null;
     stopAction?: Readonly<{ stopping: boolean; onStop: () => void }> | null;
     cancelResponseAction?: Readonly<{ pending: boolean; onCancel: () => void }> | null;
     /** The Run's result as text, when it has one to copy. */
@@ -135,18 +140,16 @@ export const SessionExecutionRunInfoCard = React.memo((props: Readonly<{
     attention?: SessionAgentActivityAttentionPresentation | null;
 }>) => {
     const styles = stylesheet;
+    const { theme } = useUnistyles();
     const status = readExecutionRunAgentActivityStatus(props.run.status);
     const attention = props.attention ?? null;
     const running = isExecutionRunActive(props.run);
     const statusPresentation = attention ?? resolveAgentActivityStatusPresentation(status, running);
     const agentId = resolveAgentId(props.run);
     const originLabel = resolveLaunchOriginLabel(props.run, props.hostSessionId ?? null, props.originTitle ?? null);
-    const modelId = (props.run.resolvedSelection?.modelSelection?.modelId
-        ?? props.run.resolvedSelection?.teamCredentialModel?.modelId
-        ?? props.run.resolvedSelection?.modelId
-        ?? props.run.requestedConfiguration?.modelId)?.trim() || null;
+    const modelId = readExecutionRunModelId(props.run);
     const agentLabel = resolveExecutionRunBackendLabel(props.run.backendTarget, props.acpCatalogSnapshot);
-    const nativeModelLabel = resolveRunNativeModelLabel(props.run.backendTarget, props.nativeModelCatalog, props.run.resolvedSelection);
+    const nativeModelLabel = resolveRunNativeModelLabel(props.run.backendTarget, props.nativeModelCatalog, props.run.resolvedSelection, props.sessionModels);
     const providerConnections = useProviderSettingsForServer(props.serverId ?? undefined).connections;
     const resolvedSourceLabel = useExecutionRunSourceLabel(props.run.resolvedSelection, props.serverId);
     // D9: "Inherit session · <route> · <model>" or "Chosen for this run · …" when the host recorded it.
@@ -188,14 +191,25 @@ export const SessionExecutionRunInfoCard = React.memo((props: Readonly<{
         return next;
     }, [agentAndModel, permissionLabel, props.daemonProcessLine, props.run.runClass, props.run.runId, startedAtMs, tookSeconds]);
 
+    // A walkthrough conversation is a talk with what wrote the walkthrough (lab WT3-D3): its own mark, then the
+    // model and the machine. The route, permissions and origin stay in ⋯ with the Run's other facts.
+    const walkthroughConversation = props.run.intent === 'scm_diff_summary';
+    const modelLabel = resolveRunAnsweringEngine({ backendTarget: props.run.backendTarget, selection: props.run.resolvedSelection,
+        modelId, catalogProfiles: props.nativeModelCatalog, sessionModels: props.sessionModels })?.label ?? null;
     const meta: DetailsTabHeaderMetaFact[] = [];
-    if (agentAndModel) meta.push({ key: 'agent', text: agentAndModel });
-    if (permissionLabel) meta.push({ key: 'permissions', text: permissionLabel });
-    if (originLabel) meta.push({ key: 'origin', text: originLabel });
+    if (walkthroughConversation) {
+        if (modelLabel) meta.push({ key: 'model', text: modelLabel });
+        if (props.machineName) meta.push({ key: 'machine', text: props.machineName, icon: 'desktop', shrink: true });
+    } else {
+        if (agentAndModel) meta.push({ key: 'agent', text: agentAndModel });
+        if (permissionLabel) meta.push({ key: 'permissions', text: permissionLabel });
+        if (originLabel) meta.push({ key: 'origin', text: originLabel });
+    }
     return (
         <DetailsTabHeader
             testID="session-run-header"
-            title={resolveExecutionRunTitle(props.run)}
+            title={resolveExecutionRunTitle(props.run, 'conversation')}
+            {...(walkthroughConversation ? { leading: <Icon testID="session-run-header-walkthrough-mark" name="path" size={ICON_SIZE.md} color={theme.colors.text.primary} /> } : {})}
             meta={meta}
             metaLeading={<View style={styles.live}>
                 <ExecutionRunAgentMark testID="session-run-header-mark" agentId={agentId} size={20} />

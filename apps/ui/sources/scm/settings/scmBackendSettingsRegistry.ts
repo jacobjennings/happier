@@ -63,8 +63,5 @@ export function createScmBackendSettingsRegistry(catalog: ScmContributionCatalog
             if (!backendId) return null;
             return pluginMap.get(backendId) ?? null;
         },
-        assertRegistryValid(): void {
-            void buildBuiltInPluginMap();
-        },
     };
 }

@@ -191,7 +191,10 @@ describe('native password login', () => {
 
     it('rejects malformed prelogin without disclosing password to another route', async () => {
         runtimeFetch.mockResolvedValue(json({ v: 1, kind: 'plain_password', expectedAccountId: 'leaked' }));
-        await expect(loginEmailPassword({ target, email: 'person@example.test', password })).rejects.toBeDefined();
+        // The strict prelogin schema refuses the unknown field before any password route is chosen.
+        await expect(loginEmailPassword({ target, email: 'person@example.test', password })).rejects.toMatchObject({
+            issues: expect.arrayContaining([expect.objectContaining({ code: 'unrecognized_keys', keys: ['expectedAccountId'] })]),
+        });
         expect(runtimeFetch.mock.calls).toHaveLength(1);
     });
 

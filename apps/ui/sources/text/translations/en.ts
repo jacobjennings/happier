@@ -9,6 +9,7 @@ import { composerReferenceTranslations } from './composerReferenceTranslations.s
 import { hunkReviewTranslations } from './hunkReviewTranslations.shared';
 import { capabilityKitTranslations } from './capabilityKitTranslations';
 import { workspaceTabKeyboardTranslations } from './workspaceTabTranslations.shared';
+import { sessionListSpacesKeyboardTranslations } from './sessionListSpacesKeyboardTranslations.shared';
 import { reviewKeyboardTranslations } from './reviewKeyboardTranslations.shared';
 import { paneArrangementTranslations, paneKeyboardTranslations, paneRegionLabels } from './paneKeyboardTranslations';
 import { mediaKeyboardTranslations } from './mediaKeyboardTranslations';
@@ -1413,6 +1414,7 @@ const enSettingsKeyboard = {
     codeProblemNext: 'Next problem',
     codeProblemPrevious: 'Previous problem',
     ...workspaceTabKeyboardTranslations,
+    ...sessionListSpacesKeyboardTranslations['en'],
     ...reviewKeyboardTranslations['en'],
     ...paneKeyboardTranslations['en'].commands,
     ...mediaKeyboardTranslations['en'],
@@ -1632,7 +1634,7 @@ const enApprovals = {
   fieldStatus: 'Status',
   fieldAction: 'Action',
   approve: 'Approve',
-  reject: 'Reject',
+  reject: 'Deny',
   stopWaiting: 'Stop waiting',
   waitingForYou: 'Waiting for your approval',
   review: 'Review',
@@ -1655,16 +1657,16 @@ const enApprovals = {
   linkRemoved: 'This link no longer exists',
   unsafeDetailsTitle: 'These details cannot be shown safely',
   unsafeDetailsBody:
-    'Happier could not display this request exactly as it was sent, so it cannot be approved. Reject it, or ask for it to be sent again.',
+    'Happier could not display this request exactly as it was sent, so it cannot be approved. Deny it, or ask for it to be sent again.',
   approveUnavailableHint:
     'Approval is unavailable while these details cannot be shown safely.',
   irreversibleNote: "This can't be undone.",
   dismiss: "Dismiss",
-  dismissHint: "Closes the request without approving or rejecting it.",
+  dismissHint: "Closes the request without approving or denying it.",
   confirmApproveTitle: 'Approve request?',
   confirmApproveBody: 'This will run the requested action.',
-  confirmRejectTitle: 'Reject request?',
-  confirmRejectBody: 'This will reject the request.',
+  confirmRejectTitle: 'Deny request?',
+  confirmRejectBody: 'This will deny the request.',
   proposedComments: ({ count }: { count: number }) =>
     `${count} proposed ${count === 1 ? 'comment' : 'comments'}`,
   generation: ({ generation }: { generation: string }) =>
@@ -1692,8 +1694,9 @@ const enMemoryContext = {
     alwaysRemembered: 'Always remembered:',
     searchable: 'Searchable:',
     countsUnavailable: 'Couldn’t load the counts',
-    countsNeedMachine: 'Counts come from a machine’s memory index.',
-    searchNeedMachine: 'Search runs on a machine’s memory index.',
+    countsNeedMachine: 'Choose a machine to load the counts.',
+    countsOff: 'Off. Counts show when memory is on.',
+    searchNeedMachine: 'Choose a machine to search your memory.',
     factCount: ({ count }: { count: number }) => `${count} ${count === 1 ? 'fact' : 'facts'}`,
     topicsLabel: 'Topics:',
     showAll: ({ count }: { count: number }) => `Show all ${count}`,
@@ -4645,6 +4648,8 @@ const enConnectedServices = {
     poolAccounts: ({ count }: { count: number }) => count === 1 ? '1 account' : `${count} accounts`,
     poolAccountsInUse: ({ accounts, account }: { accounts: string; account: string }) => `${accounts} · using ${account}`,
     requiredPrompt: 'Choose an account or group',
+    signInToChoose: 'Sign in to this Home to choose an account',
+    requiredAccountPrompt: 'Choose an account',
     notSet: 'Not set',
     ownSignIn: ({ agent }: { agent: string }) => `${agent}’s own sign-in`,
     legacyUnavailable: 'This server cannot show connected-account targets yet',
@@ -5077,7 +5082,7 @@ const enConnectedServices = {
     },
   },
   oauthPaste: {
-    invalidConfig: 'Invalid connected service configuration.',
+    invalidConfig: "That isn't the code or address the sign-in page shows. Copy it again and paste it here.",
     connectWebGroupTitle: 'Connect (web)',
     connectWebDescription:
       'Next step: sign in on the page that opens, copy the final browser URL, then paste it back here.',
@@ -7202,6 +7207,23 @@ const enSettingsAgents = {
     bannerDescription:
       'Showing the last known state. Machine actions are unavailable until it reconnects.',
   },
+  idleCompaction: {
+    title: 'Compact while idle',
+    description: 'Compacts long conversations before the prompt cache expires, so your next message starts fast and costs less.',
+    whenTitle: 'When to compact',
+    whenOverTokens: ({ tokens }: { tokens: string }) => `Over ${tokens} tokens`,
+    whenAnySize: 'Any size',
+    minContextTokens: 'Minimum conversation size',
+    minContextTokensDescription: 'Shorter conversations aren’t compacted.',
+    minContextTokensNone: 'No minimum',
+    tokensUnit: 'tokens',
+    cacheWindowOverrideMs: 'Cache window',
+    cacheWindowDescription: 'Automatic follows the provider. A window you pick overrides it.',
+    cacheWindowAutomatic: 'Automatic',
+    cacheWindowCustom: 'Custom',
+    cacheWindowCustomOption: 'Custom…',
+    minutesUnit: 'minutes',
+  },
   detailPage: {
     kindCodingAgent: 'Coding agent',
     usedByNewSessions: 'used by new sessions',
@@ -8275,6 +8297,8 @@ const enErrors = {
   connectionTimeout: 'Connection timed out',
   authenticationFailed: 'Authentication failed',
   permissionDenied: 'Permission denied',
+  machineAdminAccessRequired: 'Set up administrator access for this machine, then try adding the domain again.',
+  machineManagedCliUnavailable: "Install or update Happier on this machine, then try adding the domain again.",
   permissionDeniedReadOnlyMode:
     'Denied by Read Only mode (write actions are denied).',
   permissionCanceled: 'Permission canceled',
@@ -9358,6 +9382,7 @@ const enSession = {
     },
   },
   pendingActivation: {
+    held: { title: "Stopped by you", body: "Your message stays queued until you resume this session." },
     waiting_offline: {
       title: 'Message queued for this machine',
       body: 'It will be processed when this machine and its daemon are back online.',
@@ -9408,8 +9433,11 @@ const enSession = {
       provider_endpoint_unavailable: 'The provider endpoint is unavailable. Check the Gateway and its machine connection, then retry the session.',
       plugin_mcp_preparation_unavailable: 'Plugin MCP preparation is unavailable. Check the target machine, then retry the session.',
       agent_runtime_daemon_service_generation_not_current: 'The runner agent generation is no longer current. Retry the session on the target machine.',
+      plugin_disabled: "This Agent plugin is disabled. Re-enable it in Plugins to resume this Session.",
       native_agent_privileged_effect_authority_unavailable: 'Runner daemon authority is unavailable. Check the target machine, then retry the session.',
       native_agent_privileged_effect_outcome_unknown: 'Runner daemon preparation could not be confirmed. Check the session and target machine before retrying.',
+      daemon_draining: 'The target machine is temporarily pausing new work. Retry the session when it is ready.',
+      daemon_shutting_down: 'Happier is shutting down on the target machine. Restart it there, then retry the session.',
       skills_unavailable: 'Skill delivery is unavailable. Check the target machine, then retry the session.',
       team_credential_provider_selection_not_current: 'The selected Team provider is unavailable. Review the Team model selection, then retry the session.',
       teamCredential: 'The shared Team credential refused the request.',
@@ -9789,6 +9817,32 @@ const enSession = {
     askedFromHere: 'Asked from here',
     openQuestion: 'Open question',
     questionUnavailable: 'Couldn’t load the question',
+    showMore: 'Show more',
+    showLess: 'Show less',
+  },
+  askRecord: {
+    asked: 'Asked',
+    sentTo: 'Sent to',
+    groupAsked: 'This session asked',
+    groupSentTo: 'This session sent to',
+    answered: 'Answered',
+    passed: 'Passed',
+    cancelled: 'Cancelled',
+    noAnswer: 'No answer',
+    noAnswerYet: 'No answer yet',
+    sent: 'Sent',
+    waitsForYou: 'Waits for you',
+    notSent: 'Not sent',
+    notAnswered: 'Couldn’t answer',
+    unsure: 'Not sure it was sent',
+    unavailable: 'Couldn’t check',
+    selectorFallback: 'Sessions',
+    retryHint: 'Send again from the composer to retry only the ones that didn’t go through.',
+    summaryAnswered: ({ count }: { count: number }) => `${count} answered`,
+    summaryPassed: ({ count }: { count: number }) => `${count} passed`,
+    summaryFailed: ({ count }: { count: number }) => `${count} not delivered`,
+    summarySent: ({ count }: { count: number }) => `${count} sent`,
+    summaryWaiting: ({ count }: { count: number }) => `${count} waiting`,
   },
   subagents: {
     messages: {
@@ -9963,6 +10017,7 @@ const enSession = {
       blocked: 'Blocked',
       delivering: 'Delivering',
       queuedInClaude: 'Queued in Claude',
+      nextTurn: 'Waiting for the next turn',
     },
     queuedReasons: {
       waitingForForegroundTurn: 'Waiting for the current turn',
@@ -10425,6 +10480,7 @@ const enVoiceAssistant = {
 const enVoiceSurface = {
   reviewCredentials: 'Review credentials',
   connectAgent: 'Connect',
+  setUpAgent: ({ agent }: { agent: string }) => `Set up ${agent}`,
   installAgentRuntime: 'Install',
   updateAgentRuntime: 'Update',
   reconnect: 'Reconnect',
@@ -10443,6 +10499,7 @@ const enVoiceSurface = {
   orbExpand: 'Expand Voice',
   orbCollapse: 'Collapse Voice',
   delegatedWorking: 'Working…',
+  earlierTurnsLeftOut: "Earlier parts of this conversation were left out to fit the model’s memory.",
   composerStartHint: 'Starts a spoken conversation about this session.',
   composerGlobalStartHint:
     'Starts a spoken conversation that is not attached to any session.',
@@ -11070,6 +11127,9 @@ const enSessionInfo = {
   thinking: 'Thinking',
   thinkingSince: 'Thinking since',
   thinkingLevel: 'Thinking level',
+  peerReportFrom: ({ name }: { name: string }) => `Report from ${name}`,
+  peerMessageFrom: ({ name }: { name: string }) => `Message from ${name}`,
+  peerUnnamedSender: 'another agent',
   cliVersion: 'CLI version',
   cliVersionOutdated: 'CLI update required',
   cliVersionOutdatedMessage: ({
@@ -11084,6 +11144,8 @@ const enSessionInfo = {
   deleteSession: 'Delete session',
   deleteSessionSubtitle: 'Permanently remove this session',
   deleteSessionConfirm: 'Delete Session Permanently?',
+  stopAndDeleteSession: 'Stop and delete',
+  stopAndDeleteSessionWarning: 'This will stop the session and permanently delete all its messages and data. This action cannot be undone.',
   deleteSessionWarning:
     'This action cannot be undone. All messages and data associated with this session will be permanently deleted.',
   failedToDeleteSession: 'Failed to delete session',
@@ -11189,6 +11251,18 @@ const enAgentInput = {
     people: 'People',
   },
   suggestionTypeMoreToNarrow: 'Type more to narrow',
+  commands: {
+    compact: 'Compact the conversation',
+    clear: 'Clear the conversation',
+    help: 'Show available commands',
+    reset: 'Reset the session',
+    export: 'Export the conversation',
+    debug: 'Show debug information',
+    status: 'Show connection status',
+    stop: 'Stop the current operation',
+    abort: 'Abort the current operation',
+    cancel: 'Cancel the current operation',
+  },
   stopCodingTurn: 'Stop coding turn',
   nonSteerableSend: {
     title: 'Agent is busy',
@@ -12635,6 +12709,10 @@ const enLocalServices = {
     emptyTitle: 'No local services detected',
     errorTitle: 'Local service scan needs attention',
     scanCause: {
+      /** The daemon cannot watch this Project root: the root and its cause, short enough for a phone's two lines. */
+      rootDenied: ({ path }: { path: string }) => `No permission to read ${path}`,
+      rootMissing: ({ path }: { path: string }) => `Can't find ${path}`,
+      rootUnreadable: ({ path }: { path: string }) => `Couldn't read ${path}`,
       workspacesUnavailable: 'Couldn\'t read which projects are open on this machine, so some services may be missing.',
       partial: 'The scan ran out of time on this machine, so some running services may be missing.',
       failed: 'This machine couldn\'t list its running processes, so running services can\'t be found.',
@@ -12714,6 +12792,9 @@ const enLocalServices = {
     waitingAddress: 'Started. Waiting for an address.',
     noAddress: 'No address',
     failed: 'Service could not start.',
+    reviewOutput: 'Review output',
+    address: 'Address',
+    addressOpensHere: 'Opens on this phone through Local services',
   },
   session: {
     thisSessionTitle: 'This session',
@@ -12888,12 +12969,37 @@ const enLocalServices = {
     runScriptA11y: 'Run script in a new terminal tab',
     failure: {
       title: 'Action did not complete',
-      refused:
-        'The machine refused this action. Check this machine’s local-service permissions and try again.',
+      refused: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}): string => servicesActionOffered
+        ? "The machine refused this action."
+        : 'The machine refused this action. Check this machine’s local-service permissions and try again.',
       unavailable:
         'This action is not available for this service on this machine.',
-      incomplete: 'The action did not finish. You can try it again.',
-      outcomeUnknown: 'The action outcome is unknown. Check this service on the selected machine before trying again.',
+      incomplete: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}): string => servicesActionOffered
+        ? "The action did not finish."
+        : 'The action did not finish. You can try it again.',
+      serviceNotRunning: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}): string => servicesActionOffered
+        ? "This service isn’t running anymore."
+        : 'This service isn’t running anymore; check Services.',
+      namedServiceNotRunning: ({ service, servicesActionOffered = false }: { service: string; servicesActionOffered?: boolean }): string => servicesActionOffered
+        ? `${service} isn’t running anymore.`
+        : `${service} isn’t running anymore; check Services.`,
+      previewNotReady: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}): string => servicesActionOffered
+        ? "This service isn’t ready to open."
+        : 'This service isn’t ready to open; check Services.',
+      browserViewUnavailable: "Happier couldn’t open its in-app browser view. Try again in a moment.",
+      startFailedTitle: "Service couldn’t start",
+      startFailed: "The service stopped before it was ready.",
+      namedStartFailed: ({ service }: { service: string }): string => `${service} stopped before it was ready.`,
+      previewFailed: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}): string => servicesActionOffered
+        ? "The preview could not be opened."
+        : 'The preview could not be opened; check Services and try again.',
+      previewUnavailable: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}): string => servicesActionOffered
+        ? "Preview access is unavailable."
+        : 'Preview access is unavailable; check Services.',
+      namedReason: ({ service, reason }: { service: string; reason: string }) => `${service}: ${reason}`,
+      outcomeUnknown: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}): string => servicesActionOffered
+        ? "The action outcome is unknown."
+        : 'The action outcome is unknown. Check this service on the selected machine before trying again.',
       portInUse: ({ port }: { port: number }) => `Port ${port} is already in use. Stop the existing service or choose another port.`,
       portInUseSameProject: ({ port }: { port: number }) => `Port ${port} is already in use by this project. Use the running service or choose another port.`,
       processExit: ({ code }: { code: string }) => `The service exited with code ${code}. Check Details before trying again.`,
@@ -13129,14 +13235,21 @@ const enBrowserShell = {
     previewElsewhere: `This device can’t open it directly. Share a link from Services to open it here.`,
     previewEndedTitle: `This preview has ended`,
     previewEnded: `Its service stopped sharing it, or the link was revoked. Open it again from Services.`,
-    previewEndedLastPage: ({ page }: { page: string }) => `The last page was ${page}. Its service stopped sharing it, or the link was revoked. Open it again from Services.`,
+    previewEndedLastPageDetail: ({ page }: { page: string }) => `Last page: ${page}`,
+    previewEndedStopped: `Its service stopped sharing it, or the link was revoked.`,
+    previewEndedServiceStopped: ({ service }: { service: string }) => `${service} stopped.`,
     previewEndedRunning: `Its service is running, so you can open it again here.`,
-    previewEndedRunningLastPage: ({ page }: { page: string }) => `The last page was ${page}. Its service is running, so you can open it again here.`,
+    previewEndedNamed: ({ service }: { service: string }) => `${service} stopped sharing it, or the link was revoked. Open it again from Services.`,
+    previewEndedStoppedNamed: ({ service }: { service: string }) => `${service} stopped sharing it, or the link was revoked.`,
+    previewEndedRunningNamed: ({ service }: { service: string }) => `${service} is running, so you can open it again here.`,
     openAgain: `Open again`,
     openServices: `Go to Services`,
     previewTransportUnavailableTitle: `Can’t reach this preview`,
-    previewTransportUnavailable: `The machine running it isn’t answering right now. Reload to try again.`,
+    previewTransportUnavailable: `The machine running it isn’t answering right now.`,
     closeTab: `Close tab`,
+    previewTransportUnavailableNamed: ({ machine }: { machine: string }) => `${machine} isn’t answering for this preview right now.`,
+    startAgain: `Start again`,
+    startService: ({ service }: { service: string }) => `Start ${service}`,
     desktopEngineUnavailable:
       'The in-app browser engine is unavailable on this machine.',
     desktopWebView:
@@ -15159,6 +15272,9 @@ const enSettingsVoice = {
     retry: 'Try again',
     roleYou: 'You',
     roleAssistant: 'Assistant',
+    recoveryDescription: 'Some of what you said couldn’t be confirmed as delivered. Nothing is resent or discarded until you decide.',
+    recoveryTitle: 'Review held messages',
+    recoveryOpenFailed: 'Couldn’t open the Voice conversation. Try again.',
   },
   dictation: {
     title: 'Dictation',
@@ -16580,6 +16696,7 @@ const enSettingsVoice = {
       tts_failed: 'Speech synthesis failed.',
       turn_aborted: 'Voice turn canceled.',
       authentication_required: 'Connect the selected agent to use Voice.',
+      agent_signed_out: ({ agent, machine }: { agent: string; machine: string }) => `${agent} has no default connected account, and it isn’t signed in on ${machine}.`,
       session_unavailable:
         'The selected session is no longer available for Voice.',
       unsupported_runtime: 'Install the selected agent runtime to use Voice.',
@@ -16589,6 +16706,7 @@ const enSettingsVoice = {
       mic_unavailable: 'No microphone found. Connect one and try again.',
       speech_recognition_unavailable: 'Speech recognition isn’t available here. Choose another speech engine.',
       previous_session_stop_failed: 'Couldn’t stop the previous voice session.',
+      agent_selection_unavailable: 'The selected agent is unavailable. Choose an agent in Voice settings.',
     },
   },
   languageTitle: 'Language',
@@ -17201,7 +17319,7 @@ const enReleaseNotes = {
           'Any Claude, Codex, or OpenCode session running on your machine, open it in Happier, live.',
         voiceTitle: 'A voice assistant to brainstorm with',
         voiceBody:
-          'Ask what your agents are doing and send messages by voice. Approve permission requests with a tap.',
+          "Ask about your sessions and send messages by voice. Let the Voice agent approve requests for you, or turn that off in Voice settings.",
         reviewTitle: 'Review diffs and leave comments',
         reviewBody:
           'Mark specific lines in files or diffs, pick which notes to send, and hand them straight to an agent.',
@@ -17446,7 +17564,7 @@ const enReleaseNotes = {
       },
       voice: {
         wideTitle: 'A colleague\nyou can talk to.',
-        body: 'Ask what is running, brainstorm the next change, or send a message by voice. Approve requests with a tap in the same sessions.',
+        body: "Ask about your sessions and send messages by voice. Let the Voice agent approve requests for you, or turn that off in Voice settings.",
       },
       machines: {
         wideTitle: 'On every computer\nyou own.',
@@ -17535,6 +17653,7 @@ const enTerminal = {
 };
 
 const enTerminalEmbedded = {
+  inputRecovery: "Input delivery is uncertain. Copy your input and check the terminal before continuing.",
   nativeAccessibility: {
     terminalLabel: 'Terminal',
     fallbackValue:
@@ -18579,6 +18698,12 @@ const enMessage = {
   runtimeConfigOutcomeRequiresInteractiveControl: 'Needs terminal interaction',
   runtimeConfigOutcomeUnsupported: 'Not supported',
   runtimeConfigOutcomeFailed: 'Could not apply',
+  contextCompactionIdleStarted: 'Compacting while idle…',
+  contextCompactionIdleCompleted: 'Compacted while idle',
+  contextCompactionIdleDetail: 'Before the prompt cache expired',
+  contextCompactionIdleDetailCounts: ({ before, after }: { before: string; after: string }) => `${before} → ${after} tokens · before the prompt cache expired`,
+  contextCompactionIdleFailed: 'Couldn’t compact while idle',
+  contextCompactionIdleFailedDetail: 'The conversation stays at full size.',
   contextCompactionStarted: 'Compacting context...',
   contextCompactionCompleted: 'Context compacted',
   contextCompactionFailed: 'Context compaction failed',
@@ -20707,6 +20832,8 @@ const enProjects = {
       targetMismatchHint: "Choose the machine again. If this continues, reconnect it to this Home and retry. Your choices are kept.",
       invalidFolder: "Choose a folder inside this checkout.",
       unsupported: "This machine cannot prepare this project.",
+      cloneUnsupported: "This machine cannot clone repositories.",
+      hostingProviderUnavailable: "This Source’s hosting provider is unavailable on this machine.",
       setupFailed: ({ project }: { project: string }) => `${project} opened, but setup failed.`,
       filesKept: "The checkout is kept. Fix setup or open Scripts to try again.",
       openScripts: "Open Scripts",
@@ -20766,6 +20893,18 @@ const enProjects = {
     agentWaitedFor: ({ name }: { name: string }) => `Waited for ${name}`,
     agentAccepted: "Accepted",
     agentOn: ({ machine }: { machine: string }) => `on ${machine}`,
+    environment: {
+      host: "Host environment",
+      empty: "No native environment detected",
+      checking: "Checking available tools…",
+      pending: "Waiting for approval to evaluate this environment",
+      preparing: ({ tool, machine }: { tool: string; machine: string }) => `Preparing ${tool} on ${machine}…`,
+      unavailable: ({ tool }: { tool: string }) => `${tool} is unavailable on this Machine`,
+      failed: "Native environment preparation failed. View output.",
+      changed: "Environment inputs changed. Review again.",
+      unevaluated: "Nix definitions are read once this environment is evaluated.",
+      noFallback: "Nothing was run in the host environment",
+    },
     definition: {
       inspecting: "Finding project commands…",
       partial: "Some definitions could not be read",
@@ -20779,6 +20918,7 @@ const enProjects = {
     },
     run: {
       notRun: "Not run in this checkout yet",
+      waitsForSetup: "Waits for setup",
       accepted: "Accepted. Waiting to start.",
       running: ({ machine }: { machine: string }) => `Running on ${machine}`,
       completed: ({ time }: { time: string }) => `Completed ${time}`,
@@ -20809,6 +20949,7 @@ const enProjects = {
       values: "Values",
       valuesNote: "Names only; values are filled at run time.",
       stepsUnavailable: "The setup steps couldn’t be read.",
+      review: "Review setup",
       from: "From",
       viewFile: "View file",
       sharedScope: ({ osUser, machine }: { osUser: string; machine: string }) => `Runs as ${osUser} on ${machine}. Your approval for this project applies until setup changes.`,
@@ -20818,6 +20959,10 @@ const enProjects = {
       consequenceThisTime: "Runs setup now. Next time, Happier asks again.",
       consequenceSkip: "Skips setup for this invocation. It will not be marked ready.",
       consequenceUntilChanged: "Covers this project on any machine, including a teammate’s shared machine, until a command, the tools or the project file change. Teammates approve for themselves.",
+      agentAsksRememberedTitle: "Run setup and remember it for this project?",
+      agentAsksRemembered: "An agent asked you to remember this setup",
+      agentAsksRememberedBody: "Approving runs setup now and skips this review for you in this project, on any of your machines, until a command, the tools or the project file change.",
+      agentAsksRememberedRow: "Asks to remember this setup",
       readySince: ({ time }: { time: string }) => `Ready for these inputs since ${time}`,
       notRunYet: "Setup hasn’t run for this version yet",
       needsReview: "Setup changed. Review it in Scripts",
@@ -20856,10 +21001,10 @@ const enProjects = {
       environment: "Environment",
       environmentBody: "Every agent, terminal, script and service for this project starts inside it. Found by reading files; nothing is evaluated until setup is approved.",
       toolsFrom: "Tools from",
-      hostTools: "This machine’s tools",
       toolAvailable: ({ machine }: { machine: string }) => `Available on ${machine}`,
       toolUnavailable: ({ machine }: { machine: string }) => `Not installed on ${machine}`,
       toolUnresolved: ({ machine }: { machine: string }) => `Not confirmed on ${machine}`,
+      toolsCount: ({ available, total, machine }: { available: number; total: number; machine: string }) => `${available} of ${total} available on ${machine}`,
       toolRequested: ({ version, file }: { version: string; file: string }) => `Requests ${version} in ${file}`,
       alsoFound: ({ names }: { names: string }) => `also found ${names}`,
       setup: "Setup",
@@ -20903,6 +21048,7 @@ const enProjects = {
       title: "Output",
       ranOn: "Runs on",
       openInTerminal: "Open in terminal",
+      earlierNotKept: "Earlier output is no longer retained",
       purpose: {
         setup: "Setup",
         teardown: "Teardown",
@@ -21037,6 +21183,7 @@ const enProjects = {
     rowsLoadingTitle: "Loading your projects",
     rowsUnavailableTitle: "Your projects didn’t load.",
     rowsUnavailableBody: "Nothing was removed. Try again in a moment.",
+    rowsStaleReason: "Couldn’t refresh your projects.",
     openInvalidTitle: "This link doesn’t point to one checkout.",
     openInvalidBody: "Open the project from Projects instead.",
     backToProjects: "Back to Projects",
@@ -21530,6 +21677,10 @@ const enSettingsPlugins = {
     action: string;
     outcome: string;
   }) => `${action} failed (${outcome}).`,
+  marketplaceInstallRefused: ({ reason }: { reason: string }) =>
+    `The plugin was not installed.\n\n${reason}`,
+  marketplaceChangeRefused: ({ action, reason }: { action: string; reason: string }) =>
+    `${action} failed.\n\n${reason}`,
   pluginChangeConfirmBody: ({
     action,
     name,
@@ -22030,7 +22181,7 @@ const enPluginRuntime = {
   transportUnavailable: "Happier could not reach the source for this plugin view. Check the connection and try again.",
   sourceUnavailable: "The selected plugin view’s files are unavailable. Try loading it again.",
   viewNotCurrent: "This plugin’s selected view is no longer current. Reopen the page, update the plugin on its machine, or choose another machine.",
-  unavailableGeneric: 'It may still be starting. Try again in a moment.',
+  unavailableGeneric: 'It may still be starting.',
   crashLoop: 'The plugin was stopped after repeated crashes.',
   disabledByPolicy:
     'This plugin view is disabled by current settings or compatibility.',
@@ -22488,6 +22639,7 @@ export const en: TranslationStructure = {
     policyScope: "Prompt Library edits by agents, in every session",
     changedBy: (params: { name: string }) => `Changed by ${params.name}`,
     approvedBy: (params: { name: string }) => `Approved by ${params.name}`,
+    approvedByVoice: (params: { name: string }) => `Approved by the Voice agent for ${params.name}`,
     detachHelp: 'The document stays in Prompt Library.',
     chooseDocument: 'Choose document',
     openInLibrary: 'Open in Prompt Library',
@@ -22756,6 +22908,7 @@ type EnglishNamespaces0 = {
     readonly policyScope: string;
     readonly changedBy: (params: { name: string }) => string;
     readonly approvedBy: (params: { name: string }) => string;
+    readonly approvedByVoice: (params: { name: string }) => string;
     readonly detachHelp: string;
     readonly chooseDocument: string;
     readonly openInLibrary: string;

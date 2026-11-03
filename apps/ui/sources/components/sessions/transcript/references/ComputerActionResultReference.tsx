@@ -95,6 +95,8 @@ const VERB_ICON = {
     click: 'hand',
     type: 'text-aa',
     press: 'text-aa',
+    drag: 'hand',
+    wheel: 'hand',
 } as const satisfies Record<TranscriptComputerVerb, IconName>;
 
 function describeComputerAction(reference: Extract<TranscriptComputerActionReference, { kind: 'action' }>): string {
@@ -102,6 +104,8 @@ function describeComputerAction(reference: Extract<TranscriptComputerActionRefer
     switch (reference.verb) {
         case 'capture': return t(running ? 'computerUse.tool.captureRunning' : 'computerUse.tool.capture');
         case 'query': return t(running ? 'computerUse.tool.queryRunning' : 'computerUse.tool.query');
+        case 'drag': return t(running ? 'browserPresence.doing.drag' : 'computerUse.tool.drag');
+        case 'wheel': return t(running ? 'browserPresence.doing.scroll' : 'computerUse.tool.wheel');
         case 'click': return !running && reference.targetLabel
             ? t('computerUse.tool.clickTarget', { target: reference.targetLabel })
             : t(running ? 'computerUse.tool.clickRunning' : 'computerUse.tool.click');
@@ -118,7 +122,8 @@ function describeComputerAction(reference: Extract<TranscriptComputerActionRefer
 function ComputerWatchButton(props: Readonly<{ sessionId: string; serverId: string | null; machineId: string; testID: string }>): React.ReactElement | null {
     const open = useOpenSessionComputerScreen({ sessionId: props.sessionId, serverId: props.serverId, machineId: props.machineId });
     if (!open) return null;
-    return <RoundButton size="small" display="secondary" title={t('computerUse.request.watch')} onPress={open} testID={props.testID} />;
+    return <RoundButton size="small" display="secondary" title={t('computerUse.request.watch')}
+        onPress={open.open} disabled={Boolean(open.disabledReason)} accessibilityHint={open.disabledReason ?? undefined} testID={props.testID} />;
 }
 
 /** What the agent did on the shared window: the act in words, its screenshot, and Watch. */

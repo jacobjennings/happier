@@ -1,3 +1,6 @@
+import { readManagedServiceResponseJson, readManagedServiceResponseText } from '@/plugins/testkit/managedServiceResponse';
+import { createNativeComposeLifecycle } from '@/daemon/local/services/launch/nativeComposeLifecycle';
+import { projectNativeComposeReview } from '@/workspaces/projectSetup/nativeComposeReview';
 import { Buffer } from 'node:buffer';
 import { EventEmitter } from 'node:events';
 import { createServer, type ServerResponse } from 'node:http';
@@ -38,7 +41,7 @@ import type {
     ManagedProviderRequestAuthCapabilityPathBinding,
     ManagedServiceCredentialFileOwner,
 } from './managedServicesAdapter';
-import { createManagedServicesOwner, type ProjectManagedServiceSupervisionInput } from './managedServicesOwner';
+import { createManagedServicesOwner, type WorkspaceProjectManagedServiceSupervisionInput } from './managedServicesOwner';
 import { createProductionPluginInvocationServiceOwners } from './production';
 import { createLocalServiceActionRoutes } from '@/daemon/local/services/actions/routes';
 import { createLocalServicesDaemonRuntimeActionExecutor } from '@/daemon/local/services/actions/runtimeActionExecutor';
@@ -91,6 +94,8 @@ import { resolveProcessOwnerRequester } from '@/daemon/processes/ownership/resol
 import { projectMachineProcesses } from '@/daemon/processes/view/projectMachineProcesses';
 import { MachineProcessesAnswerV1Schema } from '@happier-dev/protocol/machines/processes/machineProcessesV1';
 import type { ProcessCensusSnapshot } from '@/processes/census/processCensus';
+import { createProjectNativeToolchainIoForHost } from './exec';
+
 
 type CredentialFileMaterializeInput = Parameters<
     ManagedServiceCredentialFileOwner['materialize']
@@ -177,7 +182,7 @@ describe('managed service requester process projection', () => {
             await service.waitUntilHealthy();
             const response = await service.request({ pathAndQuery: '/verdict' });
             expect(response.status).toBe(200);
-            expect(await new Response(response.body).json()).toEqual({
+            expect(await readManagedServiceResponseJson(response)).toEqual({
                 cwd: await realpath(directory), selection: identity === 'foreign' ? 'foreign-selected' : 'invocation-selected',
             });
         } finally {
@@ -243,7 +248,7 @@ describe('shared managed Provider physical Exec custody', () => {
             return { command: process.execPath };
         };
         const service = createStablePluginExecService({
-            allowedExecutables: [executable], signal: firstInvocation.signal,
+            signal: firstInvocation.signal,
             isOccurrenceCurrent: () => true, resolveExecutable: resolver,
             resolveManagedExecutable: resolver,
             resolvePath: async () => directory,
@@ -276,7 +281,7 @@ describe('shared managed Provider physical Exec custody', () => {
             await handle.waitUntilHealthy();
             const response = await handle.request({ pathAndQuery: '/pid' });
             expect(response.status).toBe(200);
-            const observed = Number(await new Response(response.body).text());
+            const observed = Number(await readManagedServiceResponseText(response));
             expect(Number.isInteger(observed) && observed > 0).toBe(true);
             return observed;
         };
@@ -306,7 +311,7 @@ describe('shared managed Provider physical Exec custody', () => {
             await first?.dispose();
             const response = await second.request({ pathAndQuery: '/v1/models' });
             expect(response.status).toBe(200);
-            expect(await new Response(response.body).text()).toBe('/v1/models');
+            expect(await readManagedServiceResponseText(response)).toBe('/v1/models');
             await second.dispose();
             expect(await waitForProcessExit(pid)).toBe(true);
             completed = true;
@@ -606,7 +611,7 @@ function createManagedProviderBinding(
 function createProjectLifecycleInput(options: Readonly<{
     isCurrent?: () => boolean;
     signal?: AbortSignal;
-}> = {}): ProjectManagedServiceSupervisionInput {
+}> = {}): WorkspaceProjectManagedServiceSupervisionInput {
     const isCurrent = options.isCurrent ?? (() => true);
     const workspace = {
         id: 'workspace-one', serverId: 'server-one', machineId: 'machine-one',
@@ -621,6 +626,7 @@ function createProjectLifecycleInput(options: Readonly<{
         machineId: workspace.machineId, installationId: 'installation-one',
     };
     return {
+        kind: 'workspace',
         workspace, declaration, requester, cwd: workspace.rootPath,
         serviceId: 'project:workspace-one:manifest:worker',
         specIdentity: 'reviewed-worker-effect',
@@ -646,7 +652,7 @@ function createProjectLifecycleInput(options: Readonly<{
                     environment: {
                         selection: { kind: 'host' }, root: workspace.rootPath,
                         platform: process.platform,
-                        io: createProjectNativeEnvironmentIoForHost({ resolveTool: async () => null }),
+                        io: createProjectNativeToolchainIoForHost({ resolveTool: async () => null }),
                     },
                 },
                 launch: {
@@ -743,9 +749,9 @@ describe('managed-services SVC09 owner', () => {
             await service.waitUntilHealthy();
             const response = await service.request({ pathAndQuery: '/v1/models' });
             expect(response.status).toBe(200);
-            expect(await new Response(response.body).text()).toBe('/v1/models');
+            expect(await readManagedServiceResponseText(response)).toBe('/v1/models');
             const processResponse = await service.request({ pathAndQuery: '/pid' });
-            const pid = Number(await new Response(processResponse.body).text());
+            const pid = Number(await readManagedServiceResponseText(processResponse));
             await service.dispose();
             if (!Number.isInteger(pid) || pid <= 0) throw new Error('Expected a physical Provider process');
             expect(await waitForProcessExit(pid)).toBe(true);
@@ -986,7 +992,8 @@ describe('managed-services SVC09 owner', () => {
             if (result.status === 'rejected') throw result.reason;
             expect(harness.exec.spawn).toHaveBeenCalledTimes(2);
             await joined.request({ pathAndQuery: '/v1/responses', method: 'POST', body: Buffer.from('fresh second input') });
-            expect(result.value.instanceId).toBe(joined.instanceId);
+            // Consumer handles expose no instance id; both read the one replacement physical service.
+            expect(result.value.snapshot()).toEqual(joined.snapshot());
             await result.value.request({ pathAndQuery: '/v1/responses', method: 'POST', body: Buffer.from('fresh first input') });
             await result.value.dispose();
             expect(replacement.dispose).not.toHaveBeenCalled();
@@ -1111,7 +1118,7 @@ describe('managed-services SVC09 owner', () => {
         let admitted = true;
         const input = createProjectLifecycleInput({ isCurrent: () => admitted });
         const executable = { kind: 'systemTool', id: 'fixture.native-helper' } as const;
-        const helper = await createStablePluginExecService({ allowedExecutables: [executable], signal: new AbortController().signal,
+        const helper = await createStablePluginExecService({ signal: new AbortController().signal,
             isOccurrenceCurrent: () => true, resolveExecutable: async () => ({ command: process.execPath }),
             resolvePath: async () => input.cwd }).spawn({ executable, args: ['-e', 'setInterval(()=>{},1000)'] });
         const pid = readSupervisedPluginProcessIdForHost(helper);
@@ -1128,7 +1135,7 @@ describe('managed-services SVC09 owner', () => {
             const launch = await authorizeResolvedProjectExecLaunchForHost({ signal, assertCurrent() {},
                 projectLaunch: { status: 'ready', reviewedEffectDigest: input.specIdentity,
                     environment: { selection: { kind: 'host' }, root: input.cwd, platform: process.platform,
-                        io: createProjectNativeEnvironmentIoForHost({ resolveTool: async () => null }) } },
+                        io: createProjectNativeToolchainIoForHost({ resolveTool: async () => null }) } },
                 launch: { command: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'], cwd: input.cwd, env: {} } });
             // Current requester access changes after the real final authorizer
             // returned, before the owner can hand that tuple to its supervisor.
@@ -1188,7 +1195,7 @@ describe('managed-services SVC09 owner', () => {
         const input = createProjectLifecycleInput();
         const inspected = deferred<void>();
         let stopped = false;
-        const edges: unknown[] = [];
+        const edges: ReturnType<typeof owner.activity.read>[] = [];
         const unsubscribe = owner.activity.subscribe(() => edges.push(owner.activity.read()));
         const establishment = owner.superviseProject({ ...input, processSpec: { ...input.processSpec,
             mode: { kind: 'native', instance: { adapter: { pluginId: 'native', localId: 'worker' },
@@ -1198,18 +1205,18 @@ describe('managed-services SVC09 owner', () => {
             } },
         } });
         try {
-            expect(owner.activity.read()).toMatchObject({ coverage: 'complete', items: [
+            expect(await owner.activity.read()).toMatchObject({ coverage: 'complete', items: [
                 { category: 'service', attribution: input.requester, state: 'active' },
             ] });
             inspected.resolve();
             const handle = await establishment;
             expect(handle.snapshot().baseUrl).toBeNull();
-            expect(owner.activity.read()).toMatchObject({ coverage: 'complete', items: [
+            expect(await owner.activity.read()).toMatchObject({ coverage: 'complete', items: [
                 { category: 'service', ownerRef: handle.instanceId, state: 'active' },
             ] });
             await handle.stop();
-            expect(owner.activity.read()).toEqual({ coverage: 'complete', items: [] });
-            expect(edges).toContainEqual({ coverage: 'complete', items: [] });
+            expect(await owner.activity.read()).toEqual({ coverage: 'complete', items: [] });
+            expect(await Promise.all(edges)).toContainEqual({ coverage: 'complete', items: [] });
         } finally {
             inspected.resolve();
             unsubscribe();
@@ -1334,8 +1341,7 @@ describe('managed-services SVC09 owner', () => {
             nativeResourceId: 'exact-project-resource',
         };
         // Native resource inspection and termination are genuine external IO.
-        const handle = await owner.superviseProject({
-            ...input,
+        const handle = await owner.superviseProject({ ...input,
             processSpec: {
                 ...input.processSpec,
                 mode: {
@@ -1426,8 +1432,7 @@ describe('managed-services SVC09 owner', () => {
         const inspection = deferred<void>();
         let inspecting = false;
         let stoppable = initiallyStoppable;
-        const establishment = owner.superviseProject({
-            ...input,
+        const establishment = owner.superviseProject({ ...input,
             processSpec: {
                 ...input.processSpec,
                 mode: {
@@ -1486,8 +1491,7 @@ describe('managed-services SVC09 owner', () => {
         const input = createProjectLifecycleInput();
         const toolResolution = deferred<void>();
         let resolving = false;
-        const establishment = owner.superviseProject({
-            ...input,
+        const establishment = owner.superviseProject({ ...input,
             authorizeLaunch: ({ signal }) => authorizeResolvedProjectExecLaunchForHost({
                 signal,
                 assertCurrent() {},
@@ -1497,7 +1501,7 @@ describe('managed-services SVC09 owner', () => {
                         selection: { kind: 'toolchain', tool: 'mise', configPath: 'mise.toml' },
                         root: input.cwd,
                         platform: 'linux',
-                        io: createProjectNativeEnvironmentIoForHost({
+                        io: createProjectNativeToolchainIoForHost({
                             // Suspend only installed-tool resolution, a genuine OS boundary.
                             resolveTool: async () => {
                                 resolving = true;
@@ -3227,7 +3231,7 @@ describe('managed-services SVC09 owner', () => {
         expect(JSON.stringify(handle.snapshot())).not.toContain(downstreamBearer!);
     });
 
-    it('projects exact endpoint-bounded authenticated fetch without disclosing its host bearer', async () => {
+    it('projects repeatable authenticated endpoint access without restricting trusted requests to declared paths', async () => {
         const hostFetch = vi.fn<typeof globalThis.fetch>(async (
             _input: string | URL | Request,
             _init?: RequestInit,
@@ -3295,14 +3299,20 @@ describe('managed-services SVC09 owner', () => {
         expect(JSON.stringify(projection.access)).not.toContain(
             privateAuthorization!,
         );
-        await expect(projection.access.request({
+        const undeclaredPath = await projection.access.request({
             pathAndQuery: '/admin',
             method: 'GET',
             timeoutMs: 5_000,
-        })).rejects.toMatchObject({
-            code: 'plugin_managed_service_unavailable',
         });
-        expect(hostFetch).toHaveBeenCalledTimes(1);
+        expect(undeclaredPath.status).toBe(200);
+        const repeated = await harness.owner.projectManagedProviderEndpointAccess!({
+            service: handle,
+            endpoints: [{ endpointTemplateId: 'responses', servicePath: '/v1' }],
+            signal: new AbortController().signal,
+            isCurrent: () => true,
+        });
+        expect(repeated?.access.endpointUrl('responses')).toBe('http://127.0.0.1:4312/v1');
+        expect(hostFetch).toHaveBeenCalledTimes(2);
 
         harness.moveHealthyEndpoint('http://127.0.0.1:4312', 4312, 2);
         expect(projection.access.endpointUrl('responses')).toBeNull();
@@ -3313,7 +3323,7 @@ describe('managed-services SVC09 owner', () => {
         })).rejects.toMatchObject({
             code: 'plugin_managed_service_unavailable',
         });
-        expect(hostFetch).toHaveBeenCalledTimes(1);
+        expect(hostFetch).toHaveBeenCalledTimes(2);
 
         await projection.cleanup();
         expect(projection.isCurrent()).toBe(false);
@@ -6341,6 +6351,33 @@ describe('managed-services SVC09 owner', () => {
         }
     });
 
+    it('attaches editor inference only to a running explicit Provider claim without establishing or reviving it', async () => {
+        const harness = createLifecycleHarness([], 'daemon');
+        let current = true;
+        const establish = vi.fn(async () => explicitStartOutcome());
+        const operation = {
+            operationId: 'existing-editor-source', pluginId: 'acme.providers',
+            contributionQualifiedId: 'acme.providers/providers/gateway', occurrenceId: 'provider-p',
+            purposeBindingsEqualityKey: 'binding-key-one', isCurrent: () => current,
+            revalidateRetainedCurrentness: async () => current, establish,
+        };
+        try {
+            expect(await harness.owner.runManagedProviderExplicitStart({ ...operation, existingOnly: true })).toEqual({ status: 'unavailable' });
+            expect(establish).not.toHaveBeenCalled();
+            expect(await harness.owner.runManagedProviderExplicitStart(operation)).toMatchObject({ status: 'established' });
+            const borrowed = await harness.owner.runManagedProviderExplicitStart({ ...operation, existingOnly: true });
+            expect(borrowed).toMatchObject({ status: 'established' });
+            expect(establish).toHaveBeenCalledOnce();
+            current = false;
+            if (borrowed.status === 'established') expect(borrowed.value.projection.isCurrent()).toBe(false);
+            expect(await harness.owner.runManagedProviderExplicitStart({ ...operation, existingOnly: true })).toEqual({ status: 'not_current' });
+            current = true;
+            await harness.owner.retireManagedProviderExplicitStart(operation);
+            expect(await harness.owner.runManagedProviderExplicitStart({ ...operation, existingOnly: true })).toEqual({ status: 'unavailable' });
+            expect(establish).toHaveBeenCalledOnce();
+        } finally { await harness.owner.dispose(); }
+    });
+
     it('joins pending and settled exact explicit Provider starts before launch authority', async () => {
         const harness = createLifecycleHarness([], 'daemon');
         const launchGate = deferred<void>();
@@ -6567,6 +6604,53 @@ describe('managed-services SVC09 owner', () => {
 
         await expect(harness.owner.dispose()).resolves.toBeUndefined();
         expect(cleanupByOperation.get('public-start')).toHaveBeenCalledOnce();
+    });
+
+    it('retries only the exact terminal claim after selected currentness cleanup fails', async () => {
+        const harness = createLifecycleHarness([], 'daemon');
+        let cleanupBlocked = true;
+        const reads = new Map<string, number>();
+        const cleanup = vi.fn(async () => {
+            if (cleanupBlocked) throw new Error('child still held');
+        });
+        const unrelatedCleanup = vi.fn(async () => undefined);
+        const operation = (operationId: string) => ({
+            operationId,
+            pluginId: 'acme.providers',
+            contributionQualifiedId: 'acme.providers/providers/gateway',
+            occurrenceId: 'provider-p',
+            purposeBindingsEqualityKey: 'binding',
+            lifecycleKind: 'providerBroker' as const,
+            isCurrent: () => true,
+            revalidateRetainedCurrentness: async () => {
+                reads.set(operationId, (reads.get(operationId) ?? 0) + 1);
+                return false;
+            },
+            establish: async () => explicitStartOutcome(
+                operationId === 'selected' ? cleanup : unrelatedCleanup,
+            ),
+        });
+        try {
+            await harness.owner.runManagedProviderExplicitStart(operation('selected'));
+            await harness.owner.runManagedProviderExplicitStart(operation('unrelated'));
+            await expect(harness.owner.revalidateManagedProviderExplicitStarts(
+                undefined, operation('selected'),
+            )).rejects.toThrow();
+            expect(reads).toEqual(new Map([['selected', 1]]));
+            expect(unrelatedCleanup).not.toHaveBeenCalled();
+            expect(harness.owner.readRetainedSemanticCustodyCount()).toBe(2);
+            cleanupBlocked = false;
+            await expect(harness.owner.revalidateManagedProviderExplicitStarts(
+                undefined, operation('selected'),
+            )).resolves.toBe(1);
+            expect(reads).toEqual(new Map([['selected', 1]]));
+            expect(cleanup).toHaveBeenCalledTimes(2);
+            expect(unrelatedCleanup).not.toHaveBeenCalled();
+            expect(harness.owner.readRetainedSemanticCustodyCount()).toBe(1);
+        } finally {
+            cleanupBlocked = false;
+            await harness.owner.dispose();
+        }
     });
 
     it('reports external operation retirement only after all application custody is actually released', async () => {
@@ -7027,8 +7111,7 @@ describe('Project Local Services control composition', () => {
         const input = createProjectLifecycleInput();
         let nativeStopped = false;
         try {
-            const handle = await owner.superviseProject({
-                ...input,
+            const handle = await owner.superviseProject({ ...input,
                 processSpec: { ...input.processSpec, mode: { kind: 'native',
                     instance: { adapter: { pluginId: 'acme.native', localId: 'compose' }, nativeResourceId: 'cancellable-control-resource' },
                     // Resource inspection and termination are the actual external IO boundary.
@@ -7167,14 +7250,14 @@ describe('Project Local Services control composition', () => {
         const rpc = new RpcHandlerManager({ scopePrefix: workspace.machineId, localMachineId: workspace.machineId,
             encryptionMode: 'plain', logger() {}, authorizeRequest: request => authorizeMachineRpcRequest(request, boundary) });
         try {
-            const handle = await owner.superviseProject({
+            const handle = await owner.superviseProject({ kind: 'workspace',
                 workspace, declaration, cwd: workspace.rootPath, serviceId: 'project-preview-web', requester,
                 specIdentity: 'preview-web-effect', isCurrent: () => true,
                 processSpec: { mode: { kind: 'managedSpawn' }, startupTimeoutMs: 1_000 },
                 authorizeLaunch: ({ signal }) => authorizeResolvedProjectExecLaunchForHost({
                     signal, assertCurrent() {}, projectLaunch: { status: 'ready', reviewedEffectDigest: 'preview-web-effect',
                         environment: { selection: { kind: 'host' }, root: workspace.rootPath, platform: process.platform,
-                            io: createProjectNativeEnvironmentIoForHost({ resolveTool: async () => null }) } },
+                            io: createProjectNativeToolchainIoForHost({ resolveTool: async () => null }) } },
                     launch: { command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], cwd: workspace.rootPath, env: {} },
                 }),
             });
@@ -7199,7 +7282,7 @@ describe('Project Local Services control composition', () => {
             const previewRegistry = createLocalServicePreviewRegistry();
             const endpoint = new URL(handle.snapshot().baseUrl!);
             const registration = registerLocalServicePreview(previewRegistry, {
-                previewId: handle.serviceId, machineId: workspace.machineId, owner: { kind: 'user', id: requester.accountId },
+                previewId: handle.instanceId, machineId: workspace.machineId, owner: { kind: 'user', id: requester.accountId },
                 serviceTarget: target, target: { scheme: 'http', host: endpoint.hostname, port: Number(endpoint.port) },
                 initialPath: { pathname: '/', search: '' }, display: { title: 'Web', addressLabel: endpoint.host }, originMode: 'host',
             });
@@ -7214,9 +7297,9 @@ describe('Project Local Services control composition', () => {
                 feed: createLocalServiceLauncherFeed({ machineId: workspace.machineId, inventoryRegistry: createLocalServiceInventoryRegistry(),
                     previewRegistry, projectManagedServices: owner }), previewRoutes, history: createLocalServiceLauncherHistoryStore() });
             expect(await leaves.registerPreview({ machineId: workspace.machineId, targetId: handle.serviceId }))
-                .toMatchObject({ status: 'existing', previewId: handle.serviceId, browserTarget: { kind: 'localServicePreview', targetId: handle.serviceId } });
+                .toMatchObject({ status: 'existing', previewId: handle.instanceId, browserTarget: { kind: 'localServicePreview', targetId: handle.instanceId } });
             expect(await leaves.openPreview({ machineId: workspace.machineId, targetId: handle.serviceId }))
-                .toMatchObject({ status: 'opened', browserTarget: { kind: 'localServicePreview', targetId: handle.serviceId } });
+                .toMatchObject({ status: 'opened', browserTarget: { kind: 'localServicePreview', targetId: handle.instanceId } });
             const waiting = call({ v: 1, kind: 'wait_retirement', target, instanceId: handle.instanceId });
             await new Promise<void>(resolve => setImmediate(resolve));
             await owner.stopForAccessLoss(requester);
@@ -7234,7 +7317,7 @@ describe('Project Local Services control composition', () => {
         const reviewedEffectDigest = 'control-worker-effect';
         let servingCurrent = true;
         try {
-            const handle = await owner.superviseProject({
+            const handle = await owner.superviseProject({ kind: 'workspace',
                 workspace, declaration, cwd: workspace.rootPath, serviceId: 'project-control-worker',
                 requester: { serverId: workspace.serverId, accountId: 'starter-a', machineId: workspace.machineId, installationId: 'installation-a' },
                 specIdentity: reviewedEffectDigest, isCurrent: () => servingCurrent,
@@ -7242,7 +7325,7 @@ describe('Project Local Services control composition', () => {
                 authorizeLaunch: ({ signal }) => authorizeResolvedProjectExecLaunchForHost({
                     signal, assertCurrent() {}, projectLaunch: { status: 'ready', reviewedEffectDigest,
                         environment: { selection: { kind: 'host' }, root: workspace.rootPath, platform: process.platform,
-                            io: createProjectNativeEnvironmentIoForHost({ resolveTool: async () => null }) } },
+                            io: createProjectNativeToolchainIoForHost({ resolveTool: async () => null }) } },
                     launch: { command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], cwd: workspace.rootPath, env: {} },
                 }),
             });
@@ -7292,4 +7375,75 @@ describe('Project Local Services control composition', () => {
                 .toMatchObject({ status: 'denied', reasonCode: 'unknown_managed_service' });
         } finally { await owner.dispose(); }
     });
+    it('projects changed native published ports after the same Environment generation stops and starts', async () => {
+        const { owner } = createLifecycleHarness([], 'daemon');
+        const id = 'a'.repeat(64);
+        const args = ['compose', '--project-name', 'production', '--file', '/release/compose.yaml'];
+        let state = 'running';
+        let published = '32769';
+        let inspections = 0;
+        let nativeEvent: ((value: unknown) => void) | undefined;
+        const configuration = projectNativeComposeReview({ services: { web: { ports: [
+            { target: 3000, published, host_ip: '127.0.0.1', protocol: 'tcp' },
+        ] } } }, '/release', value => value).services[0]!;
+        const capture = createNativeComposeLifecycle({ args, engineId: 'published-port-test',
+            environment: { composeService: 'web', containerIds: [id], facts: { configuration, containerImages: [] } }, io: {
+                async events({ event }) { nativeEvent = event; return { async dispose() {} }; },
+                async run() { inspections++; return { exitCode: 0, stdout: JSON.stringify([{ Id: id,
+                    Config: { Labels: { 'com.docker.compose.project': 'production', 'com.docker.compose.service': 'web' } },
+                    State: { Status: state }, NetworkSettings: { Ports: state === 'running'
+                        ? { '3000/tcp': [{ HostIp: '127.0.0.1', HostPort: published }] } : {} } }]) }; },
+            } });
+        capture.bindLaunch({ command: '/docker', args, cwd: '/release', env: {}, release() {} });
+        const handle = await owner.superviseProject({ kind: 'environment', serverId: 'home', machineId: 'machine',
+            environmentId: 'production', environmentInstanceId: 'production-machine', deploymentId: 'deploy-a',
+            composeService: 'web', serviceId: 'production-machine/web', specIdentity: 'deploy-a', isCurrent: () => true,
+            release: { environmentId: 'production', environmentInstanceId: 'production-machine', deploymentId: 'deploy-a',
+                machineId: 'machine', installationId: 'installation', rootPath: '/release', manifestFingerprint: 'exact-a',
+                assertCurrent: async () => {}, commit: async () => {}, abort: async () => {} },
+            nativeEffects: { keys: [{ kind: 'composeProject', dockerEndpoint: 'published-port-test', projectName: 'production' }] },
+            releaseObservation: async () => {}, processSpec: { mode: { kind: 'native', observationOnly: true, builtinLifecycle: capture.lifecycle } },
+        });
+        const projection = owner.machineServiceRows;
+        let publications = 0;
+        const subscription = projection.subscribe('machine', [handle], () => { publications++; });
+        try {
+            const initial = projection.read(handle);
+            expect(initial).toMatchObject({ baseUrl: 'http://127.0.0.1:32769', port: 32769,
+                configuration: { ports: [{ target: 3000, published: '32769', bindAddress: '127.0.0.1', protocol: 'tcp' }] } });
+            const initialInspections = inspections;
+            for (let index = 0; index < 100; index++) {
+                expect(projection.read(handle)).toBe(initial);
+                nativeEvent?.({ Type: 'container', Action: 'start', Actor: { ID: 'unrelated-container' } });
+            }
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(inspections).toBe(initialInspections);
+            expect(publications).toBe(0);
+            nativeEvent?.({ Type: 'container', Action: 'start', Actor: { ID: id } });
+            await vi.waitFor(() => expect(inspections).toBe(initialInspections + 1));
+            expect(projection.read(handle)).toBe(initial);
+            expect(publications).toBe(0);
+            state = 'exited';
+            nativeEvent?.({ Type: 'container', Action: 'die', Actor: { ID: id } });
+            await vi.waitFor(() => expect(projection.read(handle).state).toBe('stopped'));
+            expect(projection.read(handle).baseUrl).toBeNull();
+            state = 'running';
+            published = '32770';
+            nativeEvent?.({ Type: 'container', Action: 'start', Actor: { ID: id } });
+            await vi.waitFor(() => expect(projection.read(handle).baseUrl).toBe('http://127.0.0.1:32770'));
+            const listed = await owner.listProjectServices({ requireComplete: true });
+            expect(listed).toEqual([handle]);
+            expect(projection.read(listed[0])).toMatchObject({ generation: initial.generation, port: 32770,
+                configuration: { ports: [{ target: 3000, published: '32770', bindAddress: '127.0.0.1', protocol: 'tcp' }] } });
+            expect(handle.readNativeRuntimeFacts!().configuration?.ports).toEqual(projection.read(handle).configuration?.ports);
+            const restarted = projection.read(handle);
+            const restartedPublications = publications;
+            nativeEvent?.({ Type: 'container', Action: 'start', Actor: { ID: id } });
+            await vi.waitFor(() => expect(inspections).toBe(initialInspections + 4));
+            expect(projection.read(handle)).toBe(restarted);
+            expect(publications).toBe(restartedPublications);
+        } finally { subscription.dispose(); await owner.dispose(); }
+    });
+
+
 });

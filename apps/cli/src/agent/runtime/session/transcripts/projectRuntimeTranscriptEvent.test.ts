@@ -278,6 +278,26 @@ describe('projectRuntimeTranscriptEvent', () => {
     bridge.clear();
   });
 
+  it('commits peer-delivered agent text with its sender beside the message, outside any stream segment', async () => {
+    const { createKeyedStreamedTranscriptBridge } = await import('@/api/session/createKeyedStreamedTranscriptBridge');
+    const { projectRuntimeTranscriptEvent } = await import('./projectRuntimeTranscriptEvent');
+    const stored = new Map<string, CommittedAgentMessageBody>();
+    const session = { sessionId: 'session-1',
+      enqueueAgentMessageCommitted: async (_provider: unknown, body: CommittedAgentMessageBody, opts: { localId: string }) => {
+        stored.set(opts.localId, body);
+        return { persisted: true, delivered: true };
+      },
+    };
+    const bridge = createKeyedStreamedTranscriptBridge({ provider: 'claude', createSessionForStream: () => session });
+    await expect(projectRuntimeTranscriptEvent({ session, provider: 'claude', runtimeMessageDeltaBridge: bridge,
+      event: canonicalRuntimeEvent({ sessionId: session.sessionId, emittedAtMs: 1, kind: 'transcript-message-committed',
+        role: 'assistant', messageId: 'claude-jsonl:main:user:handback', text: 'Report body',
+        peer: { name: 'general-purpose', handback: true } }) })).resolves.toMatchObject({ projected: true });
+    expect([...stored.entries()]).toEqual([['claude-jsonl:main:user:handback',
+      { type: 'message', message: 'Report body', peer: { name: 'general-purpose', handback: true } }]]);
+    bridge.clear();
+  });
+
   it('drains a named live stream before durable finalization and retains its identity after cancellation', async () => {
     const { projectRuntimeTranscriptEvent } = await import('./projectRuntimeTranscriptEvent');
     let releaseLive!: () => void;

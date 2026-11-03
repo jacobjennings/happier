@@ -120,6 +120,8 @@ export type DeepIndexDbHandle = Readonly<{
   /** Every Session id for which this deep index retains a chunk or embedding. */
   listIndexedSessionIds: () => readonly string[];
   hasSessionChunks: (args: Readonly<{ sessionId: string }>) => boolean;
+  /** Exact existence of chunks, embeddings or source progress removed for this Session. */
+  hasSessionIndexData: (sessionId: string) => boolean;
   hasSessionArtifactsOutsidePolicy: (args: Readonly<{ sessionId: string; policyKey: string }>) => boolean;
   pruneSessionArtifacts: (args: Readonly<{
     sessionId: string;
@@ -163,7 +165,7 @@ export type ExternalSourceState = Readonly<{
 export type DeepIndexReader = Pick<DeepIndexDbHandle,
   'getExternalSourceState' | 'listExternalSourceStates' | 'getExternalSourceItemCursor' |
   'loadEmbeddings' | 'listChunksWithoutEmbeddings' | 'getDeepIndexStats' | 'getDocumentFactCounts' |
-  'searchDocuments' | 'listIndexedSessionIds' | 'hasSessionChunks' | 'hasSessionArtifactsOutsidePolicy' |
+  'searchDocuments' | 'listIndexedSessionIds' | 'hasSessionChunks' | 'hasSessionIndexData' | 'hasSessionArtifactsOutsidePolicy' |
   'search' | 'close'>;
 
 function normalizeQuery(raw: string): string {
@@ -438,6 +440,7 @@ export function openDeepIndexReader(args: Readonly<{ dbPath: string }>): DeepInd
       searchDocuments: handle.searchDocuments,
       listIndexedSessionIds: handle.listIndexedSessionIds,
       hasSessionChunks: handle.hasSessionChunks,
+      hasSessionIndexData: handle.hasSessionIndexData,
       hasSessionArtifactsOutsidePolicy: handle.hasSessionArtifactsOutsidePolicy,
       search: handle.search,
       close: handle.close,
@@ -514,6 +517,11 @@ function createDeepIndexDbHandle(db: SqliteDatabaseSync): DeepIndexDbHandle {
   const deleteSessionChunksStmt = db.prepare(`DELETE FROM message_chunks WHERE sessionId = ?;`);
   const deleteSessionEmbeddingsStmt = db.prepare(`DELETE FROM chunk_embeddings WHERE sessionId = ?;`);
   const hasSessionChunksStmt = db.prepare('SELECT 1 FROM message_chunks WHERE sessionId = ? LIMIT 1;');
+  const hasSessionIndexDataStmt = db.prepare(`
+    SELECT EXISTS(SELECT 1 FROM message_chunks WHERE sessionId = ?)
+      OR EXISTS(SELECT 1 FROM chunk_embeddings WHERE sessionId = ?)
+      OR EXISTS(SELECT 1 FROM external_source_state WHERE sessionId = ?) AS present;
+  `);
   const listIndexedSessionIdsStmt = db.prepare(`
     SELECT sessionId FROM message_chunks
     UNION
@@ -576,6 +584,8 @@ function createDeepIndexDbHandle(db: SqliteDatabaseSync): DeepIndexDbHandle {
       AND (policyKey <> ? OR seqFrom < ? OR createdAtFromMs < ?);
   `);
   const hasMismatchedPolicyStmt = db.prepare(`SELECT 1 FROM message_chunks WHERE sessionId = ? AND policyKey <> ? LIMIT 1;`);
+  const selectDocumentRevisionStmt = db.prepare(`SELECT documentId, headerVersion, bodyVersion FROM indexed_documents WHERE serverId = ? AND artifactId = ?;`);
+  const selectDocumentEntriesStmt = db.prepare(`SELECT factId, location, text FROM document_entries WHERE documentId = ? ORDER BY entryId;`);
   const deleteDocumentStmt = db.prepare(`DELETE FROM indexed_documents WHERE serverId = ? AND artifactId = ?;`);
   const deleteDocumentByIdStmt = db.prepare(`DELETE FROM indexed_documents WHERE documentId = ?;`);
   const insertDocumentStmt = db.prepare(`
@@ -632,20 +642,35 @@ function createDeepIndexDbHandle(db: SqliteDatabaseSync): DeepIndexDbHandle {
       // Schema is ensured at open time.
     },
     replaceDocumentIndexData: ({ ref, revision, entries }) => {
+      const projectedEntries = entries.flatMap(entry => {
+        const text = entry.text.trim();
+        return text ? [{ factId: entry.factId ?? null, location: serializeDocumentLocation(entry.location), text }] : [];
+      });
       db.exec('BEGIN IMMEDIATE');
       try {
+        const indexedRevision = selectDocumentRevisionStmt.get(ref.serverId, ref.artifactId) as
+          (AccountArtifactRevision & { documentId: number }) | undefined;
+        if (indexedRevision?.headerVersion === revision.headerVersion && indexedRevision.bodyVersion === revision.bodyVersion) {
+          // Expiry can move a fact into archive without changing the Artifact revision.
+          const indexedEntries = selectDocumentEntriesStmt.all(indexedRevision.documentId) as typeof projectedEntries;
+          if (indexedEntries.length === projectedEntries.length && indexedEntries.every((entry, index) => {
+            const projected = projectedEntries[index];
+            return entry.factId === projected.factId && entry.location === projected.location && entry.text === projected.text;
+          })) {
+            db.exec('COMMIT');
+            return;
+          }
+        }
         deleteDocumentStmt.run(ref.serverId, ref.artifactId);
         // Both native SQLite adapters return this insertion result shape.
         const documentInsert = insertDocumentStmt.run(
           ref.serverId, ref.artifactId, revision.headerVersion, revision.bodyVersion,
         ) as Readonly<{ lastInsertRowid: number | bigint }>;
         const documentId = Number(documentInsert.lastInsertRowid);
-        for (const entry of entries) {
-          const text = entry.text.trim();
-          if (!text) continue;
-          const entryInsert = insertDocumentEntryStmt.run(documentId, entry.factId ?? null, serializeDocumentLocation(entry.location), text) as Readonly<{ lastInsertRowid: number | bigint }>;
+        for (const entry of projectedEntries) {
+          const entryInsert = insertDocumentEntryStmt.run(documentId, entry.factId, entry.location, entry.text) as Readonly<{ lastInsertRowid: number | bigint }>;
           const entryId = Number(entryInsert.lastInsertRowid);
-          for (const term of tokenizeMemoryText(text)) insertDocumentTermStmt.run(term, entryId);
+          for (const term of tokenizeMemoryText(entry.text)) insertDocumentTermStmt.run(term, entryId);
         }
         db.exec('COMMIT');
       } catch (error) {
@@ -914,6 +939,10 @@ function createDeepIndexDbHandle(db: SqliteDatabaseSync): DeepIndexDbHandle {
       return doomed.length > 0;
     },
     hasSessionChunks: ({ sessionId }) => Boolean(hasSessionChunksStmt.get(sessionId)),
+    hasSessionIndexData: sessionId => {
+      const row = hasSessionIndexDataStmt.get(sessionId, sessionId, sessionId) as { present: number };
+      return row.present === 1;
+    },
     listIndexedSessionIds: () => {
       const rows = listIndexedSessionIdsStmt.all() as Array<{ sessionId?: unknown }>;
       const out: string[] = [];

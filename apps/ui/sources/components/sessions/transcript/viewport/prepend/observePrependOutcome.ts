@@ -8,9 +8,9 @@ import {
  * Default alignment tolerance for classifying a prepend as MVCP-preserved.
  * Mirrors the legacy `TRANSCRIPT_NATIVE_PREPEND_ANCHOR_RESTORE_ALIGNMENT_TOLERANCE_PX` constant.
  */
-export const PREPEND_ANCHOR_ALIGNMENT_TOLERANCE_PX = 4;
+const PREPEND_ANCHOR_ALIGNMENT_TOLERANCE_PX = 4;
 
-export const PREPEND_CORRECTOR_COVERED_RESIDUAL_TOLERANCE_PX = 48;
+const PREPEND_CORRECTOR_COVERED_RESIDUAL_TOLERANCE_PX = 48;
 
 export type PrependAnchorKey = Readonly<{
     itemId: string;
@@ -64,11 +64,9 @@ function resolveCurrentFirstItemId(items: readonly TranscriptViewportAnchorResol
 export function observePrependOutcome(params: Readonly<{
     capturedAnchor: PrependCapturedAnchor;
     postCommit: PrependPostCommitObservation;
-    tolerancePx?: number;
     correctorCoverage?: PrependCorrectorCoverage;
 }>): PrependOutcome {
     const { capturedAnchor, postCommit } = params;
-    const tolerancePx = params.tolerancePx ?? PREPEND_ANCHOR_ALIGNMENT_TOLERANCE_PX;
 
     if (
         postCommit.items.length <= capturedAnchor.capturedDataLength &&
@@ -100,7 +98,7 @@ export function observePrependOutcome(params: Readonly<{
 
     const observedItemOffsetPx = layout.y - postCommit.absoluteScrollOffset;
     const deltaPx = observedItemOffsetPx - capturedAnchor.itemOffsetPx;
-    if (Math.abs(deltaPx) <= Math.max(0, tolerancePx)) {
+    if (Math.abs(deltaPx) <= PREPEND_ANCHOR_ALIGNMENT_TOLERANCE_PX) {
         return { kind: 'mvcp-preserved', observedItemOffsetPx, deltaPx };
     }
 

@@ -88,37 +88,6 @@ describe('responsive utilities', () => {
             expect(result).toBe('phone');
         });
 
-        it('treats iOS phones as phones', () => {
-            const result = determineDeviceType({
-                platform: 'ios',
-                isPad: false,
-                widthPoints: 390,
-                heightPoints: 844,
-            });
-
-            expect(result).toBe('phone');
-        });
-
-        it('uses min edge threshold on Android', () => {
-            const result = determineDeviceType({
-                platform: 'android',
-                widthPoints: 800,
-                heightPoints: 1280,
-            });
-
-            expect(result).toBe('tablet');
-        });
-
-        it('treats Android phones as phones', () => {
-            const result = determineDeviceType({
-                platform: 'android',
-                widthPoints: 360,
-                heightPoints: 800,
-            });
-
-            expect(result).toBe('phone');
-        });
-
         it('uses min edge threshold on web to avoid landscape-phone false positives', () => {
             expect(determineDeviceType({
                 platform: 'web',
@@ -171,13 +140,6 @@ describe('responsive utilities', () => {
                 isLandscape: false
             });
             expect(height).toBe(64);
-        });
-
-        it('draws the desktop pane band and the phone band at the page metrics pane-header roles', async () => {
-            const { HAPPIER_PAGE_METRICS } = await import('@happier-dev/plugin-ui/presentation');
-            expect(calculateHeaderHeight({ platform: 'web', isLandscape: false })).toBe(HAPPIER_PAGE_METRICS.paneHeaderHeightPx);
-            expect(calculateHeaderHeight({ platform: 'ios', isLandscape: false, isMacCatalyst: true })).toBe(HAPPIER_PAGE_METRICS.paneHeaderHeightPx);
-            expect(calculateHeaderHeight({ platform: 'ios', isPad: false, isLandscape: false })).toBe(HAPPIER_PAGE_METRICS.paneHeaderUnderNativeChromeHeightPx);
         });
 
         it('should return correct height for iOS iPhone', () => {

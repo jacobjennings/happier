@@ -5,6 +5,7 @@ import {
 } from '@/sync/domains/session/readState/sessionViewer';
 import {
     areResponsibleAccountSummariesEqual,
+    readSessionListGuardState,
     type SessionListRenderableSession,
 } from '@/sync/domains/session/listing/sessionListRenderable';
 import {
@@ -17,6 +18,13 @@ import { parseSessionRuntimeActivityProjectionFields } from '@happier-dev/protoc
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import { normalizeSessionAccessProjection } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 import { sameStrictJsonValue } from '@happier-dev/protocol/json/strictJsonValue';
+import { createStoredReadSchema } from '@happier-dev/protocol/json/storedReadSchema';
+import { SessionOwnerDisplayV1Schema } from '@happier-dev/protocol';
+import { projectSessionUsageLimitRecoveryDisplayV1 } from '@happier-dev/protocol/sessions/state/valueSchemas/usageLimitRecovery';
+import { isSessionContentReadable, readBlockedSessionContentAvailability, readSessionContentAvailability } from '@/sync/domains/session/encryptedContentAvailability';
+import { SESSION_LIST_DOCUMENT_ADMISSION, fingerprintSessionListDisplayAdmission,
+    hasCurrentSessionListDisplayMetadata, restoreSessionListCachedDisplayAdmission,
+    type SessionListDocumentAdmission } from '@/sync/domains/session/sessionDocumentAdmission';
 
 import type {
     SessionListCacheEntryV1,
@@ -24,6 +32,7 @@ import type {
 
 const EMPTY_WARM_CACHE_ENTRIES: Record<string, never> = {};
 const EMPTY_SESSION_LIST_CACHE_ENTRIES = EMPTY_WARM_CACHE_ENTRIES as Record<string, SessionListCacheEntryV1>;
+const sessionForkDisplayReadSchema = createStoredReadSchema(SessionOwnerDisplayV1Schema.shape.forkV1);
 
 export {
     buildMachineDisplayCacheEntriesFromRenderables,
@@ -84,9 +93,10 @@ function hasNonEmptyString(value: string | null | undefined): boolean {
     return typeof value === 'string' && value.trim().length > 0;
 }
 
-export function isSessionListCacheEntryMetadataUsable(entry: SessionListCacheEntryV1 | undefined): entry is SessionListCacheEntryV1 {
+export function isSessionListCacheEntryMetadataUsable(entry: SessionListCacheEntryV1 | undefined): boolean {
     if (!entry) return false;
     return hasNonEmptyString(entry.name)
+        || hasNonEmptyString(entry.summaryText)
         || hasNonEmptyString(entry.path)
         || hasNonEmptyString(entry.host)
         || hasNonEmptyString(entry.machineId)
@@ -108,6 +118,7 @@ function areSessionListCacheEntriesEqual(
 ): boolean {
     return (
         nextEntry.seq === previousEntry.seq
+        && areCacheJsonValuesEqual(nextEntry.displayProof, previousEntry.displayProof)
         && readSessionMetadataLayoutVersion(nextEntry.metadataLayoutVersion)
             === readSessionMetadataLayoutVersion(previousEntry.metadataLayoutVersion)
         && nextEntry.metadataVersion === previousEntry.metadataVersion
@@ -115,6 +126,7 @@ function areSessionListCacheEntriesEqual(
         && nextEntry.updatedAt === previousEntry.updatedAt
         && nextEntry.meaningfulActivityAt === previousEntry.meaningfulActivityAt
         && nextEntry.createdAt === previousEntry.createdAt
+        && nextEntry.ownerAccountId === previousEntry.ownerAccountId
         && nextEntry.active === previousEntry.active
         && nextEntry.activeAt === previousEntry.activeAt
         && nextEntry.archivedAt === previousEntry.archivedAt
@@ -152,7 +164,21 @@ function areSessionListCacheEntriesEqual(
         && nextEntry.name === previousEntry.name
         && nextEntry.summaryText === previousEntry.summaryText
         && areProjectGroupsV1Equal(nextEntry.projectGroupV1, previousEntry.projectGroupV1)
+        && areCacheJsonValuesEqual(nextEntry.agentActivityHeadline, previousEntry.agentActivityHeadline)
+        && areCacheJsonValuesEqual(nextEntry.workDisplay, previousEntry.workDisplay)
+        && areCacheJsonValuesEqual(nextEntry.workflowHeadline, previousEntry.workflowHeadline)
+        && areCacheJsonValuesEqual(nextEntry.guardState, previousEntry.guardState)
+        && areCacheJsonValuesEqual(nextEntry.forkV1, previousEntry.forkV1)
+        && nextEntry.lifecycleState === previousEntry.lifecycleState
+        && areCacheJsonValuesEqual(nextEntry.sessionUsageLimitRecoveryV1, previousEntry.sessionUsageLimitRecoveryV1)
+        && areCacheJsonValuesEqual(nextEntry.externalAgentObservationV1, previousEntry.externalAgentObservationV1)
+        && areCacheJsonValuesEqual(nextEntry.readStateV1, previousEntry.readStateV1)
+        && areCacheJsonValuesEqual(nextEntry.terminalControlServiceabilityV1, previousEntry.terminalControlServiceabilityV1)
         && nextEntry.path === previousEntry.path
+        && nextEntry.branch === previousEntry.branch
+        && (nextEntry.projectId ?? null) === (previousEntry.projectId ?? null)
+        && (nextEntry.workspaceId ?? null) === (previousEntry.workspaceId ?? null)
+        && areCacheJsonValuesEqual(nextEntry.sessionWorkspaceLocationV1, previousEntry.sessionWorkspaceLocationV1)
         && nextEntry.homeDir === previousEntry.homeDir
         && nextEntry.host === previousEntry.host
         && nextEntry.machineId === previousEntry.machineId
@@ -180,7 +206,7 @@ function countOwnEntries(record: Readonly<Record<string, unknown>> | null | unde
 }
 
 export function buildSessionListRenderableFromCacheEntry(entry: SessionListCacheEntryV1): SessionListRenderableSession {
-    const metadataUsable = isSessionListCacheEntryMetadataUsable(entry);
+    const metadataUsable = isSessionListCacheEntryMetadataUsable(entry) || entry.displayProof !== undefined;
     const access = entry.effectiveAccess === null
         ? null
         : entry.effectiveAccess === undefined
@@ -193,6 +219,12 @@ export function buildSessionListRenderableFromCacheEntry(entry: SessionListCache
     });
     return {
         id: entry.sessionId,
+        agentActivityHeadline: entry.agentActivityHeadline,
+        workDisplay: entry.workDisplay,
+        workflowHeadline: entry.workflowHeadline,
+        guardState: entry.guardState ? readSessionListGuardState({ v: 1, ...entry.guardState }) : null,
+        forkV1: entry.forkV1,
+        ownerAccountId: entry.ownerAccountId,
         seq: normalizeNonNegativeInteger(entry.seq) ?? 0,
         createdAt: entry.createdAt,
         updatedAt: entry.updatedAt,
@@ -215,10 +247,19 @@ export function buildSessionListRenderableFromCacheEntry(entry: SessionListCache
         metadataVersion: entry.metadataVersion,
         agentStateVersion: entry.agentStateVersion,
         metadata: metadataUsable ? {
+            ...(entry.lifecycleState !== undefined ? { lifecycleState: entry.lifecycleState } : {}),
+            ...(entry.sessionUsageLimitRecoveryV1 !== undefined ? { sessionUsageLimitRecoveryV1: entry.sessionUsageLimitRecoveryV1 } : {}),
+            externalAgentObservationV1: entry.externalAgentObservationV1,
+            readStateV1: entry.readStateV1,
+            terminalControlServiceabilityV1: entry.terminalControlServiceabilityV1,
             name: entry.name,
             summaryText: entry.summaryText ?? null,
             path: entry.path,
             ...(entry.projectGroupV1 ? { projectGroupV1: entry.projectGroupV1 } : {}),
+            ...(entry.branch !== undefined ? { branch: entry.branch } : {}),
+            ...(entry.projectId !== undefined ? { projectId: entry.projectId } : {}),
+            ...(entry.workspaceId !== undefined ? { workspaceId: entry.workspaceId } : {}),
+            ...(entry.sessionWorkspaceLocationV1 !== undefined ? { sessionWorkspaceLocationV1: entry.sessionWorkspaceLocationV1 } : {}),
             homeDir: entry.homeDir ?? null,
             host: entry.host ?? null,
             machineId: entry.machineId ?? null,
@@ -257,12 +298,30 @@ export function buildSessionListRenderableFromCacheEntry(entry: SessionListCache
     };
 }
 
+/** Re-admit last-known display under fresh scope; the hydration owner decides revision currentness. */
+export function readSessionListWarmCacheDisplay(
+    entry: SessionListCacheEntryV1 | undefined,
+    admission: SessionListDocumentAdmission,
+    versions: Readonly<{ id: string; metadataVersion: number }>,
+): SessionListRenderableSession | undefined {
+    const proof = entry?.displayProof;
+    if (!entry || !proof || entry.sessionId !== versions.id
+        || entry.encryptionMode !== admission.encryptionMode
+        || readSessionMetadataLayoutVersion(entry.metadataLayoutVersion) !== admission.metadataLayoutVersion
+        || !isSessionContentReadable(readSessionContentAvailability(entry))
+        || proof.admissionFingerprint !== fingerprintSessionListDisplayAdmission(admission)
+        || proof.metadataVersion !== entry.metadataVersion) return undefined;
+    return { ...buildSessionListRenderableFromCacheEntry(entry),
+        [SESSION_LIST_DOCUMENT_ADMISSION]: restoreSessionListCachedDisplayAdmission(admission, proof.metadataVersion) };
+}
+
 function shouldPreserveSessionMetadataFromPreviousEntry(
     session: SessionListRenderableSession,
     previousEntry: SessionListCacheEntryV1 | undefined,
 ): previousEntry is SessionListCacheEntryV1 {
     return session.metadata == null
         && session.metadataUnavailable !== true
+        && readBlockedSessionContentAvailability(readSessionContentAvailability(session)) === null
         && readSessionMetadataLayoutVersion(session.metadataLayoutVersion)
             === readSessionMetadataLayoutVersion(previousEntry?.metadataLayoutVersion)
         && isSessionListCacheEntryMetadataUsable(previousEntry);
@@ -305,9 +364,22 @@ export function buildSessionListCacheEntryFromRenderable(
     // snapshot's layout-matched cache fallback already expect it. A contracted row (`metadata`
     // null) still persists nothing private.
     const projectedMetadata = session.metadata;
+    const displayMetadata = preserveMetadata ? previousEntry : projectedMetadata;
+    const fork = preserveMetadata ? previousEntry.forkV1 : session.forkV1;
+    const branch = preserveMetadata ? previousEntry.branch : projectedMetadata?.branch;
+    const projectId = preserveMetadata ? previousEntry.projectId : projectedMetadata?.projectId;
+    const workspaceId = preserveMetadata ? previousEntry.workspaceId : projectedMetadata?.workspaceId;
+    const sessionWorkspaceLocationV1 = preserveMetadata ? previousEntry.sessionWorkspaceLocationV1 : projectedMetadata?.sessionWorkspaceLocationV1;
     const viewer = normalizeSessionViewerCompatibility(session);
+    const admission = session[SESSION_LIST_DOCUMENT_ADMISSION];
+    const displayProof = admission?.scope && hasCurrentSessionListDisplayMetadata(session)
+        ? { admissionFingerprint: fingerprintSessionListDisplayAdmission(admission),
+            metadataVersion: session.metadataVersion }
+        : undefined;
     const nextEntry: SessionListCacheEntryV1 = {
         sessionId: session.id,
+        ...(displayProof ? { displayProof } : {}),
+        ownerAccountId: session.ownerAccountId,
         viewer: session.viewer,
         seq: preserveReadState ? previousEntry.seq : normalizeNonNegativeInteger(session.seq) ?? 0,
         metadataLayoutVersion: preserveMetadata
@@ -375,8 +447,24 @@ export function buildSessionListCacheEntryFromRenderable(
             : {}),
         name: preserveMetadata ? previousEntry.name : projectedMetadata?.name,
         summaryText: preserveMetadata ? previousEntry.summaryText ?? null : session.metadata?.summaryText ?? null,
+        agentActivityHeadline: preserveMetadata ? previousEntry.agentActivityHeadline : session.agentActivityHeadline,
+        workDisplay: preserveMetadata ? previousEntry.workDisplay : session.workDisplay,
+        workflowHeadline: preserveMetadata ? previousEntry.workflowHeadline : session.workflowHeadline,
+        guardState: preserveMetadata ? previousEntry.guardState : session.guardState,
+        ...(fork ? { forkV1: sessionForkDisplayReadSchema.parse(fork) } : {}),
+        ...(displayMetadata?.lifecycleState !== undefined ? { lifecycleState: displayMetadata.lifecycleState } : {}),
+        ...(displayMetadata?.sessionUsageLimitRecoveryV1 !== undefined ? {
+            sessionUsageLimitRecoveryV1: projectSessionUsageLimitRecoveryDisplayV1(displayMetadata.sessionUsageLimitRecoveryV1),
+        } : {}),
+        externalAgentObservationV1: displayMetadata?.externalAgentObservationV1,
+        readStateV1: displayMetadata?.readStateV1,
+        terminalControlServiceabilityV1: displayMetadata?.terminalControlServiceabilityV1,
         path: preserveMetadata ? previousEntry.path : projectedMetadata?.path ?? '',
         projectGroupV1: preserveMetadata ? previousEntry.projectGroupV1 : projectedMetadata?.projectGroupV1,
+        ...(branch !== undefined ? { branch } : {}),
+        ...(projectId !== undefined ? { projectId } : {}),
+        ...(workspaceId !== undefined ? { workspaceId } : {}),
+        ...(sessionWorkspaceLocationV1 !== undefined ? { sessionWorkspaceLocationV1 } : {}),
         homeDir: preserveMetadata ? previousEntry.homeDir ?? null : projectedMetadata?.homeDir ?? null,
         host: preserveMetadata ? previousEntry.host ?? null : projectedMetadata?.host ?? null,
         machineId: preserveMetadata ? previousEntry.machineId ?? null : projectedMetadata?.machineId ?? null,

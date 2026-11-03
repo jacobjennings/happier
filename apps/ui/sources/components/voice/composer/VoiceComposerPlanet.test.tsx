@@ -1,7 +1,6 @@
 import * as React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import type { ReactTestInstance } from 'react-test-renderer';
-import { Platform } from 'react-native';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setReducedMotionPreferenceOverride } from '@/hooks/ui/useReducedMotionPreference';
 
@@ -10,7 +9,8 @@ import {
     resetReanimatedFrameCallbacks,
 } from '@/dev/testkit/mocks/reanimated';
 import { VoiceEnergyProvider, type VoiceEnergyState } from '@/components/voice/light/useVoiceEnergy';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { HAPPIER_DEFAULT_MINIMUM_INTERACTIVE_TARGET_SIZE } from '@happier-dev/plugin-ui/environment';
+import { readHitArea } from '@/dev/testkit/harness/hitFrameReach';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { voiceRuntimeLevelStore, type VoiceRuntimeLevelWriter } from '@/voice/runtime/levels/voiceRuntimeLevelStore';
 
@@ -132,13 +132,20 @@ describe('VoiceComposerPlanet', () => {
         return hosts[0]!;
     }
 
-    it('presses through a real platform-size frame rather than web-inert slop', () => {
-        render(scene());
+    it('draws at its slot and reaches the finger target by hit area, stopping at its 8 px gap to Send', async () => {
+        const { HappierUiPlatformProvider } = await import('@happier-dev/plugin-ui/environment');
+        render(<HappierUiPlatformProvider platform={{ platform: 'ios', colorScheme: 'light' }}>{scene()}</HappierUiPlatformProvider>);
 
-        const button = tree!.root.findByType(IconButton);
-        const targetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
-        expect(button.props.minimumInteractiveTargetSize).toBeGreaterThanOrEqual(targetSize);
-        expect(button.props.size).toBeLessThan(targetSize);
+        const targetSize = HAPPIER_DEFAULT_MINIMUM_INTERACTIVE_TARGET_SIZE;
+        const area = readHitArea(control());
+        expect(area.drawn.width).toBeLessThan(targetSize);
+        expect(area.drawn.height).toBeLessThan(targetSize);
+        // Stacked above Send 2 px apart it reaches 1 px of that gap; sideways only half the row's 8 px gap,
+        // so it never overlaps Send's own hit area.
+        expect(area.insets.top).toBe(1);
+        expect(area.insets.bottom).toBe(1);
+        expect(area.insets.left).toBe(4);
+        expect(area.insets.right).toBe(4);
     });
 
     it('asks the shared energy clock to run only while the planet is live', () => {

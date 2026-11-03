@@ -82,6 +82,17 @@ describe('finite Script row facts', () => {
         expect(presentProjectRun({ ...noLaunch, snapshot: { ...noLaunch.snapshot, state: 'running', settledAt: undefined, error: undefined } }, null, 'idle').startedAt).toBeNull();
     });
 
+    it('leaves out a duration under a second instead of reading "0 s"', () => {
+        const attachment = run().snapshot.domainRef;
+        if (attachment?.kind !== 'projectCommand') throw new Error('Missing command fixture');
+        const quick = (settledAt: number) => presentProjectRun(run({ state: 'failed', settledAt,
+            error: { errorCode: 'project_command_step_failed', error: 'Build failed' },
+            domainRef: { ...attachment, exitCode: 1 } }), null, 'idle');
+        expect(quick(2_400).text).toContain('projects.scripts.run.exited(code=1');
+        expect(quick(2_400).text).not.toContain('durationSeconds');
+        expect(quick(3_000).text).toContain('durationSeconds(seconds=1)');
+    });
+
     it('retains measured duration for failed and stopped launches and exposes observed step-failure exit only', () => {
         for (const state of ['failed', 'cancelled'] as const) {
             const operation = run({ state, settledAt: 44_000, error: state === 'failed' ? { errorCode: 'project_command_step_failed', error: 'Build failed' } : undefined });

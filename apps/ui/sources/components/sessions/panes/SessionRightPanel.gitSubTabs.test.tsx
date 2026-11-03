@@ -1,6 +1,9 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// The static storage graph reaches the Socket.IO transport; register its external boundary before any import.
+vi.mock('socket.io-client', async (importOriginal) =>
+    (await import('@/dev/testkit/harness/serverAccountConnectionHarness')).createSocketIoClientBoundary(importOriginal));
 import { createScmCapabilities, type ScmWorkingSnapshot } from '@happier-dev/protocol/scm';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { createMachineFixture, createSessionFixture, flushHookEffects, renderScreen } from '@/dev/testkit';
@@ -89,6 +92,8 @@ describe('SessionRightPanel git sub-tabs', () => {
     it('keeps a missing workspace in recovery without issuing an unscoped SCM request', async () => {
         storage.getState().applySessions([createSessionFixture({ id: 's1', serverId: runtime.serverId, active: true, metadata: { path: '', machineId: 'm1', host: 'test-machine' } })]);
         const screen = await renderPanel();
+        // Settle effects as the positive sibling does, so a late unscoped refresh would be seen.
+        await flushHookEffects({ cycles: 3, turns: 3 });
         expect(screen.findHostByTestId('session-rightpanel-surface-git')).not.toBeNull();
         expect(rpc.mock.calls.some(([method]) => method === RPC_METHODS.SCM_STATUS_SNAPSHOT)).toBe(false);
     });
@@ -114,12 +119,15 @@ describe('SessionRightPanel git sub-tabs', () => {
         expect(screen.findHostByTestId('session-rightpanel-git-subtab:history')).toBeNull();
     });
 
-    it('hides the composer when repository capabilities deny commits', async () => {
-        snapshot = { ...createSnapshot(), capabilities: createScmCapabilities({ readStatus: true, readLog: true, writeCommit: false }) };
+    it.each([
+        [false, 'hides'],
+        [true, 'shows'],
+    ])('repository capabilities writeCommit %s: %s the composer', async (writeCommit) => {
+        snapshot = { ...createSnapshot(), capabilities: createScmCapabilities({ readStatus: true, readLog: true, writeCommit }) };
         storage.getState().applySettingsLocal({ experiments: true, featureToggles: { 'scm.writeOperations': true } });
         storage.getState().updateSessionProjectScmSnapshot('s1', snapshot, runtime.serverId);
         const screen = await renderPanel();
-        expect(screen.findHostByTestId('scm-commit-message')).toBeNull();
+        expect(screen.findHostByTestId('scm-commit-message') !== null).toBe(writeCommit);
         expect(screen.findHostByTestId('session-rightpanel-git-subtab:history')).not.toBeNull();
     });
 

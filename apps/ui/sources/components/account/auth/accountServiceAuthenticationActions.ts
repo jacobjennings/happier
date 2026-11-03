@@ -13,7 +13,7 @@ import { describeHomeAuthenticationAction } from './homeAuthenticationActionPres
 
 type OAuthExecution = Extract<AccountDirectoryAuthenticationAction['execution'], { kind: 'oauth' }>;
 
-export async function startAccountServiceOAuthAuthentication(input: Readonly<{
+async function startAccountServiceOAuthAuthentication(input: Readonly<{
     authority: VerifiedAccountServiceAuthority;
     execution: OAuthExecution;
     intent: AccountContinuationIntent;
@@ -41,7 +41,7 @@ export async function startAccountServiceOAuthAuthentication(input: Readonly<{
  * provider return lands back on the same origin and the page it left re-reads its sign-in; native
  * hands the URL to the OS.
  */
-export async function leaveForAccountServiceAuthUrl(url: string): Promise<void> {
+async function leaveForAccountServiceAuthUrl(url: string): Promise<void> {
     if (Platform.OS === 'web') {
         const location = typeof window !== 'undefined' ? window.location : null;
         if (location && typeof location.assign === 'function') {

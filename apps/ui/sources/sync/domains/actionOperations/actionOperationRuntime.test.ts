@@ -8,6 +8,15 @@ import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol';
 import { ACTION_OPERATION_RPC_METHODS_V2, projectActionOperationSnapshotForV1Reader } from '@happier-dev/protocol/actions/operations/v1';
 import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpcErrors';
 import { listActionOperations, type ActionOperationRpc } from '@/sync/ops/actionOperations';
+import { createDeferred, flushHookEffects } from '@/dev/testkit';
+import { clearMachineRequestReachabilityForMachine } from '@/sync/domains/machines/reachability/machineReachability';
+
+const transport = vi.hoisted(() => ({ call: vi.fn() }));
+// The daemon RPC is the system boundary; reconciliation, schemas and recovery stay real.
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', async () => {
+    const { createServerScopedMachineRpcBoundaryMock } = await import('@/dev/testkit/mocks/serverScopedRpc');
+    return createServerScopedMachineRpcBoundaryMock(transport.call);
+});
 
 import { createActionOperationStore } from './actionOperationStore';
 import { createActionOperationSelectors } from './actionOperationSelectors';
@@ -16,6 +25,7 @@ import {
     bindActionOperationRuntimeToAccountLifetime,
     ActionOperationRuntime,
     reconcileActionOperationsOnce,
+    createActionOperationRuntimeCoordinator,
     type ActionOperationMachineRuntimeScope,
 } from './actionOperationRuntime';
 
@@ -44,6 +54,66 @@ function operation(overrides: Partial<ActionOperationSnapshotV1> = {}): ActionOp
 }
 
 describe('action operation observation runtime', () => {
+    it('hydrates retained setup after a pushed Machine recovery, sharing bursts and stopping retired reads without polling', async () => {
+        const { actionOperationStore } = await import('./actionOperationStore');
+        actionOperationStore.reset();
+        transport.call.mockReset();
+        const retained = operation({ actionId: 'projects.prepare', state: 'failed', startedAt: 1_000, settledAt: 1_001,
+            error: { errorCode: 'project_setup_step_failed', error: 'Setup failed' }, domainRef: {
+                kind: 'projectCommand', purpose: 'setup', serverId: scope.serverId, machineId: scope.machineId,
+                workspaceRefId: 'workspace', cwd: '/project', terminalId: 'output', exitCode: 1,
+            } });
+        const recovery = createDeferred<{ items: ActionOperationSnapshotV1[]; nextCursor: null }>();
+        transport.call.mockRejectedValueOnce(Object.assign(new Error('Transport disconnected'), { rpcErrorCode: 'MACHINE_RPC_UNREACHABLE' }))
+            .mockReturnValueOnce(recovery.promise).mockResolvedValue({ items: [retained], nextCursor: null });
+        const coordinator = createActionOperationRuntimeCoordinator();
+        const address = actionOperationAddressKey({ serverId: scope.serverId, operationId: retained.operationId });
+        const observation = () => actionOperationStore.getSnapshot().machineObservationByKey.get(actionOperationMachineAddressKey(scope));
+        try {
+            coordinator.reconcile([scope]);
+            await flushHookEffects();
+            expect(observation()).toBe('reconnecting');
+            expect(transport.call).toHaveBeenCalledTimes(1);
+            clearMachineRequestReachabilityForMachine({ ...scope, accountId: 'other-account' }, scope.machineId);
+            clearMachineRequestReachabilityForMachine(scope, 'other-machine');
+            await flushHookEffects();
+            expect(transport.call).toHaveBeenCalledTimes(1);
+            clearMachineRequestReachabilityForMachine(scope, scope.machineId);
+            await flushHookEffects();
+            expect(transport.call).toHaveBeenCalledTimes(2);
+            for (let arrival = 0; arrival < 100; arrival++) clearMachineRequestReachabilityForMachine(scope, scope.machineId);
+            await flushHookEffects();
+            expect(transport.call).toHaveBeenCalledTimes(2);
+            recovery.resolve({ items: [retained], nextCursor: null });
+            await flushHookEffects();
+            expect(actionOperationStore.getSnapshot().operationsByKey.get(address)?.snapshot).toEqual(retained);
+            expect(observation()).toBe('available');
+            // A recovery during a pending read needs one fresh reconciliation, never one per wake.
+            expect(transport.call).toHaveBeenCalledTimes(3);
+            const published = actionOperationStore.getSnapshot();
+            vi.useFakeTimers();
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(transport.call).toHaveBeenCalledTimes(3);
+            expect(actionOperationStore.getSnapshot()).toBe(published);
+            vi.useRealTimers();
+            const retired = createDeferred<{ items: ActionOperationSnapshotV1[]; nextCursor: null }>();
+            transport.call.mockReturnValueOnce(retired.promise);
+            clearMachineRequestReachabilityForMachine(scope, scope.machineId);
+            await flushHookEffects();
+            const signal = transport.call.mock.calls.at(-1)?.[0].signal as AbortSignal;
+            coordinator.stopAll();
+            expect(signal.aborted).toBe(true);
+            retired.resolve({ items: [], nextCursor: null });
+            clearMachineRequestReachabilityForMachine(scope, scope.machineId);
+            await flushHookEffects();
+            expect(actionOperationStore.getSnapshot()).toBe(published);
+            expect(transport.call).toHaveBeenCalledTimes(4);
+        } finally {
+            vi.useRealTimers();
+            coordinator.stopAll();
+            actionOperationStore.reset();
+        }
+    });
     it('does not commit its mounted runtime when visible Machine details change without membership changes', async () => {
         const previous = storage.getState();
         const serverId = getActiveServerSnapshot().serverId;

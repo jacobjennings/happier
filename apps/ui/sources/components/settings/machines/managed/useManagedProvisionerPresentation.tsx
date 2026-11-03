@@ -20,6 +20,10 @@ import { buildQualifiedPluginContributionKey } from '@happier-dev/protocol/plugi
 import { BUNDLED_MACHINE_PROVISIONER_DECLARATIONS } from '@/agents/registry/generatedBundledPluginEntries';
 
 type Provisioner = MachineProvisionersListResultV1['provisioners'][number];
+// Identity, translations, credential titles and repair/option Actions are the
+// presented question. Other Agent, tool and workflow inventories are unrelated.
+const PRESENTATION_SECTIONS = ['familiesById.pluginUi', 'familiesById.machineProvisioners',
+    'familiesById.connectedAccounts', 'actionsById', 'resourcesById'] as const;
 /**
  * A provisioner's mark at each slot it stands in (lab `l12-kit.js` / `screens-x-machines.js`): a page
  * header, a receipt's identity or a provider tile, a list row, the collection rail. No tile behind it.
@@ -69,6 +73,7 @@ export function useManagedProvisionerPresentation(input: Readonly<{
     refreshKey?: number;
 }>) {
     const projection = useDaemonMergedProjectionInputs({ serverId: input.serverId, machineId: input.controller?.machineId, enabled: !!input.controller,
+        sections: PRESENTATION_SECTIONS,
         ...(input.refreshKey === undefined ? {} : { refreshKey: input.refreshKey }) });
     const uiProjection = projection.inputs?.pluginUiProjection ?? EMPTY_PLUGIN_UI_PROJECTION;
     const locale = getPreferredLanguage();

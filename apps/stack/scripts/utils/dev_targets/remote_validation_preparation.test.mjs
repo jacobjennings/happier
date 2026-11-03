@@ -659,6 +659,26 @@ writeFileSync(root + '/published-plugin', dist);`);
   assert.equal(readFileSync(join(root, 'published-plugin'), 'utf8'), 'export const generation = 2;\n');
 });
 
+test('UI source-test preparation materializes the replica-owned atmosphere core through the checkout generator', async (t) => {
+  const { root } = await createTempFixture(t, { prefix: 'hstack-ui-atmosphere-preparation-' });
+  const tools = join(root, 'apps/ui/tools/atmosphere');
+  mkdirSync(tools, { recursive: true });
+  writeFileSync(join(root, 'apps/ui/package.json'), JSON.stringify({ name: '@fixture/ui' }));
+  // The checkout's own generator is its process boundary (it needs the
+  // replica's installed esbuild); preparation must call it, natively only.
+  writeFileSync(join(tools, 'buildAtmosphereRenderers.mjs'), `import { mkdirSync, writeFileSync } from 'node:fs';
+export async function buildAtmosphereRenderers({ web = true } = {}) {
+  mkdirSync(new URL('../../sources/components/atmosphere/', import.meta.url), { recursive: true });
+  writeFileSync(new URL('../../sources/components/atmosphere/backdropWorkletCore.generated.js', import.meta.url), 'web=' + web);
+}
+`);
+  const output = join(root, 'apps/ui/sources/components/atmosphere/backdropWorkletCore.generated.js');
+  await prepareRemoteValidationWorkspace({ repoDir: root, componentRelativeDir: 'apps/cli', validationKind: 'source-test' });
+  assert.equal(existsSync(output), false, 'only UI source tests consume the atmosphere core');
+  await prepareRemoteValidationWorkspace({ repoDir: root, componentRelativeDir: 'apps/ui', validationKind: 'source-test' });
+  assert.equal(readFileSync(output, 'utf8'), 'web=false');
+});
+
 test('source-test readers leave cold, current and stale outputs to their producers', async (t) => {
   const { root } = await createTempFixture(t, { prefix: 'hstack-source-preparation-' });
   writeFileSync(join(root, 'package.json'), JSON.stringify({ private: true }));

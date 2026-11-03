@@ -12,7 +12,8 @@ import { getStorage } from '@/sync/domains/state/storage';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { setSessionManager } from '@/sync/ops/relations/setSessionManager';
 import { t } from '@/text';
-import { getSessionName } from '@/utils/sessions/sessionUtils';
+import { sessionDisplayTitle } from '@/utils/sessions/sessionDisplayTitle';
+import { readSessionPresentationRecord, readSessionPresentationServerId, readSessionPresentationInputDisplay, readSessionPresentationInputRelations } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 
 import { loadSessionManagerEligibility, type SessionManagerEligibilitySnapshot } from '@/sync/ops/relations/sessionManagerEligibility';
 
@@ -63,7 +64,7 @@ export function PutUnderSessionModal(props: PutUnderSessionModalProps) {
         const state = getStorage().getState();
         const sessions = selectSessionRelationRecords(state.sessions, props.serverId, state.sessionListRowsByServerId);
         const self = sessions[props.sessionId] ?? null;
-        return { sessions, currentLeadId: readSessionManagerSessionIdV1(self),
+        return { sessions, currentLeadId: readSessionManagerSessionIdV1(self ? readSessionPresentationInputRelations(self) : null),
             sessionId: props.sessionId, serverId: props.serverId,
             lifetime: captureActiveServerAccountScopeLifetime() };
     });
@@ -85,8 +86,8 @@ export function PutUnderSessionModal(props: PutUnderSessionModalProps) {
         const abort = new AbortController();
         let loaded: SessionManagerEligibilitySnapshot | null = null;
         const candidateSessionIds = Object.values(snapshot.sessions)
-            .filter((session) => (session.serverId ?? null) === props.serverId && session.id !== props.sessionId)
-            .map((session) => session.id);
+            .filter((session) => (readSessionPresentationServerId(session) ?? null) === props.serverId && readSessionPresentationRecord(session).id !== props.sessionId)
+            .map((session) => readSessionPresentationRecord(session).id);
         void loadSessionManagerEligibility({
             serverId: props.serverId,
             sessionId: props.sessionId,
@@ -117,7 +118,6 @@ export function PutUnderSessionModal(props: PutUnderSessionModalProps) {
             sessions: snapshot.sessions,
             sessionId: props.sessionId,
             facts,
-            describeName: (session) => getSessionName(session, session.serverId ?? null),
         });
         return {
             id: 'leads',
@@ -141,15 +141,16 @@ export function PutUnderSessionModal(props: PutUnderSessionModalProps) {
         if (busy) return;
         const state = getStorage().getState();
         const sessions = selectSessionRelationRecords(state.sessions, props.serverId, state.sessionListRowsByServerId);
-        const self = sessions[props.sessionId];
+        const selfInput = sessions[props.sessionId];
+        const self = selfInput ? readSessionPresentationRecord(selfInput) : null;
         if (!snapshot.lifetime?.isCurrent() || props.serverId !== snapshot.serverId || props.sessionId !== snapshot.sessionId
-            || !self || (self.serverId ?? null) !== snapshot.serverId) {
+            || !self || !selfInput || (readSessionPresentationServerId(selfInput) ?? null) !== snapshot.serverId) {
             onClose();
             return;
         }
         if (!facts?.isCurrent() || facts.serverId !== snapshot.serverId || facts.accountId !== snapshot.lifetime.scope.accountId
             || facts.sessionId !== snapshot.sessionId || facts.currentManagerSessionId !== snapshot.currentLeadId
-            || readSessionManagerSessionIdV1(self) !== snapshot.currentLeadId) {
+            || readSessionManagerSessionIdV1(readSessionPresentationInputRelations(selfInput)) !== snapshot.currentLeadId) {
             setError(describeSessionListDropReason('unavailable').message);
             return;
         }
@@ -195,7 +196,7 @@ export function PutUnderSessionModal(props: PutUnderSessionModalProps) {
     // Lab K1c: the sheet names what it moves ("Put Review #2481 under…").
     const title = React.useMemo(() => {
         const self = snapshot.sessions[props.sessionId];
-        return self ? t('entityDragDrop.chooser.putUnderTitle', { item: getSessionName(self, self.serverId ?? null) }) : t('sessionWork.putUnder.title');
+        return self ? t('entityDragDrop.chooser.putUnderTitle', { item: sessionDisplayTitle(readSessionPresentationInputDisplay(self), readSessionPresentationServerId(self)) }) : t('sessionWork.putUnder.title');
     }, [props.sessionId, snapshot.sessions]);
     const chrome = React.useMemo(() => ({
         kind: 'card' as const,

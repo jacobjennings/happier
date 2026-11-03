@@ -8,24 +8,14 @@ describe('resolveRowLayoutMutationViewportOwnershipAction', () => {
     // WITHOUT passing the group-toggle choke point, so no visible-anchor hold was armed and
     // the expansion parked the viewport hours away (offset 5559 -> 2590, firstVisibleItemId
     // changed, zero writer events). Every expand/collapse row mutation must arm the ONE keyed hold.
-    it('arms the renderer hold for expand and collapse mutations', () => {
-        expect(resolveRowLayoutMutationViewportOwnershipAction({
-            reason: 'expand',
-        })).toBe('arm-visible-anchor-hold');
-        expect(resolveRowLayoutMutationViewportOwnershipAction({
-            reason: 'collapse',
-        })).toBe('arm-visible-anchor-hold');
-    });
-
-    it('arms the renderer hold for bounded async content replacement or growth', () => {
-        expect(resolveRowLayoutMutationViewportOwnershipAction({
-            reason: 'content-change',
-        })).toBe('arm-visible-anchor-hold');
-    });
-
-    it('never arms for non-toggle signature changes', () => {
-        expect(resolveRowLayoutMutationViewportOwnershipAction({
-            reason: 'signature-change',
-        })).toBe('none');
+    // Bounded async content replacement or growth arms the same hold; a non-toggle signature
+    // change (streaming re-signature) must never arm, or tail-follow and MVCP fight a hold.
+    it.each([
+        { reason: 'expand', action: 'arm-visible-anchor-hold' },
+        { reason: 'collapse', action: 'arm-visible-anchor-hold' },
+        { reason: 'content-change', action: 'arm-visible-anchor-hold' },
+        { reason: 'signature-change', action: 'none' },
+    ] as const)('resolves $reason row mutations to $action', ({ reason, action }) => {
+        expect(resolveRowLayoutMutationViewportOwnershipAction({ reason })).toBe(action);
     });
 });

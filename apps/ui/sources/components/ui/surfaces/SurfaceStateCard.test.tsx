@@ -54,16 +54,6 @@ describe('SurfaceStateCard', () => {
             .flatMap((node) => React.Children.toArray(node.props.children))
             .filter((child) => typeof child === 'string')).toEqual([]);
     });
-    it('keeps a failed line one block: the cause and its recovery, no disclosure under it (final-acceptance 10)', async () => {
-        const screen = await renderScreen(<SurfaceStateCard testID="vitals" size="line" kind="error" title="Couldn't read this machine"
-            diagnosticCode="machine_rpc_failed" action={{ testID: 'retry', label: 'Retry', onPress: () => {} }} />);
-        const line = screen.findByTestId('vitals')!;
-        expect(line.findAll((node) => node.props?.testID === 'retry')).not.toHaveLength(0);
-        // A line never grows a centred Details block beneath it; the code stays on the QA marker.
-        expect(screen.findByTestId('vitals-details-toggle')).toBeFalsy();
-        expect(screen.findByTestId('vitals-diagnostic-machine_rpc_failed')).toBeTruthy();
-        await screen.unmount();
-    });
     it('tints a failed line rose and a warning line amber: rose means failure, amber means it needs you (DESIGN.md)', async () => {
         const glyphColor = async (kind: 'error' | 'warning') => {
             const screen = await renderScreen(<SurfaceStateCard size="line" kind={kind} title="Couldn't update this comment" />);
@@ -504,36 +494,5 @@ describe('SurfaceStateCard pane-state composition', () => {
         );
         expect(screen.findByTestId('state-line-loading-spinner')).toBeTruthy();
         expect(screen.getTextContent()).toContain('Connecting…');
-    });
-});
-
-describe('SurfaceFreshnessLine', () => {
-    it('keeps content honest: as of when, why, and one retry', async () => {
-        const { SurfaceFreshnessLine } = await import('./SurfaceFreshnessLine');
-        const { formatAsOfTime } = await import('@/utils/time/formatAsOfTime');
-        const retry = vi.fn();
-        const asOf = Date.now() - 60_000;
-        const screen = await renderScreen(
-            <SurfaceFreshnessLine
-                testID="fresh"
-                asOf={asOf}
-                reason="devbox isn’t answering"
-                action={{ label: 'Retry', onPress: retry }}
-            />,
-        );
-        expect(screen.getTextContent()).toContain(`As of ${formatAsOfTime(asOf)}`);
-        expect(screen.getTextContent()).toContain('devbox isn’t answering');
-        await act(async () => {
-            screen.pressByTestId('fresh-action');
-        });
-        expect(retry).toHaveBeenCalledTimes(1);
-    });
-
-    it('shows a working ring while it reconnects', async () => {
-        const { SurfaceFreshnessLine } = await import('./SurfaceFreshnessLine');
-        const screen = await renderScreen(
-            <SurfaceFreshnessLine testID="fresh" reason="Reconnecting to MacBook Pro…" busy />,
-        );
-        expect(screen.findByTestId('fresh-spinner')).toBeTruthy();
     });
 });

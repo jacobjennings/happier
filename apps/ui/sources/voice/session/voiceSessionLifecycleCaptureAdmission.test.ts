@@ -167,10 +167,12 @@ describe('Voice session lifecycle capture admission', () => {
         expect(fixture.captureAdmission.acquire('dictation')).toEqual({ status: 'busy', activeOwner: 'conversation' });
 
         const stopping = fixture.lifecycle.stop(fixture.runtime.controlSessionId);
-        expect(fixture.lifecycle.getSnapshot().canStop || fixture.browser.micTrack.readyState === 'ended').toBe(true);
+        // End keeps its Stop control while local capture cleanup is still held.
+        expect(fixture.lifecycle.getSnapshot().canStop).toBe(true);
         const disposal = fixture.lifecycle.dispose();
         await cleanupStarted.promise;
         expect(fixture.audioContext.close).toHaveBeenCalledOnce();
+        expect(fixture.lifecycle.getSnapshot().canStop).toBe(true);
         expect(fixture.captureAdmission.acquire('dictation')).toEqual({ status: 'busy', activeOwner: 'conversation' });
         cleanup.resolve();
         await Promise.all([stopping, disposal]);

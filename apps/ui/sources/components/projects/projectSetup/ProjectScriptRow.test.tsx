@@ -102,6 +102,36 @@ describe('Script row title line', () => {
   });
 });
 
+describe('Running script row anatomy', () => {
+  const workspace: WorkspaceAddressV1 = { serverId: 'home', machineId: 'machine', workspaceId: 'ws', rootPath: '/repo' };
+  const running: ActionOperationProjection = {
+    serverId: 'home', observation: 'available', isUnavailableProjection: false,
+    snapshot: { version: 1, operationId: 'test-run', revision: 2, actionId: 'projects.script.run', state: 'running',
+      scope: { accountId: 'account', machineId: 'machine' }, title: 'test', createdAt: 1_000, startedAt: 1_100, cancellation: 'supported',
+      progress: { kind: 'output', label: 'ok src/cart.test.tsx (14 tests)' } as never,
+      domainRef: { kind: 'projectCommand', purpose: 'script', serverId: 'home', machineId: 'machine',
+        workspaceRefId: 'ws', cwd: '/repo', terminalId: 'pty' } },
+  };
+  const row = () => <ProjectScriptRow testID="script" workspace={workspace} name="test" badge="package.json" command="yarn test"
+    portable operation={running} idleText="Not run" pending={false} failureCode={null} compact={false} onRun={() => {}} />;
+
+  it('lets a wide row open into its output with a caret and the latest output line under its status', async () => {
+    const screen = await renderScreen(row());
+    expect(screen.findByTestId('script.caret')).toBeTruthy();
+    expect(screen.findByTestId('script.tail')).toBeTruthy();
+    await screen.unmount();
+  });
+
+  it('keeps the phone row to its status and Run control: the row press opens the output, no caret or output line', async () => {
+    device.current = 'phone';
+    const screen = await renderScreen(row());
+    expect(screen.findByTestId('script.caret')).toBeFalsy();
+    expect(screen.findByTestId('script.tail')).toBeFalsy();
+    expect(screen.findByTestId('script.run')).toBeTruthy();
+    await screen.unmount();
+  });
+});
+
 describe('Script output before a terminal exists', () => {
   it('shows the observed queue/copy/setup stage and actual target instead of empty output', async () => {
     const workspace: WorkspaceAddressV1 = { serverId: 'source-home', machineId: 'source-machine', workspaceId: 'source-workspace', rootPath: '/source' };
@@ -165,6 +195,34 @@ describe('Script output before a terminal exists', () => {
       workspaceRefId: workspace.workspaceId, controllerMachineId: 'source-machine',
     });
     expect(onRun).not.toHaveBeenCalled();
+  });
+});
+
+describe('A refusal newer than the retained run', () => {
+  const workspace: WorkspaceAddressV1 = { serverId: 'home', machineId: 'machine', workspaceId: 'ws', rootPath: '/repo' };
+  const finished: ActionOperationProjection = {
+    serverId: 'home', observation: 'available', isUnavailableProjection: false,
+    snapshot: {
+      version: 1, operationId: 'earlier', revision: 2, actionId: 'projects.script.run', state: 'succeeded',
+      scope: { accountId: 'account', machineId: 'machine' }, title: 'verify', createdAt: 1_000, startedAt: 1_100, settledAt: 2_000,
+      cancellation: 'supported',
+      domainRef: { kind: 'projectCommand', purpose: 'script', serverId: 'home', machineId: 'machine', workspaceRefId: 'ws', cwd: '/repo' },
+    },
+  };
+  const row = (failureCode: string | null) => <ProjectScriptRow testID="script" workspace={workspace} name="verify" badge={null}
+    command="devenv shell" portable={false} operation={finished} idleText="Not run" pending={false} failureCode={failureCode}
+    failureText={failureCode ? 'refusal sentence' : null} compact={false} onRun={() => {}} />;
+
+  it('says the refusal and keeps the earlier run\'s output out from under it', async () => {
+    const earlier = await renderScreen(row(null));
+    await earlier.pressByTestIdAsync('script');
+    expect(earlier.findAllByTestId('script.noOutput').length).toBeGreaterThan(0);
+    await earlier.unmount();
+    const refused = await renderScreen(row('native_tool_unavailable'));
+    await refused.pressByTestIdAsync('script');
+    expect(refused.getTextContent()).toContain('refusal sentence');
+    expect(refused.findAllByTestId('script.noOutput')).toHaveLength(0);
+    await refused.unmount();
   });
 });
 

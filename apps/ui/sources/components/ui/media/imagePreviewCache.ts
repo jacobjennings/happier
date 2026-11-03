@@ -216,20 +216,6 @@ export class ImagePreviewCache {
         }
     }
 
-    invalidatePaths(input: Readonly<{ sessionId: string; paths: ReadonlySet<string> }>): void {
-        const sessionId = input.sessionId;
-        if (!sessionId) return;
-
-        for (const [storageKey, entry] of this.entries) {
-            if (entry.sessionId !== sessionId) continue;
-            if (!input.paths.has(entry.filePath)) continue;
-            this.entries.delete(storageKey);
-            this.totalBytes -= entry.byteSize;
-            this.cleanupEntry(entry);
-            for (const listener of this.valueListeners.get(storageKey) ?? []) listener(null);
-        }
-    }
-
     private estimateBytes(value: ImagePreviewCacheValue): number {
         if (value.status === 'loaded') {
             if (typeof value.byteLength === 'number' && Number.isFinite(value.byteLength)) {

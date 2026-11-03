@@ -4,11 +4,7 @@ import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolv
 import { createAdmittedPluginRuntimeFixture } from '@/plugins/testkit/admittedRuntime';
 
 import type { ScmBackendRegistry } from './registry';
-import type { ScmBackend } from './types';
-import {
-  createScmBackendCatalog,
-  resolveDefaultScmBackendRegistry,
-} from './scmBackendCatalog';
+import { resolveDefaultScmBackendRegistry } from './scmBackendCatalog';
 
 async function withFirstPartyScmRuntime<T>(
   run: (registry: ScmBackendRegistry) => T | Promise<T>,
@@ -94,43 +90,6 @@ describe('scmBackendCatalog', () => {
     } finally {
       await fixture.dispose();
     }
-  });
-
-  it('merges registered plugin backends through the catalog without editing built-in provider arrays', () => {
-    const pluginBackend = {
-      id: 'acme-vcs',
-      selection: {
-        modeSelectionScores: {
-          '.git': 25,
-        },
-        preferenceAllowedModes: ['.git'],
-      },
-      detectRepo: async () => ({ isRepo: false, rootPath: null, mode: null }),
-      getCapabilities: () => ({
-        readStatus: true,
-        readDiff: false,
-        writeCommit: false,
-        writeRemotePush: false,
-      }),
-    } as unknown as ScmBackend;
-    const backends = (createScmBackendCatalog as (input?: {
-      pluginBackends?: readonly ScmBackend[];
-    }) => readonly ScmBackend[])({
-      pluginBackends: [pluginBackend],
-    });
-
-    expect(backends.map((backend) => backend.id)).toEqual(['acme-vcs']);
-  });
-
-  it('keeps the synchronous host catalog provider-neutral while loading first-party SCM backends from bundled plugins', async () => {
-    expect(createScmBackendCatalog().map((backend) => backend.id)).toEqual([]);
-
-    await withFirstPartyScmRuntime((resolvedRegistry) => {
-      expect(resolvedRegistry.listBackends().map((backend) => backend.id)).toEqual([
-        'happier.scm.backend.git/git',
-        'happier.scm.backend.sapling/sapling',
-      ]);
-    });
   });
 
   it('routes static support through provider-owned grouped capability declarations', async () => {

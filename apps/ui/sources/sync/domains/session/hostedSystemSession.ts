@@ -1,19 +1,22 @@
 import { SESSION_METADATA_LAYOUT_VERSION_V1, createPlainSessionOwnerMetadataEnvelopeV1, createSessionOwnerMetadataV1, projectSessionSharedMetadataV1, type SessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import { V2SessionByIdResponseSchema, type V2SessionByIdResponse } from '@happier-dev/protocol/sessions/control/contract';
 import { sealSessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataEnvelopesV1';
+import { projectSessionDisplayV1, type SessionDisplayProjectionV1 } from '@happier-dev/protocol';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { encodeBase64 } from '@/encryption/base64';
 import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 import type { EnsureSessionVisibleForRouteResult } from '@/sync/domains/session/sessionRouteHydrationState';
 import type { Encryptor } from '@/sync/encryption/encryptor';
+import { createResourceDataKey } from '@/sync/encryption/resourceDataKey';
+import { createSessionDisplayCrypto } from '@/sync/encryption/sessionDisplayCrypto';
 import type {
     ServerAccountRequestAuthority,
 } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 
 type HostedSystemSessionEncryption = Readonly<{
     openEncryption(dataEncryptionKey: Uint8Array | null): Promise<Encryptor>;
-    encryptEncryptionKey(key: Uint8Array): Promise<Uint8Array>;
+    encryptEncryptionKey(key: Uint8Array): Promise<Uint8Array | null>;
 }>;
 
 export type SessionCreateOrLoadInput = Readonly<{
@@ -73,6 +76,7 @@ type HostedSystemSessionCreateBody = Readonly<{
     metadataLayoutVersion: typeof SESSION_METADATA_LAYOUT_VERSION_V1;
     sharedMetadata: Readonly<{ ciphertext: string }>;
     ownerMetadata: SessionOwnerMetadataEnvelopeV1;
+    displayProjectionV1: SessionDisplayProjectionV1;
     agentState: null;
     dataEncryptionKey: string | null;
     encryptionMode: 'plain' | 'e2ee';
@@ -110,6 +114,30 @@ async function buildCreateBody(
             ownerMetadata.unsupportedFields,
         );
     }
+    const display = projectSessionDisplayV1({ sharedMetadata, ownerMetadata: ownerMetadata.ownerMetadata });
+    const ownerDisplay = display.owner;
+    if (!ownerDisplay) throw new Error('Hosted system session owner display projection failed');
+    const buildDisplayProjection = async (encryptor?: Encryptor): Promise<SessionDisplayProjectionV1> => {
+        const crypto = createSessionDisplayCrypto({
+            sessionMode: input.accountMode,
+            accountMode: input.accountMode,
+            credentials: input.credentials,
+            sessionEncryption: encryptor ? {
+                encryptRaw: async (payload) => {
+                    const [encrypted] = await encryptor.encrypt([payload]);
+                    if (!encrypted) throw new Error('Hosted system session display encryption failed');
+                    return encodeBase64(encrypted, 'base64');
+                },
+            } : null,
+        });
+        return {
+            v: 1,
+            sourceMetadataVersion: 0,
+            metadataLayoutVersion: SESSION_METADATA_LAYOUT_VERSION_V1,
+            shared: await crypto.encodeSharedDisplay(display.shared),
+            owner: crypto.encodeOwnerDisplay(ownerDisplay),
+        };
+    };
     if (input.accountMode === 'plain') {
         return {
             tag: input.tag,
@@ -120,19 +148,26 @@ async function buildCreateBody(
             ownerMetadata: createPlainSessionOwnerMetadataEnvelopeV1(
                 ownerMetadata.ownerMetadata,
             ),
+            displayProjectionV1: await buildDisplayProjection(),
             agentState: null,
             dataEncryptionKey: null,
             encryptionMode: 'plain',
         };
     }
 
-    if (!input.encryption) {
+    const encryption = input.encryption;
+    if (!encryption) {
         throw new Error('Account encryption material is required to create an E2EE hosted system session');
     }
-    const dataEncryptionKey = 'encryption' in input.credentials
-        ? input.randomBytes(32)
-        : null;
-    const encryptor = await input.encryption.openEncryption(dataEncryptionKey);
+    const resourceKey = await createResourceDataKey({
+        mode: 'e2ee',
+        encryptDataEncryptionKey: (dataKey) =>
+            encryption.encryptEncryptionKey(dataKey),
+    });
+    if (!resourceKey || resourceKey.mode !== 'e2ee') {
+        throw new Error('Account encryption material is required to create an E2EE hosted system session');
+    }
+    const encryptor = await encryption.openEncryption(resourceKey.dataKey);
     const [encryptedSharedMetadata] = await encryptor.encrypt([sharedMetadata]);
     if (!encryptedSharedMetadata) {
         throw new Error('Hosted system session metadata encryption failed');
@@ -151,13 +186,9 @@ async function buildCreateBody(
             ownerMetadata: ownerMetadata.ownerMetadata,
             randomBytes: input.randomBytes,
         }),
+        displayProjectionV1: await buildDisplayProjection(encryptor),
         agentState: null,
-        dataEncryptionKey: dataEncryptionKey
-            ? encodeBase64(
-                await input.encryption.encryptEncryptionKey(dataEncryptionKey),
-                'base64',
-            )
-            : null,
+        dataEncryptionKey: resourceKey.dataEncryptionKey,
         encryptionMode: 'e2ee',
     };
 }

@@ -155,6 +155,8 @@ export const managedMachinesEn = {
             billedWhileRunning: "Billed only while it runs.",
             imageDescription: "What it starts with. Happier installs itself on top.",
             locationDescription: "Closer to you is quicker to type into.",
+            network: "Network",
+            networkDescription: "Which public addresses it gets. The price follows your choice.",
             localLocationDescription: ({ computer }: { computer: string }) => `Where it runs on ${computer}.`,
             localSizeDescription: ({ computer }: { computer: string }) => `Its share of ${computer} while it runs. Stopping frees it.`,
             headroom: ({ computer }: { computer: string }) => `Left for ${computer}`,
@@ -263,7 +265,8 @@ export const managedMachinesEn = {
         },
         credential: {
             refused: "The provisioner connection is no longer available.",
-            required: "Connect a provisioner account to see available machines.",
+            required: "Connect an account to see what you can create.",
+            choose: "Choose an account to see what you can create.",
         },
         power: {
             pending: ({ provider, state }: { provider: string; state: string }) => `Waiting for ${provider} to confirm ${state}…`,
@@ -290,6 +293,8 @@ export const managedMachinesEn = {
             refused: ({ name }: { name: string }) => `You don’t have permission to manage ${name}.`,
         },
         inspect: {
+            notCreated: "This machine wasn’t created",
+            checkFailed: "Couldn’t confirm this machine",
             checkNow: "Check now",
         },
         actions: {

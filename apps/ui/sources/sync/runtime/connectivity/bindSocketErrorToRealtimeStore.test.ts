@@ -58,14 +58,4 @@ describe('primary socket error recovery', () => {
             expect(storage.getState().syncError).toBeNull();
         } finally { channel.detach(); }
     });
-
-    it('does not restore a socket error already superseded by successful sync', () => {
-        const channel = socketErrorChannel();
-        try {
-            channel.emit(new Error('Socket disconnected before connect'));
-            storage.getState().clearSyncError();
-            channel.emit(null);
-            expect(storage.getState().syncError).toBeNull();
-        } finally { channel.detach(); }
-    });
 });

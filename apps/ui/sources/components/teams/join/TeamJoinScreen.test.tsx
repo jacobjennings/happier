@@ -178,9 +178,10 @@ beforeEach(() => {
     runtimeFetchMock.mockReset();
     serverFetchMock.mockReset();
     accountAuthorityMock.mockReset();
+    // The authenticated transport records the exact Account scope its authority was bound to.
     accountAuthorityMock.mockImplementation(
-        async (_params: unknown, operation: (authority: Readonly<{ request: typeof serverFetchMock }>) => Promise<unknown>) =>
-            await operation({ request: serverFetchMock }),
+        async (params: Readonly<{ scope: unknown }>, operation: (authority: unknown) => Promise<unknown>) =>
+            await operation({ request: (path: string, init?: RequestInit) => serverFetchMock(path, init, { accountScope: params.scope }) }),
     );
     getCredentialsForServerUrlMock.mockReset();
     getCredentialsForServerUrlMock.mockResolvedValue({ token: tokenForSub('account') });
@@ -215,9 +216,9 @@ describe('the exact Home contextual entry refusal', () => {
             runtimeFetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'feature-disabled' }), { status: 403 }));
             const screen = await renderScreen(<TeamJoinScreen token={TOKEN} homeTarget="srv_feature_home" />);
             await waitForTestId(screen, `team-auth-entry-${state === 'disabled' ? 'unavailable' : state === 'network' ? 'offline' : 'incompatible'}`);
-            expect(accountAuthorityMock).toHaveBeenCalledWith(expect.objectContaining({
-                scope: { serverId: 'srv_feature_home', accountId: 'account' },
-            }), expect.any(Function));
+            expect(serverFetchMock).toHaveBeenCalledWith('/v1/auth/entry', expect.anything(), {
+                accountScope: { serverId: 'srv_feature_home', accountId: 'account' },
+            });
             expect(screen.findByTestId('team-auth-entry-join')).toBeNull();
             expect(screen.findByTestId('team-join-account-authentication')).toBeNull();
             expect(screen.getTextContent()).not.toContain('Untrusted Team');

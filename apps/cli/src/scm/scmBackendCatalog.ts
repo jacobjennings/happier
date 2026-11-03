@@ -1,4 +1,3 @@
-import { createScmBackendCatalog as createBuiltInScmBackendCatalog } from './providers/catalog';
 import { createScmBackendRegistry, type ScmBackendRegistry } from './registry';
 import type { ScmBackend } from './types';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
@@ -8,22 +7,11 @@ import {
 } from './pluginBackends/runtimeRegistry';
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
 
-export function createScmBackendCatalogWithPlugins(input?: Readonly<{
-    pluginBackends?: readonly ScmBackend[];
-    pluginRuntimeRegistry?: ScmBackendPluginRuntimeRegistry;
+function createScmBackendCatalogWithPlugins(input: Readonly<{
+    pluginRuntimeRegistry: ScmBackendPluginRuntimeRegistry;
 }>): readonly ScmBackend[] {
-    const pluginRuntimeBackends = input?.pluginRuntimeRegistry
-        ? createPluginScmBackendsFromRuntimeRegistry(input.pluginRuntimeRegistry)
-        : [];
-
-    return Object.freeze([
-        ...createBuiltInScmBackendCatalog(),
-        ...(input?.pluginBackends ?? []),
-        ...pluginRuntimeBackends,
-    ]);
+    return Object.freeze([...createPluginScmBackendsFromRuntimeRegistry(input.pluginRuntimeRegistry)]);
 }
-
-export { createScmBackendCatalogWithPlugins as createScmBackendCatalog };
 
 export async function activateScmRuntimeContributionsOnDemand(
     runtimeRegistry: ScmBackendPluginRuntimeRegistry & Pick<

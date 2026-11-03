@@ -1806,7 +1806,6 @@
     "src/scm/workspace/workspaceLocationInspection.ts",
     "src/scm/workspace/workspacePortability.ts",
     "src/scm/workspace/workspacePostMaterialization.ts",
-    "src/scm/workspace/workspaceSyncArtifacts.ts",
     "src/scm/workspace/workspaceTransferResolution.ts",
     "src/server/homeTarget.ts",
     "src/server/serverProfiles.ts",

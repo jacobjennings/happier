@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/lists/itemTextClamp';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
 import { Text } from '@/components/ui/text/Text';
+import { metaFigureStyle } from '@/components/ui/text/metaFigures';
 import { FindHighlightedText } from '@/components/ui/text/FindHighlightedText';
 import { queryRanges } from '@/components/ui/text/queryRanges';
 import { MiddleEllipsisText, splitForWebMiddleEllipsis } from '@/components/ui/text/MiddleEllipsisText';
@@ -41,7 +42,6 @@ import {
     ITEM_TITLE_TEXT_METRICS,
 } from '@/components/ui/lists/itemDensityMetrics';
 import {
-    isTouchPrimaryPointer,
     resolvePageRowDensityInput,
     resolvePageRowMetrics,
     type PageRowMetrics,
@@ -51,19 +51,21 @@ import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import { buildActionRowAccessibilityLabel } from './actionRowAccessibility';
 import { Icon } from '@/components/ui/icons/Icon';
 import { ICON_LABEL_OPTICAL_NUDGE_STYLE } from '@/components/ui/icons/iconOpticalAlignment';
-import { useListPresentation } from './listPresentation';
+import { useListPresentation, useWidgetBodyRowEdge } from './listPresentation';
 import { GROUPED_SURFACE_RADIUS_PX, PAGE_LIST_METRICS } from './pageListMetrics';
 import { HAPPIER_RADIUS_V1 } from '@happier-dev/plugin-ui/environment';
 import { resolveHappierRowTitleMetaPlacement } from '@happier-dev/plugin-ui/advanced';
 import { useSectionLeadingColumn } from './sectionLeadingColumn';
 import {
     HAPPIER_COLLECTION_LIST_METRICS,
+    type HappierCollectionRowRole,
     HappierPageRowFieldLayoutContext,
     HAPPIER_META_COLUMN_STYLE,
     resolveHappierItemBehavior,
     resolveHappierPageRowFieldMaxWidth,
     HappierDivider,
     happierPageRowDividerInset,
+    happierPageRowDividerWidth,
     isHappierPageRowNarrow,
     resolveHappierPageRowDetailLayout,
     isHappierPageRowAccessoryStacked,
@@ -123,6 +125,12 @@ export interface ItemProps {
      * leading glyph or mark, so a row's own figures (a bar, a verdict) read as part of its text.
      */
     bottomElementInset?: 'row' | 'text';
+    /**
+     * Render `bottomElement` below the row's Pressable instead of inside it. Use this when the bottom
+     * content holds its own controls (a repair button, a link): each keeps its own activation and the
+     * row never nests one button inside another on React Native Web.
+     */
+    bottomElementOutsidePressable?: boolean;
     /** An inline mark after a string title, such as a "Beta" badge. */
     titleAccessory?: React.ReactNode;
     /**
@@ -174,7 +182,7 @@ export interface ItemProps {
      * the flat {@link MENU_ROW_METRICS} — a smaller glyph on a shorter row — and ignores the list
      * density setting entirely. See that constant for why density has no business reaching a menu.
      */
-    rowRole?: 'item' | 'menu';
+    rowRole?: HappierCollectionRowRole;
     rightElement?: React.ReactNode;
     /**
      * The right element is facts (telemetry, a quiet word), not a control: when the title would fall below
@@ -261,12 +269,23 @@ export interface ItemProps {
      */
     rightElementOutsidePressable?: boolean;
     /**
+     * Render `leftElement` as a sibling of the row Pressable, before it. Use this when the leading
+     * slot holds its own controls (a reorder handle, a radio): each keeps its own activation and
+     * the row never nests one button inside another on React Native Web.
+     */
+    leftElementOutsidePressable?: boolean;
+    /**
      * Where the right accessory sits. `inline` (default) keeps it beside the
      * label; `stacked` always places it under the label at full width (visual pickers, text areas);
      * `adaptive` moves it under the label only when the row is too narrow for both (segmented controls,
      * field selects), using the row's own width in pages, grouped sections and popovers.
      */
     accessoryLayout?: 'inline' | 'stacked' | 'adaptive';
+    /**
+     * Whether this row's leading glyph makes its page section reserve the leading column for every row
+     * (default). An add row's plus keeps to its own column: the rows it adds to keep their own edge.
+     */
+    reservesSectionLeadingColumn?: boolean;
     /**
      * How much of the row an inline accessory may take. `half` (default) holds it to half the row so a
      * long value never squeezes the label. `row` is for trailing facts and marks that must never be cut
@@ -297,6 +316,9 @@ export interface ItemProps {
  * wherever they are appended; see {@link MENU_ROW_METRICS} for why a menu ignores density at all.
  */
 const MENU_ROW_HEIGHT_STYLE = { minHeight: MENU_ROW_METRICS.minHeightPx } as const;
+// A list row in a widget body stands on the body's edge: the frame's inset is the only one, so its glyph sits under
+// the frame's mark and its meta on the frame's edge (lab `rw` C).
+const BODY_EDGE_ROW_INSET_STYLE = { paddingHorizontal: 0 } as const;
 // The inset too: a host menu row and a plugin menu row (and the state line among them) start on one edge.
 const MENU_ROW_PADDING_STYLE = {
     paddingVertical: MENU_ROW_METRICS.paddingVerticalPx,
@@ -332,7 +354,7 @@ function resolvePageRowStyles(metrics: PageRowMetrics): PageRowStyles {
     const styles: PageRowStyles = {
         box: { minHeight: metrics.minHeightPx },
         padding: { paddingVertical: metrics.paddingVerticalPx },
-        title: { ...metrics.title, ...Typography.default('medium') },
+        title: { ...metrics.title, ...Typography.default(metrics.titleWeight) },
         subtitle: { ...metrics.subtitle },
         // A value summary reads at the title's size, in the regular face.
         detail: { ...metrics.title },
@@ -456,6 +478,13 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
         ...ITEM_TITLE_TEXT_METRICS.tight,
     },
     titleNormal: {
+        color: theme.colors.text.primary,
+    },
+    // An inspector fact's label steps back and its value leads (`PageRowMetrics.valueLeads`).
+    titleFact: {
+        color: theme.colors.text.secondary,
+    },
+    detailFact: {
         color: theme.colors.text.primary,
     },
     titleSelected: {
@@ -586,9 +615,6 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
         alignItems: 'stretch',
         gap: theme.space.s10,
     },
-    pageDivider: {
-        height: StyleSheet.hairlineWidth,
-    },
     accessoryMeasure: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -653,6 +679,7 @@ export const Item = React.memo<ItemProps>((props) => {
         subtitleAccessory,
         bottomElement,
         bottomElementInset,
+        bottomElementOutsidePressable = false,
         titleAccessory,
         titleQualifier,
         titleMeta,
@@ -715,9 +742,11 @@ export const Item = React.memo<ItemProps>((props) => {
         showChevron = true,
         keepChevronWithRightElement = false,
         rightElementOutsidePressable = false,
+        leftElementOutsidePressable = false,
         rightElementYields = false,
         accessoryLayout = 'inline',
         accessoryMaxWidth = 'half',
+        reservesSectionLeadingColumn = true,
         fieldAccessory = false,
         fieldAccessorySiblingPx,
         showDivider = true,
@@ -790,9 +819,9 @@ export const Item = React.memo<ItemProps>((props) => {
     // Handle long press for copy functionality
     const handlePressIn = React.useCallback(() => {
         longPressConsumedRef.current = false;
-        if (rightElementOutsidePressable && rightElement) setIsSplitPrimaryPressed(true);
+        if ((rightElementOutsidePressable && rightElement) || (leftElementOutsidePressable && leftElement)) setIsSplitPrimaryPressed(true);
         onPressIn?.();
-    }, [onPressIn, rightElement, rightElementOutsidePressable]);
+    }, [leftElement, leftElementOutsidePressable, onPressIn, rightElement, rightElementOutsidePressable]);
     const handlePressOut = React.useCallback(() => {
         setIsSplitPrimaryPressed(false);
     }, []);
@@ -941,15 +970,17 @@ export const Item = React.memo<ItemProps>((props) => {
     const showSelectedBackground = sharedItemBehavior.selectionVisible;
     const groupCornerRadius = GROUPED_SURFACE_RADIUS_PX;
 
-    const titleColor = destructive ? styles.titleDestructive : (selected ? styles.titleSelected : styles.titleNormal);
+    const titleColorBase = destructive ? styles.titleDestructive : (selected ? styles.titleSelected : styles.titleNormal);
     const isCozy = resolvedDensity === 'cozy';
     const isCompact = resolvedDensity === 'compact';
     const isTight = resolvedDensity === 'tight';
     const resolvedIconDensity = isTight ? 'tight' : isCompact ? 'compact' : isCozy ? 'cozy' : 'comfortable';
     const hasSubtitleContent = Boolean(subtitle || subtitleAccessory);
     const isMenuRow = rowRole === 'menu';
+    const isCatalogRow = rowRole === 'catalogRow';
     const listPresentation = useListPresentation();
-    const isPageRow = listPresentation === 'page' && !isMenuRow;
+    const isPageRow = listPresentation === 'page' && !isMenuRow && !isCatalogRow;
+    const bodyEdgeRow = useWidgetBodyRowEdge() && !isPageRow && !isMenuRow && !isCatalogRow;
     // A page row is drawn at the user's density; a section's `compact` asks for its list shape.
     const pageRowMetrics = isPageRow
         ? resolvePageRowMetrics({
@@ -958,10 +989,11 @@ export const Item = React.memo<ItemProps>((props) => {
                 requested: resolvedDensity,
                 requestedExplicitly: densityInputs.requested,
             }),
-            touch: isTouchPrimaryPointer(),
         })
         : null;
     const pageRowStyles = pageRowMetrics ? resolvePageRowStyles(pageRowMetrics) : null;
+    const factRow = pageRowMetrics?.valueLeads === true && !destructive;
+    const titleColor = factRow ? styles.titleFact : titleColorBase;
     const [isNarrowRow, setIsNarrowRow] = React.useState(false);
     const [rowWidthPx, setRowWidthPx] = React.useState<number | null>(null);
     const [accessoryWidthPx, setAccessoryWidthPx] = React.useState<number | null>(null);
@@ -1017,7 +1049,7 @@ export const Item = React.memo<ItemProps>((props) => {
     const detailTrailingPx = theme.space.s8 + (rightElement != null || showAccessory ? 8 : 0)
         + (showAccessory ? ITEM_CHEVRON_SIZE[resolvedIconDensity] + theme.space.s4 : 0);
     // A page section reserves the leading column for all its rows when any row has an icon or mark.
-    const reservesLeadingColumn = useSectionLeadingColumn(isPageRow && (icon != null || leftElement != null));
+    const reservesLeadingColumn = useSectionLeadingColumn(isPageRow && reservesSectionLeadingColumn && (icon != null || leftElement != null));
     const { beneath: detailBeneath, inlineMaxWidthPx: detailInlineMaxWidthPx } = resolveHappierPageRowDetailLayout({
         rowWidthPx: measuresDetail ? rowWidthPx : null,
         detailWidthPx,
@@ -1108,13 +1140,14 @@ export const Item = React.memo<ItemProps>((props) => {
         : hasSubtitleContent
             ? (isTight ? styles.containerWithSubtitleTight : isCompact ? styles.containerWithSubtitleCompact : isCozy ? styles.containerWithSubtitleCozy : styles.containerWithSubtitle)
             : (isTight ? styles.containerWithoutSubtitleTight : isCompact ? styles.containerWithoutSubtitleCompact : isCozy ? styles.containerWithoutSubtitleCozy : styles.containerWithoutSubtitle);
+    const rowEdgeStyle = bodyEdgeRow ? BODY_EDGE_ROW_INSET_STYLE : null;
     const containerBase = isTight
-        ? [styles.container, styles.containerTight, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null, pageContainerStyle, stackedContainerStyle]
+        ? [styles.container, styles.containerTight, rowEdgeStyle, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null, pageContainerStyle, stackedContainerStyle]
         : isCompact
-            ? [styles.container, styles.containerCompact, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null, pageContainerStyle, stackedContainerStyle]
+            ? [styles.container, styles.containerCompact, rowEdgeStyle, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null, pageContainerStyle, stackedContainerStyle]
             : isCozy
-                ? [styles.container, styles.containerCozy, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null, pageContainerStyle, stackedContainerStyle]
-            : [styles.container, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null, pageContainerStyle, stackedContainerStyle];
+                ? [styles.container, styles.containerCozy, rowEdgeStyle, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null, pageContainerStyle, stackedContainerStyle]
+            : [styles.container, rowEdgeStyle, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null, pageContainerStyle, stackedContainerStyle];
     const alignsToFirstLine = contentAlign === 'start';
     const containerCore = alignsToFirstLine ? [containerBase, styles.containerAlignStart] : containerBase;
     const iconBoxSizeOverride = leadingMediaBox
@@ -1196,7 +1229,15 @@ export const Item = React.memo<ItemProps>((props) => {
     const subtitleSizeStyle = pageRowStyles
         ? pageRowStyles.subtitle
         : isTight ? styles.subtitleTight : isCompact ? styles.subtitleCompact : isCozy ? styles.subtitleCozy : null;
-    const detailSizeStyle = pageRowStyles ? pageRowStyles.detail : isTight ? styles.detailTight : isCompact ? styles.detailCompact : isCozy ? styles.detailCozy : null;
+    const factDetailStyle = React.useMemo(
+        () => (factRow && pageRowStyles ? [pageRowStyles.detail, styles.detailFact] : null),
+        [factRow, pageRowStyles, styles.detailFact],
+    );
+    const detailSizeStyle = pageRowStyles
+        ? (factDetailStyle ?? pageRowStyles.detail)
+        : isTight ? styles.detailTight : isCompact ? styles.detailCompact : isCozy ? styles.detailCozy : null;
+
+    const detailFigures = metaFigureStyle(detail);
 
     const [isHovered, setIsHovered] = React.useState(false);
     // The pointer over an accessory that sits beside the press target (a row's own menu) still engages the row.
@@ -1261,12 +1302,16 @@ export const Item = React.memo<ItemProps>((props) => {
     const subtitleAccessoryNode = React.useMemo(() => normalizeNodeForView(subtitleAccessory ?? null), [subtitleAccessory]);
     const titleMetaNode = normalizeNodeForView(titleMeta ?? null);
     const [titleMetaPlacement, setTitleMetaPlacement] = React.useState<'inline' | 'beneath'>('inline');
-    const titleMetaMeasure = React.useRef({ row: 0, meta: 0 });
-    const placeTitleMeta = React.useCallback((next: Partial<{ row: number; meta: number }>) => {
+    // A text title is measured out of flow, so a short name keeps its meta on its line where the two fit; until
+    // that width arrives the name counts at the floor a title meta keeps.
+    const titleMetaMeasure = React.useRef({ row: 0, meta: 0, titleNatural: Number.NaN });
+    const placeTitleMeta = React.useCallback((next: Partial<{ row: number; meta: number; titleNatural: number }>) => {
         titleMetaMeasure.current = { ...titleMetaMeasure.current, ...next };
+        const { titleNatural } = titleMetaMeasure.current;
         setTitleMetaPlacement(resolveHappierRowTitleMetaPlacement({
             rowContentWidthPx: titleMetaMeasure.current.row,
-            titleNaturalWidthPx: Number.POSITIVE_INFINITY,
+            // Layout reports whole pixels: the name needs one more than its measured width not to clip.
+            titleNaturalWidthPx: Number.isNaN(titleNatural) ? Number.POSITIVE_INFINITY : titleNatural + 1,
             metaNaturalWidthPx: titleMetaMeasure.current.meta,
             titleMinWidthPx: ITEM_TITLE_META_TITLE_MIN_PX,
         }));
@@ -1299,7 +1344,7 @@ export const Item = React.memo<ItemProps>((props) => {
         );
     }, [accessibilityExpanded, chevronSize, showAccessory, theme.colors.text.secondary]);
 
-    // A sheet row's hairline is the sheet's: its divider colour, from the row's text to its trailing inset
+    // A sheet row's hairline is the sheet's: its divider colour, from the row's text to the sheet's trailing edge
     // (`happierPageRowDividerInset`). A page row outside a sheet (a bare or columned section) draws the same
     // page hairline in the page divider colour.
     const flatDividerColor = pageSheet?.rowDividerColor ?? (isPageRow ? theme.colors.border.subtle : null);
@@ -1315,8 +1360,8 @@ export const Item = React.memo<ItemProps>((props) => {
             color={flatDividerColor ?? theme.colors.border.default}
             style={[
                 styles.divider,
-                flatDividerColor !== null ? styles.pageDivider : null,
-                flatDividerInset ?? {
+                // One portable literal, as the public list row composes it: the page hairline and its inset.
+                flatDividerInset !== null ? { height: happierPageRowDividerWidth(), ...flatDividerInset } : {
                     marginLeft: (isAndroid || isWeb)
                         ? 0
                         : (dividerInset + (icon || leftElement ? (16 + (iconBoxSize ?? resolvedIconBoxSize) + resolvedIconMarginRight) : 16))
@@ -1361,8 +1406,9 @@ export const Item = React.memo<ItemProps>((props) => {
         );
     }, [isWeb]);
 
-    const renderRowContent = React.useCallback((options?: Readonly<{ includeRightAccessory?: boolean }>) => {
+    const renderRowContent = React.useCallback((options?: Readonly<{ includeRightAccessory?: boolean; includeLeftAccessory?: boolean }>) => {
         const includeRightAccessory = options?.includeRightAccessory ?? true;
+        const includeLeftAccessory = options?.includeLeftAccessory ?? true;
         // A split primary remains a bounded horizontal label/value band. Its independent
         // operation stacks outside this band, so only content containing that operation stacks.
         const stackContentAccessory = stackAccessory && includeRightAccessory;
@@ -1370,7 +1416,7 @@ export const Item = React.memo<ItemProps>((props) => {
         <>
             <View style={[styles.labelBand, alignsToFirstLine ? styles.containerAlignStart : null, stackContentAccessory ? styles.labelBandStacked : null]}>
             {/* Left Section */}
-            {leftAccessory || (isPageRow && reservesLeadingColumn) ? (
+            {includeLeftAccessory && (leftAccessory || (isPageRow && reservesLeadingColumn)) ? (
                 <View
                     style={iconContainerStyle}
                     // An empty reserved column is layout only.
@@ -1406,6 +1452,12 @@ export const Item = React.memo<ItemProps>((props) => {
                             {titleMetaPlacement === 'inline' ? titleMetaCell : null}
                         </View>
                         {titleMetaPlacement === 'beneath' ? <View style={styles.titleMetaBeneath}>{titleMetaCell}</View> : null}
+                        <Text style={[styles.title, titleSizeStyle, titleStyle, styles.detailMeasure]} numberOfLines={1}
+                            onLayout={(event: LayoutChangeEvent) => {
+                                const widthPx = event.nativeEvent.layout.width;
+                                if (Number.isFinite(widthPx) && widthPx > 0) placeTitleMeta({ titleNatural: widthPx });
+                            }}
+                            aria-hidden accessibilityElementsHidden importantForAccessibility="no-hide-descendants">{title}</Text>
                     </>
                 ) : (typeof title === 'string' || typeof title === 'number') && titleTrailing ? (
                     <View style={styles.inlineMarkRow}>
@@ -1536,6 +1588,7 @@ export const Item = React.memo<ItemProps>((props) => {
                         style={[
                             styles.detail,
                             detailSizeStyle,
+                            detailFigures,
                             { marginRight: rightElement || showAccessory ? 8 : 0 },
                             detailStyle
                         ]}
@@ -1558,7 +1611,7 @@ export const Item = React.memo<ItemProps>((props) => {
                 {chevronAccessory}
             </View>
             {measuresDetail && detail ? (
-                <Text style={[styles.detail, detailSizeStyle, styles.detailMeasure]} numberOfLines={1} onLayout={handleDetailLayout}
+                <Text style={[styles.detail, detailSizeStyle, detailFigures, styles.detailMeasure]} numberOfLines={1} onLayout={handleDetailLayout}
                     aria-hidden accessibilityElementsHidden importantForAccessibility="no-hide-descendants">{detail}</Text>
             ) : null}
             {measuresTitle ? (
@@ -1597,6 +1650,7 @@ export const Item = React.memo<ItemProps>((props) => {
         detail,
         detailTestID,
         detailSizeStyle,
+        detailFigures,
         detailStyle,
         iconContainerStyle,
         isPageRow,
@@ -1641,7 +1695,7 @@ export const Item = React.memo<ItemProps>((props) => {
     const menuBottomText = bottomElementInset === 'text' && isMenuRow && (icon != null || leftElement != null);
     // A list row (a collection rail) with a glyph: the title's edge is the row's own padding, the glyph box and its gap.
     const listBottomTextStart = bottomElementInset === 'text' && !isPageRow && !isMenuRow && icon != null && leftElement == null
-        ? ITEM_ROW_PADDING_HORIZONTAL[resolvedIconDensity] + (iconBoxSize ?? resolvedIconBoxSize) + resolvedIconMarginRight
+        ? (bodyEdgeRow ? 0 : ITEM_ROW_PADDING_HORIZONTAL[resolvedIconDensity]) + (iconBoxSize ?? resolvedIconBoxSize) + resolvedIconMarginRight
         : null;
     const bottomTextInset = bottomElementInset === 'text' && isPageRow && (icon != null || leftElement != null || reservesLeadingColumn)
         ? PAGE_LIST_METRICS.rowLeadingColumnPx + resolvedIconMarginRight
@@ -1650,18 +1704,21 @@ export const Item = React.memo<ItemProps>((props) => {
         ? MENU_ROW_METRICS.paddingHorizontalPx + MENU_ROW_METRICS.iconBoxSizePx + MENU_ROW_METRICS.iconMarginRightPx
         : listBottomTextStart ?? PAGE_LIST_METRICS.rowPaddingHorizontalPx + bottomTextInset;
     const bottom = bottomElement ? <View style={{ paddingHorizontal: PAGE_LIST_METRICS.rowPaddingHorizontalPx, paddingLeft: bottomPaddingLeft, paddingBottom: PAGE_LIST_METRICS.rowPaddingVerticalPx }}>{bottomElement}</View> : null;
+    // The row's own activation covers the row alone; its bottom content and divider follow it as siblings.
+    const bottomBelowPressable = Boolean(bottom && bottomElementOutsidePressable && isInteractive);
     const content = React.useMemo(() => (
         <>
             <View style={[containerCore, containerPadding, style]} onLayout={measuresRowWidth ? handleRowLayout : undefined}>
                 {renderRowContent()}
             </View>
 
-            {bottom}
-            {dividerNode}
+            {bottomBelowPressable ? null : bottom}
+            {bottomBelowPressable ? null : dividerNode}
         </>
     ), [
         containerCore,
         bottom,
+        bottomBelowPressable,
         containerPadding,
         dividerNode,
         handleRowLayout,
@@ -1674,13 +1731,15 @@ export const Item = React.memo<ItemProps>((props) => {
         && sharedItemBehavior.accessoryPlacement === 'outside'
         && rightAccessory,
     );
+    const splitLeftElementOutsidePressable = Boolean(isInteractive && leftElementOutsidePressable && leftAccessory);
+    const splitRow = splitRightElementOutsidePressable || splitLeftElementOutsidePressable;
 
     const paintColor = useHappierMaterialColorResolver();
     const pressableBackground = RNStyleSheet.flatten(pressableStyle)?.backgroundColor;
     const resolveInteractiveRowStyle = React.useCallback((pressed: boolean) => {
         const backgroundColor = (() => {
             if (pressed && isIOS && !isWeb) return theme.colors.surface.pressedOverlay;
-            if (pressed && splitRightElementOutsidePressable) return theme.colors.surface.pressed;
+            if (pressed && splitRow) return theme.colors.surface.pressed;
             if (showSelectedBackground) return theme.colors.surface.selected;
             // Web-only hover affordance for interactive rows (no hover when disabled).
             if (isWeb && hoverFill && isHovered && !disabled && !loading) return hoverBackgroundColor;
@@ -1688,7 +1747,7 @@ export const Item = React.memo<ItemProps>((props) => {
         })();
 
         const roundedCornersStyle = getItemGroupRowCornerRadii({
-            hasBackground: backgroundColor !== 'transparent',
+            hasBackground: backgroundColor !== 'transparent' || typeof pressableBackground === 'string',
             position: rowPosition,
             radius: groupCornerRadius,
         });
@@ -1714,7 +1773,7 @@ export const Item = React.memo<ItemProps>((props) => {
         pressableBackground,
         rowPosition,
         showSelectedBackground,
-        splitRightElementOutsidePressable,
+        splitRow,
         theme.colors.surface.pressed,
         theme.colors.surface.pressedOverlay,
         theme.colors.surface.selected,
@@ -1757,11 +1816,18 @@ export const Item = React.memo<ItemProps>((props) => {
         }
         : null;
 
-    if (splitRightElementOutsidePressable) {
+    if (splitRow) {
+        // Leading controls outside the row's own activation: they sit before it in one label band.
+        const withOutsideLeading = (primary: React.ReactElement) => splitLeftElementOutsidePressable ? (
+            <View style={[styles.labelBand, alignsToFirstLine ? styles.containerAlignStart : null, stackAccessory ? styles.labelBandStacked : null]}>
+                <View style={[iconContainerStyle, alignsToFirstLine ? containerPadding : null]}>{leftAccessory}</View>
+                {primary}
+            </View>
+        ) : primary;
         return (
             <>
                 <View style={[containerCore, style, resolveInteractiveRowStyle(isSplitPrimaryPressed)]} onLayout={measuresRowWidth ? handleRowLayout : undefined}>
-                    <Pressable
+                    {withOutsideLeading(<Pressable
                         ref={assignPressableRef}
                         testID={testID}
                         {...{ dataSet }}
@@ -1825,10 +1891,13 @@ export const Item = React.memo<ItemProps>((props) => {
                         } : undefined}
                     >
                         <View style={[styles.splitPressableInner, containerPadding, stackAccessory ? styles.splitPressableInnerStacked : null]}>
-                            {renderRowContent({ includeRightAccessory: false })}
+                            {renderRowContent({
+                                includeRightAccessory: !splitRightElementOutsidePressable,
+                                includeLeftAccessory: !splitLeftElementOutsidePressable,
+                            })}
                         </View>
-                    </Pressable>
-                    <View
+                    </Pressable>)}
+                    {splitRightElementOutsidePressable ? <View
                         style={[
                             styles.rightSection,
                             // A stacked page operation sits above the row's bottom padding.
@@ -1843,7 +1912,7 @@ export const Item = React.memo<ItemProps>((props) => {
                         importantForAccessibility={sharedItemBehavior.secondaryActionsEnabled ? 'auto' : 'no-hide-descendants'}
                     >
                         {rightAccessory}
-                    </View>
+                    </View> : null}
                 </View>
                 {bottom}
                 {dividerNode}
@@ -1852,7 +1921,7 @@ export const Item = React.memo<ItemProps>((props) => {
     }
 
     if (isInteractive) {
-        return (
+        const pressable = (
             <Pressable
                 ref={assignPressableRef}
                 testID={testID}
@@ -1918,6 +1987,7 @@ export const Item = React.memo<ItemProps>((props) => {
                 {content}
             </Pressable>
         );
+        return bottomBelowPressable ? <>{pressable}{bottom}{dividerNode}</> : pressable;
     }
 
     return (

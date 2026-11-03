@@ -1,4 +1,45 @@
-import type { SessionWorkStateWriteItemV1 } from './sessionWorkStateV1.js';
+import { z } from 'zod/mini';
+
+import { lazyZodSchema } from '../../../lazyZodSchema.js';
+import { SessionWorkStateItemV1Schema, type SessionWorkStateWriteItemV1 } from './sessionWorkStateV1.js';
+
+export const SessionWorkDisplayItemV1Schema = lazyZodSchema(() => z.strictObject(z.pick(SessionWorkStateItemV1Schema, {
+  id: true, kind: true, title: true, status: true, statusReason: true,
+}).shape));
+export type SessionWorkDisplayItemV1 = z.infer<typeof SessionWorkDisplayItemV1Schema>;
+
+/** Display facts only; neither retained work history nor a full work-state snapshot. */
+export const SessionWorkDisplayV1Schema = lazyZodSchema(() => z.strictObject({
+  v: z.literal(1),
+  primaryItem: z.nullable(SessionWorkDisplayItemV1Schema),
+  hasActiveGoal: z.boolean(),
+}));
+export type SessionWorkDisplayV1 = z.infer<typeof SessionWorkDisplayV1Schema>;
+
+type SessionWorkDisplaySourceV1 = Readonly<{
+  items: readonly SessionWorkDisplayItemV1[];
+  primaryItemId?: string | null;
+}>;
+
+/** Full readers and compact readers share the canonical primary-item decision. */
+export function projectSessionWorkDisplayV1(
+  work: SessionWorkDisplaySourceV1 | SessionWorkDisplayV1 | null | undefined,
+): SessionWorkDisplayV1 | null {
+  if (!work) return null;
+  if (!('items' in work)) return work;
+  const primary = readSessionWorkStatePrimaryItemV1(work.items, work.primaryItemId);
+  return {
+    v: 1,
+    primaryItem: primary ? {
+      id: primary.id,
+      kind: primary.kind,
+      title: primary.title,
+      status: primary.status,
+      ...(primary.statusReason === undefined ? {} : { statusReason: primary.statusReason }),
+    } : null,
+    hasActiveGoal: work.items.some(item => item.kind === 'goal' && item.status === 'active'),
+  };
+}
 
 /**
  * Canonical primary-item resolution for the unified session work-state (MED-2).

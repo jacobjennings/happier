@@ -36,7 +36,7 @@ export async function fetchChanges(params: {
                     'Content-Type': 'application/json',
                 },
             },
-            { includeAuth: false },
+            { includeAuth: false, recoveryRead: 'paged' },
         );
     } catch {
         return { status: 'error' };
@@ -85,7 +85,7 @@ export async function fetchCurrentChangesCursor(params: {
                     'Content-Type': 'application/json',
                 },
             },
-            { includeAuth: false },
+            { includeAuth: false, recoveryRead: 'paged' },
         );
     } catch {
         return { status: 'error' };

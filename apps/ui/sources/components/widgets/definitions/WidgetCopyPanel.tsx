@@ -15,7 +15,7 @@ import type { WidgetCandidate } from '@/components/widgets/widgetCatalog';
 import { useWidgetInstanceDescriptor } from '@/components/widgets/surface/useWidgetInstanceDescriptor';
 import { WidgetSetupPreview } from '@/components/widgets/surface/WidgetSetupPreview';
 import { buildWidgetCandidateSetup, widgetProvidedContext, type WidgetSurfaceContext } from '@/components/widgets/surface/widgetSurfaceSetup';
-import { readWidgetDescriptor } from '@/components/widgets/widgetCatalog';
+import { readWidgetDescriptor, resolveWidgetInstanceTitle } from '@/components/widgets/widgetCatalog';
 import { randomUUID } from '@/platform/randomUUID';
 import { useWorkspaceRefs } from '@/sync/domains/state/storage';
 import { t } from '@/text';
@@ -110,7 +110,7 @@ export function WidgetCopyPanel(props: Readonly<{
         onCancel={props.onClose} onDone={result => {
             publishPresentationNotice({ key: `widget-copy:${props.instance.id}`, severity: 'info', message: result.approvalPending
                 ? `${promoted.current ? `${t('widgetDefinition.savedButNotPlaced')} ` : ''}${t('widgetAdd.areaApprovalPending')}`
-                : t('widgetAdd.justAdded', { widget: props.instance.displayName ?? candidate.title }) });
+                : t('widgetAdd.justAdded', { widget: resolveWidgetInstanceTitle(props.instance, candidate) }) });
             (props.onDone ?? props.onClose)();
         }} serverId={props.current.serverId} testID={`${props.testID}.setup`} />;
 }

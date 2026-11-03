@@ -3,6 +3,10 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { act, create as createRenderer, type ReactTestRenderer } from 'react-test-renderer';
 
 import { useSelectionListDynamicSections } from '../useSelectionListDynamicSections';
+import {
+    createDefaultDynamicSectionCache,
+    type SelectionListDynamicSectionCache,
+} from '../selectionListDynamicSectionCache';
 import type {
     SelectionListDynamicSection,
     SelectionListInputBehavior,
@@ -40,6 +44,9 @@ function HostHarness(props: {
         dynamicSections: props.dynamicSections,
         inputValue: props.inputValue,
         inputBehavior: props.inputBehavior,
+        // A per-test cache keeps successful resolves out of the process-wide
+        // default cache, so no spec seeds a later spec's first mount.
+        cache,
     });
     React.useEffect(() => {
         props.onState(state);
@@ -49,11 +56,13 @@ function HostHarness(props: {
 
 let renderer: ReactTestRenderer | null = null;
 let onState: ReturnType<typeof vi.fn>;
+let cache: SelectionListDynamicSectionCache;
 const ORIGINAL_TIMERS = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
 
 beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
     onState = vi.fn();
+    cache = createDefaultDynamicSectionCache();
 });
 
 afterEach(() => {
@@ -75,23 +84,6 @@ function lastState(): Capture {
 }
 
 describe('useSelectionListDynamicSections', () => {
-    it('starts in idle status for sections with empty input and no resolver call yet', async () => {
-        const section: SelectionListDynamicSection = {
-            id: 's1',
-            resolve: vi.fn(async () => ({ options: [] })),
-        };
-        await act(async () => {
-            renderer = createRenderer(
-                <HostHarness dynamicSections={[section]} inputValue="" onState={onState} />,
-            );
-        });
-        const state = lastState();
-        const entry = state.get('s1');
-        expect(entry).toBeDefined();
-        expect(entry?.status).toBe('idle');
-        expect(section.resolve).not.toHaveBeenCalled();
-    });
-
     it('debounces resolve calls by debounceMs before invoking the resolver', async () => {
         const resolver = vi.fn(async () => ({ options: [] }));
         const section: SelectionListDynamicSection = {
@@ -117,40 +109,36 @@ describe('useSelectionListDynamicSections', () => {
         expect((resolver.mock.calls[0] as unknown as [string])?.[0]).toBe('a');
     });
 
-    it('renders loading skeleton rows while the resolver is pending', async () => {
-        const d = defer();
-        const section: SelectionListDynamicSection = {
-            id: 's1',
-            resolve: async () => d.promise,
-            loadingSkeletonRows: 4,
-            debounceMs: 50,
-        };
-        await act(async () => {
-            renderer = createRenderer(
-                <HostHarness dynamicSections={[section]} inputValue="x" onState={onState} />,
-            );
-        });
-        await act(async () => {
-            vi.advanceTimersByTime(51);
-        });
-        const entry = lastState().get('s1');
-        expect(entry?.status).toBe('loading');
-        expect(entry?.options.length).toBe(4);
-        expect(entry?.options[0]?.disabled).toBe(true);
-        expect(entry?.options[0]?.id.startsWith('skeleton:')).toBe(true);
-    });
-
-    it('uses the section seedFromInput override over inputBehavior.getDynamicSectionSeed', async () => {
+    it.each([
+        {
+            source: 'the section seedFromInput override over inputBehavior',
+            seedFromInput: (input: string) => `section-seed:${input}`,
+            behaviorSeed: (input: string) => `behavior-seed:${input}`,
+            expected: 'section-seed:abc',
+        },
+        {
+            source: 'inputBehavior.getDynamicSectionSeed when the section has no override',
+            seedFromInput: undefined,
+            behaviorSeed: (input: string) => `behavior-seed:${input}`,
+            expected: 'behavior-seed:abc',
+        },
+        {
+            source: 'the raw input when neither override nor behavior seed is provided',
+            seedFromInput: undefined,
+            behaviorSeed: undefined,
+            expected: 'abc',
+        },
+    ])('seeds the resolver from $source', async ({ seedFromInput, behaviorSeed, expected }) => {
         const resolver = vi.fn(async () => ({ options: [] }));
         const section: SelectionListDynamicSection = {
             id: 's1',
             resolve: resolver,
-            seedFromInput: (input) => `section-seed:${input}`,
             debounceMs: 0,
+            ...(seedFromInput ? { seedFromInput } : {}),
         };
-        const behavior: SelectionListInputBehavior = {
-            getDynamicSectionSeed: (input) => `behavior-seed:${input}`,
-        };
+        const behavior: SelectionListInputBehavior | undefined = behaviorSeed
+            ? { getDynamicSectionSeed: behaviorSeed }
+            : undefined;
         await act(async () => {
             renderer = createRenderer(
                 <HostHarness
@@ -165,51 +153,7 @@ describe('useSelectionListDynamicSections', () => {
             vi.advanceTimersByTime(1);
         });
         expect(resolver).toHaveBeenCalledTimes(1);
-        expect((resolver.mock.calls[0] as unknown as [string])?.[0]).toBe('section-seed:abc');
-    });
-
-    it('falls back to inputBehavior.getDynamicSectionSeed when section has no override', async () => {
-        const resolver = vi.fn(async () => ({ options: [] }));
-        const section: SelectionListDynamicSection = {
-            id: 's1',
-            resolve: resolver,
-            debounceMs: 0,
-        };
-        const behavior: SelectionListInputBehavior = {
-            getDynamicSectionSeed: (input) => `seed:${input}`,
-        };
-        await act(async () => {
-            renderer = createRenderer(
-                <HostHarness
-                    dynamicSections={[section]}
-                    inputValue="hello"
-                    inputBehavior={behavior}
-                    onState={onState}
-                />,
-            );
-        });
-        await act(async () => {
-            vi.advanceTimersByTime(1);
-        });
-        expect((resolver.mock.calls[0] as unknown as [string])?.[0]).toBe('seed:hello');
-    });
-
-    it('falls back to raw input when neither override nor behavior seed is provided', async () => {
-        const resolver = vi.fn(async () => ({ options: [] }));
-        const section: SelectionListDynamicSection = {
-            id: 's1',
-            resolve: resolver,
-            debounceMs: 0,
-        };
-        await act(async () => {
-            renderer = createRenderer(
-                <HostHarness dynamicSections={[section]} inputValue="raw-seed" onState={onState} />,
-            );
-        });
-        await act(async () => {
-            vi.advanceTimersByTime(1);
-        });
-        expect((resolver.mock.calls[0] as unknown as [string])?.[0]).toBe('raw-seed');
+        expect((resolver.mock.calls[0] as unknown as [string])?.[0]).toBe(expected);
     });
 
     it('hides the section (idle, no fetch) when visibleWhen returns false', async () => {
@@ -366,28 +310,7 @@ describe('useSelectionListDynamicSections', () => {
         const errored = lastState().get('s1');
         expect(errored?.status).toBe('error');
         expect(errored?.error?.message).toBe('boom');
-        // Cached options preserved
-        expect(errored?.options.length).toBeGreaterThan(0);
-    });
-
-    it('exposes emptyHint when resolver returns zero options with a hint', async () => {
-        const section: SelectionListDynamicSection = {
-            id: 's1',
-            resolve: async () => ({ options: [], emptyHint: 'No files here' }),
-            debounceMs: 0,
-        };
-        await act(async () => {
-            renderer = createRenderer(
-                <HostHarness dynamicSections={[section]} inputValue="a" onState={onState} />,
-            );
-        });
-        await act(async () => {
-            vi.advanceTimersByTime(1);
-            await Promise.resolve();
-        });
-        const entry = lastState().get('s1');
-        expect(entry?.status).toBe('success');
-        expect(entry?.options.length).toBe(0);
-        expect(entry?.emptyHint).toBe('No files here');
+        // The prior successful rows stay visible (not the loading skeletons).
+        expect(errored?.options.map((o) => o.id)).toEqual(['cached-a']);
     });
 });

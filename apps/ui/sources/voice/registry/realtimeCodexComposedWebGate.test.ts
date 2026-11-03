@@ -28,6 +28,14 @@ import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import { parseToken } from '@/utils/auth/parseToken';
 import { AccountProfileSchema } from '@happier-dev/protocol/account/profile';
 import { encodePlainMachineStoredContent } from '@happier-dev/protocol/machines/machineStoredContent';
+import { buildSystemSessionMetadataV1 } from '@happier-dev/protocol/sessions/control/contract';
+import { SessionCurrentProjectionRecordV1Schema } from '@happier-dev/protocol/sessions/listing/response';
+import { SessionOwnerCompatibilityViewV1Schema } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
+import { createStoredReadSchema } from '@happier-dev/protocol/json/storedReadSchema';
+import { writeVoiceConversationBindingMetadata } from '@/voice/binding/voiceConversationBindingMetadata';
+import { writeVoiceConversationScopeMetadata } from '@/voice/persistence/voiceConversationScopeMetadata';
+import { VOICE_CONVERSATION_SYSTEM_SESSION_KEY } from '@happier-dev/protocol/voice/sessionBinding';
+import type { AgentSessionRealtimeWatchResultV1 } from '@happier-dev/protocol/voice/realtime/agentSession';
 
 vi.mock('socket.io-client', async importOriginal => (await import('@/dev/testkit/harness/serverAccountConnectionHarness')).createSocketIoClientBoundary(importOriginal));
 
@@ -390,6 +398,80 @@ describe('realtime_codex normal web composed gate', () => {
     voiceConversationRuntimeMachine.reset();
   });
 
+  it('persists a continued hidden native carrier logical target before realtime starts', async () => {
+    const previousSessions = storage.getState().sessions;
+    const carrierAddress = { serverId: activeServerId, sessionId: 'codex-hidden-continuation' };
+    const session = createSessionFixture({ ...previousSessions['codex-direct-session']!, id: carrierAddress.sessionId });
+    const ownerMetadata = writeVoiceConversationBindingMetadata(writeVoiceConversationScopeMetadata({
+      ...session.metadata!,
+      ...buildSystemSessionMetadataV1({ key: VOICE_CONVERSATION_SYSTEM_SESSION_KEY, hidden: true }),
+    }, { kind: 'voice_home' }), {
+      adapterId: 'happier.agent.codex/realtime-codex', controlSessionId: '__voice_agent__',
+      conversationSessionId: carrierAddress.sessionId, conversationSessionAddress: carrierAddress,
+      transcriptMode: 'native_session', targetSessionAddress: carrierAddress, updatedAt: 1,
+    });
+    storage.setState(current => ({ sessions: { ...current.sessions, [session.id]: { ...session, metadata: ownerMetadata } } }));
+    sessionHttp.replaceSession(session.id);
+    const readPersistedBinding = async () => {
+      const response = sessionHttp.handle(new URL(`/v2/sessions/${session.id}`, getActiveServerSnapshot().serverUrl));
+      if (!response) throw new Error('Missing persisted hidden carrier');
+      const payload: unknown = await response.json();
+      if (!payload || typeof payload !== 'object' || !('session' in payload)) throw new Error('Missing Session response');
+      const record = SessionCurrentProjectionRecordV1Schema.parse(payload.session);
+      if (record.ownerMetadata?.t !== 'plain') throw new Error('Expected persisted Plain owner metadata');
+      return createStoredReadSchema(SessionOwnerCompatibilityViewV1Schema.shape.voiceConversationBindingV1)
+        .parse(record.ownerMetadata.v.system?.voiceConversationBindingV1);
+    };
+    const started = createDeferred<void>();
+    const watched = createDeferred<AgentSessionRealtimeWatchResultV1>();
+    rpcBoundary.sessionRpc.mockImplementation(async (input: Readonly<{ sessionId: string; method: string }>) => {
+      expect(input.sessionId).toBe(session.id);
+      if (input.method.endsWith('.inspect')) return { ok: true, status: 'available', transport: 'webrtc' };
+      if (input.method.endsWith('.start')) {
+        try {
+          expect(await readPersistedBinding()).toMatchObject({ targetSessionId: null, targetServerId: null });
+        } catch (error) {
+          started.reject(error);
+          throw error;
+        }
+        started.resolve();
+        return { ok: true, status: 'started', transport: { kind: 'webrtc', answerSdp: 'v=0\r\na=continued-answer\r\n' } };
+      }
+      if (input.method.endsWith('.watch')) return await watched.promise;
+      if (input.method.endsWith('.stop')) {
+        watched.resolve({ ok: true, status: 'terminal', event: { kind: 'terminal', reason: 'stopped' } });
+        return { ok: true, status: 'stopped' };
+      }
+      throw new Error(`Unexpected native carrier RPC ${input.method}`);
+    });
+    const browser = installVoiceWebRtcBrowserBoundary();
+    const lease = createBundledConversationRuntimeHostLease();
+    const runtime = await activateCodexEntry({
+      host: Object.freeze({ ...lease.host, getPlatform: () => 'web' as const, createMicSession: browser.createMicSession }),
+      authorityHost: lease.host,
+    });
+    registerVoiceAdapters([runtime.adapter]);
+    try {
+      const starting = runtime.adapter.start({ sessionId: session.id, requestedTargetSessionAddress: carrierAddress });
+      await Promise.race([started.promise, starting.then(() => {
+        throw new Error('Native carrier Start settled before the realtime start boundary');
+      })]);
+      browser.peer.channel.open();
+      await starting;
+      expect(runtime.adapter.getSnapshot()).toMatchObject({ status: 'connected', sessionId: session.id });
+      expect(voiceSessionBindingStore.getState().getByControlSessionId(session.id))
+        .toMatchObject({ conversationSessionAddress: carrierAddress, targetSessionAddress: null });
+      expect(rpcBoundary.sessionRpc.mock.calls.some(([input]) => String(input.method).endsWith('.inspect'))).toBe(true);
+      await runtime.adapter.stop({ sessionId: session.id });
+    } finally {
+      watched.resolve({ ok: true, status: 'terminal', event: { kind: 'terminal', reason: 'stopped' } });
+      await runtime.dispose();
+      lease.revoke();
+      browser.restore();
+      storage.setState({ sessions: previousSessions });
+    }
+  });
+
   it('composes public activation, exact direct binding, bound V3 authority, host WebRTC, finals, and reverse terminal cleanup', async () => {
     const consoleError = vi.spyOn(console, 'error');
     const watchResolvers: Array<(value: unknown) => void> = [];
@@ -408,6 +490,7 @@ describe('realtime_codex normal web composed gate', () => {
           ok: true,
           status: 'started',
           transport: { kind: 'webrtc', answerSdp: 'v=0\r\na=test-answer\r\n' },
+          preparedInstructionsFor: { serverId: activeServerId, sessionId: 'codex-direct-session' },
         };
       }
       if (input.method.endsWith('.watch')) {
@@ -475,6 +558,7 @@ describe('realtime_codex normal web composed gate', () => {
       requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
     });
     await waitForTestEvent(runtime.adapter.subscribe!, () => expect(runtime.adapter.getSnapshot().status).toBe('connecting'));
+    expect(runtime.adapter.getSnapshot().preparedInstructionsFor).toBeUndefined();
     await Promise.resolve(browser.peerCreated().then(peer => peer.dataChannelCreated)).then(() => expect(browser.peer.createDataChannel).toHaveBeenCalledWith('oai-events'));
     browser.peer.channel.open();
     await starting;
@@ -483,6 +567,7 @@ describe('realtime_codex normal web composed gate', () => {
       adapterId: 'happier.agent.codex/realtime-codex',
       sessionId: 'codex-direct-session',
       status: 'connected',
+      preparedInstructionsFor: { serverId: activeServerId, sessionId: 'codex-direct-session' },
     });
     expect(browser.peer.setRemoteDescription).toHaveBeenCalledWith({
       type: 'answer',

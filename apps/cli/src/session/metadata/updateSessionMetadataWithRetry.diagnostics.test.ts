@@ -39,6 +39,7 @@ describe('metadata tuple terminal diagnostics', () => {
         raw = V2SessionByIdResponseSchema.parse({ session: { ...raw,
           metadataLayoutVersion: 1, metadata: submitted.target.sharedMetadata.ciphertext,
           ownerMetadata: submitted.target.ownerMetadata, agentState: submitted.target.agentState.ciphertext,
+          ...(submitted.target.displayProjectionV1 ? { displayProjectionV1: submitted.target.displayProjectionV1 } : {}),
           metadataVersion: 5, agentStateVersion: 3, share: null,
         } }).session;
       }

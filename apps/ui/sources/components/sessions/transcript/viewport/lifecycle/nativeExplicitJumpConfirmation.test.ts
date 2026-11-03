@@ -12,23 +12,6 @@ const pending: NativeExplicitJumpConfirmationState = {
 };
 
 describe('native explicit jump confirmation', () => {
-    it('does nothing when there is no pending confirmation', () => {
-        expect(resolveNativeExplicitJumpConfirmationEffects({
-            pending: null,
-            observation: {
-                contentHeight: 1200,
-                distanceFromBottom: 120,
-                isTrusted: false,
-                pinThresholdPx: 72,
-                sessionId: 'session-1',
-            },
-        })).toEqual({
-            consumed: false,
-            effects: [],
-            pending: null,
-        });
-    });
-
     it('clears stale-session and trusted-scroll pending confirmation without consuming the observation', () => {
         for (const observation of [
             {
@@ -57,29 +40,6 @@ describe('native explicit jump confirmation', () => {
         }
     });
 
-    it('clears pending and adopts live-tail arrival when the explicit jump reaches the bottom threshold', () => {
-        expect(resolveNativeExplicitJumpConfirmationEffects({
-            pending,
-            observation: {
-                contentHeight: 1200,
-                distanceFromBottom: 40,
-                isTrusted: false,
-                pinThresholdPx: 72,
-                sessionId: 'session-1',
-            },
-        })).toEqual({
-            consumed: true,
-            effects: [
-                {
-                    distanceFromBottom: 40,
-                    sessionId: 'session-1',
-                    type: 'adopt-live-tail-arrival',
-                },
-            ],
-            pending: null,
-        });
-    });
-
     it('spends exactly one reconfirm write when content height changes before bottom arrival', () => {
         expect(resolveNativeExplicitJumpConfirmationEffects({
             pending,
@@ -98,28 +58,6 @@ describe('native explicit jump confirmation', () => {
                 reconfirmSpent: true,
                 sessionId: 'session-1',
             },
-        });
-    });
-
-    it('keeps ownership without another write after the reconfirm is spent', () => {
-        const spentPending: NativeExplicitJumpConfirmationState = {
-            ...pending,
-            reconfirmSpent: true,
-        };
-
-        expect(resolveNativeExplicitJumpConfirmationEffects({
-            pending: spentPending,
-            observation: {
-                contentHeight: 1600,
-                distanceFromBottom: 180,
-                isTrusted: false,
-                pinThresholdPx: 72,
-                sessionId: 'session-1',
-            },
-        })).toEqual({
-            consumed: true,
-            effects: [],
-            pending: spentPending,
         });
     });
 

@@ -7,6 +7,48 @@ This document describes the Happier wire protocol as implemented in `apps/server
 - WebSocket: Socket.IO server at path `/v1/updates` (transports: websocket, polling).
 - CORS: `*` (server-side).
 
+### API response compression (0.3 development)
+
+The API composition negotiates Brotli or gzip for eligible responses through
+`enableApiCompression`, retaining the plugin's 1 KiB threshold, Brotli quality 4
+and gzip defaults. Requests are not automatically decompressed. Identity and
+already encoded responses retain their existing representation; JSON and stored
+content envelopes are unchanged.
+
+Static UI sidecars and Engine.IO at `/v1/updates` keep their own encoding owners.
+Local-service preview responses hijack Fastify's raw reply and stream directly.
+The external Provider API opts out at its route owner with `compress: false` so
+JSON chunks remain incremental; other incremental API routes must choose that
+same explicit opt-out rather than inherit buffered compression behavior.
+
+### UI recovery read lifetime (0.3 development)
+
+The HTTP request owner retains read cancellation through response consumption,
+including captured Home/Account requests and read-only POST operations. Web reads
+use an inactivity window, reset when nonempty body chunks arrive, rather than a
+total transfer deadline. The default is the server peer-liveness window (15s ping
+interval plus 45s timeout); `EXPO_PUBLIC_HAPPIER_SERVER_READ_INACTIVITY_TIMEOUT_MS`
+can override it with a positive timer-safe millisecond value. Timeout activation
+is logged without request content or credentials.
+
+Native fetch may expose no progress until the whole response arrives. Only
+owner-declared server-bounded pages acquire a deadline in that phase; large,
+unpaged reads remain cancellable without a total deadline. Read recovery never
+opts mutations into cancellation or retry. HTTP readiness remains independent of
+socket-only failures: the socket transport retains its own managed retry demand,
+and suspends dialing when HTTP reachability is genuinely unavailable.
+
+Manual Retry cancels outstanding recovery reads and releases only the incumbent
+resume's queue waiters, including waits parked in backoff or snapshot repair.
+The incumbent settles through its original dedupe owner before a fresh manual
+resume enters. The existing manual-generation and scope guard retires queued
+apply actions and later snapshot phases; a retired apply supplies no safe cursor.
+InvalidateSync retains its autonomous cycle, serialization and existing backoff.
+A superseded in-flight read is replaced within that cycle without consuming its
+failure budget or adding backoff. Issued mutations and user-request leases remain
+intact; configuration retirement and other hard boundaries keep their existing
+behavior. This describes 0.3 development source.
+
 ## Protocol design motivations
 The protocol is designed to stay minimal, explicit, and resilient under intermittent connectivity. A few guiding principles shape naming, payloads, and versioning:
 
@@ -44,6 +86,12 @@ pending input, work state, and content availability. Host adapters normalize exi
 authorized Session facts and content-opening results into its pure projector. The
 projection is not persisted and does not own unread state, following, personal
 attention, or notification decisions.
+
+The shared presentation keeps a completed, operationally ready worker settled
+after its publisher stops, goes offline or its observation becomes stale. The
+process-terminal fact remains separate. Current requests, explicit resume and
+runtime serviceability failures retain precedence; List, Map and report counts
+consume the same decision.
 
 Pending permission and user-action counts are session-wide projections of the
 acknowledged Agent state. Its legacy and metadata-tuple writers normalize and
@@ -211,7 +259,8 @@ Field names below match on-wire payloads.
   - `body`: `{ t: "delete-session", sid }`
 
 - `new-message`
-  - `body`: `{ t: "new-message", sid, message: { id, seq, content, localId, createdAt, updatedAt } }`
+  - 0.3 development `body`: `{ t: "new-message", sid, delivery: "full" | "hint", message }`. `message-updated` uses the same delivery arms.
+  - `full` carries the existing complete message row. `hint` carries only message identity, sequence, timestamps, optional role/sidechain/source provenance, and required attention impact. It contains no content, actor profile or delivery-resolution detail.
 
 - `update-account`
   - `body`: `{ t: "update-account", id, settings?, github? }`
@@ -239,6 +288,57 @@ Field names below match on-wire payloads.
 
 - `kv-batch-update`
   - `body`: `{ t: "kv-batch-update", changes: [{ key, value, version }] }`
+
+### Session content consumption (0.3 development)
+
+UI sockets with purpose `sync` or `concurrent-server-cache` replace their own current
+content demand through `session-consumption-replace`:
+`{ v: 1, liveSessionIds: string[], durableSessionIds: string[] }`. The response is
+`{ ok: true, v: 1, liveSessionIds, durableSessionIds }` with admitted ids, or
+`{ ok: false, error }`. Both envelopes are closed. The server admits requested ids
+through the socket credential's current `readTranscript` decision; an omitted id
+does not distinguish absence from denied access. Interest never grants access.
+
+`sessionLiveConsumption` is the sole UI demand producer. Visible transcripts,
+explicit content panes, active Voice and the mounted SCM Session consume live
+content. Hidden same-project SCM consumes durable bodies without live stream
+segments. Retention-only back-stack surfaces do not request content. Declarations
+are local to the socket, resent on reconnect, and discarded with that connection.
+Retained Voice focus and primary-action targets count only while Voice can stop
+an active attempt. A refused or partial declaration logs a warning on either
+Home transport without changing connected status; demand changes and reconnects
+remain the re-declaration triggers.
+`ui-focus` and human-presence declarations retain their separate meanings.
+
+After existing recipient/publication admission, each receiving API node uses the
+shared Protocol delivery classifier with its local socket's demand. Live consumers
+receive complete durable rows, checkpoints and deltas. Durable-only SCM consumers
+receive complete durable rows and no stream segments. Other UI sockets receive
+durable hints and no stream segments, including before their first declaration.
+The UI's pooled `scoped-rpc` sockets also receive hints without stream segments;
+they carry RPCs and do not declare transcript demand.
+Session-scoped runners/SDK followers and existing non-UI user-scoped carriers retain
+full delivery. Existing Machine exclusion and sender suppression remain unchanged.
+Redis forwards protected routing intent; it does not hold a second interest map.
+
+Hints update scalar list facts and known remote sequence, and retain deferred append
+or exact revision-repair markers. They never decrypt, materialize a transcript row,
+advance its received-row watermark, or acknowledge a changes page. After admitted
+live demand, the UI uses its existing exact-shell and transcript catch-up owners;
+a late hint also invalidates that consumer's existing repair owner. Secondary Home
+hints patch only their qualified row and read unknown rows through the existing
+exact reader. Actual secondary content demand enters the same transcript/SCM owner
+with that Home's captured request authority and cipher. Delayed content and hint
+markers cannot cross into another Home's same-id full carrier. Rebinding that
+single full carrier to a different known Home retires its old transcript state;
+same-Home refresh and revision repair preserve older pages. A live stream without
+an accepted checkpoint drops deltas until a
+later checkpoint; paused publishers have no promised periodic checkpoint.
+
+This is canonical unreleased 0.3 wire behavior, with no feature gate or mixed
+0.2/0.3 component support. Stored message/metadata/key formats are unchanged, so
+0.2-created data continues through the existing readers and migrations. This
+section does not certify loaded-runtime or deployment validation.
 
 ### Ephemeral event types
 - `activity`: `{ type: "activity", id: sessionId, active, activeAt, thinking? }`
@@ -363,9 +463,12 @@ Absent or malformed markers retain ordinary path-session behavior, including
 released 0.2 session data. The marker never establishes filesystem ownership;
 only the daemon's local owner record can do that.
 
-Session organization adds `{ t: 'managedSessions', serverId, machineId }` to
-`SessionFolderWorkspaceRefV1`. It represents one machine's Chats scope, so private
-per-session paths do not become folder scopes, Projects or recent paths.
+Retained folder data can use `{ t: 'managedSessions', serverId, machineId }` in
+`SessionFolderWorkspaceRefV1` for one machine's Chats scope. Current 0.3 Account
+sections use the existing folder records without a workspace restriction; private
+per-session paths still do not become Projects or recent paths. The
+[section Action contract](actions.md) preserves these historical identities and
+assignments while keeping the released folder HTTP DTO vocabulary.
 
 A missing or unproven managed directory produces `SESSION_DIRECTORY_MISSING`
 without silent recreation. Explicit user consent reuses the resume request's
@@ -393,6 +496,22 @@ See `api.md` for the full HTTP endpoint catalog and auth flows.
 This 0.3 integration is in progress, not a released guarantee. The hosted catch-up, page-pipeline, viewport-demand, retry, realtime-gap, and sparse-repair behavior described below is present with focused owner coverage; integrated and live validation remain incomplete.
 
 Account-change cursors, Session sequence hints, and transcript paging cursors serve different purposes. A Session hint announces durable content but does not prove that this device has loaded intervening rows. An account checkpoint can advance after successful shell/content handling when the UI retains outstanding forward loading in its canonical deferred-transcript state. Failed shell loads, message loads, and revision repairs still block the affected checkpoint.
+
+In current 0.3 development source, an absent Account-change checkpoint starts
+snapshot repair instead of replaying change history from zero. Repair captures
+the current cursor before starting its materializing reads. List invalidation
+drains an older acquisition and awaits a fresh cycle under the existing resume
+wait budget; a stopped, expired, failed, or retired repair cannot seed the
+checkpoint. A completed repair is reused by the resume tail. If the app becomes
+backgrounded during resume, that attempt stops issuing HTTP work and the next
+foreground transition owns catch-up. These source contracts still require the
+integrated and loaded-runtime checks described above.
+
+Required Session rows gather through the existing `/v2/sessions/read-batch`
+owner, including pins discovered while an ordinary list read is in flight.
+Returned compact IDs alone do not prove required readable materialization.
+Only recognized exact absence authorizes local retirement; an unrecognized
+404 remains a failed read and cannot authorize a checkpoint.
 
 `decideMessageCatchUpPolicy` owns hosted catch-up. Its existing defaults allow three incremental pages, with a separate large-gap threshold of 500 sequence positions and a long-offline threshold of 30 minutes; sequence positions are not necessarily main-transcript rows. Large backlogs go directly to the latest page for live-tail readers and remain deferred for history readers. An explicit reopen can probe one page even when the Session hint appears current. Known deferred backlog takes precedence over a stale hint.
 

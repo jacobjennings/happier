@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { isStackContext } from './serverContext';
+
 function stubWebRuntime(
     origin: string,
     runtimeConfig: Record<string, unknown> | null = null,
@@ -18,11 +20,6 @@ function stubWebRuntime(
     vi.stubGlobal('document', {});
 }
 
-async function importFresh() {
-    vi.resetModules();
-    return await import('./serverContext');
-}
-
 describe('serverContext', () => {
     const previousServerContext = process.env.EXPO_PUBLIC_HAPPY_SERVER_CONTEXT;
 
@@ -39,7 +36,6 @@ describe('serverContext', () => {
         delete process.env.EXPO_PUBLIC_HAPPY_SERVER_CONTEXT;
         stubWebRuntime('http://127.0.0.1:8081', { serverContext: 'stack' });
 
-        const { isStackContext } = await importFresh();
 
         expect(isStackContext()).toBe(true);
     });

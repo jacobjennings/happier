@@ -38,6 +38,21 @@ it('delivers a native model keyed by the admitted installed Agent without requir
 });
 
 describe('resolveExecutionRunChildSelection', () => {
+    it('inherits omitted Connected authentication independently of an explicit native model reference', () => {
+        const modelSelection = { ...providerSelection, providerConnectionId: null, modelId: 'chosen-model' };
+        const resolved = resolveExecutionRunChildSelection({ backendTarget: codexTarget,
+            lifecycle: 'attached', modelSelection, parent: appliedParent });
+        expect(resolved).toMatchObject({ modelSelection, modelId: 'chosen-model', connectedServices: {
+            v: 2, bindingsByServiceId: {
+                'happier.agent.codex/openai-codex': { source: 'connected', selection: 'group', groupId: 'parent-pool' },
+            },
+        } });
+        expect(resolved.connectedServices?.bindingsByServiceId['happier.agent.codex/openai-codex']).not.toHaveProperty('profileId');
+        expect(() => resolveExecutionRunChildSelection({ backendTarget: claudeTarget, lifecycle: 'attached',
+            modelSelection: { ...modelSelection, agentTargetKey: 'agent:happier.agent.claude/claude' }, parent: appliedParent }))
+            .toThrow(expect.objectContaining({ code: 'execution_run_child_choice_required' }));
+    });
+
     it('inherits a known parent before the summary default, and uses that default when the parent is unavailable', () => {
         const summaryDefault = ProviderBoundModelRefSchema.parse({ agentTargetKey: providerSelection.agentTargetKey,
             providerConnectionId: 'pc_summary_default', modelId: 'summary-model' });

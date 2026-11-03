@@ -5,7 +5,6 @@ import {
 import type { TranscriptViewportLifecycleEffect } from './lifecycle';
 
 export type NativeScrollReadOnlyVisibleBottomIgnoredReason =
-    | 'not-native'
     | 'trusted-observation'
     | 'already-following'
     | 'not-visible-live-tail'
@@ -27,11 +26,9 @@ export function resolveNativeScrollReadOnlyVisibleBottomDecision(params: Readonl
     distanceFromLiveTailPx: number;
     followIntentIsPinned: boolean;
     followIntentWantsPinned: boolean;
-    isNative: boolean;
     isTrusted: boolean;
     pinnedOffsetThresholdPx: number;
 }>): NativeScrollReadOnlyVisibleBottomDecision {
-    if (!params.isNative) return { reason: 'not-native', type: 'ignore' };
     if (params.isTrusted) return { reason: 'trusted-observation', type: 'ignore' };
     if (params.bottomFollowMode === 'following') return { reason: 'already-following', type: 'ignore' };
     if (!params.followIntentIsPinned) return { reason: 'not-visible-live-tail', type: 'ignore' };

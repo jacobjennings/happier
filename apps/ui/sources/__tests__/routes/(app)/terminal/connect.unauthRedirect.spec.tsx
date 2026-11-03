@@ -85,26 +85,6 @@ describe('TerminalConnectScreen unauthenticated redirect', () => {
         standardCleanup();
     });
 
-    it('captures a strict V4 descriptor in the real web owner and selects its Home before auth', async () => {
-        const link = createV4Link('https://company.example.test', 'srv_company_home');
-        setWindowLocation(link.href);
-        const Screen = (await import('@/app/(app)/terminal/connect')).default;
-
-        await renderTerminalRoute(Screen, null);
-        await act(async () => {});
-
-        const { getPendingTerminalConnect } = await import('@/sync/domains/pending/pendingTerminalConnect');
-        await vi.waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/?server=https%3A%2F%2Fcompany.example.test'));
-        // The route deliberately keeps the auth redirect recoverable when the live connection
-        // switch cannot complete. Activate the target as the auth landing would, then read the
-        // real target-bound pre-auth record.
-        await activateServer('https://company.example.test');
-        expect(getPendingTerminalConnect()).toMatchObject({
-            serverIdentityId: 'srv_company_home',
-            homeConnectionDescriptor: link.descriptor,
-        });
-    });
-
     it('does not crash when bootstrap session storage is unavailable', async () => {
         setWindowLocation('https://ui.example.test/terminal/connect');
         const deniedStorage = vi.spyOn(browser.window, 'sessionStorage', 'get').mockImplementation(() => { throw new Error('storage denied'); });

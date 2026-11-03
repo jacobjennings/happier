@@ -12,6 +12,7 @@ import { signRunnerBrokerReadinessRequestV1 } from '@happier-dev/protocol/teams'
 import { openBoxBundleWithSecretKey } from '@happier-dev/protocol/crypto/boxBundle';
 import { computeRunnerMachineContentKeyFingerprintV1, openRunnerMachineContentKeyVerifierFactV1, verifyRunnerMachineContentKeyBindingV1 } from '@happier-dev/protocol/ephemeralRunner/machineContentKeyBinding';
 import { MACHINE_PLAIN_DATA_KEY_MARKER, decodePlainMachineStoredContent, sealBoxBundle, signAccountContentKeyBindingV1, computeContentPublicKeyFingerprint, openEncryptedDataKeyEnvelopeV1, openSessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol';
+import { SessionDisplayProjectionV1Schema, openSessionOwnerDisplayEnvelopeV1, openSessionSharedDisplayEnvelopeV1 } from '@happier-dev/protocol';
 import type { RunnerEndpointFactsRecipientV1 } from '@happier-dev/protocol/ephemeralRunner/activation';
 import { RunnerRuntimeBootstrapV1Schema } from '@happier-dev/protocol/ephemeralRunner/bootstrap';
 import { Encryption } from '@/sync/encryption/encryption';
@@ -442,6 +443,24 @@ describe('creator Runner review and materialization', () => {
             ? { type: 'legacy', secret: accountSecret }
             : { type: 'dataKey', machineKey: accountEncryption.getContentPrivateKey() } })).toMatchObject({ ok: true, ownerMetadata: { workspace: { path: '/work/project' } } });
         expect(openSessionOwnerMetadataEnvelopeV1({ accountMode: 'e2ee', envelope: request.session.ownerMetadata, material: { type: 'legacy', secret: sessionKey } })).toMatchObject({ ok: false });
+        const display = SessionDisplayProjectionV1Schema.parse(request.session.displayProjectionV1);
+        expect(display).toMatchObject({ sourceMetadataVersion: 0, metadataLayoutVersion: 1,
+            shared: { t: 'encrypted' }, owner: { t: 'encrypted' } });
+        expect(await openSessionSharedDisplayEnvelopeV1({
+            sessionMode: 'e2ee', envelope: display.shared,
+            decryptPayload: async (ciphertext) => (await new AES256Encryption(sessionKey)
+                .decrypt([decodeBase64(ciphertext, 'base64')]))[0],
+        })).toEqual({ ok: true, display: { v: 1 } });
+        expect(openSessionOwnerDisplayEnvelopeV1({
+            accountMode: 'e2ee', envelope: display.owner,
+            material: credentialType === 'legacy' ? { type: 'legacy', secret: accountSecret }
+                : { type: 'dataKey', machineKey: accountEncryption.getContentPrivateKey() },
+        })).toMatchObject({ ok: true, display: { path: '/work/project', host: 'runner.example.test',
+            homeDir: '/runner/home', machineId: fixture.binding.machineId } });
+        expect(openSessionOwnerDisplayEnvelopeV1({
+            accountMode: 'e2ee', envelope: display.owner,
+            material: { type: 'legacy', secret: sessionKey },
+        })).toMatchObject({ ok: false });
         const machineEncryption = encryption.getMachineEncryption(fixture.binding.machineId);
         expect(machineEncryption).not.toBeNull();
         expect(await machineEncryption!.decryptMetadata(1, request.machine.metadata)).toEqual(endpointFactsContent.machine);
@@ -736,10 +755,29 @@ describe('creator Runner review and materialization', () => {
             requestRecipientEnvelopeProjection,
         });
         expect(request).toMatchObject({
-            v: 1, activationId: fixture.binding.activationId, session: { requestedEncryptionMode: 'plain', dataEncryptionKey: null },
+            v: 1, activationId: fixture.binding.activationId,
+            session: {
+                requestedEncryptionMode: 'plain',
+                dataEncryptionKey: null,
+                displayProjectionV1: {
+                    v: 1,
+                    sourceMetadataVersion: 0,
+                    metadataLayoutVersion: 1,
+                    shared: { t: 'plain' },
+                    owner: { t: 'plain' },
+                },
+            },
             machine: { dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER, runnerContentKeyBinding: null },
         });
         expect(requestRecipientEnvelopeProjection).not.toHaveBeenCalled();
+        const display = SessionDisplayProjectionV1Schema.parse(request.session.displayProjectionV1);
+        expect(await openSessionSharedDisplayEnvelopeV1({
+            sessionMode: 'plain', envelope: display.shared,
+        })).toEqual({ ok: true, display: { v: 1 } });
+        expect(openSessionOwnerDisplayEnvelopeV1({
+            accountMode: 'plain', envelope: display.owner,
+        })).toMatchObject({ ok: true, display: { path: '/work/project', host: 'runner.example.test',
+            homeDir: '/runner/home', machineId: fixture.binding.machineId } });
         expect(request.session.initialAccess?.grants).toEqual([{
             subject: { kind: 'account', accountId: 'plain-recipient' },
             accessLevel: 'view',

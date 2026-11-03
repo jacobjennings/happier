@@ -763,7 +763,7 @@ const ConnectedAccountServiceController = React.memo(
                 ...(expectedActiveServer ? { expectedActiveServer } : {}),
                 command: pending.kind === 'device'
                     ? { operation: 'resumeDevice', attemptId: pending.attemptId }
-                    : { operation: 'read', attemptId: pending.attemptId, restoreKind: 'oauth' },
+                    : { operation: 'read', attemptId: pending.attemptId },
                 signal: request.signal,
             });
             if (!isControllerCurrent() || request.signal.aborted || generation !== flowGenerationRef.current) return;
@@ -1470,7 +1470,6 @@ const ConnectedAccountServiceController = React.memo(
                     id: entry.mode.id,
                     title: entry.mode.kind === 'oauthAuthorizationCode' ? t('connectedServicesSettings.methodBrowser')
                         : entry.mode.kind === 'oauthDeviceCode' ? t('connectedServicesSettings.methodCode')
-                            : setupPresentation && 'manualMethodTitleKey' in setupPresentation ? t(setupPresentation.manualMethodTitleKey)
                             : resolveConnectedAccountModeTitle(entry.mode, localizeServiceText),
                     recommended: entry.recommended,
                 })) : []}

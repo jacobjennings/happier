@@ -1,11 +1,17 @@
 import { expect, it } from 'vitest';
 
 import { joinInstalledCatalogRuntimeIntrospection } from '@/plugins/projection/introspection/catalogSnapshot';
-import { createAdmittedPluginRuntimeFixture } from '@/plugins/testkit/admittedRuntime';
+import { createAuthoredAdmittedPluginRuntimeFixture } from '@/plugins/testkit/admittedRuntime';
+import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 import { readCurrentDaemonPluginCatalogSnapshot } from './currentCatalog';
 
 it('projects a live catalog without multiplying whole-registry policy work by the number of entries', async () => {
-  const fixture = await createAdmittedPluginRuntimeFixture();
+  // The whole bundled catalog is joined around one eagerly activated daemon
+  // target, so the retirement check below observes an actual activation target.
+  const fixture = await createAuthoredAdmittedPluginRuntimeFixture({ plugins: [{
+    manifest: createPluginManifestV2Fixture({ id: 'acme.catalog-target' }),
+    files: { 'daemon.mjs': 'export function activate() {}' },
+  }] });
   try {
     const read = () => readCurrentDaemonPluginCatalogSnapshot({
       reloadController: fixture.controller,
@@ -41,16 +47,15 @@ it('projects a live catalog without multiplying whole-registry policy work by th
       projections.push(cpuMs(start));
     }
     const median = (values: number[]) => [...values].sort((a, b) => a - b)[2]!;
-    console.info('catalog CPU benchmark', JSON.stringify({
-      plugins: initial.plugins.length,
-      readMs: median(reads) / 10,
-      onceProjectedMs: median(projections) / 10,
-      ratio: median(reads) / median(projections),
-    }));
     expect(median(reads) / median(projections)).toBeLessThan(2);
     // A subsequent read still derives facts from the live owner: retention
-    // across calls must not advertise a fenced plugin as applied.
-    const applied = initial.plugins.find(entry => entry.appliedGeneration !== null);
+    // across calls must not advertise a fenced plugin as applied. Retire an
+    // actual activation target; data-only entries can carry a generation too.
+    const activeTargetIds = new Set(registry.targetActivationFacts
+      .flatMap(fact => fact.status === 'active' ? [fact.pluginId] : []));
+    const applied = initial.plugins.find(entry => (
+      entry.appliedGeneration !== null && activeTargetIds.has(entry.pluginId)
+    ));
     expect(applied).toBeDefined();
     await registry.recordPluginActivationFailure?.(applied!.pluginId, 'performance fixture retirement');
     const retired = await read();

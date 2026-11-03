@@ -98,28 +98,22 @@ describe('UserActionPromptCard (preview)', () => {
         expect(routerPush).not.toHaveBeenCalled();
     });
 
-    it('does not render when the session is inactive', async () => {
+    it('names the prompt once: the header is the tool title and the form body carries the question', async () => {
         const { UserActionPromptCard } = await import('./UserActionPromptCard');
-
-        const request = {
-            id: 'ua1',
-            tool: 'ask_user',
-            kind: 'user_action',
-            arguments: { question: 'Continue?' },
-        } as PendingPermissionRequest;
 
         const screen = await renderWithSessionTranscriptSource(
             <UserActionPromptCard
-                request={request}
+                request={{ id: 'ua1', tool: 'ask_user', kind: 'user_action', arguments: { question: 'Continue?' } } as PendingPermissionRequest}
                 location={null}
                 sessionId="session-1"
                 metadata={null}
-                canApprovePermissions={false}
-                disabledReason="inactive"
+                canApprovePermissions={true}
             />,
         );
 
-        expect(screen.findAllByTestId('user-action-prompt-card')).toHaveLength(0);
+        expect(screen.getTextContent()).toContain('Question');
+        // The header subtitle of the mocked model repeats the question the body renders in full.
+        expect(screen.getTextContent()).not.toContain('Continue?');
     });
 
     it('updates an inactive card to active on the same instance without a hook-order error', async () => {

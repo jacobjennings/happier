@@ -106,33 +106,23 @@ describe('Team Sessions route', () => {
         standardCleanup();
     });
 
-    it('hosts the canonical list under a Home-qualified route identity', async () => {
+    it.each([
+        ['home-a', 'Acme'],
+        ['home-b', 'Globex'],
+    ])('hosts the canonical list under a Home-qualified route identity (%s)', async (serverId, teamDisplayName) => {
+        routeParamsRef.current = { teamId: 'team-1', serverId };
         await renderTeamSessionsRoute();
 
         const props = capturedSessionsListProps.current.at(-1);
         expect(props).toBeDefined();
         expect(props.viewContext).toMatchObject({
             kind: 'team',
-            team: { serverId: 'home-a', teamId: 'team-1' },
-            teamDisplayName: 'Acme',
+            team: { serverId, teamId: 'team-1' },
+            teamDisplayName,
         });
         // The Home is in the path, so the same Team id on another Home is a
         // different surface rather than a colliding one.
-        expect(props.pathname).toBe('/teams/team-1/sessions?serverId=home-a');
-    });
-
-    it('gives two Homes holding the same Team id distinct surface identities', async () => {
-        await renderTeamSessionsRoute();
-        const first = capturedSessionsListProps.current.at(-1)?.pathname;
-
-        capturedSessionsListProps.current = [];
-        routeParamsRef.current = { teamId: 'team-1', serverId: 'home-b' };
-        await renderTeamSessionsRoute();
-        const second = capturedSessionsListProps.current.at(-1)?.pathname;
-
-        expect(first).toBe('/teams/team-1/sessions?serverId=home-a');
-        expect(second).toBe('/teams/team-1/sessions?serverId=home-b');
-        expect(first).not.toBe(second);
+        expect(props.pathname).toBe(`/teams/team-1/sessions?serverId=${serverId}`);
     });
 
     it('goes noninteractive and data-inactive once the surface loses focus', async () => {

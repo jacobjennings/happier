@@ -18,6 +18,7 @@ export type DeliverHiddenSessionScmMutationSignalParams = Readonly<{
     rawMessage: SessionMessageV1 | undefined;
     sessionEncryptionMode: SessionEncryptionMode;
     getSessionEncryption: (sessionId: string) => SessionMessageEncryption | null;
+    shouldContinue?: () => boolean;
     /** Test seam mirroring the workspace-mutation ingestion; production uses the runtime singleton. */
     ingestMessages?: (sessionId: string, messages: readonly NormalizedMessage[], serverId?: string | null) => void;
 }>;
@@ -36,6 +37,7 @@ export type DeliverHiddenSessionScmMutationSignalParams = Readonly<{
 export async function deliverHiddenSessionScmMutationSignal(
     params: DeliverHiddenSessionScmMutationSignalParams,
 ): Promise<void> {
+    if (params.shouldContinue?.() === false) return;
     const rawMessage = params.rawMessage;
     if (!rawMessage) return;
 
@@ -52,7 +54,8 @@ export async function deliverHiddenSessionScmMutationSignal(
         sessionEncryptionMode: params.sessionEncryptionMode,
         decryptMessage: encryption ? (message) => encryption.decryptMessage(message) : undefined,
     });
-    if (!decrypted) return;
+    if (!decrypted || params.shouldContinue?.() === false
+        || !resolveSessionScmMutationSignal(params.sessionId, params.serverId)) return;
 
     const normalized = normalizeRawMessage(
         decrypted.id,

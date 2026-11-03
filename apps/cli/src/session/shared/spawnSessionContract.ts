@@ -1,4 +1,6 @@
 import type { ProjectGroupV1 } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
+import { SPAWN_SESSION_ERROR_CODES } from '@happier-dev/protocol/spawnSession';
+import type { SessionSpawnLaunchErrorV1 } from '@happier-dev/protocol/spawnSession';
 import { z } from 'zod/mini';
 import type { ActionExecutorContext } from '@happier-dev/protocol';
 import { decodeBase64, encodeBase64 } from '@happier-dev/protocol/crypto/base64';
@@ -93,6 +95,8 @@ export function deserializeNativeForkSourceV1(value: string): NativeForkSource {
  * depends on the high-level handler graph merely to describe a spawn request or response.
  */
 export interface SpawnSessionOptions extends SessionCreateOriginFieldsV1 {
+  /** Birth-only private provenance; never an existing Session mutation. */
+  authoringOrigin?: import('@happier-dev/protocol/plugins/ui').PluginUiNewSessionSeedOriginV1;
   /** Authored Session ceiling, committed before the native runner opens. */
   workspaceWrites?: 'allow' | 'deny';
   /** Original cold-start operation, retained only until native Session open. Never serialized. */
@@ -310,4 +314,13 @@ export function projectSpawnSessionControlErrorResponse(
     ...(error.agentId !== undefined ? { agentId: error.agentId } : {}),
     ...(errorDetail ? { errorDetail } : {}),
   };
+}
+
+export function projectSessionRunnerLaunchAdmissionFailure(
+  admission: boolean | SessionSpawnLaunchErrorV1,
+): Extract<SpawnSessionResult, { type: 'error' }> | null {
+  if (admission === true) return null;
+  return !admission
+    ? { type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.DAEMON_RPC_UNAVAILABLE, errorMessage: 'Session handoff launch custody unavailable' }
+    : { type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED, errorMessage: admission.message, errorDetail: admission };
 }

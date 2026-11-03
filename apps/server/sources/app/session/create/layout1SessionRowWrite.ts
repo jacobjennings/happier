@@ -3,6 +3,7 @@ import { resolveSessionAccessForOperation } from "@/app/session/access/sessionAc
 import { attachCreatedSessionManagerInTx, type SessionManagerSetResult } from "@/app/session/follow/sessionManagerService";
 import { workflowRunIdentityWhere } from "@/app/workflows/workflowRunService";
 import { encodeSessionOwnerMetadataEnvelopeV1, SESSION_METADATA_LAYOUT_VERSION_V1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
+import { validateSessionDisplayProjectionV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import { AutomationDefinitionCreateRequestSchema } from '@happier-dev/protocol/automations/automationApiV3';
 
 import { applySessionCreationPlacementInTx } from "@/app/session/organization/organizationMutations";
@@ -169,6 +170,11 @@ export async function insertLayout1SessionRowInTx(
     }>,
 ): Promise<CreatedSessionRow> {
     const { prepared, effectiveEncryptionMode } = params;
+    const display = prepared.displayProjectionV1 == null ? null
+        : validateSessionDisplayProjectionV1({ projection: prepared.displayProjectionV1,
+            sessionMode: effectiveEncryptionMode, accountMode: params.ownerAccountMode,
+            metadataVersion: 0, metadataLayoutVersion: SESSION_METADATA_LAYOUT_VERSION_V1 });
+    if (prepared.displayProjectionV1 != null && !display?.ok) throw new SessionOwnerEnvelopeError();
     const selectedTeamCredentialBindings = (prepared.teamCredentialBindings ?? []).filter((intent) => (
         intent.resourceId !== null
     ));
@@ -246,6 +252,7 @@ export async function insertLayout1SessionRowInTx(
             metadata: prepared.metadata,
             metadataLayoutVersion: SESSION_METADATA_LAYOUT_VERSION_V1,
             ownerMetadata: encodeSessionOwnerMetadataEnvelopeV1(prepared.ownerMetadata),
+            displayProjectionV1: display?.ok ? JSON.stringify(display.projection) : null,
             agentState: prepared.agentState,
             createdAt,
             lastActiveAt: createdAt,

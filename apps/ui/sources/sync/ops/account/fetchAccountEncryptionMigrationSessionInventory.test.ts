@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createCompactSessionListFetchBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
+import { projectSessionDisplayV1, sealSessionSharedDisplayEnvelopeV1Sync } from '@happier-dev/protocol';
 
 import {
     fetchAccountEncryptionMigrationSessionInventory,
@@ -58,7 +60,28 @@ function jsonResponse(body: unknown): Response {
     });
 }
 
+function requestListSources(request: Parameters<typeof fetchAccountEncryptionMigrationSessionInventory>[0]['request']) {
+    return createCompactSessionListFetchBoundary(async (path, init) => {
+        if (path === '/v2/sessions/read-batch') return undefined;
+        return request(path, init);
+    });
+}
+
 describe('fetchAccountEncryptionMigrationSessionInventory', () => {
+    it('carries the exact full-read display sidecar into the owner Account transition inventory', async () => {
+        const shared = sealSessionSharedDisplayEnvelopeV1Sync({ sessionMode: 'plain',
+            display: projectSessionDisplayV1({ sharedMetadata: { v: 1 } }).shared });
+        if (!shared.ok) throw new Error('Expected canonical shared display fixture');
+        const displayProjectionV1 = { v: 1, metadataLayoutVersion: 1, sourceMetadataVersion: 7,
+            shared: shared.envelope };
+        const row = { ...buildSessionRow({ id: 'retained-display' }), displayProjectionV1 };
+        const rows = await fetchAccountEncryptionMigrationSessionInventory({ token: 'token', scope,
+            request: requestListSources(async path => jsonResponse({ sessions: path.startsWith('/v2/sessions/archived') ? [] : [row],
+                hasNext: false, nextCursor: null })),
+        });
+        expect(rows[0]).toMatchObject({ encryptionMode: 'plain', displayProjectionV1 });
+    });
+
     it('normalizes stored Bot owner extensions while preserving the canonical migration precondition', async () => {
         const row = { ...buildSessionRow({ id: 'bot' }), ownerMetadata: {
             t: 'plain', future: true, v: { v: 1, future: true,
@@ -66,8 +89,8 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
                     viewPreferences: { showToolCalls: false, future: true }, future: true } },
         } };
         const rows = await fetchAccountEncryptionMigrationSessionInventory({ token: 'token', scope,
-            request: async (path) => jsonResponse({ sessions: path.startsWith('/v2/sessions/archived') ? [] : [row],
-                hasNext: false, nextCursor: null }),
+            request: requestListSources(async (path) => jsonResponse({ sessions: path.startsWith('/v2/sessions/archived') ? [] : [row],
+                hasNext: false, nextCursor: null })),
         });
         expect(rows[0]?.ownerMetadata).toEqual({ t: 'plain', v: { v: 1, work: {
             bot: { kind: 'bot' }, createdAsBot: true, viewPreferences: { showToolCalls: false },
@@ -84,7 +107,7 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
         });
 
         const migrationRows = await fetchAccountEncryptionMigrationSessionInventory({
-            token: 'token', request, scope, onSession: (session) => modes.push(session),
+            token: 'token', request: requestListSources(request), scope, onSession: (session) => modes.push(session),
         });
 
         expect(migrationRows.map((row) => row.id)).toEqual(['plain-owner']);
@@ -136,15 +159,18 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
             throw new Error(`Unexpected request path: ${path}`);
         });
 
+        const boundary = vi.fn(requestListSources(request));
         await expect(
             fetchAccountEncryptionMigrationSessionInventory({
                 token: 'token',
-                request,
+                request: boundary,
                 scope,
             }),
         ).resolves.toEqual([
             {
                 id: 'active-owner',
+                encryptionMode: 'plain',
+                displayProjectionV1: null,
                 metadataLayoutVersion: 1,
                 metadataVersion: 7,
                 agentStateVersion: 8,
@@ -152,6 +178,8 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
             },
             {
                 id: 'archived-owner',
+                encryptionMode: 'plain',
+                displayProjectionV1: null,
                 metadataLayoutVersion: 1,
                 metadataVersion: 7,
                 agentStateVersion: 8,
@@ -159,6 +187,14 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
             },
         ]);
         expect(request).toHaveBeenCalledTimes(3);
+        const batchReads = boundary.mock.calls.filter(([path]) => path === '/v2/sessions/read-batch');
+        expect(batchReads).toHaveLength(1);
+        const batchInit = batchReads[0]?.[1];
+        if (typeof batchInit?.body !== 'string') throw new Error('Expected a JSON snapshot batch request body');
+        expect(JSON.parse(batchInit.body)).toEqual({
+            sessionIds: ['active-owner', 'archived-owner'], includeSnapshot: true,
+            includeTurns: false, includeMessages: false,
+        });
     });
 
     it('fails closed when pagination repeats a cursor', async () => {
@@ -180,10 +216,32 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
         await expect(
             fetchAccountEncryptionMigrationSessionInventory({
                 token: 'token',
-                request,
+                request: requestListSources(request),
                 scope,
             }),
         ).rejects.toThrow('repeated cursor');
+    });
+
+    it.each([403, 409, 503] as const)('preserves a per-Session batch refusal (%s) instead of returning a partial inventory', async status => {
+        const request = createCompactSessionListFetchBoundary(async (path) => {
+            if (path === '/v2/sessions/read-batch') return jsonResponse({ results: [{ sessionId: 'owner',
+                detail: { status, body: { error: 'unavailable', code: 'session_inventory_unavailable' } } }] });
+            return jsonResponse({ sessions: path.startsWith('/v2/sessions/archived') ? [] : [buildSessionRow({ id: 'owner' })],
+                hasNext: false, nextCursor: null });
+        });
+        await expect(fetchAccountEncryptionMigrationSessionInventory({ token: 'token', scope, request }))
+            .rejects.toMatchObject({ httpStatus: status, body: { code: 'session_inventory_unavailable' } });
+    });
+
+    it('fails closed when owner access is revoked between the census and full snapshot', async () => {
+        const request = createCompactSessionListFetchBoundary(async (path) => {
+            if (path === '/v2/sessions/read-batch') return jsonResponse({ results: [{ sessionId: 'owner',
+                detail: { status: 200, body: { session: buildSessionRow({ id: 'owner', owner: false }) } } }] });
+            return jsonResponse({ sessions: path.startsWith('/v2/sessions/archived') ? [] : [buildSessionRow({ id: 'owner' })],
+                hasNext: false, nextCursor: null });
+        });
+        await expect(fetchAccountEncryptionMigrationSessionInventory({ token: 'token', scope, request }))
+            .rejects.toMatchObject({ name: 'Error', message: 'Invalid Session batch response' });
     });
 
     it('fails closed when a continuing page omits its cursor', async () => {
@@ -196,7 +254,7 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
         await expect(
             fetchAccountEncryptionMigrationSessionInventory({
                 token: 'token',
-                request,
+                request: requestListSources(request),
                 scope,
             }),
         ).rejects.toThrow('pagination is incomplete');
@@ -217,7 +275,7 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
 
         await expect(fetchAccountEncryptionMigrationSessionInventory({
             token: 'token',
-            request,
+            request: requestListSources(request),
             scope,
         })).resolves.toHaveLength(501);
         expect(request).toHaveBeenCalledTimes(2);
@@ -233,7 +291,7 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
         await expect(
             fetchAccountEncryptionMigrationSessionInventory({
                 token: 'token',
-                request,
+                request: requestListSources(request),
                 scope,
             }),
         ).rejects.toThrow('Duplicate Session migration inventory row');
@@ -272,7 +330,7 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
             nextCursor: null,
         }));
 
-        await expect(fetchAccountEncryptionMigrationSessionInventory({ token: 'token', request, scope }))
+        await expect(fetchAccountEncryptionMigrationSessionInventory({ token: 'token', request: requestListSources(request), scope }))
             .resolves.toEqual([]);
     });
 
@@ -284,7 +342,7 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
             nextCursor: null,
         }));
 
-        await expect(fetchAccountEncryptionMigrationSessionInventory({ token: 'token', request, scope }))
+        await expect(fetchAccountEncryptionMigrationSessionInventory({ token: 'token', request: requestListSources(request), scope }))
             .rejects.toThrow();
     });
 
@@ -302,7 +360,7 @@ describe('fetchAccountEncryptionMigrationSessionInventory', () => {
         });
         const pending = fetchAccountEncryptionMigrationSessionInventory({
             token: 'token',
-            request,
+            request: requestListSources(request),
             scope: {
                 scope: { serverId: 'home-a', accountId: 'account-a' },
                 isCurrent: () => current,

@@ -1,3 +1,23 @@
+export type {
+    HttpMethod,
+    PluginFetchCredentialBinding,
+    PluginWebSocketHeader,
+    PluginWebSocketMessage,
+    PluginWebSocketClose,
+    PluginWebSocketOpenInput,
+    PluginWebSocketConnection,
+    HttpRequest,
+    HttpResponse,
+    HttpStreamRequest,
+    HttpStreamResponse,
+    HttpPreparedReadInput,
+    PreparedHttpRead,
+} from '@happier-dev/cli-common/plugins/http/contracts';
+
+export type HttpService = Pick<
+    import('@happier-dev/cli-common/plugins/http/contracts').HttpService,
+    'request' | 'openWebSocket'
+>;
 /** @moduleRealm daemon */
 import type { PluginDiagnosticData } from '../diagnostics.js';
 import type { JsonValue, PluginContributionRef } from '../identity.js';
@@ -5,80 +25,23 @@ import type { Disposable, PluginCancellationOptions } from '../lifecycle.js';
 import type { ManagedExecutableRef } from '@happier-dev/protocol';
 import type { AgentNativeLaunchQualifier } from '../exec.js';
 
-export type HttpMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS';
+
 export const MAX_PLUGIN_FETCH_REDIRECTS = 10;
 
-export type PluginFetchCredentialBinding =
-    Readonly<{
-        kind: 'voiceAccountOperation';
-        provider: PluginContributionRef;
-        operation: string;
-        parameters: Readonly<Record<string, JsonValue>>;
-    }>;
+
 
 /** A redaction-aware header supplied during a host-vended WebSocket handshake. */
-export type PluginWebSocketHeader = Readonly<{
-    name: string;
-    value: string;
-    sensitive?: boolean;
-}>;
 
-export type PluginWebSocketMessage =
-    | Readonly<{ kind: 'text'; text: string }>
-    | Readonly<{ kind: 'binary'; data: Uint8Array }>;
 
-export type PluginWebSocketClose = Readonly<{
-    kind: 'remote' | 'local' | 'aborted' | 'generationRetired' | 'hostShutdown' | 'error';
-    code?: number;
-    reason?: string;
-    wasClean: boolean;
-    diagnostic?: PluginDiagnosticData;
-}>;
 
-export type PluginWebSocketOpenInput = Readonly<{
-    url: string;
-    protocols?: readonly string[];
-    headers?: readonly PluginWebSocketHeader[];
-    allowInsecureWs?: boolean;
-    connectTimeoutMs?: number;
-    maxMessageBytes?: number;
-    maxPendingMessages?: number;
-    maxPendingBytes?: number;
-    maxBufferedSendBytes?: number;
-}>;
 
-export interface PluginWebSocketConnection extends Disposable {
-    readonly url: string;
-    readonly protocol: string;
-    readonly closed: Promise<PluginWebSocketClose>;
-    send(message: PluginWebSocketMessage, options?: PluginCancellationOptions): Promise<void>;
-    receive(options?: PluginCancellationOptions): Promise<PluginWebSocketMessage | Readonly<{
-        kind: 'closed';
-        close: PluginWebSocketClose;
-    }>>;
-    close(request?: Readonly<{ code?: number; reason?: string }>): void;
-}
 
-export interface HttpService {
-    request(input: Readonly<{
-        url: string;
-        method?: HttpMethod;
-        headers?: Readonly<Record<string, string>>;
-        body?: Uint8Array;
-        credentialBinding?: PluginFetchCredentialBinding;
-        redirect: 'error' | 'follow' | 'manual';
-        timeoutMs?: number;
-    }>, options?: { signal?: AbortSignal }): Promise<{
-        status: number;
-        finalUrl: string;
-        headers: Readonly<Record<string, string>>;
-        body: Uint8Array;
-    }>;
-    openWebSocket(
-        input: PluginWebSocketOpenInput,
-        options?: PluginCancellationOptions,
-    ): Promise<PluginWebSocketConnection>;
-}
+
+
+
+
+
+
 
 export type PluginPath =
     | Readonly<{ root: 'pluginData'; relativePath: string }>
@@ -86,6 +49,19 @@ export type PluginPath =
     | Readonly<{ root: 'project'; projectId: string; relativePath: string }>;
 
 export interface FileSystemService {
+    /** Observe only metadata of a declared read-only Machine path. The ready
+     * snapshot includes changes during attachment. Cancellation or disposal
+     * invalidates reads; disposal awaits native watcher cleanup. The host retains
+     * watcher ownership, and this grants no file content or writes. */
+    observeMachinePath(input: Readonly<{ absolutePath: string }>,
+        emit: (event: Readonly<{ kind: 'changed'; identity: string | null; size: number | null }>
+            | Readonly<{ kind: 'unavailable'; code: string; retryable: boolean }>) => void,
+        options?: PluginCancellationOptions,
+    ): Promise<Disposable & Readonly<{
+        identity: string | null;
+        size: number | null;
+        read(): Promise<Readonly<{ identity: string; size: number }> | null>;
+    }>>;
     readFile(path: PluginPath, options?: { maxBytes?: number; signal?: AbortSignal }): Promise<Uint8Array>;
     writeFile(path: PluginPath, data: Uint8Array, options?: { signal?: AbortSignal }): Promise<void>;
     stat(path: PluginPath, options?: { signal?: AbortSignal }): Promise<{ kind: 'file' | 'directory'; size: number; modifiedAtMs: number }>;
@@ -103,6 +79,9 @@ export type PluginExecSpawnRequest = Readonly<{
     /** Process-only selected absolute cwd, or an existing admitted filesystem root. */
     cwd?: PluginPath | string;
     env?: Readonly<Record<string, string>>;
+    /** Single-use phase/operational custody, or a backup job's per-command loan;
+     * never a plugin-readable map. */
+    deploymentEnv?: DeploymentExecEnvAttachmentV1;
     stdin?: Uint8Array;
     maxStdoutBytes?: number;
     maxStderrBytes?: number;
@@ -147,6 +126,9 @@ export interface PluginProcessHandle extends Disposable {
 export interface PluginJsonRpcClient extends Disposable {
     request(method: string, params?: JsonValue, options?: { signal?: AbortSignal; timeoutMs?: number | null }): Promise<JsonValue>;
     notify(method: string, params?: JsonValue): Promise<void>;
+    /** Observes a parsed native notification synchronously before ordered callback dispatch.
+     * Observation only: callbacks must not transform the frame or perform asynchronous work. */
+    onNotificationReceived(listener: (message: Readonly<{ method: string; params?: JsonValue; receivedAtMs: number }>) => void): Disposable;
     onNotification(listener: (message: { method: string; params?: JsonValue }) => void | Promise<void>): Disposable;
     onRequest(method: string, listener: (request: { id: string | number; method: string; params?: JsonValue }) => JsonValue | Promise<JsonValue>): Disposable;
 }
@@ -186,7 +168,15 @@ export type PluginLoopbackWebSocketClientSpec =
         maxFrameBytes: number;
     }>;
 export type PluginProtocolClientSpec =
-    | Readonly<{ kind: 'jsonRpc'; launch: PluginExecSpawnRequest; framing: 'jsonLines' | 'contentLength'; maxFrameBytes: number; requestTimeoutMs?: number; cancellationMethod?: string }>
+    | Readonly<{
+        kind: 'jsonRpc';
+        launch: PluginExecSpawnRequest;
+        framing: 'jsonLines' | 'contentLength' | 'webSocket';
+        /** An explicit caller-owned frame budget; omitted means no payload-size cap. */
+        maxFrameBytes?: number;
+        requestTimeoutMs?: number;
+        cancellationMethod?: string;
+    }>
     | Readonly<{ kind: 'jsonStream'; launch: PluginExecSpawnRequest; maxFrameBytes: number }>
     | Readonly<{ kind: 'framedBytes'; launch: PluginExecSpawnRequest; framing: 'lengthPrefix' | 'contentLength'; maxFrameBytes: number }>
     | PluginLoopbackWebSocketClientSpec;
@@ -205,6 +195,47 @@ export interface PluginProtocolClientHandle<K extends PluginProtocolClientKind =
     wait(): Promise<PluginProcessResult>;
     dispose(): Promise<void>;
 }
+/** A connection to an already-owned native Unix endpoint; it never starts its server. */
+export type PluginJsonRpcConnectionSpec = Readonly<{
+    endpoint: Readonly<{ kind: 'unixWebSocket'; socketPath: string }>;
+    maxFrameBytes?: number;
+    requestTimeoutMs?: number;
+    cancellationMethod?: string;
+}>;
+export interface PluginJsonRpcConnection extends Disposable {
+    readonly client: PluginJsonRpcClient;
+    readonly closed: Promise<void>;
+    dispose(): Promise<void>;
+}
 export interface ProtocolClientsService {
+    connectJsonRpc(spec: PluginJsonRpcConnectionSpec, options?: { signal?: AbortSignal }): Promise<PluginJsonRpcConnection>;
     spawn<K extends PluginProtocolClientKind>(spec: PluginProtocolClientSpecByKind<K>, options?: { signal?: AbortSignal; nativeLaunch?: AgentNativeLaunchQualifier }): Promise<PluginProtocolClientHandle<K>>;
+}
+
+export interface DeploymentExecEnvAttachmentV1 extends Disposable {
+    readonly [deploymentExecEnvAttachmentV1]: true;
+}
+
+declare const deploymentExecEnvAttachmentV1: unique symbol;
+
+export interface DeploymentExecEnvPortV1 {
+    prepare(input: Readonly<{
+        source: import('./deployments.js').DeploymentSourceMaterializationV1;
+        phase: 'build' | 'runtime';
+        bindingIdentity?: never;
+        backupDestination?: never;
+    }> | Readonly<{
+        /** Opaque identity from deployment-protocol's environmentSecretBindingIdentityV1. */
+        bindingIdentity: string;
+        source?: never;
+        phase?: never;
+        backupDestination?: never;
+    }> | Readonly<{
+        /** Roles come from the host-admitted current destination. Reuse this
+         * handle within one admitted backup/restore job; dispose it in its finally. */
+        backupDestination: Readonly<{ configKey: 'destination' }>;
+        bindingIdentity?: never;
+        source?: never;
+        phase?: never;
+    }>, options?: PluginCancellationOptions): Promise<DeploymentExecEnvAttachmentV1>;
 }

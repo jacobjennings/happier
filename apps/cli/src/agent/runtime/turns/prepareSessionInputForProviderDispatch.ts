@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { UsagePromptCompositionSchema, type UsagePromptComposition, type UsagePromptCompositionComponent } from '@happier-dev/protocol/usage/coach/usagePromptComposition';
 import { createPromptCompositionScope, type PromptCompositionScope } from '@/agent/prompting/promptComposition';
 import { logger } from '@/ui/logger';
+import { renderRunFollowNotice } from '@/agent/runtime/session/follow/sessionFollowNotice';
 import { normalizePermissionModeQueuedPromptLocalIds, type PermissionModeQueuedPrompt } from '@/agent/runtime/permissions/queuedPrompt';
 import type { SessionClientInteractionApi } from '@/api/session/client/transport/sessionClientInteractionApi';
 import { isAbortLikeError } from '@/agent/runtime/lifecycle/classifyAbortLikeError';
@@ -161,9 +162,7 @@ export async function prepareSessionInputForProviderDispatch(input: Readonly<{
       transformedUserText: input.prompt.returnedAnswer ? '' : input.transformedUserText,
       ...(input.providerNativeCommand ? { userTextPlacement: 'beforeContext' as const } : {}),
     });
-    const runFollowNotices = (optionalContext.runFollowDeliveries ?? []).flatMap(({ delivery }) => 'source' in delivery.original
-      ? [`<happier_run_follow>${JSON.stringify({ original: delivery.original,
-        ...('event' in delivery ? { event: delivery.event } : {}) }).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e')}</happier_run_follow>\nRead the original Run result.`] : []);
+    const runFollowNotices = (optionalContext.runFollowDeliveries ?? []).map(({ delivery }) => renderRunFollowNotice(delivery)).filter(Boolean);
     // Keep primary slash/native command grammar untouched in queue custody.
     // Informational review facts join only the final actual provider input.
     const reviewNoteText = input.providerNativeCommand ? ''

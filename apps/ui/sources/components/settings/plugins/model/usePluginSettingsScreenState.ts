@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useActivePluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/projection';
+import { useActivePluginAccountAvailabilityReader, usePluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/projection';
 
 import {
     getMachineCapabilitiesCacheState,
@@ -65,16 +65,13 @@ import {
     readInstalledPlugins,
     projectAccountInstalledPlugins,
     isPluginMutationVisibleAfterRefresh,
-    readPluginChangeKind,
-    projectPluginInstallActionResult,
-    readPluginManagedResourceRemovalReview,
-    isPluginDisableNoopResult,
+    projectPluginMutationResult,
+    type PluginMutationResult,
     readPluginCreateResult,
     readPluginEditTargetResult,
     readPendingPluginChanges,
     resolvePluginDaemonOperationsAvailability,
     readPluginInstallationReviewChange,
-    readPluginRegistryProfileRequirement,
     resolvePluginReadOnlySnapshotNotice,
     resolvePluginTruthReadState,
     type DevelopmentPluginEntry,
@@ -250,7 +247,7 @@ export type PluginSettingsScreenState = Readonly<{
     resolveDevelopmentEditTarget: (pluginId: string) => Promise<DevelopmentEditTargetSettlement>;
     runDevelopmentSourceInstall: (sourceRootPath: string) => void;
     runDevelopmentAction: (action: 'test' | 'pack' | 'unregister', sourceRootPath: string) => void;
-    runInstalledPluginAction: (action: InstalledPluginActionId, pluginId: string) => void;
+    runInstalledPluginAction: (action: InstalledPluginActionId, pluginId: string, scope?: 'account' | 'machine') => void;
     setInstalledPluginUpdatePolicy: (pluginId: string, policy: PluginUpdatePolicyV1) => void;
     setActiveView: (view: PluginSettingsViewId) => void;
     setDiscoverSearchText: (value: string) => void;
@@ -294,6 +291,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
     // differ from the Account currently supplying Discover's registry reads.
     const installedExecution = useMountedActionExecution(executionTarget?.serverId, { openOnRequest: true });
     const selectedServerIdentityId = administration.selectedServerIdentityId;
+    const installedAvailabilityReader = usePluginAccountAvailabilityReader(installedExecution.binding?.scope ?? null);
     const executionMachineId = executionTarget?.machine.id ?? null;
     const executionMachineHomeDir = executionTarget?.machine.metadata?.homeDir ?? null;
     const executionServerId = executionTarget?.serverId ?? null;
@@ -397,10 +395,15 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
     const administeredInstalledPlugins = hasCapabilitySnapshot
         ? currentInstalledPlugins
         : lastKnownInstalledPluginsRef.current.installedPlugins;
-    const installedPlugins = React.useMemo(() => projectAccountInstalledPlugins(administeredInstalledPlugins, accountInstalledAdmission), [accountInstalledAdmission, administeredInstalledPlugins]);
+    const scopedInstalledPlugins = React.useMemo(() => administeredInstalledPlugins.map(entry => {
+        if (entry.machineEnabled === undefined) return entry;
+        const accountEnabled = installedAvailabilityReader?.readCurrentAccountEnablement(entry.pluginId) ?? undefined;
+        return accountEnabled === entry.accountEnabled ? entry : { ...entry, accountEnabled };
+    }), [administeredInstalledPlugins, installedAvailabilityReader]);
+    const installedPlugins = React.useMemo(() => projectAccountInstalledPlugins(scopedInstalledPlugins, accountInstalledAdmission), [accountInstalledAdmission, scopedInstalledPlugins]);
     const installedPluginById = React.useMemo(
-        () => new Map(administeredInstalledPlugins.map((entry) => [entry.pluginId, entry] as const)),
-        [administeredInstalledPlugins],
+        () => new Map(scopedInstalledPlugins.map((entry) => [entry.pluginId, entry] as const)),
+        [scopedInstalledPlugins],
     );
     const installedPluginByIdRef = React.useRef(installedPluginById);
     installedPluginByIdRef.current = installedPluginById;
@@ -806,15 +809,17 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                     || params.method === 'forgetTrust'
                     ? params.method
                     : null;
-                const showMutationFailure = (outcome: string) => {
+                const showMutationFailure = (outcome: string, reason: string | null) => {
+                    const action = resolvePluginChangeActionLabel(params.method);
                     Modal.alert(
                         t('common.error'),
-                        params.method === 'install'
-                            ? t('settingsPlugins.marketplaceInstallDecisionFailed', { outcome })
-                            : t('settingsPlugins.marketplaceChangeDecisionFailed', {
-                                action: resolvePluginChangeActionLabel(params.method),
-                                outcome,
-                            }),
+                        reason
+                            ? params.method === 'install'
+                                ? t('settingsPlugins.marketplaceInstallRefused', { reason })
+                                : t('settingsPlugins.marketplaceChangeRefused', { action, reason })
+                            : params.method === 'install'
+                                ? t('settingsPlugins.marketplaceInstallDecisionFailed', { outcome })
+                                : t('settingsPlugins.marketplaceChangeDecisionFailed', { action, outcome }),
                     );
                 };
                 const isMutationOutcomeUnknown = (code: string | undefined) => code === 'outcomeUnknown' || code === 'outcome_uncertain';
@@ -844,7 +849,8 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                 };
                 const requestChange = async (managedResourceDispositions?: readonly ManagedResourceDispositionV1[]): Promise<
                     | { supported: false; reason: 'cancelled' }
-                    | { supported: true; response: CapabilitiesInvokeResponse }
+                    | { supported: true; response: Extract<CapabilitiesInvokeResponse, { ok: false }>
+                        | Readonly<{ ok: true; result: PluginMutationResult }> }
                 > => {
                     const actionFailure = (execution: ActionExecuteFailure, actionId: PluginDevLoopActionIdV1) => {
                         if (isActionApprovalDeclinedErrorCode(execution.errorCode) || !isAuthorityCurrent()) {
@@ -874,13 +880,12 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                             const execution = await execute('plugins.install', actionInput,
                                 { signal: installLifetime.controller.signal });
                             if (!execution.ok) return actionFailure(execution, 'plugins.install');
-                            const result = execution.result;
                             // `plugins.install` resumes only after its ordinary
                             // approval Artifact settles. Project that terminal
                             // Action outcome into the existing mutation reader;
                             // daemon review ids never become a second UI decision.
                             return { supported: true as const, response: { ok: true as const,
-                                result: projectPluginInstallActionResult(result, params.method, params.pluginId),
+                                result: projectPluginMutationResult(execution.result, params.method, params.pluginId),
                             } };
                         }
                         const actionId = {
@@ -890,11 +895,13 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                         const execution = await installedExecution.execute(actionId[params.method], {
                             machineId: initialTarget.machine.id,
                             pluginId: params.pluginId,
+                            ...(params.scope ? { scope: params.scope } : {}),
                             ...(params.policy ? { policy: params.policy } : {}),
                             ...(managedResourceDispositions ? { managedResourceDispositions } : {}),
                         }, { signal: installLifetime.controller.signal });
                         if (!execution.ok) return actionFailure(execution, actionId[params.method]);
-                        return { supported: true as const, response: { ok: true as const, result: execution.result } };
+                        return { supported: true as const, response: { ok: true as const,
+                            result: projectPluginMutationResult(execution.result, params.method, params.pluginId) } };
                     } catch {
                         if (installLifetime.controller.signal.aborted || !isAuthorityCurrent()) {
                             return { supported: false, reason: 'cancelled' };
@@ -909,7 +916,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                 if (!isAuthorityCurrent()) return;
                 while ((params.method === 'disable' || params.method === 'uninstall')
                     && 'response' in response && response.response.ok) {
-                    const resources = readPluginManagedResourceRemovalReview(response.response.result, params.method, params.pluginId);
+                    const resources = response.response.result.managedResources;
                     if (!resources) break;
                     const dispositions = await reviewManagedResourceRemoval(resources);
                     if (!dispositions || !isAuthorityCurrent()) return;
@@ -927,11 +934,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                     && 'response' in response
                     && response.response.ok
                 ) {
-                    const registryRequirement = readPluginRegistryProfileRequirement(
-                        response.response.result,
-                        params.method,
-                        params.pluginId,
-                    );
+                    const registryRequirement = response.response.result.registryRequirement;
                     if (!registryRequirement) break;
                     const proceed = await showPluginRegistryProfileSelectionDialog({
                         requirement: registryRequirement,
@@ -970,15 +973,17 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
                     return;
                 }
 
-                const changeKind = readPluginChangeKind(response.response.result, params.method, params.pluginId);
+                const changeKind = response.response.result.kind;
                 if (changeKind === 'cancelled') return;
-                const disabledNoop = params.method === 'disable'
-                    && isPluginDisableNoopResult(response.response.result, params.pluginId);
+                const disabledNoop = response.response.result.disabledNoop;
                 if (changeKind !== 'committed' && !disabledNoop) {
                     if (changeKind === 'outcomeUnknown') {
                         await reconcileAmbiguousMutation(exactInstallEntry?.version ?? null);
                     } else {
-                        showMutationFailure(changeKind ?? 'invalid-response');
+                        showMutationFailure(
+                            changeKind ?? 'invalid-response',
+                            response.response.result.failureReason,
+                        );
                         if (changeKind === 'dataRemovalPartial') {
                             machineCapabilities.refresh({ bypassCache: true });
                             refreshPluginTruth();
@@ -1001,6 +1006,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
     const runInstalledPluginAction = React.useCallback((
         action: InstalledPluginActionId,
         pluginId: string,
+        scope?: 'account' | 'machine',
     ) => {
         const installed = installedPluginByIdRef.current.get(pluginId) ?? null;
         if (
@@ -1011,7 +1017,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         ) {
             return;
         }
-        const capabilities = projectInstalledPluginLifecycleCapabilities(installed);
+        const capabilities = projectInstalledPluginLifecycleCapabilities(installed, scope);
         if (
             (action === 'enable' && !capabilities.canEnable)
             || (action === 'disable' && !capabilities.canDisable)
@@ -1024,7 +1030,7 @@ export function usePluginSettingsScreenState(params: Readonly<{ focused?: boolea
         }
         // Action policy owns confirmation. Retained-resource responsibility is
         // a distinct daemon-issued review handled by the mutation loop above.
-        runCatalogAction({ method: action, pluginId });
+        runCatalogAction({ method: action, pluginId, ...(scope ? { scope } : {}) });
     }, [isPluginActionInFlight, mutationAuthorityKey, runCatalogAction]);
 
     const setInstalledPluginUpdatePolicy = React.useCallback((

@@ -1,4 +1,9 @@
 export { ACP_AGENT_CLI_TRANSPORT_TIMEOUTS } from '../../agentRuntime/projections.js';
+export type {
+  AgentSessionCompactionCapability,
+  AgentSessionCompactionIdleCapability,
+  PluginAgentSessionCompactionCapabilityV2,
+} from '../../agentRuntime/projections.js';
 export { canPublishSessionResumeIdentity } from '../../agentRuntime/projections.js';
 export {
   AGENT_STARTUP_FAILURE_PREVIEWS,
@@ -463,3 +468,6 @@ export { resolveTerminalPromptWriteTimeoutMs } from '../../runtime/promptWriteTi
 export { isSessionPermissionShellToolName, matchSessionPermissionToolIdentifier, parseSessionPermissionToolIdentifier } from '../../agentRuntime/projections.js';
 
 export { TERMINAL_BRACKETED_PASTE_START, TERMINAL_BRACKETED_PASTE_END } from '../../agentRuntime/projections.js';
+
+export { resolvePromptCacheLastUseAtMs } from '../../agentRuntime/promptCacheClock.js';
+export { OPENAI_GPT56_PROMPT_CACHE_QUALIFICATION, PROMPT_CACHE_DURATIONS } from '../../agentRuntime/projections.js';

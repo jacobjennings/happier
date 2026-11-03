@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import type {
     EmbeddedTerminalRendererHandle,
@@ -6,21 +6,6 @@ import type {
 } from '@/components/terminal/embedded/embeddedTerminalRendererHandle';
 import { getTerminalQaWorkload } from './workloads';
 import { createTerminalQaSession } from './session';
-
-type Timer = ReturnType<typeof setTimeout>;
-
-function makeScheduler() {
-    const callbacks: Array<() => void> = [];
-    return {
-        schedule: (callback: () => void) => {
-            callbacks.push(callback);
-            return callbacks.length as unknown as Timer;
-        },
-        cancel: vi.fn(),
-        flushOne: () => callbacks.shift()?.(),
-        count: () => callbacks.length,
-    };
-}
 
 function completion(input: Readonly<{
     seq: number;
@@ -175,7 +160,10 @@ describe('terminal loaded-device QA session', () => {
     });
 
     it('retries a one-shot immediate rejection from the original byte offset', () => {
-        const scheduler = makeScheduler();
+        vi.useFakeTimers();
+        onTestFinished(() => {
+            vi.useRealTimers();
+        });
         const writes: Array<{ byteOffset: number; writeGeneration: number }> = [];
         const renderer: EmbeddedTerminalRendererHandle = {
             write: vi.fn(),
@@ -189,8 +177,6 @@ describe('terminal loaded-device QA session', () => {
             terminalId: 'terminal-qa:test',
             rendererRef: { current: renderer },
             evidenceIdentity,
-            schedule: scheduler.schedule,
-            cancel: scheduler.cancel,
         });
 
         session.rejectOneWrite();
@@ -202,14 +188,17 @@ describe('terminal loaded-device QA session', () => {
             rejectedWrites: 1,
             rejectNextWrite: false,
         });
-        expect(scheduler.count()).toBe(1);
+        expect(vi.getTimerCount()).toBe(1);
 
-        scheduler.flushOne();
+        vi.runOnlyPendingTimers();
         expect(writes).toEqual([{ byteOffset: 0, writeGeneration: 2 }]);
     });
 
     it('preserves one logical session across native rejection and xterm fallback', () => {
-        const scheduler = makeScheduler();
+        vi.useFakeTimers();
+        onTestFinished(() => {
+            vi.useRealTimers();
+        });
         const nativeWrites: Array<{ seq: number; byteLength: number; generation: number }> = [];
         const fallbackWrites: Array<{ seq: number; byteLength: number; generation: number }> = [];
         const native: EmbeddedTerminalRendererHandle = {
@@ -233,8 +222,6 @@ describe('terminal loaded-device QA session', () => {
             terminalId: 'terminal-qa:test',
             rendererRef,
             evidenceIdentity,
-            schedule: scheduler.schedule,
-            cancel: scheduler.cancel,
         });
         const workload = getTerminalQaWorkload('ansi-burst');
 
@@ -249,7 +236,7 @@ describe('terminal loaded-device QA session', () => {
             accepted: false,
         }));
         rendererRef.current = fallback;
-        scheduler.flushOne();
+        vi.runOnlyPendingTimers();
 
         expect(fallbackWrites).toEqual([{ seq: 1, byteLength: workload.byteLength, generation: 2 }]);
         expect(session.getSnapshot().terminalId).toBe('terminal-qa:test');

@@ -124,6 +124,9 @@ describe('voice QA temporary settings scope', () => {
   it('retires a failed settings scope when native persistence rejects the override and permits a later run', async () => {
     const baseline = createBaselineSettings();
     const harness = createSettingsHarness(baseline);
+    // The persistence owner migrates retired device-history fields out of settings.
+    // Compare the full real persisted baseline, not the pre-migration store shape.
+    const persistedBaseline = loadSettings().settings;
     const coordinator = createVoiceQaTemporarySettingsScopeCoordinator(harness);
     // The real settings owner persists before publishing its store projection.
     // Fail only the native storage write, preserving that ordering.
@@ -136,7 +139,7 @@ describe('voice QA temporary settings scope', () => {
       delta: { experiments: true, voice: createVoiceSettings('temporary') },
     }, async () => 'unreachable')).rejects.toThrow('settings_apply_failed');
     expect(harness.readSettings()).toMatchObject(baseline);
-    expect(loadSettings().settings).toMatchObject(baseline);
+    expect(loadSettings().settings).toEqual(persistedBaseline);
 
     await coordinator.run({
       ownerId: 'screen-b',
@@ -146,6 +149,6 @@ describe('voice QA temporary settings scope', () => {
       expect(loadSettings().settings).toMatchObject({ voice: { assistantLanguage: 'retry' } });
     });
     expect(harness.readSettings()).toMatchObject(baseline);
-    expect(loadSettings().settings).toMatchObject(baseline);
+    expect(loadSettings().settings).toEqual(persistedBaseline);
   });
 });

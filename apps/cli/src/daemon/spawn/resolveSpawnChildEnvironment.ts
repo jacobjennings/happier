@@ -53,6 +53,7 @@ import { resolveSpawnHookInstallablesRegistry } from './spawnHookInstallablesReg
 import { HAPPIER_SESSION_CREATE_ORIGIN_ENV_KEY, pickSessionCreateOriginFields } from '@/session/shared/sessionCreateOrigin';
 import { HAPPIER_SESSION_CREATE_MANAGER_ENV_KEY } from '@/session/shared/sessionCreateManager';
 import { HAPPIER_SESSION_CREATE_ROLES_ENV_KEY } from '@/session/shared/sessionCreateRoles';
+import { HAPPIER_SESSION_CREATE_AUTHORING_ORIGIN_ENV_KEY } from '@/session/shared/sessionCreateAuthoringOrigin';
 import { resolveExistingSessionHandoffState } from '@/session/handoff/agentBundle/import';
 import { requiresAgentSessionCli } from '@/agent/catalog/runtimeEntry';
 
@@ -868,6 +869,9 @@ async function resolveSpawnChildEnvironmentImpl(params: {
     extraEnvForChild[SESSION_DIRECTORY_KIND_ENV] = 'managed';
   }
   const createOrigin = params.options.existingSessionId ? {} : pickSessionCreateOriginFields(params.options);
+  if (!params.options.existingSessionId && params.options.authoringOrigin !== undefined) {
+    extraEnvForChild[HAPPIER_SESSION_CREATE_AUTHORING_ORIGIN_ENV_KEY] = JSON.stringify(params.options.authoringOrigin);
+  }
   if (!params.options.existingSessionId && params.options.initialSessionRolesV1 !== undefined) {
     extraEnvForChild[HAPPIER_SESSION_CREATE_ROLES_ENV_KEY] = JSON.stringify(params.options.initialSessionRolesV1);
   }

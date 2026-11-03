@@ -1,8 +1,10 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
+import { readSessionPresentationRecord, readSessionPresentationServerId, readSessionPresentationInputSource, type SessionRelationRecord, type SessionPresentationRecord } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import type { SessionManagerEligibilitySnapshot } from '@/sync/ops/relations/sessionManagerEligibility';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import { readSessionFullPublicationUpdatedAt } from '@/sync/domains/session/sessionRuntimeObservation';
 
-type SessionRecord = Readonly<Record<string, Session>>;
+type SessionRecord = Readonly<Record<string, SessionRelationRecord>>;
 
 export type PutUnderEligibility = Readonly<{ allowed: true; expectedManagerSessionId: string | null }> | Readonly<{
     allowed: false;
@@ -15,12 +17,14 @@ export function resolvePutUnderEligibility(
     sessions: SessionRecord, sessionId: string, managerSessionId: string,
     facts?: SessionManagerEligibilitySnapshot | null, scope: PutUnderScope = {},
 ): PutUnderEligibility {
-    const session = sessions[sessionId];
-    const candidate = sessions[managerSessionId];
-    if (!session || !candidate) return { allowed: false, reason: 'unavailable' };
-    const serverId = session.serverId ?? null;
+    const sessionInput = sessions[sessionId];
+    const candidateInput = sessions[managerSessionId];
+    if (!sessionInput || !candidateInput) return { allowed: false, reason: 'unavailable' };
+    const session = readSessionPresentationRecord(sessionInput);
+    const candidate = readSessionPresentationRecord(candidateInput);
+    const serverId = readSessionPresentationServerId(sessionInput) ?? null;
     if (serverId === null) return { allowed: false, reason: 'unavailable' };
-    if (!areServerProfileIdentifiersEquivalent(candidate.serverId ?? null, serverId)
+    if (!areServerProfileIdentifiersEquivalent(readSessionPresentationServerId(candidateInput) ?? null, serverId)
         || (scope.serverId !== undefined && !areServerProfileIdentifiersEquivalent(scope.serverId, serverId))) return { allowed: false, reason: 'different_home' };
     if (session.id === candidate.id) return { allowed: false, reason: 'cycle' };
     if (session.archivedAt != null || candidate.archivedAt != null) return { allowed: false, reason: 'archived' };
@@ -40,11 +44,16 @@ export function resolvePutUnderEligibility(
 export function listPutUnderCandidateOptions(sessions: SessionRecord, session: Pick<Session, 'id' | 'serverId'>,
     facts?: SessionManagerEligibilitySnapshot | null) {
     return Object.values(sessions)
-        .map((candidate) => ({ candidate, eligibility: resolvePutUnderEligibility(sessions, session.id, candidate.id, facts, {
+        .map((input) => ({ candidate: readSessionPresentationRecord(input), input, source: readSessionPresentationInputSource(input) }))
+        // This chooser snapshots receipt recency on open, without promoting it to Session content time.
+        .map(({ candidate, input, source }) => ({ candidate, input, updatedAt: readSessionFullPublicationUpdatedAt({
+            id: candidate.id, serverId: readSessionPresentationServerId(input),
+            updatedAt: source?.lifecycle.updatedAt ?? candidate.updatedAt,
+        }), eligibility: resolvePutUnderEligibility(sessions, session.id, candidate.id, facts, {
             serverId: session.serverId ?? null, allowCurrentLead: true,
         }) }))
         .filter(({ eligibility }) => eligibility.allowed || !['cycle', 'archived', 'different_home'].includes(eligibility.reason))
-        .sort((a, b) => b.candidate.updatedAt - a.candidate.updatedAt);
+        .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 /**
@@ -55,7 +64,7 @@ export function listPutUnderCandidates(
     sessions: SessionRecord,
     session: Pick<Session, 'id' | 'serverId'>,
     facts?: SessionManagerEligibilitySnapshot | null,
-): readonly Session[] {
+): readonly SessionPresentationRecord[] {
     return listPutUnderCandidateOptions(sessions, session, facts)
         .filter(({ eligibility }) => eligibility.allowed).map(({ candidate }) => candidate);
 }

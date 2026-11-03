@@ -2,7 +2,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { connect as connectLoopback, type AddressInfo } from 'node:net';
 
 import { attach, type Server as EngineServer } from 'engine.io';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createHappierSocket } from '@happier-dev/sync-client';
 import { buildAccountStoredContentCompatibilitySocketAuthV1, CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
@@ -253,7 +253,7 @@ describe('browser Iroh production Home vertical', () => {
         await transport.destroy();
     }, 30_000);
 
-    it('reconnects over a fresh carrier stream after the Home drops the socket', async () => {
+    it('opens a fresh carrier stream for a second connection owner after an intentional disconnect', async () => {
         const carrier = await acquireCarrier(createLoopbackEndpointClient(() => port));
         const build = () => createHappierSocket({
             clientType: 'user-scoped',
@@ -286,6 +286,27 @@ describe('browser Iroh production Home vertical', () => {
         await second.transport.destroy();
     }, 30_000);
 
+    it('refuses a Socket.IO connection when the stream authenticates a different EndpointId', async () => {
+        const carrier = await acquireCarrier(
+            createLoopbackEndpointClient(() => port, 'k51endpointimposteraaaaaaaaaaaaaaaaaaaaaaaaaa'),
+        );
+        const { transport } = createHappierSocket({
+            clientType: 'user-scoped',
+            clientPurpose: 'sync',
+            authExtras: buildAccountStoredContentCompatibilitySocketAuthV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION),
+            endpoint: CANONICAL_HOME_URL,
+            token: 'home-token',
+            websocketFactory: (uri, protocols, options) => carrier.createWebSocket(uri, protocols, options),
+        });
+        // The identity refusal surfaces as the connection owner's rejected connect.
+        await expect(transport.connect()).rejects.toThrow();
+
+        expect(transport.isConnected()).toBe(false);
+        expect(handshakePackets).toEqual([]);
+
+        await transport.destroy();
+    }, 30_000);
+
     it('sends zero application bytes to a Home that proves a different EndpointId', async () => {
         const carrier = await acquireCarrier(
             createLoopbackEndpointClient(() => port, 'k51endpointimposteraaaaaaaaaaaaaaaaaaaaaaaaaa'),
@@ -300,17 +321,4 @@ describe('browser Iroh production Home vertical', () => {
         await expect(request('/v1/sessions', undefined, { retry: 'none' })).rejects.toThrow(/EndpointId/iu);
         expect(authorizationHeaders).toEqual([]);
     }, 30_000);
-});
-
-describe('browser Iroh production Home vertical activation', () => {
-    it('never routes production traffic without both HTTP and Socket.IO facilities present', async () => {
-        // Activation is all-or-nothing by construction: the resolved carrier is
-        // one object exposing both facilities, so a caller cannot be given the
-        // request path while the socket path is missing.
-        const carrier = await acquireCarrier(createLoopbackEndpointClient(() => 0));
-        expect(typeof carrier.request).toBe('function');
-        expect(typeof carrier.createWebSocket).toBe('function');
-        expect(carrier.endpointId).toBe(HOME_ENDPOINT_ID);
-        expect(vi.isMockFunction(carrier.request)).toBe(false);
-    });
 });

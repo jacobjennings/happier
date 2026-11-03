@@ -76,6 +76,7 @@ export const MachineActivityRow = React.memo(function MachineActivityRow(props: 
                     {phone ? <Text style={styles.time}>{model.figure || facts ? `\n${time}` : time}</Text> : null}
                 </Text>
             ) : undefined}
+            rightElementOutsidePressable={actions.length > 0}
             rightElement={actions.length > 0 ? (
                 <View style={styles.actions}>
                     {actions.map(item => (

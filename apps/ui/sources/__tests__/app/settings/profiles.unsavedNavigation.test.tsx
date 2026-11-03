@@ -17,6 +17,9 @@ import { ACP_CATALOG_ROWS_ROUTE_V1, AcpCatalogRowReadResponseV1Schema } from '@h
 
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// The static storage graph reaches the Socket.IO transport; register its external boundary before any import.
+vi.mock('socket.io-client', async (importOriginal) =>
+    (await import('@/dev/testkit/harness/serverAccountConnectionHarness')).createSocketIoClientBoundary(importOriginal));
 
 import type { AiLaunchProfile } from '@happier-dev/protocol';
 
@@ -193,7 +196,8 @@ let publishedArtifactId: string | null = null;
 const runtime = installSessionPaneRuntimeTestHarness({ request: async (url, init) => {
     const path = new URL(String(url)).pathname;
     if (path === '/v1/artifacts' || path.startsWith('/v1/artifacts/')) {
-        const response = await artifactStore.handle(path, init ?? {});
+        // The Profile catalog filters its Artifact census by kind on the query string.
+        const response = await artifactStore.handle(`${path}${new URL(String(url)).search}`, init ?? {});
         if (response?.ok && path === '/v1/artifacts' && init?.method === 'POST') publishedArtifactId = artifactStore.list().at(-1)?.id ?? null;
         if (response) return response;
     }
@@ -235,7 +239,7 @@ vi.spyOn(actionRuntime, 'createFrontDoorActionExecute').mockImplementation((...f
         const [actionId, input, context] = args;
         shareState.calls.push({ actionId, input, context });
         return execute(...args);
-    }, { prepare: execute.prepare });
+    }, { confirmed: execute.confirmed, prepare: execute.prepare });
 });
 const profileEditModule = await import('@/components/profiles/edit');
 const realLaunchProfileEditForm = profileEditModule.LaunchProfileEditForm;

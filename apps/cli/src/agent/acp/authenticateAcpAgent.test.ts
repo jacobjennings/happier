@@ -28,6 +28,10 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   return { ...actual, readdir: (...args: Parameters<typeof actual.readdir>) => {
     if (enumeration.denied && String(args[0]) === '/proc') throw new Error('process listing unavailable');
     return actual.readdir(...args);
+  }, open: (...args: Parameters<typeof actual.open>) => {
+    // Exact-PID teardown observes identity directly, so the same OS boundary also refuses that read.
+    if (enumeration.denied && /^\/proc\/\d+\/stat$/u.test(String(args[0]))) throw new Error('process observation unavailable');
+    return actual.open(...args);
   } };
 });
 vi.mock('@happier-dev/cli-common/process', async (importOriginal) => {
@@ -51,7 +55,11 @@ afterEach(async () => {
   }));
 });
 
-function fixture(dir: string, behavior: 'success' | 'reject' | 'wait' = 'success') {
+function fixture(
+  dir: string,
+  behavior: 'success' | 'reject' | 'wait' = 'success',
+  methodIds: readonly string[] = ['oauth-personal'],
+) {
   const script = writeAcpTestAgentScript({
     dir,
     fileName: 'auth-agent.mjs',
@@ -63,7 +71,7 @@ function fixture(dir: string, behavior: 'success' | 'reject' | 'wait' = 'success
       createInterface({input:process.stdin}).on('line', line => {
         const request = JSON.parse(line);
         if (request.method === 'initialize') {
-          reply(request.id, {protocolVersion:1, authMethods:[{id:'oauth-personal',name:'Google'}]});
+          reply(request.id, {protocolVersion:1, authMethods:${JSON.stringify(methodIds.map(id => ({ id, name: id })))}});
         } else if (request.method === 'authenticate') {
           if (${JSON.stringify(behavior)} === 'reject') {
             process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,error:{code:-32602,message:'Rejected'}}) + '\\n');
@@ -127,6 +135,16 @@ describe('ACP login', () => {
       await authenticateAcpAgent({ ...fixture(dir), onStderr: (text) => { output += text; } });
       expect(JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))).toEqual({ auth: { type: 'oauth-personal' } });
       expect(output).toContain('https://accounts.google.com/example');
+      expectProviderStopped(dir);
+    });
+  });
+
+  it('authenticates with any advertised method rather than truncating the provider catalog', async () => {
+    await withTempDir('happier-acp-login-catalog-', async (dir) => {
+      const methodIds = Array.from({ length: 65 }, (_, index) => `oauth-${index}`);
+      const methodId = methodIds.at(-1)!;
+      await authenticateAcpAgent({ ...fixture(dir, 'success', methodIds), methodId });
+      expect(JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))).toEqual({ auth: { type: methodId } });
       expectProviderStopped(dir);
     });
   });

@@ -33,16 +33,6 @@ describe('main transcript renderer frame host', () => {
         });
     });
 
-    it('resolves the native main frame as newest-first Legend', () => {
-        const frame = resolveMainTranscriptRendererFrameHost(baseParams);
-
-        expect(frame).toMatchObject({
-            dataOrder: 'newest-first',
-            platform: 'native',
-            renderer: 'legendList',
-        });
-    });
-
     it('falls back to the default follow ratio when layout geometry is unknown', () => {
         const frame = resolveMainTranscriptRendererFrameHost({
             ...baseParams,
@@ -50,6 +40,8 @@ describe('main transcript renderer frame host', () => {
         });
 
         expect(frame.rendererOptions.continuousFollow.endThresholdRatio).toBe(0.1);
+        // The native platform passes through to the shell frame (newest-first Legend data).
+        expect(frame).toMatchObject({ dataOrder: 'newest-first', platform: 'native', renderer: 'legendList' });
     });
 
     it('withholds Legend initial tail placement for a released entry so entry restore consumes the saved anchor first', () => {

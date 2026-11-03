@@ -24,7 +24,7 @@ type ScopedServerAccountRequestContext = Extract<
     { scope: 'scoped' }
 >;
 
-export type ServerAccountRequestOptions = Readonly<Pick<ServerFetchOptions, 'onIssued' | 'retry'>>;
+export type ServerAccountRequestOptions = Readonly<Pick<ServerFetchOptions, 'onIssued' | 'retry' | 'recoveryRead'>>;
 export type ServerAccountResponseRequest = ServerResponseRequest<ServerAccountRequestOptions>;
 type RawServerAccountRequest = (path: string, init?: RequestInit, options?: ServerAccountRequestOptions) => Promise<Response>;
 
@@ -64,7 +64,7 @@ export function createServerRequestForExplicitServerScope(params: Readonly<{
             // no-retry requests. Supply its scoped credential and request policy
             // here instead of parking user Retry on passive reachability.
             const requestInit = { ...init, method: init?.method ?? 'GET', headers };
-            const requestOptions = { retry: 'none' as const, ...(options?.onIssued ? { onIssued: options.onIssued } : {}) };
+            const requestOptions = { ...options, retry: 'none' as const };
             return consumeResponse ? await endpointRequest(path, requestInit, requestOptions, consumeResponse)
                 : await endpointRequest(path, requestInit, requestOptions);
         }
@@ -75,6 +75,7 @@ export function createServerRequestForExplicitServerScope(params: Readonly<{
             url: `${params.runtimeOrigin ?? params.serverUrl}${path}`,
             ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
             ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
+            ...(options?.recoveryRead !== undefined ? { recoveryRead: options.recoveryRead } : {}),
             init: {
                 ...init,
                 method: init?.method ?? 'GET',
@@ -167,7 +168,7 @@ type ServerAccountRequestTarget =
 
 type CaptureServerAccountRequestParams = ServerAccountRequestTarget & Readonly<{
     activeRequest: RawServerAccountRequest;
-}>;
+}> & Pick<Parameters<typeof resolveServerAccountRequestContext>[0], 'signal'>;
 
 export async function captureServerRequestAuthorityForServerAccountScope(params: CaptureServerAccountRequestParams): Promise<ServerAccountRequestAuthority> {
     const serverId = params.scope?.serverId ?? params.serverId;
@@ -175,6 +176,7 @@ export async function captureServerRequestAuthorityForServerAccountScope(params:
     const context = await resolveServerAccountRequestContext({
         serverId,
         preferScoped: true,
+        ...(params.signal ? { signal: params.signal } : {}),
     });
     if (context.scope !== 'scoped') {
         throw new Error('Account-scoped request did not resolve to scoped credentials');

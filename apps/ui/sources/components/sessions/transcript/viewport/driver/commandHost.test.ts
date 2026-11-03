@@ -1,7 +1,6 @@
 import type { MutableRefObject } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { resetChatListHarness } from '@/dev/testkit/harness/chatListHarness';
 import type { TranscriptViewportTelemetryEvent } from '@/components/sessions/transcript/scroll/transcriptViewportTelemetry';
 import type {
     LastNativeRestoreIndexCommand,
@@ -35,7 +34,6 @@ const { createTranscriptViewportCommandHost } = await import(
 );
 
 function setPlatform(platformOs: 'web' | 'ios'): void {
-    resetChatListHarness({ platformOs });
     platformMockState.os = platformOs;
 }
 

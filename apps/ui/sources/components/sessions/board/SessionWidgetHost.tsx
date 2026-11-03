@@ -12,6 +12,7 @@ import { getSessionBoardWidgetFootprintV1, resolveSessionBoardWidgetSizeV1 } fro
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import { WidgetFrame, type WidgetFrameStyle } from '@/components/widgets/frame/WidgetFrame';
+import { WidgetFrameBodyCaptionContext, WidgetFrameBodyMetaContext } from '@/components/widgets/frame/widgetFrameBodyCaption';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { SurfaceStateSizeProvider } from '@/components/ui/surfaces/surfaceStateSize';
@@ -55,7 +56,7 @@ import { useDiscussionParticipantProfiles } from '@/components/discussions/useDi
 import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { useAppShellPluginUiProjection } from '@/components/appShell/plugins/AppShellPluginUiProjection';
-import { readWidgetInstanceName } from '@/components/widgets/frame/widgetFrameTitle';
+import { resolveWidgetInstanceTitle } from '@/components/widgets/widgetCatalog';
 import { resolveBoardWidgetProvenance } from '@/components/widgets/boardWidgetProvenance';
 import type { SessionPluginRuntimeState } from '@/components/sessions/plugins/useSessionPluginRuntime';
 import type { SessionBoardHostActionBinding } from './sessionBoardHostActions';
@@ -73,6 +74,8 @@ import {
 import { SessionSurfaceEntityDragHandle, SessionSurfaceEntityTargetFeedback, useSessionSurfaceEntityDrag, type SessionSurfaceEntityBinding } from './SessionSurfaceEntityDrag';
 import { buildSessionBoardItemActions, type SessionBoardItemMenuInput } from './sessionBoardItemMenu';
 import { SessionVisualCopyPanel } from './SessionVisualCopyPanel';
+import { SessionVisualNetworkPanel } from './SessionVisualNetworkPanel';
+import { readSessionVisualNetworkChoice, type SessionVisualNetworkChoice } from './sessionBoardVisualNetwork';
 import { WidgetFlowShell } from '@/components/widgets/flow/WidgetFlowShell';
 
 /**
@@ -160,6 +163,8 @@ export type SessionWidgetHostProps = Readonly<{
     onSetInputs?: (bindings: WidgetInputBindingsV1) => Promise<WidgetSetupSubmitResult>;
     /** Edit content in place when the mounted Board controller publishes a real editor handler. */
     onEdit?: () => void;
+    /** An HTML visual's network access (none, exact sites, any site), through the Board's item update. Editors only. */
+    onSetNetwork?: (network: SessionVisualNetworkChoice) => Promise<WidgetSetupSubmitResult>;
     /** Persist one semantic Board width. Full density only. */
     onResize?: (width: SessionBoardItemWidth) => void;
     /** Persist one anchored move within the current Board view. */
@@ -296,6 +301,8 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
     const styles = stylesheet;
     const { theme } = useUnistyles();
     const testID = props.testID ?? `session-board-item-${props.item.itemId}`;
+    const [bodyCaption, setBodyCaption] = React.useState<string | null>(null);
+    const [bodyMeta, setBodyMeta] = React.useState<React.ReactNode>(null);
     const [hostedFrameReportedHeight, setHostedFrameReportedHeight] = React.useState<number | null>(props.reportedHeight ?? null);
     const measuredHeightRef = React.useRef<number | null>(null);
     const onReportIntrinsicHeight = React.useCallback((height: number) => {
@@ -361,7 +368,8 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
     const widgetDescriptor = useWidgetInstanceDescriptor(boardSurface.scope, widgetInstance, installedDescriptor);
     // A widget card is named by the shared widget-name owner (its own name, else its definition's title) so an
     // installed surface never shows its local id; the stored title is the fallback for every other source.
-    const title = (widgetInstance ? readWidgetInstanceName(widgetInstance, widgetDescriptor) : null) ?? resolveSessionBoardItemTitle(state);
+    const title = widgetInstance ? resolveWidgetInstanceTitle(widgetInstance, widgetDescriptor, { fallbackTitle: resolveSessionBoardItemTitle(state) })
+        : resolveSessionBoardItemTitle(state);
     // The title this card shows is the one name the Board uses for it: the carried ghost and every drop place that
     // describes it read it from here.
     const onDisplayTitle = React.useRef(props.onDisplayTitle);
@@ -444,6 +452,11 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
         },
     }), []);
     const [copyFlow, setCopyFlow] = React.useState<'save' | 'share' | null>(null);
+    const [networkFlow, setNetworkFlow] = React.useState(false);
+    const closeNetworkFlow = React.useCallback(() => setNetworkFlow(false), []);
+    const onSetNetwork = props.onSetNetwork;
+    const editNetwork = React.useMemo(() => props.canEdit && onSetNetwork && readyItem && readSessionVisualNetworkChoice(readyItem) !== null
+        ? () => { card.reveal(); setNetworkFlow(true); } : undefined, [card, onSetNetwork, props.canEdit, readyItem]);
     const closeCopyFlow = React.useCallback(() => setCopyFlow(null), []);
     const copyAccount = boardSurface.scope && viewerScope?.serverId === boardSurface.scope.serverId ? viewerScope : null;
     const copyable = Boolean(readyItem && canPromoteSessionWidgetDefinitionSourceV1(readyItem.source) && copyAccount);
@@ -529,6 +542,7 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
         onRename: renameEnabled ? beginRename : undefined,
         editInputs: inputs.editInputs,
         definition: { onAbout: definitionFlows.about, onAddTo: definitionFlows.addTo, onSaveAsYours: definitionFlows.saveAsYours, onPostSnapshot: definitionFlows.postSnapshot },
+        onEditNetwork: editNetwork,
         visualCopy: { onSaveArtifact: saveHtml, onShare: shareVisual },
         onMove: props.onMove,
         canMoveBefore: props.canMoveBefore,
@@ -557,6 +571,7 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
         definitionFlows.postSnapshot,
         saveHtml,
         shareVisual,
+        editNetwork,
         props.canEdit,
         props.canMoveAfter,
         props.canMoveBefore,
@@ -846,16 +861,16 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
             testID={`${testID}-provenance`}
             style={styles.provenanceStack}
             accessible
-            accessibilityLabel={asOfLabel ? `${provenance.accessibilityLabel} · ${asOfLabel}` : provenance.accessibilityLabel}
+            accessibilityLabel={[provenance.accessibilityLabel, bodyCaption, asOfLabel].filter(Boolean).join(' · ')}
         >
             {asOfLabel && narrow ? (
                 <>
-                    <Text style={styles.provenance} numberOfLines={1}>{provenance.label}</Text>
+                    <Text style={styles.provenance} numberOfLines={1}>{bodyCaption ?? provenance.label}</Text>
                     <Text style={styles.provenance} numberOfLines={1}>{asOfLabel}</Text>
                 </>
             ) : (
                 <Text style={styles.provenance} numberOfLines={1}>
-                    {asOfLabel ? `${provenance.label} · ${asOfLabel}` : provenance.label}
+                    {asOfLabel ? `${bodyCaption ?? provenance.label} · ${asOfLabel}` : bodyCaption ?? provenance.label}
                 </Text>
             )}
         </View>
@@ -903,6 +918,12 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
             <SessionSurfaceEntityTargetFeedback drag={entityDrag} testID={testID} />
             {inputs.popover}
             {definitionFlows.panel}
+            {networkFlow && readyItem ? <WidgetFlowShell anchorRef={card.anchorRef}
+                title={t('sessionBoard.item.network.title')}
+                onRequestClose={closeNetworkFlow} testID={`${testID}.networkShell`}>
+                <SessionVisualNetworkPanel item={readyItem} testID={`${testID}.network`} onClose={closeNetworkFlow}
+                    onSave={(choice) => onSetNetwork?.(choice) ?? Promise.resolve({ ok: false, message: t('sessionBoard.item.network.failed') })} />
+            </WidgetFlowShell> : null}
             {copyFlow && readyItem && copyAccount ? <WidgetFlowShell anchorRef={card.anchorRef}
                 title={t('widgetDefinition.visualSaveTitle')}
                 onRequestClose={closeCopyFlow} testID={`${testID}.copyShell`}>
@@ -926,7 +947,7 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
                 // A narrow card (the Board in a pane) reads its source whole, on its own line beneath the title; "Snapshot
                 // by you · as of 10:42" and a plugin's name are never squeezed out beside a long title.
                 {...(source && narrow ? { sourcePlacement: 'below' as const } : {})}
-                meta={meta}
+                meta={bodyMeta ? <>{meta}{bodyMeta}</> : meta}
                 menu={controls}
                 {...(moveHandle ? { grip: moveHandle } : {})}
                 fresh={props.fresh === true}
@@ -937,7 +958,8 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
                 body={{
                     kind: 'content',
                     children: (
-                        <>
+                        <WidgetFrameBodyCaptionContext.Provider value={setBodyCaption}>
+                        <WidgetFrameBodyMetaContext.Provider value={setBodyMeta}>
                             <View
                                 testID={`${testID}-body`}
                                 style={[styles.body, resolvedHeight ? { height: resolvedHeight.height } : null]}
@@ -946,7 +968,8 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
                                     <SurfaceStateSizeProvider size={props.expanded ? 'pane' : 'line'}>{body}</SurfaceStateSizeProvider>
                                 ) : body}
                             </View>
-                        </>
+                        </WidgetFrameBodyMetaContext.Provider>
+                        </WidgetFrameBodyCaptionContext.Provider>
                     ),
                 }}
             />

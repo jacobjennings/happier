@@ -1,5 +1,6 @@
-import type { InputFieldHint, InputHints } from './inputFields.js';
+import type { InputFieldHint, InputFieldHintDescriptor, InputHints, InputHintsDescriptor } from './inputFields.js';
 import { evaluateInputPredicate, readInputPath } from './inputPredicates.js';
+import { readRecord } from './inputRecords.js';
 export {
   inputOptionValueKey,
   inputOptionValueSearchText,
@@ -22,14 +23,14 @@ export type EffectiveInputField = InputFieldHint & Readonly<{
   disabled: boolean;
 }>;
 
-export function resolveEffectiveInputFields(
-  spec: Readonly<{ inputHints?: InputHints }>,
+export function resolveEffectiveInputFields<TText = string, TField extends InputFieldHintDescriptor<TText> = InputFieldHintDescriptor<TText>>(
+  spec: Readonly<{ inputHints?: InputHintsDescriptor<TText> & Readonly<{ fields: readonly TField[] }> }>,
   input: unknown,
   options: Readonly<{ includeHidden?: boolean; contextSlots?: readonly string[] }> = {},
-): readonly EffectiveInputField[] {
+): readonly (TField & InputFieldHintDescriptor<TText> & Pick<EffectiveInputField, 'visible' | 'required' | 'disabled'>)[] {
   const fields = spec.inputHints?.fields ?? [];
 
-  const out: EffectiveInputField[] = [];
+  const out: (TField & InputFieldHintDescriptor<TText> & Pick<EffectiveInputField, 'visible' | 'required' | 'disabled'>)[] = [];
   for (const field of fields) {
     const { visibleWhen, requiredWhen, disabledWhen } = field;
 
@@ -61,10 +62,20 @@ export function writeInputPath(
       return { ...source, [segment]: value };
     }
     const current = source[segment];
-    const child = current && typeof current === 'object' && !Array.isArray(current)
-      ? current as Record<string, unknown>
-      : {};
-    return { ...source, [segment]: write(child, index + 1) };
+    return { ...source, [segment]: writeChild(current, index + 1) };
+  };
+
+  const writeChild = (source: unknown, index: number): unknown => {
+    if (Array.isArray(source)) {
+      const segment = segments[index]!;
+      const position = Number(segment);
+      // Indexed paths update prepared slots, not wildcard or property-shaped entries.
+      if (!/^(0|[1-9]\d*)$/.test(segment) || position >= source.length || !Object.hasOwn(source, segment)) return source;
+      const next: unknown[] = source.slice();
+      next[position] = index === segments.length - 1 ? value : writeChild(source[position], index + 1);
+      return next;
+    }
+    return write(readRecord(source), index);
   };
 
   return write(input, 0);

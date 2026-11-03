@@ -17,6 +17,10 @@ import { artifactHtmlBundleFromBodyV1, ARTIFACT_HTML_BUNDLE_MIME_V1 } from '@hap
 import { hashArtifactBinaryContent } from '@/sync/domains/artifacts/artifactBinaryContent';
 import { encodeBase64 } from '@/encryption/base64';
 import { useDocumentShareController } from './useDocumentShareController';
+import { useProjectDashboardDocument } from '@/components/widgets/area/useProjectDashboardDocument';
+import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
+import { createFrontDoorActionExecute } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
+import { ArtifactAccessGrantsListResponseV1Schema } from '@happier-dev/protocol/artifacts/artifactAccessV1';
 import { useDocumentPublicLinkController } from './useDocumentPublicLinkController';
 import { buildWidgetDefinitionArtifactHeaderV1, buildWidgetSurfaceArtifactHeaderV1, buildWidgetSurfaceArtifactIdV1, WidgetAreaLayoutV1Schema, WidgetDefinitionV1Schema, type WidgetDefinitionV1, type WidgetInputBindingsV1 } from '@happier-dev/protocol/widgets';
 import { widgetInstalledPackage, widgetProjectionEntry } from '@/dev/testkit/fixtures/pluginWidgetProjectionFixtures';
@@ -28,7 +32,7 @@ import { t } from '@/text';
 import { installDisconnectedServerSocketBoundary } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
 import { waitForHomeGovernance } from '@/dev/testkit/harness/homeGovernanceHarness';
-import { projectArtifactStoredKind } from '@/dev/testkit/harness/artifactStoreBoundary';
+import { createArtifactReadBatchHttpResponse, projectArtifactStoredKind } from '@/dev/testkit/harness/artifactStoreBoundary';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -153,6 +157,17 @@ async function serveHome(): Promise<void> {
             });
             // The sheet targets its captured profile scope, not the focused Home's transport.
             if (request.home !== 'home') return undefined;
+            if (request.path === '/v1/artifacts/read' && request.method === 'POST') {
+                return createArtifactReadBatchHttpResponse(request.body, artifactId => {
+                    const approval = host.approvalArtifacts.get(artifactId);
+                    if (approval) return { artifactId, ok: true, artifact: approval, recipientCensus: null };
+                    const layout = host.document.header.kind === 'widget-area-layout.v1'
+                        ? WidgetAreaLayoutV1Schema.safeParse(JSON.parse(host.document.body)) : null;
+                    return host.access !== null && layout?.success && buildWidgetSurfaceArtifactIdV1(layout.data.surface) === artifactId
+                        ? { artifactId, ok: true, artifact: storedArtifact(artifactId), recipientCensus: null }
+                        : { artifactId, ok: false, error: 'artifact_not_found', status: 404, retryable: false };
+                });
+            }
             if (request.path === '/v1/account/encryption/currentness') return Response.json(createPlainAccountEncryptionCurrentnessFixture());
             if (request.path === '/v1/teams/list') return Response.json(teamPage);
             if (request.path === '/v1/teams/groups/list') return Response.json({ items: [], nextCursor: null });
@@ -436,6 +451,73 @@ describe('DocumentShareSheet', () => {
         vi.restoreAllMocks();
     });
 
+    it.each(['owner', 'admin', 'edit', 'view'] as const)('reads attached dashboard grants through the sharing reader as %s, with no idle or unrelated reads', async access => {
+        await activateWidgetHome();
+        const dashboard = dashboardDocument();
+        host.document = dashboard.document;
+        host.access = access;
+        const reference = { artifactId: dashboard.artifactId };
+        const hook = await renderHook(() => useProjectDashboardDocument(reference, host.serverId, true));
+        await settle();
+        await vi.waitFor(() => expect(hook.getCurrent().loaded).toBe(true));
+        expect(hook.getCurrent().document?.name).toBe('Dashboard');
+        expect(hook.getCurrent().grants).toEqual([ana, studio]);
+        expect(host.requests).toEqual([{ method: 'GET' }]);
+
+        await act(async () => {
+            publishHomeAccountChange(host.serverId, ['another-dashboard'], { changeKinds: ['artifact'] });
+            await vi.advanceTimersByTimeAsync(60_000);
+        });
+        await hook.rerender();
+        expect(host.requests).toEqual([{ method: 'GET' }]);
+
+        host.grants = [studio];
+        await act(async () => publishHomeAccountChange(host.serverId, [dashboard.artifactId], { changeKinds: ['artifact'] }));
+        await settle();
+        expect(hook.getCurrent().grants).toEqual([studio]);
+        expect(host.requests).toEqual([{ method: 'GET' }, { method: 'GET' }]);
+
+        host.access = null;
+        await act(async () => publishHomeAccountChange(host.serverId, [dashboard.artifactId], { changeKinds: ['artifact'] }));
+        await settle();
+        expect(hook.getCurrent().document).toBeNull();
+        expect(hook.getCurrent().grants).toBeNull();
+        await hook.unmount();
+    });
+
+    it('does not read grants for an unrequested dashboard, and keeps a readable document when roster admission fails', async () => {
+        await activateWidgetHome();
+        const dashboard = dashboardDocument();
+        host.document = dashboard.document;
+        host.access = 'view';
+        const reference = { artifactId: dashboard.artifactId };
+        const hook = await renderHook(({ grants }) => useProjectDashboardDocument(reference, host.serverId, grants),
+            { initialProps: { grants: false } });
+        await settle();
+        await vi.waitFor(() => expect(hook.getCurrent().loaded).toBe(true));
+        expect(hook.getCurrent().document?.name).toBe('Dashboard');
+        expect(host.requests).toEqual([]);
+        host.grantStatus = 403;
+        await hook.rerender({ grants: true });
+        await settle();
+        expect(hook.getCurrent().document?.name).toBe('Dashboard');
+        expect(hook.getCurrent().grants).toBeNull();
+        expect(host.requests).toEqual([{ method: 'GET' }]);
+        await hook.unmount();
+    });
+
+    it('exposes the same admitted dashboard roster to an Agent through the existing grants Action', async () => {
+        await activateWidgetHome();
+        const dashboard = dashboardDocument();
+        host.document = dashboard.document;
+        const result = await createFrontDoorActionExecute()('artifact.access.grants.list', { artifactId: dashboard.artifactId },
+            { surface: 'mcp', serverId: host.serverId, expectedAccountId: 'owner' });
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error(result.errorCode);
+        expect(ArtifactAccessGrantsListResponseV1Schema.parse(result.result).grants).toEqual([ana, studio]);
+        expect(host.requests).toEqual([{ method: 'GET' }]);
+    });
+
     it('keeps people sharing available for a widget layout without offering or loading public links', async () => {
         const dashboard = dashboardDocument();
         host.document = dashboard.document;
@@ -448,6 +530,15 @@ describe('DocumentShareSheet', () => {
         expect(screen.findByTestId('document-share-copy-link')).toBeNull();
         await screen.pressByTestIdAsync('document-share-grant-team:studio');
         await screen.pressByTestIdAsync('document-share-remove:team:studio');
+        await settle();
+        expect(host.grants).toEqual([ana, studio]);
+        expect(host.requests.filter(request => request.method !== 'GET')).toEqual([]);
+        expect(screen.findByTestId('document-share-remove-confirm:team:studio')).not.toBeNull();
+        await screen.pressByTestIdAsync('document-share-remove-cancel:team:studio');
+        expect(screen.findByTestId('document-share-remove-confirm:team:studio')).toBeNull();
+        expect(host.grants).toEqual([ana, studio]);
+        await screen.pressByTestIdAsync('document-share-remove:team:studio');
+        await screen.pressByTestIdAsync('document-share-remove-confirm:team:studio');
         await settle();
         expect(host.grants).toEqual([ana]);
         expect(host.documentUpdates).toEqual([]);
@@ -711,6 +802,7 @@ describe('DocumentShareSheet', () => {
 
         await screen.pressByTestIdAsync('document-share-grant-team:studio');
         await screen.pressByTestIdAsync('document-share-remove:team:studio');
+        await screen.pressByTestIdAsync('document-share-remove-confirm:team:studio');
         await settle();
         expect(host.requests.at(-1)).toEqual({ method: 'DELETE',
             body: { artifactId: 'wf-1', principal: { kind: 'team', teamId: 'studio' } } });
@@ -741,6 +833,7 @@ describe('DocumentShareSheet', () => {
         expect(screen.findByTestId('document-share-grant-team:payments')).not.toBeNull();
         await screen.pressByTestIdAsync('document-share-grant-team:studio');
         await screen.pressByTestIdAsync('document-share-remove:team:studio');
+        await screen.pressByTestIdAsync('document-share-remove-confirm:team:studio');
         await settle();
         expect(screen.findByTestId('document-share-grant-team:studio')).toBeNull();
         expect(screen.findByTestId('document-share-grant-account:ana')).not.toBeNull();
@@ -757,7 +850,16 @@ describe('DocumentShareSheet', () => {
         await settle();
         expect(hook.getCurrent().grants).toHaveLength(2);
 
-        hook.getCurrent().actions.confirmRemove(self);
+        await act(async () => { hook.getCurrent().actions.confirmRemove(self); });
+        expect(host.requests.filter(request => request.method === 'DELETE')).toEqual([]);
+        await act(async () => { hook.getCurrent().actions.requestRemove(self); });
+        await act(async () => { hook.getCurrent().actions.confirmRemove({ kind: 'team', teamId: 'studio' }); });
+        expect(host.requests.filter(request => request.method === 'DELETE')).toEqual([]);
+        await act(async () => { hook.getCurrent().actions.cancelRemove(self); });
+        await act(async () => { hook.getCurrent().actions.confirmRemove(self); });
+        expect(host.requests.filter(request => request.method === 'DELETE')).toEqual([]);
+        await act(async () => { hook.getCurrent().actions.requestRemove(self); });
+        await act(async () => { hook.getCurrent().actions.confirmRemove(self); });
         await settle();
         expect(host.access).toBeNull();
         expect(hook.getCurrent().grants).toEqual([]);
@@ -775,6 +877,7 @@ describe('DocumentShareSheet', () => {
         await settle();
         await screen.pressByTestIdAsync('document-share-grant-account:owner');
         await screen.pressByTestIdAsync('document-share-remove:account:owner');
+        await screen.pressByTestIdAsync('document-share-remove-confirm:account:owner');
         await settle();
 
         expect(renderedTestIds(screen, 'document-share-grant-')).toEqual([]);
@@ -834,7 +937,7 @@ describe('DocumentShareSheet', () => {
         expect(host.publicRequests.filter(request => request.method === 'POST')).toHaveLength(1);
     });
 
-    it('keeps a refused public link inline with its options intact until a deliberate retry succeeds', async () => {
+    it('withdraws the options after a setup refusal and offers Create again when the row is reopened on a repaired Home', async () => {
         host.publicCreateError = 'public_share_isolation_unavailable';
         const screen = await renderScreen(<DocumentShareSheet artifactId="wf-1" kind="workflow-definition.v1" />);
         await settle();
@@ -847,17 +950,25 @@ describe('DocumentShareSheet', () => {
         await settle();
 
         expect(screen.findByTestId('session-public-link-mutation-error')).not.toBeNull();
-        expect(screen.findByTestId('session-public-link-options-create')).not.toBeNull();
+        expect(screen.findByTestId('session-public-link-options')).toBeNull();
+        expect(screen.findByTestId('session-public-link-options-create')).toBeNull();
+        expect(screen.findByTestId('session-public-link-create')).toBeNull();
         expect(screen.findByTestId('document-share-public-link')?.props.accessibilityLabel).toContain('Off');
         expect(host.publicShare).toBeNull();
         expect(modal.alert).not.toHaveBeenCalled();
         expect(screen.getTextContent()).toContain(t('session.collaboration.pane.linkUnavailable'));
 
+        // A fresh open owns no remembered refusal: once the Home is set up, Create works again.
         host.publicCreateError = null;
-        await screen.pressByTestIdAsync('session-public-link-options-create');
+        const reopened = await renderScreen(<DocumentShareSheet artifactId="wf-1" kind="workflow-definition.v1" />);
         await settle();
-        expect(screen.findByTestId('session-public-link-mutation-error')).toBeNull();
-        expect(screen.findByTestId('session-public-link-url')).not.toBeNull();
+        await reopened.pressByTestIdAsync('document-share-public-link');
+        expect(reopened.findByTestId('session-public-link-mutation-error')).toBeNull();
+        await reopened.pressByTestIdAsync('session-public-link-create');
+        await reopened.pressByTestIdAsync('session-public-link-expiry:30');
+        await reopened.pressByTestIdAsync('session-public-link-options-create');
+        await settle();
+        expect(reopened.findByTestId('session-public-link-url')).not.toBeNull();
         expect(host.publicShare?.expiresAt).toBeGreaterThan(Date.now() + 29 * 24 * 60 * 60 * 1000);
     });
 

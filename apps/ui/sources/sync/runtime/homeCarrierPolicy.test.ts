@@ -1,22 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IrohError } from '@happier-dev/iroh-native';
 
 const acquireBrowserSpy = vi.hoisted(() => vi.fn());
 const acquireNativeSpy = vi.hoisted(() => vi.fn());
-const browserEligibilitySpy = vi.hoisted(() => vi.fn());
-const browserHostSpy = vi.hoisted(() => vi.fn());
 
-vi.mock('@/sync/runtime/browserIroh/hostEligibility', () => ({
-    resolveBrowserIrohHostDecision: () => browserHostSpy(),
-}));
-vi.mock('@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier', () => ({
+// Only the carrier acquisition (worker/wasm) is a boundary here; the real
+// eligibility decision and the real host decision run beneath it.
+vi.mock('@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier')>()),
     acquireBrowserIrohHomeCarrier: (input: unknown) => acquireBrowserSpy(input),
-    resolveBrowserIrohHomeCarrierEligibility: (...args: unknown[]) => browserEligibilitySpy(...args),
 }));
-vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
-    acquireIrohHomeRuntimeOrigin: (input: unknown) => acquireNativeSpy(input),
-}));
+vi.mock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return await createReactNativeWebMock();
+});
 
 import {
     acquireEligibleHomeCarrier,
@@ -24,9 +22,31 @@ import {
 } from './homeCarrierPolicy';
 import { createIrohHomeTunnelSupervisor } from './nativeIrohTunnels/supervisor';
 import { getStorage } from '@/sync/domains/state/storageStore';
+import type { IrohHomeTunnelAcquireInput } from './nativeIrohTunnels/types';
+
+const TAURI_INTERNALS_KEY = '__TAURI_INTERNALS__';
+const BROWSER_USER_AGENT =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)'
+    + ' Chrome/150.0.0.0 Safari/537.36';
+
+/** Describes the host through the same boundary globals the real host decision reads. */
+function setHost(kind: 'browser' | 'desktop' | 'no_shared_worker'): void {
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: BROWSER_USER_AGENT } });
+    if (kind === 'no_shared_worker') {
+        Reflect.deleteProperty(globalThis, 'SharedWorker');
+    } else {
+        Object.defineProperty(globalThis, 'SharedWorker', { configurable: true, value: function SharedWorkerStub() {} });
+    }
+    if (kind === 'desktop') {
+        (globalThis as Record<string, unknown>)[TAURI_INTERNALS_KEY] = { invoke: () => null };
+    } else {
+        Reflect.deleteProperty(globalThis, TAURI_INTERNALS_KEY);
+    }
+}
 
 const endpoint = { endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test/'] };
 const baseInput = {
+    acquireNative: (input: IrohHomeTunnelAcquireInput) => acquireNativeSpy(input),
     mode: 'initial_selection' as const,
     applicationCarrierEligibility: 'automatic' as const,
     descriptor: {
@@ -46,8 +66,13 @@ describe('acquireEligibleHomeCarrier', () => {
     beforeEach(() => {
         acquireBrowserSpy.mockReset();
         acquireNativeSpy.mockReset();
-        browserEligibilitySpy.mockReset();
-        browserHostSpy.mockReset();
+        setHost('browser');
+    });
+
+    afterEach(() => {
+        Reflect.deleteProperty(globalThis, TAURI_INTERNALS_KEY);
+        Reflect.deleteProperty(globalThis, 'navigator');
+        Reflect.deleteProperty(globalThis, 'SharedWorker');
     });
 
     it('uses device-local Standard only even when a caller requests automatic selection', async () => {
@@ -64,21 +89,6 @@ describe('acquireEligibleHomeCarrier', () => {
         }
     });
 
-    it('selects the declared HTTPS endpoint when it differs from the canonical audience and Iroh is absent', async () => {
-        await expect(acquireEligibleHomeCarrier({
-            ...baseInput,
-            descriptor: {
-                ...baseInput.descriptor,
-                endpoints: [{ kind: 'https', url: 'https://ingress.example.test' }],
-            },
-        })).resolves.toEqual({
-            kind: 'https',
-            runtimeOrigin: 'https://ingress.example.test',
-        });
-        expect(acquireBrowserSpy).not.toHaveBeenCalled();
-        expect(acquireNativeSpy).not.toHaveBeenCalled();
-    });
-
     it('returns only the acquired browser carrier when the browser carrier is eligible', async () => {
         const release = vi.fn(async () => {});
         const carrier = {
@@ -87,12 +97,6 @@ describe('acquireEligibleHomeCarrier', () => {
             endpointId: endpoint.endpointId,
             release,
         };
-        browserHostSpy.mockReturnValue({ eligible: true });
-        browserEligibilitySpy.mockReturnValue({
-            eligible: true,
-            endpointId: endpoint.endpointId,
-            relayUrls: endpoint.relayUrls,
-        });
         acquireBrowserSpy.mockResolvedValue(carrier);
 
         const acquired = await acquireEligibleHomeCarrier(baseInput);
@@ -116,8 +120,7 @@ describe('acquireEligibleHomeCarrier', () => {
             status: 'ready',
             release,
         };
-        browserHostSpy.mockReturnValue({ eligible: false, reason: 'desktop_host' });
-        browserEligibilitySpy.mockReturnValue({ eligible: false, reason: 'host_ineligible' });
+        setHost('desktop');
         acquireNativeSpy.mockResolvedValue(lease);
 
         const acquired = await acquireEligibleHomeCarrier(baseInput);
@@ -131,10 +134,31 @@ describe('acquireEligibleHomeCarrier', () => {
         expect(acquireBrowserSpy).not.toHaveBeenCalled();
     });
 
+    it('retries a failed native lease release on the next explicit release, then stays released', async () => {
+        const release = vi.fn()
+            .mockRejectedValueOnce(new Error('native release failed'))
+            .mockResolvedValueOnce(undefined);
+        setHost('desktop');
+        acquireNativeSpy.mockResolvedValue({
+            leaseId: 'native-release-retry',
+            homeServerIdentityId: baseInput.descriptor.homeServerIdentityId,
+            endpointId: endpoint.endpointId,
+            runtimeOrigin: 'http://127.0.0.1:43123',
+            status: 'ready',
+            release,
+        });
+
+        const acquired = await acquireEligibleHomeCarrier(baseInput);
+        expect(acquired.kind).toBe('native_iroh');
+        if (acquired.kind !== 'native_iroh') return;
+        await expect(acquired.release()).rejects.toThrow('native release failed');
+        await expect(acquired.release()).resolves.toBeUndefined();
+        await expect(acquired.release()).resolves.toBeUndefined();
+        expect(release).toHaveBeenCalledTimes(2);
+    });
+
     it('fails closed and releases a browser carrier whose returned endpoint differs from the requested endpoint', async () => {
         const release = vi.fn(async () => {});
-        browserHostSpy.mockReturnValue({ eligible: true });
-        browserEligibilitySpy.mockReturnValue({ eligible: true, endpointId: endpoint.endpointId, relayUrls: endpoint.relayUrls });
         acquireBrowserSpy.mockResolvedValue({ leaseId: 'wrong-browser', endpointId: 'b'.repeat(64), release });
 
         await expect(acquireEligibleHomeCarrier(baseInput)).resolves.toMatchObject({
@@ -146,7 +170,7 @@ describe('acquireEligibleHomeCarrier', () => {
 
     it('fails closed and releases a native carrier that is not verified ready', async () => {
         const release = vi.fn(async () => {});
-        browserHostSpy.mockReturnValue({ eligible: false, reason: 'desktop_host' });
+        setHost('desktop');
         acquireNativeSpy.mockResolvedValue({
             leaseId: 'not-ready-native',
             endpointId: endpoint.endpointId,
@@ -162,35 +186,8 @@ describe('acquireEligibleHomeCarrier', () => {
         expect(release).toHaveBeenCalledTimes(1);
     });
 
-    it('owns failed release custody and retries it only on the next explicit drain', async () => {
-        const release = vi.fn()
-            .mockRejectedValueOnce(new Error('release failed'))
-            .mockResolvedValueOnce(undefined);
-        const carrier = {
-            leaseId: 'browser-release-retry',
-            homeServerIdentityId: baseInput.descriptor.homeServerIdentityId,
-            endpointId: endpoint.endpointId,
-            release,
-        };
-        browserHostSpy.mockReturnValue({ eligible: true });
-        browserEligibilitySpy.mockReturnValue({ eligible: true, endpointId: endpoint.endpointId, relayUrls: endpoint.relayUrls });
-        acquireBrowserSpy.mockResolvedValue(carrier);
-
-        const acquired = await acquireEligibleHomeCarrier(baseInput);
-        expect(acquired.kind).toBe('browser_iroh');
-        if (acquired.kind !== 'browser_iroh') return;
-        await expect(acquired.release()).rejects.toThrow('release failed');
-        expect(release).toHaveBeenCalledTimes(1);
-
-        await drainRetainedHomeCarrierReleases();
-        expect(release).toHaveBeenCalledTimes(2);
-        await expect(acquired.release()).resolves.toBeUndefined();
-        expect(release).toHaveBeenCalledTimes(2);
-    });
-
     it('returns independently trusted HTTPS only for an allowed Iroh fallback', async () => {
-        browserHostSpy.mockReturnValue({ eligible: false, reason: 'desktop_host' });
-        browserEligibilitySpy.mockReturnValue({ eligible: false, reason: 'host_ineligible' });
+        setHost('desktop');
         acquireNativeSpy.mockRejectedValue(new IrohError('unavailable', 'native unavailable'));
 
         await expect(acquireEligibleHomeCarrier({
@@ -209,8 +206,7 @@ describe('acquireEligibleHomeCarrier', () => {
     });
 
     it('fails closed after the native supervisor starts a tunnel whose health probe fails', async () => {
-        browserHostSpy.mockReturnValue({ eligible: false, reason: 'desktop_host' });
-        browserEligibilitySpy.mockReturnValue({ eligible: false, reason: 'host_ineligible' });
+        setHost('desktop');
         const releaseHomeTunnel = vi.fn(async () => undefined);
         const supervisor = createIrohHomeTunnelSupervisor({
             native: {
@@ -258,8 +254,7 @@ describe('acquireEligibleHomeCarrier', () => {
     });
 
     it('does not let unavailable cleanup mask a post-acquisition health failure', async () => {
-        browserHostSpy.mockReturnValue({ eligible: false, reason: 'desktop_host' });
-        browserEligibilitySpy.mockReturnValue({ eligible: false, reason: 'host_ineligible' });
+        setHost('desktop');
         const releaseHomeTunnel = vi.fn()
             .mockRejectedValueOnce(new IrohError('unavailable', 'desktop stop command unavailable'))
             .mockResolvedValueOnce(undefined);
@@ -312,7 +307,7 @@ describe('acquireEligibleHomeCarrier', () => {
     });
 
     it('treats missing browser carrier capability as unavailable without attempting the native carrier', async () => {
-        browserHostSpy.mockReturnValue({ eligible: false, reason: 'shared_worker_unsupported' });
+        setHost('no_shared_worker');
 
         await expect(acquireEligibleHomeCarrier(baseInput)).resolves.toEqual({
             kind: 'https',
@@ -322,8 +317,27 @@ describe('acquireEligibleHomeCarrier', () => {
         expect(acquireNativeSpy).not.toHaveBeenCalled();
     });
 
+    it('treats an eligible browser host without relay reachability as unavailable without attempting either carrier', async () => {
+
+        const result = await acquireEligibleHomeCarrier({
+            ...baseInput,
+            descriptor: {
+                ...baseInput.descriptor,
+                endpoints: [{ kind: 'iroh', ...endpoint, relayUrls: [] }],
+            },
+        });
+
+        expect(result).toMatchObject({
+            kind: 'fail_closed',
+            fallbackAllowed: true,
+            error: { name: 'IrohError', code: 'unavailable' },
+        });
+        expect(acquireBrowserSpy).not.toHaveBeenCalled();
+        expect(acquireNativeSpy).not.toHaveBeenCalled();
+    });
+
     it('fails typed when the browser carrier is unsupported and no trusted HTTPS origin exists', async () => {
-        browserHostSpy.mockReturnValue({ eligible: false, reason: 'shared_worker_unsupported' });
+        setHost('no_shared_worker');
 
         const result = await acquireEligibleHomeCarrier({
             ...baseInput,
@@ -342,11 +356,17 @@ describe('acquireEligibleHomeCarrier', () => {
         expect(acquireNativeSpy).not.toHaveBeenCalled();
     });
 
-    it('keeps browser identity, credential, and endpoint ineligibility fail-closed', async () => {
-        browserHostSpy.mockReturnValue({ eligible: true });
-        browserEligibilitySpy.mockReturnValue({ eligible: false, reason: 'credential_missing' });
-
-        const result = await acquireEligibleHomeCarrier(baseInput);
+    it.each([
+        ['credential', { verification: { kind: 'authenticated' as const, token: '' } }],
+        ['identity', { descriptor: { ...baseInput.descriptor, homeServerIdentityId: '' } }],
+        ['endpoint', {
+            descriptor: {
+                ...baseInput.descriptor,
+                endpoints: [{ kind: 'iroh' as const, ...endpoint, endpointId: '' }],
+            },
+        }],
+    ])('keeps a missing browser %s fail-closed', async (_name, override) => {
+        const result = await acquireEligibleHomeCarrier({ ...baseInput, ...override });
 
         expect(result).toMatchObject({ kind: 'fail_closed', fallbackAllowed: false });
         expect(acquireBrowserSpy).not.toHaveBeenCalled();
@@ -355,8 +375,7 @@ describe('acquireEligibleHomeCarrier', () => {
 
     it('returns fail-closed for identity failure even when HTTPS is independently trusted', async () => {
         const error = new IrohError('identity_mismatch', 'wrong endpoint');
-        browserHostSpy.mockReturnValue({ eligible: false, reason: 'desktop_host' });
-        browserEligibilitySpy.mockReturnValue({ eligible: false, reason: 'host_ineligible' });
+        setHost('desktop');
         acquireNativeSpy.mockRejectedValue(error);
 
         await expect(acquireEligibleHomeCarrier(baseInput)).resolves.toEqual({
@@ -368,8 +387,7 @@ describe('acquireEligibleHomeCarrier', () => {
 
     it('fails closed as unavailable when an allowed fallback has no trusted HTTPS destination', async () => {
         const error = new IrohError('unavailable', 'native unavailable');
-        browserHostSpy.mockReturnValue({ eligible: false, reason: 'desktop_host' });
-        browserEligibilitySpy.mockReturnValue({ eligible: false, reason: 'host_ineligible' });
+        setHost('desktop');
         acquireNativeSpy.mockRejectedValue(error);
 
         await expect(acquireEligibleHomeCarrier({

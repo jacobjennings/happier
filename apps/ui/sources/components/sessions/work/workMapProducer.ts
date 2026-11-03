@@ -1,5 +1,7 @@
 import { buildHappierWorkMap, type HappierWorkMap, type HappierWorkMapNodeDeclaration, type HappierWorkMapPlaced } from '@happier-dev/plugin-ui/presentation';
 
+import { t } from '@/text';
+
 import type { WorkItem, WorkProjection, WorkStatus } from './workProjection';
 
 /**
@@ -8,7 +10,8 @@ import type { WorkItem, WorkProjection, WorkStatus } from './workProjection';
  * background runs the lead started under the lead. Every edge comes from the Work projection's manager
  * ancestry (with archived intermediates folded out), or "this Session started it"; nothing is inferred
  * from order, time or workspace.
- * The lead's node carries no state of its own, so it stays neutral whatever its reports need (S-6).
+ * The lead's node says what it waits on ("Waiting on 3", lab `session-A2`) in the status slot, but stays
+ * neutral whatever its reports need (S-6): ancestors are never tinted for their descendants.
  */
 export type SessionWorkMapNodeDeclaration = HappierWorkMapNodeDeclaration & Readonly<{
     kind: 'lead' | WorkItem['kind'];
@@ -50,13 +53,16 @@ export function projectSessionWorkMap(input: Readonly<{
 }>): SessionWorkMap {
     const leadNodeId = `session:${input.managerSessionId}`;
     const folded = new Set(readWorkFoldedFromMap(input.projection).map((item) => item.key));
+    const waitingOn = input.projection.summary.outstanding;
     const nodes: SessionWorkMapNodeDeclaration[] = [{
         nodeId: leadNodeId,
         label: input.leadTitle,
         parentNodeId: null,
         open: { kind: 'session', sessionId: input.managerSessionId },
         kind: 'lead',
-        status: null,
+        status: waitingOn > 0
+            ? { state: 'waiting_on_reports', bucket: 'working', tone: 'neutral', attentionType: null, word: t('sessionWork.map.waitingOn', { count: waitingOn }) }
+            : null,
         agentId: input.leadAgentId ?? null,
         facts: input.leadFacts ?? [],
     }];

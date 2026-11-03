@@ -12,12 +12,16 @@ import {
   type VoiceProviderContribution,
 } from '@happier-dev/protocol';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import type { RpcHandler, RpcHandlerContext } from '@/api/rpc/types';
 import { registerAgentSessionRealtimeVoiceRpc } from './registerAgentSessionRealtimeVoiceRpc';
-import { resolveCliVoicePromptStackBlocks } from '@/agent/prompts/library/resolveCliVoicePromptStackBlocks';
+import { resolveCliVoicePromptPreparation } from '@/agent/prompts/library/resolveCliVoicePromptStackBlocks';
+import type { VoicePromptPreparation } from '@/agent/voice/agent/voiceAgentTypes';
+import { readSettings, writeSettings } from '@/persistence';
+import { adoptServerProfileHomeConnectionDescriptor } from '@/server/serverProfiles';
+import { FIRST_PARTY_SKILLS_V1, HAPPIER_ACTION_DISCOVERY_GUIDANCE_V1 } from '@happier-dev/protocol/prompts/library/skills/firstPartySkillsV1';
 
 const agentRef = { pluginId: 'happier.agent.codex', localId: 'codex' } as const;
 const providerRef = { pluginId: 'happier.agent.codex', localId: 'realtime-codex' } as const;
@@ -153,7 +157,7 @@ function register(
     isOccurrenceCurrent?: () => boolean;
     retirementSignal?: AbortSignal;
     resolveRetirementSignal?: () => AbortSignal | null;
-    resolveSystemAppendBlocks?: (input: Readonly<{ sessionId: string; signal?: AbortSignal }>) => Promise<readonly string[]>;
+    resolvePromptPreparation?: (input: Readonly<{ sessionId: string; signal?: AbortSignal }>) => Promise<VoicePromptPreparation>;
   }>,
 ) {
   const handlers = new Map<string, Handler>();
@@ -162,7 +166,9 @@ function register(
       registerHandler: (method, handler: RpcHandler) => {
         handlers.set(method, async (raw, context) => await handler(
           raw,
-          context ?? { signal: new AbortController().signal },
+          { signal: new AbortController().signal, callerAuthority: 'present_user',
+            authorization: { kind: 'session.write', sessionId: options?.getHappierSessionId?.() ?? 'session-1', authority: 'sessionOwner' },
+            ...context },
         ));
       },
     },
@@ -172,7 +178,7 @@ function register(
     agentGeneration: 'daemon-generation-1',
     isOccurrenceCurrent: options?.isOccurrenceCurrent ?? (() => true),
     resolveProviderOccurrenceId: () => 'provider-generation-1',
-    ...(options?.resolveSystemAppendBlocks ? { resolveSystemAppendBlocks: options.resolveSystemAppendBlocks } : {}),
+    ...(options?.resolvePromptPreparation ? { resolvePromptPreparation: options.resolvePromptPreparation } : {}),
     resolveRetirementSignal: options?.resolveRetirementSignal
       ?? (() => options?.retirementSignal ?? null),
     resolveConversation: ({ runtime: candidate, provider }) => (
@@ -196,10 +202,108 @@ describe('Agent-session realtime Voice session RPC', () => {
   const canonicalSdpMaxBytes = resolveCanonicalSdpMaxBytes();
   const exactSdp = 'é'.repeat(canonicalSdpMaxBytes / 2);
   const oversizedSdp = `${exactSdp}x`;
+  it('requires trusted owner-classified Start even without an input admission hook', async () => {
+    const fixture = runtimeFixture();
+    const handlers = register(fixture.runtime);
+    const request = { v: 1, provider: providerRef, applicationAttemptId: 'owner-only',
+      transport: { kind: 'webrtc', offerSdp: 'offer' } };
+    try {
+      await expect(handlers.get(SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_START)!(request, {
+        signal: new AbortController().signal, callerAuthority: 'present_user',
+        authorization: { kind: 'session.write', sessionId: 'session-1' },
+      })).resolves.toMatchObject({ ok: false, status: 'unavailable', code: 'agent_realtime_owner_required' });
+      expect(fixture.start).not.toHaveBeenCalled();
+      await expect(handlers.get(SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_START)!(request))
+        .resolves.toMatchObject({ ok: true, status: 'started' });
+    } finally { handlers.dispose(); }
+  });
+  it('delivers the canonical Action discovery recipe without requiring an installed Happier skill', async () => {
+    const fixture = runtimeFixture();
+    const handlers = register(fixture.runtime);
+    try {
+      const result = await handlers.get(SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_START)!({
+        v: 1, provider: providerRef, applicationAttemptId: 'discoverable-actions',
+        transport: { kind: 'webrtc', offerSdp: 'offer' },
+      });
+      expect(result).toMatchObject({ status: 'started' });
+      // Compare the delivered context to the real bundled guide, not a second
+      // native-only recipe. No skill installation/index is supplied to this Start.
+      const guide = FIRST_PARTY_SKILLS_V1.find(skill => skill.skillId === 'happier:happier')!;
+      const markdown = Buffer.from(guide.files[0]!.contentBase64, 'base64').toString('utf8');
+      const discovery = markdown.split('\n\n').find(block => block.includes('`action_spec_search`'))!;
+      expect(discovery).toBeTruthy();
+      expect(fixture.start.mock.calls[0]?.[0].systemAppendBlocks ?? []).toContain(discovery);
+    } finally {
+      handlers.dispose();
+    }
+  });
+  it.each(['started', 'failed', 'superseded', 'no_instructions'] as const)(
+    'acknowledges prepared instructions only after a current native start: %s', async (outcome) => {
+      const serverId = 'srv_native_receipt';
+      const settings = await readSettings();
+      onTestFinished(() => writeSettings(settings));
+      await adoptServerProfileHomeConnectionDescriptor({ observation: 'exact', suggestedName: 'Native receipt', descriptor: {
+        v: 1, homeServerIdentityId: serverId, canonicalServerUrl: 'https://native.example.test', revision: 1,
+        endpoints: [{ kind: 'https', url: 'https://native.example.test' }],
+      } });
+      const fixture = runtimeFixture();
+      let sessionId = 'session-1';
+      let release!: () => void;
+      let entered!: () => void;
+      const starting = new Promise<void>(resolve => { entered = resolve; });
+      const pending = new Promise<void>(resolve => { release = resolve; });
+      fixture.start.mockImplementationOnce(async () => {
+        entered();
+        await pending;
+        return outcome === 'failed'
+          ? { status: 'failed', diagnostic: { code: 'native_start_failed', severity: 'error' } }
+          : { status: 'started', transport: { kind: 'webrtc', answerSdp: 'answer' }, handle: fixture.handle };
+      });
+      const preparedInstructionsFor = { serverId, sessionId };
+      let preparationFailure: unknown;
+      const handlers = register(fixture.runtime, undefined, {
+        getHappierSessionId: () => sessionId,
+        resolvePromptPreparation: async ({ signal }) => {
+          try {
+            return await resolveCliVoicePromptPreparation({
+              serverId, sessionId, scope: { serverId, accountId: 'account-a', sessionId },
+              accountEntries: [], profileEntries: [], signal,
+              sessionMetadata: { work: { memoryEnabled: false, promptStack: [
+                { id: outcome === 'no_instructions' ? 'ordinary' : 'session.instructions',
+                  ref: { kind: 'doc', artifactId: 'persona' }, required: true, enabled: true, placement: 'system_append' },
+              ] } },
+              readArtifact: async () => ({ id: 'persona', header: { v: 1, kind: 'prompt_doc.v2', title: 'Persona' },
+                revision: { headerVersion: 1, bodyVersion: 1 },
+                body: JSON.stringify({ v: 1, markdown: 'Accepted persona', createdAtMs: 1, updatedAtMs: 1 }) }),
+              readArtifactHeader: async () => ({ header: { v: 1, kind: 'prompt_doc.v2', title: 'Persona' } }),
+            });
+          } catch (error) {
+            preparationFailure = error;
+            throw error;
+          }
+        },
+      });
+      const response = handlers.get(SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_START)!({
+        v: 1, provider: providerRef, applicationAttemptId: `receipt-${outcome}`,
+        transport: { kind: 'webrtc', offerSdp: 'offer' },
+      });
+      await Promise.race([starting, response.then(result => {
+        throw new Error(`Preparation settled before native start: ${JSON.stringify(result)}`, { cause: preparationFailure });
+      })]);
+      expect(fixture.start.mock.calls[0]?.[0]).toMatchObject({ systemAppendBlocks: [HAPPIER_ACTION_DISCOVERY_GUIDANCE_V1, 'Accepted persona'] });
+      if (outcome === 'superseded') sessionId = 'session-2';
+      release();
+      const result = await response;
+      expect(result).toMatchObject({ status: outcome === 'superseded' ? 'aborted' : outcome === 'no_instructions' ? 'started' : outcome });
+      if (outcome === 'started') expect(result).toHaveProperty('preparedInstructionsFor', preparedInstructionsFor);
+      else expect(result).not.toHaveProperty('preparedInstructionsFor');
+      handlers.dispose();
+    },
+  );
   it('refuses native start when the admitted required document cannot be read', async () => {
     const fixture = runtimeFixture();
     const handlers = register(fixture.runtime, undefined, {
-      resolveSystemAppendBlocks: ({ signal }) => resolveCliVoicePromptStackBlocks({
+      resolvePromptPreparation: ({ signal }) => resolveCliVoicePromptPreparation({
         sessionEntries: [{ id: 'required', ref: { kind: 'doc', artifactId: 'missing' }, required: true,
           enabled: true, placement: 'system_append' }],
         signal, readArtifact: async () => null,
@@ -219,9 +323,9 @@ describe('Agent-session realtime Voice session RPC', () => {
     const seen: string[] = [];
     const handlers = register(fixture.runtime, undefined, {
       getHappierSessionId: () => sessionId,
-      resolveSystemAppendBlocks: async ({ sessionId: target, signal }) => {
+      resolvePromptPreparation: async ({ sessionId: target, signal }) => {
         seen.push(target);
-        return resolveCliVoicePromptStackBlocks({
+        return resolveCliVoicePromptPreparation({
           sessionEntries: [{ id: 'persona', ref: { kind: 'doc', artifactId: target }, enabled: true, required: true, placement: 'system_append' }],
           signal,
           readArtifact: async ({ artifactId }) => {
@@ -240,7 +344,7 @@ describe('Agent-session realtime Voice session RPC', () => {
     });
     await expect(start('first')).resolves.toMatchObject({ status: 'started' });
     expect(fixture.start.mock.calls[0]?.[0]).toEqual({
-      transport: { kind: 'webrtc', offerSdp: 'offer' }, systemAppendBlocks: ['Current A instructions'],
+      transport: { kind: 'webrtc', offerSdp: 'offer' }, systemAppendBlocks: [HAPPIER_ACTION_DISCOVERY_GUIDANCE_V1, 'Current A instructions'],
     });
     body = 'pending';
     const pending = start('second');
@@ -272,7 +376,7 @@ describe('Agent-session realtime Voice session RPC', () => {
       transport: { kind: 'webrtc', answerSdp: 'v=0\r\na=answer\r\n' },
     });
     expect(fixture.start).toHaveBeenCalledWith(
-      { transport: { kind: 'webrtc', offerSdp: 'v=0\r\na=offer\r\n' } },
+      { transport: { kind: 'webrtc', offerSdp: 'v=0\r\na=offer\r\n' }, systemAppendBlocks: [HAPPIER_ACTION_DISCOVERY_GUIDANCE_V1] },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
 
@@ -364,7 +468,8 @@ describe('Agent-session realtime Voice session RPC', () => {
       encryptionVariant: 'dataKey',
       encryptionMode: 'plain',
       logger: () => {},
-      authorizeRequest: async () => {
+      authorizeRequest: async request => {
+        if (!request.method.endsWith(SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_WATCH)) return { ok: true };
         markAuthorizationStarted();
         await authorizationGate;
         return { ok: true };
@@ -392,13 +497,16 @@ describe('Agent-session realtime Voice session RPC', () => {
       provider: providerRef,
       applicationAttemptId: 'voice-attempt:pre-aborted-watch',
     };
-    await expect(rpc.invokeLocal(
-      SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_START,
-      {
+    // Native Start consumes the authenticated server carrier, never local invocation identity.
+    await expect(rpc.handleRequest({
+      method: `session-1:${SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_START}`,
+      callerAuthority: 'present_user',
+      authorization: { kind: 'session.write', sessionId: 'session-1', authority: 'sessionOwner' },
+      params: {
         ...request,
         transport: { kind: 'webrtc' as const, offerSdp: 'v=0\r\n' },
       },
-    )).resolves.toMatchObject({ ok: true, status: 'started' });
+    })).resolves.toMatchObject({ ok: true, status: 'started' });
 
     const abortedWatch = rpc.handleRequest({
       method: `session-1:${SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_WATCH}`,

@@ -90,6 +90,23 @@ function makeController(overrides: Partial<EmbeddedTerminalPaneController>): Emb
 }
 
 describe('EmbeddedTerminalPaneFrame states (terminal lab ST)', () => {
+    it('keeps uncertain input recoverable with copy and discard while retaining output', async () => {
+        const copyInputRecovery = vi.fn(async () => {});
+        const discardInputRecovery = vi.fn();
+        const screen = await renderScreen(<EmbeddedTerminalPaneFrame title="shell" controller={makeController({
+            status: 'error', connectionLost: true, inputRecoveryAvailable: true, copyInputRecovery, discardInputRecovery,
+        })} chrome="none" surface={React.createElement('TerminalSurface')} testIdPrefix="input" platformOS="web" />);
+        expect(screen.findByTestId('input-surface')).toBeTruthy();
+        expect(screen.findByTestId('input-overlay')).toBeFalsy();
+        const copy = screen.findByTestId('input-recover-input');
+        const discard = screen.findByTestId('input-discard-input');
+        expect(copy).toBeTruthy();
+        expect(discard).toBeTruthy();
+        await copy?.props.onPress();
+        discard?.props.onPress();
+        expect(copyInputRecovery).toHaveBeenCalledOnce();
+        expect(discardInputRecovery).toHaveBeenCalledOnce();
+    });
     it('offers the shared pending-approval continuation while retaining the terminal surface', async () => {
         const onOpenApproval = vi.fn();
         const controller = { ...makeController({ status: 'connecting' }), approvalPending: true, onOpenApproval };
@@ -179,6 +196,24 @@ describe('EmbeddedTerminalPaneFrame states (terminal lab ST)', () => {
         expect(exited.findByTestId('term-surface')).toBeTruthy();
         const offline = await render({ status: 'error', error: 'terminal_machine_unreachable' });
         expect(offline.findByTestId('term-state-line')).toBeTruthy();
+    });
+
+    it('says once that earlier output is no longer retained, for a borrowed retained output only', async () => {
+        const retention = (truncated: boolean) => ({ mode: 'byte-offset' as const, retainedFromCursor: truncated ? 4096 : 0, availableCursor: 9000, truncated });
+        const render = (controller: Partial<EmbeddedTerminalPaneController>) => renderScreen(React.createElement(EmbeddedTerminalPaneFrame, {
+            title: 'build',
+            chrome: 'none',
+            ownerStatesExit: true,
+            controller: makeController({ status: 'exited', exitCode: 0, ...controller }),
+            surface: React.createElement('TerminalSurface'),
+            testIdPrefix: 'term',
+            platformOS: 'web',
+        }));
+        expect((await render({ readOnly: true, outputRetention: retention(true) })).findByTestId('term-retained-notice')).toBeTruthy();
+        expect((await render({ readOnly: true, outputRetention: retention(false) })).findByTestId('term-retained-notice')).toBeFalsy();
+        // Unknown bounds (legacy transport) say nothing; a person's own shell scrollback is not announced.
+        expect((await render({ readOnly: true, outputRetention: null })).findByTestId('term-retained-notice')).toBeFalsy();
+        expect((await render({ readOnly: false, outputRetention: retention(true) })).findByTestId('term-retained-notice')).toBeFalsy();
     });
 
     it('keeps the output when the machine goes offline, with one line and Check again', async () => {

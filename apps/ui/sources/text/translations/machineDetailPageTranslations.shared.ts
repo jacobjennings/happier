@@ -44,6 +44,7 @@ export const english = {
             sharing: "Sharing",
             agents: "Agents",
             terminal: "Terminal",
+            computer: "Computer control",
             connection: "Connection",
             tools: "Tools",
             doctor: "Doctor",
@@ -152,7 +153,7 @@ export const english = {
         offlineHidden: ({ count }: { count: number }) => count === 1 ? `1 machine is offline` : `${count} machines are offline`,
         showOffline: "Show",
         hideOffline: "Hide",
-        machinesCount: ({ count }: { count: number }) => count === 1 ? `1 machine` : `${count} machines`,
+        machinesCount: ({ count }: { count: number }) => count === 1 ? `1 Machine` : `${count} Machines`,
         sessionsWorking: ({ count }: { count: number }) => count === 1 ? `1 session working` : `${count} sessions working`,
     },
     machineSummary: {
@@ -464,8 +465,8 @@ export const english = {
             },
             customSustain: {
                 title: 'How long',
-                body: 'Any whole number of minutes, up to a week (10080).',
-                invalid: 'Enter a whole number of minutes from 1 to 10080.',
+                body: 'Any whole number of minutes, up to a week (10080). Include a unit: ms, s, min, h or d.',
+                invalid: 'Enter a whole number of minutes from 1 to 10080. Include a unit: ms, s, min, h or d.',
             },
             customCpu: {
                 title: 'CPU above',
@@ -774,7 +775,7 @@ export const english = {
                 customTitle: 'Suggest unused items after',
             },
             days: ({ days }: { days: number }) => `${days} ${days === 1 ? 'day' : 'days'}`,
-            customDays: { body: 'Any whole number of days, 1 or more.', invalid: 'Enter a whole number of days, 1 or more.' },
+            customDays: { body: 'Any whole number of days, 1 or more. Include a unit: ms, s, min, h or d.', invalid: 'Enter a whole number of days, 1 or more. Include a unit: ms, s, min, h or d.' },
         },
         scope: {
             label: 'What to show',
@@ -1040,8 +1041,8 @@ export const english = {
             milliseconds: ({ milliseconds }: { milliseconds: number }) => `${milliseconds} ms`,
             customIdle: {
                 title: "Tool idle close",
-                body: "Enter milliseconds, seconds, minutes or hours; at least 1 second.",
-                invalid: "Enter a duration of at least 1 second.",
+                body: "Enter milliseconds, seconds, minutes or hours; at least 1 second. Include a unit: ms, s, min, h or d.",
+                invalid: "Enter a duration of at least 1 second. Include a unit: ms, s, min, h or d.",
             },
             customBrowsers: {
                 title: "Concurrent browsers",
@@ -1097,7 +1098,7 @@ export const english = {
             sustainHelp: 'A build spike never triggers it.',
             cooldownTitle: 'Then wait between steps',
             cooldownHelp: 'After each step Happier waits this long and checks that memory dropped.',
-            customMinutes: { title: 'How long', body: 'Any whole number of minutes, 1 or more, like 3 or 90.', invalid: 'Enter a whole number of minutes, 1 or more.' },
+            customMinutes: { title: 'How long', body: 'Any whole number of minutes, 1 or more, like 3 min or 1.5 h. Include a unit: ms, s, min, h or d.', invalid: 'Enter a whole number of minutes, 1 or more. Include a unit: ms, s, min, h or d.' },
         },
         ladder: {
             label: 'What the memory guard would do',
@@ -1199,7 +1200,7 @@ export const english = {
             graceHelp: 'Gives a process a moment to finish on its own.',
             atOnce: 'At once',
             seconds: ({ seconds }: { seconds: number }) => `${seconds} s`,
-            customGrace: { title: 'How long to wait', body: 'Seconds or minutes, like 45 s or 3 min.', invalid: 'Enter a number of seconds or minutes, 0 or more.' },
+            customGrace: { title: 'How long to wait', body: 'Seconds or minutes, like 45 s or 3 min. Include a unit: ms, s, min, h or d.', invalid: 'Enter a number of seconds or minutes, 0 or more. Include a unit: ms, s, min, h or d.' },
         },
         limits: {
             title: 'Limits and power',

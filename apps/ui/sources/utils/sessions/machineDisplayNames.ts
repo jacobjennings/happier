@@ -21,6 +21,8 @@ export type MachineAbsence = 'removed' | 'replaced' | 'temporary' | 'unlisted';
 type MachineNameInput = Readonly<{
     id?: string | null;
     metadata?: MachineNameMetadata;
+    /** The admitted managed resource's human name, before the generated guest host. */
+    managedName?: string | null;
     availability?: MachineNameAvailability;
     absence?: MachineAbsence | null;
 }>;
@@ -71,7 +73,8 @@ export function describeMachineLockedReason(machine: MachineNameInput | null | u
 /** The name a person gave the machine, else its host; `null` when it has neither or is locked. */
 export function readMachineName(machine: MachineNameInput | null | undefined): string | null {
     if (machine && (machine.absence || isMachineLocked(machine))) return null;
-    return readPublishedMachineName(machine?.metadata);
+    return readPublishedMachineName(machine?.managedName ? { ...machine.metadata,
+        displayName: machine.metadata?.displayName?.trim() || machine.managedName } : machine?.metadata);
 }
 
 /** What a machine whose details cannot be read is called on screen. */
@@ -111,16 +114,45 @@ export function getMachineDisplayName(machine: MachineNameInput, inventory?: rea
 export function getMachineDisplayName(machine: MachineNameInput | null | undefined, inventory?: readonly MachineNameSource[]): string | null;
 export function getMachineDisplayName(machine: MachineNameInput | null | undefined, inventory?: readonly MachineNameSource[]): string | null {
     if (!machine) return null;
+    const name = machineBaseDisplayName(machine);
+    // Qualify just this chip through the same resolver that names its picker.
+    if (inventory && machine.id) {
+        const peers = selectMachineDisplayNamePeers(machine, inventory);
+        return resolveMachineDisplayNames(peers).get(machine.id) ?? name;
+    }
+    return name;
+}
+
+/**
+ * The machine's name only once it has been read; `null` while its details are still hydrating. A row that
+ * names a machine inside a line of facts (a subtitle, a request's source) never prints the
+ * "Loading…" placeholder as if it were the name: a machine on another Home or one that is offline may
+ * never hydrate, and the placeholder would then sit there for good. The caller falls back to what it
+ * knows (the Session's own host) or leaves the machine out.
+ */
+export function getSettledMachineDisplayName(machine: MachineNameInput | null | undefined, inventory?: readonly MachineNameSource[]): string | null {
+    if (!machine || (!machine.absence && isMachineDisplayHydrating(machine))) return null;
+    return getMachineDisplayName(machine, inventory);
+}
+
+function machineBaseDisplayName(machine: MachineNameInput): string {
     if (machine.absence) return t(ABSENT_MACHINE_NAME_KEYS[machine.absence]);
     if (isMachineLocked(machine)) return lockedMachineName();
     if (isMachineDisplayHydrating(machine)) return t('common.loading');
-    // A selected chip keeps the same identity as the list it opens. The list's resolver owns
-    // disambiguation; callers supply its Home inventory rather than reimplementing suffix rules.
-    if (inventory && machine.id) {
-        const name = resolveMachineDisplayNames(inventory).get(machine.id);
-        if (name !== undefined) return name;
-    }
     return readMachineName(machine) ?? unnamedMachineName();
+}
+
+/** Only same-name peers can affect a selected label's inventory qualification. */
+export function selectMachineDisplayNamePeers(
+    machine: MachineNameInput | null | undefined,
+    inventory: readonly MachineNameSource[],
+): readonly MachineNameSource[] {
+    if (!machine?.id || machine.absence || isMachineLocked(machine) || isMachineDisplayHydrating(machine)) return [];
+    const listed = inventory.find(candidate => candidate.id === machine.id);
+    if (!listed) return [];
+    const name = machineBaseDisplayName(listed).toLocaleLowerCase();
+    return inventory.filter(candidate => machineBaseDisplayName(candidate).toLocaleLowerCase() === name)
+        .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 /**

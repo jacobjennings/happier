@@ -1,4 +1,5 @@
 import { createArtifactHttpMutation, updateArtifactHttpMutation } from '@/app/artifacts/artifactMutationHttpResponse';
+import { ARTIFACT_LIST_PAGE_MAX_ITEMS_V1 } from '@happier-dev/protocol/artifacts/artifactListSelectionV1';
 import { registerArtifactUploadRoutes } from './registerArtifactUploadRoutes';
 import { ArtifactCoarseKindV1Schema, ArtifactStoredKindV1Schema, ArtifactKindWriteBatchInputV1Schema,
     ArtifactKindWriteBatchResponseV1Schema, ArtifactKindCoverageV1Schema, type ArtifactKindWriteBatchResponseV1, type ArtifactCoarseKindV1 } from '@happier-dev/protocol/artifacts/artifactKindV1';
@@ -41,8 +42,9 @@ import { ArtifactHtmlPreviewResponseV1Schema } from '@happier-dev/protocol/artif
 import { ArtifactAccountEncryptionMigrationInventoryV1Schema } from '@happier-dev/protocol/artifacts/artifactAccountEncryptionMigrationV1';
 import { CoordinationMessageRefV1Schema } from '@happier-dev/protocol/discussions/messageRefs';
 import { readSessionAccessAuthenticationFromRequest } from '@/app/session/access/sessionAccessAuthentication';
+import { ApprovalArtifactQueryHintsV1Schema, ApprovalArtifactStateV1Schema, type ApprovalArtifactStateV1 } from '@happier-dev/protocol/approvals/approvalArtifactKindV1';
 
-const DEFAULT_ARTIFACT_LIST_LIMIT = 500;
+const DEFAULT_ARTIFACT_LIST_LIMIT = ARTIFACT_LIST_PAGE_MAX_ITEMS_V1;
 
 const artifactListItemSchema = z.object({
     id: z.string(), kind: z.nullable(ArtifactCoarseKindV1Schema), header: z.string(), headerVersion: z.number(),
@@ -246,13 +248,16 @@ export function artifactsRoutes(app: Fastify) {
         },
         schema: {
             querystring: z.object({
-                limit: z.optional(z.coerce.number().check(z.int(), z.minimum(1), z.maximum(500))),
+                limit: z.optional(z.coerce.number().check(z.int(), z.minimum(1), z.maximum(ARTIFACT_LIST_PAGE_MAX_ITEMS_V1))),
                 cursor: z.optional(z.string().check(z.minLength(1))),
                 includeBody: z.optional(z.literal('true')),
                 ownerAccountId: z.optional(z.string()),
                 kind: z.optional(ArtifactCoarseKindV1Schema),
                 kinds: z.optional(z.string()),
-                unclassified: z.optional(z.enum(['true', 'coarse'])),
+                approvalStates: z.optional(z.string()),
+                approvalSessionIds: z.optional(z.string()),
+                browserListed: z.optional(z.literal('true')),
+                unclassified: z.optional(z.enum(['true', 'coarse', 'approval'])),
             }),
             response: {
                 200: z.union([z.array(artifactListItemSchema), z.object({ items: z.array(artifactListItemSchema), hasUnclassified: z.boolean(),
@@ -263,13 +268,30 @@ export function artifactsRoutes(app: Fastify) {
     }, async (request, reply) => {
         const userId = request.userId;
         const query = request.query as { limit?: number; cursor?: string; includeBody?: 'true'; ownerAccountId?: string;
-            kind?: ArtifactCoarseKindV1; kinds?: string; unclassified?: 'true' | 'coarse' };
+            kind?: ArtifactCoarseKindV1; kinds?: string; approvalStates?: string; approvalSessionIds?: string;
+            browserListed?: 'true'; unclassified?: 'true' | 'coarse' | 'approval' };
         const listLimit = typeof query.limit === "number" ? query.limit : DEFAULT_ARTIFACT_LIST_LIMIT;
         const cursor = parseArtifactListCursor(query.cursor);
         if (query.cursor && !cursor) return reply.code(400).send({ error: 'Failed to get artifacts' });
-        if ([query.kind !== undefined, query.kinds !== undefined, query.unclassified !== undefined].filter(Boolean).length > 1
+        if ([query.kind !== undefined, query.kinds !== undefined, query.browserListed !== undefined, query.unclassified !== undefined].filter(Boolean).length > 1
             || (query.unclassified !== undefined && query.includeBody === 'true')) return reply.code(400).send({ error: 'Failed to get artifacts' });
         let kinds: string[] | undefined;
+        let approvalStates: ApprovalArtifactStateV1[] | undefined;
+        let approvalSessionIds: string[] | undefined;
+        if (query.approvalSessionIds !== undefined) {
+            try {
+                const parsed = z.array(z.string().check(z.minLength(1))).safeParse(JSON.parse(query.approvalSessionIds));
+                if (!parsed.success) return reply.code(400).send({ error: 'Failed to get artifacts' });
+                approvalSessionIds = parsed.data;
+            } catch { return reply.code(400).send({ error: 'Failed to get artifacts' }); }
+        }
+        if (query.approvalStates !== undefined) {
+            try {
+                const parsed = z.array(ApprovalArtifactStateV1Schema).safeParse(JSON.parse(query.approvalStates));
+                if (!parsed.success) return reply.code(400).send({ error: 'Failed to get artifacts' });
+                approvalStates = parsed.data;
+            } catch { return reply.code(400).send({ error: 'Failed to get artifacts' }); }
+        }
         if (query.kinds !== undefined) {
             try {
                 const parsed = z.array(z.string().check(z.minLength(1))).safeParse(JSON.parse(query.kinds));
@@ -280,12 +302,16 @@ export function artifactsRoutes(app: Fastify) {
 
         const page = await listArtifactHeaderPageForCaller({ actorAccountId: userId, limit: listLimit, cursor,
             includeBody: query.includeBody === 'true', ownerAccountId: query.ownerAccountId, kind: query.kind, kinds,
-            unclassified: query.unclassified === 'coarse' ? 'coarse' : query.unclassified === 'true' });
+            approvalStates, approvalSessionIds,
+            ...(query.browserListed ? { browserListed: true } : {}),
+            unclassified: query.unclassified === 'coarse' || query.unclassified === 'approval' ? query.unclassified : query.unclassified === 'true' });
 
         const projected = page.items.map(projectArtifactListItem);
-        if (query.kind === undefined && kinds === undefined && query.unclassified === undefined) return reply.send(projected);
+        if (query.kind === undefined && kinds === undefined && query.browserListed === undefined && query.unclassified === undefined
+            && approvalStates === undefined && approvalSessionIds === undefined) return reply.send(projected);
         return reply.send({ items: projected, hasUnclassified: page.hasUnclassified,
-            ...(kinds !== undefined || query.unclassified !== undefined ? { coverage: page.coverage } : {}) });
+            ...(kinds !== undefined || query.browserListed !== undefined || query.unclassified !== undefined
+                || approvalStates !== undefined || approvalSessionIds !== undefined ? { coverage: page.coverage } : {}) });
     });
 
     // A transport batch reuses independent canonical CAS transactions and publication.
@@ -297,7 +323,8 @@ export function artifactsRoutes(app: Fastify) {
         const items: ArtifactKindWriteBatchResponseV1['items'] = [];
         for (const item of request.body.items) {
             const result = await updateArtifactHttpMutation(request.userId, item.artifactId,
-                { kind: item.kind, expectedHeaderVersion: item.expectedHeaderVersion });
+                { kind: item.kind, approvalState: item.approvalState, approvalSessionId: item.approvalSessionId,
+                    expectedHeaderVersion: item.expectedHeaderVersion });
             items.push('success' in result.body && result.body.success
                 ? { artifactId: item.artifactId, success: true }
                 : { artifactId: item.artifactId, success: false, error: 'error' in result.body
@@ -436,6 +463,8 @@ export function artifactsRoutes(app: Fastify) {
             body: z.strictObject({
                 id: z.string().check(z.uuid()),
                 kind: z.optional(ArtifactStoredKindV1Schema),
+                approvalState: z.optional(ApprovalArtifactQueryHintsV1Schema.shape.approvalState),
+                approvalSessionId: z.optional(ApprovalArtifactQueryHintsV1Schema.shape.approvalSessionId),
                 header: z.string(),
                 body: z.string(),
                 dataEncryptionKey: z.string(),
@@ -496,6 +525,8 @@ export function artifactsRoutes(app: Fastify) {
             body: z.strictObject({
                 header: z.optional(z.string()),
                 kind: z.optional(ArtifactStoredKindV1Schema),
+                approvalState: z.optional(ApprovalArtifactQueryHintsV1Schema.shape.approvalState),
+                approvalSessionId: z.optional(ApprovalArtifactQueryHintsV1Schema.shape.approvalSessionId),
                 expectedHeaderVersion: z.optional(z.number().check(z.int(), z.minimum(0))),
                 body: z.optional(z.string()),
                 expectedBodyVersion: z.optional(z.number().check(z.int(), z.minimum(0))),

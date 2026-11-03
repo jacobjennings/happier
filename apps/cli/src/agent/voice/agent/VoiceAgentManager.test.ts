@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import axios from 'axios';
 import { createSocketTransportAdapter } from '@happier-dev/sync-client';
 
@@ -6,11 +6,12 @@ import { ProviderBoundModelRefSchema, buildBackendTargetKeyV2, createVoiceAgentO
 import type { ExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
 import type { BackendFactory, ResolveVoicePromptPreparationArgs, VoiceAgentTurnStreamEvent } from './voiceAgentTypes';
 import { VoiceAgentError, VoiceAgentManager } from './VoiceAgentManager';
+import { ConnectedServiceSpawnProfileActionRequiredError } from '@/daemon/connectedServices/resolveConnectedServiceAuthForSpawn';
 import { createVoiceSessionRuntimeThroughNativeFactory } from '@/agent/runtime/bridges/executionRun/testkit/nativeSessionContext';
 import type { AgentRuntime, AgentSessionOpenRequest, AgentSessionRuntimeContext, AgentSessionRuntimeEvent, AgentSessionSendRequest, AgentSessionSendResult } from '@happier-dev/plugin-sdk/agents/runtime';
 import { ApiSessionClient } from '@/api/session/sessionClient';
 import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
-import { createAccountEncryptionCurrentnessFixture, createPlainSessionFixture, createSessionNotificationContextFixture } from '@/testkit/backends/sessionFixtures';
+import { createAccountEncryptionCurrentnessFixture, createPlainSessionFixture, createSessionNotificationContextFixture, createMutableApiSessionClientFixture } from '@/testkit/backends/sessionFixtures';
 import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
 import { createApiSessionSocketStub, createSessionRuntimeActivityHomeStub, createSessionTurnMutationAppliedSocketAck } from '@/testkit/backends/apiSessionSocketHarness';
 import { createSessionFollowContextReconciler } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
@@ -34,10 +35,14 @@ import { resolveCliVoicePromptStackBlocks, resolveCliVoicePromptPreparation } fr
 import { ArtifactEncryptionMaterialUnavailableError } from '@/api/artifacts/accountArtifactStore';
 import { buildMemoryRecallGuidanceBlockV1 } from '@happier-dev/protocol/prompts/memoryRecallGuidanceV1';
 import { applyExecutionRunAction } from '@/agent/runtime/bridges/executionRun/executionRunApplyAction';
+import { startVoiceAgentTurnStream, readVoiceAgentTurnStream, cancelVoiceAgentTurnStream } from '@/agent/runtime/bridges/executionRun/voiceAgentTurnStreams';
+import { ExecutionRunTurnStreamReadResponseSchema } from '@happier-dev/protocol/execution/runs/streaming';
 import type { ExecutionRunState } from '@/agent/runtime/bridges/executionRun/executionRunTypes';
 import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
 import { readSettings, updateSettings, writeSettings } from '@/persistence';
 import { DEFAULT_MEMORY_SETTINGS } from '@/settings/memorySettings';
+import { resolveCausalPermissionMode } from '@/agent/permissions/causalPermissionMode';
+import { ProviderEnforcedPermissionHandler } from '@/agent/permissions/providerEnforced/handler';
 
 type VoiceTestRuntime<T extends object = object> = ExecutionRunHostRuntime & T;
 
@@ -298,7 +303,7 @@ async function createAccountVoiceFollowTransportFixture(options: Readonly<{
     await vi.waitFor(() => expect(socket.getHandler('update')).toBeTypeOf('function'));
     await vi.waitFor(() => expect(session.getServerFeaturesSnapshot()?.status).toBe('ready'));
     socket.trigger('update', { id: 'committed-voice-user', createdAt: Date.now(), body: {
-      t: 'new-message', sid: sessionId, message: {
+      t: 'new-message', delivery: 'full' as const, sid: sessionId, message: {
         id: 'voice-user-message', seq: options.userMessageSeq, localId: options.localId, messageRole: 'user',
         content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'what changed?' }, meta: { sentFrom: 'cli' } } },
       },
@@ -503,6 +508,68 @@ function createPromptCaptureBackend(
 }
 
 describe('VoiceAgentManager', () => {
+  it.each(['delivered', 'refused', 'cancelled'] as const)('publishes instruction receipts through the real stream reader only after %s delivery', async outcome => {
+    const previousSettings = await readSettings();
+    await updateSettings(current => ({ ...current, servers: { ...current.servers, home: {
+      id: 'home', name: 'Receipt Home', serverUrl: 'https://receipt.example.test', webappUrl: 'https://receipt.example.test',
+      createdAt: 1, updatedAt: 1, lastUsedAt: 1, homeConnectionDescriptorAuthority: 'exact',
+      homeConnectionDescriptor: { v: 1, homeServerIdentityId: 'srv_receipt_home', canonicalServerUrl: 'https://receipt.example.test',
+        revision: 1, endpoints: [{ kind: 'https', url: 'https://receipt.example.test' }] },
+    } } }));
+    onTestFinished(async () => { await writeSettings(previousSettings); });
+    let release!: () => void;
+    let entered!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const sending = new Promise<void>(resolve => { entered = resolve; });
+    const backend = createDeterministicBackend('receipt', { onSend: async (request, publish) => {
+      entered();
+      await pending;
+      if (outcome === 'refused') return { status: 'rejected', diagnostic: { code: 'provider_busy', severity: 'error' }, retryable: false };
+      publish({ kind: 'message-delta', turnId: request.delivery.turnId, channel: 'assistant', text: 'ready' });
+      publish({ kind: 'turn-complete', turnId: request.delivery.turnId });
+      return undefined;
+    } });
+    const manager = new VoiceAgentManager({ createRuntime: () => backend,
+      resolvePromptPreparation: async args => resolveCliVoicePromptPreparation({ ...args, serverId: 'home',
+        accountEntries: [], profileEntries: [], sessionMetadata: { work: { promptStack: [{ id: 'session.instructions',
+          ref: { kind: 'doc', artifactId: 'instructions' }, enabled: true, required: true, placement: 'system_append' }] } },
+        readArtifactHeader: async () => ({ header: { v: 1, kind: 'prompt_doc.v2', title: 'Instructions' } }),
+        readArtifact: async () => ({ id: 'instructions', header: { v: 1, kind: 'prompt_doc.v2', title: 'Instructions' },
+          revision: { headerVersion: 1, bodyVersion: 1 }, body: JSON.stringify({ v: 1, markdown: 'PERSONA', createdAtMs: 1, updatedAtMs: 1 }) }),
+      }) });
+    try {
+      const { voiceAgentId } = await manager.start({ backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+        contextSessionId: 'target', chatModelId: 'chat', commitModelId: 'chat', permissionIntent: 'read-only', idleTtlSeconds: 60, initialContext: '' });
+      const run: ExecutionRunState = { runId: voiceAgentId, callId: 'call', sidechainId: 'sidechain', sessionId: 'control', depth: 0,
+        intent: 'voice_agent', backendTarget: { kind: 'builtInAgent', agentId: 'claude' }, backendId: 'claude', instructions: '',
+        permissionMode: 'read_only', retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'streaming', status: 'running', startedAtMs: 0 };
+      const controller: ExecutionRunController = { kind: 'voice_agent', controllerOccurrenceId: 'receipt-controller', voiceAgentId,
+        cancelled: false, lastMarkerWriteAtMs: 0, terminalPromise: Promise.resolve(), resolveTerminal: () => {},
+        transcript: { persistenceMode: 'ephemeral', epoch: 1 }, externalStreamIdByInternal: new Map(), internalStreamIdByExternal: new Map(),
+        pendingTranscriptTurnByExternalStreamId: new Map(), terminalReadByExternalStreamId: new Map(), readInFlightByExternalStreamId: new Map() };
+      const base = { runId: voiceAgentId, runs: new Map([[voiceAgentId, run]]), controllers: new Map([[voiceAgentId, controller]]),
+        voiceAgentManager: manager, transcriptWriter: null };
+      const started = await startVoiceAgentTurnStream({ ...base, params: { message: 'hello' } });
+      if (!started.ok) throw new Error(started.error);
+      const { streamId } = started;
+      const readStream = async (cursor: number, waitForEvents = false) => {
+        const read = await readVoiceAgentTurnStream({ ...base, params: { streamId, cursor, waitForEvents },
+          writeActivityMarker: async () => {}, getNowMs: () => 1 });
+        if (!read.ok) throw new Error(read.error);
+        return ExecutionRunTurnStreamReadResponseSchema.parse(read);
+      };
+      await sending;
+      expect(await readStream(0)).not.toHaveProperty('preparedInstructionsFor');
+      const cancellation = outcome === 'cancelled' ? cancelVoiceAgentTurnStream({ ...base, params: { streamId } }) : null;
+      const cancelledRead = cancellation ? await readStream(0) : null;
+      release();
+      await cancellation;
+      let read = cancelledRead ?? await readStream(0, true);
+      while (!read.done) read = await readStream(read.nextCursor, true);
+      if (outcome === 'delivered') expect(read).toHaveProperty('preparedInstructionsFor', { serverId: 'srv_receipt_home', sessionId: 'target' });
+      else expect(read).not.toHaveProperty('preparedInstructionsFor');
+    } finally { release(); await manager.dispose(); }
+  });
   it.each(['welcome', 'turn', 'commit', 'isolated commit'] as const)(
     'reports actual work activity for %s and becomes idle after completion',
     async (operation) => {
@@ -1308,6 +1375,23 @@ describe('VoiceAgentManager', () => {
     await manager.dispose();
   });
 
+  it('retains the connected account owner diagnostic when Voice start requires profile action', async () => {
+    const manager = new VoiceAgentManager({ createBackend: () => {
+      throw new ConnectedServiceSpawnProfileActionRequiredError({
+        serviceId: 'happier.agent.codex/openai-codex', profileId: 'work', status: 'needs_reauth',
+      });
+    } });
+    await expect(manager.start({ backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      chatModelId: 'chat-model', commitModelId: 'commit-model', permissionIntent: 'read-only',
+      idleTtlSeconds: 60, initialContext: 'CTX',
+    })).rejects.toMatchObject({ code: 'connected_service_credential_reconnect_required', uxDiagnostic: {
+      code: 'connected_service_credential_reconnect_required', retryable: false,
+      serviceId: 'happier.agent.codex/openai-codex', profileId: 'work',
+      suggestedActions: ['reconnect_profile', 'open_connected_accounts'],
+    } });
+    await manager.dispose();
+  });
+
   it('passes through VoiceAgentError codes thrown by the backend factory', async () => {
 
     const createBackend: BackendFactory = () => {
@@ -1600,6 +1684,130 @@ describe('VoiceAgentManager', () => {
     expect(commitBackend.getSeenPrompts().length).toBe(1);
   });
 
+  it('admits every Voice input with its own permission ceiling through the native host', async () => {
+    const decisions: ReturnType<typeof resolveCausalPermissionMode>[] = [];
+    const toolDecisions: ReturnType<ProviderEnforcedPermissionHandler['getImmediateDecision']>[] = [];
+    const permissions = new ProviderEnforcedPermissionHandler(createMutableApiSessionClientFixture(), { logPrefix: '[Voice settings]' });
+    const backend = createDeterministicBackend('voice-settings-authority', { onSend: (request, publish) => {
+      const witness = backend.readActiveTurnAdmissionWitness?.();
+      const context = {
+        causalPermissionAuthority: witness?.causalPermissionAuthority ?? null,
+      };
+      decisions.push(resolveCausalPermissionMode({ currentPermissionMode: 'default', context }));
+      // Codex's native request must reach the Action approval owner in default
+      // mode, while the next input's explicit read-only ceiling still refuses it.
+      toolDecisions.push(permissions.getImmediateDecision('settings-call', 'mcp__happier__settings_set',
+        { anchor: 'voiceConversations.minSpeechMs', value: 1100 }, context));
+      publish({ kind: 'message-delta', turnId: request.delivery.turnId, channel: 'assistant',
+        text: request.input.text.includes('reply with exactly READY') ? 'READY' : 'Done.' });
+      publish({ kind: 'turn-complete', turnId: request.delivery.turnId });
+    } });
+    const manager = new VoiceAgentManager({ createRuntime: () => backend });
+    try {
+      const started = await manager.start({ backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+        chatModelId: 'chat-model', commitModelId: 'chat-model', permissionIntent: 'default',
+        idleTtlSeconds: 60, initialContext: '', bootstrapMode: 'ready_handshake' });
+      await manager.welcome({ voiceAgentId: started.voiceAgentId });
+      await manager.sendTurn({ voiceAgentId: started.voiceAgentId, userText: 'Read my settings' });
+      const stream = await manager.startTurnStream({ voiceAgentId: started.voiceAgentId,
+        userText: 'Change my setting', causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'read-only',
+        } });
+      await readVoiceAgentTurnStreamUntilDone({ manager, voiceAgentId: started.voiceAgentId, streamId: stream.streamId });
+      expect(decisions).toEqual([
+        ...Array.from({ length: 3 }, () => ({ ok: true, authority: 'admittedSessionInputV1', effectiveMode: 'default' })),
+        { ok: true, authority: 'admittedSessionInputV1', effectiveMode: 'read-only' },
+      ]);
+      expect(toolDecisions).toEqual([
+        { decision: 'approved' }, { decision: 'approved' }, { decision: 'approved' }, { decision: 'denied' },
+      ]);
+    } finally { await manager.dispose(); }
+  });
+
+  it.each(['ordinary', 'stream', 'narrowed-stream', 'permitted-stream', 'read-stream'] as const)('enforces the admitted permission ceiling for action blocks (%s)', async transport => {
+    const action = transport === 'read-stream'
+      ? { t: 'settings_get', args: { anchor: 'voiceConversations.minSpeechMs' } }
+      : { t: 'settings_set', args: { anchor: 'voiceConversations.minSpeechMs', value: 1100 } };
+    const backend = createDeterministicBackend('voice-settings-actions', { onSend: (request, publish) => {
+      publish({ kind: 'message-delta', turnId: request.delivery.turnId, channel: 'assistant',
+        text: `<voice_actions>${JSON.stringify({ actions: [action] })}</voice_actions>` });
+      publish({ kind: 'turn-complete', turnId: request.delivery.turnId });
+    } });
+    const manager = new VoiceAgentManager({ createRuntime: () => backend });
+    try {
+      const started = await manager.start({ backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+        chatModelId: 'chat-model', commitModelId: 'chat-model',
+        permissionIntent: transport === 'narrowed-stream' || transport === 'permitted-stream' ? 'default' : 'read-only',
+        idleTtlSeconds: 60, initialContext: '' });
+      if (transport === 'ordinary') {
+        await expect(manager.sendTurn({ voiceAgentId: started.voiceAgentId, userText: 'Change minimum speech' }))
+          .rejects.toMatchObject({ code: 'permission_denied' });
+      } else {
+        const stream = await manager.startTurnStream({ voiceAgentId: started.voiceAgentId, userText: 'Change minimum speech',
+          ...(transport === 'narrowed-stream' ? { causalPermissionAuthority: {
+            kind: 'admittedSessionInputV1' as const, admittedPermissionCeiling: 'read-only' as const,
+          } } : {}),
+        });
+        const events = await readVoiceAgentTurnStreamUntilDone({ manager, voiceAgentId: started.voiceAgentId, streamId: stream.streamId });
+        if (transport === 'permitted-stream' || transport === 'read-stream') {
+          expect(events.some(event => event.t === 'error')).toBe(false);
+          expect(events.some(event => event.t === 'voice_output' && event.output.kind === 'side_effect' && event.output.action.t === action.t)).toBe(true);
+        } else {
+          expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ t: 'error', errorCode: 'permission_denied' })]));
+          expect(events.some(event => event.t === 'voice_output' && event.output.kind === 'side_effect')).toBe(false);
+        }
+      }
+    } finally { await manager.dispose(); }
+  });
+
+  describe.each([
+    { action: { t: 'session_stop', args: { sessionId: 'other-session' } }, read: false },
+    { action: { t: 'settings_invoke', args: { anchor: 'voicePrivacy.forgetVoiceAgentMemory' } }, read: false },
+    { action: { t: 'approval_request_decide', args: { artifactId: 'voice-pending-approval', decision: 'approve' } }, read: false },
+    { action: { t: 'approval_request_decide', args: { artifactId: 'voice-pending-approval', decision: 'reject' } }, read: false },
+    { action: { t: 'session_permission_respond', args: { sessionId: 'coding-session', requestId: 'native-permission', turnId: 'native-turn', decision: 'allow' } }, read: false },
+    { action: { t: 'session_permission_respond', args: { sessionId: 'coding-session', requestId: 'native-permission', turnId: 'native-turn', decision: 'deny' } }, read: false },
+    { action: { t: 'listServers', args: {} }, read: true },
+    { action: { t: 'invokeAction', args: { action: { pluginId: 'example.plugin', localId: 'test' }, input: {} } }, read: false },
+  ])('semantic Voice Action admission ($action.t)', ({ action, read }) => {
+    it.each(['ordinary', 'narrowed-stream', 'default-stream'] as const)('preserves the Action ceiling through %s output', async transport => {
+      const backend = createDeterministicBackend('voice-semantic-actions', { onSend: (request, publish) => {
+        publish({ kind: 'message-delta', turnId: request.delivery.turnId, channel: 'assistant',
+          text: `<voice_actions>${JSON.stringify({ actions: [action] })}</voice_actions>` });
+        publish({ kind: 'turn-complete', turnId: request.delivery.turnId });
+      } });
+      const manager = new VoiceAgentManager({ createRuntime: () => backend });
+      try {
+        const started = await manager.start({ backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+          chatModelId: 'chat-model', commitModelId: 'chat-model',
+          permissionIntent: transport === 'ordinary' ? 'read-only' : 'default',
+          idleTtlSeconds: 60, initialContext: '' });
+        const permitted = read || transport === 'default-stream';
+        if (transport === 'ordinary') {
+          const result = manager.sendTurn({ voiceAgentId: started.voiceAgentId, userText: 'Use this Action' });
+          if (permitted) await expect(result).resolves.toMatchObject({ actions: [action] });
+          else await expect(result).rejects.toMatchObject({ code: 'permission_denied' });
+        } else {
+          const stream = await manager.startTurnStream({ voiceAgentId: started.voiceAgentId, userText: 'Use this Action',
+            ...(transport === 'narrowed-stream' ? { causalPermissionAuthority: {
+              kind: 'admittedSessionInputV1' as const, admittedPermissionCeiling: 'read-only' as const,
+            } } : {}),
+          });
+          const events = await readVoiceAgentTurnStreamUntilDone({ manager, voiceAgentId: started.voiceAgentId, streamId: stream.streamId });
+          if (permitted) {
+            expect(events.some(event => event.t === 'error')).toBe(false);
+            expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ t: 'voice_output',
+              output: expect.objectContaining({ kind: 'side_effect', action: expect.objectContaining(action) }),
+            })]));
+          } else {
+            expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ t: 'error', errorCode: 'permission_denied' })]));
+            expect(events.some(event => event.t === 'voice_output' && event.output.kind === 'side_effect')).toBe(false);
+          }
+        }
+      } finally { await manager.dispose(); }
+    });
+  });
+
   it('surfaces the runtime refusal when the host declines the prompt instead of treating it as delivered', async () => {
     // `deliverInput` reports a refusal as a value rather than a throw. If Voice
     // ignored the status it would fall through to an empty chat buffer and report
@@ -1871,7 +2079,7 @@ describe('VoiceAgentManager', () => {
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
       chatModelId: 'chat-model',
       commitModelId: 'commit-model',
-      permissionIntent: 'read-only',
+      permissionIntent: 'default',
       idleTtlSeconds: 60,
       initialContext: 'CTX',
     });
@@ -2165,7 +2373,7 @@ describe('VoiceAgentManager', () => {
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
       chatModelId: 'chat-model',
       commitModelId: 'chat-model',
-      permissionIntent: 'read-only',
+      permissionIntent: 'default',
       idleTtlSeconds: 60,
       initialContext: 'CURRENT VOICE CONTEXT',
     });
@@ -2868,7 +3076,7 @@ describe('VoiceAgentManager', () => {
     }) });
     const started = await manager.start({
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-      chatModelId: 'chat-model', commitModelId: 'chat-model', permissionIntent: 'read-only',
+      chatModelId: 'chat-model', commitModelId: 'chat-model', permissionIntent: 'default',
       idleTtlSeconds: 60, initialContext: 'CTX',
     });
     let persistedText = '';
@@ -2956,7 +3164,7 @@ describe('VoiceAgentManager', () => {
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
       chatModelId: 'chat-model',
       commitModelId: 'commit-model',
-      permissionIntent: 'read-only',
+      permissionIntent: 'default',
       idleTtlSeconds: 60,
       initialContext: 'CTX',
     });
@@ -2999,7 +3207,7 @@ describe('VoiceAgentManager', () => {
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
       chatModelId: 'chat-model',
       commitModelId: 'commit-model',
-      permissionIntent: 'read-only',
+      permissionIntent: 'default',
       idleTtlSeconds: 60,
       initialContext: 'CTX',
     });

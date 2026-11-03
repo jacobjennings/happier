@@ -1,4 +1,4 @@
-import { readReleasedOutputNonTranscriptRecordTypes } from '@happier-dev/agents';
+import { readReleasedOutputNonTranscriptRecordTypes } from '@happier-dev/agents/definitions/released-output-transcript-record-reader';
 import { createEmptyCanonicalTurnDiffSuppressionState, rememberSuppressedEmptyCanonicalTurnDiffCallId, shouldSuppressEmptyCanonicalTurnDiffToolResult } from '@happier-dev/protocol/sessions/messages/emptyCanonicalTurnDiffSuppression';
 import { resolveTranscriptBodySessionMessageRole } from '@happier-dev/protocol/sessions/messages/sessionMessageRole';
 import type { EmptyCanonicalTurnDiffSuppressionState, MessageStructuredPresentationV1, SessionMessageRole } from '@happier-dev/protocol';
@@ -7,6 +7,7 @@ import { readEmptyCanonicalTurnDiffToolCallId, shouldSuppressEmptyCanonicalTurnD
 import { SessionForkVisualOriginV1Schema } from '@happier-dev/protocol/sessions/board/forkVisualCopies';
 import { TranscriptRawAgentEventV1Schema } from '@happier-dev/protocol/sessions/messages/transcriptRawRecordV1';
 import { createStoredReadSchema } from '@happier-dev/protocol/json/storedReadSchema';
+import { readTranscriptPeerSenderV1, type TranscriptPeerSenderV1 } from '@happier-dev/protocol/sessions/messages/transcriptPeerSenderV1';
 import type { z } from 'zod/mini';
 
 import type { MessageMeta } from "../messages/messageMetaTypes.js";
@@ -30,6 +31,8 @@ type NormalizedAgentContent =
         text: string;
         uuid: string;
         parentUUID: string | null;
+        /** Sender when another agent delivered this text into the Agent's conversation. */
+        peer?: TranscriptPeerSenderV1;
     } | {
         type: 'thinking';
         thinking: string;
@@ -194,6 +197,24 @@ function isClaudeSyntheticNoResponseOutputData(value: unknown): boolean {
     const model = readRecordString(value, 'model') ?? readRecordString(message, 'model');
     return model === '<synthetic>'
         && readSingleTextContentBlock(message.content)?.trim() === SYNTHETIC_NO_RESPONSE_TEXT;
+}
+
+/**
+ * 0.2 CLIs (PR #702, `formatClaudePeerMessageText`) persist Claude peer deliveries as raw `user`
+ * output rows with `origin.kind === 'peer'` and a `From <sender>:` label on the body. They are
+ * the delivering agent's text, not user input. Current CLIs commit the clean body with a `peer`
+ * sidecar instead; remove this reader once 0.2 peer rows are no longer readable history.
+ */
+function readLegacyClaudePeerOutput(data: unknown): Readonly<{ text: string; peer: TranscriptPeerSenderV1 }> | null {
+    if (!isPlainRecord(data) || data.type !== 'user' || !isPlainRecord(data.origin) || data.origin.kind !== 'peer') return null;
+    const content = isPlainRecord(data.message) ? data.message.content : undefined;
+    if (typeof content !== 'string') return null;
+    const name = typeof data.origin.name === 'string' && data.origin.name.trim() ? data.origin.name.trim() : null;
+    const label = `From ${name ?? 'Peer'}:\n\n`;
+    return {
+        text: content.startsWith(label) ? content.slice(label.length) : content,
+        peer: { name, handback: data.origin.handback === true },
+    };
 }
 
 function shouldKeepNormalizedEventRoleOutput(message: NormalizedMessage, messageRole: SessionMessageRole | null | undefined): boolean {
@@ -647,6 +668,27 @@ function normalizeRawMessageFromRaw(
                   const sidechainId = metaSidechainId ?? getOutputSidechainId(raw.content.data) ?? claudeParentToolUseId;
                 const isSidechain = Boolean(sidechainId) || getOutputIsSidechain(raw.content.data) || metaIsSidechain;
 
+                // Another agent's delivery belongs to the Agent's conversation, not the user's.
+                const legacyPeer = readLegacyClaudePeerOutput(raw.content.data);
+                if (legacyPeer) {
+                    return filterNormalizedEventRoleOutput({
+                        id,
+                        ...(seq !== undefined ? { seq } : {}),
+                        localId,
+                        createdAt,
+                        role: 'agent',
+                        ...(sidechainId ? { sidechainId } : {}),
+                        isSidechain,
+                        content: [{
+                            type: 'text',
+                            text: legacyPeer.text,
+                            uuid: outputUuid,
+                            parentUUID: raw.content.data.parentUuid ?? null,
+                            peer: legacyPeer.peer,
+                        }],
+                    }, opts?.messageRole);
+                }
+
 	                // Handle sidechain user messages
 	                if (isSidechain && raw.content.data.message && typeof raw.content.data.message.content === 'string') {
 	                    // Return as a special agent message with sidechain content
@@ -911,6 +953,7 @@ function normalizeRawMessageFromRaw(
 
               if (raw.content.data.type === 'message') {
                   const messageText = typeof acpDataRecord.message === 'string' ? acpDataRecord.message : '';
+                  const peer = readTranscriptPeerSenderV1(acpDataRecord.peer);
                   return {
                       id,
                       ...(seq !== undefined ? { seq } : {}),
@@ -923,7 +966,8 @@ function normalizeRawMessageFromRaw(
                         type: 'text',
                         text: messageText,
                         uuid: id,
-                        parentUUID: null
+                        parentUUID: null,
+                        ...(peer ? { peer } : {}),
                     }],
                     meta: raw.meta
                 } satisfies NormalizedMessage;

@@ -30,14 +30,6 @@ vi.mock('react-native', async () => {
     });
 });
 
-vi.mock('react-native-reanimated', () => ({
-    default: { View: 'AnimatedView' },
-    useAnimatedStyle: () => ({ opacity: 1 }),
-    useSharedValue: (value: number) => ({ value }),
-    withRepeat: (value: unknown) => value,
-    withTiming: (value: unknown) => value,
-}));
-
 function flattenStyle(style: unknown): Record<string, unknown> {
     if (!style) return {};
     if (Array.isArray(style)) {
@@ -101,37 +93,6 @@ describe('StatusDot', () => {
         expect(style.animationIterationCount).toBeUndefined();
 
         hostViewedState.value = true;
-    });
-
-    it('draws its halo as a concentric ring twice the dot size, in the halo colour', async () => {
-        const { StatusDot } = await import('./StatusDot');
-        const screen = await renderScreen(React.createElement(StatusDot, {
-            color: 'green',
-            halo: 'palegreen',
-            size: 8,
-            testID: 'status-dot',
-        }));
-
-        const halo = flattenStyle(screen.findByTestId('status-dot-halo')?.props.style);
-        expect(halo.backgroundColor).toBe('palegreen');
-        expect(halo.width).toBe(16);
-        expect(halo.height).toBe(16);
-        expect(halo.borderRadius).toBe(8);
-        // The dot itself keeps its own colour and size inside the ring.
-        const dot = flattenStyle(screen.findByTestId('status-dot')?.props.style);
-        expect(dot.backgroundColor).toBe('green');
-        expect(dot.width).toBe(8);
-    });
-
-    it('draws no halo wrapper when no halo is asked for', async () => {
-        const { StatusDot } = await import('./StatusDot');
-        const screen = await renderScreen(React.createElement(StatusDot, {
-            color: 'green',
-            size: 8,
-            testID: 'status-dot',
-        }));
-
-        expect(screen.findByTestId('status-dot-halo')).toBeNull();
     });
 
     it('stops pulsing inside a retained pane that is not being presented', async () => {

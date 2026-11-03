@@ -19,6 +19,18 @@ const canonicalExternalSessionLink = {
 };
 
 describe('sessionListRenderableMetadataComparison', () => {
+    it('carries last observed branch with unavailable distinct from detached, reusing unrelated rows', () => {
+        const metadata = { path: '/checkout', host: 'host', branch: 'feature/actual' };
+        const first = buildSessionListRenderableMetadataComparison(metadata);
+        expect(first).toHaveProperty('branch', 'feature/actual');
+        expect(buildSessionListRenderableMetadataComparison({ ...metadata, version: 'changed' }, first)).toBe(first);
+        const detached = buildSessionListRenderableMetadataComparison({ ...metadata, branch: null }, first);
+        expect(detached).not.toBe(first);
+        expect(detached).toHaveProperty('branch', null);
+        const unknown = buildSessionListRenderableMetadataComparison({ path: '/checkout', host: 'host' }, detached);
+        expect(unknown).not.toBe(detached);
+        expect(unknown).not.toHaveProperty('branch');
+    });
     it('does not promote untyped metadata fields into Project and checkout membership', () => {
         const row = buildSessionListRenderableFromSession(createSessionFixture({
             metadata: { path: '/repo', host: 'host', projectId: { id: 'anchor' }, workspaceId: 42 },

@@ -270,6 +270,7 @@ const actionConfirmationTranslations = { ru: {
         homeUnavailable: 'Это одобрение относится к Home, недоступному на этом устройстве. Подключите Home повторно, чтобы принять решение.',
         turnedOffTitle: 'Действие выключено',
         turnedOffMessage: 'Это действие выключено, поэтому ничего не изменилось. Включить его снова можно в Настройки → Действия.',
+        turnedOffReadMessage: 'Это действие выключено, поэтому ничего не загружено. Включить его снова можно в Настройки → Действия.',
         openActionSettings: 'Открыть настройки Действий',
     } } as const satisfies Pick<Record<string, ActionConfirmationTranslations>, "ru">;
 
@@ -565,15 +566,21 @@ const ru: typeof en = {
     descriptions: {
         conversation: ({ machine }) => `Спросите что угодно, не прерывая эту сессию. Разговор идёт на ${machine} рядом; ничего не вернётся, пока вы это не отправите.`,
     },
+    placeholders: {
+        review: 'На чём рецензентам стоит сосредоточиться?',
+    },
     chips: {
         engineTitle: 'Кто отвечает',
         addReviewer: 'Добавить рецензента',
+        reviewer: 'Рецензент',
+        reviewerNeeded: 'Добавьте рецензента, чтобы начать',
         removeReviewer: ({ name }) => `Убрать ${name}`,
         scope: 'Что проверить',
         advanced: 'Дополнительно',
     },
     reportToSession: 'Сообщить этой сессии',
     startsWhenYouSend: ({ count }) => count > 1 ? `Проверок начнётся при отправке: ${count}` : 'Начнётся при отправке',
+    thisFolder: 'этой папке',
     offline: ({ machine }) => `${machine} не в сети. Агент запускается там; черновик останется здесь, пока машина не вернётся.`,
     menu: {
         askSection: 'Попросить агента',
@@ -1041,6 +1048,7 @@ const artifactsBrowserTranslations = { ru: {
         },
         proposal: {
             title: 'Предложенная правка',
+            titleBy: ({ who }) => `${who} предлагает правку`,
             basedOn: ({ n }) => `На основе версии ${n}`,
             current: ({ n }) => `Версия ${n} · текущая`,
             before: 'До',
@@ -1242,6 +1250,8 @@ const ru: BoardsTranslations = {
     meta: {
         needYou: ({ count }) => `Ждут вас: ${count}`,
         items: ({ count }) => `${count} ${slavicPlural(count, 'элемент', 'элемента', 'элементов')}`,
+        itemsAtLeast: ({ count }) => `${count}+ элементов`,
+        needYouAtLeast: ({ count }) => `Ждут вас: ${count}+`,
         handPicked: 'Выбрано вручную',
         empty: 'Пусто',
         moreSources: ({ count }) => `+ ${count}`,
@@ -1326,10 +1336,22 @@ const ru: BoardsTranslations = {
         empty: 'Ничего не найдено.',
         noMatch: ({ query }) => `Ничего не найдено по запросу «${query}»`,
     },
+    /** Candidates an answered filter could not classify: said once under the header, qualifying every count. */
+    undetermined: {
+        sessions: ({ count }) => `Не удалось проверить сессии: ${count}`,
+        runs: ({ count }) => `Не удалось проверить запуски: ${count}`,
+        items: ({ count }) => `Не удалось проверить элементы: ${count}`,
+        projectAssociation: 'Связь с проектом не опубликована или недоступна вам.',
+        filterFacts: 'Нет информации, необходимой для этого фильтра.',
+    },
     empty: {
         title: 'Выберите, что покажет эта доска',
         body: 'Добавьте сессии, воркфлоу, запуски или машины вручную либо покажите раздел, например «Ждут вас». Вы их расставляете, а доска держит их в живом виде.',
         action: 'Добавить на доску',
+        sourcedTitle: 'Пока здесь пусто',
+        sourcedBody: 'Элементы, подходящие под источник этой доски, появятся здесь по мере поступления. Можно также добавить их вручную.',
+        uncheckedTitle: 'Совпадения пока не подтверждены',
+        pendingTitle: 'Проверяем, что сюда подходит…',
     },
     widgets: {
         group: 'Виджеты',
@@ -1651,6 +1673,30 @@ type MachineParams = Shared_computerUseTranslations.MachineParams;
 type ComputerUseTranslations = Shared_computerUseTranslations.ComputerUseTranslations;
 
 const computerUseTranslations = { ru: {
+        providers: {
+            pageDescription: ({ machine }) => `Как агенты видят экран ${machine} и управляют им.`,
+            sectionTitle: "Провайдеры",
+            sectionDescription: "Агенты используют провайдер по умолчанию, если не попросят другой включённый.",
+            offlineDescription: ({ machine }) => `${machine} не в сети, поэтому сейчас нельзя включить провайдеры.`,
+            cuaDescription: "Быстрый. Работает с тем, что на экране.",
+            agentDesktopDescription: "Действует через именованные элементы. Медленнее, тратит меньше токенов.",
+            status: {
+                checking: "Проверка…",
+                installsOnEnable: "Установится при включении",
+                installing: "Установка…",
+                installed: "Установлен",
+                missing: "Не установлен",
+                failed: "Не удалось установить",
+                unavailable: "Недоступен на этой машине",
+            },
+            install: "Установить",
+            retry: "Повторить",
+            defaultTitle: "По умолчанию",
+            makeDefault: "Сделать по умолчанию",
+            loadFailedTitle: "Не удалось загрузить настройки управления компьютером",
+            saveFailed: "Не удалось сохранить изменение",
+            summaryPair: ({ first, second }) => `${first} и ${second}`,
+        },
         approval: {
             sectionTitle: 'На компьютере',
             act: {
@@ -1835,6 +1881,8 @@ const computerUseTranslations = { ru: {
             pressKey: ({ key }) => `Нажал ${key}`,
             press: 'Нажал клавишу',
             pressRunning: 'Нажимает клавишу',
+            drag: 'Перетащил',
+            wheel: 'Прокрутил',
             mayHaveLanded: 'возможно, сработало',
             failed: 'Не выполнено',
         },
@@ -2627,9 +2675,11 @@ const ru: EntityDragDropTranslations = {
         putUnderDetail: 'Отчитывается ей · обе продолжают работать',
         moveAbove: ({ target }) => `Переместить над: ${target}`,
         moveBelow: ({ target }) => `Переместить под: ${target}`,
+        moveBefore: ({ target }) => `Переместить перед: ${target}`,
+        moveAfter: ({ target }) => `Переместить после: ${target}`,
         orderDetail: 'Меняет только порядок',
         moveToFolder: ({ folder }) => `Переместить в ${folder}`,
-        folderDetail: 'Только папка · никому не отчитывается',
+        folderDetail: 'Продолжает работать там же', leaveSectionDetail: 'Покидает свой раздел',
         moveToTopLevel: 'Переместить на верхний уровень',
         topLevelDetail: 'Из папки · больше ничего не меняется',
         cantPutUnder: ({ target }) => `Нельзя подчинить: ${target}`,
@@ -2674,7 +2724,7 @@ const ru: EntityDragDropTranslations = {
         foldersOff: 'Папки отключены для этого Home',
         gone: 'Это место только что исчезло',
         generic: 'Сюда это поместить нельзя',
-        otherGroup: 'Он относится к другой группе',
+        otherGroup: 'Сессия остаётся в проекте, где она работает. Поместите её в раздел',
         cantHold: 'В эту строку ничего нельзя поместить',
         fixedItem: 'Его нельзя переместить в этом списке',
     },
@@ -5935,6 +5985,7 @@ const machineDetailPageTranslations = { ru: translated({
                 sharing: "Доступ",
                 agents: "Агенты",
                 terminal: "Терминал",
+                computer: "Управление компьютером",
                 connection: "Подключение",
                 tools: "Инструменты",
                 doctor: "Диагностика",
@@ -6355,8 +6406,8 @@ const machineDetailPageTranslations = { ru: translated({
                 },
                 customSustain: {
                     title: "Как долго",
-                    body: "Любое целое число минут, до недели (10080).",
-                    invalid: "Введите целое число минут от 1 до 10080.",
+                    body: "Любое целое число минут, до недели (10080). Укажите единицу: ms, s, min, h или d.",
+                    invalid: "Введите целое число минут от 1 до 10080. Укажите единицу: ms, s, min, h или d.",
                 },
                 customCpu: {
                     title: "CPU выше",
@@ -6664,7 +6715,7 @@ const machineDetailPageTranslations = { ru: translated({
                     customTitle: "Предлагать неиспользуемое через",
                 },
                 days: ({ days }) => `${days} ${days % 10 === 1 && days % 100 !== 11 ? 'день' : days % 10 >= 2 && days % 10 <= 4 && (days % 100 < 12 || days % 100 > 14) ? 'дня' : 'дней'}`,
-                customDays: { body: "Любое целое число дней, 1 или больше.", invalid: "Введите целое число дней, 1 или больше." },
+                customDays: { body: "Любое целое число дней, 1 или больше. Укажите единицу: ms, s, min, h или d.", invalid: "Введите целое число дней, 1 или больше. Укажите единицу: ms, s, min, h или d." },
             },
             scope: {
                 label: "Что показать",
@@ -6929,8 +6980,8 @@ const machineDetailPageTranslations = { ru: translated({
                 milliseconds: ({ milliseconds }) => `${milliseconds} ms`,
                 customIdle: {
                     title: "Закрытие неактивных инструментов",
-                    body: "Введите миллисекунды, секунды, минуты или часы; не менее 1 секунды.",
-                    invalid: "Введите длительность не менее 1 секунды.",
+                    body: "Введите миллисекунды, секунды, минуты или часы; не менее 1 секунды. Укажите единицу: ms, s, min, h или d.",
+                    invalid: "Введите длительность не менее 1 секунды. Укажите единицу: ms, s, min, h или d.",
                 },
                 customBrowsers: {
                     title: "Одновременные браузеры",
@@ -6986,7 +7037,7 @@ const machineDetailPageTranslations = { ru: translated({
                 sustainHelp: "Пик нагрузки при сборке его никогда не запускает.",
                 cooldownTitle: "Затем ждать между шагами",
                 cooldownHelp: "После каждого шага Happier ждёт это время и проверяет, снизилось ли использование памяти.",
-                customMinutes: { title: "Как долго", body: "Любое целое число минут, 1 или больше, например 3 или 90.", invalid: "Введите целое число минут, 1 или больше." },
+                customMinutes: { title: "Как долго", body: "Любое целое число минут, 1 или больше, например 3 min или 1.5 h. Укажите единицу: ms, s, min, h или d.", invalid: "Введите целое число минут, 1 или больше. Укажите единицу: ms, s, min, h или d." },
             },
             ladder: {
                 label: "Что сделала бы защита памяти",
@@ -7088,7 +7139,7 @@ const machineDetailPageTranslations = { ru: translated({
                 graceHelp: "Даёт процессу немного времени завершиться самому.",
                 atOnce: "Сразу",
                 seconds: ({ seconds }) => `${seconds} с`,
-                customGrace: { title: "Сколько ждать", body: "Секунды или минуты, например 45 с или 3 мин.", invalid: "Введите число секунд или минут, 0 или больше." },
+                customGrace: { title: "Сколько ждать", body: "Секунды или минуты, например 45 с или 3 мин. Укажите единицу: ms, s, min, h или d.", invalid: "Введите число секунд или минут, 0 или больше. Укажите единицу: ms, s, min, h или d." },
             },
             limits: {
                 title: "Лимиты и питание",
@@ -7829,7 +7880,7 @@ return { nativePasswordTranslations };
 const Domain_navigationPlacementTranslations = (() => {
 type NavigationPlacementTranslation = Shared_navigationPlacementTranslations.NavigationPlacementTranslation;
 
-const navigationPlacementTranslations = { ru: { customize: 'Настроить…', title: 'Навигация', description: 'Выберите видимые, скрытые пункты и пункты в «Ещё». Перетащите для изменения порядка. Сохраняется на этом устройстве.', pinned: 'Закреплено', overflow: 'Ещё', hidden: 'Скрыто', reset: 'Сбросить', appRail: 'Левая панель', sessionRail: 'Панель сессии', workspaceRail: 'Панель рабочего пространства', sessionTabBar: 'Вкладки телефона', phoneLauncher: 'Ярлыки телефона' } } satisfies Pick<Record<string, NavigationPlacementTranslation>, "ru">;
+const navigationPlacementTranslations = { ru: { customize: 'Настроить…', title: 'Навигация', description: 'Выберите видимые, скрытые пункты и пункты в «Ещё». Перетащите для изменения порядка. Сохраняется на этом устройстве.', pinned: 'Закреплено', overflow: 'Ещё', hidden: 'Скрыто', reset: 'Сбросить', appRail: 'Левая панель', sessionRail: 'Панель сессии', workspaceRail: 'Панель рабочего пространства', sessionTabBar: 'Вкладки телефона', phoneLauncher: 'Ярлыки телефона', composer: 'Поле ввода' } } satisfies Pick<Record<string, NavigationPlacementTranslation>, "ru">;
 
 return { navigationPlacementTranslations };
 })();
@@ -8460,7 +8511,8 @@ const Domain_pluginSettingsPresentationTranslations = (() => {
 const english = Shared_pluginSettingsPresentationTranslations.english;
 
 const pluginSettingsPresentationTranslations = { ru: {
-        rowStatus: { enabled: 'Включено', disabled: 'Отключено', incompatible: 'Несовместимо', trustRemoved: 'Доверие отозвано', needsAttention: 'Требует внимания' },
+        enablement: {"account": "В вашем аккаунте", "machine": "На этом компьютере", "description": "Оба параметра должны быть включены для работы плагина здесь. Отключение сохраняет данные и подключения.", "accountScope": "Все ваши компьютеры", "accountOff": "Отключено в вашем аккаунте, поэтому не работает ни на одном из ваших компьютеров. Данные и подключения сохраняются.", "machineOff": "Отключено на этом компьютере. Другие компьютеры это не затрагивает, данные и подключения сохраняются."},
+        rowStatus: { enabled: 'Включено', disabled: 'Отключено', incompatible: 'Несовместимо', trustRemoved: 'Доверие отозвано', needsAttention: 'Требует внимания', offInAccount: 'Отключено в аккаунте' },
         developmentPhase: { observing: 'Наблюдение', preparingDependencies: 'Подготовка зависимостей', compiling: 'Компиляция', validating: 'Проверка', active: 'Активно', retainedIncumbent: 'Предыдущая версия активна', unavailable: 'Недоступно' },
         developmentDiagnostic: { manifestMissing: 'В этой папке нет манифеста плагина. Добавьте .happier-plugin/plugin.json или выберите папку плагина.', projectMissing: 'Этой папки больше нет. Уберите её из разработки или укажите, где сейчас находится плагин.' },
         rowSource: { bundled: 'Входит в Happier', npm: 'Пакет npm', archive: 'Архивный файл', localPath: 'Локальная папка', other: 'Настроенный источник' },
@@ -9094,9 +9146,12 @@ const rolesTranslations = { ru: {
             sectionTitle: 'Роли',
             allRoles: 'Все роли',
             inUse: ({ count }) => `Используется: ${count}`,
-            changed: 'изменена',
-            thisSession: 'эта сессия',
+            changedHere: 'Изменено здесь',
+            addedHere: 'Добавлено здесь',
             reset: 'Сбросить',
+            runsInBackground: 'работает в фоне',
+            approvalReviewerFollowsDefault: ({ value }) => `Как в настройках по умолчанию · ${value}`,
+            approvalReviewerOverride: ({ value }) => `Задано здесь · по умолчанию: ${value}`,
             newRoleForSession: 'Новая роль для этой сессии',
             changeForSession: 'Изменить для этой сессии',
             editNotes: 'Изменить заметки',
@@ -9221,7 +9276,7 @@ const runPageTranslations = { ru: {
         launcher: {
             titles: { review: 'Запросить ревью', plan: 'Запросить план', delegate: 'Поручить задачу' },
             descriptions: {
-                review: ({ machine }) => `Каждый агент отдельно проверяет изменения на ${machine}; здесь вы получите результат от каждого.`,
+                review: ({ folder }) => `Каждый агент отдельно проверяет изменения в ${folder}; здесь вы получите результат от каждого.`,
                 plan: ({ machine }) => `Агент читает код на ${machine} и предлагает здесь план. Он ничего не меняет.`,
                 delegate: ({ machine }) => `Агент работает на ${machine} с разрешениями ниже и отчитывается здесь.`,
             },
@@ -9319,7 +9374,7 @@ type SecretsSettingsCopy = Shared_secretsSettingsTranslations.SecretsSettingsCop
 const en = Shared_secretsSettingsTranslations.en;
 
 const ru: SecretsSettingsCopy = {
-    purpose: "API-ключи и токены для агентов и серверов MCP. Сохранённые значения больше не отображаются.",
+    purpose: "Ключи API и токены для агентов и серверов MCP. Значения скрыты, пока их не покажет тот, кто управляет секретом.",
     yoursTitle: 'Ваши секреты',
     yoursDescription: 'Секреты, которые вы сохранили или которыми владеете. Выбирайте их везде, где Happier просит ключ.',
     sharedWithYouTitle: 'Доступные вам',
@@ -9348,6 +9403,27 @@ const ru: SecretsSettingsCopy = {
     storagePlain: 'Управляется Home',
     storagePlainDescription: 'Этот Home хранит его и может прочитать, чтобы доставить.',
     save: 'Сохранить секрет',
+    revealValue: "Показать значение",
+    hideValue: "Скрыть значение",
+    revealConfirmTitle: ({ name }: { name: string }) => `Показать «${name}»?`,
+    revealConfirmBody: "Значение видно на этом устройстве, пока вы его не скроете или не уйдёте со страницы. Показы и копирования записываются в историю.",
+    revealConfirm: "Показать",
+    valueUnavailable: "Сохранено. Сейчас его нельзя показать на этом устройстве.",
+    valueRefused: "Не удалось показать значение, ничего не отображено.",
+    copyRefused: "Не удалось скопировать значение. Покажите его снова, чтобы повторить.",
+    copyUnrecorded: "Значение, возможно, в буфере обмена, но это копирование не удалось записать.",
+    historyTitle: "История показов",
+    historyEmpty: "Никто не показывал это значение.",
+    historyUnavailable: "Не удалось загрузить историю.",
+    historyRevealed: "Показано",
+    historyRevealedCopied: "Показано и скопировано",
+    historyCopyNotConfirmed: "Показано · копирование не подтверждено",
+    historyNotShown: "Не показано",
+    historyUnconfirmed: "Показ не подтверждён",
+    historyThisDevice: "Это устройство",
+    historyOtherDevice: "Другое устройство",
+    historyUnknownActor: "Кто-то",
+    historyOlder: "Показать более ранние",
 };
 
 const secretsSettingsTranslations = { ru } as const;
@@ -9649,6 +9725,24 @@ const sessionBoardTranslations = { ru: {
                 unpin: 'Открепить от этого вида',
                 pinToBoard: 'Закрепить на доске',
                 moveToView: ({ title }) => `Переместить в «${title}»`,
+                network: 'Доступ к сети…',
+            },
+            network: {
+                title: 'Доступ к сети',
+                hint: 'К каким сайтам эта визуализация может обращаться из браузера, в котором она показана.',
+                reach: 'Может обращаться к',
+                none: 'Нет',
+                sites: 'Выбранные сайты',
+                open: 'Любой сайт',
+                sitesLabel: 'Сайты',
+                sitesPlaceholder: 'https://api.example.com',
+                sitesInvalid: ({ sites }) => `Это не адрес сайта: ${sites}. Используйте https://example.com.`,
+                sitesNeeded: 'Добавьте хотя бы один сайт.',
+                noneConsequence: 'Работает сама по себе и не отправляет внешних запросов.',
+                sitesConsequence: 'Может обращаться только к перечисленным сайтам. Удалённый код и ресурсы могут измениться.',
+                openConsequence: 'Может обращаться к любому сайту, отправлять туда своё содержимое и раскрывать IP-адрес зрителя. Удалённый код может измениться.',
+                shareOffNote: 'Публичной ссылкой по-прежнему можно поделиться без доступа к сети.',
+                failed: 'Не удалось изменить доступ к сети. Попробуйте ещё раз.',
             },
             moved: {
                 before: ({ title }) => `${title} перемещён раньше.`,
@@ -10866,6 +10960,7 @@ const ru: typeof en = {
         muteFailed: 'Не удалось заглушить',
         truncated: "Результат сокращён.",
         wokenBy: ({ count }) => (count === 1 ? 'Разбужено обновлением' : `Разбужено обновлениями: ${count}`),
+        updateCount: ({ count }) => `${count} ${(count % 10 === 1 && count % 100 !== 11) ? 'обновление' : (count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14)) ? 'обновления' : 'обновлений'}`,
         notFromYou: 'это не ваше сообщение',
     },
     workerFollow: {
@@ -10904,9 +10999,10 @@ const ru: typeof en = {
         expandMap: 'Открыть карту рядом с сессией',
     },
     map: {
-        folded: "Завершённая работа сворачивается",
+        folded: ({ names }) => `Завершённая работа остаётся в списке: ${names}`,
         backgroundRuns: ({ count }) => (count === 1 ? "1 фоновый запуск" : `${count} фоновых запусков`),
         positionUnder: ({ position, total, parent }) => `${position} из ${total} под ${parent}`,
+        waitingOn: ({ count }) => `Ждёт: ${count}`,
     },
     actions: {
         showInTranscript: 'Показать в переписке',
@@ -11582,6 +11678,10 @@ const shareSheetTranslations = { ru: {
         remove: 'Удалить доступ',
         confirmRemove: 'Подтвердить удаление',
         removedAnnouncement: ({ name }) => `У ${name} больше нет доступа`,
+        removeLosesPerson: ({ name }) => `${name} теряет доступ на всех устройствах.`,
+        removeLosesMembers: ({ name }) => `Участники ${name} теряют доступ на всех устройствах.`,
+        removeKeepsOtherAccess: "Доступ, выданный им другим способом, сохраняется.",
+        removeKeepsTheirWork: "Их собственные checkout, сессии и виджеты остаются за ними.",
         browseAll: 'Показать все',
         browsePeople: 'Показать всех людей',
         browseTeams: 'Показать все команды',
@@ -13037,7 +13137,7 @@ const voiceMomentsTranslations = { ru: {
         setupClose: 'Закрыть',
         needsYouEnded: 'Голос завершён. Подтверждение всё ещё ждёт во входящих.',
         needsYouReview: 'Просмотреть запрос',
-        needsYouTapToDecide: 'Прочитано вслух · решайте здесь, не голосом',
+        needsYouTapToDecide: "Прочитано вслух · коснитесь, чтобы решить здесь",
         briefMe: 'Введи в курс',
         briefMeA11y: 'Введи в курс: голос зачитает, что ждёт вас, что не удалось и что готово',
         briefNeedsYou: 'Ждёт вас',
@@ -13045,7 +13145,7 @@ const voiceMomentsTranslations = { ru: {
         briefReady: 'Готово',
         briefIncomplete: 'Ещё не всё загружено, так что это может быть не всё.',
         briefCaughtUp: 'Сейчас ничего не ждёт вас.',
-        briefNotSpoken: 'Голос сейчас не может это зачитать. Весь список здесь.',
+        briefNotSpoken: "Голос сейчас не может это зачитать.",
         briefStop: 'Стоп',
         continueTitle: 'Продолжить разговор здесь',
         continueDetail: ({ device }) => `Вы говорили на ${device}`,
@@ -13141,7 +13241,7 @@ const defineVoiceReadinessTranslation = Shared_voiceReadinessTranslations.define
 
 const voiceReadinessTranslations = { ru: defineVoiceReadinessTranslation({
     ready: 'Голосовой режим готов.',
-    permissionAnnouncement: ({ summary }) => `Сеансу разработки требуется разрешение для ${summary}. Проверьте его в интерфейсе сеанса, чтобы разрешить или отклонить.`,
+    permissionAnnouncement: ({ summary }) => `Сеансу разработки требуется разрешение для ${summary}.`,
     userActionAnnouncement: ({ question }) => `Сеансу разработки нужен ваш ответ. ${question}`,
     userActionFallback: 'Сеансу разработки нужен ваш ответ. Ответьте на вопрос, чтобы я мог продолжить.',
     requestedTool: 'запрошенный инструмент',
@@ -13469,7 +13569,7 @@ const ru: VoiceSettingsPagesCopy = {
       toolsTitle: 'Названия инструментов',
       toolsDescription: 'Например, «Изменён файл». Аргументы и пути к файлам никогда не передаются.',
       permissionsTitle: 'Запросы разрешений',
-      permissionsDescription: 'Чтобы он мог сказать, что требует вашего внимания. Одобряете вы по-прежнему касанием.',
+      permissionsDescription: "Чтобы читать запросы вслух и помогать вам на них отвечать.",
       devicesTitle: 'Ваши машины и устройства',
       devicesDescription: 'Названия и статус в сети, чтобы запускать сессии там, где вы попросите.',
       liveTitle: 'Пока вы говорите',
@@ -13554,7 +13654,11 @@ const ru: VoiceSettingsPagesCopy = {
       itMayReadOnly: 'Только читать',
       itMayReadOnlyDescription: 'Он читает сессии и файлы и ничего не меняет.',
       itMayAsk: 'Сначала спрашивать',
-      itMayAskDescription: 'Каждое изменение сначала спрашивает вас. Сказанное вслух «да» никогда не одобряет — вы касаетесь.',
+      itMayAskDescription: "Каждое изменение сначала спрашивает вас.",
+      approvalsTitle: "Одобрения",
+      approvalsDescription: "Когда сеанс просит разрешения, пока вы говорите.",
+      canApproveRequestsTitle: "Голосовой агент может одобрять запросы",
+      canApproveRequestsDescription: "Он зачитывает каждый запрос и отвечает на него так, как вы скажете. Выключено: вы решаете каждый касанием.",
       itMaySafe: 'Безопасные изменения',
       itMaySafeDescription: 'Сам вносит безопасные изменения в рабочую область, об остальном спрашивает.',
       itMayAnything: 'Всё',
@@ -13671,6 +13775,7 @@ const walkthroughSettingsTranslations = { ru: copy({
         model: 'Модель сводки',
         modelDescription: 'Используется для объяснений, обзоров изменений и предложений коммитов.',
         chooseModel: 'Выбрать модель',
+        sessionModel: 'Модель сессии',
         searchModels: 'Поиск моделей',
         loadModels: "Найти другие модели",
         loadFailed: "Не удалось загрузить сохранённые обзоры.",
@@ -13686,6 +13791,7 @@ const walkthroughSettingsTranslations = { ru: copy({
         costPremium: "Высокая стоимость",
         loadingModels: "Загрузка моделей…",
         noModels: "Модели не найдены",
+        chooseMachineForModels: "Сначала выберите машину, чтобы увидеть её модели.",
         loadModelsFailed: "Не удалось загрузить модели. Повторите попытку.",
         startFailure: {
             notInstalled: { title: "Не установлено на этой машине", next: "Проверьте команду и рабочий каталог, затем повторите попытку." },
@@ -13751,6 +13857,7 @@ const walkthroughTranslations = { ru: {
             saved: walkthroughSavedTranslations.ru,
             progress: walkthroughProgressTranslations.ru,
             eyebrow: 'Обзор',
+            conversationTitle: 'Обсуждение обзора',
             generated: 'Сгенерировано',
             generatedBy: ({ model }) => `Сгенерировано · ${model}`,
             generatedA11y: 'Написано моделью',
@@ -13798,6 +13905,25 @@ const walkthroughTranslations = { ru: {
             nextStop: 'Следующая остановка',
             done: 'Готово',
             evidence: { displayFailed: 'Не удалось показать сохранённый код. Файл остаётся в разделе «Файлы».', binary: 'Двоичный файл, описан по метаданным. Показан, не проанализирован.', unavailable: ({ reason }) => `Не удалось прочитать (${reason}). Он остаётся в списке; здесь не утверждается, что он просмотрен.` },
+            stopNumber: ({ number }) => `Остановка ${number}`,
+            receipt: {
+                wrote: 'Обзор написан',
+                updated: 'Обзор обновлён',
+                savedAnalysis: 'Анализ изменений сохранён',
+                updatedAnalysis: 'Анализ изменений обновлён',
+                stopCount: ({ count }) => (count === 1 ? '1 остановка' : `Остановок: ${count}`),
+                open: 'Открыть обзор',
+                openChanges: 'Открыть изменения',
+                stopChanged: ({ number }) => `остановка ${number} изменена`,
+                stopsChanged: ({ numbers }) => `остановки ${numbers} изменены`,
+                stopsRemoved: ({ count }) => (count === 1 ? 'удалена 1 остановка' : `удалено остановок: ${count}`),
+                stopsMergedInto: ({ count, number }) => `объединено остановок: ${count}, в остановку ${number}`,
+                titleEditKept: 'ваш заголовок сохранён',
+                lastChangeUndone: 'последнее изменение отменено',
+                undo: 'Отменить',
+                undoing: 'Отмена…',
+                undone: 'Отменено',
+            },
             notice: {
                 stale: 'Файлы изменились после написания',
                 refresh: 'Обновить обзор',
@@ -14179,6 +14305,14 @@ const widgetGlanceTranslations = { ru: {
         servicesLoading: 'Загрузка локальных сервисов',
         servicesReadFailed: 'Не удалось прочитать локальные сервисы. Попробуйте ещё раз.',
         noMachine: 'У этой сессии нет машины для запроса.',
+        appEmptyTitle: 'Ничего не запущено',
+        appUnlistedTitle: 'Службы не показаны',
+        appUnlistedOffline: ({ machine }: { machine: string }) => `${machine} не в сети.`,
+        appUnlistedMany: ({ count }: { count: number }) => `${count} машин недоступны.`,
+        appEmptyReason: 'Здесь появятся веб-серверы, которые вы запускаете на своих машинах.',
+        machineOffline: ({ machine }: { machine: string }) => `${machine} не в сети: её сервисы не показаны.`,
+        machineUnreadable: ({ machine }: { machine: string }) => `Не удалось сейчас прочитать сервисы ${machine}.`,
+        machinesNotListed: ({ count }: { count: number }) => `${count} машин недоступны: их сервисы не показаны.`,
         changedCount: ({ count }) => `изменено: ${count}`,
         moreFiles: ({ count }) => `ещё файлов: ${count}`,
         runningCount: ({ count }) => `работает: ${count}`,
@@ -14201,6 +14335,10 @@ const ru: WorkStatusTranslations = {
         finished: 'Завершено',
         idle: 'Простаивает',
         offline: 'Не в сети',
+    },
+    words: {
+        permission: 'Разрешение',
+        question: 'Вопрос',
     },
 };
 

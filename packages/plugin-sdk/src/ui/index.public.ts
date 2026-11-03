@@ -1,3 +1,41 @@
+export {
+    compileEntityListFilterV1,
+    combineEntityFilterMatchesV1,
+    matchEntityFilterKnownV1,
+    matchEntityFilterSetV1,
+    matchEntityFilterTimeV1,
+    matchEntityFilterExtensionV1,
+    defineEntityFilterFieldV1,
+    getUnsupportedEntityFilterFieldsV1,
+    createEntityFilterConditionCodecV1,
+    admitPluginListFilterFieldV1,
+    admitPluginListFilterFieldValueV1,
+    createPluginListFilterFieldRegistryV1,
+    validatePluginListFilterSelectionsV1,
+} from './collectionFilters.js';
+export type {
+    SetSelectionV1,
+    UpdatedSelectionV1,
+    ExtensionSelectionV1,
+    EntityFilterFactValueV1,
+    EntityListFilterResultV1,
+    EntityFilterFieldV1,
+    CompilableEntityFilterFieldV1,
+    EntityFilterRegistryV1,
+    EntityFilterMatchV1,
+    EntityFilterEvaluatorV1,
+    EntityFilterFieldKindV1,
+    EntityFilterConditionCodecV1,
+    EntityFilterConditionOperatorV1,
+    EntityFilterConditionV1,
+    PluginListFilterFieldV1,
+    AdmittedPluginListFilterFieldV1,
+    PluginListFilterSelectionV1,
+    PluginListFilterFactsV1,
+} from './collectionFilters.js';
+export { getWidgetSizeFootprintV1, WIDGET_SIZE_POLICY_V1 } from './widgetSizes.js';
+export type { WidgetGroupWidthV1, WidgetSurfaceRefV1 } from './widgetSizes.js';
+export { PluginDeclarativeNodeV2Schema, readPluginDeclarativeDataFieldV1, readPluginDeclarativeDataRowsV1 } from './declarativeData.js';
 export type { HostedWebBridgeEnvelopeV1 } from '../ui.js';
 export { PluginUiLaunchInputV1Schema } from './hostApi.js';
 export type { PluginRightSidebarDefaultPlacement } from '../ui.js';
@@ -104,6 +142,7 @@ export {
 } from './hostApi.js';
 export type { PluginUiTargetedContributionSelectorV1 } from './hostApi.js';
 export type { PluginUiIconTokenV1 } from '../ui.js';
+export type { InboxItemAttentionTypeV1 } from '../ui.js';
 export type { PluginUiToneV1 } from '../ui.js';
 export type { PluginUiAttachmentToneV1 } from '../ui.js';
 export type { PluginUiHostApi } from './hostApi.js';

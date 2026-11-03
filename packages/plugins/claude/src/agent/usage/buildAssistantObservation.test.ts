@@ -3,6 +3,25 @@ import { describe, expect, it } from 'vitest';
 import { buildClaudeAssistantUsageObservation } from './buildAssistantObservation.js';
 
 describe('buildClaudeAssistantUsageObservation', () => {
+    it.each([
+        { cache_creation: { ephemeral_1h_input_tokens: 20, ephemeral_5m_input_tokens: 10 }, ttlMs: 3_600_000 },
+        { cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 30 }, ttlMs: undefined },
+        { cache_creation: undefined, ttlMs: undefined },
+    ])('uses only the live request clock and detected long-write class ($ttlMs)', ({ cache_creation, ttlMs }) => {
+        const observation = buildClaudeAssistantUsageObservation({
+            requestStartedAtMs: 100, observedAtMs: 900,
+            usage: { input_tokens: 5, cache_creation_input_tokens: 30, cache_creation },
+        });
+        expect(observation?.promptCache).toEqual({ lastUseAtMs: 100, ...(ttlMs === undefined ? {} : { ttlMs }) });
+        expect(observation?.tokens.cacheWrite).toBe(30);
+    });
+
+    it('never turns receipt time or a long-write total without a request clock into cache evidence', () => {
+        const observation = buildClaudeAssistantUsageObservation({ observedAtMs: 900,
+            usage: { input_tokens: 5, cache_creation: { ephemeral_1h_input_tokens: 30 } } });
+        expect(observation?.promptCache).toBeUndefined();
+    });
+
     it('carries the native record identity for replayable assistant usage', () => {
         expect(buildClaudeAssistantUsageObservation({
             nativeSessionId: 'native-session-exact',
@@ -84,18 +103,6 @@ describe('buildClaudeAssistantUsageObservation', () => {
         });
     });
 
-    it('leaves cost unavailable for a catalog model without exact pricing', () => {
-        const observation = buildClaudeAssistantUsageObservation({
-            modelId: 'claude-opus-5-custom-unknown',
-            usage: {
-                input_tokens: 1_000_000,
-                output_tokens: 1_000_000,
-            },
-        });
-
-        expect(observation?.cost).toBeNull();
-    });
-
     it.each([
         ['claude-opus-4-5-20251101', 30],
         ['claude-opus-4-5', 30],
@@ -120,10 +127,13 @@ describe('buildClaudeAssistantUsageObservation', () => {
         });
     });
 
-    it('prices all four counters through the shared Sonnet 5 snapshot', () => {
+    it.each([
+        SONNET_5_STANDARD_PRICING_START_MS - 1,
+        SONNET_5_STANDARD_PRICING_START_MS,
+    ])('prices all four counters through the current shared Sonnet 5 snapshot at %s', (observedAtMs) => {
         const observation = buildClaudeAssistantUsageObservation({
             modelId: 'claude-sonnet-5',
-            observedAtMs: SONNET_5_STANDARD_PRICING_START_MS - 1,
+            observedAtMs,
             usage: {
                 input_tokens: 1_000_000,
                 output_tokens: 1_000_000,
@@ -133,21 +143,6 @@ describe('buildClaudeAssistantUsageObservation', () => {
         });
 
         expect(observation?.cost?.estimatedUsd).toBe(14.7);
-    });
-
-    it('uses the current shared snapshot instead of a second date-based tariff table', () => {
-        const observation = buildClaudeAssistantUsageObservation({
-            modelId: 'claude-sonnet-5',
-            observedAtMs: SONNET_5_STANDARD_PRICING_START_MS,
-            usage: {
-                input_tokens: 1_000_000,
-                output_tokens: 1_000_000,
-                cache_creation_input_tokens: 1_000_000,
-                cache_read_input_tokens: 1_000_000,
-            },
-        });
-
-        expect(observation?.cost?.estimatedUsd).toBeCloseTo(14.7);
     });
 
     it('uses the current snapshot without requiring a price-effective observation date', () => {
@@ -172,14 +167,15 @@ describe('buildClaudeAssistantUsageObservation', () => {
     });
 
     it.each([
-        'future-model-without-pricing',
-        'claude-opus-6',
-        'claude-sonnet-5-unknown-snapshot',
-    ])('does not infer pricing for unknown or unpriced native model %s', (modelId) => {
+        ['future-model-without-pricing', SONNET_5_STANDARD_PRICING_START_MS],
+        ['claude-opus-6', SONNET_5_STANDARD_PRICING_START_MS],
+        ['claude-sonnet-5-unknown-snapshot', SONNET_5_STANDARD_PRICING_START_MS],
+        ['claude-opus-5-custom-unknown', undefined],
+    ] as const)('does not infer pricing for unknown or unpriced native model %s', (modelId, observedAtMs) => {
         const observation = buildClaudeAssistantUsageObservation({
             modelId,
-            observedAtMs: SONNET_5_STANDARD_PRICING_START_MS,
-            usage: { input_tokens: 1_000_000 },
+            ...(observedAtMs === undefined ? {} : { observedAtMs }),
+            usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
         });
 
         expect(observation?.cost).toBeNull();

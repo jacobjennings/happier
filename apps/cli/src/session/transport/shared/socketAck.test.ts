@@ -20,6 +20,7 @@ describe('Socket ACK transport', () => {
 
     expect(await result).toMatchObject({
       name: 'SocketAckError', code: 'socket_ack_timeout', event: 'probe', timeoutMs: 100,
+      cause: expect.objectContaining({ message: 'operation has timed out' }),
     });
     expect(socket.connected).toBe(true);
   });

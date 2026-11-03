@@ -7,10 +7,9 @@ import { HAPPIER_SESSION_CONNECTED_SERVICES_BINDINGS_ENV_KEY } from '@/agent/run
 import { HAPPIER_SESSION_CONNECTED_SERVICE_MATERIALIZATION_IDENTITY_ENV_KEY } from '@/agent/runtime/sessionConnectedServiceMaterializationIdentityEnv';
 import {
   HAPPIER_AGENT_RUNTIME_RUNNER_BOOTSTRAP_FILE_ENV_KEY,
-} from '@/agent/runtime/session/process/agentRuntimeRunnerProtocol';
-import {
   HAPPIER_AGENT_RUNTIME_DAEMON_SERVICE_AUTHORITY_FILE_ENV_KEY,
-} from '@/daemon/agentRuntime/sessionBridgeAuthorization';
+  HAPPIER_SESSION_CREATE_AUTHORING_ORIGIN_ENV_KEY,
+} from '@/agent/runtime/session/process/agentRuntimeRunnerEnvironment';
 import { HAPPIER_SPAWN_EXPLICIT_ENV_KEYS_JSON_ENV_VAR } from '@/daemon/spawn/spawnExplicitEnvKeysMarker';
 import {
   HAPPIER_CONNECTED_SERVICE_MATERIALIZED_ENV_KEYS_ENV_KEY,
@@ -66,6 +65,7 @@ export const SYSTEM_SESSION_CONTROL_ENV_KEYS = Object.freeze([
   HAPPIER_SESSION_CREATE_ORIGIN_ENV_KEY,
   HAPPIER_SESSION_CREATE_MANAGER_ENV_KEY,
   HAPPIER_SESSION_CREATE_ROLES_ENV_KEY,
+  HAPPIER_SESSION_CREATE_AUTHORING_ORIGIN_ENV_KEY,
   'TMUX_SESSION_NAME',
   'TMUX_TMPDIR',
 ] as const);

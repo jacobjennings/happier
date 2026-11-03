@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActionApprovalRequestCreatedResultSchema } from '@happier-dev/protocol/actions/actionExecutionResult';
+import { normalizeActionsSettingsV1 } from '@happier-dev/protocol/actions/actionSettings';
 
 import {
   API_TOKEN_FULL_GRANT_V1,
@@ -27,6 +28,8 @@ import { createLocalServicesDaemonRuntimeActionExecutor } from '@/daemon/local/s
 import { createManagedServicesOwner } from '@/plugins/runtime/invocation/services/managedServicesOwner';
 import { createManagedServiceProcessSupervisorHost } from '@/plugins/runtime/invocation/services/managedProcessSupervisor';
 import { authorizeResolvedProjectExecLaunchForHost, createProjectNativeEnvironmentIoForHost } from '@/plugins/runtime/invocation/services/exec';
+import { createProjectNativeToolchainIoForHost } from '@/plugins/runtime/invocation/services/exec';
+
 
 // Only the Account server's HTTP boundary is replaced. The real Action executor,
 // the real approval Artifact store and its codecs, and the server's versioned
@@ -40,7 +43,10 @@ const http = vi.hoisted(() => ({
   failNextUpdateStatus: null as null | number,
   loseNextUpdateResponse: false as boolean | ((id: string) => void),
 }));
-vi.mock('axios', () => ({ default: { get: http.get, post: http.post, request: http.request } }));
+vi.mock('axios', async importOriginal => ({ default: {
+  ...(await importOriginal<typeof import('axios')>()).default,
+  get: http.get, post: http.post, request: http.request,
+} }));
 vi.mock('@/configuration', () => ({ configuration: {
   apiServerUrl: 'http://approval-settlement.invalid',
   activeServerId: 'home-1',
@@ -141,7 +147,10 @@ const uiContext = {
   surface: 'ui' as const,
   authority: 'present_user' as const,
   serverId: 'home-1',
+  serverIdentityId: 'srv_approval_settlement',
   runtimeAccountId: 'account-1',
+  defaultSessionMachineId: 'machine-a',
+  actionsSettings: normalizeActionsSettingsV1({ v: 1, actions: {} }),
   actionRequestId: 'settlement-1',
   actionCaller: { kind: 'host' as const },
 };
@@ -324,7 +333,7 @@ describe('approval settlement through the real CLI Artifact store', () => {
       const decided = await executor.execute('approval.request.decide', {
         artifactId, decision: outcome === 'rejected' ? 'reject' : 'approve',
       }, uiContext);
-      const persisted = await store.approvalsGet({ artifactId, serverId: null });
+      const persisted = ApprovalRequestV2Schema.parse(await store.approvalsGet({ artifactId, serverId: null }));
       expect(persisted).toMatchObject({ status: outcome === 'succeeded' ? 'executed' : outcome === 'rejected' ? 'rejected' : 'failed',
         executionOriginV1: { actionRequestAttributionV1: attribution },
       });
@@ -461,7 +470,7 @@ describe('approval settlement through the real CLI Artifact store', () => {
       expect(gate.isEnabled('localServices.actions')).toBe(true);
       expect(gate.isEnabled('localServices.managed')).toBe(true);
       try {
-        const handle = await owner.superviseProject({
+        const handle = await owner.superviseProject({ kind: 'workspace',
           workspace, declaration, cwd: workspace.rootPath,
           requester: { serverId: workspace.serverId, accountId: 'account-1',
             machineId: workspace.machineId, installationId: 'stop-installation' },
@@ -471,7 +480,7 @@ describe('approval settlement through the real CLI Artifact store', () => {
             signal, assertCurrent() {},
             projectLaunch: { status: 'ready', reviewedEffectDigest: 'reviewed-stop-worker',
               environment: { selection: { kind: 'host' }, root: workspace.rootPath, platform: process.platform,
-                io: createProjectNativeEnvironmentIoForHost({ resolveTool: async () => null }) } },
+                io: createProjectNativeToolchainIoForHost({ resolveTool: async () => null }) } },
             launch: { command: process.execPath, args: [], cwd: workspace.rootPath, env: {} },
           }),
           processSpec: { mode: { kind: 'native',

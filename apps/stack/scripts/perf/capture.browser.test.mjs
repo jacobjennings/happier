@@ -127,6 +127,8 @@ test('counts capture retains async request issuers; timing and cleanup remain un
       assert.ok(request, 'fixture request must enter the native capture window');
       assert.equal(request.decodedBytes, Buffer.byteLength(probeBody), 'real Chrome reports decoded UTF-8 byte length for compressed responses');
       assert.ok(request.encodedBytes < request.decodedBytes, 'actual compressed transfer remains distinct from decoded payload bytes');
+      assert.ok(request.encodedBodyBytes === null || request.encodedBodyBytes <= request.encodedBytes,
+        'encoded chunks cannot include response headers; Chrome may withhold chunk transfer lengths');
       assert.equal(request.initiator.stack.some(frame => frame.functionName === 'issuingOperation'), captureMode === 'counts',
         'the Promise scheduler must be retained only with async stack tracing ON');
       assert.equal(result.react.instrumentation.asyncCallStackDepth > 0, captureMode === 'counts');
@@ -208,6 +210,7 @@ test('counts capture retains async request issuers; timing and cleanup remain un
     const bundle = JSON.parse(await readFile(`${output}/bundle.json`, 'utf8'));
     assert.notEqual(bundle.status, 'FAILED', 'unavailable/reset informational SQL must not discard the capture');
     assert.equal(bundle.counts.sqlStatements, scenario.expected);
+    assert.equal(bundle.counts['transfer.measured'], 1, 'real journey bundles feed transfer metrics to comparison');
     assert.equal(bundle.gaps.some(reason => /SQL/.test(reason)), scenario.expected === null);
     assert.ok(!JSON.stringify(bundle).includes('private SQL failure diagnostic'));
     assert.ok(JSON.parse(await readFile(`${output}/cpu.cpuprofile`, 'utf8')).nodes.length > 0,

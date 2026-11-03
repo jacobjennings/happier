@@ -162,7 +162,7 @@ describe('journeyBeats', () => {
         });
     });
 
-    it('uses the journey i18n namespace for every narration slot', () => {
+    it('points every beat at its own narration copy', () => {
         for (const beat of journeyBeats) {
             const keyPrefix = `journey.beats.${beat.id.toLowerCase()}.`;
             expect(beat.narrationKeys).toEqual({

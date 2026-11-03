@@ -6,13 +6,14 @@ import type { SessionViewerProjectionV1 } from '@happier-dev/protocol/sessions/p
 import type { SessionManagedSessionsV1 } from '@happier-dev/protocol/sessions/follow/sessionManagerV1';
 import { resolveFollowDeliveryV1, type InboxItemAttentionTypeV1 } from '@happier-dev/protocol/sessions/follow/sessionFollowPolicyV1';
 import type { WorkflowInvocationLifecycleV1, WorkflowRunStateV1, WorkflowRunSummaryV1 } from '@happier-dev/protocol/workflows/workflowProgressV1';
-import { classifyWorkerUpdateEventV1, type WorkerUpdateV1 } from '@happier-dev/protocol/sessions/relations/workerUpdateV1';
+import { classifyWorkerUpdateEventV1, composeSessionWorkerUpdateHeadlineV1, type WorkerUpdateHeadlineFactsV1, type WorkerUpdateV1 } from '@happier-dev/protocol/sessions/relations/workerUpdateV1';
 import type { ActionOperationSnapshotV1, ActionOperationStateV1 } from '@happier-dev/protocol/actions/operations/v1';
 import type { PluginWorkItemCategoryV1 } from '@happier-dev/protocol/plugins/contributions/workItems';
 
 import {
     HAPPIER_WORK_STATUS_BUCKETS,
     HAPPIER_WORK_STATUS_SEMANTIC_TONE,
+    joinHappierFacts,
     type HappierWorkStatusBucket,
     type HappierWorkStatusPresentation,
     type HappierWorkStatusTone,
@@ -46,7 +47,7 @@ export const WORK_STATUS_PILL_VARIANT = HAPPIER_WORK_STATUS_SEMANTIC_TONE satisf
  * outcome distinguishes failure from a current request. A workflow state with no card word of its
  * own keeps the run owner's word.
  */
-export function describeWorkerUpdateState(update: WorkerUpdateV1): string {
+export function describeWorkerUpdateState(update: Pick<WorkerUpdateV1, 'workerKind' | 'ownerState' | 'wake'>): string {
     const event = classifyWorkerUpdateEventV1(update);
     if (event === 'needs_you') return t('sessionWork.workerUpdate.state.needsYou');
     if (event === 'stalled') return t('sessionWork.workerUpdate.state.stalled');
@@ -61,6 +62,23 @@ export function describeWorkerUpdateState(update: WorkerUpdateV1): string {
         case 'timeout': return t('sessionWork.workerUpdate.state.timedOut');
         default: return t(`workflows.runState.${update.ownerState}`);
     }
+}
+
+/** Cards and rows state the same outcome once, retaining an authored summary when it adds a fact. */
+export function describeWorkerUpdateHeadline(
+    update: WorkerUpdateHeadlineFactsV1,
+    options: Readonly<{ title?: string; stateWord?: string }> = {},
+): string {
+    const state = options.stateWord ?? describeWorkerUpdateState(update);
+    const headline = update.headline.trim();
+    // Native pre-fix reports embedded identity and an enum. Match the known identity,
+    // not arbitrary plugin-authored text that happens to end with a status word.
+    const nativeDefault = update.workerKind === 'session' && (
+        headline === composeSessionWorkerUpdateHeadlineV1(update)
+        || headline === `${options.title ?? update.workerId} · ${update.ownerState}`
+        || headline === `${update.workerId} · ${update.ownerState}`
+    );
+    return joinHappierFacts(state, nativeDefault || headline === options.title ? null : headline);
 }
 
 // The approved FIN hold/stop words are presentation inputs until its protocol seam lands.

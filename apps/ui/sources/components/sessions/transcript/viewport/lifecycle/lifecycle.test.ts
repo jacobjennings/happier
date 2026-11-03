@@ -13,6 +13,7 @@ describe('transcript viewport lifecycle', () => {
     it('preempts both entry restore and explicit jump for web user takeover', () => {
         const lifecycle = createTranscriptViewportLifecycle();
         lifecycle.dispatch({
+            platform: 'web',
             sessionId: 'session-a',
             shouldFollowLiveTail: true,
             type: 'session-entry',
@@ -106,6 +107,7 @@ describe('transcript viewport lifecycle', () => {
     it('tracks drag start, drag end, and momentum settle phases', () => {
         const lifecycle = createTranscriptViewportLifecycle();
         lifecycle.dispatch({
+            platform: 'native',
             sessionId: 'session-a',
             shouldFollowLiveTail: true,
             type: 'session-entry',
@@ -163,6 +165,7 @@ describe('transcript viewport lifecycle', () => {
     it('keeps repeated gesture-start events idempotent and preserves the original pre-gesture mode', () => {
         const lifecycle = createTranscriptViewportLifecycle();
         lifecycle.dispatch({
+            platform: 'native',
             sessionId: 'session-a',
             shouldFollowLiveTail: true,
             type: 'session-entry',
@@ -199,6 +202,7 @@ describe('transcript viewport lifecycle', () => {
     it('emits viewport-change and deferred-newer drain effects atomically when a released reader returns to the live tail', () => {
         const lifecycle = createTranscriptViewportLifecycle();
         lifecycle.dispatch({
+            platform: 'web',
             sessionId: 'session-a',
             shouldFollowLiveTail: false,
             type: 'session-entry',

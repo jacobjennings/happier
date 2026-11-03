@@ -42,18 +42,20 @@ export type PersonalHomeRuntimeArtifactPaths = Readonly<{
   operationLockPath: string;
 }>;
 
-export function resolvePersonalHomeRuntimeLayout(params: Readonly<{
-  env?: NodeJS.ProcessEnv;
+type HomeRuntimeLayoutOptions = Readonly<{
+  env?: Readonly<Record<string, string | undefined>>;
   homeDir?: string;
   platform?: NodeJS.Platform;
   mode?: 'user' | 'system';
   channel?: PublicReleaseRingId;
-}> = {}): PersonalHomeRuntimeLayout {
+}>;
+
+function resolveHomeRuntimeDataPaths(params: HomeRuntimeLayoutOptions) {
   const env = params.env ?? process.env;
   const platform = params.platform ?? process.platform;
   const mode = params.mode ?? 'user';
   const fallbackHome = params.homeDir ?? homedir();
-  const pathEnv: NodeJS.ProcessEnv = platform === 'win32'
+  const pathEnv = platform === 'win32'
     ? { ...env, USERPROFILE: fallbackHome }
     : { ...env, HOME: fallbackHome };
   const defaults = resolveRelayRuntimeDefaults({ platform, mode, channel: params.channel ?? 'stable', homeDir: fallbackHome });
@@ -65,6 +67,17 @@ export function resolvePersonalHomeRuntimeLayout(params: Readonly<{
     resolveManagedServerLightPathEnvValue(env, 'HAPPIER_SERVER_LIGHT_DATA_DIR', 'HAPPY_SERVER_LIGHT_DATA_DIR')
       || defaults.dataDir,
   );
+  return { env, pathEnv, platform, mode, defaults, api, absolute, installRoot, configDir, dataDir };
+}
+
+/** The transport key belongs to every Home, independently of its database provider. */
+export function resolveHomeIrohEndpointKeyPath(params: HomeRuntimeLayoutOptions = {}): string {
+  const { api, dataDir } = resolveHomeRuntimeDataPaths(params);
+  return api.resolve(api.join(dataDir, 'runtime', 'iroh', 'endpoint.key'));
+}
+
+export function resolvePersonalHomeRuntimeLayout(params: HomeRuntimeLayoutOptions = {}): PersonalHomeRuntimeLayout {
+  const { env, pathEnv, platform, mode, defaults, api, absolute, installRoot, configDir, dataDir } = resolveHomeRuntimeDataPaths(params);
   const filesDir = absolute(
     resolveManagedServerLightPathEnvValue(env, 'HAPPIER_SERVER_LIGHT_FILES_DIR', 'HAPPY_SERVER_LIGHT_FILES_DIR')
       || api.join(dataDir, 'files'),
@@ -75,7 +88,7 @@ export function resolvePersonalHomeRuntimeLayout(params: Readonly<{
   return Object.freeze({ installRoot, configDir, dataDir, databasePath, publicFilesDir: filesDir, privateFilesDir,
     masterSecretPath: api.resolve(api.join(dataDir, 'handy-master-secret.txt')),
     backupsDir: api.resolve(api.join(dataDir, 'backups')), derivedDataDir: api.resolve(api.join(dataDir, 'derived')), logsDir,
-    irohEndpointKeyPath: api.resolve(api.join(dataDir, 'runtime', 'iroh', 'endpoint.key')), mode, platform });
+    irohEndpointKeyPath: resolveHomeIrohEndpointKeyPath(params), mode, platform });
 }
 
 export function resolvePersonalHomeRuntimeArtifactPaths(layout: PersonalHomeRuntimeLayout): PersonalHomeRuntimeArtifactPaths {

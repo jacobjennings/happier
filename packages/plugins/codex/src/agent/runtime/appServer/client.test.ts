@@ -1,10 +1,8 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WebSocketServer } from 'ws';
 
 import { PluginError, type JsonValue } from '@happier-dev/plugin-sdk';
 import type {
@@ -12,6 +10,7 @@ import type {
     PluginProcessResult } from '@happier-dev/plugin-sdk/exec';
 import type {
     PluginJsonRpcClient,
+    PluginJsonRpcConnectionSpec,
     PluginProtocolClientHandle,
     PluginProtocolClientSpec,
 } from '@happier-dev/plugin-sdk/exec/protocol-clients';
@@ -57,11 +56,13 @@ function createCapturingExec(
 ): Readonly<{
     exec: ExecService;
     specs: PluginProtocolClientSpec[];
+    connections: PluginJsonRpcConnectionSpec[];
     requests: Array<Readonly<{ method: string; params: unknown; timeoutMs?: number | null }>>;
     notifications: Array<Readonly<{ method: string; params: unknown }>>;
     emitExit(result: PluginProcessResult): void;
 }> {
     const specs: PluginProtocolClientSpec[] = [];
+    const connections: PluginJsonRpcConnectionSpec[] = [];
     const requests: Array<Readonly<{ method: string; params: unknown; timeoutMs?: number | null }>> = [];
     const notifications: Array<Readonly<{ method: string; params: unknown }>> = [];
     let settleExit: ((result: PluginProcessResult) => void) | null = null;
@@ -82,6 +83,7 @@ function createCapturingExec(
         onNotification() {
             return { dispose: () => undefined };
         },
+        onNotificationReceived: () => ({ dispose: () => undefined }),
         dispose: async () => undefined,
         ...clientOverrides,
     };
@@ -100,6 +102,7 @@ function createCapturingExec(
     };
     return {
         specs,
+        connections,
         requests,
         notifications,
         emitExit(result) {
@@ -117,6 +120,12 @@ function createCapturingExec(
                 })),
             },
             clients: {
+                async connectJsonRpc(spec: PluginJsonRpcConnectionSpec) {
+                    connections.push(spec);
+                    let close!: () => void;
+                    const closed = new Promise<void>(resolve => { close = resolve; });
+                    return { client, closed, async dispose() { close(); } };
+                },
                 spawn: async (spec: PluginProtocolClientSpec) => {
                     specs.push(spec);
                     return handle;
@@ -128,6 +137,11 @@ function createCapturingExec(
 
 describe('createCodexAppServerClient', () => {
     it.skipIf(process.platform !== 'linux')('pins projected SQLite in the real stdio launch and admits both warm clients before either initializes', async () => {
+        await mkdir(join(osBoundary.home, '.codex'));
+        await writeFile(join(osBoundary.home, '.codex', 'config.toml'), 'cli_auth_credentials_store = "keyring"\n');
+        const cwd = join(osBoundary.home, 'project');
+        await mkdir(join(cwd, '.git'), { recursive: true });
+        await writeFile(join(cwd, '.git', 'HEAD'), 'ref: refs/heads/main\n');
         const sqliteHome = join(osBoundary.home, 'shared-sqlite');
         const processEnv = { CODEX_HOME: join(osBoundary.home, 'auth'), CODEX_SQLITE_HOME: sqliteHome };
         await mkdir(sqliteHome);
@@ -137,7 +151,7 @@ describe('createCodexAppServerClient', () => {
                 ? 'codex-cli 0.162.1\n' : ''));
         }
         await writeFile(join(sqliteHome, 'state_5.sqlite'), 'SQLite format 3\0');
-        const first = await createCodexNativeAppServerClient({ exec: captures[0]!.exec, processEnv, cwd: osBoundary.home });
+        const first = await createCodexNativeAppServerClient({ exec: captures[0]!.exec, processEnv, cwd });
         await first.dispose();
         let release = () => {};
         const initialized = new Promise<void>(resolve => { release = resolve; });
@@ -152,7 +166,7 @@ describe('createCodexAppServerClient', () => {
                 return await handle.exec.clients.spawn(spec);
             });
         }
-        const opening = Promise.allSettled(captures.slice(1).map(capture => createCodexNativeAppServerClient({ exec: capture.exec, processEnv, cwd: osBoundary.home })));
+        const opening = Promise.allSettled(captures.slice(1).map(capture => createCodexNativeAppServerClient({ exec: capture.exec, processEnv, cwd })));
         try { await vi.waitFor(() => expect(entered).toHaveLength(2)); }
         finally {
             release();
@@ -272,9 +286,15 @@ describe('createCodexAppServerClient', () => {
                 { status: 'fulfilled', value: { ok: true } },
             ]);
             expect(debug).toHaveBeenCalledTimes(1);
-            expect(debug).toHaveBeenCalledWith(expect.any(String), {
-                pid: process.pid, heldForMs: expect.any(Number), waitedForMs: expect.any(Number),
-            });
+            // Admission can observe an occupied path before its owner record
+            // is readable. The canonical reporter preserves that as null.
+            const observation = debug.mock.calls[0]?.[1];
+            expect(debug).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+                waitedForMs: expect.any(Number),
+            }));
+            expect(observation).toEqual(expect.objectContaining(observation?.pid === null
+                ? { pid: null, heldForMs: null }
+                : { pid: process.pid, heldForMs: expect.any(Number) }));
         } finally {
             releaseInitialization();
             await opening;
@@ -282,78 +302,40 @@ describe('createCodexAppServerClient', () => {
         }
     });
 
-    it('uses the supported Codex daemon proxy transport without probing or starting another app-server', async () => {
+    it('attaches to the native daemon through managed WebSocket framing without probing or starting an app-server', async () => {
         const capture = createCapturingExec();
-
-        const client = await createCodexNativeAppServerClient({
-            exec: capture.exec,
-            processEnv: {},
-            transport: { kind: 'daemonProxy' },
-        });
+        const client = await createCodexNativeAppServerClient({ exec: capture.exec, processEnv: {}, transport: { kind: 'daemonProxy' } });
         try {
             expect(capture.specs).toHaveLength(1);
-            expect(capture.specs[0]).toMatchObject({
-                launch: { args: ['app-server', 'proxy'] },
-            });
+            expect(capture.specs[0]).toMatchObject({ kind: 'jsonRpc', framing: 'webSocket', launch: { args: ['app-server', 'proxy'] } });
             expect(capture.exec.run).not.toHaveBeenCalled();
             expect(capture.requests[0]).toMatchObject({ method: 'initialize' });
-        } finally {
-            await client.dispose();
-        }
+        } finally { await client.dispose(); }
     });
 
-    it('speaks JSON-RPC directly over the shared app-server Unix WebSocket', async () => {
-        // AF_UNIX has an OS path capacity; worker TMPDIR can be substantially longer.
-        const root = await mkdtemp(join(process.platform === 'win32' ? tmpdir() : '/tmp', 'codex-ws-'));
-        const socketPath = process.platform === 'win32'
-            ? `\\\\.\\pipe\\happier-codex-test-${process.pid}-${Date.now()}`
-            : join(root, 'app-server.sock');
-        const httpServer = createServer();
-        const webSocketServer = new WebSocketServer({
-            server: httpServer,
-            verifyClient: (info, done) => done(info.req.headers['sec-websocket-extensions'] === undefined),
+    it('connects an explicit native socket through the managed host without another native server launch', async () => {
+        const capture = createCapturingExec({ async request(method) {
+            return method === 'thread/read' ? { thread: { id: 'native-thread', name: 'λ😀 Native title' } } : {};
+        } });
+        const controller = new AbortController();
+        const connectJsonRpc = vi.fn(capture.exec.clients.connectJsonRpc);
+        const client = await createCodexNativeAppServerClient({ exec: { ...capture.exec, clients: { ...capture.exec.clients, connectJsonRpc } },
+            processEnv: { CODEX_HOME: '/fixture/native-home' }, signal: controller.signal,
+            nativeLaunch: Object.freeze({}) as AgentNativeLaunchQualifier,
+            configOverrides: ['server.setting="retained-by-server"'], disableUserMcpServers: true,
+            transport: { kind: 'unixWebSocket', socketPath: '/fixture/exact-native.sock', realtimeConversationAdvertised: true },
         });
-        webSocketServer.on('connection', (socket) => {
-            socket.on('message', (payload) => {
-                const message = JSON.parse(payload.toString()) as { id?: number; method?: string };
-                if (message.method === 'initialize') {
-                    socket.send(JSON.stringify({ id: message.id, result: {} }));
-                } else if (message.method === 'test/ping') {
-                    socket.send(JSON.stringify({ id: message.id, result: { pong: true } }));
-                }
-            });
-        });
-        await new Promise<void>((resolve, reject) => {
-            httpServer.once('error', reject);
-            httpServer.listen(socketPath, resolve);
-        });
-
-        const capture = createCapturingExec();
-        const spawn = vi.spyOn(capture.exec.clients, 'spawn');
         try {
-            const client = await createCodexNativeAppServerClient({
-                exec: capture.exec,
-                processEnv: {},
-                nativeLaunch: Object.freeze({}) as AgentNativeLaunchQualifier,
-                transport: {
-                    kind: 'unixWebSocket',
-                    socketPath,
-                    realtimeConversationAdvertised: true,
-                },
-            });
-            try {
-                await expect(client.request('test/ping')).resolves.toEqual({ pong: true });
-                expect(spawn).not.toHaveBeenCalled();
-                expect(capture.exec.run).not.toHaveBeenCalled();
-                expect(client.launchFeatures).toEqual({ realtimeConversationAdvertised: true });
-            } finally {
-                await client.dispose();
-            }
-        } finally {
-            await new Promise<void>((resolve) => webSocketServer.close(resolve));
-            await new Promise<void>((resolve) => httpServer.close(() => resolve()));
-            await rm(root, { recursive: true, force: true });
-        }
+            await expect(client.request('thread/read', { threadId: 'native-thread', includeTurns: false }))
+                .resolves.toEqual({ thread: { id: 'native-thread', name: 'λ😀 Native title' } });
+            expect(capture.connections.map(connection => connection.endpoint)).toEqual([
+                { kind: 'unixWebSocket', socketPath: '/fixture/exact-native.sock' },
+            ]);
+            expect(capture.specs).toEqual([]);
+            expect(connectJsonRpc).toHaveBeenCalledWith(expect.anything(), { signal: controller.signal });
+            expect(capture.exec.run).not.toHaveBeenCalled();
+            expect(client.launchFeatures.realtimeConversationAdvertised).toBe(true);
+        } finally { await client.dispose(); }
     });
 
     it('resolves the declared Codex system tool before every native app-server launch path', async () => {
@@ -412,6 +394,7 @@ describe('createCodexAppServerClient', () => {
             },
             onRequest: () => ({ dispose: () => undefined }),
             onNotification: () => ({ dispose: () => undefined }),
+            onNotificationReceived: () => ({ dispose: () => undefined }),
             dispose: async () => undefined,
         };
         const never = new Promise<Awaited<ReturnType<PluginProtocolClientHandle<'jsonRpc'>['wait']>>>(() => undefined);
@@ -909,6 +892,36 @@ describe('createCodexAppServerClient', () => {
         expect(notificationCalls).toEqual([{ suffix: 'two' }]);
         expect(registeredRequest).toBeNull();
         expect(registeredNotification).toBeNull();
+    });
+
+    it('forwards native receipt time independently of ordered notification processing', async () => {
+        const transport: {
+            receive?: Parameters<PluginJsonRpcClient['onNotification']>[0];
+            received?: Parameters<PluginJsonRpcClient['onNotificationReceived']>[0];
+        } = {};
+        const capture = createCapturingExec({
+            onNotification(handler) { transport.receive = handler; return { dispose() {} }; },
+            onNotificationReceived(handler) { transport.received = handler; return { dispose() { delete transport.received; } }; },
+        });
+        const client = await createCodexNativeAppServerClient({ exec: capture.exec, processEnv: {} });
+        const receipts: Array<{ method: string; receivedAtMs: number }> = [];
+        expect(transport.received).toBeUndefined();
+        const unsubscribe = client.onNativeEvent((method, _params, receivedAtMs) => receipts.push({ method, receivedAtMs }));
+        let release!: () => void;
+        client.registerNotificationHandler('item/completed', () => new Promise<void>(resolve => { release = resolve; }));
+        try {
+            if (!transport.receive) throw new Error('Missing ordered notification callback');
+            const processing = transport.receive({ method: 'item/completed' });
+            transport.received?.({ method: 'error', params: { threadId: 'native-thread' }, receivedAtMs: 1234 });
+            expect(receipts).toContainEqual({ method: 'error', receivedAtMs: 1234 });
+            release();
+            await processing;
+        } finally {
+            release?.();
+            unsubscribe();
+            expect(transport.received).toBeUndefined();
+            await client.dispose();
+        }
     });
 
     it('publishes all synchronous notification handlers before the following notification', async () => {

@@ -26,6 +26,7 @@ import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
+import { usePageListBottomPadding } from '@/components/ui/lists/pageListBottomPadding';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { useTeamGroup, useTeamGroupMembers } from '@/hooks/teams/useTeamGroups';
 import { useTeamMembersRoster } from '@/hooks/teams/useTeamMembersRoster';
@@ -48,6 +49,7 @@ import { TeamSection } from '../TeamSection';
 import { useEditedMetadataDraft } from '../useEditedMetadataDraft';
 import type { TeamSectionContext } from '../teamSectionContext';
 import { teamMutationFailureLabel, teamReadFailureLabel } from '../teamMutationPresentation';
+import { useTeamReadFailureAction } from '../useTeamReadFailureAction';
 import { groupManagementLabel } from '../teamLabels';
 import {
     teamDirectorySourcePath,
@@ -249,7 +251,9 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
     header?: React.ReactNode;
 }>) {
     const { theme } = useUnistyles();
+    const bottomPadding = usePageListBottomPadding();
     const router = useRouter();
+    const readFailureAction = useTeamReadFailureAction();
     const { context, groupId } = props;
     const [busy, setBusy] = React.useState(false);
     const [notice, setNotice] = React.useState<string | null>(null);
@@ -656,11 +660,7 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                 <AttentionBanner
                     testID="team-group-members-error"
                     title={teamReadFailureLabel(membersError)}
-                    action={membersError.retryable ? {
-                        label: t('teams.unavailable.retry'),
-                        onPress: () => void members.reload(),
-                        testID: 'team-group-members-retry',
-                    } : null}
+                    action={readFailureAction(membersError, { onPress: () => void members.reload(), testIDPrefix: 'team-group-members' }) ?? null}
                 />
             ));
         } else if (members.hasMore && members.rows.length > 0) {
@@ -1003,7 +1003,7 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                 backgroundColor: theme.colors.surface.base,
                 ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
             }}
-            contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
+            contentContainerStyle={{ paddingBottom: bottomPadding }}
             initialNumToRender={6}
             maxToRenderPerBatch={4}
             windowSize={7}

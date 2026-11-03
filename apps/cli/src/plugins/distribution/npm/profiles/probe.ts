@@ -1,26 +1,13 @@
 import type { PersistedNpmRegistryProfile } from '@/plugins/store/npmRegistries/store';
 
-import {
-  createNpmRegistryHttpsClient,
-  NpmRegistryHttpError,
-  type NpmRegistryHttpsClient,
-} from '../httpsClient';
+import { createNpmRegistryHttpsClient, NpmRegistryHttpError } from '../httpsClient';
 
-type CreateClient = (options: Readonly<{
-  registryOrigin: string;
-  authorizationHeader?: string;
-  allowPrivateNetwork?: boolean;
-}>) => NpmRegistryHttpsClient;
-
-export function createNpmRegistryProfileProbe(options: Readonly<{
-  createClient?: CreateClient;
-}> = {}): (input: Readonly<{
+export function createNpmRegistryProfileProbe(): (input: Readonly<{
   profile: PersistedNpmRegistryProfile;
   authorizationHeader?: string;
 }>) => Promise<Readonly<{ status: 'available' | 'authentication_failed' | 'offline' }>> {
-  const createClient = options.createClient ?? createNpmRegistryHttpsClient;
   return async ({ profile, authorizationHeader }) => {
-    const client = createClient({
+    const client = createNpmRegistryHttpsClient({
       registryOrigin: profile.origin,
       allowPrivateNetwork: profile.allowPrivateNetwork,
       ...(authorizationHeader ? { authorizationHeader } : {}),

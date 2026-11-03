@@ -28,11 +28,10 @@ import {
     type SessionPersonalDiscussionFacts,
 } from "@/app/session/personal/discussionFacts";
 import {
-    createV2SessionListRowSelect,
-    createV2SessionListLegacyRowSelect,
+    createV2SessionCompactListRowSelect,
     getV2SessionListEffectiveActivityAt,
-    mapV2SessionListRow,
-    type V2SessionListRowCompat,
+    mapV2SessionCompactListRow,
+    type V2SessionCompactListRow as V2SessionListRowCompat,
     SESSION_LIST_PROJECTION_FALLBACK_COLUMNS,
 } from "./rows";
 
@@ -41,8 +40,7 @@ type V2SessionListMeaningfulActivityCursor = Readonly<{
     meaningfulActivityAt: number;
 }>;
 
-type SessionListRowSelect = ReturnType<typeof createV2SessionListRowSelect>
-    | ReturnType<typeof createV2SessionListLegacyRowSelect>;
+type SessionListRowSelect = ReturnType<typeof createV2SessionCompactListRowSelect>;
 
 const SESSION_LIST_ACTIVITY_SELECT = {
     id: true,
@@ -58,12 +56,6 @@ export type SessionListReadSource = Readonly<{
     reader: Pick<Tx, "session" | "sessionPin" | "account">;
     baseWhere: Prisma.SessionWhereInput;
     accessMode: "effective_access_v1" | "legacy_owner_or_direct";
-    /**
-     * Released GET readers may omit not-yet-present projection columns during
-     * a supported migration-skew window. Strict current query/detail readers
-     * must fail closed instead of returning a row missing required semantics.
-     */
-    allowProjectionFallback: boolean;
     qualifiedTeamIds?: ReadonlySet<string>;
     collectiveAccessSnapshot?: SessionCollectiveAccessSnapshot;
     discussionReader?: Tx;
@@ -129,13 +121,7 @@ export async function findV2SessionListRows(params: FindV2SessionListRowsParams)
             return admitted.slice(0, take);
         };
         const projectionContext = { userId, mode: params.source?.accessMode, collectiveAccessSnapshot };
-        const readCurrent = () => readWithAdmission(createV2SessionListRowSelect(projectionContext));
-        return params.source && !params.source.allowProjectionFallback
-            ? await readCurrent()
-            : await runWithSessionListProjectionFallback(
-                readCurrent,
-                () => readWithAdmission(createV2SessionListLegacyRowSelect(projectionContext)),
-            );
+        return await readWithAdmission(createV2SessionCompactListRowSelect(projectionContext));
     };
 
     if (params.source) return await readFrom(params.source.reader, params.source.baseWhere, params.source.collectiveAccessSnapshot);
@@ -195,12 +181,12 @@ export function mapV2SessionListRows(params: Readonly<{
     accessMode?: "effective_access_v1" | "legacy_owner_or_direct";
     now?: number;
 }>) {
-    const sessions: ReturnType<typeof mapV2SessionListRow>[] = [];
+    const sessions: ReturnType<typeof mapV2SessionCompactListRow>[] = [];
     const recipientReadiness = createAccountRecipientEnvelopeReadinessReadScope();
     let metadataUpgradeRequiredCount = 0;
     for (const row of params.rows) {
         try {
-            sessions.push(mapV2SessionListRow({
+            sessions.push(mapV2SessionCompactListRow({
                 row,
                 recipientReadiness,
                 userId: params.userId,

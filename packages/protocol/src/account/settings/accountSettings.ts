@@ -1,3 +1,6 @@
+import { DeploymentCreationDefaultsV1Schema } from '../../projects/deploymentCreationDefaultsV1.js';
+import { MAX_IDLE_COMPACTION_CACHE_WINDOW_MS } from './idleCompactionPreferences.js';
+export { MAX_IDLE_COMPACTION_CACHE_WINDOW_MS, resolveIdleCompactionPreference, type IdleCompactionPreference } from './idleCompactionPreferences.js';
 import { backfillClaudeUnifiedTerminalResponseLocations } from '../../agents/claude/settingsPolicy.js';
 import { lazyDefinition, lazyZodSchema } from '../../lazyZodSchema.js';
 import { normalizeScmBackendQualifiedId } from '../../scm/backendIdentity.js';
@@ -48,6 +51,7 @@ import {
 } from '../../backends/targets/backendTargetRefV2.js';
 import { LlmTaskRunnerConfigV1Schema } from '../../llm/tasks/llmTaskRunnerConfigV1.js';
 import { InstallableAutoUpdateModeSchema } from '../../installables/descriptor.js';
+import { ComputerUseByMachineIdV1Schema } from '../../computer/v1.js';
 import {
   SAVED_SECRET_COLLECTION_MAX_ENTRIES,
   SavedSecretSchema,
@@ -571,7 +575,9 @@ function backfillLegacyTargetKeyedAccountSettings(raw: Record<string, unknown>):
   }
 
   for (const key of ['backendEnabledByTargetKey', 'backendCliSourcePreferenceByTargetKey',
-    'sessionDefaultPermissionModeByTargetKey', 'newSessionDefaultPersistenceModeByTargetKeyV1'] as const) {
+    'sessionDefaultPermissionModeByTargetKey', 'newSessionDefaultPersistenceModeByTargetKeyV1',
+    'sessionIdleCompactionEnabledByTargetKey', 'sessionIdleCompactionMinContextTokensByTargetKey',
+    'sessionIdleCompactionCacheWindowOverrideMsByTargetKey'] as const) {
     if (Object.hasOwn(next, key)) next[key] = canonicalizeStoredBackendTargetMap(next[key]);
   }
 
@@ -1167,6 +1173,9 @@ const NewSessionWizardSectionPresentationByIdSchema = lazyDefinition(() => (<I e
 }), z._default(z.partialRecord(NewSessionWizardSectionIdSchema, NewSessionWizardSectionPresentationSchema), {})));
 const ACCOUNT_SESSION_AUTHORING_CATALOG_DEFINITIONS = {
     sessionDefaultPermissionModeByTargetKey: accountPolicy(z.record(BackendTargetKeyV2InputSchema, z.enum(SESSION_PERMISSION_MODES)), {}, 'default permission mode', 32 * 1024),
+    sessionIdleCompactionEnabledByTargetKey: accountPreference(z.record(BackendTargetKeyV2InputSchema, z.boolean()), {}, 'idle compaction', 32 * 1024),
+    sessionIdleCompactionMinContextTokensByTargetKey: accountPreference(z.record(BackendTargetKeyV2InputSchema, z.number().check(z.int(), z.nonnegative(), z.maximum(Number.MAX_SAFE_INTEGER))), {}, 'idle compaction', 32 * 1024),
+    sessionIdleCompactionCacheWindowOverrideMsByTargetKey: accountPreference(z.record(BackendTargetKeyV2InputSchema, z.number().check(z.int(), z.positive(), z.maximum(MAX_IDLE_COMPACTION_CACHE_WINDOW_MS))), {}, 'idle compaction', 32 * 1024),
     newSessionDefaultPersistenceModeV1: accountPreference(z.enum(['direct', 'persisted']), 'persisted', 'session authoring'),
     newSessionDefaultPersistenceModeByTargetKeyV1: accountPreference(z.record(BackendTargetKeyV2InputSchema, z.enum(['direct', 'persisted'])), {}, 'session authoring', 32 * 1024),
     newSessionDraftEntryMode: accountPreference(z.enum(NEW_SESSION_DRAFT_ENTRY_MODES), 'resumePrevious', 'session authoring'),
@@ -1327,8 +1336,20 @@ const ACCOUNT_RUNTIME_AND_WORKFLOW_CATALOG_DEFINITIONS = {
     sessionTmuxIsolated: accountPreference(z.boolean(), true, 'session terminal defaults'),
     sessionTmuxTmpDir: accountPreference(z.nullable(accountBoundedString(16 * 1024)), null, 'session terminal defaults', 16 * 1024),
     installablesPolicyByMachineId: accountPolicy(AccountInstallablePoliciesByMachineIdSchema, {}, 'installable policy', 64 * 1024),
+    computerUseByMachineId: accountCatalogDefinition(ComputerUseByMachineIdV1Schema, {}, {
+        semanticDomain: 'machine computer-use providers', classification: 'preference',
+        maximumSerializedValueBytes: ACCOUNT_SETTINGS_MAX_DOCUMENT_BYTES,
+    }),
 } as const;
+export const accountDeploymentSettingDefinitions = {
+    deploymentDefaultsV1: accountCatalogDefinition(DeploymentCreationDefaultsV1Schema, {}, {
+        semanticDomain: 'deployment creation defaults', classification: 'preference',
+        maximumSerializedValueBytes: ACCOUNT_SETTINGS_MAX_DOCUMENT_BYTES,
+    }),
+} as const;
+
 const ACCOUNT_SETTING_CANDIDATES = {
+    ...accountDeploymentSettingDefinitions,
     ...ACCOUNT_CORE_CATALOG_DEFINITIONS,
     ...ACCOUNT_DISPLAY_CATALOG_DEFINITIONS,
     ...ACCOUNT_LEGACY_ROOT_CATALOG_DEFINITIONS,

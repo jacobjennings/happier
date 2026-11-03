@@ -20,6 +20,22 @@ import { resolveRoleSelectionV1 } from '@happier-dev/protocol/prompts/roles/reso
 import { renderSessionRoleBlockV1 } from '@happier-dev/protocol/prompts/roles/renderSessionRoleBlockV1';
 import { createRoleSourceReaderV1 } from '@happier-dev/protocol/prompts/roles/accountRoleActions';
 import { readUiPluginRoleSources } from '@/sync/ops/roles/roleSources';
+import { log } from '@/log';
+
+const PREPARATION_FAILURE_CODES = new Set([
+  'account-encryption-currentness-unavailable', 'account-encryption-mode-unavailable',
+  'account-encryption-mode-read-retired', 'action_account_scope_changed', 'content_unavailable',
+]);
+const PREPARATION_FAILURE_CLASSES = new Set(['Error', 'TypeError', 'HappyError', 'AccountStorageCurrentnessUnavailableError']);
+
+function recordPreparationRefusal(error: unknown, step: 'resolve_currentness' | 'prepare'): void {
+  const record = error && typeof error === 'object' ? error as Record<string, unknown> : null;
+  log.log('[voicePromptStack] preparation refused ' + JSON.stringify({
+    step,
+    code: typeof record?.code === 'string' && PREPARATION_FAILURE_CODES.has(record.code) ? record.code : null,
+    errorClass: typeof record?.name === 'string' && PREPARATION_FAILURE_CLASSES.has(record.name) ? record.name : 'unknown',
+  }));
+}
 
 export type UiVoicePromptStackInput = Omit<PromptStackSystemAppendInputV1, 'surface' | 'readArtifact'>
 & Partial<Pick<PromptStackSystemAppendInputV1, 'readArtifact'>> & Readonly<{
@@ -28,7 +44,17 @@ export type UiVoicePromptStackInput = Omit<PromptStackSystemAppendInputV1, 'surf
   targetSessionAddress?: SessionAddress | null;
 }>;
 
+export type UiVoicePromptStackPreparation = Readonly<{
+  blocks: string[];
+  /** Qualified required entry admitted by the shared resolver; installation is still the carrier's job. */
+  preparedInstructionsFor?: SessionAddress;
+}>;
+
 export async function resolveUiVoicePromptStackBlocks(args?: UiVoicePromptStackInput): Promise<string[]> {
+  return (await resolveUiVoicePromptStackPreparation(args)).blocks;
+}
+
+export async function resolveUiVoicePromptStackPreparation(args?: UiVoicePromptStackInput): Promise<UiVoicePromptStackPreparation> {
   const explicitSources = args?.accountEntries !== undefined || args?.profileEntries !== undefined
     || args?.promptStacksV1 !== undefined;
   const resolve = async (input: UiVoicePromptStackInput, accountContext?: LazyActionAccountContext,
@@ -46,15 +72,18 @@ export async function resolveUiVoicePromptStackBlocks(args?: UiVoicePromptStackI
     } catch (error) {
       input.signal?.throwIfAborted();
       try { assertCurrent(); }
-      catch { throw new PromptStackPreparationError('unavailable'); }
+      catch (currentnessError) {
+        recordPreparationRefusal(currentnessError, 'resolve_currentness');
+        throw new PromptStackPreparationError('unavailable');
+      }
       throw error;
     }
   };
-  if (args && explicitSources && !args.targetSessionAddress) return (await resolve(args, args.accountContext)).blocks;
+  if (args && explicitSources && !args.targetSessionAddress) return { blocks: (await resolve(args, args.accountContext)).blocks };
   // A global unbound Voice call does not borrow the focused Account or Session.
   const target = args?.targetSessionAddress;
   const serverId = target?.serverId || args?.serverId?.trim() || args?.accountContext?.serverId;
-  if (!serverId) return [];
+  if (!serverId) return { blocks: [] };
   let owned: LazyActionAccountContext | undefined;
   try {
     const borrowed = args?.accountContext;
@@ -130,10 +159,13 @@ export async function resolveUiVoicePromptStackBlocks(args?: UiVoicePromptStackI
       if (block) result.blocks.push(block);
     }
     assertCurrent();
-    return result.blocks;
+    return { blocks: result.blocks, ...(target && result.admittedEntries.some(entry => entry.layer === 'session'
+      && entry.entryId === 'session.instructions' && (entry.outcome === 'ready' || entry.outcome === 'valid-empty'))
+      ? { preparedInstructionsFor: target } : {}) };
   } catch (error) {
     args?.signal?.throwIfAborted();
     if (error instanceof PromptStackPreparationError) throw error;
+    recordPreparationRefusal(error, 'prepare');
     throw new PromptStackPreparationError('unavailable');
   } finally { owned?.dispose(); }
 }

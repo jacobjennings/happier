@@ -21,42 +21,32 @@ const plan: SectionRenderPlan = {
  * hidden measure mirror duplicates option testIDs / aria identity in the live
  * tree the moment a transition-animated section is measured.
  */
+function rows(measureMode: boolean): React.ReactElement {
+    return (
+        <PlanAnimatedSuccessRows
+            plan={plan}
+            rootTestID="sl"
+            stepId="root"
+            selectedOptionIds={new Set<string>()}
+            focusedOptionId={null}
+            onSelect={() => {}}
+            onPushStep={() => {}}
+            transitionKey="dir:/tmp"
+            sectionTestId="sl:section:dir"
+            measureMode={measureMode}
+        />
+    );
+}
+
 describe('PlanAnimatedSuccessRows measure-mode forwarding', () => {
     it('renders identity-free rows when measureMode is set', async () => {
-        const screen = await renderScreen(
-            <PlanAnimatedSuccessRows
-                plan={plan}
-                rootTestID="sl"
-                stepId="root"
-                selectedOptionIds={new Set<string>()}
-                focusedOptionId={null}
-                onSelect={() => {}}
-                onPushStep={() => {}}
-                transitionKey="dir:/tmp"
-                sectionTestId="sl:section:dir"
-                measureMode
-            />,
-        );
+        // Control: the live rows carry the identity the mirror must drop.
+        const screen = await renderScreen(rows(false));
+        expect(screen.findByTestId('sl:root:option:opt-0')).not.toBeNull();
+        expect(screen.findByTestId('sl:root:option-wrapper:opt-0')).not.toBeNull();
 
+        await screen.update(rows(true));
         expect(screen.findByTestId('sl:root:option:opt-0')).toBeNull();
         expect(screen.findByTestId('sl:root:option-wrapper:opt-0')).toBeNull();
-    });
-
-    it('keeps row identity when measureMode is not set', async () => {
-        const screen = await renderScreen(
-            <PlanAnimatedSuccessRows
-                plan={plan}
-                rootTestID="sl"
-                stepId="root"
-                selectedOptionIds={new Set<string>()}
-                focusedOptionId={null}
-                onSelect={() => {}}
-                onPushStep={() => {}}
-                transitionKey="dir:/tmp"
-                sectionTestId="sl:section:dir"
-            />,
-        );
-
-        expect(screen.findByTestId('sl:root:option:opt-0')).not.toBeNull();
     });
 });

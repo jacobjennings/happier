@@ -75,7 +75,7 @@ export type PluginActionExecutionAttempt = Readonly<
 
 export type ClientContributedActionExecutor = (
   request: UiContributedActionExecuteRequestV1,
-  options: Readonly<{ signal?: AbortSignal }>,
+  options: Readonly<{ signal?: AbortSignal; clientId?: string }>,
 ) => Promise<PluginActionExecutorResult>;
 
 type PluginActionExecutionRegistry = ResolvedContributionRegistry | ResolvedExecutablePluginRuntimeRegistry;
@@ -309,7 +309,7 @@ async function isExpectedPluginCurrent(params: Readonly<{
 function actionHandlerNotStartedFailure(
   errorCode: string,
   error: string,
-): PluginActionExecutorResult {
+): Extract<PluginActionExecutorResult, { ok: false }> {
   return {
     ok: false,
     errorCode,
@@ -363,13 +363,17 @@ async function activateOwningPluginForAction(params: Readonly<{
   if (!pluginId) {
     return null;
   }
-  const activationResults = await params.registry.activateContributionsOnDemand([{
+  await params.registry.activateContributionsOnDemand([{
     pluginId,
     family: 'actions',
     localId: params.action.definition.id,
   }]);
-  const diagnostics = activationResults.find((result) => result.pluginId === pluginId)?.diagnostics ?? [];
-  const activationFailure = diagnostics.find((diagnostic) => diagnostic.code === 'plugin_activation_failed');
+  const activationFailure = params.registry.targetActivationFacts?.find((fact) => (
+    fact.pluginId === pluginId && fact.status === 'unavailable'
+    && fact.required.some((registration) => (
+      registration.family === 'actions' && registration.localId === params.action.definition.id
+    ))
+  ))?.diagnostics[0];
   if (!activationFailure) {
     return null;
   }
@@ -384,8 +388,11 @@ export async function executeContributedAction(params: Readonly<{
   runtimeRegistry?: ResolvedExecutablePluginRuntimeRegistry;
   actionId: ActionId | string;
   input?: unknown;
+  /** Host routing metadata, never contributed business input or a UI authority claim. */
+  clientId?: string;
   /** Host-only read constraint; checked before activation on this registry lease. */
   requiredDangerLevel?: 'safe';
+  requiredReadOnly?: true;
   /** Host-admitted settings snapshot; scoped runtimes must never consult ambient Account policy. */
   actionsSettings?: ActionsSettingsV1;
   /** Host-private request from ActionsService.executeWithExecutionOrigin only. */
@@ -492,10 +499,21 @@ export async function executeContributedAction(params: Readonly<{
     && action.definition.execution !== null
     && 'target' in action.definition.execution
     && action.definition.execution.target === 'account';
+  if (params.requiredReadOnly
+    && (clientTarget || action.definition.readOnly === undefined || action.definition.readOnly === false)) {
+    return { matched: true, result: actionHandlerNotStartedFailure(
+      'plugin_action_read_only_required', 'This Resource requires an explicitly declared read operand',
+    ) };
+  }
   if (params.messageActionReference && !clientTarget) {
     return { matched: true, result: actionHandlerNotStartedFailure(
       'plugin_message_action_unavailable',
       'This Action cannot resolve an explicit client Message reference',
+    ) };
+  }
+  if (params.clientId !== undefined && !clientTarget) {
+    return { matched: true, result: actionHandlerNotStartedFailure(
+      'client_routing_not_applicable', 'clientId is only supported for client-targeted Actions',
     ) };
   }
   // Only authenticated host automated origins can use the reverse channel.
@@ -640,7 +658,7 @@ export async function executeContributedAction(params: Readonly<{
     }
     if (!runtimeRegistry?.executeClientAction) {
       return { matched: true, result: actionHandlerNotStartedFailure(
-        'plugin_action_client_target_unavailable', 'No answering UI client is available',
+        params.clientId ? 'client_not_available' : 'plugin_action_client_target_unavailable', 'No answering UI client is available',
       ) };
     }
     const request = UiContributedActionExecuteRequestV1Schema.safeParse({
@@ -656,6 +674,7 @@ export async function executeContributedAction(params: Readonly<{
     }
     return { matched: true, result: await runtimeRegistry.executeClientAction(request.data, {
       ...(params.context.signal ? { signal: params.context.signal } : {}),
+      ...(params.clientId === undefined ? {} : { clientId: params.clientId }),
     }) };
   }
   const targetActionInvocations = runtimeRegistry
@@ -898,11 +917,15 @@ export async function executeContributedAction(params: Readonly<{
     const targetInvocation = {
       pluginId,
       localId: action.definition.id,
+      ...(params.requiredReadOnly ? { requiredReadOnly: true as const } : {}),
       input: validatedInput === null ? params.input : validatedInput.value,
       surface: actionSurface,
       invocationSurface,
       invocationAuthority: params.approvalContext?.authority ?? 'account_automation',
       ...(params.approvalContext ? { approvalContext: params.approvalContext } : {}),
+      ...(params.approvalContext?.invocationServices?.machineConnectorSecrets
+        ? { machineConnectorSecrets: params.approvalContext.invocationServices.machineConnectorSecrets }
+        : {}),
       ...(caller ? { caller } : {}),
       ...(params.context.initiatingActionCaller ? { initiatingActionCaller: params.context.initiatingActionCaller } : {}),
       ...(params.context.startedBy ? { startedBy: params.context.startedBy } : {}),
@@ -1106,4 +1129,18 @@ export async function executeContributedAction(params: Readonly<{
       'Plugin action is not bound through named activation',
     ),
   };
+}
+
+export function checkContributedActionSettingsAvailability(params: Readonly<{
+  action: ResolvedActionContribution;
+  surface: NonNullable<import('@happier-dev/protocol/actions/actionSettings').ActionEnablementContext['surface']>;
+  actionsSettings?: ActionsSettingsV1;
+}>): Extract<PluginActionExecutorResult, { ok: false }> | null {
+  const pluginId = params.action.pluginId;
+  const settingsId = pluginId ? resolveContributedActionSettingsId(pluginId, params.action.definition.id) : null;
+  if (settingsId !== null && !isActionEnabledByActionsSettings(settingsId,
+    params.actionsSettings ?? createActionSettingsProvider().getActionsSettings(), { surface: params.surface })) {
+    return actionHandlerNotStartedFailure('plugin_action_unavailable', 'Plugin action is disabled by Action settings');
+  }
+  return null;
 }

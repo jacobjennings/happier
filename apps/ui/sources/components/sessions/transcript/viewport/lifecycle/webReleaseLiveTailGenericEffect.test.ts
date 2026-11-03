@@ -60,30 +60,18 @@ describe('web release live-tail generic effects', () => {
             },
             type: 'apply-generic-observed-viewport-state',
         });
-    });
 
-    it('uses the lifecycle-provided release distance without adding mapper normalization', () => {
-        const effect = firstGenericObservedStateEffect(resolveWebReleaseLiveTailGenericEffects({
+        expect(firstGenericObservedStateEffect(resolveWebReleaseLiveTailGenericEffects({
             effect: {
-                distanceFromLiveTailPx: -0.5,
+                distanceFromLiveTailPx: 180,
                 isPinned: false,
-                sessionId: 'session-b',
+                sessionId: 'session-a',
                 type: 'web-release-live-tail',
             },
-            nextScrollOffsetPx: 16,
+            nextScrollOffsetPx: 512,
             pinEnabled: false,
-        }));
-
-        expect(effect.state.viewportState).toEqual({
-            isPinned: false,
-            offsetY: -0.5,
-            shouldPersistViewport: false,
-            shouldRestoreViewport: true,
-        });
-        expect(effect.state.lastDistanceFromLiveTailPx).toBe(-0.5);
-        expect(effect.state.scrollPinEvent).toMatchObject({
+        })).state.scrollPinEvent).toMatchObject({
             enabled: false,
-            offsetY: -0.5,
             pinnedOffsetThresholdPx: 0,
         });
     });

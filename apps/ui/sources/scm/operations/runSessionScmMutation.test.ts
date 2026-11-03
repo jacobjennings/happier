@@ -15,7 +15,6 @@ vi.mock('@/sync/ops/scm/machineScm', () => ({ machineScmRepositoryRemoveIndexLoc
 import { projectManager, type ScmProjectOperationLogEntry } from '@/sync/runtime/orchestration/projectManager';
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { selectScmWriteOperation } from './selectScmWriteOperation';
-import { reportWorkspaceScmOperation } from './reporting';
 const { runSessionScmMutation } = await import('./runSessionScmMutation');
 
 /** Exercise the real operation owner; the network callback remains the system boundary. */
@@ -144,13 +143,5 @@ describe('runSessionScmMutation', () => {
         expect(refreshAfterMutation).not.toHaveBeenCalled();
         expect(run).toHaveBeenCalledTimes(1);
         expect(state.inFlight).toBeNull();
-    });
-
-    it('retains the same canonical outcome in the shared workspace operation log', () => {
-        createOperationState();
-        const scope = projectManager.getProjectForSession('s1')!.key;
-        const outcome: ScmOperationOutcome = { v: 1, kind: 'outcome_unknown', errorCode: 'COMMAND_OUTCOME_UNKNOWN', reconciliation: { kind: 'remote_ref', remote: 'origin' }, nextActions: [{ kind: 'refresh' }] };
-        reportWorkspaceScmOperation({ state: { appendWorkspaceScmOperation: (target, entry) => { projectManager.appendWorkspaceScmOperation(target, entry); } }, scope, operation: 'push', status: 'failed', surface: 'update', outcome });
-        expect(projectManager.getWorkspaceScmOperationLog(scope)[0]).toMatchObject({ outcome });
     });
 });

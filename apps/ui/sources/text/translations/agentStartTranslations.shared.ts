@@ -7,15 +7,21 @@ export const en = {
     descriptions: {
         conversation: ({ machine }: { machine: string }) => `Ask anything without interrupting this session. It runs on ${machine} beside it; nothing goes back unless you send it.`,
     },
+    placeholders: {
+        review: 'What should they focus on?',
+    },
     chips: {
         engineTitle: 'Who answers',
         addReviewer: 'Add reviewer',
+        reviewer: 'Reviewer',
+        reviewerNeeded: 'Add a reviewer to start',
         removeReviewer: ({ name }: { name: string }) => `Remove ${name}`,
         scope: 'What to review',
         advanced: 'Advanced',
     },
     reportToSession: 'Report to this session',
     startsWhenYouSend: ({ count }: { count: number }) => count > 1 ? `${count} reviews start when you send` : 'Starts when you send',
+    thisFolder: 'this folder',
     offline: ({ machine }: { machine: string }) => `${machine} is offline. The agent starts there; your draft stays here until it’s back.`,
     menu: {
         askSection: 'Ask an agent to',

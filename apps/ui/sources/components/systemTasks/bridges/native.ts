@@ -66,17 +66,11 @@ export function loadOptionalNativeSshModule(): NativeSshModule | null {
     return getOptionalHappierSshNativeModule();
 }
 
-export function resolveDefaultNativeSshSystemTaskCapability(params: Readonly<{
-    nativeModule?: NativeSshModule | null;
-    buildIncluded?: boolean;
-}> = {}): NativeSshSystemTaskCapability {
+export function resolveDefaultNativeSshSystemTaskCapability(): NativeSshSystemTaskCapability {
     if (getFeatureBuildPolicyDecision('setup.machine.allowRemoteSshMachineSetup') === 'deny') {
         return unavailableNativeSshCapability('feature-disabled');
     }
-    const buildIncluded = params.buildIncluded
-        ?? getFeatureBuildPolicyDecision('setup.ssh.nativeTransport') !== 'deny';
     return resolveNativeSshSystemTaskCapability(getNativeSshAvailability({
-        nativeModule: params.nativeModule,
-        buildIncluded,
+        buildIncluded: getFeatureBuildPolicyDecision('setup.ssh.nativeTransport') !== 'deny',
     }));
 }

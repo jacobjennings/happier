@@ -30,25 +30,6 @@ describe('collectInlineMockFamilyStats', () => {
         expect(stats.reactNative).toEqual({ total: 1, canonical: 0, adHoc: 1 });
     });
 
-    it('counts shared chat list harness helper wrappers as canonical and local harness wrappers as ad hoc', () => {
-        const input = [
-            "vi.mock('react-native', async () => (",
-            "    (await import('./ChatList.legacyListTestHarness')).createLegacyChatListReactNativeMock()",
-            '));',
-            "vi.mock('react-native', async () => (",
-            "    (await import('@/dev/testkit/harness/chatListHarness')).createLegacyChatListReactNativeMock({ platformOs: 'ios' })",
-            '));',
-            "vi.mock('@/sync/domains/state/storage', async (importOriginal) => (",
-            "    (await import('@/dev/testkit/harness/chatListHarness')).createFlashListChatListStorageMock(importOriginal)",
-            '));',
-        ].join('\n');
-
-        const stats = collectInlineMockFamilyStats(input, { filePath: 'chatListHarnessClassifier.test.tsx' });
-
-        expect(stats.reactNative).toEqual({ total: 2, canonical: 1, adHoc: 1 });
-        expect(stats.storage).toEqual({ total: 1, canonical: 1, adHoc: 0 });
-    });
-
     it('counts alias-backed canonical router mocks as canonical', () => {
         const input = [
             "const expoRouterMock = createExpoRouterMock({ params: { sessionId: 'session-1' } });",

@@ -4,8 +4,9 @@ import { filterUserFacingMachineDetailSessions } from '@/components/machines/mac
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 describe('filterUserFacingMachineDetailSessions', () => {
-    it('excludes a hidden machine-backed Voice History carrier while retaining a normal session', () => {
+    it('keeps only user-facing session rows, dropping a hidden Voice History carrier and list header strings', () => {
         const sessions = filterUserFacingMachineDetailSessions([
+            'section-header',
             createSessionFixture({
                 id: 'voice-history',
                 metadata: {

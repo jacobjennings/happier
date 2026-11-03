@@ -170,6 +170,11 @@ type CurrentAutomationDefinitionWrite = Readonly<{
     templateCiphertext: string;
     accountMode: "plain" | "e2ee";
     strictExistingSessionId?: string;
+    managedTarget: Readonly<{
+        managedTargetIndexed: boolean;
+        managedTargetHomeId?: string | null;
+        managedTargetManagedId?: string | null;
+    }>;
 }>;
 
 function toCurrentAutomationDefinitionTargetType(
@@ -232,6 +237,13 @@ async function normalizeCurrentAutomationDefinitionWriteTx(params: Readonly<{
         targetType: null,
         templateCiphertext: serialized.serialized,
         accountMode: accountCurrentness.mode,
+        // A rewrite by an older client cannot erase a previously known pair.
+        // It does withdraw the index's authority until the client derives it again.
+        managedTarget: serialized.recipe.managedTarget === undefined
+            ? { managedTargetIndexed: false }
+            : { managedTargetIndexed: true,
+                managedTargetHomeId: serialized.recipe.managedTarget?.homeId ?? null,
+                managedTargetManagedId: serialized.recipe.managedTarget?.managedId ?? null },
     };
 }
 
@@ -4522,8 +4534,12 @@ export async function listAutomationDefinitionsPage(params: Readonly<{
     limit?: number;
     cursor?: string | null;
     workflowDefinitionId?: string;
+    workflowDefinitionIds?: readonly string[];
     scopeSessionId?: string;
     scope?: "account_inline";
+    managedTarget?: AutomationManagedTargetV1;
+    includeUnindexedManagedTargets?: true;
+    managedTargetUnindexed?: true;
 }>): Promise<Readonly<{
     automations: AutomationListItem[];
     nextCursor: string | null;
@@ -4538,14 +4554,19 @@ export async function listAutomationDefinitionsPage(params: Readonly<{
             accountId: params.accountId,
             deletedAt: null,
             ...(params.workflowDefinitionId !== undefined ? { workflowDefinitionId: params.workflowDefinitionId } : {}),
+            ...(params.workflowDefinitionIds !== undefined ? { workflowDefinitionId: { in: [...new Set(params.workflowDefinitionIds)] } } : {}),
             ...(params.scopeSessionId !== undefined ? { scopeSessionId: params.scopeSessionId } : {}),
             ...(params.scope === "account_inline" ? { workflowDefinitionId: null, scopeSessionId: null } : {}),
-            ...(cursor ? {
-                OR: [
+            AND: [
+                ...(params.managedTarget ? [{ OR: [
+                    { managedTargetIndexed: true, managedTargetHomeId: params.managedTarget.homeId, managedTargetManagedId: params.managedTarget.managedId },
+                    ...(params.includeUnindexedManagedTargets ? [{ managedTargetIndexed: false }] : []),
+                ] }] : params.managedTargetUnindexed ? [{ managedTargetIndexed: false }] : []),
+                ...(cursor ? [{ OR: [
                     { updatedAt: { lt: cursor.updatedAt } },
                     { updatedAt: cursor.updatedAt, id: { gt: cursor.id } },
-                ],
-            } : {}),
+                ] }] : []),
+            ],
         },
         select: automationDefinitionListItemSelect,
         orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
@@ -4734,6 +4755,9 @@ export async function createAutomationInTx(tx: Tx, params: Readonly<{
             workflowDefinitionId: params.input.workflowDefinitionId ?? null,
             scopeSessionId: params.input.scopeSessionId ?? null,
             templateCiphertext: definition.templateCiphertext,
+            ...(currentDefinition?.managedTarget ?? {
+                managedTargetIndexed: true, managedTargetHomeId: null, managedTargetManagedId: null,
+            }),
             templateVersion: 1,
         },
         select: { id: true },
@@ -5105,6 +5129,9 @@ export async function updateAutomation(params: {
                 ? {
                     targetType: effectiveTargetType,
                     templateCiphertext: effectiveTemplateCiphertext,
+                    ...(currentDefinition?.managedTarget ?? {
+                        managedTargetIndexed: true, managedTargetHomeId: null, managedTargetManagedId: null,
+                    }),
                 }
                 : {}),
             ...(templateSemanticsWritten
@@ -5446,6 +5473,7 @@ export async function reconcileAutomationDefinition(params: Readonly<{
                 ...(params.input.scopeSessionId !== undefined ? { scopeSessionId: params.input.scopeSessionId } : {}),
                 ...(currentDefinition ? {
                     targetType: currentDefinition.targetType,
+                    ...currentDefinition.managedTarget,
                 } : {}),
             },
         });

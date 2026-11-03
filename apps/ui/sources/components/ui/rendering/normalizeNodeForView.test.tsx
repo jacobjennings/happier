@@ -1,9 +1,5 @@
 import * as React from 'react';
-import { describe, expect, it, vi } from 'vitest';
-
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: ({ children }: { children?: React.ReactNode }) => React.createElement('mock-text', null, children),
-}));
+import { describe, expect, it } from 'vitest';
 
 describe('normalizeNodeForView', () => {
     it('drops invalid React element types instead of passing them through to View renderers', async () => {

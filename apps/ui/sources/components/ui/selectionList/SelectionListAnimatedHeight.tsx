@@ -134,15 +134,12 @@ export type SelectionListAnimatedHeightProps = Readonly<{
     measuredContentHeight?: number;
     style?: StyleProp<ViewStyle>;
     testID?: string;
-    /** Override; defaults via `useReducedMotionPreference()`. */
-    reducedMotion?: boolean;
 }>;
 
 export function SelectionListAnimatedHeight(
     props: SelectionListAnimatedHeightProps,
 ): React.ReactElement {
-    const detectedReducedMotion = useReducedMotionPreference();
-    const reducedMotion = props.reducedMotion ?? detectedReducedMotion;
+    const reducedMotion = useReducedMotionPreference();
     const enabled = props.enabled !== false;
 
     const animatedHeight = useSharedValue<number>(0);

@@ -83,6 +83,8 @@ export type FetchedMachineRow = Readonly<{
     keyBasis?: Machine['keyBasis'];
     access?: Machine['access'];
     isShared?: boolean;
+    recipientWorkPending?: boolean;
+    recipientWorkCursor?: number;
     storageMode?: Machine['storageMode'];
     runnerContentKeyBinding?: unknown;
     seq: number;

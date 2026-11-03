@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { PaneHeaderScrollIsolation } from '@/components/appShell/panes/paneHeaderScroll';
-import { BackHandler, Keyboard, Platform, StyleSheet as RNStyleSheet, View, type StyleProp, type ViewProps, type ViewStyle, useWindowDimensions } from 'react-native';
+import { BackHandler, Keyboard, Platform, StyleSheet as RNStyleSheet, View, type StyleProp, type ViewProps, type ViewStyle } from 'react-native';
 import { usePopoverBoundaryRef } from './PopoverBoundary';
 import { usePopoverScrollSourceRef } from './PopoverScrollSource';
 import { requireRadixDismissableLayer } from '@/utils/web/radixCjs';
@@ -47,11 +47,12 @@ import {
 } from '@/keyboard/focusReturn';
 import { resolveHappierPopoverPlacement } from '@happier-dev/plugin-ui/presentation';
 import { resolvePopoverSideMaxHeight } from './resolvePopoverHeightStyle';
-import { useDeviceType } from '@/utils/platform/responsive';
+import { useDeviceType, usePresentationWindowDimensions } from '@/utils/platform/responsive';
 import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
 import { BaseModal } from '@/modal/components/BaseModal';
 import { ModalCardFrame } from '@/modal/components/card/ModalCardFrame';
 import { FloatingOverlaySheetContext } from '@/components/ui/overlays/FloatingOverlay';
+import { GlassOpenedLayer } from '@/components/ui/glass/GlassSurface';
 
 const ViewWithWheel = View as unknown as React.ComponentType<ViewProps & { onWheel?: any }>;
 
@@ -343,7 +344,7 @@ export function Popover(props: PopoverProps) {
 }
 
 function PhonePopoverSheet(props: PopoverProps) {
-    const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+    const { width: windowWidth, height: windowHeight } = usePresentationWindowDimensions();
     const insets = useChromeSafeAreaInsets();
     const maxHeight = Math.min(props.maxHeightCap ?? windowHeight, Math.max(0, windowHeight - insets.top - insets.bottom));
     const closeSheet = () => props.onRequestClose?.();
@@ -437,7 +438,7 @@ function AnchoredPopover(props: PopoverProps) {
     // particular popover should instead be constrained to the viewport.
     const boundaryRef = boundaryRefProp === undefined ? boundaryFromContext : boundaryRefProp;
     const followScrollRef = followScrollRefProp === undefined ? scrollSourceFromContext : followScrollRefProp;
-    const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+    const { width: windowWidth, height: windowHeight } = usePresentationWindowDimensions();
     // Without an explicit cap a popover takes whatever room its side offers (content scrolls inside it);
     // the room a side must offer to be preferred stays the usual menu height.
     const maxHeightCap = maxHeightCapProp ?? windowHeight;
@@ -1833,6 +1834,23 @@ function AnchoredPopover(props: PopoverProps) {
         };
     }, [getContentDomElement, open, shouldPortalWeb]);
 
+    // A web portal first renders its content under the window-sized bound, then under its placement's own bound.
+    // Read the content box again as soon as that bound changes, before paint: a frame placed from the earlier,
+    // taller height would show the panel over its trigger for a frame and hover whichever row then lies under a
+    // resting pointer (a long menu's highlight jumping away from the current choice).
+    React.useLayoutEffect(() => {
+        if (Platform.OS !== 'web' || !open || !shouldPortalWeb) return;
+        const contentEl = getContentDomElement();
+        if (!contentEl || typeof contentEl.getBoundingClientRect !== 'function') return;
+        const rect = contentEl.getBoundingClientRect();
+        if (!(rect.width > 0) || !(rect.height > 0)) return;
+        setContentRectState((prev) => (
+            prev && Math.abs(prev.width - rect.width) <= 1 && Math.abs(prev.height - rect.height) <= 1
+                ? prev
+                : { x: 0, y: 0, width: rect.width, height: rect.height }
+        ));
+    }, [computed.maxHeight, computed.maxWidth, computed.placement, getContentDomElement, open, shouldPortalWeb]);
+
     const stopScrollEventPropagationOnWeb = React.useCallback((event: any) => {
         // Expo Router (Vaul/Radix) modals on web often install document-level scroll-lock listeners
         // that `preventDefault()` wheel/touch scroll, which breaks scrolling inside portaled popovers.
@@ -2003,8 +2021,9 @@ function AnchoredPopover(props: PopoverProps) {
 
     // A repeated native geometry measurement can revisit this component without changing
     // the public layout. Keep the content render tied to that layout, not the measurement.
+    // The popover is a floating layer opened over its anchor's surface, never in that surface's flow.
     const renderedChildren = React.useMemo(() => shouldRender
-        ? children({ ...computed, maxWidth: contentMaxWidth, requestClose })
+        ? <GlassOpenedLayer>{children({ ...computed, maxWidth: contentMaxWidth, requestClose })}</GlassOpenedLayer>
         : null, [children, computed, contentMaxWidth, requestClose, shouldRender]);
     const content = shouldRender ? (
         <EscapeLayerProvider layer={escapeLayer}>

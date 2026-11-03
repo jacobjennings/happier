@@ -11,6 +11,7 @@ import {
     loadLocalVoiceEngineWithCompatState,
     registerLocalVoiceEngineHarnessHooks,
     localVoicePendingEnqueue,
+    localVoiceSpeechOutputBoundary,
     localVoiceSpeechTranscription,
     acknowledgeLocalVoicePendingEnqueue,
     speechRecStart,
@@ -27,16 +28,6 @@ let localVoiceEngine: Awaited<ReturnType<typeof loadLocalVoiceEngineWithCompatSt
 async function waitForVoiceStatus(getStatus: () => string, expectedStatus: string) {
     await waitForLocalVoiceState(state => state.status === expectedStatus);
     expect(getStatus()).toBe(expectedStatus);
-}
-
-async function expectPromiseToStayPending(promise: Promise<unknown>) {
-    const settled = await Promise.race([
-        promise.then(() => true),
-        new Promise<boolean>((resolve) => {
-            setTimeout(() => resolve(false), 0);
-        }),
-    ]);
-    expect(settled).toBe(false);
 }
 
 const restoreHarnessModuleLoader = await warmLocalVoiceEngineHarnessGraph();
@@ -274,6 +265,8 @@ describe('local voice engine TTS behavior', () => {
         await expect(toggleLocalVoiceTurn('s1')).rejects.toBeInstanceOf(Error);
 
         expect(localVoiceSpeechTranscription).toHaveBeenCalledTimes(1);
+        // The selected TTS is daemon-synthesized; device speech alone could never observe it.
+        expect(localVoiceSpeechOutputBoundary.speechSynthesizeRpc).not.toHaveBeenCalled();
         expect(expoSpeechSpeak).not.toHaveBeenCalled();
         expect(localVoiceEngine.getLocalVoiceState()).toMatchObject({ status: 'idle', error: 'send_failed' });
     });

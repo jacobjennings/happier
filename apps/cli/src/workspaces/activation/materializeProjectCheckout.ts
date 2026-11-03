@@ -130,12 +130,17 @@ export async function materializeProjectCheckout(input: MaterializeProjectChecko
 
   const { realizeWorkspaceCheckoutWithScmWorkspaceSource } = await import('@/scm/workspace/workspaceCheckoutOperations');
   input.signal?.throwIfAborted();
-  input.onEffectsIssued?.();
   const checkout = await realizeWorkspaceCheckoutWithScmWorkspaceSource({
     sourcePath: sourceDirectory, targetPath: choice.targetPath, registry: input.registry,
     checkoutCreation: { ...choice.checkout, baseRef: input.ref ?? choice.checkout.baseRef, branchMode: choice.checkout.branchMode ?? 'new' },
+  }).catch(error => {
+    // The SCM materializer emits ref_unavailable only during its no-effect
+    // admission. Every other exception remains conservatively uncertain.
+    if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'ref_unavailable') input.onEffectsIssued?.();
+    throw error;
   });
   if (!checkout) return refused('checkout_unavailable');
+  input.onEffectsIssued?.();
   const rootPath = await existingDirectory(checkout.realization.targetPath);
   const mapped = await resolveDirectoryInCheckout({
     sourceDirectory, sourceRootPath: checkout.sourceRootPath, checkoutRootPath: rootPath,

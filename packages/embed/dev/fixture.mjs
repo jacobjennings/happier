@@ -87,9 +87,22 @@ function readRetainedSdkSessionId(error) {
     ? error.result.sessionId : undefined;
 }
 
+function readTypedSdkIssues(error) {
+  if (!error || typeof error !== 'object' || !error.details || typeof error.details !== 'object'
+    || !Array.isArray(error.details.issues)) return [];
+  return error.details.issues.flatMap((issue) => {
+    if (!issue || typeof issue !== 'object' || typeof issue.code !== 'string' || !issue.code.trim()
+      || !Array.isArray(issue.path) || issue.path.some((segment) => typeof segment !== 'string' && typeof segment !== 'number')) {
+      return [];
+    }
+    return [{ path: issue.path, code: issue.code }];
+  });
+}
+
 function fixtureSdkFailure(error, sessionId) {
   const code = readTypedSdkErrorCode(error) ?? 'fixture_sdk_error';
-  const failure = Object.assign(new Error(code), { code, sessionId });
+  const issues = readTypedSdkIssues(error);
+  const failure = Object.assign(new Error(code), { code, sessionId, ...(issues.length ? { details: issues } : {}) });
   if (error && typeof error === 'object' && typeof error.status === 'number') failure.status = error.status;
   return failure;
 }
@@ -103,7 +116,28 @@ export function projectFixtureErrorResponse(error) {
       : code === 'idempotency_conflict' ? 409 : 400;
   const sessionId = error && typeof error === 'object' && typeof error.sessionId === 'string' && error.sessionId.trim()
     ? error.sessionId : null;
-  return { status, body: { error: code, ...(sessionId ? { sessionId } : {}) } };
+  const issues = error && typeof error === 'object' && Array.isArray(error.details)
+    ? error.details.flatMap((issue) => {
+      if (!issue || typeof issue !== 'object' || typeof issue.code !== 'string' || !issue.code.trim()
+        || !Array.isArray(issue.path) || issue.path.some((segment) => typeof segment !== 'string' && typeof segment !== 'number')) {
+        return [];
+      }
+      return [{ path: issue.path, code: issue.code }];
+    }) : [];
+  return { status, body: { error: code, ...(sessionId ? { sessionId } : {}), ...(issues.length ? { issues } : {}) } };
+}
+
+/** Log projection never falls back to an exception message or schema issue values. */
+export function projectFixtureErrorLog(error) {
+  const response = projectFixtureErrorResponse(error);
+  const errorCode = error && typeof error === 'object' && typeof error.code === 'string' && error.code.trim()
+    ? error.code : 'fixture_error';
+  return {
+    status: response.status,
+    error: errorCode,
+    ...(response.body.sessionId ? { sessionId: response.body.sessionId } : {}),
+    ...(response.body.issues ? { issues: response.body.issues } : {}),
+  };
 }
 
 /** Claim CRM ownership before the agent can call the business Actions in its first turn. */

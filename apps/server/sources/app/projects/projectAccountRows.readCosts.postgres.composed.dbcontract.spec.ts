@@ -133,6 +133,16 @@ describe.skipIf(process.env.HAPPIER_DB_PROVIDER !== 'postgres')('Project row nar
             expect((await read({ kinds: ['workspace-ref'], serverId: key.serverId }, outsider.id)).json())
                 .toEqual({ status: 'listed', rows: [], coverage: 'complete' });
             expect((await read({ key }, outsider.id, 'read')).json()).toEqual({ status: 'absent' });
+            const session = { serverId: 'other-home', sessionId: 'authoring-session' };
+            const recorded = await read({ key, session }, owner.id, 'authoring-session');
+            expect(recorded.json()).toMatchObject({ status: 'recorded', row: { revision: 1, authoringSession: session } });
+            const sequence = (await db.account.findUniqueOrThrow({ where: { id: owner.id } })).seq;
+            statements.length = 0;
+            expect((await read({ key, session }, owner.id, 'authoring-session')).json()).toEqual(recorded.json());
+            expect(statements.filter(event => /^(INSERT|UPDATE|DELETE)\b/i.test(event.query))).toHaveLength(0);
+            expect(statements.filter(event => /^SELECT\b/i.test(event.query) && event.query.includes('"UserKVStore"'))).toHaveLength(1);
+            expect((await db.account.findUniqueOrThrow({ where: { id: owner.id } })).seq).toBe(sequence);
+            expect((await read({ key, includeAuthoringSession: true }, owner.id, 'read')).json()).toMatchObject({ row: { authoringSession: session } });
             await db.userKVStore.update({ where: { accountId_key: { accountId: owner.id, key: buildProjectAccountRowPhysicalKeyV1(key) } },
                 data: { value: row(key, { t: 'encrypted', c: 'wrong-mode' }).value } });
             expect((await read({ kinds: ['workspace-ref'], serverId: key.serverId })).json()).toEqual({ status: 'account-mode-mismatch' });

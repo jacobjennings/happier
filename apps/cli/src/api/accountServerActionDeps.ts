@@ -1,4 +1,8 @@
 import axios, { type AxiosResponse } from 'axios';
+import { createHash, randomUUID } from 'node:crypto';
+import { executeSessionSectionActionV1, isSessionSectionActionIdV1 } from '@happier-dev/protocol/actions/sessionSections';
+import { SessionOrganizationSnapshotRequestSchema, SessionOrganizationSnapshotResponseSchema } from '@happier-dev/protocol/sessions/organization/snapshot';
+import { CreateOrUpdateSessionOrganizationFolderResponseSchema, DeleteSessionOrganizationFolderResponseSchema, SetSessionFolderAssignmentResponseSchema } from '@happier-dev/protocol/sessions/organization/mutations';
 import { readActionCredentialScopeDeniedHttpFailureV1 } from '@happier-dev/protocol/actions/externalActionApi';
 import { ACCOUNT_API_TOKENS_CREATE_HTTP_PATH_V1, AccountApiTokensServerErrorV1Schema, ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1, ACCOUNT_API_TOKENS_REVOKE_ALL_HTTP_PATH_V1, ACCOUNT_API_TOKENS_REVOKE_HTTP_PATH_V1, ACCOUNT_API_TOKENS_UPDATE_HTTP_PATH_V1, AccountApiTokensCreateActionInputV1Schema, AccountApiTokensCreateActionOutputV1Schema, AccountApiTokensListActionInputV1Schema, AccountApiTokensListActionOutputV1Schema, AccountApiTokensRevokeActionInputV1Schema, AccountApiTokensRevokeActionOutputV1Schema, AccountApiTokensRevokeAllActionInputV1Schema, AccountApiTokensRevokeAllActionOutputV1Schema, AccountApiTokensUpdateActionInputV1Schema, AccountApiTokensUpdateActionOutputV1Schema } from '@happier-dev/protocol/auth/accountApiTokens';
 import { ProjectWorkerActionInputSchemasV1 } from '@happier-dev/protocol/actions/specs/projectWorkers';
@@ -7,7 +11,6 @@ import { createAccountServerWorkspaceWorkerPreferenceClient } from '@/api/worksp
 import { observeProjectServicePlacementActualV1 } from '@happier-dev/protocol/workspaces/projectServicePlacementV1';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc/methods';
 import { readProjectAccountRowsObservation } from '@/workspaces/projectAccountRows';
-import { readWorkspaceSyncChildMachineFacts } from '@/workspaces/sync/workspaceSyncTargetAuthority';
 import { listCurrentAccountMachines } from '@/api/machine/resolveCurrentAccountMachineTarget';
 import { callExactMachineRpc } from '@/session/transport/rpc/machineRpc';
 import { createAccountServerMachineFinitePolicyClient } from '@/api/machine/accountServerMachineFinitePolicyClient';
@@ -17,7 +20,6 @@ import { ACCOUNT_SESSIONS_SIGN_OUT_EVERYWHERE_HTTP_PATH_V1, AccountSessionsSignO
 import { bindHomeDomainActionHttpRequestV1, bindPublicProfilePreparedHttpRequestV1, homeDomainActionOutputSchemaV1, readHomeDomainActionErrorV1 } from '@happier-dev/protocol/actions/homeDomainActionFamily';
 import { bindPublicProfileActionPorts } from '@happier-dev/protocol/actions/executor/publicProfileActions';
 import { buildPublicProfileSnapshot } from '@happier-dev/protocol/account/publicProfileSnapshot';
-import { readScmHostingRepository } from '@/scm/hostingProviders/readRepository';
 import { readHomeDomainConfirmedRollbackV1 } from '@happier-dev/protocol/actions/homeDomainHttpBinding';
 import { bindSessionAccessActionHttpRequestV1 } from '@happier-dev/protocol/actions/sessionAccessActionFamily';
 import { getActionSpec, resolveActionExecutionPlacementForInput } from '@happier-dev/protocol/actions/actionSpecs';
@@ -29,7 +31,7 @@ import { ManagedErrorV1Schema, ManagedMachineActionInputSchemasV1, ManagedMachin
 import { normalizeServerIdentityIdCapability } from '@happier-dev/protocol/features/payload/capabilities/serverIdentityCapabilities';
 import { MachinePoolErrorV1Schema } from '@happier-dev/protocol/machines/pools/v1';
 import { SessionPublicLinkCreateActionInputV1Schema, projectSessionPublicLinkActionResultV1, projectSessionPublicLinkCreateActionResultV1 } from '@happier-dev/protocol/sessions/access/sessionAccessActionsV1';
-import { SessionAccessErrorCodeV1Schema } from '@happier-dev/protocol/sessions/access/sessionAccessOperationsV1';
+import { SessionAccessErrorCodeV1Schema, SetSessionAccessContextRequestV1Schema } from '@happier-dev/protocol/sessions/access/sessionAccessOperationsV1';
 import { z } from 'zod/mini';
 
 import {
@@ -45,6 +47,7 @@ import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient'
 import type { StoredCredentials } from '@/persistence';
 import {
   materializeSessionAccessGrantEnvelope,
+  recordSessionTeamShareStatement,
   SessionAccessGrantEnvelopeHostError,
 } from '@/api/sessionAccessGrantEnvelopeHost';
 import {
@@ -70,7 +73,6 @@ import { AccountSettingsV2GetResponseSchema } from '@happier-dev/protocol/accoun
 import { accountSettingsParse } from '@happier-dev/protocol/account/settings/accountSettings';
 import { admitUsageCoachRemedies, applyUsageCoachPreferences } from '@happier-dev/protocol/usage/coach/evaluateUsageCoach';
 import { buildUsageCoachRemedies } from '@happier-dev/protocol/usage/coach/buildUsageCoachRemedies';
-import { readCliUsageDetail } from '@/usage/readCliUsageDetail';
 import { loadMcpServerCatalogV1, type McpServerCatalogSnapshotV1 } from '@happier-dev/protocol/mcp/servers/serverCatalogV1';
 import { MCP_SERVER_CATALOG_ROWS_ROUTE_V1, McpServerCatalogRowReadResponseV1Schema } from '@happier-dev/protocol/mcp/servers/serverRowsV1';
 import { resolveCliAccountStorageContext } from '@/api/client/accountKvJsonTransport';
@@ -625,6 +627,7 @@ export function createAccountServerActionDeps(input: Readonly<{
           quota = { status: code === 'unsupported' ? 'unsupported' : 'unknown',
             errorCode: typeof code === 'string' ? code : 'usage_quota_read_failed' };
         }
+        const { readCliUsageDetail } = await import('@/usage/readCliUsageDetail');
         if (context.signal?.aborted) return { ok: false, errorCode: 'cancelled', error: 'cancelled' };
         if (input.isCredentialCurrent && !await input.isCredentialCurrent()) return retired();
         const accounting = snapshots.filter((snapshot): snapshot is UsageAccountingSourceSnapshot => !('ok' in snapshot));
@@ -719,8 +722,12 @@ export function createAccountServerActionDeps(input: Readonly<{
             workspaceRefs: rows.workspaceRefs, relationships: rows.relationships,
             childMachineProjections: machines.flatMap(machine => machine.devcontainerChild
               ? [{ serverId: targetServerId, machineId: machine.id, projection: machine.devcontainerChild }] : []),
-            readChildMachines: machineIds => readWorkspaceSyncChildMachineFacts({ serverId: targetServerId, serverHttpBaseUrl, credentials, signal,
-              purpose: 'admitted_mapping', machineIds }),
+            readChildMachines: async machineIds => {
+              const localProfileId = configuration.activeServerId;
+              const { readWorkspaceSyncChildMachineFacts } = await import('@/workspaces/sync/workspaceSyncTargetAuthority');
+              return await readWorkspaceSyncChildMachineFacts({ serverId: targetServerId, serverHttpBaseUrl, localProfileId, credentials, signal,
+                purpose: 'admitted_mapping', machineIds });
+            },
             isCurrent: async () => await isCurrent() && await observation.isCurrent(),
             readSnapshot: snapshot => callExactMachineRpc({ credentials, serverUrl: serverHttpBaseUrl,
               machineId: snapshot.machineId, method: RPC_METHODS.DAEMON_LOCAL_SERVICES_LAUNCHER_SNAPSHOT,
@@ -920,11 +927,81 @@ export function createAccountServerActionDeps(input: Readonly<{
      * configured endpoint and the signed Account credential do, and the Home's
      * own transaction remains the authority for every governance decision.
      */
-    homeDomainAction: async ({ actionId, input: actionInput, preparedRequest, context: actionContext, signal }) => {
+    homeDomainAction: async ({ actionId, input: actionInput, preparedRequest, context: actionContext, signal, archiveSession }) => {
       const mismatch = await accountServerTargetMismatch(actionContext);
       if (mismatch) return mismatch;
-      const hasOrganizationDisplay = (actionId.startsWith('session.folders.') || actionId.startsWith('session.tags.'))
-        && !actionId.endsWith('.delete');
+      if (isSessionSectionActionIdV1(actionId)) {
+        const sectionCreateFolderId = actionId === 'session.sections.create' && actionContext.actionRequestId
+          ? `folder_${createHash('sha256').update(`session.sections.create\0${actionContext.actionRequestId}`).digest('hex').slice(0, 32)}`
+          : null;
+        const assertCurrent = async () => {
+          if (signal?.aborted || (input.isCredentialCurrent && !await input.isCredentialCurrent())) {
+            throw Object.assign(new Error('action_account_scope_changed'), { code: 'action_account_scope_changed' });
+          }
+        };
+        // Id-only assignment/removal has no private display to open or seal.
+        // Capture Account mode/material once, only when this invocation needs it.
+        let displayPromise: ReturnType<typeof captureSessionOrganizationDisplayHost> | undefined;
+        const getDisplay = () => displayPromise ??= captureSessionOrganizationDisplayHost({
+          token: input.token, credentials: input.credentials, serverHttpBaseUrl,
+          isCurrent: input.isCredentialCurrent, ...(signal ? { signal } : {}),
+        });
+        const request = async <TSchema extends z.ZodMiniType>(method: string, path: string, schema: TSchema, body?: unknown): Promise<z.output<TSchema> | ActionExecuteFailure> => {
+          await assertCurrent();
+          const headers = resolveRequestHeaders({ context: actionContext, effectActionId: actionId, method, path,
+            ...(body === undefined ? {} : { body }) });
+          if (!headers.ok) return externalAuthorizationUnavailable();
+          const sideEffectClass = method === 'GET' ? 'read' : 'external';
+          const dispatch = await dispatchAccountServerActionHttpRequest({ headers: headers.headers, method, path,
+            ...(body === undefined ? {} : { body }), ...(signal ? { signal } : {}), sideEffectClass });
+          if (!dispatch.ok) return dispatch;
+          const { response } = dispatch;
+          if (response.status >= 400) {
+            const rollback = readHomeDomainConfirmedRollbackV1(response.status, response.data);
+            if (rollback) return { ok: false, errorCode: rollback.code, error: rollback.code };
+            const named = readHomeDomainActionErrorV1(response.data);
+            if (named) return { ok: false, errorCode: named.code, error: named.code };
+            const error = z.strictObject({ error: z.string() }).safeParse(response.data);
+            if (error.success) return { ok: false, errorCode: error.data.error, error: error.data.error };
+            if (isAuthenticationStatus(response.status)) throw createAuthenticationHttpStatusError(response.status, 'Section authentication failed');
+            return { ok: false, errorCode: 'unsupported_action', error: `unsupported_action:${actionId}` };
+          }
+          if (method === 'GET') await assertCurrent();
+          return settleAccountServerActionHttpOutput({ data: response.data, outputSchema: schema, sideEffectClass });
+        };
+        return executeSessionSectionActionV1(actionId, actionInput, {
+          assertCurrent,
+          allocateFolderId: () => sectionCreateFolderId ?? `folder_${randomUUID().replaceAll('-', '')}`,
+          archiveSession,
+          readSnapshot: async requested => {
+            const parsed = SessionOrganizationSnapshotRequestSchema.parse(requested);
+            const query = new URLSearchParams();
+            for (const [key, value] of Object.entries(parsed)) {
+              if (Array.isArray(value)) { if (value.length) query.set(key, value.join(',')); }
+              else if (value !== undefined) query.set(key, String(value));
+            }
+            const result = await request('GET', `/v2/session-organization?${query}`, SessionOrganizationSnapshotResponseSchema);
+            if ('ok' in result) return result;
+            const folders = result.snapshot.folders.length
+              ? result.snapshot.folders.map((await getDisplay()).openFolder) : [];
+            return { folders, folderAssignments: result.snapshot.folderAssignments };
+          },
+          upsertFolder: async folder => {
+            const display = await getDisplay();
+            const result = await request('POST', '/v2/session-organization/folders', CreateOrUpdateSessionOrganizationFolderResponseSchema,
+              display.prepareFolderInput(folder));
+            return 'ok' in result ? result : display.openFolder(result.folder);
+          },
+          deleteFolder: folder => request('DELETE', `/v2/session-organization/folders/${encodeURIComponent(folder.folderId)}`,
+            DeleteSessionOrganizationFolderResponseSchema, folder),
+          setAssignment: (sessionId, folderId) => request('PUT', `/v2/session-organization/folder-assignments/${encodeURIComponent(sessionId)}`,
+            SetSessionFolderAssignmentResponseSchema, { folderId }),
+        });
+      }
+      // Assignment acknowledgements contain only ids, not private display
+      // envelopes. Do not capture keys or project them as inventory snapshots.
+      const hasOrganizationDisplay = actionId === 'session.tags.list'
+        || actionId === 'session.tags.create' || actionId === 'session.tags.rename';
       const organizationDisplay = hasOrganizationDisplay ? await captureSessionOrganizationDisplayHost({
         token: input.token, credentials: input.credentials, serverHttpBaseUrl,
         isCurrent: input.isCredentialCurrent, ...(signal ? { signal } : {}),
@@ -1011,6 +1088,7 @@ export function createAccountServerActionDeps(input: Readonly<{
       let request = publicRequest;
       let localPublication: Awaited<ReturnType<typeof materializeSessionPublicLinkCreateBody>> | null = null;
       let retainedEnvelopeFallback = false;
+      let repairActionId: 'session.access.layout.update' | undefined;
       if (actionId === 'session.public_link.create') {
         if (signal?.aborted) {
           return { ok: false, errorCode: 'cancelled', error: 'cancelled' };
@@ -1085,6 +1163,18 @@ export function createAccountServerActionDeps(input: Readonly<{
           }
         }
       }
+      if (actionId === 'session.access.context.set' && input.credentials?.token === input.token) {
+        const { sessionId, primaryTeamId } = SetSessionAccessContextRequestV1Schema.parse(actionInput);
+        if (primaryTeamId !== null) {
+          try {
+            await recordSessionTeamShareStatement({ token: input.token, credentials: input.credentials,
+              serverHttpBaseUrl, sessionId, teamId: primaryTeamId, ...(signal ? { signal } : {}) });
+          } catch {
+            // The statement never fails a share, so only cancellation reaches here.
+            return { ok: false, errorCode: 'cancelled', error: 'cancelled' };
+          }
+        }
+      }
       if (actionId === 'session.access.grant.set') {
         try {
           let serverFeaturesSnapshot: CliServerFeaturesSnapshot | undefined;
@@ -1105,6 +1195,7 @@ export function createAccountServerActionDeps(input: Readonly<{
           });
           const physicalInput = materialized.input;
           retainedEnvelopeFallback = materialized.retainedEnvelopeFallback;
+          repairActionId = materialized.repairActionId;
           const accountEnvelopeInput = 'accountEnvelopeInput' in physicalInput
             ? physicalInput.accountEnvelopeInput
             : undefined;
@@ -1174,6 +1265,10 @@ export function createAccountServerActionDeps(input: Readonly<{
           const code = retainedEnvelopeFallback && named.data === 'recipient_envelope_required'
             ? 'session_data_key_unavailable'
             : named.data;
+          if (code === 'session_data_key_unavailable' && repairActionId) {
+            return { ok: false, errorCode: code, error:
+              `${code}: this Session uses the legacy metadata layout. Run ${repairActionId} for it, then share again.` };
+          }
           return { ok: false, errorCode: code, error: code };
         }
         if (actionId === 'session.public_link.remove' && response.status === 404 && body?.error === 'Share not found') {
@@ -1526,6 +1621,9 @@ export function createAccountServerActionDeps(input: Readonly<{
         throw Object.assign(new Error('credential_scope_retired'), { code: 'credential_scope_retired' });
       }
     },
-    getRepository: (selector, context) => readScmHostingRepository({ selector, signal: context.signal }),
+    getRepository: async (selector, context) => {
+      const { readScmHostingRepository } = await import('@/scm/hostingProviders/readRepository');
+      return await readScmHostingRepository({ selector, signal: context.signal });
+    },
   }) };
 }

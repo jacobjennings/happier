@@ -73,8 +73,8 @@ function buildDesktopActivityOverlaySessionSnapshots(
             statusText: viewModel.statusText ?? null,
             previewText: viewModel.previewText ?? null,
             attentionState: viewModel.attentionState,
-            active: candidate?.session.active === true,
-            updatedAt: candidate?.session.updatedAt ?? viewModel.updatedAt,
+            active: (candidate?.presentationSource?.lifecycle.active ?? candidate?.session.active) === true,
+            updatedAt: viewModel.updatedAt,
         };
     });
 }

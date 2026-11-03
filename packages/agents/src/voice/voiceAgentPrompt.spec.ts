@@ -21,6 +21,26 @@ import {
 } from './voiceAgentPrompt.js';
 
 describe('voiceAgentPrompt', () => {
+  it('documents Account settings and request discovery through the real admitted Voice catalog', () => {
+    const specs = listVoiceToolActionSpecs();
+    const tools = [
+      'settings_list', 'settings_get', 'settings_set', 'settings_invoke',
+      'approval_request_list', 'approval_request_get', 'approval_request_decide',
+      'session_permission_respond',
+    ];
+    const prompt = buildVoiceClientToolAgentPrompt({ actionSpecs: specs,
+      availableToolNames: [...specs.map(spec => spec.bindings!.voiceClientToolName!), 'action_execute'] });
+    const documented = [...prompt.matchAll(/^- ([A-Za-z0-9_]+):/gm)].map(match => match[1]);
+    expect(documented).toEqual(expect.arrayContaining(tools.filter(name => name !== 'settings_invoke' && name !== 'approval_request_list')));
+    for (const name of tools) expect(prompt).toContain(name);
+    expect(prompt).toContain('action_execute');
+    const disabled = buildVoiceClientToolAgentPrompt({ actionSpecs: specs,
+      availableToolNames: specs.map(spec => spec.bindings!.voiceClientToolName!),
+      disabledActionIds: ['approval.request.list', 'approval.request.get', 'approval.request.decide', 'settings.invoke'] });
+    for (const name of ['approval_request_list', 'approval_request_get', 'approval_request_decide', 'settings_invoke']) {
+      expect(disabled).not.toContain(`- ${name}:`);
+    }
+  });
   it('documents generic execution only when admitted alongside the realtime discovery catalog', () => {
     const input = { actionSpecs: listVoiceToolActionSpecs(), availableToolNames: ['searchActionSpecs', 'getActionSpec', 'action_execute'] };
     const prompt = buildVoiceClientToolAgentPrompt(input);
@@ -100,19 +120,19 @@ describe('voiceAgentPrompt', () => {
       digest: createHash('sha256').update(rendered, 'utf8').digest('hex'),
     }).toEqual({
       id: 'happier.global_voice_agent',
-      revision: 2,
+      revision: 4,
       blockIds: [
         'voice.global_agent.identity',
         'voice.global_agent.authority',
         'voice.global_agent.custody',
         'voice.global_agent.results',
       ],
-      digest: '98800df793b847e96f53eb3c5b0f41dffb0877761986d1818fc5054a0a00696b',
+      digest: 'b5f76b12bd1973d8455970eeb0fb4368258b5f7c9c6eaef060ae51d85dc81cc2',
     });
 
     expect(rendered).toContain("Happier's global Voice agent");
     expect(rendered).toContain('canonical Happier tools');
-    expect(rendered).toContain('Never auto-approve');
+    expect(rendered).toContain('Voice agent can approve requests is enabled by default');
     expect(rendered).toContain('Never semantically retry a mutation');
     expect(rendered).toContain('Do not claim completion before canonical results exist');
     expect(rendered).not.toContain('sendSessionMessage');
@@ -120,7 +140,7 @@ describe('voiceAgentPrompt', () => {
     expect(rendered).not.toContain('{{');
   });
 
-  it('keeps true coding-permission decisions in the canonical session UI across Voice prompts', () => {
+  it('describes delegated Voice approval and its opt-out across Voice prompts', () => {
     const prompts = [
       renderPromptPlanV1(buildGlobalVoiceAgentStartupInstructionsPlanV1()),
       buildLocalVoiceAgentSystemPrompt({ sessionId: 's1' }),
@@ -131,10 +151,11 @@ describe('voiceAgentPrompt', () => {
     ];
 
     for (const prompt of prompts) {
-      expect(prompt).toContain('canonical session UI');
-      expect(prompt).toContain('spoken approval, denial, "yes," or equivalent does not decide');
-      expect(prompt).toContain('Only report the permission as approved, denied, or settled after canonical session state shows that outcome');
-      expect(prompt).not.toContain('Only approve/deny after the user explicitly answers');
+      expect(prompt).toContain('Voice agent can approve requests is enabled by default');
+      expect(prompt).toContain('Read the specific request aloud within the sharing policy');
+      expect(prompt).toContain('a tap in the request UI is required');
+      expect(prompt).toContain('do not bypass a present_user_required refusal');
+      expect(prompt).toContain('Only report the permission as approved, denied, or settled after canonical request state shows that outcome');
     }
   });
 
@@ -193,20 +214,6 @@ describe('voiceAgentPrompt', () => {
     expect(prompt).toContain('- setSessionMode:');
   });
 
-  it('omits disabled voice tool action specs in the client-tool prompt', () => {
-    const prompt = buildVoiceClientToolAgentPrompt({
-      initialConversationContextPlaceholder: '{{initialConversationContext}}',
-      sessionIdPlaceholder: '{{sessionId}}',
-      disabledActionIds: ['review.start'],
-    } as any);
-
-    const review = listVoiceToolActionSpecs().find((s) => s.id === 'review.start');
-    const toolName = review?.bindings?.voiceClientToolName;
-    if (typeof toolName === 'string' && toolName.trim().length > 0) {
-      expect(prompt).not.toContain(toolName);
-    }
-  });
-
   it('prioritizes discovery and hot-path actions in the local voice system prompt instead of inlining the full catalog', () => {
     const prompt = buildLocalVoiceAgentSystemPrompt({
       sessionId: 's1',
@@ -226,8 +233,11 @@ describe('voiceAgentPrompt', () => {
     const prompt = buildLocalVoiceAgentSystemPrompt({
       actionsTag: 'voice_actions',
       sessionId: 's1',
-      disabledActionIds: ['review.start'],
-    } as any);
+      disabledActionIds: ['review.start', 'settings.list'],
+    });
+
+    expect(prompt).not.toContain('- settings_list:');
+    expect(prompt).toContain('- settings_get:');
 
     const review = listVoiceActionBlockSpecs().find((s) => s.id === 'review.start');
     const toolName = review?.bindings?.voiceClientToolName;
@@ -354,15 +364,15 @@ describe('voiceAgentPrompt', () => {
       sessionIdPlaceholder: '{{sessionId}}',
     });
 
-    expect(localPrompt).toContain('use sendSessionMessage');
+    expect(localPrompt).toContain('Use sendSessionMessage when the user asks the coding assistant');
     expect(localPrompt).toContain('Do not repeatedly narrate that you are waiting');
     expect(localPrompt).toContain('Do not add greeting filler like "Hi there"');
-    expect(localPrompt).toContain('Do not claim a permission request exists unless a real pending permission or user-action request is present in the current session updates');
+    expect(localPrompt).toContain('Establish pending requests from canonical request tools or current session updates');
     expect(localPrompt).toContain('answerUserActionRequest');
     expect(clientToolPrompt).not.toContain('sendSessionMessage');
     expect(clientToolPrompt).toContain('Do not repeatedly narrate that you are waiting');
     expect(clientToolPrompt).toContain('Do not add greeting filler like "Hi there"');
-    expect(clientToolPrompt).toContain('Do not claim a permission request exists unless a real pending permission or user-action request is present in the current session updates');
+    expect(clientToolPrompt).toContain('Establish pending requests from canonical request tools or current session updates');
     expect(clientToolPrompt).not.toContain('answerUserActionRequest');
   });
 
@@ -376,8 +386,8 @@ describe('voiceAgentPrompt', () => {
       sessionIdPlaceholder: '{{sessionId}}',
     });
 
-    expect(localPrompt).toContain('Do not call discovery tools or send new coding work while a permission or user-action request is pending');
-    expect(clientToolPrompt).toContain('Do not call discovery tools or send new coding work while a permission or user-action request is pending');
+    expect(localPrompt).toContain('use only tools needed to present or answer that request; do not send new coding work');
+    expect(clientToolPrompt).toContain('use only tools needed to present or answer that request; do not send new coding work');
   });
 
   it('tells voice agents to answer active coding-session questions or option prompts before sending more work', () => {

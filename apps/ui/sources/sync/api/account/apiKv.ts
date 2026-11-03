@@ -165,7 +165,8 @@ export async function kvList(
  */
 export async function kvBulkGet(
     credentials: AuthCredentials,
-    keys: string[]
+    keys: string[],
+    options: Pick<KvListParams, 'request' | 'retry'> = {},
 ): Promise<KvBulkGetResponse> {
     if (keys.length === 0) {
         return { values: [] };
@@ -175,8 +176,8 @@ export async function kvBulkGet(
         throw new Error('Cannot bulk get more than 100 keys at once');
     }
 
-    const request = createServerFetchForActiveServer();
-    return await backoff(async () => {
+    const request = options.request ?? createServerFetchForActiveServer();
+    const run = async () => {
         const response = await request('/v1/kv/bulk', {
             method: 'POST',
             headers: {
@@ -184,7 +185,7 @@ export async function kvBulkGet(
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({ keys })
-        }, { includeAuth: false });
+        }, { includeAuth: false, recoveryRead: 'unbounded', ...(options.retry ? { retry: options.retry } : {}) });
 
         if (!response.ok) {
             if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
@@ -202,7 +203,8 @@ export async function kvBulkGet(
 
         const data = await response.json() as KvBulkGetResponse;
         return data;
-    });
+    };
+    return options.retry === 'none' ? await run() : await backoff(run);
 }
 
 /**

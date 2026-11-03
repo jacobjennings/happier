@@ -2,8 +2,11 @@ import * as React from 'react';
 
 import { LocalServicesSurfaceHost } from '@/components/sessions/localServices';
 import { createProjectServicePlacementRenderer } from './ProjectServicePlacementControls';
+import { isProjectServiceTargetFromSource } from './projectServiceSource';
 import { ProjectServicePlacementObservationProvider } from './projectServicePlacementObservation';
 import { useProjectDefinitionInspection } from '@/components/projects/projectSetup/useProjectDefinitionInspection';
+import { describeProjectCommandSource, findProjectInvocation } from '@/components/projects/projectSetup/projectScriptPresentation';
+import type { DescribeServiceDeclaration } from '@/sync/domains/local/services/serviceRow';
 import { useServerCredentialAccountScopeBinding } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import type { WorkspaceAddressV1 } from '@happier-dev/protocol/workspaces/workspaceRefV1';
 import type { ServiceRowOpenHandler } from '@/components/sessions/localServices/ServiceRowView';
@@ -51,6 +54,22 @@ export function ProjectRightPanelServicesView(props: ProjectRightPanelServicesVi
     const placementSource = React.useMemo(() => props.serverId && props.machineId && props.workspaceRefId
         ? { serverId: props.serverId, machineId: props.machineId, refId: props.workspaceRefId } : null,
     [props.machineId, props.serverId, props.workspaceRefId]);
+    // What a declared service runs, in the Scripts page's own words ("yarn storybook", the file it comes from).
+    const describeDeclaration = React.useMemo<DescribeServiceDeclaration | undefined>(() => {
+        if (!inspection.read || !('value' in inspection.read)) return undefined;
+        const { value } = inspection.read;
+        const document = value.definition.document;
+        return (declaration, target) => {
+            if (!placementSource || !isProjectServiceTargetFromSource(placementSource, target)) return null;
+            const { selection } = declaration;
+            const source = selection.kind === 'native'
+                ? selection.source
+                : document?.status === 'valid' ? document.manifest.services?.[selection.name]?.source : undefined;
+            if (!source) return null;
+            const { command, badge } = describeProjectCommandSource(source, findProjectInvocation(value, source));
+            return { command, badge };
+        };
+    }, [inspection.read, placementSource]);
     const renderServicePlacement = React.useMemo(() => createProjectServicePlacementRenderer(placementSource, declarations),
         [declarations, placementSource]);
     const body = (
@@ -70,6 +89,7 @@ export function ProjectRightPanelServicesView(props: ProjectRightPanelServicesVi
             presentation={props.presentation}
             onAddService={props.onAddService}
             renderServicePlacement={renderServicePlacement}
+            describeDeclaration={describeDeclaration}
             testID={props.testID ?? 'project-rightpanel-services'}
         />
     );

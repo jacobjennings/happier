@@ -1,7 +1,7 @@
 import { realpath } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
-import { canonicalAbsolutePathsEqual, createCanonicalAbsolutePathComparator, isCanonicalAbsolutePathInsideRoot } from '@happier-dev/cli-common/path';
-import { physicalPathWithoutFollowingLeaf, realpathWithAbsentSuffix } from '@/utils/path/physicalAncestorPath';
+import { basename, dirname, join, resolve, win32 } from 'node:path';
+import { canonicalAbsolutePathsEqual, createCanonicalAbsolutePathComparator, isCanonicalAbsolutePathInsideRoot, resolveCanonicalAbsolutePath } from '@happier-dev/cli-common/path';
+import { realpathWithAbsentSuffix } from '@/utils/path/physicalAncestorPath';
 
 /** Native disk IDs carry non-UTF8 POSIX paths losslessly; display names are never filesystem authority. */
 export function storagePathToFs(path: string): string | Buffer {
@@ -80,6 +80,89 @@ export function createStoragePathComparator(platform: NodeJS.Platform = process.
     };
 }
 export type StoragePathComparator = ReturnType<typeof createStoragePathComparator>;
+
+/** A read-local ancestry join, using the same canonical spelling and lossless byte-path owner. */
+export function createStoragePathIndex<T>(items: readonly T[], pathOf: (item: T) => string,
+    platform: NodeJS.Platform = process.platform) {
+    type Entry = { item: T; order: number };
+    type Branch = { entries: Entry[]; children: Map<string, Branch> };
+    const branch = (): Branch => ({ entries: [], children: new Map() });
+    const root = branch();
+    const paths = new Map<string, readonly string[]>();
+    const segments = (path: string): readonly string[] => {
+        const cached = paths.get(path);
+        if (cached) return cached;
+        let parts: string[];
+        if (platform === 'win32' && !path.startsWith('bytes:')) {
+            const canonical = resolveCanonicalAbsolutePath(path, { platform });
+            if (!canonical) throw Object.assign(new Error('Storage path must be absolute'), { code: 'invalid_storage_path' });
+            const volume = win32.parse(canonical.comparisonKey).root;
+            parts = [`win32:${volume}`, ...canonical.comparisonKey.slice(volume.length).split(win32.sep).filter(Boolean)];
+        } else {
+            const canonical = path.startsWith('bytes:') ? storageAbsolutePath(path)
+                : resolveCanonicalAbsolutePath(path, { platform })?.path;
+            if (!canonical) throw Object.assign(new Error('Storage path must be absolute'), { code: 'invalid_storage_path' });
+            const decoded = storagePathToFs(canonical);
+            const bytes = typeof decoded === 'string' ? Buffer.from(decoded) : decoded;
+            parts = ['posix:/'];
+            let start = 1;
+            for (let index = 1; index <= bytes.length; index++) {
+                if (index < bytes.length && bytes[index] !== 47) continue;
+                if (index > start) parts.push(bytes.subarray(start, index).toString('hex'));
+                start = index + 1;
+            }
+        }
+        paths.set(path, parts); return parts;
+    };
+    for (const [order, item] of items.entries()) {
+        let node = root;
+        for (const segment of segments(pathOf(item))) {
+            let child = node.children.get(segment);
+            if (!child) { child = branch(); node.children.set(segment, child); }
+            node = child;
+        }
+        node.entries.push({ item, order });
+    }
+    const find = (path: string) => {
+        let node: Branch | undefined = root;
+        for (const segment of segments(path)) { node = node.children.get(segment); if (!node) break; }
+        return node;
+    };
+    const ordered = (entries: Entry[]) => entries.sort((left, right) => left.order - right.order).map(entry => entry.item);
+    const hasAncestor = (path: string): boolean => {
+        let node = root;
+        for (const segment of segments(path)) {
+            const child = node.children.get(segment); if (!child) return false;
+            node = child; if (node.entries.length) return true;
+        }
+        return false;
+    };
+    return {
+        exact(path: string): T | undefined { return find(path)?.entries[0]?.item; },
+        ancestors(path: string): T[] {
+            const entries: Entry[] = []; let node = root;
+            for (const segment of segments(path)) {
+                const child = node.children.get(segment); if (!child) break;
+                node = child;
+                for (const entry of node.entries) entries.push(entry);
+            }
+            return ordered(entries);
+        },
+        descendants(path: string): T[] {
+            const node = find(path); if (!node) return [];
+            const entries: Entry[] = []; const pending = [...node.children.values()];
+            for (const child of pending) {
+                for (const entry of child.entries) entries.push(entry);
+                for (const next of child.children.values()) pending.push(next);
+            }
+            return ordered(entries);
+        },
+        hasAncestor,
+        /** Whether an indexed path is at or beneath this path (without walking that subtree). */
+        hasDescendant(path: string): boolean { return find(path) !== undefined; },
+        overlaps(path: string): boolean { return hasAncestor(path) || find(path) !== undefined; },
+    };
+}
 export async function realStoragePathWithAbsentSuffix(path: string): Promise<string> {
     const decoded = storagePathToFs(path);
     if (typeof decoded === 'string') return realpathWithAbsentSuffix(decoded);
@@ -92,8 +175,22 @@ export async function realStoragePathWithAbsentSuffix(path: string): Promise<str
     }
 }
 export async function physicalStoragePathWithoutFollowingLeaf(path: string): Promise<string> {
-    if (!path.startsWith('bytes:')) return physicalPathWithoutFollowingLeaf(path);
-    const parent = storagePathDirname(path);
-    return storagePathsEqual(parent, path) ? realStoragePathWithAbsentSuffix(path)
-        : storagePathJoin(await realStoragePathWithAbsentSuffix(parent), storagePathLeaf(path));
+    return (await physicalStoragePathsWithoutFollowingLeaf([path])).get(path)!;
+}
+
+/** One observation resolves each shared parent once; every subsequent observation reads it afresh. */
+export async function physicalStoragePathsWithoutFollowingLeaf(paths: readonly string[]): Promise<ReadonlyMap<string, string>> {
+    const parents = new Map<string, string[]>();
+    for (const path of new Set(paths)) {
+        const parent = storagePathDirname(path);
+        const siblings = parents.get(parent) ?? [];
+        siblings.push(path); parents.set(parent, siblings);
+    }
+    const result = new Map<string, string>();
+    await Promise.all([...parents].map(async ([parent, siblings]) => {
+        const physicalParent = await realStoragePathWithAbsentSuffix(parent);
+        for (const path of siblings) result.set(path, storagePathsEqual(parent, path) ? physicalParent
+            : storagePathJoin(physicalParent, storagePathLeaf(path)));
+    }));
+    return result;
 }

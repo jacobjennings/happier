@@ -5,6 +5,7 @@ import rateLimit from '@fastify/rate-limit';
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { runnerActivationProjectionBindingV1 } from '@happier-dev/protocol/ephemeralRunner/projection';
+import { projectSessionDisplayV1, sealSessionOwnerDisplayEnvelopeV1, sealSessionSharedDisplayEnvelopeV1Sync } from '@happier-dev/protocol';
 import { signRunnerClaimV1, signRunnerEndpointFactsV1 } from '@happier-dev/protocol/ephemeralRunner/endpoint';
 import { signRunnerConsentV1 } from '@happier-dev/protocol/ephemeralRunner/consent';
 import { signRunnerReadinessV1 } from '@happier-dev/protocol/ephemeralRunner/readiness';
@@ -607,7 +608,18 @@ describe('Runner activation and draft lifecycle', () => {
 
     it('materializes a fresh Runner through its existing content admission', async () => {
         const fixture = await materializationFixture();
-        const request = materializationRequest(fixture);
+        const base = materializationRequest(fixture);
+        const sessionId = fixture.created.activation.sessionId;
+        const sharedMetadata = { v: 1 as const, summary: { text: 'Runner shared display', updatedAt: 1 } };
+        const ownerMetadata = { v: 1 as const, workspace: { name: 'Runner owner display', path: '/private/runner' } };
+        const display = projectSessionDisplayV1({ sharedMetadata, ownerMetadata });
+        const shared = sealSessionSharedDisplayEnvelopeV1Sync({ sessionMode: 'plain', display: display.shared });
+        const owner = sealSessionOwnerDisplayEnvelopeV1({ accountMode: 'plain', display: display.owner! });
+        if (!shared.ok || !owner.ok) throw new Error('Canonical plain display producer failed');
+        const displayProjectionV1 = { v: 1 as const, sourceMetadataVersion: 0, metadataLayoutVersion: 1 as const,
+            shared: shared.envelope, owner: owner.envelope };
+        const request = { ...base, session: { ...base.session,
+            metadata: JSON.stringify(sharedMetadata), ownerMetadata: { t: 'plain' as const, v: ownerMetadata }, displayProjectionV1 } };
         const result = await materializeEphemeralRunner({ creatorAccountId: fixture.account.id, request,
             authentication: presentUserAuthentication, env: process.env });
         expect(result).toMatchObject({ status: 'materialized', result: {
@@ -615,6 +627,9 @@ describe('Runner activation and draft lifecycle', () => {
         } });
         expect(await db.machine.findUniqueOrThrow({ where: { id: fixture.created.activation.machineId } }))
             .toMatchObject({ kind: 'ephemeral_session_runner', installationId: fixture.claim.payload.installation.installationId });
+        const stored = await db.session.findUniqueOrThrow({ where: { id: sessionId } });
+        expect(stored.metadataVersion).toBe(0);
+        expect(JSON.parse(stored.displayProjectionV1 ?? 'null')).toEqual(displayProjectionV1);
         expect(await materializeEphemeralRunner({ creatorAccountId: fixture.account.id, request,
             authentication: presentUserAuthentication, env: process.env })).toEqual(result);
     });

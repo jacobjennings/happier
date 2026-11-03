@@ -1,5 +1,4 @@
 import { Session } from 'node:inspector/promises';
-import { performance } from 'node:perf_hooks';
 import { EventEmitter } from 'node:events';
 import type { Socket } from 'socket.io-client';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
@@ -167,7 +166,6 @@ it('reads the daemon catalog only on projection changes or a missed-signal recon
         expect(restored!.tools.some(entry => entry.originalName === 'acme_echo')).toBe(true);
         await client.listTools();
         expect(daemonCatalogBoundary.read.mock.calls.length - before).toBe(2);
-        console.log('MCP_CATALOG_SIGNAL_READS', JSON.stringify({ bootstrap: 1, unchangedPost: 0, change: 1, reconnect: 1 }));
     } finally {
         await client.close(); runtime.happierMcpServer.stop();
     }
@@ -285,10 +283,7 @@ it('keeps absent optional Action policy as cheap as explicit defaults through Se
     try {
         await inspector.post('Profiler.enable');
         await inspector.post('Profiler.startPreciseCoverage', { callCount: true, detailed: false });
-        const started = performance.now();
-        const cpuBefore = process.cpuUsage();
         runtime = await bootstrap();
-        const bootstrapMs = performance.now() - started;
         const coverage = await inspector.post('Profiler.takePreciseCoverage');
         const errorFunctions = coverage.result
             .filter(script => isZodErrorsScript(script.url))
@@ -299,9 +294,6 @@ it('keeps absent optional Action policy as cheap as explicit defaults through Se
         await client.connect(new StreamableHTTPClientTransport(new URL(runtime.happierMcpServer.url)));
         const first = await client.listTools();
         const second = await client.listTools();
-        const cpu = process.cpuUsage(cpuBefore);
-        console.log('CHILD_MCP_BOOTSTRAP', JSON.stringify({ bootstrapMs, discoveryMs: performance.now() - started - bootstrapMs,
-            cpuMs: (cpu.user + cpu.system) / 1000, errorConstructionCount, tools: first.tools.length }));
         expect(first.tools.some(tool => tool.name === 'change_title')).toBe(true);
         expect(second.tools.map(tool => tool.name)).toEqual(first.tools.map(tool => tool.name));
         // Compare the same real preparation with explicit defaults: other
@@ -313,7 +305,6 @@ it('keeps absent optional Action policy as cheap as explicit defaults through Se
             .filter(script => isZodErrorsScript(script.url))
             .flatMap(script => script.functions).filter(fn => fn.functionName === 'initializer')
             .reduce((sum, fn) => sum + (fn.ranges[0]?.count ?? 0), 0);
-        console.log('CHILD_MCP_EXPLICIT_DEFAULTS', JSON.stringify({ explicitErrorCount }));
         z.string().safeParse(null);
         const control = await inspector.post('Profiler.takePreciseCoverage');
         expect(control.result.filter(script => isZodErrorsScript(script.url))
@@ -400,7 +391,6 @@ it('reuses the admitted Action inventory across stateless MCP requests', async (
     inspector.connect();
     const client = new Client({ name: 'offline-request-cost', version: '1.0.0' });
     let runtime: Awaited<ReturnType<typeof bootstrap>> | undefined;
-    const rows: Array<Record<string, number | string>> = [];
     // Observe real HTTP; the only substituted network boundary is daemon IPC.
     const http = vi.spyOn(globalThis, 'fetch');
     try {
@@ -410,22 +400,17 @@ it('reuses the admitted Action inventory across stateless MCP requests', async (
             await inspector.post('Profiler.takePreciseCoverage');
             const reads = daemonCatalogBoundary.read.mock.calls.length;
             const httpCalls = http.mock.calls.length;
-            const started = performance.now();
-            const cpuBefore = process.cpuUsage();
             const result = await operation();
-            const requestWallMs = performance.now() - started;
-            const cpu = process.cpuUsage(cpuBefore);
             const coverage = await inspector.post('Profiler.takePreciseCoverage');
             const count = (name: string) => coverage.result.flatMap(script => script.functions)
                 .filter(fn => fn.functionName === name)
                 .reduce((total, fn) => total + (fn.ranges[0]?.count ?? 0), 0);
-            const row = { label, requestWallMs, wallMs: performance.now() - started, cpuMs: (cpu.user + cpu.system) / 1000,
+            const row = { label,
                 constructions: count('createHappierMcpServer'), inventory: count('listBuiltInHappierTools'),
                 maps: count('createActionToolNameToIdMap'), lookups: count('getActionSpec'),
                 schemas: count('toMcpToolInputSchema'),
                 httpCalls: http.mock.calls.length - httpCalls,
                 daemonReads: daemonCatalogBoundary.read.mock.calls.length - reads };
-            rows.push(row);
             return { result, row };
         }
         const prepared = await measure('bootstrap', async () => { runtime = await bootstrap(); });
@@ -437,7 +422,6 @@ it('reuses the admitted Action inventory across stateless MCP requests', async (
         // Account writes require the real daemon Session capability. This
         // offline cache measurement uses the host's local catalog read instead.
         const call = await measure('tools/call action_spec_get', async () => await client.callTool({ name: 'action_spec_get', arguments: { id: 'browser.view.open' } }));
-        console.log('MCP_REQUEST_COST', JSON.stringify(rows));
         expect(second.row.inventory).toBe(0);
         expect(second.row.maps).toBe(0);
         expect(second.row.schemas).toBe(0);

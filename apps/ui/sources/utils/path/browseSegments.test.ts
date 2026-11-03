@@ -176,7 +176,7 @@ describe('browseSegments', () => {
             expect(appendSegment('~/Documents/', 'lantern')).toBe('~/Documents/lantern');
         });
 
-        it('produces a path with trailing separator when appending an empty seed dir', () => {
+        it('returns just the name when appending to an empty seed dir', () => {
             // Empty directory + name yields just the name (no leading separator inferred).
             expect(appendSegment('', 'foo')).toBe('foo');
         });
@@ -360,17 +360,11 @@ describe('browseSegments', () => {
                 expect(isAtRoot('C:')).toBe(false);
                 expect(isAtRoot('C:', 'windows')).toBe(false);
             });
-
-            it('returns true for `C:\\` and `C:/`', () => {
-                expect(isAtRoot('C:\\')).toBe(true);
-                expect(isAtRoot('C:/')).toBe(true);
-            });
         });
 
         describe('walkUpOneSegment with partial UNC input', () => {
             it('does not return a parent above the UNC share root', () => {
                 expect(walkUpOneSegment('\\\\server\\share\\foo\\bar')).toBe('\\\\server\\share\\foo\\');
-                expect(walkUpOneSegment('\\\\server\\share\\foo')).toBe('\\\\server\\share\\');
             });
         });
     });

@@ -7,6 +7,7 @@ import { buildDesktopActivityOverlayModel } from '@/activity/adapters/desktop/pr
 import type { DesktopOverlayPolicy } from '@/activity/adapters/desktop/runtime/resolveDesktopOverlayPolicy';
 import { activityInstanceKey } from '@/sync/domains/session/sessionAddress';
 import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { createSessionListPresentationSource } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import type { ConnectedServiceQuotaSummary } from '@/hooks/server/connectedServices/useConnectedServiceQuotaSummaries';
 
 import { buildDesktopActivityOverlaySnapshot } from './buildDesktopActivityOverlaySnapshot';
@@ -80,6 +81,25 @@ function createOverlaySource(params: Readonly<{
 }
 
 describe('buildDesktopActivityOverlaySnapshot', () => {
+    it('keeps reconciled lifecycle facts in a mixed-row desktop snapshot', () => {
+        const base = createSessionFixture({ id: 'mixed-desktop', serverId: 'server-1',
+            active: true, activeAt: 1_000, presence: 'online', updatedAt: 900,
+            pendingPermissionRequestCount: 1, pendingRequestObservedAt: 950 });
+        const row = buildSessionListRenderableFromSession({ ...base, seq: base.seq + 1,
+            active: false, activeAt: 100, updatedAt: 100 });
+        const candidate = buildSessionActivityAttention({ session: row, nowMs: 1_000,
+            presentationSource: createSessionListPresentationSource(row, { baseSession: base, serverId: 'server-1' }) });
+        const snapshot = buildDesktopActivityOverlaySnapshot({
+            source: createOverlaySource({ sessions: [base] }),
+            sourceOverview: { candidates: [candidate],
+                counts: { unread: 0, permissionRequired: 1, actionRequired: 0, thinking: 0, totalAttention: 1 } },
+            activityPolicy: resolveActivitySurfacePolicy({}),
+            desktopPolicy: createDesktopPolicy(),
+            nowMs: 1_000,
+        });
+        expect(snapshot.primary).toMatchObject({ sessionId: base.id, active: true, updatedAt: 900 });
+    });
+
     it.each(['status_only', 'title_only', 'include_preview'] as const)('applies %s workspace privacy to real-source overlay payloads', (privacyMode) => {
         const snapshot = buildDesktopActivityOverlaySnapshot({
             source: {

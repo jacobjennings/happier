@@ -170,7 +170,8 @@ describe('forwardRpcCall', () => {
             timeout: () => ({ fetchSockets: async () => targets }) }) } as unknown as Server;
         const args = { io, targetUserId: 'user-1', method: `machine-1:${RPC_METHODS.UI_ACTION_EXECUTE}`,
             callParams: 'sealed-action', answeringClient: { requireSingle: true as const } };
-        expect(await forwardRpcCall(args)).toMatchObject({ ok: false, errorCode: 'RPC_CLIENT_AMBIGUOUS' });
+        expect(await forwardRpcCall(args)).toMatchObject({ ok: false, errorCode: 'RPC_CLIENT_AMBIGUOUS',
+            answeringClients: [{ id: 'app-a', deviceLabel: null }, { id: 'app-b', deviceLabel: null }] });
         expect(emitWithAck).not.toHaveBeenCalled();
         expect(await forwardRpcCall({ ...args, answeringClient: { clientId: 'app-b' } }))
             .toMatchObject({ ok: true, answeringClientId: 'app-b' });

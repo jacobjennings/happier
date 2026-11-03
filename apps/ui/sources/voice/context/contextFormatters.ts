@@ -17,6 +17,7 @@ import { isInventoryPrivacyVoiceToolName } from '@/sync/domains/settings/actionS
 import { projectUiSessionAwareness } from '@/sync/domains/session/awareness/sessionAwareness';
 import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { t } from '@/text';
+import { voiceSettingsDefaults } from '@/sync/domains/settings/voiceSettings';
 interface SessionMetadata {
     summary?: { text?: string };
     path?: string;
@@ -26,6 +27,7 @@ interface SessionMetadata {
 }
 
 export interface VoiceContextFormatterPrefs {
+    voiceCanApproveRequests?: boolean;
     voiceShareSessionSummary?: boolean;
     voiceShareRecentMessages?: boolean;
     voiceRecentMessagesCount?: number;
@@ -91,6 +93,7 @@ function collectUserActionSummary(
 
 function resolvePrefs(prefs?: VoiceContextFormatterPrefs): ResolvedVoiceContextFormatterPrefs {
     return {
+        voiceCanApproveRequests: prefs?.voiceCanApproveRequests ?? voiceSettingsDefaults.canApproveRequests,
         voiceShareSessionSummary: prefs?.voiceShareSessionSummary === true,
         voiceShareRecentMessages: prefs?.voiceShareRecentMessages === true,
         voiceRecentMessagesCount: normalizeNonnegativeInt(prefs?.voiceRecentMessagesCount, 10),
@@ -210,7 +213,7 @@ export function summarizeAssistantMessagesForVoiceHuman(
 ): string | null {
     const resolved = resolvePrefs(prefs);
     const latestAssistantMessage = [...messages]
-        .filter((message): message is Extract<Message, { kind: 'agent-text' }> => message?.kind === 'agent-text')
+        .filter((message): message is Extract<Message, { kind: 'agent-text' }> => message?.kind === 'agent-text' && !message.peer)
         .sort((left, right) => left.createdAt - right.createdAt)
         .at(-1);
 
@@ -243,11 +246,20 @@ export function summarizeMessagesForVoiceHuman(
     );
 }
 
+/** Shared request/Brief instruction text; decision admission stays with the executor. */
+export function formatVoiceApprovalGuidance(canApproveRequests: boolean): string {
+    return [
+        canApproveRequests
+            ? 'Voice approvals are enabled. Read the request aloud within the sharing policy and ask the person. Use the canonical request tools to approve or deny on the person\'s behalf, following their answer.'
+            : 'Voice approvals are off. A tap in the request UI is required; do not approve or deny through Voice, and do not bypass a present_user_required refusal.',
+        'Native Codex Realtime cannot decide requests; use a tap or switch to Local Voice when Voice approvals are enabled.',
+        'Never claim it was settled until canonical session updates show the result.',
+    ].join(' ');
+}
+
 /**
  * Format a permission request for natural language context.
- *
- * Note: tool args may contain sensitive data. This formatter only includes args
- * when explicitly enabled via prefs.
+ * Tool args are included only when explicitly enabled via prefs.
  */
 export function formatPermissionRequest(
     sessionId: SessionAddress | string,
@@ -269,10 +281,8 @@ export function formatPermissionRequest(
         ${sharedToolName ? `<tool_name>${sharedToolName}</tool_name>` : '<tool_name_redacted>true</tool_name_redacted>'}
         ${args ? `<tool_args>${args}</tool_args>` : '<tool_args_redacted>true</tool_args_redacted>'}
         Interrupt your previous plan and tell the human about this request now.
-        Do not call any tools or send new coding-session work while this permission remains pending.
-        Tell the human to use the canonical session UI to approve or deny it.
-        A spoken answer does not decide this permission request.
-        Never claim it was settled until canonical session updates show the result.
+        ${formatVoiceApprovalGuidance(resolved.voiceCanApproveRequests)}
+        Use only tools needed for this request while it remains pending; do not send new coding-session work.
     `);
 }
 
@@ -327,7 +337,9 @@ function formatMessageWithPrefs(message: Message, prefs?: VoiceContextFormatterP
     if (message.kind === 'agent-text') {
         const readable = prepareTranscriptMessageBody(message).text ?? '';
         const text = resolved.voiceShareFilePaths ? readable : redactVoicePathLikeString(readable);
-        lines.push(`Coding assistant: \n<text>${text}</text>`);
+        lines.push(message.peer
+            ? `${message.peer.handback ? 'Sub-agent report' : 'Agent message'} from ${message.peer.name ?? 'another agent'} to the coding assistant: \n<text>${text}</text>`
+            : `Coding assistant: \n<text>${text}</text>`);
     } else if (message.kind === 'user-text') {
         const readable = prepareTranscriptMessageBody(message).text ?? '';
         const text = resolved.voiceShareFilePaths ? readable : redactVoicePathLikeString(readable);

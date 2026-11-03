@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import type { TranscriptViewportLifecycleEffect } from './lifecycle';
 import {
-    resolveNativeObservedViewportStateGenericEffects,
     resolveNativeObservedViewportStateGenericLifecycleEffects,
 } from './nativeObservedViewportStateGenericEffect';
+
+type NativeObservedViewportStateEffect = Extract<
+    TranscriptViewportLifecycleEffect,
+    { type: 'native-observed-viewport-state' }
+>;
 
 function firstGenericObservedStateEffect(
     effects: readonly TranscriptViewportLifecycleEffect[],
@@ -17,10 +21,9 @@ function firstGenericObservedStateEffect(
     return effect;
 }
 
-const followingObservedEffect = (overrides: Partial<Extract<
-    TranscriptViewportLifecycleEffect,
-    { type: 'native-observed-viewport-state' }
->> = {}): Extract<TranscriptViewportLifecycleEffect, { type: 'native-observed-viewport-state' }> => ({
+const followingObservedEffect = (
+    overrides: Partial<NativeObservedViewportStateEffect> = {},
+): NativeObservedViewportStateEffect => ({
     distanceFromLiveTailPx: 96,
     isPinned: false,
     pinnedOffsetThresholdPx: 72,
@@ -31,14 +34,29 @@ const followingObservedEffect = (overrides: Partial<Extract<
     ...overrides,
 });
 
+function resolveCurrentSessionObservedState(params: Readonly<{
+    effect: NativeObservedViewportStateEffect;
+    nextScrollOffsetPx: number;
+    pinEnabled: boolean;
+    suppressAnchorCapture: boolean;
+}>) {
+    return firstGenericObservedStateEffect(resolveNativeObservedViewportStateGenericLifecycleEffects({
+        effects: [params.effect],
+        nextScrollOffsetPx: params.nextScrollOffsetPx,
+        pinEnabled: params.pinEnabled,
+        sessionId: params.effect.sessionId,
+        suppressAnchorCapture: params.suppressAnchorCapture,
+    }));
+}
+
 describe('native observed viewport-state generic effects', () => {
-    it('maps following native observed state to generic observed-state effects', () => {
-        expect(firstGenericObservedStateEffect(resolveNativeObservedViewportStateGenericEffects({
+    it('projects the current-session following native observed state through the generic mapping', () => {
+        expect(resolveCurrentSessionObservedState({
             effect: followingObservedEffect(),
             nextScrollOffsetPx: 512.9,
             pinEnabled: true,
             suppressAnchorCapture: true,
-        }))).toEqual({
+        })).toEqual({
             sessionId: 'session-a',
             state: {
                 anchorCapture: {
@@ -75,19 +93,21 @@ describe('native observed viewport-state generic effects', () => {
         });
     });
 
-    it('preserves released native observed state', () => {
-        const effect = firstGenericObservedStateEffect(resolveNativeObservedViewportStateGenericEffects({
+    it('derives viewport restore from wantsPinned for released native observed state', () => {
+        const effect = resolveCurrentSessionObservedState({
             effect: {
                 ...followingObservedEffect(),
                 distanceFromLiveTailPx: 180,
                 pinnedOffsetThresholdPx: 0,
-                shouldRestoreViewport: true,
+                // Deliberately opposite to the derived value (!wantsPinned): the mapper
+                // must derive restore from follow intent, not copy this field.
+                shouldRestoreViewport: false,
                 wantsPinned: false,
             },
             nextScrollOffsetPx: 24,
             pinEnabled: false,
             suppressAnchorCapture: false,
-        }));
+        });
 
         expect(effect.state.viewportState).toEqual({
             isPinned: false,
@@ -108,7 +128,7 @@ describe('native observed viewport-state generic effects', () => {
     });
 
     it('preserves pinned native observed state without forced anchor suppression', () => {
-        const effect = firstGenericObservedStateEffect(resolveNativeObservedViewportStateGenericEffects({
+        const effect = resolveCurrentSessionObservedState({
             effect: {
                 ...followingObservedEffect(),
                 distanceFromLiveTailPx: 0,
@@ -117,7 +137,7 @@ describe('native observed viewport-state generic effects', () => {
             nextScrollOffsetPx: 0,
             pinEnabled: true,
             suppressAnchorCapture: false,
-        }));
+        });
 
         expect(effect.state.viewportState).toEqual({
             isPinned: true,
@@ -135,59 +155,18 @@ describe('native observed viewport-state generic effects', () => {
 
     it('clamps invalid next scroll offsets to the existing host-safe zero', () => {
         for (const nextScrollOffsetPx of [-12, Number.NaN, Number.POSITIVE_INFINITY]) {
-            const effect = firstGenericObservedStateEffect(resolveNativeObservedViewportStateGenericEffects({
+            const effect = resolveCurrentSessionObservedState({
                 effect: followingObservedEffect(),
                 nextScrollOffsetPx,
                 pinEnabled: false,
                 suppressAnchorCapture: false,
-            }));
+            });
 
             expect(effect.state.nextScrollOffsetPx).toBe(0);
         }
     });
 
-    it('returns no generic effects when no native observed state exists for the current session', () => {
-        expect(resolveNativeObservedViewportStateGenericLifecycleEffects({
-            effects: [],
-            nextScrollOffsetPx: 8,
-            pinEnabled: true,
-            sessionId: 'session-a',
-            suppressAnchorCapture: false,
-        })).toEqual([]);
-
-        expect(resolveNativeObservedViewportStateGenericLifecycleEffects({
-            effects: [followingObservedEffect({ sessionId: 'session-b' })],
-            nextScrollOffsetPx: 8,
-            pinEnabled: true,
-            sessionId: 'session-a',
-            suppressAnchorCapture: false,
-        })).toEqual([]);
-    });
-
-    it('projects the current-session native observed state through the existing generic mapping', () => {
-        const effects = resolveNativeObservedViewportStateGenericLifecycleEffects({
-            effects: [followingObservedEffect()],
-            nextScrollOffsetPx: 44.9,
-            pinEnabled: true,
-            sessionId: 'session-a',
-            suppressAnchorCapture: true,
-        });
-
-        expect(firstGenericObservedStateEffect(effects)).toMatchObject({
-            sessionId: 'session-a',
-            state: {
-                anchorCapture: {
-                    suppressAnchorCapture: true,
-                },
-                lastDistanceFromLiveTailPx: 96,
-                nextScrollOffsetPx: 44,
-                wantsPinned: true,
-            },
-            type: 'apply-generic-observed-viewport-state',
-        });
-    });
-
-    it('filters mixed effects down to the current-session native observed state', () => {
+    it('filters mixed effects down to the first current-session native observed state', () => {
         const effects = resolveNativeObservedViewportStateGenericLifecycleEffects({
             effects: [
                 followingObservedEffect({ sessionId: 'session-b' }),
@@ -198,6 +177,7 @@ describe('native observed viewport-state generic effects', () => {
                     type: 'native-scroll-release-live-tail',
                 },
                 followingObservedEffect({ distanceFromLiveTailPx: 132 }),
+                followingObservedEffect({ distanceFromLiveTailPx: 180 }),
             ],
             nextScrollOffsetPx: 12,
             pinEnabled: false,
@@ -206,23 +186,5 @@ describe('native observed viewport-state generic effects', () => {
         });
 
         expect(firstGenericObservedStateEffect(effects).state.lastDistanceFromLiveTailPx).toBe(132);
-    });
-
-    it('preserves first-match behavior for multiple current-session native observed states', () => {
-        const effects = resolveNativeObservedViewportStateGenericLifecycleEffects({
-            effects: [
-                followingObservedEffect({ distanceFromLiveTailPx: 120 }),
-                followingObservedEffect({ distanceFromLiveTailPx: 180 }),
-            ],
-            nextScrollOffsetPx: -10,
-            pinEnabled: false,
-            sessionId: 'session-a',
-            suppressAnchorCapture: true,
-        });
-
-        const effect = firstGenericObservedStateEffect(effects);
-        expect(effect.state.lastDistanceFromLiveTailPx).toBe(120);
-        expect(effect.state.nextScrollOffsetPx).toBe(0);
-        expect(effect.state.anchorCapture.suppressAnchorCapture).toBe(true);
     });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { machineProvisionerAuthorFixture, createMachineProvisionerRepairAuthorFixture, prepareMachineProvisionerAuthorStoredReaders, machineProvisionerAuthorOptions } from '../fixtures/authoring-inference/machineProvisioners.js';
+import { machineProvisionerAuthorFixture, createMachineProvisionerRepairAuthorFixture, prepareMachineProvisionerAuthorStoredReaders, machineProvisionerAuthorOptions, projectMachineProvisionerAuthorSelection } from '../fixtures/authoring-inference/machineProvisioners.js';
 import { parsePluginManifest } from './manifest.js';
 import { createPluginTestkit } from './testing/host.js';
 import { MachineProvisionerOptionsResultV1Schema } from './machineProvisioners.js';
@@ -7,16 +7,35 @@ import { MachineProvisionerOptionsResultV1Schema } from './machineProvisioners.j
 describe('public machine provisioner authoring', () => {
   it('exposes labelled native options through the public neutral result schema', async () => {
     expect(MachineProvisionerOptionsResultV1Schema.parse(machineProvisionerAuthorOptions)).toEqual(machineProvisionerAuthorOptions);
-    const testkit = await createPluginTestkit({ manifest: machineProvisionerAuthorFixture.manifest, module: machineProvisionerAuthorFixture });
+    // A packaged external author can predate optional diagnostics and native facts.
+    const manifest = structuredClone(machineProvisionerAuthorFixture.manifest);
+    for (const action of manifest.contributes.actions ?? []) {
+      const result = action.resultSchema;
+      if (!result) continue;
+      for (const envelope of [result, ...(result.oneOf ?? []), ...(result.anyOf ?? [])]) {
+        if (!envelope.properties) continue;
+        delete envelope.properties.nativeCause;
+        if (action.id === 'options') delete envelope.properties.code;
+      }
+      if (action.id === 'options') {
+        const facts = result.properties?.dimensions?.properties?.size?.items?.properties?.nativeFacts;
+        if (!facts?.properties?.size?.properties) throw new Error('Expected canonical native option facts');
+        delete facts.properties.network;
+        delete facts.properties.size.properties.memoryBytes;
+      }
+    }
+    expect(parsePluginManifest(manifest).ok).toBe(true);
+    const testkit = await createPluginTestkit({ manifest, module: machineProvisionerAuthorFixture });
     try {
       const options = MachineProvisionerOptionsResultV1Schema.parse(await testkit.invokeAction('options', {}));
       expect(options).toEqual(machineProvisionerAuthorOptions);
-      expect(options.choices[0]?.nativeFacts?.size).not.toHaveProperty('memoryBytes');
+      expect(options.dimensions.size[0]?.nativeFacts?.size).not.toHaveProperty('memoryBytes');
       expect(machineProvisionerAuthorFixture.manifest.contributes.machineProvisioners?.[0]?.retention.finiteOnly).toBe(true);
       await expect(testkit.invokeAction('check', {})).resolves.toEqual({ available: true });
-      const selected = options.choices[0]!;
-      expect(selected.launch).toBeDefined();
-      if (selected.launch === undefined) throw new Error('The native option must expose its launch configuration');
+      expect(projectMachineProvisionerAuthorSelection(options, { size: 'small' })).toMatchObject({ kind: 'incomplete' });
+      const selected = projectMachineProvisionerAuthorSelection(options, { size: 'small', image: 'linux' });
+      expect(selected.kind).toBe('ready');
+      if (selected.kind !== 'ready') throw new Error('The complete public selection must expose its validated launch');
       await expect(testkit.invokeAction('acquire', { launch: selected.launch })).resolves.toEqual({
         kind: 'bound', resource: { contributionRef: { pluginId: machineProvisionerAuthorFixture.manifest.id, localId: 'guest' },
           schemaVersion: 1, value: selected.launch },

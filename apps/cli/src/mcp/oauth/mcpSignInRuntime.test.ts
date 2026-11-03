@@ -9,7 +9,7 @@ import { HOST_CONNECTED_ACCOUNT_SERVICE_REF_V1 } from '@happier-dev/protocol/con
 import { ConnectedAccountRequestAuthMaterializationV1Schema } from '@happier-dev/protocol/connect/connected-account-request-auth';
 import type { HostConnectedAccountAuthenticationContext } from '@/plugins/runtime/connectedAccounts/hostRuntime';
 import type { JsonValue } from '@happier-dev/protocol/json/strictJsonValue';
-import { createConnectedAccountConfigurationOwner, type ConnectedAccountConfigurationRecord } from '@/plugins/runtime/connectedAccounts/configurationOwner';
+import { createConnectedAccountConfigurationOwner, type ConnectedAccountConfigurationRecord } from '@happier-dev/cli-common/connectedAccounts';
 import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 
@@ -244,16 +244,7 @@ describe('MCP server sign-in runtime', () => {
         expect(entries.size).toBe(0);
     });
 
-    it.each(['metadata', 'issuer'] as const)('refuses a non-loopback HTTP %s before fetching its discovery authority', async insecureEndpoint => {
-        const { result, fixture, staged, entries } = await begin({ insecureEndpoint });
-        expect(result).toMatchObject({ status: 'rejected', diagnostic: { code: 'mcp_oauth_endpoints_require_https' } });
-        expect(fixture.fetches.some(url => url.startsWith(fixture.insecureBase))).toBe(false);
-        expect(fixture.requests.some(request => request.path === '/register')).toBe(false);
-        expect(staged.content).toBeNull();
-        expect(entries.size).toBe(0);
-    });
-
-    it.each(['authorization', 'registration'] as const)('refuses a non-loopback HTTP %s endpoint before registering, staging or publishing a browser URL', async insecureEndpoint => {
+    it.each(['metadata', 'issuer', 'authorization', 'registration'] as const)('refuses a non-loopback HTTP %s endpoint before fetching it, registering, staging or publishing a browser URL', async insecureEndpoint => {
         const { result, fixture, staged, entries } = await begin({ insecureEndpoint });
         expect(result).toMatchObject({ status: 'rejected', diagnostic: { code: 'mcp_oauth_endpoints_require_https' } });
         expect(fixture.fetches.some(url => url.startsWith(fixture.insecureBase))).toBe(false);

@@ -3,7 +3,7 @@ import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { useUnistyles } from 'react-native-unistyles';
 
-import { DEFAULT_AGENT_ID, isBundledAgentId, type AgentId } from '@/agents/catalog/catalog';
+import { isBundledAgentId } from '@/agents/catalog/catalog';
 import { useEnabledAgentIds } from '@/agents/hooks/useEnabledAgentIds';
 import { resolveAgentCatalogTitle } from '@/agents/backendCatalog/agentCatalogProjection';
 import { getResolvedBackendCatalogEntries } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
@@ -40,9 +40,9 @@ import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
 import { resolveFeatureAvailabilityArm } from '@/hooks/server/resolveFeatureAvailabilityArm';
 import { useNewSessionPreflightModelsState } from '@/components/sessions/new/hooks/screenModel/useNewSessionPreflightModelsState';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { useSettingsSelector } from '@/sync/domains/state/storage';
+import { useSetting } from '@/sync/domains/state/storage';
 import { useAcpCatalog } from '@/sync/store/useAcpCatalog';
-import { useVoiceExecutionMachinePresentation } from '@/voice/credentials/useExecutionMachinePresentation';
+import { useVoiceExecutionMachineId } from '@/voice/credentials/useExecutionMachinePresentation';
 import { resolveVoiceProviderIdFromSettings } from '@/voice/settings/resolveVoiceProviderId';
 import { resolveVoiceWelcomeSelection } from '@/voice/settings/welcome';
 import { VoiceGreetingItem } from '@/voice/settings/panels/VoiceGreetingItem';
@@ -118,9 +118,8 @@ export function LocalConversationSection(props: {
         : t('voice.readiness.runtime_unknown');
   const enabledAgentIds = useEnabledAgentIds();
   const { snapshot: acpCatalog } = useAcpCatalog();
-  const settings = useSettingsSelector((settings) => ({
-      backendEnabledByTargetKey: settings.backendEnabledByTargetKey,
-  }));
+  const backendEnabledByTargetKey = useSetting('backendEnabledByTargetKey');
+  const settings = React.useMemo(() => ({ backendEnabledByTargetKey }), [backendEnabledByTargetKey]);
   // "Custom…" in a model or agent menu opens an inline field under that menu, not a prompt.
   const [advancedAgentExpanded, setAdvancedAgentExpanded] = React.useState(false);
   const [customEntry, setCustomEntry] = React.useState<null | 'agentId' | 'chatModelId' | 'commitModelId'>(null);
@@ -137,7 +136,7 @@ export function LocalConversationSection(props: {
   const hasConfiguredProviderChat = cfg.agent.providerChat?.status === 'configured';
   const needsProviderChatSelection = cfg.agent.providerChat?.status === 'needs_selection'
     || cfg.agent.providerChat?.status === 'migration_required' && cfg.agent.providerChat.reason === 'provider_catalog_import_required';
-  const executionMachine = useVoiceExecutionMachinePresentation();
+  const executionMachineId = useVoiceExecutionMachineId();
   const enabled = resolveVoiceProviderIdFromSettings(voice) === 'local_conversation';
   const customAgentRequested = useSettingRevealRequested([AGENT_SELECTION_SETTINGS.customAgent]);
   const customChatModelRequested = useSettingRevealRequested([CHAT_MODEL_SETTINGS.chatModelId]);
@@ -163,9 +162,8 @@ export function LocalConversationSection(props: {
     const raw = String(cfg.agent.agentId ?? '').trim();
     return raw.length > 0 ? raw : null;
   }, [cfg.agent.agentId, cfg.agent.agentSource]);
-  const effectiveAgentIdForModelOptions = selectedAgentIdForModelOptions ?? DEFAULT_AGENT_ID;
 
-  const preflightMachineId = executionMachine.machineId;
+  const preflightMachineId = executionMachineId;
 
   const capabilityServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
   const voiceSettingsScope = useAccountSettingsScope();
@@ -264,15 +262,17 @@ export function LocalConversationSection(props: {
   ]);
 
   const preflightModels = useNewSessionPreflightModelsState({
-    backendTarget: hasConfiguredProviderChat
-      ? null
-      : { kind: 'backend', backendId: effectiveAgentIdForModelOptions },
+    // This settings page has no admitted Session target. The session source is
+    // resolved by the canonical Session reader at start, never by a default Agent.
+    backendTarget: !hasConfiguredProviderChat && selectedAgentIdForModelOptions
+      ? { kind: 'backend', backendId: selectedAgentIdForModelOptions }
+      : null,
     // This id is an Agent id, not a backend id, so name it as the runtime carrier:
     // a non-bundled backend id alone leaves the preflight with no Agent to probe.
-    runtimeCarrierAgentId: effectiveAgentIdForModelOptions as AgentId,
+    runtimeCarrierAgentId: selectedAgentIdForModelOptions,
     selectedMachineId: preflightMachineId,
     capabilityServerId,
-    enabled: Boolean(preflightMachineId),
+    enabled: Boolean(preflightMachineId && selectedAgentIdForModelOptions),
   });
 
   const selectableModelMenuItems = React.useMemo(() => {

@@ -4,11 +4,12 @@ import { useShallow } from 'zustand/react/shallow';
 
 import { getStorage } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
-import { getSessionName } from '@/utils/sessions/sessionUtils';
+import { sessionDisplayTitle } from '@/utils/sessions/sessionDisplayTitle';
 import { t } from '@/text';
 import type { SessionListRowStateByServerId } from '@/sync/domains/session/listing/sessionListRowStateLookup';
 
 import { selectSessionRelationRecords } from './reportSubtree';
+import { readSessionPresentationInputRelations, readSessionPresentationInputDisplay } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 
 /** A lead above a Session in the `manager` tree (ORC §3.1), named as this device can name it. */
 export type SessionLineageAncestor = Readonly<{
@@ -36,13 +37,14 @@ export function readSessionLineage(
   const records = selectSessionRelationRecords(sessions, serverId, rowsByServerId);
   const ancestors: SessionLineageAncestor[] = [];
   const visited = new Set([sessionId]);
-  let leadId = readSessionManagerSessionIdV1(records[sessionId]);
+  const self = records[sessionId];
+  let leadId = readSessionManagerSessionIdV1(self ? readSessionPresentationInputRelations(self) : null);
   while (leadId && !visited.has(leadId)) {
     const lead = records[leadId];
     if (!lead) break;
     visited.add(leadId);
-    ancestors.unshift({ sessionId: leadId, title: getSessionName(lead) });
-    leadId = readSessionManagerSessionIdV1(lead);
+    ancestors.unshift({ sessionId: leadId, title: sessionDisplayTitle(readSessionPresentationInputDisplay(lead), serverId) });
+    leadId = readSessionManagerSessionIdV1(readSessionPresentationInputRelations(lead));
   }
   return ancestors;
 }

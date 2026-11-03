@@ -12,7 +12,6 @@ vi.mock('@/utils/platform/desktopHost', () => ({
 
 describe('desktopWindowBridge', () => {
     afterEach(() => {
-        vi.resetModules();
         invokeDesktopHostMock.mockReset();
         listenDesktopHostEventMock.mockReset();
         isDesktopHostMock.mockReset();
@@ -110,7 +109,6 @@ describe('desktopWindowBridge', () => {
             isFullscreen: false,
         });
 
-        vi.resetModules();
         invokeDesktopHostMock.mockReset();
         listenDesktopHostEventMock.mockReset();
         isDesktopHostMock.mockReset();

@@ -7,6 +7,7 @@ import {
     resolveSessionListSourceIndex,
 } from '@/sync/domains/session/listing/sessionListIndexPresentation';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
+import { useSessionListAgentTargetDemand } from '@/sync/domains/session/listing/useSessionListAgentTargetDemand';
 import {
     useSessionListQuerySourceState,
     type SessionListQueryHomeInput,
@@ -18,6 +19,8 @@ export type VisibleSessionListSourceStateOptions = Readonly<{
     queryHomes?: readonly SessionListQueryHomeInput[];
     /** Distinguishes a proved empty qualified selection from startup before Home discovery. */
     emptyQuerySelectionComplete?: boolean;
+    /** A local Agent condition needs its private target fact, not another structural corpus. */
+    agentTargetDemand?: boolean;
 }>;
 
 export type VisibleSessionListSourceState = Readonly<{
@@ -37,6 +40,7 @@ export function useVisibleSessionListSourceState(
         enabled: queryActive,
         homes: options.queryHomes ?? [],
         emptySelectionComplete: options.emptyQuerySelectionComplete === true,
+        agentTargetDemand: options.agentTargetDemand === true,
     });
     const selectedServerIds = React.useMemo(
         () => {
@@ -54,6 +58,7 @@ export function useVisibleSessionListSourceState(
         },
         [selection.activeServerId, selection.allowedServerIds, selection.enabled],
     );
+    useSessionListAgentTargetDemand(selectedServerIds, !queryActive && options.agentTargetDemand === true);
     const byServerId = useSessionListIndexByServerId(selectedServerIds);
     const ordinaryActiveIndex = React.useMemo(() => {
         const activeServerId = String(selection.activeServerId ?? '').trim();

@@ -90,7 +90,7 @@ describe('executeScmRemoteOperation failure feedback', () => {
         expect(actions).toEqual(['pull', 'refresh', 'push', 'refresh']);
     });
 
-    it('never pushes after a rejected, uncertain, unrefreshed, or cancelled pull', async () => {
+    it('never pushes after a rejected, uncertain, or unrefreshed pull', async () => {
         const failures: ReadonlyArray<Readonly<{ execute: () => Promise<ScmRemoteResponse>; refresh?: () => Promise<void> }>> = [
             { execute: async () => ({ success: false, errorCode: SCM_OPERATION_ERROR_CODES.REMOTE_NON_FAST_FORWARD }) },
             { execute: async () => { throw new Error('response lost'); } },

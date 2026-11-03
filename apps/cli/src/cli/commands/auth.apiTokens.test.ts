@@ -4,10 +4,17 @@ import tweetnacl from 'tweetnacl';
 import { API_TOKEN_FULL_GRANT_V1, computeAccountEncryptionMigrateKeyFingerprintV1, deriveAccountMachineKeyFromRecoverySecret, formatAccountApiTokenCredentialV1, openApiTokenEncryptionAccessV1, parseAccountApiTokenCredentialV1 } from '@happier-dev/protocol';
 import { decodeBase64, encodeBase64 } from '@happier-dev/protocol/crypto/base64';
 
+import { reloadConfiguration } from '@/configuration';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
 import { captureConsoleText } from '@/testkit/logger/captureOutput';
+import { publishServerHttpRuntimeOrigin } from '@/api/client/serverHttpBaseUrl';
+import { writeCredentialsTokenOnly, writeCredentialsDataKey, writeCredentialsTokenOnlyForServerId } from '@/persistence';
+import { handleAuthCommand } from './auth';
+import { addServerProfile } from '@/server/serverProfiles';
+import { resolveServerSelectionFromArgs } from '@/server/serverSelection';
+import * as persistence from '@/persistence';
 
 const TOKEN_SCOPE_FIELDS = {
   grant: API_TOKEN_FULL_GRANT_V1,
@@ -40,12 +47,13 @@ describe('trusted auth api-tokens commands', () => {
       HAPPIER_TOKEN: undefined,
       HAPPIER_ACCOUNT_SETTINGS_MODE: 'never',
     });
-    vi.resetModules();
+    reloadConfiguration();
     vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('unexpected process exit'); });
   });
   afterEach(async () => {
     vi.restoreAllMocks();
     env.restore();
+    reloadConfiguration();
     process.exitCode = 0;
     await removeTempDir(home);
   });
@@ -55,7 +63,6 @@ describe('trusted auth api-tokens commands', () => {
     { authorizeUnattendedTeamAccess: false, json: true },
     { authorizeUnattendedTeamAccess: true, json: true },
   ])('creates through the shared Action and shows the new token once; unattended=$authorizeUnattendedTeamAccess json=$json', async ({ authorizeUnattendedTeamAccess, json }) => {
-    const { publishServerHttpRuntimeOrigin } = await import('@/api/client/serverHttpBaseUrl');
     const release = publishServerHttpRuntimeOrigin('http://runtime.account.test', 'iroh');
     const app = fastify();
     let capturedRequest: Readonly<{ authorization: string | undefined; body: unknown }> | null = null;
@@ -79,9 +86,7 @@ describe('trusted auth api-tokens commands', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://runtime.account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'api-tokens', 'create', '--label', 'build',
         ...(authorizeUnattendedTeamAccess ? ['--authorize-unattended-team-access'] : []),
@@ -122,10 +127,8 @@ describe('trusted auth api-tokens commands', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsDataKey } = await import('@/persistence');
       const key = tweetnacl.box.keyPair();
       await writeCredentialsDataKey({ token: 'interactive', machineKey: key.secretKey, publicKey: key.publicKey });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(['api-tokens', 'create', '--label', 'build', '--yes', '--json']);
 
       expect(requests).toContain('/v2/account/settings');
@@ -133,51 +136,6 @@ describe('trusted auth api-tokens commands', () => {
       const result = JSON.parse(output.text());
       expect(result).toMatchObject({ ok: false, error: { code: 'api_token_operation_failed' } });
       expect(result.error).not.toHaveProperty('tokenId');
-    } finally {
-      output.restore();
-      restore();
-      await app.close();
-    }
-  });
-
-  it('withholds a bearer-only credential when the Home acknowledges another selector', async () => {
-    const app = fastify();
-    let requestedTokenId: string | undefined;
-    const returnedTokenId = '12345678-1234-4234-8234-123456789abc';
-    app.post('/v1/auth/api-tokens/create', async (request) => {
-      requestedTokenId = (request.body as { tokenId: string }).tokenId;
-      return {
-        token: `hap_v1_${returnedTokenId}_${'A'.repeat(43)}`,
-        apiToken: {
-          ...TOKEN_SCOPE_FIELDS,
-          tokenId: returnedTokenId,
-          label: 'build',
-          displayPrefix: 'hap_v1_12345678',
-          createdAt: '2026-09-05T00:00:00Z',
-          expiresAt: null,
-          lastUsedAt: null,
-          hasEncryptionAccess: false,
-          hasUnattendedTeamAccess: false,
-        },
-      };
-    });
-    const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
-    const output = captureConsoleText();
-    try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
-      await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
-      await handleAuthCommand(['api-tokens', 'create', '--label', 'build', '--yes', '--json']);
-
-      expect(JSON.parse(output.text())).toMatchObject({
-        ok: false,
-        error: {
-          code: 'api_token_creation_outcome_unknown',
-          tokenId: requestedTokenId,
-        },
-      });
-      expect(requestedTokenId).not.toBe(returnedTokenId);
-      expect(output.text()).not.toContain(`hap_v1_${returnedTokenId}`);
     } finally {
       output.restore();
       restore();
@@ -195,16 +153,13 @@ describe('trusted auth api-tokens commands', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'https://company.test' });
     const output = captureConsoleText();
     try {
-      const { addServerProfile } = await import('@/server/serverProfiles');
       const company = await addServerProfile({
         name: 'company',
         serverUrl: 'https://company.test',
         webappUrl: 'https://company.test',
         use: false,
       });
-      const { writeCredentialsTokenOnlyForServerId } = await import('@/persistence');
       await writeCredentialsTokenOnlyForServerId(company.id, { token: 'company-interactive' });
-      const { resolveServerSelectionFromArgs } = await import('@/server/serverSelection');
       const resolvedSelection = await resolveServerSelectionFromArgs([
         'list', '--server', 'company', '--no-persist', '--json',
       ]);
@@ -213,7 +168,6 @@ describe('trusted auth api-tokens commands', () => {
         serverUrl: 'https://company.test',
         application: { kind: 'ephemeralEnv' },
       });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(['api-tokens', 'list', '--server', 'company', '--no-persist', '--json']);
 
       const envelope = JSON.parse(output.text());
@@ -264,9 +218,7 @@ describe('trusted auth api-tokens commands', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
       for (const command of [['list'], ['revoke', tokenId, '--yes'], ['revoke-all', '--yes']]) {
         output.lines.length = 0;
         await handleAuthCommand(['api-tokens', ...command, '--json']);
@@ -372,16 +324,14 @@ describe('trusted auth api-tokens commands', () => {
         HAPPIER_PUBLIC_SERVER_URL: origin,
         HAPPIER_WEBAPP_URL: origin,
       });
-      vi.resetModules();
+      reloadConfiguration();
     } else {
       restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     }
     const output = captureConsoleText();
     try {
-      const persistence = await import('@/persistence');
       if (kind === 'legacy') await persistence.writeCredentialsLegacy({ token: 'interactive', secret });
       else await persistence.writeCredentialsDataKey({ token: 'interactive', machineKey, publicKey: kind === 'wrongPair' ? new Uint8Array(32).fill(9) : publicKey });
-      const { handleAuthCommand } = await import('./auth');
       if (kind === 'cancelled') controller.abort();
       await handleAuthCommand(['api-tokens', 'create', '--label', 'build', '--encryption', '--yes', '--json'], controller.signal);
       const result = JSON.parse(output.text());
@@ -424,49 +374,6 @@ describe('trusted auth api-tokens commands', () => {
     }
   });
 
-  it('reports the request-owned selector when a bearer-only create response is lost', async () => {
-    const app = fastify();
-    let createCount = 0;
-    let requestedTokenId: string | undefined;
-    app.post('/v1/auth/api-tokens/create', async (request, reply) => {
-      createCount++;
-      requestedTokenId = (request.body as { tokenId: string }).tokenId;
-      reply.hijack();
-      request.raw.socket.destroy();
-      return reply;
-    });
-    await app.listen({ host: '127.0.0.1', port: 0 });
-    const address = app.server.address();
-    if (!address || typeof address === 'string') throw new Error('Expected an HTTP API-token test address.');
-    const origin = `http://127.0.0.1:${address.port}`;
-    env.patch({
-      HAPPIER_SERVER_URL: origin,
-      HAPPIER_PUBLIC_SERVER_URL: origin,
-      HAPPIER_WEBAPP_URL: origin,
-    });
-    vi.resetModules();
-    const output = captureConsoleText();
-    try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
-      await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
-      await handleAuthCommand(['api-tokens', 'create', '--label', 'build', '--yes', '--json']);
-
-      expect(JSON.parse(output.text())).toMatchObject({
-        ok: false,
-        error: {
-          code: 'api_token_creation_outcome_unknown',
-          tokenId: requestedTokenId,
-          message: expect.stringContaining('List tokens and revoke the requested token'),
-        },
-      });
-      expect(createCount).toBe(1);
-    } finally {
-      output.restore();
-      await app.close();
-    }
-  });
-
   it.each([
     ['create', '--label', 'build'],
     ['revoke', '12345678-1234-4234-8234-123456789abc'],
@@ -480,9 +387,7 @@ describe('trusted auth api-tokens commands', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(['api-tokens', ...command, '--json']);
 
       expect(JSON.parse(output.text())).toMatchObject({

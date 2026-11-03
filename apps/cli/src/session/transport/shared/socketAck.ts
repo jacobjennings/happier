@@ -32,10 +32,11 @@ export class SocketAckError extends Error {
     code: SocketAckErrorCode;
     event: string;
     timeoutMs?: number;
+    cause?: unknown;
   }>) {
     super(params.code === 'socket_not_connected'
       ? `Socket is disconnected before ${params.event} ACK`
-      : `Socket ACK timed out for ${params.event}`);
+      : `Socket ACK timed out for ${params.event}`, { cause: params.cause });
     this.name = 'SocketAckError';
     this.code = params.code;
     this.event = params.event;
@@ -113,7 +114,7 @@ export async function emitSocketWithAck<
     ackPromise.then(
       (value) => settle(() => resolve(value as T)),
       (error: unknown) => settle(() => reject(isSocketIoAckTimeoutError(error)
-        ? new SocketAckError({ code: 'socket_ack_timeout', event: params.event, ...(timeoutMs === null ? {} : { timeoutMs }) })
+        ? new SocketAckError({ code: 'socket_ack_timeout', event: params.event, cause: error, ...(timeoutMs === null ? {} : { timeoutMs }) })
         : error)),
     );
   });

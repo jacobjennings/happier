@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runCliUpdateValidation } from '../pipeline/release-validation/executors/cli-update.mjs';
@@ -42,6 +43,33 @@ test('release-validate plans a named release profile without inventing profile e
       'docker-release-assets',
     ],
   });
+});
+
+test('release-validate profile planning does not load the protocol package used only by suite execution', () => {
+  // Measured 2026-10-26: the planner loaded 2,500 modules (2,254 from packages/protocol/dist)
+  // through the packed-author harness, so a dry-run spent most of its time importing code it
+  // never runs. Planning stays independent of execution-only dependencies.
+  const loaderDir = mkdtempSync(join(tmpdir(), 'happier-release-validate-plan-imports-'));
+  const loaderPath = join(loaderDir, 'reject-protocol.mjs');
+  writeFileSync(loaderPath, [
+    'export async function resolve(specifier, context, nextResolve) {',
+    "  if (specifier === '@happier-dev/protocol' || specifier.startsWith('@happier-dev/protocol/')) {",
+    "    throw new Error(`release-validate planning imported ${specifier}`);",
+    '  }',
+    '  return nextResolve(specifier, context);',
+    '}',
+    '',
+  ].join('\n'));
+  try {
+    const raw = execFileSync(
+      process.execPath,
+      ['--no-warnings', '--loader', loaderPath, scriptPath, '--profile', 'integrated', '--dry-run'],
+      { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 },
+    );
+    assert.equal(JSON.parse(raw).profile, 'integrated');
+  } finally {
+    rmSync(loaderDir, { recursive: true, force: true });
+  }
 });
 
 test('release-validate rejects suite-specific inputs when planning a profile', async () => {

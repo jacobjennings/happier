@@ -46,12 +46,13 @@ describe('resolveDefaultDiffModeForFile', () => {
         expect(mode).toBe('pending');
     });
 
-    it('uses sapling default when no override is provided', () => {
+    it('uses the sapling default when neither an override nor a delta selects a mode', () => {
+        // Both areas are available, so only the plugin default (not the first available area) yields pending.
         const mode = resolveDefaultDiffModeForFile({
-            snapshot: saplingSnapshot,
+            snapshot: { ...saplingSnapshot, capabilities: { ...saplingSnapshot.capabilities, supportedDiffAreas: ['included', 'pending'] } },
             backendOverrides: {},
             hasIncludedDelta: false,
-            hasPendingDelta: true,
+            hasPendingDelta: false,
         });
         expect(mode).toBe('pending');
     });

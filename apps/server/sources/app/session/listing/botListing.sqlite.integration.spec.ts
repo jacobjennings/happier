@@ -7,7 +7,6 @@ import {
     SessionListQueryResponseV1Schema,
 } from '@happier-dev/protocol';
 import { buildSessionListServerQueryV1, SessionListQueryV1Schema } from '@happier-dev/protocol/sessions/listing/query';
-import { matchSessionBotFilterV1 } from '@happier-dev/protocol/sessions/listFilter/sessionListFilterV1';
 
 import { db } from '@/storage/db';
 import { createLightSqliteHarness, type LightSqliteHarness } from '@/testkit/lightSqliteHarness';
@@ -48,7 +47,6 @@ describe('metadata-owned Bot roster paging (SQLite)', () => {
         }));
         expect(query).not.toHaveProperty('bot');
         const sessionIds: string[] = [];
-        const botIds: string[] = [];
         let cursor: string | undefined;
         let pages = 0;
         let responseBytes = 0;
@@ -64,8 +62,7 @@ describe('metadata-owned Bot roster paging (SQLite)', () => {
             pages += 1;
             responseBytes += Buffer.byteLength(JSON.stringify(page));
             sessionIds.push(...page.sessions.map(row => row.id));
-            botIds.push(...page.sessions.filter(row => matchSessionBotFilterV1(JSON.parse(row.metadata), 'bot') === 'match')
-                .map(row => row.id));
+            expect(page.sessions.every(row => row.documents === 'omitted' && row.metadata === undefined)).toBe(true);
             if (page.hasNext) {
                 expect(page.nextCursor).toBeTruthy();
                 expect(page.nextCursor).not.toBe(cursor);
@@ -76,7 +73,6 @@ describe('metadata-owned Bot roster paging (SQLite)', () => {
         expect(sessionIds).toHaveLength(corpusSize);
         expect(new Set(sessionIds).size).toBe(corpusSize);
         expect(sessionIds.at(-1)).toBe(botId);
-        expect(botIds).toEqual([botId]);
-        console.info(`Bot roster synthetic real-SQLite corpus: ${corpusSize} candidates, ${botIds.length} Bot, ${pages} pages, ${responseBytes} JSON bytes, ${(performance.now() - startedAt).toFixed(1)} ms; excludes transport and client hydration`);
+        console.info(`Bot roster synthetic real-SQLite corpus: ${corpusSize} candidates, ${pages} pages, ${responseBytes} JSON bytes, ${(performance.now() - startedAt).toFixed(1)} ms; excludes transport and client hydration`);
     });
 });

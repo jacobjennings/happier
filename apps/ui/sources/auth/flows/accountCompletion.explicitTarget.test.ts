@@ -123,6 +123,6 @@ describe('completeAccountAuthRequest explicit target', () => {
             response: new Uint8Array([1]),
             homeServerIdentityId: 'srv_home_b',
             responseKind: 'tokenOnly',
-        })).rejects.toThrow('409');
+        })).rejects.toMatchObject({ code: 'account_completion_failed', status: 409, retryable: false });
     });
 });

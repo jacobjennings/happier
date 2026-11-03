@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { FlatList, PixelRatio, Platform, Pressable, View, useWindowDimensions, type ViewToken } from 'react-native';
+import { FlatList, PixelRatio, Platform, Pressable, View, type ViewToken } from 'react-native';
 import { GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   useAnimatedReaction,
@@ -36,7 +36,7 @@ import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreferenc
 import { ESCAPE_LAYER_PRIORITIES, useEscapeLayer } from '@/keyboard/escape';
 import { Modal, type CustomModalInjectedProps } from '@/modal';
 import { t } from '@/text';
-import { useDeviceType } from '@/utils/platform/responsive';
+import { useDeviceType, usePresentationWindowDimensions } from '@/utils/platform/responsive';
 import { canOpenFileInDefaultApp, saveFileUri } from '@/sync/runtime/files/saveFileBytes';
 import { resolveFileViewerKind } from '@/scm/utils/filePresentation';
 import { SessionPaneLazyLoader } from '@/components/sessions/panes/SessionPaneLazyLoader';
@@ -44,7 +44,8 @@ import type { MediaPlayerBodyProps } from '@/components/workspaces/files/file/Me
 import type { PdfViewerProps } from '../pdf/PdfViewerStates';
 import type { PdfZoom } from '../pdf/pdfZoom';
 
-import { ImageWellCheckerboard, useImageBacking } from '../imageBacking';
+import { HappierImageCheckerboard } from '@happier-dev/plugin-ui/presentation';
+import { useImageBacking } from '../imageBacking';
 import { MediaPicture, type MediaPictureSize } from '../MediaPicture';
 import { useFilePreviewSource, type FilePreviewSourceState } from '../useFilePreviewSource';
 import { useWheelZoom } from '../zoom/useWheelZoom';
@@ -413,7 +414,7 @@ const StageViewer = React.forwardRef<ViewerHandle, StageViewerProps>(
                     >
                       <View style={[pictureSize, backing.paper ? { backgroundColor: backing.paper } : null]}>
                         {backing.checkerboard && pictureSize ? (
-                          <ImageWellCheckerboard color={theme.colors.text.primary} testID="media-stage-image-checkerboard" />
+                          <HappierImageCheckerboard color={theme.colors.text.primary} testID="media-stage-image-checkerboard" />
                         ) : null}
                         <MediaPicture
                           key={attempt}
@@ -621,7 +622,7 @@ function StageGalleryStrip(props: Readonly<{
 export function MediaStage(props: MediaStageProps & CustomModalInjectedProps) {
   const { theme } = useUnistyles();
   const gallery = useMediaStageGallery(props.items, props.initialIndex);
-  const window = useWindowDimensions();
+  const window = usePresentationWindowDimensions();
   const insets = useChromeSafeAreaInsets();
   const phone = useDeviceType() === 'phone';
   const reducedMotion = useReducedMotionPreference();

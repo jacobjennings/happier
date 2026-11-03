@@ -250,6 +250,12 @@ export async function readProjectExecutionInputs(root: string, files: readonly s
     return inputs;
 }
 
+/** Native reference identity shared by passive imports and named Service discovery. */
+export function projectNativeSourceKey(root: string, source: ProjectNativeRefV1): string {
+    return JSON.stringify([source.kind, source.kind === 'native' ? source.tool : [source.adapter.pluginId, source.adapter.localId],
+        relative(resolve(root), resolve(root, source.file.replaceAll('\\', '/'))).replaceAll('\\', '/'), source.target]);
+}
+
 /** Passive import projection. It never probes versions or invokes plugin effect callbacks. */
 export async function inspectProjectImportCandidates(input: Readonly<{
     root: string; detection: ProjectDefinitionDetectionV1; io?: ProjectNativeCommandIo; signal?: AbortSignal;
@@ -259,8 +265,7 @@ export async function inspectProjectImportCandidates(input: Readonly<{
     const label = (entry: ProjectDefinitionDetectionV1['entries'][number]) => JSON.stringify([entry.usage, entry.source.target]);
     for (const entry of input.detection.entries) {
         const source = entry.source;
-        const key = JSON.stringify([source.kind, source.kind === 'native' ? source.tool : [source.adapter.pluginId, source.adapter.localId],
-            relative(resolve(input.root), resolve(input.root, source.file.replaceAll('\\', '/'))).replaceAll('\\', '/'), source.target, entry.usage]);
+        const key = JSON.stringify([projectNativeSourceKey(input.root, source), entry.usage]);
         if (intents.has(key)) continue;
         intents.set(key, entry);
         labelCounts.set(label(entry), (labelCounts.get(label(entry)) ?? 0) + 1);
@@ -295,4 +300,18 @@ export async function inspectProjectImportCandidates(input: Readonly<{
         } else candidates.push({ ...entry, ...selectedFacts(), availability: 'available', preselected: true });
     }
     return candidates;
+}
+
+export type ProjectNativeEnvironmentSelection = Readonly<{
+    environmentInstanceId: string;
+    services: readonly string[];
+    physicalProjectName?: string;
+}>;
+
+/** Environment custody supplies the physical name; actors, releases and services do not. */
+export function resolveEnvironmentComposeProjectName(environment: ProjectNativeEnvironmentSelection): string {
+    const project = environment.physicalProjectName
+        ?? `happier-${createHash('sha256').update(environment.environmentInstanceId).digest('hex')}`;
+    if (!environment.environmentInstanceId || !/^[a-z0-9][a-z0-9_-]*$/u.test(project)) throw new Error('native_compose_project_invalid');
+    return project;
 }

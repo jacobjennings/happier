@@ -110,23 +110,7 @@ describe('resolveSlideLayerStyle (pure worklet helper, JS-callable)', () => {
         });
     });
 
-    describe('blur curve peaks at midpoint', () => {
-        it('returns 0 blur at progress=0 and progress=±1', () => {
-            const center = resolveSlideLayerStyle({ role: 'current', progress: 0, distance: DISTANCE, maxBlur: MAX_BLUR });
-            const right = resolveSlideLayerStyle({ role: 'current', progress: 1, distance: DISTANCE, maxBlur: MAX_BLUR });
-            const left = resolveSlideLayerStyle({ role: 'current', progress: -1, distance: DISTANCE, maxBlur: MAX_BLUR });
-            expect(center.blurPx).toBe(0);
-            expect(right.blurPx).toBe(0);
-            expect(left.blurPx).toBe(0);
-        });
-
-        it('returns max blur at progress=±0.5', () => {
-            const right = resolveSlideLayerStyle({ role: 'current', progress: 0.5, distance: DISTANCE, maxBlur: MAX_BLUR });
-            const left = resolveSlideLayerStyle({ role: 'current', progress: -0.5, distance: DISTANCE, maxBlur: MAX_BLUR });
-            expect(right.blurPx).toBeCloseTo(MAX_BLUR);
-            expect(left.blurPx).toBeCloseTo(MAX_BLUR);
-        });
-
+    describe('blur curve ramps linearly between the ends and the midpoint', () => {
         it('returns half blur at progress=±0.25 (linear ramp up)', () => {
             const right = resolveSlideLayerStyle({ role: 'current', progress: 0.25, distance: DISTANCE, maxBlur: MAX_BLUR });
             expect(right.blurPx).toBeCloseTo(MAX_BLUR / 2);

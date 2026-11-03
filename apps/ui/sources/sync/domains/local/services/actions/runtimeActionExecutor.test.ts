@@ -826,6 +826,27 @@ describe('UI local-services runtime action executor', () => {
         });
     });
 
+    it('preserves disabled public status through the real status client and Action projection without dispatch', async () => {
+        const { primeServerFeaturesSnapshot, deleteServerFeaturesSnapshot } = await import('@/sync/api/capabilities/serverFeaturesClient');
+        const { createRootLayoutFeaturesResponse } = await import('@/dev/testkit/fixtures/featureFixtures');
+        const { fetchLocalServicePublicPreviewStatusViaMachineRpc } = await import('../publicPreview/machineRpc');
+        const { createLocalServicesRuntimeActionExecutor } = await import('./runtimeActionExecutor');
+        primeServerFeaturesSnapshot({ serverId: 'disabled_public_home', snapshot: { status: 'ready',
+            features: createRootLayoutFeaturesResponse({ features: { localServices: { publicPreview: { enabled: false } } } }),
+        } });
+        relocationBoundary.rpc.mockClear();
+        try {
+            const execute = createLocalServicesRuntimeActionExecutor({ resolveMachineId: () => 'machine_1',
+                fetchPublicPreviewStatus: fetchLocalServicePublicPreviewStatusViaMachineRpc });
+            await expect(execute(runtimeArgs({ actionId: 'localServices.publicPreview.status', input: {},
+                context: { serverId: 'disabled_public_home' } }))).resolves.toMatchObject({ ok: false,
+                errorCode: 'runtime_action_disabled',
+                error: 'runtime_action_disabled:localServices:local_services_public_preview_feature_disabled',
+            });
+            expect(relocationBoundary.rpc).not.toHaveBeenCalled();
+        } finally { deleteServerFeaturesSnapshot({ serverId: 'disabled_public_home' }); }
+    });
+
     it('redacts public-preview status URLs for agent-surface egress while publishing the raw store snapshot', async () => {
         const mod = await import('./runtimeActionExecutor').catch(() => null);
         expect(mod?.createLocalServicesRuntimeActionExecutor).toBeTypeOf('function');
@@ -1020,7 +1041,14 @@ describe('UI local-services runtime action executor', () => {
         }));
     });
 
-    it('dispatches localServices.preview.revoke to the daemon route and publishes the refreshed snapshot', async () => {
+    it.each([
+        { binding: 'inventory', serviceTarget: undefined },
+        { binding: 'managed Service', serviceTarget: {
+            kind: 'managed_service' as const, machineId: 'machine_1', managedServiceId: 'managed-web',
+            workspaceId: 'workspace_1', cwd: '/workspace',
+            declaration: { workspaceRefId: 'workspace_1', selection: { kind: 'manifest' as const, name: 'web' } },
+        } },
+    ])('revokes a $binding preview with its exact binding and publishes the refreshed snapshot', async ({ serviceTarget }) => {
         const mod = await import('./runtimeActionExecutor');
 
         const revokePreview = vi.fn(async () => ({ ok: true as const, response: previewRevokeResponse }));
@@ -1033,11 +1061,11 @@ describe('UI local-services runtime action executor', () => {
 
         await expect(execute(runtimeArgs({
             actionId: 'localServices.preview.revoke',
-            input: { previewId: previewResource.previewId },
+            input: { previewId: previewResource.previewId, ...(serviceTarget ? { serviceTarget } : {}) },
         }))).resolves.toEqual(previewRevokeResponse);
 
         expect(revokePreview).toHaveBeenCalledWith({
-            request: { machineId: 'machine_1', previewId: previewResource.previewId },
+            request: { machineId: 'machine_1', previewId: previewResource.previewId, ...(serviceTarget ? { serviceTarget } : {}) },
             serverId: undefined,
         });
         expect(onPreviewSnapshot).toHaveBeenCalledWith(expect.objectContaining({

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildClaudeEffortCliArgs,
+  resolveClaudeEffortLevelsForProviderModel,
   isClaudeUltracodeSupportedModelId,
   resolveClaudeDefaultEffortLevelForModelId,
   resolveClaudeEffectiveEffortForModel,
@@ -9,6 +10,14 @@ import {
 } from './reasoningEffort.js';
 
 describe('resolveClaudeEffectiveEffortForModel', () => {
+  it('does not apply a non-select or inconsistent Provider effort declaration', () => {
+    const model = { id: 'custom', name: 'Custom', capabilities: { reasoningControls: 'supported' as const },
+      modelOptions: [{ id: 'reasoning_effort', name: 'Thinking', type: 'boolean', currentValue: 'high',
+        options: [{ value: 'high', name: 'High' }] }] };
+    expect(resolveClaudeEffortLevelsForProviderModel(model)).toEqual([]);
+    expect(resolveClaudeEffortLevelsForProviderModel({ ...model,
+      modelOptions: [{ ...model.modelOptions[0]!, type: 'select', currentValue: 'low' }] })).toEqual([]);
+  });
   it('preserves a valid native effort for live control and launch serialization', () => {
     expect(resolveClaudeEffectiveEffortForModel({
       modelId: 'claude-sonnet-4-6',
@@ -159,9 +168,9 @@ describe('buildClaudeEffortCliArgs', () => {
 describe('[1m] extended-context model-id lookups', () => {
   it('resolves effort levels for a [1m] variant id through the direct lookup', () => {
     expect(resolveClaudeEffortLevelsForModelId('claude-sonnet-4-6[1m]'))
-      .toEqual(resolveClaudeEffortLevelsForModelId('claude-sonnet-4-6'));
+      .toEqual(['low', 'medium', 'high', 'max']);
     expect(resolveClaudeEffortLevelsForModelId('claude-fable-5[1m]'))
-      .toEqual(resolveClaudeEffortLevelsForModelId('claude-fable-5'));
+      .toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
   });
 
   it('resolves the default effort level for a [1m] variant id', () => {
@@ -169,7 +178,7 @@ describe('[1m] extended-context model-id lookups', () => {
     expect(resolveClaudeDefaultEffortLevelForModelId('claude-sonnet-4-6[1m]')).toBe('high');
   });
 
-  it('keeps CLI effort args lookup-only (the sent model id is never mutated)', () => {
+  it('resolves CLI effort args for a suffixed model id', () => {
     expect(buildClaudeEffortCliArgs({ modelId: 'claude-fable-5[1m]', effort: 'xhigh' }))
       .toEqual(['--effort', 'xhigh']);
   });

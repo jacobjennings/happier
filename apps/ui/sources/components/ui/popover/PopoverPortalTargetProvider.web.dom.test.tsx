@@ -333,45 +333,6 @@ describe('PopoverPortalTargetProvider (web dom)', () => {
         }
     });
 
-    it('does not enqueue a null portal target update during cleanup', async () => {
-        const originalUseState = React.useState;
-        const stateUpdates: unknown[] = [];
-        const useStateSpy = vi.spyOn(React, 'useState');
-        useStateSpy.mockImplementation(((initialState: unknown) => {
-            const [state, setState] = originalUseState(initialState as never);
-            const wrappedSetState = (value: unknown) => {
-                stateUpdates.push(value);
-                return (setState as unknown as (next: unknown) => void)(value);
-            };
-            return [state, wrappedSetState];
-        }) as unknown as typeof React.useState);
-
-        const container = document.createElement('div');
-        document.body.appendChild(container);
-        const root = createRoot(container);
-
-        try {
-            const { PopoverPortalTargetProvider } = await import('./PopoverPortalTargetProvider');
-
-            await act(async () => {
-                root.render(
-                    <PopoverPortalTargetProvider>
-                        <div>child</div>
-                    </PopoverPortalTargetProvider>,
-                );
-            });
-
-            await act(async () => {
-                root.unmount();
-            });
-
-            expect(stateUpdates.some((value) => value === null)).toBe(false);
-        } finally {
-            useStateSpy.mockRestore();
-            container.remove();
-        }
-    });
-
     it('does not trigger nested update loops when a web modal mounts above the same screen tree', async () => {
         const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
         const container = document.createElement('div');

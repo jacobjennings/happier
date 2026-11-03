@@ -1,11 +1,20 @@
 import { mkdtemp, mkdir, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { classifyPath, classifyPaths, classifyPhysicalPath, type StorageProtectionFacts } from './protectedPaths';
 import { physicalPathWithoutFollowingLeaf } from '@/utils/path/physicalAncestorPath';
 import { createDaemonEventLoopStallMonitor } from '@/daemon/diagnostics/daemonEventLoopStallMonitor';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
+import { logger } from '@/ui/logger';
+import { withStorageReadTrace } from '@/daemon/externalActions/webLatencyTrace';
+import * as filesystem from 'node:fs/promises';
+
+// Observe actual filesystem work; physical-path and protection logic remain real.
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, realpath: vi.fn(actual.realpath) };
+});
 
 const fixtures: string[] = [];
 async function fixture() {
@@ -15,6 +24,39 @@ async function fixture() {
 }
 afterEach(async () => { await Promise.all(fixtures.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 describe('storage physical path protection', () => {
+  it('resolves a summary inventory parent once per observation, including managed aliases', async () => {
+    const { root, home } = await fixture();
+    const logs = join(home, 'logs'); await mkdir(logs);
+    const alias = join(root, 'alias'); await symlink(logs, alias, 'junction');
+    const paths = Array.from({ length: 1200 }, (_, index) => join(alias, `${index}.log`));
+    const candidates = paths.map(path => ({ path, managedItemPath: path }));
+    const reads = vi.mocked(filesystem.realpath);
+    for (let observation = 0; observation < 2; observation++) {
+      const before = reads.mock.calls.length;
+      const result = await classifyPaths(candidates, { homeDir: home });
+      expect(result.every(value => value.tier === null)).toBe(true);
+      // The exact names need their shared physical parent, never 2N identical realpaths.
+      expect(reads.mock.calls.slice(before).filter(([path]) => path === alias)).toHaveLength(1);
+    }
+  });
+  it('keeps diagnostic work proportional to phases rather than candidate rows', async () => {
+    const { home } = await fixture(); const path = join(home, 'cache'); await mkdir(path);
+    const traceEnv = createEnvKeyScope(['HAPPIER_WEB_LATENCY_TRACE', 'HAPPIER_LOG_LEVEL']);
+    const debug = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
+    try {
+      traceEnv.patch({ HAPPIER_WEB_LATENCY_TRACE: '1', HAPPIER_LOG_LEVEL: 'debug' });
+      const stages: number[] = [];
+      for (const rows of [1, 1000]) {
+        debug.mockClear();
+        const result = await withStorageReadTrace('rpc_classification-cost', () => classifyPaths(
+          Array.from({ length: rows }, () => ({ path, managedItemPath: path })), { homeDir: home }));
+        expect(result).toEqual(Array.from({ length: rows }, () => ({ tier: null })));
+        stages.push(debug.mock.calls.length);
+      }
+      expect(stages[0]).toBeGreaterThan(0);
+      expect(stages[1]).toBe(stages[0]);
+    } finally { debug.mockRestore(); traceEnv.restore(); }
+  });
   it('projects repeated Session process bindings without starving the daemon or losing a holder', async () => {
     const paths = Array.from({ length: 1500 }, (_, index) => `/projects/work-${index % 15}`);
     const warnings: Readonly<Record<string, unknown>>[] = [];

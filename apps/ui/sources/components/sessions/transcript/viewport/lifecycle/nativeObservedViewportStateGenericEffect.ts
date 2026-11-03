@@ -12,7 +12,7 @@ function normalizeNextScrollOffsetPx(value: number): number {
     return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
 }
 
-export function resolveNativeObservedViewportStateGenericEffects(params: Readonly<{
+function resolveNativeObservedViewportStateGenericEffects(params: Readonly<{
     effect: NativeObservedViewportStateEffect;
     nextScrollOffsetPx: number;
     pinEnabled: boolean;

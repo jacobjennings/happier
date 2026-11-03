@@ -47,6 +47,25 @@ const daemonWitness = Object.freeze({
 });
 const witness = daemonWitness;
 
+it('returns typed unavailability for native observation and saved health without a runner transport', async () => {
+    const services = await prepareRunnerDaemonPluginServices({
+        invocationId: 'native-service-unavailable',
+        signal: new AbortController().signal,
+        local: createUnavailablePluginServices(),
+        dispatch: async operation => {
+            if (operation.kind === 'plugin_services.prepare_v1') return preparedSnapshot();
+            throw new Error(`Unexpected native service transport: ${operation.kind}`);
+        },
+    });
+    await expect(Promise.resolve().then(() => services.fs.observeMachinePath(
+        { absolutePath: '/var/log/journal' }, () => {},
+    ))).rejects.toMatchObject({ code: 'plugin_service_unavailable' });
+    await expect(Promise.resolve().then(() => services.healthChecks.read(
+        { sourceInstanceId: 'health-source', checkIds: [] },
+    ))).rejects.toMatchObject({ code: 'plugin_service_unavailable' });
+});
+
+
 function createSeparatelyBundledPluginError(input: Readonly<{
     code: string;
     message: string;
@@ -226,7 +245,6 @@ describe('runner daemon PluginServices proxy', () => {
             const executable = { kind: 'systemTool' as const, id: 'codex-cli' };
             const daemonExec = createStablePluginExecService({
                 signal: controller.signal, isOccurrenceCurrent: () => true,
-                allowedExecutables: [executable],
                 resolveExecutable: async () => ({ command: process.execPath, args: [script] }),
                 resolvePath: async () => root,
             });
@@ -314,6 +332,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -346,6 +365,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -388,6 +408,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -431,6 +452,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -567,6 +589,7 @@ describe('runner daemon PluginServices proxy', () => {
             dispatch,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -696,6 +719,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -832,6 +856,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -961,6 +986,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -1067,6 +1093,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -1176,6 +1203,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -1277,6 +1305,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -1368,6 +1397,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -1430,6 +1460,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -1546,6 +1577,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -1619,6 +1651,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -1758,6 +1791,7 @@ describe('runner daemon PluginServices proxy', () => {
             bindManagedServices,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger,
                 sessions: canonicalSessions,
                 managedServices: unavailable.managedServices,
@@ -2086,6 +2120,7 @@ describe('runner daemon PluginServices proxy', () => {
             readActiveTurnAdmissionWitness: () => witness,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -2197,6 +2232,7 @@ describe('runner daemon PluginServices proxy', () => {
             readActiveTurnAdmissionWitness: () => witness,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -2244,6 +2280,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices:
@@ -2359,6 +2396,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -2472,6 +2510,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -2556,6 +2595,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -2628,6 +2668,7 @@ describe('runner daemon PluginServices proxy', () => {
                 unavailable.managedServices,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -2680,6 +2721,7 @@ describe('runner daemon PluginServices proxy', () => {
             dispatch,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -2762,6 +2804,7 @@ describe('runner daemon PluginServices proxy', () => {
             dispatch,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -2834,6 +2877,7 @@ describe('runner daemon PluginServices proxy', () => {
             dispatch,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -2888,6 +2932,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -2934,6 +2979,7 @@ describe('runner daemon PluginServices proxy', () => {
             dispatch,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -2983,6 +3029,7 @@ describe('runner daemon PluginServices proxy', () => {
             dispatch,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -3045,6 +3092,7 @@ describe('runner daemon PluginServices proxy', () => {
             dispatch,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -3111,6 +3159,7 @@ describe('runner daemon PluginServices proxy', () => {
             dispatch,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -3177,6 +3226,7 @@ describe('runner daemon PluginServices proxy', () => {
             dispatch,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -3293,6 +3343,7 @@ describe('runner daemon PluginServices proxy', () => {
                     === 'runner_daemon_service_authority_transition',
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -3405,6 +3456,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -3494,6 +3546,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -3606,6 +3659,7 @@ describe('runner daemon PluginServices proxy', () => {
                     === 'runner_daemon_service_authority_transition',
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -3750,6 +3804,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -3840,6 +3895,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -3925,6 +3981,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -3987,6 +4044,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -4063,6 +4121,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -4141,6 +4200,7 @@ describe('runner daemon PluginServices proxy', () => {
                     === 'runner_daemon_service_authority_transition',
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -4207,6 +4267,7 @@ describe('runner daemon PluginServices proxy', () => {
                     === 'runner_daemon_service_authority_transition',
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -4264,6 +4325,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -4318,6 +4380,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -4385,6 +4448,7 @@ describe('runner daemon PluginServices proxy', () => {
             },
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,
@@ -4470,6 +4534,7 @@ describe('runner daemon PluginServices proxy', () => {
             dispatch,
             local: {
                 availability: unavailable.availability,
+                backgroundServices: unavailable.backgroundServices,
                 logger: unavailable.logger,
                 sessions: unavailable.sessions,
                 managedServices: unavailable.managedServices,

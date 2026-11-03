@@ -22,6 +22,7 @@ function guidance(adHoc: 'resolved' | 'refused'): Guidance {
     definition: { basis: { kind: 'present', hash: 'a'.repeat(64) }, status: 'valid', diagnostics: [] },
     workerPreferences: { status: 'ready', preference, revision: 'absent', provenance: 'default' },
     destination: null,
+    services: [],
     scripts: [
       { name: 'test', source: { kind: 'command', command: 'test' }, execution: 'portable', resolution: resolve('portable', 'test') },
       { name: 'typecheck', source: { kind: 'command', command: 'typecheck' }, execution: 'portable', resolution: resolve('portable', 'typecheck') },

@@ -1,5 +1,5 @@
 import type { Server, Socket } from "socket.io";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { CallerInputConstraintsV1 } from "@happier-dev/protocol/auth/apiTokenGrant";
 import type { ExternalActionExecutionAuthorizationV1, ExternalActionRequestEnvelope } from '@happier-dev/protocol/actions/externalActionApi';
 
@@ -22,6 +22,7 @@ import {
     type SessionActionRpcOriginV1,
     type SocketRpcTransportAcknowledgementV1,
     type SocketRpcAnsweringClientV1,
+    type SocketRpcAnsweringClientCandidateV1,
 } from "@happier-dev/protocol/socketRpc";
 
 import {
@@ -64,6 +65,7 @@ export type RpcForwardResult =
         ok: false;
         error: string;
         errorCode?: string;
+        answeringClients?: readonly SocketRpcAnsweringClientCandidateV1[];
       }>
     | Readonly<{ ok: false } & AnyClientUpgradeRequiredV1>;
 
@@ -170,9 +172,13 @@ export async function forwardRpcCall(params: Readonly<{
     const callStartedAt = Date.now();
     const lookupStartedAt = Date.now();
     const targetTraceId = params.traceId ?? params.cancellation?.targetRequestId;
-    const correlation = targetTraceId && params.callerSocketId ? {
-        requestId: targetTraceId,
-        callerSocketId: params.callerSocketId,
+    const correlation = targetTraceId ? {
+        // Socket ingress already supplies its existing safe relay identity. HTTP
+        // roots use the same opaque-id privacy projection as daemon diagnostics;
+        // keep the original trace on the wire so the daemon derives the same id.
+        requestId: params.callerSocketId || /^(?:rpc_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetTraceId)
+            ? targetTraceId : `sha256:${createHash('sha256').update(targetTraceId).digest('hex')}`,
+        ...(params.callerSocketId ? { callerSocketId: params.callerSocketId } : {}),
     } : null;
     let methodRegistrationAbsent = false;
     let discoveryFailed = false;
@@ -212,7 +218,8 @@ export async function forwardRpcCall(params: Readonly<{
     if (selection.type === 'ambiguous') {
         recordRpcCallFailure(params.method, 'request_error');
         observeRpcCall({ method: params.method, durationMs: Date.now() - callStartedAt, result: 'error' });
-        return { ok: false, error: 'Choose an exact answering client', errorCode: RPC_ERROR_CODES.CLIENT_AMBIGUOUS };
+        return { ok: false, error: 'Pass clientId to choose an exact answering client', errorCode: RPC_ERROR_CODES.CLIENT_AMBIGUOUS,
+            answeringClients: selection.clients };
     }
 
     if (selection.type === "self-call") {

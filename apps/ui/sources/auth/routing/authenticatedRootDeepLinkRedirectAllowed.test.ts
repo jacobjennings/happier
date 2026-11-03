@@ -19,6 +19,11 @@ describe('isAuthenticatedRootDeepLinkRedirectAllowed', () => {
         expect(isAuthenticatedRootDeepLinkRedirectAllowed()).toBe(true);
     });
 
+    it('returns true for an empty pathname', () => {
+        (globalThis as any).window = { location: { pathname: '' } };
+        expect(isAuthenticatedRootDeepLinkRedirectAllowed()).toBe(true);
+    });
+
     it('returns true for root pathnames', () => {
         (globalThis as any).window = { location: { pathname: '/' } };
         expect(isAuthenticatedRootDeepLinkRedirectAllowed()).toBe(true);

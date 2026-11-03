@@ -41,8 +41,8 @@ export type ChangesCursorBlockedContext = Readonly<{
 }>;
 
 export type SnapshotBaseCursorFetchFailedContext = Readonly<{
-    trigger: 'cursor-gone' | 'forced-snapshot' | 'page-budget';
-    fallbackCursor: string;
+    trigger: 'missing-cursor' | 'cursor-gone' | 'forced-snapshot' | 'page-budget';
+    fallbackCursor: string | null;
     error: string;
 }>;
 
@@ -87,7 +87,7 @@ export async function runSocketReconnectCatchUpViaChanges(params: {
     applyPlanned: (planned: PlannedChangeActions) => Promise<PlannedChangesApplyResult>;
     /** Loaded-list knowledge of the planned Home; absent, every Session write re-reads the list. */
     planContext?: SessionChangePlanningContext;
-    snapshotRefresh: () => Promise<SnapshotRefreshResult | void>;
+    snapshotRefresh: () => Promise<SnapshotRefreshResult>;
 }): Promise<
     | { status: 'fallback' }
     | { status: 'ok'; nextCursor: string; shouldPersistCursor: boolean }
@@ -174,7 +174,7 @@ export async function runSocketReconnectCatchUpViaChanges(params: {
     };
 
     const runSnapshotRepair = async (
-        fallbackCursor: string,
+        fallbackCursor: string | null,
         trigger: SnapshotBaseCursorFetchFailedContext['trigger'],
     ): Promise<
         | { status: 'fallback' }
@@ -204,8 +204,9 @@ export async function runSocketReconnectCatchUpViaChanges(params: {
             snapshotBaseCursor = current.cursor;
         }
 
+        if (snapshotBaseCursor === null) return { status: 'fallback' };
         const snapshot = await params.snapshotRefresh();
-        if (snapshot && snapshot.status !== 'complete') {
+        if (snapshot.status !== 'complete') {
             return { status: 'fallback' };
         }
         if (params.checkpointCursor) {
@@ -221,11 +222,19 @@ export async function runSocketReconnectCatchUpViaChanges(params: {
         return { status: 'ok', cursor: snapshotBaseCursor, checkpointPersisted: false };
     };
 
-    let afterCursor = params.afterCursor ?? '0';
+    let afterCursor = params.afterCursor;
     const maxPages = Math.max(1, Math.trunc(params.maxChangesPagesPerResume ?? 5));
     let forceSnapshotRefresh = params.forceSnapshotRefresh;
     let snapshotCursorAwaitingFinalPersist: string | null = null;
     let blockedCheckpoint: { status: 'ok'; nextCursor: string; shouldPersistCursor: boolean } | null = null;
+
+    if (afterCursor === null) {
+        const snapshot = await runSnapshotRepair(null, 'missing-cursor');
+        if (snapshot.status === 'fallback') return snapshot;
+        afterCursor = snapshot.cursor;
+        forceSnapshotRefresh = false;
+        snapshotCursorAwaitingFinalPersist = snapshot.checkpointPersisted ? null : snapshot.cursor;
+    }
 
     for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
         const result = await params.fetchChanges({

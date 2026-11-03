@@ -15,12 +15,6 @@ vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
     useReducedMotionPreference: () => shared.reducedMotion,
 }));
 
-vi.mock('@/components/ui/motion/StepTransitionFrame', () => ({
-    StepTransitionFrame: ({ children, ...props }: React.PropsWithChildren<Record<string, unknown>>) =>
-        React.createElement('StepTransitionFrame', props, children),
-    resolveStepTransitionDirection: () => 'replace',
-}));
-
 vi.mock('react-native', async () => {
     const ReactModule = await import('react');
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -96,7 +90,7 @@ function createImageCard(key: string): StoryDeckImageCard {
 }
 
 describe('StoryDeckSurface', () => {
-    it('lets the horizontal pager own slide motion and avoids wrapping it in StepTransitionFrame', async () => {
+    it('advances the horizontal pager by one page width', async () => {
         shared.reducedMotion = false;
         shared.windowWidth = 360;
         shared.scrollTo.mockClear();
@@ -104,7 +98,6 @@ describe('StoryDeckSurface', () => {
         const { StoryDeckSurface } = await import('./StoryDeckSurface');
         const screen = await renderScreen(<StoryDeckSurface cards={cards} onComplete={() => {}} testID="story" />);
 
-        expect(screen.findAllByType('StepTransitionFrame')).toHaveLength(0);
         await screen.pressByTestIdAsync('story-footer-primary');
 
         expect(shared.scrollTo).toHaveBeenCalledWith({ x: 360, animated: true });
@@ -173,6 +166,24 @@ describe('StoryDeckSurface', () => {
 
         expect(screen.findByTestId('story-card-0')?.props.style).not.toContainEqual({ flexDirection: 'row-reverse' });
         expect(screen.findByTestId('story-card-1')?.props.style).not.toContainEqual({ flexDirection: 'row-reverse' });
+    });
+
+    it('places media at the end of every second wide card when alternate placement is requested', async () => {
+        shared.reducedMotion = false;
+        shared.windowWidth = 1200;
+
+        const { StoryDeckSurface } = await import('./StoryDeckSurface');
+        const screen = await renderScreen(
+            <StoryDeckSurface
+                cards={[createImageCard('one'), createImageCard('two')]}
+                onComplete={() => {}}
+                alternateWideMediaPlacement
+                testID="story"
+            />,
+        );
+
+        expect(screen.findByTestId('story-card-0')?.props.style).not.toContainEqual({ flexDirection: 'row-reverse' });
+        expect(screen.findByTestId('story-card-1')?.props.style).toContainEqual({ flexDirection: 'row-reverse' });
     });
 
     it('can use the soft blur transition without driving the horizontal pager', async () => {

@@ -1,6 +1,47 @@
 import { describe, expect, it } from 'vitest';
 
 import { UpdateBodySchema } from './index.js';
+import { classifySessionEventDelivery } from '../sessions/sessionEventDelivery.js';
+import { SessionConsumptionReplaceV1Schema, SessionConsumptionReplaceAckV1Schema } from '../sessions/sessionConsumptionV1.js';
+import { buildSessionMessageObservationFactsV1, SessionMessageObservationFactsV1Schema } from '../sessions/messages/sessionMessageObservationFactsV1.js';
+
+it('classifies durable-only, live and unconsumed events with one policy', () => {
+  for (const event of ['new-message', 'message-updated', 'checkpoint', 'delta'] as const) {
+    expect(classifySessionEventDelivery({ event, consumption: { durableBodies: false, liveSegments: true } }))
+      .toEqual({ delivery: 'full', materialization: 'full' });
+    for (const durableBodies of [true, false]) {
+      expect(classifySessionEventDelivery({ event, consumption: { durableBodies, liveSegments: false } })).toEqual(
+        event === 'checkpoint' || event === 'delta' ? { delivery: 'skip', materialization: 'none' }
+          : { delivery: durableBodies ? 'full' : 'hint', materialization: event === 'new-message' ? 'projection' : 'stale' });
+    }
+  }
+});
+
+it('keeps consumption declaration and refusal envelopes closed', () => {
+  const request = { v: 1, liveSessionIds: ['live'], durableSessionIds: ['scm'] };
+  expect(SessionConsumptionReplaceV1Schema.parse(request)).toEqual(request);
+  expect(SessionConsumptionReplaceV1Schema.safeParse({ ...request, accountId: 'claimed' }).success).toBe(false);
+  expect(SessionConsumptionReplaceV1Schema.safeParse({ ...request, liveSessionIds: [''] }).success).toBe(false);
+  expect(SessionConsumptionReplaceAckV1Schema.parse({ ok: true, ...request })).toEqual({ ok: true, ...request });
+  expect(SessionConsumptionReplaceAckV1Schema.parse({ ok: false, error: 'not_allowed' })).toEqual({ ok: false, error: 'not_allowed' });
+});
+
+it('whitelists a serialized hint without content, actor or acceptance detail', () => {
+  const hint = buildSessionMessageObservationFactsV1({ id: 'm', seq: 4, localId: null,
+    content: { t: 'encrypted', c: 'secret' }, accountActor: null,
+    deliveryResolution: { v: 1, kind: 'manual_handled' }, createdAt: 100, updatedAt: 101,
+    sourceCreatedAt: 10, transcriptObservationProvenance: { kind: 'non_dependent', source: 'history' } });
+  expect(SessionMessageObservationFactsV1Schema.parse(hint)).toEqual(hint);
+  expect(hint).not.toHaveProperty('content');
+  expect(hint).not.toHaveProperty('accountActor');
+  expect(hint).not.toHaveProperty('deliveryResolution');
+  expect(hint.attentionImpact).toEqual({ affectsUnread: true, affectsMeaningfulActivity: true });
+  for (const t of ['new-message', 'message-updated']) {
+    const parsed = UpdateBodySchema.parse({ t, sid: 's', delivery: 'hint', message: hint });
+    if ((parsed.t !== 'new-message' && parsed.t !== 'message-updated') || parsed.delivery !== 'hint') throw new Error('Expected durable message hint');
+    expect(parsed.message).toEqual(hint);
+  }
+});
 
 function buildNewSessionUpdateBody(overrides: Record<string, unknown> = {}) {
   return {

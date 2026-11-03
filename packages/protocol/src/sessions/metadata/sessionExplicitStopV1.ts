@@ -1,6 +1,10 @@
 import { lazyZodSchema } from '../../lazyZodSchema.js';
 import { z } from 'zod/mini';
 import type { ActionExecutorContext } from '../../actions/executor/types.js';
+import { SessionSpawnLaunchErrorV1Schema } from '../creation/sessionSpawnLaunchErrorV1.js';
+
+/** Resource/lifecycle Stop frees the runner; explicit Stop also holds future automatic wake. */
+export type SessionStopIntent = 'explicit_stop' | 'lifecycle_control';
 
 /** Classifies an admitted Stop author; Action dispatch and Home own target scope. */
 export function resolveSessionExplicitControlIntent(input: Readonly<{
@@ -30,12 +34,34 @@ export const SessionExplicitStopV1Schema = lazyZodSchema(() => z.strictObject({
 }));
 export type SessionExplicitStopV1 = z.infer<typeof SessionExplicitStopV1Schema>;
 
-export type SessionAutoResumeAdmissionV1 =
-  | 'eligible'
-  | 'held_by_person'
-  | 'archived'
-  | 'machine_unavailable'
-  | 'authority_unavailable';
+/** Validates the admitted author before deciding whether this Stop authors a hold. */
+export function buildSessionStopHoldV1(input: Parameters<typeof resolveSessionExplicitControlIntent>[0] & Readonly<{
+  stopIntent: SessionStopIntent;
+  requestId: string;
+  requestedAtMs: number;
+}>): Readonly<{ kind: 'refused'; reason: 'unauthorized' | 'self_stop_forbidden' }>
+  | Readonly<{ kind: 'no_hold' }> | Readonly<{ kind: 'hold'; stop: SessionExplicitStopV1 }> {
+  const author = resolveSessionExplicitControlIntent(input);
+  if (author === 'unauthorized' || author === 'self_stop_forbidden') return { kind: 'refused', reason: author };
+  if (input.stopIntent === 'lifecycle_control' || author === 'automatic') return { kind: 'no_hold' };
+  const caller = input.actionContext?.actionCaller;
+  return { kind: 'hold', stop: SessionExplicitStopV1Schema.parse({
+    v: 1, cause: 'explicit_stop', requestId: input.requestId, requestedAtMs: input.requestedAtMs,
+    ...(author === 'manager' && caller?.kind === 'session' ? { managerSessionId: caller.sessionId } : {}),
+  }) };
+}
+
+export const SessionAutoResumeRefusalV1Schema = lazyZodSchema(() => z.enum([
+  'held_by_person', 'archived', 'machine_unavailable', 'authority_unavailable',
+]));
+export type SessionAutoResumeRefusalV1 = z.infer<typeof SessionAutoResumeRefusalV1Schema>;
+export type SessionAutoResumeAdmissionV1 = 'eligible' | SessionAutoResumeRefusalV1;
+
+/** Read the existing presentation carrier; a refusal never grants launch or retry authority. */
+export function readSessionAutoResumeRefusalV1(detail: unknown): SessionAutoResumeRefusalV1 | null {
+  const launchError = SessionSpawnLaunchErrorV1Schema.safeParse(detail);
+  return launchError.success ? SessionAutoResumeRefusalV1Schema.safeParse(launchError.data.code).data ?? null : null;
+}
 
 /** Shared by absent-runtime delivery and the machine's automatic launch owner. */
 export function resolveSessionAutoResumeAdmissionV1(input: Readonly<{

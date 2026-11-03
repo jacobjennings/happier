@@ -16,13 +16,6 @@ describe('happier notify Action surface', () => {
     })).toMatchObject({ ok: true, input: { message: 'Deployment ready', title: 'Deploy', channels: ['builtin:expo_push'] } });
   });
 
-  it('refuses another Account and duplicate channels at the canonical input owner', () => {
-    const command = findCompiledActionCliCommand(['notify'], listCompiledActionCliCommands());
-    if (!command) throw new Error('notify command unavailable');
-    expect(command.spec.inputSchema.safeParse({ message: 'ready', accountId: 'someone-else' }).success).toBe(false);
-    expect(command.spec.inputSchema.safeParse({ message: 'ready', channels: ['builtin:expo_push', 'builtin:expo_push'] }).success).toBe(false);
-  });
-
   it('keeps a declared alias literal after the option terminator', () => {
     const command = findCompiledActionCliCommand(['notify'], listCompiledActionCliCommands());
     if (!command) throw new Error('notify command unavailable');

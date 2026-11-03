@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { createWorkspaceFileDownloadHarness } from '@/dev/testkit/harness/workspaceFileDownloadHarness';
 import { Modal } from '@/modal';
 import type { IModal } from '@/modal';
@@ -47,6 +48,8 @@ describe('workspaceWriteFile finalize recovery composition', () => {
         const transferRequests = () => boundary.requests.filter(request => new URL(request.url).pathname.startsWith('/machine-transfers/direct/imports/'));
         const finalizeRequests = () => transferRequests().filter(request => request.url.endsWith('/finalize'));
         const chunkRequests = () => transferRequests().filter(request => request.url.endsWith('/chunks/0'));
+        const abortRequests = () => boundary.rpcRequests.filter(request => request.method === RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_ABORT
+            || request.method === 'daemon.filesystem.transfer.cancel');
 
         await vi.waitFor(() => expect(prompts).toHaveLength(1));
         expect(finalizeRequests()).toHaveLength(1);
@@ -62,6 +65,7 @@ describe('workspaceWriteFile finalize recovery composition', () => {
         expect(chunkRequests()).toHaveLength(1);
         await Promise.resolve();
         expect(finalizeRequests()).toHaveLength(2);
+        expect(abortRequests()).toEqual([]);
 
         requireModalProps(prompts[1]).onResolve('retry_finalize');
         // The canonical HTTP boundary hashes the bytes that actually arrived.
@@ -71,6 +75,7 @@ describe('workspaceWriteFile finalize recovery composition', () => {
         expect(prepareRequests()).toHaveLength(1);
         expect(boundary.uploads).toHaveLength(1);
         expect(boundary.uploads[0]).toMatchObject({ finalized: true, aborted: false, finalizeAttempts: 3 });
+        expect(abortRequests()).toEqual([]);
         const baseUrl = chunkRequests()[0]!.url.slice(0, -'/chunks/0'.length);
         expect(new URL(baseUrl).pathname).toBe(`/machine-transfers/direct/imports/${boundary.uploads[0]!.uploadId}`);
         expect(transferRequests().map(({ method, url }) => ({ method, url }))).toEqual([

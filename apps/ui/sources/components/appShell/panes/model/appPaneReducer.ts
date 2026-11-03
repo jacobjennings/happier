@@ -66,7 +66,8 @@ export type PaneScopeState = Readonly<{
 }>;
 
 /** Used only when activation creates a scope; retained state always wins. */
-export type InitialRightPaneState = Readonly<Pick<PaneScopeState['right'], 'isOpen' | 'activeTabId'>>;
+export type InitialRightPaneState = Readonly<Pick<PaneScopeState['right'], 'isOpen' | 'activeTabId'>
+    & Partial<Pick<PaneScopeState['right'], 'selectedDestination'>>>;
 
 export type AppPaneState = Readonly<{
     activeScopeId: string | null;
@@ -112,9 +113,9 @@ export type AppPaneAction =
         openAs?: DetailsTabOpenMode;
         restoreSourceOnRehydrate?: boolean;
     }>
-    | { type: 'setDetailsTabState'; scopeId: string; tabKey: string; nextState: unknown }
-    | { type: 'patchDetailsTabState'; scopeId: string; tabKey: string; patch: Readonly<Record<string, unknown>> }
-    | { type: 'pinDetailsTab'; scopeId: string; tabKey: string }
+    | { type: 'setDetailsTabState'; scopeId: string; tabKey: string; nextState: unknown; persist?: boolean }
+    | { type: 'patchDetailsTabState'; scopeId: string; tabKey: string; patch: Readonly<Record<string, unknown>>; persist?: boolean }
+    | { type: 'pinDetailsTab'; scopeId: string; tabKey: string; persist?: boolean }
     | { type: 'unpinDetailsTab'; scopeId: string; tabKey: string }
     | { type: 'closeDetails'; scopeId: string }
     | Readonly<{
@@ -159,7 +160,8 @@ function createEmptyScopeState(initialRight?: InitialRightPaneState): PaneScopeS
         right: {
             isOpen: initialRight?.isOpen ?? false,
             activeTabId,
-            selectedDestination: activeTabId === null ? null : createBuiltinPaneDestination(activeTabId),
+            selectedDestination: initialRight?.selectedDestination
+                ?? (activeTabId === null ? null : createBuiltinPaneDestination(activeTabId)),
             tabState: {},
         },
         details: createEmptyPaneDetailsState(),

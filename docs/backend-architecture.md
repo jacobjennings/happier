@@ -256,11 +256,38 @@ The event name and retry hint are unchanged for clients on the retiring node.
 The router implements recipient filters so updates go only to interested connections (e.g., all session listeners or a specific machine).
 
 ### Update sequence numbers
+
+In 0.3 development, generic `account-change` wakes coalesce once per committed
+transaction and recipient Account's V3 stored-content audience. The first
+post-commit callback retains its position and emits that Account's maximum
+allocated cursor as `seq`; every change still allocates its own cursor, and
+entity hints remain in the durable feed. Attempt-local state is discarded on
+rollback/replay. Exact-Machine plugin-webhook wakes are a separate audience and
+do not join this coalescing.
+
+The development wake body optionally carries `changeKinds` and `entityIds`:
+the deduplicated union of that recipient's allocations in the committed
+transaction. These are already server-visible routing facts, never hints,
+titles, names or content. The feed remains authoritative; wake metadata does
+not advance materialization or replace any feed row. Development UI socket
+readers pass these advisory facts through the single `homeAccountChange` owner,
+which makes kind-less, empty, unknown and Account/security wakes coarse before
+domain relevance filters run. Advisory ids never prove feed consumption:
+`feedPageConsumed` is emitted only after detailed feed planner dispatch and
+exact Session-system-record invalidation. It is not a cursor checkpoint or a
+materialization proof. Observed Session records revalidate from relevant wake
+ids even while catch-up is held; secondary Home snapshot demand reuses the
+existing change planner's domain classification. Reconnect, observer gaps and
+blocked-cursor recovery retain their existing behavior.
+Exact-Machine webhook wakes may omit these fields and retain coarse behavior.
+
 - `Account.seq` is the Account change-feed cursor. `markAccountChanged` and its ordered set forms record publication intents during `inTx` domain work. At the terminal publication phase, their single owner locks the complete recipient union in sorted Account-id order, allocates cursors and persists coalesced `AccountChange` rows, then commits. PostgreSQL uses `FOR NO KEY UPDATE` for this phase. In current development, the admission owner reuses already-held serializing/exclusive locks when they cover every recipient; content admission still requires the terminal locking SELECT. Admitted work that records no publication operation allocates no cursor and emits no change wake. Ordinary writers acquire no further Session/resource locks after publication locking. The sole exception is the already-exclusively-admitted physical Account-erasure tail: its final `Account.delete` and existing FK cascades/SET NULL run after allocation through the same Account-owned operation seam. Cross-Account shared-Session writers admit the retiring member before resource locking, so they cannot hold those rows while waiting on its exclusive erasure entry. The Account lock stays held through commit: once a reader checkpoints C, no change at cursor ≤ C can become visible later. Coalescing permits cursor gaps; content-free socket wakes run through `afterTx`, and the durable feed owns recovery.
 - Ordinary PostgreSQL content admission takes compatible Account `FOR KEY SHARE` through `accountSessionOwnerMetadataFence.ts`, before resource locking and current-mode/current-authority reads. The complete entry set includes actual publication recipients as well as Accounts whose domain resources are affected; admitting only the actor can still cycle with a multi-Account exclusive operation. Sessions, grants and other mutable resources serialize their domain work through their owning row locks or CAS. In current development, Account-wide Collection, Pet and ordinary Artifact quota writers, and transition-stage cleanup, use the same owner's `serializing` intent (`FOR NO KEY UPDATE`): they serialize with each other while admitting unrelated content. Quota-configured Artifact grant/envelope writers and quoted Discussion admission join this cohort before resource locks to avoid reversing Artifact/Account order. Terminal cursor publication still conflicts with this lock. Mode/key/credential authority, authoritative lifecycle, retention-floor, identity and erasure mutations retain exclusive `FOR UPDATE`. Composed transition preparation selects exclusive admission before cleanup. Every caller chooses its strongest intent for the complete sorted audience at entry; an expanded or stronger nested request replays the attempt before acquiring another lock. `FOR SHARE` is unsuitable because it conflicts with cursor updates. MySQL retains early exclusive `FOR UPDATE` for all intents; SQLite retains its single-writer reservation. Provider differences remain inside the canonical owners.
 - Session/Follow/Workflow, Machine, Artifact and Discussion audience owners recheck current recipients before domain work and during terminal publication. Growth beyond the captured audience aborts the attempt through existing `inTx` replay rather than extending the lock set out of order. Resource checks must account for the transaction's own mutations: creating a Session does not by itself mean the Account audience grew. Child-only and projection-only publishers still enter through their canonical resource owner before mutation: a nullable `AccountChange` foreign key can otherwise acquire a parent lock too late, including against physical deletion cascades.
 - Physical Account erasure composes its cleanup scope with lifecycle admission before the first exclusive lock and rechecks discovery after acquisition. Session and Discussion cleanup own the retained authored/received grant predicates; erasure also includes owned Session deletion, responsibility cleanup and their workflow projections. These relationships belong to erasure admission, not the ordinary Account-status census. Cleanup cannot extend the admitted cohort or suppress surviving recipients, and the final physical-delete exception remains unchanged.
 - Publication returns explicit `AccountChangePublication` handles, not an eagerly allocated number. Code that needs an outward cursor uses `transactionResult` to project the response after terminal allocation, or resolves the handle inside `afterTx`. Final Account-currentness projections read after queued Account mutations and allocation, before commit. The encryption coordinator prelocks its activation receipt during domain work; terminal publication atomically fills that receipt with the actual allocated cursor, preserving the activation-result constraint.
+- In 0.3 development, Connected Account mutations use the Protocol-owned Connected Services Account-change builder: a known service publishes `account/connected-service:<pluginId>/<localId>` with `connectedServices: true` and its `connectedServiceRef`; bulk changes publish the separate `account/connected-services` entity. The existing per-entity coalescing and cursor filter retain exactly the services changed after a reader's checkpoint. Ordinary `account/self` hints keep replacement semantics, so later settings or username writes carry no inherited service scope. The shared reader also treats retained predecessor `account/self` rows with `connectedServices: true` as broad invalidations. Broad changes and reconnect/cursor recovery require full invalidation. Real health changes still publish Team credential-source changes because health can withdraw or restore direct-material eligibility. Named-service mutations publish to Teams whose connected-account or pool sources use that service; bulk changes and unreadable source bindings retain broad source-Team publication. The daemon's direct-material subscription consumes these explicit Team changes and completeness recovery, while connected-service facts independently invalidate retained authorization.
+- The 0.3 V4 credential reader includes committed health in its read-only top-level `health` field, beside the presentation-only `metadata` accepted by credential replacement and Account encryption migration. The daemon's status settlement compares the health seen by the invocation's final credential-currentness read before issuing a health mutation. An unchanged status preserves committed refresh timestamps and publishes no Account change; real status transitions and refresh-result settlement retain their fenced mutation and Team publication paths. Named-service invalidations reach only binding watches authorized for those services before reading the binding store; broad changes, registry replacement and durable binding changes retain their freshness checks.
 - Account delivery-mute edits read and merge the current scope list in the terminal Account operation, then resolve their changed/disposition result through `transactionResult`. Compatible entry alone does not serialize list replacements. Session delivery-mute edits retain their Session resource lock before reading and merging.
 - Entity deletion preserves the change's durable kind, entity id, hint and cursor. Nullable entity links reflect final materialized existence, matching their existing `ON DELETE SET NULL` semantics even when deletion followed the queued intent during domain work. They are not a reason to drop the removal invalidation.
 - Complete non-database awaits—imports, asynchronous crypto, RPC and provider calls—before the transaction. Immutable Collection-contract preparation precedes admission; mutable intent, quota and readiness checks remain protected. Account-owned settings/feed writes join terminal publication where an earlier Account update would invert resource locking. Refusal and failed result projection roll back domain rows, counters and change rows together. This is an internal development-source transaction contract; it changes no cursor schema or client wire format. See [PostgreSQL row locking](https://www.postgresql.org/docs/17/explicit-locking.html#LOCKING-ROWS), [MySQL locking reads](https://dev.mysql.com/doc/refman/8.0/en/innodb-locking-reads.html), and [SQLite transactions](https://www.sqlite.org/lang_transaction.html).
@@ -276,6 +303,14 @@ The current development server has separate session and machine presence owners:
 - `runPresenceTimeoutTick` reads durable timestamps and conditionally expires the observed session fence. Session and machine expiry default to ten minutes, with a separate timeout-loop tick; these are not a ten-minute flush timer. Runtime activity snapshots describe agent activity separately from reachability.
 
 These are development-source semantics, not a claim that every published server already contains them.
+
+The development Session-awareness presenter keeps reported `background_active`
+work in the shared Working bucket even when its observation freshness is stale.
+The localized presenter says "awaiting updates" and retains paused motion;
+observation age does not settle the work. List placement, Work filters and report
+rollups consume the same presentation owner. Idle activity, offline presence,
+archive and admitted requests keep their normal precedence. These are development
+source semantics, not a statement about a published UI.
 
 The development UI reconciles public lifecycle facts through
 `sessionLifecycleProjection.ts` at full Session apply, list replacement, and list
@@ -326,6 +361,12 @@ or the existing presence-expiry path.
 
 ## Storage and persistence
 ### Database (Prisma)
+In 0.3 development source, `sources/storage/prisma.ts` constructs runtime and
+maintenance clients with `errorFormat: 'minimal'` for every database provider.
+This disables Prisma's per-query source call-site capture in development and QA,
+while retaining error messages, codes and metadata for `inTx` and the shared HTTP
+error handler. Server diagnostics do not depend on Prisma source snippets.
+
 Prisma models live in `prisma/schema.prisma`. Key tables:
 
 ```mermaid
@@ -409,7 +450,9 @@ flowchart TD
 - Session organization counts, hierarchy and whole-order replacement share the existing exclusive Account admission through `organization/changes.ts`, before reading the aggregate. Session-specific operations admit their complete Session audience at that strongest intent initially; nested import owners reuse it without widening or upgrading. Creation placement retains its opposing content admission. Private reply-progress HTTP/socket writers instead use the existing exact original-JSON CAS and current linked admission at ReadCommitted; they allocate no Account cursor and do not introduce a second progress owner.
 - `afterTx()` to emit socket updates after commit.
 
-In 0.3 development source, local admission and native transaction acquisition consume the same acquisition budget. Callback entry rechecks that budget before user work, including when a transaction pooler delays BEGIN beyond Prisma's own pool wait. An expired entry rolls back without running user work or `afterTx`; it uses the existing retry owner and budgets. Request-deadline and acquisition exhaustion both project through the shared HTTP error mapper as 503 `database_connection_unavailable`. This entry check prevents a late commit; it does not interrupt a BEGIN still queued at the pooler.
+In 0.3 development source, PostgreSQL transactions share one absolute operation deadline across preparation, local admission, native acquisition, callback SQL and retry backoff. `inTx` uses the caller's deadline when supplied; otherwise it derives one at entry from the configured maxWait plus timeout (normally 10 + 15 seconds). Retries never renew that allowance. Whole-transaction replay is limited to structured concurrency aborts (`P2034`, SQLSTATE `40001`/`40P01`) and explicit domain replay requests, within the existing retry cap and backoff. Expired `P2028`, internal execution expiry, statement cancellation (`57014`) and ordinary lock timeout (`55P03`) settle without another attempt. Expired execution and statement/lock-budget expiry use `database_transaction_timeout` HTTP 503; exhausted conflicts use `database_transaction_conflict_exhausted`. Cancellation without evidence of expiry retains its rollback classification; unknown commit outcomes remain distinct. SQLite retains its own retry budget.
+
+Local admission and native transaction acquisition consume the same acquisition budget. Callback entry rechecks that budget before user work, including when a transaction pooler delays BEGIN beyond Prisma's own pool wait. An expired PostgreSQL entry settles without running user work, `afterTx` or another acquisition attempt. Request-deadline and acquisition exhaustion both project through the shared HTTP error mapper as 503 `database_connection_unavailable`. This entry check prevents a late commit; it does not interrupt a BEGIN still queued at the pooler.
 
 Account publication holds its row locks through commit. The required lock order is the complete prospective Account audience in id order before Session write locks or the retained owner-metadata fence. Session discovery includes retained grants on unpublished Sessions and inactive Accounts, so later publication or reactivation cannot introduce an unfenced reader. The same census covers manager Follow destinations, managed source Sessions and requested lifecycle Automation publications. After acquisition, the canonical Session helper rechecks the audience; an expanded audience rolls back and replays the whole transaction instead of extending locks out of order. Grant/membership/Account-status writers fence their affected Session audiences before mutation. Pending admission similarly rechecks its selected Machine/controller after acquisition.
 
@@ -421,7 +464,9 @@ In development source, the Account admission owner sets PostgreSQL `application_
 
 The same opt-in development trace distinguishes Session RPC connection, issue and ACK wait; runner outbox persistence, delivery-slot admission and transcript socket ACK; and server publisher queue admission versus execution. `socket.transcript-observation.ack` marks the successful observation response immediately before invoking its callback, not proof that the caller received it. Actor resolution and realtime/ready publication can follow that marker, so the complete socket-handler span is not an ACK latency. Successful `db.*` spans require trace-level server logs; other phase summaries use debug. Request roots are process-local: join the caller, runner and server using the owned Session and a single unambiguous original operation, not an assumed shared UUID. The default Session RPC ACK budget is 20 seconds after connection; whole-command time additionally includes startup and admission outside that wait.
 
-Exhaustion diagnostics distinguish Prisma P2028 as `acquisition-unavailable`, `expired-timeout`, `transaction-not-found` or `unclassified` in `prismaTransactionErrorKind`, using the existing recovery classifiers. Acquisition exhaustion records `outcome: acquisition-unavailable`; confirmed rollback retains `outcome: conflict-exhausted`. These labels do not change retry or outcome-certainty policy, and never include raw Prisma messages. Team restore and credential deletion supply `teams.restore` and `teams.credentials.delete` transaction classes to this same owner and Account admission label.
+Development source adds one content-free `db.transaction.phases` record per managed interactive `inTx` attempt with `HAPPIER_WEB_LATENCY_TRACE=1` and `HAPPIER_SERVER_LOG_LEVEL=trace`. It records the original entry/deadline, configured and bounded allowances, local admission submit/acquire, native callback start/end, publication completion and native settlement; unreached phases are null. Existing SQL spans carry the same request id and attempt id, so their durations and completion timestamps distinguish SQL from gaps between statements. Settlement uses the transaction owner's existing certainty (`committed`, `rolled-back`, `not-started` or `unknown`); P2028 discovery is a fixed query, batch query, or commit label, with numeric native timeout/elapsed and SQLSTATE when exposed. No SQL, parameters or raw Prisma messages enter these records. Disabled capture adds no trace state, clock or timer work. This capture does not itself identify a lock holder or explain time in client/event-loop gaps; those require contemporaneous evidence.
+
+Exhaustion diagnostics distinguish Prisma P2028 as `acquisition-unavailable`, `expired-timeout`, `transaction-not-found` or `unclassified` in `prismaTransactionErrorKind`, using the existing recovery classifiers. Acquisition exhaustion records `outcome: acquisition-unavailable`; execution or statement-budget expiry records `outcome: deadline-exceeded`; other confirmed rollback exhaustion records `outcome: conflict-exhausted`. These labels do not change retry or outcome-certainty policy, and never include raw Prisma messages. Team restore and credential deletion supply `teams.restore` and `teams.credentials.delete` transaction classes to this same owner and Account admission label.
 
 This development-source pattern is used for multi-write operations like batch KV mutation and session deletion.
 
@@ -488,6 +533,17 @@ graph TB
 - **Push tokens**: stored for later notification delivery.
 
 ## Observability
+
+In 0.3 development source, Prisma validation failures reaching the global HTTP
+error handler return the opaque HTTP 500 envelope with code
+`database_query_validation_failed`. The existing shared-QA/latency query extension
+captures model and operation at the query boundary. `storage/prismaErrors.ts`
+projects recognized validation sentences into field/argument names only; request
+logs and sanitized exception monitoring never receive the invocation or its
+values. Failures outside that extension retain unknown model/operation rather
+than inferring them from query text. This diagnostic is distinct from shared-QA
+P2021/P2022 schema mismatch guidance and adds no retry or database write.
+
 - `/health` route checks DB connectivity.
 - Metrics server exposes `/metrics` for Prometheus.
 - HTTP request counters and duration histograms are captured via Fastify hooks.

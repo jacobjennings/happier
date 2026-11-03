@@ -50,12 +50,14 @@ export async function applyPlannedChangeActions(params: {
     getSessionMaterializedMaxSeq?: (sessionId: string) => number;
     isSessionMessagesDeferred?: (sessionId: string) => boolean;
     concurrencyLimit?: number;
+    shouldContinue?: () => boolean;
     invalidate: {
         settings?: () => Promise<void>;
         profile?: () => Promise<void>;
         machines?: () => Promise<void>;
         machinePools?: () => Promise<void>;
-        artifacts?: () => Promise<void>;
+        /** Refresh exactly the Artifact rows named by this durable Account-change page. */
+        artifacts?: (artifactIds: readonly string[]) => Promise<void>;
         friends?: () => Promise<void>;
         friendRequests?: () => Promise<void>;
         feed?: () => Promise<void>;
@@ -95,6 +97,15 @@ export async function applyPlannedChangeActions(params: {
     materializeProjectAccountRow?: (physicalKey: string) => Promise<void>;
 }): Promise<PlannedChangesApplyResult> {
     const { planned } = params;
+    const retiredResult = (): PlannedChangesApplyResult => ({
+        status: 'partial',
+        safeAdvanceCursor: null,
+        blockedCursor: String(planned.changes[0]?.cursor ?? ''),
+        blockedReason: 'partial-materialization',
+        processedChanges: 0,
+        blockedChanges: planned.changes.length,
+    });
+    if (params.shouldContinue?.() === false) return retiredResult();
 
     // Fence pre-change material through its canonical loader before publishing
     // the same change. Its awaited task, not the notification, owns this demand.
@@ -142,7 +153,9 @@ export async function applyPlannedChangeActions(params: {
                 if (!params.refreshWorkflowRuns) throw new Error('workflow_run_refresh_unavailable');
                 await params.refreshWorkflowRuns(runIds);
                 for (const runId of runIds) completedWorkflowRunIds.add(runId);
-                if (workflowRunChanges.length > 0) params.publishAccountChanges?.(workflowRunChanges, { workflowRunsMaterialized: true });
+                if (params.shouldContinue?.() !== false && workflowRunChanges.length > 0) {
+                    params.publishAccountChanges?.(workflowRunChanges, { workflowRunsMaterialized: true });
+                }
             } catch {
                 for (const runId of runIds) failedWorkflowRunIds.add(runId);
             }
@@ -204,7 +217,13 @@ export async function applyPlannedChangeActions(params: {
             }
         });
     }
-    if (planned.invalidate.artifacts) tasks.push(() => params.invalidate.artifacts?.() ?? Promise.resolve());
+    if (planned.invalidate.artifacts) {
+        const artifactIds = Array.from(new Set(planned.changes
+            .filter(change => change.kind === 'artifact')
+            .map(change => change.entityId)
+            .filter(Boolean))).sort();
+        tasks.push(() => params.invalidate.artifacts?.(artifactIds) ?? Promise.resolve());
+    }
     if (planned.invalidate.friends) {
         tasks.push(() => params.invalidate.friends?.() ?? Promise.resolve());
         tasks.push(() => params.invalidate.friendRequests?.() ?? Promise.resolve());
@@ -282,6 +301,7 @@ export async function applyPlannedChangeActions(params: {
                     return;
                 }
                 await params.refreshSessionOrganization(sessionOrganizationPlan);
+                if (params.shouldContinue?.() === false) return;
                 params.applyAuthoritativeSessionOrganizationDeletions?.(sessionOrganizationPlan);
             } catch {
                 sessionOrganizationRefreshFailed = true;
@@ -310,6 +330,7 @@ export async function applyPlannedChangeActions(params: {
                 }
             }
 
+            if (params.shouldContinue?.() === false) return;
             if (shouldCatchUpMessages) {
                 try {
                     await params.invalidateMessagesForSession(sessionId);
@@ -321,6 +342,7 @@ export async function applyPlannedChangeActions(params: {
             }
 
             if (repair) {
+                if (params.shouldContinue?.() === false) return;
                 try {
                     if (!params.repairSessionTranscriptRevision) {
                         failedTranscriptRepairSessionIds.add(sessionId);
@@ -415,18 +437,29 @@ export async function applyPlannedChangeActions(params: {
 
             try {
                 const bulk = await params.kvBulkGet(params.credentials, todoKeys);
+                if (params.shouldContinue?.() === false) return;
                 if (bulk.values.length !== todoKeys.length) {
                     await (params.invalidate.todos?.() ?? Promise.resolve());
                     return;
                 }
                 await params.applyTodoSocketUpdates(bulk.values.map((value): TodoSocketUpdate => ({ key: value.key, value: value.value, version: value.version })));
             } catch {
+                if (params.shouldContinue?.() === false) return;
                 await (params.invalidate.todos?.() ?? Promise.resolve());
             }
         });
     }
 
-    await runTasksWithLimit(tasks, concurrencyLimit);
+    // Retire queued actions, but drain started work before releasing the resume slot.
+    await runTasksWithLimit(tasks.map(task => async () => {
+        if (params.shouldContinue?.() === false) return;
+        try {
+            await task();
+        } catch (error) {
+            if (params.shouldContinue?.() !== false) throw error;
+        }
+    }), concurrencyLimit);
+    if (params.shouldContinue?.() === false) return retiredResult();
 
     let safeAdvanceCursor: string | null = null;
     let processedChanges = 0;

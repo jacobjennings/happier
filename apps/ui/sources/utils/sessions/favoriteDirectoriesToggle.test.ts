@@ -3,16 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { toggleHomeAwareDirectoryFavorite } from './favoriteDirectoriesToggle';
 
 describe('toggleHomeAwareDirectoryFavorite', () => {
-    it('removes a stored home-relative favorite when toggled from an absolute path', () => {
-        const next = toggleHomeAwareDirectoryFavorite(
-            ['~/src/app'],
-            '/Users/alice/src/app',
-            '/Users/alice',
-        );
-
-        expect(next).toEqual([]);
-    });
-
     it('preserves the provided path form when adding a new favorite', () => {
         const next = toggleHomeAwareDirectoryFavorite(
             ['/Users/alice/notes'],

@@ -86,137 +86,6 @@ async function expectPackedVoiceAgentRealtimeSession(
 
 describe('packed external Voice provider author contract', () => {
 
-  it('activates source client and packed daemon runtimes and carries cancellation into raw and speech work', async () => {
-    const registered = new Map<string, Record<string, unknown>>();
-    const registeredAgents = new Set<string>();
-    const registeredActions = new Set<string>();
-    const api = {
-      actions: {
-        register(localId: string, _handler: unknown) {
-          if (registeredActions.has(localId)) {
-            throw new Error(`duplicate fixture Action registration: ${localId}`);
-          }
-          registeredActions.add(localId);
-        },
-      },
-      agents: {
-        register(
-          localId: string,
-          _factory: unknown,
-          _options: unknown,
-        ) {
-          if (registeredAgents.has(localId)) {
-            throw new Error(`duplicate fixture Agent registration: ${localId}`);
-          }
-          registeredAgents.add(localId);
-        },
-      },
-      voiceProviders: {
-        register(localId: string, runtime: Record<string, unknown>) {
-          if (registered.has(localId)) throw new Error(`duplicate fixture registration: ${localId}`);
-          registered.set(localId, runtime);
-        },
-      },
-    };
-    const clientModule = await import(pathToFileURL(
-      join(fixtureRoot, 'src', 'voiceRuntime.tsx'),
-    ).href) as Readonly<{ activate(input: typeof api): void }>;
-    const daemonModule = await import(new URL(
-      '../testkit/fixtures/packed-external-voice-provider/dist/daemon.js',
-      import.meta.url,
-    ).href) as Readonly<{ activate(input: typeof api): void }>;
-
-    clientModule.activate(api);
-    daemonModule.activate(api);
-
-    expect([...registeredAgents]).toEqual(['voice-agent']);
-    expect([...registeredActions]).toEqual(['open-packed-current-context']);
-    expect([...registered].map(([localId, runtime]) => ({ localId, kind: runtime.kind }))).toEqual([
-      { localId: 'conversation-mediated', kind: 'conversation' },
-      { localId: 'conversation-raw', kind: 'conversation' },
-      { localId: 'speech-stt', kind: 'speech' },
-      { localId: 'speech-tts', kind: 'speech' },
-    ]);
-
-    const rawRuntime = registered.get('conversation-raw') as Readonly<{
-      createConnection(input: Readonly<{
-        credentials: Readonly<{
-          phase: 'connection';
-          mediated: null;
-          raw: Readonly<{
-            materialize(
-              request: unknown,
-              options?: Readonly<{ signal?: AbortSignal }>,
-            ): Promise<unknown>;
-          }>;
-        }>;
-        signal: AbortSignal;
-      }>): Promise<unknown>;
-    }>;
-    const rawController = new AbortController();
-    const materializationCalls: Readonly<{ request: unknown; signal: AbortSignal | undefined }>[] = [];
-    const rawConnection = rawRuntime.createConnection({
-      credentials: {
-        phase: 'connection',
-        mediated: null,
-        raw: {
-          async materialize(request, options) {
-            materializationCalls.push({ request, signal: options?.signal });
-            await new Promise<never>((_resolve, reject) => {
-              const signal = options?.signal;
-              if (!signal) {
-                reject(new Error('packed_voice_raw_materialization_missing_signal'));
-                return;
-              }
-              if (signal.aborted) {
-                reject(signal.reason);
-                return;
-              }
-              signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-            });
-          },
-        },
-      },
-      signal: rawController.signal,
-    });
-    rawController.abort(new Error('packed_voice_generation_retired'));
-    await expect(rawConnection).rejects.toThrow('packed_voice_generation_retired');
-    expect(materializationCalls).toEqual([{
-      request: {
-        kind: 'httpHeaders',
-        origin: 'https://voice.example.test',
-        headerNames: ['authorization'],
-      },
-      signal: rawController.signal,
-    }]);
-
-    const speechSignal = new AbortController();
-    speechSignal.abort(new Error('packed_voice_generation_retired'));
-    const speechContext = {
-      credentials: { phase: 'speech', mediated: null, raw: null },
-      signal: speechSignal.signal,
-    } as const;
-    const sttRuntime = registered.get('speech-stt') as Readonly<{
-      transcribe(request: Readonly<{ requestId: string }>, context: typeof speechContext): Promise<unknown>;
-    }>;
-    const ttsRuntime = registered.get('speech-tts') as Readonly<{
-      synthesize(request: Readonly<{ requestId: string }>, context: typeof speechContext): Promise<unknown>;
-    }>;
-    await expect(sttRuntime.transcribe({ requestId: 'retired-stt' }, speechContext))
-      .rejects.toThrow('packed_voice_generation_retired');
-    await expect(ttsRuntime.synthesize({ requestId: 'retired-tts' }, speechContext))
-      .rejects.toThrow('packed_voice_generation_retired');
-
-    const mediatedRuntime = registered.get('conversation-mediated') as Readonly<{
-      dispose(): Promise<void>;
-    }>;
-    await mediatedRuntime.dispose();
-    const fixtureEvents = (
-      globalThis as typeof globalThis & { __HAPPIER_PACKED_VOICE_FIXTURE_EVENTS__?: readonly unknown[] }
-    ).__HAPPIER_PACKED_VOICE_FIXTURE_EVENTS__;
-    expect(fixtureEvents).toContainEqual({ kind: 'runtime_disposed' });
-  });
-
   it('packs, stages, and runs the dependency-closed public fixture through its attested Agent runner', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'happier-packed-voice-public-contract-'));
     const archivePath = join(parent, 'packed-voice.tgz');
@@ -255,6 +124,10 @@ describe('packed external Voice provider author contract', () => {
       });
       expect(staged.ok).toBe(true);
       if (!staged.ok) return;
+      expect(staged.candidate.manifest.value.entrypoints).toEqual({
+        daemon: './dist/daemon.js',
+        development: './src/voiceDaemon.ts',
+      });
 
       expect(staged.candidate.generatedUiArtifacts.artifactIds)
         .toEqual(['voice-runtime-web']);

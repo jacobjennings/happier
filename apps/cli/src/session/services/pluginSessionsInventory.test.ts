@@ -968,7 +968,7 @@ describe('plugin sessions inventory public service boundary', () => {
 
     latestSequence = 3;
     ordinarySocket.emit('update', { id: 'committed', seq: 2, createdAt: 12,
-      body: { t: 'new-message', sid: 'session-ordinary', message: {
+      body: { t: 'new-message', delivery: 'full' as const, sid: 'session-ordinary', message: {
         id: 'message-3', seq: 3, localId: null, createdAt: 12, updatedAt: 12,
         content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: committedText } } },
       } } });

@@ -1,5 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type {
@@ -13,13 +12,10 @@ import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { describe, expect, it } from 'vitest';
 
-import { createTestRpcManager, runGit as git } from './testRpcHarness';
+import { createGitWorkspace, createTestRpcManager, runGit as git } from './testRpcHarness';
 
 function initWorkspace(): string {
-    const workspace = mkdtempSync(join(tmpdir(), 'happier-git-branch-integration-rpc-'));
-    git(workspace, ['init']);
-    git(workspace, ['config', 'user.email', 'test@example.com']);
-    git(workspace, ['config', 'user.name', 'Test User']);
+    const workspace = createGitWorkspace('happier-git-branch-integration-rpc-');
     writeFileSync(join(workspace, 'a.txt'), 'base\n');
     git(workspace, ['add', 'a.txt']);
     git(workspace, ['commit', '-m', 'base']);

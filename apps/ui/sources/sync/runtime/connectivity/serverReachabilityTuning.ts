@@ -1,3 +1,19 @@
+/** Server Socket.IO peer liveness: socket.ts pingInterval (15s) + pingTimeout (45s).
+ * A silent UI dial must settle within the same existing connection-liveness window.
+ */
+export const SERVER_PEER_LIVENESS_WINDOW_MS = 15_000 + 45_000;
+
+/** Web bodies reset this window on progress. Native XHR fetch exposes no body
+ * progress, so only server-bounded reads may use it before fetch resolves.
+ */
+export function readServerReadInactivityTimeoutMs(): number {
+    const raw = String(process.env.EXPO_PUBLIC_HAPPIER_SERVER_READ_INACTIVITY_TIMEOUT_MS ?? '').trim();
+    const parsed = Number(raw);
+    // JavaScript timer delays are signed 32-bit milliseconds.
+    return raw && Number.isFinite(parsed) && Math.trunc(parsed) > 0 && parsed <= 2_147_483_647
+        ? Math.trunc(parsed) : SERVER_PEER_LIVENESS_WINDOW_MS;
+}
+
 /**
  * Upper bound for durable pending-outbox writes. Only that owner has the
  * idempotency key and retry lifecycle needed to recover an ambiguous timeout.

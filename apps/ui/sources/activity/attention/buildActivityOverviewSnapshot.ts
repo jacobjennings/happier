@@ -12,8 +12,8 @@ function sortCandidates(left: SessionActivityAttention, right: SessionActivityAt
     // Recency is the session list's own notion of it: the last meaningful activity. `updatedAt`
     // also moves when the person merely opens the session (its read state is written), which
     // would reorder the list under their pointer.
-    const leftActivityAt = resolveSessionListRenderableMeaningfulActivityAt(left.session);
-    const rightActivityAt = resolveSessionListRenderableMeaningfulActivityAt(right.session);
+    const leftActivityAt = left.meaningfulActivityAt ?? resolveSessionListRenderableMeaningfulActivityAt(left.session);
+    const rightActivityAt = right.meaningfulActivityAt ?? resolveSessionListRenderableMeaningfulActivityAt(right.session);
     if (leftActivityAt !== rightActivityAt) {
         return rightActivityAt - leftActivityAt;
     }
@@ -93,7 +93,7 @@ export function buildStableActivityOverviewFingerprint(overview: ActivityOvervie
             presentation: candidate.session.viewer?.attention.presentation ?? 'full',
             encryption: candidate.awareness.encryption,
             priority: candidate.priority,
-            updatedAt: candidate.session.updatedAt,
+            updatedAt: candidate.presentationSource?.lifecycle.updatedAt ?? candidate.session.updatedAt,
             lastTurnCompletedAt: candidate.lastTurnCompletedAt,
             reasons: candidate.reasons,
         })),

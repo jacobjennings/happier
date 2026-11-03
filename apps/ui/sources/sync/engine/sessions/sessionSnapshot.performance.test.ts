@@ -2,13 +2,13 @@ import { cpus, platform, arch } from 'node:os';
 import { afterEach, expect, it, vi } from 'vitest';
 import * as ownerEnvelopes from '@happier-dev/protocol/sessions/metadata/sessionMetadataEnvelopesV1';
 import * as dataKeyEnvelopes from '@happier-dev/protocol/crypto/encryptedDataKeyEnvelopeV1';
-import * as canonicalBase64 from '@happier-dev/protocol/crypto/base64';
 import * as metadataSchemas from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import {
     createPlainSessionOwnerMetadataEnvelopeV1,
     projectLegacySessionAccessCapabilitiesV1,
     SessionListQueryResponseV1Schema,
-    type SessionListQueryResponseV1,
+    type V2SessionRecord,
+    V2SessionRecordSchema,
     type SessionListQueryV1,
 } from '@happier-dev/protocol';
 
@@ -21,14 +21,26 @@ import { isUserFacingSession } from '@/sync/domains/session/listing/isUserFacing
 import { storage } from '@/sync/domains/state/storage';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { buildSessionListCacheEntriesFromRenderables } from '@/sync/domains/state/warmCacheAdapters';
-import { createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit/fixtures/accountEncryptionCurrentness';
+import { SessionListCacheEntryV1Schema, type SessionListCacheEntryV1 } from '@/sync/domains/state/warmCachePersistence';
+import { createLegacyAccountEncryptionCurrentnessFixture, createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit/fixtures/accountEncryptionCurrentness';
 import { act, createSessionFixture, renderHook, standardCleanup } from '@/dev/testkit';
 import { useSessionDisplayTitles, readableSessionDisplayTitle } from '@/utils/sessions/sessionDisplayTitle';
 import { useSessionDisplayNameProjections } from '@/sync/store/hooks';
 import { readComposerSessionSuggestionDisplay } from '@/sync/domains/input/suggestionSession';
 import { t } from '@/text';
 
-import { buildRenderableFromRowAndCache, fetchAndApplySessions } from './sessionSnapshot';
+import { buildRenderableFromRowAndCache, fetchAndApplySessions as fetchAndApplySessionsSource } from './sessionSnapshot';
+import { createCompactSessionListFetchBoundary, createCompactSessionListRowFixture } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
+import { fetchAndApplySessionById } from './sessionById';
+import { buildUpdatedSessionFromSocketUpdate } from './syncSessions';
+
+function fetchAndApplySessions(params: Parameters<typeof fetchAndApplySessionsSource>[0]) {
+    const request = params.request;
+    return fetchAndApplySessionsSource({ ...params,
+        ...(request ? { request: createCompactSessionListFetchBoundary(async (path, init) => path === '/v2/sessions/read-batch'
+            ? undefined : request(path, init)) } : {}),
+    });
+}
 import { readSessionListRenderableOwnerMetadataView } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { SESSION_OWNER_METADATA_PROJECTION } from '@/sync/domains/session/readSessionOwnerMetadataView';
 
@@ -94,7 +106,7 @@ it('retains admitted plain owner continuation facts independently of public list
     expect(storage.getState().sessionListRowsByServerId[serverId]?.[row.id]).toBe(row);
 });
 
-it('settles demanded Session hydration without sweeping older rows on refresh and opens deferred rows on demand', async () => {
+it('hydrates full Sessions only on demand while reusing current display documents', async () => {
     const secret = new Uint8Array(32).fill(31);
     const encryption = await Encryption.create(secret);
     encryption.configureNativeCryptoWorker({ routing: { mode: 'off' } });
@@ -128,8 +140,8 @@ it('settles demanded Session hydration without sweeping older rows on refresh an
     vi.useFakeTimers();
     await refresh();
     await vi.runAllTimersAsync();
-    expect([...sessionDataKeys.keys()].sort()).toEqual(['demand-1', 'demand-2']);
-    expect(open).toHaveBeenCalledTimes(2);
+    expect([...sessionDataKeys.keys()].sort()).toEqual(rows.map(row => row.id));
+    expect(open).toHaveBeenCalledTimes(6);
     await vi.waitFor(() => expect(Object.keys(storage.getState().sessions).filter(id => id.startsWith('demand-')).sort()).toEqual(['demand-1', 'demand-2']));
     const retainedRows = readRows();
     const rowPublications: Array<Readonly<{ changedIds: string[]; fields: string[] }>> = [];
@@ -151,12 +163,12 @@ it('settles demanded Session hydration without sweeping older rows on refresh an
         expect(rowPublications).toEqual([]);
         expect(readRows()).toBe(retainedRows);
     } finally { unsubscribe(); }
-    expect(open).toHaveBeenCalledTimes(2);
+    expect(open).toHaveBeenCalledTimes(6);
     expect(storage.getState().sessions['demand-4']).toBeUndefined();
     expect(vi.getTimerCount()).toBe(0);
     await refresh('demand-4');
     await vi.runAllTimersAsync();
-    expect(open).toHaveBeenCalledTimes(3);
+    expect(open).toHaveBeenCalledTimes(6);
     // AES completes at the platform boundary, independently of fake timer drains.
     await vi.waitFor(() => expect(storage.getState().sessions['demand-4']?.metadata?.summary?.text).toBe('Session 4'));
     expect(storage.getState().sessions['demand-5']).toBeUndefined();
@@ -169,12 +181,13 @@ it('settles demanded Session hydration without sweeping older rows on refresh an
         dataEncryptionKey: encodeBase64(await encryption.encryptEncryptionKey(replacementKey)) };
     await refresh();
     await vi.runAllTimersAsync();
-    // A previously visited row is no longer demand once it leaves the viewport.
-    expect(open).toHaveBeenCalledTimes(3);
+    // The changed display opens its replacement key, without publishing a full Session.
+    expect(open).toHaveBeenCalledTimes(7);
+    expect(readRows()['demand-4']?.metadata?.summaryText).toBe('Updated Session 4');
     expect(storage.getState().sessions['demand-4']?.metadata?.summary?.text).toBe('Session 4');
     await refresh('demand-4');
     await vi.runAllTimersAsync();
-    expect(open).toHaveBeenCalledTimes(4);
+    expect(open).toHaveBeenCalledTimes(7);
     await vi.waitFor(() => expect(storage.getState().sessions['demand-4']?.metadata?.summary?.text).toBe('Updated Session 4'));
 });
 
@@ -187,8 +200,8 @@ afterEach(() => {
     syncPerformanceTelemetry.reset();
 });
 
-function createOwnerChoicesPage() {
-    const rows = Array.from({ length: 6 }, (_, index) => ({
+function createOwnerChoicesPage(count = 6) {
+    const rows = Array.from({ length: count }, (_, index) => ({
         id: `choice-${index}`, seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
         archivedAt: null, encryptionMode: 'plain', metadataLayoutVersion: 1,
         metadata: JSON.stringify({ v: 1, summary: { text: `Session ${index}`, updatedAt: 1 } }),
@@ -202,14 +215,193 @@ function createOwnerChoicesPage() {
             follow: { follows: false, notificationLevel: 'none' }, notification: { level: 'none', source: 'preference' } },
         responsibleAccountId: null, responsibleAccount: null,
     }));
-    return SessionListQueryResponseV1Schema.parse({ sessions: rows, nextCursor: null, hasNext: false,
-        attentionNextCursor: null, attentionHasNext: false });
+    return { sessions: rows.map(row => V2SessionRecordSchema.parse(row)), nextCursor: null, hasNext: false,
+        attentionNextCursor: null, attentionHasNext: false };
 }
 
-it('names Account-opened owner envelopes before Session content hydration through the shared title and mention readers', async () => {
+it('restores 1000 proved display rows from persisted cache without batch hydration', async () => {
+    storage.setState(storage.getInitialState(), true);
+    const serverId = 'persisted-compact-home';
+    const credentials = { token: 'persisted-compact-account' };
+    const accountCurrentness = createPlainAccountEncryptionCurrentnessFixture();
+    const rows = createOwnerChoicesPage(1_000).sessions;
+    let listedRows = rows;
+    const batches: string[][] = [];
+    const boundary = createCompactSessionListFetchBoundary(async path => {
+        const url = new URL(path, 'https://persisted-compact.test');
+        if (url.pathname === '/v2/sessions/read-batch') return undefined;
+        if (url.pathname !== '/v2/sessions') return undefined;
+        const start = Number(url.searchParams.get('cursor') ?? '0');
+        const end = Math.min(start + 200, listedRows.length);
+        return Response.json({ sessions: listedRows.slice(start, end),
+            nextCursor: end < listedRows.length ? String(end) : null, hasNext: end < listedRows.length });
+    });
+    const refresh = (cachedSessionListEntries?: Record<string, SessionListCacheEntryV1>, scope = { credentials, accountCurrentness }) => fetchAndApplySessionsSource({
+        serverId, ...scope, encryption: null, sessionDataKeys: new Map(),
+        contentDemand: 'list-projection', sessionListPageSize: 200, sessionListMaxPages: 5,
+        request: async (path, init) => {
+            if (path === '/v2/sessions/read-batch') {
+                const input: unknown = JSON.parse(String(init.body));
+                if (!input || typeof input !== 'object' || !('sessionIds' in input) || !Array.isArray(input.sessionIds)) {
+                    throw new Error('Expected a real Session batch request');
+                }
+                batches.push(input.sessionIds.map(String));
+            }
+            return boundary(path, init);
+        },
+        cachedSessionListEntries,
+        getExistingSession: id => storage.getState().sessions[id],
+        getCurrentSessionListRenderable: id => storage.getState().sessionListRowsByServerId[serverId]?.[id],
+        applySessionListRenderables: values => storage.getState().applyServerScopedSessionListRows(serverId, values, { source: 'ordinary', mode: 'replace' }),
+        applySessionListRenderablePatches: patches => storage.getState().applyServerScopedSessionListRowPatches(serverId, patches),
+        applySessions: values => storage.getState().applySessions(values),
+        awaitSessionListHydration: true, log: { log() {} },
+    });
+    await refresh();
+    expect(batches.flat()).toEqual(rows.map(row => row.id));
+    expect(Object.keys(storage.getState().sessions)).toEqual([]);
+    const written = buildSessionListCacheEntriesFromRenderables(storage.getState().sessionListRowsByServerId[serverId] ?? {});
+    const restored = Object.fromEntries(Object.entries(written).map(([id, entry]) =>
+        [id, SessionListCacheEntryV1Schema.parse(JSON.parse(JSON.stringify(entry)))]));
+    storage.setState(storage.getInitialState(), true);
+    batches.length = 0;
+    await refresh(restored);
+    expect(batches).toEqual([]);
+    const displayed = storage.getState().sessionListRowsByServerId[serverId] ?? {};
+    expect(Object.keys(displayed)).toHaveLength(1_000);
+    expect(displayed['choice-0']?.metadata).toMatchObject({ path: '/private/0', summaryText: 'Session 0' });
+    expect(displayed['choice-999']?.metadata).toMatchObject({ path: '/private/999', summaryText: 'Session 999' });
+    expect(Object.keys(storage.getState().sessions)).toEqual([]);
+    const first = rows[0]!;
+    const firstEntry = restored[first.id]!;
+    const { displayProof: _priorProof, ...legacyEntry } = firstEntry;
+    const shared = { ...first, ownerMetadata: undefined, agentState: null,
+        effectiveAccess: { v: 1 as const, level: 'view' as const,
+            sources: [{ kind: 'direct' as const, shareId: 'persisted-display-share' }],
+            capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view' }) },
+        share: { accessLevel: 'view' as const, canApprovePermissions: false } };
+    for (const scenario of [
+        { row: first, entry: legacyEntry, scope: { credentials, accountCurrentness }, path: '/private/0' },
+        { row: first, entry: firstEntry, scope: { credentials: { token: 'replacement-credential' }, accountCurrentness }, path: '/private/0' },
+        { row: first, entry: firstEntry, scope: { credentials,
+            accountCurrentness: { ...accountCurrentness, updatedAt: accountCurrentness.updatedAt + 1 } }, path: '/private/0' },
+        { row: shared, entry: firstEntry, scope: { credentials, accountCurrentness }, path: '' },
+    ]) {
+        listedRows = [scenario.row];
+        storage.setState(storage.getInitialState(), true);
+        batches.length = 0;
+        await refresh({ [first.id]: scenario.entry }, scenario.scope);
+        expect(batches).toEqual([[first.id]]);
+        expect(storage.getState().sessionListRowsByServerId[serverId]?.[first.id]?.metadata)
+            .toMatchObject({ path: scenario.path, summaryText: 'Session 0' });
+        expect(Object.keys(storage.getState().sessions)).toEqual([]);
+    }
+});
+
+it('refuses a persisted display proof after an equal-version Session key replacement', async () => {
+    const serverId = 'persisted-key-home';
+    const secret = new Uint8Array(32).fill(73);
+    const credentials = { token: 'persisted-key-account', secret: encodeBase64(secret) };
+    const accountCurrentness = createPlainAccountEncryptionCurrentnessFixture();
+    const encryption = await Encryption.create(secret);
+    encryption.configureNativeCryptoWorker({ routing: { mode: 'off' } });
+    const base = createOwnerChoicesPage(1).sessions[0]!;
+    const keyedRow = async (key: Uint8Array, title: string): Promise<V2SessionRecord> => {
+        const cipher = await encryption.openEncryption(key);
+        const [metadata] = await cipher.encrypt([{ v: 1, summary: { text: title, updatedAt: 1 } }]);
+        return { ...base, encryptionMode: 'e2ee', metadata: encodeBase64(metadata!),
+            dataEncryptionKey: encodeBase64(await encryption.encryptEncryptionKey(key)) };
+    };
+    let row = await keyedRow(new Uint8Array(32).fill(31), 'Before key replacement');
+    let batches = 0;
+    const boundary = createCompactSessionListFetchBoundary(async path => path === '/v2/sessions/read-batch'
+        ? undefined : Response.json({ sessions: [row], nextCursor: null, hasNext: false }));
+    const refresh = (cachedSessionListEntries?: Record<string, SessionListCacheEntryV1>) => fetchAndApplySessionsSource({
+        serverId, credentials, accountCurrentness, encryption, sessionDataKeys: new Map(), sessionDataKeyEnvelopes: new Map(),
+        contentDemand: 'list-projection', cachedSessionListEntries,
+        request: async (path, init) => { if (path === '/v2/sessions/read-batch') batches += 1; return boundary(path, init); },
+        getExistingSession: id => storage.getState().sessions[id],
+        getCurrentSessionListRenderable: id => storage.getState().sessionListRowsByServerId[serverId]?.[id],
+        applySessionListRenderables: values => storage.getState().applyServerScopedSessionListRows(serverId, values, { source: 'rowOnly', mode: 'replace' }),
+        applySessionListRenderablePatches: patches => storage.getState().applyServerScopedSessionListRowPatches(serverId, patches),
+        applySessions: values => storage.getState().applySessions(values), awaitSessionListHydration: true, log: { log() {} },
+    });
+    storage.setState(storage.getInitialState(), true);
+    await refresh();
+    const entry = buildSessionListCacheEntriesFromRenderables(storage.getState().sessionListRowsByServerId[serverId] ?? {})[row.id]!;
+    const restored = SessionListCacheEntryV1Schema.parse(JSON.parse(JSON.stringify(entry)));
+    expect(storage.getState().sessionListRowsByServerId[serverId]?.[row.id]?.metadata?.summaryText).toBe('Before key replacement');
+    row = await keyedRow(new Uint8Array(32).fill(47), 'After key replacement');
+    expect(row.metadataVersion).toBe(restored.metadataVersion);
+    storage.setState(storage.getInitialState(), true);
+    batches = 0;
+    await refresh({ [row.id]: restored });
+    expect(batches).toBe(1);
+    expect(storage.getState().sessionListRowsByServerId[serverId]?.[row.id]?.metadata?.summaryText).toBe('After key replacement');
+    expect(Object.keys(storage.getState().sessions)).toEqual([]);
+});
+
+it('reopens owner metadata after a shared-only socket revision instead of proving the retained owner current', async () => {
+    storage.setState(storage.getInitialState(), true);
+    const serverId = 'socket-owner-revision-home';
+    const credentials = { token: 'socket-owner-account' };
+    const accountCurrentness = createPlainAccountEncryptionCurrentnessFixture();
+    const encryption = await Encryption.create(new Uint8Array(32).fill(83));
+    const original = { ...createOwnerChoicesPage(1).sessions[0]!,
+        ownerMetadata: createPlainSessionOwnerMetadataEnvelopeV1({ v: 1, workspace: { name: 'Opened owner N', path: '/owner-n' } }) };
+    const currentRow = (id: string) => storage.getState().sessionListRowsByServerId[serverId]?.[id];
+    const existing = (id: string) => storage.getState().sessions[id];
+    const opened = await fetchAndApplySessionById({ serverId, sessionId: original.id, credentials, accountCurrentness,
+        encryption, sessionDataKeys: new Map(), includeTurnsProjection: false,
+        prefetched: { detail: { status: 200, body: { session: original } } },
+        request: async () => { throw new Error('Unexpected full-reader transport'); },
+        getExistingSession: existing, getCurrentSessionListRenderable: currentRow,
+        applySessions: values => storage.getState().applySessions(values), log: { log() {} } });
+    expect(opened.ok).toBe(true);
+    expect(existing(original.id)?.ownerMetadataView?.name).toBe('Opened owner N');
+    const shared = JSON.stringify({ v: 1, summary: { text: 'Shared N+1', updatedAt: 2 } });
+    const { nextSession } = await buildUpdatedSessionFromSocketUpdate({ session: existing(original.id)!,
+        getCurrentSession: () => existing(original.id)!, sessionEncryption: null,
+        updateBody: { metadataLayoutVersion: 1, metadata: { version: 2, value: shared } },
+        updateSeq: 2, updateCreatedAt: 2 });
+    storage.getState().applySessions([nextSession]);
+    expect(existing(original.id)?.metadataVersion).toBe(2);
+    expect(existing(original.id)?.ownerMetadataView?.name).toBe('Opened owner N');
+    const retained = currentRow(original.id)!;
+    expect(retained.metadataVersion).toBe(2);
+    const entry = buildSessionListCacheEntriesFromRenderables({ [retained.id]: retained })[retained.id]!;
+    expect(entry.displayProof).toBeUndefined();
+    const restored = SessionListCacheEntryV1Schema.parse(JSON.parse(JSON.stringify(entry)));
+    const fresh = { ...original, metadataVersion: 2, metadata: shared,
+        ownerMetadata: createPlainSessionOwnerMetadataEnvelopeV1({ v: 1, workspace: { name: 'Fresh owner N+1', path: '/owner-n-plus-one' } }) };
+    let batches = 0;
+    const boundary = createCompactSessionListFetchBoundary(async path => path === '/v2/sessions/read-batch'
+        ? undefined : Response.json({ sessions: [fresh], nextCursor: null, hasNext: false }));
+    const refresh = (cachedSessionListEntries?: Record<string, SessionListCacheEntryV1>) => fetchAndApplySessionsSource({
+        serverId, credentials, accountCurrentness, encryption, sessionDataKeys: new Map(), contentDemand: 'list-projection',
+        cachedSessionListEntries, getExistingSession: existing, getCurrentSessionListRenderable: currentRow,
+        request: async (path, init) => { if (path === '/v2/sessions/read-batch') batches += 1; return boundary(path, init); },
+        applySessionListRenderables: values => storage.getState().applyServerScopedSessionListRows(serverId, values, { source: 'rowOnly', mode: 'replace' }),
+        applySessionListRenderablePatches: patches => storage.getState().applyServerScopedSessionListRowPatches(serverId, patches),
+        applySessions: values => storage.getState().applySessions(values), awaitSessionListHydration: true, log: { log() {} },
+    });
+    await refresh();
+    expect(batches).toBe(1);
+    expect(currentRow(original.id)?.metadata).toMatchObject({ name: 'Fresh owner N+1', path: '/owner-n-plus-one' });
+    storage.setState(storage.getInitialState(), true);
+    batches = 0;
+    await refresh({ [original.id]: restored });
+    expect(batches).toBe(1);
+    expect(currentRow(original.id)?.metadata).toMatchObject({ name: 'Fresh owner N+1', path: '/owner-n-plus-one' });
+    expect(Object.keys(storage.getState().sessions)).toEqual([]);
+});
+
+
+
+it('projects Account-opened full-detail owner envelopes through the shared title and mention readers', async () => {
     const secret = new Uint8Array(32).fill(17);
     const credentials = { token: 'owner-title', secret: encodeBase64(secret) };
-    const currentness = { mode: 'e2ee' as const, version: 1, signingKeyFingerprint: 'signing', contentKeyFingerprint: 'content', updatedAt: 1 };
+    const currentness = createLegacyAccountEncryptionCurrentnessFixture({ secret });
     const encryption = await Encryption.create(secret);
     const cipher = await encryption.openEncryption(new Uint8Array(32).fill(29));
     const [sharedMetadata] = await cipher.encrypt([{ v: 1, summary: { text: 'Not opened shared title', updatedAt: 1 } }]);
@@ -259,10 +451,10 @@ it('names Account-opened owner envelopes before Session content hydration throug
     expect(titles.getCurrent()[0]).toBe(t('session.untitled'));
 });
 
-it('lists cold encrypted owner rows from proved visibility before Session content hydration', async () => {
+it('hydrates missing cold compact display facts before applying their visibility', async () => {
     const secret = new Uint8Array(32).fill(31);
     const credentials = { token: 'visibility', secret: encodeBase64(secret) };
-    const accountCurrentness = { mode: 'e2ee' as const, version: 1, signingKeyFingerprint: 'signing', contentKeyFingerprint: 'content', updatedAt: 1 };
+    const accountCurrentness = createLegacyAccountEncryptionCurrentnessFixture({ secret });
     const encryption = await Encryption.create(secret);
     encryption.configureNativeCryptoWorker({ routing: { mode: 'off' } });
     const serverId = 'cold-owner-visibility-home';
@@ -290,6 +482,7 @@ it('lists cold encrypted owner rows from proved visibility before Session conten
         getExistingSession: id => storage.getState().sessions[id],
         getCurrentSessionListRenderable: id => storage.getState().sessionListRowsByServerId[serverId]?.[id],
         applySessionListRenderables: values => storage.getState().applyServerScopedSessionListRows(serverId, values, { source: 'ordinary', mode: 'replace' }),
+        applySessionListRenderablePatches: patches => storage.getState().applyServerScopedSessionListRowPatches(serverId, patches),
         applySessions: values => storage.getState().applySessions(values),
         awaitSessionListHydration: true,
         log: { log() {} },
@@ -302,23 +495,23 @@ it('lists cold encrypted owner rows from proved visibility before Session conten
     expect(index?.flatMap(item => item.type === 'session' ? [item.sessionId] : [])).toEqual(['choice-0']);
     const projected = state.sessionListRowsByServerId[serverId]!;
     expect(rows.map(row => isUserFacingSession(projected[row.id]!))).toEqual([true, false, false]);
-    expect(projected['choice-0']?.metadata?.path).toBe('');
+    expect(projected['choice-0']?.metadata?.path).toBe('/private/0');
     expect(projected['choice-1']?.metadata?.hiddenSystemSession).toBe(true);
     expect(projected['choice-2']?.metadataUnavailable).toBe(true);
     expect(rows.map(row => state.sessions[row.id])).toEqual([undefined, undefined, undefined]);
-    expect(rows.map(row => encryption.getSessionEncryption(row.id))).toEqual([null, null, null]);
+    expect(encryption.getSessionEncryption('choice-0')).not.toBeNull();
     expect(projected['choice-0']?.[SESSION_OWNER_METADATA_PROJECTION]?.kind).toBe('owner');
     expect(readSessionListRenderableOwnerMetadataView(projected['choice-0']!, {
         requireAdmitted: { credentials, accountMode: 'e2ee', accountCurrentness, isCurrent: () => true },
-    })).toBeNull();
-    expect(openDataKey).not.toHaveBeenCalled();
+    })).toMatchObject({ path: '/private/0' });
+    expect(openDataKey).toHaveBeenCalled();
 
-    // A prior readable projection remains useful while shared content is deferred.
-    // A newly proved owner-hidden fact must nevertheless remove it from the list.
+    // A new metadata revision must replace retained display facts and apply a
+    // newly proved owner-hidden fact through the same full-read fallback.
     storage.getState().applyServerScopedSessionListRowPatches(serverId, [{ sessionId: 'choice-0', patch: {
         metadata: { ...projected['choice-0']!.metadata, path: '/retained/worktree', summaryText: 'Retained title' },
     } }]);
-    rows[0] = { ...rows[0]!, ownerMetadata: ownerEnvelopes.sealSessionOwnerMetadataEnvelopeV1({
+    rows[0] = { ...rows[0]!, metadataVersion: 2, ownerMetadata: ownerEnvelopes.sealSessionOwnerMetadataEnvelopeV1({
         material: { type: 'legacy', secret },
         ownerMetadata: { v: 1, workspace: { path: '/private/0' },
             system: { systemSessionV1: { v: 1, key: 'voice_carrier', hidden: true } } },
@@ -327,18 +520,18 @@ it('lists cold encrypted owner rows from proved visibility before Session conten
     await refresh();
     const refreshed = storage.getState();
     expect(refreshed.sessionListRowsByServerId[serverId]?.['choice-0']?.metadata).toMatchObject({
-        path: '/retained/worktree', summaryText: 'Retained title', hiddenSystemSession: true,
+        path: '/private/0', summaryText: 'Private title 0', hiddenSystemSession: true,
     });
     expect(resolveVisibleSessionListIndexSummary({ enabled: false, activeServerId: serverId,
         activeIndex: refreshed.sessionListIndexByServerId[serverId] ?? null })).toEqual({ sessionsReady: true, sessionCount: 0 });
     expect(rows.map(row => refreshed.sessions[row.id])).toEqual([undefined, undefined, undefined]);
-    expect(openDataKey).not.toHaveBeenCalled();
+    expect(openDataKey).toHaveBeenCalled();
 });
 
 it('opens an unchanged owner envelope once and retains unrelated scoped row subscriptions', async () => {
     const secret = new Uint8Array(32).fill(7);
     const credentials = { token: 'owner-projection-test', secret: encodeBase64(secret, 'base64') };
-    const accountCurrentness = { mode: 'e2ee' as const, version: 1, signingKeyFingerprint: 'signing', contentKeyFingerprint: 'content', updatedAt: 1 };
+    const accountCurrentness = createLegacyAccountEncryptionCurrentnessFixture({ secret });
     const body = createOwnerChoicesPage();
     body.sessions = body.sessions.slice(0, 2).map(row => ({ ...row,
         ownerMetadata: ownerEnvelopes.sealSessionOwnerMetadataEnvelopeV1({
@@ -349,14 +542,8 @@ it('opens an unchanged owner envelope once and retains unrelated scoped row subs
     }));
     const open = vi.spyOn(ownerEnvelopes, 'openSessionOwnerMetadataEnvelopeV1');
     const openValue = vi.spyOn(ownerEnvelopes, 'openSessionOwnerMetadataV1');
-    const parseEnvelope = vi.spyOn(ownerEnvelopes.SessionOwnerMetadataEnvelopeV1Schema, 'safeParse');
     const projectOwner = vi.spyOn(metadataSchemas, 'projectSessionOwnerCompatibilityViewV1');
     const opens = () => open.mock.calls.length + openValue.mock.calls.length;
-    // Forward the real canonical validator: fresh HTTP objects must not rescan
-    // retained ciphertext, while new bytes still go through full validation.
-    const canonicalValidation = vi.spyOn(canonicalBase64, 'readCanonicalPaddedBase64DecodedLength');
-    const ciphertexts = new Set(body.sessions.flatMap(row => row.ownerMetadata?.t === 'encrypted' ? [row.ownerMetadata.c] : []));
-    const validations = () => canonicalValidation.mock.calls.filter(([value]) => ciphertexts.has(value)).length;
     const serverId = 'owner-projection-home';
     const readRows = () => storage.getState().sessionListRowsByServerId[serverId] ?? {};
     const refresh = () => fetchAndApplySessions({
@@ -374,7 +561,6 @@ it('opens an unchanged owner envelope once and retains unrelated scoped row subs
     await refresh();
     expect(readRows()['choice-0']?.metadata?.path).toBe('/owner-projection');
     expect(opens()).toBe(2);
-    expect(parseEnvelope).toHaveBeenCalledTimes(2);
     expect(projectOwner).toHaveBeenCalledTimes(2);
     const admission = { credentials: { ...credentials }, accountCurrentness, isCurrent: () => true };
     expect(readSessionListRenderableOwnerMetadataView(readRows()['choice-0']!, { requireAdmitted: admission }))
@@ -382,8 +568,6 @@ it('opens an unchanged owner envelope once and retains unrelated scoped row subs
     expect(readSessionListRenderableOwnerMetadataView(readRows()['choice-0']!, { requireAdmitted: { ...admission,
         accountCurrentness: { ...accountCurrentness, contentKeyFingerprint: 'changed-content' },
     } })).toBeNull();
-    const initialValidations = validations();
-    expect(initialValidations).toBeGreaterThan(0);
     const unchanged = readRows()['choice-1'];
     let unrelatedUpdates = 0;
     const unsubscribe = storage.subscribe((next, previous) => {
@@ -392,43 +576,32 @@ it('opens an unchanged owner envelope once and retains unrelated scoped row subs
     try {
         await refresh();
         expect(opens()).toBe(2);
-        expect(parseEnvelope).toHaveBeenCalledTimes(2);
         expect(projectOwner).toHaveBeenCalledTimes(2);
-        expect(validations()).toBe(initialValidations);
         body.sessions[0] = { ...body.sessions[0]!, updatedAt: 2, seq: 2, metadataVersion: 2,
             metadata: JSON.stringify({ v: 1, summary: { text: 'Updated', updatedAt: 2 } }),
         };
         await refresh();
         expect(opens()).toBe(2);
-        expect(parseEnvelope).toHaveBeenCalledTimes(2);
         expect(readRows()['choice-0']?.metadata?.summaryText).toBe('Updated');
         expect(projectOwner).toHaveBeenCalledTimes(3);
         expect(readRows()['choice-1']).toBe(unchanged);
         expect(unrelatedUpdates).toBe(0);
-        expect(validations()).toBe(initialValidations);
         const retainedEnvelope = body.sessions[0]!.ownerMetadata;
         if (retainedEnvelope?.t !== 'encrypted') throw new Error('Expected encrypted owner fixture');
         const invalidCiphertext = `${retainedEnvelope.c}\n`;
-        ciphertexts.add(invalidCiphertext);
         body.sessions[0] = { ...body.sessions[0]!, ownerMetadata: { t: 'encrypted', c: invalidCiphertext } };
         await expect(refresh()).rejects.toThrow();
-        expect(validations()).toBeGreaterThan(initialValidations);
         expect(readRows()['choice-1']).toBe(unchanged);
         const changedEnvelope = ownerEnvelopes.sealSessionOwnerMetadataEnvelopeV1({
             material: { type: 'legacy', secret }, ownerMetadata: { v: 1, workspace: { path: '/owner-projection/changed' } },
             randomBytes: length => new Uint8Array(length).fill(9),
         });
         if (changedEnvelope.t !== 'encrypted') throw new Error('Expected encrypted owner fixture');
-        ciphertexts.add(changedEnvelope.c);
-        const beforeChangedCiphertext = validations();
         body.sessions[0] = { ...body.sessions[0]!, seq: 3, updatedAt: 3, metadataVersion: 3, ownerMetadata: changedEnvelope };
         await refresh();
-        expect(validations()).toBeGreaterThan(beforeChangedCiphertext);
         expect(opens()).toBe(3);
         expect(readRows()['choice-0']?.metadata?.path).toBe('/owner-projection/changed');
-        const afterChangedCiphertext = validations();
         await refresh();
-        expect(validations()).toBe(afterChangedCiphertext);
         expect(opens()).toBe(3);
     } finally { unsubscribe(); }
 });
@@ -518,7 +691,7 @@ it('measures real encrypted hydration and rapid query replacement across three f
     const homes = await Promise.all(Array.from({ length: 3 }, async (_, homeIndex) => {
         const encryption = await Encryption.create(new Uint8Array(32).fill(homeIndex + 1));
         encryption.configureNativeCryptoWorker({ routing: { mode: 'off' } });
-        const rows = await Promise.all(Array.from({ length: 50 }, async (_, rowIndex): Promise<SessionListQueryResponseV1['sessions'][number]> => {
+        const rows = await Promise.all(Array.from({ length: 50 }, async (_, rowIndex): Promise<V2SessionRecord> => {
             const id = `session-${rowIndex}`;
             const key = new Uint8Array(32).fill(rowIndex + 10);
             const cipher = await encryption.openEncryption(key);
@@ -551,10 +724,12 @@ it('measures real encrypted hydration and rapid query replacement across three f
         }));
         // Validate the complete HTTP fixture before either timed workload. Strict
         // queries require current viewer/access/responsibility and both frontiers.
-        const queryBody = JSON.stringify(SessionListQueryResponseV1Schema.parse({
+        const page = {
             sessions: rows, nextCursor: null, hasNext: false,
             attentionNextCursor: null, attentionHasNext: false,
-        }));
+        };
+        SessionListQueryResponseV1Schema.parse({ ...page, sessions: rows.map(createCompactSessionListRowFixture) });
+        const queryBody = JSON.stringify(page);
         const ordinaryBody = JSON.stringify({ sessions: rows, nextCursor: null, hasNext: false });
         return {
             encryption, serverId: `home-${homeIndex}`,

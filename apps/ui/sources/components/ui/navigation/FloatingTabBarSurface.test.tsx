@@ -66,25 +66,6 @@ describe('FloatingTabBarSurface', () => {
         expect(mergedStyle(bounds?.props.style).maxWidth).toBe('100%');
     });
 
-    it('renders a trailing accessory as a sibling capsule beside the bar', async () => {
-        const { FloatingTabBarSurface } = await import('./FloatingTabBarSurface');
-
-        const screen = await renderScreen(
-            <FloatingTabBarSurface
-                bottomInset={0}
-                testID="tab-bar-surface"
-                trailingAccessory={React.createElement('TrailingAccessory')}
-            >
-                {React.createElement('TabRow')}
-            </FloatingTabBarSurface>,
-        );
-
-        // A sibling, never a tab: creating a session is not a navigation destination and must never
-        // take the active-tab highlight.
-        expect(screen.tree.root.findAllByType('TrailingAccessory' as never)).toHaveLength(1);
-        expect(findAccessoryRow(screen.tree.root).findAllByType('TabRow' as never)).toHaveLength(1);
-    });
-
     it('stretches the accessory row so the accessory cannot change the measured bar height', async () => {
         const { FloatingTabBarSurface } = await import('./FloatingTabBarSurface');
 
@@ -139,5 +120,9 @@ describe('FloatingTabBarSurface', () => {
         expect(leading.width).toBe(44);
         expect(trailing.width).toBe(44);
         expect(cells[cells.length - 1]!.findAllByType('TrailingAccessory' as never)).toHaveLength(1);
+        // A sibling capsule beside the bar, never a tab: creating a session is not a navigation
+        // destination and must never take the active-tab highlight.
+        expect(screen.tree.root.findAllByType('TrailingAccessory' as never)).toHaveLength(1);
+        expect(row.findAllByType('TabRow' as never)).toHaveLength(1);
     });
 });

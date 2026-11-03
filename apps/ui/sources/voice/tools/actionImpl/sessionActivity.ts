@@ -76,6 +76,7 @@ export async function getSessionActivityForVoiceTool(params: Readonly<{
     throw error;
   }
   if (params.signal?.aborted) return fail('tool_cancelled');
+  if (acquired.kind === 'awaiting_push') return fail(acquired.errorCode);
   if (acquired.kind !== 'available') return fail(acquired.errorCode || acquired.cause);
   const state = storage.getState();
   const raw = state.sessions[sessionId];

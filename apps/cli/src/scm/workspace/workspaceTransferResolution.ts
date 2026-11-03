@@ -1,8 +1,6 @@
 import { readdir, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-import type { WorkspaceManifest } from '@happier-dev/protocol';
-
 import { runWithScmBackendRegistryLease } from '../scmBackendCatalog';
 import type { ScmBackendRegistry } from '../registry';
 import { resolveScmSelection } from '../resolveScmSelection';
@@ -185,7 +183,7 @@ async function resolveWorkspaceTransferStateWithScmWorkspace(
     };
 }
 
-export function classifyPortableWorkspaceTransferEntryWithScmWorkspace(input: Readonly<{
+function classifyPortableWorkspaceTransferEntryWithScmWorkspace(input: Readonly<{
     entry: ScmWorkspaceIntegrationWorkspaceTransferEntry;
     registry?: ScmBackendRegistry;
 }>): ScmWorkspaceIntegrationPortableWorkspacePathClassification {
@@ -235,60 +233,6 @@ export async function resolveWorkspaceTransferWithScmWorkspace(input: Readonly<{
             ...input,
             registry,
         })).transfer);
-}
-
-export async function resolveWorkspaceTransferEntriesWithScmWorkspace(input: Readonly<{
-    sourcePath: string;
-    workspaceTransfer: ScmWorkspaceIntegrationWorkspaceTransferRequestInput;
-    registry?: ScmBackendRegistry;
-}>): Promise<readonly ScmWorkspaceIntegrationWorkspaceTransferEntry[] | null> {
-    const transfer = await resolveWorkspaceTransferWithScmWorkspace(input);
-    return transfer ? transfer.entries.map((entry) => createScmWorkspaceIntegrationWorkspaceTransferEntry(entry)) : null;
-}
-
-export async function resolveWorkspaceTransferMetadataWithScmWorkspace(input: Readonly<{
-    sourcePath: string;
-    workspaceTransfer: ScmWorkspaceIntegrationWorkspaceTransferRequestInput;
-    registry?: ScmBackendRegistry;
-}>): Promise<ScmWorkspaceIntegrationWorkspaceTransferMetadata | null> {
-    const transfer = await resolveWorkspaceTransferWithScmWorkspace(input);
-    return transfer ? transfer.metadata ?? null : null;
-}
-
-export async function buildWorkspaceExportManifestWithScmWorkspace(input: Readonly<{
-    sourcePath: string;
-    workspaceTransfer: ScmWorkspaceIntegrationWorkspaceTransferRequestInput;
-    registry?: ScmBackendRegistry;
-}>): Promise<WorkspaceManifest> {
-    const sourceInputs = await resolveWorkspaceReplicationSourceInputsWithScmWorkspace(input);
-    const workspaceExportArtifacts = await buildWorkspaceExportArtifactsWithSourcePathBlobProviderFromTransferEntries({
-        entries: sourceInputs.entries,
-        shouldIgnoreAccessError: isIgnorableWorkspaceExportAccessError,
-    });
-
-    return {
-        entries: workspaceExportArtifacts.manifest.entries.map((entry) => ({ ...entry })),
-        fingerprint: workspaceExportArtifacts.manifest.fingerprint,
-    };
-}
-
-export async function buildWorkspaceExportArtifactsWithScmWorkspace(input: Readonly<{
-    sourcePath: string;
-    workspaceTransfer: ScmWorkspaceIntegrationWorkspaceTransferRequestInput;
-    registry?: ScmBackendRegistry;
-}>): Promise<ScmWorkspaceIntegrationWorkspaceExportArtifacts> {
-    const sourceInputs = await resolveWorkspaceReplicationSourceInputsWithScmWorkspace(input);
-    const workspaceExportArtifacts = await buildWorkspaceExportArtifactsWithSourcePathBlobProviderFromTransferEntries({
-        entries: sourceInputs.entries,
-        shouldIgnoreAccessError: isIgnorableWorkspaceExportAccessError,
-    });
-
-    // In-memory blob maps are intentionally not supported on this path; consumers must use
-    // file-backed blob providers (see buildWorkspaceExportArtifactsWithBlobProviderFromWorkspaceIntegration).
-    return createScmWorkspaceIntegrationWorkspaceExportArtifacts({
-        manifest: workspaceExportArtifacts.manifest,
-        workspaceIntegrationMetadata: sourceInputs.workspaceIntegrationMetadata,
-    });
 }
 
 export async function buildWorkspaceExportArtifactsWithBlobProviderFromWorkspaceIntegration(input: Readonly<{

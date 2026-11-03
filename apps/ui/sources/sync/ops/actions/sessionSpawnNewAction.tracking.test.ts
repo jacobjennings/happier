@@ -12,6 +12,7 @@ import {
 } from '@/sync/domains/session/spawn/spawnAttemptNonceStore';
 import type { ActionExecuteResult } from '@happier-dev/protocol/actions/actionExecutionResult';
 import { actionOperationStore } from '@/sync/domains/actionOperations/actionOperationStore';
+import { projectSessionSpawnNewActionResultV1 } from '@happier-dev/protocol/sessions/creation/sessionSpawnNewResultV1';
 
 const frontDoorExecute = vi.fn<(...args: Parameters<import('./frontDoorRuntimeActionExecutor').FrontDoorActionExecute>) => Promise<ActionExecuteResult>>();
 
@@ -56,6 +57,22 @@ const result: SessionSpawnNewResultV1 = {
 beforeEach(() => frontDoorExecute.mockReset());
 
 describe('executeSessionSpawnNewAction tracking', () => {
+    it('retains an admitted birth origin for a direct manual caller without a separate writer-choice argument', async () => {
+        getPersistenceStorage().clearAll();
+        actionOperationStore.reset();
+        const userAttemptId = 'direct-origin-birth';
+        const scope = { serverId: 'server-1', accountId: 'account-1' };
+        const authoringOrigin = { kind: 'project', accountId: scope.accountId, page: 'scripts',
+            workspace: { serverId: scope.serverId, workspaceId: 'checkout-1', machineId: 'machine-1', rootPath: '/private-checkout' } } as const;
+        frontDoorExecute.mockResolvedValueOnce({ ok: true, result: projectSessionSpawnNewActionResultV1(result) });
+        const settled = await executeManualSessionSpawnNewAction({ ...input,
+            creationKey: buildManualSessionCreationKey(userAttemptId), authoringOrigin,
+        }, { surface: 'ui', actionRequestId: userAttemptId }, {
+            scope, machineHomeDir: '/home/tester', userAttemptId, seedNonce: 'direct-origin-nonce',
+        });
+        expect(settled).toMatchObject({ status: 'executed', custody: { authoringOriginPersistence: 'daemon-birth' } });
+        expect(frontDoorExecute.mock.calls[0]?.[1]).toMatchObject({ authoringOrigin });
+    });
     it.each(['direct', 'pending', 'recovered', 'waiting'] as const)(
         'qualifies a daemon-spelled %s result before marking manual creation committed', async receipt => {
             getPersistenceStorage().clearAll();

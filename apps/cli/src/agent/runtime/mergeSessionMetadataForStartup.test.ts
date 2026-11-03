@@ -7,8 +7,26 @@ import { createStartupMetadataOverrides } from './createStartupMetadataOverrides
 import { createSessionOwnerMetadataV1, SessionOwnerMetadataV1Schema } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import { SessionRunnerRuntimeStateV1Schema } from '@happier-dev/protocol/sessions/control/sessionRunnerRuntimeV1';
 import { readCapabilityLaunchRestartFromMetadataV1, resolveCapabilityApplyTimingV1 } from '@happier-dev/protocol/reach/capabilityApplyTimingV1';
+import { applyDisplayTitleSessionMetadata } from '@happier-dev/agents/session/state/metadataWriters';
 
 describe('mergeSessionMetadataForStartup', () => {
+    it('preserves born authoring provenance across startup metadata and title updates', () => {
+        const authoringOriginV1 = { kind: 'project' as const, accountId: 'original-account',
+            workspace: { serverId: 'original-home', workspaceId: 'original-workspace', machineId: 'original-machine', rootPath: '/original/repo' }, page: 'scripts' as const };
+        let current = createTestMetadata({ work: { authoringOriginV1 }, summary: { text: 'Initial title', updatedAt: 1 } });
+        for (const nowMs of [2, 3, 4]) {
+            current = applyDisplayTitleSessionMetadata(current, { title: `Native title ${nowMs}`, staleBehavior: 'bump-if-value-changed' });
+            current = mergeSessionMetadataForStartup({ current,
+                next: createTestMetadata({ work: { memoryEnabled: false, authoringOriginV1: { ...authoringOriginV1, page: 'code' } },
+                    summary: { text: `Native title ${nowMs}`, updatedAt: nowMs } }),
+                mode: 'attach', nowMs,
+            });
+            const owner = createSessionOwnerMetadataV1({ metadata: current });
+            if (!owner.ok) throw new Error(owner.unsupportedFields.join(','));
+            expect(SessionOwnerMetadataV1Schema.parse(owner.ownerMetadata).work?.authoringOriginV1).toEqual(authoringOriginV1);
+            expect(current.summary?.text).toBe(`Native title ${nowMs}`);
+        }
+    });
     it('retires old plain-runner absence evidence when a new runner starts without a terminal', () => {
         const merged = mergeSessionMetadataForStartup({ mode: 'attach', nowMs: 2,
             current: createTestMetadata({ hostPid: 1, terminal: { mode: 'plain', controlServiceabilityV1: {
@@ -213,16 +231,18 @@ describe('mergeSessionMetadataForStartup', () => {
         expect(merged.hostPid).toBe(2);
     });
 
-    it('preserves accepted project and workspace identity when attaching', () => {
+    it.each([undefined, 'replace_with_runtime_identity'] as const)('preserves accepted project and workspace identity at the same checkout (%s)', attachMetadataIdentityPolicy => {
         const nowMs = 1;
         const merged = mergeSessionMetadataForStartup({
             current: {
+                path: '/workspace/accepted', machineId: 'machine-accepted',
                 workspaceId: 'ws_authoritative',
                 projectId: 'project_authoritative',
                 workspaceLocationId: 'loc_authoritative',
                 workspaceCheckoutId: 'checkout_authoritative',
             } as any,
             next: {
+                path: '/workspace/accepted', machineId: 'machine-accepted',
                 workspaceId: 'ws_wrong',
                 projectId: 'project_wrong',
                 workspaceLocationId: 'loc_wrong',
@@ -231,6 +251,7 @@ describe('mergeSessionMetadataForStartup', () => {
             } as any,
             nowMs,
             mode: 'attach',
+            attachMetadataIdentityPolicy,
         });
 
         expect((merged as Record<string, unknown>).workspaceId).toBe('ws_authoritative');

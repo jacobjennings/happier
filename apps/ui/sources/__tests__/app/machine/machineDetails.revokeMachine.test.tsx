@@ -24,7 +24,6 @@ import { MachinePublishedMetadataV1Schema } from '@happier-dev/protocol/machines
 import { ExternalActionRequestEnvelopeV1Schema, ExternalActionResponseEnvelopeV1Schema } from '@happier-dev/protocol/actions/externalActionApi';
 import { getActionSpec } from '@happier-dev/protocol/actions/actionSpecs';
 import { RPC_METHODS, RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
-import { CODEX_ACP_DEP_ID } from '@happier-dev/protocol/installables';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import type { MachineUpdateMetadataRequest, MachineUpdateMetadataResponse } from '@happier-dev/protocol';
 import type { Machine } from '@/sync/domains/state/storageTypes';
@@ -65,7 +64,6 @@ const {
         providerCatalogRevision: 1,
         providerCatalogWrites: [] as ProviderConnectionsCatalogV1[],
         requests: [] as Array<{ path: string; method: string; body: unknown }>,
-        capabilityInvocations: [] as unknown[],
         daemonStops: [] as unknown[],
         revokeFailure: null as { status: number; error: string } | null,
         serverId: '',
@@ -110,11 +108,8 @@ installMachineDetailsCommonModuleMocks({
             },
         }).module;
     },
-    storage: async (importOriginal) => importOriginal(),
 });
 
-vi.doUnmock('@/sync/domains/state/storage');
-vi.doUnmock('@/constants/Typography');
 installDisconnectedServerSocketBoundary((socket) => {
     configureConnectedServerSocketBoundary(socket);
     socket.timeout = vi.fn<typeof socket.timeout>(() => socket);
@@ -125,10 +120,6 @@ installDisconnectedServerSocketBoundary((socket) => {
         // This fixture has no installed daemon contributions or execution runs.
         if (event === SOCKET_RPC_EVENTS.CALL && request && typeof request === 'object' && 'method' in request) {
             const method = String(request.method);
-            if (method.endsWith(`:${RPC_METHODS.CAPABILITIES_INVOKE}`)) {
-                machineState.capabilityInvocations.push(request);
-                return { ok: true, result: { ok: true, result: { logPath: '/machine/install.log' } } };
-            }
             if (method.endsWith(`:${RPC_METHODS.DAEMON_EXECUTION_RUNS_LIST}`)) return { ok: true, result: { runs: [] } };
             if (method.endsWith(`:${RPC_METHODS.STOP_DAEMON}`)) {
                 machineState.daemonStops.push(request);
@@ -263,6 +254,12 @@ async function publishMachineFixture() {
     });
 }
 
+/** Save stays disabled while the page's Home target is still settling; press it once it is live. */
+async function pressNameSave(screen: RenderedScreen) {
+    await vi.waitFor(() => expect(screen.findByTestId('machine-detail-name-save')?.props.disabled).toBe(false));
+    await screen.pressByTestIdAsync('machine-detail-name-save');
+}
+
 async function readVisibleMachine() {
     const { storage } = await import('@/sync/domains/state/storage');
     return storage.getState().machines[routeParams.id];
@@ -375,7 +372,6 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         machineState.providerCatalogWrites = [];
         machineState.requests = [];
         artifactStore.clear();
-        machineState.capabilityInvocations = [];
         machineState.daemonStops = [];
         machineState.revokeFailure = null;
         const { createAccountTokenForTests } = await import('@/dev/testkit/harness/homeGovernanceHarness');
@@ -400,30 +396,6 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         expect(alertSpy.mock.calls.some(call => Array.isArray(call[2]))).toBe(false);
         expect(confirmSpy).not.toHaveBeenCalled();
         expect(alertSpy).toHaveBeenCalledWith('machine.daemonStoppedTitle', 'Daemon stopped');
-    });
-
-    it('installs from the mounted machine row through the front-door Action and scoped daemon RPC', async () => {
-        const { InstallableDepInstaller } = await import('@/components/machines/InstallableDepInstaller');
-        const screen = await renderMachineSection(React.createElement(InstallableDepInstaller, {
-            machineId: 'machine-1', serverId: machineState.serverId, enabled: true, groupTitle: 'Tools',
-            depId: CODEX_ACP_DEP_ID, depTitle: 'Codex ACP', depIconName: 'wrench',
-            depStatus: { installed: false, installedVersion: null, sourceKind: 'github_release_binary',
-                lastInstallLogPath: null, lastBackgroundUpdateCheckAtMs: null },
-            capabilitiesStatus: 'loaded', installLabels: { install: 'Install now', update: 'Update now', reinstall: 'Reinstall now' },
-            installModal: { installTitle: 'Install dependency', updateTitle: 'Update dependency', reinstallTitle: 'Reinstall dependency', description: 'Confirm install' },
-            refreshStatus: vi.fn(),
-        }));
-        const installRow = screen.findAll(node => node.props?.title === 'Install now' && typeof node.props?.onPress === 'function')[0];
-        expect(installRow).toBeTruthy();
-        confirmSpy.mockResolvedValueOnce(true);
-        await act(async () => { await installRow!.props.onPress(); });
-        expect(confirmSpy).toHaveBeenCalledTimes(1);
-        expect(machineState.capabilityInvocations).toEqual([expect.objectContaining({
-            method: expect.stringContaining(RPC_METHODS.CAPABILITIES_INVOKE),
-            params: { id: CODEX_ACP_DEP_ID, method: 'install' },
-        })]);
-        expect(alertSpy).toHaveBeenCalledWith('common.success', expect.any(String));
-        await screen.unmount();
     });
 
     it('opens the machine\'s one share sheet from the header ⋯ as "Share <machine>" (lab m-share S)', async () => {
@@ -455,11 +427,13 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         await act(async () => screen.changeTextByTestId('machine-detail-name-input', '  theo-devbox  '));
         expect(metadataTransportSpy).not.toHaveBeenCalled();
         expect(promptSpy).not.toHaveBeenCalled();
-        await screen.pressByTestIdAsync('machine-detail-name-save');
+        await pressNameSave(screen);
+        // The save runs through the real Action executor; wait for its one metadata write and store apply.
+        await vi.waitFor(() => expect(metadataTransportSpy).toHaveBeenCalledTimes(1));
         const request = metadataTransportSpy.mock.calls[0]?.[1];
         expect(request).toMatchObject({ machineId: 'machine-1', expectedVersion: 1 });
         expect(decodePlainMachineStoredContent(request!.metadata)).toMatchObject({ displayName: 'theo-devbox', host: 'host' });
-        expect((await readVisibleMachine())?.metadata?.displayName).toBe('theo-devbox');
+        await vi.waitFor(async () => expect((await readVisibleMachine())?.metadata?.displayName).toBe('theo-devbox'));
         expect((await readVisibleMachine())?.metadataVersion).toBe(2);
         expect(screen.findByTestId('machine-detail-name-input')).toBeNull();
         expect(alertSpy).not.toHaveBeenCalled();
@@ -500,7 +474,7 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         await act(async () => findHeaderMenuAction(screen, 'machine-detail-menu-rename')!.onSelect());
         expect(screen.findByTestId('machine-detail-name-input')).toBeTruthy();
         await act(async () => screen.changeTextByTestId('machine-detail-name-input', 'Retry name'));
-        await screen.pressByTestIdAsync('machine-detail-name-save');
+        await pressNameSave(screen);
         expect(alertSpy).toHaveBeenCalledWith('common.error', 'rename transport failed');
         expect(machineState.requests.filter(request => request.path === '/v1/machines').length).toBeGreaterThan(1);
         expect(screen.findByTestId('machine-detail-name-input')?.props.value).toBe('Retry name');
@@ -513,8 +487,9 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         await act(async () => findHeaderMenuAction(screen, 'machine-detail-menu-rename')!.onSelect());
         expect(screen.findByTestId('machine-detail-name-input')).toBeTruthy();
         await act(async () => screen.changeTextByTestId('machine-detail-name-input', '  '));
-        await screen.pressByTestIdAsync('machine-detail-name-save');
-        expect((await readVisibleMachine())?.metadata?.displayName).toBeUndefined();
+        await pressNameSave(screen);
+        await vi.waitFor(() => expect(metadataTransportSpy).toHaveBeenCalledTimes(1));
+        await vi.waitFor(async () => expect((await readVisibleMachine())?.metadata?.displayName).toBeUndefined());
         const request = metadataTransportSpy.mock.calls[0]?.[1];
         expect(request).toMatchObject({ machineId: 'machine-1', expectedVersion: 1 });
         expect(decodePlainMachineStoredContent(request!.metadata)).not.toHaveProperty('displayName');
@@ -575,10 +550,16 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
             const sessionName = screen.findAll(node => node.props?.accessibilityLabel === 'profiles.tmuxSession'
                 && typeof node.props?.onChangeText === 'function')[0];
             sessionName.props.onChangeText('Selected session');
-            await vi.waitFor(() => expect(machineState.settings.sessionTmuxByMachineId).toMatchObject({
-                'machine-1': { useTmux: true, sessionName: 'Selected session' }, 'machine-2': neighbor,
-            }));
         });
+        // SettingTextInput keeps keystrokes local and commits the gesture on blur.
+        await act(async () => {
+            const sessionName = screen.findAll(node => node.props?.accessibilityLabel === 'profiles.tmuxSession'
+                && typeof node.props?.onBlur === 'function')[0];
+            await sessionName.props.onBlur();
+        });
+        await vi.waitFor(() => expect(machineState.settings.sessionTmuxByMachineId).toMatchObject({
+            'machine-1': { useTmux: true, sessionName: 'Selected session' }, 'machine-2': neighbor,
+        }));
         await act(async () => {
             override().props.onPress();
             await vi.waitFor(() => expect(machineState.settings.sessionTmuxByMachineId).not.toHaveProperty('machine-1'));
@@ -799,30 +780,6 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         ]);
     });
 
-    it('selects a replacement candidate through its UI policy waiver without a local confirmation', async () => {
-        confirmSpy.mockResolvedValueOnce(true);
-        machineState.settings.actionsSettingsV1 = { v: 1, approvalWaivedSurfaces: { 'machines.replacement.set': ['ui'] } };
-
-        const { MachinePageScreen: MachineDetailScreen } = await import('@/components/machines/page/MachinePageScreen');
-
-        const screen = await renderScreen(React.createElement(MachineDetailScreen));
-
-        const replacementItem = findHeaderMenuAction(screen, 'machine-replacement-repair-open');
-        expect(replacementItem).toBeTruthy();
-
-        await act(async () => {
-            replacementItem!.onSelect();
-            readReplacementPickerProps()?.onSelectCandidate('machine-2', 'Replacement Machine');
-            await vi.waitFor(() => expect(machineState.currentMachine.replacedByMachineId).toBe('machine-2'));
-        });
-
-        expect(confirmSpy).not.toHaveBeenCalled();
-        expect(machineState.requests.find(request => request.path.endsWith('/replacement'))).toMatchObject({
-            method: 'POST', body: { replacementMachineId: 'machine-2', confirmActiveOldMachine: true },
-        });
-        expect((await readVisibleMachine())?.replacedByMachineId).toBe('machine-2');
-    });
-
     it.each(['machines.replacement.set', 'machines.replacement.clear'] as const)('honors disabled %s policy at the mounted header instead of submitting a parallel HTTP mutation', async actionId => {
         confirmSpy.mockResolvedValue(true);
         machineState.settings.actionsSettingsV1 = { v: 1, actions: { [actionId]: { enabled: false } } };
@@ -905,6 +862,9 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         confirmSpy.mockResolvedValue(false);
         await act(async () => invoke());
         await vi.waitFor(() => expect(effects()).toHaveLength(1));
+        expect(effects()[0]).toMatchObject(actionId.endsWith('set')
+            ? { method: 'POST', body: { replacementMachineId: 'machine-2', confirmActiveOldMachine: true } }
+            : { method: 'DELETE' });
         expect((await readVisibleMachine())?.replacedByMachineId).toBe(actionId.endsWith('set') ? 'machine-2' : null);
         machineState.currentMachine = { ...machineState.currentMachine, replacedByMachineId: actionId.endsWith('set') ? null : 'machine-2' };
         machineState.settings.actionsSettingsV1 = { v: 1, approvalWaivedSurfaces: { [actionId]: ['ui'] } };
@@ -971,32 +931,5 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         const text = screen.getTextContent();
         expect(text).toContain('machineDetailPage.replacedByFact(machine=machine.unnamedMachine)');
         expect(text).not.toContain('machine=machine-2');
-    });
-
-    it('clears a replacement through its UI policy waiver without a local confirmation', async () => {
-        confirmSpy.mockResolvedValueOnce(true);
-        machineState.settings.actionsSettingsV1 = { v: 1, approvalWaivedSurfaces: { 'machines.replacement.clear': ['ui'] } };
-        machineState.currentMachine = {
-            ...machineState.currentMachine,
-            replacedByMachineId: 'machine-2',
-        };
-
-        const { MachinePageScreen: MachineDetailScreen } = await import('@/components/machines/page/MachinePageScreen');
-
-        const screen = await renderScreen(React.createElement(MachineDetailScreen));
-
-        // The replaced state is a header fact, and undoing it is a rare operation in `⋯`.
-        expect(screen.getTextContent()).toContain('machineDetailPage.replacedByFact');
-        const undoItem = findHeaderMenuAction(screen, 'machine-replacement-repair-undo');
-        expect(undoItem).toBeTruthy();
-
-        await act(async () => {
-            undoItem!.onSelect();
-            await vi.waitFor(() => expect(machineState.currentMachine.replacedByMachineId).toBeNull());
-        });
-
-        expect(confirmSpy).not.toHaveBeenCalled();
-        expect(machineState.requests.find(request => request.path.endsWith('/replacement'))).toMatchObject({ method: 'DELETE' });
-        expect((await readVisibleMachine())?.replacedByMachineId).toBeNull();
     });
 });

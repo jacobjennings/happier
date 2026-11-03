@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { setPreferredLanguageFromSettings } from '@/text';
 import { getKokoroAssetSetOptions } from '@/voice/kokoro/assets/kokoroAssetSets';
+import { preloadTranslations } from '@/text/i18n';
 
 describe('kokoroAssetSets', () => {
   afterEach(() => {
@@ -10,17 +11,8 @@ describe('kokoroAssetSets', () => {
 
   it('lists the exact published q8 Kokoro pack after the environment-default option', () => {
     const options = getKokoroAssetSetOptions({});
-    expect(options).toEqual([
-      expect.objectContaining({ id: '' }),
-      {
-        id: 'kokoro-82m-v1.0-onnx-q8-wasm',
-        title: 'Kokoro 82M',
-        subtitle: 'Default local neural voice model.',
-      },
-    ]);
     const ids = options.map((option) => option.id);
-
-    expect(ids).toContain('kokoro-82m-v1.0-onnx-q8-wasm');
+    expect(ids).toEqual(['', 'kokoro-82m-v1.0-onnx-q8-wasm']);
     expect(ids).not.toContain('kokoro-en-v0_19');
   });
 
@@ -39,7 +31,8 @@ describe('kokoroAssetSets', () => {
     ]);
   });
 
-  it('projects localized built-in descriptions while preserving environment-provided option copy', () => {
+  it('projects localized built-in descriptions while preserving environment-provided option copy', async () => {
+    await preloadTranslations('es');
     setPreferredLanguageFromSettings('es');
 
     const localized = getKokoroAssetSetOptions({});

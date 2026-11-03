@@ -30,6 +30,7 @@ import { formatRelativeTimeShort } from '@/utils/time/formatShortRelativeTime';
 import { useServerScopedMachine } from '@/sync/store/hooks';
 import { formatHappierDataBytes } from '@happier-dev/plugin-ui/presentation';
 import { executeProjectWorkerActionV1 } from '@/sync/ops/actions/projectWorkerActions';
+import { isMachineActivityPlaceholder } from '@/sync/domains/machines/machineActivity';
 import { t } from '@/text';
 import { getMachineSentenceName } from '@/utils/sessions/machineDisplayNames';
 import { presentProjectRun } from '@/components/projects/projectSetup/projectScriptPresentation';
@@ -44,8 +45,8 @@ export function useMachineWorkerPolicy(serverId: string, machineId: string) {
   const machine = useServerScopedMachine(serverId, machineId);
   const setting = useObservedWorkerSetting<ReadyPolicy, ReadyPolicy['policy'], ProjectWorkerActionOutputV1<'machines.worker.policy.set'>>({
     // The metadata port needs the discovered row's storage/encryption context. Credentials
-    // can arrive first; wait for that producer rather than retaining a premature refusal.
-    enabled: machine !== null && machine !== undefined,
+    // and presence can arrive first; a heartbeat-only row is not that context.
+    enabled: machine != null && !isMachineActivityPlaceholder(machine),
     serverId,
     scopeKey: JSON.stringify(['machines.worker.policy', serverId, machineId]),
     read: (accountId) =>

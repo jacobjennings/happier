@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-    resolveRightSidebarMobileSurface,
-    resolveRightSidebarTabIdForMobileSurface,
-} from '@/components/appShell/rightSidebar/rightSidebarMobileProjection';
+import { resolveRightSidebarMobileSurface } from '@/components/appShell/rightSidebar/rightSidebarMobileProjection';
 import { resolveRightSidebarTabs } from '@/components/appShell/rightSidebar/rightSidebarTabRegistry';
 import {
     resolveSessionCockpitLandingSurface,
@@ -41,16 +38,6 @@ describe('sessionCockpitState', () => {
         expect(agents && resolveRightSidebarMobileSurface(agents, 'session')).toBe('agents');
     });
 
-    it('admits People on every session, shared or not, through the shared registry', () => {
-        // People answers who hears about a session and what it follows (coordination lab P1p), which
-        // does not depend on whether this Home offers sharing.
-        const tabs = resolveRightSidebarTabs({ scope: 'session', presentation: 'mobile', sessionSharingAvailable: true });
-        const collaboration = tabs.find((tab) => tab.id === 'collaboration');
-        expect(collaboration).toBeDefined();
-        expect(collaboration && resolveRightSidebarMobileSurface(collaboration, 'session')).toBe('collaboration');
-        expect(resolveRightSidebarTabs({ scope: 'session' }).some((tab) => tab.id === 'collaboration')).toBe(true);
-        expect(resolveRightSidebarTabs({ scope: 'project', sessionSharingAvailable: true }).some((tab) => tab.id === 'collaboration')).toBe(false);
-    });
     it('maps legacy fullscreen subroutes to cockpit surfaces', () => {
         expect(resolveSessionMobileSurfaceIntent({ routeKind: 'files' })).toBe('browse');
         expect(resolveSessionMobileSurfaceIntent({ routeKind: 'git' })).toBe('git');
@@ -87,25 +74,6 @@ describe('sessionCockpitState', () => {
         ).toBe('chat');
     });
 
-    it('opens the host-owned full Companion surface from a constrained classic layout', () => {
-        expect(shouldUseSessionCockpitExperience({
-            cockpitEnabled: false,
-            explicitSurface: 'companion',
-            companionAddressQualified: true,
-        })).toBe(true);
-        expect(shouldUseSessionCockpitExperience({
-            cockpitEnabled: false,
-            explicitSurface: 'chat',
-            companionAddressQualified: true,
-        })).toBe(false);
-        expect(shouldUseSessionCockpitExperience({
-            cockpitEnabled: false,
-            explicitSurface: 'unknown',
-            companionAddressQualified: true,
-        })).toBe(false);
-        expect(shouldUseSessionCockpitExperience({ cockpitEnabled: true, explicitSurface: null })).toBe(true);
-    });
-
     it('admits the Companion route hint on every Home once the route resolves to an exact Session', () => {
         // Companion's first-party Session Summary is composed from Session facts
         // alone, so a Home that serves no Board still opens the destination; only
@@ -124,6 +92,17 @@ describe('sessionCockpitState', () => {
             cockpitEnabled: false,
             explicitSurface: 'companion',
             companionAddressQualified: false,
+        })).toBe(false);
+        // Only Companion opens the cockpit from a constrained classic layout.
+        expect(shouldUseSessionCockpitExperience({
+            cockpitEnabled: false,
+            explicitSurface: 'chat',
+            companionAddressQualified: true,
+        })).toBe(false);
+        expect(shouldUseSessionCockpitExperience({
+            cockpitEnabled: false,
+            explicitSurface: 'unknown',
+            companionAddressQualified: true,
         })).toBe(false);
         expect(shouldUseSessionCockpitExperience({
             cockpitEnabled: true,
@@ -167,23 +146,6 @@ describe('sessionCockpitState', () => {
         expect(resolveSessionRightTabIdForSurface('chat', true)).toBeNull();
         expect(resolveSessionRightTabIdForSurface('tabs', true)).toBeNull();
         expect(resolveSessionRightTabIdForSurface('companion', true)).toBeNull();
-    });
-
-    it('round-trips the navigation surface through its declared right-sidebar tab', () => {
-        const tabs = resolveRightSidebarTabs({
-            scope: 'session',
-            presentation: 'mobile',
-            terminalTabAvailable: true,
-        });
-        const navigationTab = tabs.find((tab) => tab.id === 'navigation');
-
-        // The registry declaration is the single source: the cockpit surface id and the
-        // right-tab id it maps back to must both come from it, not from a local list.
-        expect(navigationTab).toBeDefined();
-        expect(navigationTab && resolveRightSidebarMobileSurface(navigationTab, 'session')).toBe('navigation');
-        expect(resolveSessionRightTabIdForSurface('navigation', true)).toBe(
-            resolveRightSidebarTabIdForMobileSurface({ scope: 'session', surface: 'navigation', tabs }),
-        );
     });
 
     it('builds canonical session cockpit route paths for each surface', () => {
@@ -265,12 +227,15 @@ describe('sessionCockpitState', () => {
         });
     });
 
-    it('routes tabs presses through the canonical details URL when starting from files', () => {
-        expect(shouldRouteSessionCockpitSurfacePressThroughUrl({
-            pathname: '/session/session-1/files',
-            sessionId: 'session-1',
-            surface: 'tabs',
-        })).toBe(true);
+    it.each(['/session/session-1', '/session/session-1/files', '/session/session-1/git'])(
+        'keeps the Session route %s when Tabs presents its empty scene', (pathname) => {
+            expect(shouldRouteSessionCockpitSurfacePressThroughUrl({
+                pathname, sessionId: 'session-1', surface: 'tabs',
+                explicitRootSurfaceHint: 'chat',
+            })).toBe(false);
+        });
+
+    it('keeps routes that already select the requested surface', () => {
         expect(shouldRouteSessionCockpitSurfacePressThroughUrl({
             pathname: '/session/session-1/files',
             sessionId: 'session-1',

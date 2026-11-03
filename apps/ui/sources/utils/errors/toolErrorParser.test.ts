@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseToolUseError, parseAllToolUseErrors, hasToolUseError, isCancelError } from './toolErrorParser';
+import { parseToolUseError } from './toolErrorParser';
 
 describe('toolErrorParser', () => {
     describe('parseToolUseError', () => {
@@ -65,92 +65,6 @@ describe('toolErrorParser', () => {
                 isToolUseError: false,
                 errorMessage: null,
             });
-        });
-    });
-
-    describe('parseAllToolUseErrors', () => {
-        it('should extract multiple tool use errors', () => {
-            const input = '<tool_use_error>Error 1</tool_use_error> some text <tool_use_error>Error 2</tool_use_error>';
-            const result = parseAllToolUseErrors(input);
-            
-            expect(result).toEqual(['Error 1', 'Error 2']);
-        });
-
-        it('should return empty array for no matches', () => {
-            const input = 'No tool use errors here';
-            const result = parseAllToolUseErrors(input);
-            
-            expect(result).toEqual([]);
-        });
-
-        it('should ignore malformed tags while still parsing valid ones', () => {
-            const input = '<tool_use_error>Good</tool_use_error> <tool_use_error>Broken';
-            expect(parseAllToolUseErrors(input)).toEqual(['Good']);
-        });
-    });
-
-    describe('hasToolUseError', () => {
-        it('should return true when tool use error present', () => {
-            const input = '<tool_use_error>Some error</tool_use_error>';
-            expect(hasToolUseError(input)).toBe(true);
-        });
-
-        it('should return false when no tool use error', () => {
-            const input = 'Regular error message';
-            expect(hasToolUseError(input)).toBe(false);
-        });
-    });
-
-    describe('isCancelError', () => {
-        it('should detect tool_use_error tags', () => {
-            const input = '<tool_use_error>Operation cancelled</tool_use_error>';
-            expect(isCancelError(input)).toBe(true);
-        });
-
-        it('should detect Request interrupted by user for tool use', () => {
-            const input = 'Error: [Request interrupted by user for tool use]';
-            expect(isCancelError(input)).toBe(true);
-        });
-
-        it('should detect various cancellation patterns', () => {
-            const cancelMessages = [
-                'Request interrupted',
-                'User cancelled the operation',
-                'Operation cancelled by user',
-                'Cancelled by user action',
-                'User aborted the process',
-                'Operation aborted',
-                'Interrupted by user'
-            ];
-
-            cancelMessages.forEach(msg => {
-                expect(isCancelError(msg)).toBe(true);
-            });
-        });
-
-        it('should be case insensitive', () => {
-            expect(isCancelError('REQUEST INTERRUPTED')).toBe(true);
-            expect(isCancelError('user CANCELLED')).toBe(true);
-        });
-
-        it('should return false for non-cancellation errors', () => {
-            const regularErrors = [
-                'File not found',
-                'Permission denied',
-                'Network error',
-                'Invalid input',
-                'Syntax error'
-            ];
-
-            regularErrors.forEach(msg => {
-                expect(isCancelError(msg)).toBe(false);
-            });
-        });
-
-        it('should handle non-string input', () => {
-            expect(isCancelError(null as any)).toBe(false);
-            expect(isCancelError(undefined as any)).toBe(false);
-            expect(isCancelError(123 as any)).toBe(false);
         });
     });
 });

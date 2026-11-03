@@ -24,7 +24,7 @@ import {
   resolveExecutablePluginRuntimeRegistry,
   type PluginRuntimeMachineAdmissionTransport,
 } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
-import { getResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { getResolvedContributionRegistry, readCurrentBundledPluginEnablement } from '@/plugins/projection/registry/builtIn/snapshot';
 import {
   createPluginRegistryStateStore,
   type PluginRegistryAvailabilityInventory,
@@ -66,6 +66,8 @@ import type {
 import type { ExternalSessionHostOperationOwner } from '@/session/external/hostOperationOwner';
 import type { PluginDaemonDatabaseLimitsPolicy } from '@/plugins/runtime/context/daemonDatabase';
 import type { AccountPluginDataStorageHostDependencies } from '@/plugins/runtime/context/accountPluginDataStorage';
+import { subscribePluginAccountAvailabilityChanges } from '@/plugins/runtime/context/pluginAccountSettingsChangeBroker';
+import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import type { CliServerFeaturesSnapshot } from '@/features/featureDecisionService';
 import type { CurrentMachineExecutionOriginContext } from '@/api/machine/resolveCurrentMachineExecutionOriginContext';
 import type { RequesterWorkAttributionV1 } from '@/daemon/lifecycle/requesterWorkAttribution';
@@ -201,7 +203,15 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
   startupMode?: 'normal' | 'pluginRecovery';
   /** Authenticated server boundary used by registry generation retirement. */
   generationCustodyRetirement?: PluginGenerationCustodyRetirementRemoteDependencies;
+
+agentIsolation?: import('@/daemon/agentIsolation/agentIsolationLaunchPolicy').HostAgentIsolationLaunchContext;
 }>): DaemonPluginRuntimeOwner {
+  // A registry reload changes executable occurrences, not this host's prior
+  // Account declaration admissions. All replacement Data hosts use this map.
+  const accountStorageDependencies: AccountPluginDataStorageHostDependencies = {
+    ...params.accountStorageDependencies,
+    writerClaims: params.accountStorageDependencies?.writerClaims ?? new Map(),
+  };
   // The controller owns this stable target-local observer across cold startup
   // and prepared registry replacement. Runtime construction only consumes it.
   const targetedContributions =
@@ -249,10 +259,13 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
     : beforePublish;
   let stableEventsBroker: StablePluginEventsBroker | null = null;
   let developmentRoots: DaemonPluginDevelopmentRootsOwner | null = null;
+  let unsubscribeAccountAvailability: (() => void) | null = null;
   const resolveDevelopmentSourceAuthority: DaemonPluginDevelopmentRootsOwner['resolveDevelopmentSourceAuthority'] = (
     input,
   ) => developmentRoots?.resolveDevelopmentSourceAuthority(input) ?? null;
   const runtimeLifecycle = createDaemonPluginRegistryRuntimeLifecycle({
+...(params.agentIsolation ? { agentIsolation: params.agentIsolation } : {}),
+
     ...(params.signal ? { signal: params.signal } : {}),
     beforeInstallPublish: async (registry, pluginIds, firstInstallPluginIds) => {
       const declarations = (registry.contributes.mcpServers ?? []).filter(entry => entry.pluginId && pluginIds.includes(entry.pluginId));
@@ -296,13 +309,14 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
     ...(params.resolveSessionResourceAccess
       ? { resolveSessionResourceAccess: params.resolveSessionResourceAccess }
       : {}),
-    ...(params.accountStorageDependencies
-      ? { accountStorageDependencies: params.accountStorageDependencies }
-      : {}),
+    accountStorageDependencies,
     ...(params.resolveServerFeaturesSnapshot
       ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot }
       : {}),
     reloadController: params.reloadController,
+    ...(params.onRuntimeProjectionInvalidated
+      ? { onRuntimeProjectionInvalidated: params.onRuntimeProjectionInvalidated }
+      : {}),
     resolveDevelopmentSourceAuthority,
     isDevelopmentSourceRegistered: (registeredRootId) => (
       developmentRoots?.isDevelopmentSourceRegistered(registeredRootId) === true
@@ -592,22 +606,22 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
         const registeredRootId = await realpath(request.sourceRootPath).catch(() => null);
         if (registeredRootId && !options?.signal?.aborted && !baseChangeService.isQuiescing()
           && !baseChangeService.hasPendingDevelopmentSourceChange(registeredRootId)) {
-          let observation = developmentRoots!.resolveRegisteredSourceObservation(registeredRootId);
-          if (!observation) {
-            // Direct development installs enter the same custody owner as
-            // author submissions; its initial observation owns the review.
-            const registration = await developmentRoots!.control({
-              kind: 'registerExplicit', rootPath: registeredRootId,
-              ...(request.sdkRegistryOrigin ? { sdkRegistryOrigin: request.sdkRegistryOrigin } : {}),
-            });
-            if (baseChangeService.hasPendingDevelopmentSourceChange(registeredRootId)) {
-              return await baseChangeService.requestPluginChange(request, options);
-            }
-            if (registration.kind === 'failed') {
-              return Object.freeze({ kind: 'failed' as const, code: registration.code, message: registration.message });
-            }
-            observation = developmentRoots!.resolveRegisteredSourceObservation(registeredRootId);
+          // Re-adoption refreshes through the same observation owner as a
+          // watched edit before capturing its revision. Preparing directly
+          // against the previous observation races that edit's watcher.
+          const registration = await developmentRoots!.control(
+            developmentRoots!.resolveRegisteredSourceObservation(registeredRootId)
+              ? { kind: 'reload', rootPath: registeredRootId }
+              : { kind: 'registerExplicit', rootPath: registeredRootId,
+                  ...(request.sdkRegistryOrigin ? { sdkRegistryOrigin: request.sdkRegistryOrigin } : {}) },
+          );
+          if (baseChangeService.hasPendingDevelopmentSourceChange(registeredRootId)) {
+            return await baseChangeService.requestPluginChange(request, options);
           }
+          if (registration.kind === 'failed') {
+            return Object.freeze({ kind: 'failed' as const, code: registration.code, message: registration.message });
+          }
+          const observation = developmentRoots!.resolveRegisteredSourceObservation(registeredRootId);
           if (observation) {
             return await baseChangeService.requestPluginChange({
               ...request,
@@ -660,6 +674,8 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
         : Object.freeze({ kind: 'projectTrustAccepted' as const, projectRoot: pending.projectRoot });
     },
     async shutdown() {
+      unsubscribeAccountAvailability?.();
+      unsubscribeAccountAvailability = null;
       await developmentRoots.stop();
       await baseChangeService.shutdown();
     },
@@ -785,9 +801,7 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
             ...(params.resolveSessionResourceAccess
               ? { resolveSessionResourceAccess: params.resolveSessionResourceAccess }
               : {}),
-            ...(params.accountStorageDependencies
-              ? { accountStorageDependencies: params.accountStorageDependencies }
-              : {}),
+            accountStorageDependencies,
             ...(params.resolveServerFeaturesSnapshot
               ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot }
               : {}),
@@ -865,7 +879,9 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
               ? { targetedContributions }
               : {}),
             ...(params.startupMode === 'pluginRecovery'
-              ? { contributes: getResolvedContributionRegistry() }
+              ? { contributes: getResolvedContributionRegistry({ pluginEnablementById: await readCurrentBundledPluginEnablement({
+                  happyHomeDir: params.happyHomeDir, accountStorageDependencies: params.accountStorageDependencies,
+                }) }) }
               : {}),
           });
           // Cold start has no serving incumbent to preserve, so isolate a rejected
@@ -982,7 +998,24 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
       // without a registry commit; its runtime-only materializations follow
       // it. Identical bodies are deduplicated by the reporter.
       params.reloadController.subscribe(() => reportCurrentAvailability());
-      reportCurrentAvailability();
+      unsubscribeAccountAvailability = subscribePluginAccountAvailabilityChanges((accountScopeKey, pluginIds) => {
+        const currentScopeKey = params.accountStorageDependencies?.resolveAccountScopeKey
+          ? params.accountStorageDependencies.resolveAccountScopeKey()
+          : getActiveAccountSettingsSnapshot()?.scopeKey;
+        if (accountScopeKey !== currentScopeKey) return;
+        const contributes = params.reloadController.getState().activeRegistry?.contributes;
+        const changedPluginIds = pluginIds ?? [...new Set([
+          ...Object.keys(contributes?.pluginEnablementById ?? {}),
+          ...(contributes?.pluginDeclarations ?? []).map(declaration => declaration.pluginId),
+        ])];
+        const relevantPluginIds = changedPluginIds.filter(pluginId => contributes?.pluginEnablementById?.[pluginId]
+          || contributes?.pluginDeclarations?.some(declaration => declaration.pluginId === pluginId));
+        if (relevantPluginIds.length === 0) return;
+        void stateStore.refreshRuntime(relevantPluginIds).catch(error => {
+          logger.warn('[PLUGIN RUNTIME] Account availability refresh failed', error);
+        });
+      });
+      await reportCurrentAvailability();
       await developmentRoots.initialize();
     },
     reportCurrentAvailability,

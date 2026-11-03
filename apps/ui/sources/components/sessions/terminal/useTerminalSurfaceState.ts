@@ -3,6 +3,7 @@ import * as React from 'react';
 import type { DaemonTerminalStreamEventUrl } from '@happier-dev/protocol';
 
 import type { EmbeddedTerminalRendererHandle } from '@/components/terminal/embedded/embeddedTerminalRendererHandle';
+import type { TerminalOutputRetention } from '@/sync/domains/terminal/stream/model';
 import {
     appendTerminalPreviewText,
     createEmptyTerminalSurfaceState,
@@ -25,6 +26,10 @@ export function useTerminalSurfaceState(params: Readonly<{
         [params.terminalKey],
     );
     const [detectedUrl, setDetectedUrl] = React.useState<DaemonTerminalStreamEventUrl | null>(initialSurfaceState.detectedUrl);
+    const [outputRetention, setOutputRetention] = React.useState<Readonly<{ terminalId: string; value: TerminalOutputRetention }> | null>(
+        () => initialSurfaceState.terminalId && initialSurfaceState.outputRetention
+            ? { terminalId: initialSurfaceState.terminalId, value: initialSurfaceState.outputRetention } : null);
+    const retentionRef = React.useRef(outputRetention);
 
     const updateSurfaceState = React.useCallback((updater: (current: ReturnType<typeof createEmptyTerminalSurfaceState>) => ReturnType<typeof createEmptyTerminalSurfaceState>) => {
         return updateTerminalSurfaceState(params.terminalKey, updater);
@@ -33,6 +38,18 @@ export function useTerminalSurfaceState(params: Readonly<{
     const replaceSurfaceState = React.useCallback((nextState: ReturnType<typeof createEmptyTerminalSurfaceState>) => {
         return replaceTerminalSurfaceState(params.terminalKey, nextState);
     }, [params.terminalKey]);
+
+    const syncOutputRetention = React.useCallback((terminalId: string, value: TerminalOutputRetention | null) => {
+        const current = retentionRef.current;
+        // Polls can repeat the same window; publish only a changed daemon fact.
+        if (value === null ? current === null : current?.terminalId === terminalId
+            && current.value.retainedFromCursor === value.retainedFromCursor
+            && current.value.availableCursor === value.availableCursor) return;
+        const next = value ? { terminalId, value } : null;
+        retentionRef.current = next;
+        setOutputRetention(next);
+        updateSurfaceState(state => ({ ...state, terminalId, outputRetention: value ?? undefined }));
+    }, [updateSurfaceState]);
 
     const syncDetectedUrl = React.useCallback((nextUrl: DaemonTerminalStreamEventUrl | null) => {
         setDetectedUrl(nextUrl);
@@ -119,12 +136,18 @@ export function useTerminalSurfaceState(params: Readonly<{
         params.cursorRef.current = cached.cursor;
         params.terminalRendererHandleRef.current = null;
         setDetectedUrl(cached.detectedUrl);
+        const retention = cached.terminalId && cached.outputRetention
+            ? { terminalId: cached.terminalId, value: cached.outputRetention } : null;
+        retentionRef.current = retention;
+        setOutputRetention(retention);
         params.terminalRef.current?.clear();
     }, [params.cursorRef, params.terminalIdRef, params.terminalKey, params.terminalRef, params.terminalRendererHandleRef]);
 
     return {
         initialSurfaceState,
         detectedUrl,
+        outputRetention,
+        syncOutputRetention,
         updateSurfaceState,
         replaceSurfaceState,
         syncDetectedUrl,

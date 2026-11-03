@@ -17,12 +17,6 @@ vi.mock('@/text', async () => {
     return createTextModuleMock({ translate: (key: string) => key });
 });
 
-vi.mock('@/components/onboarding', () => ({
-    WizardModalShell: (props: { testID?: string; children?: React.ReactNode }) => (
-        <View testID={props.testID}>{props.children}</View>
-    ),
-}));
-
 vi.mock('@/components/onboarding/restore/RestoreIndexEmbedded', () => ({
     RestoreIndexEmbedded: () => <View testID="restore-embedded" />,
 }));

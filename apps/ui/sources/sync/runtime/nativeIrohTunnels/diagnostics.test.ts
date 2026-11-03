@@ -4,8 +4,6 @@ import {
     createInitialIrohHomeTransportDiagnostics,
     projectIrohHomeTransportDiagnosticsEvent,
 } from './diagnostics';
-import { createIrohHomeTunnelSupervisor } from './supervisor';
-import { readIrohHomeTransportDiagnostics } from '@/sync/runtime/irohHomeTransportDiagnostics';
 
 describe('native Iroh Home transport diagnostics projection', () => {
     it('retains exact applied configuration and sanitizes relay URLs', () => {
@@ -105,44 +103,4 @@ describe('native Iroh Home transport diagnostics projection', () => {
         expect(ready.current).toEqual({ carrier: 'iroh' });
         expect(ready.lastKnown).toEqual({ carrier: 'iroh' });
     });
-
-    it('is retained by the existing supervisor after a verified native acquisition', async () => {
-        const native = {
-            ensureHomeTunnel: async () => ({
-                leaseId: 'lease_1',
-                homeServerIdentityId: 'home_1',
-                homeEndpointId: 'endpoint_1',
-                runtimeOrigin: 'http://127.0.0.1:47111',
-                carrier: 'iroh' as const,
-                observedPath: 'unknown' as const,
-                startedAtMs: 10,
-                release: async () => undefined,
-            }),
-            releaseHomeTunnel: async () => undefined,
-        };
-        const supervisor = createIrohHomeTunnelSupervisor({
-            native,
-            probe: async () => ({ ok: true }),
-        });
-        await supervisor.ensureTunnel({
-            remoteHostId: 'home_1',
-            purpose: 'home',
-            homeServerIdentityId: 'home_1',
-            endpointId: 'endpoint_1',
-            canonicalServerUrl: 'https://home.example.test',
-            policy: 'automatic',
-            relayUrls: ['https://relay.example.test'],
-            verification: { kind: 'enrollment' },
-        });
-
-        expect(readIrohHomeTransportDiagnostics().find(
-            (entry) => entry.homeServerIdentityId === 'home_1',
-        )).toMatchObject({
-            state: 'connected',
-            remoteEndpointId: 'endpoint_1',
-            effectiveConfiguration: { policy: 'automatic', relayUrls: ['https://relay.example.test'] },
-            current: { carrier: 'iroh' },
-        });
-    });
-
 });

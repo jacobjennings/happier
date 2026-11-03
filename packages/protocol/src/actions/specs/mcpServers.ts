@@ -1,4 +1,5 @@
 import { readRecord } from '../../inputs/inputRecords.js';
+import { projectNativeJsonValueForTransport } from '../../json/strictJsonValue.js';
 import { MCP_SERVER_ACTION_INPUT_SCHEMAS_V1 as inputs, MCP_SERVER_ACTION_OUTPUT_SCHEMAS_V1 as outputs,
   type McpServerActionIdV1 } from '../../mcp/servers/serverActionsV1.js';
 import type { PreNormalizedActionSpec } from '../actionSpecs.js';
@@ -12,6 +13,8 @@ import { RegistryItemPointerV1Schema } from '../../registries/registryItemsV1.js
 import { McpServerCatalogEntryV1Schema, McpServerToolSettingsPatchV1Schema, McpServerToolPolicyV1Schema,
   type McpServerCatalogEntryV1, type McpServerConfigOverrideV1 } from '../../mcp/servers/settingsV1.js';
 import { ReachPlaceV1Schema } from '../../reach/reachPlaceV1.js';
+import { DaemonMcpServersDetectErrorCodeSchema, DaemonMcpServersTestErrorCodeSchema } from '../../mcp/servers/daemonRpcV1.js';
+import { MCP_SERVER_CATALOG_SUGGESTIONS_V1 } from '../../mcp/servers/catalogSuggestionsV1.js';
 
 // Review is presentation data, never executable input. In particular imported
 // config text, literal values and OAuth bearers stay in their live continuation.
@@ -46,7 +49,7 @@ function mcpReviewSchema(id: McpServerActionIdV1) {
   return review.check(z.refine(value => value.servers !== undefined || value.from !== undefined || id === 'mcp.servers.test' && value.serverId !== undefined, 'Missing reviewed MCP operation'));
 }
 
-function reviewServer(server: McpServerCatalogEntryV1 | ImportedMcpServerDraftV1) {
+function reviewServer(server: Omit<McpServerCatalogEntryV1, 'id' | 'createdAt' | 'updatedAt'> | ImportedMcpServerDraftV1) {
   const folder = server.stdio?.cwd;
   return { name: server.name, ...(server.title ? { title: server.title } : {}), transport: server.transport,
     ...(server.stdio ? { command: server.stdio.command, arguments: server.stdio.args,
@@ -93,6 +96,12 @@ function projectMcpApprovalInput(id: McpServerActionIdV1, raw: unknown) {
   if (id === 'mcp.servers.create') {
     const create = inputs[id].parse(input);
     if ('entries' in create) return mcpReviewSchema(id).parse({ servers: create.entries.map(item => ({ ...reviewServer(item.entry), where: item.where ?? defaultMcpWhere })) });
+    if ('suggestionId' in create) {
+      const suggestion = MCP_SERVER_CATALOG_SUGGESTIONS_V1.find(suggestion => suggestion.id === create.suggestionId)!;
+      return mcpReviewSchema(id).parse({ servers: [reviewServer({ name: suggestion.id, title: suggestion.title,
+        transport: 'http', remote: { url: suggestion.url, headers: {}, ...(suggestion.oauth ? { auth: { kind: 'oauth' } as const } : {}) }, env: {} })],
+        where: create.where ?? defaultMcpWhere });
+    }
   }
   const overrides = id === 'mcp.servers.update' ? inputs[id].parse(input) : null;
   const configuration = overrides && 'configOverrides' in overrides ? overrides.configOverrides : undefined;
@@ -160,10 +169,21 @@ const mcpCreateCliInput = z.strictObject({
   }
 }));
 
+const mcpObservationErrorCode = z.union([DaemonMcpServersDetectErrorCodeSchema, DaemonMcpServersTestErrorCodeSchema]);
+// Public approval reads use this same observation owner. Preserve reviewed
+// policy/control choices, but never copy executable config or credential values.
+const mcpObservationControls = z.object(z.pick(mcpReviewInput, {
+  default: true, tools: true, where: true, directory: true,
+  removeBindings: true, stepUp: true, dryRun: true, oauthApp: true, clientId: true,
+}).shape);
+
 function projectMcpObservation(input: unknown): unknown {
   const value = readRecord(input);
   const entry = readRecord(value.entry);
+  const controls = mcpObservationControls.safeParse(value);
+  const errorCode = value.ok === false && typeof value.errorCode === 'string' ? mcpObservationErrorCode.safeParse(value.errorCode) : null;
   return {
+    ...(controls.success ? readRecord(projectNativeJsonValueForTransport(controls.data)) : {}),
     ...(typeof value.status === 'string' ? { status: value.status } : {}),
     ...(typeof value.serverId === 'string' ? { serverId: value.serverId } : typeof entry.id === 'string' ? { serverId: entry.id } : {}),
     ...(Array.isArray(value.entries) ? { serverIds: value.entries
@@ -172,6 +192,10 @@ function projectMcpObservation(input: unknown): unknown {
     ...(typeof value.expectedRevision === 'number' || value.expectedRevision === 'absent' ? { expectedRevision: value.expectedRevision } : {}),
     ...(typeof value.revision === 'number' || value.revision === 'absent' ? { revision: value.revision } : {}),
     ...(typeof value.ok === 'boolean' ? { ok: value.ok } : {}),
+    // The public failure reader admits the response schema. Keep Test's
+    // numeric timing and use only the closed code as the safe error text.
+    ...(errorCode?.success ? { errorCode: errorCode.data, error: errorCode.data } : {}),
+    ...(typeof value.durationMs === 'number' ? { durationMs: value.durationMs } : {}),
     ...(typeof value.toolCount === 'number' ? { toolCount: value.toolCount } : {}),
   };
 }
@@ -247,6 +271,9 @@ export const MCP_SERVER_ACTION_SPECS_V1 = [
         visibility: 'canonical' as const }] } },
   { ...mcpSpec('mcp.servers.create', 'Add MCP server',
     'Add an MCP server, which gives agents extra tools.', { danger: true, direct: true }),
+    inputHints: { fields: [{ path: 'suggestionId', title: 'Suggested MCP server', widget: 'select' as const,
+      options: MCP_SERVER_CATALOG_SUGGESTIONS_V1.map(suggestion => ({ value: suggestion.id, label: suggestion.title,
+        description: suggestion.description })) }] },
     cli: { acceptsServerId: true, inputSchema: mcpCreateCliInput,
       bindInput: (value: unknown) => {
         const input = mcpCreateCliInput.parse(value);

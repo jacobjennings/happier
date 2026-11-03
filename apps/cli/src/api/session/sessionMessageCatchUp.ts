@@ -48,7 +48,7 @@ function createCatchUpUpdate(msg: SessionMessageV1, sessionId: string): Update {
         seq: 0,
         createdAt,
         body: {
-            t: 'new-message',
+            t: 'new-message', delivery: 'full' as const,
             sid: sessionId,
             message: {
                 id: msg.id,

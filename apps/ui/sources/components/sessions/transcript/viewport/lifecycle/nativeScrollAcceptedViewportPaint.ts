@@ -1,8 +1,7 @@
-export type NativeScrollAcceptedViewportPaintDecision =
+type NativeScrollAcceptedViewportPaintDecision =
     | Readonly<{ type: 'record-accepted-viewport-paint' }>
     | Readonly<{
         reason:
-            | 'not-native'
             | 'not-loaded'
             | 'empty-list'
             | 'trusted-observation'
@@ -32,7 +31,7 @@ export type NativeScrollAcceptedViewportPaintEffect = Readonly<{
  * `transcriptInitialFillBudgetMs + transcriptMountSettleQuiescentWindowMs`, so a settle signal that
  * never stabilizes still reveals on the deadline.
  */
-export function resolveNativeFollowBottomObservationCanReleasePaint(params: Readonly<{
+function resolveNativeFollowBottomObservationCanReleasePaint(params: Readonly<{
     distanceFromLiveTailPx: number;
     isWarmKeepAliveInstance: boolean;
     nativeMountSettleDeadlineReached: boolean;
@@ -46,18 +45,16 @@ export function resolveNativeFollowBottomObservationCanReleasePaint(params: Read
     return params.isWarmKeepAliveInstance && params.sessionEntryShouldFollowBottom !== false;
 }
 
-export function resolveNativeScrollAcceptedViewportPaintDecision(params: Readonly<{
+function resolveNativeScrollAcceptedViewportPaintDecision(params: Readonly<{
     entryRestoreConfirmedByObservation: boolean;
     hasRenderedItems: boolean;
     isLoaded: boolean;
-    isNative: boolean;
     isTrusted: boolean;
     nativeFollowBottomObservationCanReleasePaint: boolean;
     refDistanceFromLiveTailPx: number;
     thresholdPx: number;
     wantsPinned: boolean;
 }>): NativeScrollAcceptedViewportPaintDecision {
-    if (!params.isNative) return { reason: 'not-native', type: 'skip' };
     if (!params.isLoaded) return { reason: 'not-loaded', type: 'skip' };
     if (!params.hasRenderedItems) return { reason: 'empty-list', type: 'skip' };
     if (params.isTrusted) return { reason: 'trusted-observation', type: 'skip' };
@@ -73,7 +70,7 @@ export function resolveNativeScrollAcceptedViewportPaintDecision(params: Readonl
     return { reason: 'not-accepted', type: 'skip' };
 }
 
-export function resolveNativeScrollAcceptedViewportPaintEffects(params: Readonly<{
+function resolveNativeScrollAcceptedViewportPaintEffects(params: Readonly<{
     decision: NativeScrollAcceptedViewportPaintDecision;
     fallbackMetrics: Readonly<{
         contentHeight: number;
@@ -105,7 +102,6 @@ export function resolveNativeScrollAcceptedViewportPaintObservationEffects(param
     }>;
     hasRenderedItems: boolean;
     isLoaded: boolean;
-    isNative: boolean;
     isTrusted: boolean;
     isWarmKeepAliveInstance: boolean;
     nativeMountSettleDeadlineReached: boolean;
@@ -129,7 +125,6 @@ export function resolveNativeScrollAcceptedViewportPaintObservationEffects(param
             entryRestoreConfirmedByObservation: params.entryRestoreConfirmedByObservation,
             hasRenderedItems: params.hasRenderedItems,
             isLoaded: params.isLoaded,
-            isNative: params.isNative,
             isTrusted: params.isTrusted,
             nativeFollowBottomObservationCanReleasePaint,
             refDistanceFromLiveTailPx: params.distanceFromLiveTailPx,

@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ReadinessProbeResult } from '@happier-dev/connection-supervisor';
-import { buildConnectedServiceCredentialRecord, FeaturesResponseSchema } from '@happier-dev/protocol';
+import { buildConnectedServiceCredentialRecord, FeaturesResponseSchema, QualifiedConnectedAccountCredentialHealthPatchV4Schema } from '@happier-dev/protocol';
 import { QualifiedConnectedAccountCredentialSnapshotV4Schema } from '@happier-dev/protocol/connect/qualified-connected-account-projections';
 import { QualifiedConnectedAccountGroupResponseV4Schema } from '@happier-dev/protocol/connect/qualifiedConnectedAccountsV4';
 import { BUNDLED_LEGACY_CONNECTED_ACCOUNT_COMPATIBILITY_BY_SERVICE_ID } from '@happier-dev/protocol/connect/generatedBuiltInLegacyConnectedAccountCompatibility';
@@ -12,7 +12,7 @@ import { buildProjectAccountRowPhysicalKeyV1 } from '@happier-dev/protocol/proje
 import { buildProfilePhysicalKey, ProfileRecordV1Schema } from '@happier-dev/protocol/profiles/profileRecordV1';
 import { refreshActiveProfileCatalog } from '@/settings/profiles/hydrateProfileCatalog';
 import { refreshActivePromptLibraryCatalog } from '@/settings/prompts/hydratePromptLibraryCatalog';
-import { DEFAULT_PROVIDER_CONNECTIONS_CATALOG_V1, PROVIDER_CONNECTIONS_ACCOUNT_KV_KEY_V1 } from '@happier-dev/protocol/providers/connections/connectionRowsV1';
+import { DEFAULT_PROVIDER_CONNECTIONS_CATALOG_V1, PROVIDER_CONNECTIONS_ACCOUNT_KV_KEY_V1, ProviderConnectionsCatalogV1Schema } from '@happier-dev/protocol/providers/connections/connectionRowsV1';
 import { accountSettingsParse } from '@happier-dev/protocol/account/settings/accountSettings';
 import { emptyAccountSettingsHistoryCaptureResponse } from '@/settings/accountSettings/emptyAccountSettingsHistoryCapture.testkit';
 import { buildPromptLibraryPhysicalKeyV1, PromptLibraryCatalogKeyV1Schema } from '@happier-dev/protocol/prompts/library/promptLibraryRowsV1';
@@ -29,7 +29,8 @@ import { hydrateSavedSecretCatalog } from '@/settings/secrets/hydrateSavedSecret
 import type { Machine } from '@/api/types';
 import { encodeBase64, encrypt } from '@/api/encryption';
 import { configuration } from '@/configuration';
-import { readProjectAccountRows, getActiveProjectAccountRowsSnapshot, withdrawActiveProjectAccountRowsSnapshot } from '@/workspaces/projectAccountRows';
+import { readProjectAccountRows, getActiveProjectAccountRowsSnapshot, subscribeActiveProjectAccountRowsSnapshot, withdrawActiveProjectAccountRowsSnapshot } from '@/workspaces/projectAccountRows';
+import { createPlainProjectAccountRefRow, projectAccountRowsReadHttpResponse } from '@/workspaces/projectAccountRows.testkit';
 import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
 import {
     clearActiveAccountSettingsSnapshot,
@@ -37,7 +38,8 @@ import {
     setActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { createCliRegistryHostV1 } from '@/registries/createCliRegistryHost';
-import { bindApiSessionSocketMock, createApiSessionSocketStub } from '@/testkit/backends/apiSessionSocketHarness';
+import { bindApiSessionSocketMock } from '@/testkit/backends/apiSessionSocketHarness';
+import { createApiMachineSocketFixture as createMachineSocket } from '@/testkit/apiMachineTransport';
 import { createDeferred } from '@/testkit/async/deferred';
 import { logger } from '@/ui/logger';
 import { getConnectedServiceStateSharingDescriptor, resolveConnectedServiceMaterializedHomeRoot } from '@/daemon/connectedServices/catalogHooks';
@@ -49,12 +51,45 @@ import { ConnectedServiceRuntimeRegistry } from '@/daemon/connectedServices/runt
 import { bootstrapMachineSyncRuntime } from '@/daemon/machine/bootstrapMachineSyncRuntime';
 import { startDaemonSessionControlRuntime } from '@/daemon/startup/startDaemonSessionControlRuntime';
 import { HAPPIER_CONNECTED_SERVICE_TARGET_MATERIALIZED_ROOT_ENV_KEY } from '@/daemon/connectedServices/connectedServiceChildEnvironment';
-import { ApiMachineClient } from './apiMachine';
+import { ApiMachineClient, type ManagedMachinePolicyInvalidation } from './apiMachine';
+import { createDaemonTeamCredentialDirectMaterialReconciler, subscribeTeamCredentialDirectMaterialAccountChanges, subscribeTeamCredentialDirectMaterialSourceChanges } from '@/daemon/connectedServices/directMaterial/daemonTeamCredentialDirectMaterialReconciler';
 import { attachPluginWebhookDaemonWakeV1 } from '@/plugins/runtime/webhooks/pluginWebhookDaemonWake';
 import { ManagedWakeTargetV1Schema } from '@happier-dev/protocol/machines/managed/managedIntentV1';
 import { UpdateBodySchema } from '@happier-dev/protocol/updates';
 import { buildProviderAccountUsageRecordId } from '@happier-dev/protocol/connect/accountUsage';
 import type { ChangeEntry } from '@happier-dev/protocol/changes';
+import { buildSessionFollowReceiverChangeEntityIdV1 } from '@happier-dev/protocol/sessions/follow/changes';
+import { createLightSqliteHarness } from '../../../server/sources/testkit/lightSqliteHarness';
+import { db } from '../../../server/sources/storage/db';
+import { inTx } from '../../../server/sources/storage/inTx';
+import { markAccountChanged } from '../../../server/sources/app/changes/markAccountChanged';
+import { eventRouter } from '../../../server/sources/app/events/connectionEventRouter';
+import { getAccountStoredContentV3SocketRoom } from '../../../server/sources/app/api/socketRooms';
+import { createAuthenticatedTestApp } from '../../../server/sources/app/api/testkit/sqliteFastify';
+import { changesRoutes } from '../../../server/sources/app/api/routes/changes/changesRoutes';
+import { registerProviderConnectionsRoutes } from '../../../server/sources/app/account/providers/registerProviderConnectionsRoutes';
+import { mutateProviderConnectionsRowInTx } from '../../../server/sources/app/account/providers/connectionRows';
+import { registerSavedSecretResourceRoutes } from '../../../server/sources/app/api/routes/account/registerSavedSecretResourceRoutes';
+import { registerAccountSettingsRoutes } from '../../../server/sources/app/api/routes/account/registerAccountSettingsRoutes';
+import { createSavedSecretResourceInTx } from '../../../server/sources/app/account/savedSecrets/savedSecretResourceService';
+import { writeAccountSettingsInTx } from '../../../server/sources/app/accountSettings/writeAccountSettingsInTx';
+import { publishAccountTeamMembershipsChangedInTx } from '../../../server/sources/app/teams/teamChanges';
+import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';
+import { recordConnectedServiceAccountProfileChange } from '../../../server/sources/app/api/routes/connect/connectedServicesAccountProfileChange';
+import { listQualifiedConnectedAccounts, mutateQualifiedConnectedServiceCredential, mutateQualifiedConnectedServiceCredentialHealth, readQualifiedConnectedServiceCredential } from '../../../server/sources/app/api/routes/connect/qualifiedConnectedAccounts/credentialRepository';
+import { ConnectedServiceRefreshCoordinator } from '@/daemon/connectedServices/refresh/ConnectedServiceRefreshCoordinator';
+import { createDaemonConnectedAccountPurposeBindingRuntime } from '@/daemon/connectedServices/purposeBindings/createDaemonConnectedAccountPurposeBindingRuntime';
+import { createQualifiedConnectedAccountEstablishedRuntimeOwner } from '@/daemon/connectedServices/qualifiedConnectedAccountEstablishedRuntimeOwner';
+import { homeDomainActionTransportV1 } from '@happier-dev/protocol/actions/homeDomainActionFamily';
+import { computeTeamCredentialSourceMemberKeyV1 } from '@happier-dev/protocol/teams';
+import { createHttpTeamCredentialDirectMaterialClient } from '@/daemon/connectedServices/directMaterial/teamCredentialDirectMaterialClient';
+import { registerTeamRoutes } from '../../../server/sources/app/teams/registerTeamRoutes';
+import { registerQualifiedConnectedAccountCredentialRoutesV4 } from '../../../server/sources/app/api/routes/connect/qualifiedConnectedAccounts/registerQualifiedConnectedAccountCredentialRoutesV4';
+import { readQualifiedConnectedAccountSourceIdentityInTx } from '../../../server/sources/app/api/routes/connect/qualifiedConnectedAccounts/credentialRepository';
+import { listQualifiedConnectedAccountsV4, listQualifiedConnectedAccountGroupsV4, readQualifiedConnectedAccountGroupV4 } from '@/api/client/qualifiedConnectedAccountApi';
+import { CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 } from '@happier-dev/protocol/connect/plugin-connected-account-authentication-v2';
+import { QualifiedConnectedAccountServiceRefSchema, QualifiedConnectedAccountServiceListV4Schema } from '@happier-dev/protocol/connect/qualified-connected-account-projections';
+import { writeSessionTeamCredentialBindingsInTx } from '../../../server/sources/app/teams/credentials/sessionBinding';
 import {
     publishPluginAccountCollectionWatchInvalidation as publishCollectionChange,
     readPluginAccountAvailabilityChangeKey,
@@ -66,10 +101,31 @@ import {
 const { claudeProvenanceReplaceCount } = vi.hoisted(() => ({
     claudeProvenanceReplaceCount: { current: 0 },
 }));
+const checkpointIo = vi.hoisted(() => ({
+    publications: [] as string[],
+    refuseCheckpoint: false,
+}));
+// Observe/interfere only at the OS publication boundary; persistence stays real.
+vi.mock('node:fs', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:fs')>();
+    return {
+        ...actual,
+        renameSync: (oldPath: Parameters<typeof actual.renameSync>[0], newPath: Parameters<typeof actual.renameSync>[1]) => {
+            const destination = String(newPath);
+            if (destination.endsWith('changes-cursors.json') && checkpointIo.refuseCheckpoint) {
+                throw Object.assign(new Error('checkpoint publication interrupted'), { code: 'EIO' });
+            }
+            actual.renameSync(oldPath, newPath);
+            checkpointIo.publications.push(destination);
+        },
+    };
+});
 const {
     mockIo,
     axiosGet,
     axiosPost,
+    axiosPut,
+    axiosDelete,
     axiosIsAxiosError,
         readAccountChangesCursor,
         writeAccountChangesCursor,
@@ -78,6 +134,8 @@ const {
         mockIo: vi.fn(),
         axiosGet: vi.fn(),
         axiosPost: vi.fn(),
+        axiosPut: vi.fn(),
+        axiosDelete: vi.fn(),
         axiosIsAxiosError: vi.fn((error: unknown) => (
             typeof error === 'object' && error !== null && (error as { isAxiosError?: unknown }).isAxiosError === true
         )),
@@ -94,10 +152,12 @@ vi.mock('node:fs/promises', async (importOriginal) => {
             oldPath: Parameters<typeof actual.rename>[0],
             newPath: Parameters<typeof actual.rename>[1],
         ) => {
+            const destination = String(newPath);
             if (String(newPath).endsWith('.happier-claude-connected-service-home.json')) {
                 claudeProvenanceReplaceCount.current += 1;
             }
             await actual.rename(oldPath, newPath);
+            checkpointIo.publications.push(destination);
         },
     };
 });
@@ -110,6 +170,8 @@ vi.mock('axios', () => ({
     default: {
         get: axiosGet,
         post: axiosPost,
+        put: axiosPut,
+        delete: axiosDelete,
         isAxiosError: axiosIsAxiosError,
     },
     isAxiosError: axiosIsAxiosError,
@@ -168,6 +230,8 @@ beforeEach(() => {
     axiosGet.mockReset();
     mockAccountGet(async url => { throw new Error(`Unexpected Account HTTP read: ${url}`); });
     axiosPost.mockReset();
+    axiosPut.mockReset();
+    axiosDelete.mockReset();
     readAccountChangesCursor.mockReset().mockResolvedValue(0);
     writeAccountChangesCursor.mockReset().mockResolvedValue(undefined);
     withdrawActiveProjectAccountRowsSnapshot();
@@ -191,37 +255,168 @@ afterEach(() => {
     vi.useRealTimers();
 });
 
-function createMachineSocket(options: {
-    emitWithAck?: (event: string, payload: unknown) => Promise<unknown> | unknown;
-} = {}) {
-    return createApiSessionSocketStub({
-        emitWithAck: async (event, payload) => {
-            if (options.emitWithAck) {
-                return await options.emitWithAck(event, payload);
-            }
-
-            if (event === 'machine-update-state' && payload && typeof payload === 'object') {
-                return {
-                    result: 'success',
-                    version: 1,
-                    daemonState: (payload as { daemonState?: unknown }).daemonState,
-                };
-            }
-
-            if (event === 'machine-update-metadata' && payload && typeof payload === 'object') {
-                return {
-                    result: 'success',
-                    version: 1,
-                    metadata: (payload as { metadata?: unknown }).metadata,
-                };
-            }
-
-            return { result: 'success', version: 1 };
-        },
-    });
-}
 
 describe('ApiMachineClient /v2/changes reconnect', () => {
+
+    async function withRealCheckpoint(run: (storage: typeof persistence) => Promise<void>) {
+        const homeDir = await mkdtemp(join(tmpdir(), 'happier-cursor-coalesce-'));
+        const original = { happyHomeDir: configuration.happyHomeDir, settingsFile: configuration.settingsFile };
+        Object.assign(configuration, { happyHomeDir: homeDir, settingsFile: join(homeDir, 'settings.json') });
+        const storage = await vi.importActual<typeof persistence>('@/persistence');
+        readAccountChangesCursor.mockImplementation(storage.readAccountChangesCursor);
+        writeAccountChangesCursor.mockImplementation(storage.writeAccountChangesCursor);
+        try {
+            await storage.updateSettings(settings => ({ ...settings, chromeMode: true }));
+            await storage.writeAccountChangesCursor('coalesce-account', 10);
+            checkpointIo.publications.length = 0;
+            await run(storage);
+        } finally {
+            checkpointIo.refuseCheckpoint = false;
+            Object.assign(configuration, original);
+            await rm(homeDir, { recursive: true, force: true });
+        }
+    }
+
+    it.each(['complete', 'failed-tail', 'cancelled-tail', 'cursor-gone'] as const)(
+        'publishes one real checkpoint at catch-up exit with the last materialized page (%s)', async mode => {
+            await withRealCheckpoint(async storage => {
+                const machine: Machine = { id: 'coalesce-machine', encryptionMode: 'plain', metadata: null,
+                    metadataVersion: 0, daemonState: null, daemonStateVersion: 0 };
+                const controller = new AbortController();
+                const requested: number[] = [];
+                const persistedWhilePaging: number[] = [];
+                let idle = true;
+                mockAccountGet(async (url, options) => {
+                    if (url.endsWith('/v1/account/profile')) return { status: 200, data: { id: 'coalesce-account' } };
+                    if (url.includes('/v1/machines/')) return { status: 200, data: { machine } };
+                    if (url.includes('/v2/changes')) {
+                        const after = Number((options?.params as { after: number }).after);
+                        requested.push(after);
+                        persistedWhilePaging.push(await storage.readAccountChangesCursor('coalesce-account'));
+                        if (idle) return { status: 200, data: { changes: [], nextCursor: after } };
+                        if (after === 1010 && mode === 'cursor-gone') {
+                            return { status: 410, data: { error: 'cursor-gone', currentCursor: 8 } };
+                        }
+                        const changes = Array.from({ length: after < 1010 ? 200 : 1 }, (_, index) => ({
+                            cursor: after + index + 1, kind: 'session', entityId: `coalesce-${after + index + 1}`, changedAt: 1,
+                        }));
+                        return { status: 200, data: { changes, nextCursor: changes.at(-1)!.cursor } };
+                    }
+                    throw new Error(`Unexpected coalesce route: ${new URL(url).pathname}`);
+                });
+                const socket = createMachineSocket();
+                bindApiSessionSocketMock(mockIo, socket);
+                admitAccountSnapshot(admitAccountSnapshot.name);
+                const client = new ApiMachineClient(admitAccountSnapshot.name, machine);
+                client.onConnectedServicesProjection(async () => {});
+                client.onSessionChanged(async change => {
+                    if (change.cursor !== 1011) return;
+                    if (mode === 'failed-tail') throw new Error('tail materialization failed');
+                    if (mode === 'cancelled-tail') controller.abort();
+                });
+                const retryOwner = (client as unknown as {
+                    connectedServicesProjectionRetry: { waitForIdle(): Promise<void> };
+                }).connectedServicesProjectionRetry;
+                const sync = () => (client as unknown as {
+                    syncChangesOnConnect(options: { reason: 'live' }, signal: AbortSignal): Promise<void>;
+                }).syncChangesOnConnect({ reason: 'live' }, controller.signal);
+                try {
+                    if (mode === 'complete') {
+                        // Exercise the real socket registration and catch-up scheduler.
+                        client.connect();
+                        await vi.waitFor(() => expect(requested).toHaveLength(1));
+                        await retryOwner.waitForIdle();
+                        expect(checkpointIo.publications).toEqual([]);
+                        requested.length = 0;
+                        persistedWhilePaging.length = 0;
+                    }
+                    idle = false;
+                    if (mode === 'complete') {
+                        socket.trigger('update', { id: 'coalesce-wake', seq: 1011, createdAt: 1, body: { t: 'account-change' } });
+                        await vi.waitFor(() => expect(requested).toHaveLength(6));
+                        await retryOwner.waitForIdle();
+                    } else if (mode === 'failed-tail') {
+                        await expect(sync()).rejects.toThrow('tail materialization failed');
+                    } else if (mode === 'cancelled-tail') {
+                        await expect(sync()).rejects.toThrow();
+                    } else {
+                        await sync();
+                    }
+                    expect(checkpointIo.publications.filter(path => path.endsWith('changes-cursors.json'))).toHaveLength(1);
+                    expect(checkpointIo.publications.filter(path => path.endsWith('settings.json'))).toHaveLength(0);
+                    expect(requested).toEqual([10, 210, 410, 610, 810, 1010]);
+                    expect(persistedWhilePaging).toEqual([10, 10, 10, 10, 10, 10]);
+                    expect(await storage.readAccountChangesCursor('coalesce-account')).toBe(
+                        mode === 'complete' ? 1011 : mode === 'cursor-gone' ? 8 : 1010,
+                    );
+                    if (mode === 'complete') {
+                        idle = true;
+                        checkpointIo.publications.length = 0;
+                        await sync();
+                        expect(checkpointIo.publications).toEqual([]);
+                    }
+                } finally { await client.shutdown(); }
+            });
+        },
+    );
+
+    it('replays uncheckpointed materialization idempotently from disk after an interrupted publication', async () => {
+        await withRealCheckpoint(async storage => {
+            const machine: Machine = { id: 'replay-machine', encryptionMode: 'plain', metadata: null,
+                metadataVersion: 0, daemonState: null, daemonStateVersion: 0 };
+            const requested: number[] = [];
+            const materialized = new Set<string>();
+            let deliveries = 0;
+            let interrupted = true;
+            mockAccountGet(async (url, options) => {
+                if (url.endsWith('/v1/account/profile')) return { status: 200, data: { id: 'coalesce-account' } };
+                if (url.includes('/v2/changes')) {
+                    const after = Number((options?.params as { after: number }).after);
+                    requested.push(after);
+                    if (after === 210 && interrupted) {
+                        // The process has consumed a page, but its only durable
+                        // restart position must still be the previous operation.
+                        expect(await storage.readAccountChangesCursor('coalesce-account')).toBe(10);
+                        checkpointIo.refuseCheckpoint = true;
+                        throw new Error('connection interrupted mid-catch-up');
+                    }
+                    const changes = after === 10 ? Array.from({ length: 200 }, (_, index) => ({
+                        cursor: index + 11, kind: 'session', entityId: `replayed-${index}`, changedAt: 1,
+                    })) : [];
+                    return { status: 200, data: { changes, nextCursor: after === 10 ? 210 : after } };
+                }
+                throw new Error(`Unexpected replay route: ${new URL(url).pathname}`);
+            });
+            const start = () => {
+                const client = new ApiMachineClient(admitAccountSnapshot.name, machine);
+                client.onSessionChanged(async change => { deliveries += 1; materialized.add(change.sessionId); });
+                return client;
+            };
+            const sync = (client: ApiMachineClient) => (client as unknown as {
+                syncChangesOnConnect(options: { reason: 'live' }): Promise<void>;
+            }).syncChangesOnConnect({ reason: 'live' });
+            admitAccountSnapshot(admitAccountSnapshot.name);
+            const first = start();
+            try {
+                await expect(sync(first)).rejects.toThrow();
+                expect(await storage.readAccountChangesCursor('coalesce-account')).toBe(10);
+                expect(materialized.size).toBe(200);
+            } finally { await first.shutdown(); checkpointIo.refuseCheckpoint = false; }
+            interrupted = false;
+            requested.length = 0;
+            const restarted = start();
+            try {
+                await sync(restarted);
+                expect(requested).toEqual([10, 210]);
+                expect(deliveries).toBe(400);
+                expect(materialized.size).toBe(200);
+                expect(await storage.readAccountChangesCursor('coalesce-account')).toBe(210);
+                expect(checkpointIo.publications.filter(path => path.endsWith('changes-cursors.json'))).toHaveLength(1);
+                expect(checkpointIo.publications.filter(path => path.endsWith('settings.json'))).toHaveLength(0);
+            } finally { await restarted.shutdown(); }
+        });
+    });
+
     it('consumes Account wake cursor demand once, including hints covered while a real feed read is pending', async () => {
         const machine: Machine = { id: 'cursor-demand-machine', encryptionMode: 'plain', metadata: null,
             metadataVersion: 0, daemonState: null, daemonStateVersion: 0 };
@@ -256,8 +451,9 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             body: { t: 'account-change' } });
         try {
             client.connect();
-            await vi.waitFor(() => expect(writeAccountChangesCursor).toHaveBeenCalledWith('cursor-demand-account', 10));
+            await vi.waitFor(() => expect(reads).toBe(1));
             await retryOwner.waitForIdle();
+            expect(writeAccountChangesCursor).not.toHaveBeenCalled();
             reads = 0;
             for (let index = 0; index < 50; index += 1) wake(10);
             await retryOwner.waitForIdle();
@@ -367,7 +563,7 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             }
         } finally { await client.shutdown(); }
     });
-    it('invalidates managed policy only for this controller or lost change-feed completeness', async () => {
+    it('classifies targeted Machine invalidations and controller policy or completeness wakes', async () => {
         const machine: Machine = { id: 'policy-controller', encryptionMode: 'plain', metadata: null,
             metadataVersion: 0, daemonState: null, daemonStateVersion: 0 };
         let changes: ChangeEntry[] = [];
@@ -391,25 +587,31 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
         });
         const client = new ApiMachineClient('token', machine);
         client.onConnectedServicesProjection(async () => {});
-        const notifications: string[] = [];
-        const detach = client.onManagedMachinePolicyInvalidated(() => { notifications.push('policy'); });
+        const notifications: (ManagedMachinePolicyInvalidation | undefined)[] = [];
+        const detach = client.onManagedMachinePolicyInvalidated(change => { notifications.push(change); });
         const sync = (reason: 'live' | 'reconnect' = 'live') => (
             client as unknown as { syncChangesOnConnect(options: { reason: 'live' | 'reconnect' }): Promise<void> }
         ).syncChangesOnConnect({ reason });
         const entry: ChangeEntry = { cursor: 1, kind: 'account', entityId: 'managed-row', changedAt: 1,
             hint: { managedMachinePolicy: true, machineId: machine.id } };
         try {
-            changes = [{ ...entry, hint: null }, { ...entry, kind: 'machine', entityId: 'another-controller' },
+            changes = [{ ...entry, hint: null },
                 { ...entry, hint: { managedMachinePolicy: true, machineId: 'another-controller' } },
                 { ...entry, hint: { managedMachinePolicy: true, machineId: machine.id, unexpected: true } }];
             await sync();
             expect(notifications).toEqual([]);
+            // The policy runtime owns its enrolled-Machine set. The feed
+            // supplies exact Machine ids rather than an unscoped policy wake.
+            changes = [{ ...entry, kind: 'machine', entityId: 'another-controller' }];
+            await sync();
+            expect(notifications).toEqual([{ kind: 'machines', machineIds: ['another-controller'] }]);
+            notifications.length = 0;
             changes = [entry];
             await sync();
-            expect(notifications).toHaveLength(1);
+            expect(notifications).toEqual([undefined]);
             changes = [{ ...entry, kind: 'machine', entityId: machine.id, hint: null }];
             await sync();
-            expect(notifications).toHaveLength(2);
+            expect(notifications).toEqual([undefined, { kind: 'currentness' }]);
             changes = [];
             await sync('reconnect');
             expect(notifications).toHaveLength(3);
@@ -449,6 +651,8 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
         bindApiSessionSocketMock(mockIo, socket);
         const client = new ApiMachineClient('token', machine);
         client.onConnectedServicesProjection(async () => {});
+        const sourcesInvalidated = vi.fn();
+        client.onAutomationEventSourcesInvalidated(sourcesInvalidated);
         // Observe the wake output; HTTP parsing, Account catch-up and attachment stay real.
         const events: string[] = [];
         const detach = attachPluginWebhookDaemonWakeV1({ apiMachine: client,
@@ -462,18 +666,21 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             await vi.waitFor(() => expect(writeAccountChangesCursor).toHaveBeenCalledWith('webhook-observer-account', cursor));
             await new Promise<void>(resolve => setImmediate(resolve));
             events.length = 0;
+            sourcesInvalidated.mockClear();
             cursor++;
             changes = [{ cursor, kind: 'machine', entityId: 'another-machine', changedAt: 1 }];
             socket.trigger('update', { id: 'unrelated-account-wake', seq: cursor, createdAt: 1,
                 body: { t: 'account-change' } });
             await vi.waitFor(() => expect(events).toContain('cursor'));
             expect(events).toEqual(['cursor']);
+            expect(sourcesInvalidated).not.toHaveBeenCalled();
             events.length = 0;
             cursor++;
             changes = [{ cursor, kind: 'pluginDomain', entityId: 'pluginDomain/example.tasks/webhook', changedAt: 1,
                 hint: { pluginDomain: 'webhook', pluginId: 'example.tasks' } }];
             await sync();
             expect(events).toEqual(['wake', 'cursor']);
+            expect(sourcesInvalidated).toHaveBeenCalledTimes(1);
             events.length = 0;
             cursor++;
             changes = [{ cursor, kind: 'pluginDomain', entityId: 'pluginDomain/example.tasks/availability', changedAt: 1,
@@ -498,7 +705,7 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
         }
     });
 
-    it.each(['single', 'paged', 'failed-tail'] as const)('delivers exact quota Refresh before acknowledging the Account cursor (%s)', async mode => {
+    it.each(['single', 'paged', 'failed-tail', 'mixed', 'mixed-catalog', 'mixed-team'] as const)('delivers exact quota Refresh before acknowledging the Account cursor (%s)', async mode => {
         const machine: Machine = { id: 'quota-observer-machine', encryptionMode: 'plain', metadata: null,
             metadataVersion: 0, daemonState: null, daemonStateVersion: 0 };
         const recordId = buildProviderAccountUsageRecordId({ providerId: 'quota-provider', accountSubjectId: 'work',
@@ -506,6 +713,14 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
         const { buildProviderAccountUsageRefreshChangeV1 } = await import('@happier-dev/protocol/changes');
         const changes: ChangeEntry[] = [{ cursor: mode === 'single' ? 1 : 201, changedAt: 1,
             ...buildProviderAccountUsageRefreshChangeV1(recordId) }];
+        if (mode === 'mixed') changes.push({ cursor: 202, changedAt: 1, kind: 'account', entityId: 'self',
+            hint: { connectedServices: true } });
+        if (mode === 'mixed-catalog') {
+            const { buildConnectedAccountCatalogPhysicalKeyV1 } = await import('@happier-dev/protocol/connect/connectedAccountConfigurationRowsV1');
+            changes.push({ cursor: 202, changedAt: 1, kind: 'account', entityId: buildConnectedAccountCatalogPhysicalKeyV1('purposes') });
+        }
+        if (mode === 'mixed-team') changes.push({ cursor: 202, changedAt: 1, kind: 'account', entityId: 'teams', hint: null });
+        const mixed = mode === 'mixed' || mode === 'mixed-catalog';
         let savedCursor = 0;
         let refuseTail = mode === 'failed-tail';
         readAccountChangesCursor.mockImplementation(async () => savedCursor);
@@ -526,10 +741,13 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
         bindApiSessionSocketMock(mockIo, socket);
         const client = new ApiMachineClient('token', machine);
         const events: unknown[] = [];
+        const directMaterialWakes: unknown[] = [];
+        client.onManagedProviderRetainedCurrentnessInvalidation(change => { directMaterialWakes.push(change); });
         const detach = client.onConnectedServicesProjection(async notification => {
             if (!notification.quotaRefreshRecordIds) return;
             if (refuseTail) throw new Error('quota-refresh-consumer-unavailable');
-            events.push(notification.quotaRefreshRecordIds);
+            events.push({ recordIds: notification.quotaRefreshRecordIds,
+                quotaRefreshOnly: 'quotaRefreshOnly' in notification && notification.quotaRefreshOnly });
         });
         writeAccountChangesCursor.mockImplementation(async (_accountId, cursor) => { savedCursor = cursor; events.push('cursor'); });
         try {
@@ -542,12 +760,22 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
                 events.length = 0;
             }
             await sync();
-            expect(events).toEqual(mode === 'paged' ? ['cursor', [recordId], 'cursor'] : [[recordId], 'cursor']);
-            expect(savedCursor).toBe(mode === 'single' ? 1 : 201);
+            const refresh = { recordIds: [recordId], quotaRefreshOnly: !mixed };
+            // Quota-only scopes the Connected Services projection. A Team
+            // change on the same page still wakes direct-material admission.
+            expect(events).toEqual([refresh, 'cursor']);
+            expect(directMaterialWakes).toEqual(mixed || mode === 'mixed-team' ? [{ source: 'changes',
+                signal: expect.any(AbortSignal), facts: expect.arrayContaining([mode === 'mixed' ? 'connected-services'
+                    : mode === 'mixed-catalog' ? 'connected-catalog' : 'teams']) }] : []);
+            expect(axiosGet.mock.calls.filter(([url]) => String(url).endsWith('/v1/account/profile')))
+                // The first catch-up authenticates the opaque token's Account;
+                // only a mixed credential change needs a projection read too.
+                .toHaveLength(mixed ? 2 : 1);
+            expect(savedCursor).toBe(mode === 'single' ? 1 : mixed || mode === 'mixed-team' ? 202 : 201);
         } finally { detach(); await client.shutdown(); }
     });
 
-    it.each(['stalled', 'cancelled'] as const)('does not fetch beyond a %s full Account page', async mode => {
+    it.each(['stalled', 'cancelled'] as const)('does not continue a %s Account catch-up', async mode => {
         const machine: Machine = { id: 'page-observer-machine', encryptionMode: 'plain', metadata: null,
             metadataVersion: 0, daemonState: null, daemonStateVersion: 0 };
         const controller = new AbortController();
@@ -559,13 +787,13 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
                 const after = options?.params && typeof options.params === 'object' && 'after' in options.params
                     ? Number(options.params.after) : 0;
                 requestedCursors.push(after);
+                if (mode === 'cancelled' && after === 400) controller.abort();
                 return { status: 200, data: { changes: Array.from({ length: 200 }, (_, index) => ({
                     cursor: index + 201, kind: 'machine', entityId: `unrelated-${index}`, changedAt: 1,
                 })), nextCursor: mode === 'stalled' ? 200 : 400 } };
             }
             throw new Error(`Unexpected page observer boundary: ${new URL(url).pathname}`);
         });
-        writeAccountChangesCursor.mockImplementation(async () => { controller.abort(); });
         const client = new ApiMachineClient('token', machine);
         try {
             await expect((client as unknown as {
@@ -573,7 +801,7 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             }).syncChangesOnConnect({ reason: 'live' }, controller.signal)).rejects.toThrow(
                 mode === 'stalled' ? 'account_changes_cursor_not_advanced' : undefined,
             );
-            expect(requestedCursors).toEqual([200]);
+            expect(requestedCursors).toEqual(mode === 'stalled' ? [200] : [200, 400]);
             if (mode === 'stalled') expect(writeAccountChangesCursor).not.toHaveBeenCalled();
             else expect(writeAccountChangesCursor).toHaveBeenCalledExactlyOnceWith('page-observer-account', 400);
         } finally { await client.shutdown(); }
@@ -712,12 +940,291 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             expect(getActiveAccountSettingsSnapshot()?.providerConnectionsCatalog).toMatchObject({ status: 'ready', revision: 2 });
             expect(getActiveAccountSettingsSnapshot()?.settingsVersion).toBe(7);
             expect(settingsHint).not.toHaveBeenCalled();
-            expect(retainedCatalogRevisions).toEqual([2]);
+            // Revision-only replacement of an empty ready catalog consumes
+            // the same credential facts, so retained material remains current.
+            expect(retainedCatalogRevisions).toEqual([]);
         } finally {
             await client.shutdown(); stored.mockRestore(); clearActiveAccountSettingsSnapshot();
             if (previous) setActiveAccountSettingsSnapshot(previous);
         }
     });
+        async function createMaterialChangeHarness(accountId: string, token: string,
+            registerRoutes?: (app: ReturnType<typeof createAuthenticatedTestApp>) => void) {
+            const app = createAuthenticatedTestApp();
+            changesRoutes(app);
+            registerProviderConnectionsRoutes(app);
+            registerSavedSecretResourceRoutes(app);
+            registerAccountSettingsRoutes(app);
+            registerRoutes?.(app);
+            await app.ready();
+            const machine: Machine = { id: 'material-cost-machine', encryptionMode: 'plain', metadata: null,
+                metadataVersion: 0, daemonState: null, daemonStateVersion: 0 };
+            let acknowledged = 0;
+            readAccountChangesCursor.mockImplementation(async () => acknowledged);
+            writeAccountChangesCursor.mockImplementation(async (_accountId, cursor) => { acknowledged = cursor; });
+            const reads = { providerRows: 0, settings: 0, savedSecrets: 0 };
+            const changePages: { after: number; entries: ChangeEntry[] }[] = [];
+            const headers = { 'x-test-user-id': accountId, ...buildCurrentAccountStoredContentCompatibilityHttpHeaders() };
+            axiosGet.mockImplementation(async (url: string, options?: { params?: Record<string, unknown>; validateStatus?: (status: number) => boolean }) => {
+                const request = new URL(url);
+                const path = request.pathname;
+                if (path === '/v1/account/profile') return { status: 200, data: { id: accountId } };
+                if (path === '/v1/auth/ping') return { status: 200, data: {} };
+                if (path.startsWith('/v1/machines/')) return { status: 200, data: { machine } };
+                if (path === '/v1/account/encryption/currentness') {
+                    const account = await db.account.findUniqueOrThrow({ where: { id: accountId } });
+                    return { status: 200, data: { mode: 'plain', version: 1, settingsVersion: account.settingsVersion,
+                        signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1 } };
+                }
+                if (path === '/v1/account/entity-rows/provider-connections') reads.providerRows++;
+                if (path === '/v2/account/settings') reads.settings++;
+                if (path === '/v1/account/saved-secrets/resources/materials') reads.savedSecrets++;
+                for (const [key, value] of Object.entries(options?.params ?? {})) request.searchParams.set(key, String(value));
+                const response = await app.inject({ method: 'GET', url: `${path}${request.search}`, headers });
+                const data: unknown = response.json();
+                if (path === '/v2/changes' && response.statusCode === 200) {
+                    changePages.push({ after: Number(request.searchParams.get('after')),
+                        entries: response.json<{ changes: ChangeEntry[] }>().changes });
+                }
+                if (!(options?.validateStatus?.(response.statusCode) ?? (response.statusCode >= 200 && response.statusCode < 300))) {
+                    // Preserve Axios's real HTTP refusal shape, including the
+                    // expected source-missing response after emergency revoke.
+                    throw Object.assign(createHttpStatusError(response.statusCode, `Account HTTP boundary ${path}`), {
+                        isAxiosError: true, response: { status: response.statusCode, data },
+                    });
+                }
+                return { status: response.statusCode, data };
+            });
+            const socket = createMachineSocket();
+            bindApiSessionSocketMock(mockIo, socket);
+            // Replace only Socket.IO delivery. Publication, room selection,
+            // payload construction, client registration and catch-up stay real.
+            const wakes: unknown[] = [];
+            eventRouter.setIo({ to: room => ({
+                emit: (event, payload) => {
+                    if (room !== getAccountStoredContentV3SocketRoom(accountId)) return;
+                    wakes.push(payload);
+                    socket.trigger(event, payload);
+                },
+                disconnectSockets: () => {},
+            }) });
+            const client = new ApiMachineClient(token, machine);
+            const detachProjection = client.onConnectedServicesProjection(async () => {});
+            const settle = async () => {
+                const { seq } = await db.account.findUniqueOrThrow({ where: { id: accountId }, select: { seq: true } });
+                await vi.waitFor(() => expect(acknowledged).toBe(seq));
+            };
+            return { client, socket, reads, wakes, changePages, settle, app, headers, detachProjection, getCursor: () => acknowledged,
+                start: async () => {
+                    client.connect();
+                    await vi.waitFor(() => expect(client.hasCurrentAccountChangesObserver()).toBe(true));
+                    await settle();
+                    reads.providerRows = reads.settings = reads.savedSecrets = 0;
+                    wakes.length = 0;
+                },
+                close: async () => { eventRouter.clearIo(); await client.shutdown(); await app.close(); },
+            };
+        }
+
+    describe('real Account-change material cost', () => {
+        let database: Awaited<ReturnType<typeof createLightSqliteHarness>> | undefined;
+        beforeAll(async () => {
+            database = await createLightSqliteHarness({ tempDirPrefix: 'happier-material-cost-feed-',
+                initAuth: false, initEncrypt: true, initFiles: false });
+        });
+        afterAll(async () => { await database?.close(); });
+
+        it('materializes only consumed domains at scale, stays idle for 300 seconds, and never rereads acknowledged entries', async () => {
+            const account = await db.account.create({ data: { id: 'domain-cost-account', encryptionMode: 'plain' } });
+            const session = await db.session.create({ data: { accountId: account.id, tag: 'domain-cost',
+                metadata: '{}', encryptionMode: 'plain' } });
+            const discardedKinds = ['feed', 'friends', 'friend_request', 'friend_accepted', 'kv', 'pet', 'machinePool'];
+            const irrelevantCount = 1_000;
+            await db.accountChange.createMany({ data: Array.from({ length: irrelevantCount }, (_, index) => ({
+                accountId: account.id, cursor: index + 1, kind: discardedKinds[index % discardedKinds.length]!,
+                entityId: `irrelevant-${index}`,
+            })) });
+            await db.account.update({ where: { id: account.id }, data: { seq: irrelevantCount } });
+            admitAccountSnapshot(admitAccountSnapshot.name);
+            const harness = await createMaterialChangeHarness(account.id, admitAccountSnapshot.name);
+            const delivered: number[] = [];
+            const revisions: number[] = [];
+            harness.client.onSessionChanged(async change => { delivered.push(change.cursor); });
+            harness.client.onSessionTranscriptRevised(async change => { revisions.push(change.cursor); });
+            vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+            try {
+                await harness.start();
+                const initialEntries = harness.changePages.flatMap(page => page.entries);
+                expect({ pages: harness.changePages.length, materialized: initialEntries.length,
+                    discarded: initialEntries.filter(entry => discardedKinds.includes(entry.kind)).length })
+                    .toEqual({ pages: 1, materialized: 0, discarded: 0 });
+
+                harness.changePages.length = 0;
+                await vi.advanceTimersByTimeAsync(300_000);
+                expect(harness.changePages).toEqual([]);
+                for (let index = 0; index < 50; index++) {
+                    harness.socket.trigger('update', { id: `settled-domain-wake-${index}`, seq: irrelevantCount,
+                        createdAt: 1, body: { t: 'account-change' } });
+                }
+                await vi.advanceTimersByTimeAsync(0);
+                expect(harness.changePages).toEqual([]);
+
+                await inTx(tx => markAccountChanged(tx, { accountId: account.id, kind: 'session', entityId: session.id }));
+                await harness.settle();
+                expect(harness.changePages).toMatchObject([{ after: irrelevantCount,
+                    entries: [{ cursor: irrelevantCount + 1, kind: 'session', entityId: session.id }] }]);
+                expect(delivered).toEqual([irrelevantCount + 1]);
+
+                harness.changePages.length = 0;
+                await inTx(tx => markAccountChanged(tx, { accountId: account.id, kind: 'share', entityId: session.id,
+                    hint: { updatedMessageSeq: 7, updatedMessageId: 'domain-revision' } }));
+                await harness.settle();
+                expect(harness.changePages).toMatchObject([{ after: irrelevantCount + 1,
+                    entries: [{ cursor: irrelevantCount + 2, kind: 'share', entityId: session.id }] }]);
+                expect(revisions).toEqual([irrelevantCount + 2]);
+
+                harness.changePages.length = 0;
+                // A genuine reconnect still has to establish currentness once;
+                // the existing equal-cursor live wake contract covers zero reads.
+                harness.socket.trigger('disconnect');
+                harness.socket.trigger('connect');
+                await vi.waitFor(() => expect(harness.changePages.length).toBeGreaterThan(0));
+                await vi.waitFor(() => expect(harness.client.hasCurrentAccountChangesObserver()).toBe(true));
+                expect(harness.changePages.flatMap(page => page.entries)).toEqual([]);
+                expect(delivered).toEqual([irrelevantCount + 1]);
+            } finally { await harness.close(); }
+        });
+
+    it('runs one direct-material pass when a Saved Secret change publishes its snapshot', async () => {
+        const previous = getActiveAccountSettingsSnapshot();
+        const account = await db.account.create({ data: { id: 'saved-secret-material-cost', encryptionMode: 'plain' } });
+        clearActiveAccountSettingsSnapshot();
+        setActiveAccountSettingsSnapshot({ source: 'network', settings: accountSettingsParse({}), rawSettings: {},
+            settingsVersion: 1, loadedAtMs: 1, settingsSecretsReadKeys: [], scopeKey: resolveAccountSettingsScopeKeyForToken('token'),
+            savedSecretCatalogState: 'ready', savedSecretResources: [] });
+        const harness = await createMaterialChangeHarness(account.id, 'token');
+        const { client } = harness;
+        const materialPasses = vi.fn();
+        const unsubscribeSource = subscribeTeamCredentialDirectMaterialSourceChanges(materialPasses);
+        const unsubscribeAccount = subscribeTeamCredentialDirectMaterialAccountChanges(client, materialPasses);
+        const retained = vi.fn();
+        client.onManagedProviderRetainedCurrentnessInvalidation(retained);
+        try {
+            await harness.start();
+            materialPasses.mockClear();
+            retained.mockClear();
+            expect(await inTx(tx => createSavedSecretResourceInTx(tx, { accountId: account.id, resourceId: 'new-secret',
+                displayName: 'New credential', kind: 'apiKey', encryptionMode: 'plain',
+                storedContent: { t: 'plain', v: { v: 1, name: 'New credential', kind: 'apiKey', value: 'fixture-value' } } })))
+                .toMatchObject({ ok: true });
+            await harness.settle();
+            expect(harness.wakes).toEqual([expect.objectContaining({ body: { t: 'account-change',
+                changeKinds: ['savedSecretResource'], entityIds: ['new-secret'] } })]);
+            expect(getActiveAccountSettingsSnapshot()?.savedSecretResources).toEqual([expect.objectContaining({ resourceId: 'new-secret' })]);
+            expect(harness.reads.savedSecrets).toBe(1);
+            expect(materialPasses).toHaveBeenCalledTimes(1);
+            expect(retained).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ facts: ['saved-secrets'] }));
+        } finally {
+            unsubscribeSource(); unsubscribeAccount(); await harness.close(); clearActiveAccountSettingsSnapshot();
+            if (previous) setActiveAccountSettingsSnapshot(previous);
+        }
+    });
+
+    it('keeps unrelated settings and Provider preferences out of material refresh demand', async () => {
+        const previous = getActiveAccountSettingsSnapshot();
+        const credentials = { token: 'provider-settings-churn', encryption: null };
+        const catalog = ProviderConnectionsCatalogV1Schema.parse({ ...DEFAULT_PROVIDER_CONNECTIONS_CATALOG_V1,
+            connections: [{ v: 1, id: 'pc_a', source: { kind: 'contribution', contributionKey: 'plugin/p' },
+                role: 'default', displayName: 'A', displayNameMode: 'automatic', revision: 0, createdAt: 1, updatedAt: 1 }] });
+        const stored = vi.spyOn(persistence, 'readStoredCredentials').mockResolvedValue(credentials);
+        const account = await db.account.create({ data: { id: 'provider-settings-churn', encryptionMode: 'plain', settingsVersion: 1 } });
+        const team = await db.team.create({ data: { name: 'Material currentness' } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: account.id, role: 'owner' } });
+        expect(await inTx(tx => mutateProviderConnectionsRowInTx(tx, { accountId: account.id, expectedRevision: 'absent',
+            sourceSettingsVersion: 1, referencedSavedSecretIds: [], content: { t: 'plain', v: catalog } })))
+            .toMatchObject({ status: 'updated', revision: 0 });
+        clearActiveAccountSettingsSnapshot();
+        setActiveAccountSettingsSnapshot({ source: 'network', settings: accountSettingsParse({}), rawSettings: {}, settingsVersion: 1,
+            loadedAtMs: 1, settingsSecretsReadKeys: [], scopeKey: resolveAccountSettingsScopeKeyForToken(credentials.token),
+            providerConnectionsCatalog: { status: 'ready', revision: 0, catalog } });
+        let revision = 1;
+        let kind: 'settings' | 'preference' | 'material' | 'read-key' | 'team-read-key' = 'settings';
+        const harness = await createMaterialChangeHarness(account.id, credentials.token);
+        const { client } = harness;
+        client.onAccountSettingsVersionHint(async hint => {
+            const snapshot = getActiveAccountSettingsSnapshot()!;
+            setActiveAccountSettingsSnapshot({ ...snapshot, settingsVersion: hint.settingsVersion ?? snapshot.settingsVersion,
+                settings: accountSettingsParse({ unrelated: revision }), rawSettings: { unrelated: revision },
+                ...(kind === 'read-key' || kind === 'team-read-key'
+                    ? { settingsSecretsReadKeys: [new Uint8Array([kind === 'read-key' ? 9 : 10])] } : {}) });
+        });
+        const material = vi.fn(async () => {});
+        client.onManagedProviderRetainedCurrentnessInvalidation(material);
+        const materialPasses = vi.fn();
+        const accountMaterialPasses = vi.fn();
+        const unsubscribeSource = subscribeTeamCredentialDirectMaterialSourceChanges(materialPasses);
+        const unsubscribeAccount = subscribeTeamCredentialDirectMaterialAccountChanges(client, accountMaterialPasses);
+        let catalogRevision = 0;
+        let settingsVersion = 1;
+        const publish = async () => {
+            if (kind === 'preference' || kind === 'material') {
+                const result = await inTx(tx => mutateProviderConnectionsRowInTx(tx, { accountId: account.id,
+                    expectedRevision: catalogRevision, referencedSavedSecretIds: [], content: { t: 'plain', v: {
+                        ...catalog,
+                        ...(kind === 'material' ? { connections: catalog.connections.map(connection => ({ ...connection, revision: 1 })) } : {}),
+                        modelPickerVisibilityByConnectionId: { pc_a: revision % 2 === 0 },
+                    } } }));
+                expect(result).toMatchObject({ status: 'updated', revision: catalogRevision + 1 });
+                catalogRevision++;
+            } else {
+                expect(await inTx(async tx => {
+                    const result = await writeAccountSettingsInTx({ tx, accountId: account.id,
+                        expectedVersion: settingsVersion, next: { kind: 'v2', content: { t: 'plain', v: { unrelated: revision } } } });
+                    if (kind === 'team-read-key') await publishAccountTeamMembershipsChangedInTx(tx, {
+                        accountId: account.id, additionalAccountIds: [account.id] });
+                    return result;
+                })).toMatchObject({ status: 'success' });
+                settingsVersion++;
+            }
+            await harness.settle();
+        };
+        try {
+            await harness.start();
+            material.mockClear();
+            materialPasses.mockClear();
+            accountMaterialPasses.mockClear();
+            for (let index = 0; index < 25; index++) { revision++; await publish(); }
+            expect(harness.wakes).toHaveLength(25);
+            expect(harness.reads).toEqual({ providerRows: 0, settings: 0, savedSecrets: 0 });
+            expect(material).not.toHaveBeenCalled();
+            expect(materialPasses).not.toHaveBeenCalled();
+            expect(accountMaterialPasses).not.toHaveBeenCalled();
+            kind = 'preference';
+            for (let index = 0; index < 25; index++) { revision++; await publish(); }
+            expect(harness.reads).toEqual({ providerRows: 25, settings: 0, savedSecrets: 0 });
+            expect(material).not.toHaveBeenCalled();
+            expect(materialPasses).not.toHaveBeenCalled();
+            expect(accountMaterialPasses).not.toHaveBeenCalled();
+            kind = 'material'; revision++; await publish();
+            expect(material).toHaveBeenCalledTimes(1);
+            expect(materialPasses).toHaveBeenCalledTimes(1);
+            kind = 'read-key'; revision++; await publish();
+            expect(harness.reads.providerRows).toBe(27);
+            expect(getActiveAccountSettingsSnapshot()?.providerConnectionsCatalog).toMatchObject({
+                status: 'ready', catalog: { connections: [{ id: 'pc_a', revision: 1 }] },
+            });
+            expect(accountMaterialPasses).not.toHaveBeenCalled();
+            kind = 'team-read-key'; revision++; await publish();
+            expect(accountMaterialPasses).toHaveBeenCalledTimes(1);
+            expect(material).toHaveBeenLastCalledWith(expect.objectContaining({ facts: ['all', 'teams'] }));
+        } finally {
+            unsubscribeSource(); unsubscribeAccount();
+            await harness.close(); stored.mockRestore(); clearActiveAccountSettingsSnapshot();
+            if (previous) setActiveAccountSettingsSnapshot(previous);
+        }
+    });
+    });
+
     it('refreshes demanded prompt catalogs on content-free Account hints without advancing Settings', async () => {
         const previous = getActiveAccountSettingsSnapshot();
         const credentials = { token: `e30.${Buffer.from(JSON.stringify({ sub: 'prompt-library-account' })).toString('base64url')}.signature`, encryption: null };
@@ -807,7 +1314,7 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             if (previous) setActiveAccountSettingsSnapshot(previous);
         }
     });
-    it('loads keyless Project rows through daemon bootstrap and releases its listener on retirement', async () => {
+    it('loads keyless Project rows through daemon bootstrap, reads only live changed rows and releases its listener on retirement', async () => {
         const previousSettings = getActiveAccountSettingsSnapshot();
         clearActiveAccountSettingsSnapshot();
         const tempRoot = await mkdtemp(join(tmpdir(), 'project-row-daemon-'));
@@ -816,6 +1323,10 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             metadata: null, metadataVersion: 0, daemonState: null, daemonStateVersion: 0 };
         const key = { kind: 'workspace-ref' as const, serverId: configuration.activeServerId, id: 'project-row-daemon-ref' };
         const ref = { id: key.id, serverId: key.serverId, machineId: machine.id, rootPath: '/daemon-project', createdAtMs: 1 };
+        const rows = [createPlainProjectAccountRefRow(ref, 2), ...Array.from({ length: 1024 }, (_, index) => {
+            const key = { kind: 'project-organization' as const, serverId: ref.serverId, projectKey: `unrelated-${index}` };
+            return { key, revision: 0, content: { t: 'plain' as const, v: { key, value: {} } } };
+        })];
         const socket = createMachineSocket();
         socket.connect.mockImplementation(() => { socket.connected = true; return socket; });
         bindApiSessionSocketMock(mockIo, socket);
@@ -831,10 +1342,8 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             if (url.includes('/v2/sessions')) return { status: 200, data: { sessions: [], nextCursor: null } };
             throw new Error(`unexpected url: ${url}`);
         });
-        axiosPost.mockImplementation(async (url: string) => {
-            if (url.endsWith('/v1/account/project-rows/list')) return { status: 200, data: {
-                status: 'listed', coverage: 'complete', rows: [{ key, revision: 2, content: { t: 'plain', v: { key, value: ref } } }],
-            } };
+        axiosPost.mockImplementation(async (url: string, body: unknown) => {
+            if (url.includes('/v1/account/project-rows/')) return projectAccountRowsReadHttpResponse(rows, url, body);
             throw new Error(`unexpected url: ${url}`);
         });
         const client = new ApiMachineClient(credentials.token, machine);
@@ -844,7 +1353,7 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             preferredHost: 'host.local', happyHomeDir: tempRoot, happyLibDir: tempRoot,
             filesystemAccessPolicy: { kind: 'osUser' }, takeoverRequested: false, isShuttingDown: () => false,
             createConnectedApiMachine: () => client, attachTransferRuntimeStatePublisher: async () => {},
-            startAutomationWorkerForMachine: () => ({ liveWorkProducer: { read: () => ({ coverage: 'complete', items: [] }), subscribe: () => () => {} }, stop: () => {}, refreshAssignments: async () => {}, pause: () => {}, resume: () => {}, handleServerUpdate: () => {} }),
+            startAutomationWorkerForMachine: () => ({ liveWorkProducer: { read: () => ({ coverage: 'complete', items: [] }), subscribe: () => () => {} }, stop: () => {}, catchUp: async () => {}, refreshAssignments: async () => {}, pause: () => {}, resume: () => {}, handleServerUpdate: () => {} }),
             startMemoryWorkerForMachine: async () => null, startVoiceInferenceWorkerForMachine: async () => null,
             spawnSession: async () => ({ type: 'success', sessionId: 'unused' }),
             spawnSessionForInternalResume: async () => { throw new Error('Unexpected internal resume'); },
@@ -863,6 +1372,20 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             const sync = () => (client as unknown as { syncChangesOnConnect(options: { reason: 'live' }): Promise<void> }).syncChangesOnConnect({ reason: 'live' });
             await sync();
             expect(getActiveProjectAccountRowsSnapshot()?.workspaceRefs).toEqual([ref]);
+            axiosPost.mockClear();
+            rows[0] = createPlainProjectAccountRefRow({ ...ref, rootPath: '/daemon-project-moved' }, 3);
+            const publishedChanges: unknown[] = [];
+            const stopObserving = subscribeActiveProjectAccountRowsSnapshot((_previous, next) => publishedChanges.push(next));
+            try {
+                await sync();
+                expect(getActiveProjectAccountRowsSnapshot()?.workspaceRefs).toEqual([{ ...ref, rootPath: '/daemon-project-moved' }]);
+                expect(publishedChanges).toHaveLength(1);
+                expect(axiosPost.mock.calls.map(([url, body]) => [new URL(url).pathname, body])).toEqual([
+                    ['/v1/account/project-rows/list', { kinds: ['workspace-ref', 'relationship-graph'] }],
+                ]);
+                await sync();
+                expect(publishedChanges).toHaveLength(1);
+            } finally { stopObserving(); }
             bootstrap.machineConnectionStateCleanup?.();
             const published = getActiveProjectAccountRowsSnapshot();
             axiosPost.mockClear();
@@ -908,8 +1431,8 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
         const client = new ApiMachineClient(credentials.token, machine);
         const settingsHint = vi.fn();
         client.onAccountSettingsVersionHint(settingsHint);
-        client.onAccountProjectRowsChanged(async ({ signal }) => {
-            await readProjectAccountRows({ credentials, signal, publication: 'installed' });
+        client.onAccountProjectRowsChanged(async ({ signal, keys }) => {
+            await readProjectAccountRows({ credentials, signal, publication: 'installed', changedKeys: keys });
         });
 
         await (client as unknown as { syncChangesOnConnect(options: { reason: 'live' }): Promise<void> })
@@ -947,8 +1470,8 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
                 : { status: 'listed', coverage: 'complete', rows: [] } };
             throw new Error(`unexpected url: ${url}`);
         });
-        client.onAccountProjectRowsChanged(async ({ signal }) => {
-            await readProjectAccountRows({ credentials, signal });
+        client.onAccountProjectRowsChanged(async ({ signal, keys }) => {
+            await readProjectAccountRows({ credentials, signal, publication: 'installed', changedKeys: keys });
         });
         const sync = () => (client as unknown as { syncChangesOnConnect(options: { reason: 'live' }): Promise<void> })
             .syncChangesOnConnect({ reason: 'live' });
@@ -1358,18 +1881,27 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
         const revalidate = vi.fn(async () => {
             throw new Error('managed_provider_revalidation_failed');
         });
-        client.onManagedProviderRetainedCurrentnessInvalidation(revalidate);
+        const withdraw = client.onManagedProviderRetainedCurrentnessInvalidation(revalidate);
+        const sync = () => (client as unknown as {
+            syncChangesOnConnect(options: { reason: 'live' }): Promise<void>;
+        }).syncChangesOnConnect({ reason: 'live' });
 
         try {
-            await expect((client as any).syncChangesOnConnect({ reason: 'live' }))
+            await expect(sync())
                 .rejects.toThrow('managed_provider_revalidation_failed');
 
             expect(revalidate).toHaveBeenCalledWith({
                 source: 'changes',
                 signal: expect.any(AbortSignal),
+                facts: expect.arrayContaining(['teams']),
             });
             expect(writeAccountChangesCursor).not.toHaveBeenCalled();
+            withdraw();
+            await sync();
+            expect(revalidate).toHaveBeenCalledOnce();
+            expect(writeAccountChangesCursor).toHaveBeenCalledWith('acc-1', 1);
         } finally {
+            withdraw();
             clearActiveAccountSettingsSnapshot();
             if (priorSnapshot) setActiveAccountSettingsSnapshot(priorSnapshot);
         }
@@ -1819,6 +2351,7 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
                 liveWorkProducer: { read: () => ({ coverage: 'complete' as const, items: [] }), subscribe: () => () => {} },
                 stop: vi.fn(),
                 refreshAssignments: vi.fn(async () => {}),
+                catchUp: vi.fn(async () => {}),
                 pause: vi.fn(),
                 resume: vi.fn(),
                 handleServerUpdate: vi.fn(),
@@ -2087,45 +2620,592 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
         expect(writeAccountChangesCursor).toHaveBeenCalledWith('acc-1', 8);
     });
 
-    it('reconciles connected services once for a live connected-services change', async () => {
-        const machine: Machine = {
-            id: 'machine-1',
-            encryptionKey: new Uint8Array(32).fill(7),
-            encryptionVariant: 'legacy',
-            metadata: null,
-            metadataVersion: 0,
-            daemonState: null,
-            daemonStateVersion: 0,
-        };
-        mockAccountGet(async (url: string) => {
-            if (url.includes('/v1/account/profile')) return { status: 200, data: { id: 'acc-1' } };
-            if (url.includes('/v2/changes')) {
-                return {
-                    status: 200,
-                    data: {
-                        changes: [{
-                            cursor: 9,
-                            kind: 'account',
-                            entityId: 'self',
-                            changedAt: 9,
-                            hint: { connectedServices: true },
-                        }],
-                        nextCursor: 9,
+    describe('service-proportional inventory reads', () => {
+        let database: Awaited<ReturnType<typeof createLightSqliteHarness>> | undefined;
+        beforeAll(async () => {
+            database = await createLightSqliteHarness({ tempDirPrefix: 'happier-scoped-health-feed-',
+                initAuth: false, initEncrypt: true, initFiles: false,
+                env: { HAPPIER_FEATURE_TEAMS__ENABLED: '1', HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: '1' } });
+        });
+        afterAll(async () => { await database?.close(); });
+
+        it('does not replay an email health commit on unrelated Account wakes or equal/refused health writes', async () => {
+            await withRealCheckpoint(async storage => {
+                const admitted = await createAdmittedPluginRuntimeFixture();
+                let harness: Awaited<ReturnType<typeof createMaterialChangeHarness>> | undefined;
+                try {
+                    const account = await db.account.create({ data: { encryptionMode: 'plain' } });
+                    const service = { pluginId: 'happier.channel.email', localId: 'email-imap-smtp' };
+                    const ref = { service, accountId: 'pf25-email' };
+                    const created = await mutateQualifiedConnectedServiceCredential({ accountId: account.id, ref,
+                        expectedCredentialRevision: null, authenticationModeId: 'password',
+                        content: { t: 'plain', v: { token: 'disposable-email-fixture' } }, metadata: { scopes: [] } });
+                    if (created.status !== 'written') throw new Error('Email fixture credential was not created');
+                    harness = await createMaterialChangeHarness(account.id, 'token', registerQualifiedConnectedAccountCredentialRoutesV4);
+                    // Keep the helper's completion witness, while exercising the
+                    // real cursor file rather than a cursor held by a test mock.
+                    const rememberCursor = writeAccountChangesCursor.getMockImplementation()!;
+                    readAccountChangesCursor.mockImplementation(storage.readAccountChangesCursor);
+                    writeAccountChangesCursor.mockImplementation(async (accountId, cursor) => {
+                        await storage.writeAccountChangesCursor(accountId, cursor);
+                        await rememberCursor(accountId, cursor);
+                    });
+                    await harness.start();
+                    const purposeRuntime = createDaemonConnectedAccountPurposeBindingRuntime({
+                        reloadController: admitted.controller, coordinatorInventoryIsObserved: () => true,
+                        resolveQualifiedConnectedAccountV4Support: () => 'advertised',
+                        establishedRuntimeOwner: createQualifiedConnectedAccountEstablishedRuntimeOwner({
+                            reloadController: admitted.controller,
+                            credentials: { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+                            getAccountEncryptionMode: async () => 'plain',
+                            configuration: { read: async () => null, secrets: {
+                                admit: async () => undefined, has: async () => false, read: async () => null,
+                            } },
+                        }),
+                        qualifiedApi: {
+                            listAccountsForServices: (services, signal) => listQualifiedConnectedAccountsV4({ token: 'token', services, signal }),
+                            listAccounts: currentService => listQualifiedConnectedAccountsV4({ token: 'token', service: currentService }),
+                            listGroups: currentService => listQualifiedConnectedAccountGroupsV4({ token: 'token', service: currentService }),
+                            readGroup: group => readQualifiedConnectedAccountGroupV4({ token: 'token', group }),
+                        },
+                    });
+                    await purposeRuntime.listCoordinatorAccounts();
+                    harness.detachProjection();
+                    const projections: import('./apiMachine').ConnectedServicesProjectionNotification[] = [];
+                    harness.client.onConnectedServicesProjection(async notification => {
+                        projections.push(notification);
+                        purposeRuntime.invalidate({ services: notification.connectedServiceRefs });
+                        await purposeRuntime.listCoordinatorAccounts();
+                    });
+                    axiosGet.mockClear();
+                    vi.mocked(logger.debug).mockClear();
+                    const servicePages = () => vi.mocked(logger.debug).mock.calls
+                        .filter(([message]) => message === '[API MACHINE] Connected service Account page')
+                        .map(([, diagnostic]) => diagnostic);
+                    const health = { v: 1 as const, status: 'needs_reauth' as const, reconnectRequired: true };
+                    const patchHealth = (expectedCredentialRevision = created.credentialRevision) => harness!.app.inject({
+                        method: 'PATCH', url: '/v4/connect/qualified/credential/health', headers: harness!.headers,
+                        payload: QualifiedConnectedAccountCredentialHealthPatchV4Schema.parse({ ref, health,
+                            expectedCredentialRevision, expectedConfigurationRevision: created.configurationRevision }),
+                    });
+                    expect((await patchHealth()).statusCode).toBe(200);
+                    await harness.settle();
+                    const firstCursor = await storage.readAccountChangesCursor(account.id);
+                    expect(projections).toEqual([expect.objectContaining({ source: 'changes', connectedServiceRefs: [service] })]);
+                    expect(servicePages()).toEqual([
+                        { phase: 'classified', afterCursor: firstCursor - 1, nextCursor: firstCursor,
+                            changeCursors: [firstCursor], allServices: false, serviceKinds: ['email-imap-smtp'] },
+                        { phase: 'settled', afterCursor: firstCursor - 1, nextCursor: firstCursor,
+                            changeCursors: [firstCursor], allServices: false, serviceKinds: ['email-imap-smtp'] },
+                    ]);
+                    const listServices = () => axiosGet.mock.calls.flatMap(([url]) => {
+                        const parsed = new URL(String(url));
+                        if (parsed.pathname !== '/v4/connect/qualified/accounts') return [];
+                        const service = parsed.searchParams.get('service');
+                        return service ? [QualifiedConnectedAccountServiceRefSchema.parse(JSON.parse(service))]
+                            : QualifiedConnectedAccountServiceListV4Schema.parse(JSON.parse(parsed.searchParams.get('services') ?? 'null'));
+                    });
+                    expect(listServices()).toEqual([service]);
+                    for (let index = 0; index < 25; index++) {
+                        await inTx(tx => markAccountChanged(tx, { accountId: account.id, kind: 'account',
+                            entityId: 'self', hint: { settingsVersion: index + 2 } }));
+                        await harness.settle();
+                        await purposeRuntime.listCoordinatorAccounts();
+                    }
+                    expect(await storage.readAccountChangesCursor(account.id)).toBeGreaterThan(firstCursor);
+                    expect(projections).toHaveLength(1);
+                    expect(listServices()).toEqual([service]);
+                    const beforeRefusal = await storage.readAccountChangesCursor(account.id);
+                    expect((await patchHealth()).statusCode).toBe(200);
+                    expect((await patchHealth(`csr_${'x'.repeat(22)}`)).statusCode).toBe(409);
+                    await harness.settle();
+                    await purposeRuntime.listCoordinatorAccounts();
+                    expect(await storage.readAccountChangesCursor(account.id)).toBe(beforeRefusal);
+                    expect(projections).toHaveLength(1);
+                    expect(listServices()).toEqual([service]);
+                    expect(servicePages()).toHaveLength(2);
+                } finally {
+                    try { await harness?.close(); }
+                    finally { await admitted.dispose(); }
+                }
+            });
+        });
+
+        it.each(['health', 'emergency-revoke'] as const)('withdraws and restores real direct material through Team feed (%s)', async transition => {
+            const admitted = await createAdmittedPluginRuntimeFixture();
+            let harness: Awaited<ReturnType<typeof createMaterialChangeHarness>> | undefined;
+            let detachMaterial: (() => void) | undefined;
+            let drainMaterial: (() => Promise<void>) | undefined;
+            try {
+                const custodian = await db.account.create({ data: { publicKey: null, encryptionMode: 'plain' } });
+                const recipient = await db.account.create({ data: { publicKey: null, encryptionMode: 'plain' } });
+                const departed = await db.account.create({ data: { publicKey: null, encryptionMode: 'plain' } });
+                const service = { pluginId: 'happier.voice.openai', localId: 'openai' };
+                const ref = { service, accountId: 'fx206-source' };
+                const contribution = admitted.registry.connectedAccountContributions?.describe(service);
+                const mode = contribution?.descriptor.authentication.modes.find(candidate => candidate.id === 'api-key');
+                if (!contribution || mode?.kind !== 'manual' || !mode.directExport) {
+                    throw new Error('Expected the admitted manual OpenAI direct-export contribution');
+                }
+                const directExportContract = mode.directExport.contractVersion;
+                const createCredential = () => mutateQualifiedConnectedServiceCredential({
+                    accountId: custodian.id, ref, expectedCredentialRevision: null, authenticationModeId: mode.id,
+                    directExportContract,
+                    contributionContractVersion: contribution.occurrenceId,
+                    content: { t: 'plain', v: { v: 1, values: { token: 'sk-fx206-disposable-fixture' } } },
+                    metadata: { scopes: [] },
+                });
+                const created = await createCredential();
+                if (created.status !== 'written') throw new Error('Fixture source credential was not created');
+                const identity = await inTx(tx => readQualifiedConnectedAccountSourceIdentityInTx(tx, { accountId: custodian.id, ref }));
+                if (!identity) throw new Error('Fixture source has no canonical incarnation');
+                expect(identity.directExportContract).toBe(CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1);
+                const source = { v: 1 as const, kind: 'connected_account' as const,
+                    target: { kind: 'account' as const, account: ref }, credentialIncarnation: identity.incarnation };
+                const team = await db.team.create({ data: { name: `FX206 ${transition}` } });
+                await db.teamMembership.create({ data: { teamId: team.id, accountId: custodian.id, role: 'owner' } });
+                const recipientMembership = await db.teamMembership.create({ data: { teamId: team.id, accountId: recipient.id, role: 'member' } });
+                const departedMembership = await db.teamMembership.create({ data: { teamId: team.id, accountId: departed.id, role: 'member' } });
+                const resource = await db.teamCredentialResource.create({ data: {
+                    teamId: team.id, custodianAccountId: custodian.id, displayName: 'FX206 direct source',
+                    disclosureCeiling: 'direct_allowed', sessionUsePolicy: 'personal_allowed', sourceBindingJson: JSON.stringify(source),
+                    memberGrants: { create: { teamMembershipId: recipientMembership.id, deliveryMode: 'direct' } },
+                } });
+                // No membership survives for this broker custodian. Its resource
+                // keeps it in the real Team publication audience.
+                const broker = await db.machine.create({ data: { accountId: departed.id, id: `fx206-broker-${transition}`,
+                    metadata: '{}', dataEncryptionKey: null } });
+                await db.teamCredentialResource.create({ data: {
+                    teamId: team.id, custodianAccountId: departed.id, displayName: 'Departed broker custodian',
+                    disclosureCeiling: 'brokered_only', sessionUsePolicy: 'personal_allowed',
+                    brokerMachineId: broker.id, sourceBindingJson: JSON.stringify(source),
+                } });
+                await db.teamMembership.delete({ where: { id: departedMembership.id } });
+                expect(await db.teamMembership.count({ where: { teamId: team.id, accountId: departed.id } })).toBe(0);
+                const session = await db.session.create({ data: { accountId: recipient.id, tag: crypto.randomUUID(),
+                    metadata: '{}', encryptionMode: 'plain', currentStorageState: 'hosted', metadataLayoutVersion: 1,
+                    ownerMetadata: JSON.stringify({ t: 'plain', v: { v: 1 } }), agentState: null, active: true } });
+                const slot = { kind: 'connected_service_purpose' as const,
+                    purpose: { consumer: service, purpose: 'voice.client-auth' } };
+                const acceptResource = async (revision: number) => {
+                    expect(await inTx(tx => writeSessionTeamCredentialBindingsInTx(tx, {
+                        sessionId: session.id, accountId: recipient.id,
+                        intents: [{ v: 1, slot, resourceId: resource.id, expectedResourceRevision: revision, deliveryMode: 'direct' }],
+                        authentication: { env: process.env, authority: 'present_user', authenticationEvidence: undefined },
+                    }))).toEqual({ ok: true });
+                };
+                await acceptResource(resource.revision);
+                harness = await createMaterialChangeHarness(custodian.id, 'token', app => {
+                    registerTeamRoutes(app, { HAPPIER_FEATURE_TEAMS__ENABLED: '1', HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: '1' });
+                    registerQualifiedConnectedAccountCredentialRoutesV4(app);
+                });
+                const { app, headers, client } = harness;
+                const request = async (method: 'POST' | 'PUT' | 'DELETE', url: string, payload?: unknown, actor = custodian.id) => {
+                    const response = await app.inject({ method, url: new URL(url, 'http://fixture').pathname + new URL(url, 'http://fixture').search,
+                        headers: { ...headers, 'x-test-user-id': actor, ...(payload === undefined ? {} : { 'content-type': 'application/json' }) },
+                        ...(payload === undefined ? {} : { payload: JSON.stringify(payload) }) });
+                    expect(response.statusCode, `${method} ${new URL(url, 'http://fixture').pathname}: ${response.body}`).toBe(200);
+                    return { status: response.statusCode, data: response.json() as unknown };
+                };
+                axiosPost.mockImplementation((url: string, payload: unknown, options?: { headers?: { Authorization?: string } }) =>
+                    request('POST', url, payload, options?.headers?.Authorization === 'Bearer recipient' ? recipient.id : custodian.id));
+                axiosPut.mockImplementation((url: string, payload: unknown) => request('PUT', url, payload));
+                axiosDelete.mockImplementation((url: string, options?: { data?: unknown }) => request('DELETE', url, options?.data));
+                const establishedRuntimeOwner = createQualifiedConnectedAccountEstablishedRuntimeOwner({
+                    reloadController: admitted.controller, credentials: { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+                    getAccountEncryptionMode: async () => 'plain',
+                    configuration: { read: async () => null, secrets: {
+                        admit: async () => undefined, has: async () => false, read: async () => null,
+                    } },
+                });
+                const purposeRuntime = createDaemonConnectedAccountPurposeBindingRuntime({
+                    reloadController: admitted.controller, establishedRuntimeOwner,
+                    coordinatorInventoryIsObserved: () => true, resolveQualifiedConnectedAccountV4Support: () => 'advertised',
+                    qualifiedApi: {
+                        listAccountsForServices: (services, signal) => listQualifiedConnectedAccountsV4({ token: 'token', services, signal }),
+                        listAccounts: currentService => listQualifiedConnectedAccountsV4({ token: 'token', service: currentService }),
+                        listGroups: currentService => listQualifiedConnectedAccountGroupsV4({ token: 'token', service: currentService }),
+                        readGroup: group => readQualifiedConnectedAccountGroupV4({ token: 'token', group }),
+                    },
+                });
+                await purposeRuntime.listCoordinatorAccounts();
+                const services = axiosGet.mock.calls.flatMap(([url]) => {
+                    const parsed = new URL(String(url));
+                    if (parsed.pathname !== '/v4/connect/qualified/accounts') return [];
+                    const service = parsed.searchParams.get('service');
+                    return service ? [QualifiedConnectedAccountServiceRefSchema.parse(JSON.parse(service))]
+                        : QualifiedConnectedAccountServiceListV4Schema.parse(JSON.parse(parsed.searchParams.get('services') ?? 'null'));
+                });
+                expect(services).toContainEqual(service);
+                harness.detachProjection();
+                client.onConnectedServicesProjection(async notification => {
+                    purposeRuntime.invalidate({ services: notification.connectedServiceRefs });
+                    await purposeRuntime.listCoordinatorAccounts();
+                });
+                const retained = vi.fn();
+                client.onManagedProviderRetainedCurrentnessInvalidation(retained);
+                const homeDomainAction = vi.fn<NonNullable<import('@happier-dev/protocol').ActionExecutorDeps['homeDomainAction']>>(async action => {
+                    const transport = homeDomainActionTransportV1(action.actionId);
+                    return (await request('POST', transport.path, action.input)).data;
+                });
+                const materialOwner = createDaemonTeamCredentialDirectMaterialReconciler({
+                    token: 'token', accountId: custodian.id, homeDomainAction, establishedRuntimeOwner,
+                    listAccounts: (currentService, signal) => listQualifiedConnectedAccountsV4({ token: 'token', service: currentService, signal }),
+                    readGroup: async () => null, resolveProviderSource: async () => null,
+                    isAccountChangesObserverCurrent: () => client.hasCurrentAccountChangesObserver(),
+                });
+                const pending = new Set<Promise<unknown>>();
+                drainMaterial = async () => { await Promise.all([...pending]); };
+                const passes: Awaited<ReturnType<typeof materialOwner.reconcile>>[] = [];
+                const passErrors: unknown[] = [];
+                // Match daemon startup: establish a real readable tuple before
+                // attaching Account wakes. Subscription mutations must fail on
+                // the health/revocation edge, not on baseline fixture setup.
+                expect(await materialOwner.reconcile('startup')).toMatchObject({ prepared: 1, failures: [] });
+                detachMaterial = subscribeTeamCredentialDirectMaterialAccountChanges(client, wake => {
+                    const pass = materialOwner.reconcile(wake).then(result => { passes.push(result); }, error => { passErrors.push(error); })
+                        .finally(() => pending.delete(pass));
+                    pending.add(pass);
+                });
+                const settle = async ({ sourceUnavailable = false }: { sourceUnavailable?: boolean } = {}) => {
+                    await vi.waitFor(async () => {
+                        expect(pending.size).toBe(0);
+                        if (sourceUnavailable) {
+                            for (const error of passErrors) expect(error).toMatchObject({
+                                response: { status: 400, data: { error: 'source_replaced_or_missing' } },
+                            });
+                        } else expect(passErrors, 'real material reconciler errors').toEqual([]);
+                        expect(harness!.getCursor()).toBe((await db.account.findUniqueOrThrow({ where: { id: custodian.id } })).seq);
+                    });
+                    passErrors.length = 0;
+                };
+                await harness.start();
+                await settle();
+                const recipientClient = createHttpTeamCredentialDirectMaterialClient({ token: 'recipient', teamId: team.id,
+                    readRecipientEncryptionMaterial: async () => ({ mode: 'plain' }) });
+                const open = () => recipientClient.open({ resourceId: resource.id, teamId: team.id,
+                    consumer: { kind: 'session', sessionId: session.id }, slot, disclosedMember: ref });
+                expect(await open()).toMatchObject({ ok: true, payload: { material: { kind: 'qualified_connected_account' } } });
+                const memberKey = computeTeamCredentialSourceMemberKeyV1({ kind: 'connected_account', service, connectedAccountId: ref.accountId });
+                const storedBefore = await db.teamCredentialRecipientMaterial.findFirstOrThrow({ where: { resourceId: resource.id, recipientAccountId: recipient.id } });
+                const censusCount = () => homeDomainAction.mock.calls.filter(([action]) => action.actionId === 'teams.list').length;
+                const checkpoints = async () => Promise.all([custodian, recipient, departed].map(async account => ({
+                    accountId: account.id, cursor: (await db.account.findUniqueOrThrow({ where: { id: account.id } })).seq,
+                })));
+                const assertAudience = async (before: Awaited<ReturnType<typeof checkpoints>>) => {
+                    for (const account of before) {
+                        expect(await db.accountChange.findMany({ where: { accountId: account.accountId, entityId: 'teams', cursor: { gt: account.cursor } } }),
+                            `newer Team fact for ${account.accountId === departed.id ? 'departed broker custodian' : 'current member'}`).not.toEqual([]);
+                    }
+                };
+                homeDomainAction.mockClear(); passes.length = 0; retained.mockClear();
+                const before = await checkpoints();
+                if (transition === 'health') {
+                    expect((await mutateQualifiedConnectedServiceCredentialHealth({ accountId: custodian.id, ref,
+                        expectedCredentialRevision: created.credentialRevision, expectedConfigurationRevision: created.configurationRevision,
+                        health: { v: 1, status: 'needs_reauth', reconnectRequired: true } })).status).toBe('written');
+                } else {
+                    const query = new URLSearchParams({ ref: JSON.stringify(ref), expectedCredentialRevision: created.credentialRevision,
+                        cleanupGroupReferences: 'true', emergencyRevoke: 'true' });
+                    await request('DELETE', `/v4/connect/qualified/credential?${query}`);
+                    expect(await inTx(tx => readQualifiedConnectedAccountSourceIdentityInTx(tx, { accountId: custodian.id, ref }))).toBeNull();
+                }
+                await assertAudience(before);
+                await settle({ sourceUnavailable: transition === 'emergency-revoke' });
+                expect(censusCount(), 'one material census per source transition').toBe(1);
+                expect(retained).toHaveBeenCalledWith(expect.objectContaining({ facts: expect.arrayContaining(['connected-services']) }));
+                expect(await open()).toMatchObject({ ok: false });
+                if (transition === 'health') {
+                    expect(await db.teamCredentialRecipientMaterial.count({ where: { id: storedBefore.id } }), 'captured material tuple withdrawn').toBe(0);
+                    homeDomainAction.mockClear();
+                    const noChange = await checkpoints();
+                    expect((await mutateQualifiedConnectedServiceCredentialHealth({ accountId: custodian.id, ref,
+                        expectedCredentialRevision: created.credentialRevision, expectedConfigurationRevision: created.configurationRevision,
+                        health: { v: 1, status: 'needs_reauth', reconnectRequired: true } })).status).toBe('written');
+                    await settle();
+                    expect(censusCount(), 'equal-health retry').toBe(0);
+                    for (const account of noChange) expect((await db.account.findUniqueOrThrow({ where: { id: account.accountId } })).seq).toBe(account.cursor);
+                    const recovering = await checkpoints();
+                    expect((await mutateQualifiedConnectedServiceCredentialHealth({ accountId: custodian.id, ref,
+                        expectedCredentialRevision: created.credentialRevision, expectedConfigurationRevision: created.configurationRevision,
+                        health: { v: 1, status: 'connected', reconnectRequired: false } })).status).toBe('written');
+                    await assertAudience(recovering);
+                    await settle();
+                    expect(censusCount(), 'one material census for connected recovery').toBe(1);
+                } else {
+                    homeDomainAction.mockClear();
+                    const recreated = await createCredential();
+                    expect(recreated.status).toBe('written');
+                    const nextIdentity = await inTx(tx => readQualifiedConnectedAccountSourceIdentityInTx(tx, { accountId: custodian.id, ref }));
+                    if (!nextIdentity) throw new Error('Recreated credential has no incarnation');
+                    expect(nextIdentity.incarnation).not.toBe(identity.incarnation);
+                    await settle({ sourceUnavailable: true });
+                    expect(await open(), 'recreation must not revive the old pinned source').toMatchObject({ ok: false });
+                    expect((await db.teamCredentialResource.findUniqueOrThrow({ where: { id: resource.id } })).sourceBindingJson)
+                        .toBe(JSON.stringify(source));
+                    // Explicit source rebind uses the normal resource update route.
+                    const transport = homeDomainActionTransportV1('teams.credentials.update');
+                    await request('POST', transport.path, { resourceId: resource.id, expectedRevision: resource.revision,
+                        replacement: { enabled: true, displayName: resource.displayName, sessionUsePolicy: 'personal_allowed',
+                            requestPolicy: null, allMembersDeliveryMode: null, groupGrants: [],
+                            memberGrants: [{ teamMembershipId: recipientMembership.id, deliveryMode: 'direct' }],
+                            usageLimitDelta: { upserts: [], deleteIds: [] },
+                            custodian: { source: { ...source, credentialIncarnation: nextIdentity.incarnation },
+                                disclosureCeiling: 'direct_allowed', brokerPlacement: null } } });
+                    // A recipient explicitly accepts the rebound resource revision.
+                    const currentResource = await db.teamCredentialResource.findUniqueOrThrow({ where: { id: resource.id } });
+                    await acceptResource(currentResource.revision);
+                    await settle();
+                }
+                expect(await open(), 'freshly admitted material after recovery/rebind').toMatchObject({ ok: true });
+                const restored = await db.teamCredentialRecipientMaterial.findFirstOrThrow({ where: { resourceId: resource.id, recipientAccountId: recipient.id, sourceMemberKey: memberKey } });
+                expect(restored.id).not.toBe(storedBefore.id);
+                homeDomainAction.mockClear();
+                const unrelatedService = services.find(candidate => candidate.pluginId !== service.pluginId || candidate.localId !== service.localId);
+                if (!unrelatedService) throw new Error('Direct material fixture needs an unrelated service');
+                expect((await mutateQualifiedConnectedServiceCredential({ accountId: custodian.id,
+                    ref: { service: unrelatedService, accountId: 'fx206-unrelated' }, expectedCredentialRevision: null,
+                    authenticationModeId: 'api-key', content: { t: 'plain', v: { token: 'unrelated-fixture' } }, metadata: { scopes: [] } })).status).toBe('written');
+                await settle();
+                expect(censusCount(), 'unrelated same-Account service').toBe(0);
+                expect(await open()).toMatchObject({ ok: true });
+            } finally {
+                detachMaterial?.();
+                try { await drainMaterial?.(); await harness?.close(); }
+                finally { await admitted.dispose(); }
+            }
+        });
+
+        it('keeps health PATCHes and Account-feed publications at zero across two settled status intervals', async () => {
+            const admitted = await createAdmittedPluginRuntimeFixture();
+            try {
+                const account = await db.account.create({ data: { id: 'acc-settled-health', publicKey: null, encryptionMode: 'plain' } });
+                const ref = { service: { pluginId: 'happier.voice.openai', localId: 'openai' }, accountId: 'status-account' };
+                const created = await mutateQualifiedConnectedServiceCredential({ accountId: account.id, ref,
+                    expectedCredentialRevision: null, authenticationModeId: 'api-key',
+                    content: { t: 'plain', v: { v: 1, values: { token: 'sk-status-fixture' } } }, metadata: { scopes: [] } });
+                if (created.status !== 'written') throw new Error('Fixture credential did not settle');
+                const credentials: persistence.Credentials = { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32) } };
+                const readCredential = async () => {
+                    const result = await readQualifiedConnectedServiceCredential({ accountId: account.id, ref });
+                    return result.status === 'resolved'
+                        ? QualifiedConnectedAccountCredentialSnapshotV4Schema.parse({ ref, ...result.credential }) : null;
+                };
+                const established = createQualifiedConnectedAccountEstablishedRuntimeOwner({ reloadController: admitted.controller,
+                    credentials, getAccountEncryptionMode: async () => 'plain', readCredential,
+                    readConfiguration: async () => null, configuration: { read: async () => null, secrets: {
+                        admit: async () => undefined, has: async () => false, read: async () => null,
+                    } } });
+                const healthPatches = vi.fn(async ({ patch }: { token: string; patch: unknown }) => {
+                    const result = await mutateQualifiedConnectedServiceCredentialHealth({ accountId: account.id,
+                        ...QualifiedConnectedAccountCredentialHealthPatchV4Schema.parse(patch) });
+                    if (result.status !== 'written') throw new Error('Fixture health did not settle');
+                    return result;
+                });
+                let clock = 1_000_000;
+                const coordinatorParams: ConstructorParameters<typeof ConnectedServiceRefreshCoordinator>[0] = {
+                    api: { getAccountEncryptionMode: async () => 'plain' } as unknown as ApiClient,
+                    credentials, machineIdProvider: () => 'machine-1', activeServerDir: join(admitted.happyHomeDir, 'active'),
+                    baseDir: join(admitted.happyHomeDir, 'materialized'), refreshWindowMs: 60_000, refreshLeaseMs: 30_000, now: () => clock,
+                    qualifiedConnectedAccountRuntime: {
+                        resolvePeerClass: () => 'advertised_v4', establishedRuntimeOwner: established, readCredential,
+                        mutateCredentialHealth: healthPatches,
+                        listScheduledAccounts: async () => await listQualifiedConnectedAccounts({ accountId: account.id, service: ref.service }),
+                        acquireRefreshLease: async () => { throw new Error('Status must not acquire a refresh lease'); },
+                        mutateCredential: async () => { throw new Error('Status must not replace credentials'); },
                     },
                 };
+                await new ConnectedServiceRefreshCoordinator(coordinatorParams).tickOnce();
+                expect(healthPatches).toHaveBeenCalledOnce();
+                const checkpoint = (await db.account.findUniqueOrThrow({ where: { id: account.id } })).seq;
+                for (let interval = 0; interval < 2; interval++) {
+                    clock += 300_000;
+                    await new ConnectedServiceRefreshCoordinator(coordinatorParams).tickOnce();
+                }
+                expect(healthPatches).toHaveBeenCalledOnce();
+                expect(await db.accountChange.count({ where: { accountId: account.id, cursor: { gt: checkpoint } } })).toBe(0);
+                expect((await db.account.findUniqueOrThrow({ where: { id: account.id } })).seq).toBe(checkpoint);
+            } finally {
+                await admitted.dispose();
             }
-            throw new Error(`unexpected url: ${url}`);
         });
-        const reconcile = vi.fn(async () => {});
-        const client = new ApiMachineClient('token', machine);
-        client.onConnectedServicesProjection(reconcile);
 
-        await (client as any).syncChangesOnConnect({ reason: 'live' });
-
-        expect(reconcile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-            source: 'changes',
-            executionAuthority: 'runtime_recovery',
-        }));
+        it.each(['one', 'two', 'broad', 'legacy', 'team'] as const)('reconciles connected services with one batch inventory read (%s)', async mode => {
+            const admitted = await createAdmittedPluginRuntimeFixture();
+            let client: ApiMachineClient | undefined;
+            try {
+                const listAccounts = vi.fn(async (service: { pluginId: string; localId: string }) => ({ service, accounts: [] }));
+                const listAccountsForServices = vi.fn(async (services: readonly { pluginId: string; localId: string }[]) => ({ services, accounts: [] }));
+                const purposeRuntime = createDaemonConnectedAccountPurposeBindingRuntime({
+                    reloadController: admitted.controller,
+                    coordinatorInventoryIsObserved: () => true,
+                    resolveQualifiedConnectedAccountV4Support: () => 'advertised',
+                    establishedRuntimeOwner: createQualifiedConnectedAccountEstablishedRuntimeOwner({
+                        reloadController: admitted.controller,
+                        credentials: { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+                        getAccountEncryptionMode: async () => 'plain',
+                        readCredential: async () => { throw new Error('Inventory must not read credentials'); },
+                        readConfiguration: async () => null,
+                        configuration: { read: async () => null, secrets: {
+                            admit: async () => undefined, has: async () => false, read: async () => null,
+                        } },
+                    }),
+                    qualifiedApi: { listAccountsForServices, listAccounts, listGroups: async () => ({ groups: [] }), readGroup: async () => null },
+                });
+                await purposeRuntime.listCoordinatorAccounts();
+                expect(listAccountsForServices).toHaveBeenCalledOnce();
+                expect(listAccounts).not.toHaveBeenCalled();
+                const services = listAccountsForServices.mock.calls[0]![0];
+                // The contract compares the batch scope with the admitted inventory;
+                // bundled membership may change, but the two-service case needs both.
+                expect(services[0]).toBeDefined();
+                expect(services[1]).toBeDefined();
+                const connectedServiceRefs = mode === 'broad' || mode === 'legacy' ? undefined : services.slice(0, mode === 'two' ? 2 : 1);
+                const account = await db.account.create({ data: { id: `acc-scope-${mode}`, publicKey: null, encryptionMode: 'plain' } });
+                if (mode === 'team') {
+                    const team = await db.team.create({ data: { name: 'Credential source health' } });
+                    await db.teamMembership.create({ data: { teamId: team.id, accountId: account.id, role: 'owner' } });
+                    await db.teamCredentialResource.create({ data: {
+                        teamId: team.id, custodianAccountId: account.id, displayName: 'Health source',
+                        disclosureCeiling: 'direct_allowed', sessionUsePolicy: 'personal_allowed',
+                        sourceBindingJson: JSON.stringify({ v: 1, kind: 'connected_account',
+                            target: { kind: 'account', account: { service: services[0], accountId: 'scope-test' } },
+                            credentialIncarnation: 'scope-incarnation' }),
+                    } });
+                }
+                const revisions = [];
+                for (const service of connectedServiceRefs ?? services.slice(0, 1)) {
+                    const ref = { service, accountId: 'scope-test' };
+                    const created = await mutateQualifiedConnectedServiceCredential({ accountId: account.id, ref,
+                        expectedCredentialRevision: null, authenticationModeId: 'api-key',
+                        content: { t: 'plain', v: { token: 'test-credential' } }, metadata: { scopes: [] } });
+                    if (created.status !== 'written') throw new Error('Fixture credential creation did not settle');
+                    revisions.push({ ref, credentialRevision: created.credentialRevision, configurationRevision: created.configurationRevision });
+                    const health = await mutateQualifiedConnectedServiceCredentialHealth({ accountId: account.id, ref,
+                        expectedCredentialRevision: created.credentialRevision, expectedConfigurationRevision: created.configurationRevision,
+                        health: { v: 1, status: 'needs_reauth', reconnectRequired: true } });
+                    expect(health.status).toBe('written');
+                }
+                if (mode === 'broad') await inTx(tx => recordConnectedServiceAccountProfileChange({ tx, accountId: account.id }));
+                if (mode === 'legacy') await inTx(tx => markAccountChanged(tx, { accountId: account.id, kind: 'account',
+                    entityId: 'self', hint: { connectedServices: true } }));
+                let acknowledged = 0;
+                readAccountChangesCursor.mockImplementation(async () => acknowledged);
+                writeAccountChangesCursor.mockImplementation(async (_accountId, cursor) => { acknowledged = cursor; });
+                listAccounts.mockClear();
+                listAccountsForServices.mockClear();
+                const machine: Machine = {
+                    id: 'machine-1',
+                    encryptionKey: new Uint8Array(32).fill(7),
+                    encryptionVariant: 'legacy',
+                    metadata: null,
+                    metadataVersion: 0,
+                    daemonState: null,
+                    daemonStateVersion: 0,
+                };
+                mockAccountGet(async (url: string) => {
+                    if (url.includes('/v1/account/profile')) return { status: 200, data: { id: account.id } };
+                    if (url.includes('/v2/changes')) {
+                        const changes = await db.accountChange.findMany({ where: { accountId: account.id, cursor: { gt: acknowledged } },
+                            orderBy: { cursor: 'asc' } });
+                        return {
+                            status: 200,
+                            data: {
+                                changes: changes.map(change => ({
+                                    cursor: change.cursor,
+                                    kind: 'account',
+                                    entityId: change.entityId,
+                                    changedAt: change.changedAt.getTime(),
+                                    hint: change.hint,
+                                })),
+                                nextCursor: changes.at(-1)?.cursor ?? acknowledged,
+                            },
+                        };
+                    }
+                    throw new Error(`unexpected url: ${url}`);
+                });
+                const reconcile = vi.fn(async (notification: import('./apiMachine').ConnectedServicesProjectionNotification) => {
+                    purposeRuntime.invalidate({ services: notification.connectedServiceRefs });
+                    await purposeRuntime.listCoordinatorAccounts();
+                });
+                const directMaterial = vi.fn(async () => {});
+                client = new ApiMachineClient('token', machine);
+                client.onConnectedServicesProjection(reconcile);
+                client.onManagedProviderRetainedCurrentnessInvalidation(directMaterial);
+                // The Action transport is the boundary; feed classification,
+                // subscription and the real census owner remain composed.
+                const homeDomainAction = vi.fn(async () => ({ items: [], nextCursor: null }));
+                const materialOwner = createDaemonTeamCredentialDirectMaterialReconciler({
+                    token: 'token', accountId: account.id, homeDomainAction,
+                    establishedRuntimeOwner: { readMaterialSnapshot: async () => { throw new Error('Empty Team census must not read material'); } },
+                    listAccounts, readGroup: async () => null, resolveProviderSource: async () => null,
+                    isAccountChangesObserverCurrent: () => true,
+                });
+                const materialPasses: Promise<unknown>[] = [];
+                const detachMaterial = subscribeTeamCredentialDirectMaterialAccountChanges(client, wake => {
+                    materialPasses.push(materialOwner.reconcile(wake));
+                });
+                await (client as unknown as { syncChangesOnConnect(input: { reason: 'live' }): Promise<void> })
+                    .syncChangesOnConnect({ reason: 'live' });
+                await Promise.all(materialPasses);
+                expect(homeDomainAction).toHaveBeenCalledTimes(mode === 'team' ? 1 : 0);
+                expect(listAccountsForServices.mock.calls.map(([services]) => services)).toEqual([connectedServiceRefs ?? services]);
+                expect(listAccounts).not.toHaveBeenCalled();
+                expect(reconcile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+                    source: 'changes', executionAuthority: 'runtime_recovery',
+                    ...(connectedServiceRefs ? { connectedServiceRefs } : {}),
+                }));
+                expect(directMaterial).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ facts: expect.arrayContaining(['connected-services']) }));
+                if (mode === 'two' || mode === 'team') {
+                    homeDomainAction.mockClear();
+                    materialPasses.length = 0;
+                    listAccounts.mockClear();
+                    listAccountsForServices.mockClear();
+                    reconcile.mockClear();
+                    const [first] = revisions;
+                    if (!first) throw new Error('Missing service A credential revision');
+                    expect((await mutateQualifiedConnectedServiceCredentialHealth({ accountId: account.id, ref: first.ref,
+                        expectedCredentialRevision: first.credentialRevision, expectedConfigurationRevision: first.configurationRevision,
+                        health: { v: 1, status: 'connected', reconnectRequired: false } })).status).toBe('written');
+                    await (client as unknown as { syncChangesOnConnect(input: { reason: 'live' }): Promise<void> })
+                        .syncChangesOnConnect({ reason: 'live' });
+                    await Promise.all(materialPasses);
+                    expect(homeDomainAction).toHaveBeenCalledTimes(mode === 'team' ? 1 : 0);
+                    expect(listAccountsForServices.mock.calls.map(([services]) => services)).toEqual([[services[0]]]);
+                    expect(listAccounts).not.toHaveBeenCalled();
+                    expect(reconcile).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ connectedServiceRefs: [services[0]] }));
+                }
+                if (mode === 'team') {
+                    homeDomainAction.mockClear();
+                    materialPasses.length = 0;
+                    const unrelated = await mutateQualifiedConnectedServiceCredential({ accountId: account.id,
+                        ref: { service: services[1]!, accountId: 'unshared-account' }, expectedCredentialRevision: null,
+                        authenticationModeId: 'api-key', content: { t: 'plain', v: { token: 'unshared-fixture' } },
+                        metadata: { scopes: [] } });
+                    expect(unrelated.status).toBe('written');
+                    await (client as unknown as { syncChangesOnConnect(input: { reason: 'live' }): Promise<void> })
+                        .syncChangesOnConnect({ reason: 'live' });
+                    await Promise.all(materialPasses);
+                    expect(homeDomainAction).not.toHaveBeenCalled();
+                }
+                listAccounts.mockClear();
+                listAccountsForServices.mockClear();
+                reconcile.mockClear();
+                directMaterial.mockClear();
+                await inTx(tx => markAccountChanged(tx, { accountId: account.id, kind: 'account', entityId: 'self', hint: { settingsVersion: 2 } }));
+                await (client as unknown as { syncChangesOnConnect(input: { reason: 'live' }): Promise<void> })
+                    .syncChangesOnConnect({ reason: 'live' });
+                await purposeRuntime.listCoordinatorAccounts();
+                expect(listAccounts).not.toHaveBeenCalled();
+                expect(listAccountsForServices).not.toHaveBeenCalled();
+                expect(reconcile).not.toHaveBeenCalled();
+                expect(directMaterial).not.toHaveBeenCalled();
+                detachMaterial();
+            } finally {
+                try { await client?.shutdown(); }
+                finally { await admitted.dispose(); }
+            }
+        });
     });
 
     it('continues /v2/changes catch-up without timer retry when generation reconciliation awaits another domain event', async () => {
@@ -2759,8 +3839,12 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
         await vi.waitFor(() => expect(socket.connect).toHaveBeenCalled());
         socket.trigger('connect');
         await vi.waitFor(() => {
-            expect(writeAccountChangesCursor).toHaveBeenCalledWith('acc-1', 0);
+            expect(applyResourceSessionAccessWitness).toHaveBeenCalled();
         });
+        await (client as unknown as {
+            connectedServicesProjectionRetry: { waitForIdle(): Promise<void> };
+        }).connectedServicesProjectionRetry.waitForIdle();
+        expect(writeAccountChangesCursor).not.toHaveBeenCalled();
 
         phase = 'live';
         writeAccountChangesCursor.mockClear();
@@ -2849,7 +3933,7 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             accountId: 'acc-1',
             witness: { v: 1, throughCursor: 200, entries: [] },
         });
-        expect(order).toEqual(['witness', 'cursor', 'witness', 'cursor']);
+        expect(order).toEqual(['witness', 'witness', 'cursor']);
         await client.shutdown();
     });
 
@@ -3028,6 +4112,10 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             order.push('deleted');
         });
         client.onSessionDeletedChange(deleted);
+        const revoked = vi.fn(async () => {});
+        client.onSessionAccessRevoked(revoked);
+        const changed: unknown[] = [];
+        client.onSessionChanged(async change => { changed.push(change); });
 
         await (client as any).syncChangesOnConnect({ reason: 'connect' });
 
@@ -3039,6 +4127,11 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
                 accountSubject: 'account-deletion-a',
             },
         });
+        expect(revoked).toHaveBeenCalledExactlyOnceWith({ sessionId: 'session-revoked', cursor: 11 });
+        expect(changed).toEqual([
+            { sessionId: 'session-revoked', cursor: 11, removed: true },
+            { sessionId: 'session-deleted', cursor: 12, removed: true },
+        ]);
         expect(order).toEqual(['deleted', 'cursor']);
     });
 
@@ -3050,9 +4143,10 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             if (url.includes('/v2/changes')) return { status: 200, data: {
                 changes: [{ cursor: 12, kind: 'session', entityId: 'follow-destination', changedAt: 2, hint: null },
                     { cursor: 13, kind: 'artifact', entityId: 'unrelated-artifact', changedAt: 3, hint: null },
-                    { cursor: 14, kind: 'session', entityId: 'other-destination', changedAt: 4, hint: { pendingVersion: 0 } }],
-                nextCursor: 14,
-                sessionAccessWitness: { v: 1, throughCursor: 14,
+                    { cursor: 14, kind: 'session', entityId: 'other-destination', changedAt: 4, hint: { pendingVersion: 0 } },
+                    { cursor: 15, kind: 'account', entityId: buildSessionFollowReceiverChangeEntityIdV1('follow-destination'), changedAt: 5, hint: null }],
+                nextCursor: 15,
+                sessionAccessWitness: { v: 1, throughCursor: 15,
                     entries: [{ sessionId: 'follow-destination', cursor: 12, status: 'available' },
                         { sessionId: 'other-destination', cursor: 14, status: 'available' }] },
             } };
@@ -3060,11 +4154,13 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
         });
         const order: string[] = [];
         const changed: unknown[] = [];
+        const followChanges: unknown[] = [];
         let unavailable = true;
         writeAccountChangesCursor.mockClear();
         writeAccountChangesCursor.mockImplementation(async () => { order.push('cursor'); });
         const client = new ApiMachineClient('fake-token', machine);
         client.onConnectedServicesProjection(async () => {});
+        client.onSessionFollowRulesChanged(async change => { followChanges.push(change); });
         admitAccountSnapshot('fake-token');
         const dispose = client.onSessionChanged(async change => {
             if (unavailable) throw new Error('follow_read_temporarily_unavailable');
@@ -3080,6 +4176,8 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             expect(changed).toEqual([{ sessionId: 'follow-destination', cursor: 12 },
                 { sessionId: 'other-destination', cursor: 14 }]);
             expect(order).toEqual(['changed', 'changed', 'cursor']);
+            expect(followChanges).toContainEqual({ full: false, workflowRunIds: [], discussionIds: [],
+                receiverSessionIds: ['follow-destination'] });
         } finally { dispose(); await client.shutdown(); }
     });
 
@@ -3940,8 +5038,12 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
         await vi.waitFor(() => expect(socket.connect).toHaveBeenCalled());
         socket.trigger('connect');
         await vi.waitFor(() => {
-            expect(writeAccountChangesCursor).toHaveBeenCalledWith('acc-1', 0);
+            expect(axiosGet.mock.calls.some(([url]) => String(url).includes('/v2/changes'))).toBe(true);
         });
+        await (client as unknown as {
+            connectedServicesProjectionRetry: { waitForIdle(): Promise<void> };
+        }).connectedServicesProjectionRetry.waitForIdle();
+        expect(writeAccountChangesCursor).not.toHaveBeenCalled();
 
         phase = 'live';
         axiosGet.mockClear();

@@ -1,4 +1,5 @@
-import { REMOTE_HOST_ACTION_INPUT_SCHEMAS_V1 as inputs, REMOTE_HOST_ACTION_OUTPUT_SCHEMAS_V1 as outputs,
+import { projectRelayAccessConfigV1 } from '../../system/tasks/relayAccessConfigV1.js';
+import { REMOTE_HOST_ACTION_INPUT_SCHEMAS_V1 as inputs, REMOTE_HOST_ACTION_OUTPUT_SCHEMAS_V1 as outputs, RemoteHostCredentialSelectionV1Schema,
   type RemoteHostActionIdV1 } from '../../remoteHosts/remoteHostActionsV1.js';
 import type { PreNormalizedActionSpec } from '../actionSpecs.js';
 import type { ActionInputHints } from '../actionInputHints.js';
@@ -9,7 +10,6 @@ function projectRemoteHostObservation(value: unknown): unknown {
   const record = readRecord(value);
   const host = readRecord(record.host);
   const operation = readRecord(record.operation);
-  const config = readRecord(operation.config);
   const target = readRecord(record.target);
   const key = readRecord(record.key);
   const projectKey = (value: unknown) => {
@@ -27,11 +27,7 @@ function projectRemoteHostObservation(value: unknown): unknown {
     ...(typeof record.taskId === 'string' ? { taskId: record.taskId } : {}),
     ...(typeof record.revision === 'number' ? { revision: record.revision } : {}),
     ...(operation.kind === 'disable' ? { operation: { kind: 'disable' } }
-      : operation.kind === 'configure' ? { operation: { kind: 'configure', config: {
-        ...(typeof config.providerId === 'string' ? { providerId: config.providerId } : {}),
-        ...(config.providerId === 'lan' && typeof config.url === 'string' ? { url: stripBrowserDiagnosticUrlValues(config.url) } : {}),
-        ...(config.providerId === 'cloudflareNamed' && typeof config.hostname === 'string' ? { hostname: config.hostname } : {}),
-      } } } : {}),
+      : operation.kind === 'configure' ? { operation: { kind: 'configure', config: projectRelayAccessConfigV1(operation.config) } } : {}),
   };
 }
 
@@ -61,6 +57,8 @@ type RemoteHostActionSpec<Id extends RemoteHostActionIdV1> = PreNormalizedAction
 function remoteHostSpec<Id extends RemoteHostActionIdV1>(id: Id, title: string, summary: string, options: Readonly<{
   client?: boolean; read?: boolean; danger?: boolean;
 }>): RemoteHostActionSpec<Id> {
+  const liveOnly = id === 'remote_hosts.save' || id === 'remote_hosts.relay.configure' || id === 'remote_hosts.trusted_keys.remove'
+    || id === 'remote_hosts.trusted_keys.clear' || id === 'remote_hosts.tunnel.stop';
   return {
     id, approvalPolicy: { uiConfirmation: id === 'remote_hosts.relay.restart' ? 'direct' : 'policy' }, approval: { result: 'required' }, title, safety: options.danger ? 'danger' : 'safe',
     ...({
@@ -90,10 +88,19 @@ function remoteHostSpec<Id extends RemoteHostActionIdV1>(id: Id, title: string, 
     bindings: { mcpToolName: id.replaceAll('.', '_'), ...(!options.client ? { rpcMethod: id } : {}) },
     inputSchema: inputs[id], outputSchema: outputs[id],
     projectObservationInput: projectRemoteHostObservation, projectObservationOutput: projectRemoteHostObservation,
+    ...(!liveOnly ? { approvalPresentation: { summary: () => null, projectInput: (input: unknown) => {
+      const value = readRecord(input);
+      return { ...readRecord(projectRemoteHostObservation(input)),
+        ...(typeof value.expectedRevision === 'number' || value.expectedRevision === 'absent'
+          ? { expectedRevision: value.expectedRevision } : {}),
+        ...(id === 'remote_hosts.duplicate' ? { newHostId: value.newHostId, name: value.name } : {}),
+        ...(id === 'remote_hosts.credential.change'
+          ? { credential: RemoteHostCredentialSelectionV1Schema.parse(value.credential) } : {}),
+      };
+    } } } : {}),
     // Composite saves may contain Plain SavedSecret content. Only the admitted
     // live invocation keeps it; durable approval state uses the safe projection.
-    ...(id === 'remote_hosts.save' || id === 'remote_hosts.relay.configure' || id === 'remote_hosts.trusted_keys.remove'
-      || id === 'remote_hosts.trusted_keys.clear' || id === 'remote_hosts.tunnel.stop' ? { approvalInputCustody: 'live_only' as const } : {}),
+    ...(liveOnly ? { approvalInputCustody: 'live_only' as const } : {}),
     inputHints: { description: summary, fields: id === 'remote_hosts.relay.configure' ? relayConfigurationFields
       : id === 'remote_hosts.trusted_keys.remove' ? [{ path: 'key', title: 'Exact trusted host key', widget: 'json', required: true }]
       : id === 'remote_hosts.trusted_keys.clear' ? [{ path: 'keys', title: 'Reviewed trusted host keys', widget: 'json', required: true }]

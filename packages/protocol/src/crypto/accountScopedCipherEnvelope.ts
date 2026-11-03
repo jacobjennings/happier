@@ -48,6 +48,7 @@ export type AccountScopedBlobKind =
   | 'runner_machine_content_key_verifier'
   | 'session_first_intent'
   | 'session_owner_metadata'
+  | 'session_owner_display'
   | 'session_organization_display'
   | 'session_respawn_environment'
   | 'workflow_accepted_snapshot'
@@ -109,6 +110,7 @@ const ACCOUNT_SCOPED_KIND_BYTE = Object.freeze({
   account_connected_acknowledgement_catalog: 48,
   provider_account_usage_page_projection: 49,
   account_session_follow_rule: 50,
+  session_owner_display: 51,
 } satisfies Record<AccountScopedBlobKind, number>);
 
 /**

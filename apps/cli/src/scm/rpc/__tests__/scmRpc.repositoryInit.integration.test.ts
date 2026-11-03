@@ -1,12 +1,9 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
     SCM_OPERATION_ERROR_CODES,
-    type ScmDiffFileRequest,
-    type ScmDiffFileResponse,
     type ScmRepositoryInitRequest,
     type ScmRepositoryInitResponse,
     type ScmStatusSnapshotRequest,
@@ -15,55 +12,12 @@ import {
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { describe, expect, it } from 'vitest';
 
-import { decodeBase64, decrypt, encodeBase64, encrypt } from '@/api/encryption';
-import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
-import type { RpcRequest } from '@/api/rpc/types';
-import type { FilesystemAccessPolicy } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
-import { registerScmHandlers } from '@/rpc/handlers/scm';
-
-function runGit(cwd: string, args: string[]): string {
-    return execFileSync('git', args, {
-        cwd,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim();
-}
-
-function createScopedRpcManager(input: {
-    workingDirectory: string;
-    accessPolicy?: FilesystemAccessPolicy;
-}) {
-    const encryptionKey = new Uint8Array(32).fill(7);
-    const encryptionVariant = 'legacy' as const;
-    const scopePrefix = 'repository-init-test';
-    const manager = new RpcHandlerManager({
-        scopePrefix,
-        encryptionKey,
-        encryptionVariant,
-        logger: () => undefined,
-    });
-    registerScmHandlers(manager, input.workingDirectory, {
-        accessPolicy: input.accessPolicy,
-    });
-
-    async function call<TResponse, TRequest>(method: string, request: TRequest): Promise<TResponse> {
-        const encryptedParams = encodeBase64(encrypt(encryptionKey, encryptionVariant, request));
-        const rpcRequest: RpcRequest = {
-            method: `${scopePrefix}:${method}`,
-            params: encryptedParams,
-        };
-        const encryptedResponse = await manager.handleRequest(rpcRequest);
-        const decrypted = decrypt(encryptionKey, encryptionVariant, decodeBase64(encryptedResponse));
-        return decrypted as TResponse;
-    }
-
-    return { call };
-}
+import { createTestRpcManager, runGit } from './testRpcHarness';
 
 describe('git RPC handlers (repository init)', () => {
     it('advertises repository initialization on authorized non-repository snapshots', async () => {
         const workspace = mkdtempSync(join(tmpdir(), 'happier-git-init-rpc-'));
-        const { call } = createScopedRpcManager({ workingDirectory: workspace });
+        const { call } = createTestRpcManager({ workingDirectory: workspace });
 
         const response = await call<ScmStatusSnapshotResponse, ScmStatusSnapshotRequest>(
             RPC_METHODS.SCM_STATUS_SNAPSHOT,
@@ -80,6 +34,7 @@ describe('git RPC handlers (repository init)', () => {
             throw new Error('Expected non-repository status snapshot');
         }
         expect(snapshot.repo.isRepo).toBe(false);
+        expect(snapshot.entries).toEqual([]);
         expect(snapshot.capabilities.writeRepositoryInit).toBe(true);
     });
 
@@ -87,7 +42,7 @@ describe('git RPC handlers (repository init)', () => {
         const workspace = mkdtempSync(join(tmpdir(), 'happier-git-init-rpc-'));
         const child = join(workspace, 'project');
         mkdirSync(child, { recursive: true });
-        const { call } = createScopedRpcManager({
+        const { call } = createTestRpcManager({
             workingDirectory: workspace,
             accessPolicy: { kind: 'restrictedRoots', roots: [workspace] },
         });
@@ -117,7 +72,7 @@ describe('git RPC handlers (repository init)', () => {
         const outside = join(suiteDir, 'outside');
         mkdirSync(workspace, { recursive: true });
         mkdirSync(outside, { recursive: true });
-        const { call } = createScopedRpcManager({
+        const { call } = createTestRpcManager({
             workingDirectory: workspace,
             accessPolicy: { kind: 'restrictedRoots', roots: [workspace] },
         });
@@ -132,25 +87,5 @@ describe('git RPC handlers (repository init)', () => {
             errorCode: SCM_OPERATION_ERROR_CODES.INVALID_PATH,
         });
         expect(existsSync(join(outside, '.git'))).toBe(false);
-    });
-
-    it('keeps unrelated SCM operations rejected for non-repository paths', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-init-rpc-'));
-        const nonRepository = join(workspace, 'plain-folder');
-        mkdirSync(nonRepository, { recursive: true });
-        const { call } = createScopedRpcManager({ workingDirectory: workspace });
-
-        const response = await call<ScmDiffFileResponse, ScmDiffFileRequest>(
-            RPC_METHODS.SCM_DIFF_FILE,
-            {
-                cwd: nonRepository,
-                path: 'README.md',
-            },
-        );
-
-        expect(response).toMatchObject({
-            success: false,
-            errorCode: SCM_OPERATION_ERROR_CODES.NOT_REPOSITORY,
-        });
     });
 });

@@ -3,16 +3,15 @@ import { registerVoiceSetupPresentation, setVoiceSetupOpen } from '@/components/
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Color from 'color';
 import { act } from 'react-test-renderer';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { dispatchEscapeToLayerStack } from '@/keyboard/escape';
+import { setReducedMotionPreferenceOverride } from '@/hooks/ui/useReducedMotionPreference';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-
-const motion = vi.hoisted(() => ({ reduced: false }));
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -22,20 +21,20 @@ vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
     return createUnistylesMock();
 });
-// The host's reduce-motion preference (an OS / media-query boundary).
-vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
-    useReducedMotionPreference: () => motion.reduced,
-    readReducedMotionPreference: () => motion.reduced,
-}));
 // The panel unmounts when its collapse lands, so the canonical reanimated mock settles `withTiming`.
 vi.mock('react-native-reanimated', async () => {
     const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
     return createReanimatedModuleMock({ settleTimingCallbacks: true });
 });
 
+// The owner's own override pins the host preference to full motion for every scenario.
+beforeEach(() => {
+    setReducedMotionPreferenceOverride(false);
+});
+
 afterEach(() => {
     standardCleanup();
-    motion.reduced = false;
+    setReducedMotionPreferenceOverride(null);
 });
 
 /** A panel that records whether it is mounted: what the pairing session's lifetime follows. */
@@ -134,27 +133,6 @@ describe('SetupBlockGrid', () => {
             }
             standardCleanup();
         }
-    });
-    it('gives a setup card the Elements material over a backdrop and its exact paper with nothing behind', async () => {
-        const { GlassMaterialSettingsProvider } = await import('@/components/ui/glass/useGlassMaterialSettings');
-        const { GlassRuntimeEnvironmentProvider } = await import('@/components/ui/glass/glassRuntimeEnvironment');
-        const { glassPresetMaterials } = await import('@/components/ui/glass/glassMaterial');
-        const { SetupBlockPaper } = await import('./SetupBlockPaper');
-        const { useUnistyles } = await import('react-native-unistyles');
-        const { theme } = useUnistyles();
-        const scene = (atmosphereBehind: 'wallpaper' | 'none') => <GlassRuntimeEnvironmentProvider value={{ atmosphereBehind }}>
-            <GlassMaterialSettingsProvider value={{ glassSurfaceMaterials: glassPresetMaterials('auto') }}>
-                <SetupBlockPaper testID="backdrop-setup-paper" layout="card"><Text>Set up voice</Text></SetupBlockPaper>
-            </GlassMaterialSettingsProvider>
-        </GlassRuntimeEnvironmentProvider>;
-        const paints = (screen: Awaited<ReturnType<typeof renderScreen>>) => screen.findAllByType('View').map(node => StyleSheet.flatten(node.props.style) ?? {});
-        const screen = await renderScreen(scene('wallpaper'));
-        expect(paints(screen).some(style => typeof style.backdropFilter === 'string' && style.backdropFilter.includes('blur'))).toBe(true);
-        await screen.update(scene('none'));
-        expect(paints(screen).some(style => typeof style.backdropFilter === 'string' && style.backdropFilter.includes('blur'))).toBe(false);
-        // The same card fill and finish as every other Element on the page.
-        expect(paints(screen).some(style => typeof style.backgroundColor === 'string' && Color(style.backgroundColor).hexa() === Color(theme.colors.edge.cardFill).hexa())).toBe(true);
-        expect(paints(screen).some(style => typeof style.backgroundImage === 'string' && style.backgroundImage.includes('gradient'))).toBe(true);
     });
     it('grows the pressed tile into its panel over the row, keeping every tile in its slot underneath', async () => {
         const lifecycle: string[] = [];

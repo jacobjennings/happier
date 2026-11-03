@@ -6,7 +6,7 @@ import { log } from "@/utils/logging/log";
 import { z } from "zod/mini";
 import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import { SessionOrganizationPlacementV1Schema } from '@happier-dev/protocol/sessions/creation/sessionSpawnNewResultV1';
-import { SessionOwnerMetadataEnvelopeV1Schema, SESSION_METADATA_LAYOUT_VERSION_V1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
+import { SessionOwnerMetadataEnvelopeV1Schema, SessionDisplayProjectionV1Schema, SESSION_METADATA_LAYOUT_VERSION_V1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import { SessionInitialAccessMaterializedV1Schema } from '@happier-dev/protocol/sessions/access/sessionInitialAccessDraftV1';
 import { SessionInitialTriggerAdmissionV1Schema } from '@happier-dev/protocol/sessions/creation/sessionInitialTriggerAdmissionV1';
 import { SessionCreateOriginFieldsV1Schema, refineSessionCreateOriginFieldsV1 } from '@happier-dev/protocol/sessions/creation/sessionCreateOriginV1';
@@ -73,6 +73,7 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
                 metadataLayoutVersion: z.literal(SESSION_METADATA_LAYOUT_VERSION_V1),
                 sharedMetadata: z.strictObject({ ciphertext: z.string().check(z.minLength(1)) }),
                 ownerMetadata: SessionOwnerMetadataEnvelopeV1Schema,
+                displayProjectionV1: z.optional(z.nullable(SessionDisplayProjectionV1Schema)),
                 agentState: z.nullish(z.string()),
                 dataEncryptionKey: z.nullish(z.string()),
                 encryptionMode: z.optional(z.enum(["e2ee", "plain"])),
@@ -280,6 +281,7 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
                 tag,
                 metadata,
                 ownerMetadata: layoutOneRequest.ownerMetadata,
+                displayProjectionV1: layoutOneRequest.displayProjectionV1,
                 agentState: agentState ?? null,
                 dataEncryptionKey: dataEncryptionKey ?? null,
                 requestedEncryptionMode,

@@ -8,6 +8,7 @@ import { createHomeGovernanceHarness, installHomeGovernanceBoundaries } from '@/
 import { initializeRealAppRuntimeForTests } from '@/dev/testkit/harness/realAppRuntimeHarness';
 import { configureConnectedServerSocketBoundary, restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import { storage } from '@/sync/domains/state/storageStore';
+import { captureSessionFullPublicationBaseline } from '@/sync/domains/session/sessionRuntimeObservation';
 import type { StorageState } from '@/sync/store/types';
 import { createSessionsDomain } from './sessions';
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
@@ -185,14 +186,16 @@ describe('sessions domain: unchanged writes', () => {
         const previous = previousRows.s1;
         const next = { ...structuredClone(row), seq: row.seq + 1 };
         if (mode === 'merge') domain.mergeSessionListRowsForServerScope(serverId, [next]);
-        else if (mode === 'reconcile') domain.reconcileSessionListRowsForServerScope(serverId, [next], previousRows);
+        else if (mode === 'reconcile') domain.reconcileSessionListRowsForServerScope(serverId, [next], previousRows,
+            captureSessionFullPublicationBaseline(serverId, Object.keys(previousRows)));
         else domain.applyServerScopedSessionListRows(serverId, [next], { source: 'ordinary', mode: 'replace' });
         expect(get().sessionListRowsByServerId[serverId].s1.seq).toBe(next.seq);
         expect(get().sessionListRowsByServerId[serverId].s1.metadata).toBe(previous.metadata);
         const retainedState = get();
         const replay = structuredClone(next);
         if (mode === 'merge') domain.mergeSessionListRowsForServerScope(serverId, [replay]);
-        else if (mode === 'reconcile') domain.reconcileSessionListRowsForServerScope(serverId, [replay], retainedState.sessionListRowsByServerId[serverId]);
+        else if (mode === 'reconcile') domain.reconcileSessionListRowsForServerScope(serverId, [replay], retainedState.sessionListRowsByServerId[serverId],
+            captureSessionFullPublicationBaseline(serverId, Object.keys(retainedState.sessionListRowsByServerId[serverId])));
         else domain.applyServerScopedSessionListRows(serverId, [replay], { source: 'ordinary', mode: 'replace' });
         expect(get()).toBe(retainedState);
     });
@@ -400,7 +403,8 @@ describe('sessions domain: sessionListIndex rebuild gating', () => {
 
         if (mode === 'hydration') domain.applySessions([refreshed]);
         else if (mode === 'merge') domain.mergeSessionListRowsForServerScope(remote.id, [row]);
-        else domain.reconcileSessionListRowsForServerScope(remote.id, [row], baseline);
+        else domain.reconcileSessionListRowsForServerScope(remote.id, [row], baseline,
+            captureSessionFullPublicationBaseline(canonicalId, Object.keys(baseline)));
 
         expect(readSessionListRowForServerId(get().sessionListRowsByServerId, canonicalId, session.id)?.updatedAt).toBe(43);
         expect(get().sessionListRowsByServerId[remote.id]).toBeUndefined();

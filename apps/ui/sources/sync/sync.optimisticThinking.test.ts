@@ -3,7 +3,7 @@ import React from 'react';
 import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
 import { installDisconnectedServerSocketBoundary, restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
-import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createPlainSessionCurrentProjectionRecordFixture, createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { installWebLockManagerMock } from '@/auth/storage/tokenStorage.web.testHelpers';
 import type { RenderScreenResult } from '@/dev/testkit/render/renderScreen';
 import { act } from 'react-test-renderer';
@@ -13,8 +13,11 @@ import { IDBFactory } from 'fake-indexeddb';
 import type { ManagedEndpointSupervisor } from '@happier-dev/connection-supervisor';
 import { createSocketIoAckTimeoutError } from '@happier-dev/sync-client';
 import { PendingResetStartSetResultV1Schema } from '@happier-dev/protocol/sessions/pending/pendingRequestedActionV1';
+import { SessionDisplayProjectionV1Schema, SessionMetadataTuplePatchV1Schema, openSessionOwnerDisplayEnvelopeV1, openSessionSharedDisplayEnvelopeV1, projectLegacySessionAccessCapabilitiesV1 } from '@happier-dev/protocol';
+import { SessionCurrentProjectionRecordV1Schema } from '@happier-dev/protocol/sessions/listing/response';
 import { SESSION_HUMAN_PRESENCE_VISIBLE_REPLACE_EVENT, SessionHumanPresenceVisibleReplaceV1Schema, SessionHumanPresenceVisibleReplaceResultV1Schema } from '@happier-dev/protocol/sessions';
 import { createSessionMetadataHttpBoundary } from '@/dev/testkit/harness/sessionMetadataHttpBoundary';
+import { createSessionReadBatchFetchBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
 import type { ResumeSessionOptions } from '@/sync/ops/sessions';
 
 vi.mock('socket.io-client', async (importOriginal) =>
@@ -3546,9 +3549,12 @@ describe('sync.sendMessage rejection and auth through the applied Account', () =
     let runtime: typeof import('./syncEngine')['sync'];
     let authProbeStatuses: number[];
     let metadataBoundary: ReturnType<typeof createSessionMetadataHttpBoundary>;
+    let metadataPatches: unknown[];
+    let sessionDetailReads: number;
+    let metadataPatchRefusals: number;
     let disposePendingSettlement: (() => void) | undefined;
 
-    const request = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = createSessionReadBatchFetchBoundary(async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const path = new URL(String(url), 'https://optimistic-account.example.test').pathname;
         if (path === '/health') return Response.json({});
         if (path === '/v1/auth/ping') {
@@ -3564,10 +3570,20 @@ describe('sync.sendMessage rejection and auth through the applied Account', () =
         });
         if (path === '/v2/account/settings') return Response.json({ content: null, version: 0 });
         if (path === '/v2/cursor') return Response.json({ cursor: 0, changesFloor: 0 });
+        if (init?.method === 'PATCH' && path.startsWith('/v2/sessions/')) {
+            metadataPatches.push(JSON.parse(String(init.body)));
+            if (metadataPatchRefusals > 0) {
+                metadataPatchRefusals -= 1;
+                return Response.json({ error: 'forbidden' }, { status: 403 });
+            }
+        }
+        if ((init?.method ?? 'GET') === 'GET' && path.startsWith('/v2/sessions/')) {
+            sessionDetailReads += 1;
+        }
         const metadataResponse = metadataBoundary.handle(url, init);
         if (metadataResponse) return metadataResponse;
         return Response.json({ error: 'not_found' }, { status: 404 });
-    };
+    });
 
     beforeEach(async () => {
         // Keep the untouched legacy family isolated; none of its internal fakes can
@@ -3589,6 +3605,9 @@ describe('sync.sendMessage rejection and auth through the applied Account', () =
         accountTransport.emitted.mockReset();
         accountTransport.authDenied = false;
         authProbeStatuses = [];
+        metadataPatches = [];
+        sessionDetailReads = 0;
+        metadataPatchRefusals = 0;
         await loadSyncSingletonForTests();
         state = (await import('./domains/state/storage')).storage;
         metadataBoundary = createSessionMetadataHttpBoundary(() => state.getState().sessions);
@@ -3636,6 +3655,127 @@ describe('sync.sendMessage rejection and auth through the applied Account', () =
             rawRecord: { role: 'user', content: { type: 'text', text: 'keep me' }, meta: {} },
         });
     }
+
+    it('commits the current owner display projection with its renamed full tuple', async () => {
+        const sessionId = 's_current_owner_display';
+        installSession(sessionId);
+        metadataBoundary.replaceSession(sessionId, createPlainSessionCurrentProjectionRecordFixture({
+            id: sessionId,
+            metadataVersion: 7,
+            agentStateVersion: 4,
+            metadata: { path: '/private/project', host: 'owner-host', version: '0.3.0',
+                name: 'Private project', summary: { text: 'Before', updatedAt: 1 } },
+        }));
+
+        await runtime.patchSessionMetadataWithRetry(sessionId, (metadata) => ({
+            ...metadata, summary: { text: 'Renamed', updatedAt: 2 },
+        }), { mutationIntent: 'rename_session' });
+
+        expect(metadataPatches).toEqual([expect.objectContaining({
+            mode: 'owner',
+            sharedMetadata: expect.objectContaining({ expectedVersion: 7 }),
+            displayProjectionV1: expect.objectContaining({
+                v: 1,
+                sourceMetadataVersion: 8,
+                metadataLayoutVersion: 1,
+                shared: expect.objectContaining({ t: 'plain' }),
+                owner: expect.objectContaining({ t: 'plain' }),
+            }),
+        })]);
+        const patch = SessionMetadataTuplePatchV1Schema.parse(metadataPatches[0]);
+        if (patch.mode !== 'owner') throw new Error('Expected the current owner tuple mutation');
+        const display = SessionDisplayProjectionV1Schema.parse(patch.displayProjectionV1);
+        expect(await openSessionSharedDisplayEnvelopeV1({
+            sessionMode: 'plain', envelope: display.shared,
+        })).toEqual({ ok: true, display: { v: 1, summaryText: 'Renamed' } });
+        expect(openSessionOwnerDisplayEnvelopeV1({
+            accountMode: 'plain', envelope: display.owner,
+        })).toEqual({ ok: true, display: { v: 1, path: '/private/project', host: 'owner-host', name: 'Private project' } });
+        expect(state.getState().sessions[sessionId]?.metadataVersion).toBe(8);
+    });
+
+    it.each([1, 0] as const)('retains full route readiness after committing a rename to an admitted layout %s owner tuple', async (layout) => {
+        const sessionId = 's_admitted_owner_rename';
+        installSession(sessionId);
+        const metadata = { path: '/private/project', host: 'owner-host', version: '0.3.0',
+            name: 'Private project', summary: { text: 'Before', updatedAt: 1 } };
+        const record = createPlainSessionCurrentProjectionRecordFixture({
+            id: sessionId,
+            metadataVersion: 7,
+            agentStateVersion: 4,
+            metadata,
+        });
+        if (layout === 0) {
+            const { ownerMetadata: _ownerMetadata, ...legacy } = record;
+            metadataBoundary.replaceSession(sessionId, SessionCurrentProjectionRecordV1Schema.parse({
+                ...legacy, metadata: JSON.stringify(metadata), metadataLayoutVersion: 0,
+                agentState: JSON.stringify({ controlledByUser: true }),
+            }));
+            // A refused lazy ensure must retain the genuine layout-0 full read;
+            // the following explicit rename then owns its real migration CAS.
+            metadataPatchRefusals = 1;
+        } else metadataBoundary.replaceSession(sessionId, record);
+        const { hasAuthoritativeSessionRouteData } = await import('./domains/session/hasAuthoritativeSessionRouteData');
+        expect(await runtime.ensureSessionVisibleForMessageRoute(sessionId, {
+            serverId: restored!.home.id, forceRefresh: true, hydrateMessages: false,
+        })).toMatchObject({ kind: 'available' });
+        const admitted = state.getState().sessions[sessionId];
+        expect(hasAuthoritativeSessionRouteData(admitted, { hasSessionEncryption: false })).toBe(true);
+        expect(admitted?.metadataLayoutVersion).toBe(layout);
+
+        await runtime.patchSessionMetadataWithRetry(sessionId, (metadata) => ({
+            ...metadata, summary: { text: 'Renamed', updatedAt: 2 },
+        }), { mutationIntent: 'rename_session' });
+
+        const committed = state.getState().sessions[sessionId];
+        expect(committed?.metadataVersion).toBeGreaterThan(admitted!.metadataVersion);
+        expect(committed?.metadataLayoutVersion).toBe(1);
+        if (layout === 0) {
+            expect(committed?.agentStateVersion).toBeGreaterThan(admitted!.agentStateVersion);
+            expect(committed?.agentState).toMatchObject({ controlledByUser: true });
+        }
+        expect(committed?.metadata?.summary?.text).toBe('Renamed');
+        expect(hasAuthoritativeSessionRouteData(committed, { hasSessionEncryption: false })).toBe(true);
+        const readsAfterCommit = sessionDetailReads;
+        expect(await runtime.ensureSessionVisibleForMessageRoute(sessionId, {
+            serverId: restored!.home.id, hydrateMessages: false,
+        })).toMatchObject({ kind: 'available' });
+        expect(sessionDetailReads).toBe(readsAfterCommit);
+    });
+
+    it('retains full route readiness after committing a shared-editor summary without owner or new state authority', async () => {
+        const sessionId = 's_admitted_shared_summary';
+        installSession(sessionId);
+        const { ownerMetadata: _ownerMetadata, ...record } = createPlainSessionCurrentProjectionRecordFixture({
+            id: sessionId, metadataVersion: 7, agentStateVersion: 4,
+            metadata: { path: '/private/shared-source', host: 'owner-host', summary: { text: 'Before', updatedAt: 1 } },
+        });
+        metadataBoundary.replaceSession(sessionId, SessionCurrentProjectionRecordV1Schema.parse({
+            ...record,
+            share: { accessLevel: 'edit', canApprovePermissions: false },
+            effectiveAccess: { v: 1, level: 'edit',
+                sources: [{ kind: 'team', teamId: 'team-edit', requiredByTeamPolicy: false }],
+                capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'edit' }) },
+        }));
+        const { hasAuthoritativeSessionRouteData } = await import('./domains/session/hasAuthoritativeSessionRouteData');
+        expect(await runtime.ensureSessionVisibleForMessageRoute(sessionId, {
+            serverId: restored!.home.id, forceRefresh: true, hydrateMessages: false,
+        })).toMatchObject({ kind: 'available' });
+        const admitted = state.getState().sessions[sessionId];
+        expect(hasAuthoritativeSessionRouteData(admitted, { hasSessionEncryption: false })).toBe(true);
+
+        await runtime.patchSessionMetadataWithRetry(sessionId, (metadata) => ({
+            ...metadata, summary: { text: 'Shared rename', updatedAt: 2 },
+        }), { mutationIntent: 'rename_session' });
+
+        const committed = state.getState().sessions[sessionId];
+        expect(metadataPatches).toEqual([expect.objectContaining({ mode: 'shared_editor' })]);
+        expect(committed?.metadata?.summary?.text).toBe('Shared rename');
+        expect(committed?.ownerMetadataView).toBeNull();
+        expect(committed?.agentStateVersion).toBe(admitted!.agentStateVersion);
+        expect(committed?.agentState).toBeNull();
+        expect(hasAuthoritativeSessionRouteData(committed, { hasSessionEncryption: false })).toBe(true);
+    });
 
     it('leaves a newer permission choice pending when an earlier prompt is admitted', async () => {
         const sessionId = 's_account_permission_frozen';

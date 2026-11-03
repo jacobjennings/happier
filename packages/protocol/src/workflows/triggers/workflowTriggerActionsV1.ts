@@ -32,6 +32,7 @@ export type WorkflowTriggerSummaryInputV1 = z.infer<typeof WorkflowTriggerSummar
 const ContextFields = lazyZodSchema(() => zMini.omit(AutomationStoredWorkflowDefinitionV2Schema, { workspace: true, inlineDefinition: true, onComplete: true }));
 export const WorkflowTriggerListRequestV1Schema = lazyZodSchema(() => z.union([
   z.strictObject({ workflow: WorkflowDefinitionRefV1StringSchema }),
+  z.strictObject({ managedTarget: AutomationManagedTargetV1Schema }),
   z.strictObject({ scope: z.enum(['account_inline', 'account_all']) }),
   z.strictObject({ automationId: asProtocolZod(AutomationIdV1Schema), review: z.literal(true) }),
 ]));

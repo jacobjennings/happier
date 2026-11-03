@@ -110,13 +110,12 @@ function isMetadataPrivacyUpgradeRequiredResponse(
     );
 }
 
-async function emitSessionMetadataTuplePatch(params: Readonly<{
+export async function emitSessionMetadataTuplePatch(params: Readonly<{
     sessionId: string;
     patch:
         | SessionMetadataTuplePatchV1
         | SessionMetadataInactiveModelIntentOwnerPatchV1
         | SessionTeamCredentialBindingMetadataPatchV1;
-    context: Awaited<ReturnType<typeof resolveServerAccountRequestContext>>;
     request: (path: string, init?: RequestInit) => Promise<Response>;
     assertCurrent: () => void;
 }>): Promise<UpdateMetadataAck> {
@@ -144,11 +143,17 @@ async function emitSessionMetadataTuplePatch(params: Readonly<{
         const expectedAgentStateVersion = patch.mode === 'shared_editor' ? undefined
             : patch.mode === 'owner_migration' ? patch.source.agentState.version + 1
                 : patch.agentState.expectedVersion + 1;
+        // Layout-1 owner writes preserve AgentState's version when its stored
+        // ciphertext is unchanged. Migration still advances both versions.
+        const unchangedAgentStateVersion = patch.mode === 'shared_editor' || patch.mode === 'owner_migration'
+            ? undefined : patch.agentState.expectedVersion;
         if (parsed.success
             && parsed.data.sharedMetadata.version === expectedMetadataVersion
             && (expectedAgentStateVersion === undefined
                 ? parsed.data.agentState === undefined
-                : parsed.data.agentState?.version === expectedAgentStateVersion)) {
+                : parsed.data.agentState?.version === expectedAgentStateVersion
+                    || (unchangedAgentStateVersion !== undefined
+                        && parsed.data.agentState?.version === unchangedAgentStateVersion))) {
             return {
                 result: 'success',
                 metadataLayoutVersion: parsed.data.metadataLayoutVersion,
@@ -407,7 +412,6 @@ export async function emitSessionMetadataUpdateWithServerScope(
         return await emitSessionMetadataTuplePatch({
             sessionId: params.sessionId,
             patch: params.patch,
-            context,
             request,
             assertCurrent,
         });

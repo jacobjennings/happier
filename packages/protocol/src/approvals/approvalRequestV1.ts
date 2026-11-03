@@ -110,6 +110,8 @@ export type ApprovalDecisionV1 = z.infer<typeof ApprovalDecisionV1Schema>;
 export const ApprovalDecisionV2Schema = lazyZodSchema(() => (<T extends z.ZodMiniObject>(schema: T) => z.core.clone(schema, { ...schema._zod.def, catchall: z.never() }) as z.ZodMiniObject<T['shape'], z.core.$strict>)(z.extend(ApprovalDecisionV1Schema, {
   authority: z.optional(z.literal('present_user')),
   decidingAccountId: z.optional(SessionMessageAccountActorV1Schema.shape.accountId),
+  /** Host-stamped delegated decision modality; absence preserves historical unknown. */
+  decidedVia: z.optional(z.literal('voice')),
   narrowedInput: zMini.optional(StrictJsonValueSchema),
 })));
 
@@ -123,6 +125,14 @@ export const ApprovalRequesterConfirmationV1Schema = lazyZodSchema(() => z.stric
   inputDigest: z.string().check(z.regex(/^[A-Za-z0-9_-]{43}$/u)),
 }));
 export type ApprovalRequesterConfirmationV1 = z.infer<typeof ApprovalRequesterConfirmationV1Schema>;
+
+/** A decision on an ordinary approval does not carry requester-specific replay custody. */
+export function readApprovalRequesterDecisionV1(
+  request: Readonly<{ v: number; requesterConfirmation?: ApprovalRequesterConfirmationV1 }>,
+  decision: 'approve' | 'reject' | 'cancel' | undefined,
+): Readonly<{ subject: ApprovalRequesterConfirmationV1; decision: 'approve' | 'reject' | 'cancel' }> | null {
+  return decision && request.requesterConfirmation ? { subject: request.requesterConfirmation, decision } : null;
+}
 
 export const ApprovalExecutionV1Schema = lazyZodSchema(() => z.looseObject({
   executedAtMs: z.number().check(z.int(), z.minimum(0)),
@@ -645,6 +655,8 @@ export const ApprovalRequestV2Schema = lazyZodSchema(() => z.strictObject({
   requestedSurface: z.optional(ApprovalRequestedSurfaceSchema),
   origin: z.optional(ApprovalRequestOriginV1Schema),
   executionOriginV1: ApprovalExecutionOriginV1Schema,
+  /** Private binding of the original admitted input, including live-only operands. */
+  requestInputDigest: z.optional(z.string().check(z.regex(/^[A-Za-z0-9_-]{43}$/u))),
   requesterConfirmation: z.optional(ApprovalRequesterConfirmationV1Schema),
   /** Immutable private presentation fact; it grants no publication or decision authority. */
   discussionDraftReview: z.optional(z.literal(true)),
@@ -739,7 +751,7 @@ const SURFACE_REQUIRES_EXACT_DAEMON_REPLAY_RECORD = {
   api: true,
 } as const satisfies Record<ApprovalExecutionOriginV1['surface'], boolean>;
 
-function resolveApprovalRequestAppExecutionPlacement(approval: ApprovalRequest): 'account' | 'client' | null {
+export function resolveApprovalRequestAppExecutionPlacement(approval: ApprovalRequest): 'account' | 'client' | null {
   const actionId = ActionIdSchema.safeParse(approval.actionId);
   const spec = actionId.success ? getActionSpec(actionId.data) : null;
   const input = spec?.inputSchema.safeParse(approval.actionArgs);
@@ -841,3 +853,5 @@ export function requiresExactDaemonApprovalReplay(approval: ApprovalRequest): bo
   return SURFACE_REQUIRES_EXACT_DAEMON_REPLAY_RECORD[origin.surface]
     || CALLER_REQUIRES_EXACT_DAEMON_REPLAY_RECORD[origin.caller.kind];
 }
+
+export { resolveApprovalExecutor } from './resolveApprovalExecutor.js';

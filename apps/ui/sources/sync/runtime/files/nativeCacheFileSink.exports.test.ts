@@ -7,7 +7,14 @@ import { captureUsageViewPng, deliverUsageImageFile } from '@/components/setting
 const platform = vi.hoisted(() => ({ OS: 'ios' }));
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-    return { ...await createReactNativeWebMock(), Platform: platform,
+    const base = await createReactNativeWebMock();
+    // Keep the testkit Platform (select, etc.) and only override OS per scenario.
+    const Platform = {
+        ...base.Platform,
+        get OS() { return platform.OS; },
+        select: (spec: Record<string, unknown>) => spec[platform.OS] ?? spec.native ?? spec.default,
+    };
+    return { ...base, Platform,
         Share: { sharedAction: 'sharedAction', dismissedAction: 'dismissedAction', share: async (content: { url: string }) => {
             await sdk.share({ uri: content.url, bytes: fs.files.get(content.url) });
             return { action: 'sharedAction' };
@@ -80,8 +87,9 @@ const documents = [
     },
 ];
 describe('native export consumers through the cache sharing owner', () => {
-    it.each(documents)('shares $kind document bytes with platform custody', async (document) => {
-        for (const os of ['android', 'ios']) {
+    it.each(documents.flatMap((document) => (['android', 'ios'] as const).map((os) => ({ ...document, os }))))(
+        'shares $kind document bytes with platform custody on $os',
+        async ({ os, ...document }) => {
             platform.OS = os;
             sdk.share.mockImplementation((handoff: { uri: string; name?: string; mimeType?: string; UTI?: string; dialogTitle?: string; bytes: number[] }) => {
                 document.read(new TextDecoder().decode(new Uint8Array(handoff.bytes)));
@@ -95,10 +103,8 @@ describe('native export consumers through the cache sharing owner', () => {
             if (os === 'android') expect(handoff.mimeType).toBe(document.mimeType);
             if (os === 'android' && document.name) expect(handoff.name).toBe(document.name);
             expect(fs.files.has(handoff.uri)).toBe(os === 'android');
-            fs.files.clear();
-            sdk.share.mockReset();
-        }
-    });
+        },
+    );
     it('removes a rejected diagnostic handoff and preserves its error', async () => {
         platform.OS = 'android';
         sdk.share.mockRejectedValue(new Error('Recipient unavailable'));

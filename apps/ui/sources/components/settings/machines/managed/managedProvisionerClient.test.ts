@@ -1,11 +1,15 @@
+import type { ManagedMachineEnrollmentIdentityV1 } from '@happier-dev/protocol/machines/managed/managedMachineV1';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeBase64 } from '@happier-dev/protocol/crypto/base64';
 import { ExternalActionRequestEnvelopeV1Schema, ExternalActionRequestEnvelopeV2Schema } from '@happier-dev/protocol/actions/externalActionApi';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { standardCleanup } from '@/dev/testkit';
 import { createHomeGovernanceHarness, installHomeGovernanceBoundaries } from '@/dev/testkit/harness/homeGovernanceHarness';
+import { createPlainMachineRowFixture } from '@/dev/testkit/fixtures/machineFixtures';
 
 const harness = createHomeGovernanceHarness();
+const reviewedEnrollmentIdentity = { kind: 'dedicatedDaemonUser', username: 'happier', serviceMode: 'user',
+    role: 'server', adminAccessAtCreation: 'preauthorized' } satisfies ManagedMachineEnrollmentIdentityV1;
 installHomeGovernanceBoundaries(harness);
 const { resetScopedHomeActionExecutorsForTests } = await import('@/sync/ops/actions/scopedHomeActionExecutor');
 beforeEach(async () => { await harness.reset(); resetScopedHomeActionExecutorsForTests(); });
@@ -31,11 +35,14 @@ describe('managed configurator uses the exact Home Action front door', () => {
             provenance: { v: 1, kind: 'account', authority: 'present_user' } })), 'base64url')}.signature`;
         vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({ token, secret: encodeBase64(new Uint8Array(32).fill(29), 'base64url') });
         let receipts = 0;
-        harness.answer(serverId, '/v1/machines', { body: [{ id: 'host', kind: 'persistent', installationId: 'installation',
+        const host = { id: 'host', kind: 'persistent', installationId: 'installation',
                 active: false, activeAt: 1, revokedAt: null, replacedByMachineId: null, dataEncryptionKey: null,
                 storageMode: 'e2ee', metadata: 'opaque', metadataVersion: 1, daemonState: null, daemonStateVersion: 0,
                 keyBasis: { dataEncryptionKey: null, metadataVersion: 1, daemonStateVersion: 0 }, seq: 1, createdAt: 1, updatedAt: 1,
-                access: { custodian: { accountId: 'owner', displayName: 'Owner' }, role: 'manage', resourceMode: 'e2ee', accessState: 'ready' } }] });
+                access: { custodian: { accountId: 'owner', displayName: 'Owner' }, role: 'manage', resourceMode: 'e2ee', accessState: 'ready' } };
+        harness.answer(serverId, '/v1/machines', { body: [host] });
+        // The controller row is read through the batched Machine reader (one exact Machine per id).
+        harness.answer(serverId, '/v1/machines/host', { body: { machine: host } });
         harness.answer(serverId, '/v1/actions/machines.managed.acquire', { select: value => {
             const envelope = ExternalActionRequestEnvelopeV2Schema.parse(value);
             receipts++;
@@ -46,7 +53,8 @@ describe('managed configurator uses the exact Home Action front door', () => {
         const client = createManagedProvisionerClient({ serverId, accountId: 'owner' }, 'srv_compute');
         expect(await client.execute('machines.managed.acquire', { selection: { kind: 'one-off', homeId: 'srv_compute',
             launch: { provider: { pluginId: 'custom.compute', localId: 'vm' }, schemaVersion: 1, name: 'Guest', choices: {} },
-            controller: { machineId: 'host', installationId: 'installation' }, retention: { kind: 'until-delete' }, wakeOnAcceptedMessage: false } }))
+            controller: { machineId: 'host', installationId: 'installation' }, retention: { kind: 'until-delete' }, wakeOnAcceptedMessage: false },
+            enrollmentIdentity: reviewedEnrollmentIdentity }))
             .toEqual({ kind: 'admitted', receipt: { managedId: 'waiting-managed' } });
         expect(receipts).toBe(1);
     });
@@ -65,6 +73,8 @@ describe('managed configurator uses the exact Home Action front door', () => {
         harness.answer(serverId, '/v1/machines', { body: [{ id: 'host', kind: 'persistent', installationId: 'installation',
             active: false, revokedAt: null, replacedByMachineId: null, dataEncryptionKey: null,
             access: { custodian: { accountId: 'owner', displayName: 'Owner' }, role: 'manage', resourceMode: 'plain', accessState: 'ready' } }] });
+        harness.answer(serverId, '/v1/machines/host', { body: { machine: { ...createPlainMachineRowFixture({ id: 'host', accountId: 'owner' }),
+            installationId: 'installation', active: false } } });
         // Native Action admission owns its ordinary Artifact; the UI does not create an outer Ask.
         harness.answer(serverId, '/v1/actions/machines.managed.acquire', { select: value => {
             const request = ExternalActionRequestEnvelopeV1Schema.parse(value);
@@ -73,7 +83,8 @@ describe('managed configurator uses the exact Home Action front door', () => {
         } });
         const result = await client.execute('machines.managed.acquire', { selection: { kind: 'one-off', homeId: 'srv_compute',
             launch: { provider: { pluginId: 'custom.compute', localId: 'vm' }, schemaVersion: 1, name: 'Guest', choices: {} },
-            controller: { machineId: 'host', installationId: 'installation' }, retention: { kind: 'until-delete' }, wakeOnAcceptedMessage: false } });
+            controller: { machineId: 'host', installationId: 'installation' }, retention: { kind: 'until-delete' }, wakeOnAcceptedMessage: false },
+            enrollmentIdentity: reviewedEnrollmentIdentity });
         expect(result).toMatchObject({ kind: 'approval_pending', approval: { artifactId: expect.any(String) } });
         expect(harness.requestsFor('/v1/actions/machines.managed.acquire')).toHaveLength(1);
         expect(await client.execute('machines.provisioners.list', { homeId: 'srv_other' })).toEqual({ kind: 'failed', code: 'server_target_mismatch' });

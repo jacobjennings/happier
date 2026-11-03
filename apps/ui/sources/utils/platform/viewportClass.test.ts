@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-    CONSTRAINED_MAX_WIDTH_PX_BY_VIEWPORT_CLASS,
-    resolveViewportClass,
-    resolveViewportMinEdgePx,
-    VIEWPORT_CLASS_MIN_EDGE_BREAKPOINTS_PX,
-} from './viewportClass';
+import { resolveViewportClass, resolveViewportMinEdgePx } from './viewportClass';
 
 describe('viewportClass', () => {
     it('computes min edge from width/height', () => {
@@ -21,14 +16,4 @@ describe('viewportClass', () => {
         expect(resolveViewportClass({ width: 2500, height: 1400 })).toBe('wide');
     });
 
-    it('exposes breakpoint constants and constrained width mapping', () => {
-        expect(VIEWPORT_CLASS_MIN_EDGE_BREAKPOINTS_PX.tabletMin).toBe(600);
-        expect(VIEWPORT_CLASS_MIN_EDGE_BREAKPOINTS_PX.expandedMin).toBe(840);
-        expect(VIEWPORT_CLASS_MIN_EDGE_BREAKPOINTS_PX.wideMin).toBe(1200);
-
-        expect(CONSTRAINED_MAX_WIDTH_PX_BY_VIEWPORT_CLASS.compact).toBe(800);
-        expect(CONSTRAINED_MAX_WIDTH_PX_BY_VIEWPORT_CLASS.medium).toBe(960);
-        expect(CONSTRAINED_MAX_WIDTH_PX_BY_VIEWPORT_CLASS.expanded).toBe(1200);
-        expect(CONSTRAINED_MAX_WIDTH_PX_BY_VIEWPORT_CLASS.wide).toBe(1400);
-    });
 });

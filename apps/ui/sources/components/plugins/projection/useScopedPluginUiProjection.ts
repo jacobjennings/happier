@@ -7,6 +7,7 @@ export function useScopedPluginUiProjection(params: Readonly<{
     machineId?: string | null;
     serverId?: string | null;
     enabled?: boolean;
+    includeConnectedAccountPurposes?: boolean;
 }>): PluginUiProjectionCurrentness {
     return usePluginUiProjectionCurrentness(params);
 }

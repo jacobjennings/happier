@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { act } from 'react';
-import { View } from 'react-native';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS, Popover } from '@/components/ui/popover';
 import { renderScreen } from '@/dev/testkit';
 
 import { LinkBubble } from '../LinkBubble';
@@ -17,48 +17,14 @@ vi.mock('@/text', async () => {
     return createTextModuleMock({ translate: (key: string) => key });
 });
 
-vi.mock('@/sync/store/hooks', () => ({
-    useLocalSetting: () => 1,
-}));
+const capturedPortal: { current: React.ComponentProps<typeof Popover>['portal'] | null } = { current: null };
 
-type CapturedPopoverProps = Readonly<{
-    open: boolean;
-    children: React.ReactNode | ((renderProps: any) => React.ReactNode);
-    testID?: string;
-    portal?: Readonly<{
-        web?: boolean | Readonly<{ target?: string }>;
-        native?: boolean;
-        matchAnchorWidth?: boolean;
-        anchorAlign?: string;
-    }>;
-}>;
-
-const capturedPopoverProps: { current: CapturedPopoverProps | null } = { current: null };
-
-// Popover positioning/portaling is covered by the Popover suite; this component test verifies
-// LinkBubble passes the modal-aware portal contract into that positioning primitive.
-vi.mock('@/components/ui/popover', () => ({
-    MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS: {
-        web: true,
-        native: true,
-        matchAnchorWidth: false,
-        anchorAlign: 'start',
-    },
-    Popover: React.memo((props: CapturedPopoverProps) => {
-        capturedPopoverProps.current = props;
-        if (!props.open) return null;
-        const content = typeof props.children === 'function'
-            ? props.children({ maxHeight: 300, maxWidth: 400, placement: 'bottom' as const })
-            : props.children;
-        return React.createElement(View, { testID: props.testID }, content);
-    }),
-}));
-
-vi.mock('@/components/ui/overlays/FloatingOverlay', () => ({
-    FloatingOverlay: React.memo((props: { children: React.ReactNode }) => {
-        return React.createElement(View, {}, props.children);
-    }),
-}));
+vi.mock('@/components/ui/popover', async (importOriginal) => {
+    const { createInlinePopoverModuleMock } = await import('@/dev/testkit/mocks/popover');
+    return createInlinePopoverModuleMock(importOriginal, undefined, {
+        onRender: (props) => { capturedPortal.current = props.portal; },
+    });
+});
 
 const DEFAULT_ANCHOR = { kind: 'rect' as const, rect: { left: 100, top: 200, height: 18 } };
 
@@ -78,7 +44,7 @@ function defaultProps(overrides: Partial<LinkBubbleProps> = {}): LinkBubbleProps
 
 describe('LinkBubble', () => {
     beforeEach(() => {
-        capturedPopoverProps.current = null;
+        capturedPortal.current = null;
     });
 
     it('lets Popover choose the modal-aware web portal target', async () => {
@@ -86,22 +52,7 @@ describe('LinkBubble', () => {
             <LinkBubble {...defaultProps()} />,
         );
 
-        expect(capturedPopoverProps.current?.portal).toEqual({
-            web: true,
-            native: true,
-            matchAnchorWidth: false,
-            anchorAlign: 'start',
-        });
-    });
-
-    it('renders the URL and action buttons in display mode', async () => {
-        const screen = await renderScreen(
-            <LinkBubble {...defaultProps()} />,
-        );
-        expect(screen.findByTestId('link-bubble:url')).toBeTruthy();
-        expect(screen.findByTestId('link-bubble:open')).toBeTruthy();
-        expect(screen.findByTestId('link-bubble:edit')).toBeTruthy();
-        expect(screen.findByTestId('link-bubble:unlink')).toBeTruthy();
+        expect(capturedPortal.current).toBe(MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS);
     });
 
     it('uses the markdown link bubble labels for display actions', async () => {
@@ -199,7 +150,7 @@ describe('LinkBubble', () => {
             <LinkBubble {...defaultProps({ href: longUrl })} />,
         );
         const text = screen.getTextContent();
-        // The displayed URL should be truncated (not showing the full URL).
-        expect(text.length).toBeLessThan(longUrl.length + 50);
+        expect(text).toContain(`${longUrl.slice(0, 50)}…`);
+        expect(text).not.toContain(longUrl);
     });
 });

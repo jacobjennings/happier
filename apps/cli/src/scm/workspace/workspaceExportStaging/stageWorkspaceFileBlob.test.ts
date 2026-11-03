@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createWorkspaceStagingDescriptor, createWorkspaceStagingRoot } from './createWorkspaceStagingRoot';
-import { stageWorkspaceFileBlob } from './stageWorkspaceFileBlob';
+import { stageWorkspaceFileBlobFromFile } from './stageWorkspaceFileBlob';
 
 const tempRoots: string[] = [];
 const blobDigest = 'sha256:1111111111111111111111111111111111111111111111111111111111111111';
@@ -16,25 +16,34 @@ async function makeTempDir(prefix: string): Promise<string> {
     return directory;
 }
 
-describe('stageWorkspaceFileBlob', () => {
+async function writeSourceFile(content: Buffer): Promise<string> {
+    const sourceFilePath = join(await makeTempDir('workspace-staging-blob-source-'), 'blob.txt');
+    await writeFile(sourceFilePath, content);
+    return sourceFilePath;
+}
+
+describe('stageWorkspaceFileBlobFromFile', () => {
     afterEach(async () => {
         await Promise.all(tempRoots.splice(0, tempRoots.length).map(async (directory) => await rm(directory, { recursive: true, force: true })));
     });
 
-    it('stages blob bytes under the verified staging root using digest-addressed layout', async () => {
+    it('stages source file bytes under the verified staging root using digest-addressed layout', async () => {
         const stagingRoot = await createWorkspaceStagingRoot({
             parentDirectory: await makeTempDir('workspace-staging-blob-root-'),
             stagingId: 'stage_blob_1',
         });
         const content = Buffer.from('staged blob payload\n', 'utf8');
 
-        const stagedBlob = await stageWorkspaceFileBlob({
+        const stagedBlob = await stageWorkspaceFileBlobFromFile({
             stagingRoot,
             digest: blobDigest,
-            content,
+            sourceFilePath: await writeSourceFile(content),
         });
 
-        expect(stagedBlob.filePath).toBe(join(stagingRoot.blobsDirectory, 'sha256', '1111111111111111111111111111111111111111111111111111111111111111.blob'));
+        expect(stagedBlob).toEqual({
+            digest: blobDigest,
+            filePath: join(stagingRoot.blobsDirectory, 'sha256', '1111111111111111111111111111111111111111111111111111111111111111.blob'),
+        });
         await expect(readFile(stagedBlob.filePath)).resolves.toEqual(content);
     });
 
@@ -45,10 +54,10 @@ describe('stageWorkspaceFileBlob', () => {
             stagingId: 'missing_marker',
         });
 
-        await expect(stageWorkspaceFileBlob({
+        await expect(stageWorkspaceFileBlobFromFile({
             stagingRoot,
             digest: blobDigest,
-            content: Buffer.from('staged blob payload\n', 'utf8'),
+            sourceFilePath: await writeSourceFile(Buffer.from('staged blob payload\n', 'utf8')),
         })).rejects.toThrow(/workspace staging root marker/i);
         await expect(access(stagingRoot.blobsDirectory)).rejects.toThrow();
     });
@@ -59,40 +68,11 @@ describe('stageWorkspaceFileBlob', () => {
             stagingId: 'stage_blob_invalid',
         });
 
-        await expect(stageWorkspaceFileBlob({
+        await expect(stageWorkspaceFileBlobFromFile({
             stagingRoot,
             digest: 'sha256:not-a-valid-digest',
-            content: Buffer.from('staged blob payload\n', 'utf8'),
+            sourceFilePath: await writeSourceFile(Buffer.from('staged blob payload\n', 'utf8')),
         })).rejects.toThrow();
         await expect(access(join(stagingRoot.blobsDirectory, 'sha256'))).rejects.toThrow();
-    });
-
-    it('stages blob bytes from a source file without requiring in-memory blob contents', async () => {
-        const stagingRoot = await createWorkspaceStagingRoot({
-            parentDirectory: await makeTempDir('workspace-staging-blob-file-'),
-            stagingId: 'stage_blob_file',
-        });
-        const sourceDirectory = await makeTempDir('workspace-staging-blob-source-');
-        const sourceFilePath = join(sourceDirectory, 'blob.txt');
-        const content = Buffer.from('file-backed blob payload\n', 'utf8');
-        await writeFile(sourceFilePath, content);
-
-        const stageWorkspaceFileBlobModule = await import('./stageWorkspaceFileBlob') as Readonly<{
-            stageWorkspaceFileBlobFromFile?: (params: Readonly<{
-                stagingRoot: typeof stagingRoot;
-                digest: string;
-                sourceFilePath: string;
-            }>) => Promise<Readonly<{ digest: string; filePath: string }>>;
-        }>;
-
-        expect(stageWorkspaceFileBlobModule.stageWorkspaceFileBlobFromFile).toBeTypeOf('function');
-        const stagedBlob = await stageWorkspaceFileBlobModule.stageWorkspaceFileBlobFromFile!({
-            stagingRoot,
-            digest: blobDigest,
-            sourceFilePath,
-        });
-
-        expect(stagedBlob.digest).toBe(blobDigest);
-        await expect(readFile(stagedBlob.filePath)).resolves.toEqual(content);
     });
 });

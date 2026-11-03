@@ -275,6 +275,77 @@ describe('authenticated finite Project Action owner', () => {
         };
     }
 
+    it.each([
+        ['nix_flake', 'flake.nix', '2.35.2', '{ outputs = inputs: {}; }'],
+        ['devenv', 'devenv.nix', '2.4.0', '{ pkgs, ... }: { env.NATIVE_VALUE = "prepared"; }'],
+    ] as const)('reviews unevaluated %s before native effects and resumes the original Project Run after human approval', async (tool, configPath, version, content) => {
+        const token = `header.${Buffer.from(JSON.stringify({ sub: 'owner', tokenEpoch: 1,
+            provenance: { v: 1, kind: 'account', authority: 'present_user' } })).toString('base64url')}.signature`;
+        const h = await harness({ version: 1, environment: { kind: 'toolchain', tool, configPath } }, 1, 'machine', token);
+        await writeFile(join(h.root, configPath), content);
+        const evaluated = join(h.root, 'native-evaluated');
+        Object.assign(h.runtime, {
+            nativeIo: { resolveTool: async (id: string) => ({ executablePath: `/managed/${id}`, version: id === 'make' ? '1' : version }) },
+            environmentIo: createProjectNativeEnvironmentIoForHost({
+                // The installed-tool OS boundary substitutes a real supervised
+                // process; admission, review, native production and PTY stay real.
+                resolveTool: async () => ({ executablePath: process.execPath, version, args: ['-e',
+                    `require('node:fs').writeFileSync(${JSON.stringify(evaluated)},'evaluated');process.stdout.write('\\0HAPPIER_NATIVE_ENV_V1\\0NATIVE_VALUE=prepared\\0');`, '--'] }),
+            }),
+        });
+        const scope = { accountId: 'owner', machineId: 'machine' };
+        try {
+            expect(await h.rpcInvoke('projects.script.run', { workspace: h.address,
+                selection: { kind: 'native', source: { kind: 'native', tool: 'make', file: 'Makefile', target: 'check' } } }))
+                .toMatchObject({ operation: { operationId: 'operation' } });
+            await expect.poll(() => {
+                const snapshot = h.operationRuntime.store.get(scope, 'operation');
+                return snapshot?.setupReview?.code ?? snapshot?.error?.errorCode ?? snapshot?.state;
+            }).toBe('project_setup_consent_required');
+            const review = ProjectSetupConsentFailureDetailsV1Schema.parse(h.operationRuntime.store.get(scope, 'operation')!.setupReview);
+            expect(review.reviewedEffect).toMatchObject({ environment: { selection: { kind: 'toolchain', tool, configPath } },
+                files: [expect.objectContaining({ file: configPath, digest: expect.any(String) })] });
+            await expect(access(evaluated)).rejects.toMatchObject({ code: 'ENOENT' });
+            expect(h.spawned).toEqual([]);
+            h.waiveSetupApproval();
+            expect(await h.rpcInvoke('projects.prepare', { workspace: h.address, phase: 'setup', heldOperationId: 'operation',
+                expectedEffectDigest: review.reviewedEffectDigest, consentScope: 'thisTime' },
+            { ...h.context, callerAuthority: 'present_user', transportRequestId: 'approve-native-evaluation' }))
+                .toMatchObject({ operation: { operationId: 'operation' } });
+            await expect.poll(() => h.spawned.length).toBe(1);
+            expect(await readFile(evaluated, 'utf8')).toBe('evaluated');
+            expect(h.spawned[0]!.params).toMatchObject({ file: '/managed/make', args: ['-f', join(h.root, 'Makefile'), 'check'],
+                options: { cwd: h.root, env: { NATIVE_VALUE: 'prepared' } } });
+            h.spawned[0]!.pty.exit(0);
+            expect(await h.operationRuntime.runner.waitForTerminal(scope, 'operation')).toMatchObject({ state: 'succeeded' });
+            expect(h.operationRuntime.store.list(scope).items).toHaveLength(1);
+            expect(h.post.mock.calls.filter(([url]) => String(url).endsWith('/project-trust/mutate'))).toEqual([]);
+        } finally { await h.operationRuntime.runner.retireProjectFiniteOperations(); }
+    });
+
+    it.each(['missing', 'unqualified'] as const)('retains the typed refusal for a %s selected Nix tool without native evaluation or host fallback', async mode => {
+        const h = await harness({ version: 1, environment: { kind: 'toolchain', tool: 'nix_flake', configPath: 'flake.nix' } });
+        await writeFile(join(h.root, 'flake.nix'), '{ outputs = inputs: {}; }');
+        const evaluated = join(h.root, 'must-not-evaluate');
+        const tool = mode === 'missing' ? null : { executablePath: process.execPath, version: '2.35.999', args: ['-e',
+            `require('node:fs').writeFileSync(${JSON.stringify(evaluated)},'unexpected');`, '--'] };
+        Object.assign(h.runtime, { nativeIo: { resolveTool: async (id: string) => id === 'nix' ? tool : { executablePath: `/managed/${id}`, version: '1' } },
+            environmentIo: createProjectNativeEnvironmentIoForHost({ resolveTool: async () => tool }) });
+        h.waiveSetupApproval();
+        try {
+            const result = await h.rpcInvoke('projects.script.run', { workspace: h.address,
+                selection: { kind: 'native', source: { kind: 'native', tool: 'make', file: 'Makefile', target: 'check' } } });
+            if (mode === 'missing') expect(result).toMatchObject({ ok: false, errorCode: 'native_tool_unavailable' });
+            else {
+                expect(result).toMatchObject({ operation: { operationId: 'operation' } });
+                expect(await h.operationRuntime.runner.waitForTerminal({ accountId: 'owner', machineId: 'machine' }, 'operation'))
+                    .toMatchObject({ state: 'failed', error: { errorCode: 'native_version_not_characterized' } });
+            }
+            await expect(access(evaluated)).rejects.toMatchObject({ code: 'ENOENT' });
+            expect(h.spawned).toEqual([]);
+        } finally { await h.operationRuntime.runner.retireProjectFiniteOperations(); }
+    });
+
     it.for([{ commands: [] }, { commands: ['echo must-not-run'] }])('retries the original built-in native environment through public Stop while retaining the same FIFO reservation, setup $commands', async ({ commands }, { task }) => {
         const h = await harness({ version: 1, environment: { kind: 'toolchain', tool: 'mise', configPath: 'mise.toml' },
             workspace: { setup: commands.map(command => ({ kind: 'command', command })) } }, 1);
@@ -1133,7 +1204,7 @@ describe('authenticated finite Project Action owner', () => {
         const reviewed = ProjectSetupConsentFailureDetailsV1Schema.parse(h.operationRuntime.store.get(scope, 'operation')!.setupReview);
         // This contract compares consent intent, not concurrent operation-id
         // allocation. Admit each original request before asserting its receipt.
-        for (const [index, consentScope] of (['thisTime', 'untilChanged'] as const).entries()) {
+        for (const [index, consentScope] of (['thisTime'] as const).entries()) {
             const pending = await h.invoke('projects.prepare', {
                 workspace: h.address, phase: 'setup', expectedEffectDigest: reviewed.reviewedEffectDigest, consentScope,
             }, { ...h.context, transportRequestId: `prepare-${consentScope}` });
@@ -1147,6 +1218,12 @@ describe('authenticated finite Project Action owner', () => {
         }
         expect(await h.rpcInvoke('projects.prepare', { workspace: h.address, phase: 'setup', consentScope: 'thisTime' }))
             .toMatchObject({ ok: false, errorCode: 'invalid_parameters' });
+        // Remembered consent belongs to the approving app, never the native preparation RPC.
+        expect(await createProjectFiniteAction(h.runtime, h.context)({ actionId: 'projects.prepare',
+            input: { workspace: h.address, phase: 'setup', heldOperationId: 'operation',
+                expectedEffectDigest: reviewed.reviewedEffectDigest, consentScope: 'untilChanged' },
+            context: { authority: 'present_user', surface: 'ui', serverId: h.address.serverId } }))
+            .toMatchObject({ ok: false, errorCode: 'project_setup_consent_invalid' });
         expect(await h.rpcInvoke('projects.prepare', { workspace: h.address, phase: 'setup', expectedEffectDigest: reviewed.reviewedEffectDigest,
             consentScope: 'forever' })).toMatchObject({ ok: false, errorCode: 'invalid_parameters' });
         expect(await h.rpcInvoke('projects.prepare', { workspace: h.address, phase: 'setup', expectedEffectDigest: reviewed.reviewedEffectDigest,
@@ -1554,19 +1631,50 @@ describe('authenticated finite Project Action owner', () => {
         expect(h.spawned).toEqual([]);
     });
 
-    it('does not treat a setup digest as approval of the exact requested Script effect', async () => {
-        const h = await harness();
+    it('runs an unchanged named native Script after completed setup but refuses a setup digest as its Script precondition', async () => {
+        const h = await harness({ version: 1,
+            workspace: { setup: [{ kind: 'command', command: 'echo setup' }] },
+            scripts: { checked: { source: { kind: 'native', tool: 'make', file: 'Makefile', target: 'check' } } },
+        });
+        h.waiveSetupApproval();
         const prepared = await h.invoke('projects.prepare', { workspace: h.address, phase: 'setup' });
         expect(prepared).toMatchObject({ operation: { operationId: 'operation' } });
         const scope = { accountId: 'owner', machineId: 'machine' };
+        await expect.poll(() => h.spawned.length).toBe(1);
+        h.spawned[0]!.pty.exit(0);
         await expect.poll(() => h.operationRuntime.store.get(scope, 'operation')?.state).toBe('succeeded');
         const preparationResult = h.operationRuntime.store.get(scope, 'operation')!.result;
         if (!preparationResult || typeof preparationResult !== 'object' || !('reviewedEffectDigest' in preparationResult)) throw new Error('missing preparation review');
-        expect(await h.invoke('projects.script.run', { workspace: h.address, selection: { kind: 'native', source: { kind: 'native', tool: 'make', file: 'Makefile', target: 'check' } },
-            expectedEffectDigest: preparationResult.reviewedEffectDigest })).toMatchObject({ operation: { operationId: 'operation-2' } });
-        await expect.poll(() => h.operationRuntime.store.get(scope, 'operation-2')?.state).toBe('failed');
-        expect(h.operationRuntime.store.get(scope, 'operation-2')).toMatchObject({ error: { errorCode: 'project_script_effect_changed' } });
-        expect(h.spawned).toEqual([]);
+        h.askSetupApproval();
+        const input = { workspace: h.address, selection: { kind: 'named', name: 'checked' } };
+        expect(await h.rpcInvoke('projects.script.run', input, { ...h.context, transportRequestId: 'named-after-setup' }))
+            .toMatchObject({ operation: { operationId: 'operation-2' } });
+        await expect.poll(() => h.spawned.length).toBe(2);
+        expect(h.spawned[1]!.params).toMatchObject({ file: '/managed/make', args: ['-f', join(h.root, 'Makefile'), 'check'] });
+        h.spawned[1]!.pty.output(Buffer.from('checked\r\n'));
+        h.spawned[1]!.pty.exit(0);
+        await expect.poll(() => h.operationRuntime.store.get(scope, 'operation-2')?.state).toBe('succeeded');
+        const output = await executeActionOperationActionV1({ actionId: 'projects.execution.output.read',
+            input: { serverId: 'home', machineId: 'machine', operationId: 'operation-2', byteOffset: 0 },
+            transport: async request => {
+                if (request.method === 'actionOperation.get.v2') return h.operationRuntime.handlers.getV2(request.payload, h.context);
+                if (request.method !== RPC_METHODS.DAEMON_TERMINAL_STREAM_READ_BYTES) throw new Error(request.method);
+                const { TerminalStreamReadRequestSchema } = await import('@happier-dev/protocol/terminal/stream');
+                return h.terminalSessions.readByteStream(TerminalStreamReadRequestSchema.parse(request.payload));
+            } });
+        const replay = TerminalStreamReadResponseSchema.parse(output);
+        if (!replay.ok) throw new Error(replay.code);
+        expect(Buffer.concat(replay.frames.flatMap(frame => frame.t === 'bytes' ? [decodeTerminalStreamBytesFrame(frame)] : []))
+            .toString('utf8')).toBe('checked\r\n');
+        expect(await h.rpcInvoke('projects.script.run', { ...input,
+            expectedEffectDigest: preparationResult.reviewedEffectDigest }, { ...h.context, transportRequestId: 'wrong-setup-precondition' }))
+            .toMatchObject({ operation: { operationId: 'operation-3' } });
+        await expect.poll(() => h.operationRuntime.store.get(scope, 'operation-3')?.state).toBe('failed');
+        expect(h.operationRuntime.store.get(scope, 'operation-3')).toMatchObject({ error: {
+            errorCode: 'project_script_effect_changed', details: { reviewedEffect: { purpose: 'script',
+                setupEffect: preparationResult.reviewedEffectDigest, command: { source: { tool: 'make', target: 'check' } } } },
+        } });
+        expect(h.spawned).toHaveLength(2);
     });
 
     it('refuses a queued invocation when its actual requester credential lifetime retires', async () => {

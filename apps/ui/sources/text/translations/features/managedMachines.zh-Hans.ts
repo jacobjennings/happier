@@ -149,6 +149,8 @@ export const managedMachines: ManagedMachinesTranslations = {
             billedWhileRunning: "仅在运行时计费。",
             imageDescription: "启动时的系统。Happier 会安装在其上。",
             locationDescription: "越近，输入响应越快。",
+            network: "网络",
+            networkDescription: "选择它获得的公网地址。价格随你的选择而变化。",
             localLocationDescription: ({ computer }: { computer: string }) => `在 ${computer} 上的运行位置。`,
             localSizeDescription: ({ computer }: { computer: string }) => `运行时占用的 ${computer} 资源。停止后释放。`,
             headroom: ({ computer }: { computer: string }) => `留给 ${computer}`,
@@ -257,7 +259,8 @@ export const managedMachines: ManagedMachinesTranslations = {
         },
         credential: {
             refused: "配置器连接已不再可用。",
-            required: "连接配置器账户以查看可用的机器。",
+            required: "连接账户以查看可创建的内容。",
+            choose: "选择账户以查看可创建的内容。",
         },
         power: {
             pending: ({ provider, state }: { provider: string; state: string }) => `正在等待 ${provider} 确认${state}…`,
@@ -284,6 +287,8 @@ export const managedMachines: ManagedMachinesTranslations = {
             refused: ({ name }: { name: string }) => `你没有管理 ${name} 的权限。`,
         },
         inspect: {
+            notCreated: "此机器未创建",
+            checkFailed: "无法确认此机器的状态",
             checkNow: "立即检查",
         },
         actions: {

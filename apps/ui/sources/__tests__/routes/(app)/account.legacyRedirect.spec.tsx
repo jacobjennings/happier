@@ -1,7 +1,7 @@
 import React from 'react';
-import renderer, { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
+import type { IModal } from '@/modal';
 
 
 type ReactActEnvironmentGlobal = typeof globalThis & {
@@ -11,9 +11,16 @@ type ReactActEnvironmentGlobal = typeof globalThis & {
 
 
 const routerReplaceSpy = vi.fn();
-const promptAccountConnectApprovalRequiredSpy = vi.fn();
 let localSearchParams: Record<string, unknown> = {};
 let isAuthenticated = false;
+// The person's choice in the real guidance dialog: the Modal boundary presses the matching button.
+let guidanceChoice: 'showQr' | 'dismiss' = 'showQr';
+const alertAsyncSpy = vi.fn<IModal['alertAsync']>(async (_title, _message, buttons) => {
+    const pressed = guidanceChoice === 'showQr'
+        ? buttons?.find((button) => button.style !== 'cancel' && button.onPress)
+        : buttons?.find((button) => button.style === 'cancel');
+    pressed?.onPress?.();
+});
 
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
@@ -24,6 +31,11 @@ vi.mock('expo-router', async () => {
     return expoRouterMock.module;
 });
 
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ spies: { alertAsync: alertAsyncSpy } }).module;
+});
+
 vi.mock('@/auth/context/AuthContext', async () => {
     const actual = await vi.importActual<typeof import('@/auth/context/AuthContext')>('@/auth/context/AuthContext');
     return {
@@ -32,105 +44,71 @@ vi.mock('@/auth/context/AuthContext', async () => {
     };
 });
 
-
-vi.mock('@/components/account/restore/accountConnectApprovalGuidance', () => ({
-    promptAccountConnectApprovalRequired: promptAccountConnectApprovalRequiredSpy,
-}));
+const Screen = (await import('@/app/(app)/account')).default;
 
 afterEach(() => {
     localSearchParams = {};
     isAuthenticated = false;
-    routerReplaceSpy.mockReset();
-    promptAccountConnectApprovalRequiredSpy.mockReset();
-    vi.restoreAllMocks();
-    vi.resetModules();
+    guidanceChoice = 'showQr';
+    routerReplaceSpy.mockClear();
+    alertAsyncSpy.mockClear();
 });
+
+async function renderRoute() {
+    const screen = await renderScreen(<Screen />);
+    return screen;
+}
 
 describe('Legacy /account route', () => {
     it('redirects to the canonical account settings route', async () => {
-        const Screen = (await import('@/app/(app)/account')).default;
-
-        let tree: ReturnType<typeof renderer.create> | undefined;
+        const screen = await renderRoute();
         try {
-            tree = (await renderScreen(<Screen />)).tree;
-
             expect(routerReplaceSpy).toHaveBeenCalledWith('/settings/account');
         } finally {
-            act(() => {
-                tree?.unmount();
-            });
+            await screen.unmount();
         }
     });
 
     it('preserves server override query when redirecting', async () => {
         localSearchParams = { server: 'http://localhost:3014' };
-        const Screen = (await import('@/app/(app)/account')).default;
-
-        let tree: ReturnType<typeof renderer.create> | undefined;
+        const screen = await renderRoute();
         try {
-            tree = (await renderScreen(<Screen />)).tree;
-
             expect(routerReplaceSpy).toHaveBeenCalledWith({
                 pathname: '/settings/account',
                 params: { server: 'http://localhost:3014' },
             });
         } finally {
-            act(() => {
-                tree?.unmount();
-            });
+            await screen.unmount();
         }
     });
 
-    it('retires an authenticated account-connect request to the canonical Home QR display', async () => {
-        isAuthenticated = true;
+    it.each([
+        { signedIn: true, choice: 'showQr', destination: '/settings/add-phone' },
+        { signedIn: true, choice: 'dismiss', destination: '/settings/account' },
+        { signedIn: false, choice: 'showQr', destination: '/restore' },
+        { signedIn: false, choice: 'dismiss', destination: '/' },
+    ] as const)('explains an account-connect request (signed in: $signedIn, choice: $choice) and opens $destination', async ({ signedIn, choice, destination }) => {
+        isAuthenticated = signedIn;
+        guidanceChoice = choice;
         localSearchParams = { accountConnectKey: 'abc+123/=', server: 'https://ignored.example' };
-        promptAccountConnectApprovalRequiredSpy.mockResolvedValueOnce('showQr');
-        const Screen = (await import('@/app/(app)/account')).default;
-
-        let tree: ReturnType<typeof renderer.create> | undefined;
+        const screen = await renderRoute();
         try {
-            tree = (await renderScreen(<Screen />)).tree;
-
-            expect(promptAccountConnectApprovalRequiredSpy).toHaveBeenCalledWith({ showQr: true });
-            expect(routerReplaceSpy).toHaveBeenCalledWith('/settings/add-phone');
+            await vi.waitFor(() => expect(routerReplaceSpy).toHaveBeenCalledWith(destination));
+            expect(alertAsyncSpy).toHaveBeenCalledOnce();
+            expect(routerReplaceSpy).toHaveBeenCalledOnce();
         } finally {
-            act(() => {
-                tree?.unmount();
-            });
+            await screen.unmount();
         }
     });
 
     it('ignores array-valued account-connect keys instead of choosing an ambiguous request', async () => {
         localSearchParams = { accountConnectKey: ['first', 'second'] };
-        const Screen = (await import('@/app/(app)/account')).default;
-
-        let tree: ReturnType<typeof renderer.create> | undefined;
+        const screen = await renderRoute();
         try {
-            tree = (await renderScreen(<Screen />)).tree;
-
             expect(routerReplaceSpy).toHaveBeenCalledWith('/settings/account');
+            expect(alertAsyncSpy).not.toHaveBeenCalled();
         } finally {
-            act(() => {
-                tree?.unmount();
-            });
-        }
-    });
-
-    it('explains an account-connect request to signed-out users and opens account restore when selected', async () => {
-        localSearchParams = { accountConnectKey: 'abc123' };
-        promptAccountConnectApprovalRequiredSpy.mockResolvedValueOnce('showQr');
-        const Screen = (await import('@/app/(app)/account')).default;
-
-        let tree: ReturnType<typeof renderer.create> | undefined;
-        try {
-            tree = (await renderScreen(<Screen />)).tree;
-
-            expect(promptAccountConnectApprovalRequiredSpy).toHaveBeenCalledWith({ showQr: true });
-            expect(routerReplaceSpy).toHaveBeenCalledWith('/restore');
-        } finally {
-            act(() => {
-                tree?.unmount();
-            });
+            await screen.unmount();
         }
     });
 });

@@ -246,4 +246,29 @@ describe('openRemoteAcquisition destination policy', () => {
       await opened.dispose();
     }
   });
+
+  it('cancels the exact pending DNS acquisition before opening a connection', async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(async () => new Response('{}'));
+    let resolveDns!: (answers: readonly { address: string; family: 4 }[]) => void;
+    const operation = openRemoteAcquisition({
+      url: 'https://catalog.example.test/index.json', headers: {}, policy: ARCHIVE_POLICY, timeoutMs: null,
+      signal: controller.signal, errorLabel: 'Marketplace catalog', fetchImpl,
+      resolveAddresses: () => new Promise((resolve) => { resolveDns = resolve; }),
+    });
+    const rejected = expect(operation).rejects.toThrow('discovery cancelled');
+    controller.abort(new Error('discovery cancelled'));
+    await rejected;
+    resolveDns([{ address: '93.184.216.34', family: 4 }]);
+    await Promise.resolve();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps a genuine transport error', async () => {
+    await expect(openRemoteAcquisition({
+      url: 'https://catalog.example.test/index.json', headers: {}, policy: ARCHIVE_POLICY, timeoutMs: null,
+      errorLabel: 'Marketplace catalog', resolveAddresses: resolverFor({}),
+      fetchImpl: async () => { throw new Error('connection refused'); },
+    })).rejects.toThrow('connection refused');
+  });
 });

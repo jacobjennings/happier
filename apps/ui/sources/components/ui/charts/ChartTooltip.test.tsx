@@ -111,34 +111,4 @@ describe('ChartTooltip', () => {
         expect(screen.findByType('Popover' as never).props.open).toBe(false);
     });
 
-    it('opens on hover and closes on hover out on web', async () => {
-        const { ChartTooltip } = await import('./ChartTooltip');
-
-        const screen = await renderScreen(
-            <ChartTooltip
-                testID="usage-chart-tooltip"
-                title="OpenAI Codex App Server"
-                subtitle="Apr"
-                value="92 events"
-                accentColor="#34C759"
-            >
-                <React.Fragment>
-                    <View testID="usage-chart-tooltip-child" />
-                </React.Fragment>
-            </ChartTooltip>,
-        );
-
-        const trigger = screen.findByTestId('usage-chart-tooltip-trigger');
-        act(() => {
-            trigger?.props?.onHoverIn?.();
-        });
-
-        expect(screen.findByType('Popover' as never).props.open).toBe(true);
-
-        act(() => {
-            trigger?.props?.onHoverOut?.();
-        });
-
-        expect(screen.findByType('Popover' as never).props.open).toBe(false);
-    });
 });

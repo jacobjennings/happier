@@ -410,10 +410,14 @@ describe('exact invoking-surface continuation', () => {
             } finally { releaseFocus(); nativeReadGate = null; stopFocusObservation(); }
             if (decision) {
                 const settled = await decision;
-                if (revokeCredential || cancelDecision) {
+                if (revokeCredential) {
                     expect(settled, JSON.stringify(settled)).toMatchObject({ ok: false, errorCode: 'approval_execution_outcome_unknown' });
                     expect(JSON.parse(artifacts.readPlainBody(approvalId!) ?? 'null')).toMatchObject({ status: 'executing' });
-                } else expect(settled, JSON.stringify(settled)).toMatchObject({ ok: true, result: { status: 'executed' } });
+                } else {
+                    // A decided outcome settles its Artifact even after the deciding intent's signal ends.
+                    expect(settled, JSON.stringify(settled)).toMatchObject({ ok: true, result: { status: 'executed' } });
+                    expect(JSON.parse(artifacts.readPlainBody(approvalId!) ?? 'null')).toMatchObject({ status: 'executed' });
+                }
             }
             await vi.waitFor(async () => {
                 await act(async () => {});
@@ -463,24 +467,14 @@ describe('exact invoking-surface continuation', () => {
         expect(screen.getTextContent()).not.toContain('Open Account settings to continue connecting the Home');
     });
 
-    it('offers a rejected approval the same fresh attempt expiry already gets', async () => {
+    // `stop` is what the directory projects for a declined approval; `retry_stage` must not demote it to Retry.
+    it.each(['stop', 'retry_stage'] as const)('keeps a rejected approval on the fresh-attempt action (%s recovery)', async (recovery) => {
         const input = { service: fixture.service,
             credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
             session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
             intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId } };
         screen = await renderScreen(<AccountServiceContinuation input={input}
-            result={{ kind: 'failure', stage: 'enroll', code: { source: 'home', code: 'rejected' }, recovery: 'stop', accountCredentialCommitted: true, homeCredentialCommitted: false }}
-            onResult={() => {}} onBack={() => {}} />);
-        expect(screen.getTextContent()).toContain('Start again');
-    });
-
-    it('keeps a rejected approval on the fresh-attempt action even when the stage is retryable', async () => {
-        const input = { service: fixture.service,
-            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
-            session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
-            intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId } };
-        screen = await renderScreen(<AccountServiceContinuation input={input}
-            result={{ kind: 'failure', stage: 'enroll', code: { source: 'home', code: 'rejected' }, recovery: 'retry_stage', accountCredentialCommitted: true, homeCredentialCommitted: false }}
+            result={{ kind: 'failure', stage: 'enroll', code: { source: 'home', code: 'rejected' }, recovery, accountCredentialCommitted: true, homeCredentialCommitted: false }}
             onResult={() => {}} onBack={() => {}} />);
 
         expect(screen.getTextContent()).toContain('Start again');

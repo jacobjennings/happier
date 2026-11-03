@@ -21,8 +21,6 @@ type Replacement = Readonly<{
     rewrite: InlineMockRewrite;
 }>;
 
-const CHAT_LIST_HARNESS_SPECIFIER = '@/dev/testkit/harness/chatListHarness';
-const LEGACY_CHAT_LIST_HARNESS_SPECIFIER = './ChatList.legacyListTestHarness';
 const UNISTYLES_MOCK_SPECIFIER = '@/dev/testkit/mocks/unistyles';
 
 const LOW_SIGNAL_UNISTYLES_THEME_SHAPES = new Set([
@@ -948,13 +946,6 @@ function isDefaultUnistylesRuntimeOptions(
     return normalizeMockShape(runtimeInitializer.getText(sourceFile)) === "{themeName:'light'}";
 }
 
-function buildHarnessHelperCallText(
-    helperName: string,
-    argsText: string,
-): string {
-    return `(await import('${CHAT_LIST_HARNESS_SPECIFIER}')).${helperName}(${argsText})`;
-}
-
 function createTextMockReplacement(params: {
     translateExpression?: string;
     translateLooseExpression?: string;
@@ -1501,50 +1492,6 @@ function maybeRewriteReactNativeMock(
                 },
             };
         }
-
-        const legacyHelperCall = getHarnessHelperCall(
-            factory,
-            'createLegacyChatListReactNativeMock',
-            LEGACY_CHAT_LIST_HARNESS_SPECIFIER,
-        );
-        if (legacyHelperCall) {
-            const argsText = legacyHelperCall.arguments.map((argument) => argument.getText(sourceFile)).join(', ');
-            return {
-                start: callExpression.getStart(sourceFile),
-                end: callExpression.getEnd(),
-                value: [
-                    `vi.${mockMethod}('react-native', async () => (`,
-                    `    ${buildHarnessHelperCallText('createLegacyChatListReactNativeMock', argsText)}`,
-                    '))',
-                ].join('\n'),
-                rewrite: {
-                    family: 'reactNative',
-                    target: 'react-native',
-                },
-            };
-        }
-
-        const flashListHelperCall = getHarnessHelperCall(
-            factory,
-            'createFlashListChatListReactNativeMock',
-            CHAT_LIST_HARNESS_SPECIFIER,
-        );
-        if (flashListHelperCall) {
-            const argsText = flashListHelperCall.arguments.map((argument) => argument.getText(sourceFile)).join(', ');
-            return {
-                start: callExpression.getStart(sourceFile),
-                end: callExpression.getEnd(),
-                value: [
-                    `vi.${mockMethod}('react-native', async () => (`,
-                    `    ${buildHarnessHelperCallText('createFlashListChatListReactNativeMock', argsText)}`,
-                    '))',
-                ].join('\n'),
-                rewrite: {
-                    family: 'reactNative',
-                    target: 'react-native',
-                },
-            };
-        }
     }
 
     return null;
@@ -1933,31 +1880,6 @@ function maybeRewriteStorageMock(
     const [target, factory] = callExpression.arguments;
     if (!target || !ts.isStringLiteral(target) || target.text !== '@/sync/domains/state/storage' || !factory) {
         return null;
-    }
-
-    if (ts.isArrowFunction(factory) || ts.isFunctionExpression(factory)) {
-        const legacyHelperCall = getHarnessHelperCall(
-            factory,
-            'createLegacyChatListStorageMock',
-            LEGACY_CHAT_LIST_HARNESS_SPECIFIER,
-        );
-        if (legacyHelperCall) {
-            const parameterText = factory.parameters.map((parameter) => parameter.getText(sourceFile)).join(', ');
-            const argsText = legacyHelperCall.arguments.map((argument) => argument.getText(sourceFile)).join(', ');
-            return {
-                start: callExpression.getStart(sourceFile),
-                end: callExpression.getEnd(),
-                value: [
-                    `vi.${mockMethod}('@/sync/domains/state/storage', async (${parameterText}) => (`,
-                    `    ${buildHarnessHelperCallText('createLegacyChatListStorageMock', argsText)}`,
-                    '))',
-                ].join('\n'),
-                rewrite: {
-                    family: 'storage',
-                    target: '@/sync/domains/state/storage',
-                },
-            };
-        }
     }
 
     let returnedObject = getFactoryReturnObject(factory);

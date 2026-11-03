@@ -4,20 +4,16 @@ import { scmUiBackendRegistry } from './scmUiBackendRegistry';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 
 describe('scmUiBackendRegistry', () => {
-    it('resolves git and sapling plugins by backend id', () => {
-        const git = scmUiBackendRegistry.getPlugin('git');
-        const sapling = scmUiBackendRegistry.getPlugin('sapling');
-
-        expect(git.displayName).toBe('Git');
-        expect(sapling.displayName).toBe('Sapling');
-    });
-
-    it('resolves qualified first-party snapshot identities to their leaf UI policies', () => {
-        const git = scmUiBackendRegistry.getPlugin('happier.scm.backend.git/git');
-        const sapling = scmUiBackendRegistry.getPlugin('happier.scm.backend.sapling/sapling');
-
-        expect(git.diffModeConfig(null).availableModes).toEqual(['included', 'pending']);
-        expect(sapling.diffModeConfig(null).availableModes).toEqual(['pending']);
+    it.each([
+        { ids: ['git', 'happier.scm.backend.git/git'], displayName: 'Git', modes: ['included', 'pending'] },
+        { ids: ['sapling', 'happier.scm.backend.sapling/sapling'], displayName: 'Sapling', modes: ['pending'] },
+    ])('resolves $displayName by bare and qualified identity to its leaf UI policy', ({ ids, displayName, modes }) => {
+        for (const id of ids) {
+            const plugin = scmUiBackendRegistry.getPlugin(id);
+            expect(plugin.displayName).toBe(displayName);
+            // Conservative without a snapshot so older daemons never get a "both" diff request they cannot satisfy.
+            expect(plugin.diffModeConfig(null).availableModes).toEqual(modes);
+        }
     });
 
     it('falls back when backend id is unknown', () => {
@@ -104,20 +100,6 @@ describe('scmUiBackendRegistry', () => {
             supportsPathScopedCommit: false,
             supportsLineSelection: true,
         });
-    });
-
-    it('validates plugin map invariants', () => {
-        expect(() => scmUiBackendRegistry.assertRegistryValid()).not.toThrow();
-    });
-
-    it('uses backend-default diff areas when no snapshot is available', () => {
-        const gitPlugin = scmUiBackendRegistry.getPlugin('git');
-        const saplingPlugin = scmUiBackendRegistry.getPlugin('sapling');
-
-        // Be conservative when capabilities are unknown so older daemons don't get a "both" diff request
-        // that they can't satisfy.
-        expect(gitPlugin.diffModeConfig(null).availableModes).toEqual(['included', 'pending']);
-        expect(saplingPlugin.diffModeConfig(null).availableModes).toEqual(['pending']);
     });
 
     it('fails closed for sapling remote actions when capabilities are unavailable', () => {

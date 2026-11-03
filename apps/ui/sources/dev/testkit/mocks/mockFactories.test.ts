@@ -9,6 +9,34 @@ import type { ExpoRouterParams } from './router';
 import { createTokenStorageModuleMock } from './tokenStorage';
 
 describe('UI testkit mock factories', () => {
+    it('shares one window override between React Native dimension readers', async () => {
+        const { createReactNativeWebMock } = await import('./reactNative');
+        const window = { width: 390, height: 844, scale: 3, fontScale: 1.2 };
+        const screen = { width: 1920, height: 1080, scale: 2, fontScale: 1 };
+        const get = (name: 'window' | 'screen') => name === 'window' ? window : screen;
+        const boundary = await createReactNativeWebMock({ Dimensions: { get } });
+        const dimensions = boundary.Dimensions as { get: typeof get };
+
+        expect(dimensions.get('window')).toBe(window);
+        expect(boundary.useWindowDimensions()).toBe(window);
+        expect(dimensions.get('screen')).toBe(screen);
+        window.width = 844;
+        expect(boundary.useWindowDimensions().width).toBe(844);
+        expect(dimensions.get('window').width).toBe(844);
+    });
+
+    it('reports a useWindowDimensions override through Dimensions.get', async () => {
+        const { createReactNativeWebMock } = await import('./reactNative');
+        const phone = { width: 390, height: 844, scale: 3, fontScale: 1 };
+        const boundary = await createReactNativeWebMock({ useWindowDimensions: () => phone });
+        const dimensions = boundary.Dimensions as { get: (name: 'window' | 'screen') => typeof phone };
+
+        expect(boundary.useWindowDimensions()).toBe(phone);
+        expect(dimensions.get('window')).toMatchObject({ width: 390, height: 844 });
+        phone.width = 844;
+        expect(dimensions.get('window').width).toBe(844);
+    });
+
     it('keeps the real portal target owner above the scoped Test Renderer paint port', async () => {
         const { installBrowserRuntimeForTests } = await import('../harness/browserRuntimeHarness');
         const browser = await installBrowserRuntimeForTests({ url: 'https://portal-boundary.test/' });
@@ -400,23 +428,6 @@ describe('UI testkit mock factories', () => {
         });
     });
 
-    it('creates a removable React Native AppState change emitter', async () => {
-        const { createReactNativeAppStateEmitter } = await import('./reactNative');
-        const boundary = createReactNativeAppStateEmitter();
-        const listener = vi.fn();
-        const subscription = boundary.appState.addEventListener('change', listener);
-
-        boundary.emit('inactive');
-        expect(boundary.appState.currentState).toBe('inactive');
-        expect(listener).toHaveBeenCalledExactlyOnceWith('inactive');
-        expect(boundary.getListenerCount()).toBe(1);
-
-        subscription.remove();
-        boundary.emit('background');
-        expect(listener).toHaveBeenCalledTimes(1);
-        expect(boundary.getListenerCount()).toBe(0);
-    });
-
     it('preserves nested stub exports when overriding React Native module objects like Animated', async () => {
         const { createReactNativeWebMock } = await import('./reactNative');
 
@@ -505,12 +516,14 @@ describe('UI testkit mock factories', () => {
         const runtime = moduleMock.UnistylesRuntime as {
             setTheme: (themeName: string) => void;
             setAdaptiveThemes: () => void;
+            updateTheme: () => void;
         };
 
         runtime.setTheme('dark');
 
         expect(setTheme).toHaveBeenCalledWith('dark');
         expect(typeof runtime.setAdaptiveThemes).toBe('function');
+        expect(typeof runtime.updateTheme).toBe('function');
     });
 
     it('creates a text module mock with stable identity translation output', async () => {
@@ -543,12 +556,16 @@ describe('UI testkit mock factories', () => {
 
     it('creates a react-navigation native mock with focus hooks and CommonActions', async () => {
         const { createReactNavigationNativeMock } = await import('./reactNavigation');
+        const { renderHook } = await import('../hooks/renderHook');
 
         const moduleMock = createReactNavigationNativeMock({
             isFocused: false,
         });
 
-        expect(moduleMock.useIsFocused()).toBe(false);
+        const focus = await renderHook(() => moduleMock.useIsFocused());
+        try {
+            expect(focus.getCurrent()).toBe(false);
+        } finally { await focus.unmount(); }
         expect(moduleMock.CommonActions.setParams({ id: 'abc' })).toEqual({
             type: 'SET_PARAMS',
             payload: { params: { id: 'abc' } },
@@ -735,62 +752,34 @@ describe('UI testkit mock factories', () => {
         });
     });
 
-    it('supports dynamic segment suppliers', async () => {
+    it('reads dynamic segment suppliers lazily on every call', async () => {
         const { createExpoRouterMock } = await import('./router');
 
         let currentSegments = ['(app)', 'settings'];
+        const segments = vi.fn(() => currentSegments);
 
-        const routerMock = createExpoRouterMock({
-            segments: () => currentSegments,
-        });
+        const routerMock = createExpoRouterMock({ segments });
 
+        expect(segments).not.toHaveBeenCalled();
         expect(routerMock.module.useSegments()).toEqual(['(app)', 'settings']);
 
         currentSegments = ['(app)', 'session', '123', 'file'];
         expect(routerMock.module.useSegments()).toEqual(['(app)', 'session', '123', 'file']);
     });
 
-    it('does not eagerly evaluate dynamic segment suppliers during router mock creation', async () => {
-        const { createExpoRouterMock } = await import('./router');
-
-        const segmentsSpy = vi.fn(() => ['(app)', 'settings']);
-
-        const routerMock = createExpoRouterMock({
-            segments: segmentsSpy,
-        });
-
-        expect(segmentsSpy).not.toHaveBeenCalled();
-        expect(routerMock.module.useSegments()).toEqual(['(app)', 'settings']);
-        expect(segmentsSpy).toHaveBeenCalledTimes(1);
-    });
-
-    it('supports dynamic pathname suppliers', async () => {
+    it('reads dynamic pathname suppliers lazily on every call', async () => {
         const { createExpoRouterMock } = await import('./router');
 
         let currentPathname = '/settings';
+        const pathname = vi.fn(() => currentPathname);
 
-        const routerMock = createExpoRouterMock({
-            pathname: () => currentPathname,
-        });
+        const routerMock = createExpoRouterMock({ pathname });
 
+        expect(pathname).not.toHaveBeenCalled();
         expect(routerMock.module.usePathname()).toBe('/settings');
 
         currentPathname = '/session/123/file';
         expect(routerMock.module.usePathname()).toBe('/session/123/file');
-    });
-
-    it('does not eagerly evaluate dynamic pathname suppliers during router mock creation', async () => {
-        const { createExpoRouterMock } = await import('./router');
-
-        const pathnameSpy = vi.fn(() => '/settings');
-
-        const routerMock = createExpoRouterMock({
-            pathname: pathnameSpy,
-        });
-
-        expect(pathnameSpy).not.toHaveBeenCalled();
-        expect(routerMock.module.usePathname()).toBe('/settings');
-        expect(pathnameSpy).toHaveBeenCalledTimes(1);
     });
 
     it('provides a Redirect component on the expo-router mock module', async () => {
@@ -1345,19 +1334,5 @@ describe('UI testkit mock factories', () => {
 
         expect(mock.machinePreviewEnv).toBe(originalPreview);
         expect(overrideAbort).toHaveBeenCalledWith('session-1');
-    });
-
-    it('creates a vector-icons mock surface', async () => {
-        const { createExpoVectorIconsMock } = await import('./icons');
-
-        expect(createExpoVectorIconsMock()).toEqual({
-            Ionicons: 'Ionicons',
-            Octicons: 'Octicons',
-            AntDesign: 'AntDesign',
-            MaterialIcons: 'MaterialIcons',
-            FontAwesome: 'FontAwesome',
-            FontAwesome5: 'FontAwesome5',
-            Feather: 'Feather',
-        });
     });
 });

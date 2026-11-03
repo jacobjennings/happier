@@ -20,6 +20,19 @@ const targetRecordId = `${attempt.machineId.length}:${attempt.machineId}${attemp
 const compositeRecordId = `${targetRecordId}${attempt.userAttemptId.length}:${attempt.userAttemptId}`;
 
 describe('spawnAttemptNonceStore persistence', () => {
+    it.each(['daemon-birth', 'legacy-checkpoint'] as const)('retains %s origin writer through submission, recovery, and a changed capability', async authoringOriginPersistence => {
+        const store = await import('./spawnAttemptNonceStore');
+        const acquired = await store.acquireSpawnAttemptCustody({ ...attempt, seedNonce: 'origin-writer', authoringOriginPersistence });
+        expect(acquired).toMatchObject({ status: 'acquired', record: { authoringOriginPersistence } });
+        await store.markSpawnAttemptSubmitted({ ...attempt, nonce: 'origin-writer' });
+        await store.markSpawnAttemptCreated({ ...attempt, nonce: 'origin-writer', createdSessionId: 'origin-session' });
+        const recovered = await store.acquireSpawnAttemptCustody({ ...attempt,
+            authoringOriginPersistence: authoringOriginPersistence === 'daemon-birth' ? 'legacy-checkpoint' : 'daemon-birth' });
+        expect(recovered).toMatchObject({ status: 'acquired', reused: true,
+            record: { authoringOriginPersistence, submissionState: 'submitted', createdSessionId: 'origin-session' } });
+        const persisted = store.readSpawnAttemptCustodyState(scope);
+        expect(persisted.status === 'valid' && Object.values(persisted.attempts)[0]?.authoringOriginPersistence).toBe(authoringOriginPersistence);
+    });
     afterEach(async () => {
         const store = await import('./spawnAttemptNonceStore');
         await store.clearSpawnAttemptCustody(attempt);

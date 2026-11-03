@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { buildSessionMessageObservationFactsV1 } from '@happier-dev/protocol';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import { handleMessageUpdatedSocketUpdate } from './sessionSocketUpdate';
@@ -29,6 +30,7 @@ function buildUpdate(params: {
     createdAt: number;
     body: {
         t: 'message-updated';
+        delivery: 'full';
         sid?: string;
         message: {
             id: string;
@@ -48,6 +50,7 @@ function buildUpdate(params: {
         createdAt: params.updateCreatedAt ?? 1_000,
         body: {
             t: 'message-updated',
+            delivery: 'full',
             sid: params.sid ?? 's1',
             message: {
                 id: params.messageId,
@@ -113,6 +116,7 @@ function buildHarness(
         isMutableToolCall: () => false,
         invalidateScmStatus: () => {},
         isSessionMessagesLoaded: () => true,
+        isSessionFullContentConsumerActive: () => true,
         getSessionMaterializedMaxSeq: () => 1,
         markSessionMaterializedMaxSeq,
         onMessageGapDetected,
@@ -139,6 +143,64 @@ describe('socket Account actor metadata', () => {
 });
 
 describe('handleMessageUpdatedSocketUpdate', () => {
+    it('projects a hint revision for an exact cached row without creating a full shell', async () => {
+        const update = buildUpdate({ messageId: 'm2', messageSeq: 2, attentionImpact: userAttentionImpact });
+        const applyCacheOnlySessionProjectionPatch = vi.fn(() => true);
+        const markSessionTranscriptStale = vi.fn();
+        const harness = buildHarness({
+            updateData: { ...update, body: { ...update.body, delivery: 'hint',
+                message: buildSessionMessageObservationFactsV1(update.body.message) } },
+            getSession: () => undefined,
+            getSessionProjection: () => ({ latestTurnStatus: null, latestTurnStatusObservedAt: null }),
+            isSessionFullContentConsumerActive: () => false,
+            applyCacheOnlySessionProjectionPatch,
+            markSessionTranscriptStale,
+        });
+        await handleMessageUpdatedSocketUpdate(harness.params);
+        expect(harness.fetchSessions).not.toHaveBeenCalled();
+        expect(harness.applyMessages).not.toHaveBeenCalled();
+        expect(applyCacheOnlySessionProjectionPatch).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1' }));
+        expect(markSessionTranscriptStale).toHaveBeenCalledWith('s1', {
+            updateType: 'message-updated', seq: 2, messageId: 'm2',
+        });
+    });
+    it('keeps a same-sequence hint revision stale until the real transcript owner repairs it', async () => {
+        const update = buildUpdate({ messageId: 'm2', messageSeq: 2, attentionImpact: userAttentionImpact });
+        const facts = buildSessionMessageObservationFactsV1(update.body.message);
+        const sessionReceivedMessages = new Map([['s1', new Map([['m2', 1_000]])]]);
+        const markSessionTranscriptStale = vi.fn();
+        const getSessionEncryption = vi.fn(() => null);
+        const harness = buildHarness({
+            updateData: { ...update, body: { ...update.body, delivery: 'hint', message: facts } },
+            getSession: () => buildSession('s1', 2),
+            getSessionMaterializedMaxSeq: () => 2,
+            isSessionFullContentConsumerActive: () => true,
+            getSessionEncryption,
+            sessionReceivedMessages,
+            markSessionTranscriptStale,
+        });
+        await handleMessageUpdatedSocketUpdate(harness.params);
+        expect(getSessionEncryption).not.toHaveBeenCalled();
+        expect(harness.applyMessages).not.toHaveBeenCalled();
+        expect(harness.markSessionMaterializedMaxSeq).not.toHaveBeenCalled();
+        expect(sessionReceivedMessages.get('s1')?.get('m2')).toBe(1_000);
+        expect(markSessionTranscriptStale).toHaveBeenCalledWith('s1', {
+            updateType: 'message-updated', seq: 2, messageId: 'm2',
+        });
+        expect(harness.onMessageGapDetected).toHaveBeenCalledWith('s1', {
+            prevMaterializedMaxSeq: 2, messageSeq: 2,
+        });
+    });
+    it('preserves the committed sidechain when updating encrypted Run input', async () => {
+        const update = buildUpdate({ messageId: 'run-input', messageSeq: 3 });
+        const harness = buildHarness({ updateData: { ...update, body: { ...update.body,
+            message: { ...update.body.message, sidechainId: 'subagent_run-owned' } } } });
+        await handleMessageUpdatedSocketUpdate(harness.params);
+        expect(harness.applyMessages.mock.calls[0]?.[1]?.[0]).toMatchObject({
+            role: 'user', sidechainId: 'subagent_run-owned', isSidechain: true,
+        });
+    });
+
     it('preserves update message seq on normalized messages and advances session seq', async () => {
         const { params, applyMessages, applySessions } = buildHarness({
             updateData: buildUpdate({ sid: 's1', messageId: 'm2', messageSeq: 2 }),
@@ -428,7 +490,6 @@ describe('handleMessageUpdatedSocketUpdate', () => {
             } as Session),
             isSessionActivelyViewed: () => false,
             isSessionFullContentConsumerActive: () => false,
-            realtimeProjectionMode: 'enabled',
             markSessionKnownRemoteSeq,
             markSessionTranscriptStale,
         } as Partial<Parameters<typeof handleMessageUpdatedSocketUpdate>[0]>);
@@ -476,7 +537,6 @@ describe('handleMessageUpdatedSocketUpdate', () => {
             getSessionMaterializedMaxSeq: () => 7,
             isSessionActivelyViewed: () => false,
             isSessionFullContentConsumerActive: () => false,
-            realtimeProjectionMode: 'enabled',
             markSessionKnownRemoteSeq,
             markSessionTranscriptStale,
         } as Partial<Parameters<typeof handleMessageUpdatedSocketUpdate>[0]>);
@@ -519,7 +579,6 @@ describe('handleMessageUpdatedSocketUpdate', () => {
             getSessionMaterializedMaxSeq: () => 2,
             isSessionActivelyViewed: () => false,
             isSessionFullContentConsumerActive: () => false,
-            realtimeProjectionMode: 'enabled',
             markSessionKnownRemoteSeq,
             markSessionTranscriptStale,
         } as Partial<Parameters<typeof handleMessageUpdatedSocketUpdate>[0]>);
@@ -569,7 +628,6 @@ describe('handleMessageUpdatedSocketUpdate', () => {
             sessionReceivedMessages,
             isSessionActivelyViewed: () => true,
             isSessionFullContentConsumerActive: () => true,
-            realtimeProjectionMode: 'enabled',
             markSessionTranscriptDeferred,
             markSessionTranscriptStale,
         });

@@ -6,8 +6,10 @@ import { View } from 'react-native';
 import type { ExternalSessionOperationSharedPresentationV1 } from '@happier-dev/protocol';
 
 import type { Message, ToolCallMessage } from "@happier-dev/session-core/messages";
+import { resolveMessageRouteIdForDisplay } from '@happier-dev/session-core/messages';
+import { selectToolApprovalRequestsForMessages, useToolApprovalRequestsIndex } from '@/components/tools/shell/views/toolApprovalPromptMatching';
 import type { TranscriptListOrientation } from '@/components/sessions/transcript/listOrientation';
-import { resolveOlderNeighborRenderedIndex } from '@/components/sessions/transcript/listOrientation';
+import { resolveNewerNeighborRenderedIndex } from '@/components/sessions/transcript/listOrientation';
 import type { ChatListInternalProps, ChatTranscriptListItem } from '@/components/sessions/transcript/chatListTypes';
 import { ChatListMessageRow, TranscriptRowShell } from '@/components/sessions/transcript/ChatListRows';
 import {
@@ -155,6 +157,8 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
         sessionServerId,
         toolChromeCommon,
     } = deps.props;
+    // Own stable, keyed approval selections where live messages become memoized row inputs.
+    useToolApprovalRequestsIndex(approvalRequests);
     // Editing is an event, not row data. A retained/recycled pending row must
     // invoke the current committed composer without invalidating every row
     // whenever SessionView publishes a new closure. Presence still changes the
@@ -673,7 +677,10 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
                 >
                     {(messages) => {
                         const message = messages[0];
-                        return message?.kind === 'tool-call' ? (
+                        if (message?.kind !== 'tool-call') return null;
+                        const messageId = resolveMessageRouteIdForDisplay({ message,
+                            messagesById: toolRouteCommon.messagesById, reducerState: toolRouteCommon.reducerState });
+                        return (
                             <ToolCallsGroupUnitToolRowWithSessionCommon
                                 sessionId={sessionId}
                                 groupId={item.groupId}
@@ -681,15 +688,16 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
                                 interaction={interaction}
                                 message={message}
                                 expanded={item.expanded}
-                                approvalRequests={approvalRequests}
+                                approvalRequests={selectToolApprovalRequestsForMessages({ requests: approvalRequests,
+                                    sessionId, rowId: item.id, messages: [message], messageId })}
                                 messagePins={messagePins}
                                 onToggleToolPin={onToggleMessagePin}
                                 forkCommon={forkCommon}
                                 messageDisplayCommon={messageDisplayCommon}
                                 toolChromeCommon={toolChromeCommon}
-                                toolRouteCommon={toolRouteCommon}
+                                messageRouteId={messageId}
                             />
-                        ) : null;
+                        );
                     }}
                 </TranscriptLiveMessagesRowShell>
             );
@@ -716,20 +724,22 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
             const neighborItems = listData[index]?.id === item.id
                 ? listData
                 : itemsRef.current;
-            const olderNeighborIndex = resolveOlderNeighborRenderedIndex(
+            const newerNeighborIndex = resolveNewerNeighborRenderedIndex(
                 index,
                 neighborItems.length,
                 listOrientation,
             );
-            const prev = olderNeighborIndex != null
-                ? neighborItems[olderNeighborIndex]
+            const next = newerNeighborIndex != null
+                ? neighborItems[newerNeighborIndex]
                 : undefined;
+            // A recycler cell paints inside its own box, so a row cannot be pulled above its top
+            // edge. A tool row followed by another tool row gives up part of its own trailing gap.
             const shouldTightenToolStack =
                 toolChromeMode === 'activity_feed' &&
                 resolveKindForMessageId(item.messageId) === 'tool-call' &&
-                prev?.kind === 'message' &&
-                resolveKindForMessageId(prev.messageId) === 'tool-call';
-            const wrapperStyle = shouldTightenToolStack ? { marginTop: -12 } : undefined;
+                next?.kind === 'message' &&
+                resolveKindForMessageId(next.messageId) === 'tool-call';
+            const wrapperStyle = shouldTightenToolStack ? { marginBottom: -12 } : undefined;
             return wrapTranscriptItemForAnchor(item, (
                 <TranscriptEnterWrapper
                     id={item.id}

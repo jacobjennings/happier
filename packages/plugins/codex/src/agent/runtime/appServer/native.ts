@@ -16,6 +16,7 @@ import type {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import type { JsonValue, PluginDiagnosticData } from '@happier-dev/plugin-sdk';
 import { PluginError } from '@happier-dev/plugin-sdk';
+import { AGENT_DEFINITION } from '../../definition.js';
 import { isDeepStrictEqual } from 'node:util';
 import type { SessionAuthService } from '@happier-dev/plugin-sdk/sessions';
 import {
@@ -53,7 +54,12 @@ import {
   readCanonicalCodexAgentRuntimeDescriptorV1,
   readExactCodexProviderSessionId,
 } from '../../../protocol/runtimeDescriptorV1.js';
-import { CodexSharedAppServerStartupError, createCodexSharedAppServer, type CodexSharedAppServerStartupFailure } from './sharedServer.js';
+import {
+  createCodexSharedAppServer,
+  readCodexNativeTransportStartupFailure,
+  readCodexSharedAppServerStartupFailure,
+  type CodexSharedAppServerStartupFailure,
+} from './sharedServer.js';
 import { buildCodexExecutionRunBaseEnv } from '../../executionRuns/environment.js';
 import { assignInjectedServerKeys, buildCodexAppServerConfigOverrides, listCodexAppServerMcpServerNames } from './config/overrides.js';
 import {
@@ -387,20 +393,27 @@ function createSanitizedNativeStartupError(error: unknown): Error {
       : 'Codex cannot enforce the requested native tool policy for this configuration.';
     return new PluginError({ code: error.code, message: `${error.code}: ${message}` });
   }
-  const descriptor = error instanceof Error ? Object.getOwnPropertyDescriptor(error, 'code') : undefined;
+  const startupCause = error instanceof AggregateError ? error.errors[0] : error;
+  const descriptor = startupCause instanceof Error ? Object.getOwnPropertyDescriptor(startupCause, 'code') : undefined;
   const errorCode: unknown = descriptor && 'value' in descriptor ? descriptor.value : undefined;
+  const nativeTransportFailure = readCodexNativeTransportStartupFailure(startupCause);
   const code = readAgentStartupFailureCode(errorCode)
     ?? (error instanceof TypeError ? 'agent_startup_invalid_state'
       : error instanceof Error && error.name === 'JsonRpcApplicationError' && typeof errorCode === 'number'
         ? 'agent_startup_rpc_rejected'
-      : typeof errorCode === 'string' && ['ENOENT', 'ENAMETOOLONG', 'EACCES', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE'].includes(errorCode)
+      : nativeTransportFailure
         ? 'agent_startup_transport_failed'
         : 'agent_startup_failed');
   // Shared startup cleanup can aggregate the original failure. Preserve that
-  // owner's closed diagnostic without copying either exception's raw cause.
-  const startupCause = error instanceof AggregateError ? error.errors[0] : error;
+  // owner's closed diagnostic, or a closed Node system-error identity, without
+  // copying either exception's raw cause, paths, addresses or values.
+  const startupFailure = readCodexSharedAppServerStartupFailure(
+    startupCause && typeof startupCause === 'object'
+      ? (startupCause as Readonly<{ startupFailure?: unknown }>).startupFailure
+      : undefined,
+  ) ?? nativeTransportFailure;
   const sanitized = new CodexAppServerStartupError(code,
-    startupCause instanceof CodexSharedAppServerStartupError ? startupCause.startupFailure : undefined);
+    startupFailure ?? undefined);
   const classification = error instanceof Error
     ? sanitizeCodexAppServerRuntimeAuthClassification(
         (error as { runtimeAuthClassification?: unknown }).runtimeAuthClassification,
@@ -456,8 +469,10 @@ function readCommittedMessage(
 function mapCodexAppServerEvent(event: CodexAppServerEvent): NativeSessionEventInput | null {
   switch (event.kind) {
     case 'context-compaction':
-      return { kind: event.kind, compactionId: event.compactionId, phase: event.phase, trigger: event.trigger,
-        ...(event.turnId ? { turnId: event.turnId } : {}) };
+      {
+        const { sessionId: _sessionId, executionRunId: _executionRunId, emittedAtMs: _emittedAtMs, ...compaction } = event;
+        return compaction;
+      }
     case 'turn-start':
       return {
         kind: 'turn-start',
@@ -573,6 +588,7 @@ function mapCodexAppServerEvent(event: CodexAppServerEvent): NativeSessionEventI
         ...(event.tokens ? { tokens: event.tokens } : {}),
         ...(event.cost ? { cost: event.cost } : {}),
         ...(event.context ? { context: event.context } : {}),
+        ...(event.promptCache ? { promptCache: event.promptCache } : {}),
       };
     case 'turn-rollback-boundary-observed':
       return {
@@ -624,13 +640,18 @@ export function createCodexNativeAppServerSessionRuntime(
   onDispose?: () => void | Promise<void>,
   initialMcpToolPolicy?: AgentSessionOpenRequest['mcpToolPolicy'],
 ): AgentSessionRuntime {
-  return createCodexNativeAppServerConversationRuntime(
-    appServer,
-    { kind: 'session', sessionId },
-    realtimeConversation,
-    onDispose,
-    initialMcpToolPolicy,
-  ) as AgentSessionRuntime;
+  return {
+    ...createCodexNativeAppServerConversationRuntime(
+      appServer,
+      { kind: 'session', sessionId },
+      realtimeConversation,
+      onDispose,
+      initialMcpToolPolicy,
+    ) as AgentSessionRuntime,
+    runtimeCapabilities: {
+      sessionCapabilities: AGENT_DEFINITION.core.sessionCapabilities,
+    },
+  };
 }
 
 export function createCodexNativeAppServerExecutionRunConversationRuntime(
@@ -714,6 +735,11 @@ function createCodexNativeAppServerConversationRuntime(
   const nativeRuntime: NativeConversationRuntimeCore = {
     ...(realtimeConversation ? { realtimeConversation } : {}),
     ...(appServer.runtimeAuth ? { runtimeAuth: appServer.runtimeAuth } : {}),
+    async compact(request) {
+      if (disposed) return { status: 'unavailable', retryable: false,
+        diagnostic: diagnostic('codex_runtime_disposed', 'Codex runtime is disposed.') };
+      return await appServer.compact(request);
+    },
     conversationRollback: {
       async rollback(request) {
         return await appServer.rollbackNativeConversation(request);
@@ -925,10 +951,13 @@ function createCodexNativeAppServerConversationRuntime(
       bufferedEvents?.dispose();
       bufferedEvents = null;
       bufferedEventFailure = null;
-      subscription();
-      listeners.clear();
-      await onDispose?.();
-      await appServer.dispose('session_closed');
+      try {
+        await onDispose?.();
+        await appServer.dispose('session_closed');
+      } finally {
+        subscription();
+        listeners.clear();
+      }
     },
   };
   if (scope.kind === 'session') {
@@ -1062,6 +1091,7 @@ export async function openCodexNativeAppServerSession(
     appServerEndpoint: sharedAppServer?.endpoint,
     appServerTransport,
     initialModelId: readInitialModelId(request),
+    initialProviderModel: request.providerBinding?.model,
     connectedAccountService: request.connectedAccounts?.find(selection => selection.account.service.pluginId === 'happier.agent.codex'
       && selection.account.service.localId === 'openai-codex')?.account.service,
     initialCollaborationModeId: request.configuration?.mode.value,
@@ -1076,6 +1106,7 @@ export async function openCodexNativeAppServerSession(
     resolveCurrentPolicy: () => resolveCodexTerminalPermissionPolicy(readPermissionMode(request), request.configuration?.workspaceWrites, request.configuration?.unlistedTools),
     ...(goalProjection
       ? {
+          goalProjection,
           observeGoal: (() => {
             const goalSource = context.workState.publisher('goals');
             return async (payload: Parameters<CodexGoalProjection['publish']>[0]): Promise<void> => {
@@ -1104,8 +1135,7 @@ export async function openCodexNativeAppServerSession(
         : {}),
     });
     if (request.kind === 'create') {
-      // Goal controls use a separate native client. Persist the zero-turn
-      // thread through the existing attachment owner before exposing controls.
+      // Persist the zero-turn thread for attachment and later inactive controls.
       await runtime.prepareProviderCliAttach();
     }
   } catch (error) {
@@ -1131,6 +1161,8 @@ export async function openCodexNativeAppServerSession(
   );
   return {
     ...sessionRuntime,
+    goals: runtime.goals,
+    usageLimitRecovery: runtime.usageLimitRecovery,
     get skillsDelivered() { return runtime.skillsDelivered; },
     ...(sharedAppServer
       ? {
@@ -1228,6 +1260,7 @@ export async function openCodexNativeAppServerExecutionRunConversation(
     initialProviderSessionId: providerSessionId,
     appServerEndpoint: sharedAppServer?.endpoint,
     initialModelId: readInitialModelId(request),
+    initialProviderModel: request.providerBinding?.model,
     initialCollaborationModeId: request.configuration?.mode.value,
     initialWorkspaceWrites: request.configuration?.workspaceWrites,
     initialPermissionMode: readPermissionMode(request),

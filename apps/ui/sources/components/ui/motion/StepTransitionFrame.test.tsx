@@ -4,14 +4,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 
+import { slideTransitionTokens } from './slideTransitionTokens';
+
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock();
 });
-
-vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
-    useReducedMotionPreference: () => false,
-}));
 
 function flattenStyle(style: unknown): Record<string, unknown> {
     if (!style) return {};
@@ -25,7 +23,7 @@ function flattenStyle(style: unknown): Record<string, unknown> {
 }
 
 describe('StepTransitionFrame', () => {
-    it('keeps the outgoing step mounted while the incoming step enters', async () => {
+    it('keeps the outgoing step mounted while the incoming step enters on the routine role', async () => {
         const { StepTransitionFrame } = await import('./StepTransitionFrame');
         const screen = await renderScreen(
             <StepTransitionFrame transitionKey="one" direction="replace" testID="step-frame">
@@ -39,12 +37,13 @@ describe('StepTransitionFrame', () => {
             </StepTransitionFrame>,
         );
 
+        const routine = slideTransitionTokens.routine.timed;
         expect(screen.findByTestId('step-one')).not.toBeNull();
         expect(screen.findByTestId('step-two')).not.toBeNull();
         expect(screen.findByTestId('step-frame-exit-layer')).not.toBeNull();
         expect(flattenStyle(screen.findByTestId('step-frame-current-layer')?.props.style)).toMatchObject({
-            transitionDuration: '220ms',
-            filter: 'blur(0px)',
+            transitionDuration: `${routine.durationMs.enter}ms`,
+            filter: `blur(${routine.blurPx}px)`,
         });
     });
 });

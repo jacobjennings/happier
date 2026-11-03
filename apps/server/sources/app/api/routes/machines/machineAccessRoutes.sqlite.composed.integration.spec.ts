@@ -67,11 +67,46 @@ describe('Machine accessible discovery and access HTTP (SQLite)', () => {
         return { owner, recipient, other, machine };
     }
 
+    it('acquires recipient-work facts for UI census reads but not API-token bootstrap', async () => {
+        const keys = tweetnacl.box.keyPair();
+        const owner = await db.account.create({ data: { encryptionMode: 'e2ee', ...createSignedAccountContentBinding(keys.publicKey) } });
+        const machine = await db.machine.create({ data: { id: randomUUID(), accountId: owner.id,
+            installationId: randomUUID(), metadata: 'encrypted-metadata', daemonState: 'encrypted-state',
+            dataEncryptionKey: sealEncryptedDataKeyEnvelopeV1({ dataKey: tweetnacl.randomBytes(32),
+                recipientPublicKey: keys.publicKey, randomBytes: tweetnacl.randomBytes }) } });
+        const phases: string[] = [];
+        const previousLogLevel = logger.level;
+        logger.level = 'trace';
+        const diagnostic = vi.spyOn(logger, 'trace').mockImplementation(record => {
+            if (typeof record === 'object' && record !== null && 'phase' in record && typeof record.phase === 'string') {
+                phases.push(record.phase);
+            }
+        });
+        try {
+            await withAuthenticatedTestApp(machinesRoutes, async app => {
+                phases.length = 0;
+                const ui = await app.inject({ method: 'GET', url: '/v1/machines', headers: headers(owner.id) });
+                expect(ui.statusCode, ui.body).toBe(200);
+                expect(ui.json()).toEqual([expect.objectContaining({ id: machine.id, recipientWorkPending: false })]);
+                expect(phases.filter(phase => phase === 'db.raw.$queryRawUnsafe')).toHaveLength(1);
+                phases.length = 0;
+                const bootstrap = await app.inject({ method: 'GET', url: '/v1/machines',
+                    headers: { ...headers(owner.id), 'x-test-auth-token-kind': 'api_token' } });
+                expect(bootstrap.statusCode, bootstrap.body).toBe(200);
+                expect(bootstrap.json()).toEqual([expect.objectContaining({ id: machine.id })]);
+                expect(bootstrap.json()[0]).not.toHaveProperty('recipientWorkPending');
+                expect(phases.filter(phase => phase === 'db.raw.$queryRawUnsafe')).toHaveLength(0);
+            });
+        } finally { diagnostic.mockRestore(); logger.level = previousLogLevel; }
+    });
+
     it('reads an owned fleet without a database round trip for every Machine', async () => {
         const { owner, machine } = await fixture();
         // Observe real Prisma operations through the existing diagnostic sink;
         // the HTTP handler, access policy and SQLite reads all remain real.
         const phases: string[] = [];
+        const previousLogLevel = logger.level;
+        logger.level = 'trace';
         const diagnostic = vi.spyOn(logger, 'trace').mockImplementation(record => {
             if (typeof record === 'object' && record !== null && 'phase' in record
                 && typeof record.phase === 'string' && /^db\.[A-Z]/u.test(record.phase)) phases.push(record.phase);
@@ -96,7 +131,7 @@ describe('Machine accessible discovery and access HTTP (SQLite)', () => {
                 })]));
                 expect(fleet.operations.length, JSON.stringify({ single: single.operations, fleet: fleet.operations })).toBeLessThanOrEqual(single.operations.length);
             });
-        } finally { diagnostic.mockRestore(); }
+        } finally { diagnostic.mockRestore(); logger.level = previousLogLevel; }
     });
 
     it('omits revoked owned Machines from listing but preserves offline discovery and exact owner reads', async () => {
@@ -287,6 +322,14 @@ describe('Machine accessible discovery and access HTTP (SQLite)', () => {
             }
             const before = await app.inject({ method: 'GET', url: `${base}/data-key-envelopes`, headers: headers(owner.id) });
             expect(before.json()).toMatchObject({ kind: 'refused' });
+            if (envelopeState === 'absent') {
+                const discovery = await app.inject({ method: 'GET', url: '/v1/machines?includeRevoked=true', headers: headers(owner.id) });
+                expect(discovery.json()).toEqual(expect.arrayContaining([expect.objectContaining({ id: machine.id,
+                    recipientWorkPending: true, recipientWorkCursor: expect.any(Number) })]));
+                const selected = await app.inject({ method: 'POST', url: '/v1/machines/read-batch', headers: headers(owner.id),
+                    payload: { machineIds: [machine.id] } });
+                expect(selected.json()).toMatchObject({ results: [{ status: 'found', machine: { recipientWorkPending: true } }] });
+            }
             const paths: string[] = [];
             const request = async (method: 'GET' | 'POST' | 'PATCH', url: unknown, body?: unknown) => {
                 const path = new URL(String(url)).pathname + new URL(String(url)).search;
@@ -321,6 +364,9 @@ describe('Machine accessible discovery and access HTTP (SQLite)', () => {
             expect(retained).toMatchObject({ metadataVersion: 6, daemonStateVersion: 8 });
             const ready = await app.inject({ method: 'GET', url: base, headers: headers(recipient.id) });
             expect(ready.json().machine.access.accessState).toBe('ready');
+            expect(ready.json().machine).not.toHaveProperty('recipientWorkPending');
+            const settled = await app.inject({ method: 'GET', url: base, headers: headers(owner.id) });
+            expect(settled.json()).toMatchObject({ machine: { recipientWorkPending: false, recipientWorkCursor: expect.any(Number) } });
             const recipientKey = openEncryptedDataKeyEnvelopeV1({ envelope: privacyKit.decodeBase64(ready.json().machine.dataEncryptionKey), recipientSecretKeyOrSeed: recipientKeys.secretKey });
             expect(recipientKey).toEqual(independentKey);
             expect(decryptWithDataKey(privacyKit.decodeBase64(ready.json().machine.metadata), recipientKey!)).toEqual(editedMetadata);

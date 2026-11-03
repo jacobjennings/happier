@@ -1,4 +1,4 @@
-import { access, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 type SourceExpectation = Readonly<{
@@ -76,18 +76,5 @@ describe('local voice canonical owner imports', () => {
                 expect(source).not.toContain(forbiddenImport);
             }
         }
-    });
-
-    it('retires the localVoiceState compatibility facade once canonical runtime-machine readers own state projection', async () => {
-        const source = await readFile('sources/voice/local/localVoiceEngine.ts', 'utf8');
-
-        expect(source).not.toContain('./localVoiceState');
-        await expect(access('sources/voice/local/localVoiceState.ts')).rejects.toBeDefined();
-    });
-
-    it('keeps the public local runtime facade directly bound to the engine owner', async () => {
-        await expect(
-            access('sources/voice/local/createLocalVoiceRuntimeControllerImpl.ts'),
-        ).rejects.toBeDefined();
     });
 });

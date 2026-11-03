@@ -10,6 +10,69 @@ const nativeTarget = { kind: 'agent' as const, identity: { pluginId: 'native.age
 const roleTarget = { kind: 'agent' as const, identity: { pluginId: 'role.agent', localId: 'agent' } };
 
 describe('canonical Action agent-start adapter', () => {
+  it.each([false, true])('inherits Session credentials and Launch Profile with only a model ref: role=%s', role => {
+    const connectedServices = { v: 2 as const, bindingsByServiceId: {
+      'acme.auth/subscription': { source: 'connected' as const, selection: 'profile' as const, profileId: 'parent-account' },
+    } };
+    const context: AgentStartContextV1 = {
+      caller: { kind: 'session', sessionId: 'lead', starterDepth: 0, turnDepth: 0 },
+      baseline: { machineId: 'machine', directory: '/repo', configuration: {
+        agentTarget: nativeTarget, profileId: 'parent-launch', connectedServices,
+      } },
+      roles: { approval_reviewer: { roleId: 'approval_reviewer', name: 'Reviewer', instructions: 'Review',
+        engine: { agentTargetKey: 'agent:native.agent/agent', modelId: 'review-model' },
+        runsAs: { kind: 'background_run', intent: 'task' }, workspaceWrites: 'deny', secondOpinion: 'off', enabled: true } },
+      ledSubtreeSessionIds: [], workDepthLimit: 4, callerPermissionCeiling: 'default',
+    };
+    const input = { backendTarget: nativeTarget, intent: role ? 'task' : 'delegate',
+      ...(role ? { roleId: 'approval_reviewer' } : { modelSelection: {
+        agentTargetKey: 'agent:native.agent/agent', providerConnectionId: null, modelId: 'explicit-model',
+      } }), instructions: 'Do the work', permissionMode: 'no_tools',
+      retentionPolicy: 'ephemeral', runClass: 'bounded', ioMode: 'request_response' };
+    const resolved = resolveActionAgentStartRequestsV1({ actionId: 'execution.run.start', input, context: {}, baseline: context.baseline });
+    if (!resolved.ok || !resolved.requests[0]) throw new Error('expected_start');
+    const admission = admitActionAgentStartV1({}, resolved.requests[0], context);
+    if (!admission.ok) throw new Error(admission.refusal.code);
+    const bound = stampAgentStartSelectionV1(resolved.effectiveInput, admission.stamped, 'execution_run', context);
+    expect(ExecutionRunStartRequestSchema.parse(bound)).toMatchObject({
+      connectedServices, launchProfileId: 'parent-launch', modelSelection: {
+        modelId: role ? 'review-model' : 'explicit-model', providerConnectionId: null,
+      },
+    });
+    const explicit = { ...input, launchProfileId: 'child-launch', connectedServices: null };
+    expect(stampAgentStartSelectionV1(explicit, admission.stamped, 'execution_run', context))
+      .toMatchObject({ launchProfileId: 'child-launch', connectedServices: null });
+    const otherAgent = stampAgentStartSelectionV1({ ...input, backendTarget: roleTarget },
+      { workDepth: 1 }, 'execution_run', context);
+    expect(otherAgent).not.toHaveProperty('connectedServices');
+    expect(otherAgent).not.toHaveProperty('launchProfileId');
+    const otherMachine = stampAgentStartSelectionV1({ ...input, machineId: 'other-machine' },
+      { workDepth: 1 }, 'execution_run', context);
+    expect(otherMachine).not.toHaveProperty('connectedServices');
+    expect(otherMachine).not.toHaveProperty('launchProfileId');
+    for (const explicitSource of [{ modelSelection: null }, { childSelection: 'agentDefault' },
+      { connectedServicesDefaultServiceIds: ['acme.auth/subscription'] }]) {
+      expect(stampAgentStartSelectionV1({ ...input, ...explicitSource }, { workDepth: 1 }, 'execution_run', context))
+        .not.toHaveProperty('connectedServices');
+    }
+  });
+
+  it('refuses inherited direct Team custody before it becomes an explicit child binding', () => {
+    const context: AgentStartContextV1 = {
+      caller: { kind: 'session', sessionId: 'lead', starterDepth: 0, turnDepth: 0 },
+      baseline: { machineId: 'machine', directory: '/repo', configuration: { agentTarget: nativeTarget,
+        connectedServices: { v: 2, bindingsByServiceId: { 'acme.auth/subscription': {
+          source: 'team_resource', resourceId: 'resource', deliveryMode: 'direct',
+          disclosedMember: { service: { pluginId: 'acme.auth', localId: 'subscription' }, accountId: 'member' },
+        } } },
+      } }, roles: {}, ledSubtreeSessionIds: [], workDepthLimit: 4, callerPermissionCeiling: 'default',
+    };
+    expect(() => stampAgentStartSelectionV1({ backendTarget: nativeTarget,
+      modelSelection: { agentTargetKey: 'agent:native.agent/agent', providerConnectionId: null, modelId: 'model' },
+    }, { workDepth: 1 }, 'execution_run', context))
+      .toThrow(expect.objectContaining({ code: 'execution_run_child_choice_required' }));
+  });
+
   it('keeps current-Session start authority narrower than a readable led Session', async () => {
     const agentStartContext: AgentStartContextV1 = {
       caller: { kind: 'session', sessionId: 'lead', starterDepth: 0, turnDepth: 0 },
@@ -216,7 +279,7 @@ describe('canonical Action agent-start adapter', () => {
       facts: { agentTarget: overrideEngine ? roleTarget : nativeTarget, profileId: 'portable-profile',
         modelSelection: { modelId: overrideEngine ? 'role-model' : 'native-model' } } }] });
     expect(result).toMatchObject({ ok: true, effectiveInput: { backendTarget: overrideEngine ? roleTarget : nativeTarget,
-      profileId: 'native-execution-profile', modelId: overrideEngine ? 'role-model' : 'native-model' } });
+      profileId: 'native-execution-profile', launchProfileId: 'portable-profile', modelId: overrideEngine ? 'role-model' : 'native-model' } });
   });
 
   it('supplies a missing native spawn target from the frozen selection', () => {

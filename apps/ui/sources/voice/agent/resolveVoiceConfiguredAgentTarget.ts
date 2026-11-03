@@ -57,32 +57,43 @@ export async function resolveVoiceConfiguredAgentTarget(params: Readonly<{
     if (knownTarget) return knownTarget;
 
     if (!scope || !lifetime || !areAccountSettingsScopesEqual(scope, lifetime.scope)) return unavailable();
-    const snapshot = getAcpCatalogSnapshot(scope);
-    if (snapshot?.catalog.status !== 'ready' || snapshot.stale) await refreshAcpCatalog(scope);
-    if (!lifetime.isCurrent()) return unavailable();
-    const externalIdentitySelection = identitySelection;
-    const projectionInputs = externalIdentitySelection
-        ? await loadDaemonMergedProjectionInputs({
+    const enabledAgentIds = getEnabledAgentIds({ backendEnabledByTargetKey });
+    let projectionInputs: Awaited<ReturnType<typeof loadDaemonMergedProjectionInputs>> = null;
+    const resolveFromCurrentCatalog = () => {
+        const snapshot = getAcpCatalogSnapshot(scope);
+        return projectVoiceConfiguredAgentTarget({
+            selection: params.selection,
+            entries: getResolvedBackendCatalogEntries({
+                enabledAgentIds,
+                // Retained/loading ACP rows cannot authorize a configured
+                // definition. Bundled and installed Agents have other owners.
+                acpCatalogSnapshot: snapshot && !snapshot.stale ? snapshot.catalog : undefined,
+                backendEnabledByTargetKey,
+                mergedProviderProjectionById: projectionInputs?.mergedProviderProjectionById ?? null,
+                mergedBackendProjectionById: projectionInputs?.mergedBackendProjectionById ?? null,
+                discoveredBackendIds: projectionInputs?.discoveredBackendIds,
+            }),
+            backendEnabledByTargetKey,
+            mergedProviderProjectionById: projectionInputs?.mergedProviderProjectionById,
+        })!;
+    };
+    // Resolve from the selected Agent's actual authority before demanding
+    // unrelated configured-ACP rows. End/Start must not turn an unavailable
+    // Account ACP row into removal of a still-present bundled Agent.
+    const currentTarget = resolveFromCurrentCatalog();
+    if (currentTarget.ok) return currentTarget;
+    if (identitySelection) {
+        projectionInputs = await loadDaemonMergedProjectionInputs({
             machineId: normalizeNonEmptyString(params.machineId),
             serverId: scope.serverId,
             signal: params.signal,
-        })
-        : null;
-    const catalog = getAcpCatalogSnapshot(scope)?.catalog;
-    if (!lifetime.isCurrent() || catalog?.status !== 'ready') return unavailable();
-    const entries = getResolvedBackendCatalogEntries({
-        enabledAgentIds: getEnabledAgentIds({ backendEnabledByTargetKey }),
-        acpCatalogSnapshot: catalog,
-        backendEnabledByTargetKey,
-        mergedProviderProjectionById: projectionInputs?.mergedProviderProjectionById ?? null,
-        mergedBackendProjectionById: projectionInputs?.mergedBackendProjectionById ?? null,
-        discoveredBackendIds: projectionInputs?.discoveredBackendIds ?? undefined,
-    });
-
-    return projectVoiceConfiguredAgentTarget({
-        selection: params.selection,
-        entries,
-        backendEnabledByTargetKey,
-        mergedProviderProjectionById: projectionInputs?.mergedProviderProjectionById,
-    })!;
+        });
+        if (!lifetime.isCurrent()) return unavailable();
+        const projectedTarget = resolveFromCurrentCatalog();
+        if (projectedTarget.ok) return projectedTarget;
+    }
+    const snapshot = getAcpCatalogSnapshot(scope);
+    if (snapshot?.catalog.status !== 'ready' || snapshot.stale) await refreshAcpCatalog(scope);
+    if (!lifetime.isCurrent()) return unavailable();
+    return resolveFromCurrentCatalog();
 }

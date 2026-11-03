@@ -139,10 +139,8 @@ import { computeAccountEncryptionMigrateKeyFingerprintV1 } from '@happier-dev/pr
 import { prepareAccountSettingsV2Content } from '@/settings/accountSettings/updateAccountSettingsV2WithRetry';
 import { encodeStoredCredentials } from '@/persistence';
 import { COMPOSER_SOURCE_REF_PRIVATE_META_FIELD_V1 } from '@happier-dev/protocol/plugins/ui/composerRef';
-import {
-    createResolvedContributionRegistry,
-    getResolvedContributionRegistry,
-} from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { getResolvedContributionRegistry } from '@/plugins/projection/registry/builtIn/snapshot';
 import type {
     ResolvedComposerAttachmentContribution,
     ResolvedContributionRegistry,
@@ -220,7 +218,6 @@ import { ConnectedServiceRefreshCoordinator } from '../connectedServices/refresh
 import { authorizeConnectedServiceRuntimeAuthFailureSource } from '../connectedServices/runtimeAuth/handleConnectedServiceRuntimeAuthFailureForSession';
 import { RuntimeAuthRecoveryScheduler } from '../connectedServices/runtimeAuth/RuntimeAuthRecoveryScheduler';
 import { ConnectedServiceTemporaryThrottleRetryScheduler } from '../connectedServices/runtimeAuth/temporaryThrottleRetryScheduler';
-import { computeConnectedServiceAccessTokenFingerprint } from '../connectedServices/refresh/credentialFreshness/tokenFingerprint';
 import { resolveQuotaProbeFreshProof } from '../connectedServices/quotas/proof/quotaProbeFreshProof';
 import { buildConnectedServiceAuthGroupCommittedGenerationFact } from '../connectedServices/sessionAuthSwitch/connectedServiceAuthSwitchOutcome';
 import {
@@ -13971,7 +13968,7 @@ describe('startDaemonSessionControlRuntime', () => {
             now: () => 2_000, randomBytes: (length) => new Uint8Array(length), discoveryEnabled: false, runtimeQuotaSnapshots: runtimeStore,
         });
         const bindings = { v: 2 as const, bindingsByServiceId: unbound ? {} : { [serviceId]: { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' } } };
-        const environment = unbound ? {} : { HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON: JSON.stringify([{ kind: 'profile', serviceId, profileId: 'work', credentialRevision }]) };
+        const environment: Record<string, string> = unbound ? {} : { HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON: JSON.stringify([{ kind: 'profile', serviceId, profileId: 'work', credentialRevision }]) };
         const runtime = await startDaemonSessionControlRuntime({ machineId: 'native-proof-machine', credentials, api: api as never,
             connectedServicesMaterializationBaseDir: '/tmp/native-proof', getConnectedServiceRefreshCoordinator: () => null,
             getConnectedServiceQuotasCoordinator: () => coordinator,
@@ -14018,9 +14015,11 @@ describe('startDaemonSessionControlRuntime', () => {
                     snapshot: { serviceId, activeAccountId: 'provider-user', ...(org ? { providerOrganizationId: org } : {}) },
                 }));
                 const snapshot = runtimeStore.getSnapshotEntry({ serviceId, profileId: 'work' })!.snapshot;
-                const identity = { serviceId, profileId: 'work', groupId: null, groupGeneration: null,
+                // The proof port is typed by the legacy service id; this fixture keeps its qualified key value.
+                const proofServiceId = serviceId as Parameters<typeof coordinator.resolveQuotaProbeFreshProof>[0]['serviceId'];
+                const identity = { serviceId: proofServiceId, profileId: 'work', groupId: null, groupGeneration: null,
                     providerAccountId: 'provider-user', materialFingerprint: computeConnectedServiceAccessTokenFingerprint('current-access') };
-                expect(coordinator.resolveQuotaProbeFreshProof({ serviceId, profileId: 'work',
+                expect(coordinator.resolveQuotaProbeFreshProof({ serviceId: proofServiceId, profileId: 'work',
                     expectedAppliedIdentity: identity, snapshotAppliedIdentity: identity, snapshot })).toEqual({ status: 'proof', proofKind: 'quota_probe_fresh' });
             } else expect(runtimeStore.getSnapshotEntry({ serviceId, profileId: 'work' })).toBeNull();
             expect(runtime.providerAccountUsageStore.resolveBySource(source) !== null).toBe(accepted && Boolean(org));
@@ -22193,7 +22192,7 @@ describe('startDaemonSessionControlRuntime', () => {
         expect(requestConnectedServiceSessionRestartSignalMock).not.toHaveBeenCalled();
     });
 
-    it('returns typed automatic auth-group apply failure after deferred fallback restart signals at turn boundary', async () => {
+    it.each([false, true])('returns typed automatic auth-group apply failure after deferred fallback restart (executable replaced: %s)', async executableReplaced => {
         createDaemonQualifiedConnectedAccountAuthGroupSwitchCoordinatorMock.mockClear();
         handleConnectedServiceRuntimeAuthFailureForSessionMock.mockClear();
         requestConnectedServiceSessionRestartSignalMock.mockClear();
@@ -22277,6 +22276,16 @@ describe('startDaemonSessionControlRuntime', () => {
                 sessionId?: string;
             }) => Promise<unknown>;
         };
+        const realSignal = await vi.importActual<typeof import('../connectedServices/sessionAuthSwitch/requestConnectedServiceSessionRestartSignal')>('../connectedServices/sessionAuthSwitch/requestConnectedServiceSessionRestartSignal');
+        const { adoptTrackedSessionRunnerIdentity } = await import('../sessions/sessionReportCorrelation');
+        const signals = executableReplaced ? vi.spyOn(process, 'kill').mockImplementation(() => true) : null;
+        if (executableReplaced) {
+            requestConnectedServiceSessionRestartSignalMock.mockImplementationOnce(async request => {
+                adoptTrackedSessionRunnerIdentity(tracked, { pid: 4343, processStartTimeMs: 23_456,
+                    processCommandHash: 'replacement-hash', processCommand: 'replacement-runner' });
+                return await realSignal.requestConnectedServiceSessionRestartSignal(request);
+            });
+        }
         const pendingRestart = coordinatorInput.applyGeneration?.({
             serviceId: CODEX_QUALIFIED_SERVICE,
             groupId: 'codex-main',
@@ -22292,11 +22301,15 @@ describe('startDaemonSessionControlRuntime', () => {
             sessionId: 'sess-runtime',
             event: 'assistant_message_end',
         });
-        await expect(pendingRestart).resolves.toEqual({
+        const result = await pendingRestart;
+        expect(signals?.mock.calls.filter(([, signal]) => signal !== 0) ?? []).toEqual([]);
+        signals?.mockRestore();
+        expect(result).toEqual({
             ok: false,
-            errorCode: 'generation_apply_not_confirmed',
-            serviceId: 'openai-codex',
-            diagnostics: { failurePhase: 'restart' },
+            errorCode: executableReplaced ? 'restart_failed' : 'generation_apply_not_confirmed',
+            serviceId: 'happier.agent.codex/openai-codex',
+            diagnostics: { failurePhase: 'restart', ...(executableReplaced
+                ? { restartRefusalReason: 'runner_identity_changed', retryable: false } : {}) },
         });
         expect(requestConnectedServiceSessionRestartSignalMock).toHaveBeenCalledOnce();
         expect(requestConnectedServiceSessionRestartSignalMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -22304,7 +22317,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 trigger: 'automatic_group_switch',
                 sessionId: 'sess-runtime',
                 agentId: 'codex',
-                serviceId: 'openai-codex',
+                serviceId: 'happier.agent.codex/openai-codex',
                 profileId: 'backup',
                 groupId: 'codex-main',
                 generation: 4,

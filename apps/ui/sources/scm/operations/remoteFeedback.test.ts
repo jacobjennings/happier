@@ -8,10 +8,6 @@ import {
 } from './remoteFeedback';
 
 describe('formatRemoteTargetForDisplay', () => {
-    it('formats remote with branch', () => {
-        expect(formatRemoteTargetForDisplay({ remote: 'origin', branch: 'main' }, 'Detached HEAD')).toBe('origin/main');
-    });
-
     it('falls back to detached label when branch is missing', () => {
         expect(formatRemoteTargetForDisplay({ remote: 'origin', branch: null }, 'Detached HEAD')).toBe('origin (Detached HEAD)');
     });
@@ -51,15 +47,18 @@ describe('buildRemoteOperationSuccessDetail', () => {
 });
 
 describe('buildNonFastForwardFetchPromptDialog', () => {
-    it('returns follow-up dialog copy for non-fast-forward push errors', () => {
+    it('names the rejected push target and offers Fetch or Not now', () => {
         const dialog = buildNonFastForwardFetchPromptDialog({
             target: { remote: 'origin', branch: 'main' },
             detachedHeadLabel: 'Detached HEAD',
         });
+        const detached = buildNonFastForwardFetchPromptDialog({
+            target: { remote: 'upstream', branch: null },
+            detachedHeadLabel: 'Detached HEAD',
+        });
 
-        expect(dialog.title).toBe('Remote has newer commits');
-        expect(dialog.body).toContain('Push to origin/main was rejected');
-        expect(dialog.confirmText).toBe('Fetch');
-        expect(dialog.cancelText).toBe('Not now');
+        expect(dialog.body).toContain('origin/main');
+        expect(detached.body).toContain('upstream (Detached HEAD)');
+        expect(dialog).toMatchObject({ confirmText: 'Fetch', cancelText: 'Not now' });
     });
 });

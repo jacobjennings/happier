@@ -130,7 +130,7 @@ export type AppShellPluginUiProjectionPublication = Readonly<{
     publishExecutionOrigin(pluginId: string, lifetime: ActiveServerAccountScopeLifetime | null, origin: PluginMachineExecutionOriginV1 | null,
         selectableOrigins: readonly PluginMachineExecutionOriginV1[], hasStoredTarget?: boolean): void;
     getSnapshot(): AppShellPluginUiProjectionSnapshot;
-    subscribe(listener: () => void): () => void;
+    subscribe(listener: () => void, scope?: 'committed'): () => void;
     dispose(): void;
 }>;
 
@@ -143,6 +143,8 @@ export function createAppShellPluginUiProjectionPublication(): AppShellPluginUiP
     let unionMembers = NO_MEMBERS;
     let currentnessReports: ReadonlyMap<string, AppShellAccountScopedPluginUiCurrentnessReport> = new Map();
     let originReports: ReadonlyMap<string, AppShellAccountScopedPluginExecutionOriginReport> = new Map();
+    let groupedOriginReports = originReports;
+    let selectableByMachine: ReadonlyMap<string, readonly PluginMachineExecutionOriginV1[]> = new Map();
     let selections: PluginUiProjectionUnionOriginSelections = new Map();
     let explicitSelections: PluginUiProjectionUnionOriginSelections = new Map();
     let installedInput: InstalledPlugins | undefined;
@@ -158,13 +160,26 @@ export function createAppShellPluginUiProjectionPublication(): AppShellPluginUiP
     let connectedAccounts = createConnectedAccountDescriptorProjectionPublication();
     let skills = createPluginSkillSourceIdentityPublication();
     const machineMerges = new Map<string, ReturnType<typeof createInstalledPluginUiProjectionPublication>>();
-    const listeners = new Set<() => void>();
-    const notify = () => { for (const listener of listeners) listener(); };
+    const listeners = new Map<() => void, 'committed' | undefined>();
+    const notify = (previous: AppShellPluginUiProjectionSnapshot) => {
+        // Committed readers consume declarations/candidates, not the raw
+        // Machine reports which Browser and Voice still observe through React.
+        const committedChanged = previous.accountLifetime !== snapshot.accountLifetime
+            || previous.activeServerId !== snapshot.activeServerId
+            || previous.pluginUiProjection !== snapshot.pluginUiProjection
+            || previous.candidateFactsByPluginId !== snapshot.candidateFactsByPluginId
+            || previous.projectionUnion.phase !== snapshot.projectionUnion.phase
+            || previous.projectionUnion.interactionEnabled !== snapshot.projectionUnion.interactionEnabled
+            || (previous.accountUiProjection === null) !== (snapshot.accountUiProjection === null);
+        for (const [listener, scope] of listeners) if (scope !== 'committed' || committedChanged) listener();
+    };
 
     function resetDerived() {
         currentnessReports = new Map();
         unionMembers = NO_MEMBERS;
         originReports = new Map();
+        groupedOriginReports = originReports;
+        selectableByMachine = new Map();
         selections = new Map();
         explicitSelections = new Map();
         installedInput = undefined;
@@ -251,7 +266,6 @@ export function createAppShellPluginUiProjectionPublication(): AppShellPluginUiP
             if (nextIds.length !== pluginIds.length || nextIds.some((id, index) => id !== pluginIds[index])) pluginIds = Object.freeze(nextIds);
             modelBasis = nextModelBasis;
         }
-        const selectableByMachine = new Map<string, PluginMachineExecutionOriginV1[]>();
         const admitted = new Set(pluginIds);
         if ([...originReports.keys()].some(id => !admitted.has(id))) {
             originReports = new Map([...originReports].filter(([id]) => admitted.has(id)));
@@ -262,14 +276,21 @@ export function createAppShellPluginUiProjectionPublication(): AppShellPluginUiP
                 explicitSelections = new Map([...explicitSelections].filter(([id]) => admitted.has(id)));
             }
         }
-        for (const [id, report] of originReports) {
-            if (!admitted.has(id) || report.accountLifetime !== accountLifetime || !isCurrent(report.accountLifetime)) continue;
-            for (const origin of report.selectableOrigins ?? []) {
-                const machineId = getPluginMachineExecutionOriginRef(origin).machineId;
-                const supplying = selectableByMachine.get(machineId) ?? [];
-                supplying.push(origin);
-                selectableByMachine.set(machineId, supplying);
+        // Machine presentation reports do not change the admitted origin facts.
+        // Publish their grouping only when its own source reports change.
+        if (groupedOriginReports !== originReports) {
+            const grouped = new Map<string, PluginMachineExecutionOriginV1[]>();
+            for (const [id, report] of originReports) {
+                if (!admitted.has(id) || report.accountLifetime !== accountLifetime || !isCurrent(report.accountLifetime)) continue;
+                for (const origin of report.selectableOrigins ?? []) {
+                    const machineId = getPluginMachineExecutionOriginRef(origin).machineId;
+                    const supplying = grouped.get(machineId) ?? [];
+                    supplying.push(origin);
+                    grouped.set(machineId, supplying);
+                }
             }
+            selectableByMachine = new Map([...grouped].map(([machineId, origins]) => [machineId, Object.freeze(origins)]));
+            groupedOriginReports = originReports;
         }
         const previousMembers = new Map(unionMembers.map(member => [member.machineId, member]));
         const nextMembers = targets.map(target => {
@@ -289,7 +310,7 @@ export function createAppShellPluginUiProjectionPublication(): AppShellPluginUiP
                 unavailableReasonCode: current?.unavailableReasonCode, interactionEnabled: current?.interactionEnabled ?? false,
             };
             const old = previousMembers.get(target.machineId);
-            return old && arePluginUiProjectionUnionMembersEquivalent([old], [member]) ? old : member;
+            return old && (shallow(old, member) || arePluginUiProjectionUnionMembersEquivalent([old], [member])) ? old : member;
         });
         for (const id of machineMerges.keys()) if (!eligible.has(id)) machineMerges.delete(id);
         const members = arePluginUiProjectionUnionMembersEquivalent(unionMembers, nextMembers) ? unionMembers : Object.freeze(nextMembers);
@@ -310,7 +331,8 @@ export function createAppShellPluginUiProjectionPublication(): AppShellPluginUiP
         for (const machineId of sources.selectableMachineIds) {
             const current = currentness.get(machineId);
             const projection = current?.connectedAccountProjection;
-            if (!projection || (projection.kind === 'ready' && current?.phase !== 'current')) {
+            // Descriptor success is independent of unrelated Machine UI establishment.
+            if (!projection || (projection.kind === 'ready' && current?.phase !== 'current' && current?.phase !== 'establishing')) {
                 descriptorInputs.push({ kind: 'loading' });
             } else if (projection.kind !== 'ready') {
                 descriptorInputs.push(projection);
@@ -335,7 +357,7 @@ export function createAppShellPluginUiProjectionPublication(): AppShellPluginUiP
             destinationSurfacePlacements, settingsPages, candidateFactsByPluginId, connectedAccountResolution });
         if ((Object.keys(next) as (keyof AppShellPluginUiProjectionSnapshot)[]).every(key => next[key] === previous[key])) return;
         snapshot = next;
-        notify();
+        notify(previous);
     }
 
     return {
@@ -347,10 +369,11 @@ export function createAppShellPluginUiProjectionPublication(): AppShellPluginUiP
                 resetDerived();
                 retirement = next.accountLifetime?.onRetire(() => {
                     if (sources?.accountLifetime !== next.accountLifetime) return;
+                    const previous = snapshot;
                     sources = null;
                     resetDerived();
                     // Account capture may retire an owner during another React render.
-                    queueMicrotask(notify);
+                    queueMicrotask(() => notify(previous));
                 });
             }
             sources = next;
@@ -390,7 +413,7 @@ export function createAppShellPluginUiProjectionPublication(): AppShellPluginUiP
             publishDerived();
         },
         getSnapshot: () => sources && isCurrent(sources.accountLifetime) ? snapshot : EMPTY_SNAPSHOT,
-        subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+        subscribe(listener: () => void, scope?: 'committed') { listeners.set(listener, scope); return () => { listeners.delete(listener); }; },
         dispose() { retirement?.dispose(); retirement = undefined; sources = null; resetDerived(); listeners.clear(); },
     };
 }

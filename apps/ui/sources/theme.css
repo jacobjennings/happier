@@ -38,13 +38,15 @@ html {
 /*
  * A long path, hash or identifier in rendered Markdown (the enriched renderer's HTML) has no break
  * opportunity, so it ran past the comment bubble or column it sat in. Text breaks inside the column;
- * code blocks and tables keep their own horizontal scroll.
+ * code blocks and tables keep their own horizontal scroll. Mathematics keeps its intrinsic widths for
+ * the same reason: emergency breaking shrinks the cells of an array until its numbers overlap, so a
+ * wide equation scrolls inside its own display block (owned by the renderer) instead.
  */
 [data-happier-enriched-markdown-profile] {
     overflow-wrap: anywhere;
 }
 
-[data-happier-enriched-markdown-profile] :is(pre, table) {
+[data-happier-enriched-markdown-profile] :is(pre, table, [role="math"], math) {
     overflow-wrap: normal;
 }
 
@@ -99,11 +101,21 @@ html:not([data-happier-input-modality="keyboard"]) :focus {
     margin: 0;
 }
 
+/* The placeholder stays inside the paragraph, so it ends where the field's reserved accessory padding begins. */
+[data-composer-editor] [data-empty="true"] {
+    position: relative;
+}
+
 [data-composer-editor] [data-empty="true"]::before {
     content: attr(data-placeholder);
     color: var(--happier-placeholder-color);
     pointer-events: none;
     position: absolute;
+    left: 0;
+    right: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
 }
 
 [data-composer-decoration="code"] {

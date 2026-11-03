@@ -21,16 +21,9 @@ export type UiSurfaceRendererFactories<TResult> = Readonly<{
  * prepare admitted factories; this kernel knows only the closed renderer mode
  * and owns no plugin, Session, Board, placement, or capability decision.
  */
-export function resolveUiSurfaceRenderer<TResult>(
-    kind: UiSurfaceRendererKind,
-    factories: UiSurfaceRendererFactories<TResult>,
-): TResult {
-    return factories[kind]();
-}
-
 export function UiSurfaceRendererHost(props: Readonly<{
     kind: UiSurfaceRendererKind;
     renderers: UiSurfaceRendererFactories<React.ReactNode>;
 }>): React.ReactNode {
-    return resolveUiSurfaceRenderer(props.kind, props.renderers);
+    return props.renderers[props.kind]();
 }

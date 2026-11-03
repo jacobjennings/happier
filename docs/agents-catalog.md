@@ -19,7 +19,56 @@ does not activate plugins, import app UI, or supply installed Agent metadata.
 Unknown ids return `null`; the shared `getNeutralAgentIdentityColor` supplies
 the existing neutral hue when a host has no admitted color.
 
+In 0.3 development source, `agents.backends.list` publishes each resolved
+selection as optional `agentTarget: AgentExecutionTargetV1`, retaining Custom
+ACP's `definitionId`. The SDK's `/agents` entrypoint exposes the same strict
+composable parser as `AgentExecutionTargetV1Schema`. Plugin `readSession`
+returns its admitted metadata target separately from catalog presentation;
+an unknown or unavailable target stays absent.
+
 ---
+
+## Session compaction capabilities and preferences (0.3 development)
+
+The Agent definition owns `capabilities.sessions.compaction`: `events: true`,
+optional `manual: true`, and optional `idle` support. Protocol's
+`AgentSessionCompactionCapability` is the shared descriptor; bundled manifests,
+Agents projections and the public runtime SDK consume that declaration. There
+is no separate SupportLevel grammar or bundled manifest capability literal.
+An opened runtime's published capability takes precedence over the catalog;
+omitted or null compaction in that publication means unsupported. Before open,
+the plugin's existing terminal-presentation selection can supply the selected
+mode's descriptor without the host interpreting its opaque runtime descriptor.
+
+Before a Session opens, the UI reads the configured runtime through the plugin's
+`sessionExtras` behavior declaration and the shared registry resolver. A declaration
+can omit `outputKey` when it selects a runtime without adding a spawn option;
+`booleanValues` maps boolean preferences to runtime kinds and `defaultValue`
+handles an absent preference. Claude maps `claudeUnifiedTerminalEnabled` to
+`unifiedTerminal` or `agentSdk` here, so native mode omits the host cache-window row.
+
+The host owns three deliberate per-Agent Account preferences through
+`agentPreferenceStorage`: `sessionIdleCompactionEnabledByTargetKey`,
+`sessionIdleCompactionMinContextTokensByTargetKey`, and
+`sessionIdleCompactionCacheWindowOverrideMsByTargetKey`. The same
+`resolveIdleCompactionPreference` resolves descriptor defaults and explicit
+values for UI and CLI. The CLI captures the resolved preference once when a
+Session starts and reuses it across native reopen. Preference changes apply to
+the next Session. Observed context size, cache clocks and scheduling state never
+belong in these maps.
+
+Native-mode launch receives only enabled and a declared, honored minimum;
+cache-window overrides apply to host scheduling. Host mode uses the default
+minimum only when no explicit minimum is stored. Clearing a target restores its
+descriptor default; **Automatic** clears only that target's cache window. The
+maximum window is the platform's single-timer maximum, 2,147,483,647 ms; invalid
+values are rejected rather than silently clamped. See the existing
+[settings Actions](actions.md#idle-compaction-preferences-03-development) and
+[runtime owner](runtime-core.md#idle-compaction-unreleased-03).
+
+This describes unreleased 0.3 development behavior, not loaded-runtime or release
+certification. Nondeclaring Agents and finite Execution Runs have no idle
+Session preference or scheduler.
 
 ## Key concepts (shared language)
 
@@ -535,6 +584,16 @@ operation lifetime, including preparation and cleanup; the transport budget boun
 This applies equally to installed Agent plugins. A lost reply retains `outcomeUnknown` rather
 than claiming that the native inventory failed or is empty.
 
+In 0.3 development source, Session-caller start admission owns omitted Launch
+Profile and Connected Account inheritance for Session spawn, attached Runs,
+Review/planning/delegation/Voice, Approval reviewer Roles and Workflow leaves.
+The same Agent on the same Machine inherits the authenticated baseline per field,
+even when a caller or Role chooses a model. Explicit source/native/default choices
+retain precedence; incompatible attached inheritance requires a typed child choice.
+This applies to installed Agents through their declared identity and compatibility
+adapters, without Agent-id branches. Each child rematerializes the selected account
+or pool under current credential admission. See [attached child selection](providers.md#attached-child-selection-03-development).
+
 In development source, native execution-run structured-output admission uses that same preflight owner
 with the Run's Connected Account selection and Saved Secret overlay. A retained
 Run probes under its requester Account and plugin occurrence, rather than the
@@ -954,15 +1013,29 @@ helper request/application evidence remains part of the composed Provider QA
 journey; launch-environment assertions alone do not prove that evidence.
 
 In development source, the existing native effective-model evidence feed also
-projects observed effort onto admitted model controls. SDK initialization
-acknowledges the explicit effort captured for that actual query launch;
-statusline and verified terminal-control results report native effective truth.
+projects observed effort onto admitted model controls. The SDK pairs captured
+launch effort with the first actual main-assistant model from that same query;
+initialization alone supplies no model or effort proof. An interrupted query
+retains its unpublished launch effort when reused. Statusline and verified
+terminal-control results report native effective truth.
 Pending configuration, deferred controls, and unverified delivery do not supply
 an observed effort. Context-only evidence and model catalog enrichment retain
 the last observation without advancing catalog freshness. When no effort has
 been observed, the existing catalog default remains a fallback, not proof of
 native application. Known aliases continue to use the plugin's canonical
 effort-support policy rather than catalog membership.
+
+In 0.3 development, Claude's native model source starts without an observed model.
+Opening a Session or accepting configuration does not turn the selected model into
+runtime evidence. SDK launch controls acknowledge the next-query boundary through
+the existing deferred configuration result; effective-model observations remain
+the only writer of the reported current model. Aggregate usage cannot select a
+pending requested model or let an older background query replace the current
+query's model. Actual launch-setting changes
+retire interrupted-query reuse through the SDK query lifecycle, including model,
+fallback, effort, effective Ultracode, workspace policy and skill-root changes.
+Unchanged settings and permission-only updates preserve eligible query reuse;
+background work retains its existing activity-owned cleanup.
 
 ##### Internal transcript event classification (development)
 
@@ -989,15 +1062,25 @@ attribute the row at this reader rather than adding consumer-specific classifier
 
 ##### Queued SDK result boundaries (development)
 
-The SDK runtime in `packages/plugins/claude/src/agent/runtime/remote/sdk/session.ts`
-retains the submitted turn when a result reports a positive integer
-`queued_turn_count`. Both successful and failed results can precede queued user
-work; their transcript and usage evidence remain visible, and earlier failures are
-logged without completing the submitted turn. The final result keeps its normal
-success or failure behavior, while explicit cancellation still ends the turn. This
-follows the optional result field introduced in the
-[Claude Agent SDK 0.3.243 contract](https://github.com/anthropics/claude-agent-sdk-typescript/blob/v0.3.243/CHANGELOG.md);
-results without the field retain the existing completion behavior.
+The native query's `sdk/promptSettlement.ts` owns submitted UUIDs, exact input
+acknowledgments and result attribution. A main-chain replayed user record or a
+result naming `user_message_uuid` / `user_message_uuids` establishes acceptance
+for that exact input; attributed results remain visible in the transcript.
+The SDK runtime consumes results in order and retains the foreground while any
+of its submitted inputs remain unanswered. When every submitted input has an
+attributed result, a positive `queued_turn_count` for other native sends no
+longer blocks completion. Successful and failed results use the same attribution;
+normal failure and explicit cancellation behavior remain unchanged.
+
+For native versions without result attribution, positive integer queue counts
+retain the existing behavior and zero or absent counts permit completion. With
+attribution, an empty queue can retire omitted older result IDs only after the
+latest submitted input itself has an attributed answer; this accommodates
+Claude's capped result UUID list without acknowledging omitted inputs. A write
+proven rejected before reaching the native process is removed from correlation.
+No idle event, elapsed time or automatic resend establishes delivery or completion.
+The optional queue field was introduced in the
+[Claude Agent SDK 0.3.243 contract](https://github.com/anthropics/claude-agent-sdk-typescript/blob/v0.3.243/CHANGELOG.md).
 
 ##### Permission hook input changes (development)
 
@@ -1453,12 +1536,44 @@ for connected-service profile/group enumeration. Custody stops at the home:
 intentional shared-state symlinks inside it remain supported. This does not add a
 second native-home catalog or require a daemon merely to discover local pets.
 
+Codex Browse in 0.3 development source selects rows through the existing host
+candidate index, then refreshes their native names through the optional selected-page
+hydration operation. One managed native proxy process carries a WebSocket connection
+to the already-running server's control socket and reads lean `thread/read` metadata
+for that page. The host protocol client owns binary framing before public output
+redaction. It does not start a server, list the whole native corpus or retain a
+second title cache. Native name
+precedence is shared with app-server discovery. Renames are read on the next page
+request even when rollout files and the index are unchanged. Missing native names
+preserve the current rollout presentation. Failed reads also preserve it and emit
+a content-free diagnostic; caller cancellation and deadlines still stop the operation. Preparation
+pages retain their supplied rollout titles and receive the same selected-page overlay.
+
+Shared Codex server endpoints retain their `unixWebSocket` descriptor and exact
+socket identity. The native client uses `exec.clients.connectJsonRpc` and the same
+host WebSocket JSON-RPC engine as daemon-proxy reads, without a parallel parser or
+another child process. Real connection error codes and syscalls remain available
+to the shared server's existing readiness retry owner. That server still owns
+startup, realtime facts and shutdown; closing a client closes only its connection.
+Shared-server platform admission remains unchanged.
+
 Claude External Sessions in 0.3 development source resolve the admitted config
 home's `projects` entry to its physical storage root, including connected-account
 shared-state links. Candidate discovery, exact identity, transcript paging and
 observation use that same root. Project-directory escapes and transcript-file
 symlinks remain refused; a completed turn cannot settle Activity when ordered
 source admission fails.
+
+Claude's metadata reader keeps title interpretation in the plugin and resumes
+from the host's persisted candidate-index checkpoints. Concurrent reads share
+only in-flight JSONL pages for the same path, file identity and byte offset;
+each invocation applies its own prompt interpretation and title precedence.
+Page entries disappear when the read settles, including failures. Root listing,
+exact-id lookup and metadata search use this reader. Caller cancellation,
+deadlines and reply budgets remain owned by their existing invocation paths;
+content search retains its separate query-driven transcript scan. Handoff's
+existing create-if-absent publication rejects differing target transcripts.
+These are 0.3 development-source behaviors.
 
 For a linked Claude store that matches the current configured store, takeover
 preserves the native config environment, including an unset `CLAUDE_CONFIG_DIR`.
@@ -1475,6 +1590,10 @@ through `resolveAcpLaunch`, install through its managed archive/npm owners, and
 succeed only after that same resolver reports a ready launch. Archive success
 also carries the checksum fact.
 Machine RPCs use `daemon.agents.install.start/read/cancel/list`:
+
+In 0.3 development, install admission accepts a catalog routing id or a qualified
+`pluginId/localId` identity. The registry resolves both to the same Agent before
+job creation, so both spellings share one active job and managed installation.
 
 - `start({agentId, definitionId?, expectedDefinitionVersion?, intent: 'install' | 'update' | 'uninstall', consent: {vendorRecipe: boolean}, force?})`
   returns `{ok: true, jobId}`. `force` requests reinstall rather than skip-if-installed.
@@ -1904,6 +2023,12 @@ cannot report a partial transcript as complete. Native cursors retain the admitt
 home and provider item identities. Connected-account native reads pin SQLite to
 the admitted home: the current state-sharing declaration shares rollout entries,
 not ambient user SQLite storage. This adds no SDK service or host-side Codex policy.
+
+Native `webSearch`, `imageView`, and `sleep` items project as `WebSearch`,
+`view_image`, and `sleep` tool rows through the Codex app-server projector shared
+by live Sessions, native children, and External Sessions history. Web searches
+publish on completion, when their query is known, and preserve structured results.
+The separate rollout projection still omits `web_search_call` response items.
 
 Three optional same-Agent siblings add narrower capabilities without creating another Agent or Provider catalog:
 

@@ -1,14 +1,12 @@
 /**
  * The press-commit contract, driven through the REAL `SelectionList`.
  *
- * What it pins: a tap performs the action of the row that was TAPPED, not of the
- * highlighted one. `CommandMenu.test.tsx` cannot pin this — it stubs
- * `@/components/ui/selectionList` down to plain `View`s, so no row in that suite is
- * pressable at all and its assertions stop at the item mapper. Here the real list
- * renders the real rows, so the whole activation path (row press →
+ * What it pins: the item → row/section mapping, both empty-state branches, and that a
+ * tap performs the action of the row that was TAPPED, not of the highlighted one. The
+ * real list renders the real rows, so the whole activation path (row press →
  * `activateSelectionListRow` → id→index resolution → `onSelect`) runs. Mutating
  * `CommandMenu`'s `onSelect(items[index], index)` to commit `selectedIndex` turns
- * both cases RED.
+ * the commit cases RED.
  *
  * `Platform.OS === 'ios'` so the row/section rendering path is covered on native
  * too.
@@ -22,7 +20,7 @@
  */
 import * as React from 'react';
 import { Text, View } from 'react-native';
-import { act } from 'react-test-renderer';
+import { act, type ReactTestInstance } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 
@@ -71,6 +69,40 @@ function defaultProps(overrides: Partial<CommandMenuProps> = {}): CommandMenuPro
     };
 }
 
+function textUnder(node: ReactTestInstance | null | undefined, text: string): boolean {
+    return (node?.findAll((child) => child.children.includes(text)).length ?? 0) > 0;
+}
+
+describe('CommandMenu (real list)', () => {
+    it('maps each item to its row (label and description) under its group title', async () => {
+        // An empty label is supplied so the empty branch could render: rows must win while items exist.
+        const screen = await renderScreen(<CommandMenu {...defaultProps({ emptyStateLabel: 'No commands found' })} />);
+        const list = screen.findByTestId('cmd-menu:list');
+        for (const title of ['Format', 'Lists']) expect(textUnder(list, title)).toBe(true);
+        const heading1 = screen.findByTestId('cmd-menu:row:heading1');
+        expect(textUnder(heading1, 'Heading 1')).toBe(true);
+        expect(textUnder(heading1, 'Large heading')).toBe(true);
+        expect(textUnder(screen.findByTestId('cmd-menu:row:heading2'), 'Medium heading')).toBe(true);
+        expect(textUnder(screen.findByTestId('cmd-menu:row:bullet'), 'Bullet list')).toBe(true);
+        expect(textUnder(screen.findByTestId('cmd-menu:row:code'), 'Code block')).toBe(true);
+        expect(screen.findAllByTestId('cmd-menu:empty')).toHaveLength(0);
+    });
+
+    it('shows the caller empty label when there are no items', async () => {
+        const screen = await renderScreen(
+            <CommandMenu {...defaultProps({ items: [], emptyStateLabel: 'No commands found' })} />,
+        );
+        expect(textUnder(screen.findByTestId('cmd-menu:empty'), 'No commands found')).toBe(true);
+    });
+
+    it('hands the command menu default empty wording to the list instead of the list fallback', async () => {
+        const screen = await renderScreen(<CommandMenu {...defaultProps({ items: [] })} />);
+        const text = screen.getTextContent();
+        expect(text).toContain('commandMenu.empty');
+        expect(text).not.toContain('selectionList.emptyMatch');
+    });
+});
+
 describe('CommandMenu (native tap commit)', () => {
     it('renders an empty group invitation with the list while keeping keyboard selection on an option', async () => {
         const onSelect = vi.fn();
@@ -116,21 +148,6 @@ describe('CommandMenu (native tap commit)', () => {
         expect(onSelect).toHaveBeenCalledWith(
             expect.objectContaining({ id: 'bullet', label: 'Bullet list' }),
             2,
-        );
-    });
-
-    it('commits a row that carries no group section header', async () => {
-        const onSelect = vi.fn();
-        const screen = await renderScreen(
-            <CommandMenu {...defaultProps({ onSelect, selectedIndex: 1 })} />,
-        );
-
-        screen.pressByTestId('cmd-menu:list:command-menu-root:option:code');
-
-        expect(onSelect).toHaveBeenCalledTimes(1);
-        expect(onSelect).toHaveBeenCalledWith(
-            expect.objectContaining({ id: 'code', label: 'Code block' }),
-            3,
         );
     });
 });

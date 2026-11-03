@@ -2,12 +2,13 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { renderSystemdServiceUnit } from '@happier-dev/cli-common/service';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { reloadConfiguration } from '@/configuration';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
+import { handleServerCommand } from './server';
 
 const envKeys = [
     'HAPPIER_HOME_DIR',
@@ -51,8 +52,6 @@ describe('happier server add', () => {
             delete process.env.HAPPIER_WEBAPP_URL;
             reloadConfiguration();
 
-            vi.resetModules();
-            const { handleServerCommand } = await import('./server');
             await handleServerCommand([
                 'add',
                 '--name',
@@ -89,8 +88,6 @@ describe('happier server add', () => {
             delete process.env.HAPPIER_WEBAPP_URL;
             reloadConfiguration();
 
-            vi.resetModules();
-            const { handleServerCommand } = await import('./server');
             await handleServerCommand([
                 'add',
                 '--name',
@@ -132,8 +129,6 @@ describe('happier server add', () => {
             writeInstalledDefaultFollowingServiceFixture(home, happierHomeDir);
             reloadConfiguration();
 
-            vi.resetModules();
-            const { handleServerCommand } = await import('./server');
             await handleServerCommand([
                 'add',
                 '--name',

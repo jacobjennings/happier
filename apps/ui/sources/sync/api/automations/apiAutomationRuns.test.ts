@@ -124,7 +124,7 @@ describe('apiAutomationRuns', () => {
         });
         expect(result.runs[0]).toMatchObject({ state: 'failed', producedSessionId: null });
         expect(request).toHaveBeenCalledExactlyOnceWith('/v3/automations/runs?limit=25&cursor=cursor&attention=required',
-            expect.objectContaining({ signal: controller.signal }), { includeAuth: false });
+            expect.objectContaining({ signal: controller.signal }), { includeAuth: false, recoveryRead: 'unbounded' });
     });
 
     it('reads Event run summaries only through the current owner', async () => {

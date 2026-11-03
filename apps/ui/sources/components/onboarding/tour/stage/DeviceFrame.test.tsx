@@ -162,7 +162,6 @@ describe('DeviceFrame', () => {
         // real app uses titleBarStyle Overlay + hiddenTitle. Only decorative
         // traffic lights survive, positioned as an absolute top-left overlay in
         // the inset the OS overlay chrome would occupy.
-        expect(screen.findByTestId('demo-frame-window-title')).toBeNull();
         expect(screen.findByTestId('demo-frame-traffic-overlay')).not.toBeNull();
         expect(screen.findByTestId('demo-frame-traffic-red')).not.toBeNull();
         expect(screen.findByTestId('demo-frame-traffic-yellow')).not.toBeNull();
@@ -200,7 +199,6 @@ describe('DeviceFrame', () => {
         expect(screen.findByTestId('demo-frame-phone-notch')).not.toBeNull();
         expect(screen.findByTestId('demo-frame-phone-button-left')).not.toBeNull();
         expect(screen.findByTestId('demo-frame-phone-button-right')).not.toBeNull();
-        expect(screen.findByTestId('demo-frame-window-chrome')).toBeNull();
         expect(flattenStyle(screen.findByTestId('demo-frame-phone-rail')?.props.style)).toMatchObject({
             borderRadius: stageVisualTokens.phoneFrame.outerRadius,
             backgroundColor: stageVisualTokens.phoneFrame.bezelColor,

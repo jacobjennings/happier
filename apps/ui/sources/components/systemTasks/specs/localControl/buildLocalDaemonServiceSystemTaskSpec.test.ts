@@ -78,31 +78,21 @@ describe('buildLocalDaemonServiceSystemTaskSpec', () => {
         expect(params.channel).toBe('dev');
     });
 
-    it('builds daemon service start tasks for the local machine', () => {
-        expect(buildLocalDaemonServiceSystemTaskSpec('daemon.service.start.v1')).toEqual({
-            protocolVersion: 1,
-            kind: 'daemon.service.start.v1',
-            params: {
-                channel: 'stable',
-                target: { kind: 'local' },
-                surface: 'desktop.ui',
-                mode: 'user',
-            },
-        });
-    });
-
-    it('builds daemon service stop tasks for the local machine', () => {
-        expect(buildLocalDaemonServiceSystemTaskSpec('daemon.service.stop.v1')).toEqual({
-            protocolVersion: 1,
-            kind: 'daemon.service.stop.v1',
-            params: {
-                channel: 'stable',
-                target: { kind: 'local' },
-                surface: 'desktop.ui',
-                mode: 'user',
-            },
-        });
-    });
+    it.each(['daemon.service.start.v1', 'daemon.service.stop.v1', 'daemon.service.restart.v1'] as const)(
+        'builds %s tasks for the local machine',
+        (kind) => {
+            expect(buildLocalDaemonServiceSystemTaskSpec(kind)).toEqual({
+                protocolVersion: 1,
+                kind,
+                params: {
+                    channel: 'stable',
+                    target: { kind: 'local' },
+                    surface: 'desktop.ui',
+                    mode: 'user',
+                },
+            });
+        },
+    );
 
     it('builds the PATH exposure tasks on the same local params', () => {
         for (const kind of ['cli.pathExposure.ensure.v1', 'cli.pathExposure.remove.v1'] as const) {
@@ -117,18 +107,5 @@ describe('buildLocalDaemonServiceSystemTaskSpec', () => {
                 },
             });
         }
-    });
-
-    it('builds daemon service restart tasks for the local machine', () => {
-        expect(buildLocalDaemonServiceSystemTaskSpec('daemon.service.restart.v1')).toEqual({
-            protocolVersion: 1,
-            kind: 'daemon.service.restart.v1',
-            params: {
-                channel: 'stable',
-                target: { kind: 'local' },
-                surface: 'desktop.ui',
-                mode: 'user',
-            },
-        });
     });
 });

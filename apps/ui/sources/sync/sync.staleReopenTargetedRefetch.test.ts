@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildSessionMessageObservationFactsV1 } from '@happier-dev/protocol';
 
 // C6/D2a (stale-reopen targeted refetch): when a session becomes visible with stale-message
 // markers (rows edited while hidden), onSessionVisible must refetch only the stale region and
@@ -308,38 +309,6 @@ describe('sync stale-reopen targeted refetch (C6/D2a)', () => {
     });
 
     afterEach(() => vi.unstubAllGlobals());
-
-    it('preserves loaded older history when reopening a session with a single stale row', async () => {
-        const { sync } = await seedLoadedHistorySession();
-        const syncForTest = sync as unknown as SyncStaleReopenTestAccess;
-
-        const before = storage.getState().sessionMessages[SESSION_ID];
-        const historyCountBefore = before?.messageIdsOldestFirst.length ?? 0;
-        expect(historyCountBefore).toBe(20);
-
-        // One row (seq 15) was edited while the session was hidden.
-        syncForTest.markSessionTranscriptStale(SESSION_ID, {
-            updateType: 'message-updated',
-            seq: 15,
-            messageId: 'mm15',
-        });
-
-        sync.onSessionVisible(SESSION_ID);
-        await sync.refreshSessionMessages(SESSION_ID);
-        await expect.poll(() => messagesRequestPaths().some((path) => path.includes('afterSeq=14'))).toBe(true);
-        await expect.poll(() => storage.getState().isSessionCatchingUpNewer(SESSION_ID)).toBe(false);
-
-        const after = storage.getState().sessionMessages[SESSION_ID];
-        // The transcript is NOT destructively wiped: it stays loaded and keeps its full history.
-        expect(after?.isLoaded).toBe(true);
-        expect(after?.messageIdsOldestFirst.length).toBe(historyCountBefore);
-
-        // The refetch is scoped to the stale region (newer-from just below the stale seq),
-        // never a full-transcript snapshot reset.
-        const paths = messagesRequestPaths();
-        expect(paths.length).toBeGreaterThanOrEqual(1);
-        expect(paths.some((path) => path.includes('afterSeq=14'))).toBe(true);
-    });
 
     it('keeps stale markers retryable when the targeted refetch fails transiently', async () => {
         const { sync } = await seedLoadedHistorySession();
@@ -683,6 +652,69 @@ describe('sync stale-reopen targeted refetch (C6/D2a)', () => {
         }
     });
 
+    it('marks a hidden secondary-Home materialized fixed-seq hint stale through the shared owner', async () => {
+        const { getActiveServerSnapshot } = await import('./domains/server/serverRuntime');
+        const active = getActiveServerSnapshot();
+        const home = 'secondary-home';
+        storage.getState().activateProfileScope({ serverId: active.serverId, accountId: 'account-a' });
+        const { sync } = await seedLoadedHistorySession();
+        const syncForTest = sync as unknown as SyncStaleReopenTestAccess;
+        storage.getState().applySessions([{ ...createSession(SESSION_ID, 20), serverId: home }]);
+        try {
+            await sync.consumeSessionRealtimeUpdateForHome({ serverId: home,
+                credentials: { token: 'hdr.eyJzdWIiOiJhY2NvdW50LWEifQ.sig' }, encryption: null, isCurrent: () => true,
+                update: { id: 'secondary-hint', seq: 40, createdAt: 40,
+                    body: { t: 'message-updated', delivery: 'hint', sid: SESSION_ID,
+                        message: buildSessionMessageObservationFactsV1(plainTranscriptApiMessage('mm15', 15, 'opaque', 40)) } },
+            });
+            expect(readStaleTranscriptMessageIds(syncForTest.deferredTranscriptState, SESSION_ID)).toContain('mm15');
+            expect(syncForTest.sessionMaterializedMaxSeqById[SESSION_ID]).toBe(20);
+            expect(readStoredTranscriptText('mm15')).toBe('mm15');
+        } finally {
+            markSessionSurfaceHidden(SESSION_ID, home);
+            sync.resetMessageTransport();
+            sync.disconnectServer();
+        }
+    });
+
+    it('repairs a late bodyless edit on an already live transcript without reopening or clearing older pages', async () => {
+        const { getActiveServerSnapshot } = await import('./domains/server/serverRuntime');
+        const appliedServer = getActiveServerSnapshot();
+        storage.getState().activateProfileScope({ serverId: appliedServer.serverId, accountId: 'account-a' });
+        const { sync } = await seedLoadedHistorySession();
+        const syncForTest = sync as unknown as SyncStaleReopenTestAccess & {
+            appliedServerTarget: typeof appliedServer;
+            serverID: string;
+            handleUpdate: (update: import('./api/types/apiTypes').ApiUpdateContainer) => Promise<void>;
+        };
+        syncForTest.appliedServerTarget = appliedServer;
+        syncForTest.serverID = 'account-a';
+        storage.getState().applySessions([{ ...createSession(SESSION_ID, 20), serverId: appliedServer.serverId }]);
+        const oldest = readStoredSessionMessages(storage.getState(), SESSION_ID)[0];
+        requestMock.mockImplementation((path: string) => Promise.resolve(
+            String(path).includes('afterSeq=14') ? new Response(JSON.stringify({
+                messages: [plainTranscriptApiMessage('mm15', 15, 'late hint repaired', 40)], nextAfterSeq: null,
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } }) : emptyMessagesResponse(),
+        ));
+        try {
+            markSessionSurfaceVisible(SESSION_ID, appliedServer.serverId);
+            sync.onSessionVisible(SESSION_ID);
+            await sync.refreshSessionMessages(SESSION_ID);
+            await syncForTest.handleUpdate({
+                id: 'late-hint', seq: 40, createdAt: 40,
+                body: { t: 'message-updated', delivery: 'hint', sid: SESSION_ID,
+                    message: buildSessionMessageObservationFactsV1(plainTranscriptApiMessage('mm15', 15, 'opaque', 40)) },
+            });
+            await expect.poll(() => readStoredTranscriptText('mm15')).toBe('late hint repaired');
+            expect(readStoredSessionMessages(storage.getState(), SESSION_ID)).toHaveLength(20);
+            expect(readStoredSessionMessages(storage.getState(), SESSION_ID)).toContain(oldest);
+        } finally {
+            markSessionSurfaceHidden(SESSION_ID, appliedServer.serverId);
+            sync.resetMessageTransport();
+            sync.disconnectServer();
+        }
+    });
+
     it('repairs a second hidden edit received while an older same-row repair is in flight', async () => {
         const { getActiveServerSnapshot } = await import('./domains/server/serverRuntime');
         const appliedServer = getActiveServerSnapshot();
@@ -701,7 +733,7 @@ describe('sync stale-reopen targeted refetch (C6/D2a)', () => {
         const deliverHiddenEdit = async (updatedAt: number, text: string) => {
             await syncForTest.handleUpdate({
                 id: `edit-${updatedAt}`, seq: updatedAt, createdAt: updatedAt,
-                body: { t: 'message-updated', sid: SESSION_ID, message: plainTranscriptApiMessage('mm15', 15, text, updatedAt) },
+                body: { t: 'message-updated', delivery: 'full' as const, sid: SESSION_ID, message: plainTranscriptApiMessage('mm15', 15, text, updatedAt) },
             });
         };
         let releaseOldRepair: (response: Response) => void = () => { throw new Error('Repair request was not issued'); };

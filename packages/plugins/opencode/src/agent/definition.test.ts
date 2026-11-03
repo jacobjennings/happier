@@ -4,19 +4,14 @@ import { AGENT_DEFINITION } from './definition.js';
 import { PLUGIN_MANIFEST } from '../manifest.js';
 
 describe('OpenCode AGENT_DEFINITION', () => {
-  it('publishes credential-kind eligibility through the public connected-account declarations', () => {
-    expect(PLUGIN_MANIFEST.contributes.agents[0]?.connectedAccounts).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        service: { pluginId: 'happier.agent.claude', localId: 'claude-subscription' },
-        credentialKinds: ['oauth', 'token'],
-      }),
-      expect.objectContaining({
-        service: { pluginId: 'happier.agent.claude', localId: 'anthropic' },
-        credentialKinds: ['token'],
-      }),
-    ]));
+  it('projects opt-in host compaction for server while leaving ACP unsupported', () => {
+    expect(AGENT_DEFINITION.core.sessionCapabilities).toMatchObject({ compaction: {
+      events: true, manual: true, idle: { mode: 'host', defaultEnabled: false, defaultMinContextTokens: 100000 },
+    } });
+    expect(PLUGIN_MANIFEST.contributes.agents[0]?.capabilities.sessions?.compaction)
+      .toEqual(AGENT_DEFINITION.core.sessionCapabilities.compaction);
+    expect(AGENT_DEFINITION.core.runtimeKinds.byKind.acp.overrides.sessionCapabilities.compaction).toBeNull();
   });
-
   it('publishes the recovered OpenCode runtime capabilities from the plugin-owned definition', () => {
     expect(AGENT_DEFINITION).toMatchObject({
       id: 'opencode',

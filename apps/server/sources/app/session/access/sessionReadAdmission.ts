@@ -2,8 +2,9 @@ import type { Tx } from "@/storage/inTx";
 import { buildSessionAccessWhere } from "./sessionAccessWhere";
 import type { SessionAccessAuthentication } from "./sessionAccessAuthentication";
 import { createSessionDataKeyEnvelopeViewerSelect, projectViewerSessionDataKey, type SessionDataKeyEnvelopeViewerRow } from "../encryption/sessionDataKeyEnvelopePersistence";
-import { assertSessionOwnerMetadataCurrentness, deriveSessionMetadataOwnerAccountMode, sessionMetadataOwnerAccountCurrentnessSelect } from "../metadata/sessionMetadataRecipientProjection";
+import { assertSessionOwnerMetadataCurrentness, deriveSessionMetadataOwnerAccountMode, projectSessionDisplayForRecipient, sessionMetadataOwnerAccountCurrentnessSelect } from "../metadata/sessionMetadataRecipientProjection";
 import { buildSessionAccessProjectionSelect, projectSessionEffectiveAccessV1, resolveSessionAccessForOperation, type SessionAccessOperationDecision } from "./sessionAccess";
+import type { SessionDisplayProjectionV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import { projectSessionLegacyShare } from "../listing/rows";
 
 /** Filter a captured projection without re-reading or broadening its content corpus. */
@@ -28,7 +29,8 @@ export async function readCurrentSessionIdsInTx(tx: Tx, input: Readonly<{
 }
 
 type CapturedSessionReadRow = Readonly<{ id: string; encryptionMode?: string;
-    metadataLayoutVersion?: number | null; ownerMetadata?: unknown; effectiveAccess?: unknown;
+    metadataLayoutVersion?: number | null; metadata?: unknown; ownerMetadata?: unknown; effectiveAccess?: unknown;
+    metadataVersion?: number; displayProjectionV1?: string | SessionDisplayProjectionV1 | null;
     dataEncryptionKey?: string | null; dataKeyEnvelopes?: SessionDataKeyEnvelopeViewerRow["dataKeyEnvelopes"] }>;
 
 export type SessionReadAdmission<T> =
@@ -41,9 +43,10 @@ export async function readmitSessionRowsWithAdmissionInTx<T extends CapturedSess
 ): Promise<ReadonlyMap<string, SessionReadAdmission<T>>> {
     const result = new Map<string, SessionReadAdmission<T>>();
     if (captured.length === 0) return result;
+    const includesDocuments = captured.some(row => 'metadata' in row || 'ownerMetadata' in row);
     const accessSelect = buildSessionAccessProjectionSelect(input.accountId);
     const current = await tx.session.findMany({ where: { id: { in: captured.map(row => row.id) } },
-        select: { metadataLayoutVersion: true, ownerMetadata: true,
+        select: { metadataLayoutVersion: true, ownerMetadata: includesDocuments,
             ...accessSelect,
             account: { select: { ...accessSelect.account.select, ...sessionMetadataOwnerAccountCurrentnessSelect } },
             ...createSessionDataKeyEnvelopeViewerSelect({ viewerAccountId: input.accountId }) } });
@@ -76,7 +79,11 @@ export async function readmitSessionRowsWithAdmissionInTx<T extends CapturedSess
             result.set(row.id, { status: "unavailable" });
             continue;
         }
-        if (row.metadataLayoutVersion === 1) {
+        if (row.metadataLayoutVersion !== undefined && row.metadataLayoutVersion !== fresh.metadataLayoutVersion) {
+            result.set(row.id, { status: 'unavailable' });
+            continue;
+        }
+        if (includesDocuments && row.metadataLayoutVersion === 1) {
             const capturedOwnerMetadata = row.ownerMetadata === undefined ? fresh.ownerMetadata
                 : row.ownerMetadata;
             assertSessionOwnerMetadataCurrentness({ metadataLayoutVersion: row.metadataLayoutVersion,
@@ -90,12 +97,29 @@ export async function readmitSessionRowsWithAdmissionInTx<T extends CapturedSess
             result.set(row.id, { status: "unavailable" });
             continue;
         }
+        // Captured display content obeys the same fresh Account mode as
+        // full documents. Withdraw an incompatible owner leaf without
+        // refreshing the captured tuple or selecting another document.
+        const displayProjectionV1 = row.displayProjectionV1 !== undefined
+            && row.metadataVersion !== undefined && row.encryptionMode !== undefined
+            ? projectSessionDisplayForRecipient({
+                session: { ...row, metadataVersion: row.metadataVersion,
+                    encryptionMode: row.encryptionMode, accountId: fresh.accountId },
+                recipient: fresh.accountId === input.accountId && decision.access.level === 'owner'
+                    && !input.authentication.sessionRuntimePrincipal
+                    ? { type: 'owner', accountId: input.accountId, accountMode: ownerModes.get(fresh.accountId)! }
+                    : { type: 'shared', accountId: input.accountId, ownerAccountMode: ownerModes.get(fresh.accountId) },
+            }) : undefined;
+        const readmittedRow = row.displayProjectionV1 == null ? row : { ...row,
+            displayProjectionV1: typeof row.displayProjectionV1 === 'string'
+                ? displayProjectionV1 ? JSON.stringify(displayProjectionV1) : null
+                : displayProjectionV1 };
         if (row.effectiveAccess !== undefined) {
             const share = projectSessionLegacyShare({ receivesOwnerMetadata: fresh.accountId === input.accountId
                 && decision.access.level === "owner", share: fresh.shares[0] });
-            result.set(row.id, { status: "allowed", row: { ...row, share: share.share,
+            result.set(row.id, { status: "allowed", row: { ...readmittedRow, share: share.share,
                 effectiveAccess: projectSessionEffectiveAccessV1(decision.access) } });
-        } else result.set(row.id, { status: "allowed", row });
+        } else result.set(row.id, { status: "allowed", row: readmittedRow });
     }
     return result;
 }

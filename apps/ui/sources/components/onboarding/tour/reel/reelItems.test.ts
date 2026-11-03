@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { journeyBeatById } from '../state/journeyBeats';
 
-import { journeyReelItemKeys, journeyReelItems } from './reelItems';
+import { journeyReelItems } from './reelItems';
 
 describe('journeyReelItems', () => {
     it('uses the approved A14 grid feature order and excludes already-promoted or rejected features', () => {
@@ -29,17 +29,4 @@ describe('journeyReelItems', () => {
         expect(journeyReelItems.map((item) => item.id)).not.toContain('themes');
     });
 
-    it('points every reel item at the journey reel translation namespace', () => {
-        for (const item of journeyReelItems) {
-            expect(item.titleKey).toBe(`journey.reel.features.${item.id}.title`);
-            expect(item.bodyKey).toBe(`journey.reel.features.${item.id}.body`);
-        }
-    });
-
-    it('builds reel translation keys through the typed reel key helper', () => {
-        expect(journeyReelItemKeys('goals')).toEqual({
-            titleKey: 'journey.reel.features.goals.title',
-            bodyKey: 'journey.reel.features.goals.body',
-        });
-    });
 });

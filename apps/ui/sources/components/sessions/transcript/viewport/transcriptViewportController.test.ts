@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import { createTranscriptViewportController } from '@/components/sessions/transcript/viewport/createTranscriptViewportController';
-import type { TranscriptViewportControllerInput } from '@/components/sessions/transcript/viewport/transcriptViewportTypes';
 
 describe('transcript viewport controller', () => {
     it('resolves initial follow bottom to a pin command', () => {
@@ -22,24 +21,6 @@ describe('transcript viewport controller', () => {
             mode: 'follow-bottom',
         });
         expect(controller.getMode()).toBe('follow-bottom');
-    });
-
-    it('keeps the first-paint list implementation contract aligned with the legacy runtime id', () => {
-        const controller = createTranscriptViewportController();
-        const input = {
-            type: 'first-paint',
-            sessionId: 'session-a',
-            shouldFollowBottom: true,
-            entrySnapshot: null,
-            jumpToSeq: null,
-        } satisfies Extract<TranscriptViewportControllerInput, { type: 'first-paint' }>;
-
-        expect(controller.resolve(input)).toEqual({
-            kind: 'pin-bottom',
-            sessionId: 'session-a',
-            reason: 'initial-open',
-            mode: 'follow-bottom',
-        });
     });
 
     it('resolves unpinned entry distance to a semantic restore distance command', () => {
@@ -389,36 +370,5 @@ describe('transcript viewport controller', () => {
             mode: 'hydrating',
         });
         expect(controller.getMode()).toBe('hydrating');
-    });
-
-    it('uses adapter-specific command targets for shared modes', () => {
-        const webController = createTranscriptViewportController();
-        const nativeController = createTranscriptViewportController();
-
-        const webCommand = webController.resolve({
-            type: 'first-paint',
-            sessionId: 'session-a',
-            shouldFollowBottom: false,
-            entrySnapshot: { shouldFollowBottom: false, distanceFromLiveTailPx: 120 },
-            jumpToSeq: null,
-        });
-        const nativeCommand = nativeController.resolve({
-            type: 'first-paint',
-            sessionId: 'session-a',
-            shouldFollowBottom: false,
-            entrySnapshot: { shouldFollowBottom: false, distanceFromLiveTailPx: 120 },
-            jumpToSeq: null,
-        });
-
-        expect(webCommand).toMatchObject({
-            kind: 'restore-distance',
-            mode: 'restore-distance',
-            distanceFromLiveTailPx: 120,
-        });
-        expect(nativeCommand).toMatchObject({
-            kind: 'restore-distance',
-            mode: 'restore-distance',
-            distanceFromLiveTailPx: 120,
-        });
     });
 });

@@ -168,6 +168,10 @@ export type VoiceSettingsPagesCopy = Readonly<{
       itMayReadOnlyDescription: string;
       itMayAsk: string;
       itMayAskDescription: string;
+      approvalsTitle: string;
+      approvalsDescription: string;
+      canApproveRequestsTitle: string;
+      canApproveRequestsDescription: string;
       itMaySafe: string;
       itMaySafeDescription: string;
       itMayAnything: string;
@@ -330,7 +334,7 @@ export const en: VoiceSettingsPagesCopy = {
       toolsTitle: 'Tool names',
       toolsDescription: 'Like “Edited file”. Arguments and file paths are never shared.',
       permissionsTitle: 'Permission requests',
-      permissionsDescription: 'So it can tell you what needs you. You still approve with a tap.',
+      permissionsDescription: "So it can read requests aloud and help you answer them.",
       devicesTitle: 'Your machines and devices',
       devicesDescription: 'Names and online state, to start sessions where you ask.',
       liveTitle: 'While you talk',
@@ -415,7 +419,11 @@ export const en: VoiceSettingsPagesCopy = {
       itMayReadOnly: 'Read only',
       itMayReadOnlyDescription: 'It reads your sessions and files and changes nothing.',
       itMayAsk: 'Ask first',
-      itMayAskDescription: 'Every change asks you first. A spoken “yes” never approves; you tap.',
+      itMayAskDescription: "Every change asks you first.",
+      approvalsTitle: "Approvals",
+      approvalsDescription: "When a session asks for permission while you talk.",
+      canApproveRequestsTitle: "Voice agent can approve requests",
+      canApproveRequestsDescription: "It reads each request out and answers it the way you say. Off: you decide each one with a tap.",
       itMaySafe: 'Safe changes',
       itMaySafeDescription: 'It makes safe workspace changes on its own and asks for the rest.',
       itMayAnything: 'Anything',

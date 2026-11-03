@@ -24,7 +24,7 @@ export { projectActionOutcome } from './dropPreview/sessionListActionOutcome';
 import { resolvePutUnderEligibility } from '@/components/sessions/work/putUnderCandidates';
 import { selectSessionRelationRecords } from '@/components/sessions/work/reportSubtree';
 import { getStorage } from '@/sync/domains/state/storage';
-import type { Session } from '@/sync/domains/state/storageTypes';
+import { readSessionPresentationRecord, readSessionPresentationInputDisplay, readSessionPresentationInputSource, type SessionRelationRecord } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { useMountedActionExecution } from '@/components/approvals/useMountedActionExecution';
 import {
     loadSessionManagerEligibility,
@@ -93,7 +93,7 @@ export type SessionListCarry = Readonly<{
 const NO_GEOMETRY: TreeDropVisualGeometry = Object.freeze({ kind: 'none' });
 const ACCEPTED_KINDS = Object.freeze(['session', 'session-folder', 'session-workspace'] as const);
 
-function sessionsRecord(serverId: string | null): Readonly<Record<string, Session>> {
+function sessionsRecord(serverId: string | null): Readonly<Record<string, SessionRelationRecord>> {
     const state = getStorage().getState();
     return selectSessionRelationRecords(state.sessions, serverId, state.sessionListRowsByServerId);
 }
@@ -102,7 +102,7 @@ function rowName(metadata: SessionListTreeRowMetadata | undefined): string {
     if (!metadata) return '';
     if (metadata.kind === 'session' && metadata.sessionId) {
         const session = sessionsRecord(metadata.serverId)[metadata.sessionId];
-        return session ? getSessionName(session, metadata.serverId) : metadata.sessionId;
+        return session ? getSessionName(readSessionPresentationInputDisplay(session), metadata.serverId) : metadata.sessionId;
     }
     const item = metadata.item;
     return item.type === 'header' ? item.title : '';
@@ -365,12 +365,15 @@ export function useSessionListEntityDragDrop(input: UseSessionListEntityDragDrop
             },
             describe: () => {
                 const session = item.kind === 'session' ? sessionsRecord(item.address.serverId)[item.address.sessionId] : undefined;
+                const display = session ? readSessionPresentationInputDisplay(session) : undefined;
+                const record = session ? readSessionPresentationRecord(session) : undefined;
+                const source = session ? readSessionPresentationInputSource(session) : undefined;
                 const title = sourceMetadata ? rowName(sourceMetadata)
-                    : session ? getSessionName(session, current.serverId) : semanticRow?.sessionId ?? '';
+                    : display ? getSessionName(display, current.serverId) : semanticRow?.sessionId ?? '';
                 if (!title) return null;
                 // A Session carries its mark and its state line, as the lab's carried card does.
-                const subtitle = session ? getSessionCarriedLine(session, current.serverId) : null;
-                const agentId = session ? readSessionPresentationAgentId(session) : null;
+                const subtitle = record ? getSessionCarriedLine(record, current.serverId, source) : null;
+                const agentId = display ? readSessionPresentationAgentId(display) : null;
                 return { title, ...(subtitle ? { subtitle } : {}),
                     ...(agentId ? { renderMark: (size: number) => React.createElement(AgentIcon, { agentId, size }) } : {}) };
             },
@@ -381,6 +384,7 @@ export function useSessionListEntityDragDrop(input: UseSessionListEntityDragDrop
         factsRef.current = null;
         if (item.kind === 'session') {
             const candidateSessionIds = Object.values(sessionsRecord(item.address.serverId))
+                .map(readSessionPresentationRecord)
                 .filter((session) => session.id !== item.address.sessionId)
                 .map((session) => session.id);
             void loadSessionManagerEligibility({ serverId: item.address.serverId, sessionId: item.address.sessionId,

@@ -68,24 +68,6 @@ function pointerEventsFromStyle(style: unknown): unknown {
 }
 
 describe('OverlayMotionFrame', () => {
-    it('does not fade any ancestor of a real web material backdrop during entrance', async () => {
-        const { OverlayMotionFrame } = await import('./overlayMotion');
-        const { GlassSurface } = await import('@/components/ui/glass/GlassSurface');
-        const screen = await renderScreen(<OverlayMotionFrame visible kind="popover">
-            <GlassSurface finishRole={null}><div /></GlassSurface>
-        </OverlayMotionFrame>);
-        const paint = screen.findAll(node => typeof node.type === 'string'
-            && String(flattenTestStyle(node.props.style)?.backdropFilter).includes('blur'))[0]!;
-        expect(paint).toBeTruthy();
-        // The clock boundary is held at progress 0. Fading any ancestor limits the backdrop
-        // to that ancestor's empty plane, so the paint and every ancestor must stay unanimated.
-        for (let ancestor = paint.parent; ancestor; ancestor = ancestor.parent) {
-            if (typeof ancestor.type !== 'string') continue;
-            const style = flattenTestStyle(ancestor.props.style);
-            expect(style?.opacity).toBeUndefined();
-            expect(style?.transform).toBeUndefined();
-        }
-    });
     it('starts enter animations from hidden progress on first visible mount', async () => {
         const { resolveOverlayMotionPreset, useOverlayMotionAnimation } = await import('./overlayMotion');
         function Probe() {

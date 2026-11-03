@@ -1,8 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
+import { t } from '@/text';
+
 import { resolveVoiceToolResultHumanSummary } from './resolveVoiceToolResultHumanSummary';
 
 describe('resolveVoiceToolResultHumanSummary', () => {
+    it.each([false, true])('reports a created settings approval as pending rather than completed (envelope=%s)', envelope => {
+        const input = { anchor: 'voiceConversations.verbosity', value: 'balanced' };
+        const result = { kind: 'approval_request_created', artifactId: 'approval-1', actionId: 'settings.set' };
+        expect(resolveVoiceToolResultHumanSummary({
+            toolName: envelope ? 'action_execute' : 'settings_set',
+            toolInput: envelope ? { actionId: 'settings.set', input } : input,
+            toolResult: envelope ? { ok: true, result } : { ok: true, ...result },
+            shareFilePaths: true, shareSessionSummary: true,
+        })).toBe(t('approvals.status.open'));
+    });
+
     it('mentions when more sessions are available after the current page', () => {
         const summary = resolveVoiceToolResultHumanSummary({
             toolName: 'listSessions',
@@ -353,26 +366,6 @@ describe('resolveVoiceToolResultHumanSummary', () => {
 
         expect(summary ?? '').not.toContain('Refactor the payments billing flow');
         expect(summary ?? '').not.toContain('Investigate the flaky auth test');
-    });
-
-    it('suppresses the opened session summary title when shareSessionSummary is false', () => {
-        const summary = resolveVoiceToolResultHumanSummary({
-            toolName: 'openSession',
-            toolInput: {},
-            toolResult: {
-                ok: true,
-                sessionId: 'sess_123',
-                session: {
-                    id: 'sess_123',
-                    title: 'Secret roadmap planning',
-                    serverName: 'Server B',
-                },
-            },
-            shareFilePaths: true,
-            shareSessionSummary: false,
-        });
-
-        expect(summary ?? '').not.toContain('Secret roadmap planning');
     });
 
     it.each([undefined, null, false, 'true', 1, {}, []])(

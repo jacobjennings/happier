@@ -5,6 +5,7 @@ import { getStorage, useActiveServerAccountScopeLifetime } from '@/sync/domains/
 import { serverAccountScopeKeySuffix, type ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
 import { applyWorkflowTriggerSnapshotReceipt, createWorkflowTriggerChangeSelector, createWorkflowTriggerSetSelector } from '@/sync/store/domains/automations';
 import { listWorkflowTriggerSets } from '@/sync/domains/workflows/workflowTriggerActions';
+import { workflowTriggerQueryKey, workflowTriggerRequestForQueryKey } from '@/sync/domains/workflows/workflowTriggerQuery';
 import { subscribeHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { useActiveHomeSettling } from '@/components/navigation/connectionStatus/HomeReachabilityGate';
@@ -25,15 +26,14 @@ export function useWorkflowTriggerSets(request: WorkflowTriggerListRequestV1 | n
     const scopeKey = scope ? serverAccountScopeKeySuffix(scope) : null;
     const workflow = request && 'workflow' in request ? request.workflow : null;
     const requestedScope = request && 'scope' in request ? request.scope : 'account_inline';
-    const queryKey = request === null ? '' : workflow ? `workflow:${workflow}` : requestedScope;
+    const queryKey = request === null ? '' : workflowTriggerQueryKey(request);
     // Addressed reads for the focused Account share its canonical Automation
     // projection, including local Action receipts before a socket wake arrives.
     const focused = !addressed || Boolean(scope && activeLifetime?.isCurrent()
         && activeLifetime.scope.accountId === scope.accountId
         && areServerProfileIdentifiersEquivalent(activeLifetime.scope.serverId, scope.serverId));
     // The semantic query, not a caller's object allocation, owns the read lifetime.
-    const readRequest = React.useMemo<WorkflowTriggerListRequestV1 | null>(() => queryKey === '' ? null
-        : workflow === null ? { scope: requestedScope } : { workflow }, [queryKey, workflow, requestedScope]);
+    const readRequest = React.useMemo(() => workflowTriggerRequestForQueryKey(queryKey), [queryKey]);
     const identity = React.useMemo(() => ({}), [queryKey, scopeKey, lifetime]);
     const committedIdentity = React.useRef(identity);
     React.useLayoutEffect(() => { committedIdentity.current = identity; }, [identity]);
@@ -41,7 +41,9 @@ export function useWorkflowTriggerSets(request: WorkflowTriggerListRequestV1 | n
         : () => EMPTY_SETS, [focused, queryKey, workflow]);
     const sets = getStorage()(selector);
     const changeSelector = React.useMemo(() => !focused || queryKey === '' ? () => ''
-        : createWorkflowTriggerChangeSelector(null, workflow, requestedScope === 'account_all'), [focused, queryKey, workflow, requestedScope]);
+        : createWorkflowTriggerChangeSelector(null, workflow, requestedScope === 'account_all',
+            readRequest && 'managedTarget' in readRequest ? readRequest.managedTarget : undefined),
+        [focused, queryKey, workflow, requestedScope, readRequest]);
     const changeSignal = getStorage()(changeSelector);
     const [state, setState] = React.useState<{ identity: object; status: 'loading' | 'ready' | 'failed' }>(
         () => ({ identity, status: request === null ? 'ready' : 'loading' }),
@@ -69,7 +71,10 @@ export function useWorkflowTriggerSets(request: WorkflowTriggerListRequestV1 | n
     }, [addressed, focused, identity, lifetime, sets, state]);
     const [attempt, setAttempt] = React.useState(0);
     React.useEffect(() => !accountLifetime ? undefined : subscribeHomeAccountChange(event => {
-        if (areServerProfileIdentifiersEquivalent(event.serverId, accountLifetime.scope.serverId)) setAttempt(value => value + 1);
+        if (!areServerProfileIdentifiersEquivalent(event.serverId, accountLifetime.scope.serverId)) return;
+        // Consume the producer's admitted source/definition decision, including mixed pages.
+        if (event.workflowTriggersAffect === false) return;
+        setAttempt(value => value + 1);
     }), [accountLifetime]);
     React.useEffect(() => {
         if (readRequest === null || (addressed && !accountLifetime?.isCurrent())) return;

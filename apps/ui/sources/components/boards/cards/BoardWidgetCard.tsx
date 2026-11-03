@@ -8,7 +8,7 @@ import { useAppShellPluginUiProjection } from '@/components/appShell/plugins/App
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import type { ItemAction } from '@/components/ui/lists/itemActions';
 import { WidgetFrame } from '@/components/widgets/frame/WidgetFrame';
-import { readWidgetInstanceName, useWidgetFrameTitle } from '@/components/widgets/frame/widgetFrameTitle';
+import { useWidgetFrameTitle } from '@/components/widgets/frame/widgetFrameTitle';
 import { useWidgetFrameRename } from '@/components/widgets/frame/useWidgetFrameRename';
 import { useWidgetFrameSurfaceDefault } from '@/components/widgets/frame/useWidgetFrameStyle';
 import { buildWidgetDefinitionActions, buildWidgetFrameStyleActions, buildWidgetInstanceActions, buildWidgetMoveActions, buildWidgetSizeActions, orderWidgetMenu, WIDGET_MENU_MAX_HEIGHT_PX } from '@/components/widgets/frame/widgetFrameMenu';
@@ -17,7 +17,7 @@ import { useWidgetInputsEditor } from '@/components/widgets/surface/useWidgetInp
 import { useWidgetDefinitionFlows } from '@/components/widgets/definitions/useWidgetDefinitionFlows';
 import { useWidgetInstanceBindingLabel } from '@/components/widgets/surface/useWidgetInstanceBindingLabel';
 import { WidgetSurface } from '@/components/widgets/surface/WidgetSurface';
-import { readWidgetSourcePluginName, type WidgetCandidate } from '@/components/widgets/widgetCatalog';
+import { readWidgetSourcePluginName, resolveWidgetInstanceTitle, type WidgetCandidate } from '@/components/widgets/widgetCatalog';
 import { t } from '@/text';
 import { useEntityComposerMention } from '@/components/ui/treeDragDrop/useEntityComposerMention';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
@@ -84,8 +84,8 @@ export const BoardWidgetCard = React.memo(function BoardWidgetCard(props: BoardW
         instance, candidate, scope, context: NO_CONTEXT, audience: 'personal', setInputs, testID: props.testID,
     });
     const definition = useWidgetDefinitionFlows({ instance, scope, anchorRef: inputs.anchorRef, editInputs: inputs.editInputs, testID: props.testID });
-    const title = describeBoardWidgetTitle(placement, candidate);
-    const frameTitle = useWidgetFrameTitle(placement.instance, candidate);
+    const title = resolveWidgetInstanceTitle(instance, candidate);
+    const { title: frameTitle, onDefinitionRead } = useWidgetFrameTitle(instance, candidate);
     const rename = useWidgetFrameRename({
         title,
         // An empty name gives the copy back its widget's name.
@@ -146,11 +146,12 @@ export const BoardWidgetCard = React.memo(function BoardWidgetCard(props: BoardW
                 presentation="content"
                 size={size}
                 appRuntime={appRuntime}
+                onDefinitionRead={onDefinitionRead}
                 {...(inputs.onRepairInputs ? { onRepairInputs: inputs.onRepairInputs } : {})}
                 testID={`${props.testID}.widget`}
             /></View>
         ) : <View testID={`${props.testID}.deferred`} style={{ minHeight: bodyHeight }} />,
-    }), [appRuntime, bodyHeight, candidate, inputs.onRepairInputs, instance, onBodyLayout, props.active, props.testID, scope, size]);
+    }), [appRuntime, bodyHeight, candidate, inputs.onRepairInputs, instance, onBodyLayout, onDefinitionRead, props.active, props.testID, scope, size]);
 
     return (
         <>
@@ -187,9 +188,3 @@ export const BoardWidgetCard = React.memo(function BoardWidgetCard(props: BoardW
         </>
     );
 });
-
-/** A copy's title: its own name, else its widget's (an inline definition carries one), else what it is. */
-export function describeBoardWidgetTitle(placement: WorkBoardWidgetPlacementV1, candidate: Pick<WidgetCandidate, 'title'> | null): string {
-    return readWidgetInstanceName(placement.instance, candidate) ?? t('boards.widgets.kind');
-}
-

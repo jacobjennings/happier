@@ -10,6 +10,8 @@ export type WorkspaceSyncRpcRequest = Readonly<{
     method: string;
     payload: unknown;
     signal: AbortSignal;
+    /** The Home whose socket carried the RPC. */
+    serverUrl?: string;
 }>;
 
 /** Workspace sync fixtures stop at HTTP/Socket transport; scope and domain owners remain real. */
@@ -22,7 +24,8 @@ export function createWorkspaceSyncHarness(respond: (request: WorkspaceSyncRpcRe
         const separator = request.method.indexOf(':');
         if (separator < 1) throw new Error(`Expected a Machine-addressed RPC: ${request.method}`);
         return respond({ machineId: request.method.slice(0, separator),
-            method: request.method.slice(separator + 1), payload: request.params, signal: context.signal });
+            method: request.method.slice(separator + 1), payload: request.params, signal: context.signal,
+            ...(context.serverUrl ? { serverUrl: context.serverUrl } : {}) });
     });
     const ready = loadSyncSingletonForTests();
 

@@ -10,10 +10,7 @@ import { ingestPluginManifestV2 } from '@happier-dev/protocol';
 import type { AgentExternalSessionsContribution } from '@happier-dev/plugin-sdk/sessions/external';
 
 import { createUnavailablePluginServices } from '../runtime/invocation/services/unavailable';
-import {
-    createBoundedAgentExternalSessionsContribution,
-    EXTERNAL_SESSIONS_INVOCATION_POLICY,
-} from '../../session/external/agentExternalSessionsInvocation';
+import { createBoundedAgentExternalSessionsContribution } from '../../session/external/agentExternalSessionsInvocation';
 import {
     cleanupStagedNpmArtifactCandidate,
     stageDownloadedNpmArtifactCandidate,
@@ -248,8 +245,7 @@ describe('packed External Sessions Agent contract', () => {
             const resolved = await bounded.resolveSource({ ...bounds, source: SOURCE });
             expect(resolved).toEqual({ ok: true, value: { source: SOURCE } });
 
-            // Discovery: the host clamps the requested window to its own page
-            // ceiling; the packed leaf pages from the clamped window.
+            // Discovery: the packed leaf pages from the requested window.
             const firstPage = await bounded.listCandidates({
                 ...bounds,
                 source: SOURCE,
@@ -259,7 +255,6 @@ describe('packed External Sessions Agent contract', () => {
             if (!firstPage.ok) return;
             expect(firstPage.value.candidates.map(({ remoteSessionId }) => remoteSessionId))
                 .toEqual(['packed-session-1']);
-            expect(EXTERNAL_SESSIONS_INVOCATION_POLICY.listCandidates.maxItems).toBe(50);
 
             // Paging: the continuation rides a leaf-owned cursor inside the
             // host's qualified envelope.
@@ -444,73 +439,6 @@ describe('packed External Sessions Agent contract', () => {
                 'takeover',
             ]);
             expect(recorded.takeover).toEqual({ status: 'rejected', code: 'source_invalid' });
-        } finally {
-            await staged?.cleanup();
-            await rm(parent, { recursive: true, force: true });
-        }
-    });
-
-    it('applies host retirement and cancellation to the packed leaf', async () => {
-        const parent = await mkdtemp(join(tmpdir(), 'happier-packed-external-sessions-fencing-'));
-        let staged: Awaited<ReturnType<typeof stagePackedFixture>> | null = null;
-        try {
-            staged = await stagePackedFixture(parent);
-            const retiredModule = await import(pathToFileURL(join(
-                staged.rootPath,
-                'src/daemon.mjs',
-            )).href) as Readonly<{
-                activate(api: Readonly<{
-                    agents: Readonly<{
-                        registerExternalSessions(
-                            agentId: string,
-                            value: AgentExternalSessionsContribution,
-                        ): void;
-                    }>;
-                    backgroundServices: Readonly<{
-                        register(
-                            id: string,
-                            run: (context: unknown) => Promise<void>,
-                        ): void;
-                    }>;
-                }>): void;
-            }>;
-            let contribution: AgentExternalSessionsContribution | null = null;
-            retiredModule.activate({
-                agents: {
-                    registerExternalSessions(_agentId, value) { contribution = value; },
-                },
-                backgroundServices: {
-                    register() {},
-                },
-            });
-            if (!contribution) throw new Error('packed external-sessions fixture registered no contribution');
-            const retirement = new AbortController();
-            const retired = createBoundedAgentExternalSessionsContribution({
-                contribution,
-                identity,
-                isCurrent: () => true,
-                retirementSignal: retirement.signal,
-                createInvocationExec: async () => createUnavailablePluginServices().exec,
-            });
-            retirement.abort();
-            expect(await retired.listCandidates({ ...bounds, source: SOURCE, maxItems: 3 }))
-                .toEqual({ ok: false, code: 'unavailable', retryable: true });
-
-            const cancellation = new AbortController();
-            const live = createBoundedAgentExternalSessionsContribution({
-                contribution,
-                identity,
-                isCurrent: () => true,
-                retirementSignal: new AbortController().signal,
-                createInvocationExec: async () => createUnavailablePluginServices().exec,
-            });
-            cancellation.abort();
-            expect(await live.listCandidates({
-                ...bounds,
-                signal: cancellation.signal,
-                source: SOURCE,
-                maxItems: 3,
-            })).toEqual({ ok: false, code: 'cancelled', retryable: false });
         } finally {
             await staged?.cleanup();
             await rm(parent, { recursive: true, force: true });

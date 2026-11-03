@@ -13,7 +13,7 @@ import type { VoiceAdapterTranscriptMode } from '@/voice/session/types';
 import type { VoiceConversationBindingResolution } from './voiceConversationBindingTypes';
 import { readLocalConversationVoiceSettings, voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
+import { areSessionAddressesEqual, normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { storage } from '@/sync/domains/state/storage';
 import { readVoiceSessionOwnerMetadataFromState } from '@/voice/shared/readVoiceSessionOwnerMetadata';
 import { isVoiceConversationSystemSessionMetadata, shouldRetireLegacyVoiceConversationSession } from '@/voice/persistence/voiceConversationSystemSessionLookup';
@@ -62,6 +62,28 @@ async function ensureVoiceHomeConversationSessionIdWithRecovery(params: Readonly
     }
 }
 
+function resolveHiddenCarrierLogicalTarget(conversationSessionAddress: SessionAddress, metadata: unknown): SessionAddress | null {
+    const existing = readPreferredVoiceConversationBindingMetadata({
+        conversationSessionId: conversationSessionAddress.sessionId,
+        preferredMetadata: metadata,
+        sourceServerId: conversationSessionAddress.serverId,
+    });
+    if (existing && !areSessionAddressesEqual(existing.targetSessionAddress, conversationSessionAddress)) {
+        return existing.targetSessionAddress;
+    }
+    const scope = readVoiceConversationScopeMetadata(metadata);
+    if (scope?.kind === 'voice_home') return null;
+    const rootAddress = scope?.kind === 'session_root'
+        ? normalizeSessionAddress(conversationSessionAddress.serverId, scope.sessionRootId) : null;
+    if (rootAddress && !areSessionAddressesEqual(rootAddress, conversationSessionAddress)) return rootAddress;
+    // Existing self targets came from treating the carrier as a coding Session.
+    // Only its recorded scope can recover that lost target; never chase carriers.
+    if (existing || scope?.kind === 'session_root') {
+        throw Object.assign(new Error('session_unavailable'), { code: 'session_unavailable' });
+    }
+    return null;
+}
+
 export async function ensureVoiceConversationBindingResolution(params: Readonly<{
     providerId: string;
     controlSessionId: string;
@@ -85,40 +107,45 @@ export async function ensureVoiceConversationBindingResolution(params: Readonly<
         settings: params.settings,
         signal: params.signal,
     });
-    if (providerOwnedResolution) {
-        const conversationSessionAddress = normalizeSessionAddress(
+    const providerConversationSessionAddress = providerOwnedResolution
+        ? normalizeSessionAddress(
             providerOwnedResolution.conversationSessionAddress.serverId,
             providerOwnedResolution.conversationSessionAddress.sessionId,
-        );
-        if (!conversationSessionAddress) return null;
-        return {
-            controlSessionId,
-            conversationSessionId: conversationSessionAddress.sessionId,
-            conversationSessionAddress,
-            transcriptMode: providerOwnedResolution.transcriptMode,
-            targetSessionAddress: providerOwnedResolution.targetSessionAddress,
-        };
-    }
+        ) : null;
+    if (providerOwnedResolution && !providerConversationSessionAddress) return null;
 
-    const transcriptMode = resolveBindingTranscriptMode(providerId, params.settings);
+    const transcriptMode = providerOwnedResolution?.transcriptMode ?? resolveBindingTranscriptMode(providerId, params.settings);
     if (!transcriptMode) return null;
 
-    let requestedMetadata = targetSessionAddress
+    const needsRequestedMetadata = !providerOwnedResolution
+        || areSessionAddressesEqual(targetSessionAddress, providerConversationSessionAddress);
+    let requestedMetadata = needsRequestedMetadata && targetSessionAddress
         ? readVoiceSessionOwnerMetadataFromState(storage.getState(), targetSessionAddress) : null;
-    if (targetSessionAddress && !requestedMetadata
+    if (needsRequestedMetadata && targetSessionAddress && !requestedMetadata
         && areServerProfileIdentifiersEquivalent(targetSessionAddress.serverId, getActiveServerSnapshot().serverId)) {
         await sync.ensureSessionVisibleForMessageRoute(targetSessionAddress.sessionId, { serverId: targetSessionAddress.serverId });
         requestedMetadata = readVoiceSessionOwnerMetadataFromState(storage.getState(), targetSessionAddress);
     }
-    if (targetSessionAddress && isVoiceConversationSystemSessionMetadata(requestedMetadata)
-        && !shouldRetireLegacyVoiceConversationSession({ metadata: requestedMetadata })) {
-        const conversationSessionId = await ensureVoiceConversationSessionForSessionRoot({ sessionRootAddress: targetSessionAddress, signal: params.signal });
-        const existing = readPreferredVoiceConversationBindingMetadata({ conversationSessionId,
-            preferredMetadata: requestedMetadata, sourceServerId: targetSessionAddress.serverId });
-        const scope = readVoiceConversationScopeMetadata(requestedMetadata);
-        return { controlSessionId, conversationSessionId, conversationSessionAddress: targetSessionAddress, transcriptMode,
-            targetSessionAddress: existing ? existing.targetSessionAddress
-                : (scope?.kind === 'session_root' ? normalizeSessionAddress(targetSessionAddress.serverId, scope.sessionRootId) : null) };
+    const requestedCarrierAddress = targetSessionAddress && isVoiceConversationSystemSessionMetadata(requestedMetadata)
+        && !shouldRetireLegacyVoiceConversationSession({ metadata: requestedMetadata }) ? targetSessionAddress : null;
+    if (providerOwnedResolution && providerConversationSessionAddress) {
+        return {
+            controlSessionId,
+            conversationSessionId: providerConversationSessionAddress.sessionId,
+            conversationSessionAddress: providerConversationSessionAddress,
+            transcriptMode,
+            targetSessionAddress: requestedCarrierAddress
+                && areSessionAddressesEqual(requestedCarrierAddress, providerConversationSessionAddress)
+                ? resolveHiddenCarrierLogicalTarget(requestedCarrierAddress, requestedMetadata)
+                : providerOwnedResolution.targetSessionAddress,
+        };
+    }
+    if (requestedCarrierAddress) {
+        const logicalTargetSessionAddress = resolveHiddenCarrierLogicalTarget(requestedCarrierAddress, requestedMetadata);
+        const conversationSessionId = await ensureVoiceConversationSessionForSessionRoot({ sessionRootAddress: requestedCarrierAddress, signal: params.signal });
+        return { controlSessionId, conversationSessionId,
+            conversationSessionAddress: { serverId: requestedCarrierAddress.serverId, sessionId: conversationSessionId }, transcriptMode,
+            targetSessionAddress: logicalTargetSessionAddress };
     }
 
     // The hidden conversation Session belongs to the same Home as its root Session: for the

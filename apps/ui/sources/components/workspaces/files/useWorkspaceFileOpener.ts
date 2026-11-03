@@ -16,13 +16,14 @@ import { useDestinationRouter } from '@/components/appShell/workspace/Destinatio
 import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
 import { areSessionAddressesEqual, normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 import { fireAndForget } from '@/utils/system/fireAndForget';
+import { resolveFileDetailsRootPath, workspaceFileDetailsTabKey } from '@/components/appShell/panes/details/fileDetailsTab';
 
 export type WorkspaceFileOpenTarget = WorkspaceFileTarget & Readonly<{ path: string }>;
 export type WorkspaceFileOpenOrigin = Readonly<{
     focusReturnRef?: FocusReturnRef;
     transcript?: TranscriptJumpHighlightRowIdentity;
 }>;
-export type WorkspaceFileOpenOptions = Readonly<Pick<WorkspaceFileOpenInput, 'anchor' | 'anchorSource' | 'view' | 'blame' | 'changesScope'> & {
+export type WorkspaceFileOpenOptions = Readonly<Pick<WorkspaceFileOpenInput, 'anchor' | 'anchorSource' | 'view' | 'blame' | 'changesScope' | 'rootPath'> & {
     intent?: 'preview' | 'pinned' | 'beside';
     present?: boolean;
     find?: z.infer<typeof WorkspaceFindSeedSchema>;
@@ -52,6 +53,11 @@ export function useWorkspaceFileOpener() {
     }, [destinationNavigation, router]);
     const open = React.useCallback(async (target: WorkspaceFileOpenTarget, options?: WorkspaceFileOpenOptions): Promise<boolean | null> => {
         if (options?.signal?.aborted) return null;
+        if (options?.rootPath) {
+            const scopeId = target.kind === 'session' ? createSessionPaneScopeId(target.sessionId, target.serverId)
+                : buildProjectPaneScopeId(target.workspaceRefId, target.serverId);
+            options = { ...options, rootPath: resolveFileDetailsRootPath(options.rootPath, scopeId) };
+        }
         if (!canOpen) return false;
         const { path, ...address } = target;
         if (paneDispatch && options?.present !== false && (paneRegion === 'main' || paneRegion === 'side')) {
@@ -62,6 +68,7 @@ export function useWorkspaceFileOpener() {
         }
         const result = await executeWorkspaceUiAction({ actionId: 'workspace.tabs.open', input: {
             file: { target: address, path,
+                ...(options?.rootPath ? { rootPath: options.rootPath } : {}),
                 ...(options?.anchor ? { anchor: options.anchor } : {}),
                 ...(options?.anchorSource ? { anchorSource: options.anchorSource } : {}),
                 ...(options?.view ? { view: options.view } : {}),
@@ -82,7 +89,7 @@ export function useWorkspaceFileOpener() {
         if (opened && options?.present !== false && origin && target.kind === 'session' && transcript?.sessionAddress
             && areSessionAddressesEqual(transcript.sessionAddress, normalizeSessionAddress(target.serverId, target.sessionId))) {
             const scopeId = createSessionPaneScopeId(target.sessionId, target.serverId, instanceKey);
-            focusReturnOwner?.recordDetailsTabOrigin(scopeId, `file:${path}`, {
+            focusReturnOwner?.recordDetailsTabOrigin(scopeId, workspaceFileDetailsTabKey(path, options?.rootPath), {
                 focusReturnRef: origin.focusReturnRef,
                 onReturn: kind => { if (kind === 'route') setTranscriptJumpHighlight(transcript); },
             }, phone ? 'route' : 'pane');

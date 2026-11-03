@@ -59,7 +59,11 @@ export function resolveVoiceReadinessTone(readiness: VoiceRoleReadiness | null):
         case 'installing':
             return 'working';
         case 'unavailable':
-            return readiness.code === 'server_feature_disabled' || readiness.code.startsWith('execution_machine_')
+            // Withdrawn Machine presence has an explicit Retry through the Home
+            // reader; it is not an unobserved service prerequisite to hide.
+            if (readiness.code.startsWith('execution_machine_')) return 'waiting';
+            if (readiness.code.endsWith('_unknown')) return 'unknown';
+            return readiness.code === 'server_feature_disabled'
                 ? 'waiting'
                 : 'needs_you';
         case 'incompatible':
@@ -141,7 +145,7 @@ export function presentVoicePipeline(
     const card = serviceFact && steps.some((step) => step.readiness?.message === serviceFact.message
         && step.readiness.recoveryAction === serviceFact.recoveryAction) ? null : serviceFact;
     const needYou = steps.filter((step) => step.readiness?.tone === 'needs_you' || step.readiness?.tone === 'blocked').length;
-    const overall = serviceFact ? serviceFact.tone : resolveVoiceReadinessTone(pipeline.readiness);
+    const overall = resolveVoiceReadinessTone(cardReadiness ?? pipeline.readiness);
     const tone: VoiceReadinessTone = needYou > 0 ? 'needs_you' : overall ?? 'unknown';
     const statusWord = serviceFact
         ? serviceFact.tone === 'needs_you' || serviceFact.tone === 'blocked'

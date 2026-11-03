@@ -294,8 +294,12 @@ describe('webHmrOptOut', () => {
         }
 
         const originalWebSocket = (globalThis as any).WebSocket;
+        // Earlier cases installed the guard on this realm; start without one so the
+        // guard assertion proves this install path, not a leftover.
+        const originalGuard = (globalThis as any).__HAPPIER_WEB_HMR_OPT_OUT_WEBSOCKET_GUARD__;
         try {
             (globalThis as any).WebSocket = FakeWebSocket;
+            delete (globalThis as any).__HAPPIER_WEB_HMR_OPT_OUT_WEBSOCKET_GUARD__;
 
             const disabled = installWebHmrOptOutForWebTab({
                 url: new URL('https://example.com/new?happier_hmr=0&x=1'),
@@ -309,6 +313,7 @@ describe('webHmrOptOut', () => {
             expect(!!globalThis.__HAPPIER_WEB_HMR_OPT_OUT_WEBSOCKET_GUARD__).toBe(true);
         } finally {
             (globalThis as any).WebSocket = originalWebSocket;
+            (globalThis as any).__HAPPIER_WEB_HMR_OPT_OUT_WEBSOCKET_GUARD__ = originalGuard;
         }
     });
 

@@ -26,7 +26,7 @@ vi.mock('@/sync/api/externalActionAccountTransport', async (importOriginal) => {
     return { ...real, executeOriginalAccountMachineAction: async (params: unknown) => {
         if (!projectOpenAccountActionBoundary.capture) return real.executeOriginalAccountMachineAction(params as never);
         projectOpenAccountActionBoundary.calls.push(params);
-        return { ok: true, result: { kind: 'refused', code: 'invalid_directory' } };
+        return { ok: true, result: { kind: 'refused', code: 'FEATURE_UNSUPPORTED' } };
     } };
 });
 
@@ -40,9 +40,12 @@ vi.mock('@/sync/ops/sessionDrafts/sessionDraftPersistenceStorage', () => {
     }) };
 });
 
+const routerSpies = vi.hoisted(() => ({ back: undefined as undefined | { mockClear(): void; mock: { calls: unknown[][] } } }));
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
-    return createExpoRouterMock({ params: { draftId: '00000000-0000-4000-8000-000000000081', serverId: 'home' } }).module;
+    const mock = createExpoRouterMock({ params: { draftId: '00000000-0000-4000-8000-000000000081', serverId: 'home' } });
+    routerSpies.back = mock.spies.back;
+    return mock.module;
 });
 
 // Collect the real screen outside the test timer; cold module loading is not an Open operation.
@@ -193,8 +196,21 @@ describe('Project Open rendered choices', () => {
         await act(async () => { screen.findByTestId('projects.open')!.props.onLayout({ nativeEvent: { layout: { width: 390 } } }); });
         const before = seeded.read()?.selection.value;
         expect(screen.findByTestId('projects.open.cancel')).toBeFalsy();
+        // The hosted web page has no native header, so its page header draws the Back that leaves the page.
+        routerSpies.back!.mockClear();
+        await screen.pressByTestIdAsync('projects.open.back');
+        expect(routerSpies.back!.mock.calls).toHaveLength(1);
         screen.unmount();
         expect(seeded.read()?.selection.value).toEqual(before);
+    });
+
+    it('draws no page Back where both panes fit beside each other', async () => {
+        const draftId = '00000000-0000-4000-8000-000000000081';
+        await seedOpenDraft(draftId);
+        const screen = await renderScreen(<ProjectOpenScreen />);
+        await vi.waitFor(() => expect(screen.findByTestId('projects.open.choices')).toBeTruthy());
+        await act(async () => { screen.findByTestId('projects.open')!.props.onLayout({ nativeEvent: { layout: { width: 1000 } } }); });
+        expect(screen.findByTestId('projects.open.back')).toBeFalsy();
     });
 
     it.each([{ timed: true, connect: true }, { timed: false, connect: true }, { timed: true, connect: false }])
@@ -278,7 +294,7 @@ describe('Project Open rendered choices', () => {
         expect(screen.findByTestId('projects.open.destination')).toBeTruthy();
     });
 
-    it('submits the clone destination shown in the row through the real draft and projects.open Action path', async () => {
+    it('submits the shown clone destination and renders missing clone support through the real projects.open Action path', async () => {
         const draftId = '00000000-0000-4000-8000-000000000081';
         const { createHomeGovernanceHarness, installHomeGovernanceBoundaries } =
             await import('@/dev/testkit/harness/homeGovernanceHarness');
@@ -315,6 +331,12 @@ describe('Project Open rendered choices', () => {
                 machineId: 'machine',
                 materialization: { kind: 'clone', destinationParentPath: '/Users/tester/src', destinationDirectoryName: 'Hello-World' },
             },
+        });
+        const { AttentionBanner } = await import('@/components/ui/lists/AttentionBanner');
+        await vi.waitFor(() => {
+            const banner = screen.findAllByType(AttentionBanner).find(node => node.props.testID === 'projects.open.refused');
+            expect(banner?.props.title).toBe(t('projects.open.cloneUnsupported'));
+            expect(banner?.props.details).toEqual(['FEATURE_UNSUPPORTED']);
         });
     });
 

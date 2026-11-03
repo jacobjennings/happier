@@ -1,13 +1,9 @@
+import { LOCAL_DAEMON_SERVICE_ACTION_IDS } from './localDaemonServiceActionIdsV1.js';
+export { LOCAL_DAEMON_SERVICE_ACTION_IDS } from './localDaemonServiceActionIdsV1.js';
 import { z } from 'zod/mini';
 import { lazyZodSchema } from '../../lazyZodSchema.js';
 import { SystemTaskResultSchema } from '../../system/tasks/spec.js';
 import type { PreNormalizedActionSpec } from '../actionSpecs.js';
-
-export const LOCAL_DAEMON_SERVICE_ACTION_IDS = [
-  'machines.local.service.status', 'machines.local.service.start', 'machines.local.service.stop',
-  'machines.local.service.restart', 'machines.local.service.autostart.set',
-  'machines.local.service.update', 'machines.local.service.disconnect',
-] as const;
 export type LocalDaemonServiceActionId = typeof LOCAL_DAEMON_SERVICE_ACTION_IDS[number];
 export const LocalDaemonServiceInputSchema = lazyZodSchema(() => z.strictObject({ serverId: z.string().check(z.trim(), z.minLength(1)) }));
 export const LocalDaemonServiceAutostartInputSchema = lazyZodSchema(() => (<T extends z.ZodMiniObject>(schema: T) => z.core.clone(schema, { ...schema._zod.def, catchall: z.never() }) as z.ZodMiniObject<T['shape'], z.core.$strict>)(z.extend(LocalDaemonServiceInputSchema, { autostart: z.enum(['at-login', 'on-demand']) })));
@@ -25,8 +21,9 @@ export const LOCAL_DAEMON_SERVICE_INPUT_SCHEMAS = {
   'machines.local.service.update': LocalDaemonServiceInputSchema,
   'machines.local.service.disconnect': LocalDaemonServiceInputSchema,
 } as const;
-const surfaces = { ui: true, voice: false, agent: true, mcp: true, cli: false, rpc: false } as const;
-const common = { executionPlacement: 'client', placements: [], surfaces, approval: { result: 'required' },
+const surfaces = { ui: true, voice: false, agent: true, mcp: true, cli: true, rpc: false } as const;
+const clientCli = { commands: [] };
+const common = { executionPlacement: 'client', placements: [], surfaces, cli: clientCli, approval: { result: 'required' },
   inputHints: { fields: [{ path: 'serverId', title: 'Home ID', widget: 'text', required: true }] } } as const;
 export const LOCAL_DAEMON_SERVICE_ACTION_SPECS = [
   { ...common, id: 'machines.local.service.status', title: 'Read local background service', description: 'Read the native user service for this Home on the invoking desktop.', safety: 'safe', sideEffectClass: 'read', bindings: { mcpToolName: 'machines_local_service_status' }, inputSchema: LocalDaemonServiceInputSchema, outputSchema: LocalDaemonServiceOutputSchema },

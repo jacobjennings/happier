@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildAccountStoredContentCompatibilityHttpHeadersV1,
   CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+  V2SessionListRowSchema,
 } from '@happier-dev/protocol';
 
 import { fetchMessagesPage, fetchSessionsV2, fetchSessionV2 } from './sessions';
@@ -197,9 +198,36 @@ describe('fetchSessionV2', () => {
 
 describe('fetchSessionsV2', () => {
   const originalFetch = globalThis.fetch;
+  const compactRow = V2SessionListRowSchema.parse({
+    id: 'ses_1', seq: 3, createdAt: 10, updatedAt: 20, meaningfulActivityAt: 15,
+    active: true, activeAt: 20, metadataVersion: 2, metadataLayoutVersion: 1,
+    agentStateVersion: 1, dataEncryptionKey: 'sealed-key', share: null,
+    documents: 'omitted', metadataAudience: 'owner', agentStateDocument: 'omitted',
+    pendingCount: 1, pendingVersion: 4,
+  });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+  });
+
+  it('reads compact document descriptors without fetching or synthesizing full documents', async () => {
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({
+      sessions: [compactRow], nextCursor: 'next-session', hasNext: true,
+    }), { status: 200 }));
+    globalThis.fetch = fetchSpy;
+
+    await expect(fetchSessionsV2('http://localhost:1234', 'token')).resolves.toEqual({
+      sessions: [compactRow], nextCursor: 'next-session', hasNext: true,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects full document rows on the compact list boundary', async () => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
+      sessions: [{ ...compactRow, metadata: 'ciphertext', agentState: null }], nextCursor: null, hasNext: false,
+    }), { status: 200 }));
+
+    await expect(fetchSessionsV2('http://localhost:1234', 'token')).rejects.toThrow('/v2/sessions');
   });
 
   it('declares current stored-content compatibility before reading layout-one rows', async () => {

@@ -37,7 +37,6 @@ const machineGetBugReportLogTailMock = vi.fn(async (_machineId?: string, _params
     tail: 'tail line',
 }));
 let sessionLogPath: string | null = null;
-let isDataReady = true;
 let routeHydrationState: SessionRouteHydrationState = { kind: 'available', sessionId: 'session-1' };
 const machineTargetStorageFixture = createStorageStoreMock({
     sessions: {},
@@ -66,7 +65,6 @@ installSessionRouteCommonModuleMocks({
             useSession: ((sessionId: string) => machineTargetStorage(
                 (state) => state.sessions[sessionId] ?? null,
             )) as typeof import('@/sync/domains/state/storage')['useSession'],
-            useIsDataReady: () => isDataReady,
         });
     },
 });
@@ -140,7 +138,6 @@ describe('Session log screen', () => {
     beforeEach(() => {
         setRouteSession(null, null);
         setCanonicalMachineTarget('machine-1');
-        isDataReady = true;
         routeHydrationState = { kind: 'available', sessionId: 'session-1' };
         machineReadSessionLogTailMock.mockClear();
         machineGetBugReportLogTailMock.mockClear();
@@ -154,28 +151,23 @@ describe('Session log screen', () => {
         });
     });
 
-    it('does not fetch log tail until session hydration is ready', async () => {
-        routeHydrationState = { kind: 'loading', sessionId: 'session-1', reason: 'store-miss' };
-        setRouteSession('/tmp/.happier/logs/session.log', 'machine-1');
-        const { default: SessionLogScreen } = await import('@/app/(app)/session/[id]/log');
+    it.each([
+        ['loading', { kind: 'loading', sessionId: 'session-1', reason: 'store-miss' }],
+        ['retrying', { kind: 'retrying', sessionId: 'session-1', cause: 'server_unavailable' }],
+    ] as const satisfies ReadonlyArray<readonly [string, SessionRouteHydrationState]>)(
+        'does not fetch log tail while route hydration is %s',
+        async (_kind, hydrationState) => {
+            routeHydrationState = hydrationState;
+            setRouteSession('/tmp/.happier/logs/session.log', 'machine-1');
+            const { default: SessionLogScreen } = await import('@/app/(app)/session/[id]/log');
 
-        await renderScreen(React.createElement(SessionLogScreen));
+            const screen = await renderScreen(React.createElement(SessionLogScreen));
 
-        expect(machineReadSessionLogTailMock).not.toHaveBeenCalled();
-        expect(machineGetBugReportLogTailMock).not.toHaveBeenCalled();
-    });
-
-    it('does not fetch log tail while route hydration is retrying', async () => {
-        routeHydrationState = { kind: 'retrying', sessionId: 'session-1', cause: 'server_unavailable' };
-        setRouteSession('/tmp/.happier/logs/session.log', 'machine-1');
-        const { default: SessionLogScreen } = await import('@/app/(app)/session/[id]/log');
-
-        const screen = await renderScreen(React.createElement(SessionLogScreen));
-
-        expect(screen.getTextContent()).toContain('common.loading');
-        expect(machineReadSessionLogTailMock).not.toHaveBeenCalled();
-        expect(machineGetBugReportLogTailMock).not.toHaveBeenCalled();
-    });
+            expect(screen.getTextContent()).toContain('common.loading');
+            expect(machineReadSessionLogTailMock).not.toHaveBeenCalled();
+            expect(machineGetBugReportLogTailMock).not.toHaveBeenCalled();
+        },
+    );
 
     it('renders terminal fallback when route hydration is missing', async () => {
         routeHydrationState = { kind: 'missing', sessionId: 'session-1', cause: 'not_found' };
@@ -189,8 +181,7 @@ describe('Session log screen', () => {
         expect(machineGetBugReportLogTailMock).not.toHaveBeenCalled();
     });
 
-    it('does not keep the route loading after route hydration is available when global data is not ready', async () => {
-        isDataReady = false;
+    it('does not keep the route loading once route hydration is available', async () => {
         setRouteSession('/tmp/.happier/logs/session.log', 'machine-1');
         const { default: SessionLogScreen } = await import('@/app/(app)/session/[id]/log');
 
@@ -225,15 +216,6 @@ describe('Session log screen', () => {
         await renderScreen(React.createElement(SessionLogScreen));
 
         expect(machineReadSessionLogTailMock).toHaveBeenCalledWith('replacement-machine', { path: sessionLogPath, maxBytes: 200000 }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    });
-
-    it('does not call bug report log tail RPC for session logs', async () => {
-        setRouteSession('/tmp/.happier/logs/session.log', 'machine-1');
-        const { default: SessionLogScreen } = await import('@/app/(app)/session/[id]/log');
-
-        await renderScreen(React.createElement(SessionLogScreen));
-
-        expect(machineGetBugReportLogTailMock).not.toHaveBeenCalled();
     });
 
     it('fetches when only the machine record hydrates and the session identity stays stable', async () => {

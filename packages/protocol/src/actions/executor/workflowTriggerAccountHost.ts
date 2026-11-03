@@ -1,5 +1,5 @@
 import * as z from 'zod/mini';
-import type { AutomationDefinitionDetail } from '../../automations/automationApiV3.js';
+import type { AutomationDefinitionDetail, AutomationDefinitionPatchRequest } from '../../automations/automationApiV3.js';
 import { createStoredReadSchema } from '../../json/storedReadSchema.js';
 import {
   isAvailableE2eeAutomationAccountEncryptionV1,
@@ -29,11 +29,15 @@ import {
 import {
   AutomationStoredWorkflowDefinitionRecipeV2Schema,
   AutomationStoredWorkflowDefinitionV2Schema,
+  AutomationStoredWorkflowDefinitionV2ReadSchema,
+  type AutomationStoredWorkflowDefinitionV2,
 } from '../../automations/automationWorkflowRecipeV2.js';
 import { openAccountScopedBlobCiphertext, sealAccountScopedBlobCiphertext } from '../../crypto/accountScopedCipher.js';
 import type { WorkflowDefinitionV1 } from '../../workflows/workflowV1.js';
+import { readTriggerTargetV1 } from '../../workflows/triggers/triggerTargetV1.js';
 import {
   createWorkflowTriggerActions,
+  readManagedMachineTriggerAction,
   type WorkflowTriggerActionsDependencies,
   type WorkflowTriggerAutomationOperations,
   type WorkflowTriggerActions,
@@ -53,6 +57,97 @@ export type WorkflowTriggerAccountHostParams = Readonly<{
   randomBytes: (length: number) => Uint8Array;
   newId: () => string;
 }> & Pick<WorkflowTriggerActionsDependencies, 'sessionList' | 'resolveWorkflow' | 'resolveWorkflowTeamIds' | 'resolveSession' | 'resolveRunTrigger' | 'resolveRunSource' | 'resolveManagedMachine' | 'resolveMaterializer' | 'pullRequests'>;
+
+type WorkflowCodecParams = Pick<WorkflowTriggerAccountHostParams, 'resolveEncryption' | 'randomBytes'>;
+
+function openWorkflowEnvelope(raw: unknown, current: AvailableAutomationAccountEncryptionV1) {
+  const envelope = createStoredReadSchema(AutomationStoredContentEnvelopeV1Schema).parse(raw);
+  if (!isAvailableE2eeAutomationAccountEncryptionV1(current)) {
+    if (envelope.t !== 'plain') unavailable();
+    return envelope.v;
+  }
+  if (envelope.t !== 'encrypted') unavailable();
+  const opened = openAccountScopedBlobCiphertext({ kind: 'automation_template_payload',
+    material: current.material.material, ciphertext: envelope.c });
+  if (!opened) unavailable();
+  return opened.value;
+}
+
+/** Every authoring host and the one-shot migration use this same seal and relationship derivation. */
+async function sealWorkflowContext(params: WorkflowCodecParams, input: Readonly<{
+  templateVersion: number; context: AutomationStoredWorkflowDefinitionV2;
+}>) {
+  const payload = AutomationStoredWorkflowDefinitionV2Schema.parse(input.context);
+  const current = await params.resolveEncryption();
+  const workflow = isAvailableE2eeAutomationAccountEncryptionV1(current)
+    ? { t: 'encrypted' as const, c: sealAccountScopedBlobCiphertext({ kind: 'automation_template_payload',
+      material: current.material.material, payload, randomBytes: params.randomBytes }) }
+    : { t: 'plain' as const, v: payload };
+  const managed = payload.inlineDefinition && readManagedMachineTriggerAction({ kind: 'inline', definition: payload.inlineDefinition });
+  return AutomationStoredWorkflowDefinitionRecipeV2Schema.parse({ v: 2, templateVersion: input.templateVersion,
+    workflow, triggerEvidence: null,
+    managedTarget: managed ? { homeId: managed.input.homeId, managedId: managed.input.managedId } : null });
+}
+
+/**
+ * One admitted client-startup pass, never a read/render subscription or polling effect.
+ * Persisted recipe metadata is the completion marker. A lost response or restart cannot repeat
+ * a committed write; a conflicting, locked or unavailable row remains unknown without a hot retry.
+ */
+export async function backfillAutomationManagedTargetsV1(params: WorkflowCodecParams & Readonly<{
+  automations: Pick<WorkflowTriggerAutomationOperations, 'list' | 'get'> & Readonly<{
+    patch: (automationId: string, input: AutomationDefinitionPatchRequest, beforeWrite?: () => Promise<void>) => Promise<AutomationDefinitionDetail>;
+  }>;
+  signal?: AbortSignal;
+  isCurrent?: () => boolean;
+}>): Promise<Readonly<{ updated: number; unresolved: number }>> {
+  const assertCurrent = () => {
+    params.signal?.throwIfAborted();
+    if (params.isCurrent?.() === false) unavailable();
+  };
+  let updated = 0;
+  let unresolved = 0;
+  let cursor: string | undefined;
+  do {
+    assertCurrent();
+    const page = await params.automations.list({ managedTargetUnindexed: true, ...(cursor ? { cursor } : {}) });
+    assertCurrent();
+    for (const summary of page.automations) {
+      assertCurrent();
+      try {
+        const row = await params.automations.get(summary.id);
+        assertCurrent();
+        if (!row || row.managedTarget !== undefined) continue;
+        if (row.executionRecipe?.v !== 2) { unresolved++; continue; }
+        const openedEncryption = await params.resolveEncryption();
+        assertCurrent();
+        const context = AutomationStoredWorkflowDefinitionV2ReadSchema.parse(openWorkflowEnvelope(row.executionRecipe.workflow, openedEncryption));
+        if (readTriggerTargetV1(row, context).kind !== 'available') unavailable('source_unavailable');
+        const sameAuthority = (current: AvailableAutomationAccountEncryptionV1) => {
+          assertCurrent();
+          if (current.witness.mode !== openedEncryption.witness.mode
+            || current.witness.contentKeyFingerprint !== openedEncryption.witness.contentKeyFingerprint) unavailable();
+          return current;
+        };
+        const executionRecipe = await sealWorkflowContext({ ...params,
+          resolveEncryption: async () => sameAuthority(await params.resolveEncryption()) }, {
+          templateVersion: row.templateVersion + 1, context,
+        });
+        const beforeWrite = async () => { sameAuthority(await params.resolveEncryption()); };
+        await beforeWrite();
+        // A metadata-only edit need not advance the recipe revision. Patch only the recipe so
+        // this migration cannot overwrite a concurrent rename, enablement or placement change.
+        await params.automations.patch(row.id, { expectedTemplateVersion: row.templateVersion, executionRecipe }, beforeWrite);
+        updated++;
+      } catch (error) {
+        assertCurrent();
+        unresolved++;
+      }
+    }
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  return { updated, unresolved };
+}
 
 /**
  * Every Account host (CLI/daemon and the UI front door) composes the one trigger owner through
@@ -83,19 +178,7 @@ function createAccountWorkflowTriggerActionOwner(params: WorkflowTriggerAccountH
     return { target: { kind: 'inline' as const, definition }, context,
       ...(project.machineId === undefined ? {} : { project: { machineId: project.machineId, ...workspace } }) };
   };
-  const open = async (raw: unknown) => {
-    const envelope = createStoredReadSchema(AutomationStoredContentEnvelopeV1Schema).parse(raw);
-    const current = await params.resolveEncryption();
-    if (!isAvailableE2eeAutomationAccountEncryptionV1(current)) {
-      if (envelope.t !== 'plain') unavailable();
-      return envelope.v;
-    }
-    if (envelope.t !== 'encrypted') unavailable();
-    const opened = openAccountScopedBlobCiphertext({ kind: 'automation_template_payload',
-      material: current.material.material, ciphertext: envelope.c });
-    if (!opened) unavailable();
-    return opened.value;
-  };
+  const open = async (raw: unknown) => openWorkflowEnvelope(raw, await params.resolveEncryption());
   const eventBinding = (automationId: string, triggerId: string, triggerRevision: number,
     eventRef: Extract<AutomationTriggerDefinitionBindingV1, { triggerKind: 'pluginEvent' }>['eventRef'], sourceSelectorId: string) => (
     AutomationTriggerDefinitionBindingV1Schema._zod.def.options[0].parse({ v: 1, automationId, triggerId, triggerRevision,
@@ -232,15 +315,7 @@ function createAccountWorkflowTriggerActionOwner(params: WorkflowTriggerAccountH
       if (row.executionRecipe?.v !== 2) unavailable('source_unavailable');
       return open(row.executionRecipe.workflow);
     },
-    sealContext: async ({ templateVersion, context }) => {
-      const payload = AutomationStoredWorkflowDefinitionV2Schema.parse(context);
-      const current = await params.resolveEncryption();
-      const workflow = isAvailableE2eeAutomationAccountEncryptionV1(current)
-        ? { t: 'encrypted' as const, c: sealAccountScopedBlobCiphertext({ kind: 'automation_template_payload',
-          material: current.material.material, payload, randomBytes: params.randomBytes }) }
-        : { t: 'plain' as const, v: payload };
-      return AutomationStoredWorkflowDefinitionRecipeV2Schema.parse({ v: 2, templateVersion, workflow, triggerEvidence: null });
-    },
+    sealContext: input => sealWorkflowContext(params, input),
     requiresLegacyReview: async (row) => {
       const current = await params.resolveEncryption();
       const stored = row.templateCiphertext ? readAutomationTemplateStoredEnvelopeV1(row.templateCiphertext) : null;

@@ -97,6 +97,24 @@ describe('apiSocket reconnect semantics', () => {
         } finally { currentness.dispose(); }
     });
 
+    it.each([false, true])('preserves finite Account currentness on intentional transport withdrawal (observation: %s)', async withObservation => {
+        const { captureAccountEncryptionCurrentness, getAccountEncryptionModeCacheRevision, invalidateAccountEncryptionModeCache } = await import('../account/apiAccountEncryptionMode');
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const credentials: AuthCredentials = { token: `hdr.${encodeBase64(new TextEncoder().encode(JSON.stringify({ sub: 'socket-account' })), 'base64')}.sig` };
+        const { socket, apiSocket } = await boot(withObservation ? { credentials } : {});
+        await connect(socket);
+        const currentness = captureAccountEncryptionCurrentness();
+        try {
+            const revision = getAccountEncryptionModeCacheRevision();
+            apiSocket.disconnect();
+            expect(currentness.isCurrent()).toBe(true);
+            expect(getAccountEncryptionModeCacheRevision()).toBeGreaterThan(revision);
+            expect(apiSocket.getAccountEncryptionObservationBinding(credentials)).toBeNull();
+            invalidateAccountEncryptionModeCache({ reason: 'scope-reset' });
+            expect(currentness.isCurrent()).toBe(false);
+        } finally { currentness.dispose(); }
+    });
+
     it('borrows the admitted Account socket identity without recurring mode HTTP after warm-up', async () => {
         const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
         await upsertAndActivateServer({ serverUrl: endpoint, scope: 'device' });
@@ -295,6 +313,41 @@ describe('apiSocket reconnect semantics', () => {
                 'session-human-presence:visible-replace', { v: 1, sessionIds: ['presence-session'] },
             ]), { timeout: 15_000 });
         } finally { apiSocket.disconnect(); markSessionSurfaceHidden('presence-session', serverId); }
+    });
+
+    it('declares current transcript demand on the real focused socket registration and repeats admitted catch-up after reconnect', async () => {
+        const { registerSessionRealtimeTranscriptConsumer } = await import('@/sync/runtime/sessionRealtimeTranscriptConsumers');
+        const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
+        const { apiSocket, socket, trigger } = await boot();
+        const serverId = getActiveServerSnapshot().serverId;
+        const release = registerSessionRealtimeTranscriptConsumer('consumed-session', serverId);
+        const admitted: unknown[] = [];
+        const stop = apiSocket.onSessionConsumptionAdmitted(value => admitted.push(value));
+        try {
+            await connect(socket);
+            await vi.waitFor(() => expect(admitted).toEqual([{ serverId, sessionIds: ['consumed-session'] }]), { timeout: 15_000 });
+            expect(socket.emitWithAck.mock.calls).toContainEqual(['session-consumption-replace', {
+                v: 1, liveSessionIds: ['consumed-session'], durableSessionIds: ['consumed-session'],
+            }]);
+            trigger('disconnect', 'transport close');
+            emitReachability('offline'); await connect(socket);
+            await vi.waitFor(() => expect(admitted).toHaveLength(2));
+        } finally { stop(); release(); apiSocket.disconnect(); }
+    });
+
+    it('warns about a refused consumption declaration while preserving the connected socket and connection error state', async () => {
+        const { apiSocket, socket } = await boot();
+        const respond = socket.emitWithAck.getMockImplementation();
+        if (!respond) throw new Error('Expected the canonical socket boundary ACK implementation');
+        socket.emitWithAck.mockImplementation(async (event, ...args) => event === 'session-consumption-replace'
+            ? { ok: false, error: 'not_allowed' } : respond(event, ...args));
+        const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const onError = vi.fn();
+        ownedSubscriptions.push(apiSocket.onError(onError));
+        await connect(socket);
+        await vi.waitFor(() => expect(warning).toHaveBeenCalledWith('[session-consumption]', 'session_consumption_not_allowed'));
+        expect(socket.connected).toBe(true);
+        expect(onError.mock.calls.every(([error]) => error === null)).toBe(true);
     });
 
     it('fires onReconnected only after an unintentional transport outage cycle', async () => {

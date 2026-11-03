@@ -4,13 +4,15 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { happierPageTextMetrics } from '@happier-dev/plugin-ui/presentation';
 import type { ProjectManifestV1 } from '@happier-dev/protocol/workspaces/projectSetup/projectManifestV1';
 
-import { PAGE_LIST_METRICS } from '@/components/ui/lists/pageListMetrics';
+import { GROUPED_SURFACE_RADIUS_PX, PAGE_LIST_METRICS } from '@/components/ui/lists/pageListMetrics';
+import { resolveThemeCardChromeStyle } from '@/components/ui/surfaces/themeRaisedEdge';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Icon } from '@/components/ui/icons/Icon';
 import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
+import { useDeviceType } from '@/utils/platform/responsive';
 import type { ProjectSetupDecision } from './projectSetupConsentDecision';
 
 import { describeProjectCommandSource } from './projectScriptPresentation';
@@ -107,13 +109,15 @@ export function listProjectSetupEffect(
 /**
  * Where the reviewed file came from, as the producer observed it (lab `s-scripts` SETUP: "at a41c9e2
  * on v0.3"). The repository's commit is context, never proof the file is committed: a modified,
- * untracked or unknown file says so.
+ * untracked or unknown file says so, until the producer reports the reviewed bytes as committed.
  */
 function describeSetupProvenance(presentation: ProjectSetupReviewPresentation | null): string | null {
   const provenance = presentation?.provenance;
   if (!provenance || provenance.kind === 'unavailable') return null;
   if (provenance.kind === 'nonRepository') return ` · ${t('projects.scripts.setup.provenanceNotRepository')}`;
-  const commit = provenance.headCommit?.slice(0, 7);
+  // The producer proved the reviewed bytes exist at that commit: the context is the whole statement.
+  const committed = provenance.committed?.commit.slice(0, 7);
+  const commit = committed ?? provenance.headCommit?.slice(0, 7);
   const at = commit
     ? provenance.branch
       ? t('projects.scripts.setup.provenanceAtBranch', { commit, branch: provenance.branch })
@@ -126,7 +130,7 @@ function describeSetupProvenance(presentation: ProjectSetupReviewPresentation | 
       : provenance.fileState === 'absent'
         ? t('projects.scripts.setup.provenanceAbsent')
         : t('projects.scripts.setup.provenanceUnknown');
-  return [at ? ` ${at}` : '', ` · ${state}`].join('');
+  return [at ? ` ${at}` : '', committed ? '' : ` · ${state}`].join('');
 }
 
 /** A review of a reviewed effect alone (approval page and card, Session ask): no manifest is read. */
@@ -143,6 +147,8 @@ export const ProjectSetupReviewFacts = React.memo(function ProjectSetupReviewFac
     sharedRunAs: string | null;
     /** Safe resolved effect from the D18 review, when the producer supplied it. */
     reviewedEffect?: unknown;
+    /** The effect rows on a sheet of their own (the pushed page); on a card they sit on the card. */
+    framed?: boolean;
     onViewFile?: () => void;
   }>,
 ) {
@@ -157,12 +163,12 @@ export const ProjectSetupReviewFacts = React.memo(function ProjectSetupReviewFac
   );
   return (
     <View style={styles.facts}>
-      <View style={styles.effect}>
-        {effect.map((line) => (
+      <View style={props.framed ? styles.effectSheet : styles.effect}>
+        {effect.map((line, index) => (
           <View
             key={line.key}
             testID={`${props.testID}.effect:${line.key}`}
-            style={styles.effectRow}
+            style={[styles.effectRow, props.framed ? styles.effectSheetRow : null, props.framed && index > 0 ? styles.effectSheetDivider : null]}
           >
             <Text
               style={[
@@ -261,20 +267,22 @@ export const ProjectSetupScopeChoice = React.memo(function ProjectSetupScopeChoi
   props: Readonly<{ testID: string; scope: ProjectSetupScope; onChange: (scope: ProjectSetupScope) => void }>,
 ) {
   const { theme } = useUnistyles();
+  // A phone has the room for the three choices to share the width; a wide host keeps them compact.
+  const phone = useDeviceType() === 'phone';
   const tabs = React.useMemo(() => [
     { id: 'thisTime' as const, label: t('projects.scripts.setup.thisTime') },
     { id: 'untilChanged' as const, label: t('projects.scripts.setup.untilChanged') },
     { id: 'skip' as const, label: t('common.skip') },
   ], []);
   return (
-    <View style={styles.scope}>
+    <View style={[styles.scope, phone ? styles.scopePhone : null]}>
       <SegmentedTabBar
         role="radiogroup"
         accessibilityLabel={t('projects.scripts.setup.approve')}
         tabs={tabs}
         activeTabId={props.scope}
         onSelectTab={props.onChange}
-        segmentSizing="content"
+        segmentSizing={phone ? 'equal' : 'content'}
         testIDPrefix={`${props.testID}.scope`}
       />
       <Text
@@ -290,7 +298,76 @@ export const ProjectSetupScopeChoice = React.memo(function ProjectSetupScopeChoi
   );
 });
 
-/** The page owns trust scope and Run; Session retains its canonical approval and Stop owners. */
+type ProjectSetupReviewBodyProps = Readonly<{
+  testID: string;
+  manifest: ProjectManifestV1;
+  machineName: string;
+  sharedRunAs: string | null;
+  reviewedEffect?: unknown;
+  framed?: boolean;
+  scope: ProjectSetupScope;
+  onScopeChange: (scope: ProjectSetupScope) => void;
+  onViewFile: () => void;
+}>;
+
+/** What the review says and asks: the lead, the exact effect, where it came from, and the consent choice. */
+export const ProjectSetupReviewBody = React.memo(function ProjectSetupReviewBody(props: ProjectSetupReviewBodyProps) {
+  const { theme } = useUnistyles();
+  return (
+    <>
+      <Text style={[styles.body, { color: theme.colors.text.secondary }]}>
+        {t('projects.scripts.setup.lead', { machine: props.machineName })}
+      </Text>
+      <ProjectSetupReviewFacts {...props} />
+      <ProjectSetupScopeChoice testID={props.testID} scope={props.scope} onChange={props.onScopeChange} />
+    </>
+  );
+});
+
+/**
+ * Not now and Run setup. On a card they sit right-aligned under the review; on a pushed page they fill
+ * the pinned footer, Run on top (`fill`).
+ */
+export const ProjectSetupReviewActions = React.memo(function ProjectSetupReviewActions(
+  props: Readonly<{
+    testID: string;
+    scope: ProjectSetupScope;
+    machineName: string;
+    sharedRunAs: string | null;
+    pending: boolean;
+    onRun: (scope: ProjectSetupScope) => void;
+    onNotNow: () => void;
+    fill?: boolean;
+  }>,
+) {
+  const size = props.fill ? 'normal' : 'small';
+  const notNow = (
+    <RoundButton
+      size={size}
+      display="inverted"
+      title={t('projects.scripts.setup.notNow')}
+      testID={`${props.testID}.notNow`}
+      onPress={props.onNotNow}
+    />
+  );
+  const run = (
+    <RoundButton
+      size={size}
+      title={props.scope === 'skip' ? t('common.skip') : projectSetupRunLabel(props.machineName, props.sharedRunAs)}
+      testID={`${props.testID}.run`}
+      loading={props.pending}
+      disabled={props.pending}
+      onPress={() => props.onRun(props.scope)}
+    />
+  );
+  return props.fill ? (
+    <View style={styles.actionsFill}>{run}{notNow}</View>
+  ) : (
+    <View style={styles.actions}>{notNow}{run}</View>
+  );
+});
+
+/** The card's review: the body and its actions under one row (desktop, rails and widgets). */
 export const ProjectSetupReview = React.memo(function ProjectSetupReview(
   props: Readonly<{
     testID: string;
@@ -300,42 +377,23 @@ export const ProjectSetupReview = React.memo(function ProjectSetupReview(
     pending: boolean;
     onRun: (scope: ProjectSetupScope) => void;
     reviewedEffect?: unknown;
-    initialScope?: ProjectSetupScope;
+    /** The chosen scope belongs to the review's owner, so the card and the phone page share it. */
+    scope: ProjectSetupScope;
+    onScopeChange: (scope: ProjectSetupScope) => void;
     onNotNow: () => void;
     onViewFile: () => void;
   }>,
 ) {
-  const { theme } = useUnistyles();
-  const [scope, setScope] = React.useState<ProjectSetupScope>(props.initialScope ?? DEFAULT_PROJECT_SETUP_SCOPE);
+  const phone = useDeviceType() === 'phone';
   return (
-    <View testID={props.testID} style={styles.review}>
-      <Text style={[styles.body, { color: theme.colors.text.secondary }]}>
-        {t('projects.scripts.setup.lead', { machine: props.machineName })}
-      </Text>
-      <ProjectSetupReviewFacts {...props} />
-      <ProjectSetupScopeChoice testID={props.testID} scope={scope} onChange={setScope} />
-      <View style={styles.actions}>
-        <RoundButton
-          size="small"
-          display="inverted"
-          title={t('projects.scripts.setup.notNow')}
-          testID={`${props.testID}.notNow`}
-          onPress={props.onNotNow}
-        />
-        <RoundButton
-          size="small"
-          title={scope === 'skip' ? t('common.skip') : projectSetupRunLabel(props.machineName, props.sharedRunAs)}
-          testID={`${props.testID}.run`}
-          loading={props.pending}
-          disabled={props.pending}
-          onPress={() => props.onRun(scope)}
-        />
-      </View>
+    <View testID={props.testID} style={[styles.review, phone ? styles.reviewPhone : null]}>
+      <ProjectSetupReviewBody {...props} />
+      <ProjectSetupReviewActions {...props} />
     </View>
   );
 });
 
-const styles = StyleSheet.create(() => ({
+const styles = StyleSheet.create((theme) => ({
   facts: { gap: 14 },
   // The body starts at the row's title column: row inset + leading column + gap (lab SETUP).
   review: {
@@ -344,6 +402,8 @@ const styles = StyleSheet.create(() => ({
     paddingRight: PAGE_LIST_METRICS.rowPaddingHorizontalPx,
     paddingBottom: 16,
   },
+  // Phones give the review the whole row: the title column would only narrow the text.
+  reviewPhone: { paddingLeft: PAGE_LIST_METRICS.rowPaddingHorizontalPx },
   body: {
     ...Typography.default(),
     ...happierPageTextMetrics('rowDescription'),
@@ -354,6 +414,14 @@ const styles = StyleSheet.create(() => ({
   // Content only: the parent owns any surface, so the steps read like the Where/Files/As rows.
   effect: { gap: 4 },
   effectRow: { flexDirection: 'row', gap: 12 },
+  // The pushed page's effect: the shared card, one row per line (lab SETUPp).
+  effectSheet: {
+    backgroundColor: theme.colors.edge.cardFill,
+    borderRadius: GROUPED_SURFACE_RADIUS_PX,
+    ...resolveThemeCardChromeStyle(theme),
+  },
+  effectSheetRow: { paddingHorizontal: PAGE_LIST_METRICS.rowPaddingHorizontalPx, paddingVertical: theme.space.s12 },
+  effectSheetDivider: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.border.subtle },
   effectLabel: {
     ...Typography.default(),
     ...happierPageTextMetrics('meta'),
@@ -374,6 +442,9 @@ const styles = StyleSheet.create(() => ({
     borderRadius: 10,
   },
   scope: { gap: 8, alignItems: 'flex-start' },
+  scopePhone: { alignItems: 'stretch' },
+  // The pinned footer: Run fills the width, Not now sits quietly under it.
+  actionsFill: { alignItems: 'stretch', gap: 8 },
   actions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',

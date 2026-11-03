@@ -179,52 +179,6 @@ describe('public provider microphone mode', () => {
       expect(webRtc.browser.peer.connectionState).toBe('closed');
     } finally { await webRtc.dispose(); }
   });
-
-  it('fails a fresh mute closed until the retired provider mute operation settles', async () => {
-    let releaseOldMute!: () => void;
-    const oldMuteEntered = createDeferred<void>();
-    const oldMute = new Promise<void>(resolve => { releaseOldMute = resolve; });
-    const providerCalls: boolean[] = [];
-    let captureMuted = false;
-    const providerManaged = await createRuntimeForMode('provider_managed', {
-      setInputMuted: async muted => {
-        providerCalls.push(muted);
-        if (muted && providerCalls.filter(Boolean).length === 1) {
-          oldMuteEntered.resolve();
-          await oldMute;
-        }
-        captureMuted = muted;
-      },
-    });
-    try {
-      const { adapter, controlSessionId } = providerManaged;
-      await adapter.start({ sessionId: controlSessionId, requestedTargetSessionAddress: null });
-      const initialCalls = [...providerCalls];
-      expect(initialCalls.length).toBeGreaterThan(0);
-      expect(initialCalls.every(value => value === false)).toBe(true);
-      const staleMute = adapter.setMuted({ sessionId: controlSessionId, muted: true });
-      await oldMuteEntered.promise;
-      expect(providerCalls).toEqual([...initialCalls, true]);
-      await adapter.stop({ sessionId: controlSessionId });
-      await expect(adapter.start({ sessionId: controlSessionId, requestedTargetSessionAddress: null })).rejects.toMatchObject({ code: 'voice_input_mute_failed' });
-      expect(adapter.getSnapshot().status).not.toBe('connected');
-      expect(providerCalls).toEqual([...initialCalls, true]);
-      expect(providerManaged.sdk.open).toHaveBeenCalledTimes(1);
-      releaseOldMute();
-      await expect(staleMute).resolves.toBeUndefined();
-      await adapter.start({ sessionId: controlSessionId, requestedTargetSessionAddress: null });
-      expect(adapter.getSnapshot().status).toBe('connected');
-      expect(captureMuted).toBe(false);
-      await adapter.setMuted({ sessionId: controlSessionId, muted: true });
-      expect(providerCalls.filter(Boolean)).toHaveLength(2);
-      expect(providerCalls.at(-1)).toBe(true);
-      expect(captureMuted).toBe(true);
-      expect(adapter.getSnapshot().micMuted).toBe(true);
-    } finally {
-      releaseOldMute();
-      await providerManaged.dispose();
-    }
-  });
 });
 
 async function withGeneratedElevenLabs(

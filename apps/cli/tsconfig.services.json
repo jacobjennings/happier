@@ -692,7 +692,6 @@
     "src/scm/checkpoints/rollback/execute.ts",
     "src/scm/checkpoints/rollback/index.ts",
     "src/scm/checkpoints/rollback/plan.ts",
-    "src/scm/providers/catalog.ts",
     "src/scm/workspace/workspaceExportStaging/applyWorkspaceMetadata.ts",
     "src/scm/workspace/workspaceExportStaging/cleanupWorkspaceStaging.ts",
     "src/scm/workspace/workspaceExportStaging/createWorkspaceStagingRoot.ts",

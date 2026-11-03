@@ -49,7 +49,7 @@ on:
         type: boolean
       run_ui:
         required: false
-        default: true
+        default: false
         type: boolean
       run_shared_packages:
         required: false
@@ -57,11 +57,11 @@ on:
         type: boolean
       run_plugin_workspaces:
         required: false
-        default: true
+        default: false
         type: boolean
       run_server:
         required: false
-        default: true
+        default: false
         type: boolean
       run_home_iroh_real:
         description: "Run native and real Chromium Iroh Home and Machine transport completion gates"
@@ -70,27 +70,27 @@ on:
         type: boolean
       run_server_db_contract:
         required: false
-        default: true
+        default: false
         type: boolean
       run_cli:
         required: false
-        default: true
+        default: false
         type: boolean
       run_stack:
         required: false
-        default: true
+        default: false
         type: boolean
       run_typecheck:
         required: false
-        default: true
+        default: false
         type: boolean
       run_cli_daemon_e2e:
         required: false
-        default: true
+        default: false
         type: boolean
       run_e2e_core:
         required: false
-        default: true
+        default: false
         type: boolean
       run_e2e_core_slow:
         required: false
@@ -130,7 +130,7 @@ on:
         type: boolean
       run_installers_smoke:
         required: false
-        default: true
+        default: false
         type: boolean
       run_artifact_verify:
         required: false
@@ -150,7 +150,7 @@ on:
         type: string
       run_binary_smoke:
         required: false
-        default: true
+        default: false
         type: boolean
       run_build_smoke:
         required: false
@@ -215,7 +215,11 @@ on:
 
 concurrency:
   group: tests-${{ github.workflow }}-${{ github.ref }}
-  # Push runs retain the complete exact-SHA verdict; superseded PR runs may stop.
+  # Push runs keep their complete exact-SHA verdict: nightly and release source
+  # validation consume dev/preview verdicts (verify-existing-ci.mjs), and on
+  # v0.3 several sessions push faster than a run lasts, so cancelling would
+  # leave no completed verdict at all. GitHub keeps one pending run per group,
+  # so the newest push still runs next. Superseded PR runs may stop.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -223,11 +227,14 @@ env:
   # Tests and native builds do not require these assets.
   HAPPIER_UI_VENDOR_WEB_ASSETS: "0"
 
+permissions:
+  contents: read
+
 jobs:
   gate-prepare:
     name: Gate — select and prepare shared workspace
     if: ${{ !inputs.select_jobs_explicitly && ((github.event_name == 'push' && github.ref_name == 'v0.3') || (github.event_name == 'pull_request' && github.base_ref == 'v0.3')) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Longest complete shared preparation: 53m22s in run 38398608504.
     # Twice that duration rounded up gives 110 minutes.
     # This is hang protection, not a performance target.
@@ -239,19 +246,19 @@ jobs:
       unit_matrix: ${{ steps.select.outputs.unit_matrix }}
       server_db_contract: ${{ steps.select.outputs.server_db_contract }}
       node_version: ${{ steps.toolchain.outputs.node_version }}
+      # Unit gates read package source; only compiler and artifact gates consume built dists.
+      workspace_build: ${{ steps.workspace-build.outcome }}
     env:
       # The artifact consumer needs the same mandatory web assets as its former install.
       HAPPIER_UI_VENDOR_WEB_ASSETS: "1"
     steps:
-      - name: Shared preparation hang protection
-        run: echo "The 110-minute hang guard is based on twice the longest complete 53m22s preparation."
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
       - name: Select changed workspaces and their consumers
         id: select
         env:
@@ -267,23 +274,73 @@ jobs:
       - name: Observe the shared toolchain
         id: toolchain
         run: echo "node_version=$(node -p 'process.versions.node')" >> "$GITHUB_OUTPUT"
+      - name: Key the workspace package output cache
+        id: workspace-build-cache-key
+        # Package input fingerprints include the lockfile and the build owner, so
+        # outputs from another epoch are never reusable: restores stay inside one
+        # epoch, and a new epoch starts from an empty tree. Within an epoch the
+        # checked-out packages tree decides whether a run saves a new entry.
+        run: |
+          set -euo pipefail
+          epoch="$(git rev-parse HEAD:pnpm-lock.yaml HEAD:pnpm-workspace.yaml \
+            HEAD:scripts/workspaces/ensureWorkspacePackagesBuilt.mjs \
+            HEAD:scripts/workspaces/buildTypeScriptPackageDist.mjs \
+            HEAD:scripts/workspaces/workspaceOutputScriptArgs.mjs | sha256sum | cut -c1-16)"
+          echo "prefix=gate-workspace-build-v1-${RUNNER_OS}-${epoch}-" >> "$GITHUB_OUTPUT"
+          echo "packages=$(git rev-parse HEAD:packages)" >> "$GITHUB_OUTPUT"
+      - name: Restore workspace package outputs from an earlier v0.3 run
+        id: workspace-build-cache
+        # The build owner reuses a restored dist only when its recorded input
+        # fingerprint and every recorded output digest still match; a stale,
+        # partial or foreign tree rebuilds. Only package dists are cached.
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            packages/*/dist
+            packages/plugins/*/dist
+          key: ${{ steps.workspace-build-cache-key.outputs.prefix }}${{ steps.workspace-build-cache-key.outputs.packages }}
+          restore-keys: ${{ steps.workspace-build-cache-key.outputs.prefix }}
       - name: Install canonical frozen dependencies with the dependency-only cache
         id: dependencies
+        env:
+          # Run only postinstalls that do not compile workspace packages (CLI tools,
+          # UI source assets and patches, docs). Package builds run in their own
+          # step below, so one package's compiler error cannot fail the install.
+          HAPPIER_INSTALL_SCOPE: cli,ui,docs
         uses: ./.github/actions/install-pnpm-dependencies
         with:
           cache-dependencies: 'true'
       - name: Report the exact dependency cache result
-        run: echo "Exact dependency cache hit=${{ steps.dependencies.outputs.cache-hit }}; mandatory frozen install and postinstall completed. Cold and warm install durations are distinct measurements."
+        run: echo "Exact dependency cache hit=${{ steps.dependencies.outputs.cache-hit }}; mandatory frozen install and non-compiling postinstalls completed. Cold and warm install durations are distinct measurements."
       - name: Setup pinned Rust for shared native preparation
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           toolchain: 1.94.1
       - name: Prepare the canonical Iroh native runtime
         run: pnpm --filter @happier-dev/iroh-native run build:native
-      - name: Prepare canonical compiler and unit workspace prerequisites
-        run: |
-          pnpm run prepare:typecheck:workspaces
+      - name: Generate the Protocol source inputs unit suites import
+        # Protocol's build runs this generator first; run it independently so a
+        # compiler failure in an earlier package cannot remove it from unit suites.
+        run: node packages/protocol/scripts/generate-embedded-feature-policies.mjs
+      - name: Build workspace packages for the compiler and artifact gates
+        id: workspace-build
+        # A package compiler error fails gate-compiler and gate-build-artifacts
+        # through the workspace_build output; unit gates still run from source.
+        continue-on-error: true
+        run: pnpm run prepare:typecheck:workspaces
+      - name: Save workspace package outputs for later v0.3 runs
+        # Only push runs save (pull-request caches stay private to their merge
+        # ref), and only on a key miss. A package compiler error still saves the
+        # verified outputs of every package that built.
+        if: ${{ github.event_name == 'push' && steps.workspace-build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            packages/*/dist
+            packages/plugins/*/dist
+          key: ${{ steps.workspace-build-cache.outputs.cache-primary-key }}
       - name: Prepare the canonical CLI runtime closure
+        if: ${{ steps.workspace-build.outcome == 'success' }}
         # The root preparation has already published current plugin runtimes.
         # Reuse the canonical currentness scan and finish physical runtime custody.
         run: pnpm --filter @happier-dev/cli run build:shared --source-dev
@@ -300,12 +357,16 @@ jobs:
           "import { prepareNativeCustody } from './apps/cli/src/test-setup.ts'; await prepareNativeCustody(process.argv[1]);"
           "$GITHUB_WORKSPACE/apps/cli"
       - name: Load the prepared Iroh native runtime
+        # The loader is iroh-native's built dist; CLI unit jobs recheck it themselves.
+        if: ${{ steps.workspace-build.outcome == 'success' }}
         run: pnpm --filter @happier-dev/iroh-native run verify:native --package-root "$GITHUB_WORKSPACE/apps/cli/node_modules/@happier-dev/iroh-native"
       - name: Record the installed dependency tree's admission with the canonical refresh owner
         # Consumers validate locally and refuse unadmitted trees. The frozen
         # install above is the authorized refresh; the marker travels in node_modules.
         run: node apps/stack/scripts/utils/dev_targets/remote_dependency_bootstrap.mjs --adopt-installed --repo-dir="$GITHUB_WORKSPACE"
       - name: Archive the current run's coherent preparation
+        env:
+          WORKSPACE_BUILD_OUTCOME: ${{ steps.workspace-build.outcome }}
         run: |
           set -euo pipefail
           archive_paths="$RUNNER_TEMP/gate-prepared-paths"
@@ -342,12 +403,15 @@ jobs:
           done
           # Nested dependencies are already inside the explicit prepared roots.
           find node_modules apps packages "${archive_prunes[@]}" -type d -name node_modules -prune -print0 >> "$archive_paths"
-          test -f .project/tmp/cli-source-dev-shared-deps-sync.json
+          # The CLI closure's readiness exists only after a successful package build.
+          [ "${WORKSPACE_BUILD_OUTCOME:-success}" != success ] || test -f .project/tmp/cli-source-dev-shared-deps-sync.json
           tar --create --file "$RUNNER_TEMP/gate-prepared-workspace.tar" \
             --exclude='.env' --exclude='.env.*' --exclude='.happier' \
             --exclude='.project' --null --files-from="$archive_paths"
           # Only these canonical public build-state files cross the .project boundary.
-          tar --append --file "$RUNNER_TEMP/gate-prepared-workspace.tar" .project/tmp/cli-source-dev-shared-deps-sync.json
+          if [ -f .project/tmp/cli-source-dev-shared-deps-sync.json ]; then
+            tar --append --file "$RUNNER_TEMP/gate-prepared-workspace.tar" .project/tmp/cli-source-dev-shared-deps-sync.json
+          fi
           if [ -f apps/cli/.project/tmp/bundled-plugin-publication/failures.json ]; then
             tar --append --file "$RUNNER_TEMP/gate-prepared-workspace.tar" apps/cli/.project/tmp/bundled-plugin-publication/failures.json
           fi
@@ -369,30 +433,24 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
 
-      - name: Report Gate job memory after termination
-        if: ${{ always() }}
-        run: |
-          echo "Gate job memory (whole runner service; not process-only RSS):"
-          free -h
-          cat /proc/self/cgroup
-          gate_cgroup_path="$(awk -F: '$1 == "0" && $2 == "" { print $3; exit }' /proc/self/cgroup)"
-          for observation in memory.events memory.max memory.peak memory.current; do
-            gate_observation_path="/sys/fs/cgroup$gate_cgroup_path/$observation"
-            echo "$gate_observation_path:"
-            if [ -r "$gate_observation_path" ]; then cat "$gate_observation_path"; else echo "Unavailable; no memory conclusion from missing telemetry."; fi
-          done
-
   gate-compiler:
     name: Gate — UI compiler diagnostics
     needs: [gate-prepare]
-    runs-on: ubuntu-latest
-    # Successful compiler plus preparation: 42m33s; more than twice that sample.
-    timeout-minutes: 90
+    runs-on: ubuntu-24.04
+    # Successful compiler plus preparation: 42m33s; more than twice that sample,
+    # plus the 20-minute budget of the ordinary release-contracts lane it also runs.
+    timeout-minutes: 110
     permissions:
       contents: read
     steps:
-      - name: Gate deadline — 90 minutes
-        run: echo "Gate compiler diagnostics have a 90-minute job timeout."
+      - name: Require the shared workspace package build
+        env:
+          WORKSPACE_BUILD: ${{ needs.gate-prepare.outputs.workspace_build }}
+        run: |
+          if [ "$WORKSPACE_BUILD" != success ]; then
+            echo "::error::Workspace package build ${WORKSPACE_BUILD:-unknown} in gate-prepare (step 'Build workspace packages for the compiler and artifact gates'); this gate needs its built packages."
+            exit 1
+          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
@@ -400,6 +458,7 @@ jobs:
         with:
           node-version: ${{ needs.gate-prepare.outputs.node_version }}
       - uses: ./.github/actions/install-pnpm-dependencies
+        id: gate-compiler-install
         with:
           prepared-artifact: gate-prepared-workspace
       - name: Add swap headroom for the native compiler peak
@@ -413,7 +472,6 @@ jobs:
           sudo chmod 600 "$swapfile"
           sudo mkswap "$swapfile" >/dev/null
           sudo swapon "$swapfile"
-          free -h
       - name: Check compiler diagnostics without governance or test phases
         id: gate-compiler
         env:
@@ -421,50 +479,21 @@ jobs:
           HAPPIER_TYPESCRIPT_CLI_MEASURE_RSS: "1"
           HAPPIER_TYPECHECK_REPORT_DIR: ${{ runner.temp }}/gate-compiler-ui-reports
         run: |
-          echo "GATE_COMPILER_STARTED_AT=$(date --utc --iso-8601=seconds)" >> "$GITHUB_ENV"
-          compiler_cgroup_path="$(awk -F: '$1 == "0" && $2 == "" { print $3; exit }' /proc/self/cgroup)"
-          compiler_cgroup_directory="/sys/fs/cgroup$compiler_cgroup_path"
-          echo "GATE_COMPILER_CGROUP=$compiler_cgroup_directory" >> "$GITHUB_ENV"
-          echo "Compiler host memory before execution:"
-          free -h
-          echo "Compiler host cgroup identity:"
-          cat /proc/self/cgroup
-          echo "Compiler host cgroup memory events before execution:"
-          if [ -r "$compiler_cgroup_directory/memory.events" ]; then
-            cat "$compiler_cgroup_directory/memory.events"
-          else
-            echo "Current cgroup memory.events unavailable; kernel evidence remains necessary."
-          fi
           mkdir -p "$HAPPIER_TYPECHECK_REPORT_DIR"
-          if pnpm run typecheck:compiler --prepared-workspaces --compiler-partition=ui; then package_status=0; else package_status=$?; fi
-          node scripts/ci/reportGateRegressions.mjs --kind=compiler --input="$HAPPIER_TYPECHECK_REPORT_DIR" \
-            --baseline=scripts/ci/gate-triage-baseline.json --package-status="$package_status"
-      - name: Report host evidence after compiler termination
-        if: ${{ always() }}
+          pnpm run typecheck:compiler --prepared-workspaces --compiler-partition=ui
+      - name: Run release and workflow contract tests
+        # The same commands as the ordinary release-contracts lane, which v0.3 skips;
+        # they read workflows, release scripts and the prepared workspace packages.
+        if: ${{ !cancelled() && steps.gate-compiler-install.outcome == 'success' }}
         run: |
-          echo "Compiler host memory after termination:"
-          free -h
-          echo "Compiler host cgroup identity:"
-          cat /proc/self/cgroup
-          for observation in memory.events memory.max memory.peak memory.current; do
-            compiler_observation_path="$GATE_COMPILER_CGROUP/$observation"
-            echo "$compiler_observation_path:"
-            if [ -r "$compiler_observation_path" ]; then
-              cat "$compiler_observation_path"
-            else
-              echo "Unavailable at current cgroup; no conclusion from the missing observation."
-            fi
-          done
-          echo "Kernel journal since compiler execution began:"
-          if ! sudo -n journalctl --dmesg --since "$GATE_COMPILER_STARTED_AT" --no-pager; then
-            echo "Kernel journal unavailable; compiler termination sender remains unknown."
-          fi
-
+          set -euo pipefail
+          pnpm run test:release:contracts
+          node scripts/pipeline/run.mjs release-sync-installers --check
   gate-unit:
     name: Gate — ${{ matrix.package }} unit (${{ matrix.part }}/${{ matrix.parts }})
     needs: [gate-prepare]
     if: ${{ needs.gate-prepare.outputs.packages != '[]' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Complete UI partitions in run 38398608504 took up to 2h10m.
     # Twice that duration plus rounding headroom gives a 270-minute hang guard.
     # The grouped host suite retains the platform's existing job deadline.
@@ -478,11 +507,7 @@ jobs:
       HAPPIER_UI_VITEST_PART: ${{ matrix.part }}
       HAPPIER_UI_VITEST_PARTS: ${{ matrix.parts }}
       # Four workers previously reached 14.6 GiB on the hosted 16 GiB machines.
-      HAPPIER_GATE_TRIAGE_ROOT: ${{ github.workspace }}
-      HAPPIER_GATE_TRIAGE_BASELINE: ${{ github.workspace }}/scripts/ci/gate-triage-baseline.json
     steps:
-      - name: Unit completion measurement
-        run: echo "UI hang protection is 270 minutes, derived from complete partition measurements; this is not a performance target."
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
@@ -495,9 +520,6 @@ jobs:
           if [ '${{ matrix.package }}' = ui ]; then gate_workers=2; else gate_workers="$(node -p 'require("node:os").availableParallelism()')"; fi
           echo "workers=$gate_workers" >> "$GITHUB_OUTPUT"
           echo "Gate worker budget: $gate_workers; UI uses two workers for the measured hosted memory boundary."
-          echo "Gate unit host memory before preparation:"
-          free -h
-          cat /proc/self/cgroup
       - uses: ./.github/actions/install-pnpm-dependencies
         id: gate-unit-install
         with:
@@ -522,8 +544,7 @@ jobs:
           gate_status=0
           if [ "$GATE_PACKAGES" = 'ui' ]; then
             # Preserve the UI wrapper's existing file-partition selection.
-            HAPPIER_VITEST_MAX_WORKERS="$GATE_VITEST_MAX_WORKERS" pnpm --filter @happier-dev/app run test:unit \
-              --reporter=default --reporter="$GITHUB_WORKSPACE/scripts/ci/reportGateRegressions.mjs" || gate_status=1
+            HAPPIER_VITEST_MAX_WORKERS="$GATE_VITEST_MAX_WORKERS" pnpm --filter @happier-dev/app run test:unit || gate_status=1
           else
             gate_projects=()
             for gate_package in $GATE_PACKAGES; do
@@ -535,28 +556,10 @@ jobs:
               fi
             done
             if [ "${#gate_projects[@]}" -gt 0 ]; then
-              if HAPPIER_VITEST_MAX_WORKERS="$GATE_VITEST_MAX_WORKERS" pnpm run test:gate-unit "${gate_projects[@]}"; then package_status=0; else package_status=$?; fi
-              node scripts/ci/reportGateRegressions.mjs --kind=unit --input="$HAPPIER_UNIT_JSON_OUTPUT" \
-                --baseline="$HAPPIER_GATE_TRIAGE_BASELINE" --package-status="$package_status" || gate_status=1
+              HAPPIER_VITEST_MAX_WORKERS="$GATE_VITEST_MAX_WORKERS" pnpm run test:gate-unit "${gate_projects[@]}" || gate_status=1
             fi
           fi
           exit "$gate_status"
-      - name: Report Gate unit runner memory after termination
-        if: ${{ always() }}
-        run: |
-          echo "Gate unit host memory after termination (whole runner service, not Vitest-only RSS):"
-          free -h
-          cat /proc/self/cgroup
-          unit_cgroup_path="$(awk -F: '$1 == "0" && $2 == "" { print $3; exit }' /proc/self/cgroup)"
-          for observation in memory.events memory.max memory.peak memory.current; do
-            unit_observation_path="/sys/fs/cgroup$unit_cgroup_path/$observation"
-            echo "$unit_observation_path:"
-            if [ -r "$unit_observation_path" ]; then
-              cat "$unit_observation_path"
-            else
-              echo "Unavailable at current cgroup; no conclusion from the missing observation."
-            fi
-          done
       - name: Upload CLI unit bundled-plugin preparation diagnostics
         if: ${{ always() && contains(matrix.packages, 'cli') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -569,7 +572,7 @@ jobs:
   gate-build-artifacts:
     name: Gate — build artifacts and staged import smoke
     needs: [gate-prepare]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Successful complete artifact job: 46m12s; twice that sample rounded up.
     timeout-minutes: 95
     permissions:
@@ -577,8 +580,14 @@ jobs:
     env:
       HAPPIER_UI_VENDOR_WEB_ASSETS: "1"
     steps:
-      - name: Gate deadline — 95 minutes
-        run: echo "Gate artifacts and staged import smoke have a 95-minute job timeout."
+      - name: Require the shared workspace package build
+        env:
+          WORKSPACE_BUILD: ${{ needs.gate-prepare.outputs.workspace_build }}
+        run: |
+          if [ "$WORKSPACE_BUILD" != success ]; then
+            echo "::error::Workspace package build ${WORKSPACE_BUILD:-unknown} in gate-prepare (step 'Build workspace packages for the compiler and artifact gates'); this gate needs its built packages."
+            exit 1
+          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
@@ -607,7 +616,6 @@ jobs:
           sudo chmod 600 "$swapfile"
           sudo mkswap "$swapfile" >/dev/null
           sudo swapon "$swapfile"
-          free -h
       - name: Check non-UI compiler projects from the shared preparation
         env:
           HAPPIER_TYPESCRIPT_COMPILER: microsoft
@@ -617,9 +625,7 @@ jobs:
         # Each native project is a separate process; neither job replays the suite.
         run: |
           mkdir -p "$HAPPIER_TYPECHECK_REPORT_DIR"
-          if pnpm run typecheck:compiler --prepared-workspaces --compiler-partition=host; then package_status=0; else package_status=$?; fi
-          node scripts/ci/reportGateRegressions.mjs --kind=compiler --input="$HAPPIER_TYPECHECK_REPORT_DIR" \
-            --baseline=scripts/ci/gate-triage-baseline.json --package-status="$package_status"
+          pnpm run typecheck:compiler --prepared-workspaces --compiler-partition=host
       - name: Build the CLI distribution
         # This job has just checked and emitted the current CLI source graph.
         # Consume those declarations without loading that graph a second time.
@@ -659,31 +665,16 @@ jobs:
             dist/release-assets/ui-web
           if-no-files-found: error
 
-      - name: Report Gate job memory after termination
-        if: ${{ always() }}
-        run: |
-          echo "Gate job memory (whole runner service; not process-only RSS):"
-          free -h
-          cat /proc/self/cgroup
-          gate_cgroup_path="$(awk -F: '$1 == "0" && $2 == "" { print $3; exit }' /proc/self/cgroup)"
-          for observation in memory.events memory.max memory.peak memory.current; do
-            gate_observation_path="/sys/fs/cgroup$gate_cgroup_path/$observation"
-            echo "$gate_observation_path:"
-            if [ -r "$gate_observation_path" ]; then cat "$gate_observation_path"; else echo "Unavailable; no memory conclusion from missing telemetry."; fi
-          done
-
   gate:
     name: Gate
     if: ${{ always() && !inputs.select_jobs_explicitly && ((github.event_name == 'push' && github.ref_name == 'v0.3') || (github.event_name == 'pull_request' && github.base_ref == 'v0.3')) }}
     needs: [gate-prepare, gate-compiler, gate-unit, gate-build-artifacts, server-db-contract, installers-smoke-windows]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Normally terminating aggregate: 6s; twice that sample rounded up.
     timeout-minutes: 1
     permissions:
       contents: read
     steps:
-      - name: Gate deadline — 1 minute
-        run: echo "Gate aggregation has a 1-minute job timeout."
       - name: Require every selected check to succeed
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
@@ -700,7 +691,7 @@ jobs:
           NODE
 
   cliproxyapi-managed-runtime:
-    if: ${{ !(!inputs.select_jobs_explicitly && ((github.event_name == 'push' && github.ref_name == 'v0.3') || (github.event_name == 'pull_request' && github.base_ref == 'v0.3'))) }}
+    if: ${{ !(!inputs.select_jobs_explicitly && ((github.event_name == 'push' && github.ref_name == 'v0.3') || (github.event_name == 'pull_request' && github.base_ref == 'v0.3'))) && (!inputs.select_jobs_explicitly || inputs.run_cli) }}
     needs: [trusted_ref_guard]
     name: CLIProxyAPI managed runtime (${{ matrix.platform_key }})
     runs-on: ${{ matrix.runner }}
@@ -735,7 +726,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Setup integrity-checked pnpm
         shell: bash
@@ -826,17 +817,11 @@ jobs:
         run: |
           echo "UI E2E skipped: no relevant changes."
 
-      - name: Setup Node (GitHub Actions)
-        if: (inputs.select_jobs_explicitly || steps.changes.outputs.ui_e2e == 'true') && env.ACT != 'true'
+      - name: Setup Node
+        if: inputs.select_jobs_explicitly || steps.changes.outputs.ui_e2e == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
-
-      - name: Setup Node (act)
-        if: (inputs.select_jobs_explicitly || steps.changes.outputs.ui_e2e == 'true') && env.ACT == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -861,12 +846,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sqlite3
           sqlite3 --version
-
-      - name: Validate UI E2E shard selector
-        # Runs exactly once per full run, exactly when the selector is the spec
-        # source (explicit UI_E2E_SPECS selections bypass it).
-        if: (inputs.select_jobs_explicitly || steps.changes.outputs.ui_e2e == 'true') && matrix.shard == 1 && env.UI_E2E_SPECS == ''
-        run: node --test scripts/ci/select-ui-e2e-shard.test.mjs
 
       - name: Run UI E2E
         if: inputs.select_jobs_explicitly || steps.changes.outputs.ui_e2e == 'true'
@@ -1008,7 +987,6 @@ jobs:
               - 'apps/cli/src/settings/accountSettings/activeAccountSettingsSnapshot.ts'
               - 'apps/cli/src/settings/accountSettings/refreshAccountSettingsForMinimumVersion.ts'
               - 'apps/cli/src/settings/accountSettings/updateAccountSettingsV2WithRetry.ts'
-              - 'apps/cli/src/settings/accountSettings/workspaceRefsV1.ts'
               # Finite bootstrap stays on the native Machine transfer owner.
               - 'apps/cli/src/machines/transfer/**'
               - 'apps/cli/native/processcustody/**'
@@ -1104,7 +1082,7 @@ jobs:
         if: inputs.select_jobs_explicitly || steps.changes.outputs.workspace_sync_real == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Resolve Mutagen source policy
         id: mutagen_policy
@@ -1287,7 +1265,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -1329,7 +1307,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -1374,17 +1352,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Setup Node (GitHub Actions)
-        if: env.ACT != 'true'
+      - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
-
-      - name: Setup Node (act)
-        if: env.ACT == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -1430,17 +1401,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Setup Node (GitHub Actions)
-        if: env.ACT != 'true'
+      - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
-
-      - name: Setup Node (act)
-        if: env.ACT == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -1474,6 +1438,8 @@ jobs:
     needs: [trusted_ref_guard]
     name: Generated Action DTO Drift
     runs-on: ${{ needs.trusted_ref_guard.outputs.ubuntu_2204 }}
+    outputs:
+      command_executed: ${{ inputs.select_jobs_explicitly || steps.changes.outputs.action_dtos == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -1500,7 +1466,7 @@ jobs:
         if: inputs.select_jobs_explicitly || steps.changes.outputs.action_dtos == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -1537,17 +1503,10 @@ jobs:
             packages/agents/src
           persist-credentials: false
 
-      - name: Setup Node (GitHub Actions)
-        if: env.ACT != 'true'
+      - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
-
-      - name: Setup Node (act)
-        if: env.ACT == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Setup Bun (pinned)
@@ -1599,17 +1558,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Setup Node (GitHub Actions)
-        if: env.ACT != 'true'
+      - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
-
-      - name: Setup Node (act)
-        if: env.ACT == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -1636,17 +1588,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Setup Node (GitHub Actions)
-        if: env.ACT != 'true'
+      - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
-
-      - name: Setup Node (act)
-        if: env.ACT == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -1676,7 +1621,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
@@ -1740,17 +1685,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Setup Node (GitHub Actions)
-        if: env.ACT != 'true'
+      - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
-
-      - name: Setup Node (act)
-        if: env.ACT == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -1806,17 +1744,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Setup Node (GitHub Actions)
-        if: env.ACT != 'true'
+      - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
-
-      - name: Setup Node (act)
-        if: env.ACT == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install system dependencies
@@ -1892,7 +1823,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -1921,7 +1852,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -1954,7 +1885,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -2001,7 +1932,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -2048,7 +1979,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -2115,7 +2046,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -2174,7 +2105,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -2229,7 +2160,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -2293,7 +2224,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -2354,7 +2285,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -2408,7 +2339,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -2460,7 +2391,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -2504,7 +2435,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -2538,7 +2469,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -2572,7 +2503,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -2608,7 +2539,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -2639,7 +2570,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -2676,10 +2607,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: pnpm run test:wiring && pnpm run test:policy
 
-      - name: Run governance inventory reports
-        if: ${{ !cancelled() }}
-        run: pnpm run test:inventory && pnpm run test:migration:inventory && pnpm run test:migration:governance
-
       - name: Run typecheck
         if: ${{ !cancelled() }}
         run: pnpm run typecheck
@@ -2698,25 +2625,18 @@ jobs:
       HAPPIER_SERVER_LIGHT_DATA_DIR: /tmp/happier-server-light
       HAPPIER_DB_PROVIDER: sqlite
       HAPPY_DB_PROVIDER: sqlite
-      # Fall back to a deterministic non-secret for forks / untrusted PRs (no access to repo secrets).
-      HANDY_MASTER_SECRET: ${{ secrets.CI_MASTER_SECRET != '' && secrets.CI_MASTER_SECRET || 'happier-ci-master-secret-not-a-real-secret' }}
+      # Deterministic public test credential; this lane needs no repository secret.
+      HANDY_MASTER_SECRET: happier-ci-master-secret-not-a-real-secret
       HAPPIER_NO_BROWSER_OPEN: "1"
       TMPDIR: /tmp
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Setup Node (GitHub Actions)
-        if: env.ACT != 'true'
+      - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
-
-      - name: Setup Node (act)
-        if: env.ACT == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install system dependencies
@@ -2929,17 +2849,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Setup Node (GitHub Actions)
-        if: env.ACT != 'true'
+      - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
-
-      - name: Setup Node (act)
-        if: env.ACT == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install Sapling
@@ -2980,17 +2893,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Setup Node (GitHub Actions)
-        if: env.ACT != 'true'
+      - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
-
-      - name: Setup Node (act)
-        if: env.ACT == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install Sapling
@@ -3039,26 +2945,6 @@ jobs:
       ubuntu_2204: ${{ steps.runner_pool.outputs.ubuntu_2204 }}
       ubuntu_2404: ${{ steps.runner_pool.outputs.ubuntu_2404 }}
     steps:
-      - name: Admit trusted workflow control ref
-        env:
-          CALLER_REPOSITORY: ${{ github.repository }}
-          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
-          WORKFLOW_REF: ${{ job.workflow_ref }}
-          WORKFLOW_FILE: tests.yml
-          RUNNER_POOL: ${{ inputs.runner_pool || 'github' }}
-        run: |
-          set -euo pipefail
-          test "$CALLER_REPOSITORY" = "$WORKFLOW_REPOSITORY"
-          if [ "$RUNNER_POOL" = "github" ]; then
-            exit 0
-          fi
-          case "$WORKFLOW_REF" in
-            "$WORKFLOW_REPOSITORY/.github/workflows/$WORKFLOW_FILE@refs/heads/dev"|\
-            "$WORKFLOW_REPOSITORY/.github/workflows/$WORKFLOW_FILE@refs/heads/preview"|\
-            "$WORKFLOW_REPOSITORY/.github/workflows/$WORKFLOW_FILE@refs/heads/main"|\
-            "$WORKFLOW_REPOSITORY/.github/workflows/$WORKFLOW_FILE@refs/heads/v0.3") ;;
-            *) echo "Untrusted workflow control ref: $WORKFLOW_REF" >&2; exit 1 ;;
-          esac
       - name: Resolve runner pool
         id: runner_pool
         env:
@@ -3068,7 +2954,7 @@ jobs:
           case "$RUNNER_POOL" in
             github)
               ubuntu_2204=ubuntu-22.04
-              ubuntu_2404=ubuntu-latest
+              ubuntu_2404=ubuntu-24.04
               ;;
             blacksmith-linux-4vcpu)
               ubuntu_2204=blacksmith-4vcpu-ubuntu-2204
@@ -3119,7 +3005,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -3223,6 +3109,11 @@ jobs:
       - name: Run provider contract suite
         env:
           CI: "1"
+          PRESET: ${{ inputs.providers_preset }}
+          TIER: ${{ inputs.providers_tier }}
+          STRICT_KEYS: ${{ fromJSON(inputs.providers_flags).strict_keys }}
+          FLAKE_RETRY: ${{ fromJSON(inputs.providers_flags).flake_retry }}
+          UPDATE_BASELINES: ${{ fromJSON(inputs.providers_flags).update_baselines }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -3234,11 +3125,11 @@ jobs:
           set -euo pipefail
 
           flags=()
-          if [ "${{ fromJSON(inputs.providers_flags).strict_keys }}" = "true" ]; then flags+=("--strict-keys"); fi
-          if [ "${{ fromJSON(inputs.providers_flags).flake_retry }}" != "true" ]; then flags+=("--no-flake-retry"); fi
-          if [ "${{ fromJSON(inputs.providers_flags).update_baselines }}" = "true" ]; then flags+=("--update-baselines"); fi
+          if [ "$STRICT_KEYS" = "true" ]; then flags+=("--strict-keys"); fi
+          if [ "$FLAKE_RETRY" != "true" ]; then flags+=("--no-flake-retry"); fi
+          if [ "$UPDATE_BASELINES" = "true" ]; then flags+=("--update-baselines"); fi
 
-          pnpm --filter @happier-dev/tests run providers:run "${{ inputs.providers_preset }}" "${{ inputs.providers_tier }}" "${flags[@]}"
+          pnpm --filter @happier-dev/tests run providers:run "$PRESET" "$TIER" "${flags[@]}"
 
       - name: Upload provider artifacts (on failure)
         if: failure()
@@ -3259,7 +3150,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22.x
+          node-version-file: .node-version
 
 
       - name: Install dependencies
@@ -3323,7 +3214,7 @@ jobs:
   ci_summary:
     if: ${{ always() && !(!inputs.select_jobs_explicitly && ((github.event_name == 'push' && github.ref_name == 'v0.3') || (github.event_name == 'pull_request' && github.base_ref == 'v0.3'))) }}
     name: CI result summary (all lanes)
-    needs: [cliproxyapi-managed-runtime, ui-e2e, workspace-sync-real, mobile-e2e-android, mobile-e2e-ios, ui-unit, ui-integration, ui, shared-packages-unit, plugin-workspaces-unit, server, home-iroh-real, server-db-contract, cli, stack, release-contracts, installers-smoke-linux, installers-smoke-macos, installers-smoke-windows, artifact-verify, binary-smoke, cli-update-continuity, daemon-continuity, session-continuity, release-assets-docker, self-host-systemd-e2e, self-host-launchd-e2e, self-host-schtasks-e2e, self-host-daemon-e2e, typecheck, cli-daemon-e2e, e2e-core, e2e-core-slow, trusted_ref_guard, release_actor_guard, providers, stress]
+    needs: [cliproxyapi-managed-runtime, ui-e2e, workspace-sync-real, mobile-e2e-android, mobile-e2e-ios, ui-unit, ui-integration, ui, action-map-drift, shared-packages-unit, plugin-workspaces-unit, server, home-iroh-real, server-db-contract, cli, stack, release-contracts, installers-smoke-linux, installers-smoke-macos, installers-smoke-windows, artifact-verify, binary-smoke, build-smoke, cli-update-continuity, daemon-continuity, session-continuity, release-assets-docker, self-host-systemd-e2e, self-host-launchd-e2e, self-host-schtasks-e2e, self-host-daemon-e2e, typecheck, cli-daemon-e2e, e2e-core, e2e-core-slow, trusted_ref_guard, release_actor_guard, providers, stress]
     runs-on: ubuntu-latest
     permissions:
       contents: read

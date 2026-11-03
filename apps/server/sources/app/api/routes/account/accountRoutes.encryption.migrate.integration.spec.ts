@@ -4,6 +4,9 @@ import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-
 
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
+import { matchSessionAccountEncryptionMigrationPostStateInTx, migrateSessionAccountEncryptionInTx } from '@/app/session/sessionWriteService';
+import { projectSessionDisplayV1, sealSessionOwnerDisplayEnvelopeV1, sealSessionSharedDisplayEnvelopeV1,
+    sealSessionDataKeyBundleV0 as sealDisplaySessionPayloadV0 } from '@happier-dev/protocol';
 import { acquireAccountSessionOwnerMetadataFenceInTx } from "@/app/encryption/accountSessionOwnerMetadataFence";
 import {
     PLUGIN_ACCOUNT_STORAGE_KEY_PREFIX,
@@ -3972,6 +3975,34 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
         }
     });
 
+    it('refuses a plain or foreign-purpose display for an encrypted Account target before Session mutation', async () => {
+        const owner = await db.account.create({ data: { encryptionMode: 'plain' } });
+        const sourceEnvelope = { t: 'plain' as const, v: { v: 1 as const, workspace: { name: 'source-owner' } } };
+        const targetEnvelope = { t: 'encrypted' as const, c: sealOwnerMetadata('source-owner') };
+        const semantic = projectSessionDisplayV1({ sharedMetadata: { v: 1 }, ownerMetadata: sourceEnvelope.v });
+        const shared = await sealSessionSharedDisplayEnvelopeV1({ sessionMode: 'plain', display: semantic.shared });
+        const privateDisplay = sealSessionOwnerDisplayEnvelopeV1({ accountMode: 'plain', display: semantic.owner! });
+        if (!shared.ok || !privateDisplay.ok) throw new Error('Canonical source display producer failed');
+        const displayProjectionV1 = JSON.stringify({ v: 1, sourceMetadataVersion: 0, metadataLayoutVersion: 1,
+            shared: shared.envelope, owner: privateDisplay.envelope });
+        const session = await db.session.create({ data: { accountId: owner.id, tag: crypto.randomUUID(),
+            encryptionMode: 'plain', metadataLayoutVersion: 1, metadata: JSON.stringify({ v: 1 }),
+            ownerMetadata: encodeSessionOwnerMetadataEnvelopeV1(sourceEnvelope), displayProjectionV1 } });
+        for (const ownerDisplay of [privateDisplay.envelope, targetEnvelope]) {
+            const result = await inTx(async tx => {
+                await acquireAccountSessionOwnerMetadataFenceInTx(tx, owner.id, 'content');
+                return migrateSessionAccountEncryptionInTx({ tx, accountId: owner.id,
+                    fromMode: 'plain', toMode: 'e2ee', directive: { action: 'migrate', items: [{ sessionId: session.id,
+                        expectedMetadataLayoutVersion: 1, expectedMetadataVersion: 0, expectedAgentStateVersion: 0,
+                        expectedOwnerMetadata: sourceEnvelope, ownerMetadata: targetEnvelope, ownerDisplay }] } });
+            });
+            expect(result).toEqual({ status: 'invalid_content' });
+            const unchanged = await db.session.findUniqueOrThrow({ where: { id: session.id } });
+            expect(unchanged.ownerMetadata).toBe(session.ownerMetadata);
+            expect(unchanged.displayProjectionV1).toBe(displayProjectionV1);
+        }
+    });
+
     it("rewrites a layout-1 owner envelope and publishes only the owner's Session cursor", async () => {
         harness.resetEnv({
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
@@ -3998,7 +4029,7 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
         };
         const targetEnvelope = {
             t: "plain" as const,
-            v: { v: 1 as const },
+            v: { v: 1 as const, workspace: { name: 'source-owner' } },
         };
         const session = await db.session.create({
             data: {
@@ -4015,6 +4046,32 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                 agentStateVersion: 7,
             },
         });
+        const display = projectSessionDisplayV1({ sharedMetadata: { v: 1 },
+            ownerMetadata: { v: 1, workspace: { name: 'source-owner' } } });
+        const sharedDisplay = await sealSessionSharedDisplayEnvelopeV1({ sessionMode: 'e2ee', display: display.shared,
+            encryptPayload: async payload => privacyKit.encodeBase64(await sealDisplaySessionPayloadV0(payload, new Uint8Array(32).fill(8)), 'base64') });
+        const ownerDisplay = sealSessionOwnerDisplayEnvelopeV1({ accountMode: 'e2ee', display: display.owner!,
+            material: { type: 'dataKey', machineKey: new Uint8Array(32).fill(7) }, randomBytes: length => new Uint8Array(length).fill(4) });
+        const targetOwnerDisplay = sealSessionOwnerDisplayEnvelopeV1({ accountMode: 'plain', display: display.owner! });
+        if (!sharedDisplay.ok || !ownerDisplay.ok || !targetOwnerDisplay.ok) throw new Error('Canonical Account transition display producer failed');
+        const displayProjectionV1 = { v: 1 as const, sourceMetadataVersion: 4, metadataLayoutVersion: 1 as const,
+            shared: sharedDisplay.envelope, owner: ownerDisplay.envelope };
+        await db.session.update({ where: { id: session.id }, data: { displayProjectionV1: JSON.stringify(displayProjectionV1) } });
+        const companion = async (tag: string, storedDisplay: string) => db.session.create({ data: {
+            accountId: owner.id, tag, metadata: 'shared-bytes-unchanged', metadataVersion: 4,
+            metadataLayoutVersion: 1, ownerMetadata: encodeSessionOwnerMetadataEnvelopeV1(sourceEnvelope),
+            agentState: 'agent-bytes-unchanged', agentStateVersion: 7, displayProjectionV1: storedDisplay,
+        } });
+        const omittedProducer = await companion('owner-display-omitted', JSON.stringify(displayProjectionV1));
+        const unavailableShared = await companion('owner-display-unavailable-shared', '{invalid-display');
+        const migrationItem = (sessionId: string) => ({ sessionId, expectedMetadataLayoutVersion: 1 as const,
+            expectedMetadataVersion: 4, expectedAgentStateVersion: 7, expectedOwnerMetadata: sourceEnvelope,
+            ownerMetadata: targetEnvelope });
+        const sessions = { action: 'migrate' as const, items: [
+            { ...migrationItem(session.id), ownerDisplay: targetOwnerDisplay.envelope },
+            migrationItem(omittedProducer.id),
+            { ...migrationItem(unavailableShared.id), ownerDisplay: targetOwnerDisplay.envelope },
+        ] };
         await db.sessionShare.create({
             data: {
                 sessionId: session.id,
@@ -4027,37 +4084,53 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
         registerAccountEncryptionMigrateRoutes(app as any);
         await app.ready();
         try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id": owner.id,
-                },
-                payload: {
-                    toMode: "plain",
-                    expectedSettingsVersion: 0,
-                    settingsContent: null,
-                    connectedServices: { action: "assert_empty" },
-                    automations: { action: "assert_empty" },
-                    machines: { action: "assert_empty" },
-                    todos: { action: "assert_empty" },
-                    artifacts: { action: "assert_empty" },
-                    sessions: {
-                        action: "migrate",
-                        items: [{
-                            sessionId: session.id,
-                            expectedMetadataLayoutVersion: 1,
-                            expectedMetadataVersion: 4,
-                            expectedAgentStateVersion: 7,
-                            expectedOwnerMetadata: sourceEnvelope,
-                            ownerMetadata: targetEnvelope,
-                        }],
-                    },
-                },
-            });
+            const migrate = (directive: unknown) => app.inject({ method: 'POST', url: '/v1/account/encryption/migrate',
+                headers: { 'content-type': 'application/json', 'x-test-user-id': owner.id },
+                payload: { toMode: 'plain', expectedSettingsVersion: 0, settingsContent: null,
+                    connectedServices: { action: 'assert_empty' }, automations: { action: 'assert_empty' },
+                    machines: { action: 'assert_empty' }, todos: { action: 'assert_empty' }, artifacts: { action: 'assert_empty' },
+                    sessions: directive } });
+            const wrongMode = await migrate({ ...sessions, items: sessions.items.map(item => ({
+                ...item, ownerDisplay: ownerDisplay.envelope,
+            })) });
+            expect(wrongMode.statusCode, wrongMode.body).toBe(400);
+            const malformed = await migrate({ ...sessions, items: sessions.items.map(item => ({ ...item,
+                ownerDisplay: { t: 'plain', v: { v: 1, audience: 'shared', purpose: 'session_shared_display', display: { v: 1 } } },
+            })) });
+            expect(malformed.statusCode, malformed.body).toBe(400);
+            const stale = await migrate({ ...sessions, items: sessions.items.map(item => ({
+                ...item, expectedMetadataVersion: 99,
+            })) });
+            expect(stale.statusCode, stale.body).toBe(400);
+            expect(stale.json()).toMatchObject({ error: 'invalid-params', reason: 'migration_inventory_changed' });
+            expect((await db.account.findUniqueOrThrow({ where: { id: owner.id } })).encryptionMode).toBe('e2ee');
+            expect((await db.session.findUniqueOrThrow({ where: { id: session.id } })).displayProjectionV1).toBe(JSON.stringify(displayProjectionV1));
+            const response = await migrate(sessions);
 
             expect(response.statusCode, response.body).toBe(200);
+            const transitioned = await db.session.findUniqueOrThrow({ where: { id: session.id } });
+            expect(JSON.parse(transitioned.displayProjectionV1 ?? 'null')).toEqual({
+                v: 1, sourceMetadataVersion: 4, metadataLayoutVersion: 1, shared: sharedDisplay.envelope,
+                owner: targetOwnerDisplay.envelope,
+            });
+            expect(JSON.parse((await db.session.findUniqueOrThrow({ where: { id: omittedProducer.id } })).displayProjectionV1 ?? 'null'))
+                .toEqual({ v: 1, sourceMetadataVersion: 4, metadataLayoutVersion: 1, shared: sharedDisplay.envelope });
+            expect((await db.session.findUniqueOrThrow({ where: { id: unavailableShared.id } })).displayProjectionV1).toBeNull();
+            await expect(inTx(tx => matchSessionAccountEncryptionMigrationPostStateInTx({ tx, accountId: owner.id,
+                toMode: 'plain', directive: sessions }))).resolves.toEqual({ status: 'matched' });
+            const otherOwner = sealSessionOwnerDisplayEnvelopeV1({ accountMode: 'plain', display: { v: 1, name: 'Foreign replay owner' } });
+            if (!otherOwner.ok) throw new Error('Canonical replay display producer failed');
+            await db.session.update({ where: { id: session.id }, data: { displayProjectionV1: JSON.stringify({
+                ...displayProjectionV1, owner: otherOwner.envelope,
+            }) } });
+            await expect(inTx(tx => matchSessionAccountEncryptionMigrationPostStateInTx({ tx, accountId: owner.id,
+                toMode: 'plain', directive: sessions }))).resolves.toEqual({ status: 'mismatch' });
+            await db.session.update({ where: { id: session.id }, data: { displayProjectionV1: JSON.stringify({
+                ...displayProjectionV1, owner: { t: 'plain', v: { v: 1, audience: 'shared',
+                    purpose: 'session_shared_display', display: { v: 1 } } },
+            }) } });
+            await expect(inTx(tx => matchSessionAccountEncryptionMigrationPostStateInTx({ tx, accountId: owner.id,
+                toMode: 'plain', directive: sessions }))).resolves.toEqual({ status: 'matched' });
             await expect(db.session.findUniqueOrThrow({
                 where: { id: session.id },
                 select: {

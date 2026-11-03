@@ -204,7 +204,9 @@ export function useBrowserDiagnosticsRuntime(
     input: UseBrowserDiagnosticsRuntimeInput,
 ): BrowserDiagnosticsRuntimeProjection | null {
     const [eventSource] = React.useState(() => createStore<BrowserDiagnosticsUiStore>(createBrowserDiagnosticsUiStore));
-    const [interactionEnabled, setInteractionEnabled] = React.useState(false);
+    // Initial inactivity is not a revocation: an admitted diagnostic Action supplies consent.
+    // Explicit Disable remains authoritative until the user enables interaction again.
+    const [interactionEnabled, setInteractionEnabled] = React.useState<boolean | null>(null);
     const [pickerActive, setPickerActive] = React.useState(false);
     const [pendingRequests, setPendingRequests] = React.useState<BrowserDiagnosticsPendingRequests>({});
     // DEV-3/DEV-4: the local-owner eval REPL results + expandable object-inspector tree. The runtime
@@ -242,7 +244,7 @@ export function useBrowserDiagnosticsRuntime(
         input.daemonSnapshotClient, onEvents]);
 
     React.useEffect(() => {
-        setInteractionEnabled(false);
+        setInteractionEnabled(current => current === false ? false : null);
         setPickerActive(false);
         setPendingRequests({});
         // Navigation/clear: the page's remote objects belong to the prior generation's object group
@@ -320,10 +322,12 @@ export function useBrowserDiagnosticsRuntime(
     // Interactive diagnostics (eval / element-picker) push command scripts INTO the page. Native
     // WebView injected surfaces deliver them through their bridge; the desktop engine evals them via
     // the host `desktop_browser_eval_script` command (results return over the same ipc/drain channel).
-    // Web iframes are intentionally not listed here until a real script-injection owner exists.
+    // Collector-enabled iframes use the engine's nonce-bound command channel. Without that
+    // existing automation opt-in, keep iframe interaction unavailable rather than inventing a bridge.
     const interactionSupported = input.enabled === true
         && !!input.view
-        && (canAttachInjectedDiagnostics(input.view) || canAttachDesktopInjectedDiagnostics(input.view));
+        && (canAttachInjectedDiagnostics(input.view, input.automationEnabled === true)
+            || canAttachDesktopInjectedDiagnostics(input.view));
 
     const currentRef = React.useRef({ input, interactionEnabled, bridgeBase, interactionSupported });
     currentRef.current = { input, interactionEnabled, bridgeBase, interactionSupported };
@@ -340,7 +344,7 @@ export function useBrowserDiagnosticsRuntime(
         const view = current.input.view;
         const request = args.input as Record<string, unknown>;
         if (!view || current.input.isCurrent?.() === false || !current.bridgeBase || !current.interactionSupported
-            || (!current.interactionEnabled && args.actionId !== 'browser.diagnostics.releaseObjectGroup')
+            || (current.interactionEnabled === false && args.actionId !== 'browser.diagnostics.releaseObjectGroup')
             || request.browserSessionId !== view.browserSessionId || request.viewId !== view.viewId
             || request.navigationGeneration !== view.navigationGeneration || request.tier !== 'injectedPage'
             || args.context.signal?.aborted) return unavailable;
@@ -373,6 +377,10 @@ export function useBrowserDiagnosticsRuntime(
                     pendingRequest = { elementPickerRequest: BrowserDiagnosticsElementPickerRequestV1Schema.parse(engineRequest) };
                     break;
                 default: return unavailable;
+        }
+        if (current.interactionEnabled === null && args.actionId !== 'browser.diagnostics.releaseObjectGroup') {
+            currentRef.current.interactionEnabled = true;
+            setInteractionEnabled(true);
         }
         return await new Promise(resolve => {
             const onAbort = () => settleResult(requestId, { ok: false, errorCode: 'outcome_unknown', error: 'outcome_unknown' });
@@ -610,7 +618,7 @@ export function useBrowserDiagnosticsRuntime(
             return {
                 state: 'unavailable',
                 ownerOnly: true,
-                unavailableReasonCode: input.view && canAttachInjectedDiagnostics(input.view)
+                unavailableReasonCode: input.view && canAttachInjectedDiagnostics(input.view, input.automationEnabled === true)
                     ? 'collector_unavailable'
                     : 'adapter_unavailable',
                 pickerState: 'unavailable',
@@ -623,6 +631,7 @@ export function useBrowserDiagnosticsRuntime(
                 canEnable: true,
                 pickerState: 'idle',
                 onEnableInteraction: () => {
+                    currentRef.current.interactionEnabled = true;
                     setInteractionEnabled(true);
                 },
             };

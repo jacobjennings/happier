@@ -26,8 +26,8 @@ const { FindBar } = await import('@/components/ui/find/FindBar');
 const { FindHighlightedText } = await import('@/components/ui/text/FindHighlightedText');
 const { PluginSurfaceFocusEligibilityProvider } = await import('@/components/ui/presentation/PluginSurfaceFocusEligibility');
 const { createReadOnlySessionTranscriptSource } = await import('../source/readOnlySessionTranscriptSource');
-const { createTranscriptJumpHostTestHarness, createTranscriptJumpWebMetrics, restoreTranscriptJumpEnvironment: restoreEnvironment } =
-    await import('../viewport/jump/host/transcriptJumpHostTestHarness');
+const { createTranscriptJumpHostTestHarness, createTranscriptJumpWebMetrics, emptyTranscriptJumpPage,
+    restoreTranscriptJumpEnvironment: restoreEnvironment } = await import('../viewport/jump/host/transcriptJumpHostTestHarness');
 const { TranscriptFindSurface } = await import('./TranscriptFindSurface');
 const { isTranscriptTargetObservedAtAlignment } = await import('../viewport/window/useTranscriptTargetWindowHostAdapter');
 const { createTranscriptFindModel } = await import('./useTranscriptFind');
@@ -35,12 +35,14 @@ const { revealTranscriptFindMatch } = await import('./revealTranscriptFindMatch'
 const { createDefaultActionExecutor } = await import('@/sync/ops/actions/defaultActionExecutor');
 let environment: Awaited<ReturnType<typeof restoreTranscriptJumpEnvironment>> | undefined;
 let webLocks: WebLockManagerMockHandle;
+const historyReads: URL[] = [];
 beforeEach(async () => {
     webLocks = installWebLockManagerMock();
     vi.spyOn(document.documentElement, 'clientWidth', 'get').mockReturnValue(1440);
     vi.spyOn(document.documentElement, 'clientHeight', 'get').mockReturnValue(900);
     await act(async () => { window.dispatchEvent(new Event('resize')); });
-    environment = await restoreEnvironment();
+    historyReads.length = 0;
+    environment = await restoreEnvironment((url) => { historyReads.push(url); return Response.json(emptyTranscriptJumpPage()); });
 });
 afterEach(async () => { await environment?.dispose(); webLocks.restore(); standardCleanup(); });
 
@@ -187,6 +189,9 @@ describe('web Find reveal through the real jump owner', () => {
             // The renderer approach may precede the mount; the exact landing that completes the jump is aligned.
             expect(completedLandings.at(-1)).toBe(true);
             expect(mark.getBoundingClientRect().top).toBe(96);
+            expect(mark.getBoundingClientRect().bottom).toBeLessThan(element.clientHeight);
+            // Complete coverage: the reveal lands without reading any history page.
+            expect(historyReads).toEqual([]);
         } finally { model.dispose(); await act(async () => root.unmount()); await hook.unmount(); }
     });
 

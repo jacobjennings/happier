@@ -264,6 +264,7 @@ const actionConfirmationTranslations = { de: {
         homeUnavailable: 'Diese Freigabe gehört zu einem Home, das auf diesem Gerät nicht verfügbar ist. Verbinde dieses Home erneut, um zu entscheiden.',
         turnedOffTitle: 'Aktion ausgeschaltet',
         turnedOffMessage: 'Diese Aktion ist ausgeschaltet, deshalb wurde nichts geändert. Du kannst sie unter Einstellungen → Aktionen wieder einschalten.',
+        turnedOffReadMessage: 'Diese Aktion ist ausgeschaltet, deshalb wurde nichts geladen. Du kannst sie unter Einstellungen → Aktionen wieder einschalten.',
         openActionSettings: 'Aktionseinstellungen öffnen',
     } } as const satisfies Pick<Record<string, ActionConfirmationTranslations>, "de">;
 
@@ -559,15 +560,21 @@ const de: typeof en = {
     descriptions: {
         conversation: ({ machine }) => `Frag alles, ohne diese Sitzung zu unterbrechen. Es läuft auf ${machine} daneben; nichts geht zurück, solange du es nicht sendest.`,
     },
+    placeholders: {
+        review: 'Worauf sollen sich die Reviewer konzentrieren?',
+    },
     chips: {
         engineTitle: 'Wer antwortet',
         addReviewer: 'Reviewer hinzufügen',
+        reviewer: 'Reviewer',
+        reviewerNeeded: 'Reviewer hinzufügen, um zu starten',
         removeReviewer: ({ name }) => `${name} entfernen`,
         scope: 'Was geprüft wird',
         advanced: 'Erweitert',
     },
     reportToSession: 'An diese Sitzung berichten',
     startsWhenYouSend: ({ count }) => count > 1 ? `${count} Reviews starten beim Senden` : 'Startet beim Senden',
+    thisFolder: 'diesem Ordner',
     offline: ({ machine }) => `${machine} ist offline. Der Agent startet dort; dein Entwurf bleibt hier, bis es wieder da ist.`,
     menu: {
         askSection: 'Einen Agenten bitten',
@@ -1035,6 +1042,7 @@ const artifactsBrowserTranslations = { de: {
         },
         proposal: {
             title: 'Vorgeschlagene Änderung',
+            titleBy: ({ who }) => `${who} schlägt eine Änderung vor`,
             basedOn: ({ n }) => `Basiert auf Version ${n}`,
             current: ({ n }) => `Version ${n} · aktuell`,
             before: 'Vorher',
@@ -1214,6 +1222,8 @@ const de: BoardsTranslations = {
     meta: {
         needYou: ({ count }) => (count === 1 ? '1 braucht dich' : `${count} brauchen dich`),
         items: ({ count }) => (count === 1 ? '1 Element' : `${count} Elemente`),
+        itemsAtLeast: ({ count }) => `${count}+ Elemente`,
+        needYouAtLeast: ({ count }) => `${count}+ brauchen dich`,
         handPicked: 'Von Hand gewählt',
         empty: 'Leer',
         moreSources: ({ count }) => `+ ${count}`,
@@ -1298,10 +1308,22 @@ const de: BoardsTranslations = {
         empty: 'Nichts passt.',
         noMatch: ({ query }) => `Nichts passt zu „${query}“`,
     },
+    /** Candidates an answered filter could not classify: said once under the header, qualifying every count. */
+    undetermined: {
+        sessions: ({ count }) => (count === 1 ? `1 Sitzung konnte nicht geprüft werden` : `${count} Sitzungen konnten nicht geprüft werden`),
+        runs: ({ count }) => (count === 1 ? `1 Lauf konnte nicht geprüft werden` : `${count} Läufe konnten nicht geprüft werden`),
+        items: ({ count }) => (count === 1 ? `1 Element konnte nicht geprüft werden` : `${count} Elemente konnten nicht geprüft werden`),
+        projectAssociation: 'Die Projektzuordnung wurde nicht veröffentlicht oder ist für dich nicht sichtbar.',
+        filterFacts: 'Die für diesen Filter nötigen Informationen sind nicht verfügbar.',
+    },
     empty: {
         title: 'Wähle, was dieses Board zeigt',
         body: 'Füge Sitzungen, Workflows, Läufe oder Rechner von Hand hinzu oder zeige einen Bereich wie „Braucht dich“. Du ordnest sie an; das Board hält sie live.',
         action: 'Zum Board hinzufügen',
+        sourcedTitle: 'Gerade nichts hier',
+        sourcedBody: 'Passende Einträge erscheinen hier, sobald sie eintreffen. Du kannst auch welche von Hand hinzufügen.',
+        uncheckedTitle: 'Noch keine Treffer bestätigt',
+        pendingTitle: 'Prüfe, was hierher gehört …',
     },
     widgets: {
         group: 'Widgets',
@@ -1623,6 +1645,30 @@ type MachineParams = Shared_computerUseTranslations.MachineParams;
 type ComputerUseTranslations = Shared_computerUseTranslations.ComputerUseTranslations;
 
 const computerUseTranslations = { de: {
+        providers: {
+            pageDescription: ({ machine }) => `Wie Agenten den Bildschirm von ${machine} sehen und steuern.`,
+            sectionTitle: "Anbieter",
+            sectionDescription: "Agenten nutzen den Standard, außer sie verlangen einen anderen aktivierten Anbieter.",
+            offlineDescription: ({ machine }) => `${machine} ist offline, daher können gerade keine Anbieter aktiviert werden.`,
+            cuaDescription: "Schnell. Arbeitet mit dem, was auf dem Bildschirm ist.",
+            agentDesktopDescription: "Bedient benannte Steuerelemente. Langsamer, braucht weniger Tokens.",
+            status: {
+                checking: "Wird geprüft…",
+                installsOnEnable: "Wird beim Aktivieren installiert",
+                installing: "Wird installiert…",
+                installed: "Installiert",
+                missing: "Nicht installiert",
+                failed: "Installation fehlgeschlagen",
+                unavailable: "Auf diesem Rechner nicht verfügbar",
+            },
+            install: "Installieren",
+            retry: "Erneut versuchen",
+            defaultTitle: "Standard",
+            makeDefault: "Als Standard festlegen",
+            loadFailedTitle: "Einstellungen zur Computersteuerung können nicht geladen werden",
+            saveFailed: "Änderung konnte nicht gespeichert werden",
+            summaryPair: ({ first, second }) => `${first} und ${second}`,
+        },
         approval: {
             sectionTitle: 'Auf dem Computer',
             act: {
@@ -1807,6 +1853,8 @@ const computerUseTranslations = { de: {
             pressKey: ({ key }) => `${key} gedrückt`,
             press: 'Eine Taste gedrückt',
             pressRunning: 'Drückt eine Taste',
+            drag: 'Hat gezogen',
+            wheel: 'Hat gescrollt',
             mayHaveLanded: 'wurde eventuell ausgeführt',
             failed: 'Nicht ausgeführt',
         },
@@ -2601,9 +2649,11 @@ const de: EntityDragDropTranslations = {
         putUnderDetail: 'Berichtet an sie · beide laufen weiter',
         moveAbove: ({ target }) => `Über ${target} verschieben`,
         moveBelow: ({ target }) => `Unter ${target} verschieben`,
+        moveBefore: ({ target }) => `Vor ${target} verschieben`,
+        moveAfter: ({ target }) => `Hinter ${target} verschieben`,
         orderDetail: 'Ändert nur die Reihenfolge',
         moveToFolder: ({ folder }) => `Nach ${folder} verschieben`,
-        folderDetail: 'Nur der Ordner · berichtet an niemanden',
+        folderDetail: 'Läuft weiter, wo sie ist', leaveSectionDetail: 'Verlässt ihren Abschnitt',
         moveToTopLevel: 'Auf die oberste Ebene verschieben',
         topLevelDetail: 'Aus dem Ordner · sonst ändert sich nichts',
         cantPutUnder: ({ target }) => `Kann nicht unter ${target} eingeordnet werden`,
@@ -2648,7 +2698,7 @@ const de: EntityDragDropTranslations = {
         foldersOff: 'Ordner sind für dieses Home ausgeschaltet',
         gone: 'Dieser Ort ist gerade verschwunden',
         generic: 'Dieser Ort kann das nicht aufnehmen',
-        otherGroup: 'Es gehört zu einer anderen Gruppe',
+        otherGroup: 'Eine Sitzung bleibt bei dem Projekt, in dem sie läuft. Lege sie stattdessen in einen Abschnitt',
         cantHold: 'Diese Zeile kann nichts aufnehmen',
         fixedItem: 'Es lässt sich in dieser Liste nicht verschieben',
     },
@@ -5900,6 +5950,7 @@ const machineDetailPageTranslations = { de: translated({
                 sharing: "Freigabe",
                 agents: "Agenten",
                 terminal: "Terminal",
+                computer: "Computersteuerung",
                 connection: "Verbindung",
                 tools: "Werkzeuge",
                 doctor: "Diagnose",
@@ -6320,8 +6371,8 @@ const machineDetailPageTranslations = { de: translated({
                 },
                 customSustain: {
                     title: "Wie lange",
-                    body: "Eine beliebige ganze Zahl an Minuten, bis zu einer Woche (10080).",
-                    invalid: "Gib eine ganze Zahl an Minuten von 1 bis 10080 ein.",
+                    body: "Eine beliebige ganze Zahl an Minuten, bis zu einer Woche (10080). Gib eine Einheit an: ms, s, min, h oder d.",
+                    invalid: "Gib eine ganze Zahl an Minuten von 1 bis 10080 ein. Gib eine Einheit an: ms, s, min, h oder d.",
                 },
                 customCpu: {
                     title: "CPU über",
@@ -6629,7 +6680,7 @@ const machineDetailPageTranslations = { de: translated({
                     customTitle: "Ungenutztes vorschlagen nach",
                 },
                 days: ({ days }) => `${days} ${days === 1 ? 'Tag' : 'Tage'}`,
-                customDays: { body: "Eine beliebige ganze Zahl von Tagen, 1 oder mehr.", invalid: "Gib eine ganze Zahl von Tagen ein, 1 oder mehr." },
+                customDays: { body: "Eine beliebige ganze Zahl von Tagen, 1 oder mehr. Gib eine Einheit an: ms, s, min, h oder d.", invalid: "Gib eine ganze Zahl von Tagen ein, 1 oder mehr. Gib eine Einheit an: ms, s, min, h oder d." },
             },
             scope: {
                 label: "Was angezeigt wird",
@@ -6894,8 +6945,8 @@ const machineDetailPageTranslations = { de: translated({
                 milliseconds: ({ milliseconds }) => `${milliseconds} ms`,
                 customIdle: {
                     title: "Inaktive Werkzeuge schließen",
-                    body: "Gib Millisekunden, Sekunden, Minuten oder Stunden ein; mindestens 1 Sekunde.",
-                    invalid: "Gib eine Dauer von mindestens 1 Sekunde ein.",
+                    body: "Gib Millisekunden, Sekunden, Minuten oder Stunden ein; mindestens 1 Sekunde. Gib eine Einheit an: ms, s, min, h oder d.",
+                    invalid: "Gib eine Dauer von mindestens 1 Sekunde ein. Gib eine Einheit an: ms, s, min, h oder d.",
                 },
                 customBrowsers: {
                     title: "Gleichzeitige Browser",
@@ -6951,7 +7002,7 @@ const machineDetailPageTranslations = { de: translated({
                 sustainHelp: "Eine Lastspitze beim Build löst nichts aus.",
                 cooldownTitle: "Dann zwischen den Schritten warten",
                 cooldownHelp: "Nach jedem Schritt wartet Happier so lange und prüft, ob der Speicher gesunken ist.",
-                customMinutes: { title: "Wie lange", body: "Eine ganze Zahl von Minuten, 1 oder mehr, etwa 3 oder 90.", invalid: "Gib eine ganze Zahl von Minuten ein, 1 oder mehr." },
+                customMinutes: { title: "Wie lange", body: "Eine ganze Zahl von Minuten, 1 oder mehr, etwa 3 min oder 1.5 h. Gib eine Einheit an: ms, s, min, h oder d.", invalid: "Gib eine ganze Zahl von Minuten ein, 1 oder mehr. Gib eine Einheit an: ms, s, min, h oder d." },
             },
             ladder: {
                 label: "Was der Speicherschutz tun würde",
@@ -7053,7 +7104,7 @@ const machineDetailPageTranslations = { de: translated({
                 graceHelp: "Gibt einem Prozess einen Moment, von selbst fertig zu werden.",
                 atOnce: "Sofort",
                 seconds: ({ seconds }) => `${seconds} s`,
-                customGrace: { title: "Wie lange warten", body: "Sekunden oder Minuten, etwa 45 s oder 3 min.", invalid: "Gib eine Anzahl Sekunden oder Minuten ein, 0 oder mehr." },
+                customGrace: { title: "Wie lange warten", body: "Sekunden oder Minuten, etwa 45 s oder 3 min. Gib eine Einheit an: ms, s, min, h oder d.", invalid: "Gib eine Anzahl Sekunden oder Minuten ein, 0 oder mehr. Gib eine Einheit an: ms, s, min, h oder d." },
             },
             limits: {
                 title: "Limits und Energie",
@@ -7794,7 +7845,7 @@ return { nativePasswordTranslations };
 const Domain_navigationPlacementTranslations = (() => {
 type NavigationPlacementTranslation = Shared_navigationPlacementTranslations.NavigationPlacementTranslation;
 
-const navigationPlacementTranslations = { de: { customize: 'Anpassen…', title: 'Navigation', description: 'Wähle, was sichtbar bleibt, unter Mehr erscheint oder ausgeblendet wird. Ziehen zum Sortieren. Auf diesem Gerät gespeichert.', pinned: 'Angeheftet', overflow: 'Mehr', hidden: 'Ausgeblendet', reset: 'Zurücksetzen', appRail: 'Linke Leiste', sessionRail: 'Sitzungsleiste', workspaceRail: 'Arbeitsbereichsleiste', sessionTabBar: 'Telefon-Tableiste', phoneLauncher: 'Telefon-Verknüpfungen' } } satisfies Pick<Record<string, NavigationPlacementTranslation>, "de">;
+const navigationPlacementTranslations = { de: { customize: 'Anpassen…', title: 'Navigation', description: 'Wähle, was sichtbar bleibt, unter Mehr erscheint oder ausgeblendet wird. Ziehen zum Sortieren. Auf diesem Gerät gespeichert.', pinned: 'Angeheftet', overflow: 'Mehr', hidden: 'Ausgeblendet', reset: 'Zurücksetzen', appRail: 'Linke Leiste', sessionRail: 'Sitzungsleiste', workspaceRail: 'Arbeitsbereichsleiste', sessionTabBar: 'Telefon-Tableiste', phoneLauncher: 'Telefon-Verknüpfungen', composer: 'Eingabefeld' } } satisfies Pick<Record<string, NavigationPlacementTranslation>, "de">;
 
 return { navigationPlacementTranslations };
 })();
@@ -8434,7 +8485,8 @@ const Domain_pluginSettingsPresentationTranslations = (() => {
 const english = Shared_pluginSettingsPresentationTranslations.english;
 
 const pluginSettingsPresentationTranslations = { de: {
-        rowStatus: { enabled: 'Aktiviert', disabled: 'Deaktiviert', incompatible: 'Nicht kompatibel', trustRemoved: 'Vertrauen entzogen', needsAttention: 'Benötigt Aufmerksamkeit' },
+        enablement: {"account": "In deinem Konto", "machine": "Auf diesem Computer", "description": "Beides muss aktiviert sein, damit das Plugin hier läuft. Beim Deaktivieren bleiben Daten und Verbindungen erhalten.", "accountScope": "Alle deine Computer", "accountOff": "In deinem Konto deaktiviert, daher läuft es auf keinem deiner Computer. Daten und Verbindungen bleiben erhalten.", "machineOff": "Auf diesem Computer deaktiviert. Deine anderen Computer sind nicht betroffen; Daten und Verbindungen bleiben erhalten."},
+        rowStatus: { enabled: 'Aktiviert', disabled: 'Deaktiviert', incompatible: 'Nicht kompatibel', trustRemoved: 'Vertrauen entzogen', needsAttention: 'Benötigt Aufmerksamkeit', offInAccount: 'Im Konto deaktiviert' },
         developmentPhase: { observing: 'Wird beobachtet', preparingDependencies: 'Abhängigkeiten werden vorbereitet', compiling: 'Wird kompiliert', validating: 'Wird geprüft', active: 'Aktiv', retainedIncumbent: 'Vorherige Version aktiv', unavailable: 'Nicht verfügbar' },
         developmentDiagnostic: { manifestMissing: 'In diesem Ordner gibt es kein Plugin-Manifest. Füge .happier-plugin/plugin.json hinzu oder wähle den Ordner des Plugins.', projectMissing: 'Dieser Ordner existiert nicht mehr. Entferne ihn aus der Entwicklung oder wähle den aktuellen Ort des Plugins.' },
         rowSource: { bundled: 'In Happier enthalten', npm: 'npm-Paket', archive: 'Archivdatei', localPath: 'Lokaler Ordner', other: 'Konfigurierte Quelle' },
@@ -9056,9 +9108,12 @@ const rolesTranslations = { de: {
             sectionTitle: 'Rollen',
             allRoles: 'Alle Rollen',
             inUse: ({ count }) => `${count} in Nutzung`,
-            changed: 'geändert',
-            thisSession: 'diese Sitzung',
+            changedHere: 'Hier geändert',
+            addedHere: 'Hier hinzugefügt',
             reset: 'Zurücksetzen',
+            runsInBackground: 'läuft im Hintergrund',
+            approvalReviewerFollowsDefault: ({ value }) => `Folgt deiner Standardeinstellung · ${value}`,
+            approvalReviewerOverride: ({ value }) => `Hier festgelegt · Standard: ${value}`,
             newRoleForSession: 'Neue Rolle für diese Sitzung',
             changeForSession: 'Für diese Sitzung ändern',
             editNotes: 'Notizen bearbeiten',
@@ -9183,7 +9238,7 @@ const runPageTranslations = { de: {
         launcher: {
             titles: { review: 'Review anfordern', plan: 'Plan anfordern', delegate: 'Aufgabe abgeben' },
             descriptions: {
-                review: ({ machine }) => `Jeder Agent prüft die Änderungen auf ${machine} für sich; du bekommst hier ein Ergebnis von jedem.`,
+                review: ({ folder }) => `Jeder Agent prüft die Änderungen in ${folder} für sich; du bekommst hier ein Ergebnis von jedem.`,
                 plan: ({ machine }) => `Der Agent liest den Code auf ${machine} und schlägt hier einen Plan vor. Er ändert nichts.`,
                 delegate: ({ machine }) => `Der Agent arbeitet auf ${machine} mit den Berechtigungen unten und meldet sich hier zurück.`,
             },
@@ -9281,7 +9336,7 @@ type SecretsSettingsCopy = Shared_secretsSettingsTranslations.SecretsSettingsCop
 const en = Shared_secretsSettingsTranslations.en;
 
 const de: SecretsSettingsCopy = {
-    purpose: "API-Schlüssel und Tokens für Agenten und MCP-Server. Gespeicherte Werte werden nicht erneut angezeigt.",
+    purpose: "API-Schlüssel und Tokens für Agenten und MCP-Server. Werte bleiben verborgen, außer jemand, der das Secret verwaltet, zeigt sie an.",
     yoursTitle: 'Deine Secrets',
     yoursDescription: 'Secrets, die du gespeichert hast oder besitzt. Wähle sie überall dort aus, wo Happier nach einem Schlüssel fragt.',
     sharedWithYouTitle: 'Mit dir geteilt',
@@ -9310,6 +9365,27 @@ const de: SecretsSettingsCopy = {
     storagePlain: 'Vom Home verwaltet',
     storagePlainDescription: 'Dieses Home speichert es und kann es lesen, um es bereitzustellen.',
     save: 'Secret speichern',
+    revealValue: "Wert anzeigen",
+    hideValue: "Wert ausblenden",
+    revealConfirmTitle: ({ name }: { name: string }) => `„${name}“ anzeigen?`,
+    revealConfirmBody: "Der Wert bleibt auf diesem Gerät sichtbar, bis du ihn ausblendest oder die Seite verlässt. Anzeigen und Kopieren werden im Verlauf festgehalten.",
+    revealConfirm: "Anzeigen",
+    valueUnavailable: "Gespeichert. Kann auf diesem Gerät gerade nicht angezeigt werden.",
+    valueRefused: "Der Wert konnte nicht angezeigt werden, es wurde nichts gezeigt.",
+    copyRefused: "Der Wert konnte nicht kopiert werden. Zeige ihn erneut an, um es noch einmal zu versuchen.",
+    copyUnrecorded: "Der Wert ist eventuell in der Zwischenablage, aber dieses Kopieren konnte nicht festgehalten werden.",
+    historyTitle: "Anzeigeverlauf",
+    historyEmpty: "Niemand hat diesen Wert angezeigt.",
+    historyUnavailable: "Der Verlauf konnte nicht geladen werden.",
+    historyRevealed: "Angezeigt",
+    historyRevealedCopied: "Angezeigt und kopiert",
+    historyCopyNotConfirmed: "Angezeigt · Kopieren nicht bestätigt",
+    historyNotShown: "Nicht angezeigt",
+    historyUnconfirmed: "Anzeige nicht bestätigt",
+    historyThisDevice: "Dieses Gerät",
+    historyOtherDevice: "Anderes Gerät",
+    historyUnknownActor: "Jemand",
+    historyOlder: "Ältere anzeigen",
 };
 
 const secretsSettingsTranslations = { de } as const;
@@ -9611,6 +9687,24 @@ const sessionBoardTranslations = { de: {
                 unpin: 'Aus dieser Ansicht lösen',
                 pinToBoard: 'An Board anheften',
                 moveToView: ({ title }) => `Nach ${title} verschieben`,
+                network: 'Netzwerkzugriff…',
+            },
+            network: {
+                title: 'Netzwerkzugriff',
+                hint: 'Welche Seiten diese Ansicht im Browser, der sie zeigt, erreichen darf.',
+                reach: 'Darf erreichen',
+                none: 'Keiner',
+                sites: 'Bestimmte Seiten',
+                open: 'Jede Seite',
+                sitesLabel: 'Seiten',
+                sitesPlaceholder: 'https://api.example.com',
+                sitesInvalid: ({ sites }) => `Keine Seitenadresse: ${sites}. Verwende https://example.com.`,
+                sitesNeeded: 'Füge mindestens eine Seite hinzu.',
+                noneConsequence: 'Sie läuft für sich und stellt keine Anfragen nach außen.',
+                sitesConsequence: 'Sie erreicht nur die aufgelisteten Seiten. Entfernter Code und Inhalte dort können sich ändern.',
+                openConsequence: 'Sie erreicht jede Seite, kann ihre Inhalte dorthin senden und die IP-Adresse der Betrachtenden verraten. Entfernter Code kann sich ändern.',
+                shareOffNote: 'Ein öffentlicher Link lässt sich weiterhin ohne Netzwerkzugriff teilen.',
+                failed: 'Der Netzwerkzugriff ließ sich nicht ändern. Versuche es erneut.',
             },
             moved: {
                 before: ({ title }) => `${title} nach vorn verschoben.`,
@@ -10828,6 +10922,7 @@ const de: typeof en = {
         muteFailed: 'Stummschalten fehlgeschlagen',
         truncated: "Ergebnis gekürzt.",
         wokenBy: ({ count }) => (count === 1 ? 'Durch ein Update geweckt' : `Durch ${count} Updates geweckt`),
+        updateCount: ({ count }) => (count === 1 ? '1 Update' : `${count} Updates`),
         notFromYou: 'keine Nachricht von dir',
     },
     workerFollow: {
@@ -10866,9 +10961,10 @@ const de: typeof en = {
         expandMap: 'Karte neben der Sitzung öffnen',
     },
     map: {
-        folded: "Erledigte Arbeit wird eingeklappt",
+        folded: ({ names }) => `Erledigte Arbeit bleibt in Liste: ${names}`,
         backgroundRuns: ({ count }) => (count === 1 ? "1 Hintergrundlauf" : `${count} Hintergrundläufe`),
         positionUnder: ({ position, total, parent }) => `${position} von ${total} unter ${parent}`,
+        waitingOn: ({ count }) => `Wartet auf ${count}`,
     },
     actions: {
         showInTranscript: 'Im Transkript anzeigen',
@@ -11363,6 +11459,10 @@ const shareSheetTranslations = { de: {
         remove: 'Zugriff entfernen',
         confirmRemove: 'Entfernen bestätigen',
         removedAnnouncement: ({ name }) => `${name} hat keinen Zugriff mehr`,
+        removeLosesPerson: ({ name }) => `${name} verliert auf allen Geräten den Zugriff darauf.`,
+        removeLosesMembers: ({ name }) => `Mitglieder von ${name} verlieren auf allen Geräten den Zugriff darauf.`,
+        removeKeepsOtherAccess: "Zugriff, den sie auf anderem Weg haben, bleibt bestehen.",
+        removeKeepsTheirWork: "Ihre eigenen Checkouts, Sessions und Widgets bleiben ihre.",
         browseAll: 'Alle durchsuchen',
         browsePeople: 'Alle Personen durchsuchen',
         browseTeams: 'Alle Teams durchsuchen',
@@ -12667,7 +12767,7 @@ const voiceMomentsTranslations = { de: {
         setupClose: 'Schließen',
         needsYouEnded: 'Voice beendet. Die Freigabe wartet noch im Posteingang.',
         needsYouReview: 'Anfrage prüfen',
-        needsYouTapToDecide: 'Vorgelesen · hier entscheiden, nicht per Stimme',
+        needsYouTapToDecide: "Vorgelesen · hier per Tippen entscheiden",
         briefMe: 'Bring mich auf den Stand',
         briefMeA11y: 'Bring mich auf den Stand: Voice liest vor, was dich braucht, was fehlschlug und was bereit ist',
         briefNeedsYou: 'Braucht dich',
@@ -12675,7 +12775,7 @@ const voiceMomentsTranslations = { de: {
         briefReady: 'Bereit',
         briefIncomplete: 'Noch nicht alles ist geladen, daher fehlt vielleicht etwas.',
         briefCaughtUp: 'Gerade braucht dich nichts.',
-        briefNotSpoken: 'Voice kann das gerade nicht vorlesen. Die Liste steht vollständig hier.',
+        briefNotSpoken: "Voice kann das gerade nicht vorlesen.",
         briefStop: 'Stopp',
         continueTitle: 'Hier weitersprechen',
         continueDetail: ({ device }) => `Du hast auf ${device} gesprochen`,
@@ -12771,7 +12871,7 @@ const defineVoiceReadinessTranslation = Shared_voiceReadinessTranslations.define
 
 const voiceReadinessTranslations = { de: defineVoiceReadinessTranslation({
     ready: 'Bereit für Voice.',
-    permissionAnnouncement: ({ summary }) => `Die Coding-Session benötigt eine Berechtigung für ${summary}. Prüfe sie in der Session-Oberfläche, um sie zu genehmigen oder abzulehnen.`,
+    permissionAnnouncement: ({ summary }) => `Die Coding-Session benötigt eine Berechtigung für ${summary}.`,
     userActionAnnouncement: ({ question }) => `Die Coding-Session benötigt deine Antwort. ${question}`,
     userActionFallback: 'Die Coding-Session benötigt deine Antwort. Beantworte die Frage, damit ich fortfahren kann.',
     requestedTool: 'das angeforderte Werkzeug',
@@ -12931,7 +13031,7 @@ const de: VoiceSettingsPagesCopy = {
       toolsTitle: 'Werkzeugnamen',
       toolsDescription: 'Etwa „Datei bearbeitet“. Argumente und Dateipfade werden nie geteilt.',
       permissionsTitle: 'Berechtigungsanfragen',
-      permissionsDescription: 'Damit er dir sagen kann, was dich braucht. Du bestätigst weiterhin per Tippen.',
+      permissionsDescription: "Damit es Anfragen vorlesen und dir beim Beantworten helfen kann.",
       devicesTitle: 'Deine Rechner und Geräte',
       devicesDescription: 'Namen und Online-Status, um Sitzungen dort zu starten, wo du willst.',
       liveTitle: 'Während du sprichst',
@@ -13016,7 +13116,11 @@ const de: VoiceSettingsPagesCopy = {
       itMayReadOnly: 'Nur lesen',
       itMayReadOnlyDescription: 'Er liest deine Sitzungen und Dateien und ändert nichts.',
       itMayAsk: 'Erst fragen',
-      itMayAskDescription: 'Jede Änderung fragt dich zuerst. Ein gesprochenes „Ja“ bestätigt nie; du tippst.',
+      itMayAskDescription: "Jede Änderung fragt dich zuerst.",
+      approvalsTitle: "Genehmigungen",
+      approvalsDescription: "Wenn eine Session um Erlaubnis bittet, während du sprichst.",
+      canApproveRequestsTitle: "Der Voice-Agent darf Anfragen genehmigen",
+      canApproveRequestsDescription: "Er liest jede Anfrage vor und beantwortet sie so, wie du es sagst. Aus: Du entscheidest jede per Tippen.",
       itMaySafe: 'Sichere Änderungen',
       itMaySafeDescription: 'Er macht sichere Änderungen im Arbeitsbereich selbst und fragt beim Rest.',
       itMayAnything: 'Alles',
@@ -13133,6 +13237,7 @@ const walkthroughSettingsTranslations = { de: copy({
         model: 'Zusammenfassungsmodell',
         modelDescription: 'Wird für Erklärungen, Rundgänge und Commit-Vorschläge verwendet.',
         chooseModel: 'Modell wählen',
+        sessionModel: 'Modell der Sitzung',
         searchModels: 'Modelle suchen',
         loadModels: "Weitere Modelle suchen",
         loadFailed: "Gespeicherte Walkthroughs konnten nicht geladen werden.",
@@ -13148,6 +13253,7 @@ const walkthroughSettingsTranslations = { de: copy({
         costPremium: "Hohe Kosten",
         loadingModels: "Modelle werden geladen …",
         noModels: "Keine Modelle gefunden",
+        chooseMachineForModels: "Wähle zuerst ein Gerät, um seine Modelle zu sehen.",
         loadModelsFailed: "Modelle konnten nicht geladen werden. Versuche es erneut.",
         startFailure: {
             notInstalled: { title: "Auf diesem Rechner nicht installiert", next: "Prüfe Befehl und Arbeitsverzeichnis, dann versuche es erneut." },
@@ -13213,6 +13319,7 @@ const walkthroughTranslations = { de: {
             saved: walkthroughSavedTranslations.de,
             progress: walkthroughProgressTranslations.de,
             eyebrow: 'Durchgang',
+            conversationTitle: 'Gespräch zum Durchgang',
             generated: 'Generiert',
             generatedBy: ({ model }) => `Generiert · ${model}`,
             generatedA11y: 'Von einem Modell geschrieben',
@@ -13260,6 +13367,25 @@ const walkthroughTranslations = { de: {
             nextStop: 'Nächste Station',
             done: 'Fertig',
             evidence: { displayFailed: 'Der gespeicherte Code konnte nicht angezeigt werden. Die Datei bleibt unter Dateien.', binary: 'Binärdatei, aus ihren Metadaten beschrieben. Gezeigt, nicht analysiert.', unavailable: ({ reason }) => `Konnte nicht gelesen werden (${reason}). Sie bleibt in der Liste; nichts hier behauptet, sie sei geprüft.` },
+            stopNumber: ({ number }) => `Station ${number}`,
+            receipt: {
+                wrote: 'Walkthrough geschrieben',
+                updated: 'Walkthrough aktualisiert',
+                savedAnalysis: 'Änderungsanalyse gespeichert',
+                updatedAnalysis: 'Änderungsanalyse aktualisiert',
+                stopCount: ({ count }) => (count === 1 ? '1 Station' : `${count} Stationen`),
+                open: 'Walkthrough öffnen',
+                openChanges: 'Änderungen öffnen',
+                stopChanged: ({ number }) => `Station ${number} geändert`,
+                stopsChanged: ({ numbers }) => `Stationen ${numbers} geändert`,
+                stopsRemoved: ({ count }) => (count === 1 ? '1 Station entfernt' : `${count} Stationen entfernt`),
+                stopsMergedInto: ({ count, number }) => `${count} Stationen in Station ${number} zusammengeführt`,
+                titleEditKept: 'deine Titeländerung behalten',
+                lastChangeUndone: 'letzte Änderung rückgängig gemacht',
+                undo: 'Rückgängig',
+                undoing: 'Wird rückgängig gemacht…',
+                undone: 'Rückgängig gemacht',
+            },
             notice: {
                 stale: 'Dateien haben sich geändert, nachdem dies geschrieben wurde',
                 refresh: 'Durchgang aktualisieren',
@@ -13641,6 +13767,14 @@ const widgetGlanceTranslations = { de: {
         servicesLoading: 'Lokale Dienste werden geladen',
         servicesReadFailed: 'Lokale Dienste konnten nicht gelesen werden. Versuche es erneut.',
         noMachine: 'Diese Sitzung hat keinen Rechner, der gefragt werden kann.',
+        appEmptyTitle: 'Nichts aktiv',
+        appUnlistedTitle: 'Dienste nicht aufgelistet',
+        appUnlistedOffline: ({ machine }: { machine: string }) => `${machine} ist offline.`,
+        appUnlistedMany: ({ count }: { count: number }) => `${count} Rechner sind nicht erreichbar.`,
+        appEmptyReason: 'Webserver, die du auf deinen Rechnern betreibst, erscheinen hier.',
+        machineOffline: ({ machine }: { machine: string }) => `${machine} ist offline: seine Dienste werden nicht angezeigt.`,
+        machineUnreadable: ({ machine }: { machine: string }) => `Die Dienste von ${machine} konnten gerade nicht gelesen werden.`,
+        machinesNotListed: ({ count }: { count: number }) => `${count} Rechner sind nicht erreichbar: ihre Dienste werden nicht angezeigt.`,
         changedCount: ({ count }) => `${count} geändert`,
         moreFiles: ({ count }) => (count === 1 ? '1 weitere Datei' : `${count} weitere Dateien`),
         runningCount: ({ count }) => `${count} laufen`,
@@ -13663,6 +13797,10 @@ const de: WorkStatusTranslations = {
         finished: 'Fertig',
         idle: 'Inaktiv',
         offline: 'Offline',
+    },
+    words: {
+        permission: 'Berechtigung',
+        question: 'Frage',
     },
 };
 

@@ -4,11 +4,14 @@
  */
 
 import Fuse from 'fuse.js';
+import { evaluateAgentSessionCompactionCapability, resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
+import type { AgentSessionCompactionCapability } from '@happier-dev/protocol/plugins/agents';
 import { isPromptInvocationAvailable, PromptInvocationsV1Schema, type PromptInvocationsV1 } from '@happier-dev/protocol/prompts/library/promptInvocationsV1';
 import { listActionSpecs } from '@happier-dev/protocol/actions/actionSpecs';
 import { storage } from '../state/storage';
 import { isActionEnabledInState } from '@/sync/domains/settings/actionsSettings';
 import { t } from '@/text';
+import { resolveActionTitle } from '@/text/actionTitles';
 import { BUILT_IN_PROMPTS } from './slashCommands/builtInPrompts';
 import type { PromptInvocationSuggestionMetadata } from './slashCommands/promptInvocationSuggestion';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
@@ -27,6 +30,8 @@ export interface CommandItem {
 }
 
 export interface SearchOptions {
+    /** Effective opened-runtime descriptor; absence suppresses only Happier's compact default. */
+    compaction?: AgentSessionCompactionCapability | null;
     /** Admitted Account catalog value; absence is not permission to read Settings. */
     invocations?: PromptInvocationsV1 | null;
     nativeCommands?: readonly Pick<CommandItem, 'command' | 'description'>[];
@@ -36,22 +41,20 @@ export interface SearchOptions {
     contributedActions?: readonly PluginContributedActionDescriptor[];
 }
 
-// Default commands always available
-const DEFAULT_COMMANDS: CommandItem[] = [
-    { command: 'compact', description: 'Compact the conversation history' },
-    { command: 'clear', description: 'Clear the conversation' },
-    { command: 'goal', description: t('session.workState.commandDescription') },
-];
+// Descriptions resolve when the list is built, so they follow the
+// reader's current language rather than the one loaded when this module was first imported.
+function buildDefaultCommands(compaction: AgentSessionCompactionCapability | null | undefined): CommandItem[] {
+    return [
+        ...(compaction?.manual === true ? [{ command: 'compact', description: t('agentInput.commands.compact') }] : []),
+        { command: 'clear', description: t('agentInput.commands.clear') },
+        { command: 'goal', description: t('session.workState.commandDescription') },
+    ];
+}
 
-function describeActionSlashToken(token: string, fallbackTitle: string): string {
-    if (token === '/h.review') return 'Start a code review run';
-    if (token === '/h.plan') return 'Start a planning run';
-    if (token === '/h.delegate') return 'Start a delegation run';
-    if (token === '/h.voice') return 'Start a voice agent run';
-    if (token === '/h.runs') return 'List execution runs';
-    if (token === '/h.voice.reset') return 'Reset the global voice agent';
+/** An Action's slash command reads as its localized Action title (the one title owner). */
+function describeActionSlashToken(token: string, spec: Readonly<{ id: string; title: string }>): string {
     if (token === '/pet' || token === '/h.pet') return t('commandPalette.pets.chooseSubtitle');
-    return fallbackTitle;
+    return resolveActionTitle(spec.id, spec);
 }
 
 function buildActionSlashCommands(state: any): CommandItem[] {
@@ -68,7 +71,7 @@ function buildActionSlashCommands(state: any): CommandItem[] {
             if (out.find((c) => c.command === command)) continue;
             out.push({
                 command,
-                description: describeActionSlashToken(token, spec.title),
+                description: describeActionSlashToken(token, spec),
             });
         }
     }
@@ -189,23 +192,18 @@ function buildContributedActionSlashCommands(
     });
 }
 
-// Command descriptions for known tools/commands
-const COMMAND_DESCRIPTIONS: Record<string, string> = {
-    // Default commands
-    compact: 'Compact the conversation history',
-    
-    // Common tool commands
-    help: 'Show available commands',
-    clear: 'Clear the conversation',
-    reset: 'Reset the session',
-    export: 'Export conversation',
-    debug: 'Show debug information',
-    status: 'Show connection status',
-    stop: 'Stop current operation',
-    abort: 'Abort current operation',
-    cancel: 'Cancel current operation',
-    
-    // Add more descriptions as needed
+// Descriptions for commands an Agent advertises without one of its own.
+const COMMAND_DESCRIPTIONS: Readonly<Record<string, () => string>> = {
+    compact: () => t('agentInput.commands.compact'),
+    clear: () => t('agentInput.commands.clear'),
+    help: () => t('agentInput.commands.help'),
+    reset: () => t('agentInput.commands.reset'),
+    export: () => t('agentInput.commands.export'),
+    debug: () => t('agentInput.commands.debug'),
+    status: () => t('agentInput.commands.status'),
+    stop: () => t('agentInput.commands.stop'),
+    abort: () => t('agentInput.commands.abort'),
+    cancel: () => t('agentInput.commands.cancel'),
 };
 
 // Get commands from session metadata.
@@ -217,13 +215,21 @@ function getCommandsFromSession(
     contributedActions: readonly PluginContributedActionDescriptor[] = [],
     nativeCommands: readonly Pick<CommandItem, 'command' | 'description'>[] = [],
     invocations?: PromptInvocationsV1 | null,
+    compaction?: AgentSessionCompactionCapability | null,
 ): CommandItem[] {
     const state = storage.getState();
     const session = sessionId ? state.sessions?.[sessionId] : undefined;
+    const metadata = session ? readSessionOwnerMetadataView(session) : null;
+    // Sibling Session composers read live support at the same query boundary as
+    // native commands. An explicit descriptor (including null) stays authoritative.
+    const agentId = compaction === undefined ? resolveAgentIdFromSessionMetadata(metadata) : null;
+    const effectiveCompaction = compaction === undefined && agentId
+        ? evaluateAgentSessionCompactionCapability({ agentId, metadata, declaredCapability: null })
+        : compaction;
     const commands: CommandItem[] = [
         ...buildActionSlashCommands(state),
         ...buildBuiltInPromptSlashCommands(),
-        ...DEFAULT_COMMANDS,
+        ...buildDefaultCommands(effectiveCompaction),
     ];
 
     // Add prompt template tokens (never overriding action/default commands).
@@ -231,7 +237,6 @@ function getCommandsFromSession(
         if (commands.find((c) => c.command === invocation.command)) continue;
         commands.push(invocation);
     }
-    const metadata = session ? readSessionOwnerMetadataView(session) : null;
     const details = metadata?.slashCommandDetails;
     const sessionCommands = Array.isArray(details) && details.length > 0
         ? details
@@ -244,7 +249,7 @@ function getCommandsFromSession(
             command,
             description: 'description' in entry && typeof entry.description === 'string' && entry.description.trim().length > 0
                 ? entry.description
-                : COMMAND_DESCRIPTIONS[command],
+                : COMMAND_DESCRIPTIONS[command]?.(),
         });
     }
 
@@ -260,7 +265,7 @@ export async function searchCommands(
     const { limit = 10, threshold = 0.3, contributedActions = [] } = options;
     
     // Get commands from session metadata (no caching)
-    const commands = getCommandsFromSession(sessionId, contributedActions, options.nativeCommands, options.invocations);
+    const commands = getCommandsFromSession(sessionId, contributedActions, options.nativeCommands, options.invocations, options.compaction);
     
     // If query is empty, return all commands
     if (!query || query.trim().length === 0) {
@@ -289,6 +294,6 @@ export async function searchCommands(
 }
 
 // Get all available commands for a session
-export function getAllCommands(sessionId: string | null, options: Pick<SearchOptions, 'contributedActions' | 'invocations'> = {}): CommandItem[] {
-    return getCommandsFromSession(sessionId, options.contributedActions, [], options.invocations);
+export function getAllCommands(sessionId: string | null, options: Pick<SearchOptions, 'contributedActions' | 'invocations' | 'compaction'> = {}): CommandItem[] {
+    return getCommandsFromSession(sessionId, options.contributedActions, [], options.invocations, options.compaction);
 }

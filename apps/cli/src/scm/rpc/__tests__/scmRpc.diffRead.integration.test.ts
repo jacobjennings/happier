@@ -5,20 +5,9 @@ import { join } from 'path';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
-import { createTestRpcManager, runGit as git } from './testRpcHarness';
+import { createGitWorkspace, createTestRpcManager, runGit as git } from './testRpcHarness';
 
 describe('git RPC handlers', () => {
-    it('returns a non-repository snapshot when cwd is outside a git repository', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        const { call } = createTestRpcManager({ workingDirectory: workspace });
-
-        const result = await call<any, { cwd?: string }>(RPC_METHODS.SCM_STATUS_SNAPSHOT, { cwd: '.' });
-
-        expect(result.success).toBe(true);
-        expect(result.snapshot.repo.isRepo).toBe(false);
-        expect(result.snapshot.entries).toEqual([]);
-    });
-
     it('returns NOT_REPOSITORY for file diff requests outside a git repository', async () => {
         const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
         const { call } = createTestRpcManager({ workingDirectory: workspace });
@@ -51,10 +40,7 @@ describe('git RPC handlers', () => {
     });
 
     it('loads dedicated worktree enrichment through the machine SCM RPC route', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'before\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'add file']);
@@ -84,10 +70,7 @@ describe('git RPC handlers', () => {
     });
 
     it('loads file diffs even when diff.external is configured to fail', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'external-diff.sh'), '#!/bin/sh\nexit 1\n');
         chmodSync(join(workspace, 'external-diff.sh'), 0o755);
         git(workspace, ['add', 'external-diff.sh']);
@@ -114,10 +97,7 @@ describe('git RPC handlers', () => {
     });
 
     it('loads file diffs when cwd is a subdirectory and paths are repo-root relative', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
 
         mkdirSync(join(workspace, 'sub'), { recursive: true });
 
@@ -143,10 +123,7 @@ describe('git RPC handlers', () => {
     });
 
     it('loads commit diffs even when diff.external is configured to fail', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'external-diff.sh'), '#!/bin/sh\nexit 1\n');
         chmodSync(join(workspace, 'external-diff.sh'), 0o755);
         git(workspace, ['add', 'external-diff.sh']);
@@ -172,10 +149,7 @@ describe('git RPC handlers', () => {
     });
 
     it('returns newline-containing paths in status snapshots', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         const newlinePath = 'dir/new\nline.txt';
         mkdirSync(join(workspace, 'dir'), { recursive: true });
         writeFileSync(join(workspace, newlinePath), 'before\n');
@@ -194,10 +168,7 @@ describe('git RPC handlers', () => {
     });
 
     it('preserves rename previousPath for newline-containing paths', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
 
         const oldPath = 'dir/old\nname.txt';
         const newPath = 'dir/new\nname.txt';
@@ -219,10 +190,7 @@ describe('git RPC handlers', () => {
     }, 20_000);
 
     it('returns tab-containing paths in status snapshots', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         const tabPath = 'dir/tab\tname.txt';
         mkdirSync(join(workspace, 'dir'), { recursive: true });
         writeFileSync(join(workspace, tabPath), 'before\n');
@@ -240,10 +208,7 @@ describe('git RPC handlers', () => {
     });
 
     it('returns unicode paths in status snapshots', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         const unicodePath = 'dir/unicodé.txt';
         mkdirSync(join(workspace, 'dir'), { recursive: true });
         writeFileSync(join(workspace, unicodePath), 'before\n');

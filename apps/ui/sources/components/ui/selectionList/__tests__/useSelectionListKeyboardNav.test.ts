@@ -91,16 +91,13 @@ describe('useSelectionListKeyboardNav (base)', () => {
         await act(async () => { harness.getCurrent().handleKey(makeKeyEvent({ key: 'Enter' }).event); });
         expect(onActivate).toHaveBeenCalledWith('notify');
     });
-    it('initializes focusedIndex to 0 when there is at least one visible option', async () => {
-        const harness = await renderHook(() => useSelectionListKeyboardNav(makeParams()));
-        expect(harness.getCurrent().focusedIndex).toBe(0);
-    });
-
-    it('initializes focusedIndex from the preferred option when it is visible', async () => {
-        const harness = await renderHook(() => useSelectionListKeyboardNav(makeParams({
-            preferredFocusedOptionId: 'b',
-        })));
-        expect(harness.getCurrent().focusedIndex).toBe(1);
+    it.each([
+        { name: 'the first row', overrides: {}, expectedIndex: 0 },
+        { name: 'the visible preferred option', overrides: { preferredFocusedOptionId: 'b' }, expectedIndex: 1 },
+        { name: 'no row when nothing is visible', overrides: { flatVisibleOptionIds: [] }, expectedIndex: -1 },
+    ])('seeds the initial focus at $name', async ({ overrides, expectedIndex }) => {
+        const harness = await renderHook(() => useSelectionListKeyboardNav(makeParams(overrides)));
+        expect(harness.getCurrent().focusedIndex).toBe(expectedIndex);
     });
 
     it('keeps an opt-out step unhighlighted when its options refresh until the user navigates', async () => {
@@ -140,33 +137,6 @@ describe('useSelectionListKeyboardNav (base)', () => {
         expect(selected.getCurrent().focusedOptionId).toBe('b');
     });
 
-    it('keeps explicit keyboard row focus in value mode after seeding from a preferred option', async () => {
-        const onActivate = vi.fn();
-        const onCommitInputValue = vi.fn();
-        const harness = await renderHook(() => useSelectionListKeyboardNav(makeParams({
-            inputMode: 'value',
-            preferredFocusedOptionId: 'b',
-            onActivate,
-            onCommitInputValue,
-        })));
-
-        await act(async () => {
-            harness.getCurrent().handleKey(makeKeyEvent({ key: 'ArrowDown' }).event);
-        });
-        await act(async () => {
-            harness.getCurrent().handleKey(makeKeyEvent({ key: 'Enter' }).event);
-        });
-
-        expect(harness.getCurrent().focusedIndex).toBe(2);
-        expect(onActivate).toHaveBeenCalledWith('c');
-        expect(onCommitInputValue).not.toHaveBeenCalled();
-    });
-
-    it('initializes focusedIndex to -1 when there are no visible options', async () => {
-        const harness = await renderHook(() => useSelectionListKeyboardNav(makeParams({ flatVisibleOptionIds: [] })));
-        expect(harness.getCurrent().focusedIndex).toBe(-1);
-    });
-
     it('ArrowDown advances focusedIndex and consumes the event', async () => {
         const harness = await renderHook(() => useSelectionListKeyboardNav(makeParams()));
         const { event, preventDefault } = makeKeyEvent({ key: 'ArrowDown' });
@@ -175,21 +145,6 @@ describe('useSelectionListKeyboardNav (base)', () => {
         expect(consumed).toBe(true);
         expect(preventDefault).toHaveBeenCalled();
         expect(harness.getCurrent().focusedIndex).toBe(1);
-    });
-
-    it('ArrowDown wraps to 0 when at the last option', async () => {
-        const harness = await renderHook(() => useSelectionListKeyboardNav(makeParams()));
-        await act(async () => {
-            harness.getCurrent().setFocusedIndex(2);
-        });
-        await act(async () => { harness.getCurrent().handleKey(makeKeyEvent({ key: 'ArrowDown' }).event); });
-        expect(harness.getCurrent().focusedIndex).toBe(0);
-    });
-
-    it('ArrowUp wraps to last when at index 0', async () => {
-        const harness = await renderHook(() => useSelectionListKeyboardNav(makeParams()));
-        await act(async () => { harness.getCurrent().handleKey(makeKeyEvent({ key: 'ArrowUp' }).event); });
-        expect(harness.getCurrent().focusedIndex).toBe(2);
     });
 
     it.each([

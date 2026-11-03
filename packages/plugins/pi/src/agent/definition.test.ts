@@ -5,19 +5,17 @@ import { PI_DIRECT_AUTH_ENV_KEYS } from './launchEnvironment.js';
 import { PLUGIN_MANIFEST } from '../manifest.js';
 
 describe('Pi AGENT_DEFINITION', () => {
+  it('projects the consumed default-off host compaction capability from one definition', () => {
+    expect(AGENT_DEFINITION.core.sessionCapabilities).toMatchObject({ compaction: {
+      events: true, manual: true, idle: { mode: 'host', defaultEnabled: false, defaultMinContextTokens: 100000 },
+    } });
+    expect(PLUGIN_MANIFEST.contributes.agents[0]?.capabilities.sessions?.compaction)
+      .toEqual(AGENT_DEFINITION.core.sessionCapabilities.compaction);
+  });
   it('declares native-extension Happier tool delivery', () => {
     expect(AGENT_DEFINITION.core.tools).toEqual({ delivery: 'native_extension', support: 'experimental',
       mcpToolControl: { off: 'hidden', approval: 'host' } });
   });
-  it('publishes Claude subscription credential eligibility through the public declaration', () => {
-    expect(PLUGIN_MANIFEST.contributes.agents[0]?.connectedAccounts).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        service: { pluginId: 'happier.agent.claude', localId: 'claude-subscription' },
-        credentialKinds: ['oauth', 'token'],
-      }),
-    ]));
-  });
-
   it('probes every direct Pi provider credential admitted by the launch environment', () => {
     expect(PLUGIN_MANIFEST.contributes.agents[0]?.cli?.auth.environmentVariables).toEqual(PI_DIRECT_AUTH_ENV_KEYS);
     expect(AGENT_DEFINITION).not.toHaveProperty('authProbeConfig');

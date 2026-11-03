@@ -154,23 +154,6 @@ describe('sync/runtime/browserIroh machine stream foundation', () => {
             .resolves.toEqual({ bytes: new Uint8Array([0]), done: false });
     });
 
-    it('carries the machine kind and the observed path across the worker port', async () => {
-        const { owner, binding } = createOwner();
-        const ports = createPortPair();
-        createBrowserIrohWorkerConnectionHandler(owner, () => 'tab-a')(ports.worker);
-        const client = createBrowserIrohEndpointClient(
-            () => ({ port: ports.tab, onFailure: () => {} }),
-            null,
-        );
-
-        const lease = await client.acquireLease([RELAY]);
-        const stream = await lease.openStream({ streamKind: 'machine', endpointId: TARGET, relayUrls: [RELAY] });
-
-        expect(binding.opens).toEqual([{ endpointId: TARGET, streamKind: 'machine', relayUrls: [RELAY] }]);
-        expect(stream.remoteEndpointId).toBe(TARGET);
-        expect(stream.observedPath).toBe('relay');
-    });
-
     it('exposes a machine-carrier opener bound to the exact target and this tab lease', async () => {
         const { owner, binding } = createOwner();
         const ports = createPortPair();
@@ -193,7 +176,7 @@ describe('sync/runtime/browserIroh machine stream foundation', () => {
         expect(binding.opens).toEqual([{ endpointId: TARGET, streamKind: 'machine', relayUrls: [RELAY] }]);
         expect(duplex.remoteEndpointId).toBe(TARGET);
         // Relay-only: the carrier never claims a direct path.
-        expect(duplex.observedPath).not.toBe('direct');
+        expect(duplex.observedPath).toBe('relay');
         await expect(duplex.read(8)).resolves.toEqual({ bytes: new Uint8Array([1]), done: false });
         await duplex.close();
         await endpointLease.release();

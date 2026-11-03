@@ -39,15 +39,6 @@ afterEach(() => {
 });
 
 describe('UI testkit hook helpers', () => {
-    it('creates deferred promises that can be resolved later', async () => {
-        const { createDeferred } = await import('./createDeferred');
-
-        const deferred = createDeferred<number>();
-        deferred.resolve(42);
-
-        await expect(deferred.promise).resolves.toBe(42);
-    });
-
     it('renders hooks and supports rerendering with new props', async () => {
         const { renderHook } = await import('./renderHook');
 

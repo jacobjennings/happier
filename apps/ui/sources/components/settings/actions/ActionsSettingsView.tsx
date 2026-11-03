@@ -9,8 +9,7 @@ import { SearchHeader } from '@/components/ui/forms/SearchHeader';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
-import { VirtualizedList } from '@/components/ui/lists/virtualized';
+import { VirtualizedItemList } from '@/components/ui/lists/VirtualizedItemList';
 import { Text } from '@/components/ui/text/Text';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
@@ -296,54 +295,46 @@ export const ActionsSettingsView = React.memo(function ActionsSettingsView() {
     }, [daemonMergedProjection.inputs, executionTarget, openActionDetails, renderEntryRow]);
 
     return (
-        <ListPresentationProvider value="page">
-            <VirtualizedList
-                testID="settings-actions:virtualized-list"
-                data={virtualizedSegments}
-                keyExtractor={(segment) => segment.key}
-                renderItem={renderSegment}
-                ListHeaderComponent={(
-                    <>
-                        <SettingsPageHeader
-                            description={t('settings.actionsSubtitle')}
-                            actions={(
-                                <MachineAdministrationTargetSelector
-                                    selection={administrationTargetSelection}
-                                    testIDPrefix="settings.actions.administration.target"
-                                    presentation="chip"
-                                />
-                            )}
-                        />
-                        <SearchHeader
-                            value={searchQuery}
-                            onChangeText={setSearchQuery}
-                            placeholder={t('settingsActions.searchPlaceholder')}
-                        />
-                        {virtualizedSegments.length === 0 ? (
-                            <ItemGroup>
-                                <Item
-                                    testID="settings-actions:no-results"
-                                    title={t('settingsActions.noResults')}
-                                    mode="info"
-                                    showChevron={false}
-                                />
-                            </ItemGroup>
-                        ) : null}
-                    </>
-                )}
-                style={{
-                    flex: 1,
-                    backgroundColor: theme.colors.surface.base,
-                    ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
-                }}
-                contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
-                initialNumToRender={6}
-                maxToRenderPerBatch={4}
-                windowSize={7}
-                estimatedItemSize={560}
-                recycleItems
-                maintainVisibleContentPosition
-            />
-        </ListPresentationProvider>
+        <VirtualizedItemList
+            testID="settings-actions:virtualized-list"
+            data={virtualizedSegments}
+            keyExtractor={(segment) => segment.key}
+            renderItem={renderSegment}
+            ListHeaderComponent={(
+                <>
+                    <SettingsPageHeader
+                        description={t('settings.actionsSubtitle')}
+                        actions={(
+                            <MachineAdministrationTargetSelector
+                                selection={administrationTargetSelection}
+                                testIDPrefix="settings.actions.administration.target"
+                                presentation="chip"
+                            />
+                        )}
+                    />
+                    <SearchHeader
+                        value={searchQuery}
+                        onChangeText={setSearchQuery}
+                        placeholder={t('settingsActions.searchPlaceholder')}
+                    />
+                    {virtualizedSegments.length === 0 ? (
+                        <ItemGroup>
+                            <Item
+                                testID="settings-actions:no-results"
+                                title={t('settingsActions.noResults')}
+                                mode="info"
+                                showChevron={false}
+                            />
+                        </ItemGroup>
+                    ) : null}
+                </>
+            )}
+            initialNumToRender={6}
+            maxToRenderPerBatch={4}
+            windowSize={7}
+            estimatedItemSize={560}
+            recycleItems
+            maintainVisibleContentPosition
+        />
     );
 });

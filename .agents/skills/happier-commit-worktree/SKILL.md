@@ -94,6 +94,14 @@ When more than 1,000 paths exist and no prior campaign-level sizing preference i
 
 Split a file by hunk when its changes serve different intents. Do not force an entire mixed file into the first convenient group.
 
+Every commit must type-resolve at its own resulting tree for each package it touches. CI builds every package at the pushed commit, so one consumer committed without its producer fails the shared prepare gate for every later push. Therefore:
+
+- a mixed file commits only this packet's hunks, even under a WIP or whole-path authorization;
+- a consumer commits with every producer change it relies on, or stays uncommitted;
+- a producer change that removes, renames, or reshapes an export commits with the importer adaptations it forces.
+
+Module existence ("no unresolved local imports") is not enough: changed exports, signatures, and object shapes of tracked producers break the commit the same way. Prove the invariant with the check in section 7.
+
 Order packets by dependency: contracts and shared owners before consumers, implementation with defining tests, migrations before cleanup, and mechanical follow-ups after behavior is established.
 
 ## 6. Reject dumping grounds and unwanted material
@@ -121,7 +129,16 @@ GIT_INDEX_FILE="$idx" git diff --cached
 
 Run the narrowest deciding tests appropriate to each packet. Batch compatible package-wide typechecks, builds, and broader suites once per wave rather than repeating an identical expensive check after every commit. Record which packets a shared check covers and invalidate that evidence only when later bytes touch its deciding corridor. For pre-existing behavior changes, inspect whether tests and implementation agree rather than automatically changing whichever fails. Classify failures as a real defect, test drift, harness/environment failure, external-contract change, resource saturation, or unrelated concurrent failure.
 
-If the user explicitly requests a WIP commit-only campaign with no tests, builds, formatters, or generators, preserve that validation posture through continuations and delegation. Skip those commands, but still require exact manifest review, `git diff --cached --check`, blob equality, deletion and secret/size audits, hook/signing policy checks, author verification, CAS, and post-commit index/worktree reconciliation. Report the skipped checks plainly and never imply they passed.
+Check type resolution for every packet that changes TypeScript, on the private tree before `commit-tree`:
+
+```bash
+tree=$(GIT_INDEX_FILE="$idx" git write-tree)
+./apps/stack/bin/hstack-exec --local -- node scripts/workspaces/checkCommitTypeCoherence.mjs --base="$head" --tree="$tree"
+```
+
+It type-checks the changed files and their direct importers as they exist in that tree, with the Microsoft compiler, and prints only diagnostics the base tree does not already have. Exit 1 means the slice is incoherent: add the missing producer or importer hunks, or drop the consumer, and rerun. It runs locally because it reads the Git object store, which worker replicas do not carry. Before a push, run it once with `--base=<remote tip> --tree=HEAD`, then pass commit ids to attribute any finding. It is a slice check, not the package typecheck: when a packet changes a barrel that other packages consume, a package's exports or tsconfig, or the check cannot run, run the touched packages' typecheck at the exact commit on a basis worktree through `hstack-exec --repo` (see `happier-remote-work`).
+
+If the user explicitly requests a WIP commit-only campaign with no tests, builds, formatters, or generators, preserve that validation posture through continuations and delegation. Skip those commands, but still require exact manifest review, `git diff --cached --check`, the type-resolution check above, blob equality, deletion and secret/size audits, hook/signing policy checks, author verification, CAS, and post-commit index/worktree reconciliation. Report the skipped checks plainly and never imply they passed.
 
 `git commit-tree` does not run ordinary `pre-commit`, `prepare-commit-msg`, `commit-msg`, or `post-commit` hooks. Before the campaign's first commit, inspect repository hook policy and run the required hook-equivalent checks explicitly for every applicable packet and message. Preserve required signing policy rather than silently creating unsigned commits.
 
@@ -136,7 +153,7 @@ Follow [private-index-protocol.md](references/private-index-protocol.md) exactly
 1. capture the current `HEAD` as the intended parent;
 2. initialize a unique temporary index from that parent;
 3. stage only the packet's explicit current paths and selected hunks;
-4. inspect and validate the private staged diff;
+4. inspect and validate the private staged diff, including the type-resolution check in section 7;
 5. create a commit object with `git commit-tree`;
 6. advance `HEAD` with `git update-ref HEAD <commit> <expected-parent>`;
 7. synchronize only committed paths in the shared index to the new HEAD;

@@ -1,4 +1,4 @@
-import type { TranscriptRawAgentEventV1 } from '@happier-dev/protocol';
+import type { TranscriptPeerSenderV1, TranscriptRawAgentEventV1 } from '@happier-dev/protocol';
 
 type AcpSidechainMeta = { sidechainId?: string };
 type TranscriptEventLifecycle = {
@@ -50,7 +50,7 @@ type ContextCompactionEventFields = {
 };
 
 export type ACPMessageData = AcpSidechainMeta & (
-  | { type: 'message'; message: string }
+  | { type: 'message'; message: string; peer?: TranscriptPeerSenderV1 }
   | { type: 'reasoning'; message: string }
   | { type: 'thinking'; text: string }
   | { type: 'tool-call'; callId: string; name: string; input: unknown; id: string }

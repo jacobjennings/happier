@@ -10,9 +10,10 @@ vi.mock('react-native', async () => {
     return createReactNativeWebMock();
 });
 
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: (props: { children?: React.ReactNode }) => React.createElement('Text', props, props.children),
-}));
+vi.mock('@/components/ui/text/Text', async () => {
+    const { createUiTextModuleMock } = await import('@/dev/testkit/mocks/uiText');
+    return createUiTextModuleMock();
+});
 
 describe('CommandMenuRow', () => {
     it('renders label text', async () => {
@@ -50,15 +51,5 @@ describe('CommandMenuRow', () => {
             typeof node.props?.testID === 'string' && node.props.testID === 'row:icon',
         );
         expect(hasIcon).toHaveLength(0);
-    });
-
-    it('renders without description', async () => {
-        const screen = await renderScreen(
-            <CommandMenuRow label="Code block" testID="row" />,
-        );
-        const text = screen.getTextContent();
-        expect(text).toContain('Code block');
-        // No description provided; only label text should be present
-        expect(text).not.toContain('undefined');
     });
 });

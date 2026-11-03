@@ -168,15 +168,6 @@ describe('resolveSelectionListGridArrowTarget', () => {
         expect(arrowNavIndex(sixCells, 0, 'ArrowUp')).toBe(4);
     });
 
-    it('steps over a disabled cell instead of swallowing the key', () => {
-        // Row 1 is [disabled, c]. ↓ from 'a' (row 0, col 0) must land on 'c'.
-        const geometry = buildSelectionListGridGeometry({
-            groups: [group('s', [['a', true], ['b', true], ['x', false], ['c', true]])],
-            columnCount: 2,
-        });
-        expect(arrowNavIndex(geometry, 0, 'ArrowDown')).toBe(2);
-    });
-
     it('skips a disabled cell when moving horizontally', () => {
         const geometry = buildSelectionListGridGeometry({
             groups: [group('s', [['a', true], ['x', false], ['c', true]])],

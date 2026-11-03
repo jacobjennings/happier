@@ -27,30 +27,6 @@ describe('happier server --json', () => {
     }
   });
 
-  it('prints a server_list JSON envelope', async () => {
-    const output = captureConsoleLogAndMuteStdout();
-    const prevExitCode = process.exitCode;
-    process.exitCode = undefined;
-    try {
-      await addServerProfile({ name: 'A', serverUrl: 'https://a.example.test', webappUrl: 'https://a.example.test', use: true });
-      await addServerProfile({ name: 'B', serverUrl: 'https://b.example.test', webappUrl: 'https://b.example.test', use: false });
-
-      await handleServerCommand(['list', '--json']);
-
-      const parsed = JSON.parse(output.logs.join('\n').trim());
-      expect(parsed.v).toBe(1);
-      expect(parsed.ok).toBe(true);
-      expect(parsed.kind).toBe('server_list');
-      expect(typeof parsed.data?.activeServerId).toBe('string');
-      expect(Array.isArray(parsed.data?.profiles)).toBe(true);
-      expect(parsed.data.profiles.length).toBeGreaterThanOrEqual(2);
-      expect(process.exitCode).toBe(0);
-    } finally {
-      output.restore();
-      process.exitCode = prevExitCode;
-    }
-  });
-
   // RV-11: two profiles may share one endpoint (a Home recreated at the same URL); the recorded
   // Home identity is what lets a caller tell them apart.
   it('lists the Home identity recorded for each profile', async () => {
@@ -76,6 +52,9 @@ describe('happier server --json', () => {
       await handleServerCommand(['list', '--json']);
 
       const parsed = JSON.parse(output.logs.join('\n').trim());
+      expect(parsed).toMatchObject({ v: 1, ok: true, kind: 'server_list' });
+      expect(typeof parsed.data?.activeServerId).toBe('string');
+      expect(process.exitCode).toBe(0);
       const byId = new Map((parsed.data.profiles as Array<Record<string, unknown>>).map((entry) => [entry.id, entry]));
       expect(byId.get(home.id)?.homeServerIdentityId).toBe('srv_home_new');
       expect(byId.get(plain.id)).not.toHaveProperty('homeServerIdentityId');
@@ -203,32 +182,6 @@ describe('happier server --json', () => {
       expect(parsed.kind).toBe('server_remove');
       expect(parsed.data?.removed?.serverUrl).toBe('https://b.example.test');
       expect(typeof parsed.data?.active?.serverUrl).toBe('string');
-      expect(process.exitCode).toBe(0);
-    } finally {
-      output.restore();
-      process.exitCode = prevExitCode;
-    }
-  });
-
-  it('prints a server_set JSON envelope', async () => {
-    const output = captureConsoleLogAndMuteStdout();
-    const prevExitCode = process.exitCode;
-    process.exitCode = undefined;
-    try {
-      await handleServerCommand([
-        'set',
-        '--server-url',
-        'https://s.example.test',
-        '--webapp-url',
-        'https://w.example.test',
-        '--json',
-      ]);
-
-      const parsed = JSON.parse(output.logs.join('\n').trim());
-      expect(parsed.v).toBe(1);
-      expect(parsed.ok).toBe(true);
-      expect(parsed.kind).toBe('server_set');
-      expect(parsed.data?.active?.serverUrl).toBe('https://s.example.test');
       expect(process.exitCode).toBe(0);
     } finally {
       output.restore();

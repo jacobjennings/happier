@@ -35,7 +35,7 @@ describe('stageWorkspaceSymlink', () => {
         expect(stagedSymlink.relativePath).toBe('links/readme-link');
         expect(stagedSymlink.filePath).toBe(join(stagingRoot.workspaceDirectory, 'links', 'readme-link'));
         await expect(readlink(stagedSymlink.filePath)).resolves.toBe('../README.md');
-        await expect(lstat(stagedSymlink.filePath)).resolves.toMatchObject({ isSymbolicLink: expect.any(Function) });
+        expect((await lstat(stagedSymlink.filePath)).isSymbolicLink()).toBe(true);
     });
 
     it('refuses to stage a symlink into an unverified staging root descriptor', async () => {
@@ -50,7 +50,7 @@ describe('stageWorkspaceSymlink', () => {
             relativePath: 'links/readme-link',
             target: '../README.md',
         })).rejects.toThrow(/workspace staging root marker/i);
-        await expect(access(join(stagingRoot.workspaceDirectory, 'links', 'readme-link'))).rejects.toThrow();
+        await expect(lstat(join(stagingRoot.workspaceDirectory, 'links', 'readme-link'))).rejects.toThrow();
     });
 
     it('rejects workspace paths that escape the staging workspace root before creating symlinks', async () => {
@@ -64,7 +64,7 @@ describe('stageWorkspaceSymlink', () => {
             relativePath: '../outside-link',
             target: '../README.md',
         })).rejects.toThrow(/workspace root/i);
-        await expect(access(join(stagingRoot.workspaceDirectory, 'outside-link'))).rejects.toThrow();
+        await expect(lstat(join(stagingRoot.workspaceDirectory, '..', 'outside-link'))).rejects.toThrow();
     });
 
     it('rejects blank symlink targets before creating files', async () => {

@@ -370,6 +370,7 @@ describe('updateSessionMetadataWithRetry', () => {
         expect(emitCalls).toEqual([{
             mode: 'owner',
             metadataLayoutVersion: 1,
+            displayProjectionV1: null,
             expectedOwnerMetadata: ownerCurrentEnvelope,
             sharedMetadata: {
                 ciphertext: 'shared-next',
@@ -524,6 +525,7 @@ describe('updateSessionMetadataWithRetry', () => {
         expect(emitUpdateMetadata).toHaveBeenCalledWith({
             mode: 'owner_inactive_model_intent',
             metadataLayoutVersion: 1,
+            displayProjectionV1: null,
             sessionExpectation: { kind: 'inactive_model_intent' },
             expectedOwnerMetadata: ownerCurrentEnvelope,
             sharedMetadata: {

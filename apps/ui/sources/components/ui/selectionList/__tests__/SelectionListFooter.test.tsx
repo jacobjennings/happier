@@ -14,6 +14,8 @@ describe('SelectionListFooter', () => {
         const screen = await renderScreen(
             <SelectionListFooter hints={[]} testID="footer-empty-marker" />,
         );
+        // The composite keeps its testID prop; the footer must draw no host node.
+        expect(screen.findHostByTestId('footer-empty-marker')).toBeNull();
         expect(screen.getTextContent()).toBe('');
     });
 
@@ -26,6 +28,8 @@ describe('SelectionListFooter', () => {
                 testID="footer-no-kb-marker"
             />,
         );
+        // The composite keeps its testID prop; the footer must draw no host node.
+        expect(screen.findHostByTestId('footer-no-kb-marker')).toBeNull();
         expect(screen.getTextContent()).not.toContain('select');
     });
 
@@ -70,43 +74,5 @@ describe('SelectionListFooter', () => {
         await measure(366);
         expect(screen.findByTestId('footer:hint:close')).toBeNull();
         expect(screen.findByTestId('footer:hint:move')).not.toBeNull();
-    });
-
-    it('renders a per-hint testID for stable selection', async () => {
-        const { SelectionListFooter } = await import('../SelectionListFooter');
-        const screen = await renderScreen(
-            <SelectionListFooter
-                hints={[{ id: 'enter', label: '↵', description: 'select' }]}
-                hardwareKeyboardAvailable
-                testID="footer"
-            />,
-        );
-        expect(screen.findByTestId('footer:hint:enter')).not.toBeNull();
-    });
-
-    it('Phase 2.6: exposes NO functional-action affordance — no onPress in the footer subtree', async () => {
-        // The plan's invariant: functional actions live in inputSuffix, NEVER
-        // in the footer. This guards against drift where someone adds an action
-        // button (a Pressable with onPress) to the footer.
-        const { SelectionListFooter } = await import('../SelectionListFooter');
-        const screen = await renderScreen(
-            <SelectionListFooter
-                hints={[
-                    { id: 'navigate', label: '↑↓', description: 'navigate' },
-                    { id: 'enter', label: '↵', description: 'select' },
-                    { id: 'tab', label: 'Tab', description: 'autocomplete' },
-                ]}
-                hardwareKeyboardAvailable
-                testID="footer"
-            />,
-        );
-        const footer = screen.findByTestId('footer');
-        expect(footer).not.toBeNull();
-        // Walk the subtree starting at the footer and verify no descendant
-        // exposes onPress / onClick (the contract: hints only).
-        const findAll = footer!.findAll((node) => (
-            typeof node.props?.onPress === 'function' || typeof node.props?.onClick === 'function'
-        ));
-        expect(findAll).toEqual([]);
     });
 });

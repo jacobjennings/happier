@@ -18,6 +18,11 @@ function manifest() {
         capability: 'sessions',
         reason: 'Read selected sessions',
         scope: { access: ['read'] },
+      }, {
+        id: 'session-history',
+        capability: 'sessions',
+        reason: 'Read selected session history',
+        scope: { access: ['read'] },
       }],
     },
   }));
@@ -45,20 +50,28 @@ describe('updateSelectedPluginOptionalAccess', () => {
   });
 
   it('applies an explicit deselection without disturbing unrelated authority state', () => {
-    const existing = createDefaultPluginAccessScopeRegistry().createSelection({
+    const registry = createDefaultPluginAccessScopeRegistry();
+    const existing = registry.createSelection({
       pluginId,
       accessId: 'sessions',
       capability: 'sessions',
       scope: { access: ['read'] },
       selectedAtMs: 7,
     });
+    const unrelated = registry.createSelection({
+      pluginId,
+      accessId: 'session-history',
+      capability: 'sessions',
+      scope: { access: ['read'] },
+      selectedAtMs: 5,
+    });
 
     expect(updateSelectedPluginOptionalAccess({
       pluginId,
       manifest: manifest(),
-      existing: [existing],
+      existing: [existing, unrelated],
       decisions: [{ accessId: 'sessions', selected: false }],
       selectedAtMs: 11,
-    })).toEqual([]);
+    })).toEqual([unrelated]);
   });
 });

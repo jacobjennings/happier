@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { SCM_COMMIT_MESSAGE_MAX_LENGTH, SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
-import { createTestRpcManager, runGit as git } from './testRpcHarness';
+import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
+import { createGitWorkspace, createTestRpcManager, runGit as git } from './testRpcHarness';
 
 describe('git RPC handlers', () => {
     it('rejects unsafe remote values for push requests', async () => {
@@ -21,8 +21,11 @@ describe('git RPC handlers', () => {
             },
         );
 
-        expect(response.success).toBe(false);
-        expect(response.errorCode).toBe(SCM_OPERATION_ERROR_CODES.INVALID_REQUEST);
+        expect(response).toMatchObject({
+            success: false,
+            errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST,
+            error: 'Remote name cannot start with "-"',
+        });
     });
 
     it('returns NOT_REPOSITORY for push outside a git repository', async () => {
@@ -52,8 +55,11 @@ describe('git RPC handlers', () => {
             },
         );
 
-        expect(response.success).toBe(false);
-        expect(response.errorCode).toBe(SCM_OPERATION_ERROR_CODES.INVALID_REQUEST);
+        expect(response).toMatchObject({
+            success: false,
+            errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST,
+            error: 'Branch name cannot start with "-"',
+        });
     });
 
     it('returns NOT_REPOSITORY for pull outside a git repository', async () => {
@@ -71,10 +77,7 @@ describe('git RPC handlers', () => {
     });
 
     it('maps unknown remote failures for fetch requests', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'hello\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'init']);
@@ -110,18 +113,18 @@ describe('git RPC handlers', () => {
             remote: '--upload-pack=hack',
         });
 
-        expect(response.success).toBe(false);
-        expect(response.errorCode).toBe(SCM_OPERATION_ERROR_CODES.INVALID_REQUEST);
+        expect(response).toMatchObject({
+            success: false,
+            errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST,
+            error: 'Remote name cannot start with "-"',
+        });
     });
 
     it('fetches remote updates successfully', async () => {
         const remote = mkdtempSync(join(tmpdir(), 'happier-git-rpc-remote-'));
         git(remote, ['init', '--bare']);
 
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);

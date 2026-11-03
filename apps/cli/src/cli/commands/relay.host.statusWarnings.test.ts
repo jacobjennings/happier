@@ -4,6 +4,7 @@ import { reloadConfiguration } from '../../configuration';
 import { createEnvKeyScope } from '../../testkit/env/envScope';
 import { createTempDir, removeTempDir } from '../../testkit/fs/tempDir';
 import { captureConsoleLogAndMuteStdout } from '../../testkit/logger/captureOutput';
+import { commandRegistry } from '../commandRegistry';
 
 vi.mock('@happier-dev/cli-common/relayHost', async (importOriginal) => {
     const actual = await importOriginal<any>();
@@ -34,7 +35,6 @@ describe('happier relay host status warnings', () => {
     let envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
 
     beforeEach(async () => {
-        vi.resetModules();
         envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
         home = await createTempDir('happier-relay-status-warning-home-');
         envScope.patch({
@@ -55,8 +55,6 @@ describe('happier relay host status warnings', () => {
         process.exitCode = undefined;
 
         try {
-            const { commandRegistry } = await import('../commandRegistry');
-
             await commandRegistry.relay({
                 args: ['relay', 'host', 'status', '--json'],
                 rawArgv: ['node', 'hprev', 'relay', 'host', 'status', '--json'],

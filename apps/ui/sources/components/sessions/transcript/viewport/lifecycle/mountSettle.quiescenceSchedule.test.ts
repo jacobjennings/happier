@@ -34,7 +34,7 @@ function readyCoordinator(startMs: number) {
         listLayoutHeight: 800,
         distanceFromBottom: 0,
         composerInsetHeight: 0,
-    } as never);
+    });
     return coordinator;
 }
 
@@ -63,7 +63,7 @@ describe('mount settle quiescence scheduling', () => {
             listLayoutHeight: 800,
             distanceFromBottom: 0,
             composerInsetHeight: 0,
-        } as never);
+        });
         expect(coordinator.nextSettleCheckDelayMs(1_100)).toBe(120);
     });
 

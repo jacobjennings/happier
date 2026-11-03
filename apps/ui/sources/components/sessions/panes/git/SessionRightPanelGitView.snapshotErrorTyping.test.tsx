@@ -2,8 +2,7 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createScmCapabilities, type ScmWorkingSnapshot } from '@happier-dev/protocol/scm';
-import { RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { createMachineFixture, createSessionFixture, flushHookEffects, renderScreen } from '@/dev/testkit';
+import { createMachineFixture, createSessionFixture, renderScreen } from '@/dev/testkit';
 import { storage } from '@/sync/domains/state/storageStore';
 import { installSessionDetailsPanelCommonModuleMocks } from '../sessionDetailsPanelTestHelpers';
 import { installSessionPaneRuntimeTestHarness } from '../sessionPaneRuntimeTestHarness';
@@ -44,6 +43,7 @@ describe('SessionRightPanelGitView (snapshot error is typed, never raw)', () => 
         const text = screen.getTextContent();
         expect(text).toContain(expectedKey);
         expect(text).not.toContain(message);
+        expect(text).not.toContain('Internal daemon detail');
         // Unsupported installations retain generic retry copy alongside the typed detail.
         if (errorCode === 'BACKEND_UNAVAILABLE') expect(text).not.toContain('errors.tryAgain');
     });

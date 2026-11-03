@@ -25,6 +25,7 @@ import {
   type SelectionListSectionDescriptor,
 } from '@/components/ui/selectionList';
 import { useAllMachines } from '@/sync/domains/state/storage';
+import { useDeviceType } from '@/utils/platform/responsive';
 import { t } from '@/text';
 import { ManagedMachineSelectionOffers, type ManagedMachineConfigurationContinuation } from '@/components/sessions/new/components/machineSelection/ManagedMachineSelectionOffers';
 import { managedMachineSelectionOptionId, type ManagedMachineSelectionDraft, type ManagedMachineSelectionOffer } from '@/components/sessions/new/components/machineSelection/managedMachineSelection';
@@ -92,6 +93,7 @@ export function WorkerDestinationPicker(props: WorkerDestinationPickerProps) {
 /** Mounted only while open, so a closed trigger issues no Machine status demand. */
 function OpenWorkerDestinationPicker(props: WorkerDestinationPickerProps) {
   const { theme } = useUnistyles();
+  const phone = useDeviceType() === 'phone';
   const serverId = props.workspace.serverId;
   const activeServer = useNewSessionActiveServerSource();
   const allMachines = useAllMachines();
@@ -300,7 +302,8 @@ function OpenWorkerDestinationPicker(props: WorkerDestinationPickerProps) {
             {
               kind: 'static',
               id: 'run-on-leading',
-              title: props.servicePresentation ? undefined : props.title,
+              // The phone sheet already titles itself with this text; a desktop popover has no header.
+              title: props.servicePresentation || phone ? undefined : props.title,
               options: leading,
             } as const,
           ]
@@ -325,6 +328,7 @@ function OpenWorkerDestinationPicker(props: WorkerDestinationPickerProps) {
     props.testID,
     props.title,
     props.trailingSections,
+    phone,
     theme.colors.text.secondary,
   ]);
 

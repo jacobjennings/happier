@@ -200,170 +200,72 @@ describe('SelectionListSearchHeader web keydown bridge', () => {
     });
 
     it('preserves native DOM Tab traversal for a populated search until Arrow navigation focuses a row', async () => {
-        const { createSelectionListKeyPressHandler } = await import('../SelectionListKeyboardInput');
-        const {
-            useSelectionListKeyboardNav,
-            useSelectionListRovingFocus,
-        } = await import('../useSelectionListKeyboardNav');
+        const { SelectionList } = await import('../SelectionList');
         const container = document.createElement('div');
         document.body.append(container);
         const root = createRoot(container);
-        const onActivate = vi.fn();
+        const onSelect = vi.fn();
 
-        function Harness(props: Readonly<{
-            inputValue: string;
-            visibleOptionIds: ReadonlyArray<string>;
-        }>): React.ReactElement {
-            // The production composition (`SelectionList`): roving focus is
-            // owned once and resolved BEFORE the key dispatcher, which reads it
-            // at event time. The dispatcher never owns focus itself.
-            const focus = useSelectionListRovingFocus({
-                flatVisibleOptionIds: props.visibleOptionIds,
-                inputValue: props.inputValue,
-                inputMode: 'search',
+        // The real orchestrator owns the composition (roving focus → key dispatcher →
+        // key-press handler → header bridge); the test only drives DOM keydowns.
+        const renderList = (inputValue: string, optionIds: ReadonlyArray<string>) => (
+            <SelectionList
+                rootStep={{
+                    id: 'root',
+                    inputPlaceholder: 'Search models',
+                    disableInputFilter: true,
+                    sections: [{
+                        kind: 'static',
+                        id: 'models',
+                        options: optionIds.map((id) => ({ id, label: id })),
+                    }],
+                }}
+                inputValue={inputValue}
+                onChangeInputValue={() => {}}
+                onSelect={onSelect}
+                onRequestClose={() => {}}
+                keyboardHintsEnabled={false}
+                disableTransitions
+                testID="search"
+            />
+        );
+        const press = async (input: Element, init: KeyboardEventInit): Promise<KeyboardEvent> => {
+            const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+            await act(async () => {
+                input.dispatchEvent(event);
             });
-            const keyboard = useSelectionListKeyboardNav({
-                focus,
-                flatVisibleOptionIds: props.visibleOptionIds,
-                onActivate,
-                canPopStep: false,
-                onPopStep: () => {},
-                inputValue: props.inputValue,
-                onClearInput: () => {},
-                inputMode: 'search',
-                ghostSuffixPresent: false,
-            });
-            const focusedOptionId = focus.focusedOptionId;
-            const handleKeyPress = React.useMemo(
-                () => createSelectionListKeyPressHandler({
-                    keyboard,
-                    isComposing: false,
-                    focusedOptionId,
-                    onActivate,
-                    canPopStep: false,
-                    inputValue: props.inputValue,
-                    onRequestClose: () => {},
-                }),
-                [keyboard, focusedOptionId, props.inputValue],
-            );
-            return (
-                <SelectionListSearchHeader
-                    value={props.inputValue}
-                    onChangeText={() => {}}
-                    placeholder="Search models"
-                    canPop={false}
-                    onKeyPress={handleKeyPress}
-                    testID="search"
-                />
-            );
-        }
+            return event;
+        };
+        const selectedIds = () => onSelect.mock.calls.map((call) => call[0]);
 
         try {
             await act(async () => {
-                root.render(
-                    <Harness
-                        inputValue="filtered"
-                        visibleOptionIds={['filtered-row-a', 'filtered-row-b']}
-                    />,
-                );
+                root.render(renderList('filtered', ['filtered-row-a', 'filtered-row-b']));
             });
 
-            const input = container.querySelector('[data-testid="search:input"]');
+            const input = container.querySelector('[data-testid="search:header:input"]');
             expect(input).toBeInstanceOf(HTMLInputElement);
 
-            const initialTab = new KeyboardEvent('keydown', {
-                key: 'Tab',
-                code: 'Tab',
-                bubbles: true,
-                cancelable: true,
-            });
-            await act(async () => {
-                input!.dispatchEvent(initialTab);
-            });
-            expect(initialTab.defaultPrevented).toBe(false);
-            expect(onActivate).not.toHaveBeenCalled();
+            expect((await press(input!, { key: 'Tab', code: 'Tab' })).defaultPrevented).toBe(false);
+            expect((await press(input!, { key: 'Tab', code: 'Tab', shiftKey: true })).defaultPrevented).toBe(false);
+            expect(onSelect).not.toHaveBeenCalled();
 
-            const initialShiftTab = new KeyboardEvent('keydown', {
-                key: 'Tab',
-                code: 'Tab',
-                shiftKey: true,
-                bubbles: true,
-                cancelable: true,
-            });
-            await act(async () => {
-                input!.dispatchEvent(initialShiftTab);
-            });
-            expect(initialShiftTab.defaultPrevented).toBe(false);
-            expect(onActivate).not.toHaveBeenCalled();
-
-            const arrowDown = new KeyboardEvent('keydown', {
-                key: 'ArrowDown',
-                code: 'ArrowDown',
-                bubbles: true,
-                cancelable: true,
-            });
-            await act(async () => {
-                input!.dispatchEvent(arrowDown);
-            });
-            expect(arrowDown.defaultPrevented).toBe(true);
-
-            const explicitTab = new KeyboardEvent('keydown', {
-                key: 'Tab',
-                code: 'Tab',
-                bubbles: true,
-                cancelable: true,
-            });
-            await act(async () => {
-                input!.dispatchEvent(explicitTab);
-            });
-            expect(explicitTab.defaultPrevented).toBe(true);
-            expect(onActivate).toHaveBeenCalledOnce();
-            expect(onActivate).toHaveBeenCalledWith('filtered-row-b');
+            expect((await press(input!, { key: 'ArrowDown', code: 'ArrowDown' })).defaultPrevented).toBe(true);
+            expect((await press(input!, { key: 'Tab', code: 'Tab' })).defaultPrevented).toBe(true);
+            expect(selectedIds()).toEqual(['filtered-row-b']);
 
             await act(async () => {
-                root.render(
-                    <Harness
-                        inputValue="refined"
-                        visibleOptionIds={['refined-row-a', 'refined-row-b']}
-                    />,
-                );
+                root.render(renderList('refined', ['refined-row-a', 'refined-row-b']));
             });
-            const postFilterTab = new KeyboardEvent('keydown', {
-                key: 'Tab',
-                code: 'Tab',
-                bubbles: true,
-                cancelable: true,
-            });
-            await act(async () => {
-                input!.dispatchEvent(postFilterTab);
-            });
-            expect(postFilterTab.defaultPrevented).toBe(false);
-            expect(onActivate).toHaveBeenCalledOnce();
+            expect((await press(input!, { key: 'Tab', code: 'Tab' })).defaultPrevented).toBe(false);
+            expect(selectedIds()).toEqual(['filtered-row-b']);
 
-            const refinedArrowDown = new KeyboardEvent('keydown', {
-                key: 'ArrowDown',
-                code: 'ArrowDown',
-                bubbles: true,
-                cancelable: true,
-            });
-            await act(async () => {
-                input!.dispatchEvent(refinedArrowDown);
-            });
-            const refinedExplicitTab = new KeyboardEvent('keydown', {
-                key: 'Tab',
-                code: 'Tab',
-                bubbles: true,
-                cancelable: true,
-            });
-            await act(async () => {
-                input!.dispatchEvent(refinedExplicitTab);
-            });
-            expect(refinedExplicitTab.defaultPrevented).toBe(true);
-            expect(onActivate).toHaveBeenCalledTimes(2);
+            await press(input!, { key: 'ArrowDown', code: 'ArrowDown' });
+            expect((await press(input!, { key: 'Tab', code: 'Tab' })).defaultPrevented).toBe(true);
             // A refine that replaces every identity reseeds focus on the first new match (row A), since
             // the user has not aimed at a row in these results (keyboard-nav owner, 192a9a83fd: "the initial
             // match is the current first match, not an old index"); the fresh ArrowDown then moves to row B.
-            expect(onActivate).toHaveBeenLastCalledWith('refined-row-b');
+            expect(selectedIds()).toEqual(['filtered-row-b', 'refined-row-b']);
         } finally {
             await act(async () => {
                 root.unmount();

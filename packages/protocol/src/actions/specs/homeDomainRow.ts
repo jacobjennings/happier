@@ -33,6 +33,7 @@ type HomeDomainActionRowInput<
   id: TActionId;
   approval: PreNormalizedActionSpec['approval'];
   approvalPolicy?: PreNormalizedActionSpec['approvalPolicy'];
+  approvalPresentation?: PreNormalizedActionSpec['approvalPresentation'];
   title: string;
   confirmVerb?: PreNormalizedActionSpec['confirmVerb'];
   irreversible?: PreNormalizedActionSpec['irreversible'];
@@ -98,6 +99,7 @@ export function homeDomainActionRow<
   return {
     id: spec.id, approval: spec.approval,
     ...(spec.approvalPolicy ? { approvalPolicy: spec.approvalPolicy } : {}),
+    ...(spec.approvalPresentation ? { approvalPresentation: spec.approvalPresentation } : {}),
     title: spec.title,
     ...(spec.confirmVerb === undefined ? {} : { confirmVerb: spec.confirmVerb }),
     ...(spec.irreversible === undefined ? {} : { irreversible: spec.irreversible }),

@@ -82,7 +82,7 @@ function resolveSimulatorPreviewViewModel(params: Readonly<{
     });
 }
 
-export function renderSimulatorSessionSurfaceTab(params: Readonly<{
+function renderSimulatorSessionSurfaceTab(params: Readonly<{
     sessionId: string;
     tab: DetailsTabState;
     simulatorPreview?: SimulatorPreviewSurfaceRuntime | null;
@@ -121,16 +121,4 @@ export function renderSessionSurfaceTab(params: Readonly<{
         simulatorPreview: params.simulatorPreview,
         nowMs: params.nowMs,
     });
-}
-
-export function resolveSessionSurfaceTabIconName(params: Readonly<{
-    tab: DetailsTabState;
-}>): string | null {
-    if (isSimulatorPreviewSessionSurfaceResource(params.tab.resource)) {
-        return 'device-mobile';
-    }
-    if (readComputerScreenSessionSurfaceResource(params.tab.resource)) {
-        return 'browsers';
-    }
-    return null;
 }

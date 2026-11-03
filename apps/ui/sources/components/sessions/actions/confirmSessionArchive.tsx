@@ -15,6 +15,7 @@ import { getStorage } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { findSessionListLookupSession } from '@/sync/domains/session/listing/sessionListLookupState';
 import { selectSessionReportSubtree } from '@/components/sessions/work/reportSubtree';
+import { readSessionPresentationRecord, readSessionPresentationInputRelations, type SessionRelationRecord } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { t } from '@/text';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 
@@ -123,10 +124,11 @@ type SessionArchiveLead = Readonly<{ leadSessionId: string; serverId: string | n
  * A display-only estimate for the existing confirmation. The Action resolves current scope at execution;
  * this cached projection never selects mutation targets.
  */
-function selectArchivableSessionReports(params: SessionArchiveLead): readonly Session[] {
+function selectArchivableSessionReports(params: SessionArchiveLead): readonly SessionRelationRecord[] {
     const state = getStorage().getState();
     return selectSessionReportSubtree(state.sessions, params.leadSessionId, params.serverId, state.sessionListRowsByServerId).filter((session) => (
-        readSessionManagerSessionIdV1(session) === params.leadSessionId && session.archivedAt == null
+        readSessionManagerSessionIdV1(readSessionPresentationInputRelations(session)) === params.leadSessionId
+            && readSessionPresentationRecord(session).archivedAt == null
     ));
 }
 

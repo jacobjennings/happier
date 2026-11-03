@@ -1,6 +1,6 @@
 import { createBackoff, delay, linearBackoffDelay } from "@/utils/timing/time";
 import type { PauseController } from "@/utils/timing/pauseController";
-import { shouldRetryError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
+import { isServerFetchReadSupersededError, shouldRetryError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
 
 type InvalidateSyncCycleOutcome =
     | Readonly<{ ok: true }>
@@ -19,6 +19,15 @@ export type SyncQueueWaitOutcome =
     | Readonly<{ status: 'stopped' }>;
 
 type SyncQueuePending = (outcome: SyncQueueWaitOutcome) => void;
+type SyncQueueWaitOptions = { timeoutMs?: number; signal?: AbortSignal };
+
+/** Cancels one operation's wait, never the queue's autonomous convergence. */
+export class SupersededOperationError extends Error {
+    constructor() {
+        super('Sync wait superseded');
+        this.name = 'SupersededOperationError';
+    }
+}
 
 const SYNC_QUEUE_COMPLETED: SyncQueueWaitOutcome = { status: 'completed' };
 const SYNC_QUEUE_STOPPED: SyncQueueWaitOutcome = { status: 'stopped' };
@@ -104,14 +113,28 @@ export class InvalidateSync {
         this._doSync();
     }
 
-    async invalidateAndAwait(opts?: { settleOnFirstAttempt?: boolean }) {
+    async invalidateAndAwait(opts: { timeoutMs: number; signal?: AbortSignal }): Promise<SyncQueueWaitOutcome>;
+    async invalidateAndAwait(opts?: { settleOnFirstAttempt?: boolean; signal?: AbortSignal }): Promise<void>;
+    async invalidateAndAwait(opts?: SyncQueueWaitOptions & { settleOnFirstAttempt?: boolean }): Promise<void | SyncQueueWaitOutcome> {
+        if (opts?.signal?.aborted) throw new SupersededOperationError();
+        if (opts?.timeoutMs !== undefined) return this._invalidateAndAwaitQueue(opts);
         if (this._stopped) {
             return;
         }
         await new Promise<void>((resolve, reject) => {
+            const cleanup = () => {
+                opts?.signal?.removeEventListener('abort', cancel);
+            };
+            const cancel = () => {
+                cleanup();
+                this._cyclePendings = this._cyclePendings.filter(entry => entry !== pending);
+                this._nextCyclePendings = this._nextCyclePendings.filter(entry => entry !== pending);
+                reject(new SupersededOperationError());
+            };
             const pending: InvalidateSyncCyclePending = {
                 settleOnFirstAttempt: opts?.settleOnFirstAttempt === true,
                 notify: (outcome) => {
+                    cleanup();
                     if (!outcome.ok) {
                         reject(outcome.error);
                         return;
@@ -124,11 +147,38 @@ export class InvalidateSync {
             } else {
                 this._cyclePendings.push(pending);
             }
+            opts?.signal?.addEventListener('abort', cancel, { once: true });
             this.invalidate();
         });
     }
 
-    async awaitQueue(opts?: { timeoutMs?: number }) {
+    private async _invalidateAndAwaitQueue(opts: SyncQueueWaitOptions): Promise<SyncQueueWaitOutcome> {
+        if (opts.signal?.aborted) throw new SupersededOperationError();
+        if (this._stopped) return SYNC_QUEUE_STOPPED;
+        let pending!: InvalidateSyncCyclePending;
+        const cycle = new Promise<InvalidateSyncCycleOutcome>((resolve) => {
+            pending = { settleOnFirstAttempt: false, notify: resolve };
+            if (this._invalidated && this._hasStartedCommandThisCycle) {
+                this._nextCyclePendings.push(pending);
+            } else {
+                this._cyclePendings.push(pending);
+            }
+        });
+        this.invalidate();
+        try {
+            const queue = await this.awaitQueue(opts);
+            if (queue.status !== 'completed') return queue;
+            const outcome = await cycle;
+            if (!outcome.ok) throw outcome.error;
+            return queue;
+        } finally {
+            this._cyclePendings = this._cyclePendings.filter(entry => entry !== pending);
+            this._nextCyclePendings = this._nextCyclePendings.filter(entry => entry !== pending);
+        }
+    }
+
+    async awaitQueue(opts?: SyncQueueWaitOptions) {
+        if (opts?.signal?.aborted) throw new SupersededOperationError();
         if (this._stopped) {
             return SYNC_QUEUE_STOPPED;
         }
@@ -136,29 +186,40 @@ export class InvalidateSync {
             return SYNC_QUEUE_COMPLETED;
         }
         const timeoutMs = opts?.timeoutMs;
-        if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        if (!opts?.signal && (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
             return await new Promise<SyncQueueWaitOutcome>(resolve => {
                 this._queuePendings.push(resolve);
             });
         }
 
-        return await new Promise<SyncQueueWaitOutcome>((resolve) => {
+        return await new Promise<SyncQueueWaitOutcome>((resolve, reject) => {
             let settled = false;
-            let timer: ReturnType<typeof setTimeout>;
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const cleanup = () => {
+                clearTimeout(timer);
+                opts?.signal?.removeEventListener('abort', cancel);
+            };
             const pending: SyncQueuePending = (outcome) => {
                 if (settled) return;
                 settled = true;
-                clearTimeout(timer);
+                cleanup();
                 resolve(outcome);
             };
-
-            this._queuePendings.push(pending);
-            timer = setTimeout(() => {
+            const cancel = () => {
                 if (settled) return;
                 settled = true;
-                this._queuePendings = this._queuePendings.filter((entry) => entry !== pending);
-                resolve({ status: 'wait_budget_expired' });
-            }, timeoutMs);
+                cleanup();
+                this._queuePendings = this._queuePendings.filter(entry => entry !== pending);
+                reject(new SupersededOperationError());
+            };
+            this._queuePendings.push(pending);
+            opts?.signal?.addEventListener('abort', cancel, { once: true });
+            if (typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+                timer = setTimeout(() => {
+                    this._queuePendings = this._queuePendings.filter(entry => entry !== pending);
+                    pending({ status: 'wait_budget_expired' });
+                }, timeoutMs);
+            }
         });
     }
 
@@ -224,6 +285,9 @@ export class InvalidateSync {
                 await this._command();
                 return;
             } catch (e) {
+                // Retry replaces a cancelled read inside this same queue owner.
+                // Keep its waiters and failure budget; no backoff is warranted.
+                if (isServerFetchReadSupersededError(e)) continue;
                 // Bootstrap observes a settled attempt; ordinary refresh callers
                 // still wait for this cycle's retry recovery.
                 this._notifyCyclePendings({ ok: false, error: e }, true);

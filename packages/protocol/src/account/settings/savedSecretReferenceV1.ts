@@ -1,3 +1,6 @@
+import { z } from 'zod/mini';
+import { lazyZodSchema } from '../../lazyZodSchema.js';
+
 export const SHARED_SAVED_SECRET_REF_V1_PREFIX = 'happier:shared-secret:v1:';
 
 export type SavedSecretRefV1 =
@@ -38,6 +41,28 @@ export function formatSharedSavedSecretRefV1(resourceId: string): string {
   assertSharedSavedSecretResourceIdV1(resourceId);
   return `${SHARED_SAVED_SECRET_REF_V1_PREFIX}${resourceId}`;
 }
+
+const SAVED_SECRET_ACTIVITY_ENTITY_PREFIX = 'saved-secret-activity:';
+/** History wake identity is distinct from resource content/currentness identity. */
+export function savedSecretDisclosureActivityEntityIdV1(resourceId: string): string {
+  return `${SAVED_SECRET_ACTIVITY_ENTITY_PREFIX}${formatSharedSavedSecretRefV1(resourceId)}`;
+}
+export function readSavedSecretDisclosureActivityEntityIdV1(value: string): string | null {
+  if (!value.startsWith(SAVED_SECRET_ACTIVITY_ENTITY_PREFIX)) return null;
+  try {
+    const ref = parseSavedSecretRefV1(value.slice(SAVED_SECRET_ACTIVITY_ENTITY_PREFIX.length));
+    return ref.kind === 'shared_resource' ? ref.resourceId : null;
+  } catch { return null; }
+}
+
+/** A settled picker carries identity only; pending person input is never a Saved Secret ref. */
+export const SharedSavedSecretReferenceSelectionV1Schema = lazyZodSchema(() => z.strictObject({
+  ref: z.string().check(z.refine(value => {
+    try { return parseSavedSecretRefV1(value).kind === 'shared_resource'; } catch { return false; }
+  })),
+  resourceRevision: z.number().check(z.int(), z.positive()),
+}));
+export type SharedSavedSecretReferenceSelectionV1 = z.infer<typeof SharedSavedSecretReferenceSelectionV1Schema>;
 
 /** Canonical carrier paths keep opaque ids and field names unambiguous. */
 export function formatSavedSecretReferencePathSegmentV1(key: string): string {
@@ -87,3 +112,15 @@ export function listSavedSecretReferenceCarrierPathsV1(
   visit(value, options.initialPath ?? '', false);
   return Object.freeze([...paths]);
 }
+
+/**
+ * The Saved Secret owner's typed refusal of a reference at operation admission.
+ * The CLI catalog owner classifies; carriers such as Provider errors only
+ * transport the value unchanged.
+ */
+export const SavedSecretOperationAdmissionFailureReasonV1Schema = lazyZodSchema(() => z.enum([
+  'reference_missing', 'reference_unavailable', 'reference_forbidden',
+  'reference_deleted', 'reference_mode_incompatible', 'reference_repair_required',
+  'reference_corrupt', 'reference_stale', 'reference_collision_migration_required',
+]));
+export type SavedSecretOperationAdmissionFailureReasonV1 = z.infer<typeof SavedSecretOperationAdmissionFailureReasonV1Schema>;

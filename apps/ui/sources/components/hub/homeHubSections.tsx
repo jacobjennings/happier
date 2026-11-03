@@ -3,9 +3,8 @@ import * as React from 'react';
 import { AutomationsLatestRunsSection } from '@/components/automations/home/AutomationsLatestRunsSection';
 import type { IconName } from '@/components/ui/icons/Icon';
 import type { WidgetFrameStyle } from '@/components/widgets/frame/WidgetFrame';
-import type { WidgetCandidate } from '@/components/widgets/widgetCatalog';
+import { resolveWidgetInstanceTitle, type WidgetCandidate } from '@/components/widgets/widgetCatalog';
 import { t } from '@/text';
-import { readWidgetInstanceName } from '@/components/widgets/frame/widgetFrameTitle';
 import { readWidgetGroupTitle } from '@/components/widgets/group/widgetGroupTitle';
 
 import { HubAttentionSection } from './HubAttentionSection';
@@ -82,7 +81,7 @@ export function findHomeHubBuiltinSection(id: string): HomeHubBuiltinSection | n
 /** What a section is called in its menu and in Customize. */
 export function homeHubSectionTitle(section: HomeHubSection<WidgetCandidate>): string {
     // The card's own name owner; a widget whose definition is gone is the kind word, never its instance id.
-    if (section.kind === 'widget') return readWidgetInstanceName(section.instance, section.widget) ?? t('boards.widgets.kind');
+    if (section.kind === 'widget') return resolveWidgetInstanceTitle(section.instance, section.widget);
     // A group is its title, or (untitled) the names of its widgets.
     if (section.kind === 'group') return readWidgetGroupTitle(section.group) ?? section.children.map(homeHubSectionTitle).join(' · ');
     return findHomeHubBuiltinSection(section.id)?.title() ?? section.id;
@@ -98,6 +97,6 @@ export function homeChildTitle(sections: readonly HomeHubSection<WidgetCandidate
                 if (child) return homeHubSectionTitle(child);
             }
         }
-        return instanceId;
+        return resolveWidgetInstanceTitle(null, null);
     };
 }

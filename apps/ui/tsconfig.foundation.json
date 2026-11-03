@@ -1550,7 +1550,6 @@
     "sources/components/terminal/embedded/keys/useTerminalKeys.ts",
     "sources/components/terminal/embedded/types.ts",
     "sources/components/terminal/interaction/accessibility.ts",
-    "sources/components/terminal/interaction/ime.ts",
     "sources/components/terminal/interaction/keyboard.ts",
     "sources/components/terminal/interaction/links.ts",
     "sources/components/terminal/interaction/model.ts",

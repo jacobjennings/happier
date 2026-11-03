@@ -15,14 +15,17 @@ describe('hasAuthoritativeSessionRouteData', () => {
     });
 
     it('requires the layout-1 owner compatibility view instead of shared metadata alone', () => {
-        expect(hasAuthoritativeSessionRouteData({
+        const displayOnly = {
             metadataLayoutVersion: 1,
             metadata: {
                 v: 1,
                 summary: { text: 'Shared title', updatedAt: 1 },
             },
             ownerMetadataView: null,
-        })).toBe(false);
+            workDisplay: { v: 1 as const, primaryItem: { id: 'task', kind: 'task' as const,
+                title: 'Current work', status: 'active' as const }, hasActiveGoal: true },
+        };
+        expect(hasAuthoritativeSessionRouteData(displayOnly)).toBe(false);
     });
 
     it('settles only producer-authorized session-only owner projections with readable stored shared data', () => {

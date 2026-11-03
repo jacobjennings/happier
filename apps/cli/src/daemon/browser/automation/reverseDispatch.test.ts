@@ -14,6 +14,7 @@ import { createBrowserSidecarCdpControlAdapter } from '../sidecar/controlAdapter
 import { createBrowserDaemonControlBroker } from '../control/broker';
 import { createBrowserAutomationReverseDispatcher } from './reverseDispatch';
 import { createDaemonRuntimeActionExecutor } from '../../runtimeActionExecutor';
+import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpcErrors';
 
 const view = { browserSessionId: 'visible-session', viewId: 'visible-view' };
 const request = { v: 1, ...view, automationRequestId: 'click-1', actionKind: 'click', navigationGeneration: 0,
@@ -22,6 +23,58 @@ const args: RuntimeActionExecuteArgs = { actionId: 'browser.automation.click', i
   context: { surface: 'agent', authority: 'account_automation', defaultSessionId: 'happier-session' } };
 
 describe('daemon browser reverse dispatch protocol boundary', () => {
+  it('refuses two live clients advertising the same exact view without choosing the first', async () => {
+    const { selectRpcTarget } = await import('../../../../../server/sources/app/api/socket/rpc/rpcTargetSelection');
+    let effects = 0;
+    const receiver = (id: string) => ({ id, timeout: () => ({ emitWithAck: async () => { effects++; return {}; } }) });
+    const execute = createBrowserAutomationReverseDispatcher({ getMachineClient: () => ({
+      callConnectedClientRpc: async (_method, _payload, options) => {
+        const selection = selectRpcTarget({ targets: [receiver('app-b'), receiver('app-a')],
+          answeringClient: options?.answeringClient });
+        if (selection.type === 'ambiguous') return { ok: false, errorCode: RPC_ERROR_CODES.CLIENT_AMBIGUOUS };
+        if (selection.type !== 'target') return { ok: false, errorCode: RPC_ERROR_CODES.CLIENT_NOT_AVAILABLE };
+        options?.onIssued?.();
+        return { ok: true, result: await selection.target.timeout(0).emitWithAck('rpc-request', {}) };
+      },
+    }) });
+    expect(await execute({ ...args, actionId: 'browser.diagnostics.eval', input: {
+      v: 1, ...view, evalRequestId: 'eval', navigationGeneration: 0, tier: 'injectedPage',
+      expression: '1 + 1', objectGroupId: 'group', diagnosticsInteractionEnabled: true,
+    } })).toMatchObject({ ok: false, errorCode: 'client_ambiguous' });
+    expect(effects).toBe(0);
+  });
+  it('preserves a definitive no-responder refusal after sending the RPC envelope', async () => {
+    const execute = createBrowserAutomationReverseDispatcher({ getMachineClient: () => ({
+      hasConnectedClientRpcHandler: () => true,
+      callConnectedClientRpc: async (_method, _payload, options) => {
+        options?.onIssued?.();
+        return { ok: false, errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND };
+      },
+    }) });
+    expect(await execute(args)).toMatchObject({ ok: false, errorCode: 'runtime_action_disabled' });
+  });
+
+  it.each([
+    { code: RPC_ERROR_CODES.CLIENT_NOT_AVAILABLE, expected: 'runtime_action_disabled' },
+    { code: RPC_ERROR_CODES.CLIENT_AMBIGUOUS, expected: 'client_ambiguous' },
+    { code: RPC_ERROR_CODES.METHOD_NOT_AVAILABLE, expected: 'client_routing_update_required' },
+    { code: 'machine_socket_unavailable', expected: 'outcome_unknown' },
+  ])('distinguishes diagnostics receiver refusal from a lost issued effect ($code)', async ({ code, expected }) => {
+    let issued = 0;
+    const execute = createBrowserAutomationReverseDispatcher({ getMachineClient: () => ({
+      callConnectedClientRpc: async (_method, _payload, options) => {
+        options?.onIssued?.();
+        return { ok: false, errorCode: code };
+      },
+    }) });
+    expect(await execute({ ...args, actionId: 'browser.diagnostics.eval', input: {
+      v: 1, ...view, evalRequestId: 'eval', navigationGeneration: 0, tier: 'injectedPage',
+      expression: '1 + 1', objectGroupId: 'group', diagnosticsInteractionEnabled: true,
+    }, context: { ...args.context, onTransportIssued: () => { issued++; } } }))
+      .toMatchObject({ ok: false, errorCode: expected });
+    expect(issued).toBe(1);
+  });
+
   it('reports an unknown external-open effect after its client transport was issued', async () => {
     const execute = createBrowserAutomationReverseDispatcher({ getMachineClient: () => ({
       hasConnectedClientRpcHandler: () => true,
@@ -37,8 +90,8 @@ describe('daemon browser reverse dispatch protocol boundary', () => {
 
   it.each(['takeControl', 'handBack'] as const)('routes %s to a client-owned slot without provisioning', async kind => {
     const uiAutomation = createBrowserAutomationReverseDispatcher({ getMachineClient: () => ({
-      hasConnectedClientRpcHandler: method => method === uiBrowserAutomationDispatchMethod(view),
-      callConnectedClientRpc: async (_method, payload) => {
+      callConnectedClientRpc: async (method, payload) => {
+        expect(method).toBe(uiBrowserAutomationDispatchMethod(view));
         const wire = UiBrowserAutomationDispatchRequestV1Schema.parse(payload);
         expect(wire.sessionId).toBe(args.context.defaultSessionId);
         return { ok: true, result: { v: 1, status: 'dispatched', commandId: kind, adapterKind: 'localPreview', events: [],
@@ -141,8 +194,8 @@ describe('daemon browser reverse dispatch protocol boundary', () => {
     const wireRequests: unknown[] = [];
     // Connected-client RPC is the network boundary. UI behavior is exercised by its own package.
     const uiAutomation = createBrowserAutomationReverseDispatcher({ getMachineClient: () => ({
-      hasConnectedClientRpcHandler: method => method === uiBrowserAutomationDispatchMethod(view),
-      callConnectedClientRpc: async (_method, payload) => {
+      callConnectedClientRpc: async (method, payload) => {
+        expect(method).toBe(uiBrowserAutomationDispatchMethod(view));
         const wire = UiBrowserAutomationDispatchRequestV1Schema.parse(payload);
         wireRequests.push(wire);
         const result = wire.actionId === 'browser.automation.cancelActive'

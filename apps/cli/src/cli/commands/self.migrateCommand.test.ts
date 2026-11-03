@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { handleSelfCliCommand } from './self';
 
 const { handleServiceRepairCliCommandMock } = vi.hoisted(() => ({
     handleServiceRepairCliCommandMock: vi.fn<(params: unknown) => Promise<void>>(async () => {}),
@@ -11,12 +12,10 @@ vi.mock('./service/repair/handleServiceRepairCliCommand', () => ({
 describe('happier self migrate', () => {
     afterEach(() => {
         vi.restoreAllMocks();
-        vi.resetModules();
         handleServiceRepairCliCommandMock.mockReset();
     });
 
     it('delegates to the canonical background-service repair flow', async () => {
-        const { handleSelfCliCommand } = await import('./self');
 
         await handleSelfCliCommand({
             args: ['self', 'migrate', '--yes', '--json'],

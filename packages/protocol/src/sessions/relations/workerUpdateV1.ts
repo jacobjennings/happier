@@ -125,6 +125,28 @@ export const WorkerUpdateV1Schema = lazyZodSchema(() => z.discriminatedUnion('wo
 })));
 export type WorkerUpdateV1 = z.infer<typeof WorkerUpdateV1Schema>;
 
+/** One terminal Run projection for retained parent reports and content-free Follow outcomes. */
+export function composeExecutionRunWorkerUpdateV1(input: Readonly<{
+  runId: string;
+  sessionId: string;
+  status: Extract<WorkerUpdateV1, { workerKind: 'execution_run' }>['ownerState'];
+  canInspect: boolean;
+}> & Partial<Pick<Extract<WorkerUpdateV1, { workerKind: 'execution_run' }>,
+  'result' | 'deliverables' | 'truncated' | 'engine' | 'runtimeIssueV1'>>): WorkerUpdateV1 {
+  const { runId, sessionId, status, ...content } = input;
+  return WorkerUpdateV1Schema.parse({ v: 1, workerKind: 'execution_run', workerId: runId,
+    ownerState: status, wake: resolveWorkerUpdateWakeV1(classifyWorkerUpdateEventV1({ workerKind: 'execution_run', ownerState: status })!),
+    headline: `Background run ${status}`,
+    transcriptPointer: { kind: 'execution_run', sessionId, runId }, ...content,
+  });
+}
+
+/** Compact presentation facts; result bodies and references stay with their transcript row. */
+export type WorkerUpdateHeadlineFactsV1 = {
+  [Kind in WorkerUpdateV1['workerKind']]: Pick<Extract<WorkerUpdateV1, { workerKind: Kind }>,
+    'workerKind' | 'workerId' | 'ownerState' | 'wake' | 'headline'>;
+}[WorkerUpdateV1['workerKind']];
+
 /** Source outcome is authoritative; the legacy wake only carries live attention, never success. */
 export function classifyWorkerUpdateEventV1(update: Readonly<
   Pick<WorkerUpdateV1, 'workerKind' | 'ownerState'> & Partial<Pick<WorkerUpdateV1, 'wake'>>
@@ -144,6 +166,22 @@ export function classifyWorkerUpdateEventV1(update: Readonly<
     case 'published': return 'update_posted';
     case 'settled': return update.wake === 'needs_you' ? 'needs_you' : 'finished';
     default: return null;
+  }
+}
+
+/** Plain-language fallback for native Session reports; clients localize the same outcome facts. */
+export function composeSessionWorkerUpdateHeadlineV1(update: Readonly<
+  Pick<Extract<WorkerUpdateV1, { workerKind: 'session' }>, 'ownerState' | 'wake'>
+>): string {
+  const event = classifyWorkerUpdateEventV1({ ...update, workerKind: 'session' });
+  if (event === 'needs_you') return 'Needs you';
+  switch (update.ownerState) {
+    case 'failed': return 'Failed';
+    case 'cancelled': return 'Stopped';
+    case 'stalled': return 'Stalled';
+    case 'published': return 'Published an update';
+    case 'needs_input': return 'Needs you';
+    case 'settled': return 'Finished its turn';
   }
 }
 

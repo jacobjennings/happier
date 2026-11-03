@@ -4,7 +4,7 @@ import { sameStrictJsonValue } from '@happier-dev/protocol/json/strictJsonValue'
 import type { PluginDeclarativeNodeV2 } from '@happier-dev/protocol/plugins/contributions/ui/v2';
 import type { ActionExecutorDeps } from '@happier-dev/protocol/actions/executor/types';
 import type { ActionExecuteFailure } from '@happier-dev/protocol/actions/actionExecutionResult';
-import { isSameWidgetDefinitionV1, widgetCandidateDefinitionV1, readWidgetDefinitionResourcesV1 } from '@happier-dev/protocol/widgets';
+import { isSameWidgetDefinitionV1, widgetCandidateDefinitionV1, readWidgetDefinitionResourcesV1, WidgetSurfaceReadV1Schema, type WidgetSurfaceReadV1 } from '@happier-dev/protocol/widgets';
 import { readInputPath } from '@happier-dev/protocol/inputs';
 import type { PluginUiResourceEntry } from '@happier-dev/plugin-ui/advanced';
 import type { PluginUiResourceSnapshot } from '@happier-dev/plugin-ui/hostApi';
@@ -18,7 +18,7 @@ import { describeAuthoredWidgetDefinitionV1, readWidgetDescriptor } from '@/comp
 import { readWidgetActionRuntimeV1, readWidgetSurfaceActionPortV1 } from './widgetCatalogActionDeps';
 import type { LazyActionAccountContext } from './actionAccountContext';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
-import { resolveMountedWidgetAreaLayoutSelectionOwner } from '@/components/widgets/area/widgetAreaLayoutSelection';
+import { resolveMountedWidgetAreaLayoutSelectionOwner, type WidgetAreaLayoutSelectionOwner } from '@/components/widgets/area/widgetAreaLayoutSelection';
 import { resolveCallerHostedHtmlResourceBindingV1 } from '@/components/ui/surfaces/hostedHtml/sessionCallerHostedHtmlRequestController';
 
 const unavailable = (errorCode = 'widget_refresh_unavailable'): ActionExecuteFailure => ({ ok: false, errorCode, error: errorCode });
@@ -48,17 +48,31 @@ export function createWidgetRefreshActionDepsV1(account: LazyActionAccountContex
     return { widgetRefresh: async ({ ref, context, signal }) => {
         account.assertCurrent();
         const owner = ref.surface.owner;
+        let mountedOwner: WidgetAreaLayoutSelectionOwner | undefined;
+        const isAreaCurrent = () => mountedOwner?.isCurrent() ?? true;
         // The admitted page port already supplies its captured context. Reverse
         // dispatch has none and must resolve the same current owner as selection.
         if ((owner.kind === 'project' || owner.kind === 'corePage' || owner.kind === 'pluginArea')
             && !sameStrictJsonValue(context.widgetAreaContext?.surface, ref.surface)) {
             const mounted = resolveMountedWidgetAreaLayoutSelectionOwner(ref.surface);
             if ('ok' in mounted) return mounted;
+            context = { ...context, widgetAreaContext: { surface: ref.surface, values: mounted.providedContext } };
+            mountedOwner = mounted;
         }
         if (!deps.widgetInputs || !account.accountLifetime) return unavailable();
         const port = readWidgetSurfaceActionPortV1(deps, ref.surface);
         if (!port) return unavailable();
-        const state = await port.read(ref.surface, context, signal);
+        let state: WidgetSurfaceReadV1 | ActionExecuteFailure;
+        if (mountedOwner) {
+            // The captured read re-admits the page's declared context and host
+            // port lifetime; a mounted address alone grants neither.
+            const result = await mountedOwner.read(ref.surface, signal);
+            if (!result.ok) return result;
+            const parsed = WidgetSurfaceReadV1Schema.safeParse(result.result);
+            if (!parsed.success || !sameStrictJsonValue(parsed.data.surface, ref.surface)) return unavailable('invalid_widget_area_result');
+            state = parsed.data;
+        } else state = await port.read(ref.surface, context, signal);
+        if (!isAreaCurrent()) return unavailable('widget_area_scope_retired');
         if ('ok' in state) return state;
         const instance = state.instances.find(row => row.instance.id === ref.instanceId)?.instance;
         if (!instance) return unavailable('widget_instance_not_found');
@@ -73,6 +87,7 @@ export function createWidgetRefreshActionDepsV1(account: LazyActionAccountContex
         if (definition.kind !== 'installed' && !authored) return unavailable();
         const resolved = await deps.widgetInputs.resolve({ ref, instance, context, admission: 'execution', ...(signal ? { signal } : {}) });
         account.assertCurrent();
+        if (!isAreaCurrent()) return unavailable('widget_area_scope_retired');
         if (resolved.status !== 'ready') return unavailable(`widget_inputs_${resolved.status}`);
         const initial = await readWidgetActionRuntimeV1(ref.surface, account, signal, undefined, deps);
         const installedDefinition = definition.kind === 'installed' ? definition : authored?.body.kind === 'installed' ? authored.body : null;
@@ -86,8 +101,10 @@ export function createWidgetRefreshActionDepsV1(account: LazyActionAccountContex
         const parsedSession = seed.sessionInputPath ? VoiceTrackedSessionAddressV1Schema.safeParse(readInputPath(resolved.input, seed.sessionInputPath)) : null;
         if (parsedSession && (!parsedSession.success || !areServerProfileIdentifiersEquivalent(parsedSession.data.serverId, account.serverId))) return unavailable();
         if (seed.target === 'session' && !parsedSession?.success) return unavailable();
-        const runtime = parsedSession?.success ? await readWidgetActionRuntimeV1(ref.surface, account, signal, parsedSession.data, deps) : initial;
-        if ('ok' in runtime) return runtime;
+        const selectedRuntime = parsedSession?.success ? await readWidgetActionRuntimeV1(ref.surface, account, signal, parsedSession.data, deps) : initial;
+        if (!isAreaCurrent()) return unavailable('widget_area_scope_retired');
+        if ('ok' in selectedRuntime) return selectedRuntime;
+        const runtime = { ...selectedRuntime, isCurrent: () => isAreaCurrent() && selectedRuntime.isCurrent() };
         if (definition.kind === 'artifact') {
             const current = await deps.widgetDefinitionArtifacts?.get(definition.artifactId, signal);
             account.assertCurrent();

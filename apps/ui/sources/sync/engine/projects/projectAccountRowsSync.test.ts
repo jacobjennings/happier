@@ -41,6 +41,20 @@ function harness() {
 }
 
 describe('Project Account row sync owner', () => {
+    it('projects server-visible authoring ids on cold refresh and retains them through legacy-shaped mutation acknowledgements', async () => {
+        const h = harness();
+        const key = { kind: 'workspace-ref' as const, serverId: 'home', id: 'ref' };
+        const physicalKey = buildProjectAccountRowPhysicalKeyV1(key);
+        const row = h.rows.get(physicalKey)!;
+        const authoringSession = { serverId: 'author-home', sessionId: 'author-session' };
+        h.rows.set(physicalKey, { ...row, ...{ authoringSession } });
+        const initial = await h.owner.refresh();
+        expect(Reflect.get(initial, 'authoringSessionsByPhysicalKey')).toEqual({ [physicalKey]: authoringSession });
+        await h.owner.mutateWorkspaceMetadata({ serverId: 'home', workspaceId: 'ref', label: 'Renamed' });
+        expect(Reflect.get(h.projection()!, 'authoringSessionsByPhysicalKey')).toEqual({ [physicalKey]: authoringSession });
+        expect(h.projection()?.workspaceRefs[0]?.label).toBe('Renamed');
+    });
+
     it('writes and reloads atmosphere through the organization owner while preserving label and pin', async () => {
         const h = harness();
         const key = { kind: 'project-organization' as const, serverId: 'home', projectKey: 'anchor' };

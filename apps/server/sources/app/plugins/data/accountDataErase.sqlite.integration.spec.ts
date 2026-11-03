@@ -8,12 +8,16 @@ import {
     ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION,
     PluginAccountDataEraseServerOutputV1Schema,
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
+    MACHINE_PLAIN_DATA_KEY_MARKER,
+    encodePlainMachineStoredContent,
 } from "@happier-dev/protocol";
 
 import { pluginDataRoutes } from "@/app/api/routes/plugins/data/pluginDataRoutes";
 import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
 import { withAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
 import { auth } from "@/app/auth/auth";
+import { eventRouter } from "@/app/events/connectionEventRouter";
+import { resolveMachineAdmissionInTx } from "@/app/machines/machineAccess";
 import {
     materializePluginCollectionContractsFromManifestTx,
 } from "@/app/plugins/data/collections/contracts";
@@ -238,6 +242,90 @@ describe("plugin Account data erasure", () => {
             accountId: "missing-plugin-data-account",
             pluginId: PLUGIN_ID,
         }))).resolves.toEqual({ status: "account-not-found" });
+    });
+
+    it('wakes every foreign Machine recipient after Account erasure, including Team and Group access', async () => {
+        const { deleteAccountForErasure } = await import('./accountDataErase');
+        const custodianId = 'z-erased-custodian';
+        const recipientIds = ['a-direct-recipient', 'b-team-recipient', 'c-group-recipient'];
+        const outsiderId = 'unrelated-custodian';
+        for (const id of [custodianId, ...recipientIds, outsiderId]) await createPlainAccount(id);
+        const machine = await db.machine.create({ data: {
+            id: 'erased-shared-machine', accountId: custodianId, installationId: 'erased-installation',
+            metadata: encodePlainMachineStoredContent({ host: 'shared', platform: 'linux', happyCliVersion: 'test',
+                homeDir: '/home/test', happyHomeDir: '/home/test/.happier' }),
+            dataEncryptionKey: privacyKit.decodeBase64(MACHINE_PLAIN_DATA_KEY_MARKER),
+        } });
+        const team = await db.team.create({ data: { name: 'Erasure recipients' } });
+        await db.teamMembership.createMany({ data: [
+            { teamId: team.id, accountId: recipientIds[0]!, role: 'owner' },
+            { teamId: team.id, accountId: recipientIds[1]!, role: 'member' },
+        ] });
+        const groupMember = await db.teamMembership.create({ data: {
+            teamId: team.id, accountId: recipientIds[2]!, role: 'member',
+        } });
+        const group = await db.teamGroup.create({ data: { teamId: team.id, name: 'Group', nameKey: 'group' } });
+        await db.teamGroupMembership.create({ data: {
+            teamId: team.id, teamGroupId: group.id, teamMembershipId: groupMember.id, nativeContribution: true,
+        } });
+        // Group access uses a separate Team so the third recipient cannot inherit the Team grant.
+        const grantedTeam = await db.team.create({ data: { name: 'Team grant' } });
+        await db.teamMembership.create({ data: {
+            teamId: grantedTeam.id, accountId: recipientIds[1]!, role: 'owner',
+        } });
+        await db.machineAccountGrant.create({ data: {
+            machineId: machine.id, accountId: recipientIds[0]!, accessLevel: 'view', createdByAccountId: custodianId,
+        } });
+        await db.machineTeamGrant.create({ data: {
+            machineId: machine.id, teamId: grantedTeam.id, accessLevel: 'view', createdByAccountId: custodianId,
+        } });
+        await db.machineGroupGrant.create({ data: {
+            machineId: machine.id, teamGroupId: group.id, accessLevel: 'view', createdByAccountId: custodianId,
+        } });
+        await db.machine.createMany({ data: Array.from({ length: 100 }, (_, index) => ({
+            id: `unrelated-machine-${index}`, accountId: outsiderId, metadata: '{}',
+        })) });
+        const admission = (actorAccountId: string) => inTx(tx => resolveMachineAdmissionInTx(tx, {
+            actorAccountId, machineId: machine.id,
+        }));
+        for (const accountId of recipientIds) expect(await admission(accountId)).toMatchObject({ kind: 'admitted', role: 'use' });
+        const emit = vi.spyOn(eventRouter, 'emitUpdate'); // Observe the real publisher; no domain logic is replaced.
+        expect(await deleteAccountForErasure({ accountId: custodianId })).toEqual({ status: 'deleted' });
+        expect(await db.machine.findUnique({ where: { id: machine.id } })).toBeNull();
+        expect(await db.machineAccountGrant.count({ where: { machineId: machine.id } })).toBe(0);
+        expect(await db.machineTeamGrant.count({ where: { machineId: machine.id } })).toBe(0);
+        expect(await db.machineGroupGrant.count({ where: { machineId: machine.id } })).toBe(0);
+        for (const accountId of recipientIds) expect(await admission(accountId)).toEqual({ kind: 'denied', code: 'access_denied' });
+        expect(await db.machine.count({ where: { accountId: outsiderId } })).toBe(100);
+        expect(await db.accountChange.findMany({ where: { kind: 'machineRecipientAccess' },
+            orderBy: { accountId: 'asc' }, select: { accountId: true, entityId: true } }))
+            .toEqual(recipientIds.map(accountId => ({ accountId, entityId: machine.id })));
+        const machineWakes = () => emit.mock.calls.map(([update]) => update).filter(update =>
+            update.payload.body.t === 'account-change' && update.payload.body.changeKinds?.includes('machineRecipientAccess'));
+        expect(machineWakes().map(update => update.userId).sort()).toEqual(recipientIds);
+        for (const wake of machineWakes()) expect(wake.payload.body).toMatchObject({ entityIds: expect.arrayContaining([machine.id]) });
+        emit.mockClear();
+        expect(await deleteAccountForErasure({ accountId: custodianId })).toEqual({ status: 'already-deleted' });
+        expect(machineWakes()).toEqual([]);
+        await db.team.deleteMany({ where: { id: { in: [team.id, grantedTeam.id] } } });
+    });
+
+    it('publishes authored Machine-grant withdrawal before the erased grant creator cascades away', async () => {
+        const { deleteAccountForErasure } = await import('./accountDataErase');
+        for (const id of ['grant-custodian', 'grant-creator', 'grant-recipient']) await createPlainAccount(id);
+        const machine = await db.machine.create({ data: {
+            id: 'retained-foreign-machine', accountId: 'grant-custodian', metadata: '{}',
+        } });
+        await db.machineAccountGrant.createMany({ data: [
+            { machineId: machine.id, accountId: 'grant-creator', accessLevel: 'admin', createdByAccountId: 'grant-custodian' },
+            { machineId: machine.id, accountId: 'grant-recipient', accessLevel: 'view', createdByAccountId: 'grant-creator' },
+        ] });
+        expect(await deleteAccountForErasure({ accountId: 'grant-creator' })).toEqual({ status: 'deleted' });
+        expect(await db.machine.findUnique({ where: { id: machine.id } })).not.toBeNull();
+        expect(await db.machineAccountGrant.count({ where: { machineId: machine.id } })).toBe(0);
+        expect(await db.accountChange.findMany({ where: { kind: 'machineRecipientAccess', entityId: machine.id },
+            select: { accountId: true }, orderBy: { accountId: 'asc' } }))
+            .toEqual([{ accountId: 'grant-custodian' }, { accountId: 'grant-recipient' }]);
     });
 
     it('erases owned archived Discussion bytes privately and preserves foreign bytes when a recipient is erased', async () => {

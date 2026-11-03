@@ -51,6 +51,11 @@ const CONNECTED_ACCOUNT_PROJECTION_TRANSPORT_ERROR = Object.freeze({
     kind: 'error' as const,
     reason: 'transport' as const,
 });
+// Setup reads credential descriptors and exactly one purpose declaration across
+// Resources, Actions and provisioners. It does not present plugin UI, browser
+// destinations or input widgets; those families must not delay this admission.
+const PLUGIN_UI_PURPOSE_SECTIONS = ['familiesById.connectedAccounts', 'resourcesById',
+    'actionsById', 'familiesById.machineProvisioners'] as const;
 const CONNECTED_ACCOUNT_PROJECTION_UNSUPPORTED = Object.freeze({
     kind: 'error' as const,
     reason: 'unsupported' as const,
@@ -208,7 +213,10 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
     serverId?: string | null;
     enabled?: boolean;
     reloadRevision?: number;
+    /** Setup consumes the credential-use declarations, beyond ordinary UI presentation. */
+    includeConnectedAccountPurposes?: boolean;
 }>): PluginUiProjectionCurrentness {
+    const sections = params.includeConnectedAccountPurposes ? PLUGIN_UI_PURPOSE_SECTIONS : PLUGIN_UI_SECTIONS;
     // Local and remote Settings use the same language authority and narrow subscription.
     useSetting('preferredLanguage');
     const locale = getPreferredLanguage();
@@ -276,6 +284,7 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
             params.reloadRevision ?? 0,
             projectionInvalidationRevision,
             locale,
+            params.includeConnectedAccountPurposes === true ? 'purposes' : 'ui',
         ].join(':')
         : null;
     const currentAuthorityKeyRef = React.useRef(authorityKey);
@@ -395,6 +404,7 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
                     connectedAccountProjection: CONNECTED_ACCOUNT_PROJECTION_TRANSPORT_ERROR };
             });
             const delayMs = readDaemonMergedProjectionRetryDelayMs(nextRetryEntry);
+            if (delayMs === null) return;
             retryTimer = setTimeout(() => {
                 retryTimer = null;
                 requestProjection();
@@ -406,6 +416,7 @@ export function usePluginUiProjectionCurrentness(params: Readonly<{
             // The one per-machine projection owner: every reader of this
             // machine shares its request and its projection revision.
             void loadDaemonMergedProjectionCacheEntry({
+                sections,
                 machineId: target.machineId,
                 serverId: target.serverId,
                 accountLifetime,

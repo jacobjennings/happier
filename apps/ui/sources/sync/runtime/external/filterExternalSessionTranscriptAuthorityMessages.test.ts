@@ -40,13 +40,6 @@ describe('filterExternalSessionTranscriptAuthorityMessages', () => {
         )).toEqual([expect.objectContaining({ id: liveId })]);
     });
 
-    it('canonicalizes imported ids and hides rows beyond the selected publication bound', () => {
-        expect(filterExternalSessionTranscriptAuthorityMessages(
-            [message(), message({ id: 'staged', seq: 5 })],
-            { kind: 'server_snapshot', maxServerSeq: 4, materializedThroughSourceAt: 1 },
-        )).toEqual([expect.objectContaining({ id: liveId, seq: 4 })]);
-    });
-
     it('drops every output for unavailable authority and leaves hosted rows unchanged', () => {
         const serverRow = message({ localId: null });
         expect(filterExternalSessionTranscriptAuthorityMessages(

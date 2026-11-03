@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import axios from 'axios';
 import type {
@@ -13,6 +12,7 @@ import type {
 import { createLocalServicePreviewServerRoutes, type LocalServicePreviewServerInput } from './serverRoutes';
 import {
     listLocalServicePreviewResources,
+    previewIdForInventoryEntry,
     registerLocalServicePreview,
     selectLocalServicePreviewForInventoryEntry,
     unregisterLocalServicePreview,
@@ -50,10 +50,6 @@ export type LocalServicePreviewRoutes = Readonly<{
         context?: RpcHandlerContext,
     ): Promise<LocalServicePreviewLifecycleResult<DaemonLocalServicePreviewRevokeResponseV1>>;
 }>;
-
-function previewIdForInventoryEntry(accountId: string, machineId: string, sessionId: string | undefined, entryId: string): string {
-    return `preview-${createHash('sha256').update(JSON.stringify([accountId, machineId, sessionId ?? null, entryId])).digest('hex')}`;
-}
 
 /**
  * Bind a detected listener using the canonical endpoint owner's observed scheme/loopback host.
@@ -193,8 +189,10 @@ export function createLocalServicePreviewRoutes(input: Readonly<{
                 const serviceTarget = request.serviceTarget;
                 if (request.sessionId !== undefined) return { ok: false, reasonCode: 'preview_target_unresolved' };
                 const resolved = input.projectManagedServices?.resolveProjectService(serviceTarget);
+                if (resolved?.status === 'unknown') return { ok: false, reasonCode: 'unknown_managed_service' };
                 if (resolved?.status !== 'found') return { ok: false, reasonCode: 'preview_target_unresolved' };
                 const handle = resolved.handle;
+                if (handle.kind !== 'workspace') return { ok: false, reasonCode: 'preview_target_unresolved' };
                 const endpoint = readProjectManagedServicePreviewEndpoint(handle);
                 if (!endpoint) return { ok: false, reasonCode: 'preview_target_unresolved' };
                 const existing = listLocalServicePreviewResources(input.registry).find(resource =>
@@ -276,7 +274,7 @@ export function createLocalServicePreviewRoutes(input: Readonly<{
                 return { ok: false, reasonCode: 'endpoint_scheme_unknown' };
             }
             const existing = selectLocalServicePreviewForInventoryEntry(
-                listLocalServicePreviewResources(input.registry), entry, request.sessionId,
+                listLocalServicePreviewResources(input.registry), entry, input.accountId, request.sessionId,
             );
             if (existing) {
                 const published = await publish({ ...existing, initialPath: request.initialPath ?? existing.initialPath }, signal, context);

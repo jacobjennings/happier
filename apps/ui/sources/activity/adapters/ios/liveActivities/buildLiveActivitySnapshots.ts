@@ -9,7 +9,7 @@ import {
 import type { ActivitySurfaceSessionViewModel } from '@/activity/presentation/activitySurfaceViewModels';
 import { createLiveActivitySelectionSpec } from '@/activity/selection/activitySurfaceSelectionTypes';
 import { resolveActivitySurfaceSlots } from '@/activity/selection/resolveActivitySurfaceSlots';
-import type { Session } from '@/sync/domains/state/storageTypes';
+import type { SessionPresentationRecord as Session } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { t } from '@/text';
 

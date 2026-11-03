@@ -19,6 +19,8 @@ describe('HappierStatusDot', () => {
       expect(halo!.style.backgroundColor).toBe('rgb(152, 251, 152)');
       expect(halo!.style.width).toBe('16px');
       expect(halo!.style.height).toBe('16px');
+      // A round ring: its corner radius is half its size.
+      expect(halo!.style.borderTopLeftRadius).toBe('8px');
       // The dot keeps its own colour, size and accessibility identity inside the ring.
       expect(halo!.contains(dot)).toBe(true);
       expect(dot!.style.backgroundColor).toBe('rgb(0, 128, 0)');

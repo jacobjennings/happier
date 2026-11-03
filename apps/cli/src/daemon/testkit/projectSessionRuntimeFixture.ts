@@ -5,21 +5,33 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { reloadConfiguration } from '@/configuration';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
-import { createRequesterCurrentnessSocketHarness } from '@/testkit/backends/requesterCurrentnessSocketHarness';
+import { createRequesterCurrentnessSocketHarness, type RequesterCurrentnessSocketHarness } from '@/testkit/backends/requesterCurrentnessSocketHarness';
 import { readOrCreateInstallationIdentity } from '@/daemon/identity/store';
-import { prepareRequesterSessionBootstrap } from '@/daemon/sessionEncryption/requesterSessionCredentials';
+import { prepareRequesterSessionBootstrap, type AdmittedRequesterSessionBootstrap } from '@/daemon/sessionEncryption/requesterSessionCredentials';
 import { encodePlainMachineStoredContent, MACHINE_PLAIN_DATA_KEY_MARKER } from '@happier-dev/protocol/machines/machineStoredContent';
 import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
 import { installAxiosRequestMethodAdapter } from '@/testkit/http/axiosAdapter';
 import { MachineAccessGrantsListResponseV1Schema } from '@happier-dev/protocol/machines/machineAccessV1';
 import type { StoredCredentials } from '@/persistence';
+import type { MachineInstallationIdentityV1 } from '@happier-dev/protocol';
+
+export type ProjectSessionRuntimeFixture = Readonly<{
+  directory: string;
+  readonly bootstrap: AdmittedRequesterSessionBootstrap;
+  createBootstrap(): Promise<AdmittedRequesterSessionBootstrap>;
+  installation: MachineInstallationIdentityV1;
+  channel: RequesterCurrentnessSocketHarness;
+  isHomeCurrent(): boolean;
+  retire(): void;
+}>;
 
 /** Real ordinary Session admission; only Home endpoints are substituted. */
 export async function createProjectSessionRuntimeFixture(options: Readonly<{
   serverId?: string; serverUrl?: string; accountSettings?: Readonly<Record<string, unknown>>; boundSessionId?: string;
   credentials?: StoredCredentials;
+  homeServerIdentityId?: string;
   machineAccess?: Readonly<{ custodianAccountId: string; role: 'use' | 'manage' }>;
-}> = {}) {
+}> = {}): Promise<ProjectSessionRuntimeFixture> {
   const directory = await mkdtemp(join(tmpdir(), 'project-session-runtime-'));
   const env = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_ACTIVE_SERVER_ID', 'HAPPIER_SERVER_URL']);
   env.patch({ HAPPIER_HOME_DIR: directory,
@@ -53,7 +65,9 @@ export async function createProjectSessionRuntimeFixture(options: Readonly<{
         canManage: (options.machineAccess?.role ?? 'manage') === 'manage', grants: [], ownDirectGrant: false, ownAccessSources: [] })
       : { kind: 'refused', code: 'access_denied' } };
     if (url.endsWith('/v1/machines/machine')) return { status: 200, data: { machine: {
-      id: 'machine', dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER,
+      id: 'machine', installationId: installation.installationId, dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER,
+      access: { custodian: { accountId: options.machineAccess?.custodianAccountId ?? 'requester', displayName: 'Requester' },
+        role: options.machineAccess?.role ?? 'manage', resourceMode: 'plain', accessState: 'ready' },
       metadataVersion: 1, daemonStateVersion: 0, daemonState: null,
       metadata: encodePlainMachineStoredContent({ host: 'host', platform: 'linux', homeDir: '/home/user',
         happyCliVersion: 'test', happyHomeDir: '/home/user/.happier' }),
@@ -64,12 +78,16 @@ export async function createProjectSessionRuntimeFixture(options: Readonly<{
   const createBootstrap = async () => {
     const prepared = await prepareRequesterSessionBootstrap({ credentials: options.credentials ?? {
       token: `e30.${Buffer.from(JSON.stringify({ sub: 'requester' })).toString('base64url')}.signature`, encryption: null },
-      attribution: { serverId: 'session-home', accountId: 'requester', machineId: 'machine', installationId: installation.installationId },
-      boundary: { serverId: 'session-home', serverHttpBaseUrl: 'https://session-home.test', happyHomeDir: directory },
+      attribution: { serverId: options.serverId ?? 'session-home', accountId: 'requester', machineId: 'machine', installationId: installation.installationId },
+      boundary: { serverId: options.serverId ?? 'session-home', serverHttpBaseUrl: options.serverUrl ?? 'https://session-home.test', happyHomeDir: directory },
+      ...(options.homeServerIdentityId ? { homeServerIdentityId: options.homeServerIdentityId } : {}),
       ...(options.boundSessionId ? { boundSessionId: options.boundSessionId } : {}),
       verifyMachineAdmissionCurrent: async () => current });
     if (!prepared) throw new Error('Session admission failed');
     onTestFinished(prepared.cleanupOnFailure);
+    // Cold synchronous host setup shares this test's event loop with Home.
+    // Finish both ends of the real upgrade before that work can exhaust Engine.IO's upgrade window.
+    await channel.settleTransport();
     currentBootstrap = prepared;
     return prepared.admitted;
   };
@@ -77,5 +95,5 @@ export async function createProjectSessionRuntimeFixture(options: Readonly<{
   return { directory, get bootstrap() {
     if (!currentBootstrap) throw new Error('Session admission unavailable');
     return currentBootstrap.admitted;
-  }, createBootstrap, installation, isHomeCurrent: () => current, retire: () => { current = false; } };
+  }, createBootstrap, installation, channel, isHomeCurrent: () => current, retire: () => { current = false; } };
 }

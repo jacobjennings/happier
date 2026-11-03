@@ -1,6 +1,7 @@
 import { mergeAbortSignals, throwIfAborted } from '@/utils/runtime/abortSignals';
 import { runtimeFetch } from '@/utils/system/runtimeFetch';
 import { normalizeRequestBodyHeaders } from '@/sync/http/requestBodyHeaders';
+import { isIdempotentServerRead, withServerReadLifetime, type ServerFetchOptions } from '@/sync/http/client';
 import {
     AccountStoredContentCompatibilityUnavailableError,
     readAccountStoredContentCompatibilityRequestDeclaration,
@@ -11,10 +12,11 @@ import {
 import {
     acquireServerReachabilitySupervisor,
     peekServerReachabilityScope,
-    reportServerAuthFailed,
+    reportServerReachabilityProbeResult,
     reportServerUnreachable,
     waitForServerReachable,
 } from './serverReachabilitySupervisorPool';
+import { classifyEndpointResponse } from './classifyEndpointResponse';
 
 function tryParseUrl(raw: string, base?: string): URL | null {
     try {
@@ -49,6 +51,7 @@ type ReachableFetchParams = Readonly<{
     url: string;
     init: RequestInit;
     timeoutMs?: number;
+    recoveryRead?: ServerFetchOptions['recoveryRead'];
     signal?: AbortSignal;
     /** Verified request origin; reachability and auth audience remain keyed by serverUrl. */
     runtimeOrigin?: string;
@@ -59,6 +62,21 @@ type ReachableFetchParams = Readonly<{
 export function runtimeFetchWithServerReachability(params: ReachableFetchParams): Promise<Response>;
 export function runtimeFetchWithServerReachability<T>(params: ReachableFetchParams, consumeResponse: (response: Response) => Promise<T>): Promise<T>;
 export async function runtimeFetchWithServerReachability<T>(params: ReachableFetchParams, consumeResponse?: (response: Response) => Promise<T>): Promise<Response | T> {
+    const method = String(params.init.method ?? 'GET').toUpperCase();
+    const readPolicy = params.recoveryRead
+        ?? (isIdempotentServerRead(method, tryParseUrl(params.url)?.pathname ?? params.url) ? 'unbounded' : false);
+    if (readPolicy) {
+        const cancellation = mergeAbortSignals([params.signal, params.init.signal ?? undefined]);
+        try {
+            return await withServerReadLifetime<T>({ ...params.init, signal: cancellation.signal },
+                (init, consume) => performReachableFetch({ ...params, signal: undefined, init }, consume),
+                consumeResponse, { responseSizeBounded: readPolicy === 'paged' });
+        } finally { cancellation.dispose(); }
+    }
+    return await performReachableFetch(params, consumeResponse);
+}
+
+async function performReachableFetch<T>(params: ReachableFetchParams, consumeResponse?: (response: Response) => Promise<T>): Promise<Response | T> {
     const targetUrl = tryParseUrl(params.url, params.serverUrl);
     const requestedCompatibilityDeclaration =
         readAccountStoredContentCompatibilityRequestDeclaration(params.init);
@@ -153,15 +171,8 @@ export async function runtimeFetchWithServerReachability<T>(params: ReachableFet
             if (!signal?.aborted) reportServerUnreachable(params.serverUrl, error, effectiveToken);
             throw error;
         }
-        // A normal authenticated domain endpoint uses 403 for authorization
-        // denials. Only 401 proves that this request's credential was rejected;
-        // the dedicated authenticated readiness probe separately owns its
-        // deliberate 401/403 credential check.
-        if (hasAuth && response.status === 401) {
-            if (probeReportScope) {
-                reportServerAuthFailed(params.serverUrl, response.status, probeReportScope, effectiveToken);
-            }
-        }
+        const probe = classifyEndpointResponse(response, hasAuth);
+        if (probe) reportServerReachabilityProbeResult(params.serverUrl, probe, probeReportScope ?? undefined, effectiveToken);
         if (!consumeResponse) return response;
         const result = await consumeResponse(response);
         throwIfAborted(signal);

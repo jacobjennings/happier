@@ -1,6 +1,7 @@
 import * as zMini from 'zod/mini';
 import { lazyZodSchema } from '../lazyZodSchema.js';
 import { z } from 'zod/mini';
+import { MachineTargetV1Schema } from '../machines/machineAccessV1.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
 
 import {
@@ -16,12 +17,17 @@ import {
   ConnectedServiceAuthGroupRuntimeStateRevisionV1Schema,
   ConnectedServiceAuthGroupStateV1Schema,
   ConnectedServiceCredentialRevisionV1Schema,
+  ConnectedServiceCredentialHealthV1Schema,
+  isConnectedServiceCredentialHealthStatusUsable,
 } from './connectedServiceSchemas.js';
 import {
   QualifiedConnectedAccountIdSchema,
   ConnectedAccountServiceIdentityV1Schema,
   QualifiedConnectedAccountRefSchema,
+  sameQualifiedConnectedAccountRef,
 } from './qualifiedConnectedAccountPersistence.js';
+import type { PluginConnectedAccountAuthenticationV2 } from './pluginConnectedAccountAuthenticationV2.js';
+import type { QualifiedConnectedAccountGroupV4, QualifiedConnectedAccountProfileV4 } from './qualifiedConnectedAccountsV4.js';
 
 export const QualifiedConnectedAccountConfigurationRevisionV4Schema = lazyZodSchema(() => z
   .string().check(z.trim(), z.minLength(1), z.maxLength(128)));
@@ -112,10 +118,18 @@ export const QualifiedConnectedAccountProviderIdentityV4Schema = lazyZodSchema((
 const QualifiedConnectedAccountScopesV4Schema = lazyZodSchema(() => z._default(z
   .array(z.string().check(z.trim(), z.minLength(1), z.maxLength(256))).check(z.maxLength(128), z.refine((scopes) => new Set(scopes).size === scopes.length, 'Qualified Connected Account scopes must be unique')), []));
 
+/** Display evidence of an observed authentication, never inferred from import or refresh time. */
+export const QualifiedConnectedAccountAuthenticationProvenanceV4Schema = lazyZodSchema(() => z.strictObject({
+  authenticatedAt: z.number().check(z.int(), z.nonnegative()),
+  /** serverId carries the portable Home server identity, not a device-local profile alias. */
+  machine: MachineTargetV1Schema,
+}));
+
 export const QualifiedConnectedAccountPresentationMetadataV4Schema = lazyZodSchema(() => z.strictObject({
   providerIdentity: z.optional(QualifiedConnectedAccountProviderIdentityV4Schema),
   displayName: z.optional(z.string().check(z.trim(), z.minLength(1), z.maxLength(512))),
   scopes: QualifiedConnectedAccountScopesV4Schema,
+  authenticationProvenance: z.optional(QualifiedConnectedAccountAuthenticationProvenanceV4Schema),
 }));
 
 const QualifiedConnectedAccountProfileV4Shape = {
@@ -171,7 +185,10 @@ export const QualifiedConnectedAccountCredentialSnapshotV4Schema =
     configurationRevision:
       z.nullable(QualifiedConnectedAccountConfigurationRevisionV4Schema),
     content: StoredJsonContentEnvelopeSchema,
+    // Health is server-owned and read-only here. Credential replacement metadata
+    // stays presentation-only; health mutations use the fenced health endpoint.
     metadata: QualifiedConnectedAccountCredentialMetadataV4Schema,
+    health: z.optional(ConnectedServiceCredentialHealthV1Schema),
   });
 
 export const QualifiedConnectedAccountGroupMemberV4Schema = lazyZodSchema(() => z.strictObject({
@@ -302,3 +319,71 @@ export const QualifiedConnectedAccountGroupListResponseV4Schema = lazyZodSchema(
 export const QualifiedConnectedAccountGroupResponseV4Schema = lazyZodSchema(() => z.strictObject({
   group: QualifiedConnectedAccountGroupV4Schema,
 }));
+
+/**
+ * A V4 account is eligible to authorize a current purpose only while its
+ * revision-fenced credential is usable and unexpired. Direct targets and
+ * group targets share this exact policy.
+ */
+export function isQualifiedConnectedAccountProfileActiveV4(
+  account: QualifiedConnectedAccountProfileV4,
+  now: number,
+): boolean {
+  return isConnectedServiceCredentialHealthStatusUsable(account.status)
+    && account.revisionSemantics === 'revisioned'
+    && (typeof account.expiresAt !== 'number' || account.expiresAt > now);
+}
+
+/**
+ * Determines whether a current V4 credential can be used for a purpose under
+ * the exact descriptor mode that created it. `configurationReady` remains a
+ * projection fact: it gates only modes whose configuration is account-scoped.
+ */
+export function isQualifiedConnectedAccountProfileUsableV4(input: Readonly<{
+  profile: QualifiedConnectedAccountProfileV4;
+  authentication: PluginConnectedAccountAuthenticationV2;
+  now: number;
+}>): boolean {
+  if (!isQualifiedConnectedAccountProfileActiveV4(input.profile, input.now)) {
+    return false;
+  }
+  const authenticationModeId = input.profile.authenticationModeId;
+  if (authenticationModeId === null) return false;
+  const mode = input.authentication.modes.find((candidate) => (
+    candidate.id === authenticationModeId
+  ));
+  if (!mode) return false;
+  return mode.configuration?.scope !== 'account'
+    || input.profile.configurationReady;
+}
+
+/**
+ * Resolve the one account that makes a qualified group passively usable.
+ * Group runtime status is diagnostic state; authority comes from the active,
+ * enabled member and a current usable revisioned account projection.
+ */
+export function resolveQualifiedConnectedAccountGroupActiveAccountV4(input: Readonly<{
+  group: QualifiedConnectedAccountGroupV4;
+  accounts: readonly QualifiedConnectedAccountProfileV4[];
+  authentication: PluginConnectedAccountAuthenticationV2;
+  now: number;
+}>): QualifiedConnectedAccountProfileV4 | null {
+  const activeAccountId = input.group.activeConnectedAccountId;
+  if (!activeAccountId) return null;
+  if (!input.group.members.some((member) => (
+    member.connectedAccountId === activeAccountId
+    && member.enabled !== false
+  ))) return null;
+  const activeAccountRef = {
+    service: input.group.ref.service,
+    accountId: activeAccountId,
+  };
+  return input.accounts.find((account) => (
+    sameQualifiedConnectedAccountRef(account.ref, activeAccountRef)
+    && isQualifiedConnectedAccountProfileUsableV4({
+      profile: account,
+      authentication: input.authentication,
+      now: input.now,
+    })
+  )) ?? null;
+}

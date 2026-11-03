@@ -30,28 +30,13 @@ vi.mock('@/hooks/ui/useKeyboardHeight', () => ({
     useKeyboardHeight: () => 216,
 }));
 
-vi.mock('@/components/workspaces/scm/SourceControlBranchSummary', () => ({
-    SourceControlBranchSummary: (props: any) => React.createElement('SourceControlBranchSummary', props),
-}));
-
-vi.mock('@/components/sessions/sourceControl/commitSelection/ScmChangesSelectionHeaderRow', () => ({
-    ScmChangesSelectionHeaderRow: (props: any) => React.createElement('ScmChangesSelectionHeaderRow', props),
-}));
-
 vi.mock('@/components/workspaces/scm/commitComposer/ScmCommitComposerCard', () => ({
     ScmCommitComposerCard: (props: any) => React.createElement('ScmCommitComposerCard', props),
 }));
 
-vi.mock('@/components/workspaces/scm/changes/ScmChangeRow', () => ({
+vi.mock('@/components/workspaces/scm/changes/ScmChangeRow', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/components/workspaces/scm/changes/ScmChangeRow')>(),
     ScmChangeRow: (props: any) => React.createElement('ScmChangeRow', props),
-    resolveScmChangeStatsColumnWidth: (files: readonly any[]) => {
-        const maxLabelLength = files.reduce((maxLength, file) => {
-            const added = Number.isFinite(file?.linesAdded) ? String(Math.max(0, Math.trunc(file.linesAdded))) : '0';
-            const removed = Number.isFinite(file?.linesRemoved) ? String(Math.max(0, Math.trunc(file.linesRemoved))) : '0';
-            return Math.max(maxLength, `+${added}/-${removed}`.length);
-        }, 0);
-        return Math.max(38, maxLabelLength * 7 + 4);
-    },
 }));
 
 function getStyleValue(node: ReactTestInstance, key: string): unknown {

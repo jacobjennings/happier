@@ -11,6 +11,7 @@ import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSession
 import { useActiveServerAccountScopeLifetime } from '@/sync/domains/state/storage';
 import { captureActiveServerAccountScopeLifetime, type ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import { describeWorkerUpdateHeadline } from '@/components/work/status/resolveWorkStatusTone';
 import { getAppliedActiveServerId, subscribeAppliedActiveServer } from '@/sync/runtime/orchestration/appliedActiveServerRuntime';
 
 import { resolveSessionRecap, type SessionRecap } from './sessionRecap';
@@ -53,7 +54,7 @@ export function useSessionRecap(address: SessionAddress | null): SessionRecap | 
             if (message.kind === 'agent-event' && message.event.type === 'worker-update'
                 && message.event.update.headline.trim()) {
                 return { lifetime: inputLifetime, backgroundHome: !focusedHome,
-                    latestWorkerUpdate: { headline: message.event.update.headline, atMs: message.createdAt } };
+                    latestWorkerUpdate: { headline: describeWorkerUpdateHeadline(message.event.update), atMs: message.createdAt } };
             }
         }
         return null;

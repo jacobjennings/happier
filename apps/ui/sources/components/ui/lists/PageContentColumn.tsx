@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { type StyleProp, type ViewStyle } from 'react-native';
 
+import { HappierColumnEdgeContext } from '@happier-dev/plugin-ui/presentation';
+
 import { PageFrame } from '@/components/ui/layout/PageFrame';
 
 /**
@@ -9,6 +11,10 @@ import { PageFrame } from '@/components/ui/layout/PageFrame';
  * `wide`, under the person's content-width preference) and centres it, so that content shares one edge
  * with the `PageHeader` and every `ItemGroup` on the page. Owners that already size themselves to the
  * column (`PageHeader`, `ItemGroup`) are unaffected inside it.
+ *
+ * The column draws no edge of its own, so it resets the column edge an enclosing page told its public sections
+ * (`CoreCollectionScope` on a settings page): a Collection whose page scroller opens this column insets its header
+ * and sections from here, never cancelling an inset nobody drew. A scope mounted inside the column states its own.
  */
 export function PageContentColumn(
   props: Readonly<{
@@ -23,7 +29,7 @@ export function PageContentColumn(
       testID={props.testID}
       style={props.style}
     >
-      {props.children}
+      <HappierColumnEdgeContext.Provider value={0}>{props.children}</HappierColumnEdgeContext.Provider>
     </PageFrame>
   );
 }

@@ -53,13 +53,17 @@ vi.mock('@/components/sessions/transcript/TranscriptList', () => ({
     },
 }));
 
-vi.mock('@/utils/platform/responsive', () => ({
+vi.mock('@/utils/platform/responsive', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/utils/platform/responsive')>()),
     useHeaderHeight: () => 64,
 }));
 
 vi.mock('react-native-safe-area-context', () => ({
     useSafeAreaInsets: () => ({ top: 20, bottom: 0, left: 0, right: 0 }),
 }));
+
+// Prepare the shared source graph during collection so test time measures the share flow.
+const { default: PublicShareViewerScreen } = await import('@/app/(app)/share/[token]');
 
 function createEmptyTurnDiffInput() {
     return {
@@ -121,7 +125,6 @@ describe('PublicShareViewerScreen (e2ee)', () => {
             .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({
                 messages: [], hasMore: false, nextBeforeSeq: null,
             }) });
-        const { default: PublicShareViewerScreen } = await import('@/app/(app)/share/[token]');
         const screen = await renderScreen(<PublicShareViewerScreen />);
         try {
             await flushHookEffects({ cycles: 1, turns: 2 });
@@ -200,13 +203,13 @@ describe('PublicShareViewerScreen (e2ee)', () => {
                 }),
             });
 
-        const { default: PublicShareViewerScreen } = await import('@/app/(app)/share/[token]');
 
         const screen = await renderScreen(<PublicShareViewerScreen />);
         try {
             await flushHookEffects({ cycles: 1, turns: 2 });
 
             expect(decryptDataKeyFromPublicShareSpy).toHaveBeenCalled();
+            await vi.waitFor(() => expect(screen.getTextContent()).toContain('session.sharing.failedToDecrypt'));
             expect(transcriptListSpy).not.toHaveBeenCalled();
         } finally {
             await screen.unmount();
@@ -315,7 +318,6 @@ describe('PublicShareViewerScreen (e2ee)', () => {
                 }),
             });
 
-        const { default: PublicShareViewerScreen } = await import('@/app/(app)/share/[token]');
 
         const screen = await renderScreen(<PublicShareViewerScreen />);
         try {
@@ -340,7 +342,7 @@ describe('PublicShareViewerScreen (e2ee)', () => {
         }
     });
 
-    it('suppresses encrypted non-structured event-role output rows from public share transcripts', async () => {
+    it('suppresses encrypted non-structured event-role output rows while rendering the other decrypted rows', async () => {
         transcriptListSpy.mockClear();
         serverFetchSpy.mockReset();
         decryptDataKeyFromPublicShareSpy.mockReset();
@@ -349,24 +351,20 @@ describe('PublicShareViewerScreen (e2ee)', () => {
         decryptDataKeyFromPublicShareSpy.mockResolvedValue(dataKey);
 
         const encryptor = new AES256Encryption(dataKey);
-        const [metadataCiphertextBytes, messageCiphertextBytes] = await encryptor.encrypt([
-            { path: '/repo', host: 'devbox', name: 'E2EE Session' },
-            {
-                role: 'agent',
-                content: {
-                    type: 'output',
-                    data: {
-                        type: 'assistant',
-                        uuid: 'event-uuid',
-                        message: {
-                            role: 'assistant',
-                            content: [{ type: 'text', text: 'Transport status' }],
-                        },
-                    },
-                },
-            },
+        const [metadataCiphertextBytes] = await encryptor.encrypt([
+            projectSessionSharedMetadataV1({ metadata: { path: '/repo', host: 'devbox', name: 'E2EE Session' } }),
         ]);
-        const metadataCiphertext = encodeBase64(metadataCiphertextBytes, 'base64');
+        const assistantOutput = (uuid: string, text: string) => ({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', uuid, message: { role: 'assistant', content: [{ type: 'text', text }] } },
+            },
+        });
+        const [replyCiphertextBytes, eventCiphertextBytes] = await encryptor.encrypt([
+            assistantOutput('reply-uuid', 'Visible reply'),
+            assistantOutput('event-uuid', 'Transport status'),
+        ]);
 
         serverFetchSpy
             .mockResolvedValueOnce({
@@ -375,16 +373,15 @@ describe('PublicShareViewerScreen (e2ee)', () => {
                 json: async () => ({
                     session: {
                         id: 's1',
-                        seq: 1,
+                        seq: 2,
                         encryptionMode: 'e2ee',
                         createdAt: 1,
                         updatedAt: 2,
                         active: true,
                         activeAt: 2,
-                        metadata: metadataCiphertext,
+                        metadataLayoutVersion: 1,
+                        metadata: encodeBase64(metadataCiphertextBytes, 'base64'),
                         metadataVersion: 1,
-                        agentState: null,
-                        agentStateVersion: 1,
                     },
                     owner: { id: 'u1', username: 'alice', firstName: null, lastName: null, avatar: null },
                     accessLevel: 'view',
@@ -396,26 +393,37 @@ describe('PublicShareViewerScreen (e2ee)', () => {
                 ok: true,
                 status: 200,
                 json: async () => ({
-                    messages: [{
-                        id: 'm-event',
-                        seq: 1,
-                        localId: null,
-                        messageRole: 'event',
-                        content: { t: 'encrypted', c: encodeBase64(messageCiphertextBytes, 'base64') },
-                        createdAt: 10,
-                        updatedAt: 10,
-                    }],
+                    messages: [
+                        {
+                            id: 'm-reply',
+                            seq: 2,
+                            localId: null,
+                            content: { t: 'encrypted', c: encodeBase64(replyCiphertextBytes, 'base64') },
+                            createdAt: 20,
+                            updatedAt: 20,
+                        },
+                        {
+                            id: 'm-event',
+                            seq: 1,
+                            localId: null,
+                            messageRole: 'event',
+                            content: { t: 'encrypted', c: encodeBase64(eventCiphertextBytes, 'base64') },
+                            createdAt: 10,
+                            updatedAt: 10,
+                        },
+                    ],
                 }),
             });
 
-        const { default: PublicShareViewerScreen } = await import('@/app/(app)/share/[token]');
 
         const screen = await renderScreen(<PublicShareViewerScreen />);
         try {
-            await flushHookEffects({ cycles: 1, turns: 2 });
-
+            await vi.waitFor(() => {
+                const last = transcriptListSpy.mock.calls[transcriptListSpy.mock.calls.length - 1]?.[0];
+                expect(JSON.stringify(last?.messages ?? [])).toContain('Visible reply');
+            });
             const last = transcriptListSpy.mock.calls[transcriptListSpy.mock.calls.length - 1]?.[0];
-            expect(last?.messages ?? []).toEqual([]);
+            expect(JSON.stringify(last?.messages)).not.toContain('Transport status');
         } finally {
             await screen.unmount();
         }

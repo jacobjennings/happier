@@ -7,6 +7,8 @@ import { prepareArtifactRecipientKeyEnvelopesV1 } from '@happier-dev/protocol/ar
 import { retargetWorkflowDefinitionArtifactHeaderV1 } from '@happier-dev/protocol/workflows/workflowDefinitionV1';
 import { workflowDefinitionArtifactSharingAdapterV1 } from '@happier-dev/protocol/artifacts/artifactSharingV1';
 import { openSessionOwnerMetadataEnvelopeV1, sealSessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataEnvelopesV1';
+import { projectSessionOwnerDisplayV1, sealSessionOwnerDisplayEnvelopeV1, validateSessionDisplayProjectionV1, type SessionDisplayProjectionV1 } from '@happier-dev/protocol';
+import type { AccountEncryptionCurrentnessResponse } from '@happier-dev/protocol/account/encryptionMode';
 import { AccountEncryptionMigrateReviewCommentsDirectiveSchema, type AccountEncryptionMigrateArtifactsDirective, type AccountEncryptionMigrateMachinesDirective, type AccountEncryptionMigrateReviewCommentsDirective, type AccountEncryptionMigrateSessionsDirective, type AccountEncryptionMigrateSessionOrganizationDirective, type AccountEncryptionMigrateTodosDirective, type AccountEncryptionMigrateWorkspaceDirective, type AccountEncryptionMigrateAutomationsDirective, type AccountEncryptionMigrateAutomationsInventoryResponse } from '@happier-dev/protocol/account/encryptionMigrate';
 import { WorkspaceTabsV1StoredSchema } from '@happier-dev/protocol/workspace/workspaceTabsV1';
 import { classifyAccountJsonKvKey } from '@happier-dev/protocol/account/accountJsonKv';
@@ -83,6 +85,8 @@ export type AccountEncryptionMigrationSessionRow = Readonly<{
     metadataVersion: number;
     agentStateVersion: number;
     ownerMetadata: unknown;
+    encryptionMode?: 'plain' | 'e2ee';
+    displayProjectionV1?: SessionDisplayProjectionV1 | null;
 }>;
 
 export type AccountEncryptionMigrationStorageDirectives = Readonly<{
@@ -572,6 +576,7 @@ function buildSessionDirective(params: Readonly<{
     rows: readonly AccountEncryptionMigrationSessionRow[];
     sourceCredentials: AuthCredentials;
     targetCredentials: AuthCredentials | null;
+    sourceAccountCurrentness?: AccountEncryptionCurrentnessResponse;
 }>): AccountEncryptionMigrateSessionsDirective {
     if (params.rows.length === 0) return { action: 'assert_empty' };
     const seenSessionIds = new Set<string>();
@@ -604,6 +609,7 @@ function buildSessionDirective(params: Readonly<{
             // This owner-only inventory is the Account migration endpoint, not a Session list.
             access: normalizeSessionAccessProjection({ share: null }, { allowLegacy: true }),
             accountMode: params.fromMode,
+            accountCurrentness: params.sourceAccountCurrentness,
             ownerMetadataEnvelope: row.ownerMetadata,
             credentials: params.sourceCredentials,
         });
@@ -671,6 +677,19 @@ function buildSessionDirective(params: Readonly<{
                 );
             }
         }
+        // The full owner document is already open under the captured Account identity.
+        // Only outer/shared admission is needed: the Session DEK is unrelated to this leaf.
+        const currentDisplay = row.encryptionMode ? validateSessionDisplayProjectionV1({
+            projection: row.displayProjectionV1, sessionMode: row.encryptionMode,
+            metadataVersion: row.metadataVersion, metadataLayoutVersion: row.metadataLayoutVersion,
+        }) : null;
+        const ownerDisplay = currentDisplay?.ok ? sealSessionOwnerDisplayEnvelopeV1({
+            accountMode: params.toMode, display: projectSessionOwnerDisplayV1(ownerRead.ownerMetadata),
+            material: targetMaterial, randomBytes: getRandomBytes,
+        }) : null;
+        if (ownerDisplay && !ownerDisplay.ok) {
+            throw new Error(`Target Session owner display verification failed (${row.id})`);
+        }
         return {
             sessionId: row.id,
             expectedMetadataLayoutVersion: 1 as const,
@@ -678,6 +697,7 @@ function buildSessionDirective(params: Readonly<{
             expectedAgentStateVersion: row.agentStateVersion,
             expectedOwnerMetadata: ownerRead.ownerMetadataEnvelope,
             ownerMetadata,
+            ...(ownerDisplay?.ok ? { ownerDisplay: ownerDisplay.envelope } : {}),
         };
     });
     return { action: 'migrate', items };
@@ -705,6 +725,7 @@ export async function buildAccountEncryptionMigrationStorageDirectives(
         resolveSession?: Parameters<typeof buildAccountEncryptionMigrationAutomations>[0]['resolveSession'];
         sessionSourceCredentials: AuthCredentials;
         sessionTargetCredentials: AuthCredentials | null;
+        sourceAccountCurrentness?: AccountEncryptionCurrentnessResponse;
         scope: AccountEncryptionMigrationScope;
         /** The network reader captured for this exact Home/Account transition. */
         readArtifactRecipients?: (artifactId: string) => Promise<ArtifactAccessRecipientCensusResponseV1>;
@@ -751,6 +772,7 @@ export async function buildAccountEncryptionMigrationStorageDirectives(
         rows: params.sessions,
         sourceCredentials: params.sessionSourceCredentials,
         targetCredentials: params.sessionTargetCredentials,
+        sourceAccountCurrentness: params.sourceAccountCurrentness,
     });
     const hasReviewComments = params.reviewCommentsInventory.items.length > 0;
     const sourceReviewMaterial = params.toMode === 'plain' && hasReviewComments

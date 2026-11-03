@@ -11,7 +11,8 @@ import { createCodexAppServerRuntime, startCodexAppServerRuntime, type CodexAppS
 import { openCodexNativeAppServerExecutionRunConversation, openCodexNativeAppServerSession } from './native.js';
 import type { CodexProviderBindingEngineConfigV1 } from '../../providerBinding/runtimeConfig.js';
 import { resolveCodexTerminalPermissionPolicy } from '../terminal/permissionPolicy.js';
-import { connectCodexUnixWebSocketJsonRpc } from './client/unixWebSocket.js';
+import { connectManagedJsonRpcTestClient, createManagedJsonRpcTestClient } from '../../../../../../../apps/cli/src/testkit/process/managedJsonRpc';
+import { CODEX_RAW_PROXY_FIXTURE_SCRIPT } from './client.test-support';
 
 // The network fixture models pinned Codex 0.159.2's empty paginated rollout:
 // name/set supplies metadata; a full read persists it; native resume then works.
@@ -19,6 +20,7 @@ export async function withCodexNativeAttachFixture(run: (fixture: {
   runtime: ReturnType<typeof createCodexAppServerRuntime>;
   requests: Array<{ method: string; params: Record<string, unknown> }>;
   exec: ExecService;
+  launchEnvironment: NonNullable<AgentSessionOpenRequest['launchEnvironment']>;
   directory: string;
   endpoints: readonly string[];
   nativeLaunches: readonly (readonly string[])[];
@@ -48,6 +50,9 @@ export async function withCodexNativeAttachFixture(run: (fixture: {
   skillListResponseForRoots?: (extraRoots: readonly string[], params: Readonly<Record<string, unknown>>) => unknown;
   sessionFactory?: Pick<AgentSessionRuntimeFactory, 'open'>;
   skillListFailure?: Readonly<{ code: number; message: string }>;
+  initializeFailure?: Readonly<{ code: number; message: string }>;
+  goalFailure?: Readonly<{ code: number; message: string }>;
+  goalThreadsVisibleOnlyWhenLoaded?: boolean;
   onTurnStart?: (input: Readonly<{ socket: WebSocket; params: Record<string, unknown>; turnId: string }>) => void | Promise<void>;
   beforeTurnStartResponse?: () => Promise<void>;
   beforeThreadResumeResponse?: (input: Readonly<{ socket: WebSocket; params: Record<string, unknown> }>) => void | Promise<void>;
@@ -57,6 +62,7 @@ export async function withCodexNativeAttachFixture(run: (fixture: {
   runtimeAuthHost?: Pick<CodexAppServerRuntimeHost, 'nativeHome' | 'refreshRuntimeAuth'>;
   initialProviderBinding?: CodexProviderBindingEngineConfigV1;
   providerBinding?: AgentSessionOpenRequest['providerBinding'];
+  configuration?: AgentSessionConfigurationSnapshot;
   connectedAccounts?: AgentSessionRuntimeContext['services']['connectedAccounts'];
   processEnv?: Readonly<Record<string, string | undefined>>;
   skills?: AgentSessionOpenRequest['skills'];
@@ -118,6 +124,9 @@ export async function withCodexNativeAttachFixture(run: (fixture: {
       for (const socket of webSockets.clients) socket.send(JSON.stringify({ method, params }));
     }
   };
+  // Each server substitutes one native process. An unrelated control process
+  // may not find the fixture's live thread through its own rollout lookup scope.
+  const loadedGoalServers = new WeakSet<WebSocketServer>();
   const bindServer = (webSockets: WebSocketServer) => webSockets.on('connection', (socket) => {
     // Independent Codex 0.162.1 control processes do not inherit the runtime's extra roots.
     let extraRoots: readonly string[] = [];
@@ -139,19 +148,25 @@ export async function withCodexNativeAttachFixture(run: (fixture: {
         ? options.turnIdForStart?.(turnStartOccurrence) ?? `provider-turn-${turnStartOccurrence}` : 'fixture-turn';
       if (message.method === 'initialize') {
         result = { userAgent: 'happier_cli/0.162.1 (fixture)' };
+        error = options.initializeFailure;
       } else if (message.method === 'config/read') {
         result = { config: { mcp_servers: options.nativeMcpServers ?? (options.mcpServers ? { happier__wilson: { enabled: true } } : {}), features: { code_mode: { excluded_tool_namespaces: ['functions'] } } } };
       } else if (message.method === 'account/read') {
         try { result = await options.accountRead?.() ?? {}; }
         catch { error = { code: -32000, message: 'Account read unavailable' }; }
       } else if (message.method === 'account/rateLimits/read') {
-        result = await options.rateLimitsRead?.() ?? {};
+        try { result = await options.rateLimitsRead?.() ?? {}; }
+        catch { error = { code: -32000, message: 'Quota read unavailable' }; }
       } else if (message.method === 'thread/start') {
+        loadedGoalServers.add(webSockets);
         result = { model: 'fixture-model', thread: { id: 'fresh-thread', turns: [] }, sandbox: { type: 'readOnly' }, reasoningEffort: 'low' };
       } else if (message.method.startsWith('thread/goal/')) {
         // An independent native control process can find only a persisted rollout.
-        if (!materialized || params.threadId !== 'fresh-thread') error = { code: -32600, message: 'thread not found' };
-        else if (message.method === 'thread/goal/set') {
+        if (options.goalFailure) error = options.goalFailure;
+        else if (!materialized || params.threadId !== 'fresh-thread'
+          || (options.goalThreadsVisibleOnlyWhenLoaded && !loadedGoalServers.has(webSockets))) {
+          error = { code: -32600, message: `thread not found: ${String(params.threadId)}` };
+        } else if (message.method === 'thread/goal/set') {
           goal = { ...goal, ...params, status: params.status ?? goal?.status ?? 'active',
             createdAt: 1_776_272_400, updatedAt: 1_776_272_460 };
           result = { goal };
@@ -175,7 +190,10 @@ export async function withCodexNativeAttachFixture(run: (fixture: {
       } else if (message.method === 'thread/resume') {
         if (resumeFailure) error = { code: -32000, message: resumeFailure };
         else if (params.threadId === 'fresh-thread' && !materialized) error = { code: -32000, message: 'no rollout found' };
-        else result = { thread: { id: params.threadId, turns }, sandbox: { type: 'readOnly' }, reasoningEffort: 'low' };
+        else {
+          loadedGoalServers.add(webSockets);
+          result = { thread: { id: params.threadId, turns }, sandbox: { type: 'readOnly' }, reasoningEffort: 'low' };
+        }
       } else if (message.method === 'turn/interrupt') {
         const turn = turns.find((entry) => entry.id === params.turnId);
         if (!turn) throw new Error('Cannot interrupt an unknown fixture turn');
@@ -223,8 +241,13 @@ export async function withCodexNativeAttachFixture(run: (fixture: {
     server.once('error', reject);
     server.listen(socketPath, resolve);
   });
-  // Only tool resolution crosses the Exec boundary; the real client uses Unix transport.
+  const connectClient = (request?: { maxFrameBytes?: number; requestTimeoutMs?: number }) => createManagedJsonRpcTestClient({
+    cwd: root, command: process.execPath, args: ['-e', CODEX_RAW_PROXY_FIXTURE_SCRIPT, socketPath],
+    maxFrameBytes: request?.maxFrameBytes, requestTimeoutMs: request?.requestTimeoutMs,
+  });
+  // Substitute the native executable with a byte relay; host framing and RPC remain real.
   const exec = {
+    clients: { spawn: connectClient, connectJsonRpc: (request: { endpoint: { socketPath: string }; maxFrameBytes?: number; requestTimeoutMs?: number }, options?: { signal?: AbortSignal }) => connectManagedJsonRpcTestClient({ cwd: root, socketPath: request.endpoint.socketPath, maxFrameBytes: request.maxFrameBytes, requestTimeoutMs: request.requestTimeoutMs, signal: options?.signal }) },
     systemTools: { resolve: async () => ({ executable: { kind: 'systemTool', id: 'codex-cli' }, executablePath: '/fixture/codex' }) },
     run: async () => ({ stdout: new TextEncoder().encode(JSON.stringify({ models: [{ slug: 'fixture-model', tool_mode: options.nativeToolMode === 'direct' ? undefined : 'code_mode_only' }, { slug: 'direct-model' }] })), stderr: new Uint8Array(), stdoutTruncated: false, stderrTruncated: false, termination: { requestedBy: { kind: 'none' }, observed: { kind: 'exit', exitCode: 0 } } }),
   } as unknown as ExecService;
@@ -258,12 +281,10 @@ export async function withCodexNativeAttachFixture(run: (fixture: {
   const nativeExec = {
     ...exec,
     // Substitute the process boundary with the same real JSON-RPC socket transport.
-    clients: { spawn: async (request: { maxFrameBytes: number; requestTimeoutMs: number;
+    clients: { ...exec.clients, spawn: async (request: { maxFrameBytes: number; requestTimeoutMs: number;
       launch: { args?: readonly string[]; env?: Readonly<Record<string, string>> } }) => {
       options.observer?.recordLaunch({ argv: request.launch.args ?? [], env: request.launch.env });
-      return await connectCodexUnixWebSocketJsonRpc({
-        socketPath, maxFrameBytes: request.maxFrameBytes, requestTimeoutMs: request.requestTimeoutMs,
-      });
+      return await connectClient(request);
     } },
     run: async (request: { args: readonly string[] }) => ({
       stdout: new TextEncoder().encode(request.args.includes('--version') ? 'codex-cli 0.159.2' : request.args.includes('models') ? JSON.stringify({ models: [{ slug: 'fixture-model', tool_mode: options.nativeToolMode === 'direct' ? undefined : 'code_mode_only' }, { slug: 'direct-model' }] }) : ''),
@@ -314,7 +335,7 @@ export async function withCodexNativeAttachFixture(run: (fixture: {
     },
   } as unknown as ExecService;
   try {
-    await run({ runtime, requests, exec: nativeExec, directory: root, endpoints, nativeLaunches, nativeProcessExits, emitNotification,
+    await run({ runtime, requests, exec: nativeExec, launchEnvironment: configuredLaunchEnvironment, directory: root, endpoints, nativeLaunches, nativeProcessExits, emitNotification,
       failNextRevert: (outcome) => { revertFailure = outcome; },
       failRead: () => { rejectRead = true; }, failResume: (message) => { resumeFailure = message; }, async openConfiguredSession(providerSessionId, mcpServers = options.mcpServers) {
       // Exec and host SDK services are genuine external boundaries; native/runtime/client logic stays real.
@@ -339,6 +360,7 @@ export async function withCodexNativeAttachFixture(run: (fixture: {
           permissionIntent: { value: options.permissionMode ?? 'read-only', updatedAtMs: 1 },
           options: { reasoning_effort: { value: 'low', updatedAtMs: 1 } },
           ...options.toolRestriction,
+          ...options.configuration,
         },
         ...(mcpServers ? { mcpServers } : {}),
         ...(options.providerBinding ? { providerBinding: options.providerBinding } : {}),
@@ -368,7 +390,9 @@ export async function withCodexNativeAttachFixture(run: (fixture: {
           mode: { value: null, updatedAtMs: 0 }, model: { value: 'fixture-model', updatedAtMs: 1 },
           permissionIntent: { value: options.permissionMode ?? 'read-only', updatedAtMs: 1 }, options: {},
           ...options.toolRestriction,
+          ...options.configuration,
         },
+        ...(options.providerBinding ? { providerBinding: options.providerBinding } : {}),
         ...(options.skills ? { skills: options.skills } : {}),
         ...(options.mcpServers ? { mcpServers: options.mcpServers } : {}),
         ...(options.mcpToolPolicy ? { mcpToolPolicy: options.mcpToolPolicy } : {}),

@@ -49,12 +49,46 @@ export type EnsureSessionVisibleForRouteResult =
         errorCode?: string;
     }>
     | Readonly<{
+        /** This observation was superseded; a new authority/publication or explicit retry must advance it. */
+        kind: 'awaiting_push';
+        sessionId: string;
+        serverId?: string;
+        errorCode: 'stale_response';
+    }>
+    | Readonly<{
         kind: 'retryable_failure';
         sessionId: string;
         serverId?: string;
         cause: SessionRouteHydrationRetryCause;
         errorCode?: string;
     }>;
+
+export function createAvailableSessionRouteResult(sessionId: string, serverId?: string): Extract<EnsureSessionVisibleForRouteResult, { kind: 'available' }> {
+    return { kind: 'available', sessionId, ...(serverId ? { serverId } : {}) };
+}
+
+export function createMissingSessionRouteResult(sessionId: string, serverId: string | undefined,
+    cause: SessionRouteHydrationMissingCause): Extract<EnsureSessionVisibleForRouteResult, { kind: 'missing' }> {
+    return { kind: 'missing', sessionId, ...(serverId ? { serverId } : {}), cause };
+}
+
+export function createRetryableSessionRouteResult(sessionId: string, serverId: string | undefined,
+    cause: SessionRouteHydrationRetryCause): Extract<EnsureSessionVisibleForRouteResult, { kind: 'retryable_failure' }> {
+    return { kind: 'retryable_failure', sessionId, ...(serverId ? { serverId } : {}), cause };
+}
+
+export function createAwaitingPushSessionRouteResult(sessionId: string, serverId?: string): Extract<EnsureSessionVisibleForRouteResult, { kind: 'awaiting_push' }> {
+    return { kind: 'awaiting_push', sessionId, ...(serverId ? { serverId } : {}), errorCode: 'stale_response' };
+}
+
+export function readTerminalSessionRouteMissingCause(errorCode: string): SessionRouteHydrationMissingCause | null {
+    return errorCode === 'not_found' || errorCode === 'unauthorized' || errorCode === 'forbidden' ? errorCode : null;
+}
+
+export function readRetryableSessionRouteCause(errorCode: string): SessionRouteHydrationRetryCause {
+    if (errorCode === 'server_unavailable' || errorCode === 'network_error') return 'server_unavailable';
+    return errorCode === 'session_encryption_not_found' ? 'decrypting' : 'unknown';
+}
 
 export function isSessionRouteHydrationAvailable(state: SessionRouteHydrationState): boolean {
     return state.kind === 'available';

@@ -16,12 +16,6 @@ vi.mock('@legendapp/list/react-native', async () => {
     const { createCapturingLegendListMock } = await import('@/dev/testkit/mocks/legendList');
     return createCapturingLegendListMock({ renderItems: true }).module;
 });
-vi.mock('@/components/workspaces/scm/SourceControlBranchSummary', () => ({
-    SourceControlBranchSummary: (props: any) => React.createElement('SourceControlBranchSummary', props),
-}));
-vi.mock('@/components/sessions/sourceControl/commitSelection/ScmChangesSelectionHeaderRow', () => ({
-    ScmChangesSelectionHeaderRow: (props: any) => React.createElement('ScmChangesSelectionHeaderRow', props),
-}));
 vi.mock('@/components/workspaces/scm/commitComposer/ScmCommitComposerCard', () => ({
     ScmCommitComposerCard: (props: any) => React.createElement('ScmCommitComposerCard', props),
 }));
@@ -141,9 +135,9 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
         const flatList = screen.tree.findByType(VirtualizedList);
         const headerScreen = await renderScreen(flatList.props.ListHeaderComponent);
         const textContent = headerScreen.getTextContent();
-        expect(textContent).not.toContain('files.toolbar.repositoryView');
-        expect(textContent).not.toContain('files.toolbar.turnView');
-        expect(textContent).not.toContain('files.toolbar.sessionView');
+        // The menu trigger carries the scope title, so the only view-mode signal is the menu itself.
+        expect(headerScreen.findByTestId('session-rightpanel-git-view-mode-menu')).toBeNull();
+        expect(textContent).toContain('sessionGitPane.scope.allChanges');
 
         const actionsRow = headerScreen.tree.findByProps({ testID: 'session-rightpanel-git-scope-actions-row' });
         expect(flattenStyle(actionsRow.props.style)).toMatchObject({
@@ -272,9 +266,9 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
 
         expect(() => tree.findByType(VirtualizedList)).not.toThrow();
 
-        const flatList = tree.findByType(VirtualizedList);
         expect(tree.findByType(VirtualizedList).props.initialNumToRender).toBeLessThanOrEqual(12);
         expect(tree.findByType(VirtualizedList).props.maxToRenderPerBatch).toBeLessThanOrEqual(12);
+        expect(tree.findAllByType('ScrollView' as any)).toHaveLength(0);
     });
 
     it('renders session-scoped changed files through the canonical virtualized path', async () => {
@@ -537,58 +531,6 @@ describe('SessionRightPanelGitCommitTab (virtualization)', () => {
 
         expect(firstRow.props.statsColumnWidth).toBe(secondRow.props.statsColumnWidth);
         expect(firstRow.props.statsColumnWidth).toBeGreaterThan(38);
-    });
-
-    it('does not render selection summary above the changes list (keeps it near commit composer)', async () => {
-        const { SessionRightPanelGitCommitTab } = await import('./SessionRightPanelGitCommitTab');
-
-        const files = Array.from({ length: 3 }).map((_, idx) => ({
-            ...groupedFile(`src/file-${idx}.ts`),
-        }));
-
-        let tree!: renderer.ReactTestRenderer;
-        tree = (await renderScreen(<SessionRightPanelGitCommitTab
-                    theme={makeGitTheme()}
-                    sessionId="s1"
-                    sessionPath="/workspace"
-                    backendLabel="Git"
-                    commitActionLabel="Commit"
-                    scmSnapshot={null}
-                    hasConflicts={false}
-                    scmOperationBusy={false}
-                    scmOperationStatus={null}
-                    hasGlobalOperationInFlight={false}
-                    inFlightScmOperation={null}
-                    commitAllowed={false}
-                    commitBlockedMessage={null}
-                    changedFilesViewMode="session"
-                    sessionAttribution={{ confidence: 'unknown', reason: 'unavailable' }}
-                    sessionCheckpointOverlap="unknown"
-
-                    allRepositoryChangedFiles={files as any}
-                    sessionAttributedFiles={[] as any}
-                    repositoryOnlyFiles={[] as any}
-
-                    repositorySelectedCount={2}
-                    onSelectAll={() => {}}
-                    onSelectNone={() => {}}
-                    disableSelectAll={false}
-                    disableSelectNone={false}
-                    onFilePress={() => {}}
-                    onFilePressPinned={() => {}}
-                    onToggleSelectionForFile={() => {}}
-                    renderFileActions={() => null}
-                    renderFileTrailingActions={() => null}
-                    commitDraftMessage=""
-                    onCommitDraftMessageChange={() => {}}
-                    onCommitFromMessage={() => {}}
-                    commitMessageGeneratorEnabled={false}
-                    onGenerateCommitMessageSuggestion={async () => ({ ok: true, message: '' })}
-                    scmStatusFiles={null}
-                    showCommitComposer={false}
-                />)).tree;
-
-        expect(() => tree.findByType('ScmChangesSelectionHeaderRow' as any)).toThrow();
     });
 
     it('filters directory-like SCM entries from the repository changed files list', async () => {

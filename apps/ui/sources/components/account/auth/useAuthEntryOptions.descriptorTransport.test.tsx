@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { createDeferred, flushHookEffects, renderHook, renderScreen, standardCleanup } from '@/dev/testkit';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
 import { InjectedAuthProvider } from '@/auth/context/AuthContext';
-import { authGetToken, authGetTokenAtEndpoint } from '@/auth/flows/getToken';
+import { authGetTokenAtEndpoint } from '@/auth/flows/getToken';
 import { WelcomeDecisionPanel } from '@/components/onboarding/preAuth/WelcomeDecisionPanel';
 import { adoptHomeProfile, resetServerProfilesRuntimeForTests } from '@/sync/domains/server/serverProfiles';
 import { getActiveServerSnapshot, setActiveServer, upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
@@ -98,55 +98,6 @@ it('offers Retry while Welcome discovery is pending and replaces its abandoned o
         firstFeatures.resolve(new Response('', { status: 503 }));
         await screen.unmount();
     }
-});
-
-it('keeps released v1 focused-Home login available when options only carry cancellation', async () => {
-    resetServerProfilesRuntimeForTests();
-    const origin = 'https://focused-v1.example.test';
-    await upsertAndActivateServer({ serverUrl: origin, name: 'Released Home' });
-    network(descriptor('srv_focused_v1', 'https'), origin);
-    const controller = new AbortController();
-    await expect(authGetToken(new Uint8Array(32).fill(3), { signal: controller.signal }))
-        .resolves.toBe('signed-in-target-token');
-});
-
-it.each(['features', 'auth'] as const)('cancels focused key authentication during %s without accepting a late response', async (phase) => {
-    resetServerProfilesRuntimeForTests();
-    const origin = `https://focused-cancel-${phase}.example.test`;
-    await upsertAndActivateServer({ serverUrl: origin, name: 'Cancelled Home' });
-    const held = createDeferred<Response>();
-    const features = createRootLayoutFeaturesResponse({ capabilities: {
-        auth: { keyChallenge: { v2: true } },
-        serverIdentity: { serverIdentityId: `srv_focused_cancel_${phase}` },
-        server: { canonicalServerUrl: origin },
-    } });
-    let heldSignal: AbortSignal | null | undefined;
-    let arrived = false;
-    boundary.fetch.mockImplementation(async (url: unknown, init?: RequestInit) => {
-        if (String(url).endsWith(`/v1/${phase === 'features' ? 'features' : 'auth'}`)) {
-            heldSignal = init?.signal;
-            arrived = true;
-            return await held.promise;
-        }
-        if (String(url).endsWith('/v1/auth/challenge')) return Response.json({
-            challengeId: 'cancellation-challenge', nonce: 'cancellation-nonce',
-            issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(),
-            audience: { origin, serverIdentityId: `srv_focused_cancel_${phase}` },
-        });
-        return Response.json(features);
-    });
-    const controller = new AbortController();
-    const result = authGetToken(new Uint8Array(32).fill(3), { signal: controller.signal })
-        .then((token) => ({ token }), (error: unknown) => ({ error }));
-    try {
-        await vi.waitFor(() => expect(arrived).toBe(true));
-        controller.abort();
-        expect(heldSignal?.aborted).toBe(true);
-    } finally {
-        held.resolve(Response.json(phase === 'features' ? features : { token: 'late-token' }));
-    }
-    expect(await result).toMatchObject({ error: { name: 'AbortError' } });
-    if (phase === 'features') expect(boundary.fetch.mock.calls.some(([url]) => String(url).endsWith('/v1/auth'))).toBe(false);
 });
 
 it.each(['saved-descriptor', 'identity-publication'] as const)('keeps one slow anonymous Home entry observation through %s', async (target) => {

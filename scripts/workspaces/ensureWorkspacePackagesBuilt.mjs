@@ -9,6 +9,8 @@ import { readBundledPluginPackageNames } from '../../apps/cli/scripts/build-owne
 
 import { buildIntoTempThenReplace } from '../../apps/stack/scripts/utils/fs/atomic_dir_swap.mjs';
 import { readCachedFileDigestSync } from '../../apps/stack/scripts/utils/fs/cached_file_digest.mjs';
+import { readSourceRuntimeDependencyIdentity } from '../../apps/stack/scripts/build/source_author_inputs.mjs';
+import { collectExternalRuntimeDependencies } from '../../packages/cli-common/workspaceRuntimeDependencies.mjs';
 import { writeJsonAtomic } from '../../apps/stack/scripts/utils/fs/json.mjs';
 import { readWorkspaceBuildInputs } from '../../apps/stack/scripts/utils/fs/workspaceBuildInputs.mjs';
 export { readWorkspaceBuildInputs } from '../../apps/stack/scripts/utils/fs/workspaceBuildInputs.mjs';
@@ -293,7 +295,7 @@ export async function readWorkspaceComponentDependencyGraph(componentDir, {
 
 /** Failure-only reader diagnostic. This does not certify the reader or rebuild
  * anything; currentness remains the publisher's recorded-output decision. */
-export async function findFirstNoncurrentWorkspaceDependency(componentDir, { env = process.env } = {}) {
+export async function findFirstNoncurrentWorkspaceDependency(componentDir, { env = process.env, buildMode = 'strict' } = {}) {
   const graph = await readWorkspaceComponentDependencyGraph(componentDir);
   if (!graph) return null;
   const { packageDirsByName, packageJsonByDir, packageNames, closure } = graph;
@@ -318,7 +320,7 @@ export async function findFirstNoncurrentWorkspaceDependency(componentDir, { env
     if (collectExpectedPackageOutputTargets(metadata).length === 0) return null;
     const dependencyDirs = collectWorkspacePackageFingerprintDependencyNames(metadata, name,
       workspacePackageNames, { packageDirsByName }).map(dependency => packageDirsByName.get(dependency));
-    return isWorkspacePackageOutputCurrent(packageDir, { dependencyDirs, env, buildMode: 'strict' }) ? null : name;
+    return isWorkspacePackageOutputCurrent(packageDir, { dependencyDirs, env, buildMode }) ? null : name;
   };
   for (const name of packageNames) {
     const first = visit(name);
@@ -583,10 +585,6 @@ export function readWorkspacePackageInputFingerprint({
   // The canonical selector's @typescript installation owns the actual native
   // executable and launcher helpers. Its launcher alone is not tool identity.
   const compilerInstallationDir = dirname(dirname(dirname(compilerPath)));
-  const dependencyLockRepoDir = coerceHappyMonorepoRootFromPath(packageDir) || identitySourceRepoDir;
-  const dependencyPolicyPaths = dependencyLockRepoDir
-    ? ['pnpm-lock.yaml', 'pnpm-workspace.yaml'].map(name => join(dependencyLockRepoDir, name))
-    : [];
   const buildOwnerPaths = ['ensureWorkspacePackagesBuilt.mjs', 'buildTypeScriptPackageDist.mjs', 'workspaceOutputScriptArgs.mjs'].map(name => {
     const capturedPath = identitySourceRepoDir && join(identitySourceRepoDir, 'scripts/workspaces', name);
     return capturedPath && existsSync(capturedPath) ? capturedPath : fileURLToPath(new URL(`./${name}`, import.meta.url));
@@ -605,7 +603,6 @@ export function readWorkspacePackageInputFingerprint({
     compilerPath,
     compilerPackageJson,
     ...buildOwnerPaths,
-    ...dependencyPolicyPaths.filter(path => existsSync(path)),
   ])].sort((a, b) => identityPathFor(a) < identityPathFor(b) ? -1 : identityPathFor(a) > identityPathFor(b) ? 1 : 0);
   for (const path of paths) {
     const identityPath = identityPathFor(path);
@@ -613,6 +610,26 @@ export function readWorkspacePackageInputFingerprint({
   }
   hash.update(`compiler-installation:${identityPathFor(compilerInstallationDir)}\0`);
   digestDirectory(compilerInstallationDir, hash, { followSymlinks: true });
+  // Installation policy is not a package's dependency identity: unrelated UI
+  // lock/patch updates must not invalidate every workspace. Reuse the installed
+  // closure owner. Runtime dependencies consume bytes; development and peer
+  // dependencies supply declarations to this TypeScript compilation.
+  const resolveFrom = join(installedDependencyRepoDir && identitySourceRepoDir
+    ? remapPathToDirectory(packageDir, { sourceDir: identitySourceRepoDir, destinationDir: installedDependencyRepoDir })
+    : packageDir, 'package.json');
+  const runtimeDependencies = collectExternalRuntimeDependencies(packageJson)
+    .filter(dependency => !dependency.declaredSpec.startsWith('workspace:'));
+  const runtimeDependencyNames = new Set(runtimeDependencies.map(dependency => dependency.name));
+  const declarationDependencies = collectExternalRuntimeDependencies({
+    dependencies: { ...packageJson.peerDependencies, ...packageJson.devDependencies },
+  }).filter(dependency => !dependency.declaredSpec.startsWith('workspace:') && !runtimeDependencyNames.has(dependency.name));
+  for (const [dependencies, declarationsOnly] of [[runtimeDependencies, false], [declarationDependencies, true]]) {
+    hash.update(readSourceRuntimeDependencyIdentity({
+      imports: dependencies.map(dependency => ({ path: dependency.name, resolveFrom })),
+      declarationsOnly,
+      identityPathFor,
+    }));
+  }
   for (const dependencyDir of [...dependencyDirs].sort()) {
     const identityDependencyDir = identityRepoDir && identitySourceRepoDir
       ? remapPathToDirectory(dependencyDir, { sourceDir: identitySourceRepoDir, destinationDir: identityRepoDir }) : dependencyDir;
@@ -1036,7 +1053,7 @@ async function captureWorkspacePackage({ monorepoRoot, packageDir, dependencyDir
     };
     await mount(monorepoRoot, repoDir);
     await mountCapturedWorkspaceDependencies({ sourceDir: monorepoRoot, captureDir: repoDir,
-      workspaceDirs: capturedDirs.map(dir => relative(monorepoRoot, dir)) });
+      workspaceDirs: capturedDirs.map(dir => relative(monorepoRoot, dir)), capturedFiles: capture.files });
     const capturePackageDir = join(repoDir, relative(monorepoRoot, packageDir));
     const captureDependencyDirs = dependencyDirs.map(dir => join(repoDir, relative(monorepoRoot, dir)));
     const identityRepoDir = env.HAPPIER_STACK_RUNTIME_IDENTITY_REPO_DIR || monorepoRoot;
@@ -1067,6 +1084,7 @@ async function consumeWorkspacePackageBuildInputs({
   quiet,
   env,
   force,
+  requestedBuildAt,
   timeoutMs,
   onPackageBuildStart,
   onPackageBuildDone,
@@ -1114,7 +1132,12 @@ async function consumeWorkspacePackageBuildInputs({
   } = state;
   const reportImportRetry = createWorkspaceBuildWaitNotifier({ env, label, kind: 'imports' });
   if (expectedTargets.length === 0) return { built: false, reason: 'no-expected-files' };
-  if (!force && state.complete) {
+  // Force requests a new compile relative to this demand. A concurrent
+  // publisher may already have satisfied it while admission was pending.
+  const forcedBuildCompleted = force && state.complete
+    && typeof state.verifiedOutput.record.builtAt === 'string'
+    && state.verifiedOutput.record.builtAt !== requestedBuildAt;
+  if (state.complete && (!force || forcedBuildCompleted)) {
     if (state.verifiedOutput.verificationNeeded) {
       // Initial inspection is read-only. Only this admitted publisher may
       // persist successful migration/reverification of worker-local identity.
@@ -1122,7 +1145,7 @@ async function consumeWorkspacePackageBuildInputs({
     }
     return {
       built: false,
-      reason: waited ? 'concurrent_build_already_completed' : 'already-built',
+      reason: waited || forcedBuildCompleted ? 'concurrent_build_already_completed' : 'already-built',
     };
   }
 
@@ -1344,6 +1367,11 @@ async function ensureWorkspacePackageBuilt(packageDir, {
   if (!existsSync(packageJsonPath)) return { built: false, reason: 'missing-package-json' };
 
   const packageJson = await readJson(packageJsonPath);
+  // Reuse the existing successful compiler receipt, not a separate generation
+  // or completion ledger. Failed builds and reference-only refreshes retain it.
+  const requestedBuildAt = force
+    ? (await readJson(join(packageDir, 'dist', BUILD_INPUT_RECORD)).catch(() => null))?.builtAt ?? null
+    : null;
   const inputFingerprint = readWorkspacePackageInputFingerprint({ packageDir, dependencyDirs, env: envIn });
   const initial = await inspectWorkspacePackageOutput(packageDir, packageJson, {
     env: envIn,
@@ -1370,7 +1398,7 @@ async function ensureWorkspacePackageBuilt(packageDir, {
     const { resolveWorkspacePackageBuildAdmissionClass } = await import('../../apps/stack/scripts/utils/dev_targets/remote_commands.mjs');
     const resultDir = await mkdtemp(join(tmpdir(), 'happier-workspace-build-result-'));
     const resultPath = join(resultDir, 'result.json');
-    const request = { monorepoRoot, packageDir, packageJsonPath, quiet, force, timeoutMs,
+    const request = { monorepoRoot, packageDir, packageJsonPath, quiet, force, requestedBuildAt, timeoutMs,
       publicationMode, buildMode, trailingPass, dependencyDirs, resultPath,
       boundaryModule: workspaceBuildBoundary.workerModule,
       boundaryExport: workspaceBuildBoundary.workerExport,
@@ -1451,6 +1479,7 @@ async function ensureWorkspacePackageBuilt(packageDir, {
     quiet,
     env,
     force,
+    requestedBuildAt,
     timeoutMs,
     onPackageBuildStart,
     onPackageBuildDone,

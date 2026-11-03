@@ -29,7 +29,6 @@ import { createEphemeralTlsServerFixture, type EphemeralTlsServerFixture } from 
 import { McpServerCatalogEntryV1Schema, sealSavedSecretResourceStoredContentV1, SPAWN_SESSION_ERROR_CODES } from '@happier-dev/protocol';
 import { createSavedSecretMaterializerV1 } from '@/settings/secrets/savedSecretCatalog';
 import { materializeMcpServerConfigRecord } from '@/mcp/servers/materializeMcpServerConfigRecord';
-import { probeMcpStdioServerTools } from '@/mcp/servers/probeMcpStdioServerTools';
 
 const bridgePurpose = MCP_REQUEST_AUTH_PURPOSE;
 
@@ -597,12 +596,8 @@ describe('remoteMcpStdioBridge', () => {
     const auth = await startBridgeRequestAuth(root, remote.url);
     const invocation = await resolveRemoteBridgeInvocation();
     const configPath = join(root, 'bridge.json');
-    // Test-only process-boundary mutation: the real bridge must not silently
-    // pass this journey if its private request-auth descriptor is omitted.
     await writeFile(configPath, JSON.stringify({ transport: 'sse', url: remote.url,
-      ...(process.env.HAPPIER_MCP_BRIDGE_AUTH_MISWIRE === '1' ? {} : {
-        auth: { capabilityFile: auth.capabilityFile, resource: remote.url },
-      }) }), { mode: 0o600 });
+      auth: { capabilityFile: auth.capabilityFile, resource: remote.url } }), { mode: 0o600 });
     const client = new Client({ name: 'sse-resource-test', version: '1' });
     try {
       await client.connect(new StdioClientTransport({ ...invocation, env: { ...resolveEnvRecord(), ...invocation.env, NODE_EXTRA_CA_CERTS: tls.caCertificatePath, HAPPIER_MCP_REMOTE_BRIDGE_CONFIG_FILE: configPath } }));

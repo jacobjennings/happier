@@ -352,13 +352,16 @@ describe('resolveSessionHandoffUiAvailability', () => {
         });
     });
 
-    it('fails closed when direct peer requires runtime truth but only server-routed fallback is statically known', () => {
+    it.each([
+        ['only server-routed fallback is statically known', true],
+        ['there is no server-routed fallback', false],
+    ])('fails closed when direct peer is runtime-unknown and %s', (_label, serverRoutedEnabled) => {
         expect(resolveSessionHandoffUiAvailability({
             session: HANDOFF_ELIGIBLE_SESSION,
             sessionHandoffFeatureEnabled: true,
             serverSnapshot: buildReadyServerSnapshot({
                 directPeerEnabled: true,
-                serverRoutedEnabled: true,
+                serverRoutedEnabled,
             }),
         })).toEqual({
             available: false,
@@ -367,21 +370,6 @@ describe('resolveSessionHandoffUiAvailability', () => {
     });
 
     it('allows handoff when direct peer is preferred and runtime viability is explicitly proven', () => {
-        expect(resolveSessionHandoffUiAvailability({
-            session: HANDOFF_ELIGIBLE_SESSION,
-            sessionHandoffFeatureEnabled: true,
-            serverSnapshot: buildReadyServerSnapshot({
-                directPeerEnabled: true,
-                serverRoutedEnabled: true,
-            }),
-            runtimeAvailability: 'reachable',
-        })).toEqual({
-            available: true,
-            reason: 'available',
-        });
-    });
-
-    it('allows handoff when source reachability is proven even if active direct machine-rpc viability is not separately cached', () => {
         expect(resolveSessionHandoffUiAvailability({
             session: HANDOFF_ELIGIBLE_SESSION,
             sessionHandoffFeatureEnabled: true,
@@ -440,20 +428,6 @@ describe('resolveSessionHandoffUiAvailability', () => {
         })).toEqual({
             available: false,
             reason: 'session_ineligible',
-        });
-    });
-
-    it('fails closed when direct peer is runtime-unknown even if there is no server-routed fallback', () => {
-        expect(resolveSessionHandoffUiAvailability({
-            session: HANDOFF_ELIGIBLE_SESSION,
-            sessionHandoffFeatureEnabled: true,
-            serverSnapshot: buildReadyServerSnapshot({
-                directPeerEnabled: true,
-                serverRoutedEnabled: false,
-            }),
-        })).toEqual({
-            available: false,
-            reason: 'runtime_direct_peer_unavailable',
         });
     });
 });

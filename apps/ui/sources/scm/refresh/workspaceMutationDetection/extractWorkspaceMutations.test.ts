@@ -6,6 +6,20 @@ import { extractWorkspaceMutationsFromNormalizedMessages, readToolCallMutationPa
 import { isToolPotentiallyMutableForScm } from '@/sync/domains/tools/toolMutationClassification';
 
 describe('readToolCallMutationPaths', () => {
+    it('keeps a captured turn Diff as SCM invalidation evidence without reporting a live file mutation', () => {
+        // FILES-LIVE63, nested Session cmvyp4poc009bmcn1dqvcedld: the summary is
+        // repository-relative, unlike its actual Patch calls' absolute targets.
+        const result = readToolCallMutationPaths({ name: 'Diff', input: {
+            files: [{ file_path: 'live63-1102/nested/tracking.ts', change_kind: 'modified',
+                source: 'provider_tool', confidence: 'exact', provider: 'codex' }],
+            _happier: { v: 2, protocol: 'acp', provider: 'codex', rawToolName: 'Diff', canonicalToolName: 'Diff',
+                workspaceMutationSignal: 'turn-change-set', sessionChangeScope: 'turn', turnStatus: 'completed' },
+        }, state: 'running' });
+        expect([...result.paths]).toEqual(['live63-1102/nested/tracking.ts']);
+        expect(result.hasUnknownMutations).toBe(false);
+        expect([...result.mutations]).toEqual([]);
+    });
+
     it('keeps code reads, previews and restart out of workspace mutation classification', () => {
         for (const name of ['code_hover_get', 'code_definition_get', 'code_references_list', 'code_symbols_list',
             'code_diagnostics_list', 'code_restart', 'code_rename_preview', 'code_file_rename_preview', 'code_code_actions_list']) {
@@ -235,18 +249,6 @@ describe('extractWorkspaceMutationsFromNormalizedMessages', () => {
         expect(result.hasUnknownMutations).toBe(false);
     });
 
-    it('treats canonical Task and SubAgent tool calls as containers until nested mutating tools provide evidence', () => {
-        const result = extractWorkspaceMutationsFromNormalizedMessages({
-            messages: [
-                toolCallMessage('Task', { description: 'delegate workspace changes' }),
-                toolCallMessage('SubAgent', { prompt: 'update files in parallel' }),
-            ],
-        });
-
-        expect(Array.from(result.paths)).toEqual([]);
-        expect(result.hasUnknownMutations).toBe(false);
-    });
-
     it('prefers canonical normalized file mutation tool names from _happier metadata', () => {
         const result = extractWorkspaceMutationsFromNormalizedMessages({
             messages: [
@@ -268,17 +270,21 @@ describe('extractWorkspaceMutationsFromNormalizedMessages', () => {
         expect(result.hasUnknownMutations).toBe(false);
     });
 
-    it('treats provider tool calls whose canonical metadata resolves to Task or SubAgent as containers', () => {
-        const result = extractWorkspaceMutationsFromNormalizedMessages({
-            messages: [
-                toolCallMessageWithCanonicalToolName('DelegateTask', 'Task', {
-                    description: 'delegate without direct command payload',
-                }),
-                toolCallMessageWithCanonicalToolName('SpawnWorker', 'SubAgent', {
-                    role: 'implement',
-                }),
-            ],
-        });
+    it.each([
+        ['named Task and SubAgent', [
+            toolCallMessage('Task', { description: 'delegate workspace changes' }),
+            toolCallMessage('SubAgent', { prompt: 'update files in parallel' }),
+        ]],
+        ['whose canonical metadata resolves to Task or SubAgent', [
+            toolCallMessageWithCanonicalToolName('DelegateTask', 'Task', {
+                description: 'delegate without direct command payload',
+            }),
+            toolCallMessageWithCanonicalToolName('SpawnWorker', 'SubAgent', {
+                role: 'implement',
+            }),
+        ]],
+    ])('treats tool calls %s as containers until nested mutating tools provide evidence', (_label, messages) => {
+        const result = extractWorkspaceMutationsFromNormalizedMessages({ messages });
 
         expect(Array.from(result.paths)).toEqual([]);
         expect(result.hasUnknownMutations).toBe(false);

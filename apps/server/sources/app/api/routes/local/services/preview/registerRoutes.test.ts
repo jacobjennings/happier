@@ -14,13 +14,14 @@ import { startSocket } from '@/app/api/socket';
 import { createLocalServicePreviewRuntime } from '@/app/local/services/preview/runtime';
 import { createLocalServicePublicRuntime } from '@/app/local/services/public/runtime';
 import { createLocalServicePublicRateLimitChecker } from '@/app/local/services/public/rateLimits';
-import { LocalServicePublicExposureV1Schema } from '@happier-dev/protocol/local/services/public/v1';
+import { DaemonLocalServicePublicPreviewStatusResponseV1Schema, LocalServicePublicExposureV1Schema } from '@happier-dev/protocol/local/services/public/v1';
 import type { OpenLocalServicePreviewTunnel } from '@/app/local/services/preview/httpAdapter';
 import { createLocalServiceRouteRuntimes, registerLocalServiceRoutes } from '../registerRoutes';
 import type { SessionAccessProjectionRow } from '@/app/session/access/sessionAccess';
 import { LocalServicePreviewNativeDirectAccessV1Schema, LocalServicePreviewServerAccessV1Schema } from '@happier-dev/protocol/local/services/preview/nativeDirect';
 import type { Fastify } from '@/app/api/types';
 import { enableServeUi } from '@/app/api/utils/enableServeUi';
+import { enableApiCompression } from '@/app/api/utils/enableApiCompression';
 import { FEATURE_ENV_KEYS } from '@/app/features/catalog/featureEnvSchema';
 import { peerMediationGrantSigningEnv } from '@/testkit/env';
 import { encodePlainMachineStoredContent, MACHINE_PLAIN_DATA_KEY_MARKER } from '@happier-dev/protocol/machines/machineStoredContent';
@@ -42,7 +43,8 @@ const machineFindUnique = vi.hoisted(() => vi.fn(async (_query: unknown): Promis
 const homeSettingsFindUnique = vi.hoisted(() => vi.fn(async (): Promise<unknown> => null));
 vi.mock('@/storage/db', async () => {
     const { createDbTransactionMock, inTxPostgresControlStatementMock } = await import('@/app/api/testkit/dbMocks');
-    const boundary = { ...inTxPostgresControlStatementMock,
+    const { homeConfigSnapshotPostgresQueryMock } = await import('@/app/home/settings/homeConfigSnapshot.testkit');
+    const boundary = { ...inTxPostgresControlStatementMock, ...homeConfigSnapshotPostgresQueryMock,
         machine: { findFirst: machineFindFirst, findUnique: machineFindUnique,
             findMany: async ({ where }: { where: { id: { in: string[] } } }) =>
                 (await Promise.all(where.id.in.map(id => machineFindUnique({ where: { id } })))).filter(row => row !== null),
@@ -150,6 +152,94 @@ describe('local service preview routes', () => {
             actorId: 'user_1', sessionAuthorized: true, dnsTlsValid: true, rateLimitProfileId: 'default' }))
             .toEqual({ ok: false, reasonCode: 'public_origin_unavailable' });
         expect(runtimes.public.getSnapshot({ machineId: preview.machineId, previewId: preview.previewId }).exposures).toEqual([]);
+    });
+
+    it('admits each distinct Service or Session once per machine-wide public status request while filtering denied links', async () => {
+        const account = { id: 'user_1', status: 'active', encryptionMode: 'plain' };
+        machineFindUnique.mockResolvedValue({ id: 'machine_1', kind: 'persistent', accountId: account.id,
+            installationId: 'installation_1', active: true, revokedAt: null, replacedByMachineId: null,
+            metadataVersion: 1, daemonStateVersion: 0, daemonState: null,
+            metadata: encodePlainMachineStoredContent(MachinePublishedMetadataV1Schema.parse({ host: 'machine', platform: 'linux',
+                happyCliVersion: '0.3', homeDir: '/home/user', happyHomeDir: '/home/user/.happier' })),
+            dataEncryptionKey: Buffer.from(MACHINE_PLAIN_DATA_KEY_MARKER, 'base64'), account,
+            accountGrants: [], teamGrants: [], groupGrants: [] });
+        const resource: LocalServicePreviewResourceV1 = { ...preview, sessionId: undefined,
+            owner: { kind: 'user', id: 'user_1' }, serviceTarget: { kind: 'managed_service', machineId: 'machine_1',
+                managedServiceId: 'instance_1', cwd: '/workspace/app',
+                declaration: { workspaceRefId: 'workspace_1', selection: { kind: 'manifest', name: 'web' } } } };
+        const deniedResource: LocalServicePreviewResourceV1 = { ...resource, previewId: 'preview_denied',
+            serviceTarget: { ...resource.serviceTarget!, managedServiceId: 'instance_denied' } };
+        const mismatchedResource: LocalServicePreviewResourceV1 = { ...resource,
+            serviceTarget: { ...resource.serviceTarget!, cwd: '/different/workspace' } };
+        const sessionResource: LocalServicePreviewResourceV1 = { ...preview, previewId: 'preview_session' };
+        sessionFindUnique.mockResolvedValue(sharedSession);
+        const admittedTargets: string[] = [];
+        let deniedServiceAvailable = false;
+        const socket = { id: 'custodian_socket', data: { clientType: 'machine-scoped', userId: 'user_1', machineId: 'machine_1',
+            verifiedMachineInstallationId: 'installation_1', accountStoredContentCompatibility: {
+                supportsCurrentProtocol: true, supportsPluginDataProtocol: false, supportsSessionAccessWitnessProtocol: false,
+                supportsMachinePoolChangeProtocol: false, supportsSavedSecretResourceChangeProtocol: false,
+                outcome: 'accepted', declaration: { v: 1, protocolVersion: 2 }, upgradeRequired: null } },
+            timeout: () => ({ emitWithAck: async (_event: string, raw: unknown) => {
+                const request = raw as { params: { target: { managedServiceId: string } } };
+                const id = request.params.target.managedServiceId;
+                admittedTargets.push(id);
+                const candidate = id === 'instance_denied' ? deniedResource : resource;
+                return id === 'instance_denied' && !deniedServiceAvailable ? { v: 1, kind: 'refused', reasonCode: 'service_unavailable' }
+                    : { v: 1, kind: 'admitted', instanceId: id, serviceTarget: candidate.serviceTarget,
+                        starterAccountId: 'user_1', endpoint: candidate.target };
+            } }) };
+        const room = { timeout: () => room, fetchSockets: async () => [socket], emit() {}, disconnectSockets() {} };
+        // Socket.IO acknowledgements and Prisma are the only replaced system boundaries.
+        const io = { in: () => room, to: () => room, sockets: { adapter: { rooms: new Map() }, sockets: new Map() } } as unknown as Server;
+        eventRouter.setIo(io, { forwardRpc: request => forwardRpcCall({ ...request, io }) });
+        const env = { ...peerMediationGrantSigningEnv(), HANDY_MASTER_SECRET: 'secret', HAPPIER_PUBLIC_SERVER_URL: 'https://app.happier.test',
+            HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: 'true',
+            HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__HOST_ORIGIN_DOMAIN: 'preview.happier.test',
+            HAPPIER_FEATURE_LOCAL_SERVICES_PUBLIC_PREVIEW__ENABLED: 'true',
+            HAPPIER_FEATURE_LOCAL_SERVICES_PUBLIC_PREVIEW__ALLOWED_MODES: 'public',
+            HAPPIER_FEATURE_LOCAL_SERVICES_PUBLIC_PREVIEW__MAX_TTL_MS: '60000',
+            HAPPIER_FEATURE_LOCAL_SERVICES_PUBLIC_PREVIEW__DNS_TLS_REQUIRED: '0',
+            [FEATURE_ENV_KEYS.localServicesPublicPreviewAllowTestAuditSink]: '1',
+            [FEATURE_ENV_KEYS.localServicesPublicPreviewRateLimitProfileIds]: 'default',
+            [FEATURE_ENV_KEYS.localServicesPublicPreviewAllowTestRateLimitChecker]: '1',
+            [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: '1',
+            [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: '5173',
+            [FEATURE_ENV_KEYS.machinesTunnelDirectPeerEnabled]: '1' };
+        const runtimes = createLocalServiceRouteRuntimes(env);
+        const closeHooks: Array<() => Promise<void>> = [];
+        const app = Object.assign(createFakeRouteApp(), { addHook(_name: string, hook: () => Promise<void>) { closeHooks.push(hook); } });
+        registerLocalServiceRoutes(app as never, { env, runtimes });
+        try {
+            for (const candidate of [resource, deniedResource, sessionResource]) {
+                expect(runtimes.preview.registerPreview({ resource: candidate, accountId: 'user_1' }).ok).toBe(true);
+            }
+            const links = [resource, resource, resource, sessionResource, sessionResource, sessionResource,
+                deniedResource, deniedResource, mismatchedResource].map(candidate => {
+                const result = runtimes.public.createExposure({ preview: candidate, requestedMode: 'public', requestedTtlMs: 60_000,
+                    actorId: 'user_1', sessionAuthorized: true, dnsTlsValid: true, rateLimitProfileId: 'default' });
+                if (!result.ok) throw new Error(result.reasonCode);
+                return result.exposure;
+            });
+            const handler = getRouteHandler(app, 'POST', '/v1/local-services/public/status');
+            for (let requestIndex = 0; requestIndex < 2; requestIndex++) {
+                deniedServiceAvailable = requestIndex === 1;
+                admittedTargets.length = 0;
+                sessionFindUnique.mockClear();
+                const reply = createReplyStub();
+                await handler({ userId: 'user_1', body: { machineId: 'machine_1' } }, reply);
+                expect(reply.statusCode).toBe(200);
+                const response = DaemonLocalServicePublicPreviewStatusResponseV1Schema.parse(reply.send.mock.calls[0]?.[0]);
+                const expectedLinks = links.slice(0, deniedServiceAvailable ? 8 : 6);
+                expect(response.snapshot.exposures).toHaveLength(expectedLinks.length);
+                expect(response.snapshot.exposures).toEqual(expect.arrayContaining(expectedLinks));
+                expect(admittedTargets.sort()).toEqual(['instance_1', 'instance_denied']);
+                expect(sessionFindUnique).toHaveBeenCalledTimes(1);
+            }
+        } finally {
+            for (const hook of closeHooks) await hook();
+            eventRouter.clearIo();
+        }
     });
 
     it('admits a shared current Machine viewer only against the actual current service and retires its registration', async () => {
@@ -668,7 +758,10 @@ describe('local service preview routes', () => {
         }
     });
 
-    it('releases the relay tunnel when the browser cancels an open private SSE response', async () => {
+    it.each([
+        { contentType: 'text/event-stream', first: 'data: first\n\n' },
+        { contentType: 'application/json', first: '{"rows":[' },
+    ])('streams private $contentType bytes and releases the relay tunnel on browser cancellation', async ({ contentType, first }) => {
         const env = { ...peerMediationGrantSigningEnv(), HANDY_MASTER_SECRET: 'test-master-secret',
             HAPPIER_PUBLIC_SERVER_URL: 'https://app.happier.test',
             HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: 'true',
@@ -685,12 +778,13 @@ describe('local service preview routes', () => {
         const openTunnel: OpenLocalServicePreviewTunnel = async () => ({
             tunnelId: 'tunnel', substreamId: 'sse', write() {}, endWrite() {},
             async *read() {
-                yield new TextEncoder().encode('HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: first\n\n');
+                yield new TextEncoder().encode(`HTTP/1.1 200 OK\r\nContent-Type: ${contentType}\r\n\r\n${first}`);
                 await released;
             },
             abort: release, close: release,
         });
         const app = fastify({ logger: false });
+        await enableApiCompression(app);
         app.decorate('authenticate', async () => {});
         registerLocalServiceRoutes(app as unknown as Fastify, { env, runtimes, openTunnel });
         let socket: ReturnType<typeof connect> | undefined;
@@ -699,11 +793,15 @@ describe('local service preview routes', () => {
             const cookie = String(exchange.headers['set-cookie']).split(';')[0]!;
             const listener = new URL(await app.listen({ port: 0, host: '127.0.0.1' }));
             socket = connect(Number(listener.port), '127.0.0.1');
+            let received = '';
             const firstBytes = new Promise<void>(resolve => socket!.on('data', chunk => {
-                if (chunk.toString().includes('data: first')) resolve();
+                received += chunk.toString();
+                if (received.includes(first)) resolve();
             }));
-            socket.on('connect', () => socket!.write(`GET /sse HTTP/1.1\r\nHost: ${url.host}\r\nCookie: ${cookie}\r\nAccept: text/event-stream\r\n\r\n`));
+            socket.on('connect', () => socket!.write(`GET /sse HTTP/1.1\r\nHost: ${url.host}\r\nCookie: ${cookie}\r\nAccept: text/event-stream\r\nAccept-Encoding: gzip, br\r\n\r\n`));
             await firstBytes;
+            expect(received.toLowerCase()).not.toContain('\r\ncontent-encoding:');
+            expect(received.toLowerCase()).toContain('\r\ntransfer-encoding: chunked');
             socket.destroy();
             await released;
         } finally {
@@ -745,6 +843,7 @@ describe('local service preview routes', () => {
         try {
             for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
             vi.stubEnv('HAPPIER_DB_PROVIDER', 'postgres');
+            await enableApiCompression(app);
             startSocket(app as unknown as Fastify);
             registerLocalServiceRoutes(app as unknown as Fastify, { runtimes, openTunnel: slowTunnel });
             const exchange = await app.inject({ method: 'GET', url: url.pathname + url.search, headers: { host: url.host } });

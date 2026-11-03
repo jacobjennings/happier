@@ -40,6 +40,22 @@ afterEach(() => {
 });
 
 describe('registerMachineFileBrowserHandlers', () => {
+  it('carries the OS reason code when a browsed directory no longer exists', async () => {
+    const root = createTempDirectory();
+    const { handlers, registrar } = createRegistrar();
+    registerMachineFileBrowserHandlers({
+      rpcHandlerManager: registrar,
+      workingDirectory: root,
+      deps: { resolveRoots: async () => [{ id: root, label: root, path: root }] },
+    });
+    const listDirectory = handlers.get(RPC_METHODS.DAEMON_FILESYSTEM_LIST_DIRECTORY);
+    if (!listDirectory) throw new Error('expected machine file browser directory handler');
+    await expect(listDirectory({ path: join(root, 'missing') })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'ENOENT',
+    });
+  });
+
   it('dispatches machine file-browser RPCs through ActionSpec when an executor is provided', async () => {
     const execute = vi.fn(async () => ({
       ok: true,

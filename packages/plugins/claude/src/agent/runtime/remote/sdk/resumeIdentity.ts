@@ -21,6 +21,8 @@ type TranscriptEvidence = Readonly<{
     timestampMs: number;
 }>;
 
+type SessionHookOrigin = 'sdk' | 'local_terminal';
+
 type ActiveTranscriptCandidate = {
     providerSessionId: string;
     transcriptPath: string;
@@ -29,6 +31,7 @@ type ActiveTranscriptCandidate = {
     promoted: boolean;
     promotionInFlight: Promise<void> | null;
     followHandle: AgentTranscriptFileFollowHandle | null;
+    proofReadFailure: unknown;
 };
 
 export type ClaudeAgentSdkResumeIdentityPromotion = Readonly<{
@@ -43,6 +46,7 @@ export type ClaudeAgentSdkResumeIdentityOwner = Readonly<{
     observeSessionHook(
         providerSessionId: string,
         payload: Readonly<Record<string, unknown>>,
+        origin?: SessionHookOrigin,
     ): Promise<void>;
     validateSdkResultProviderSessionId(providerSessionId: unknown): ClaudeAgentSdkResumeIdentityMismatchError | null;
     readExplicitResumeFailure(): ClaudeAgentSdkResumeIdentityMismatchError | null;
@@ -290,7 +294,7 @@ export function createClaudeAgentSdkResumeIdentityOwner(params: Readonly<{
                     candidate.evidence.length = 0;
                 },
                 onError: (error) => {
-                    params.ctx.logger.debug('[ClaudeAgentSdk] transcript identity proof follow failed', { error });
+                    recordProofReadFailure(candidate, error);
                 },
             });
             if (disposed || activeCandidate !== candidate || candidate.promoted) {
@@ -299,8 +303,16 @@ export function createClaudeAgentSdkResumeIdentityOwner(params: Readonly<{
             }
             candidate.followHandle = handle;
         } catch (error) {
-            params.ctx.logger.debug('[ClaudeAgentSdk] transcript identity proof follow unavailable', { error });
+            recordProofReadFailure(candidate, error);
         }
+    }
+
+    function recordProofReadFailure(candidate: ActiveTranscriptCandidate, error: unknown): void {
+        if (disposed || activeCandidate !== candidate || candidate.invalidated || candidate.promoted) return;
+        const code = error && typeof error === 'object' && 'code' in error ? error.code : null;
+        if (code === 'ENOENT' || code === 'ENOTDIR') return;
+        candidate.proofReadFailure = error ?? new Error('Claude transcript identity proof is unavailable.');
+        params.ctx.logger.warn('[ClaudeAgentSdk] transcript identity proof read failed', { error });
     }
 
     async function observeSessionStart(
@@ -361,6 +373,7 @@ export function createClaudeAgentSdkResumeIdentityOwner(params: Readonly<{
                 promoted: false,
                 promotionInFlight: null,
                 followHandle: null,
+                proofReadFailure: null,
             }
             : null;
         if (existing) {
@@ -385,6 +398,7 @@ export function createClaudeAgentSdkResumeIdentityOwner(params: Readonly<{
     async function observeAcceptedPrompt(
         reportedProviderSessionId: string,
         payload: Readonly<Record<string, unknown>>,
+        origin: SessionHookOrigin,
     ): Promise<void> {
         if (isSidechainSessionHook(payload)) return;
         const candidate = activeCandidate;
@@ -395,7 +409,13 @@ export function createClaudeAgentSdkResumeIdentityOwner(params: Readonly<{
         if (prompt === null) return;
         const acceptedAtMs = nowMs();
         prunePromptIntents(acceptedAtMs);
-        const intent = promptIntents.find((item) => item.acceptedAtMs === null && item.text === prompt);
+        let intent = promptIntents.find((item) => item.acceptedAtMs === null && item.text === prompt);
+        if (!intent && origin === 'local_terminal') {
+            // An owned terminal's authenticated submit hook is the person's input boundary;
+            // no host-injected prompt precedes it. The matching transcript row still proves persistence.
+            intent = { text: prompt, submittedAtMs: acceptedAtMs, acceptedAtMs: null, acceptedCandidate: null };
+            promptIntents.push(intent);
+        }
         if (!intent) return;
         intent.acceptedAtMs = acceptedAtMs;
         intent.acceptedCandidate = candidate;
@@ -409,25 +429,32 @@ export function createClaudeAgentSdkResumeIdentityOwner(params: Readonly<{
             promptIntents.push({ text: prompt, submittedAtMs, acceptedAtMs: null, acceptedCandidate: null });
         },
         async settleCurrentCandidate() {
-            if (disposed) return;
-            await Promise.allSettled(Array.from(inFlightHookOperations));
-            const candidate = activeCandidate;
-            if (!candidate || candidate.invalidated || candidate.promoted) return;
-            await candidate.followHandle?.drainNow().catch((error) => {
-                params.ctx.logger.debug('[ClaudeAgentSdk] transcript identity proof drain failed', { error });
-            });
-            await candidate.promotionInFlight?.catch((error) => {
-                params.ctx.logger.debug('[ClaudeAgentSdk] transcript identity promotion failed', { error });
-            });
+            while (!disposed) {
+                await Promise.allSettled(Array.from(inFlightHookOperations));
+                const candidate = activeCandidate;
+                if (!candidate || candidate.invalidated || candidate.promoted) return;
+                await candidate.followHandle?.drainNow().catch((error) => {
+                    recordProofReadFailure(candidate, error);
+                });
+                await candidate.promotionInFlight?.catch((error) => {
+                    params.ctx.logger.debug('[ClaudeAgentSdk] transcript identity promotion failed', { error });
+                });
+                // A hook may replace the identity during either await. Settle its candidate before takeover.
+                if (activeCandidate !== candidate) continue;
+                if (disposed || candidate.invalidated || candidate.promoted) return;
+                // Host drains can resolve after reporting onError; only matched proof retires that failure.
+                if (candidate.proofReadFailure !== null) throw candidate.proofReadFailure;
+                return;
+            }
         },
-        async observeSessionHook(providerSessionId, payload) {
+        async observeSessionHook(providerSessionId, payload, origin = 'sdk') {
             if (disposed) return;
             const eventName = readHookEventName(payload);
             let operation: Promise<void> | null = null;
             if (eventName === 'SessionStart') {
                 operation = observeSessionStart(providerSessionId, payload);
             } else if (eventName === 'UserPromptSubmit') {
-                operation = observeAcceptedPrompt(providerSessionId, payload);
+                operation = observeAcceptedPrompt(providerSessionId, payload, origin);
             }
             if (!operation) return;
             inFlightHookOperations.add(operation);

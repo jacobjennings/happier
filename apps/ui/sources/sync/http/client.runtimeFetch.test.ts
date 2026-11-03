@@ -59,6 +59,9 @@ describe('serverFetch runtime fetch override', () => {
             endpointUrl: 'https://home-b.example.test', runtimeOrigin,
             credentials: { token }, superviseReachability: true,
         });
+        // Focus moving after capture must neither reroute nor re-authorize the captured request.
+        await upsertAndActivateServer({ serverUrl: 'https://focused-after-capture.example.test', name: 'Focused later' });
+        const focused = getActiveServerSnapshot();
         expect((await request('/v1/example', { method: 'GET', signal: controller.signal })).status).toBe(200);
         expect((await request('/v1/example', { method: 'GET', signal: controller.signal })).status).toBe(200);
         expect(peekServerReachabilityScope('https://home-b.example.test', token)).not.toBeNull();
@@ -66,6 +69,9 @@ describe('serverFetch runtime fetch override', () => {
         expect(overrideFetch.mock.calls.map(([url]) => String(url))).toEqual([
             `${runtimeOrigin}/v1/auth/ping`, `${runtimeOrigin}/v1/example`, `${runtimeOrigin}/v1/example`,
         ]);
+        expect(overrideFetch.mock.calls.slice(1).map(([, init]) => new Headers(init?.headers).get('Authorization')))
+            .toEqual([`Bearer ${token}`, `Bearer ${token}`]);
+        expect(getActiveServerSnapshot()).toEqual(focused);
     });
 
     it('admits a fresh bearer through the already selected native origin without borrowing the old bearer verdict', async () => {

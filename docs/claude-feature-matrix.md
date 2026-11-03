@@ -4,6 +4,29 @@
 
 The tables must not be used to locate current owners or plan new changes. Re-derive any historical claim from the current plugin contribution, Agent catalog, and Provider contracts before acting on it. The development lifecycle notes below describe current unreleased source; the tables remain historical.
 
+## Idle compaction — unreleased 0.3 development
+
+Claude's selected runtime owns its compaction declaration: unified terminal uses
+native idle compaction; SDK mode uses the Session host's scheduler and a resumed
+`/compact` control query. Both default to enabled with a 200,000-token minimum.
+Unified honors enabled/minimum settings; Claude Code applies its native lower
+clamp. The cache-window override is an SDK host control. Preferences seed new
+Sessions, and the existing unified large-session resume choice remains separate.
+
+SDK turn, transient control and compact queries share `buildClaudeSdkQueryLaunchOptions`
+in `agent/runtime/remote/sdk/launchOptions.ts`. A compact retains the native Session
+identity and publishes canonical compaction lifecycle evidence without starting a
+foreground turn or committing a Happier user prompt. Native measured before/after
+counts pass through `readClaudeCompactionMetadata`; missing counts stay absent.
+
+Both assistant ingress paths use `buildClaudeAssistantUsageObservation`. Only a
+matching live main-chain SDK `message_start` supplies the request clock; detected
+one-hour cache writes add the vendor lifetime. Short/unknown classes carry only
+the clock, allowing the host's deliberate override. Replay, sidechains, missing
+starts and result aggregates cannot supply a fresh clock. Launch parity does not
+prove a warm cache; loaded Session/UI validation remains a separate integration
+check. See [runtime ownership](runtime-core.md#idle-compaction-unreleased-03).
+
 ## Status legend
 
 - `supported`: primary current path
@@ -23,12 +46,34 @@ The tables must not be used to locate current owners or plan new changes. Re-der
 | Linked direct transcript source (`.claude/projects/...jsonl`) | `supported` | `packages/plugins/claude/src/agent/**` | When transcript storage is `direct`, `session.ts` writes `directSessionV1`; browse/tail reads provider-owned JSONL directly and supports backward paging plus forward tail-follow. | Replace `directSessionV1` and Claude-specific file cursors with a shared transcript-source contract used by browse, takeover, and handoff. |
 | Sidechains, subagents, and team inbox | `partial` | `packages/plugins/claude/src/agent/**`, `apps/ui/sources/sync/domains/session/participants/providers/claude/deriveClaudeTeamParticipants.ts`, `apps/ui/sources/components/tools/renderers/workflow/SubAgentRunView.tsx` | Remote mode has dedicated collectors for `Task` / `Agent` JSONL sidechains and team-inbox messages; UI then reconstructs team state, shutdown pruning, and run previews from normalized tool calls plus imported sidechain messages. | Centralize Claude sidechain/team normalization so CLI collectors and UI participant derivation stop re-encoding the same lifecycle rules. |
 
-In development source, native cross-session delivery is classified by
-`packages/plugins/claude/src/agent/transcripts/nativeSemanticProjection.ts`.
-Direct history, the Unified transcript source and remote SDK output share
-sender-labelled ACP text. Ordinary queue operations and copied human wrappers
-remain internal or human input. Native peer input cannot accept a queued human
-prompt or start a human turn.
+In development source, native peer deliveries (cross-session messages, teammate
+messages and subagent hand-backs) are classified by
+`packages/plugins/claude/src/agent/transcripts/nativeSemanticProjection.ts`, from
+peer user rows and delivered queued-command attachments alike. The body comes from
+the native `origin.body` (or the `<cross-session-message>` / `<agent-message>`
+wrapper when absent), so delivery sentences and harness guidance are not shown.
+Hand-backs use `origin.handbackReportText`, or the framed body with its provenance
+frame and two-space report indentation removed. Direct history, the Unified
+transcript source and remote SDK output commit that clean body as agent ACP
+`message` text with a presentation-only `peer: { name, handback }` sidecar
+(`@happier-dev/protocol` `TranscriptPeerSenderV1`); the runtime event carries the
+same sender and stays Session-scoped, never a turn's reply. The UI shows it as a
+collapsed "Message from" / "Report from" card, and voice never reads it as the
+assistant's answer. Rows written by 0.2 CLIs as `From <sender>:`-labelled peer
+output are read back the same way by session-core. Ordinary queue operations and
+copied human wrappers remain internal or human input. Native peer input cannot
+accept a queued human prompt or start a human turn.
+
+A hand-back from an async Agent launch the task projector has already correlated
+waits for Claude's terminal task notification or task-status evidence. That outcome
+puts the report on the Agent card while preserving success, failure or cancellation;
+the report alone does not settle the task. A stopped `SendMessage` response keeps
+its own tool result alongside the child's outcome. Native system and queued
+representations of that outcome settle the current execution once. A native task
+start reopens correlation when Claude resumes the same task and tool. Hand-backs without
+an active launch correlation
+(after a resume, a CLI restart, terminal settlement or in stateless history paging)
+stay standalone peer cards.
 
 The remote SDK runtime applies permission configuration changes to its live
 queries through the existing native control transport. Normal sessions permit

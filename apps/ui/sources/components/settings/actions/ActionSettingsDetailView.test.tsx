@@ -414,8 +414,9 @@ describe('ActionSettingsDetailView', () => {
         expect(await screen.findByTestId(
             'settings-actions:action:review.start:target:agent:tool-exposure:resolved:discoverable_only',
         )).toBeTruthy();
+        // External MCP shares the agent surface's discoverable default (e1269dcdce).
         expect(await screen.findByTestId(
-            'settings-actions:action:review.start:target:mcp:tool-exposure:resolved:direct',
+            'settings-actions:action:review.start:target:mcp:tool-exposure:resolved:discoverable_only',
         )).toBeTruthy();
     });
 
@@ -575,7 +576,6 @@ describe('ActionSettingsDetailView', () => {
                 bar.testIDPrefix === `settings-actions:action:happier.inspector/actions/self-check:target:${targetId}:mode`
             ));
             expect(modeControl?.accessibilityLabel).toBe(target?.title);
-            expect(modeControl?.targetSize).toBe('platform');
             expect(modeControl?.valueSource).toBe('inherited');
             expect((modeControl?.tabs as Array<{ id: string }>).map((tab) => tab.id)).toEqual([
                 'off',

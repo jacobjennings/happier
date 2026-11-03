@@ -1,5 +1,5 @@
 import { createUnavailableRuntimeActionExecutor, resolveRuntimeActionExecutionFamily } from '@happier-dev/protocol/actions/executor/dispatch';
-import { DaemonLocalServicePreviewOpenOrCreateRequestV1Schema, DaemonLocalServicePreviewOpenOrCreateResponseV1Schema, DaemonLocalServicePreviewRevokeRequestV1Schema, type LocalServicePreviewSnapshotV1 } from '@happier-dev/protocol/local/services/preview/v1';
+import { DaemonLocalServicePreviewOpenOrCreateRequestV1Schema, DaemonLocalServicePreviewOpenOrCreateResponseV1Schema, type DaemonLocalServicePreviewRevokeRequestV1, type LocalServicePreviewSnapshotV1 } from '@happier-dev/protocol/local/services/preview/v1';
 import { DaemonLocalServicePublicPreviewCopyUrlRequestV1Schema, DaemonLocalServicePublicPreviewCreateRequestV1Schema, DaemonLocalServicePublicPreviewRevokeRequestV1Schema, DaemonLocalServicePublicPreviewStatusRequestV1Schema, redactLocalServicePublicPreviewCreateResponseForAgentEgress, redactLocalServicePublicPreviewRevokeResponseForAgentEgress, redactLocalServicePublicPreviewSnapshotForAgentEgress, type LocalServicePublicPreviewSnapshotV1 } from '@happier-dev/protocol/local/services/public/v1';
 import { getActionSpec } from '@happier-dev/protocol/actions/actionSpecs';
 import { projectUnexpectedActionFailureV1 } from '@happier-dev/protocol/actions/actionExecutionResult';
@@ -7,7 +7,7 @@ import { LocalServiceActionRequestV1Schema } from '@happier-dev/protocol/local/s
 import { fetchLocalServiceInventorySummaryViaMachineRpc } from '../inventory/machineRpc';
 import { DaemonLocalServiceLauncherLeafRequestV1Schema, DaemonLocalServiceLauncherSnapshotRequestV1Schema, DaemonLocalServiceLauncherStartRequestV1Schema, type DaemonLocalServiceLauncherLeafRequestV1 } from '@happier-dev/protocol/local/services/launcher/v1';
 import { requiresAgentEgressRedaction } from '@happier-dev/protocol/actions/actionApprovalPolicy';
-import { resolveLocalServiceActionKindForRuntimeActionId } from '@happier-dev/protocol/actions/specs/localServices';
+import { parseLocalServiceDomainActionRpcRequest, resolveLocalServiceActionKindForRuntimeActionId } from '@happier-dev/protocol/actions/specs/localServices';
 import type { RuntimeActionExecute, RuntimeActionExecuteArgs } from '@happier-dev/protocol/actions/executor/types';
 import { ProjectServiceRelocateInputV1Schema, ProjectServiceRelocateResultV1Schema } from '@happier-dev/protocol/workspaces/projectServiceRelocationV1';
 import type { WorkspaceRefV1 } from '@happier-dev/protocol/workspaces/workspaceRefV1';
@@ -78,6 +78,7 @@ import type {
     LocalServicePublicPreviewRevokeClientResult,
     LocalServicePublicPreviewStatusClientInput,
     LocalServicePublicPreviewStatusClientResult,
+    LocalServicePublicPreviewFailureReason,
 } from '../publicPreview/api';
 import { publishLocalServicePublicPreviewSnapshot } from '../publicPreview/sharedStore';
 
@@ -167,7 +168,7 @@ export type CreateLocalServicesRuntimeActionExecutorInput = Readonly<{
 }>;
 
 type LocalServicesRouteKind = 'inventory' | 'launcher' | 'preview' | 'public_preview' | 'action';
-type LocalServicesRouteFailureReason = 'unavailable' | 'request_failed' | 'invalid_response';
+type LocalServicesRouteFailureReason = LocalServicePublicPreviewFailureReason;
 type LocalServicesRuntimeActionDisabledReason =
     | 'local_services_machine_unavailable'
     | 'local_services_runtime_action_unbacked'
@@ -259,6 +260,7 @@ function readPreviewTargetReferences(input: unknown): Readonly<Record<string, un
     if (inventoryEntryId) references.inventoryEntryId = inventoryEntryId;
     const managedServiceId = normalizeNonEmptyString(input.managedServiceId);
     if (managedServiceId) references.managedServiceId = managedServiceId;
+    if (isRecord(input.serviceTarget)) references.serviceTarget = input.serviceTarget;
     const launchTargetId = normalizeNonEmptyString(input.launchTargetId);
     if (launchTargetId) references.launchTargetId = launchTargetId;
     if (isRecord(input.initialPath)) references.initialPath = input.initialPath;
@@ -352,11 +354,12 @@ export function createLocalServicesRuntimeActionExecutor(
     const fetchPreviewSnapshot = input.fetchPreviewSnapshot ?? fetchLocalServicePreviewSnapshotViaMachineRpc;
     const openOrCreatePreview = input.openOrCreatePreview ?? openOrCreateLocalServicePreviewViaMachineRpc;
     const revokePreview = input.revokePreview ?? revokeLocalServicePreviewViaMachineRpc;
-    const onPreviewSnapshot = input.onPreviewSnapshot
-        ?? ((published) => publishLocalServicePreviewSnapshot(
-            { machineId: published.machineId, serverId: published.serverId },
-            published.snapshot,
-        ));
+    const onPreviewSnapshot: NonNullable<CreateLocalServicesRuntimeActionExecutorInput['onPreviewSnapshot']> = published => {
+        if (!mayPublishCatalog(published.serverId)) return;
+        if (input.onPreviewSnapshot) input.onPreviewSnapshot(published);
+        else publishLocalServicePreviewSnapshot({ machineId: published.machineId, serverId: published.serverId,
+            ...catalogScope }, published.snapshot);
+    };
     const onPublicPreviewSnapshot = input.onPublicPreviewSnapshot
         ?? ((published) => publishLocalServicePublicPreviewSnapshot(
             {
@@ -566,11 +569,13 @@ export function createLocalServicesRuntimeActionExecutor(
 
         if (args.actionId === 'localServices.preview.revoke') {
             if (!machineId) return disabledResult('local_services_machine_unavailable');
-            const previewId = readPreviewIdFromInput(parsed.input);
-            if (!previewId) return invalidParametersResult;
-            const request = DaemonLocalServicePreviewRevokeRequestV1Schema.safeParse({ machineId, previewId });
-            if (!request.success) return invalidParametersResult;
-            const result = await revokePreview({ request: request.data, serverId, signal: args.context.signal });
+            const request = parseLocalServiceDomainActionRpcRequest(args.actionId, {
+                ...(isRecord(parsed.input) ? parsed.input : {}), machineId,
+            });
+            if (!request?.success) return invalidParametersResult;
+            // This constant Action selects the Revoke schema in the canonical lowerer.
+            const result = await revokePreview({ request: request.data as DaemonLocalServicePreviewRevokeRequestV1,
+                serverId, signal: args.context.signal });
             if (!result.ok) return previewLifecycleFailureResult(result.reason);
             publishLifecycleSnapshot(onPreviewSnapshot, machineId, serverId, result.response.snapshot);
             return result.response;

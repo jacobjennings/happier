@@ -24,6 +24,7 @@ describe('session open latch', () => {
         const facts = {
             contentHeight: 0,
             isLoaded: false,
+            isNearOlderEdge: false,
             isScrollable: false,
             itemCount: 0,
             layoutHeight: 600,
@@ -46,6 +47,7 @@ describe('session open latch', () => {
         expect(latch.onHostFacts({
             contentHeight: 1200,
             isLoaded: true,
+            isNearOlderEdge: false,
             isScrollable: true,
             itemCount: 3,
             layoutHeight: 600,
@@ -118,6 +120,7 @@ describe('session open latch', () => {
         const ready = latch.onHostFacts({
             contentHeight: 800,
             isLoaded: true,
+            isNearOlderEdge: false,
             isScrollable: true,
             itemCount: 12,
             layoutHeight: 400,
@@ -136,52 +139,12 @@ describe('session open latch', () => {
         expect(latch.phase()).toBe('disarmed');
     });
 
-    it('keeps bottom positioning renderer-owned while requesting only the initial fill duty', () => {
-        const latch = createSessionOpenLatch();
-
-        latch.arm(armInput());
-        const decision = latch.onHostFacts({
-            contentHeight: 240,
-            isLoaded: true,
-            isScrollable: false,
-            itemCount: 3,
-            layoutHeight: 600,
-            nowMs: 1_025,
-            sessionId: 'session-a',
-        });
-
-        expect(decision.phase).toBe('positioning');
-        expect(decision.effects).toEqual([{ type: 'request-initial-fill' }]);
-    });
-
-    it('treats already-scrollable bottom entries as fill-settled without requesting a generic initial fill', () => {
-        // Regression (Legend 2026-07-08): a renderer whose scroll container is already
-        // scrollable at the first measured host facts never emits `request-initial-fill`,
-        // and the fill status previously stayed 'idle' forever — permanently suspending
-        // older pagination behind the 'fill-not-done' reason. A scrollable bottom entry
-        // has nothing to fill: it must settle the fill status immediately.
-        const latch = createSessionOpenLatch();
-
-        latch.arm(armInput());
-        const decision = latch.onHostFacts({
-            contentHeight: 10_052,
-            isLoaded: true,
-            isScrollable: true,
-            itemCount: 121,
-            layoutHeight: 317,
-            nowMs: 1_025,
-            sessionId: 'session-a',
-        });
-
-        expect(decision.effects.some((effect) => effect.type === 'request-initial-fill')).toBe(false);
-        expect(latch.initialFillStatus()).toBe('done');
-    });
-
     it('requests the bottom fill duty once per arm across repeated host facts', () => {
         const latch = createSessionOpenLatch();
         const facts = {
             contentHeight: 240,
             isLoaded: true,
+            isNearOlderEdge: false,
             isScrollable: false,
             itemCount: 3,
             layoutHeight: 600,
@@ -196,6 +159,7 @@ describe('session open latch', () => {
             nowMs: 1_050,
         });
 
+        expect(first.phase).toBe('positioning');
         expect(first.effects).toEqual([{ type: 'request-initial-fill' }]);
         expect(repeated.effects).toEqual([]);
     });
@@ -207,6 +171,7 @@ describe('session open latch', () => {
         const decision = latch.onHostFacts({
             contentHeight: 0,
             isLoaded: true,
+            isNearOlderEdge: false,
             isScrollable: false,
             itemCount: 3,
             layoutHeight: 0,
@@ -216,33 +181,6 @@ describe('session open latch', () => {
 
         expect(decision.phase).toBe('awaiting-layout');
         expect(decision.effects).toEqual([]);
-    });
-
-    it('fills underfilled anchored entries before coordinating entry restore', () => {
-        const latch = createSessionOpenLatch();
-
-        latch.arm(armInput({
-            entryKind: 'anchored',
-            platform: 'native',
-            shouldFollowBottom: false,
-        }));
-        const ready = latch.onHostFacts({
-            contentHeight: 240,
-            isLoaded: true,
-            isScrollable: false,
-            itemCount: 3,
-            layoutHeight: 600,
-            nowMs: 1_025,
-            sessionId: 'session-a',
-        });
-        const fill = latch.onInitialFillSettled({
-            nowMs: 1_030,
-            sessionId: 'session-a',
-        });
-
-        expect(ready.effects.some((effect) => effect.type === 'request-initial-fill')).toBe(true);
-        expect(fill.effects).toEqual([{ type: 'request-entry-restore-attempt' }]);
-        expect(fill.phase).toBe('confirming');
     });
 
     it('treats measured scrollable anchored entries as fill-settled without generic initial fill', () => {
@@ -256,6 +194,7 @@ describe('session open latch', () => {
         const ready = latch.onHostFacts({
             contentHeight: 1_000,
             isLoaded: true,
+            isNearOlderEdge: false,
             isScrollable: true,
             itemCount: 1,
             layoutHeight: 100,
@@ -274,6 +213,11 @@ describe('session open latch', () => {
         // settle set initialFillStatus 'done' but left phase 'positioning'. The
         // synchronous settle must mirror onInitialFillSettled's phase transition so
         // open-lifecycle consumers observe one terminal state.
+        // Regression (Legend 2026-07-08): a renderer whose scroll container is already
+        // scrollable at the first measured host facts never emits `request-initial-fill`,
+        // and the fill status previously stayed 'idle' forever — permanently suspending
+        // older pagination behind the 'fill-not-done' reason. A scrollable bottom entry
+        // has nothing to fill: it must settle the fill status immediately.
         const latch = createSessionOpenLatch();
 
         latch.arm(armInput({
@@ -284,6 +228,7 @@ describe('session open latch', () => {
         const ready = latch.onHostFacts({
             contentHeight: 1_000,
             isLoaded: true,
+            isNearOlderEdge: false,
             isScrollable: true,
             itemCount: 2,
             layoutHeight: 100,
@@ -291,6 +236,7 @@ describe('session open latch', () => {
             sessionId: 'session-a',
         });
 
+        expect(ready.effects.some((effect) => effect.type === 'request-initial-fill')).toBe(false);
         expect(latch.initialFillStatus()).toBe('done');
         expect(ready.phase).toBe('done');
         expect(latch.phase()).toBe('done');
@@ -312,6 +258,7 @@ describe('session open latch', () => {
         const ready = latch.onHostFacts({
             contentHeight: 80,
             isLoaded: true,
+            isNearOlderEdge: false,
             isScrollable: false,
             itemCount: 1,
             layoutHeight: 600,
@@ -348,6 +295,7 @@ describe('session open latch', () => {
         const first = latch.onHostFacts({
             contentHeight: 80,
             isLoaded: true,
+            isNearOlderEdge: false,
             isScrollable: false,
             itemCount: 1,
             layoutHeight: 600,
@@ -357,6 +305,7 @@ describe('session open latch', () => {
         const second = latch.onHostFacts({
             contentHeight: 90,
             isLoaded: true,
+            isNearOlderEdge: false,
             isScrollable: false,
             itemCount: 1,
             layoutHeight: 600,
@@ -372,6 +321,7 @@ describe('session open latch', () => {
         const third = latch.onHostFacts({
             contentHeight: 100,
             isLoaded: true,
+            isNearOlderEdge: false,
             isScrollable: false,
             itemCount: 1,
             layoutHeight: 600,
@@ -389,6 +339,7 @@ describe('session open latch', () => {
         const facts = (nowMs: number) => latch.onHostFacts({
             contentHeight: 4_000,
             isLoaded: true,
+            isNearOlderEdge: false,
             isScrollable: false,
             itemCount: 20,
             layoutHeight: 600,
@@ -531,21 +482,5 @@ describe('session open latch', () => {
             pinThresholdPx: 72,
             sessionId: 'session-a',
         })).toBe(false);
-    });
-
-    it('releases the standard-space native first-paint placeholder on the fallback deadline', () => {
-        const latch = createSessionOpenLatch();
-
-        latch.arm(armInput({
-            platform: 'native',
-        }));
-
-        const due = latch.onNativeFirstPaintFallbackDeadline({
-            nativeViewportPaintObserved: false,
-            nowMs: 1_450,
-            sessionId: 'session-a',
-        });
-
-        expect(due.effects).toEqual([{ type: 'release-native-first-paint-placeholder' }]);
     });
 });

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('socket.io-client', async (importOriginal) =>
     (await import('@/dev/testkit/harness/serverAccountConnectionHarness')).createSocketIoClientBoundary(importOriginal));
 import { ActivityBadgeRuntime } from '@/activity/badges/ActivityBadgeRuntime';
-import { DesktopActivityOverlayRuntime } from '@/activity/adapters/desktop/runtime/DesktopActivityOverlayRuntime';
+import { AuthenticatedAppRuntimeMounts } from '@/components/appShell/runtime/AuthenticatedAppRuntimeMounts';
 
 import { flushHookEffects, standardCleanup } from '@/dev/testkit';
 import { initializeRootLayoutRuntimeForTests, renderRootLayoutRoute, installRootLayoutRouteCommonModuleMocks } from './rootLayoutRouteTestHelpers';
@@ -12,6 +12,11 @@ type ReactActEnvironmentGlobal = typeof globalThis & {
     IS_REACT_ACT_ENVIRONMENT?: boolean;
 };
 (globalThis as ReactActEnvironmentGlobal).IS_REACT_ACT_ENVIRONMENT = true;
+
+const routeState = vi.hoisted(() => ({
+    pathname: '/terminal/connect',
+    segments: ['(app)', 'terminal', 'connect'],
+}));
 
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 
@@ -29,8 +34,8 @@ installRootLayoutRouteCommonModuleMocks({
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         return createExpoRouterMock({
-            pathname: '/terminal/connect',
-            segments: ['(app)', 'terminal', 'connect'],
+            pathname: () => routeState.pathname,
+            segments: () => routeState.segments,
             router: {
                 push: vi.fn(),
                 replace: vi.fn(),
@@ -44,6 +49,8 @@ installRootLayoutRouteCommonModuleMocks({
 await initializeRootLayoutRuntimeForTests();
 
 afterEach(() => {
+    routeState.pathname = '/terminal/connect';
+    routeState.segments = ['(app)', 'terminal', 'connect'];
     vi.restoreAllMocks();
     standardCleanup();
 });
@@ -55,10 +62,18 @@ async function renderRootLayout() {
     return screen;
 }
 
-describe('RootLayout terminal connect shell runtimes', () => {
+describe('RootLayout shell runtimes', () => {
+    it('mounts the authenticated shell runtimes on an ordinary route', async () => {
+        routeState.pathname = '/';
+        routeState.segments = ['(app)'];
+        const screen = await renderRootLayout();
+        expect(screen.tree.root.findAllByType(AuthenticatedAppRuntimeMounts.type)).toHaveLength(1);
+        expect(screen.tree.root.findAllByType(ActivityBadgeRuntime)).toHaveLength(1);
+    });
+
     it('does not mount shell runtimes on plain web terminal-connect routes', async () => {
         const screen = await renderRootLayout();
+        expect(screen.tree.root.findAllByType(AuthenticatedAppRuntimeMounts.type)).toHaveLength(0);
         expect(screen.tree.root.findAllByType(ActivityBadgeRuntime)).toHaveLength(0);
-        expect(screen.tree.root.findAllByType(DesktopActivityOverlayRuntime)).toHaveLength(0);
     });
 });

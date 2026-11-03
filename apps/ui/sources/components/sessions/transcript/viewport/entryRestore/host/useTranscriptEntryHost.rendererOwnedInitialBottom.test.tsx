@@ -88,7 +88,6 @@ function createEnvelopeHarness() {
         webOpenPhaseDeadlineDelayMs: 30_000,
     });
 
-    const pinToBottom = vi.fn(() => true);
     const members = {
         activeTargetWindowTargetRef: { current: null },
         anchorLookupExhaustedRef: { current: false },
@@ -112,6 +111,7 @@ function createEnvelopeHarness() {
         invalidateViewportAnchorCapture: vi.fn(),
         isScrollable: vi.fn(() => true),
         isViewportAnchorSeqLoaded: vi.fn(() => false),
+        isViewportNearOlderEdge: vi.fn(() => false),
         lastScrollOffsetForIntentRef: { current: null },
         lastUserScrollIntentAtMsRef: { current: Number.NEGATIVE_INFINITY },
         userScrollIntent: createTranscriptUserScrollIntentOwner(),
@@ -125,8 +125,6 @@ function createEnvelopeHarness() {
         nativeMountSettleDeadlineReachedRef: { current: false },
         nativeMountSettleStable: false,
         observeMountSettleMetrics: vi.fn(),
-        pinToBottom,
-        pinToBottomRespectingNativeMountSettle: vi.fn(),
         recordRestoreDecisionTelemetry: vi.fn(),
         recordEntryOwnerOutcome: vi.fn(),
         recordViewportTelemetryEvent: vi.fn(),
@@ -169,7 +167,7 @@ function createEnvelopeHarness() {
         ...overrides,
     });
 
-    return { buildDeps, members, pinToBottom, sessionOpenLatch };
+    return { buildDeps, members, sessionOpenLatch };
 }
 
 describe('useTranscriptEntryHost renderer-owned initial bottom', () => {
@@ -192,8 +190,6 @@ describe('useTranscriptEntryHost renderer-owned initial bottom', () => {
             );
 
             const assertNoAppInitialBottomAuthority = () => {
-                expect(harness.pinToBottom).not.toHaveBeenCalled();
-                expect(harness.members.pinToBottomRespectingNativeMountSettle).not.toHaveBeenCalled();
                 expect(harness.members.executeViewportCommand).not.toHaveBeenCalled();
                 expect(vi.getTimerCount()).toBe(0);
             };

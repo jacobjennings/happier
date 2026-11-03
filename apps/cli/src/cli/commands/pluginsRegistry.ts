@@ -8,7 +8,6 @@ export type PluginsRegistryCommandDeps = Readonly<{
   service: RegistryCliService;
   machineId: string;
   promptSecret: (prompt: string) => Promise<string>;
-  allocateProfileId?: () => string;
   write: (value: unknown) => void | Promise<void>;
 }>;
 
@@ -58,7 +57,7 @@ export async function handlePluginsRegistryCommand(
   if (action === 'add') {
     const origin = positional(args, 1);
     if (!origin) throw new Error('Registry add requires an HTTPS origin');
-    const profileId = readValue(args, '--id') ?? deps.allocateProfileId?.() ?? `registry_${randomUUID()}`;
+    const profileId = readValue(args, '--id') ?? `registry_${randomUUID()}`;
     const result = requireSuccess(await deps.service.mutate({
       action: 'add',
       machineId: deps.machineId,

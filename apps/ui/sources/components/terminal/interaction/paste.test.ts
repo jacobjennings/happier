@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_TERMINAL_INTERACTION_POLICY, resolveTerminalPasteAction } from './paste';
+import { DEFAULT_TERMINAL_INTERACTION_POLICY } from './model';
+import { resolveTerminalPasteAction } from './paste';
 
 describe('terminal paste policy', () => {
     it('marks paste input as bracketed without pre-encoding terminal escape sequences', () => {

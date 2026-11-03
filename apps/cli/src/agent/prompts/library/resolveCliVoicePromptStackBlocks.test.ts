@@ -1,10 +1,13 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import axios from 'axios';
 import { accountSettingsParse } from '@happier-dev/protocol';
 import type { PromptLibraryStoredArtifact } from '@happier-dev/protocol/prompts/library/promptLibraryActionOperations';
 import type { PromptStackEntryV1 } from '@happier-dev/protocol/prompts/library/promptStacksV1';
-import { resolveCliVoicePromptStackBlocks } from './resolveCliVoicePromptStackBlocks';
+import { resolveCliVoicePromptStackBlocks, resolveCliVoicePromptPreparation } from './resolveCliVoicePromptStackBlocks';
 import { configuration } from '@/configuration';
+import { classifyHomeReadPreparationError } from './homeReadPreparationError';
+import { logger } from '@/ui/logger';
+import { artifactListResponse } from '@/testkit/http/artifactHome';
 import { resolveAccountSettingsScopeKey } from '@/settings/accountSettings/accountSettingsScopeKey';
 import { clearActiveAccountSettingsSnapshot, setActiveAccountSettingsSnapshot, getActiveAccountSettingsSnapshotLifetimeToken,
   commitActivePromptLibraryCatalog, commitActiveProfileCatalog } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
@@ -36,22 +39,80 @@ function doc(id: string, markdown: string): PromptLibraryStoredArtifact {
     body: JSON.stringify({ v: 1, markdown, createdAtMs: 1, updatedAtMs: 1 }),
   };
 }
+async function installExactHomeIdentity(profileId: string, homeServerIdentityId: string) {
+  const previous = await readSettings();
+  await writeSettings({ ...previous, servers: { ...previous.servers, [profileId]: {
+    id: profileId, name: 'Receipt Home', serverUrl: 'https://receipt.example.test', webappUrl: 'https://receipt.example.test',
+    // A valid stored descriptor is read back with exact authority.
+    createdAt: 1, updatedAt: 1, lastUsedAt: 1,
+    homeConnectionDescriptor: { v: 1, homeServerIdentityId, canonicalServerUrl: 'https://receipt.example.test', revision: 1,
+      endpoints: [{ kind: 'https', url: 'https://receipt.example.test' }] },
+  } } });
+  onTestFinished(async () => { await writeSettings(previous); });
+}
 describe('resolveCliVoicePromptStackBlocks', () => {
+  it('records the original Home cause before its safe preparation carrier replaces it', () => {
+    const logs = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
+    const error = Object.assign(new TypeError('private prompt and credential'), { code: 'ECONNRESET' });
+    expect(classifyHomeReadPreparationError(error)).toMatchObject({ reason: 'unavailable' });
+    expect(logs).toHaveBeenCalledWith('[Session] Prompt preparation failed', expect.objectContaining({
+      step: 'home.read', errorClass: 'TypeError', errorCode: 'ECONNRESET',
+    }));
+    expect(JSON.stringify(logs.mock.calls)).not.toContain('private');
+  });
+
+  it.each(['ECONNRESET', 'private-credential'] as const)('privately discriminates target currentness failure without copying content (%s)', async code => {
+    const logs = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
+    vi.spyOn(axios, 'get').mockRejectedValue(Object.assign(new TypeError('private prompt and credential'), {
+      code, config: { headers: { authorization: 'private bearer' } },
+    }));
+    await expect(resolveCliVoicePromptPreparation({
+      sessionId: 'private-session', credentials: { token: 'private-token', encryption: null },
+    })).rejects.toMatchObject({ reason: 'unavailable' });
+    expect(logs).toHaveBeenCalledWith('[Session] Prompt preparation failed', expect.objectContaining({
+      step: 'target.currentness', errorClass: 'AccountEncryptionCurrentnessUnavailableError', causeClass: 'TypeError',
+      causeCode: code === 'ECONNRESET' ? code : 'unclassified',
+    }));
+    expect(JSON.stringify(logs.mock.calls)).not.toMatch(/private|authorization|bearer/);
+  });
+
+  it.each(['Instructions', ''])('receipts only the admitted reserved Session instruction entry (%j)', async markdown => {
+    await installExactHomeIdentity('home', 'srv_receipt_home');
+    const args = { sessionId: 'target', serverId: 'home', accountEntries: [], profileEntries: [],
+      sessionMetadata: { work: { promptStack: [{ ...entry('session.instructions'), required: true }] } },
+      readArtifactHeader: async () => ({ header: { v: 1, kind: 'prompt_doc.v2', title: 'Instructions' } }),
+      readArtifact: async () => doc('session.instructions', markdown) };
+    expect(await resolveCliVoicePromptPreparation(args)).toHaveProperty('preparedInstructionsFor', { serverId: 'srv_receipt_home', sessionId: 'target' });
+    expect(await resolveCliVoicePromptPreparation({ ...args, serverId: 'unknown-profile' })).not.toHaveProperty('preparedInstructionsFor');
+    expect(await resolveCliVoicePromptPreparation({ ...args, sessionMetadata: { work: { promptStack: [entry('other')] } } }))
+      .not.toHaveProperty('preparedInstructionsFor');
+    expect(await resolveCliVoicePromptPreparation({ ...args, sessionId: null, sessionMetadata: undefined }))
+      .not.toHaveProperty('preparedInstructionsFor');
+  });
   afterEach(() => { clearActiveAccountSettingsSnapshot(); withdrawActiveProjectAccountRowsSnapshot(); vi.restoreAllMocks(); });
   it('refuses a real hidden Voice control Session whose target binding is missing or malformed', async () => {
     const hidden = buildSystemSessionMetadataV1({ key: VOICE_CONVERSATION_SYSTEM_SESSION_KEY, hidden: true });
+    const logs = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
     for (const binding of [undefined, { v: 1, targetSessionId: null }]) {
+      logs.mockClear();
       await expect(resolveCliVoicePromptStackBlocks({ sessionMetadata: { ...hidden, ...(binding ? { voiceConversationBindingV1: binding } : {}) },
         accountEntries: [], profileEntries: [], readArtifact: async () => null,
       })).rejects.toMatchObject({ reason: 'unavailable' });
+      expect(logs).toHaveBeenCalledWith('[Session] Prompt preparation failed', expect.objectContaining({
+        step: 'target.binding', errorClass: 'VoicePromptTargetBindingError',
+        errorCode: binding ? 'voice_target_binding_invalid' : 'voice_target_binding_missing',
+        ...(binding ? { causeClass: '$ZodError', schemaIssues: expect.arrayContaining([
+          expect.objectContaining({ code: 'invalid_value', path: ['transcriptMode'] }),
+        ]) } : {}),
+      }));
     }
   });
-  it('reads the hidden control binding and exact target Session instead of using its control or Voice profile', async () => {
-    const credentials = { token: 'exact-session-reader', encryption: null };
+  it.each([null, 'global-carrier', 'nested-carrier'] as const)('keeps Global native prompt scope unbound and refuses carrier targets (%s)', async targetSessionId => {
+    const logs = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
     const hidden = buildSystemSessionMetadataV1({ key: VOICE_CONVERSATION_SYSTEM_SESSION_KEY, hidden: true });
-    let markdown = 'FIRST_TARGET';
-    let retireOnBody = false;
-    let retired = false;
+    const metadata = { ...hidden, profileId: 'carrier-profile', voiceConversationScopeV1: { v: 1, kind: 'voice_home' },
+      voiceConversationBindingV1: { v: 1, adapterId: 'happier.agent.codex/realtime-codex',
+        controlSessionId: 'global-carrier', transcriptMode: 'native_session', targetSessionId, updatedAt: 1 } };
     const sessionReads: string[] = [];
     vi.spyOn(axios, 'get').mockImplementation(async url => {
       const path = new URL(String(url)).pathname;
@@ -59,26 +120,83 @@ describe('resolveCliVoicePromptStackBlocks', () => {
         signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 0 } };
       const id = path.slice('/v2/sessions/'.length);
       sessionReads.push(id);
-      const metadata = id === 'history-session' ? { ...hidden, voiceConversationBindingV1: { v: 1, adapterId: 'local',
-        controlSessionId: 'voice-global', transcriptMode: 'synthetic', targetSessionId: retired ? null : 'exact-target', updatedAt: 1 } }
-        : id === 'exact-target' ? { profileId: 'target-profile', work: { promptStack: [entry('target-doc')] } }
+      if (id !== 'global-carrier' && id !== 'nested-carrier') throw new Error('Unexpected Session read');
+      return { status: 200, data: { session: { id, seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
+        archivedAt: null, encryptionMode: 'plain', metadataVersion: 1, agentState: null, agentStateVersion: 0,
+        pendingCount: 0, pendingVersion: 0, share: null, dataEncryptionKey: null,
+        metadata: JSON.stringify(id === 'global-carrier' ? metadata : { ...hidden,
+          voiceConversationScopeV1: { v: 1, kind: 'session_root', sessionRootId: 'ordinary-root' } }) } } };
+    });
+    const preparation = resolveCliVoicePromptPreparation({
+      sessionId: 'global-carrier', credentials: { token: 'global-reader', encryption: null }, sessionMetadata: metadata,
+      accountEntries: [entry('account')], profileEntries: [entry('carrier-profile')],
+      roleContext: { availableRoles: [], notes: 'CARRIER_ROLE_MUST_NOT_LEAK' },
+      readArtifact: async ref => doc(ref.artifactId, ref.artifactId),
+    });
+    if (targetSessionId === null) {
+      await expect(preparation).resolves.toMatchObject({ systemAppendBlocks: ['account'] });
+      expect([...new Set(sessionReads)]).toEqual(['global-carrier']);
+    } else {
+      await expect(preparation).rejects.toMatchObject({ reason: 'unavailable' });
+      expect(logs).toHaveBeenCalledWith('[Session] Prompt preparation failed', expect.objectContaining({
+        step: 'target.binding', errorCode: 'voice_target_binding_target_is_carrier',
+      }));
+      // The prompt reader must reject nesting, not recursively follow another carrier's scope.
+      expect(sessionReads).not.toContain('ordinary-root');
+    }
+  });
+  it.each([false, true])('reads the hidden control binding and exact target Session with a native host snapshot=%s', async suppliedSnapshot => {
+    await installExactHomeIdentity(configuration.activeServerId, 'srv_control_home');
+    const credentials = { token: 'exact-session-reader', encryption: null };
+    const hidden = buildSystemSessionMetadataV1({ key: VOICE_CONVERSATION_SYSTEM_SESSION_KEY, hidden: true });
+    let markdown = 'FIRST_TARGET';
+    let retireOnBody = false;
+    let retired = false;
+    let controlRetired = false;
+    const sessionReads: string[] = [];
+    // Run 49 carrier shape, with identities/content replaced: hidden voice_home, local native transcript.
+    const controlMetadata = () => ({ ...hidden, voiceConversationScopeV1: { v: 1, kind: 'voice_home' },
+      voiceConversationBindingV1: { v: 1, adapterId: 'local_conversation', controlSessionId: 'voice-global',
+        transcriptMode: 'native_session', targetSessionId: retired ? null : 'exact-target', targetServerId: 'srv_control_home', updatedAt: 1 } });
+    vi.spyOn(axios, 'get').mockImplementation(async url => {
+      const path = new URL(String(url)).pathname;
+      if (path === '/v1/account/encryption/currentness') return { status: 200, data: { mode: 'plain', version: 0,
+        signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 0 } };
+      const id = path.slice('/v2/sessions/'.length);
+      sessionReads.push(id);
+      const metadata = id === 'history-session' ? (controlRetired ? {} : controlMetadata())
+        : id === 'exact-target' ? { profileId: 'target-profile', voiceConversationBindingV1: {
+          v: 1, adapterId: 'happier.agent.codex/realtime-codex', controlSessionId: 'exact-target',
+          transcriptMode: 'native_session', targetSessionId: 'exact-target', targetServerId: 'srv_control_home', updatedAt: 1 }, work: { promptStack: [{ ...entry('session.instructions'), ref: { kind: 'doc', artifactId: 'target-doc' }, required: true }] } }
           : (() => { throw new Error(`Unexpected exact Session read: ${path}`); })();
       return { status: 200, data: { session: { id, seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: 1, archivedAt: null,
         encryptionMode: 'plain', metadataVersion: 0, agentState: null, agentStateVersion: 0, pendingCount: 0,
         pendingVersion: 0, share: null, metadata: JSON.stringify(metadata), dataEncryptionKey: null } } };
     });
-    const args = { credentials, profileId: 'voice-profile', accountEntries: [], profileEntries: [],
+    const args = { credentials, serverId: configuration.activeServerId, profileId: 'voice-profile', accountEntries: [], profileEntries: [],
+      ...(suppliedSnapshot ? { sessionMetadata: controlMetadata(),
+        roleContext: { availableRoles: [], notes: 'CONTROL_ROLE_NOTES' } } : {}),
       readArtifactHeader: async () => ({ header: { v: 1, kind: 'prompt_doc.v2', title: 'Instructions' } }),
       sessionId: 'history-session', readArtifact: async (ref: { artifactId: string }) => {
         if (retireOnBody) retired = true;
         return doc(ref.artifactId, markdown);
       } };
     expect(await resolveCliVoicePromptStackBlocks(args)).toEqual(['FIRST_TARGET']);
+    expect(await resolveCliVoicePromptPreparation(args)).toHaveProperty('preparedInstructionsFor', {
+      serverId: 'srv_control_home', sessionId: 'exact-target',
+    });
     markdown = 'EDITED_TARGET';
     expect(await resolveCliVoicePromptStackBlocks(args)).toEqual(['EDITED_TARGET']);
     expect([...new Set(sessionReads)]).toEqual(['history-session', 'exact-target']);
     retireOnBody = true;
     await expect(resolveCliVoicePromptStackBlocks(args)).rejects.toMatchObject({ reason: 'unavailable', admittedEntries: [] });
+    if (suppliedSnapshot) {
+      // A snapshot captured as a carrier cannot be reinterpreted as an ordinary target after retirement.
+      retireOnBody = false;
+      retired = false;
+      controlRetired = true;
+      await expect(resolveCliVoicePromptStackBlocks(args)).rejects.toMatchObject({ reason: 'unavailable' });
+    }
   });
   it.each(['foreign', 'same'] as const)('reads a %s-Home Voice target with the correct Account custody', async relationship => {
     const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_ACTIVE_SERVER_ID', 'HAPPIER_SERVER_URL', 'HAPPIER_WEBAPP_URL']);
@@ -269,7 +387,7 @@ describe('resolveCliVoicePromptStackBlocks', () => {
         settingsVersion, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 0 } };
       if (path === '/v1/account/encryption') return { status: 200, data: { mode: 'plain', updatedAt: 0 } };
       if (path === '/v2/account/settings') return { status: 200, data: { version: settingsVersion, content: { t: 'plain', v: rawSettings } } };
-      if (path === '/v1/artifacts') return { status: 200, data: [] };
+      if (path === '/v1/artifacts') return { status: 200, data: artifactListResponse(String(url), []) };
       if (path === '/v1/account/authoring-memory/lastUsedProfile') return { status: 200, data: {
         status: 'present', revision: 1, content: { t: 'plain', v: profileId } } };
       throw new Error(`Unexpected rowless Voice selection boundary: ${path}`);

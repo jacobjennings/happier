@@ -1,7 +1,6 @@
 import chalk from 'chalk';
 import type { CommandContext } from '@/cli/commandRegistry';
 import {
-  __internal,
   bugReportUsage,
   runBugReportCommand,
   type BugReportCommandDependencies,
@@ -52,5 +51,5 @@ export async function handleBugReportCliCommand(context: CommandContext): Promis
     process.exit(1);
   }
 }
-export { __internal, runBugReportCommand };
+export { runBugReportCommand };
 export type { BugReportCommandDependencies, BugReportCommandResult };

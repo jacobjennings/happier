@@ -25,7 +25,7 @@ import { useVoiceConversationsReadinessModel } from '@/voice/settings/panels/Voi
 import { VoicePipelineCard } from '@/voice/settings/pipeline/VoicePipelineCard';
 import { VoicePipelineView } from '@/voice/settings/pipeline/VoicePipelineView';
 import { buildVoiceConversationsPipeline, buildVoiceDictationPipeline } from '@/voice/settings/pipeline/voicePipelineSteps';
-import { useVoiceConversationsReadinessInputs } from '@/voice/settings/useVoiceConversationsReadinessInputs';
+import { useVoiceSettingsReadinessInputs } from '@/voice/settings/useVoiceSettingsReadinessInputs';
 import { useVoiceSettingsMutable } from '@/voice/settings/useVoiceSettingsMutable';
 import { useVoiceSetupBlock } from '@/voice/settings/setup/VoiceSetupItem';
 import {
@@ -67,7 +67,8 @@ export function VoiceSettingsIntentIndexScreen() {
   const executionMachine = useVoiceExecutionMachinePresentation();
   const presence = useVoicePresenceContainer();
   const voiceSetup = useVoiceSetupBlock({ layout: 'row', span: 'row' });
-  const inputs = useVoiceConversationsReadinessInputs(voice, { probeMachine: false });
+  const inputs = useVoiceSettingsReadinessInputs(voice, { purpose: 'conversation', probeMachine: false });
+  const dictationInputs = useVoiceSettingsReadinessInputs(voice, { purpose: 'dictation', probeMachine: false });
   const conversations = useVoiceConversationsReadinessModel({
     voice,
     setVoice,
@@ -82,8 +83,8 @@ export function VoiceSettingsIntentIndexScreen() {
     setVoice,
     executionMachineId: executionMachine.machineId,
     executionMachineSelectionKind: executionMachine.selectionKind,
-    localAvailability: inputs.localAvailability,
-    daemonRouteDiagnosticReason: inputs.daemonRouteDiagnosticReason,
+    localAvailability: dictationInputs.localAvailability,
+    daemonRouteDiagnosticReason: dictationInputs.daemonRouteDiagnosticReason,
   });
 
   React.useEffect(() => {

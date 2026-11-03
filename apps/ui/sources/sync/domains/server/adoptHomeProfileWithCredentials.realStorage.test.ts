@@ -19,6 +19,69 @@ const HOME_B_DESCRIPTOR = {
     endpoints: [{ kind: 'https' as const, url: 'https://home-b.test' }],
 };
 
+type ServerProfilesModule = typeof import('@/sync/domains/server/serverProfiles');
+type LocalStorageMock = ReturnType<typeof installLocalStorageMock>;
+
+/** The browser storage boundary refuses every write that carries this credential. */
+function failCredentialWrites(localStorageMock: LocalStorageMock, token: string): void {
+    localStorageMock.setItemMock.mockImplementation((key: string, value: string) => {
+        if (value.includes(token)) throw new Error('storage write unavailable');
+        localStorageMock.store.set(key, value);
+    });
+}
+
+/** Records the storage key that received this credential once the write lands. */
+function observeCredentialWrite(localStorageMock: LocalStorageMock, token: string): { key: string | null } {
+    const write = { key: null as string | null };
+    localStorageMock.setItemMock.mockImplementation((key: string, value: string) => {
+        localStorageMock.store.set(key, value);
+        if (write.key === null && value.includes(token)) write.key = key;
+    });
+    return write;
+}
+
+/** Starts another claim on `serverUrl` the moment the credential lands, while adoption still holds the Home authority. */
+function startCompetingClaimOnCredentialWrite(
+    localStorageMock: LocalStorageMock,
+    profiles: ServerProfilesModule,
+    token: string,
+    serverUrl: string,
+): { started: Promise<unknown> | null } {
+    const competitor = { started: null as Promise<unknown> | null };
+    localStorageMock.setItemMock.mockImplementation((key: string, value: string) => {
+        localStorageMock.store.set(key, value);
+        if (competitor.started || !value.includes(token)) return;
+        competitor.started = (async () => {
+            const profile = await profiles.upsertServerProfile({ serverUrl, source: 'manual' });
+            return await profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_competing_home');
+        })();
+    });
+    return competitor;
+}
+
+async function seedFocusedHomeA(profiles: ServerProfilesModule) {
+    const focused = await profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', source: 'manual' });
+    await profiles.setActiveServerId(focused.id);
+    await profiles.saveHomeViewState({
+        version: 1,
+        activeTargetKind: 'server',
+        activeTargetId: focused.id,
+        groups: [{ id: 'g', name: 'Homes', serverIds: [focused.id] }],
+    });
+    return { focus: profiles.getActiveServerSnapshot(), view: profiles.loadHomeViewState() };
+}
+
+function expectFocusAndGroupsUnchanged(
+    profiles: ServerProfilesModule,
+    before: Awaited<ReturnType<typeof seedFocusedHomeA>>,
+): void {
+    expect(profiles.getActiveServerSnapshot()).toMatchObject({
+        serverId: before.focus.serverId,
+        serverUrl: before.focus.serverUrl,
+    });
+    expect(profiles.loadHomeViewState()).toEqual(before.view);
+}
+
 describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
     const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
     let restoreLocalStorage: (() => void) | null = null;
@@ -118,10 +181,12 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
             descriptor: HOME_B_DESCRIPTOR,
             source: 'qr',
             preserveUserLabel: true,
+            suggestedName: 'Home B',
             credentials: { token: 'home-b-token' },
         });
 
         expect(adopted.serverIdentityId).toBe('srv_home_b');
+        expect(adopted.name).toBe('Home B');
         expect(adopted.canonicalServerUrl ?? adopted.serverUrl).toBe('https://home-b.test');
 
         // The pre-profile credential write lands under the URL-hash scope; reading by
@@ -516,7 +581,11 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
             { serverId: 'srv_destination_failure_home' },
             { token: 'destination-failure-token' },
         )).resolves.toBe(true);
-        const destinationWrite = vi.spyOn(TokenStorage, 'setCredentialsForServerUrlWithRollback');
+        const seededKeys = [...localStorageMock.store.entries()]
+            .filter(([, value]) => value.includes('destination-failure-token'))
+            .map(([key]) => key);
+        expect(seededKeys).toHaveLength(1);
+        const writesBefore = localStorageMock.setItemMock.mock.calls.length;
 
         await expect(adoptHomeProfileWithCredentials({
             source: 'qr',
@@ -543,7 +612,10 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         await expect(TokenStorage.getCredentialsForServerUrl(
             'https://destination-failure-old.test',
         )).resolves.toBeNull();
-        expect(destinationWrite).not.toHaveBeenCalled();
+        // The credential is rewritten only in its identity-scoped slot; no destination URL slot is written.
+        expect(localStorageMock.setItemMock.mock.calls.slice(writesBefore)
+            .filter(([, value]) => value.includes('destination-failure-token'))
+            .map(([key]) => key)).toEqual(seededKeys);
     });
 
     it('holds one browser-wide Home authority across reassignment snapshot and obsolete credential cleanup', async () => {
@@ -697,4 +769,345 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         )).resolves.toEqual({ token: 'home-a-token' });
     });
 
+    it('leaves an established profile unchanged when the replacement credential cannot be stored before a canonical URL move', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `canonical_url_write_failure_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const established = await profiles.adoptHomeProfile({
+            source: 'qr',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_moving_home',
+                canonicalServerUrl: 'https://moving-home-old.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://moving-home-old.test' }],
+            },
+        });
+        failCredentialWrites(localStorageMock, 'new-home-token');
+
+        await expect(adoptHomeProfileWithCredentials({
+            source: 'qr',
+            credentials: { token: 'new-home-token' },
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_moving_home',
+                canonicalServerUrl: 'https://moving-home-new.test',
+                revision: 2,
+                endpoints: [{ kind: 'https', url: 'https://moving-home-new.test' }],
+            },
+        })).rejects.toThrow('Unable to store Home credentials');
+
+        expect(profiles.getServerProfileById(established.id)).toEqual(established);
+        await expect(TokenStorage.getCredentialsForServerUrl('https://moving-home-old.test', { serverId: 'srv_moving_home' }))
+            .resolves.toBeNull();
+    });
+
+    it('leaves profiles, focus, and groups unchanged when the credential write fails', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_write_failure_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const before = await seedFocusedHomeA(profiles);
+        failCredentialWrites(localStorageMock, 'home-b-token');
+
+        await expect(adoptHomeProfileWithCredentials({
+            descriptor: HOME_B_DESCRIPTOR,
+            source: 'qr',
+            preserveUserLabel: true,
+            credentials: { token: 'home-b-token' },
+        })).rejects.toThrow('Unable to store Home credentials');
+
+        expect(profiles.listServerProfiles()).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ serverIdentityId: 'srv_home_b' }),
+        ]));
+        expectFocusAndGroupsUnchanged(profiles, before);
+    });
+
+    it.each([
+        ['an identity that conflicts with the saved Home at that URL', {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_conflicting',
+            canonicalServerUrl: 'https://home-b.test',
+            revision: 1,
+            endpoints: [{ kind: 'https' as const, url: 'https://home-b.test' }],
+        }],
+        ['a descriptor without a stable identity', { serverUrl: 'https://unbound-home.test' }],
+    ])('stores no credential bytes when strict adoption rejects %s', async (_label, descriptor) => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_rejected_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        await profiles.adoptHomeProfile({
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_existing',
+                canonicalServerUrl: 'https://home-b.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
+            },
+            source: 'account-directory',
+        });
+
+        await expect(adoptHomeProfileWithCredentials({
+            descriptor,
+            source: 'qr',
+            preserveUserLabel: true,
+            credentials: { token: 'must-not-store' },
+        })).rejects.toThrow();
+        expect(localStorageMock.setItemMock.mock.calls.filter(([, value]) => value.includes('must-not-store'))).toEqual([]);
+    });
+
+    it('rolls back the exact credential write when the owning enrollment attempt is cancelled before profile adoption', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_cancelled_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const write = observeCredentialWrite(localStorageMock, 'must-roll-back');
+
+        await expect(adoptHomeProfileWithCredentials({
+            descriptor: HOME_B_DESCRIPTOR,
+            source: 'account-directory',
+            credentials: { token: 'must-roll-back' },
+            shouldCancel: () => write.key !== null,
+        })).rejects.toThrow('Home credential adoption cancelled');
+
+        expect(write.key).not.toBeNull();
+        expect(localStorageMock.store.has(write.key!)).toBe(false);
+        for (const [, value] of localStorageMock.store.entries()) expect(value).not.toContain('must-roll-back');
+        expect(profiles.listServerProfiles()).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ serverIdentityId: 'srv_home_b' }),
+        ]));
+        await expect(TokenStorage.getCredentialsForServerUrl('https://home-b.test', { serverId: 'srv_home_b' }))
+            .resolves.toBeNull();
+    });
+
+    it('rolls back the exact credential write when Home profile persistence fails after it lands', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_profile_write_failure_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const { MMKV } = await import('react-native-mmkv');
+        const write = observeCredentialWrite(localStorageMock, 'must-roll-back');
+        const writeNativeValue = MMKV.prototype.set;
+        // The device store refuses the Home profile write once the credential has landed.
+        const profileWrite = vi.spyOn(MMKV.prototype, 'set').mockImplementation(function (this: InstanceType<typeof MMKV>, key, value) {
+            if (write.key !== null && key === 'server-state-v1') throw new Error('profile storage unavailable');
+            writeNativeValue.call(this, key, value);
+        });
+
+        try {
+            await expect(adoptHomeProfileWithCredentials({
+                descriptor: HOME_B_DESCRIPTOR,
+                source: 'qr',
+                credentials: { token: 'must-roll-back' },
+            })).rejects.toMatchObject({ name: 'ServerProfilesPersistenceError' });
+        } finally {
+            profileWrite.mockRestore();
+        }
+
+        expect(write.key).not.toBeNull();
+        expect(localStorageMock.store.has(write.key!)).toBe(false);
+        for (const [, value] of localStorageMock.store.entries()) expect(value).not.toContain('must-roll-back');
+        expect(profiles.listServerProfiles()).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ serverIdentityId: 'srv_home_b' }),
+        ]));
+        await expect(TokenStorage.getCredentialsForServerUrl('https://home-b.test', { serverId: 'srv_home_b' }))
+            .resolves.toBeNull();
+    });
+
+    it('reports a partial commit with both errors when credential rollback cannot remove the write', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_rollback_failure_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { adoptHomeProfileWithCredentials, HomeProfileAdoptionPartialCommitError } = await import('./adoptHomeProfile');
+        const write = observeCredentialWrite(localStorageMock, 'new-home-b-token');
+        localStorageMock.removeItemMock.mockImplementation((key: string) => {
+            if (key === write.key) throw new Error('storage removal unavailable');
+            localStorageMock.store.delete(key);
+        });
+
+        const result = adoptHomeProfileWithCredentials({
+            descriptor: HOME_B_DESCRIPTOR,
+            source: 'qr',
+            credentials: { token: 'new-home-b-token' },
+            shouldCancel: () => write.key !== null,
+        });
+        await expect(result).rejects.toBeInstanceOf(HomeProfileAdoptionPartialCommitError);
+        await expect(result).rejects.toMatchObject({
+            code: 'home_profile_adoption_partial_commit',
+            canonicalServerUrl: 'https://home-b.test',
+            serverIdentityId: 'srv_home_b',
+            adoptionError: expect.objectContaining({ message: 'Home credential adoption cancelled' }),
+            rollbackOutcome: {
+                kind: 'failed',
+                error: expect.objectContaining({ message: 'storage removal unavailable' }),
+            },
+        });
+        // Truthful partial state: the profile was not adopted and the stored credential remains.
+        expect(profiles.listServerProfiles()).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ serverIdentityId: 'srv_home_b' }),
+        ]));
+        expect(localStorageMock.store.get(write.key!)).toContain('new-home-b-token');
+    });
+
+    it('reports a partial commit and keeps the concurrent winner when rollback finds the slot rewritten', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_rollback_not_applied_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { adoptHomeProfileWithCredentials, HomeProfileAdoptionPartialCommitError } = await import('./adoptHomeProfile');
+        const before = await seedFocusedHomeA(profiles);
+        const write = observeCredentialWrite(localStorageMock, 'new-home-b-token');
+        const concurrentWinner = JSON.stringify({ token: 'concurrent-winner-token' });
+
+        const result = adoptHomeProfileWithCredentials({
+            descriptor: HOME_B_DESCRIPTOR,
+            source: 'qr',
+            credentials: { token: 'new-home-b-token' },
+            shouldCancel: () => {
+                if (write.key === null) return false;
+                // Another tab rewrites the same credential slot at the browser storage boundary.
+                localStorageMock.store.set(write.key, concurrentWinner);
+                return true;
+            },
+        });
+        await expect(result).rejects.toBeInstanceOf(HomeProfileAdoptionPartialCommitError);
+        await expect(result).rejects.toMatchObject({
+            code: 'home_profile_adoption_partial_commit',
+            canonicalServerUrl: 'https://home-b.test',
+            serverIdentityId: 'srv_home_b',
+            adoptionError: expect.objectContaining({ message: 'Home credential adoption cancelled' }),
+            rollbackOutcome: { kind: 'not_applied', reason: 'ownership_changed' },
+        });
+        expect(localStorageMock.store.get(write.key!)).toBe(concurrentWinner);
+        expectFocusAndGroupsUnchanged(profiles, before);
+    });
+
+    it('serializes a competing profile claim until a same-identity credential and URL move commits', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `canonical_url_adoption_rollback_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const established = await profiles.adoptHomeProfile({
+            source: 'qr',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_moving_home',
+                canonicalServerUrl: 'https://moving-home-old.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://moving-home-old.test' }],
+            },
+        });
+        const competitor = startCompetingClaimOnCredentialWrite(localStorageMock, profiles, 'new-home-token', 'https://moving-home-new.test');
+
+        await expect(adoptHomeProfileWithCredentials({
+            source: 'qr',
+            credentials: { token: 'new-home-token' },
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_moving_home',
+                canonicalServerUrl: 'https://moving-home-new.test',
+                revision: 2,
+                endpoints: [{ kind: 'https', url: 'https://moving-home-new.test' }],
+            },
+        })).resolves.toMatchObject({
+            canonicalServerUrl: 'https://moving-home-new.test',
+            serverIdentityId: 'srv_moving_home',
+        });
+
+        expect(competitor.started).not.toBeNull();
+        await expect(competitor.started!).resolves.toBeNull();
+        await expect(TokenStorage.getCredentialsForServerUrl('https://moving-home-new.test', {
+            serverId: 'srv_moving_home',
+        })).resolves.toEqual({ token: 'new-home-token' });
+        expect(profiles.getServerProfileById(established.id)).toMatchObject({
+            canonicalServerUrl: 'https://moving-home-new.test',
+            serverIdentityId: 'srv_moving_home',
+        });
+    });
+
+    it('keeps the new credential when a competing profile claim waits for atomic adoption of a new Home', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_competing_claim_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const before = await seedFocusedHomeA(profiles);
+        const competitor = startCompetingClaimOnCredentialWrite(localStorageMock, profiles, 'new-home-b-token', 'https://home-b.test');
+
+        await expect(adoptHomeProfileWithCredentials({
+            descriptor: HOME_B_DESCRIPTOR,
+            source: 'qr',
+            credentials: { token: 'new-home-b-token' },
+        })).resolves.toMatchObject({ serverIdentityId: 'srv_home_b' });
+
+        expect(competitor.started).not.toBeNull();
+        await expect(competitor.started!).resolves.toBeNull();
+        await expect(TokenStorage.getCredentialsForServerUrl('https://home-b.test', { serverId: 'srv_home_b' }))
+            .resolves.toEqual({ token: 'new-home-b-token' });
+        expectFocusAndGroupsUnchanged(profiles, before);
+    });
+
+    it('uses a nonempty Directory hint for a new profile and preserves an existing user label', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_suggested_name_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const created = await profiles.adoptHomeProfile({
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_directory_home',
+                canonicalServerUrl: 'https://directory-home.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://directory-home.test' }],
+            },
+            source: 'account-directory',
+            preserveUserLabel: true,
+            suggestedName: '  Directory Home  ',
+        });
+        expect(created.name).toBe('Directory Home');
+
+        await profiles.adoptHomeProfile({
+            descriptor: { serverUrl: created.serverUrl },
+            source: 'manual',
+            suggestedName: 'My Home',
+            preserveUserLabel: false,
+        });
+        const preserved = await profiles.adoptHomeProfile({
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_directory_home',
+                canonicalServerUrl: 'https://directory-home.test',
+                revision: 2,
+                endpoints: [{ kind: 'https', url: 'https://directory-home.test' }],
+            },
+            source: 'account-directory',
+            preserveUserLabel: true,
+            suggestedName: '   ',
+        });
+        expect(preserved.name).toBe('My Home');
+    });
 });

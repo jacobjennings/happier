@@ -78,12 +78,14 @@ describe('searchWorkspaceCommits', () => {
         });
     });
 
-    it('fails typed and locally when the machine is offline', async () => {
-        machineScmLogListSpy.mockResolvedValue({
-            success: false,
-            error: 'Machine RPC method not available',
-            errorCode: SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE,
-        });
+    it.each([
+        ['machine is offline', SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE, 'backendUnavailable', 'Machine RPC method not available'],
+        ['workspace root is not a repository', SCM_OPERATION_ERROR_CODES.NOT_REPOSITORY, 'notRepository', 'not a repository'],
+        ['daemon does not implement the SCM method', SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED, 'unsupported', 'Method not found'],
+        ['workspace root is missing', SCM_OPERATION_ERROR_CODES.ROOT_NOT_FOUND, 'rootNotFound', 'root missing'],
+        ['failure carries no recognised code', undefined, 'error', 'boom'],
+    ])('fails typed when the %s', async (_title, errorCode, reason, error) => {
+        machineScmLogListSpy.mockResolvedValue({ success: false, error, errorCode });
 
         const outcome = await searchWorkspaceCommits({
             scope: SCOPE,
@@ -91,51 +93,7 @@ describe('searchWorkspaceCommits', () => {
             limit: 20,
         });
 
-        expect(outcome).toEqual({
-            status: 'unavailable',
-            reason: 'backendUnavailable',
-            message: 'Machine RPC method not available',
-        });
-    });
-
-    it('fails typed when the workspace root is not a repository', async () => {
-        machineScmLogListSpy.mockResolvedValue({
-            success: false,
-            error: 'not a repository',
-            errorCode: SCM_OPERATION_ERROR_CODES.NOT_REPOSITORY,
-        });
-
-        const outcome = await searchWorkspaceCommits({
-            scope: SCOPE,
-            query: 'cache layer',
-            limit: 20,
-        });
-
-        expect(outcome).toEqual({
-            status: 'unavailable',
-            reason: 'notRepository',
-            message: 'not a repository',
-        });
-    });
-
-    it('fails typed when the daemon does not implement the SCM method', async () => {
-        machineScmLogListSpy.mockResolvedValue({
-            success: false,
-            error: 'Method not found',
-            errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED,
-        });
-
-        const outcome = await searchWorkspaceCommits({
-            scope: SCOPE,
-            query: 'cache layer',
-            limit: 20,
-        });
-
-        expect(outcome).toEqual({
-            status: 'unavailable',
-            reason: 'unsupported',
-            message: 'Method not found',
-        });
+        expect(outcome).toEqual({ status: 'unavailable', reason, message: error });
     });
 
     it('propagates cancellation instead of masking it as an unavailable workspace', async () => {

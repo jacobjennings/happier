@@ -67,6 +67,7 @@ import {
   StoredSessionOwnerMetadataEnvelopeV1Schema,
   type SessionOwnerMetadataEnvelopeV1,
 } from '../metadata/sessionMetadataSchemasV1.js';
+import { SessionDisplayProjectionV1Schema, type SessionDisplayProjectionV1 } from '../metadata/sessionDisplaySchemasV1.js';
 import {
   SESSION_RUNNER_RUNTIME_METADATA_KEY,
   SessionRunnerRuntimeStateV1Schema,
@@ -319,11 +320,18 @@ export const SessionShareSchema = lazyZodSchema(() => z.looseObject({
   }));
 export type SessionShare = z.infer<typeof SessionShareSchema>;
 
+function refineSessionMetadataLayoutVersion(version: number, context: z.core.$RefinementCtx): boolean {
+  if (version === 0 || version === 1) return true;
+  context.addIssue({ code: 'custom', path: ['metadataLayoutVersion'], message: 'Unsupported Session metadata layout' });
+  return false;
+}
+
 function refineV2SessionMetadataRecipientFields(
   value: Readonly<{
     metadata: string;
     metadataVersion: number;
     metadataLayoutVersion?: number;
+    displayProjectionV1?: SessionDisplayProjectionV1;
     ownerMetadata?: SessionOwnerMetadataEnvelopeV1 | null;
     agentState?: string | null;
     agentStateVersion?: number;
@@ -333,18 +341,14 @@ function refineV2SessionMetadataRecipientFields(
   context: z.core.$RefinementCtx,
 ): void {
   const metadataLayoutVersion = value.metadataLayoutVersion ?? 0;
-  if (metadataLayoutVersion !== 0 && metadataLayoutVersion !== 1) {
-    context.addIssue({
-      code: 'custom',
-      path: ['metadataLayoutVersion'],
-      message: 'Unsupported Session metadata layout',
-    });
-    return;
-  }
+  if (!refineSessionMetadataLayoutVersion(metadataLayoutVersion, context)) return;
 
   const hasAgentState = Object.hasOwn(value, 'agentState');
   const hasAgentStateVersion = Object.hasOwn(value, 'agentStateVersion');
   if (metadataLayoutVersion === 0) {
+    if (value.displayProjectionV1 !== undefined) {
+      context.addIssue({ code: 'custom', path: ['displayProjectionV1'], message: 'Display projection requires layout one' });
+    }
     if (Object.hasOwn(value, 'ownerMetadata')) {
       context.addIssue({
         code: 'custom',
@@ -392,6 +396,7 @@ function refineV2SessionMetadataRecipientFields(
   }
 
   const projection = {
+    ...(value.displayProjectionV1 !== undefined ? { displayProjectionV1: value.displayProjectionV1 } : {}),
     metadata: value.metadata,
     metadataVersion: value.metadataVersion,
     metadataLayoutVersion,
@@ -403,6 +408,10 @@ function refineV2SessionMetadataRecipientFields(
       ? { agentStateVersion: value.agentStateVersion }
       : {}),
   };
+  if (value.displayProjectionV1 !== undefined && (value.displayProjectionV1.metadataLayoutVersion !== metadataLayoutVersion
+    || value.displayProjectionV1.sourceMetadataVersion !== value.metadataVersion)) {
+    context.addIssue({ code: 'custom', path: ['displayProjectionV1'], message: 'Display projection must match its metadata tuple' });
+  }
   const parsed = SessionMetadataRecipientProjectionV1Schema.safeParse(projection);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
@@ -415,7 +424,28 @@ function refineV2SessionMetadataRecipientFields(
   }
 }
 
+function refineSessionResponsibilityFields(value: {
+  responsibleAccountId?: string | null;
+  responsibleAccount?: { accountId: string } | null;
+}, ctx: z.core.$RefinementCtx) {
+  const id = value.responsibleAccountId;
+  const summary = value.responsibleAccount;
+  if (id === undefined && summary !== undefined) {
+    ctx.addIssue({ code: 'custom', message: 'responsibleAccount without responsibleAccountId is unsupported', path: ['responsibleAccount'] });
+  }
+  if (id !== undefined && summary === undefined) {
+    ctx.addIssue({ code: 'custom', message: 'responsibleAccountId requires an explicit responsibleAccount projection', path: ['responsibleAccount'] });
+  }
+  if (id === null && summary !== undefined && summary !== null) {
+    ctx.addIssue({ code: 'custom', message: 'unassigned responsibility must project a null summary', path: ['responsibleAccount'] });
+  }
+  if (typeof id === 'string' && summary !== undefined && (summary === null || summary.accountId !== id)) {
+    ctx.addIssue({ code: 'custom', message: 'assigned responsibility must project the matching summary', path: ['responsibleAccount'] });
+  }
+}
+
 export const V2SessionRecordSchema = lazyZodSchema(() => z.looseObject({
+    displayProjectionV1: z.optional(SessionDisplayProjectionV1Schema),
     /** Owner detail only: Home-written inference selection witness, never caller metadata or current broker authority. */
     acceptedTeamCredentialBinding: z.optional(z.nullable(SessionTeamCredentialBindingIntentV1Schema)),
     id: z.string().check(z.minLength(1)),
@@ -494,23 +524,43 @@ export const V2SessionRecordSchema = lazyZodSchema(() => z.looseObject({
     materializedThroughSourceAt: z.optional(z.nullable(z.number().check(z.int(), z.nonnegative()))),
     publishedThroughServerSeq: z.optional(z.nullable(z.number().check(z.int(), z.nonnegative()))),
     transcriptShareable: z.optional(z.boolean()),
-  }).check(z.superRefine(refineV2SessionMetadataRecipientFields), z.superRefine(refineRuntimeActivityProjectionFields), z.superRefine((value, ctx) => {
-    const id = (value as { responsibleAccountId?: string | null }).responsibleAccountId;
-    const summary = (value as { responsibleAccount?: { accountId: string } | null }).responsibleAccount;
-    if (id === undefined && summary !== undefined) {
-      ctx.addIssue({ code: "custom", message: 'responsibleAccount without responsibleAccountId is unsupported', path: ['responsibleAccount'] });
+  }).check(z.superRefine(refineV2SessionMetadataRecipientFields), z.superRefine(refineRuntimeActivityProjectionFields), z.superRefine(refineSessionResponsibilityFields)));
+export type V2SessionRecord = z.infer<typeof V2SessionRecordSchema>;
+
+/** List rows describe remote document revisions; they never replace full documents. */
+export const V2SessionListRowSchema = lazyZodSchema(() => z.looseObject({
+    ...V2SessionRecordSchema.shape,
+    documents: z.literal('omitted'),
+    metadataAudience: z.enum(['owner', 'shared']),
+    agentStateDocument: z.enum(['omitted', 'redacted']),
+    metadataLayoutVersion: z.number().check(z.int(), z.nonnegative()),
+    agentStateVersion: z.number().check(z.int(), z.nonnegative()),
+    metadata: z.optional(z.never()),
+    ownerMetadata: z.optional(z.never()),
+    agentState: z.optional(z.never()),
+  }).check(z.superRefine(refineRuntimeActivityProjectionFields), z.superRefine(refineSessionResponsibilityFields), z.superRefine((value, ctx) => {
+    if (!refineSessionMetadataLayoutVersion(value.metadataLayoutVersion, ctx)) return;
+    const shared = value.metadataAudience === 'shared';
+    if (shared && value.metadataLayoutVersion !== 1) {
+      ctx.addIssue({ code: 'custom', path: ['metadataLayoutVersion'], message: 'Shared metadata requires the recipient-safe layout' });
     }
-    if (id !== undefined && summary === undefined) {
-      ctx.addIssue({ code: "custom", message: 'responsibleAccountId requires an explicit responsibleAccount projection', path: ['responsibleAccount'] });
+    if (value.agentStateDocument !== (shared ? 'redacted' : 'omitted')) {
+      ctx.addIssue({ code: 'custom', path: ['agentStateDocument'], message: 'Agent state disposition must match the admitted recipient' });
     }
-    if (id === null && summary !== undefined && summary !== null) {
-      ctx.addIssue({ code: "custom", message: 'unassigned responsibility must project a null summary', path: ['responsibleAccount'] });
+    if (value.displayProjectionV1 !== undefined) {
+      if (value.displayProjectionV1.sourceMetadataVersion !== value.metadataVersion
+        || value.displayProjectionV1.metadataLayoutVersion !== value.metadataLayoutVersion) {
+        ctx.addIssue({ code: 'custom', path: ['displayProjectionV1'], message: 'Display projection must match its metadata tuple' });
+      }
+      if (shared && value.displayProjectionV1.owner !== undefined) {
+        ctx.addIssue({ code: 'custom', path: ['displayProjectionV1', 'owner'], message: 'Shared recipients cannot carry owner display' });
+      }
     }
-    if (typeof id === 'string' && summary !== undefined && (summary === null || summary.accountId !== id)) {
-      ctx.addIssue({ code: "custom", message: 'assigned responsibility must project the matching summary', path: ['responsibleAccount'] });
+    if (value.effectiveAccess !== undefined && (value.effectiveAccess.level === 'owner') === shared) {
+      ctx.addIssue({ code: 'custom', path: ['metadataAudience'], message: 'Metadata audience must match admitted access' });
     }
   })));
-export type V2SessionRecord = z.infer<typeof V2SessionRecordSchema>;
+export type V2SessionListRow = z.infer<typeof V2SessionListRowSchema>;
 
 export const SESSION_LOOKUP_BY_TAGS_MAX_TAGS_V2 = 4;
 export const SESSION_LOOKUP_BY_TAGS_TAG_MAX_CODE_UNITS_V2 = 256;
@@ -545,7 +595,7 @@ export const V2SessionResourceAccessResponseSchema = lazyZodSchema(() => z.stric
 export type V2SessionResourceAccessResponse = z.infer<typeof V2SessionResourceAccessResponseSchema>;
 
 export const V2SessionListResponseSchema = lazyZodSchema(() => z.looseObject({
-    sessions: z.array(V2SessionRecordSchema),
+    sessions: z.array(V2SessionListRowSchema),
     nextCursor: z.optional(z.nullable(z.string())),
     hasNext: z.optional(z.boolean()),
     attentionNextCursor: z.optional(z.nullable(z.string())),
@@ -720,6 +770,11 @@ export const SessionArchiveResultSchema = lazyZodSchema(() => z.looseObject({
   archivedAt: z.number().check(z.int(), z.nonnegative()),
 }));
 export type SessionArchiveResult = z.infer<typeof SessionArchiveResultSchema>;
+
+/** Retained archive HTTP body; Action selection and report scope stay separate. */
+export const SessionArchiveHttpBodyV1Schema = lazyZodSchema(() => z.nullish(z.strictObject({
+  originRunId: z.optional(z.string().check(z.minLength(1))),
+})));
 
 /** Action-owned direct-report scope; omission keeps the incumbent parent-only operation. */
 export const SessionArchiveActionInputV1Schema = lazyZodSchema(() => z.strictObject({

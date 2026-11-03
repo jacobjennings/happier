@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { compareRuns, safeUrl, summarizeLogs } from './analysis.mjs';
+import { compareRuns, safeUrl, summarizeLogs, transferCounts } from './analysis.mjs';
 import { startCapture } from './capture.mjs';
 import { evaluateSettledHome } from './profiling.mjs';
 import { startHostObserver } from './host-snapshot.mjs';
@@ -199,7 +199,8 @@ async function journey(id, options, runtime = {}) {
     const telemetryMeasured = storeTelemetry.events.some(event => event.name === 'sync.performance.scenario.perf-capture-end');
     const receivedSockets = browserResult.sockets.filter(event => event.direction === 'received');
     const sentSockets = browserResult.sockets.filter(event => event.direction === 'sent');
-    const counts = { requests: browserResult.network.requests, duplicateCandidates: browserResult.network.duplicateCandidates,
+    const counts = { ...transferCounts(browserResult.network, browserResult.sockets),
+      requests: browserResult.network.requests, duplicateCandidates: browserResult.network.duplicateCandidates,
       sessionExactRequests: browserResult.network.routeClasses['session-exact'] ?? 0,
       sessionFixedRouteRequests: browserResult.network.routeClasses['session-fixed-route'] ?? 0,
       machineExactRequests: browserResult.network.routeClasses['machine-exact'] ?? 0,
@@ -249,7 +250,7 @@ async function journey(id, options, runtime = {}) {
       if (!server.daemon.length) gaps.push('No daemon operation records; zero RPC/poll counts are not established');
     }
     if (!browserResult.attribution.mappedFrames) gaps.push('Source maps absent/unreadable; CPU attribution is generated script/symbol only');
-    const bundle = { version: 5, journey: id, intent: definition.intent, cache: options.cache, uiMode: options['ui-mode'],
+    const bundle = { version: 6, journey: id, intent: definition.intent, cache: options.cache, uiMode: options['ui-mode'],
       captureMode: options['capture-mode'], instrumentation: browserResult.react.instrumentation,
       backendProfileRoles, backendProfiles,
       concurrentLaneLoad: { before: lanesBefore, after: lanesAfter },
@@ -303,7 +304,7 @@ async function journey(id, options, runtime = {}) {
       viewport: { declared: viewportDeclaration ?? null, observations: viewports }, marks, hostBefore, hostAfter, windowHostStart, windowHostEnd });
     const partialStore = browserResult ? summarizeSyncPerformanceSummaries(browserResult.telemetry) : null;
     const storeMeasured = partialStore?.events.some(event => event.name === 'sync.performance.scenario.perf-capture-end');
-    await writeJson(join(output, 'bundle.json'), { version: 5, journey: id, status: 'FAILED', failedPhase: phase,
+    await writeJson(join(output, 'bundle.json'), { version: 6, journey: id, status: 'FAILED', failedPhase: phase,
       backendProfileRoles, backendProfiles,
       eligible: false, cache: options.cache, uiMode: options['ui-mode'], captureMode: options['capture-mode'],
       startMs: browserResult?.startMs, endMs: browserResult?.endMs, durationMs: browserResult?.durationMs,

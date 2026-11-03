@@ -446,6 +446,8 @@ describe('Projects › Sources', () => {
       parseLayout: value => WidgetAreaLayoutV1Schema.parse(value), buildHeader: buildWidgetSurfaceArtifactHeaderV1 });
     document.seed(layout);
     document.setCallerAccess('view');
+    document.setGrants([{ principal: { kind: 'team', teamId: 'studio' }, accessLevel: 'view',
+      createdByAccountId: 'dashboard-owner', createdAt: 1, display: { name: 'Studio' } }]);
     storage.setState({ projectAccountRows: createProjectAccountRowsFixture({ serverId, accountId: 'source-viewer' }, {
       workspaceRefs: [{ id: 'foreign-checkout', serverId, machineId: 'machine', rootPath: '/repo', createdAtMs: 1,
         projectKey: 'personal-project', source: { sourceId: 'foreign-source', revision: 1 } }],
@@ -460,6 +462,10 @@ describe('Projects › Sources', () => {
       const screen = await renderScreen(<ProjectSourcesScreen />);
       const rowId = `projects.sources.dashboard.${foreignHome}:${artifactId}`;
       await vi.waitFor(() => expect(screen.findAllByTestId(rowId)[0]?.props.title).toBe('Foreign release'));
+      // Both Homes render the Artifact's admitted audience, independently of this Home's people cache.
+      await vi.waitFor(() => expect(String(screen.findAllByTestId(rowId)[0]?.props.subtitle))
+        .toMatch(foreign ? /^Studio: shareSheet\.documents\.levels\.canRead$/
+          : /\S+ · Studio: shareSheet\.documents\.levels\.canRead$/));
       expect(screen.findAllByTestId(rowId)[0]?.props.onPress).toBeTypeOf('function');
       await act(async () => screen.pressByTestId(rowId));
       const url = new URL(String(shared.navigation.at(-1)), 'https://happier.test');
@@ -471,8 +477,18 @@ describe('Projects › Sources', () => {
       await vi.waitFor(() => expect(screen.findAllByTestId(rowId)[0]?.props.onPress).toBeUndefined());
       expect(storage.getState().artifacts[artifactId]?.title).toBe('Local release');
       expect(document.writes).toEqual([]);
-      expect(homes.requests.filter(request => request.home === 'foreign' && request.path.startsWith('/v1/artifacts'))
-        .every(request => request.accountId === 'foreign-viewer')).toBe(true);
+      const reads = homes.requests.filter(request => request.home === (foreign ? 'foreign' : 'source') && request.path.startsWith('/v1/artifacts'));
+      expect(reads.length).toBeGreaterThan(0);
+      const documentPath = `/v1/artifacts/${encodeURIComponent(artifactId)}`;
+      const contentReads = reads.filter(request => request.path === documentPath);
+      const grantReads = reads.filter(request => request.path === `${documentPath}/access/grants`);
+      expect(contentReads).toHaveLength(foreign ? 8 : 7);
+      expect(grantReads).toHaveLength(foreign ? 7 : 6);
+      expect(contentReads.slice(0, 6).every(request => request.accountId === (foreign ? 'foreign-viewer' : 'source-viewer'))).toBe(true);
+      expect(contentReads.slice(6).every(request => request.accountId === (foreign ? 'replacement-dashboard-viewer' : 'source-viewer'))).toBe(true);
+      expect(grantReads.slice(0, 6).every(request => request.accountId === (foreign ? 'foreign-viewer' : 'source-viewer'))).toBe(true);
+      expect(grantReads.slice(6).every(request => request.accountId === (foreign ? 'replacement-dashboard-viewer' : 'source-viewer'))).toBe(true);
+      expect(contentReads.length + grantReads.length).toBe(reads.length);
     } finally { await disconnect(); await homes.dispose(); }
   });
 });

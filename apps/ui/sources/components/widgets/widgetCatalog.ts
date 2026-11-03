@@ -154,6 +154,38 @@ export function describeBuiltinWidgetInstance(candidate: WidgetCandidate, instan
     return title === null || title === candidate.title ? candidate : Object.freeze({ ...candidate, title });
 }
 
+type WidgetInstanceTitleContext = Readonly<{
+    definitionState?: 'loading' | 'available' | 'unavailable';
+    pluginUiProjection?: PluginUiProjectionModel | null;
+    projectionPending?: boolean;
+    /** A Session record or placement may already carry a human name while its descriptor is absent. */
+    fallbackTitle?: string;
+}>;
+type NamedWidgetInstance = Pick<WidgetInstanceV1, 'definition' | 'displayName'>;
+
+/**
+ * One title for cards, groups, menus and summaries. Known names survive pending/failed reads;
+ * only an explicitly pending name returns null for a frame's skeleton. Unreadable authored
+ * definitions keep the neutral noun, while an absent plugin keeps its unavailable title.
+ */
+export function resolveWidgetInstanceTitle(instance: NamedWidgetInstance | null | undefined, candidate: Readonly<{ title: string }> | null | undefined, context?: WidgetInstanceTitleContext & Readonly<{ definitionState?: 'available' | 'unavailable'; projectionPending?: false }>): string;
+export function resolveWidgetInstanceTitle(instance: NamedWidgetInstance | null | undefined, candidate: Readonly<{ title: string }> | null | undefined, context: WidgetInstanceTitleContext): string | null;
+export function resolveWidgetInstanceTitle(instance: NamedWidgetInstance | null | undefined, candidate: Readonly<{ title: string }> | null | undefined, context?: WidgetInstanceTitleContext): string | null {
+    const definition = instance?.definition;
+    const name = instance?.displayName ?? candidate?.title
+        ?? (definition?.kind === 'inline' ? definition.definition.name : undefined);
+    if (name !== undefined) return name;
+    if (context?.fallbackTitle !== undefined) return context.fallbackTitle;
+    if (definition?.kind === 'installed') {
+        const pluginName = context?.pluginUiProjection?.installedPackagesById[definition.surface.pluginId]?.displayName.trim();
+        if (pluginName) return pluginName;
+    }
+    if (definition?.kind === 'artifact' && context?.definitionState === 'loading') return null;
+    if (definition?.kind !== 'artifact' && context?.projectionPending) return null;
+    const authored = !definition || definition.kind === 'artifact' || definition.kind === 'inline';
+    return t(authored ? 'composerReferences.kindWidget' : 'sessionBoard.item.pluginUnavailable.title');
+}
+
 /** All Gallery/setup surfaces share descriptive copy; provenance remains available for About. */
 export function describeWidgetCandidatePurpose(candidate: WidgetCandidate): string {
     return candidate.description ?? (candidate.sharedPluginName && candidate.surface

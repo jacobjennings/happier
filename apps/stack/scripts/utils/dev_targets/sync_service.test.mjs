@@ -826,3 +826,39 @@ test('recoverable conflict repair skips a root that reappeared without blocking 
   });
   assert.deepEqual(repairedRoots, ['packages/plugins/retired-plugin']);
 });
+
+test('sibling command sync skips an unreachable worker and prepares the reachable ones', { skip: process.platform === 'win32' }, async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'hstack-command-sync-unreachable-' });
+  const bin = fixture.path('bin');
+  await mkdir(bin);
+  // External boundaries only: SSH (one host refuses, as sshd does when it is
+  // down or out of disk) and Mutagen. Directory setup and replica safety
+  // observations run their real shell commands on this host.
+  await writeFile(join(bin, 'ssh'), '#!/bin/sh\nfor arg; do [ "$arg" = dead-host ] && exit 255; done\nfor command; do :; done\nexec /bin/sh -c "$command"\n');
+  await writeFile(fixture.path('mutagen.mjs'), [
+    'import fs from "node:fs";',
+    'const [family, action, name] = process.argv.slice(2);',
+    'if (family === "sync" && action === "flush") fs.appendFileSync(process.env.HSTACK_TEST_FLUSHED, name + "\\n");',
+    'if (family === "sync" && action === "list") console.log("[]");',
+  ].join('\n'));
+  await writeFile(join(bin, 'mutagen'), `#!/bin/sh\nexec "${process.execPath}" "${fixture.path('mutagen.mjs')}" "$@"\n`);
+  await Promise.all(['mutagen', 'ssh'].map(name => chmod(join(bin, name), 0o700)));
+  const flushed = fixture.path('flushed');
+  const env = { ...process.env, ...envFor(fixture.root), PATH: `${bin}:${process.env.PATH}`, DBUS_SESSION_BUS_ADDRESS: '', HSTACK_TEST_FLUSHED: flushed };
+  const target = name => ({ name, platform: 'posix', ssh: `${name}-host`, repoDir: fixture.path(`mirror-${name}`),
+    executorRepoDir: fixture.path('primary'), cliHomeDir: fixture.path(`home-${name}`) });
+  const [dead, live] = [target('dead'), target('live')];
+  const stackBaseDir = fixture.path('command-stack');
+  await mkdir(stackBaseDir);
+  await writeFile(join(stackBaseDir, 'dev-targets.json'), JSON.stringify({
+    version: 3, targets: [dead, live],
+    runtimePlacement: { server: { mode: 'local' }, expo: { mode: 'local' }, daemon: { mode: 'local' } },
+    commandExecution: { mode: 'auto', targets: ['dead', 'live'], fallback: 'local' },
+  }));
+  const sourceDir = fixture.path('basis');
+  await mkdir(sourceDir);
+  await prepareDevTargetCommandSync({ stackBaseDir, sourceDir, targets: [dead, live], env });
+  assert.deepEqual((await readFile(flushed, 'utf8')).trim().split('\n'), [resolveMutagenSessionName('live', sourceDir)]);
+  // With no reachable worker there is nothing to prepare: fail closed.
+  await assert.rejects(prepareDevTargetCommandSync({ stackBaseDir, sourceDir, targets: [dead], env }));
+});

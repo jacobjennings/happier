@@ -17,6 +17,7 @@ import { createAccountTokenForTests, createHomeGovernanceHarness, installHomeGov
 import { installDisconnectedServerSocketBoundary, restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
 import { createSessionReadBatchFetchBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
+import { createAccountSettingsHttpBoundary } from '@/dev/testkit/harness/actionHomesHttpHarness';
 import { installWebLockManagerMock } from '@/auth/storage/tokenStorage.web.testHelpers';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
 import { SessionMessageSendResultV1Schema } from '@happier-dev/protocol/sessions/messages/sessionInputAdmission';
@@ -80,6 +81,8 @@ const httpBoundary = { ...homes, request: readBatchRequest };
 installHomeGovernanceBoundaries(httpBoundary);
 await loadSyncSingletonForTests();
 const { storage } = await import('@/sync/domains/state/storage');
+const { settingsParse } = await import('@/sync/domains/settings/settings');
+const { normalizeVoiceSettingsLocalDelta } = await import('@/sync/domains/settings/voiceSettingsPersistence');
 const { createDefaultActionExecutor } = await import('./defaultActionExecutor');
 const { resetDynamicModelProbeCacheForTests } = await import('@/sync/domains/models/dynamicModelProbeCache');
 const { serverScopedRpcSocketPool } = await import('@/sync/runtime/orchestration/serverScopedRpc/serverScopedRpcSocketPool');
@@ -152,13 +155,42 @@ const modes = (agentId: string, currentModeId: string, ids: readonly string[]) =
 });
 const context = () => ({ surface: 'ui' as const, authority: 'present_user' as const, serverId });
 
-function installActionSettings(actions: unknown) {
-  const settings = { ...storage.getState().settings, actionsSettingsV1: normalizeActionsSettingsV1({ v: 1, actions }) };
-  storage.setState({ settings });
-  // The restored Account still performs its ordinary settings fetch. Serve
-  // the same Account policy at that boundary, rather than letting an empty
-  // fixture overwrite the UI projection between admission and feedback.
-  homes.answer(serverId, '/v2/account/settings', { body: { content: { t: 'plain', v: settings }, version: 1 } });
+function installActionSettings(actions: unknown, voiceCanApproveRequests?: boolean, approvalWaivedSurfaces?: unknown) {
+  const current = storage.getState().settings;
+  const settings = settingsParse({ ...current, actionsSettingsV1: normalizeActionsSettingsV1({ v: 1, actions,
+    ...(approvalWaivedSurfaces === undefined ? {} : { approvalWaivedSurfaces }) }),
+    ...(voiceCanApproveRequests === undefined ? {} : normalizeVoiceSettingsLocalDelta({
+      voice: { ...current.voice, canApproveRequests: voiceCanApproveRequests },
+    }, current)) });
+  const version = (storage.getState().settingsVersion ?? 0) + 1;
+  const boundary = createAccountSettingsHttpBoundary({ serverUrl: 'https://mode-actions.test', initialAccounts: [{
+    accountId: 'alice', snapshot: { content: { t: 'plain', v: settings }, version },
+  }] });
+  // Use the scoped persistence/version owner so an older in-flight bootstrap
+  // response cannot undo a later person-authored Settings Action.
+  storage.getState().applySettingsForScope({ serverId: connection!.serverId, accountId: 'alice' }, settings, version);
+  homes.answer(serverId, '/v2/account/settings', { select: async (_input, request) => {
+    const response = boundary.handle(request.url, request.init);
+    if (!response) throw new Error('Unexpected Account settings method');
+    return { status: response.status, body: await response.json() };
+  } });
+}
+
+async function setVoiceApprovalDelegation(value: boolean) {
+  const result = await createDefaultActionExecutor().execute('settings.set', {
+    anchor: 'voiceConversations.canApproveRequests', value,
+  }, context());
+  expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+  expect(storage.getState().settings.voice.canApproveRequests).toBe(value);
+}
+
+async function installRevocableVoiceSettings(approvalWaivedSurfaces?: unknown) {
+  installActionSettings({}, true, approvalWaivedSurfaces);
+  const features = createRootLayoutFeaturesResponse({ features: { voice: { enabled: true } } });
+  homes.answer(serverId, '/v1/features', { body: features });
+  homes.answer(serverId, '/v1/features/authenticated', { body: features });
+  const { primeServerFeaturesSnapshot } = await import('@/sync/api/capabilities/serverFeaturesClient');
+  primeServerFeaturesSnapshot({ serverId, snapshot: { status: 'ready', features } });
 }
 
 describe('default Action executor mode and catalog contracts', () => {
@@ -330,6 +362,25 @@ describe('default Action executor mode and catalog contracts', () => {
       await removePendingOutboxMessage(sessionId, localId, originalScope);
       body.restore();
     }
+  });
+  it.each([true, false])('clears reviewer override %s without a redundant metadata publication', async enabled => {
+    const sessionId = 'reviewer-clear';
+    const read = installSession(sessionId, { flavor: 'codex' }, serverId, 1);
+    const executor = createDefaultActionExecutor();
+    const write = (value: boolean | null) => executor.execute('session.approval_reviewer.set', { sessionId, enabled: value }, context());
+    const metadata = () => {
+      const owner = SessionOwnerMetadataEnvelopeV1Schema.parse(read().ownerMetadata);
+      if (owner.t !== 'plain') throw new Error('Expected plain owner metadata');
+      return projectSessionOwnerCompatibilityViewV1({ sharedMetadata: JSON.parse(read().metadata), ownerMetadata: owner.v });
+    };
+    expect(await write(enabled)).toMatchObject({ ok: true });
+    expect(metadata().approvalReviewerEnabled).toBe(enabled);
+    expect(await write(null)).toMatchObject({ ok: true });
+    expect(metadata()).not.toHaveProperty('approvalReviewerEnabled');
+    const writes = () => homes.requestsFor(`/v2/sessions/${sessionId}`).filter(request => request.input !== null).length;
+    const published = writes();
+    expect(await write(null)).toMatchObject({ ok: true });
+    expect(writes()).toBe(published);
   });
   it.each(['focus-switch', 'credential-replacement'] as const)(
     'keeps explicit Home metadata authority independent from ambient %s', async change => {
@@ -1283,6 +1334,118 @@ describe('default Action executor mode and catalog contracts', () => {
       params: expect.objectContaining({ id: 'q1', approved: true, answers: { Question: ['One', 'Two'] },
         answeringClientCategory: 'web' }) }));
   });
+  it.each(['approved', 'denied'] as const)('sends a delegated Voice %s decision through the native permission RPC by default', async decision => {
+    installSession('voice-permission', { machineId: 'machine-a', flavor: 'claude' });
+    storage.getState().updateSessionPermissionMode('voice-permission', 'read-only');
+    daemonAnswer = () => ({ ok: true });
+    const result = await createDefaultActionExecutor().execute('session.permission.respond', {
+      sessionId: 'voice-permission', requestId: 'permission-1', turnId: 'turn-1', decision,
+      ...(decision === 'approved' ? { mode: 'acceptEdits' } : {}),
+    }, { surface: 'voice', serverId });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    expect(outgoing).toEqual([{ method: `voice-permission:${RPC_METHODS.SESSION_PERMISSION_RESPOND}`,
+      params: { id: 'permission-1', turnId: 'turn-1', approved: decision === 'approved', decision,
+        ...(decision === 'approved' ? { mode: 'acceptEdits' } : {}), answeringClientCategory: 'web' } }]);
+    expect(storage.getState().sessions['voice-permission']?.permissionMode)
+      .toBe(decision === 'approved' ? 'safe-yolo' : 'read-only');
+  });
+  it.each(['approved', 'denied'] as const)('keeps an opted-out Voice %s decision away from the native permission RPC', async decision => {
+    installSession('voice-permission', { machineId: 'machine-a', flavor: 'claude' });
+    installActionSettings({}, false);
+    const result = await createDefaultActionExecutor().execute('session.permission.respond', {
+      sessionId: 'voice-permission', requestId: 'permission-1', turnId: 'turn-1', decision,
+    }, { surface: 'voice', serverId, authority: 'present_user' });
+    expect(result).toMatchObject({ ok: false, errorCode: 'present_user_required' });
+    expect(outgoing).toEqual([]);
+  });
+  it.each(['narrowed_voice', 'cli'] as const)('does not extend delegated Voice permission authority to %s', async actor => {
+    installSession('voice-permission', { machineId: 'machine-a', flavor: 'claude' });
+    const result = await createDefaultActionExecutor().execute('session.permission.respond', {
+      sessionId: 'voice-permission', requestId: 'permission-1', turnId: 'turn-1', decision: 'approved',
+    }, actor === 'narrowed_voice'
+      ? { surface: 'voice', serverId, authority: 'account_automation' }
+      : { surface: 'cli', serverId, authority: 'present_user' });
+    expect(result).toMatchObject({ ok: false, errorCode: 'present_user_required' });
+    expect(outgoing).toEqual([]);
+  });
+  const revocableVoiceDecisions = [
+    { actionId: 'session.permission.respond', response: 'approve',
+      input: { requestId: 'permission-1', turnId: 'turn-1', decision: 'approved' } },
+    { actionId: 'session.permission.respond', response: 'deny',
+      input: { requestId: 'permission-1', turnId: 'turn-1', decision: 'denied' } },
+    { actionId: 'session.user_action.answer', response: 'answer',
+      input: { requestId: 'question-1', answers: [{ question: 'Which revision?', values: ['42'] }] } },
+  ] as const;
+  it.each(revocableVoiceDecisions)('revokes a prepared Voice $actionId $response before native dispatch', async ({ actionId, input }) => {
+    const waiver = actionId === 'session.user_action.answer' ? { [actionId]: ['voice'] } : undefined;
+    await installRevocableVoiceSettings(waiver);
+    installSession('voice-revocation', { machineId: 'machine-a', flavor: 'claude' });
+    daemonAnswer = () => ({ ok: true });
+    const prepared = await createDefaultActionExecutor().prepare(actionId, { sessionId: 'voice-revocation', ...input }, {
+      surface: 'voice', serverId,
+    });
+    expect(prepared.kind).toBe('ready');
+    if (prepared.kind !== 'ready') throw new Error('Voice decision was not prepared');
+    expect(outgoing).toEqual([]);
+    await setVoiceApprovalDelegation(false);
+    expect(storage.getState().settings.voice.canApproveRequests).toBe(false);
+    const result = await prepared.invocation.run();
+    expect(storage.getState().settings.voice.canApproveRequests).toBe(false);
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: false, errorCode: 'present_user_required' });
+    expect(outgoing).toEqual([]);
+  });
+  it.each(revocableVoiceDecisions)('revokes Voice $actionId $response during its held Session target read', async ({ actionId, input }) => {
+    const waiver = actionId === 'session.user_action.answer' ? { [actionId]: ['voice'] } : undefined;
+    await installRevocableVoiceSettings(waiver);
+    const sessionId = 'voice-revocation';
+    installSession(sessionId, { machineId: 'machine-a', flavor: 'claude' });
+    storage.setState({ sessions: {} });
+    const body = holdSessionResponseBody(sessionId);
+    daemonAnswer = () => ({ ok: true });
+    const pending = createDefaultActionExecutor().execute(actionId, { sessionId, ...input }, { surface: 'voice', serverId });
+    try {
+      await Promise.race([body.reading, pending.then(result => {
+        throw new Error('Voice decision settled before its held Session target read: ' + JSON.stringify(result));
+      })]);
+      expect(outgoing).toEqual([]);
+      await setVoiceApprovalDelegation(false);
+      expect(storage.getState().settings.voice.canApproveRequests).toBe(false);
+      body.release();
+      const result = await pending;
+      expect(storage.getState().settings.voice.canApproveRequests).toBe(false);
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: false, errorCode: 'present_user_required' });
+      expect(outgoing).toEqual([]);
+    } finally {
+      body.release();
+      await pending;
+      body.restore();
+    }
+  });
+  it.each(['approved', 'denied'] as const)('preserves an issued native Voice %s receipt when delegation is revoked before its reply', async decision => {
+    await installRevocableVoiceSettings();
+    installSession('voice-issued', { machineId: 'machine-a', flavor: 'claude' });
+    const issued = createDeferred<void>();
+    const reply = createDeferred<unknown>();
+    daemonAnswer = () => { issued.resolve(); return reply.promise; };
+    const pending = createDefaultActionExecutor().execute('session.permission.respond', {
+      sessionId: 'voice-issued', requestId: 'permission-1', turnId: 'turn-1', decision,
+    }, { surface: 'voice', serverId });
+    try {
+      await Promise.race([issued.promise, pending.then(result => {
+        throw new Error('Voice decision settled without native dispatch: ' + JSON.stringify(result));
+      })]);
+      await setVoiceApprovalDelegation(false);
+      reply.resolve({ ok: true });
+      expect(await pending).toMatchObject({ ok: true });
+      expect(storage.getState().settings.voice.canApproveRequests).toBe(false);
+      expect(outgoing).toHaveLength(1);
+      expect(outgoing[0]).toMatchObject({ method: `voice-issued:${RPC_METHODS.SESSION_PERMISSION_RESPOND}`,
+        params: { id: 'permission-1', approved: decision === 'approved', decision } });
+    } finally {
+      reply.resolve({ ok: true });
+      await pending;
+    }
+  });
   it.each(['ui', 'voice'] as const)('preserves question pass-up through the %s Action authority boundary', async surface => {
     installSession('question-worker', { machineId: 'machine-a', flavor: 'claude' });
     storage.setState({ sessions: { ...storage.getState().sessions, 'question-worker': createSessionFixture({
@@ -1296,12 +1459,6 @@ describe('default Action executor mode and catalog contracts', () => {
       ? await createDefaultActionExecutor().execute('session.user_action.answer', input, context())
       : JSON.parse(await (await import('@/voice/tools/handlers')).createVoiceToolHandlers({ resolveSessionId: explicit => explicit ?? null })
         .action_execute!({ actionId: 'session.user_action.answer', input }, { serverId }));
-    if (surface === 'voice') {
-      // Generic Voice is Account automation, not the authenticated manager exception.
-      expect(result).toMatchObject({ ok: false, errorCode: 'present_user_required' });
-      expect(outgoing).toEqual([]);
-      return;
-    }
     expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
     expect(outgoing).toContainEqual({ method: `question-worker:${RPC_METHODS.SESSION_USER_ACTION_ANSWER}`,
       params: { id: 'question-1', disposition: 'pass_up', reason: 'Needs a person' } });
@@ -1335,6 +1492,7 @@ describe('default Action executor mode and catalog contracts', () => {
   it.each((['generic', 'question'] as const).flatMap(entry => [
     { entry, response: 'answer' as const }, { entry, response: 'reject' as const },
   ]))('requires person approval before a $entry Voice question $response reaches the sole answer RPC', async ({ entry, response }) => {
+    installActionSettings({}, false);
     installSession('question-worker', { machineId: 'machine-a', flavor: 'claude' });
     storage.setState({ sessions: { ...storage.getState().sessions, 'question-worker': createSessionFixture({
       ...storage.getState().sessions['question-worker'], agentState: { requests: {
@@ -1361,7 +1519,7 @@ describe('default Action executor mode and catalog contracts', () => {
     expect(ApprovalRequestSchema.parse(JSON.parse(homes.artifacts(serverId).readPlainBody(approval.id) ?? 'null')))
       .toMatchObject({ status: 'open', actionId: 'session.user_action.answer', actionArgs: input,
         executionOriginV1: { authority: 'account_automation', surface: 'voice', accountId: 'alice' } });
-    // Voice cannot decide its own proposal or gain authority from a settings waiver.
+    // The opted-out Voice agent cannot decide its own proposal.
     expect(await createDefaultActionExecutor().execute('approval.request.decide', { artifactId: approval.id, decision: 'approve' },
       { surface: 'voice', serverId })).toMatchObject({ ok: false, errorCode: 'present_user_required' });
     expect(outgoing).toEqual([]);
@@ -1419,7 +1577,7 @@ describe('default Action executor mode and catalog contracts', () => {
     await expect(executeSessionAction({
       actionId: 'ui.session.delete',
       target: createSessionActionTarget({ session, serverId, currentUserId: 'alice', isConnected: false, isPinned: false }),
-      context: { presentUserConfirmation: { actionId: 'session.delete' } },
+      context: { confirmed: true },
     })).resolves.toBeUndefined();
     expect(deleteRequests).toBe(1);
   });
@@ -1769,7 +1927,7 @@ describe('default Action executor mode and catalog contracts', () => {
     resetDynamicModelProbeCacheForTests();
     const credentials = { token: createAccountTokenForTests('alice', { currentAccount: true }) };
     serverId = await homes.addHome({ name: 'Mode Home', serverUrl: 'https://mode-actions.test', serverIdentityId: 'srv_mode_home', accountId: 'alice', credentials });
-    connection = await restoreServerAccountForTest({ serverUrl: 'https://mode-actions.test', accountId: 'alice', credentials,
+    connection = await restoreServerAccountForTest({ serverUrl: 'https://mode-actions.test', serverIdentityId: 'srv_mode_home', accountId: 'alice', credentials,
       request: readBatchRequest, configureSocket: configureSessionSocket });
     storage.getState().activateProfileScope({ serverId: connection.serverId, accountId: 'alice' });
     await storage.getState().activateSettingsScope({ serverId: connection.serverId, accountId: 'alice' });

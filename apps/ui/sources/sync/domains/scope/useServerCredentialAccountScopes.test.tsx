@@ -3,15 +3,13 @@ import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderHook, renderScreen, standardCleanup } from '@/dev/testkit';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { storage } from '@/sync/domains/state/storage';
 import * as serverProfiles from '@/sync/domains/server/serverProfiles';
 import { seedPersistedHomeProfilesForTests } from '@/dev/testkit/fixtures/persistedHomeProfiles';
 
-const harness = vi.hoisted(() => ({
-    tokenByServerId: new Map<string, string>(),
-    credentialLookups: [] as string[],
-    listeners: new Set<(event: { serverId: string; serverUrl: string; kind: 'credentials_set' | 'credentials_removed' }) => void>(),
-}));
+// Real TokenStorage and credential-change fan-out over the device secure-store boundary.
+const signedIn: Array<Readonly<{ serverId: string; serverUrl: string }>> = [];
 
 beforeEach(async () => {
     // Persisted profiles, not an alternate profile resolver: bulk and scalar
@@ -23,41 +21,28 @@ beforeEach(async () => {
             serverUrl: 'https://portable-home-b.example.test', createdAt: 1, updatedAt: 1, lastUsedAt: 1 },
     ] });
 });
-vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
-    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
-    return createTokenStorageModuleMock({
-        importOriginal,
-        tokenStorage: {
-            getCredentialsForServerUrl: async (_serverUrl: string, options: { serverId?: string }) => {
-                harness.credentialLookups.push(options.serverId ?? '');
-                const token = harness.tokenByServerId.get(options.serverId ?? '');
-                return token ? { token: `header.${Buffer.from(JSON.stringify({ sub: token })).toString('base64')}.signature` } : null;
-            },
-        },
-        subscribeHomeCredentialMutations: () => () => undefined,
-    });
-});
-vi.mock('@/sync/runtime/orchestration/homeAccountChange', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/runtime/orchestration/homeAccountChange')>(),
-    subscribeHomeCredentialChange: (listener: (event: { serverId: string; serverUrl: string; kind: 'credentials_set' | 'credentials_removed' }) => void) => {
-        harness.listeners.add(listener);
-        return () => harness.listeners.delete(listener);
-    },
-}));
-
-afterEach(() => {
-    // Dispose render-scoped credential observers, but retain the directory
-    // engine's process-lifetime observer just as production does. Clearing the
-    // shared mock Set would orphan the cached engine module between tests.
+afterEach(async () => {
     standardCleanup();
-    harness.tokenByServerId.clear();
-    harness.credentialLookups = [];
+    for (const home of signedIn.splice(0)) await TokenStorage.removeCredentialsForServerUrl(home.serverUrl, { serverId: home.serverId });
     storage.setState(storage.getInitialState(), true);
 });
 
+function homeUrl(serverId: string): string {
+    return serverId === 'srv_home_b' ? 'https://portable-home-b.example.test' : `https://${serverId}.example.test`;
+}
+
+/** Stores (or replaces) that Home's credential; replacement publishes the credential mutation. */
+async function signIn(serverId: string, accountId: string): Promise<void> {
+    const home = { serverId, serverUrl: homeUrl(serverId) };
+    expect(await TokenStorage.setCredentialsForServerUrl(home.serverUrl, { serverId }, {
+        token: `e30.${Buffer.from(JSON.stringify({ sub: accountId })).toString('base64url')}.signature`,
+    })).toBe(true);
+    signedIn.push(home);
+}
+
 describe('useServerCredentialAccountScopes', () => {
     it('keeps credential custody through Home label publications and still retires it when that Home is removed', async () => {
-        harness.tokenByServerId.set('home-a', 'account-a');
+        await signIn('home-a', 'account-a');
         const { useServerCredentialAccountScopes } = await import('./useServerCredentialAccountScopes');
         const hook = await renderHook(() => useServerCredentialAccountScopes(['home-a']));
         await vi.waitFor(() => expect(hook.getCurrent().get('home-a')?.accountId).toBe('account-a'));
@@ -73,8 +58,8 @@ describe('useServerCredentialAccountScopes', () => {
         expect(retired).toHaveBeenCalledOnce();
     });
     it('does not reacquire the profile resolver per entry on unchanged credential-scope renders', async () => {
-        harness.tokenByServerId.set('home-a', 'account-a');
-        harness.tokenByServerId.set('home-b', 'account-b');
+        await signIn('home-a', 'account-a');
+        await signIn('home-b', 'account-b');
         const { useServerCredentialAccountScopes } = await import('./useServerCredentialAccountScopes');
         const ids = Array.from({ length: 100 }, (_, index) => index % 2 ? 'home-a' : 'home-b');
         const hook = await renderHook(() => useServerCredentialAccountScopes(ids));
@@ -86,7 +71,7 @@ describe('useServerCredentialAccountScopes', () => {
         } finally { resolve.mockRestore(); await hook.unmount(); }
     });
     it('keeps a destination Find seed after its Search source closes, then clears it on Home Account retirement', async () => {
-        harness.tokenByServerId.set('home-b', 'account-b');
+        await signIn('home-b', 'account-b');
         const { useServerCredentialAccountScopes } = await import('./useServerCredentialAccountScopes');
         const { AppPaneProvider, useAppPaneContext } = await import('@/components/appShell/panes/AppPaneProvider');
         const destination = { host: 'project' as const, id: 'project-b', accountId: 'account-b', path: 'src/a.ts',
@@ -110,15 +95,14 @@ describe('useServerCredentialAccountScopes', () => {
         await vi.waitFor(() => expect(handoff.peek(destination)).toEqual(seed));
         await screen.update(frame(false));
         expect(handoff.peek(destination)).toEqual(seed);
-        harness.tokenByServerId.delete('home-b');
         await act(async () => {
-            for (const listener of harness.listeners) listener({ kind: 'credentials_removed', serverId: 'home-b', serverUrl: 'https://home-b.example.test' });
+            await TokenStorage.removeCredentialsForServerUrl(homeUrl('home-b'), { serverId: 'home-b' });
             expect(handoff.peek(destination)).toBeNull();
         });
     });
     it('resolves each Home Account from that Home credential and immediately retires it on mutation', async () => {
-        harness.tokenByServerId.set('home-a', 'account-a');
-        harness.tokenByServerId.set('home-b', 'account-b');
+        await signIn('home-a', 'account-a');
+        await signIn('home-b', 'account-b');
         const { useServerCredentialAccountScopes } = await import('./useServerCredentialAccountScopes');
         const hook = await renderHook(() => useServerCredentialAccountScopes(['home-a', 'home-b']));
 
@@ -132,11 +116,8 @@ describe('useServerCredentialAccountScopes', () => {
             sessionListIndexByServerId: { ...state.sessionListIndexByServerId, 'home-b': [] },
         }));
 
-        harness.tokenByServerId.set('home-b', 'account-b-next');
         await act(async () => {
-            for (const listener of harness.listeners) {
-                listener({ kind: 'credentials_set', serverId: 'home-b', serverUrl: 'https://home-b.example.test' });
-            }
+            await signIn('home-b', 'account-b-next');
             expect(oldBinding.isCurrent()).toBe(false);
             expect(retired).toBe(true);
         });
@@ -148,7 +129,7 @@ describe('useServerCredentialAccountScopes', () => {
     });
 
     it('retires that Home Team and Group rows with the credential that authorized them', async () => {
-        harness.tokenByServerId.set('home-b', 'account-b');
+        await signIn('home-b', 'account-b');
         const { useServerCredentialAccountScopes } = await import('./useServerCredentialAccountScopes');
         const {
             applyTeamGroupsPage,
@@ -191,11 +172,8 @@ describe('useServerCredentialAccountScopes', () => {
         });
         expect(getTeamGroupsSnapshot(scope, address, key)?.data).toHaveLength(1);
 
-        harness.tokenByServerId.set('home-b', 'account-b-next');
         await act(async () => {
-            for (const listener of harness.listeners) {
-                listener({ kind: 'credentials_set', serverId: 'home-b', serverUrl: 'https://home-b.example.test' });
-            }
+            await signIn('home-b', 'account-b-next');
             // These rows were readable only because that credential authorized
             // them. Leaving them behind would outlive the credential and let a
             // replacing Account read the previous one's Teams and Groups.
@@ -206,12 +184,17 @@ describe('useServerCredentialAccountScopes', () => {
     });
 
     it('keys a local profile request and its credential lookup by portable server identity', async () => {
-        harness.tokenByServerId.set('srv_home_b', 'account-b');
-        const { useServerCredentialAccountScopes } = await import('./useServerCredentialAccountScopes');
-        const hook = await renderHook(() => useServerCredentialAccountScopes(['local-home-b']));
+        await signIn('srv_home_b', 'account-b');
+        const credentialRead = vi.spyOn(TokenStorage, 'getCredentialsForServerUrl');
+        try {
+            const { useServerCredentialAccountScopes } = await import('./useServerCredentialAccountScopes');
+            const hook = await renderHook(() => useServerCredentialAccountScopes(['local-home-b']));
 
-        await vi.waitFor(() => expect(hook.getCurrent().get('srv_home_b')?.accountId).toBe('account-b'));
-        expect(hook.getCurrent().has('local-home-b')).toBe(false);
-        expect(harness.credentialLookups).toContain('srv_home_b');
+            await vi.waitFor(() => expect(hook.getCurrent().get('srv_home_b')?.accountId).toBe('account-b'));
+            expect(hook.getCurrent().has('local-home-b')).toBe(false);
+            const lookupKeys = credentialRead.mock.calls.map(([, options]) => options?.serverId);
+            expect(lookupKeys).toContain('srv_home_b');
+            expect(lookupKeys).not.toContain('local-home-b');
+        } finally { credentialRead.mockRestore(); }
     });
 });

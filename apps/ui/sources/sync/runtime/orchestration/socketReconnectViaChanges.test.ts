@@ -7,6 +7,39 @@ import { applyPlannedChangeActions } from './changesApplier';
 const credentials: AuthCredentials = { token: 't', secret: 's' };
 
 describe('runSocketReconnectCatchUpViaChanges', () => {
+    it('repairs a missing cursor before reading changes and checkpoints only the repaired base', async () => {
+        const events: string[] = [];
+        const fetchChanges = vi.fn<FetchChangesFn>(async ({ afterCursor }) => {
+            events.push(`changes:${afterCursor}`);
+            return { status: 'ok', changes: [], nextCursor: '42' };
+        });
+        const result = await runSocketReconnectCatchUpViaChanges({
+            credentials, accountId: 'a', afterCursor: null, changesPageLimit: 200,
+            forceSnapshotRefresh: false, fetchChanges,
+            fetchCurrentCursor: async () => { events.push('capture'); return { status: 'ok', cursor: '42' }; },
+            snapshotRefresh: async () => { events.push('snapshot'); return { status: 'complete' }; },
+            checkpointCursor: (cursor) => { events.push(`checkpoint:${cursor}`); return true; },
+            applyPlanned: async () => {},
+        });
+        expect(events).toEqual(['capture', 'snapshot', 'checkpoint:42', 'changes:42']);
+        expect(result).toEqual({ status: 'ok', nextCursor: '42', shouldPersistCursor: false });
+    });
+
+    it('does not read history or seed a missing cursor after incomplete snapshot repair', async () => {
+        const fetchChanges = vi.fn<FetchChangesFn>(async () => ({ status: 'ok', changes: [], nextCursor: '42' }));
+        const checkpointCursor = vi.fn();
+        const result = await runSocketReconnectCatchUpViaChanges({
+            credentials, accountId: 'a', afterCursor: null, changesPageLimit: 200,
+            forceSnapshotRefresh: false, fetchChanges,
+            fetchCurrentCursor: async () => ({ status: 'ok', cursor: '42' }),
+            snapshotRefresh: async () => ({ status: 'partial' }),
+            checkpointCursor, applyPlanned: async () => {},
+        });
+        expect(result).toEqual({ status: 'fallback' });
+        expect(fetchChanges).not.toHaveBeenCalled();
+        expect(checkpointCursor).not.toHaveBeenCalled();
+    });
+
     it('returns fallback when credentials missing', async () => {
         const res = await runSocketReconnectCatchUpViaChanges({
             credentials: null,
@@ -16,7 +49,7 @@ describe('runSocketReconnectCatchUpViaChanges', () => {
             forceSnapshotRefresh: false,
             fetchChanges: (async () => ({ status: 'error' })) as FetchChangesFn,
             applyPlanned: async () => {},
-            snapshotRefresh: async () => {},
+            snapshotRefresh: async () => ({ status: 'complete' }),
         });
 
         expect(res.status).toBe('fallback');
@@ -32,7 +65,7 @@ describe('runSocketReconnectCatchUpViaChanges', () => {
             forceSnapshotRefresh: false,
             fetchChanges,
             applyPlanned: async () => {},
-            snapshotRefresh: async () => {},
+            snapshotRefresh: async () => ({ status: 'complete' }),
         });
 
         expect(res).toEqual({ status: 'fallback' });
@@ -40,7 +73,7 @@ describe('runSocketReconnectCatchUpViaChanges', () => {
     });
 
     it('triggers snapshot repair on cursor-gone and returns the repaired cursor', async () => {
-        const snapshotRefresh = vi.fn(async () => {});
+        const snapshotRefresh = vi.fn(async () => ({ status: 'complete' as const }));
         const fetchChanges = vi.fn<FetchChangesFn>()
             .mockResolvedValueOnce({ status: 'cursor-gone' as const, currentCursor: '999' })
             .mockResolvedValueOnce({ status: 'ok' as const, changes: [], nextCursor: '999' });
@@ -228,7 +261,7 @@ describe('runSocketReconnectCatchUpViaChanges', () => {
 
     it('applies planned changes when within page limit', async () => {
         const applyPlanned = vi.fn(async () => {});
-        const snapshotRefresh = vi.fn(async () => {});
+        const snapshotRefresh = vi.fn(async () => ({ status: 'complete' as const }));
         const fetchChanges = vi.fn<FetchChangesFn>(async () => ({
             status: 'ok' as const,
             changes: [{ cursor: 11, kind: 'session' as const, entityId: 's1', changedAt: 1 }],
@@ -600,7 +633,7 @@ describe('runSocketReconnectCatchUpViaChanges', () => {
 
     it('can force snapshot refresh even when under the page limit', async () => {
         const applyPlanned = vi.fn(async () => {});
-        const snapshotRefresh = vi.fn(async () => {});
+        const snapshotRefresh = vi.fn(async () => ({ status: 'complete' as const }));
         const fetchChanges = vi.fn<FetchChangesFn>()
             .mockResolvedValueOnce({
                 status: 'ok' as const,

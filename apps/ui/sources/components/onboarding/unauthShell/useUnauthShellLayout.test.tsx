@@ -1,10 +1,10 @@
 import * as React from 'react';
 import { Text, useWindowDimensions } from 'react-native';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { storage } from '@/sync/domains/state/storageStore';
 
-import { useBrandHeroSeenAt } from './useBrandHeroSeenAt';
 import { useUnauthShellLayout } from './useUnauthShellLayout';
 
 vi.mock('react-native', async () => {
@@ -15,10 +15,6 @@ vi.mock('react-native', async () => {
     };
 });
 
-vi.mock('./useBrandHeroSeenAt', () => ({
-    useBrandHeroSeenAt: vi.fn(),
-}));
-
 function setup(width: number, brandHeroSeenAt: number | null) {
     (useWindowDimensions as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
         width,
@@ -26,7 +22,10 @@ function setup(width: number, brandHeroSeenAt: number | null) {
         scale: 1,
         fontScale: 1,
     });
-    (useBrandHeroSeenAt as unknown as ReturnType<typeof vi.fn>).mockReturnValue(brandHeroSeenAt);
+    storage.setState((state) => ({
+        ...state,
+        localSettings: { ...state.localSettings, brandHeroSeenAt },
+    }));
 }
 
 function Probe({ allow }: { allow: boolean }) {
@@ -35,6 +34,11 @@ function Probe({ allow }: { allow: boolean }) {
 }
 
 describe('useUnauthShellLayout', () => {
+    const initialState = storage.getState();
+    afterEach(() => {
+        storage.setState(initialState, true);
+    });
+
     it('returns "split" on desktop widths', async () => {
         setup(1100, null);
         const screen = await renderScreen(<Probe allow />);

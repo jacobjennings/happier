@@ -3,8 +3,6 @@ import {
     type TerminalInteractionPolicy,
 } from './model';
 
-export { DEFAULT_TERMINAL_INTERACTION_POLICY };
-
 export type TerminalOsc52ClipboardAction =
     | Readonly<{ kind: 'deny'; reason: 'osc52_denied' }>
     | Readonly<{ kind: 'prompt' }>

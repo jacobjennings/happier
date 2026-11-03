@@ -4,7 +4,7 @@ import { readManagedMachineTriggerAction } from '@happier-dev/protocol/actions/e
 import { ManagedGetOutputV1Schema } from '@happier-dev/protocol/machines/managed/actionsV1';
 import type { ManagedMachineV1 } from '@happier-dev/protocol/machines/managed/managedMachineV1';
 import { WorkflowDefinitionV1Schema } from '@happier-dev/protocol/workflows/workflowV1';
-import { SessionTriggerAddRequestV1Schema, SessionTriggerUpdateRequestV1Schema, SessionTriggerListResultV1Schema, WorkflowTriggerAddRequestV1Schema, WorkflowTriggerUpdateRequestV1Schema, WorkflowTriggerListResultV1Schema,
+import { SessionTriggerAddRequestV1Schema, SessionTriggerUpdateRequestV1Schema, WorkflowTriggerAddRequestV1Schema, WorkflowTriggerUpdateRequestV1Schema, WorkflowTriggerListResultV1Schema,
     WorkflowTriggerWriteResultV1Schema, type WorkflowTriggerSetV1 } from '@happier-dev/protocol/workflows/triggers/workflowTriggerActionsV1';
 import { sameStrictJsonValue } from '@happier-dev/protocol/json/strictJsonValue';
 import { SessionCreationCorrespondenceV1ReadSchema } from '@happier-dev/protocol/sessions/creation/sessionCreationCorrespondenceV1';
@@ -193,11 +193,11 @@ export async function bindNewManagedMachineCreationScope(input: Readonly<{
             custodianAccountId: machine.custodianAccountId });
         if (availability.reason) return { kind: 'unavailable', availability };
         if (!availability.supportedEffects.includes(input.draft.archiveEffect)) return incomplete('native_intent_unsupported');
-        const listed = classifyHomeActionOutcome(await execute(input.source.kind === 'session' ? 'session.trigger.list' : 'workflow.trigger.list',
-            input.source.kind === 'session' ? { sessionId: input.source.sessionId } : { scope: 'account_inline' }, context));
+        const listed = classifyHomeActionOutcome(await execute('workflow.trigger.list',
+            { managedTarget: { homeId: machine.homeId, managedId: machine.id } }, context));
         if (!current()) return incomplete('continuation_retired');
         if (listed.kind !== 'completed') return incomplete(listed.kind === 'failed' ? homeDomainFailureCode(listed.failure) : 'approval_required');
-        const sets = (input.source.kind === 'session' ? SessionTriggerListResultV1Schema : WorkflowTriggerListResultV1Schema).parse(listed.result).sets;
+        const sets = WorkflowTriggerListResultV1Schema.parse(listed.result).sets;
         const effect = input.draft.archiveEffect;
         const afterMs = input.draft.receipt.retention.kind === 'unused' ? input.draft.receipt.retention.afterMs : undefined;
         const definition = WorkflowDefinitionV1Schema.parse({ version: 1, defaults: {}, inputs: [], blocks: [{

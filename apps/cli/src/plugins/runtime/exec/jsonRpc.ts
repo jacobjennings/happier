@@ -1,7 +1,6 @@
 import type {
     ExecClientHandlersV1,
     ExecClientHooksV1,
-    ExecProcessHandleV1,
     JsonRpcMessageHookDecisionV1,
     JsonRpcClientV1,
     JsonRpcNotificationHandlerV1,
@@ -22,8 +21,10 @@ import {
 import { createPluginProtocolCallbackQueue } from './callbackQueue';
 import type { HostRuntimeLimitMeasurementRecorder } from '@/agent/runtime/state/runtimeLimitMeasurement';
 import { attachContentLengthFrameReader, encodeContentLengthFrame } from './contentLengthFraming';
+import { attachWebSocketFrameReader } from './webSocketFraming';
 
 type JsonRpcObject = Record<string, unknown>;
+type JsonRpcNotificationReceipt = Readonly<{ method: string; params?: unknown; receivedAtMs: number }>;
 type JsonRpcApplicationError = Error & Readonly<{
     code?: number | string;
     data?: unknown;
@@ -33,10 +34,9 @@ const MAX_JSON_RPC_ERROR_MESSAGE_BYTES = 500;
 export const DEFAULT_JSON_RPC_MAX_FRAME_BYTES = 1024 * 1024;
 
 export type CreateJsonRpcProcessClientParams = Readonly<{
-    process: ExecProcessHandleV1;
     stdout: NodeJS.ReadableStream;
     write: (input: string | Uint8Array) => Promise<void>;
-    framing?: 'jsonLines' | 'contentLength';
+    framing?: 'jsonLines' | 'contentLength' | 'webSocket';
     encoding?: BufferEncoding;
     maxFrameBytes?: number;
     requestTimeoutMs?: number;
@@ -51,6 +51,7 @@ export type CreateJsonRpcProcessClientParams = Readonly<{
 
 export type JsonRpcProcessClient = Readonly<{
     client: JsonRpcClientV1;
+    subscribeNotificationReceived(listener: (message: JsonRpcNotificationReceipt) => void): () => void;
     subscribeNotification(listener: (message: Readonly<{ method: string; params?: unknown }>) => void | Promise<void>): () => void;
     dispose(error?: Error): void;
     settleExit(error: Error): void;
@@ -191,10 +192,12 @@ export function createJsonRpcProcessClient(params: CreateJsonRpcProcessClientPar
     const requestHandlers = new Map<string, JsonRpcRequestHandlerV1>();
     const notificationHandlers = new Map<string, JsonRpcNotificationHandlerV1>();
     const notificationSubscribers = new Set<(message: Readonly<{ method: string; params?: unknown }>) => void | Promise<void>>();
-    const maxFrameBytes = params.maxFrameBytes ?? DEFAULT_JSON_RPC_MAX_FRAME_BYTES;
+    const notificationReceiptSubscribers = new Set<(message: JsonRpcNotificationReceipt) => void>();
+    const maxFrameBytes = params.maxFrameBytes;
     let nextId = 1;
     let disposedError: Error | null = null;
     let detachLineReader: () => void = () => undefined;
+    let writeWebSocketFrame: ((frame: string) => Promise<void>) | undefined;
 
     for (const [method, handler] of Object.entries(params.handlers?.requests ?? {})) {
         requestHandlers.set(method, handler);
@@ -217,8 +220,12 @@ export function createJsonRpcProcessClient(params: CreateJsonRpcProcessClientPar
             return false;
         }
         const encoded = JSON.stringify(nextMessage);
-        if (Buffer.byteLength(encoded, 'utf8') > maxFrameBytes) {
+        if (maxFrameBytes !== undefined && Buffer.byteLength(encoded, 'utf8') > maxFrameBytes) {
             throw createFrameSizeError(maxFrameBytes, readStderrPreview());
+        }
+        if (writeWebSocketFrame) {
+            await writeWebSocketFrame(encoded);
+            return true;
         }
         await params.write(params.framing === 'contentLength'
             ? encodeContentLengthFrame(new Uint8Array(Buffer.from(encoded, 'utf8')))
@@ -231,6 +238,7 @@ export function createJsonRpcProcessClient(params: CreateJsonRpcProcessClientPar
             return;
         }
         disposedError = error;
+        notificationReceiptSubscribers.clear();
         detachLineReader();
         correlator.close(error);
         pendingRequestMethods.clear();
@@ -402,16 +410,21 @@ export function createJsonRpcProcessClient(params: CreateJsonRpcProcessClientPar
         if (line.trim().length === 0) {
             return;
         }
-        if (Buffer.byteLength(line) > maxFrameBytes) {
+        if (maxFrameBytes !== undefined && Buffer.byteLength(line) > maxFrameBytes) {
             rejectOversizedFrame(line, maxFrameBytes);
             return;
         }
         try {
             const message: unknown = JSON.parse(line);
-            const isNotification = isObject(message)
+            if (isObject(message)
                 && readId(message.id) === null
-                && typeof message.method === 'string';
-            if (isNotification) {
+                && typeof message.method === 'string') {
+                if (notificationReceiptSubscribers.size > 0) {
+                    const receipt = { method: message.method,
+                        ...(Object.prototype.hasOwnProperty.call(message, 'params') ? { params: message.params } : {}),
+                        receivedAtMs: Date.now() };
+                    for (const listener of notificationReceiptSubscribers) listener(receipt);
+                }
                 notificationDispatchQueue.enqueue(Buffer.byteLength(line), () => handleMessage(message));
                 return;
             }
@@ -425,7 +438,16 @@ export function createJsonRpcProcessClient(params: CreateJsonRpcProcessClientPar
         }
     }
 
-    detachLineReader = params.framing === 'contentLength'
+    if (params.framing === 'webSocket') {
+        const transport = attachWebSocketFrameReader({
+            stdout: params.stdout,
+            write: params.write,
+            onFrame: handleLine,
+            onError: error => failClient(createPluginExecClientProtocolError('JSON-RPC WebSocket transport failed', error, readStderrPreview())),
+        });
+        writeWebSocketFrame = transport.write;
+        detachLineReader = transport.dispose;
+    } else detachLineReader = params.framing === 'contentLength'
         ? attachContentLengthFrameReader(params.stdout, (frame) => {
             handleLine(Buffer.from(frame).toString(params.encoding ?? 'utf8'));
         }, {
@@ -583,6 +605,10 @@ export function createJsonRpcProcessClient(params: CreateJsonRpcProcessClientPar
 
     return Object.freeze({
         client,
+        subscribeNotificationReceived(listener) {
+            notificationReceiptSubscribers.add(listener);
+            return () => { notificationReceiptSubscribers.delete(listener); };
+        },
         subscribeNotification(listener) {
             notificationSubscribers.add(listener);
             return () => {

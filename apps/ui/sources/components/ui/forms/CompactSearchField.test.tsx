@@ -112,7 +112,7 @@ describe('CompactSearchField', () => {
         expect(frame.props.focusable).toBe(false);
     });
 
-    it('takes the native touch floor on phones and keeps pointer density on web', async () => {
+    it('draws the compact 32px field on every platform; a finger reaches it through the hit area', async () => {
         const { HappierUiPlatformProvider } = await import('@happier-dev/plugin-ui/environment');
         const { CompactSearchField } = await import('./CompactSearchField');
         const { flattenTestStyle } = await import('@/dev/testkit');
@@ -126,9 +126,9 @@ describe('CompactSearchField', () => {
             await screen.unmount();
             return value;
         };
-        expect(await minHeightOn('ios')).toBe(44);
-        expect(await minHeightOn('android')).toBe(48);
-        // A precise pointer gets the lab's compact 32px field.
+        // A touch target is a hit area, not a drawn size (DESIGN.md): the well keeps the lab's 32px.
+        expect(await minHeightOn('ios')).toBe(32);
+        expect(await minHeightOn('android')).toBe(32);
         expect(await minHeightOn('web')).toBe(32);
     });
 
@@ -168,6 +168,23 @@ describe('CompactSearchField placement above a page list', () => {
         expect(band.alignSelf).toBe('stretch');
         expect(band.alignItems).toBe('center');
         expect(style.paddingHorizontal).toBe(resolveItemGroupContentHorizontalInsetPx());
+    });
+
+    it('puts its accessory beside the field, or under it at full width where a phone has no room beside', async () => {
+        const { CompactSearchField } = await import('./CompactSearchField');
+        const { flattenTestStyle } = await import('@/dev/testkit');
+        const accessory = React.createElement('View', { testID: 'select' });
+        const place = async (accessoryPlacement?: 'beside' | 'below') => {
+            const screen = await renderScreen(
+                <CompactSearchField testID="search" value="" onChangeText={() => {}} placeholder="Search" accessory={accessory}
+                    {...(accessoryPlacement ? { accessoryPlacement } : {})} />,
+            );
+            const select = screen.findByTestId('select')!;
+            return flattenTestStyle(select.parent!.props.style);
+        };
+        expect(await place()).toMatchObject({ flexDirection: 'row' });
+        expect(await place('below')).toMatchObject({ alignItems: 'stretch' });
+        expect(await place('below')).not.toHaveProperty('flexDirection', 'row');
     });
 
     it('adds no column of its own where it is placed inline (a rail or a section row)', async () => {

@@ -2,67 +2,68 @@ import { describe, expect, it } from 'vitest';
 
 import { formatPairingCountdown, resolveHomeEnrollmentPresentation } from './pairingPresentation';
 
+type PresentationSource = Parameters<typeof resolveHomeEnrollmentPresentation>[0];
+
+// Every non-terminal source each of the three QR surfaces can publish.
+const DISPLAY_SOURCES: readonly PresentationSource[] = [
+    ...(['generating', 'ready', 'adding', 'retryable_error', 'expired', 'invalid_request', 'update_required', 'succeeded'] as const)
+        .map((phase) => ({ kind: 'trusted_home_display' as const, phase })),
+    ...(['generating', 'ready', 'adding', 'expired', 'invalid', 'update_required', 'succeeded'] as const)
+        .map((phase) => ({ kind: 'requester_display' as const, phase })),
+    { kind: 'requester_display', phase: 'retryable_error', partialCommit: false },
+    { kind: 'requester_display', phase: 'retryable_error', partialCommit: true },
+];
+const SCANNER_SOURCES: readonly PresentationSource[] = (['idle', 'requesting', 'securing'] as const)
+    .map((phase) => ({ kind: 'scanner' as const, phase }));
+const TERMINAL_FAILURE_PHASES = new Set(['expired', 'invalid_request', 'update_required', 'partial_commit']);
+
 describe('resolveHomeEnrollmentPresentation', () => {
-    it.each([
-        ['generating', 'generating', 'common.loading', 'none', 'none', 'polite'],
-        ['ready', 'ready', 'connect.addPhoneQrInstructions', 'target_and_expiry', 'none', 'polite'],
-        ['adding', 'adding', 'connect.securingCredentials', 'target_and_requester', 'none', 'polite'],
-        ['retryable_error', 'retryable_error', 'connect.homeEnrollmentRetryBody', 'target_and_requester', 'automatic_retry', 'polite'],
-        ['expired', 'expired', 'connect.pairingQrExpired', 'target_and_expiry', 'create_new_qr', 'assertive'],
-        ['invalid_request', 'invalid_request', 'errors.operationFailed', 'none', 'create_new_qr', 'assertive'],
-        ['update_required', 'update_required', 'connect.updateRequiredBody', 'none', 'none', 'assertive'],
-        ['succeeded', 'succeeded', 'common.success', 'target_and_requester', 'none', 'polite'],
-    ] as const)(
-        'maps trusted-display %s without exposing protocol mechanics',
-        (phase, semanticPhase, primaryTranslationKey, contextualFacts, recoveryAction, liveRegion) => {
-            expect(resolveHomeEnrollmentPresentation({ kind: 'trusted_home_display', phase })).toEqual({
-                phase: semanticPhase,
-                primaryTranslationKey,
-                contextualFacts,
-                recoveryAction,
-                liveRegion,
-                activity: phase === 'generating' || phase === 'adding' || phase === 'retryable_error',
-            });
-        },
-    );
+    it('keeps invalid and expired links distinct from an unavailable sign-in method', () => {
+        const invalid = resolveHomeEnrollmentPresentation({ kind: 'scanner', phase: 'idle', result: 'invalid_request' });
+        const expired = resolveHomeEnrollmentPresentation({ kind: 'scanner', phase: 'idle', result: 'expired' });
+        expect(invalid).toMatchObject({ phase: 'invalid_request', primaryTranslationKey: 'terminal.invalidConnectionLinkDescription', activity: false });
+        expect(expired).toMatchObject({ phase: 'expired', primaryTranslationKey: 'connect.pairingQrExpired', activity: false });
+    });
 
-    it.each([
-        [{ phase: 'generating' }, 'generating', 'common.loading', 'none', 'none'],
-        [{ phase: 'ready' }, 'ready', 'connect.showRequesterQrInstructions', 'target_and_expiry', 'none'],
-        [{ phase: 'adding' }, 'adding', 'connect.securingCredentials', 'target_and_expiry', 'none'],
-        [{ phase: 'retryable_error', partialCommit: false }, 'retryable_error', 'connect.homeEnrollmentRetryBody', 'target', 'retry'],
-        [{ phase: 'retryable_error', partialCommit: true }, 'partial_commit', 'connect.homeEnrollmentPartialCommitBody', 'target', 'none'],
-        [{ phase: 'expired' }, 'expired', 'connect.pairingQrExpired', 'target', 'create_new_qr'],
-        [{ phase: 'invalid' }, 'invalid_request', 'connect.scanComputerQrUnavailableBody', 'target', 'create_new_qr'],
-        [{ phase: 'update_required' }, 'update_required', 'connect.updateRequiredBody', 'target', 'none'],
-        [{ phase: 'succeeded' }, 'succeeded', 'connect.homeAddedPreservedFocusBody', 'target', 'none'],
-    ] as const)(
-        'maps requester-display %s to one semantic presentation model',
-        (source, semanticPhase, primaryTranslationKey, contextualFacts, recoveryAction) => {
-            expect(resolveHomeEnrollmentPresentation({ kind: 'requester_display', ...source })).toMatchObject({
-                phase: semanticPhase,
-                primaryTranslationKey,
-                contextualFacts,
-                recoveryAction,
-            });
-        },
-    );
+    it('projects every surface phase onto the one semantic phase model', () => {
+        const projected = [...DISPLAY_SOURCES, ...SCANNER_SOURCES].map((source) => [
+            source, resolveHomeEnrollmentPresentation(source).phase,
+        ] as const);
+        for (const [source, phase] of projected) {
+            const expected = source.kind === 'scanner'
+                ? { idle: 'ready', requesting: 'verifying', securing: 'adding' }[source.phase]
+                : source.kind === 'requester_display' && source.phase === 'invalid'
+                    ? 'invalid_request'
+                    : source.kind === 'requester_display' && source.partialCommit
+                        ? 'partial_commit'
+                        : source.phase;
+            expect({ source, phase }).toEqual({ source, phase: expected });
+        }
+    });
 
-    it.each([
-        ['idle', 'ready', 'connect.scanComputerQrInstructions', 'none', false],
-        ['requesting', 'verifying', 'common.loading', 'target_and_expiry', true],
-        ['securing', 'adding', 'connect.securingCredentials', 'target_and_expiry', true],
-    ] as const)(
-        'maps scanner phase %s while leaving the scanner workflow owner distinct',
-        (phase, semanticPhase, primaryTranslationKey, contextualFacts, activity) => {
-            expect(resolveHomeEnrollmentPresentation({ kind: 'scanner', phase })).toMatchObject({
-                phase: semanticPhase,
-                primaryTranslationKey,
-                contextualFacts,
-                activity,
+    it('announces terminal failures assertively and marks only in-flight work as activity', () => {
+        for (const source of [...DISPLAY_SOURCES, ...SCANNER_SOURCES]) {
+            const presentation = resolveHomeEnrollmentPresentation(source);
+            expect({ source, assertive: presentation.liveRegion === 'assertive' })
+                .toEqual({ source, assertive: TERMINAL_FAILURE_PHASES.has(presentation.phase) });
+            const inFlight = ['generating', 'verifying', 'adding'].includes(presentation.phase)
+                || presentation.recoveryAction === 'automatic_retry';
+            expect({ source, activity: presentation.activity }).toEqual({ source, activity: inFlight });
+        }
+    });
+
+    it('offers a new QR only for an expired or invalid displayed code and no retry after a partial commit', () => {
+        for (const source of DISPLAY_SOURCES) {
+            const presentation = resolveHomeEnrollmentPresentation(source);
+            expect({ source, createNewQr: presentation.recoveryAction === 'create_new_qr' }).toEqual({
+                source,
+                createNewQr: presentation.phase === 'expired' || presentation.phase === 'invalid_request',
             });
-        },
-    );
+            if (presentation.phase === 'partial_commit') expect(presentation.recoveryAction).toBe('none');
+        }
+        expect(resolveHomeEnrollmentPresentation({ kind: 'requester_display', phase: 'retryable_error', partialCommit: false }))
+            .toMatchObject({ phase: 'retryable_error', recoveryAction: 'retry' });
+    });
 
     it('keeps a terminal success authoritative over a later transient scanner phase', () => {
         expect(resolveHomeEnrollmentPresentation({

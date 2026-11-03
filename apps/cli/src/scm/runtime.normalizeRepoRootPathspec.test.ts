@@ -42,12 +42,12 @@ describe('normalizeRepoRootPathspec', () => {
     });
 
     it('rejects pathspec magic injection', () => {
-        const result = normalizeRepoRootPathspec(':(exclude)a.ts');
+        const result = normalizeRepoRootRelativePath(':(exclude)a.ts');
         expect(result.ok).toBe(false);
     });
 
     it('rejects .. segments', () => {
-        const result = normalizeRepoRootPathspec('../a.ts');
+        const result = normalizeRepoRootRelativePath('../a.ts');
         expect(result.ok).toBe(false);
     });
 });

@@ -13,7 +13,6 @@ const live = { supported: true, materialLive: true, reduceTransparency: false, h
 describe('desktop glass material', () => {
     afterEach(() => {
         vi.resetAllMocks();
-        vi.resetModules();
     });
 
     it('reports the native effect outcome and retains high contrast as a diagnostic', async () => {

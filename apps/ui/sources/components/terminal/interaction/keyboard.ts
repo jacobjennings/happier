@@ -6,15 +6,9 @@ export type TerminalKeyboardEvent = Readonly<{
 }>;
 
 export function shouldTerminalCaptureKeyboardEvent(input: Readonly<{
-    terminalFocused: boolean;
     key: string;
     modifiers: TerminalKeyboardModifiers;
-    /** The canonical keyboard provider already admitted and handled this event. */
-    defaultPrevented?: boolean;
 }>): boolean {
-    if (!input.terminalFocused || input.defaultPrevented) {
-        return false;
-    }
     const normalizedKey = input.key.toLowerCase();
     const isGlobalCopy = normalizedKey === 'c' && (input.modifiers.includes('ctrl') || input.modifiers.includes('meta'));
     return !isGlobalCopy;

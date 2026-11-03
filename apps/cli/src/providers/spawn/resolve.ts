@@ -49,7 +49,9 @@ import type {
   ResolvedProviderContribution,
 } from '@/plugins/projection/registry/types';
 import { projectProviderRuntimeBindingBasis } from './runtimeBindingBasis';
+import { isRemoteProviderGatewayPlacement } from '../managed/gatewayPlacement';
 import { readProviderModelNameCatalog } from '../registry/contributions';
+import { projectProviderModelReasoningForAgent } from '@happier-dev/protocol/providers/catalog/reasoningEffort';
 
 export function selectProviderSpawnClaudeHelperModels(input: Readonly<{
   adapter?: Pick<AgentProviderBindingAdapter, 'supportsClaudeHelperModels'>;
@@ -316,7 +318,7 @@ export function resolveProviderProbeAuthorization(input: Readonly<{
   }
   if (input.request.deployment === 'managedLocal') {
     const placement = record.connection.gatewayPlacement;
-    if (placement?.kind === 'machine' && placement.machineId !== input.request.machineId) {
+    if (isRemoteProviderGatewayPlacement(placement, input.request.machineId)) {
       return { ok: false, error: createProviderErrorV1('provider_not_enabled_on_machine', context) };
     }
     const managedPurposeBindingSnapshot =
@@ -1029,6 +1031,16 @@ export function resolveProviderSpawnAuthorization(
       if (!helperModel) {
         return { ok: false, error: createProviderErrorV1('provider_model_not_found', errorContext) };
       }
+      const helperCompatibility = resolveProviderModelCompatibility({ record, providerSettings,
+        agentTargetKey: input.agentTargetKey, support: adapter.support, model: helperModel,
+        adapterVersion: adapter.adapter.adapterVersion });
+      if (helperCompatibility.result.status === 'incompatible'
+        || helperCompatibility.result.selectedProtocol !== compatibilityResult.selectedProtocol) {
+        return { ok: false, error: createProviderErrorV1('provider_incompatible_with_agent', errorContext) };
+      }
+      if (helperCompatibility.result.status === 'experimental' && !helperCompatibility.confirmed) {
+        return { ok: false, error: createProviderErrorV1('provider_compatibility_unverified', errorContext) };
+      }
     }
     let prepared: AgentProviderBindingPrepared;
     try {
@@ -1075,7 +1087,7 @@ export function resolveProviderSpawnAuthorization(
     const binding: ManagedProviderBindingAuthorizationFacts = {
       v: 1,
       agentTargetKey: input.agentTargetKey,
-      selection: { connectionId, model },
+      selection: { connectionId, model: projectProviderModelReasoningForAgent(model, adapter.support) },
       ...(modelSettings ? { modelSettings } : {}),
       ...(claudeHelperModels !== undefined ? { claudeHelperModels } : {}),
       contributionKey: contributionSource.contributionKey,
@@ -1229,7 +1241,7 @@ export function resolveProviderSpawnAuthorization(
     agentTargetKey: input.agentTargetKey,
     selection: {
       connectionId,
-      model,
+      model: projectProviderModelReasoningForAgent(model, adapter.support),
     },
     contributionKey: facts.contributionKey,
     ...(modelSettings ? { modelSettings } : {}),

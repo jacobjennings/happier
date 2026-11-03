@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
     createSyncReliabilityTelemetry,
     installSyncReliabilityTelemetryGlobal,
@@ -6,6 +6,10 @@ import {
 import type { PersistedSyncReliabilityEvent } from '@/sync/domains/state/persistence';
 
 describe('sync reliability telemetry', () => {
+    afterEach(() => {
+        delete (globalThis as { __HAPPIER_SYNC_RELIABILITY__?: unknown }).__HAPPIER_SYNC_RELIABILITY__;
+    });
+
     it('records in-memory events and persists critical events through the storage boundary', () => {
         const persisted: PersistedSyncReliabilityEvent[] = [];
         const telemetry = createSyncReliabilityTelemetry({
@@ -36,10 +40,12 @@ describe('sync reliability telemetry', () => {
         ]);
     });
 
-    it('exposes a bounded global QA snapshot', () => {
+    it('exposes a global QA snapshot bounded by maxMemoryEvents', () => {
+        let nextId = 0;
         const telemetry = createSyncReliabilityTelemetry({
             now: () => 1,
-            randomId: () => 'id',
+            randomId: () => `id-${++nextId}`,
+            maxMemoryEvents: 2,
             storage: {
                 appendEvent: () => {},
                 loadEvents: () => [],
@@ -47,14 +53,19 @@ describe('sync reliability telemetry', () => {
         });
 
         installSyncReliabilityTelemetryGlobal(telemetry);
-        telemetry.record('sync.snapshot.complete');
+        telemetry.record('sync.snapshot.first');
+        telemetry.record('sync.snapshot.second');
+        telemetry.record('sync.snapshot.third');
 
         const globalApi = (globalThis as unknown as {
             __HAPPIER_SYNC_RELIABILITY__?: { snapshot: () => unknown; reset: () => void };
         }).__HAPPIER_SYNC_RELIABILITY__;
 
         expect(globalApi?.snapshot()).toEqual({
-            events: [{ id: 'id', name: 'sync.snapshot.complete', atMs: 1, fields: {} }],
+            events: [
+                { id: 'id-2', name: 'sync.snapshot.second', atMs: 1, fields: {} },
+                { id: 'id-3', name: 'sync.snapshot.third', atMs: 1, fields: {} },
+            ],
             persistedEvents: [],
         });
         globalApi?.reset();

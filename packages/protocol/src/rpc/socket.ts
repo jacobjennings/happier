@@ -1,3 +1,5 @@
+import { deploymentChildEffectActionIdForRootV1 } from '../deployments/deploymentActionIdsV1.js';
+import { isMachineSetupPlanRpcChildV1 } from '../machines/managed/actionIdsV1.js';
 import * as zMini from 'zod/mini';
 import { AuthTokenAuthenticationEvidenceSnapshotV1Schema } from '../auth/authToken.js';
 import { lazyZodSchema } from '../lazyZodSchema.js';
@@ -56,6 +58,15 @@ export const SocketRpcAnsweringClientV1Schema = lazyZodSchema(() => z.strictObje
   requireSingle: z.optional(z.literal(true)),
 }));
 export type SocketRpcAnsweringClientV1 = Readonly<z.infer<typeof SocketRpcAnsweringClientV1Schema>>;
+/** Ephemeral, non-content receiver facts; labels remain unknown when not advertised. */
+export const SocketRpcAnsweringClientCandidateV1Schema = lazyZodSchema(() => z.strictObject({
+  id: z.string().check(z.minLength(1)),
+  deviceLabel: z.nullable(z.string()),
+  state: z.optional(z.strictObject({ computer: z.boolean(), focused: z.boolean(),
+    lastFocusedAt: z.optional(z.number().check(z.nonnegative())) })),
+}));
+export const SocketRpcAnsweringClientCandidatesV1Schema = lazyZodSchema(() => z.array(SocketRpcAnsweringClientCandidateV1Schema));
+export type SocketRpcAnsweringClientCandidateV1 = Readonly<z.infer<typeof SocketRpcAnsweringClientCandidateV1Schema>>;
 // A distinct operation name prevents older relays from ignoring routing input
 // and delivering a mutation to an arbitrary client. It uses the same handler.
 export const ANSWERING_CLIENT_RPC_PREFIX_V1 = 'answering-client.v1/';
@@ -166,7 +177,14 @@ export const WorkspaceSyncSourceExecutionV1Schema = lazyZodSchema(() => z.strict
   || value.externalActionExecution.authorization.binding.actionId === 'discussion.second_opinion.start'
     && value.externalActionExecution.effectActionId === 'session.spawn_new'
     && (value.method.endsWith(`:${RPC_METHODS.SESSION_SPAWN_NEW}`)
-      || value.method.endsWith(`:${RPC_METHODS.DAEMON_SESSION_CREATION_DIRECTORY_PREFLIGHT}`)))));
+      || value.method.endsWith(`:${RPC_METHODS.DAEMON_SESSION_CREATION_DIRECTORY_PREFLIGHT}`))
+  || isMachineSetupPlanRpcChildV1({ rootActionId: value.externalActionExecution.authorization.binding.actionId,
+    effectActionId: value.externalActionExecution.effectActionId, method: value.method.slice(value.method.indexOf(':') + 1) })
+  || value.externalActionExecution.deploymentChildRouting !== undefined
+    && value.method === `${value.externalActionExecution.deploymentChildRouting.machineId}:${RPC_METHODS.DAEMON_DEPLOYMENT_CHILD}`
+    && value.externalActionExecution.effectActionId === value.externalActionExecution.deploymentChildRouting.actionId
+    && deploymentChildEffectActionIdForRootV1(value.externalActionExecution.authorization.binding.actionId,
+      value.externalActionExecution.authorization.binding.deploymentPreparationAdmission) === value.externalActionExecution.deploymentChildRouting.actionId)));
 export type WorkspaceSyncSourceExecutionV1 = Readonly<z.infer<typeof WorkspaceSyncSourceExecutionV1Schema>>;
 
 /** Target custody has its own phase binding; the moved Session need not live on this child. */
@@ -293,6 +311,8 @@ export type SocketRpcAuthorizationContextKind =
 export type SocketRpcSessionWriteAuthorizationContext = Readonly<{
   kind: typeof SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE;
   sessionId: string;
+  /** Server-proven owner classification for an operation that requires this fact. Never caller-authored. */
+  authority?: 'sessionOwner';
 }>;
 
 /**
@@ -527,7 +547,7 @@ const SESSION_RPC_DECLARED_AUTHORITIES = Object.freeze({
   [SESSION_RPC_METHODS.SESSION_CHECKPOINT]: 'submitAgentInput',
   [SESSION_RPC_METHODS.SESSION_RESTORE]: 'submitAgentInput',
   [SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_INSPECT]: 'readTranscript',
-  [SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_START]: 'submitAgentInput',
+  [SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_START]: 'sessionOwner',
   [SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_STOP]: 'submitAgentInput',
   [SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_WATCH]: 'readTranscript',
   [SESSION_RPC_METHODS.SESSION_MANAGED_SERVICE_ENDPOINT_READ_OPEN_V1]: 'readTranscript',
@@ -777,20 +797,22 @@ export function isSocketRpcCurrentSessionPresentationOriginAuthorizationContext(
 
 export function parseSocketRpcAuthorizationContext(value: unknown): SocketRpcSessionAuthorizationContext | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const candidate = value as { kind?: unknown; sessionId?: unknown; actor?: unknown; authentication?: unknown };
+  const candidate = value as { kind?: unknown; sessionId?: unknown; actor?: unknown; authentication?: unknown; authority?: unknown };
   if (candidate.kind === SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_ACTION) {
     const parsed = SocketRpcSessionActionAuthorizationContextSchema.safeParse(value);
     return parsed.success ? parsed.data : null;
   }
   if (candidate.kind === SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE) {
     if (!Object.hasOwn(candidate, 'kind') || !Object.hasOwn(candidate, 'sessionId')
-      || Object.keys(candidate).some((key) => key !== 'kind' && key !== 'sessionId')) return null;
+      || Object.keys(candidate).some((key) => key !== 'kind' && key !== 'sessionId' && key !== 'authority')) return null;
+    if ('authority' in candidate && (!Object.hasOwn(candidate, 'authority') || candidate.authority !== 'sessionOwner')) return null;
     if (typeof candidate.sessionId !== 'string') return null;
     const sessionId = candidate.sessionId.trim();
     if (!sessionId || sessionId.length > SOCKET_RPC_AUTHORIZATION_SESSION_ID_MAX_LENGTH) return null;
     return {
       kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE,
       sessionId,
+      ...(candidate.authority === 'sessionOwner' ? { authority: 'sessionOwner' as const } : {}),
     };
   }
   if (candidate.kind !== SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_PERMISSION_RESPOND) return null;

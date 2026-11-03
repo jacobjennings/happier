@@ -6,45 +6,37 @@ import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { installAccountCommonModuleMocks } from './accountTestHelpers';
 
 const runtime = vi.hoisted(() => ({
-    focus: vi.fn(),
+    focused: [] as string[],
     recover: vi.fn(),
 }));
 
-installAccountCommonModuleMocks();
+// The host TextInput is the platform boundary that receives focus; PasswordField and its ref
+// forwarding stay real above it.
+installAccountCommonModuleMocks({
+    reactNative: async () => {
+        const { createReactNativeWebMock, createFocusableTextInputMock } = await import('@/dev/testkit/mocks/reactNative');
+        return createReactNativeWebMock({
+            TextInput: createFocusableTextInputMock(() => {}, (props) => { runtime.focused.push(String(props.testID)); }),
+        });
+    },
+});
 
 vi.mock('@/auth/password/recoverPasswordEnvelopeSecret', () => ({
     recoverPasswordEnvelopeSecret: (...args: unknown[]) => runtime.recover(...args),
 }));
 
-vi.mock('@/components/account/auth/emailPassword/PasswordField', async () => {
-    const React = await import('react');
-    const { View } = await import('react-native');
-    return {
-        PasswordField: (props: Readonly<{
-            inputRef?: React.RefObject<{ focus(): void } | null>;
-            testID?: string;
-            onChangeText(value: string): void;
-            error?: string | null;
-        }>) => {
-            React.useEffect(() => {
-                if (props.inputRef) props.inputRef.current = { focus: runtime.focus };
-                return () => { if (props.inputRef) props.inputRef.current = null; };
-            }, [props.inputRef]);
-            return <View {...props} />;
-        },
-    };
-});
+// installAccountCommonModuleMocks registers its mocks when it runs, so the owner graph loads after it.
+const { RecoveryKeyUnlockModal } = await import('./RecoveryKeyUnlockModal');
 
 afterEach(() => {
     standardCleanup();
-    runtime.focus.mockClear();
+    runtime.focused.length = 0;
     runtime.recover.mockReset();
 });
 
 describe('RecoveryKeyUnlockModal', () => {
     it('focuses the password field after a failed local unlock', async () => {
         runtime.recover.mockRejectedValueOnce(new Error('password_authentication_failed'));
-        const { RecoveryKeyUnlockModal } = await import('./RecoveryKeyUnlockModal');
         const screen = await renderScreen(<RecoveryKeyUnlockModal
             email="person@example.test"
             request={vi.fn()}
@@ -55,15 +47,14 @@ describe('RecoveryKeyUnlockModal', () => {
         await act(async () => screen.findByTestId('recovery-key-unlock-password')?.props.onChangeText('wrong password'));
         await screen.pressByTestIdAsync('recovery-key-unlock-submit');
 
-        expect(runtime.focus).toHaveBeenCalled();
-        expect(screen.findByTestId('recovery-key-unlock-password')?.props.error).toBeTruthy();
+        expect(runtime.focused).toEqual(['recovery-key-unlock-password']);
+        expect(screen.findHostByTestId('recovery-key-unlock-password-error')).not.toBeNull();
     });
 
     it('clears the recovered bytes after handing a usable view to the disclosure owner', async () => {
         const recovered = new Uint8Array(32).fill(29);
         runtime.recover.mockResolvedValueOnce(recovered);
         const observed: number[][] = [];
-        const { RecoveryKeyUnlockModal } = await import('./RecoveryKeyUnlockModal');
         const screen = await renderScreen(<RecoveryKeyUnlockModal
             email="person@example.test"
             request={vi.fn()}
@@ -83,7 +74,6 @@ describe('RecoveryKeyUnlockModal', () => {
         runtime.recover.mockRejectedValueOnce(new Error('password_authentication_failed'));
         runtime.recover.mockResolvedValueOnce(new Uint8Array(32).fill(5));
         const onUnlocked = vi.fn();
-        const { RecoveryKeyUnlockModal } = await import('./RecoveryKeyUnlockModal');
         const screen = await renderScreen(<RecoveryKeyUnlockModal
             email={null}
             request={vi.fn()}
@@ -95,7 +85,7 @@ describe('RecoveryKeyUnlockModal', () => {
         await act(async () => screen.findByTestId('recovery-key-unlock-password')?.props.onChangeText('wrong password'));
         await screen.pressByTestIdAsync('recovery-key-unlock-submit');
         // A wrong pair is a typed error under the field; the key is not disclosed.
-        expect(screen.findByTestId('recovery-key-unlock-password')?.props.error).toBeTruthy();
+        expect(screen.findHostByTestId('recovery-key-unlock-password-error')).not.toBeNull();
         expect(onUnlocked).not.toHaveBeenCalled();
         expect(runtime.recover).toHaveBeenLastCalledWith(expect.objectContaining({ email: 'person@example.test' }));
 

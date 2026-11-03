@@ -191,12 +191,14 @@ export function deriveLocalVoiceSessionSnapshot(
         ...(engineKind === 'local' && snapshot.state === 'listening' ? { canCommitInput: true } : {}),
         ...(snapshot.micMuted ? { micMuted: true } : {}),
         ...(snapshot.inUseVoice && projection.sessionStatus === 'connected' ? { inUseVoice: snapshot.inUseVoice } : {}),
+        ...(snapshot.preparedInstructionsFor && projection.sessionStatus === 'connected' ? { preparedInstructionsFor: snapshot.preparedInstructionsFor } : {}),
         ...(snapshot.error
             ? {
                 errorCode: snapshot.error.kind,
                 errorMessage: snapshot.error.reason,
                 errorRecoveryAction: snapshot.error.recoveryAction,
                 errorPresentation: snapshot.error.presentation,
+                ...(snapshot.error.uxDiagnostic ? { errorConnectedServiceDiagnostic: snapshot.error.uxDiagnostic } : {}),
             }
             : {}),
         ...(snapshot.reconnecting

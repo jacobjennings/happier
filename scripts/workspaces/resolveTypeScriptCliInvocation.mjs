@@ -9,7 +9,7 @@ import { isWorkspaceBuildStartup, resolveWorkspaceBuildAdmissionMachine } from '
 const NATIVE_TYPESCRIPT_PACKAGE_JSON = '@typescript/native/package.json';
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
-function typecheckCompilerOptions(args, workspaceDir) {
+export function typecheckCompilerOptions(args, workspaceDir) {
   // Build graphs and watch/editor tooling retain Microsoft authority. Use the
   // retained API only to read options (including extends), never to check code.
   if (args.some(arg => ['-b', '--build', '-w', '--watch', '--help', '-h', '--version', '-v', '--showconfig'].includes(arg.toLowerCase()))) return;
@@ -84,6 +84,11 @@ export function resolveTypeScriptCliInvocation(params) {
   }
 
   const compilerPath = resolve(dirname(packageJsonPath), tscBin);
+  // The synchronous native API spawns an executable, not the Node CLI wrapper.
+  // Reuse the selected package's platform resolver; API tooling always selects Microsoft.
+  const apiExecutable = params.args?.includes('--api')
+    ? { apiExecutable: createRequire(packageJsonPath)('./lib/getExePath.js').default() }
+    : {};
   // Rust snapshots and internal declarations never share Microsoft's caches.
   const cacheSuffix = options ? '.tsrs' : '';
   const buildInfoPath = options && ts.getTsBuildInfoEmitOutputFilePath(options);
@@ -113,6 +118,7 @@ export function resolveTypeScriptCliInvocation(params) {
         `--machine=${resolveWorkspaceBuildAdmissionMachine(env)}`,
         '--exec-admitted', '--', processExecPath, ...compilerArgs],
       compilerPath,
+      ...apiExecutable,
       cacheSuffix,
       ...cacheArgs,
     };
@@ -121,6 +127,7 @@ export function resolveTypeScriptCliInvocation(params) {
     command: processExecPath,
     argsPrefix: compilerArgs,
     compilerPath,
+    ...apiExecutable,
     cacheSuffix,
     ...cacheArgs,
   };

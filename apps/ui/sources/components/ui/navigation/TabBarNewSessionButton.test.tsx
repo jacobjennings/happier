@@ -17,17 +17,7 @@ installNavigationCommonModuleMocks({
                 React.createElement('Pressable', props, children),
         });
     },
-    storage: async (importOriginal) => {
-        const actual = await importOriginal<typeof import('@/sync/domains/state/storage')>();
-        return {
-            ...actual,
-            useSetting: ((key: string) => {
-                if (key === 'tabBarShowLabels') return true;
-                if (key === 'tabBarSize') return 'regular';
-                return undefined;
-            }) as typeof import('@/sync/domains/state/storage').useSetting,
-        };
-    },
+    storage: async (importOriginal) => await importOriginal(),
 });
 
 const expoRouterMock = createExpoRouterMock();

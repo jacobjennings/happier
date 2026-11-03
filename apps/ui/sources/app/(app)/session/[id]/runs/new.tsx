@@ -35,6 +35,7 @@ function InteractiveExecutionRunDraftRoute(props: Readonly<{
     draftCorrelationId: string | null;
     intent: ExecutionRunIntent | null;
     roleId: string | null;
+    heading: string | null;
     onRunStarted: (runId: string, recovery?: Readonly<{ retryInputLocalId: string }>) => void;
 }>) {
     const navigationIntent = React.useMemo(() => props.serverId && props.draftCorrelationId
@@ -56,6 +57,8 @@ function InteractiveExecutionRunDraftRoute(props: Readonly<{
             serverId={props.serverId}
             intent={props.intent}
             roleId={props.roleId}
+            heading={props.heading}
+            placement="center"
             initialText={navigationIntent?.initialText}
             launchOrigin={navigationIntent?.source}
             onRunStarted={props.onRunStarted}
@@ -66,7 +69,7 @@ function InteractiveExecutionRunDraftRoute(props: Readonly<{
 export function SessionNewRunScreen() {
     const { theme } = useUnistyles();
     const router = useRouter();
-    const params = useLocalSearchParams<{ id?: string | string[]; serverId?: string | string[]; intent?: string | string[]; roleId?: string | string[]; draftCorrelationId?: string | string[] }>();
+    const params = useLocalSearchParams<{ id?: string | string[]; serverId?: string | string[]; intent?: string | string[]; roleId?: string | string[]; title?: string | string[]; draftCorrelationId?: string | string[] }>();
     const routeScope = React.useMemo(() => createSessionRouteServerScope(params as Record<string, unknown>), [params]);
     const sessionId = normalizeSessionId(params.id);
     const routeHydrationState = useHydrateSessionForRoute(sessionId, 'SessionNewRunScreen.hydrate', routeScope.hydrationOptions);
@@ -78,14 +81,15 @@ export function SessionNewRunScreen() {
     const draftCorrelationId = readSingleRouteParam(params.draftCorrelationId);
     // A start that begins with a role (Second opinion: a review by `second_opinion`).
     const roleId = readSingleRouteParam(params.roleId);
+    const presetTitle = roleId ? readSingleRouteParam(params.title) : null;
 
     const screenOptions = React.useMemo(() => ({
         headerShown: true,
-        title: initialIntent
+        title: presetTitle ?? (initialIntent
             ? t(`executionRuns.newRun.intents.${initialIntent}` as const)
-            : t('session.subagents.panel.newAgentConversation'),
+            : t('session.subagents.panel.newAgentConversation')),
         headerBackTitle: t('common.back'),
-    }), [initialIntent]);
+    }), [initialIntent, presetTitle]);
 
     const unavailable = !sessionId || isSessionRouteHydrationMissing(routeHydrationState);
 
@@ -127,6 +131,7 @@ export function SessionNewRunScreen() {
                         draftCorrelationId={draftCorrelationId}
                         intent={initialIntent}
                         roleId={roleId}
+                        heading={presetTitle}
                         onRunStarted={(runId, recovery) => {
                             router.replace(buildScopedSessionRouteHref({
                                 sessionId,

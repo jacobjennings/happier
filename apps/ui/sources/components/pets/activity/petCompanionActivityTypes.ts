@@ -1,6 +1,6 @@
 import type { PetAnimationStateV1 } from '@happier-dev/protocol';
 
-import type { Session } from '@/sync/domains/state/storageTypes';
+import type { SessionRelationRecord } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import type { SessionContextPresentation } from '@/sync/domains/session/presentation/sessionContextPresentation';
 
@@ -50,7 +50,7 @@ export type PetCompanionActivityModel = Readonly<{
 }>;
 
 export type BuildPetCompanionActivityModelInput = Readonly<{
-    sessions: readonly Session[];
+    sessions: readonly SessionRelationRecord[];
     contextsByAddressKey?: Readonly<Record<string, SessionContextPresentation | null | undefined>>;
     selectedAddress?: SessionAddress | null;
     selectedSessionId?: string | null;

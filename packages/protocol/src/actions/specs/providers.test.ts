@@ -5,6 +5,30 @@ import { createProviderErrorV1, ProviderErrorV1Schema } from '../../providers/er
 import { describeApprovalActionFields } from '../actionApprovalPresentation.js';
 
 describe('Provider Action placement declarations', () => {
+  it('refreshes usage only as an explicit identity-only external Machine Action', () => {
+    const spec = PROVIDER_ACTION_SPECS_V1.find(spec => String(spec.id) === 'providers.usage.refresh');
+    expect(spec).toBeDefined();
+    expect(spec).toMatchObject({ executionPlacement: 'machine', safety: 'danger', sideEffectClass: 'external' });
+    expect(spec!.inputSchema.parse({ connectionId: 'gateway', machineId: 'hub' }))
+      .toEqual({ connectionId: 'gateway', machineId: 'hub' });
+    expect(spec!.inputSchema.safeParse({ connectionId: 'gateway', machineId: 'hub', credentialSlotId: 'billing' }).success).toBe(false);
+    expect(spec!.inputSchema.safeParse({ connectionId: 'gateway' }).success).toBe(false);
+    expect(spec!.outputSchema.parse({ status: 'success', sources: [{ sourceId: 'credits', status: 'not_configured' }] }))
+      .toEqual({ status: 'success', sources: [{ sourceId: 'credits', status: 'not_configured' }] });
+  });
+  it('keeps explicit per-model generation edits validated, approval-visible and consequential', () => {
+    const spec = PROVIDER_ACTION_SPECS_V1.find(spec => spec.id === 'providers.connections.update')!;
+    const modelSettings = { 'qwen2.5-coder:1.5b-base': { maxTokens: 128 }, reset: null };
+    const input = spec.inputSchema.parse({ action: 'update', connectionId: 'pc_editor', expectedRevision: 0, modelSettings });
+    expect(spec.safetyForInput?.(input)).toBe('danger');
+    expect(spec.projectObservationInput?.(input)).toMatchObject({ modelSettings });
+    expect(describeApprovalActionFields({ actionId: spec.id, actionArgs: input }).rows)
+      .toContainEqual(expect.objectContaining({ path: 'modelSettings', value: JSON.stringify(modelSettings) }));
+    for (const settings of [{ maxTokens: 1.5 }, { maxTokens: '128' }, { temperature: 3 }, { arbitrary: 1 }]) {
+      expect(spec.inputSchema.safeParse({ ...input, modelSettings: { model: settings } }).success).toBe(false);
+    }
+  });
+
   it('identifies the experimental model and Agent through the approval field contract', () => {
     const spec = PROVIDER_ACTION_SPECS_V1.find(spec => spec.id === 'providers.models.experimental.confirm')!;
     const input = spec.inputSchema.parse({ action: 'confirmExperimental', connectionId: 'connected-source:recipient',

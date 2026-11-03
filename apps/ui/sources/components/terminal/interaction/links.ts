@@ -3,8 +3,6 @@ import {
     type TerminalInteractionPolicy,
 } from './model';
 
-export { DEFAULT_TERMINAL_INTERACTION_POLICY };
-
 export type TerminalHyperlinkAction =
     | Readonly<{ kind: 'deny'; reason: 'invalid_url' | 'unsupported_scheme' | 'policy_denied' }>
     | Readonly<{ kind: 'prompt'; url: string }>

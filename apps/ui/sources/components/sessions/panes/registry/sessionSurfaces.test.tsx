@@ -55,23 +55,4 @@ describe('plugin session surface registry', () => {
         expect(screen.findByTestId('session-simulator:session_1')).toBeTruthy();
         expect(screen.findByTestId('session-simulator:session_1-preview-picker-empty')).toBeTruthy();
     });
-
-    it('does not admit the unshipped pluginSessionSurface resource into Details rendering', async () => {
-        const { renderSessionSurfaceTab } = await import('./sessionSurfaces');
-
-        expect(renderSessionSurfaceTab({
-            sessionId: 'session_1',
-            tab: {
-                key: 'plugin:preview',
-                kind: 'pluginSessionSurface',
-                title: 'Preview',
-                isPinned: true,
-                isPreview: false,
-                resource: {
-                    kind: 'pluginSessionSurface',
-                    destination: { pluginId: 'acme.preview', localId: 'preview-pane' },
-                },
-            } as never,
-        })).toBeNull();
-    });
 });

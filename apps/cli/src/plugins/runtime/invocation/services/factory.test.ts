@@ -30,7 +30,7 @@ import { createPluginAgentCliReadinessService } from '@/plugins/runtime/context/
 import { createPluginExecSystemToolResolver } from '@/plugins/runtime/exec/system/tools/resolveGrant';
 import { createPluginStorageOwner } from '@/plugins/runtime/context/storage';
 import { createPluginInvocationLifetime } from '../lifetime';
-import { createBackgroundServiceRunnerHost } from '../../lifecycle/contributions/backgroundServices';
+import { createBackgroundServiceRunnerHost, type HostBackgroundServiceContext } from '../../lifecycle/contributions/backgroundServices';
 
 const seedMaterialization = createPluginActionCallerMaterializationFixture('acme.alpha');
 
@@ -55,7 +55,7 @@ describe('unavailable plugin invocation services factory', () => {
         let runSignal: AbortSignal | undefined;
         const host = createBackgroundServiceRunnerHost({ registrations: [{
             owner: { kind: 'host', serviceId: 'factory-test' }, localId: 'index', occurrenceId: 'one', activation: 'demand',
-            async runner(context) { runSignal = context.signal; entered(); await release; },
+            async runner(context: HostBackgroundServiceContext) { runSignal = context.signal; entered(); await release; },
         }], createContext() { throw new Error('No plugin context for host service'); } });
         const lifetime = createPluginInvocationLifetime();
         const services = createPluginInvocationServicesFactory({ loggerSink: { write() {} } })(
@@ -660,7 +660,6 @@ describe('unavailable plugin invocation services factory', () => {
             },
             http: createStablePluginHttpHost({
                 adapter,
-                resolveNetworkAddresses: async () => ['93.184.216.34'],
             }),
         })(seed, binding);
 

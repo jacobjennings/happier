@@ -392,6 +392,28 @@ describe('Automation versioned API schemas', () => {
     }).success).toBe(false);
   });
 
+  it('selects only explicit managed targets or unknown rows without widening invalid demand', () => {
+    const managedTarget = { homeId: 'home-1', managedId: 'managed-1' };
+    for (const selection of [{ managedTarget }, { managedTarget, includeUnindexedManagedTargets: true }, { managedTargetUnindexed: true }]) {
+      expect(Api.AutomationDefinitionListRequestSchema.safeParse(selection).success).toBe(true);
+    }
+    for (const selection of [
+      { includeUnindexedManagedTargets: true }, { managedTargetUnindexed: false },
+      { managedTarget, managedTargetUnindexed: true }, { managedTarget, scopeSessionId: 'session-1' },
+      { managedTarget, scope: 'account_inline' }, { managedTarget, workflowDefinitionIds: [] },
+      { managedTarget: { ...managedTarget, prompt: 'private' } }, { managedTarget: { homeId: 'home-1' } },
+    ]) expect(Api.AutomationDefinitionListRequestSchema.safeParse(selection).success).toBe(false);
+    expect(Api.AutomationDefinitionListItemSchema.parse({ ...listDefinition, managedTarget })).toMatchObject({ managedTarget });
+    expect(Api.AutomationDefinitionListItemSchema.parse({ ...listDefinition, managedTarget: null })).toHaveProperty('managedTarget', null);
+    expect(Api.AutomationDefinitionListItemSchema.parse(listDefinition)).not.toHaveProperty('managedTarget');
+    const create = {
+      automationId: 'automation-managed', name: 'Managed', enabled: false, assignments: [], triggers: [],
+      executionRecipe: { ...workflowRecipe, managedTarget },
+    };
+    expect(Api.AutomationDefinitionCreateRequestSchema.safeParse(create).success).toBe(true);
+    expect(Api.AutomationDefinitionCreateRequestSchema.safeParse({ ...create, managedTarget }).success).toBe(false);
+  });
+
   it('projects plural trigger identity while keeping private definitions detail-only', () => {
     const detail = {
       ...listDefinition,

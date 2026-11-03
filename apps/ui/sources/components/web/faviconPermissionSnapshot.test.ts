@@ -110,8 +110,7 @@ function expectNoObjectKeysOrValuesOnRecords(action: () => void, guardedRecords:
     }) as typeof Object.values);
 
     try {
-        expect(action).not.toThrow('selector materialized a guarded store record with Object.keys');
-        expect(action).not.toThrow('selector materialized a guarded store record with Object.values');
+        expect(action).not.toThrow();
     } finally {
         keysSpy.mockRestore();
         valuesSpy.mockRestore();

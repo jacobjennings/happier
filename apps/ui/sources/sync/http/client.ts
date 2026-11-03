@@ -1,4 +1,7 @@
 import { mergeAbortSignals, throwIfAborted } from '@/utils/runtime/abortSignals';
+import { Platform } from 'react-native';
+import { log } from '@/log';
+import { readServerReadInactivityTimeoutMs } from '@/sync/runtime/connectivity/serverReachabilityTuning';
 import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { resolvePortableServerIdentityForRoutingId } from '@/sync/domains/server/resolvePortableServerIdentityForRoutingId';
@@ -6,7 +9,7 @@ import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import { isLoopbackHostname } from '@happier-dev/protocol/server/urls/loopbackHostname';
 import { redactPublicShareCapabilityUrl } from '@happier-dev/protocol/crypto/publicShareCapabilityUrl';
 import { runtimeFetch } from '@/utils/system/runtimeFetch';
-import { buildRetryLaterProbeResultFromResponse, readRetryLaterReason } from '@happier-dev/connection-supervisor';
+import { classifyEndpointResponse } from '@/sync/runtime/connectivity/classifyEndpointResponse';
 import { sanitizeEndpointErrorMessage } from '@/sync/runtime/connectivity/sanitizeEndpointErrorMessage';
 import {
     peekServerReachabilityScope,
@@ -61,6 +64,8 @@ export type ExpectedActiveServerFetchBasis = Readonly<{
 }>;
 
 export type ServerFetchOptions = Readonly<{
+    /** Read-only POSTs opt in. Unpaged native reads remain cancellable without a total deadline. */
+    recoveryRead?: 'paged' | 'unbounded' | false;
     includeAuth?: boolean;
     expectedActiveServer?: ExpectedActiveServerFetchBasis;
     /**
@@ -171,7 +176,8 @@ function resolveRequestTimeoutMs(optionTimeoutMs: number | undefined): number {
     return 0;
 }
 
-const inFlightControllers = new Set<AbortController>();
+type InFlightFetch = { active: boolean; readOnly: boolean; reason?: unknown };
+const inFlightControllers = new Map<AbortController, InFlightFetch>();
 let abortSequence = 0;
 
 // A marked first-key migration keeps the rejected credential bytes as recovery
@@ -195,12 +201,118 @@ const debugLogThrottleMs = 5_000;
 const lastDebugLogMsByKey = new Map<string, number>();
 let didLogActiveServerSnapshot = false;
 
-export function abortServerFetches(reason: string = 'server-switch'): void {
-    abortSequence += 1;
-    for (const controller of inFlightControllers) {
+export function abortServerFetches(reason: string = 'server-switch', scope?: Readonly<{ readOnly: true }>): void {
+    if (!scope?.readOnly) abortSequence += 1;
+    for (const [controller, request] of inFlightControllers) {
+        if (scope?.readOnly ? !request.readOnly : !request.active) continue;
+        request.reason = reason;
         controller.abort(reason);
     }
-    inFlightControllers.clear();
+}
+
+export class ServerFetchReadTimeoutError extends Error {
+    readonly retryable = true;
+    constructor() {
+        super('Server recovery read made no progress within the peer-liveness window');
+        this.name = 'ServerFetchReadTimeoutError';
+    }
+}
+
+export class ServerFetchReadSupersededError extends Error {
+    readonly retryable = false;
+    constructor() {
+        super('Server recovery read superseded by manual retry');
+        this.name = 'ServerFetchReadSupersededError';
+    }
+}
+
+/** One complete read lifetime for active, captured Home/Account and legacy scoped adapters. */
+export async function withServerReadLifetime<T = Response>(
+    init: RequestInit | undefined,
+    request: (init: RequestInit, consume: (response: Response) => Promise<Response | T>) => Promise<Response | T>,
+    consumeResponse?: (response: Response) => Promise<T>,
+    options: Readonly<{ active?: boolean; responseSizeBounded?: boolean }> = {},
+): Promise<Response | T> {
+    const controller = new AbortController();
+    // React Native's abort-controller discards abort(reason). Preserve the cause
+    // at the existing cancellation owner, independently of signal.reason.
+    const cancellation: InFlightFetch = { active: options.active === true, readOnly: true };
+    inFlightControllers.set(controller, cancellation);
+    const upstream = init?.signal;
+    const abortFromUpstream = () => {
+        cancellation.reason = upstream?.reason;
+        controller.abort(upstream?.reason);
+    };
+    const timeoutMs = readServerReadInactivityTimeoutMs();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    // Native fetch resolves after the whole XHR body: a large unpaged response
+    // must not acquire a total deadline until native exposes body progress.
+    let canObserveInactivity = Platform.OS === 'web' || options.responseSizeBounded === true;
+    const resetInactivity = () => {
+        clearTimeout(timer);
+        if (!canObserveInactivity) return;
+        timer = setTimeout(() => {
+            log.log(`[serverFetch] recovery read inactivity timeout (${timeoutMs}ms)`);
+            cancellation.reason = new ServerFetchReadTimeoutError();
+            controller.abort(cancellation.reason);
+        }, timeoutMs);
+    };
+    const cancelled = new Promise<never>((_resolve, reject) => {
+        controller.signal.addEventListener('abort', () => {
+            const reason = cancellation.reason ?? controller.signal.reason;
+            const error = reason instanceof ServerFetchReadTimeoutError ? reason
+                : reason === 'manual-retry' ? new ServerFetchReadSupersededError()
+                : reason === 'server-switch' ? new ServerFetchAbortedForServerSwitchError()
+                : reason instanceof Error ? reason
+                : Object.assign(new Error('Aborted'), { name: 'AbortError' });
+            reject(error);
+            void reader?.cancel(error).catch(() => {});
+        }, { once: true });
+    });
+    if (upstream?.aborted) abortFromUpstream();
+    else upstream?.addEventListener('abort', abortFromUpstream, { once: true });
+    resetInactivity();
+    try {
+        if (controller.signal.aborted) return await cancelled;
+        return await Promise.race([cancelled, request({ ...init, signal: controller.signal }, async response => {
+            if (controller.signal.aborted) return await cancelled;
+            resetInactivity();
+            let ownedResponse = response;
+            if (typeof response.body?.getReader === 'function') {
+                canObserveInactivity = true;
+                resetInactivity();
+                reader = response.body.getReader();
+                const bodyReader = reader;
+                ownedResponse = new Response(new ReadableStream<Uint8Array>({
+                    async pull(body) {
+                        try {
+                            const chunk = await bodyReader.read();
+                            if (chunk.done) body.close();
+                            else {
+                                if (chunk.value.byteLength > 0) resetInactivity();
+                                body.enqueue(chunk.value);
+                            }
+                        } catch (error) { body.error(error); }
+                    },
+                    cancel: reason => bodyReader.cancel(reason),
+                }), { status: response.status, statusText: response.statusText, headers: response.headers });
+            }
+            // A raw Response borrower receives complete bytes before cancellation
+            // and carrier custody end. Later json()/clone() cannot strand a read.
+            const result = consumeResponse ? await consumeResponse(ownedResponse)
+                : reader ? new Response(await ownedResponse.blob(), {
+                    status: response.status, statusText: response.statusText, headers: response.headers,
+                }) : response;
+            if (controller.signal.aborted) return await cancelled;
+            return result;
+        })]);
+    } finally {
+        clearTimeout(timer);
+        upstream?.removeEventListener('abort', abortFromUpstream);
+        void reader?.cancel().catch(() => {});
+        inFlightControllers.delete(controller);
+    }
 }
 
 function normalizePath(path: string): string {
@@ -285,6 +397,19 @@ async function requestAtEndpoint<T>(
     assertRequestContextCurrent(context);
     throwIfAborted(context.signal);
     throwIfAborted(init?.signal ?? undefined);
+    const method = String(init?.method ?? 'GET').toUpperCase();
+    const readPolicy = options.recoveryRead ?? (isIdempotentServerRead(method, path) ? 'unbounded' : false);
+    if (readPolicy) {
+        const cancellation = mergeAbortSignals([context.signal, init?.signal ?? undefined]);
+        try {
+            return await withServerReadLifetime<T>({ ...init, signal: cancellation.signal },
+                (ownedInit, consume) => requestAtEndpoint(context, path, ownedInit, { ...options, recoveryRead: false }, consume),
+                consumeResponse, { active: context.active, responseSizeBounded: readPolicy === 'paged' });
+        } catch (error) {
+            assertRequestContextCurrent(context);
+            throw error;
+        } finally { cancellation.dispose(); }
+    }
     const localAbortSequence = context.active ? abortSequence : null;
     const usesReachabilitySupervision = context.active || context.superviseReachability === true;
     const recoversStoredCredentials = context.active || context.recoverStoredCredentials === true;
@@ -506,7 +631,7 @@ async function requestAtEndpoint<T>(
     }
 
     const requestController = new AbortController();
-    if (context.active) inFlightControllers.add(requestController);
+    if (context.active) inFlightControllers.set(requestController, { active: true, readOnly: false });
     if (context.active && localAbortSequence !== null && abortSequence !== localAbortSequence) {
         requestController.abort('server-switch');
     }
@@ -527,7 +652,6 @@ async function requestAtEndpoint<T>(
         removeUpstreamListeners.push(() => upstreamSignal.removeEventListener('abort', onAbort));
     }
 
-    const method = String(init?.method ?? 'GET').toUpperCase();
     const idempotentRead = isIdempotentServerRead(method, normalizedPath);
     const effectiveTimeoutMs = resolveRequestTimeoutMs(options.timeoutMs);
     let didWriteTimeout = false;
@@ -622,19 +746,8 @@ async function requestAtEndpoint<T>(
                     throw error;
                 }
                 if (probeReportScope && retryMode !== 'none') {
-                    if (usedToken && response.status === 401) {
-                        reportServerReachabilityProbeResult(context.endpointUrl, {
-                            status: 'auth_failed', statusCode: 401, errorMessage: 'HTTP 401',
-                        }, probeReportScope, usedToken);
-                    } else if (response.status === 502 || response.status === 503 || response.status === 504
-                        || readRetryLaterReason(response.headers)) {
-                        // A domain failure still proves this Home answered. Only
-                        // gateway/service failures or explicit readiness evidence
-                        // should suspend unrelated requests behind reachability.
-                        reportServerReachabilityProbeResult(context.endpointUrl,
-                            buildRetryLaterProbeResultFromResponse(response, `HTTP ${response.status}`),
-                            probeReportScope, usedToken);
-                    }
+                    const probe = classifyEndpointResponse(response, Boolean(usedToken));
+                    if (probe) reportServerReachabilityProbeResult(context.endpointUrl, probe, probeReportScope, usedToken);
                 }
             } catch (error) {
                 maybeLogRuntimeFetchFailure({
@@ -665,7 +778,7 @@ async function requestAtEndpoint<T>(
 
             assertRequestContextCurrent(context);
 
-            if (!usedToken || response.status !== 401 || !isSupervisedOrigin) {
+            if (!usedToken || response.status !== 401 || !recoversStoredCredentials || isCrossOrigin) {
                 break;
             }
 

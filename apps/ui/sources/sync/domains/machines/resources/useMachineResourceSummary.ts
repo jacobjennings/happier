@@ -5,7 +5,7 @@ import { resolveServerScopedMachine } from '@/sync/domains/machines/resolveServe
 import { useMachineDaemonReadIdentities } from '../useMachineDaemonReadTarget';
 import { useMachinePresenceSummary } from '@/components/sessions/model/useMachinePresenceSummary';
 import { EMPTY_MACHINE_RESOURCE_STATE, isMachineResourceStateStale, machineResourceStore, type MachineResourceState } from './machineResourceStore';
-import type { MachineResourceKey } from './machineRpc';
+import type { MachineResourceKey, MachineVitalsView } from './machineRpc';
 
 export type MachineResourceAvailability =
     | Readonly<{ kind: 'reporting'; summary: MachineResourceSummaryV1 | null; freshness: 'live' | 'held' | 'stale';
@@ -83,10 +83,10 @@ export function useMachineResourceSummary(input: MachineResourceKey): MachineRes
 }
 
 /** A surface's retained summaries are being revalidated by the same demand owner. */
-export function useMachineResourceRefreshing(inputs: readonly MachineResourceKey[]): boolean {
+export function useMachineResourceRefreshing(inputs: readonly MachineResourceKey[], view: MachineVitalsView = 'summary'): boolean {
     const identities = useMachineDaemonReadIdentities(inputs);
     const keys = React.useMemo(() => identities.filter(identity => identity.accountMatches)
-        .map(identity => ({ ...identity.key, view: 'summary' as const })), [identities]);
+        .map(identity => ({ ...identity.key, view })), [identities, view]);
     const subscribe = React.useCallback((listener: () => void) => {
         const releases = keys.flatMap(key => [
             machineResourceStore.observe(key, listener),

@@ -9,9 +9,21 @@ import { selectVoiceProviderOption } from './providerSelection.js';
 import type { VoiceSettingsRegistryEntry } from './providerRegistry.js';
 import { VoiceSpeechDiagnosticsSettingsV1Schema } from '../diagnostics.js';
 import { VoiceLocalConversationSchema } from './localConversation.js';
+import { createStoredReadSchema } from '../../json/storedReadSchema.js';
+import { BoundedLegacyJsonValueSchema } from '../../account/settings/catalog/legacyJson.js';
+import { VoiceProviderSettingsEnvelopeV1Schema } from '../realtime/providerSettings.js';
 
 describe('shared Voice settings owner', () => {
   const owner = createVoiceSettingsOwner({ bundledContributions: [] });
+
+  it('defaults Voice request decisions on and preserves an explicit opt-out', () => {
+    expect(owner.voiceSettingsParse({}).canApproveRequests).toBe(true);
+    for (const canApproveRequests of [true, false]) {
+      const stored = owner.voiceSettingsParse({ canApproveRequests });
+      expect(stored.canApproveRequests).toBe(canApproveRequests);
+      expect(owner.voiceSettingsParse(JSON.parse(JSON.stringify(stored))).canApproveRequests).toBe(canApproveRequests);
+    }
+  });
 
   it('defaults both neural speech roles to June Zipformer while retaining explicit pack choices', () => {
     const june = 'sherpa-onnx-streaming-zipformer-en-2023-06-26';
@@ -148,6 +160,27 @@ describe('shared Voice settings owner', () => {
     expect(settings.privacy.shareFilePaths).toBe(false);
     expect(settings.providers['example.voice.future/conversation']).toEqual(future);
     expect(Reflect.get(settings, 'futurePreference')).toEqual({ enabled: true });
+  });
+
+  it('preserves catalog-admitted stored Voice data without a second size or cardinality policy', () => {
+    const future = { entries: Array.from({ length: 4097 }, (_, index) => `retained preference ${index}`) };
+    const raw = createStoredReadSchema(BoundedLegacyJsonValueSchema).parse({
+      futurePreference: future,
+      providers: { 'example.voice.future/conversation': { schemaVersion: 2, config: future } },
+    });
+    const settings = owner.voiceSettingsParse(raw);
+    expect(Reflect.get(settings, 'futurePreference')).toEqual(future);
+    expect(settings.providers['example.voice.future/conversation']).toEqual({ schemaVersion: 2, config: future });
+    expect(owner.voiceSettingsParse(JSON.parse(JSON.stringify(settings)))).toEqual(settings);
+  });
+
+  it('delegates opaque Voice JSON admission to the strict JSON owner without invoking accessors', () => {
+    let reads = 0;
+    const unsafe = Object.defineProperty({}, 'value', { enumerable: true, get: () => { reads += 1; return 'unsafe'; } });
+    const settings = owner.voiceSettingsParse({ futurePreference: unsafe });
+    expect(Reflect.has(settings, 'futurePreference')).toBe(false);
+    expect(VoiceProviderSettingsEnvelopeV1Schema.safeParse({ schemaVersion: 2, config: unsafe }).success).toBe(false);
+    expect(reads).toBe(0);
   });
 
   it('uses the same local conversation schema and writer without changing other Voice owners', () => {

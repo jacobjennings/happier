@@ -54,15 +54,24 @@ describe('blankRecoveryOwner', () => {
         expect(plan.effects).toEqual([]);
     });
 
-    it('ignores normal overscroll bounce invalid-offset tags', () => {
-        const plan = planTranscriptBlankRecoveryObservation(createTranscriptBlankRecoveryState(), {
+    it.each([
+        { name: 'measured native bounce', rawOffsetY: -15 },
+        { name: 'the threshold itself', rawOffsetY: INVALID_NATIVE_OFFSET_RECOVERY_RAW_THRESHOLD_PX },
+    ])('ignores a sustained invalid-offset tag at $name ($rawOffsetY px)', ({ rawOffsetY }) => {
+        let plan = planTranscriptBlankRecoveryObservation(createTranscriptBlankRecoveryState(), {
             ...baseObservation,
             observationReason: 'invalid-native-offset',
-            rawOffsetY: -15,
+            rawOffsetY,
         });
-
         expect(plan.effects).toEqual([]);
-        expect(INVALID_NATIVE_OFFSET_RECOVERY_RAW_THRESHOLD_PX).toBeLessThan(-15);
+
+        plan = planTranscriptBlankRecoveryObservation(plan.state, {
+            ...baseObservation,
+            nowMs: baseObservation.nowMs + INVALID_NATIVE_OFFSET_RECOVERY_DURATION_MS,
+            observationReason: 'invalid-native-offset',
+            rawOffsetY,
+        });
+        expect(plan.effects).toEqual([]);
     });
 
     it('recovers an empty visible window only after the deadline and chooses bottom follow vs anchor restore', () => {

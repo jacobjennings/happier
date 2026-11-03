@@ -39,6 +39,15 @@ function describeItems(
     });
 }
 
+describe('flattenRenderPlanForVirtualizedList', () => {
+    it('omits an empty section that has no hint to show, as the mapped renderer does', () => {
+        expect(flattenRenderPlanForVirtualizedList([
+            { id: 'unhinted', options: [], dynamicState: 'empty', hint: undefined },
+            { id: 'blank', options: [], dynamicState: 'empty', hint: '' },
+        ])).toEqual([]);
+    });
+});
+
 describe('groupVirtualizedItemsIntoColumnRows', () => {
     it('returns the very same array at one column — not a rebuilt equivalent', () => {
         const items = flattenRenderPlanForVirtualizedList([makeSection('models', 4)]);

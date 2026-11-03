@@ -47,7 +47,7 @@ function buildDeps(userScrollIntent: ReturnType<typeof createTranscriptUserScrol
         latestCommittedActivityKey: 'activity-1',
         lifecycleHost: {
             clearNativeExplicitJumpConfirmation: vi.fn(),
-            getMountSettleSnapshot: vi.fn(() => ({ isMountSettleActive: false })),
+            getMountSettleSnapshot: vi.fn(() => ({ stableSettle: false })),
             observeNativeScrollConfirmation: vi.fn(() => ({
                 consumed: false,
                 entrySettleEffects: [],

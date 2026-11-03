@@ -235,6 +235,7 @@ export async function prepareDaemonSpawnChildEnvironment(input: Readonly<{
         initialAccess: _initialAccess,
         manager: _manager,
         initialSessionRolesV1: _initialSessionRolesV1,
+        authoringOrigin: _authoringOrigin,
         freshSessionCreation: _freshSessionCreation,
         managedDirectorySeed: _managedDirectorySeed,
         primaryTeamId: _primaryTeamId,

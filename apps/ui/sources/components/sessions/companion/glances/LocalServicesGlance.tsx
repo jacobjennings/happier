@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Platform, Pressable, View } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { HAPPIER_PAGE_METRICS, happierPageTextMetrics } from '@happier-dev/plugin-ui/presentation';
 import { useWidgetPresentation } from '@happier-dev/plugin-ui';
@@ -10,8 +10,9 @@ import { useServicesOpenInBrowser } from '@/components/sessions/localServices/us
 import { useMachinePresenceSummary } from '@/components/sessions/model/useMachinePresenceSummary';
 import { useSessionMachineTarget } from '@/components/sessions/model/useSessionMachineTarget';
 import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
-import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { IconButton } from '@/components/ui/buttons/IconButton';
+import { ICON_SIZE } from '@/components/ui/icons/Icon';
+import { StatusDot } from '@/components/ui/status/StatusDot';
 import { SurfaceAsOfLabel } from '@/components/ui/surfaces/SurfaceAsOfLabel';
 import { Text } from '@/components/ui/text/Text';
 import { WidgetFrame, type WidgetFrameBody, type WidgetFrameStyle } from '@/components/widgets/frame/WidgetFrame';
@@ -22,24 +23,24 @@ import { buildLocalServiceRows, selectLocalServiceRunningCount } from '@/sync/do
 import { t } from '@/text';
 
 import { resolveLocalServicesGlanceRows, type LocalServicesGlanceRow } from './glanceModels';
+import { useAppLocalServicesGlance, type AppLocalServicesGlanceState } from './useAppLocalServicesGlance';
 
-const OPEN_TARGET_PX = Math.max(HAPPIER_PAGE_METRICS.controlHeightPx, resolveMinimumInteractiveTargetSize(Platform.OS));
+const ROW_MIN_HEIGHT_PX = 40;
+/** The free space above and below the Open button inside its row: its hit area reaches at most that far. */
+const OPEN_VERTICAL_REACH_PX = (ROW_MIN_HEIGHT_PX - HAPPIER_PAGE_METRICS.controlHeightPx) / 2;
 
 const stylesheet = StyleSheet.create((theme) => ({
-    row: { flexDirection: 'row', alignItems: 'center', gap: theme.space.s10, minHeight: 40, minWidth: 0 },
-    dotCell: { width: 16, alignItems: 'center', justifyContent: 'center' },
-    dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.state.success.foreground },
-    dotOff: { backgroundColor: theme.colors.border.strong },
+    row: { flexDirection: 'row', alignItems: 'center', gap: theme.space.s10, minHeight: ROW_MIN_HEIGHT_PX, minWidth: 0 },
+    dotCell: { width: ICON_SIZE.sm, alignItems: 'center', justifyContent: 'center' },
     labels: { flex: 1, minWidth: 0 },
     title: { ...Typography.default(), ...happierPageTextMetrics('rowDescription'), color: theme.colors.text.primary },
     detail: { color: theme.colors.text.tertiary },
     status: { ...Typography.default(), ...happierPageTextMetrics('meta'), color: theme.colors.text.secondary },
     quiet: { ...Typography.default(), ...happierPageTextMetrics('meta'), color: theme.colors.text.secondary },
     meta: { ...Typography.default(), ...Typography.tabular(), ...happierPageTextMetrics('meta'), color: theme.colors.text.tertiary },
-    open: { width: OPEN_TARGET_PX, height: OPEN_TARGET_PX, alignItems: 'center', justifyContent: 'center', marginRight: -8 },
 }));
 
-export type LocalServicesGlanceState =
+export type LocalServicesGlanceState = (AppLocalServicesGlanceState & Readonly<{ refreshFailed?: never }>)
     | Readonly<{ kind: 'loading' }>
     | Readonly<{ kind: 'noMachine' }>
     | Readonly<{ kind: 'error' }>
@@ -76,12 +77,23 @@ export const LocalServicesGlanceView = React.memo(function LocalServicesGlanceVi
             kind: 'error', title: t('localServices.inventory.errorTitle'), reason: t('widgetGlances.servicesReadFailed'),
             ...(props.onRetry ? { action: { label: t('common.retry'), onPress: props.onRetry } } : {}),
         };
+    } else if (state.rows.length === 0 && 'scope' in state) {
+        // Home's App glance: the frame sizes the state (a scene and one line in a card, a line in a column). A machine
+        // it could not ask replaces the promise with that reason, said once; and with no machine listed at all the
+        // title says only what is known, never that nothing runs.
+        const degradedLine = readAppDegradedLine(state.degraded);
+        const unlisted = degradedLine !== null && state.listedMachineCount === 0;
+        body = { kind: 'empty', scene: 'nothingListening',
+            title: unlisted ? t('widgetGlances.appUnlistedTitle') : t('widgetGlances.appEmptyTitle'),
+            // Under "Services aren't listed" the reason says only why, never "aren't listed" twice.
+            reason: unlisted ? readAppUnlistedReason(state.degraded) : degradedLine ?? t('widgetGlances.appEmptyReason') };
     } else if (state.rows.length === 0) {
         body = { kind: 'content', children: <Text style={styles.quiet}>{t('widgetGlances.nothingRunning')}</Text> };
     } else {
+        const degradedLine = 'scope' in state ? readAppDegradedLine(state.degraded) : null;
         body = {
             kind: 'content',
-            children: state.rows.map((row) => {
+            children: [...state.rows.map((row) => {
                 const onOpen = props.onOpen;
                 const openTarget = row.openTarget;
                 const status = row.running ? t('widgetGlances.running') : t('widgetGlances.notRunning');
@@ -89,7 +101,7 @@ export const LocalServicesGlanceView = React.memo(function LocalServicesGlanceVi
                     <View key={row.id} style={styles.row} testID={`${props.testID}.row.${row.id}`}
                         accessibilityLabel={[row.title, row.detail, status].filter(Boolean).join(', ')}>
                         <View style={styles.dotCell} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-                            <View style={[styles.dot, row.running ? null : styles.dotOff]} />
+                            <StatusDot color={row.running ? theme.colors.state.success.foreground : theme.colors.border.strong} />
                         </View>
                         <View style={styles.labels}>
                             <Text style={styles.title} numberOfLines={1}>
@@ -100,19 +112,24 @@ export const LocalServicesGlanceView = React.memo(function LocalServicesGlanceVi
                             {compact ? null : <Text testID={`${props.testID}.row.${row.id}.status`} style={styles.status} numberOfLines={1}>{status}</Text>}
                         </View>
                         {openTarget && onOpen ? (
-                            <Pressable
+                            <IconButton
                                 testID={`${props.testID}.row.${row.id}.open`}
-                                accessibilityRole="button"
+                                iconName="arrow-square-out"
+                                size={HAPPIER_PAGE_METRICS.controlHeightPx}
+                                variant="plain"
                                 accessibilityLabel={t('widgetGlances.openInBrowser', { name: row.title })}
+                                interactiveTargetEdgesPx={{
+                                    leading: theme.space.s10 / 2,
+                                    trailing: theme.space.s10 / 2,
+                                    top: OPEN_VERTICAL_REACH_PX,
+                                    bottom: OPEN_VERTICAL_REACH_PX,
+                                }}
                                 onPress={() => onOpen(openTarget)}
-                                style={styles.open}
-                            >
-                                <Icon name="arrow-square-out" size={ICON_SIZE.sm} color={theme.colors.text.secondary} />
-                            </Pressable>
+                            />
                         ) : null}
                     </View>
                 );
-            }),
+            }), degradedLine ? <Text key="degraded" testID={`${props.testID}.degraded`} style={styles.quiet}>{degradedLine}</Text> : null],
         };
     }
     const meta = props.asOf
@@ -139,6 +156,23 @@ export const LocalServicesGlanceView = React.memo(function LocalServicesGlanceVi
     );
 });
 
+/** The one honest line for machines Home could not list: who, and that their services are missing. */
+function readAppDegradedLine(degraded: AppLocalServicesGlanceState['degraded']): string | null {
+    const first = degraded[0];
+    if (!first) return null;
+    if (degraded.length > 1) return t('widgetGlances.machinesNotListed', { count: degraded.length });
+    return first.kind === 'offline' ? t('widgetGlances.machineOffline', { machine: first.machineName })
+        : t('widgetGlances.machineUnreadable', { machine: first.machineName });
+}
+
+/** Why no machine's services are listed, under the title that already says so. */
+function readAppUnlistedReason(degraded: AppLocalServicesGlanceState['degraded']): string {
+    const first = degraded[0]!;
+    if (degraded.length > 1) return t('widgetGlances.appUnlistedMany', { count: degraded.length });
+    return first.kind === 'offline' ? t('widgetGlances.appUnlistedOffline', { machine: first.machineName })
+        : t('widgetGlances.machineUnreadable', { machine: first.machineName });
+}
+
 type LocalServicesGlanceProps = Readonly<{
     sessionId: string;
     serverId: string | null;
@@ -149,6 +183,12 @@ type LocalServicesGlanceProps = Readonly<{
     measurementOnly: boolean;
     testID: string;
 }>;
+
+/** App and Session data share the same Services presenter. */
+export function AppLocalServicesGlance(props: Readonly<{ serverId: string; testID: string }>) {
+    const state = useAppLocalServicesGlance(props.serverId);
+    return <LocalServicesGlanceView state={state} machineName={null} frameStyle="plain" presentation="body" testID={props.testID} />;
+}
 
 /**
  * The Local services glance in the Companion. A measuring pass draws the frame at its loading size

@@ -1,3 +1,4 @@
+import type { RequesterEnvironmentAccessObservation } from '@/api/client/accountEncryptionCurrentnessObservation';
 import type { ExternalActionExecutionAuthorizationV1, ExternalActionRequesterAccountProjectionV1 } from '@happier-dev/protocol/actions/externalActionApi';
 import type { ExternalActionRequesterInvocationV1 } from '@happier-dev/protocol/sessions/creation/sessionRequesterBootstrapV1';
 import type { StoredCredentials } from '@/persistence';
@@ -8,6 +9,7 @@ import type { ResolveExternalActionEncryption } from '../externalActions/execute
 /** Finite Account custody at an admitted ingress, never a Session or a credential store. */
 export type RequesterAccountActionContext = Readonly<{
   invocation?: ExternalActionRequesterInvocationV1;
+  deploymentChild?: import('@happier-dev/protocol').DeploymentChildRpcV1;
   credentials: StoredCredentials;
   accountSettingsContext: AccountSettingsContext;
   savedSecretOperationContext: SavedSecretOperationContextV1;
@@ -20,6 +22,12 @@ export type RequesterAccountActionContext = Readonly<{
   refreshAccountSettings(signal?: AbortSignal): Promise<boolean>;
   retain(): () => Promise<void>;
   dispose(): Promise<void>;
+
+subscribeEnvironmentAccess(listener: (event: RequesterEnvironmentAccessObservation) => void): () => void;
+
+
+
+deploymentChildExecution?: import('@happier-dev/protocol/socketRpc').WorkspaceSyncSourceExecutionV1;
 }>;
 
 export const requesterActionContext = Symbol('admittedRequesterAccountActionContext');

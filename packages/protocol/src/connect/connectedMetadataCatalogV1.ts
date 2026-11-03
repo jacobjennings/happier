@@ -95,7 +95,11 @@ export async function loadConnectedMetadataCatalogV1(input: ConnectedMetadataLoa
     if (input.signal?.aborted) return unavailable('cancelled');
     let inventory: LegacyConnectedMetadataInventoryV1 = { entities: [], agents: [] };
     let inventoryUnavailable = false;
-    try { inventory = await transfer.readInventory(); } catch { inventoryUnavailable = true; }
+    const hasRetainedMetadata = [...CONNECTED_PRESENTATION_SOURCE_ROOTS_V1, ...CONNECTED_ACKNOWLEDGEMENTS_SOURCE_ROOTS_V1,
+        CONNECTED_DISCLOSURE_SOURCE_ROOT_V1].some(root => Object.hasOwn(source.raw, root));
+    if (hasRetainedMetadata) {
+        try { inventory = await transfer.readInventory(); } catch { inventoryUnavailable = true; }
+    }
     if (input.signal?.aborted) return unavailable('cancelled');
     const retained = readLegacyConnectedMetadataV1(source.raw, inventory);
     const presentationDiagnostics = diagnosticsForRoots(retained.diagnostics, CONNECTED_PRESENTATION_SOURCE_ROOTS_V1);

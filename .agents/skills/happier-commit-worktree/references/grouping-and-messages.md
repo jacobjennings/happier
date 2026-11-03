@@ -31,9 +31,9 @@ A candidate group is coherent when a reviewer can answer one sentence: "This com
 - **Reversion test:** reverting only this commit removes one understandable capability or correction without removing unrelated behavior.
 - **Explanation test:** every file is explainable from the subject and body without an "also updates miscellaneous files" clause.
 - **Completeness test:** the canonical owner, consumed wiring, defining tests, and required compatibility pieces are present.
-- **Dependency test:** the commit does not depend on a later commit to compile or express its claimed contract unless the campaign explicitly permits an intermediate mechanical state.
+- **Dependency test:** the commit type-resolves at its own tree and does not depend on a later commit to express its claimed contract. No campaign authorization permits a commit that breaks compilation; prove it with `checkCommitTypeCoherence.mjs` (SKILL.md section 7).
 - **Noise test:** formatting, generated churn, artifacts, and unrelated refactors are absent.
-- **Hunk test:** mixed-purpose files are split rather than assigned wholesale.
+- **Hunk test:** mixed-purpose files are split rather than assigned wholesale. A WIP or whole-path authorization does not license committing another intent's hunks.
 
 Do not split implementation and its defining test merely to increase commit count. Do not combine separate fixes merely because they share a package or test command.
 

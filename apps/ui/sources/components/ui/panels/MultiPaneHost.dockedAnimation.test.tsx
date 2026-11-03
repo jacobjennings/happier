@@ -80,7 +80,7 @@ describe('MultiPaneHost docked pane animation', () => {
             />,
         );
 
-        expect(capturedAnimatedInitialValues.slice(0, 2)).toEqual([0, 0]);
+        expect(capturedAnimatedInitialValues.slice(...DETAILS_AND_RIGHT_PROGRESS)).toEqual([0, 0]);
         expect(capturedTimingConfigs.some((config) => config?.toValue === 1)).toBe(true);
 
         expect(findAnimatedDimensionOutputRange(screen, 'width', [0, 360])).toBe(true);
@@ -169,6 +169,50 @@ describe('MultiPaneHost docked pane animation', () => {
         expect(capturedTimingConfigs.some((config) => config?.toValue === 1)).toBe(true);
 
         expect(findAnimatedDimensionOutputRange(screen, 'height', [0, 280])).toBe(true);
+    });
+
+    it('does not use the native driver on web for overlay pane animations', async () => {
+        const { MultiPaneHost } = await import('./MultiPaneHost');
+        const { MultiPaneHostWithBottom } = await import('./MultiPaneHostWithBottom');
+
+        await renderScreen(<>
+            <MultiPaneHost
+                main={<Main />}
+                rightPane={<Right />}
+                detailsPane={<Details />}
+                layout={{ main: 'docked', kind: 'overlayStack', right: 'overlay', details: 'overlay' }}
+                rightDockWidthPx={360}
+                detailsDockWidthPx={520}
+                onCloseRight={() => {}}
+                onCloseDetails={() => {}}
+                onCommitRightDockWidthPx={() => {}}
+                onCommitDetailsDockWidthPx={() => {}}
+            />
+            <MultiPaneHostWithBottom
+                main={<Main />}
+                rightPane={null}
+                detailsPane={null}
+                layout={{ main: 'docked', kind: 'single', right: 'hidden', details: 'hidden' }}
+                rightDockWidthPx={360}
+                detailsDockWidthPx={520}
+                onCloseRight={() => {}}
+                onCloseDetails={() => {}}
+                onCommitRightDockWidthPx={() => {}}
+                onCommitDetailsDockWidthPx={() => {}}
+                bottomPane={<Bottom />}
+                bottomPresentation="overlay"
+                bottomDockHeightPx={320}
+                bottomDockMinHeightPx={200}
+                bottomDockMaxHeightPx={600}
+                onCloseBottom={() => {}}
+                onCommitBottomDockHeightPx={() => {}}
+            />
+        </>);
+
+        expect(capturedTimingConfigs.length).toBeGreaterThan(0);
+        for (const config of capturedTimingConfigs) {
+            expect(config.useNativeDriver).toBe(false);
+        }
     });
 });
 

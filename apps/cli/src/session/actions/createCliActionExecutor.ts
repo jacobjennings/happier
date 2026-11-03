@@ -1,3 +1,5 @@
+import { isManagedControllerCodecActionV1, openManagedControllerActionCodecV1 } from '@happier-dev/protocol/sessions/creation/sessionRequesterBootstrapV1';
+import { decodeBase64 } from '@happier-dev/protocol/crypto/base64';
 import { createSessionFollowActionDeps } from '@/api/sessionFollowActionDeps';
 import { createSessionReadStateActionDeps } from '@/api/sessionReadStateActionDeps';
 import { createCliActionExecutorHarness } from './createCliActionExecutorHarness';
@@ -65,6 +67,7 @@ type CliActionExecutorParams = Parameters<typeof createCliActionExecutorHarness>
     approvalRequestApprovedReplay?: ActionExecutorDeps['approvalRequestApprovedReplay'];
     /** Current authority/credential/target proof for durable core Action replay. */
     isApprovalExecutionOriginCurrent?: ActionExecutorDeps['isApprovalExecutionOriginCurrent'];
+    prepareApprovalExecutionOriginContext?: ActionExecutorDeps['prepareApprovalExecutionOriginContext'];
     prepareApprovalExecutionAuthorization?: ActionExecutorDeps['prepareApprovalExecutionAuthorization'];
     prepareApprovedApiTokenExecution?: ActionExecutorDeps['prepareApprovedApiTokenExecution'];
     /** The exact daemon external-session RPC owner for host-stamped API requests. */
@@ -191,6 +194,9 @@ export function createCliActionExecutor(
         : {}),
       ...(params.isApprovalExecutionOriginCurrent
         ? { isApprovalExecutionOriginCurrent: params.isApprovalExecutionOriginCurrent }
+        : {}),
+      ...(params.prepareApprovalExecutionOriginContext
+        ? { prepareApprovalExecutionOriginContext: params.prepareApprovalExecutionOriginContext }
         : {}),
       ...(params.prepareApprovalExecutionAuthorization
         ? { prepareApprovalExecutionAuthorization: params.prepareApprovalExecutionAuthorization }
@@ -343,6 +349,38 @@ export function createCliActionExecutor(
       && context.defaultSessionMachineId === authorization.binding.machineId
       && (sameStrictJsonValue(context.externalActionTarget, authorization.binding.target) || privatelyReconciledSession)
       ? authorization.binding : null;
+    // A managed controller keeps its own Account custody. The verified Home
+    // root plus exact installed codec preserves the requester's direct click;
+    // neither the custodian credential nor a raw UI label supplies that cause.
+    let managedControllerUiBinding: typeof ordinaryUiBinding = null;
+    if (authorization && 'authentication' in authorization.binding
+      && authorization.binding.authentication.kind === 'account'
+      && isManagedControllerCodecActionV1(authorization.binding)
+      && authorization.binding.accountId !== authorization.binding.custodianAccountId
+      && runtimeAccountId === authorization.binding.custodianAccountId
+      && !authorization.binding.sessionActionOrigin && !authorization.binding.workflowActionOrigin
+      && surface === 'ui' && context?.authority === 'present_user' && context.actionCaller?.kind === 'host'
+      && context.causalPermissionAuthority == null && privateKey && params.serverId
+      && params.serverIdentityId === authorization.binding.serverIdentityId
+      && params.externalActionMachineInstallationId === authorization.binding.installationId
+      && context.actionRequestId === authorization.binding.requestId
+      && context.defaultSessionMachineId === authorization.binding.machineId
+      && sameStrictJsonValue(context.externalActionTarget, authorization.binding.target)
+      && requesterHttp && requesterHttp.accountId === authorization.binding.accountId
+      && requesterHttp.serverId === params.serverId && requesterHttp.serverIdentityId === authorization.binding.serverIdentityId
+      && requesterHttp.accountEncryptionMode === authorization.binding.accountEncryptionMode
+      && normalizeServerHttpBaseUrl(requesterHttp.serverHttpBaseUrl)
+        === normalizeServerHttpBaseUrl(params.serverHttpBaseUrl ?? resolveServerHttpBaseUrl())
+      && !context.signal?.aborted && await requesterHttp.isCurrent().catch(() => false) && !context.signal?.aborted) {
+      try {
+        const codec = openManagedControllerActionCodecV1({ authorization, includeInvocation: true,
+          machineId: authorization.binding.machineId, installationId: authorization.binding.installationId,
+          serverIdentityId: authorization.binding.serverIdentityId,
+          installationPrivateKey: typeof privateKey === 'string' ? decodeBase64(privateKey, 'base64url') : privateKey });
+        if (codec?.invocation?.caller.kind === 'host' && codec.invocation.surface === 'ui'
+          && codec.invocation.authority === 'present_user') managedControllerUiBinding = authorization.binding;
+      } catch { /* A malformed installation key cannot confer a human cause. */ }
+    }
     // Only the live registered Machine ingress can install receiver custody.
     // A source factory with the same Home proof does not acquire the foreign key.
     const admittedReceiver = Boolean(sessionBinding && admission && context?.verifyMachineAdmissionCurrent && privateKey && params.serverId
@@ -354,7 +392,7 @@ export function createCliActionExecutor(
       && params.externalActionMachineInstallationId === sessionBinding.installationId
       && context?.defaultSessionMachineId === sessionBinding.sessionActionSource?.machineId
       && sameStrictJsonValue(context.externalActionTarget, sessionBinding.target));
-    if ((admittedReceiver || ordinaryUiBinding) && authorization && privateKey && params.externalActionMachineInstallationId
+    if ((admittedReceiver || ordinaryUiBinding || managedControllerUiBinding) && authorization && privateKey && params.externalActionMachineInstallationId
       && params.serverId && params.serverIdentityId && context?.externalActionTarget) {
       const originalAuthorization = authorization;
       const projectionRequest = { authorization: originalAuthorization,
@@ -369,7 +407,7 @@ export function createCliActionExecutor(
         return null;
       }
       authorization = projected;
-      if (ordinaryUiBinding) authority = resolveInvocationAuthority({ credential: 'account', surface });
+      if (ordinaryUiBinding || managedControllerUiBinding) authority = resolveInvocationAuthority({ credential: 'account', surface });
     }
     const credentials = params.credentials;
     if (ordinaryUiBinding && credentials && !params.actionsSettingsProvider) {
@@ -395,7 +433,7 @@ export function createCliActionExecutor(
     const approvalAuthorization = authorization;
     const signExternalActionApprovalInput: ActionExecutorContext['signExternalActionApprovalInput'] =
       context?.signExternalActionApprovalInput
-      ?? ((ordinaryUiBinding || canSignOriginalSessionApproval || admittedReceiver && runtimeAccountId === sessionBinding?.accountId)
+      ?? ((ordinaryUiBinding || managedControllerUiBinding || canSignOriginalSessionApproval || admittedReceiver && runtimeAccountId === sessionBinding?.accountId)
         && approvalAuthorization && privateKey ? ({ actionId, input, target, authorization: suppliedAuthorization, requesterConfirmation, sessionTargetsV1 }) => {
         if (suppliedAuthorization.token !== approvalAuthorization.token
           || !sameStrictJsonValue(target, approvalAuthorization.binding.target)) throw new Error('approval_origin_unavailable');
@@ -413,10 +451,9 @@ export function createCliActionExecutor(
     surface,
     authority,
     ...(signExternalActionApprovalInput ? { signExternalActionApprovalInput } : {}),
-    // Local invocations use their authenticated runtime token. RPC context is
-    // host-built from the admitted requester, which may differ from the daemon
-    // custodian; neither its actor nor its absence may be replaced by that token.
-    ...(surface !== 'rpc' && !context?.machineAdmission && runtimeAccountId ? { runtimeAccountId } : {}),
+    // Token-only callers retain this host's existing Account binding. The
+    // shared harness stamps credentialed hosts; Session-only MCP has no such credentials.
+    ...(!params.credentials && surface !== 'rpc' && !context?.machineAdmission && runtimeAccountId ? { runtimeAccountId } : {}),
     actionsSettings: actionSettingsProvider.getActionsSettings(),
     sessionAgentSpawnPolicyV1:
       context?.sessionAgentSpawnPolicyV1

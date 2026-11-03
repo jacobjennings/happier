@@ -405,6 +405,9 @@ export async function createChatListHarnessStorageMock(
     let cachedMessageIds: string[] = [];
     let cachedMessagesForMap: readonly any[] | null = null;
     let cachedMessagesById: Record<string, any> = {};
+    const cachedEmptyMessages: any[] = [];
+    let cachedRefSelection: readonly (any | null)[] | null = null;
+    let cachedSnapshot: { messages: any[]; isLoaded: boolean } | null = null;
     const readMessageIds = () => {
         const messages = readMessages();
         if (cachedMessagesForIds === messages) return cachedMessageIds;
@@ -430,6 +433,22 @@ export async function createChatListHarnessStorageMock(
                     ids: readMessageIds(),
                     isLoaded: chatListHarnessState.sessionMessagesState.isLoaded,
                 };
+            },
+            // Transcript rows read their message through the source's retained-snapshot fallback.
+            useSessionMessages: (_sessionId: string, options?: Readonly<{ enabled?: boolean }>) => {
+                const enabled = options?.enabled !== false;
+                const messages = enabled ? readMessages() : cachedEmptyMessages;
+                const isLoaded = chatListHarnessState.sessionMessagesState.isLoaded;
+                if (cachedSnapshot?.messages !== messages || cachedSnapshot.isLoaded !== isLoaded) cachedSnapshot = { messages, isLoaded };
+                return cachedSnapshot;
+            },
+            useMessagesByRefs: (refs: readonly Readonly<{ messageId: string }>[]) => {
+                const byId = readMessagesById();
+                const selected = refs.map((ref) => byId[ref.messageId] ?? null);
+                const previous = cachedRefSelection;
+                if (previous && previous.length === selected.length && previous.every((message, index) => message === selected[index])) return previous;
+                cachedRefSelection = selected;
+                return selected;
             },
             useSessionMessagesById: () => readMessagesById(),
             useSessionMessagesReducerState: () => createReducer(),
@@ -680,29 +699,6 @@ export async function withChatListHarnessWebScrollerDom<T>(
         (globalThis as any).cancelAnimationFrame = previousCancelAnimationFrame;
         dom.window.close();
     }
-}
-
-export async function withRenderedChatListHarnessWebScroller<T>(
-    scrollerElement: unknown,
-    element: React.ReactElement,
-    run: (screen: ChatListHarness) => Promise<T>,
-    options: Readonly<{
-        dom?: ChatListHarnessDomInstallerOptions;
-        render?: RenderWithAppProvidersOptions;
-    }> = {},
-): Promise<T> {
-    return withChatListHarnessWebScrollerDom(
-        scrollerElement,
-        async () => {
-            const screen = await renderChatList(element, options.render ?? {});
-            try {
-                return await run(screen);
-            } finally {
-                await screen.unmount();
-            }
-        },
-        options.dom ?? {},
-    );
 }
 
 export async function renderChatListHarnessSession(

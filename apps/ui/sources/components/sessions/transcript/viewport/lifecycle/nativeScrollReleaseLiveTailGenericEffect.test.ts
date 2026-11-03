@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import type { TranscriptViewportLifecycleEffect } from './lifecycle';
 import {
-    resolveNativeScrollReleaseLiveTailGenericEffects,
     resolveNativeScrollReleaseLiveTailGenericLifecycleEffects,
 } from './nativeScrollReleaseLiveTailGenericEffect';
 
@@ -17,10 +16,14 @@ function firstGenericObservedStateEffect(
     return effect;
 }
 
-const releaseEffect = (overrides: Partial<Extract<
+type NativeScrollReleaseLiveTailEffect = Extract<
     TranscriptViewportLifecycleEffect,
     { type: 'native-scroll-release-live-tail' }
->> = {}): Extract<TranscriptViewportLifecycleEffect, { type: 'native-scroll-release-live-tail' }> => ({
+>;
+
+const releaseEffect = (
+    overrides: Partial<NativeScrollReleaseLiveTailEffect> = {},
+): NativeScrollReleaseLiveTailEffect => ({
     distanceFromLiveTailPx: 180,
     isPinned: false,
     sessionId: 'session-a',
@@ -28,13 +31,26 @@ const releaseEffect = (overrides: Partial<Extract<
     ...overrides,
 });
 
+function resolveCurrentSessionRelease(params: Readonly<{
+    effect: NativeScrollReleaseLiveTailEffect;
+    nextScrollOffsetPx: number;
+    pinEnabled: boolean;
+}>) {
+    return firstGenericObservedStateEffect(resolveNativeScrollReleaseLiveTailGenericLifecycleEffects({
+        effects: [params.effect],
+        nextScrollOffsetPx: params.nextScrollOffsetPx,
+        pinEnabled: params.pinEnabled,
+        sessionId: params.effect.sessionId,
+    }));
+}
+
 describe('native scroll release live-tail generic effects', () => {
-    it('maps native release effects to generic observed-state effects', () => {
-        expect(firstGenericObservedStateEffect(resolveNativeScrollReleaseLiveTailGenericEffects({
+    it('projects the current-session native scroll release through the generic release mapping', () => {
+        expect(resolveCurrentSessionRelease({
             effect: releaseEffect(),
             nextScrollOffsetPx: 512.9,
             pinEnabled: true,
-        }))).toEqual({
+        })).toEqual({
             sessionId: 'session-a',
             state: {
                 anchorCapture: {
@@ -73,25 +89,25 @@ describe('native scroll release live-tail generic effects', () => {
 
     it('clamps invalid next scroll offsets to the existing host-safe zero', () => {
         for (const nextScrollOffsetPx of [-12, Number.NaN, Number.POSITIVE_INFINITY]) {
-            const effect = firstGenericObservedStateEffect(resolveNativeScrollReleaseLiveTailGenericEffects({
+            const effect = resolveCurrentSessionRelease({
                 effect: releaseEffect(),
                 nextScrollOffsetPx,
                 pinEnabled: false,
-            }));
+            });
 
             expect(effect.state.nextScrollOffsetPx).toBe(0);
         }
     });
 
     it('uses the lifecycle-provided release distance without adding mapper normalization', () => {
-        const effect = firstGenericObservedStateEffect(resolveNativeScrollReleaseLiveTailGenericEffects({
+        const effect = resolveCurrentSessionRelease({
             effect: {
                 ...releaseEffect(),
                 distanceFromLiveTailPx: 0.5,
             },
             nextScrollOffsetPx: 24,
             pinEnabled: false,
-        }));
+        });
 
         expect(effect.state.viewportState).toEqual({
             isPinned: false,
@@ -107,42 +123,7 @@ describe('native scroll release live-tail generic effects', () => {
         });
     });
 
-    it('returns no generic effects when no native scroll release effect exists for the current session', () => {
-        expect(resolveNativeScrollReleaseLiveTailGenericLifecycleEffects({
-            effects: [],
-            nextScrollOffsetPx: 8,
-            pinEnabled: true,
-            sessionId: 'session-a',
-        })).toEqual([]);
-
-        expect(resolveNativeScrollReleaseLiveTailGenericLifecycleEffects({
-            effects: [releaseEffect({ sessionId: 'session-b' })],
-            nextScrollOffsetPx: 8,
-            pinEnabled: true,
-            sessionId: 'session-a',
-        })).toEqual([]);
-    });
-
-    it('projects the current-session native scroll release through the existing generic mapping', () => {
-        const effects = resolveNativeScrollReleaseLiveTailGenericLifecycleEffects({
-            effects: [releaseEffect()],
-            nextScrollOffsetPx: 44.9,
-            pinEnabled: true,
-            sessionId: 'session-a',
-        });
-
-        expect(firstGenericObservedStateEffect(effects)).toMatchObject({
-            sessionId: 'session-a',
-            state: {
-                lastDistanceFromLiveTailPx: 180,
-                nextScrollOffsetPx: 44,
-                wantsPinned: false,
-            },
-            type: 'apply-generic-observed-viewport-state',
-        });
-    });
-
-    it('filters mixed effects down to the current-session native scroll release', () => {
+    it('filters mixed effects down to the first current-session native scroll release', () => {
         const effects = resolveNativeScrollReleaseLiveTailGenericLifecycleEffects({
             effects: [
                 releaseEffect({ sessionId: 'session-b' }),
@@ -156,6 +137,7 @@ describe('native scroll release live-tail generic effects', () => {
                     wantsPinned: true,
                 },
                 releaseEffect({ distanceFromLiveTailPx: 96 }),
+                releaseEffect({ distanceFromLiveTailPx: 120 }),
             ],
             nextScrollOffsetPx: 12,
             pinEnabled: false,
@@ -163,21 +145,5 @@ describe('native scroll release live-tail generic effects', () => {
         });
 
         expect(firstGenericObservedStateEffect(effects).state.lastDistanceFromLiveTailPx).toBe(96);
-    });
-
-    it('preserves first-match behavior for multiple current-session native scroll release effects', () => {
-        const effects = resolveNativeScrollReleaseLiveTailGenericLifecycleEffects({
-            effects: [
-                releaseEffect({ distanceFromLiveTailPx: 120 }),
-                releaseEffect({ distanceFromLiveTailPx: 180 }),
-            ],
-            nextScrollOffsetPx: -10,
-            pinEnabled: false,
-            sessionId: 'session-a',
-        });
-
-        const effect = firstGenericObservedStateEffect(effects);
-        expect(effect.state.lastDistanceFromLiveTailPx).toBe(120);
-        expect(effect.state.nextScrollOffsetPx).toBe(0);
     });
 });

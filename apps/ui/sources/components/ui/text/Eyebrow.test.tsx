@@ -9,7 +9,7 @@ vi.mock('react-native', async () => {
 });
 
 describe('Eyebrow', () => {
-    it('renders through the app Text primitive with stable testID and label', async () => {
+    it('renders the label through the named eyebrow typography helper', async () => {
         const { Eyebrow } = await import('./Eyebrow');
 
         const screen = await renderScreen(
@@ -17,18 +17,11 @@ describe('Eyebrow', () => {
                 Recent
             </Eyebrow>,
         );
-
         const node = screen.findByTestId('eyebrow');
-        expect(node).not.toBeNull();
+        const flat = flattenStyle(node?.props.style);
+
         expect(node?.props.accessibilityLabel).toBe('Recent sessions');
         expect(screen.getTextContent()).toContain('Recent');
-    });
-
-    it('applies the named eyebrow typography helper', async () => {
-        const { Eyebrow } = await import('./Eyebrow');
-
-        const screen = await renderScreen(<Eyebrow testID="eyebrow">Recent</Eyebrow>);
-        const flat = flattenStyle(screen.findByTestId('eyebrow')?.props.style);
 
         expect(flat.textTransform).toBe('uppercase');
         expect(Number(flat.letterSpacing)).toBeGreaterThan(0);

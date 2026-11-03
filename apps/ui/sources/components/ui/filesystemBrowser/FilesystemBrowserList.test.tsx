@@ -124,6 +124,43 @@ describe('FilesystemBrowserList', () => {
         expect(retry).toHaveBeenCalledOnce();
     });
 
+    it('still shows the refresh error and Retry over retained rows when the page supplies an empty-state node', async () => {
+        const { FilesystemBrowserList } = await import('./FilesystemBrowserList');
+        const { SurfaceStateCard } = await import('@/components/ui/surfaces/SurfaceStateCard');
+        const retry = vi.fn();
+        const screen = await renderScreen(<FilesystemBrowserList
+            nodes={nodes}
+            rootLoading={false}
+            rootError="ENOENT"
+            listEmpty={React.createElement('View', { testID: 'page-empty-state' })}
+            loadingLabel="Loading"
+            inlineRetryLabel="Retry"
+            retryRoot={retry}
+            renderRow={({ node }) => React.createElement('View', { testID: `row-${node.path}` })}
+        />);
+        expect(screen.findByTestId('row-src/index.ts')).toBeTruthy();
+        const state = screen.findByType(SurfaceStateCard);
+        expect(state.props).toMatchObject({ size: 'line', kind: 'error', diagnosticCode: 'ENOENT' });
+        await React.act(async () => { state.props.action.onPress(); });
+        expect(retry).toHaveBeenCalledOnce();
+    });
+
+    it('leaves the root error to the supplied empty-state node when no rows are listed', async () => {
+        const { FilesystemBrowserList } = await import('./FilesystemBrowserList');
+        const { SurfaceStateCard } = await import('@/components/ui/surfaces/SurfaceStateCard');
+        const screen = await renderScreen(<FilesystemBrowserList
+            nodes={[]}
+            rootLoading={false}
+            rootError="ENOENT"
+            listEmpty={React.createElement('View', { testID: 'page-empty-state' })}
+            loadingLabel="Loading"
+            inlineRetryLabel="Retry"
+            retryRoot={() => {}}
+            renderRow={() => React.createElement(React.Fragment)}
+        />);
+        expect(screen.findAllByType(SurfaceStateCard)).toHaveLength(0);
+    });
+
     it('keeps rows mounted without an inline root loading header when loading is surfaced elsewhere', async () => {
         const { FilesystemBrowserList } = await import('./FilesystemBrowserList');
 

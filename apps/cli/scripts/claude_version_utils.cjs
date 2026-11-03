@@ -735,16 +735,10 @@ function runClaudeCli(cliPath) {
 
 module.exports = {
     findGlobalClaudeCliPath,
-    findClaudeInPath,
     pickClaudePathFromWhichOrWhereOutput,
     chooseWindowsClaudePathFromPathAndNative,
     buildClaudeBinarySpawnInvocation,
     detectSourceFromPath,
-    findNpmGlobalCliPath,
-    findBunGlobalCliPath,
-    findHomebrewCliPath,
-    findNativeInstallerCliPath,
-    getVersion,
     compareVersions,
     getClaudeCliPath,
     runClaudeCli,

@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { buildConnectedServicesAccountChangeV1 } from '@happier-dev/protocol/changes';
 
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
@@ -898,7 +899,8 @@ describe("qualified Connected Account credential repository", () => {
                     where: { id: account.id }, select: { seq: true },
                 }),
                 change: await db.accountChange.findUniqueOrThrow({
-                    where: { accountId_kind_entityId: { accountId: account.id, kind: "account", entityId: "self" } },
+                    where: { accountId_kind_entityId: { accountId: account.id, kind: "account",
+                        entityId: buildConnectedServicesAccountChangeV1(service).entityId } },
                     select: { cursor: true, hint: true },
                 }),
             });
@@ -914,7 +916,8 @@ describe("qualified Connected Account credential repository", () => {
             // Equal known health must still remove additive stored fields.
             expect(JSON.stringify(canonical.row.metadata)).not.toMatch(/future|must-not-echo/);
             expect(canonical.row.updatedAt.getTime()).toBeGreaterThan(beforeNormalization.row.updatedAt.getTime());
-            expect(canonical.change.cursor).toBeGreaterThan(beforeNormalization.change.cursor);
+            // Normalization rewrites the row but presents no new health, so no client is woken.
+            expect(canonical.change.cursor).toBe(beforeNormalization.change.cursor);
 
             const unchanged = await submit(patch);
             expect(unchanged.statusCode).toBe(200);
@@ -930,7 +933,7 @@ describe("qualified Connected Account credential repository", () => {
             const afterChange = await readState();
             expect(afterChange.row.updatedAt.getTime()).toBeGreaterThan(canonical.row.updatedAt.getTime());
             expect(afterChange.change.cursor).toBeGreaterThan(canonical.change.cursor);
-            expect(afterChange.change.hint).toEqual({ connectedServices: true });
+            expect(afterChange.change.hint).toEqual(buildConnectedServicesAccountChangeV1(service).hint);
 
             const timestampedHealth = {
                 ...changedHealth,
@@ -938,7 +941,8 @@ describe("qualified Connected Account credential repository", () => {
             };
             expect((await submit(timestampedHealth)).statusCode).toBe(200);
             const afterTimestamp = await readState();
-            expect(afterTimestamp.change.cursor).toBeGreaterThan(afterChange.change.cursor);
+            // A refresh clock is persisted for the next read without publishing an Account change.
+            expect(afterTimestamp.change.cursor).toBe(afterChange.change.cursor);
             expect(afterTimestamp.row.updatedAt.getTime()).toBeGreaterThan(afterChange.row.updatedAt.getTime());
 
             const staleCredential = await submit({ ...timestampedHealth, expectedCredentialRevision: "csr_aaaaaaaaaaaaaaaaaaaaaa" });
@@ -1003,7 +1007,7 @@ describe("qualified Connected Account credential repository", () => {
                 accountId_kind_entityId: {
                     accountId: account.id,
                     kind: "account",
-                    entityId: "self",
+                    entityId: buildConnectedServicesAccountChangeV1(service).entityId,
                 },
             },
             select: { cursor: true, hint: true },
@@ -1041,7 +1045,7 @@ describe("qualified Connected Account credential repository", () => {
                 accountId_kind_entityId: {
                     accountId: account.id,
                     kind: "account",
-                    entityId: "self",
+                    entityId: buildConnectedServicesAccountChangeV1(service).entityId,
                 },
             },
             select: { cursor: true, hint: true },
@@ -1145,7 +1149,7 @@ describe("qualified Connected Account credential repository", () => {
                 accountId_kind_entityId: {
                     accountId: account.id,
                     kind: "account",
-                    entityId: "self",
+                    entityId: buildConnectedServicesAccountChangeV1(service).entityId,
                 },
             },
             select: { cursor: true, hint: true },
@@ -1182,7 +1186,7 @@ describe("qualified Connected Account credential repository", () => {
                 accountId_kind_entityId: {
                     accountId: account.id,
                     kind: "account",
-                    entityId: "self",
+                    entityId: buildConnectedServicesAccountChangeV1(service).entityId,
                 },
             },
             select: { cursor: true, hint: true },

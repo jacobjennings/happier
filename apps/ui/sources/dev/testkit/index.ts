@@ -40,7 +40,6 @@ export * from './fixtures/sessionDraftFixtures';
 export * from './fixtures/sessionWorkflowActivityFixtures';
 export * from './fixtures/themeFixtures';
 export * from './fixtures/transcriptFixtures';
-export * from './transcript/viewportTelemetryAssertions';
 export * from './harness/browserStorageLockBoundary';
 export * from './harness/sidechainTranscriptListHarness';
 export * from './harness/popoverHarness';

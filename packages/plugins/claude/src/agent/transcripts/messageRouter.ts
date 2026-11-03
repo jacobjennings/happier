@@ -1,5 +1,5 @@
 import type { RawJSONLines } from './rawJsonLines.js';
-import { createClaudeTaskNotificationToolResultProjector, readClaudeTaskLifecycleEnvelope } from './taskNotification.js';
+import { createClaudeTaskNotificationToolResultProjector } from './taskNotification.js';
 import { isClaudeInternalTranscriptMessage } from './visibility.js';
 
 function messageKey(message: RawJSONLines): string {
@@ -47,7 +47,7 @@ export function createMessageRouter(params: Readonly<{
     function projectSessionMessage(message: RawJSONLines): RawJSONLines | null {
         if (observedProjections.has(message)) return observedProjections.get(message) ?? null;
         const projected = taskNotificationProjector.project(message);
-        const nextMessage = projected ?? (readClaudeTaskLifecycleEnvelope(message)?.subtype === 'task_notification' ? null : message);
+        const nextMessage = projected ? projected.message : message;
         observedProjections.set(message, nextMessage);
         return nextMessage;
     }

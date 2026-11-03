@@ -60,6 +60,10 @@ export function createAccountEncryptionCurrentnessObservation(options: Readonly<
     };
     const refresh = () => {
         if (!connected || disposed || fact || pending) return;
+        // Respect the transport owner's explicit terminal verdict. Retaining
+        // unavailable authority grants nothing; real invalidation clears it.
+        if (readError !== null && typeof readError === 'object'
+            && 'canTryAgain' in readError && readError.canTryAgain === false) return;
         const captured = lifetime;
         pending = waitForAccountEncryptionObservation(options.readFresh(captured.signal), captured.signal)
             .then(next => {
@@ -72,6 +76,9 @@ export function createAccountEncryptionCurrentnessObservation(options: Readonly<
             .finally(() => { if (lifetime === captured) pending = null; });
     };
     return {
+        /** Passive redacted facts; never refreshes or exposes Account identity/content. */
+        getDiagnosticState: (): Readonly<{ connected: boolean; factPresent: boolean; pending: boolean; disposed: boolean }> =>
+            ({ connected, factPresent: fact !== null, pending: pending !== null, disposed }),
         invalidate,
         connected() {
             if (disposed) return;
@@ -96,6 +103,12 @@ export function createAccountEncryptionCurrentnessObservation(options: Readonly<
                 || !('encryptionCurrentness' in parsed.data.body)) return false;
             const next = parsed.data.body.encryptionCurrentness;
             if (next && fact && next.version < fact.witness.version) return false;
+            if (next && fact && sameAccountEncryptionIdentity(next, fact.identity)) {
+                // Cursor advances still fence stale pushes without retiring an
+                // unchanged encryption identity or its consumers' live work.
+                fact = { witness: next, identity: fact.identity };
+                return false;
+            }
             // A push retires the old HTTP lifetime before publishing its fact.
             invalidate();
             fact = next ? { witness: next, identity: projectAccountEncryptionIdentity(next) } : null;
@@ -120,4 +133,42 @@ export function createAccountEncryptionCurrentnessObservation(options: Readonly<
         },
         dispose() { disposed = true; connected = false; retirement.abort(); invalidate(); },
     };
+}
+
+export class AccountModeDowngradeUnverifiedError extends Error {
+    readonly code = ACCOUNT_MODE_DOWNGRADE_UNVERIFIED;
+    readonly canTryAgain = false;
+    readonly retryable = false;
+
+    constructor(message = 'The Home reports this Account as unencrypted while this device holds its active encryption keys') {
+        super(message);
+        this.name = 'AccountModeDowngradeUnverifiedError';
+    }
+}
+
+export const ACCOUNT_MODE_DOWNGRADE_UNVERIFIED = 'account_mode_downgrade_unverified' as const;
+
+export function admitMachineRowPlainMode(input: Readonly<{
+    access: unknown;
+    viewerAccountId: string | undefined;
+    custody: AccountE2eeCustody;
+}>): void {
+    if (input.access !== undefined && readMachineRowCustodianAccountId(input.access) !== input.viewerAccountId) return;
+    admitReportedAccountMode({ reported: 'plain', custody: input.custody });
+}
+
+export type AccountE2eeCustody = 'active' | 'historical' | 'absent';
+
+function readMachineRowCustodianAccountId(access: unknown): unknown {
+    if (typeof access !== 'object' || access === null || !('custodian' in access)) return undefined;
+    const custodian = access.custodian;
+    return typeof custodian === 'object' && custodian !== null && 'accountId' in custodian ? custodian.accountId : undefined;
+}
+
+export function admitReportedAccountMode<Mode extends 'plain' | 'e2ee'>(input: Readonly<{
+    reported: Mode;
+    custody: AccountE2eeCustody;
+}>): Mode {
+    if (input.reported === 'plain' && input.custody === 'active') throw new AccountModeDowngradeUnverifiedError();
+    return input.reported;
 }

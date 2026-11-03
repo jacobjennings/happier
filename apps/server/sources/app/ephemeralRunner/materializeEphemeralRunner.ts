@@ -247,6 +247,7 @@ export async function materializeEphemeralRunner(params: Readonly<{
                 tag: request.session.tag,
                 metadata: request.session.metadata,
                 ownerMetadata: request.session.ownerMetadata,
+                displayProjectionV1: request.session.displayProjectionV1,
                 agentState: request.session.agentState,
                 dataEncryptionKey: request.session.dataEncryptionKey,
                 requestedEncryptionMode: request.session.requestedEncryptionMode,

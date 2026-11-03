@@ -58,8 +58,8 @@ describe('projectSessionWorkMap', () => {
         expect(map.nodesById.get('session:lead')?.childNodeIds).toEqual(['session:api', 'run:run-1', 'agent:run:scout']);
         expect(map.nodesById.get('session:ledger')).toMatchObject({ parentNodeId: 'session:api', depth: 2 });
         expect(map.nodesById.get('run:run-1')?.open).toEqual({ kind: 'run', runId: 'run-1' });
-        // The lead stays neutral: it has no state of its own on the map (S-6).
-        expect(map.nodesById.get('session:lead')?.status).toBeNull();
+        // The lead says what it waits on but is never tinted for it (S-6).
+        expect(map.nodesById.get('session:lead')?.status).toMatchObject({ tone: 'neutral', bucket: 'working' });
     });
 
     it('draws only the lead when nothing was started — no inferred edges', () => {

@@ -9,6 +9,8 @@ import { Encryption } from '@/sync/encryption/encryption';
 import { RawRecordSchema, type RawRecord } from "@happier-dev/session-core/raw";
 import { HappierStructuredInputV1Schema, RawIngressStructuredInputV1Schema, readAdmittedHappierStructuredInputV1FromMeta } from '@happier-dev/protocol/runtime/input/structuredInputV1';
 import { resolvePendingActivationBanner } from '@/components/sessions/pending/resolvePendingActivationBanner';
+import { SessionFollowInputV1Schema } from '@happier-dev/protocol/sessions/follow/sessionFollowInputV1';
+import { isHostAuthoredInputMeta, readHostFollowInputMeta } from '@/sync/domains/session/input/hostAuthoredInput';
 
 import {
     fetchAndApplyPendingMessagesV2 as fetchAndApplyPendingMessagesV2Impl,
@@ -33,6 +35,81 @@ const fetchAndApplyPendingMessagesV2 = (
 describe('pendingQueueV2 decrypt mapping', () => {
     beforeEach(async () => {
         await resetPendingQueueState();
+    });
+
+    it.each(['plain', 'encrypted'] as const)('reads retained terminal Follow authority through the stored Pending reader (%s)', async mode => {
+        const { OutgoingUserTextRecordSchema } = await import('@/sync/domains/messages/outgoingUserMessage');
+        const { resolvePendingMessageContentPresentation } = await import('@/components/sessions/pending/pendingMessageVisualState');
+        const sessionId = 'retained-pending-follow';
+        const encryption = await createPendingQueueEncryption({ sessionId });
+        // Redacted seq267–273 shape: the durable blocked Pending twin still owns
+        // the transcript slot. This is stored authority, not a new input request.
+        const follow = { v: 1, delivery: 'next_turn', original: { sourceSessionId: 'worker',
+            sourceMessage: { localId: 'terminal', seq: 7 } }, event: { kind: 'finished' } } as const;
+        const rawRecord = { role: 'user', content: { type: 'text', text: 'Synthetic Follow instructions' }, meta: {
+            happierProvenanceV1: { v: 1, kind: 'host', producer: 'sessionAction' },
+            happierInputAuthorityV1: { v: 1, producer: 'sessionAction', caller: { kind: 'host' },
+                permission: { admittedPermissionCeiling: 'default' }, followDeliveryV1: follow },
+        } } as const;
+        expect(OutgoingUserTextRecordSchema.safeParse(rawRecord).success).toBe(false);
+        const content = mode === 'plain' ? { t: 'plain', v: rawRecord } : { t: 'encrypted',
+            c: await encryptRawRecordForPending({ encryption, sessionId, rawRecord }) };
+        await fetchAndApplyPendingMessagesV2({ sessionId, encryption,
+            request: async () => Response.json({ pending: [{ localId: 'follow-original:retained', messageRole: 'user',
+                content, hostFollowInput: follow, status: 'queued', deliveryState: 'blocked', deliveryBlockedReason: 'host_retired_before_dispatch',
+                position: 0, createdAt: 1, updatedAt: 1 }] }) });
+        const message = storage.getState().sessionPending[sessionId]?.messages[0];
+        expect(message).toMatchObject({ text: rawRecord.content.text, source: 'server_pending',
+            pendingDeliveryStatus: 'blocked', pendingDeliveryBlockedReason: 'host_retired_before_dispatch', pendingHostFollowInput: follow });
+        expect(message).not.toHaveProperty('pendingDecryptFailure');
+        expect(message).toBeDefined();
+        expect(resolvePendingMessageContentPresentation(message!)).toMatchObject({ isHostInput: true, followInput: follow });
+        expect(SessionFollowInputV1Schema.safeParse(follow).success).toBe(false);
+    });
+
+    it('keeps admitted host identity separate from encrypted authored metadata and withdraws it on refresh', async () => {
+        const sessionId = 'pending-host-follow';
+        const encryption = await createPendingQueueEncryption({ sessionId });
+        const follow = SessionFollowInputV1Schema.parse({ v: 1, delivery: 'next_turn',
+            original: { sourceSessionId: 'worker', sourceTurn: { id: 'turn-1', status: 'completed' } },
+            event: { kind: 'finished' } });
+        const content = { t: 'encrypted', c: await encryptRawRecordForPending({ encryption, sessionId,
+            rawRecord: { role: 'user', content: { type: 'text', text: 'Followed source changed' },
+                meta: { happierInputRequestV1: { v: 1, producer: 'sessionAction', caller: { kind: 'host' },
+                    permission: {}, followDeliveryV1: follow },
+                    happierProvenanceV1: { v: 1, kind: 'host', producer: 'sessionAction' }, hostFollowInput: follow } } }) };
+        for (const hostFollowInput of [follow, undefined, { ...follow, v: 99 }]) {
+            await fetchAndApplyPendingMessagesV2({ sessionId, encryption,
+                request: async () => Response.json({ pending: [{ localId: 'host-input', messageRole: 'user',
+                    content, hostFollowInput, status: 'queued', position: 0, createdAt: 1, updatedAt: 1 }] }) });
+            const message = storage.getState().sessionPending[sessionId]?.messages[0];
+            expect(message?.text).toBe('Followed source changed');
+            expect(isHostAuthoredInputMeta(message?.rawRecord.meta, message?.pendingHostFollowInput))
+                .toBe(hostFollowInput === follow);
+            expect(readHostFollowInputMeta(message?.rawRecord.meta, message?.pendingHostFollowInput))
+                .toEqual(hostFollowInput === follow ? follow : null);
+        }
+    });
+
+    it('accepts only the server recovery projection and withdraws missing or malformed eligibility on refresh', async () => {
+        const sessionId = 'recovery-eligibility';
+        const encryption = await createPendingQueueEncryption({ sessionId });
+        const content = { t: 'encrypted', c: await encryptRawRecordForPending({ encryption, sessionId,
+            rawRecord: { role: 'user', content: { type: 'text', text: 'uncertain original' } } }) };
+        const row = { localId: 'original', messageRole: 'user', content, status: 'queued',
+            deliveryState: 'blocked', deliveryBlockedReason: 'delivery_outcome_uncertain',
+            position: 0, createdAt: 1, updatedAt: 1 };
+        for (const recovery of [{ canSendAsNew: true }, { canSendAsNew: false }, undefined,
+            { canSendAsNew: 'true' }, { canSendAsNew: true, replyProgress: {} }]) {
+            await fetchAndApplyPendingMessagesV2({ sessionId, encryption,
+                request: async () => Response.json({ pending: [{ ...row, recovery }] }) });
+            const message = storage.getState().sessionPending[sessionId]?.messages[0];
+            if (recovery && typeof recovery.canSendAsNew === 'boolean' && !('replyProgress' in recovery)) {
+                expect(message).toMatchObject({ pendingRecovery: recovery });
+            } else {
+                expect(message?.pendingRecovery).toBeUndefined();
+            }
+        }
     });
 
     it('carries only a valid held exchange root through the real pending refresh and clears it when released', async () => {

@@ -53,6 +53,32 @@ import { applyRunnerMcpSessionContext } from '@/mcp/runtime/applyRunnerMcpSessio
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import { ensureSkillSessionDirHttp } from '@/daemon/controlClient';
 import { computePromptBundleDigestV1 } from '@happier-dev/protocol/prompts/library/promptLibraryDigests';
+import { createSessionBrokerApplicationEvidence } from '@/providers/broker/sessionBrokerApplicationEvidence';
+
+await vi.hoisted(async () => {
+  const path = new URL('../../../../ui/sources/dev/vitestRnShim.ts', import.meta.url).href;
+  const { installVitestRnShim } = await import(path);
+  installVitestRnShim();
+});
+
+// This composed CLI suite consumes the real UI denial presenter. Its native
+// stylesheet boundary uses the same theme fixture as the owning UI testkit.
+vi.mock('react-native-unistyles', async () => {
+  const { createUnistylesMock } = await import('../../../../ui/sources/dev/testkit/mocks/unistyles');
+  return createUnistylesMock();
+});
+vi.mock('expo-updates', async () => {
+  const { createExpoUpdatesMock } = await import('../../../../ui/sources/dev/testkit/mocks/expoUpdates');
+  return createExpoUpdatesMock();
+});
+vi.mock('@shopify/react-native-skia', async () => {
+  const { createReactNativeSkiaMock } = await import('../../../../ui/sources/dev/testkit/mocks/reactNativeSkia');
+  return createReactNativeSkiaMock();
+});
+vi.mock('expo-file-system', async () => {
+  const { createExpoFileSystemFileMock } = await import('../../../../ui/sources/dev/testkit/mocks/expoFileSystem');
+  return createExpoFileSystemFileMock().module;
+});
 
 const nativeFetch = fetch;
 const boundary = vi.hoisted(() => ({ control: null as Parameters<typeof startDaemonControlServer>[0] | null, port: 0,
@@ -140,6 +166,63 @@ it.each(['direct', 'wrapped'] as const)('prepares grantee host input through rea
     occurrenceId: 'qb174-runner' });
   if (!source) throw new Error('Readiness did not issue consumable runner authority');
   onTestFinished(() => source.retire?.());
+  const readLog = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
+  const readRequests = vi.spyOn(globalThis, 'fetch');
+  try {
+    await expect(source.daemonTurnContributionsBridge!.readTeamCredentialDenial!({
+      sessionId: h.sessionId, turnId: 'refusal-read-turn',
+    })).resolves.toBeNull();
+    expect(readRequests).not.toHaveBeenCalled();
+    h.tracked.activeTurnId = 'refusal-read-turn';
+    await expect(readCurrentRunnerTeamCredentialBrokerDenial({ authority: expectedAuthority,
+      turnId: 'refusal-read-turn' })).resolves.toBeNull();
+    await expect(readCurrentRunnerTeamCredentialBrokerDenial({ authority: expectedAuthority,
+      turnId: 'previous-turn' })).resolves.toBeNull();
+    let evidenceCurrent = true;
+    h.tracked.teamCredentialBrokerEvidence = createSessionBrokerApplicationEvidence({
+      sessionId: h.sessionId, pid: issued.runner.pid, processStartTimeMs: issued.runner.processStartTimeMs,
+      readActiveTurnId: () => h.tracked.activeTurnId ?? null, isCurrent: () => evidenceCurrent,
+    });
+    const denial = { v: 1, resourceId: 'PRIVATE_RESOURCE', reasonCode: 'resource_forbidden' } as const;
+    h.tracked.teamCredentialBrokerEvidence.beginRequest()?.(denial);
+    await expect(readCurrentRunnerTeamCredentialBrokerDenial({ authority: expectedAuthority,
+      turnId: 'refusal-read-turn' })).resolves.toEqual(denial);
+    // A captured refusal belongs to its exact turn even after lifecycle tracking
+    // clears or advances. The evidence owner still rejects a different turn.
+    delete h.tracked.activeTurnId;
+    await expect(readCurrentRunnerTeamCredentialBrokerDenial({ authority: expectedAuthority,
+      turnId: 'refusal-read-turn' })).resolves.toEqual(denial);
+    h.tracked.activeTurnId = 'next-turn';
+    await expect(readCurrentRunnerTeamCredentialBrokerDenial({ authority: expectedAuthority,
+      turnId: 'refusal-read-turn' })).resolves.toEqual(denial);
+    await expect(readCurrentRunnerTeamCredentialBrokerDenial({ authority: expectedAuthority,
+      turnId: 'next-turn' })).resolves.toBeNull();
+    evidenceCurrent = false;
+    await expect(readCurrentRunnerTeamCredentialBrokerDenial({ authority: expectedAuthority,
+      turnId: 'refusal-read-turn' })).resolves.toBeNull();
+    // One private RPC per demanded supported read; unsupported runners stay local.
+    expect(readRequests).toHaveBeenCalledTimes(7);
+    const context = { sessionId: h.sessionId, pid: issued.runner.pid, processStartTimeMs: issued.runner.processStartTimeMs };
+    expect(readLog.mock.calls.filter(([label, data]) => label === '[provider-broker-application]'
+      && data && typeof data === 'object' && 'stage' in data && data.stage === 'evidence_read').map(([, data]) => data)).toEqual([
+      { ...context, stage: 'evidence_read', turnId: 'refusal-read-turn', outcome: 'miss', reason: 'no_evidence' },
+      { ...context, stage: 'evidence_read', turnId: 'previous-turn', outcome: 'miss', reason: 'no_evidence' },
+      { ...context, stage: 'evidence_read', turnId: 'refusal-read-turn', outcome: 'hit' },
+      { ...context, stage: 'evidence_read', turnId: 'refusal-read-turn', outcome: 'hit' },
+      { ...context, stage: 'evidence_read', turnId: 'refusal-read-turn', outcome: 'hit' },
+      { ...context, stage: 'evidence_read', turnId: 'next-turn', outcome: 'miss', reason: 'turn_mismatch' },
+      { ...context, stage: 'evidence_read', turnId: 'refusal-read-turn', outcome: 'miss', reason: 'pid_mismatch' },
+    ]);
+    expect(readLog.mock.calls.filter(([label, data]) => label === '[provider-broker-application]'
+      && data && typeof data === 'object' && 'stage' in data && data.stage === 'runner-refusal-read').map(([, data]) => data)).toContainEqual({
+        ...context, stage: 'runner-refusal-read', turnId: 'refusal-read-turn', outcome: 'miss', reason: 'unsupported',
+      });
+  } finally {
+    delete h.tracked.activeTurnId;
+    delete h.tracked.teamCredentialBrokerEvidence;
+    readRequests.mockRestore();
+    readLog.mockRestore();
+  }
   const engines = await resolveCliEngineRegistry({ happyHomeDir: h.f.directory, backendId: 'codex',
     requireRunnerAgentSessionRuntimeSource: true, runnerAgentSessionRuntimeSource: source });
   const resolution = await engines.resolveForBackendId('codex');
@@ -494,6 +577,11 @@ it.each(['ready', 'requester Home', 'admission refused', 'binding not current', 
     publicReleaseRing: configuration.publicReleaseRing });
   // The bundled development Agent belongs to this real source runner root.
   h.runner.snapshotIdentity = `path:${resolve(__dirname, '../../..')}`;
+  // The runner source admits only the exact live process; the OS identity read is the boundary.
+  const runnerCommand = `${process.execPath} ${resolve(__dirname, '../../..', 'src/index.ts')} codex --started-by daemon`;
+  h.runner.processCommandHash = hashProcessCommand(runnerCommand);
+  vi.spyOn(processIdentity, 'readProcessIdentityByPid').mockResolvedValue({ pid: process.pid,
+    processStartTimeMs: h.runner.processStartTimeMs, command: runnerCommand });
   const authority = { happyHomeDir: configuration.happyHomeDir, publicReleaseRing: configuration.publicReleaseRing,
     path, sessionId: h.sessionId, runner: h.runner, retainedAgent: h.retainedAgent };
   const published = await publishAgentRuntimeDaemonServiceAuthority({ ...authority,
@@ -514,7 +602,17 @@ it.each(['ready', 'requester Home', 'admission refused', 'binding not current', 
     return;
   }
   if (metadata === 'requester Home') {
-    const opened = await openThroughRunner();
+    const source = await createRunnerAgentSessionRuntimeSource({ happyHomeDir: configuration.happyHomeDir,
+      publicReleaseRing: configuration.publicReleaseRing, authorityFilePath: path, expectedSessionId: h.sessionId,
+      occurrenceId: 'c165-refusal-runner' });
+    if (!source?.prepareTeamCredentialProviderBinding || !source.daemonTurnContributionsBridge?.readTeamCredentialDenial) {
+      throw new Error('Missing runner Team credential composition');
+    }
+    const readTeamCredentialDenial = source.daemonTurnContributionsBridge.readTeamCredentialDenial;
+    onTestFinished(() => source.retire?.());
+    const opened = await source.prepareTeamCredentialProviderBinding({ sessionId: h.sessionId,
+      resourceId: 'resource', expectedResourceRevision: 2, agentTargetKey, modelId: model.descriptor.id,
+      signal: h.signal });
     expect(opened.providerBinding).toMatchObject({ source: { kind: 'team_resource', resourceId: 'resource' },
       upstream: { normalizedUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v1$/u) } });
     expect(parseCodexProviderBindingEngineConfigV1(opened.providerBinding)).not.toBeNull();
@@ -548,13 +646,14 @@ it.each(['ready', 'requester Home', 'admission refused', 'binding not current', 
     const mutations: SessionTurnMutationV1[] = [];
     const lifecycle = createSessionTurnLifecycle({
       session: { sessionId: h.sessionId, enqueueSessionTurnMutation: async mutation => { mutations.push(mutation); } },
-      readTeamCredentialDenial: turnId => readCurrentRunnerTeamCredentialBrokerDenial({ authority, turnId }),
+      readTeamCredentialDenial: turnId => readTeamCredentialDenial({ sessionId: h.sessionId, turnId }),
     });
     lifecycle.observeRuntimeEvent({ sequence: 0, sessionId: h.sessionId, emittedAtMs: 100,
       kind: 'turn-start', turnId: 'later-refusal-turn', startedBy: 'host' });
     lifecycle.observeRuntimeEvent({ sequence: 1, sessionId: h.sessionId, emittedAtMs: 101,
       kind: 'turn-failed', turnId: 'later-refusal-turn',
-      diagnostic: { code: 'session_error', severity: 'error', message: 'Codex app-server turn failed.' } });
+      diagnostic: { code: 'codex_app_server_turn_failed', severity: 'error', message: 'Codex app-server turn failed.',
+        details: { v: 1, source: 'agent_session_error' } } });
     await lifecycle.drainAcceptedLifecycle();
     const failure = mutations.find(mutation => mutation.action === 'fail');
     expect(failure).toMatchObject({ issue: { source: 'team_credential',

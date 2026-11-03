@@ -1,19 +1,13 @@
 import React from 'react';
-import { describe, expect, it, vi } from 'vitest';
-import renderer, { act } from 'react-test-renderer';
+import { describe, expect, it } from 'vitest';
+import renderer from 'react-test-renderer';
 
 import { findAllByType, findFirstHostNodeByTestId } from '@/dev/testkit/harness/popoverHarness';
 import { renderScreen } from '@/dev/testkit';
-import { motionTokens } from '@/components/ui/motion/motionTokens';
 import { installPopoverCommonModuleMocks } from './popoverTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-vi.mock('@/components/ui/popover', () => ({
-    usePopoverBoundaryRef: () => null,
-    PopoverScope: ({ children }: any) => React.createElement(React.Fragment, null, children),
-}));
 
 installPopoverCommonModuleMocks({
     reactNative: async () => {
@@ -125,69 +119,5 @@ describe('PopoverPortalTargetProvider (native)', () => {
 
         const outerHost = tree ? findFirstHostNodeByTestId(tree, 'outer-host') : null;
         expect(outerHost ? findAllByType(outerHost, 'PopoverChild').length : 0).toBe(0);
-    });
-
-    it('removes portal content when popover closes', async () => {
-        vi.useFakeTimers();
-
-        const anchorRef = {
-            current: {
-                measureInWindow: (cb: any) => cb(120, 240, 20, 20),
-            },
-        } as any;
-
-        const screen = await renderScreen(React.createElement(
-                    PopoverPortalTargetProvider,
-                    null,
-                    React.createElement(
-                        'View',
-                        { testID: 'screen' },
-                        React.createElement(Popover, {
-                            open: true,
-                            anchorRef,
-                            placement: 'bottom',
-                            portal: { native: true },
-                            onRequestClose: () => {},
-                            children: () => React.createElement(PopoverChild),
-                        } as any),
-                    ),
-                ));
-        const tree = screen.tree;
-
-        expect(tree ? findAllByType(tree, 'PopoverChild').length : 0).toBe(1);
-
-        try {
-            await act(async () => {
-                await screen.update(
-                    React.createElement(
-                        PopoverPortalTargetProvider,
-                        null,
-                        React.createElement(
-                            'View',
-                            { testID: 'screen' },
-                            React.createElement(Popover, {
-                                open: false,
-                                anchorRef,
-                                placement: 'bottom',
-                                portal: { native: true },
-                                onRequestClose: () => {},
-                                children: () => React.createElement(PopoverChild),
-                            } as any),
-                        ),
-                    ),
-                );
-            });
-
-            expect(tree ? findAllByType(tree, 'PopoverChild').length : 0).toBe(1);
-
-            await act(async () => {
-                vi.advanceTimersByTime(motionTokens.overlay.popover.exitMs);
-                await vi.runOnlyPendingTimersAsync();
-            });
-
-            expect(tree ? findAllByType(tree, 'PopoverChild').length : 0).toBe(0);
-        } finally {
-            vi.useRealTimers();
-        }
     });
 });

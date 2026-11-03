@@ -448,7 +448,7 @@ export function createDiscussionClient(options: Readonly<{ scope: ServerAccountS
         setSettings: (discussionId: string, settings: DiscussionSettingsV1, signal?: AbortSignal) => run('discussion.settings.set', { discussionId, settings }, signal),
         read: (discussionId: string, input: Omit<DiscussionActionInputV1ById['discussion.read'], 'discussionId'> = {}, signal?: AbortSignal) => run('discussion.read', { discussionId, ...input }, signal),
         readAttachment: (input: DiscussionActionInputV1ById['discussion.attachment.read'], signal?: AbortSignal) => run('discussion.attachment.read', input, signal),
-        create: async (input: Omit<DiscussionActionInputV1ById['discussion.create'], 'firstMessage' | 'participants'> & {
+        create: async (input: Omit<DiscussionActionInputV1ById['discussion.create'], 'firstMessage' | 'participants' | 'attachmentSources'> & {
             messageLocalId: string; content: DiscussionActionInputV1ById['discussion.post']['content']; mentionedAccountIds?: readonly string[]; mentionedSessionIds?: readonly string[];
             participants?: readonly NonNullable<DiscussionActionInputV1ById['discussion.create']['participants']>[number][];
             attachmentSources?: readonly PreparedAttachmentSource[];
@@ -483,7 +483,7 @@ export function createDiscussionClient(options: Readonly<{ scope: ServerAccountS
                 input.onResolvedParticipants?.(DiscussionInitialParticipantsV1Schema.parse(resolved.participants ?? []));
             }, input.attachmentSources);
         },
-        post: (input: Omit<DiscussionActionInputV1ById['discussion.post'], 'mentionedAccountIds' | 'mentionedSessionIds'> & { mentionedAccountIds?: readonly string[]; mentionedSessionIds?: readonly string[];
+        post: (input: Omit<DiscussionActionInputV1ById['discussion.post'], 'mentionedAccountIds' | 'mentionedSessionIds' | 'attachmentSources'> & { mentionedAccountIds?: readonly string[]; mentionedSessionIds?: readonly string[];
             attachmentSources?: readonly PreparedAttachmentSource[] }, signal?: AbortSignal) => {
             if ('kind' in input.content && input.content.kind === 'doc_passage_comment') {
                 if (!input.localId) return Promise.resolve({ kind: 'failed' as const, errorCode: 'discussion_invalid_content' });
@@ -505,7 +505,7 @@ export function createDiscussionClient(options: Readonly<{ scope: ServerAccountS
             mentionedSessionIds: input.mentionedSessionIds === undefined ? undefined : [...input.mentionedSessionIds], replyTarget: input.replyTarget,
         }, signal, undefined, input.attachmentSources);
         },
-        reply: (input: DiscussionActionInputV1ById['discussion.reply'] & { attachmentSources?: readonly PreparedAttachmentSource[] }, signal?: AbortSignal) => {
+        reply: (input: Omit<DiscussionActionInputV1ById['discussion.reply'], 'attachmentSources'> & { attachmentSources?: readonly PreparedAttachmentSource[] }, signal?: AbortSignal) => {
             const { attachmentSources, ...authored } = input;
             return run('discussion.reply', authored, signal, undefined, attachmentSources);
         },

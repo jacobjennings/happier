@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
     createBrowserIrohEndpointClient,
-    resolveBrowserIrohEndpointClient,
     resolvePackagedBrowserIrohEndpointClient,
     resetPackagedBrowserIrohEndpointClientForTests,
     type BrowserIrohWorkerConnection,
@@ -171,44 +170,18 @@ describe('sync/runtime/browserIroh/endpointClient', () => {
 
     });
 
-    it('does not connect a worker or load an asset on an HTTPS-only startup', () => {
-        // An ineligible host resolves to unavailable without touching the
-        // SharedWorker at all: the packaged wasm assets are never requested.
+    it('defers the worker connection until a caller actually asks, and reuses one port for every command', () => {
         const connect = vi.fn(createSilentPort);
 
-        const availability = resolveBrowserIrohEndpointClient(connect, {
-            eligible: false,
-            reason: 'shared_worker_unsupported',
-        });
-
-        expect(availability.available).toBe(false);
-        expect(connect).not.toHaveBeenCalled();
-    });
-
-    it('defers the worker connection until a caller actually asks for a lease', async () => {
-        const connect = vi.fn(createSilentPort);
-
-        const availability = resolveBrowserIrohEndpointClient(connect, { eligible: true });
-        expect(availability.available).toBe(true);
-        // Resolving availability is a host-capability decision only. Nothing has
-        // been fetched, constructed, or connected yet.
+        const client = createBrowserIrohEndpointClient(connect);
+        // Holding a client is free: nothing has been fetched, constructed, or connected yet.
         expect(connect).not.toHaveBeenCalled();
 
-        if (!availability.available) throw new Error('expected an available client');
-        // The reply never arrives from this silent port; the observable fact is
-        // that asking is what connects.
-        void availability.client.status();
+        // The silent port never replies; the observable fact is that asking is what connects.
+        void client.status();
         expect(connect).toHaveBeenCalledTimes(1);
-    });
 
-    it('reuses one port for every later command from this tab', async () => {
-        const connect = vi.fn(createSilentPort);
-        const availability = resolveBrowserIrohEndpointClient(connect, { eligible: true });
-        if (!availability.available) throw new Error('expected an available client');
-
-        void availability.client.status();
-        void availability.client.acquireLease(['https://relay.happier.test']);
-
+        void client.acquireLease(['https://relay.happier.test']);
         expect(connect).toHaveBeenCalledTimes(1);
     });
 
@@ -284,17 +257,20 @@ describe('sync/runtime/browserIroh/endpointClient', () => {
             }),
         );
 
-        const availability = resolveBrowserIrohEndpointClient(connect, { eligible: true });
-        if (!availability.available) throw new Error('expected an available client');
+        const client = createBrowserIrohEndpointClient(connect);
 
-        const inFlight = availability.client.status();
-        for (const listener of failListeners) listener('worker script failed to load');
+        const inFlight = client.acquireLease(['https://relay.happier.test']);
+        for (const listener of failListeners) {
+            listener('browser Iroh worker script failed to load: vendor/iroh/happier-iroh-worker.js');
+        }
 
-        await expect(inFlight).rejects.toMatchObject({ code: 'endpoint_unavailable' });
-        // A later request fails fast rather than reconnecting to a broken script.
-        await expect(availability.client.status()).rejects.toMatchObject({
+        await expect(inFlight).rejects.toMatchObject({
             code: 'endpoint_unavailable',
+            message: /failed to load/u,
         });
+        // A later request fails fast rather than reconnecting to a broken script.
+        await expect(client.status()).rejects.toMatchObject({ code: 'endpoint_unavailable' });
+        await expect(client.releaseAll()).rejects.toMatchObject({ code: 'endpoint_unavailable' });
         expect(connect).toHaveBeenCalledTimes(1);
     });
 
@@ -389,37 +365,5 @@ describe('sync/runtime/browserIroh/endpointClient', () => {
             vi.unstubAllGlobals();
             vi.unstubAllEnvs();
         }
-    });
-
-    it('fails the first command when the worker fails to load before any command was sent', async () => {
-        // The failure listener is wired at construction, so a script that 404s
-        // immediately — before this tab ever sent a command — still cannot turn
-        // the first call into a silent hang.
-        let fail: ((reason: string) => void) | null = null;
-        const connect = vi.fn(
-            (): BrowserIrohWorkerConnection => ({
-                port: { postMessage: () => {}, addEventListener: () => {} },
-                onFailure: (listener) => {
-                    fail = listener;
-                },
-            }),
-        );
-
-        const availability = resolveBrowserIrohEndpointClient(connect, { eligible: true });
-        if (!availability.available) throw new Error('expected an available client');
-
-        const first = availability.client.acquireLease(['https://relay.happier.test']);
-        fail!('browser Iroh worker script failed to load: vendor/iroh/happier-iroh-worker.js');
-
-        await expect(first).rejects.toMatchObject({
-            code: 'endpoint_unavailable',
-            message: /failed to load/u,
-        });
-        // And the failure is remembered: later commands do not retry a broken
-        // script.
-        await expect(availability.client.releaseAll()).rejects.toMatchObject({
-            code: 'endpoint_unavailable',
-        });
-        expect(connect).toHaveBeenCalledTimes(1);
     });
 });

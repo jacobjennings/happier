@@ -25,8 +25,11 @@ import {
 import {
   resolveHappierInteractiveTargetFloor,
   useHappierNativeMinimumInteractiveTargetSize,
+  type HappierHitReach,
 } from '../../environment/interactiveTarget.js';
 import { HappierLabel } from '../content/Foundation.js';
+import { isHappierPageRowNarrow } from '../layout/pageMetrics.js';
+import { HappierPageRowFieldLayoutContext, type HappierPageRowFieldLayout } from '../layout/pageRowField.js';
 import {
   HappierItemGroupBehavior,
   useHappierItemGroupItemBehavior,
@@ -297,8 +300,19 @@ function combineAccessibilityHints(...hints: readonly (string | undefined)[]): s
 /** How far a field that cannot be used right now (disabled, or waiting on its choices) recedes. */
 export const HAPPIER_FIELD_DISABLED_OPACITY = 0.5;
 
+/** A framed field's control sits beneath its label, so on a narrow form it spans the field like every stacked control. */
+const HAPPIER_STACKED_FIELD_LAYOUT: HappierPageRowFieldLayout = Object.freeze({ maxWidthPx: null, stacked: true });
+
 export function HappierField(props: HappierFieldProps) {
   const captionStyle = useHappierTypeRoleStyle('micro', props.theme);
+  // A field inside a page row takes that row's placement. A free-standing one (a dialog's form) measures its own
+  // room: wide, its select keeps the desktop field width; narrow, it spans the field as its text inputs do.
+  const rowLayout = useContext(HappierPageRowFieldLayoutContext);
+  const [narrow, setNarrow] = useState(false);
+  const handleLayout = useCallback((event: Readonly<{ nativeEvent: Readonly<{ layout: Readonly<{ width: number }> }> }>) => {
+    const next = isHappierPageRowNarrow(event.nativeEvent.layout.width);
+    setNarrow(current => (current === next ? current : next));
+  }, []);
   const generatedIssueId = useId();
   const generatedDescriptionId = useId();
   const issue = props.issue || undefined;
@@ -319,6 +333,7 @@ export function HappierField(props: HappierFieldProps) {
       <HappierFieldScopeContext.Provider value>
       <View
         testID={props.testID}
+        {...(rowLayout === null ? { onLayout: handleLayout } : {})}
         style={[{ gap: props.theme.spacing.xsmall, opacity: props.disabled ? HAPPIER_FIELD_DISABLED_OPACITY : 1 }, props.style]}
       >
         <HappierLabel theme={props.theme}>
@@ -332,7 +347,10 @@ export function HappierField(props: HappierFieldProps) {
             {description}
           </HappierText>
         ) : null}
-        {props.children}
+        {rowLayout === null
+          // One stable provider, so a field crossing the width keeps its control mounted (and an open menu open).
+          ? <HappierPageRowFieldLayoutContext.Provider value={narrow ? HAPPIER_STACKED_FIELD_LAYOUT : null}>{props.children}</HappierPageRowFieldLayoutContext.Provider>
+          : props.children}
         {issue ? (
           <HappierValidationMessage
             message={issue}
@@ -392,7 +410,10 @@ export type HappierTextFieldProps = Readonly<{
   onCompositionChange?: (isComposing: boolean) => void;
   /** Returns true when Escape was handled and must not reach an outer owner. */
   onEscape?: () => boolean;
-  /** Additive host floor; the mounted environment's native target always wins. */
+  /**
+   * A hit area the host asks for beyond the environment's finger target. It never grows the drawn field:
+   * a search well reaches it invisibly, and a bordered field is focusable across its whole drawn box.
+   */
   minimumTouchTarget?: number;
   /** Private semantic focus binding supplied by the public TextField adapter; disabled fields report no target. */
   controlRef?: (instance: HappierFocusable | null) => void;
@@ -417,13 +438,8 @@ export function HappierTextField(props: HappierTextFieldProps) {
   const paintColor = useHappierMaterialColorResolver();
   const palette = useOptionalHappierUiPalette(props.theme);
   const searchInputRef = useRef<HappierFocusable | null>(null);
-  const nativeMinimumTouchTarget = useHappierNativeMinimumInteractiveTargetSize();
   const accessibility = useOptionalHappierUiAccessibility();
   const fieldIssue = useHappierFieldIssueSemantics();
-  const minimumTouchTarget = resolveMinimumTouchTarget(
-    props.minimumTouchTarget,
-    nativeMinimumTouchTarget,
-  );
   const scaleOwnership = resolveHappierTextScaleOwnership({
     ...(accessibility === null ? {} : { environmentTextScale: accessibility.textScale }),
   });
@@ -509,7 +525,7 @@ export function HappierTextField(props: HappierTextFieldProps) {
   const fieldAppearance = props.appearance === 'field' && props.fieldColors !== undefined ? props.fieldColors : null;
   const fieldInvalid = fieldIssue.invalid || (fieldAppearance !== null && Boolean(props.error));
   const wellStyle = {
-    minHeight: props.multiline ? Math.max(96, minimumTouchTarget ?? 0) : minimumTouchTarget,
+    minHeight: props.multiline ? 96 : undefined,
     borderWidth: 1,
     borderColor: props.theme.colors.border,
     borderRadius: props.theme.radii.control,
@@ -556,10 +572,7 @@ export function HappierTextField(props: HappierTextFieldProps) {
           ...textStyle, flex: 1, minWidth: 0, minHeight: 20, padding: 0, margin: 0, borderWidth: 0, backgroundColor: 'transparent',
         } : fieldAppearance !== null
         ? {
-            ...resolveHappierFieldTextInputMetrics({
-              multiline: props.multiline,
-              nativeMinimumTargetSize: nativeMinimumTouchTarget,
-            }),
+            ...resolveHappierFieldTextInputMetrics({ multiline: props.multiline }),
             ...(bodyStyle.fontFamily === undefined ? {} : { fontFamily: bodyStyle.fontFamily }),
             color: fieldAppearance.valueColor,
             backgroundColor: 'transparent',
@@ -567,7 +580,6 @@ export function HappierTextField(props: HappierTextFieldProps) {
           }
         : props.leading === undefined
         ? {
-            minWidth: minimumTouchTarget,
             ...wellStyle,
             ...textStyle,
             textAlignVertical: props.multiline ? 'top' : 'center',
@@ -575,7 +587,6 @@ export function HappierTextField(props: HappierTextFieldProps) {
         : {
             flex: 1,
             minWidth: 0,
-            minHeight: minimumTouchTarget,
             padding: 0,
             borderWidth: 0,
             ...textStyle,
@@ -588,7 +599,7 @@ export function HappierTextField(props: HappierTextFieldProps) {
     <HappierSearchFieldBox
       testID={props.testID}
       radius={palette?.searchFieldRadiusPx ?? props.theme.radii.control}
-      minimumTargetSize={minimumTouchTarget}
+      minimumTargetSize={props.minimumTouchTarget}
       colors={{
         backgroundColor: palette?.fieldBackground ?? props.theme.colors.surface,
         borderColor: palette?.sheetBorder ?? props.theme.colors.border,
@@ -633,7 +644,6 @@ export function HappierTextField(props: HappierTextFieldProps) {
     <View
       style={{
         ...wellStyle,
-        minWidth: minimumTouchTarget,
         flexDirection: 'row',
         alignItems: 'center',
         gap: props.theme.spacing.small,
@@ -720,6 +730,8 @@ type HappierSelectOptionControlProps<Value> = Readonly<{
   onPress: () => void;
   theme: HappierUiTheme;
   minimumTouchTarget: number | undefined;
+  /** Half the gap to the options above and below, so stacked options' hit areas meet without overlapping. */
+  hitReach: HappierHitReach;
   fieldIssue: ReturnType<typeof useHappierFieldIssueSemantics>;
   itemGroupRadioIndex?: number;
   accessibilityRole: 'checkbox' | 'radio';
@@ -763,9 +775,10 @@ function HappierSelectOptionControl<Value>(props: HappierSelectOptionControlProp
       onKeyDown={groupItem.grouped ? groupItem.onKeyDown : undefined}
       onPress={props.onPress}
       testID={props.option.testID}
+      // A touch target is a hit area: the option keeps its drawn size and reaches into the gaps around it.
+      hitTarget={props.minimumTouchTarget}
+      hitReach={props.hitReach}
       style={(state) => ({
-        minWidth: props.minimumTouchTarget,
-        minHeight: props.minimumTouchTarget,
         borderWidth: 1,
         borderColor: props.selected ? props.theme.colors.accent : props.theme.colors.border,
         ...happierFocusRingStyle({ visible: state.focused, color: props.theme.colors.focus }),
@@ -947,13 +960,9 @@ export function HappierSelect<Value = string>(props: Readonly<{
   theme: HappierUiTheme;
   testID?: string;
 }>) {
-  const nativeMinimumTouchTarget = useHappierNativeMinimumInteractiveTargetSize();
   const fieldIssue = useHappierFieldIssueSemantics();
   const localization = useOptionalHappierUiLocalization();
-  const minimumTouchTarget = resolveMinimumTouchTarget(
-    props.minimumTouchTarget,
-    nativeMinimumTouchTarget,
-  );
+  const optionHitReach = { top: props.theme.spacing.small / 2, bottom: props.theme.spacing.small / 2 };
   const plan = planHappierSelectOptions(props);
   let focusTargetAssigned = false;
   const options = plan.options.map((entry) => {
@@ -967,7 +976,8 @@ export function HappierSelect<Value = string>(props: Readonly<{
         disabled={entry.disabled}
         accessibilityRole={props.multiple ? 'checkbox' : 'radio'}
         theme={props.theme}
-        minimumTouchTarget={minimumTouchTarget}
+        minimumTouchTarget={props.minimumTouchTarget}
+        hitReach={optionHitReach}
         fieldIssue={fieldIssue}
         controlRef={controlRef}
         onPress={() => { props.onChange(entry.nextValue()); }}

@@ -293,7 +293,9 @@ export function enableServeUi(app: AnyFastifyInstance, ui: UiConfig) {
     } else {
         const prefix = ui.prefix;
         app.get(prefix, async (_request, reply) => reply.redirect(`${prefix}/`, 302));
-        app.get(`${prefix}/*`, async (request, reply) => {
+        // A configured UI prefix can itself be an API-shaped path (/v1/ui).
+        // Only the route owner knows it is serving static assets there.
+        app.get(`${prefix}/*`, { compress: false }, async (request, reply) => {
             try {
                 const raw = (request.params as { '*': string | undefined })['*'] || '';
                 const decoded = decodeURIComponent(raw);

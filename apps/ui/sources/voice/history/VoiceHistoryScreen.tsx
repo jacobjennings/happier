@@ -18,13 +18,16 @@ import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
 
-import { createDefaultVoiceHistoryConsumer } from './defaultVoiceHistoryConsumer';
+import { getDefaultVoiceHistoryConsumer } from './defaultVoiceHistoryConsumer';
+import { useVoiceHistoryPendingRecovery, type VoiceHistoryPendingRecovery } from './useVoiceHistoryPendingRecovery';
+import { useVoiceHomeConversationAddress } from '@/voice/persistence/useVoiceHomeConversationAddress';
+import { useMountedActionExecution } from '@/components/approvals/useMountedActionExecution';
+import { VoiceConversationActionOutputSchemas } from '@happier-dev/protocol/actions/voiceConversationActionFamily';
 import {
   type VoiceHistoryExportArtifact,
   type VoiceHistoryRow,
   type VoiceHistorySnapshot,
 } from './voiceHistoryConsumer';
-import { registerSessionRealtimeTranscriptConsumer } from '@/sync/runtime/sessionRealtimeTranscriptConsumers';
 import { saveVoiceHistoryExportArtifact } from './voiceHistoryExportTarget';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
@@ -34,7 +37,7 @@ import {
   type VoiceHistoryInitialLoadFailureState,
 } from './voiceHistoryInitialLoadState';
 
-type VoiceHistoryConsumer = ReturnType<typeof createDefaultVoiceHistoryConsumer>;
+type VoiceHistoryConsumer = ReturnType<typeof getDefaultVoiceHistoryConsumer>;
 
 type VoiceHistoryScreenProps = Readonly<{
   consumer?: VoiceHistoryConsumer;
@@ -130,6 +133,32 @@ function VoiceHistoryActionMessage(props: Readonly<{ message: string }>) {
   );
 }
 
+/**
+ * Retained Voice input that needs a decision is recovered in the carrier Session's existing
+ * Pending block; History only flags it and opens that Session. It mounts only while this page
+ * is data-active, so the carrier subscription ends with the page.
+ */
+const VoiceHistoryRecoveryGroup = React.memo(function VoiceHistoryRecoveryGroup(props: Readonly<{
+  onOpen: (openAction: VoiceHistoryPendingRecovery['openAction']) => void;
+}>) {
+  const { theme } = useUnistyles();
+  const recovery = useVoiceHistoryPendingRecovery(useVoiceHomeConversationAddress());
+  if (!recovery) return null;
+  return (
+    <ItemGroup description={t('settingsVoice.history.recoveryDescription')}>
+      <Item
+        testID="voice-history-recovery"
+        icon={<Icon name="warning-circle" size={18} color={theme.colors.state.attention.foreground} />}
+        title={t('settingsVoice.history.recoveryTitle')}
+        subtitle={t('workStatus.buckets.needs_you')}
+        subtitleStyle={{ color: theme.colors.state.attention.textForeground }}
+        accessibilityRole="button"
+        onPress={() => props.onOpen(recovery.openAction)}
+      />
+    </ItemGroup>
+  );
+});
+
 const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
   props: VoiceHistoryScreenProps,
 ) {
@@ -138,11 +167,15 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
   // baked-in `layout.maxWidth` would freeze the user's content-width preference.
   const headerMaxWidthStyle = useLayoutMaxWidthStyle();
   const [consumer] = React.useState<VoiceHistoryConsumer>(
-    () => props.consumer ?? createDefaultVoiceHistoryConsumer(),
+    () => props.consumer ?? getDefaultVoiceHistoryConsumer(),
   );
   const saveExport = props.saveExportArtifact ?? saveVoiceHistoryExportArtifact;
+  const scope = useActiveServerAccountScope();
+  const executorOptions = React.useMemo(() => ({ voiceHistory: { consumer, saveExportArtifact: saveExport } }), [consumer, saveExport]);
+  const actions = useMountedActionExecution(scope, { executorOptions, openOnRequest: true });
+  const executeAction = actions.executeValue;
   const [query, setQuery] = React.useState('');
-  const queryRef = React.useRef('');
+  const [appliedQuery, setAppliedQuery] = React.useState('');
   const [loadState, setLoadState] = React.useState<InitialLoadState>('loading');
   const activeOperationRef = React.useRef<VoiceHistoryScreenOperation | null>(null);
   const [activeOperation, setActiveOperation] = React.useState<VoiceHistoryScreenOperation | null>(
@@ -170,14 +203,10 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
     readConsumerRevision,
   );
   const snapshot: VoiceHistorySnapshot = React.useMemo(
-    () => (loadState === 'loading' ? EMPTY_SNAPSHOT : consumer.read(query)),
-    [consumer, loadState, query, revision],
+    () => (loadState === 'loading' ? EMPTY_SNAPSHOT : consumer.read(appliedQuery)),
+    [consumer, loadState, appliedQuery, revision],
   );
 
-  React.useEffect(() => {
-    if (!snapshot.sessionId) return;
-    return registerSessionRealtimeTranscriptConsumer(snapshot.sessionId);
-  }, [snapshot.sessionId]);
 
   const showOperationError = React.useCallback((error: unknown, fallback: string) => {
     if (isVoiceHistoryOperationSupersededError(error)) {
@@ -193,30 +222,39 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
     setLoadState('loading');
     setActionMessage(null);
     try {
-      await consumer.open(query);
+      await executeAction('ui.voice_global.history.search', { query: appliedQuery, refresh: true });
       if (requestEpoch !== requestEpochRef.current) return;
       setLoadState('ready');
     } catch (error) {
       if (requestEpoch !== requestEpochRef.current) return;
       setLoadState(resolveVoiceHistoryInitialLoadFailureState(error));
     }
-  }, [consumer, query]);
+  }, [executeAction, appliedQuery]);
 
   React.useEffect(() => {
-    void open();
+    if (actions.ready) void open();
     return () => {
       requestEpochRef.current += 1;
     };
-    // Search is applied synchronously against already-loaded decrypted rows.
+    // Admitted search is applied against already-loaded decrypted rows.
     // Opening again for each keystroke would refresh the network-owned page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [consumer]);
+  }, [consumer, actions.ready]);
 
   const onSearchChange = React.useCallback((nextQuery: string) => {
-    queryRef.current = nextQuery;
+    requestEpochRef.current += 1;
+    const requestEpoch = requestEpochRef.current;
     setQuery(nextQuery);
     setActionMessage(null);
-  }, []);
+    // Keep the last admitted projection while this input passes Action policy.
+    void executeAction('ui.voice_global.history.search', { query: nextQuery }).then(() => {
+      if (requestEpoch !== requestEpochRef.current) return;
+      setAppliedQuery(nextQuery);
+    }).catch(error => {
+      if (requestEpoch !== requestEpochRef.current) return;
+      showOperationError(error, t('settingsVoice.history.loadOlderFailed'));
+    });
+  }, [executeAction, showOperationError]);
 
   const beginOperation = React.useCallback((operation: VoiceHistoryScreenOperation): boolean => {
     if (activeOperationRef.current !== null) return false;
@@ -235,27 +273,26 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
     if (!beginOperation('load_older')) return;
     setActionMessage(null);
     try {
-      await consumer.loadOlder(queryRef.current);
+      await executeAction('ui.voice_global.history.load_older', { query: appliedQuery });
     } catch (error) {
       showOperationError(error, t('settingsVoice.history.loadOlderFailed'));
     } finally {
       finishOperation('load_older');
     }
-  }, [beginOperation, consumer, finishOperation, showOperationError]);
+  }, [appliedQuery, beginOperation, executeAction, finishOperation, showOperationError]);
 
   const exportAll = React.useCallback(async () => {
     if (!beginOperation('export')) return;
     setActionMessage(null);
     try {
-      const artifact = await consumer.exportHistory({ range: 'all' });
-      await saveExport(artifact);
+      await executeAction('ui.voice_global.history.export', { range: 'all' });
       setActionMessage(t('settingsVoice.history.exportSucceeded'));
     } catch (error) {
       showOperationError(error, t('settingsVoice.history.exportFailed'));
     } finally {
       finishOperation('export');
     }
-  }, [beginOperation, consumer, finishOperation, saveExport, showOperationError]);
+  }, [beginOperation, executeAction, finishOperation, showOperationError]);
 
   const clear = React.useCallback(async () => {
     if (!beginOperation('clear')) return;
@@ -271,10 +308,15 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
       );
       if (!confirmed) return;
       setActionMessage(null);
-      const result = await consumer.clear();
+      const result = VoiceConversationActionOutputSchemas['ui.voice_global.history.clear'].parse(
+        await executeAction('ui.voice_global.history.clear', {}, {
+          presentUserConfirmation: { actionId: 'ui.voice_global.history.clear' },
+        }),
+      );
       if (!result.cleared) return;
-      queryRef.current = '';
+      requestEpochRef.current += 1;
       setQuery('');
+      setAppliedQuery('');
       setLoadState('ready');
       setActionMessage(t('settingsVoice.history.clearSucceeded'));
     } catch (error) {
@@ -282,7 +324,14 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
     } finally {
       finishOperation('clear');
     }
-  }, [beginOperation, consumer, finishOperation, showOperationError]);
+  }, [beginOperation, executeAction, finishOperation, showOperationError]);
+
+  const openRecovery = React.useCallback((openAction: VoiceHistoryPendingRecovery['openAction']) => {
+    setActionMessage(null);
+    void executeAction(openAction.actionId, openAction.input).catch(error => {
+      showOperationError(error, t('settingsVoice.history.recoveryOpenFailed'));
+    });
+  }, [executeAction, showOperationError]);
 
   const loadingOlder = activeOperation === 'load_older';
   const exporting = activeOperation === 'export';
@@ -365,25 +414,31 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
     );
   }
 
-  if (!snapshot.sessionId) {
+  if (!snapshot.sessionId && snapshot.loadedRowCount === 0) {
     return withPageState(
-      <VoiceHistoryStateMessage
-        testID="voice-history-empty"
-        kind="empty"
-        icon="clock"
-        title={t('settingsVoice.history.emptyTitle')}
-        body={t('settingsVoice.history.emptyBody')}
-        actionMessage={actionMessage}
-      />,
+      <>
+        <View style={[styles.header, headerMaxWidthStyle]}>
+          <VoiceHistoryRecoveryGroup onOpen={openRecovery} />
+        </View>
+        <VoiceHistoryStateMessage
+          testID="voice-history-empty"
+          kind="empty"
+          icon="clock"
+          title={t('settingsVoice.history.emptyTitle')}
+          body={t('settingsVoice.history.emptyBody')}
+          actionMessage={actionMessage}
+        />
+      </>,
     );
   }
 
-  const noSearchResults = query.trim().length > 0
+  const noSearchResults = appliedQuery.trim().length > 0
     && snapshot.loadedRowCount > 0
     && snapshot.rows.length === 0;
   const listHeader = (
     <View style={[styles.header, headerMaxWidthStyle]}>
       {pageHeader}
+      <VoiceHistoryRecoveryGroup onOpen={openRecovery} />
       <ItemGroup
         title={t('settingsVoice.history.searchTitle')}
         description={t('settingsVoice.history.searchFooter')}

@@ -1,8 +1,9 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
-import { createDbMocks, createDbTransactionMock, installDbModuleMock, installPrismaModuleMock } from "../../testkit/dbMocks";
+import { createDbMocks, createDbTransactionMock, installDbModuleMock, installPrismaModuleMock, inTxPostgresControlStatementMock } from "../../testkit/dbMocks";
 import { createEnvReset } from "../../testkit/env";
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
+import { homeConfigSnapshotPostgresQueryMock } from "../../../home/settings/homeConfigSnapshot.testkit";
 
 const logSpy = vi.hoisted(() => vi.fn());
 const getDbProviderFromEnvSpy = vi.hoisted(() => vi.fn(() => "sqlite"));
@@ -25,17 +26,22 @@ const conversationUpdateMany = dbMocks.db.voiceConversation.updateMany;
 const postgresRawExecute = vi.fn();
 const dbTransaction = createDbTransactionMock(() => ({
     ...dbMocks.db,
+    ...inTxPostgresControlStatementMock,
+    ...homeConfigSnapshotPostgresQueryMock,
     $executeRawUnsafe: postgresRawExecute,
 }));
 
 installDbModuleMock(() => ({
     db: dbTransaction.wrapDb(dbMocks.db),
 }));
-installPrismaModuleMock(() => ({
-    getDbProviderFromEnv: getDbProviderFromEnvSpy,
-    isPrismaErrorCode: () => false,
-    withSqliteReadSnapshot: dbTransaction.readSnapshot,
-}));
+installPrismaModuleMock(async () => {
+    const actual = await vi.importActual<typeof import("@/storage/prisma")>("@/storage/prisma");
+    return {
+        ...actual,
+        getDbProviderFromEnv: getDbProviderFromEnvSpy,
+        withSqliteReadSnapshot: dbTransaction.readSnapshot,
+    };
+});
 
 // Install the database boundary before loading the real routes once. Environment
 // decisions are read at registration/request time, so cases only reset fixture state.

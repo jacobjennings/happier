@@ -66,23 +66,6 @@ describe('Account Directory OAuth exchange custody', () => {
         expect(stored).toEqual(started.pending);
         expect(JSON.stringify(stored)).not.toContain('127.0.0.1');
     });
-    it('cannot replay cleared custody from an old callback record', async () => {
-        const pending = {
-            endpoint: 'https://directory.test', serverIdentityId: 'srv_directory', canonicalServerUrl: 'https://directory.test',
-            provider: 'github', purpose: 'account_directory' as const, credentialTarget: 'account_directory' as const,
-            entryIntent: { kind: 'enter' as const, target: { kind: 'automatic' as const } },
-            mode: 'keyless' as const, proof: 'proof', createdAt: Date.now(), expiresAt: Date.now() + 60_000,
-            returnTo: '/setup/wizard', accountEntryReturnTo: '/settings/account',
-        };
-        const result = await accountDirectoryAuthClient.exchangeOAuth({
-            providerId: 'github', purpose: 'account_directory', credentialTarget: 'account_directory',
-            endpointUrl: pending.endpoint, serverIdentityId: pending.serverIdentityId, canonicalServerUrl: pending.canonicalServerUrl,
-            pendingKey: 'callback-handle', mode: 'keyless', pending,
-        });
-        expect(result).toMatchObject({ kind: 'failed', code: 'invalid-pending', retryable: false });
-        expect(boundary.request).not.toHaveBeenCalled();
-    });
-
     async function storedInput() {
         const record = {
             endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId,
@@ -100,13 +83,6 @@ describe('Account Directory OAuth exchange custody', () => {
         };
     }
 
-    it('refuses a malformed Account Service endpoint before dispatch', async () => {
-        const input = await storedInput();
-        const result = await accountDirectoryAuthClient.exchangeOAuth({ ...input, endpointUrl: 'not a URL' });
-        expect(result).toMatchObject({ kind: 'failed', retryable: false });
-        expect(boundary.request).not.toHaveBeenCalled();
-    });
-
     it('commits only restricted credentials and returns to the recorded surface without Directory or Home work', async () => {
         const input = await storedInput();
         const result = await accountDirectoryAuthClient.exchangeOAuth(input);
@@ -116,6 +92,8 @@ describe('Account Directory OAuth exchange custody', () => {
         expect(fixture.state.calls.map(({ path }) => path)).toEqual(['/v1/features', '/v1/auth/external/github/finalize-keyless']);
         expect(JSON.stringify(result)).not.toContain('bound-proof');
         expect(await accountDirectoryAuthClient.exchangeOAuth(input)).toMatchObject({ kind: 'failed', code: 'invalid-pending' });
+        // The replayed callback is refused from local custody alone, without any network request.
+        expect(fixture.state.calls).toHaveLength(2);
     });
 
     it('announces credential commit after the final cancellation check and before persistence', async () => {
@@ -355,6 +333,7 @@ describe('Account Directory OAuth exchange custody', () => {
 
     it('rejects callback endpoint and mode tampering before any exchange', async () => {
         const input = await storedInput();
+        expect(await accountDirectoryAuthClient.exchangeOAuth({ ...input, endpointUrl: 'not a URL' })).toMatchObject({ kind: 'failed', code: 'invalid-pending', retryable: false });
         expect(await accountDirectoryAuthClient.exchangeOAuth({ ...input, endpointUrl: 'https://other.test' })).toMatchObject({ kind: 'failed', code: 'invalid-pending' });
         expect(await accountDirectoryAuthClient.exchangeOAuth({ ...input, mode: 'keyed' })).toMatchObject({ kind: 'failed', code: 'invalid-pending' });
         expect(boundary.request).not.toHaveBeenCalled();

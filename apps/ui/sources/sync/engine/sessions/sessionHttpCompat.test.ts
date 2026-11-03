@@ -1,10 +1,46 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { SessionListQueryV1 } from '@happier-dev/protocol';
+import { V2SessionRecordSchema, type SessionListQueryV1 } from '@happier-dev/protocol';
+import { createCompactSessionListRowFixture } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
+import { createPlainV2SessionRecordFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 import {
     fetchSessionListPageCompat,
     parseCompatSessionByIdResponse,
 } from './sessionHttpCompat';
+
+describe('canonical 0.3 compact list transport', () => {
+    it('rejects a full live list response while retaining layout-0 full detail reads', async () => {
+        const { ownerMetadata: _ownerMetadata, ...currentFields } = createPlainV2SessionRecordFixture({ id: 'retained-layout-zero' });
+        const session = V2SessionRecordSchema.parse({
+            ...currentFields,
+            metadataLayoutVersion: 0,
+            metadata: JSON.stringify({ path: '/retained/layout-zero', host: 'retained-host' }),
+            agentState: JSON.stringify({ requests: {} }),
+        });
+        expect(parseCompatSessionByIdResponse({ session })?.session.metadata).toBe(session.metadata);
+        const request = vi.fn(async () => Response.json({ sessions: [session], nextCursor: null, hasNext: false }));
+        await expect(fetchSessionListPageCompat({ request, token: 'compact-list', limit: 50 }))
+            .rejects.toMatchObject({ code: 'invalid_response' });
+        expect(request.mock.calls).toHaveLength(1);
+    });
+
+    it('reports a missing current list route without fetching an old full-list endpoint', async () => {
+        const paths: string[] = [];
+        const request = vi.fn(async (path: string) => {
+            paths.push(path);
+            return path.startsWith('/v2/')
+                ? Response.json({ error: 'Not found' }, { status: 404 })
+                : Response.json({ sessions: [] });
+        });
+        await expect(fetchSessionListPageCompat({ request, token: 'compact-list', limit: 50 }))
+            .rejects.toMatchObject({ status: 404 });
+        expect(paths).toEqual(['/v2/sessions?limit=50']);
+    });
+
+    it('rejects old full-detail wire coercion without rejecting current layout-0 stored content', () => {
+        expect(parseCompatSessionByIdResponse({ session: buildFullyPopulatedLegacyRow() })).toBeNull();
+    });
+});
 
 /**
  * A populated layout-0 row with legacy object content, routed through coercion.
@@ -71,17 +107,27 @@ function buildFullyPopulatedLegacyRow() {
     };
 }
 
-function coerceFullyPopulatedLegacyRow(): Record<string, unknown> {
-    const parsed = parseCompatSessionByIdResponse({ session: buildFullyPopulatedLegacyRow() });
-    expect(parsed).not.toBeNull();
-    return parsed!.session as unknown as Record<string, unknown>;
+function buildCurrentStoredLayoutZeroRecord() {
+    const source = buildFullyPopulatedLegacyRow();
+    return V2SessionRecordSchema.parse({
+        ...source,
+        metadata: JSON.stringify(source.metadata),
+        agentState: JSON.stringify(source.agentState),
+    });
 }
 
-describe('legacy session record coercion', () => {
+function readCurrentStoredLayoutZeroRecord() {
+    const parsed = parseCompatSessionByIdResponse({ session: buildCurrentStoredLayoutZeroRecord() });
+    expect(parsed).not.toBeNull();
+    if (!parsed) throw new Error('The current detail contract must retain layout-zero stored content');
+    return parsed.session;
+}
+
+describe('canonical full Session detail transport', () => {
     it('never downgrades a marked access projection into legacy owner authority', () => {
         expect(parseCompatSessionByIdResponse({
             session: {
-                ...buildFullyPopulatedLegacyRow(),
+                ...buildCurrentStoredLayoutZeroRecord(),
                 share: undefined,
                 effectiveAccess: { v: 1, level: 'owner', capabilities: {} },
             },
@@ -89,7 +135,7 @@ describe('legacy session record coercion', () => {
     });
     it('rejects a malformed explicit viewer projection instead of coercing it to legacy shared read state', () => {
         const session = {
-            ...buildLegacyCompatSession('viewer-session'),
+            ...buildCurrentStoredLayoutZeroRecord(),
             lastViewedSessionSeq: 2,
             viewer: {
                 latestFailureSeq: null,
@@ -107,30 +153,23 @@ describe('legacy session record coercion', () => {
     it('rejects an explicitly malformed encryption mode instead of treating it as a legacy omission', () => {
         expect(parseCompatSessionByIdResponse({
             session: {
-                ...buildFullyPopulatedLegacyRow(),
+                ...buildCurrentStoredLayoutZeroRecord(),
                 encryptionMode: 'encrypted-somehow',
                 dataEncryptionKey: 'legacy-looking-envelope',
             },
         })).toBeNull();
 
-        const withoutMode = buildFullyPopulatedLegacyRow();
-        delete (withoutMode as { encryptionMode?: unknown }).encryptionMode;
-        expect(parseCompatSessionByIdResponse({ session: withoutMode })).not.toBeNull();
     });
 
-    it('preserves the supplied legacy record facts while normalizing object content', () => {
-        const source = buildFullyPopulatedLegacyRow();
-        const record = coerceFullyPopulatedLegacyRow();
+    it('preserves current record facts and stored layout-zero content without coercion', () => {
+        const source = buildCurrentStoredLayoutZeroRecord();
+        const record = readCurrentStoredLayoutZeroRecord();
 
-        expect(record).toMatchObject({
-            ...source,
-            metadata: JSON.stringify(source.metadata),
-            agentState: JSON.stringify(source.agentState),
-        });
+        expect(record).toMatchObject(source);
     });
 
     it('carries the attention edge facts the placement key depends on', () => {
-        const record = coerceFullyPopulatedLegacyRow();
+        const record = readCurrentStoredLayoutZeroRecord();
 
         // Dropping these silently degrades attention ordering onto `updatedAt`,
         // a key that moves on every message to an already-promoted session.
@@ -149,22 +188,16 @@ describe('legacy session record coercion', () => {
         expect(record.responsibleAccountId).toBe('account-responsible');
     });
 
-    it('coerces absent or non-numeric edge facts to null rather than inventing a value', () => {
+    it('rejects malformed edge facts instead of inventing null values', () => {
         const parsed = parseCompatSessionByIdResponse({
             session: {
-                ...buildFullyPopulatedLegacyRow(),
+                ...buildCurrentStoredLayoutZeroRecord(),
                 pendingRequestObservedAt: undefined,
                 latestReadyEventAt: 'not-a-number',
                 latestTurnId: 42,
             },
         });
-        expect(parsed).not.toBeNull();
-        const record = parsed!.session as unknown as Record<string, unknown>;
-
-        expect(record.id).toBe('session-full');
-        expect(record.pendingRequestObservedAt).toBeNull();
-        expect(record.latestReadyEventAt).toBeNull();
-        expect(record.latestTurnId).toBeNull();
+        expect(parsed).toBeNull();
     });
 });
 
@@ -271,11 +304,11 @@ describe('fetchSessionListPageCompat query source', () => {
         })).rejects.toMatchObject({ code: 'invalid_response' });
     });
 
-    it('keeps ordinary GET compatibility and treats missing legacy attention fields as exhausted', async () => {
+    it('reads compact ordinary GET rows and treats absent optional attention fields as exhausted', async () => {
         const request = vi.fn(async (path: string) => {
             expect(path).toBe('/v2/sessions?limit=50');
             return new Response(JSON.stringify({
-                sessions: [buildLegacyCompatSession('ordinary')],
+                sessions: [createCompactSessionListRowFixture(createPlainV2SessionRecordFixture({ id: 'ordinary' }))],
                 nextCursor: null,
                 hasNext: false,
             }), { status: 200 });
@@ -284,10 +317,11 @@ describe('fetchSessionListPageCompat query source', () => {
         await expect(fetchSessionListPageCompat({
             request,
             token: 'token',
-            source: { kind: 'ordinary', path: '/v2/sessions', allowV1Fallback: true },
+            source: { kind: 'ordinary', path: '/v2/sessions', allowV1Fallback: false },
             limit: 50,
         })).resolves.toMatchObject({
             source: 'v2',
+            sessions: [{ documents: 'omitted', metadataAudience: 'owner', agentStateDocument: 'omitted' }],
             attentionNextCursor: null,
             attentionHasNext: false,
         });

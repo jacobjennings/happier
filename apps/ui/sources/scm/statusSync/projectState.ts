@@ -74,13 +74,11 @@ export function buildSnapshotSignature(snapshot: ScmWorkingSnapshot): string {
     ].join('\n');
 }
 
+/** Clears the file-search caches of a project's Sessions; an exact-Home Session clears its workspace cache. */
 export async function clearSearchCacheForProject(
-    sessionToProjectKey: Map<string, string>,
-    projectKey: string,
-    serverId?: string | null,
+    sessions: ReadonlyArray<Readonly<{ sessionId: string; serverId: string | null }>>,
 ): Promise<void> {
-    for (const [sessionId, key] of sessionToProjectKey.entries()) {
-        if (key !== projectKey) continue;
+    for (const { sessionId, serverId } of sessions) {
         if (serverId) {
             const target = resolveWorkspaceTargetForSessionFromState(storage.getState(), { sessionId, serverId });
             if (target) clearCachedWorkspaceRepositoryDirectoryEntries({ workspaceCacheKey: target.workspaceCacheKey });

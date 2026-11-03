@@ -103,9 +103,6 @@ export function createScmUiBackendRegistry(catalog: ScmContributionCatalog) {
         getPluginForSnapshot(snapshot: ScmWorkingSnapshot | null): ScmUiBackendPlugin {
             return this.getPlugin(snapshot?.repo?.backendId);
         },
-        assertRegistryValid(): void {
-            void buildBuiltInPluginMap();
-        },
     };
 }
 

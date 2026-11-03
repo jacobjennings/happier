@@ -49,6 +49,7 @@ function createDeferred<T>(): {
 }
 
 describe('buildUpdatedSessionFromSocketUpdate (plaintext)', () => {
+
   it('retains the same observed presence in detail and list projections across durable active updates', async () => {
     for (const presence of ['online', 123, undefined] as const) {
       const session = createSessionFixture({ encryptionMode: 'plain', active: true, presence });
@@ -1064,34 +1065,22 @@ describe('buildUpdatedSessionFromSocketUpdate (plaintext)', () => {
     const base = createSession({ sessionId: 's1', encryptionMode: 'e2ee' });
     syncPerformanceTelemetry.configure({ enabled: true, slowThresholdMs: 1_000_000, flushIntervalMs: 60_000 });
     syncPerformanceTelemetry.reset();
-    const decryptMetadata = vi.fn(async () => ({ path: '/fallback', host: 'fallback' }));
-    const decryptMetadataPayload = vi.fn(async () => ({ path: '/fallback', host: 'fallback' }));
-    const decryptAgentState = vi.fn(async () => ({ controlledByUser: false }));
-    const decryptSessionSnapshotState = vi.fn(async () => ({
-      metadata: { path: '/work', host: 'devbox' },
-      agentState: { controlledByUser: true },
-    }));
+    const reader = new SessionEncryption(base.id,
+      new SecretBoxEncryption(new Uint8Array(32).fill(7)), new EncryptionCache());
+    const metadata = await reader.encryptMetadata({ path: '/work', host: 'devbox' });
+    const agentState = await reader.encryptAgentState({ controlledByUser: true });
 
     const { nextSession } = await buildUpdatedSessionFromSocketUpdate({
       session: base,
       updateBody: {
-        metadata: { version: 2, value: 'enc-meta' },
-        agentState: { version: 3, value: 'enc-state' },
+        metadata: { version: 2, value: metadata },
+        agentState: { version: 3, value: agentState },
       },
       updateSeq: 10,
       updateCreatedAt: 1234,
-      sessionEncryption: {
-        decryptMetadata,
-        decryptMetadataPayload,
-        decryptAgentState,
-        decryptSessionSnapshotState,
-      },
+      sessionEncryption: reader,
     });
 
-    expect(decryptSessionSnapshotState.mock.calls[0]?.slice(0, 4)).toEqual([2, 'enc-meta', 3, 'enc-state']);
-    expect(decryptMetadata).not.toHaveBeenCalled();
-    expect(decryptMetadataPayload).not.toHaveBeenCalled();
-    expect(decryptAgentState).not.toHaveBeenCalled();
     expect(nextSession.metadataVersion).toBe(2);
     expect(nextSession.agentStateVersion).toBe(3);
     expect(nextSession.metadata).toEqual({ path: '/work', host: 'devbox' });

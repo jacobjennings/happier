@@ -36,12 +36,20 @@ export function createEndOwnerRemainder(input: Readonly<{
     const terminate = createProcessTreeTerminator(input.systemBoundary);
     const reportUnavailable = () => logger.infoFile('[process-remainder] Native owner observation unavailable',
         { code: 'process_owner_observation_unavailable' });
-    function endedRoots(current: readonly HappierProcessRoot[], key: string, captured?: OwnerRemainderCapture) {
+    function mergeCapturedRoots(current: readonly HappierProcessRoot[], captured: readonly HappierProcessRoot[], key: string) {
         const roots = [...current];
-        for (const root of captured?.roots ?? []) {
-            if (!roots.some(candidate => candidate.pid === root.pid && equalProcessStart(candidate.start, root.start)
-                && processOwnerKey(candidate.owner) === key)) roots.push(root);
+        for (const root of captured) {
+            const index = roots.findIndex(candidate => candidate.pid === root.pid && equalProcessStart(candidate.start, root.start)
+                && processOwnerKey(candidate.owner) === key);
+            if (index < 0) roots.push(root);
+            // Once the native root exits its current projection cannot read its
+            // fence again. Keep the exact pre-exit witness for cleanup and rows.
+            else roots[index] = { ...root, ...roots[index], containment: roots[index]!.containment ?? root.containment };
         }
+        return roots;
+    }
+    function endedRoots(current: readonly HappierProcessRoot[], key: string, captured?: OwnerRemainderCapture) {
+        const roots = mergeCapturedRoots(current, captured?.roots ?? [], key);
         const endedAtMs = Date.now();
         const ended = roots.filter(root => processOwnerKey(root.owner) === key)
             .map(root => ({ ...root, live: false, endedAtMs: root.endedAtMs ?? endedAtMs }));
@@ -84,10 +92,33 @@ export function createEndOwnerRemainder(input: Readonly<{
             // descendant roots and their subtrees keep their own lifecycle.
             const independent = liveCapturedTreePids(owner, view.roots, view.snapshot,
                 capture.capturedTargets.filter(target => target.pid !== root.pid));
-            return { scope: 'subtree', ownership: [], roots: capture.capturedTargets.filter(target => !independent.has(target.pid)).map(target => ({
-                owner, ...target, live: true, ownerCreatedAtMs: capture.capturedAtMs,
-                ownerCreatedStartTimeMs: target.start.startTimeMs,
-            })) };
+            const index = indexCensus(view.snapshot.rows);
+            const key = processOwnerKey(owner);
+            const starts = new Map(capture.capturedTargets.map(target => [target.pid, target.start]));
+            const sources = new Map(view.roots.filter(candidate => processOwnerKey(candidate.owner) === key
+                && starts.has(candidate.pid) && equalProcessStart(starts.get(candidate.pid)!, candidate.start))
+                .map(candidate => [candidate.pid, candidate]));
+            const owned = new Map(view.rows.filter(row => row.owner && processOwnerKey(row.owner) === key)
+                .map(row => [row.pid, row]));
+            // A generic daemon-owned subtree has no authority over shared-tag
+            // peers. Logical evidence is retained only for a matched lifecycle root.
+            return { scope: 'subtree', ownership: sources.size ? [...owned.values()] : [], roots: capture.capturedTargets.filter(target => !independent.has(target.pid)).map(target => {
+                const candidate = sources.get(target.pid);
+                const source = candidate && equalProcessStart(candidate.start, target.start) ? candidate : undefined;
+                const containment = source?.containment;
+                const members = containment?.kind === 'linux_unit' ? membersOfCgroup(index, containment.prefix)
+                    : containment?.kind === 'windows_job' ? membersOfJob(index, containment.name) : [];
+                const protectedPids = members.length ? liveCapturedTreePids(owner, view.roots, view.snapshot, members) : independent;
+                // A witnessed root alone cannot authorize its shared daemon fence.
+                // Every member must belong to this retiring physical/lifecycle tree.
+                const exclusive = members.length > 0 && members.every(member => !protectedPids.has(member.pid)
+                    && (starts.has(member.pid) && equalProcessStart(starts.get(member.pid)!, member.start)
+                        || owned.get(member.pid)?.level === 'proven'
+                            && owned.get(member.pid)!.evidence.some(evidence => evidence.kind === 'fence' && evidence.state === 'met')));
+                return { ...source, owner, ...target, live: true, ownerCreatedAtMs: source?.ownerCreatedAtMs ?? capture.capturedAtMs,
+                    ownerCreatedStartTimeMs: source?.ownerCreatedStartTimeMs ?? target.start.startTimeMs,
+                    containment: exclusive ? containment : undefined };
+            }) };
         },
         async observeEnd(owner, captured) {
             try {
@@ -110,8 +141,25 @@ export function createEndOwnerRemainder(input: Readonly<{
         },
         async end(owner, captured) {
             let departedCapturedTreeWithoutOtherMembers = false;
+            let treeResult: OwnerRemainderResult | undefined;
+            const withTreeResult = (result: OwnerRemainderResult): OwnerRemainderResult => {
+                if (!treeResult) return result;
+                const outcomes = new Map(treeResult.outcomes.map(outcome => [outcome.pid, outcome]));
+                const updated = new Set(result.outcomes.map(outcome => outcome.pid));
+                for (const outcome of result.outcomes) {
+                    const earlier = outcomes.get(outcome.pid);
+                    if (!earlier || outcome.outcome !== 'gone_before' || earlier.outcome === 'refused' || earlier.outcome === 'survived') {
+                        outcomes.set(outcome.pid, outcome);
+                    }
+                }
+                const unresolvedUnavailable = treeResult.status === 'unavailable' && (treeResult.outcomes.length === 0
+                    || treeResult.outcomes.some(outcome => outcome.outcome === 'refused' && !updated.has(outcome.pid)));
+                return { status: result.status === 'unavailable' || unresolvedUnavailable ? 'unavailable'
+                    : result.status === 'incomplete' || [...outcomes.values()].some(outcome => outcome.outcome === 'refused' || outcome.outcome === 'survived')
+                        ? 'incomplete' : 'complete', outcomes: [...outcomes.values()] };
+            };
             try {
-                const view = await input.processOwnershipRuntime.readOwners({ freshness: 'fresh', requesterAttribution: 'retained' });
+                let view = await input.processOwnershipRuntime.readOwners({ freshness: 'fresh', requesterAttribution: 'retained' });
                 if (view.status !== 'ok') { reportUnavailable(); return { status: 'unavailable', outcomes: [] }; }
                 const key = processOwnerKey(owner);
                 if (captured?.scope === 'subtree') {
@@ -157,25 +205,43 @@ export function createEndOwnerRemainder(input: Readonly<{
                             const start = capturedStarts.get(row.pid);
                             return !start || !equalProcessStart(row.start, start);
                         });
-                    return { status: results.some(result => result.status === 'unavailable') ? 'unavailable'
+                    treeResult = { status: results.some(result => result.status === 'unavailable') ? 'unavailable'
                         : results.some(result => result.status === 'incomplete') ? 'incomplete' : 'complete',
                         outcomes: results.flatMap(result => result.outcomes) };
+                    const outlyingEvidence = captured.ownership.some(row => !capturedStarts.has(row.pid)
+                        && row.level !== 'unknown' && row.evidence.some(evidence => evidence.state === 'met'
+                            && (evidence.kind === 'marker' || evidence.kind === 'parent_chain')));
+                    if (!captured.roots.some(root => root.containment) && !outlyingEvidence) return treeResult;
+                    // Detached, empty-environment members can leave the tree before
+                    // capture. The same owner/fence terminator still owns their end,
+                    // including fresh members forked during its gentle/force rounds.
+                    departedCapturedTreeWithoutOtherMembers = false;
+                    view = await input.processOwnershipRuntime.readOwners({ freshness: 'fresh', requesterAttribution: 'retained' });
+                    if (view.status !== 'ok') { reportUnavailable(); return withTreeResult({ status: 'unavailable', outcomes: [] }); }
                 }
                 // A resumed owner reowns its tagged processes. An older exit cannot retire it.
                 const liveOwner = view.roots.some(root => root.live && processOwnerKey(root.owner) === key
                     && view.snapshot.rows.some(row => row.pid === root.pid && row.state !== 'zombie' && equalProcessStart(row.start, root.start)));
-                if (liveOwner) return { status: 'complete', outcomes: [] };
+                if (liveOwner) return withTreeResult({ status: 'complete', outcomes: [] });
                 const { roots, ended } = endedRoots(view.roots, key, captured);
                 const ownership = resolveProcessOwnership({ snapshot: view.snapshot,
                     roots: [...roots.filter(root => processOwnerKey(root.owner) !== key), ...ended],
                     daemonPrincipal: view.snapshot.rows.find(row => row.pid === process.pid)?.principal ?? null,
                     daemonScopeKey: input.daemonScopeKey, platform: input.platform,
                     capturedOwnership: captured?.ownership });
-                const ownedRows = ownership.filter(row => row.owner && processOwnerKey(row.owner) === key);
+                const attributedRows = ownership.filter(row => row.owner && processOwnerKey(row.owner) === key);
+                const independent = liveCapturedTreePids(owner, view.roots, view.snapshot, attributedRows);
+                const ownedRows = attributedRows.filter(row => !independent.has(row.pid));
                 // Group/port-only evidence is a hint for the daemon's two-pass tracker, never kill authority.
                 const targets = ownedRows.filter(row => row.level !== 'unknown' && row.evidence.some(evidence =>
                     evidence.state === 'met' && ['fence', 'parent_chain', 'marker'].includes(evidence.kind)));
-                const containment = ended.length === 1 ? ended[0]?.containment : undefined;
+                const fences = new Map<string, NonNullable<Parameters<typeof terminate>[0]['containment']>>();
+                for (const root of ended) {
+                    if (root.containment?.kind === 'linux_unit') fences.set(`linux:${root.containment.prefix}`,
+                        { kind: 'linux_unit', prefix: root.containment.prefix });
+                    else if (root.containment?.kind === 'windows_job') fences.set(`windows:${root.containment.name}`, root.containment);
+                }
+                const containment = fences.size === 1 ? fences.values().next().value : undefined;
                 const censusIndex = indexCensus(view.snapshot.rows);
                 const members = containment?.kind === 'linux_unit' ? membersOfCgroup(censusIndex, containment.prefix)
                     : containment?.kind === 'windows_job' ? membersOfJob(censusIndex, containment.name) : [];
@@ -183,34 +249,41 @@ export function createEndOwnerRemainder(input: Readonly<{
                 // a swapped live owner in an old physical fence is an exact-identity sweep instead.
                 const exclusiveContainment = containment && members.every(member => targets.some(target =>
                     target.pid === member.pid && equalProcessStart(target.start, member.start))) ? containment : undefined;
+                let authorizedSnapshot = view.snapshot;
+                const authorize = async (snapshot: Extract<ProcessCensusSnapshot, { status: 'ok' }>) => {
+                    const current = await input.processOwnershipRuntime.resolveSnapshot(snapshot, undefined, { requesterAttribution: 'retained' });
+                    if (current.status !== 'ok') return false;
+                    if (current.roots.some(root => root.live && processOwnerKey(root.owner) === key
+                        && snapshot.rows.some(row => row.pid === root.pid && row.state !== 'zombie' && equalProcessStart(row.start, root.start)))) return false;
+                    // Current live/resumed roots retain precedence over captured ended facts.
+                    const known = mergeCapturedRoots(current.roots, ended, key);
+                    const ownership = resolveProcessOwnership({ snapshot, roots: known,
+                        daemonPrincipal: snapshot.rows.find(row => row.pid === process.pid)?.principal ?? null,
+                        daemonScopeKey: input.daemonScopeKey, platform: input.platform, capturedOwnership: captured?.ownership });
+                    const index = indexCensus(snapshot.rows);
+                    const freshMembers = exclusiveContainment?.kind === 'linux_unit' ? membersOfCgroup(index, exclusiveContainment.prefix)
+                        : exclusiveContainment?.kind === 'windows_job' ? membersOfJob(index, exclusiveContainment.name)
+                        : snapshot.rows.filter(row => targets.some(target => row.pid === target.pid && equalProcessStart(row.start, target.start)));
+                    const protectedPids = liveCapturedTreePids(owner, current.roots, snapshot, freshMembers);
+                    // Positive zombie state already proves exit; ownership
+                    // enrichment may disappear before the kernel reaps it.
+                    return freshMembers.every(member => !protectedPids.has(member.pid) && (member.state === 'zombie' || ownership.some(row => row.pid === member.pid
+                        && equalProcessStart(row.start, member.start) && row.ownerEnded && row.owner
+                        && processOwnerKey(row.owner) === key && row.level !== 'unknown'
+                        && row.evidence.some(evidence => evidence.state === 'met' && ['fence', 'parent_chain', 'marker'].includes(evidence.kind)))));
+                };
                 const result = await terminate({ targets: targets.map(row => ({ pid: row.pid, start: row.start })), tree: false,
                     ...(exclusiveContainment ? { containment: exclusiveContainment } : {}),
-                        async authorizeSnapshot(snapshot) {
-                            const current = await input.processOwnershipRuntime.resolveSnapshot(snapshot, undefined, { requesterAttribution: 'retained' });
-                            if (current.status !== 'ok') return false;
-                            if (current.roots.some(root => root.live && processOwnerKey(root.owner) === key
-                                && snapshot.rows.some(row => row.pid === root.pid && row.state !== 'zombie' && equalProcessStart(row.start, root.start)))) return false;
-                            // Current live/resumed roots retain precedence over captured ended facts.
-                            const known = [...current.roots];
-                            for (const root of ended) if (!known.some(value => value.pid === root.pid
-                                && equalProcessStart(value.start, root.start) && processOwnerKey(value.owner) === key)) known.push(root);
-                            const ownership = resolveProcessOwnership({ snapshot, roots: known,
-                                daemonPrincipal: snapshot.rows.find(row => row.pid === process.pid)?.principal ?? null,
-                                daemonScopeKey: input.daemonScopeKey, platform: input.platform, capturedOwnership: captured?.ownership });
-                            const index = indexCensus(snapshot.rows);
-                            const freshMembers = exclusiveContainment?.kind === 'linux_unit' ? membersOfCgroup(index, exclusiveContainment.prefix)
-                                : exclusiveContainment?.kind === 'windows_job' ? membersOfJob(index, exclusiveContainment.name)
-                                : snapshot.rows.filter(row => targets.some(target => row.pid === target.pid && equalProcessStart(row.start, target.start)));
-                            // Positive zombie state already proves exit; ownership
-                            // enrichment may disappear before the kernel reaps it.
-                            return freshMembers.every(member => member.state === 'zombie' || ownership.some(row => row.pid === member.pid
-                                && equalProcessStart(row.start, member.start) && row.ownerEnded && row.owner
-                                && processOwnerKey(row.owner) === key && row.level !== 'unknown'
-                                && row.evidence.some(evidence => evidence.state === 'met' && ['fence', 'parent_chain', 'marker'].includes(evidence.kind))));
-                        },
-                    });
+                    async authorizeSnapshot(snapshot) {
+                        authorizedSnapshot = snapshot;
+                        return authorize(snapshot);
+                    },
+                    // The terminator just rechecked native identity. Re-read the
+                    // lifecycle roots too, without another machine census per PID.
+                    authorizeSignal: () => authorize(authorizedSnapshot),
+                });
                 const incomplete = ownedRows.length > targets.length || result.outcomes.some(row => row.outcome === 'refused' || row.outcome === 'survived');
-                return { status: result.status === 'unavailable' ? 'unavailable' : incomplete || result.status === 'incomplete' ? 'incomplete' : 'complete', outcomes: result.outcomes };
+                return withTreeResult({ status: result.status === 'unavailable' ? 'unavailable' : incomplete || result.status === 'incomplete' ? 'incomplete' : 'complete', outcomes: result.outcomes });
             } finally {
                 if (!departedCapturedTreeWithoutOtherMembers) await firstPass(owner);
             }

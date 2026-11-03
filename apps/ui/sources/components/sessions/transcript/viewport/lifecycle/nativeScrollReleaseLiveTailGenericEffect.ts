@@ -12,7 +12,7 @@ function normalizeNextScrollOffsetPx(value: number): number {
     return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
 }
 
-export function resolveNativeScrollReleaseLiveTailGenericEffects(params: Readonly<{
+function resolveNativeScrollReleaseLiveTailGenericEffects(params: Readonly<{
     effect: NativeScrollReleaseLiveTailEffect;
     nextScrollOffsetPx: number;
     pinEnabled: boolean;

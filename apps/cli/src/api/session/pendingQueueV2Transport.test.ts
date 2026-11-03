@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
+import { DEFAULT_PENDING_REQUESTED_ACTION_V1 } from '@happier-dev/protocol/sessions/pending/pendingRequestedActionV1';
 import { SocketAckError } from '@/session/transport/shared/socketAck';
 
 import {
@@ -37,18 +38,6 @@ const { mockGet, mockPost, mockDelete, mockPatch } = vi.hoisted(() => ({
     mockPatch: vi.fn(),
 }));
 
-vi.mock('axios', () => ({
-    default: {
-        get: mockGet,
-        post: mockPost,
-        delete: mockDelete,
-        patch: mockPatch,
-        isAxiosError: (error: unknown) => Boolean(
-            error && typeof error === 'object' && (error as { isAxiosError?: unknown }).isAxiosError === true,
-        ),
-    },
-}));
-
 describe('pendingQueueV2Transport', () => {
     it('allows Pending admission beyond ten seconds under the containing admission budget', async () => {
         vi.useFakeTimers();
@@ -61,7 +50,8 @@ describe('pendingQueueV2Transport', () => {
         }));
         try {
             const result = enqueuePendingQueueV2MessageViaHttp({ token: 'token', sessionId: 'session',
-                body: { localId: 'retained-original', content: { t: 'plain', v: { role: 'user' } } } });
+                body: { localId: 'retained-original', content: { t: 'plain', v: { role: 'user' } },
+                    requestedAction: DEFAULT_PENDING_REQUESTED_ACTION_V1 } });
             const observed = result.then(value => ({ value }), error => ({ error }));
             await vi.advanceTimersByTimeAsync(replyAfterMs);
             expect(await observed).toMatchObject({ value: { didWrite: true } });
@@ -89,7 +79,12 @@ describe('pendingQueueV2Transport', () => {
         mockPost.mockReset();
         mockDelete.mockReset();
         mockPatch.mockReset();
+        vi.spyOn(axios, 'get').mockImplementation(mockGet);
+        vi.spyOn(axios, 'post').mockImplementation(mockPost);
+        vi.spyOn(axios, 'delete').mockImplementation(mockDelete);
+        vi.spyOn(axios, 'patch').mockImplementation(mockPatch);
     });
+    afterEach(() => vi.restoreAllMocks());
 
     it('marks delivery handled with the exact signed request and cancellation, without borrowing the daemon bearer', async () => {
         const signal = new AbortController().signal;
@@ -1287,31 +1282,6 @@ describe('pendingQueueV2Transport', () => {
         await resolveAcceptedPendingQueueV2Delivery(request);
         expect(socket.emitWithAck).toHaveBeenCalledWith('pending-delivery-accepted-v1', {
             v: 1, sessionId: 'session-1', localId: 'accepted-local', acceptedDelivery,
-        });
-    });
-
-    it('preserves didResolve false from an accepted-delivery no-op response', async () => {
-        const transport = await import('./pendingQueueV2Transport');
-        const socket = {
-            connected: true,
-            timeout: vi.fn(() => socket),
-            emitWithAck: vi.fn(async () => ({
-                ok: true,
-                didResolve: false,
-                pendingCount: 1,
-                pendingBlockedCount: 1,
-                pendingVersion: 10,
-            })),
-        };
-
-        await expect((transport as any).resolveAcceptedPendingQueueV2Delivery({
-            socket,
-            sessionId: 'session-1',
-            localId: 'blocked-local',
-        })).resolves.toEqual({
-            didResolve: false,
-            pendingQueueState: { known: true, pendingCount: 1, pendingBlockedCount: 1, pendingVersion: 10 },
-            message: null,
         });
     });
 

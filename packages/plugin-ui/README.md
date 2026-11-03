@@ -94,6 +94,30 @@ Subpath exports are available for narrower imports:
 import { usePluginHostApi, usePluginResource } from '@happier-dev/plugin-ui';
 ```
 
+### Composer status popovers (0.3 development source)
+
+For a status item that opens details from the composer, `Popover` can draw the
+existing `ComposerStatusBadge` inside its owned trigger (0.3 development source):
+
+```tsx
+<Popover
+  open={open}
+  onOpenChange={setOpen}
+  trigger="PR #42 · Checks running"
+  triggerAppearance="composerStatus"
+  triggerComposerStatus={{ tone: 'active', emphasis: 'prominent' }}
+  triggerIcon="branch"
+  triggerAccessibilityLabel="acme/widgets PR #42 · Checks running"
+  sheet={{ title: 'Pull request' }}
+>
+  {open ? <Text value="Pull request details" /> : null}
+</Popover>
+```
+
+The overlay still owns the single interactive trigger, expanded state, focus
+return and dismissal. The host presents the same content in its phone sheet;
+the badge adds no second press handler or detail subscription.
+
 ### Memory facts (0.3 development source)
 
 Import `HappierMemoryFactRow` and its props from `@happier-dev/plugin-ui/components`
@@ -221,7 +245,8 @@ A plugin page that configures something uses Happier's configuration-page
 anatomy through the same presentation owners Happier's own settings use:
 `PageHeader` (title, purpose, identity mark, meta line, actions; the host places
 its back arrow and hides the title under a native header), `ItemGroup` with a
-sentence-case `title`, `description` and optional section `action` (one hairline
+sentence-case `title`, `description` (a string, a `descriptionKey`, or a rich
+sentence around an `InlineCode` command chip) and optional section `action` (one hairline
 sheet, rows divided by full-width hairlines), `ItemAddRow` for a sheet's add
 action (a leading plus, optional controlled `expanded` state, no chevron), `Item` rows with one control in
 `accessory`, `Toggle`, `Select` with `presentation="segmented"` or `"field"`,
@@ -235,6 +260,29 @@ geometry and type come from one owner (`HAPPIER_PAGE_METRICS`,
 exact page colours (`HappierUiPalette`) and page chrome, and without them the
 colours resolve from the public theme snapshot. See the published guide
 "Settings and detail pages" (`apps/docs/content/docs/plugins/ui/configuration-pages.mdx`).
+
+In 0.3 development source, `Form.submitDisabled` blocks submission while keeping
+the draft fields and Cancel available. Use it for incomplete or invalid input;
+`Form.disabled` disables the whole form, and `busy` represents an active submission.
+
+### Project detail navigation (0.3 development source)
+
+Project `appPage` surfaces use the ordinary `defineUiSurface` context and public
+`Collection`/`DetailsPane`. The host docks published details in its existing
+Project column on desktop and pushes them on a phone. Keep selection, filters
+and Find in the controlled page model while its presentation changes.
+
+Place public `DetailsPaneOpenAsPageButton` in `DetailsPane.actions`. Its
+`onPress`, optional `disabled`, `testID` and `accessibilityLabel` bind the shared
+control; do not draw another expand button. Call the existing
+`host.replacePageLocation(fullPageSubPath, {backLocation: detailSubPath})` and use
+the returned `subPath`. Return uses `detailSubPath` with `backLocation` pointing
+to the list. These are plugin-local validated locations; the host retains Home,
+Project and checkout context. No additional DetailsPane expand prop, route
+prefix API or return-route store is needed.
+The [external author example](../plugin-sdk/examples/public-authoring) exercises
+this binding without a Run-on prerequisite. This source contract is Developer
+Preview; generated API and loaded-platform verification remain separate.
 
 ### Dialog and sheet headers
 
@@ -446,6 +494,20 @@ derive host-only injection props from their public semantic inputs.
 In 0.3 development source, a `Select` with `presentation="menu"` or `"field"`
 and no options keeps its trigger disabled. Options can arrive or be withdrawn
 while mounted; the caller explains loading, unavailable or empty source data.
+
+## Hosted CI evidence (development source)
+
+`@happier-dev/plugin-ui/ansi` exposes the pure incremental `tokenizeAnsiText`
+parser and its token/state types without loading a native or web renderer.
+Hosted CI uses these tokens for safe text presentation; it does not render log
+HTML, execute OSC commands, or emulate a terminal. Renderer composition remains
+with the UI owner.
+
+Hosted log Find uses the public `matchFindText` and Find controller contracts
+from `/components`, with `useFindSurfaceRegistration` from `/hostApi`. Reuse the
+host's Find bar and registration rather than adding a log-specific matcher or
+query Action. Row content continues to use the public collection/work primitives;
+the Triage status adapter's intrinsic geometry must be preserved when migrating.
 
 ## Published package contents
 

@@ -2721,13 +2721,18 @@ export function useMachineCliDetectionTargets(machineIds: readonly string[]): Ma
   return getStorage()(useShallow(selectTargets));
 }
 
-export function useServerScopedMachine(serverId: string | null | undefined, machineId: string | null | undefined): Machine | null {
+export function useServerScopedMachine(serverId: string | null | undefined, machineId: string | null | undefined): Machine | null;
+export function useServerScopedMachine<T>(serverId: string | null | undefined, machineId: string | null | undefined, select: (machine: Machine | null) => T): T;
+export function useServerScopedMachine<T>(serverId: string | null | undefined, machineId: string | null | undefined, select?: (machine: Machine | null) => T): T | Machine | null {
   const store = getStorage();
   const normalizedMachineId = typeof machineId === 'string' ? machineId.trim() : '';
   const enabled = normalizedMachineId.length > 0;
   const getSnapshot = React.useCallback(
-    () => resolveServerScopedMachine(store.getState(), serverId, normalizedMachineId),
-    [store, serverId, normalizedMachineId],
+    () => {
+      const machine = enabled ? resolveServerScopedMachine(store.getState(), serverId, normalizedMachineId) : null;
+      return select ? select(machine) : machine;
+    },
+    [store, serverId, normalizedMachineId, enabled, select],
   );
   const subscribe = React.useCallback((listener: () => void) => {
     const unsubscribeStore = store.subscribe((state, previous) => {
@@ -2749,8 +2754,8 @@ export function useServerScopedMachine(serverId: string | null | undefined, mach
   }, [store]);
   return React.useSyncExternalStore(
     enabled ? subscribe : noopMachineSubscribe,
-    enabled ? getSnapshot : readNullMachine,
-    enabled ? getSnapshot : readNullMachine,
+    getSnapshot,
+    getSnapshot,
   );
 }
 
@@ -2890,10 +2895,6 @@ export function useLocalSettingMutable<K extends keyof LocalSettings>(
 }
 
 // Project management hooks
-export function useProjects() {
-  return getStorage()(useShallow((state) => state.getProjects()));
-}
-
 export function useProject(projectId: string | null) {
   return getStorage()(useShallow((state) => (projectId ? state.getProject(projectId) : null)));
 }

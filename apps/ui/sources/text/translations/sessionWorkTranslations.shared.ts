@@ -30,6 +30,7 @@ export const en = {
         muteFailed: 'Couldn’t mute it',
         truncated: "Result shortened.",
         wokenBy: ({ count }: { count: number }) => (count === 1 ? 'Woken by an update' : `Woken by ${count} updates`),
+        updateCount: ({ count }: { count: number }) => (count === 1 ? '1 update' : `${count} updates`),
         notFromYou: 'not a message from you',
     },
     workerFollow: {
@@ -68,9 +69,10 @@ export const en = {
         expandMap: 'Open the map beside the session',
     },
     map: {
-        folded: "Finished work folds away",
+        folded: ({ names }: { names: string }) => `Finished work stays in List: ${names}`,
         backgroundRuns: ({ count }: { count: number }) => (count === 1 ? "1 background run" : `${count} background runs`),
         positionUnder: ({ position, total, parent }: { position: number; total: number; parent: string }) => `${position} of ${total} under ${parent}`,
+        waitingOn: ({ count }: { count: number }) => `Waiting on ${count}`,
     },
     actions: {
         showInTranscript: 'Show in transcript',

@@ -42,6 +42,7 @@ export function createCapturedServerReadTransport(params: Readonly<{
     serverId: string;
     credentials: AuthCredentials;
     accountEncryptionObservation?: AccountEncryptionObservationBinding;
+    superviseReachability?: boolean;
 } & ({ profile: CapturedProfile; prepared?: never } | { prepared: PreparedReadTransport; profile?: CapturedProfile })>): CapturedServerReadTransport {
     if (params.prepared) {
         const prepared = params.prepared;
@@ -58,7 +59,7 @@ export function createCapturedServerReadTransport(params: Readonly<{
             get key() { return JSON.stringify([bindingKey, readHomeAccountReadRevision(params.serverId)]); },
             async read(path, init, options, consumeResponse) {
                 throwIfAborted(init?.signal ?? undefined);
-                return await prepared.request(path, init, options, consumeResponse);
+                return await prepared.request(path, init, { recoveryRead: 'unbounded', ...options }, consumeResponse);
             },
         };
     }
@@ -88,8 +89,10 @@ export function createCapturedServerReadTransport(params: Readonly<{
                     serverId: params.serverId,
                     credentials: params.credentials,
                     accountEncryptionObservation: params.accountEncryptionObservation,
+                    recoverStoredCredentials: true,
+                    superviseReachability: params.superviseReachability,
                     ...(transport.homeCarrier ? { homeCarrier: transport.homeCarrier } : {}),
-                })(path, init, options, consumeResponse);
+                })(path, init, { recoveryRead: 'unbounded', ...options }, consumeResponse);
             } finally {
                 await transport.release();
             }

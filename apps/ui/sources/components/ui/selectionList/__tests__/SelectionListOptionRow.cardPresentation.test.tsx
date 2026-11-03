@@ -166,6 +166,10 @@ describe('optionPresentation default — the untouched path', () => {
 
         // And no corner overlay was created at all.
         expect(screen.findAllByTestId(OVERLAY_TEST_ID)).toHaveLength(0);
+
+        // The flush row keeps the density inset it has always had: no style prop on the Item
+        // either, so `Item` resolves the user's density setting as it does for every other list.
+        expect(itemProps.style).toBeUndefined();
     });
 });
 
@@ -183,13 +187,10 @@ describe('optionPresentation card — fill ownership', () => {
             .toBe(theme.colors.surface.selected);
 
         // The two tokens must differ, or "paints the selected surface" would be
-        // satisfied by an implementation that never repaints at all.
+        // satisfied by an implementation that never repaints at all; and the two
+        // themes must differ, or the two runs could not tell a themed card from a
+        // hardcoded one.
         expect(theme.colors.surface.base).not.toBe(theme.colors.surface.selected);
-    });
-
-    it('reads the live theme rather than a baked palette', () => {
-        // Guards the assertion above: if both themes resolved to the same ink,
-        // the two runs could not tell a themed card from a hardcoded one.
         expect(lightTheme.colors.surface.selected).not.toBe(darkTheme.colors.surface.selected);
     });
 
@@ -249,13 +250,6 @@ describe('optionPresentation card — content inset', () => {
 
         const row = await renderRow({ presentation: 'row', isSelected: false });
         expect(readItemProps(row).subtitleLines).toBeUndefined();
-    });
-
-    it('leaves the flush row on the density inset it has always had', async () => {
-        const screen = await renderRow({ presentation: 'row', isSelected: false });
-        // Not an empty style object — no style prop at all, so `Item` resolves
-        // the user's density setting exactly as it does for every other list.
-        expect(readItemProps(screen).style).toBeUndefined();
     });
 
     it('applies the same inset to the measure mirror', async () => {

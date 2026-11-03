@@ -49,13 +49,12 @@ import {
 } from "./query";
 import type { createV2SessionListServerTiming } from "./timing";
 import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
-import { readSessionManagedSubtreeSessionIdsInTx } from "@/app/session/follow/sessionManagerSubtree";
+import { readSessionManagedSubtreeSessionIdsInTx, projectSessionRuntimeManagedSubtreeAccess } from "@/app/session/follow/sessionManagerSubtree";
 import { projectSessionManagerForRowsInTx, readmitCapturedSessionManagerReferencesInTx, type SessionManagerContribution } from "@/app/session/awareness/sessionManagerProjection";
 import { readAccountFollowRuleReceiverCountsInTx } from '@/app/session/follow/accountFollowRuleService';
 import { deriveSessionCoordinatorV1 } from '@happier-dev/protocol/sessions/follow/sessionCoordinatorV1';
-import { projectSessionAccessCapabilitiesV1 } from '@happier-dev/protocol/sessions/access/sessionEffectiveAccessV1';
-import { mapV2SessionListRow } from './rows';
-import { projectSessionEffectiveAccessV1, type EffectiveSessionAccess } from '@/app/session/access/sessionAccess';
+import { mapV2SessionCompactListRow } from './rows';
+import { projectSessionEffectiveAccessV1 } from '@/app/session/access/sessionAccess';
 
 export class SessionListCredentialScopeDeniedError extends Error {
     readonly code = 'credential_scope_denied';
@@ -142,7 +141,6 @@ export async function listSessionsForAccount(params: Readonly<{
             reader: tx,
             baseWhere: accessResolution.where,
             accessMode: "legacy_owner_or_direct",
-            allowProjectionFallback: true,
             qualifiedTeamIds: accessResolution.qualifiedTeamIds,
             discussionReader: tx,
         };
@@ -221,13 +219,10 @@ async function listSessionRuntimeManagedSubtree(params: Readonly<{
         if (!ids.includes(principal.sessionId)) throw new SessionListCredentialScopeDeniedError();
         return ids;
     };
-    const viewAccess = (sessionId: string): EffectiveSessionAccess => ({
-        accountId: params.userId, sessionId, level: 'view', sources: [], relationshipKinds: [], audienceContext: null,
-        capabilities: projectSessionAccessCapabilitiesV1({ owner: false, grants: [{ accessLevel: 'view', canApprovePermissions: false }] }),
-    });
+    const viewAccess = (sessionId: string) => projectSessionRuntimeManagedSubtreeAccess({ accountId: params.userId, sessionId });
     return await readSnapshotWithCurrentAdmission(async tx => {
         const ids = await readIds(tx);
-        const source: SessionListReadSource = { kind: 'effective', reader: tx, allowProjectionFallback: false,
+        const source: SessionListReadSource = { kind: 'effective', reader: tx,
             accessMode: 'effective_access_v1', baseWhere: conjoinSessionListWhereInputs(
                 { id: { in: ids } }, createSessionListStorageWhere(query.storage), params.rowRepresentabilityWhere),
         };
@@ -242,7 +237,7 @@ async function listSessionRuntimeManagedSubtree(params: Readonly<{
         let metadataUpgradeRequiredCount = 0;
         for (const row of page.rows) {
             try {
-                const { share: _share, ...session } = mapV2SessionListRow({ row, userId: params.userId, ownerAccountModes,
+                const { share: _share, ...session } = mapV2SessionCompactListRow({ row, userId: params.userId, ownerAccountModes,
                     verifiedSessionRuntimePrincipal: true, effectiveAccess: viewAccess(row.id) });
                 sessions.push(session);
             } catch (error) {
@@ -551,7 +546,6 @@ async function listFilteredSessionsForAccount(params: Readonly<{
             reader: tx,
             baseWhere: conjoinSessionListWhereInputs(baseWhere, subtreeWhere, params.rowRepresentabilityWhere),
             accessMode: "effective_access_v1",
-            allowProjectionFallback: false,
             qualifiedTeamIds: accessResolution.qualifiedTeamIds,
             collectiveAccessSnapshot: accessResolution.collectiveAccessSnapshot,
             discussionReader: tx,

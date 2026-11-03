@@ -1,7 +1,7 @@
 import fastify from 'fastify';
 import { readFile, writeFile } from 'node:fs/promises';
 import { expect, it, vi } from 'vitest';
-import { createAdmittedPluginRuntimeFixture, createAuthoredAdmittedPluginRuntimeFixture } from '@/plugins/testkit/admittedRuntime';
+import { createAuthoredAdmittedPluginRuntimeFixture } from '@/plugins/testkit/admittedRuntime';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 import { createDaemonControlAuthGuard } from '@/daemon/controlAuth';
 import { readDaemonPluginCatalog } from '@/daemon/controlClient';
@@ -21,34 +21,35 @@ vi.mock('node:fs', async (importOriginal) => {
   } };
 });
 
+function toolPlugin() {
+  return {
+    manifest: createPluginManifestV2Fixture({ id: 'acme.tools', contributes: {
+      actions: [{ id: 'echo', title: 'Echo', scopes: ['global'], surfaces: ['agent', 'mcp'],
+        execution: { target: 'daemon' }, dangerLevel: 'safe', inputSchema: { type: 'object' } }],
+      tools: [{ id: 'echo-tool', name: 'acme_echo', title: 'Echo', action: 'echo', surfaces: ['agent', 'mcp'] }],
+    } }),
+    files: { 'daemon.mjs': 'export function activate(api) { api.actions.register("echo", async () => ({ok: true})); }' },
+  };
+}
+
 it('reads executable tools without projecting display declarations, while observing retirement', async () => {
-  const fixture = await createAdmittedPluginRuntimeFixture();
+  // The bundled catalog is joined around one eagerly activated daemon target,
+  // so retirement is observed on an actual activation target.
+  const fixture = await createAuthoredAdmittedPluginRuntimeFixture({ plugins: [toolPlugin()] });
   try {
     const params = { reloadController: fixture.controller, happyHomeDir: fixture.happyHomeDir };
     const full = await readCurrentDaemonPluginCatalogSnapshot(params);
     const readTools = () => readCurrentDaemonPluginCatalogSnapshot({ ...params, selection: 'tools' as const });
-    await readTools();
-    const batches: number[] = [];
-    let snapshot = full;
-    for (let batch = 0; batch < 5; batch++) {
-      const started = process.cpuUsage();
-      for (let read = 0; read < 10; read++) {
-        snapshot = await readTools();
-        JSON.stringify({ kind: 'available', ...snapshot });
-      }
-      const cpu = process.cpuUsage(started);
-      batches.push((cpu.user + cpu.system) / 10_000);
-    }
-    console.info('tool catalog owner benchmark', JSON.stringify({
-      plugins: full.plugins.length,
-      tools: snapshot.tools.length,
-      fullBytes: Buffer.byteLength(JSON.stringify({ kind: 'available', ...full })),
-      selectedBytes: Buffer.byteLength(JSON.stringify({ kind: 'available', ...snapshot })),
-      cpuMsPerReadIncludingSerialization: [...batches].sort((a, b) => a - b)[2],
-    }));
+    expect(full.tools).toHaveLength(1);
+    const snapshot = await readTools();
     expect(snapshot.plugins.length).toBe(0);
     expect(snapshot.tools).toEqual(full.tools);
-    const applied = full.plugins.find(entry => entry.appliedGeneration !== null);
+    // Retire an actual activation target; data-only entries can carry a generation too.
+    const activeTargetIds = new Set(fixture.registry.targetActivationFacts
+      .flatMap(fact => fact.status === 'active' ? [fact.pluginId] : []));
+    const applied = full.plugins.find(entry => (
+      entry.appliedGeneration !== null && activeTargetIds.has(entry.pluginId)
+    ));
     expect(applied).toBeDefined();
     await fixture.registry.recordPluginActivationFailure?.(applied!.pluginId, 'tool-selection retirement');
     expect((await readCurrentDaemonPluginCatalogSnapshot(params)).plugins
@@ -60,14 +61,7 @@ it('reads executable tools without projecting display declarations, while observ
 }, 180_000);
 
 it('serves fresh occurrence-bound tools through the authenticated catalog route', async () => {
-  const fixture = await createAuthoredAdmittedPluginRuntimeFixture({ plugins: [{
-    manifest: createPluginManifestV2Fixture({ id: 'acme.tools', contributes: {
-      actions: [{ id: 'echo', title: 'Echo', scopes: ['global'], surfaces: ['agent', 'mcp'],
-        execution: { target: 'daemon' }, dangerLevel: 'safe', inputSchema: { type: 'object' } }],
-      tools: [{ id: 'echo-tool', name: 'acme_echo', title: 'Echo', action: 'echo', surfaces: ['agent', 'mcp'] }],
-    } }),
-    files: { 'daemon.mjs': 'export function activate(api) { api.actions.register("echo", async () => ({ok: true})); }' },
-  }] });
+  const fixture = await createAuthoredAdmittedPluginRuntimeFixture({ plugins: [toolPlugin()] });
   const app = fastify();
   const projection = { runtimeId: 'catalog-route-fixture', contributionRegistryProjectionRevision: 1 };
   try {

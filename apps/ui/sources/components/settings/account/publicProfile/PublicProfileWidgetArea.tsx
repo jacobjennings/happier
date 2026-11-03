@@ -14,9 +14,12 @@ import {
   usageWidgetSurfaceContext,
 } from '@/components/settings/usage/usageWidgetPageContext';
 import { UsageWidgetBatchProvider } from '@/components/settings/usage/widgets/usageWidgetBatch';
-import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
-import { Text } from '@/components/ui/text/Text';
 import { WidgetArea } from '@/components/widgets/area/WidgetArea';
+import {
+  WidgetAreaLayoutBar,
+  type WidgetAreaLayoutLabels,
+} from '@/components/widgets/area/WidgetAreaLayoutBar';
+import { useCorePageWidgetAreaLayoutBar } from '@/components/widgets/area/useCorePageWidgetAreaLayoutBar';
 import { WidgetAreaPresetLine } from '@/components/widgets/area/WidgetAreaPresetLine';
 import type { WidgetSurfaceContext } from '@/components/widgets/surface/widgetSurfaceSetup';
 import type { UsagePeriod } from '@/sync/api/account/usagePeriods';
@@ -27,6 +30,7 @@ const PRESET_NAME_KEYS = {
   minimal: 'publicIdentity.editor.presetMinimal',
   dataRich: 'publicIdentity.editor.presetDataRich',
   story: 'publicIdentity.editor.presetStory',
+  nightOwl: 'publicIdentity.editor.presetNightOwl',
 } as const satisfies Record<PublicProfileLayoutPresetIdV1, string>;
 
 export function publicProfilePresetNames(): Readonly<
@@ -60,10 +64,26 @@ export function usePublicProfileUsageContext(period: UsagePeriod): Readonly<{
   }, [period]);
 }
 
+/** The same words every area uses for its named layouts (Usage's views, a plugin page's layouts). */
+const LAYOUT_LABELS: WidgetAreaLayoutLabels = {
+  get list() { return t('publicIdentity.editor.layouts'); },
+  current: (name) => name,
+  get create() { return t('usage.board.page.newView'); },
+  get createEllipsis() { return t('usage.board.page.newView'); },
+  actions: (name) => t('usage.board.page.viewActions', { name }),
+  get rename() { return t('usage.board.page.renameView'); },
+  moveBefore: (name) => t('usage.board.page.moveViewBefore', { name }),
+  moveAfter: (name) => t('usage.board.page.moveViewAfter', { name }),
+  get delete() { return t('usage.board.page.deleteView'); },
+  get deleteLabel() { return t('usage.board.page.deleteView'); },
+};
+
 /**
- * Edit on the owner's page (lab `ppcomp-E`): the one widget-area owner in place of the projected
- * blocks — start from a preset, Add, size, group and arrange, Reset/Undo — over the private Account
- * area. Nothing here is public until it is compiled at a reviewed Apply.
+ * Edit on the owner's page (lab `ppcomp-E`, `pplay-L`): the one widget-area owner in place of the
+ * projected blocks. Its named layouts are the area's own: the presets (Minimal, Data-rich, Story,
+ * Night owl) and any the owner creates, renames, reorders or deletes, through the same layout bar
+ * Usage and plugin pages draw. Switching or editing a layout writes only the private Account area;
+ * nothing here is public until it is compiled at a reviewed Apply.
  */
 export function PublicProfileWidgetArea(
   props: Readonly<{
@@ -73,37 +93,23 @@ export function PublicProfileWidgetArea(
 ): React.ReactElement {
   const { binding, area } = props.widgetArea;
   const ready = area.state.status === 'ready' ? area.state : null;
-  const owner = ready?.surface.owner ?? binding.surface?.owner ?? null;
-  // This page offers only its presets as named layouts; an unnamed area starts from the first one.
-  const layoutId = owner?.kind === 'corePage' ? owner.layoutId : undefined;
-  const selectedId = PUBLIC_PROFILE_LAYOUT_PRESET_IDS_V1.find((id) => id === layoutId) ?? PUBLIC_PROFILE_LAYOUT_PRESET_IDS_V1[0];
   const names = React.useMemo(publicProfilePresetNames, []);
-  const tabs = React.useMemo(
-    () =>
-      PUBLIC_PROFILE_LAYOUT_PRESET_IDS_V1.map((id) => ({
-        id,
-        label: names[id],
-      })),
-    [names],
-  );
-  const title = t('publicIdentity.editor.blocksTitle');
+  const presets = React.useMemo(() => PUBLIC_PROFILE_LAYOUT_PRESET_IDS_V1.map((id) => ({ id, name: names[id] })), [names]);
+  const bar = useCorePageWidgetAreaLayoutBar({ binding, area, presets, newLayoutBody: t('publicIdentity.editor.newLayoutBody') });
+  const title = bar.selectedName ?? t('publicIdentity.editor.blocksTitle');
   return (
     <UsageWidgetBatchProvider clauses={props.clauses}>
       <View style={styles.area} testID="public-profile-area-editor">
-        <View style={styles.presets}>
-          <Text variant="meta" style={styles.secondary}>
-            {t('publicIdentity.editor.startFrom')}
-          </Text>
-          <SegmentedTabBar<PublicProfileLayoutPresetIdV1>
-            tabs={tabs}
-            activeTabId={selectedId}
-            onSelectTab={(id) => {
-              void binding.selectLayout(id);
-            }}
-            testIDPrefix="public-profile-area-preset"
-            segmentSizing="content"
-          />
-        </View>
+        <WidgetAreaLayoutBar
+          layouts={bar.layouts}
+          selectedId={bar.selectedId}
+          onSelect={bar.onSelect}
+          onCreate={bar.onCreate}
+          actions={bar.actions}
+          labels={LAYOUT_LABELS}
+          heading="section"
+          testID="public-profile-area-layouts"
+        />
         {ready?.preset?.isEdited ? (
           <WidgetAreaPresetLine
             preset={ready.preset}
@@ -133,11 +139,4 @@ export function PublicProfileWidgetArea(
 
 const styles = StyleSheet.create((theme) => ({
   area: { gap: theme.space.s12 },
-  presets: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: theme.space.s12,
-  },
-  secondary: { color: theme.colors.text.secondary },
 }));

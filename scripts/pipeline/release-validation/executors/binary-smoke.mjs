@@ -10,10 +10,8 @@ import {
   extractArchivePayloadToDirectory,
 } from '@happier-dev/release-runtime/archiveExtraction';
 import {
-  capturePackedAuthorCandidateArtifacts,
-  loadPackedAuthorCandidateManifest,
-} from '../../../../packages/tests/scripts/plugin-platform/run-packed-author-ui-compat.mjs';
-import {
+  capturePackedAuthorCandidateArtifactsOnDemand,
+  loadPackedAuthorHarness,
   prepareReleaseValidationMinisignEnv,
 } from './installers-smoke-local-build.mjs';
 
@@ -165,21 +163,21 @@ export function runBinarySmokeValidation({ repoRoot, platform, source }) {
  *   }>;
  *   execFileSyncImpl?: typeof execFileSync;
  *   runCandidateHostPayloadSmokeImpl?: typeof runCandidateHostPayloadSmoke;
- *   captureCandidateImpl?: typeof capturePackedAuthorCandidateArtifacts;
+ *   captureCandidateImpl?: typeof capturePackedAuthorCandidateArtifactsOnDemand;
  *   removeCapturedRootImpl?: (root: string) => Promise<void>;
  * }} [dependencies]
  */
 export async function runCandidateBinarySmoke(
   candidateManifestPath,
   {
-    loadCandidateImpl = async (manifestPath) => loadPackedAuthorCandidateManifest(
+    loadCandidateImpl = async (manifestPath) => (await loadPackedAuthorHarness()).loadPackedAuthorCandidateManifest(
       ['--candidate', manifestPath],
       { cwd: REPO_ROOT },
     ),
     prepareMinisignEnvImpl = prepareReleaseValidationMinisignEnv,
     execFileSyncImpl = execFileSync,
     runCandidateHostPayloadSmokeImpl = runCandidateHostPayloadSmoke,
-    captureCandidateImpl = capturePackedAuthorCandidateArtifacts,
+    captureCandidateImpl = capturePackedAuthorCandidateArtifactsOnDemand,
     removeCapturedRootImpl = async (root) => await rm(root, { recursive: true, force: true }),
   } = {},
 ) {

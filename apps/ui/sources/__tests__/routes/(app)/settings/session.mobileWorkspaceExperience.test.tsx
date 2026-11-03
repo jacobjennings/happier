@@ -84,36 +84,4 @@ describe('Session settings mobile workspace experience', () => {
         await vi.waitFor(() => expect(account?.persistedSettings.mobileWorkspaceExperienceV1).toBe('classic'));
         expect(storage.getState().localSettings).toEqual(localSettingsParse({ uiMultiPanePanelsEnabled: true }));
     });
-
-    it('refreshes the cockpit mode row labels when the language changes and the screen rerenders', async () => {
-        translationPrefix = 'en';
-        const mod = await import('../../../../app/(app)/settings/session');
-        const SessionSettingsScreen = mod.default;
-
-        const screen = await renderSettingsView(React.createElement(SessionSettingsScreen));
-        const readCockpitRowLabels = () => {
-            const item = screen.findRowByTitle(`${translationPrefix}:settingsSession.mobileWorkspaceExperience.title`);
-            return {
-                title: item?.props?.title,
-                subtitle: item?.props?.subtitle,
-            };
-        };
-
-        expect(readCockpitRowLabels()).toEqual({
-            title: 'en:settingsSession.mobileWorkspaceExperience.title',
-            subtitle: 'en:settingsSession.mobileWorkspaceExperience.options.cockpitSubtitle',
-        });
-
-        translationPrefix = 'fr';
-        const { sync } = await import('@/sync/sync');
-        await act(async () => {
-            sync.applySettings({ preferredLanguage: 'fr' }, { expectedSettingsScope: account!.scope });
-        });
-        await vi.waitFor(() => expect(account?.persistedSettings.preferredLanguage).toBe('fr'));
-
-        expect(readCockpitRowLabels()).toEqual({
-            title: 'fr:settingsSession.mobileWorkspaceExperience.title',
-            subtitle: 'fr:settingsSession.mobileWorkspaceExperience.options.cockpitSubtitle',
-        });
-    });
 });

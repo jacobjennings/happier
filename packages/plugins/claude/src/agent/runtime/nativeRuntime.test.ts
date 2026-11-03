@@ -158,6 +158,17 @@ const context = {
 } as unknown as AgentSessionRuntimeContext;
 
 describe('createClaudeNativeRuntime', () => {
+  it('publishes the opened SDK compaction descriptor instead of inheriting the native prelaunch declaration', async () => {
+    const session = createClaudeNativeSessionRuntimeFromOperations(
+      createNativeOperations('compaction-capability').runtime,
+      { kind: 'create', sessionId: 'compaction-capability', cwd: '/repo' },
+      context,
+    );
+    expect(session.runtimeCapabilities?.sessionCapabilities?.compaction).toEqual({
+      events: true, manual: true, idle: { mode: 'host', defaultEnabled: true, defaultMinContextTokens: 200000 },
+    });
+    await session.dispose();
+  });
   it('reports failed local hook resource cleanup without losing positive provider exit', async () => {
     const exec = createSdkExecFixture();
     const hooks = createSessionHooksFixture();
@@ -348,7 +359,10 @@ describe('createClaudeNativeRuntime', () => {
         stdout: new TextEncoder().encode('--effort <level>'), stderr: new Uint8Array(), stdoutTruncated: false, stderrTruncated: false,
       }),
       spawn: async () => { throw new Error('This preparation case must not spawn a native process'); },
-      clients: { spawn: async () => { throw new Error('This preparation case must not submit an SDK query'); } },
+      clients: {
+        spawn: async () => { throw new Error('This preparation case must not submit an SDK query'); },
+        connectJsonRpc: async () => { throw new Error('This preparation case must not open a protocol connection'); },
+      },
       agentCli: { checkReadiness: async () => { throw new Error('Unexpected CLI readiness query'); } },
     } satisfies ExecService;
     // Reuse the canonical plugin host-port fixtures; no internal Claude opener,

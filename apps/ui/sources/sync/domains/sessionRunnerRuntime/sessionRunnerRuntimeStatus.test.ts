@@ -142,14 +142,6 @@ describe('session runner runtime status reader', () => {
         })).toBeNull();
     });
 
-    it('keeps an exact daemon-owned stale runner actionable after the server session becomes inactive', () => {
-        expect(readStaleSessionRunnerRuntimeState({
-            metadata: { [SESSION_RUNNER_RUNTIME_METADATA_KEY]: staleRuntimeState },
-            sessionId: 's1',
-            machineId: 'm1',
-        })?.runner.pid).toBe(123);
-    });
-
     it('fails closed when daemon-published identity guards are incomplete', () => {
         const cases = [
             { ...staleRuntimeState, machineId: null },

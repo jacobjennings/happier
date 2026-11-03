@@ -87,10 +87,6 @@ describe('SelectionList controlled active step', () => {
         // The consumer rebuilt the same-id step with hydrated rows: the pushed
         // entry must be refreshed in place, keeping the step mounted and the
         // back affordance intact (a refresh is not navigation).
-        const refreshed = screen.findByTestId('sl') as unknown as {
-            props: { syncActiveStep?: SelectionListStep | null };
-        };
-        void refreshed;
         const rerenderWithHydratedRows = makeRootStep({
             sections: [{
                 kind: 'static',

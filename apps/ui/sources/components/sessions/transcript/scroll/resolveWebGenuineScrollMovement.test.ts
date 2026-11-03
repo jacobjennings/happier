@@ -233,3 +233,54 @@ describe('resolveWebGenuineScrollMovement — web release authority (C3b / Q1-WE
         expect(sustained.downwardIntent).toBe(true);
     });
 });
+
+describe('resolveWebGenuineScrollMovement under concurrent layout churn', () => {
+    const baseFrame = {
+        clientHeight: 600,
+        distanceFromBottom: 900,
+        pinThresholdPx: 60,
+        previousObservedClientHeight: 600,
+        previousObservedScrollHeight: 40_000,
+        previousObservedScrollTop: 39_000,
+        previousStreak: null,
+        scrollHeight: 40_180, // content grew on this very frame
+        scrollTop: 38_900,
+        sustainFrames: 2,
+    } as const;
+
+    it.each([
+        {
+            // Preserved: `isTrusted` alone is not evidence. RN-web marks the echo of the app's own
+            // programmatic write trusted, and a reflow frame is not proof the reader moved.
+            frame: 'a trusted churn movement without witnessed input',
+            overrides: {},
+            expected: { isGenuineUserMovement: false },
+        },
+        {
+            // The keystone. A content-height change is the ONLY thing that arms the auto-pin, so a
+            // classifier that cannot certify intent during churn is blind exactly when it matters.
+            // Witnessed raw input is intent regardless of what layout is doing.
+            frame: 'a trusted churn movement with witnessed raw user input',
+            overrides: { hasWitnessedUserInput: true },
+            expected: { isGenuineUserMovement: true, upwardIntent: true },
+        },
+        {
+            // Signature/metadata-only churn: a row identity change deletes a measured size, so the
+            // content height DROPS to an estimate. No new messages at all, same blindness.
+            frame: 'a witnessed trusted movement while a measurement invalidation shrinks content',
+            overrides: { hasWitnessedUserInput: true, scrollHeight: 39_200 },
+            expected: { isGenuineUserMovement: true },
+        },
+        {
+            frame: 'a witnessed frame that did not move',
+            overrides: { hasWitnessedUserInput: true, scrollTop: baseFrame.previousObservedScrollTop },
+            expected: { isGenuineUserMovement: false },
+        },
+    ])('classifies $frame', ({ overrides, expected }) => {
+        expect(resolveWebGenuineScrollMovement({
+            ...baseFrame,
+            isTrusted: true,
+            ...overrides,
+        })).toMatchObject(expected);
+    });
+});

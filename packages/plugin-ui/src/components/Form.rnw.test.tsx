@@ -58,6 +58,37 @@ function mountForm(element: React.ReactElement, context = createSurfaceContext()
 }
 
 describe('canonical Action Form presentation', () => {
+  it('keeps fields and Cancel usable while submission requires a completed draft', async () => {
+    const onSubmit = vi.fn();
+    const onCancel = vi.fn();
+    function DraftForm() {
+      const [value, setValue] = useState<Record<string, unknown>>({});
+      return <Form hints={{ submitLabel: 'Run', fields: [{ path: 'name', title: 'Name', widget: 'text', required: true }] }}
+        value={value} onChange={setValue} onSubmit={onSubmit} onCancel={onCancel}
+        submitDisabled={typeof value.name !== 'string' || value.name.length === 0} />;
+    }
+    const mount = mountForm(<DraftForm />);
+    try {
+      const input = mount.container.querySelector<HTMLInputElement>('input[aria-label="Name"]')!;
+      const button = (title: string) => [...mount.container.querySelectorAll<HTMLElement>('[role="button"]')]
+        .find(node => node.textContent === title)!;
+      expect(input.getAttribute('aria-disabled')).not.toBe('true');
+      expect(button('Run').getAttribute('aria-disabled')).toBe('true');
+      expect(button('Cancel').getAttribute('aria-disabled')).not.toBe('true');
+      await act(async () => { button('Run').click(); });
+      expect(onSubmit).not.toHaveBeenCalled();
+      await act(async () => { button('Cancel').click(); });
+      expect(onCancel).toHaveBeenCalledOnce();
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'release');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      expect(button('Run').getAttribute('aria-disabled')).not.toBe('true');
+      await act(async () => { button('Run').click(); });
+      expect(onSubmit).toHaveBeenCalledWith({ name: 'release' });
+    } finally { mount.unmount(); }
+  });
+
   it('renders and submits author defaults once while preserving explicit values and later replacements', async () => {
     const defaultHints: FormProps['hints'] = { fields: [
       { path: 'settings.name', title: 'Name', widget: 'text', defaultValue: 'Daily report' },
@@ -1122,6 +1153,45 @@ describe('shared control visuals (D6)', () => {
     expect(toggle?.getAttribute('aria-checked')).toBe('false');
     expect(getComputedStyle(track!).backgroundColor).toBe('rgb(101, 67, 33)');
     mount.unmount();
+  });
+
+  it('stands a field Select\'s choices and a menu Select on the host\'s menu lift, and floats them flat without one', async () => {
+    const lift = { boxShadow: '0px 6px 18px rgba(1, 2, 3, 0.25)' };
+    const liftedAncestor = (item: HTMLElement | undefined): HTMLElement | null => {
+      for (let node = item?.parentElement ?? null; node; node = node.parentElement) {
+        if (getComputedStyle(node).boxShadow.includes('rgba(1, 2, 3')) return node;
+      }
+      return null;
+    };
+    for (const presentation of ['field', 'menu'] as const) {
+      for (const palette of [{ ...HOST_PALETTE, menuLift: lift }, HOST_PALETTE]) {
+        const context = createSurfaceContext();
+        const host = {
+          renderMarkdown: () => null,
+          renderCodeBlock: () => null,
+          renderIcon: () => null,
+          renderPopover: (input: Parameters<PluginUiPresentationHost['renderPopover']>[0]) => (
+            input.open ? input.content({ requestClose: () => input.onRequestClose(), maxHeight: 400 }) : null
+          ),
+        } as unknown as PluginUiPresentationHost;
+        const mount = mountThroughReactNativeWeb(
+          <PluginUiProvider hostApi={createHostApiStub(context)} context={context}>
+            <PluginUiPresentationHostProviderInternal host={host}>
+              <HappierUiPaletteProvider palette={palette}>
+                <Form.Select label="Order" presentation={presentation} value="newest" options={fieldOrderOptions} onChange={() => undefined} />
+              </HappierUiPaletteProvider>
+            </PluginUiPresentationHostProviderInternal>
+          </PluginUiProvider>,
+        );
+        try {
+          await act(async () => { mount.container.querySelector<HTMLElement>('[aria-haspopup="menu"]')?.click(); });
+          const item = mount.container.querySelector<HTMLElement>('[role="menuitemradio"]') ?? undefined;
+          expect(item, `${presentation} choices open`).toBeDefined();
+          if ('menuLift' in palette) expect(liftedAncestor(item), `${presentation} stands on the menu lift`).not.toBeNull();
+          else expect(liftedAncestor(item), `${presentation} floats flat`).toBeNull();
+        } finally { mount.unmount(); }
+      }
+    }
   });
 
   it('presents a field Select as a field box naming the chosen option that opens the shared menu', async () => {

@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { realpath } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import {
   createAgentSessionRunnerFactoryBinding,
@@ -11,8 +14,12 @@ import type {
   HostExternalTranscriptFollowEvent,
 } from '@/session/external/privateContract';
 import {
+  attestRetainedAgentForVoice,
   createRunnerAgentDaemonFacetService,
 } from './runnerAgentDaemonFacetService';
+import { readRetainedFirstPartyDevelopmentManifest, resolveRetainedFirstPartyDevelopmentRoot } from '@/plugins/runtime/retainedPluginSourceAttestation';
+import { readRetainedBundledAgentFactory } from '@/plugins/runtime/retainedBundledAgentFactory';
+import { resolvePluginStorePaths } from '@/plugins/store/paths';
 
 const sessionId = 'session-1';
 const retainedAgentGeneration = 'generation-1';
@@ -196,6 +203,38 @@ async function setup(options: SetupOptions = {}) {
 }
 
 describe('runner Agent daemon-owned facet service', () => {
+  it('attests real source-mode Codex Voice against its runner publication, not an unscoped development root', async () => {
+    // Match restart51: the native runner carries development custody for the
+    // bundled Codex leaf and a path identity for its CLI source publication.
+    // Use the actual tracked declaration and source selector, not an invented
+    // managed-generation binding or mocked verifier.
+    const cliRoot = await realpath(join(import.meta.dirname, '../../..'));
+    const pluginId = 'happier.agent.codex';
+    const sourceRoot = await resolveRetainedFirstPartyDevelopmentRoot({
+      pluginId, repoRoot: join(cliRoot, '../..'),
+    });
+    if (!sourceRoot) throw new Error('Bundled Codex source is unavailable');
+    const manifest = readRetainedFirstPartyDevelopmentManifest({ pluginId, runtimeRoot: cliRoot });
+    const factory = readRetainedBundledAgentFactory(manifest, 'codex');
+    const binding = createAgentSessionRunnerFactoryBinding({
+      v: 1, pluginId, pluginVersion: manifest.version, agentId: 'codex', localAgentId: 'codex',
+      sourceCustody: { kind: 'development', registeredRootId: sourceRoot },
+      locator: factory.locator, normalizedModulePath: factory.normalizedModulePath, loadMode: factory.loadMode,
+    });
+    const input = {
+      paths: resolvePluginStorePaths({ happyHomeDir: join(tmpdir(), 'happier-voice-source-attestation') }),
+      retainedAgent: binding,
+      runner: { ...runner, snapshotIdentity: `path:${cliRoot}` },
+    };
+    await expect(attestRetainedAgentForVoice(input)).resolves.toMatchObject({
+      sourceKind: 'development', manifestAuthority: 'bundled_first_party',
+      binding, declaredAgent: { id: 'codex' },
+    });
+    await expect(attestRetainedAgentForVoice({
+      ...input, runner: { ...runner, snapshotIdentity: 'path:/not-the-admitted-runner/apps/cli' },
+    })).resolves.toBeNull();
+  });
+
   it('rebinds an unchanged retained Agent after the host-operation generation is replaced', async () => {
     const fixture = await setup();
     await expect(fixture.service.dispatch({

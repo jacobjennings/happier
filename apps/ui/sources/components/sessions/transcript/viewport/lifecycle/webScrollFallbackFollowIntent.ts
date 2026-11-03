@@ -8,7 +8,7 @@ import {
 } from './genericScrollObservationViewportState';
 import type { TranscriptViewportLifecycleEffect } from './lifecycle';
 
-export function resolveWebScrollFallbackFollowIntent(params: Readonly<{
+function resolveWebScrollFallbackFollowIntent(params: Readonly<{
     distanceFromLiveTailPx: number;
     pinThresholdPx: number;
     previousScrollOffset: number | null;
@@ -48,38 +48,8 @@ function resolveWebScrollFallbackObservationEffectsForFollowIntent(params: Reado
     });
 }
 
-export function resolveWebScrollFallbackObservationEffects(params: Readonly<{
-    distanceFromLiveTailPx: number;
-    pinEnabled: boolean;
-    pinThresholdPx: number;
-    previousScrollOffset: number | null;
-    recentUserIntent: boolean;
-    scrollOffset: number;
-    sessionId: string;
-    suppressAnchorCapture?: boolean;
-    wantsPinned: boolean;
-}>): readonly TranscriptViewportLifecycleEffect[] {
-    const followIntent = resolveWebScrollFallbackFollowIntent({
-        distanceFromLiveTailPx: params.distanceFromLiveTailPx,
-        pinThresholdPx: params.pinThresholdPx,
-        previousScrollOffset: params.previousScrollOffset,
-        recentUserIntent: params.recentUserIntent,
-        scrollOffset: params.scrollOffset,
-        wantsPinned: params.wantsPinned,
-    });
-    return resolveWebScrollFallbackObservationEffectsForFollowIntent({
-        distanceFromLiveTailPx: params.distanceFromLiveTailPx,
-        followIntent,
-        pinEnabled: params.pinEnabled,
-        sessionId: params.sessionId,
-        suppressAnchorCapture: params.suppressAnchorCapture === true,
-    });
-}
-
 export function resolveActiveWebScrollFallbackObservationEffects(params: Readonly<{
     distanceFromLiveTailPx: number;
-    hasLiveWebMetrics: boolean;
-    isWeb: boolean;
     pinEnabled: boolean;
     pinThresholdPx: number;
     previousScrollOffset: number | null;
@@ -88,7 +58,6 @@ export function resolveActiveWebScrollFallbackObservationEffects(params: Readonl
     sessionId: string;
     wantsPinned: boolean;
 }>): readonly TranscriptViewportLifecycleEffect[] {
-    if (!params.isWeb || params.hasLiveWebMetrics) return [];
     const followIntent = resolveWebScrollFallbackFollowIntent({
         distanceFromLiveTailPx: params.distanceFromLiveTailPx,
         pinThresholdPx: params.pinThresholdPx,

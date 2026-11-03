@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import fastify from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
-import { createResolvedContributionRegistry, getResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { getResolvedContributionRegistry } from '@/plugins/projection/registry/builtIn/snapshot';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
 import { readCurrentAccountPluginExecutionSelection, resolveAccountPluginActivationSources } from './accountPluginActivationSource';
@@ -15,7 +16,7 @@ import { createUnavailableActionTransportDeps } from '@/testkit/actionTransportD
 import { createCliActionExecutor } from '@/session/actions/createCliActionExecutor';
 import { formatQualifiedPluginActionId } from '@happier-dev/protocol/plugins/actions/qualifiedActionId';
 import { registerAuthoredAccountActionRelease } from './accountPluginActions.testkit';
-import { projectLoadedPluginContributes } from '@/plugins/projection/registry/resolvePluginContributions';
+import { projectLoadedPluginContributes } from '@/plugins/projection/registry/fullProjection';
 import { GENERATED_PLUGIN_UI_ARTIFACTS_ROOT_RELATIVE_PATH } from '@/plugins/install/ui/generatedArtifacts';
 import { createBundledActivationSourceResolver } from './bundledActivationSource';
 import * as daemonControlClient from '@/daemon/controlClient';
@@ -28,6 +29,70 @@ import * as persistence from '@/persistence';
 import { manifest as authoredAccountManifest } from '../../../../../packages/plugin-sdk/fixtures/account-actions/src/index';
 
 describe('Account activation source assembly', () => {
+    it('resolves an authored authentication-only Account artifact without a Machine or native runtime', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'account-portable-authentication-'));
+        const app = fastify();
+        const manifest = normalizePluginManifestV2({ ...authoredAccountManifest, id: 'acme.portable-auth',
+            hostAccess: { required: [], optional: [] }, secrets: [],
+            contributes: { ...authoredAccountManifest.contributes, actions: [], resources: [],
+                connectedAccountDescriptors: [{ id: 'example', title: 'Example', authentication: {
+                    account: { artifactId: 'account-runtime', exportName: 'activate' }, defaultModeId: 'manual', modes: [{
+                        id: 'manual', kind: 'manual', outcomeReconciliation: 'none',
+                        fields: [{ id: 'token', title: 'Token', secret: true, schema: { type: 'string' } }],
+                    }],
+                } }],
+            },
+        });
+        const projectRoot = join(import.meta.dirname, '../../../../../packages/plugin-sdk/examples/public-authoring');
+        const fixture = await registerAuthoredAccountActionRelease(app, 'owner', { primary: {
+            manifest, projectRoot, entryPath: join(projectRoot, 'portableAuthentication.ts'),
+            activateExport: 'activate', manifestExport: null,
+        } });
+        let machineRequests = 0;
+        app.addHook('onRequest', async request => {
+            if (/^\/v1\/machines(?:\/|$)/.test(request.url)) machineRequests += 1;
+        });
+        app.get('/v1/account/encryption/currentness', async () => ({ mode: 'plain', version: 1,
+            signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1 }));
+        app.get('/v1/account/encryption', async () => ({ mode: 'plain', updatedAt: 1 }));
+        await app.ready();
+        const restore = installAxiosFastifyAdapter({ app, origin: 'http://account-portable-authentication.test' });
+        let runtime: Awaited<ReturnType<typeof resolveExecutablePluginRuntimeRegistry>> | undefined;
+        try {
+            runtime = await resolveExecutablePluginRuntimeRegistry({ happyHomeDir: home,
+                accountExecution: { credentials: { token: 'fixture', encryption: null },
+                    serverUrl: 'http://account-portable-authentication.test', isCurrent: () => true } });
+            const service = { pluginId: fixture.pluginId, localId: 'example' };
+            const selected = await runtime.resolveAccountConnectedAccountRuntime?.(service).catch(error => {
+                expect(runtime?.pluginDiagnosticsByPluginId[fixture.pluginId] ?? []).toEqual([]);
+                throw error;
+            });
+            expect(selected).toMatchObject({ ref: service, runtime: { authentication: { modes: { manual: { kind: 'manual' } } } } });
+            if (!selected) throw new Error('Expected the actual Account authentication registration');
+            expect('status' in selected.runtime).toBe(false);
+            expect(selected.isCurrent()).toBe(true);
+            expect(await runtime.resolveConnectedAccountRuntime?.(service)).toMatchObject({ ref: service, realm: 'account' });
+            const account = { service, accountId: 'selected-account' };
+            const invocation = {
+                target: { account, expectedCredentialRevision: 'credential-1', expectedRuntimeConfigurationRevision: 'configuration-1' },
+                context: { account,
+                    configuration: { target: { kind: 'service' as const, service, modeId: 'manual' },
+                        revision: 'configuration-1', values: {}, getSecret: async () => null },
+                    credentials: { get: async (key: string) => key === 'token' ? 'selected-account-token' : null } },
+                isConfigurationCurrent: () => true,
+                isCredentialRevisionCurrent: () => true,
+            };
+            await expect(runtime.connectedAccountRuntimeInvoker?.invokeEstablished({ ...invocation,
+                operation: { kind: 'materialize', request: { kind: 'httpHeaders', origin: 'https://api.example.test', headerNames: ['authorization'] } } }))
+                .resolves.toEqual({ kind: 'httpHeaders', headers: { Authorization: 'Bearer selected-account-token' } });
+            await expect(runtime.connectedAccountRuntimeInvoker?.invokeEstablished({ ...invocation,
+                operation: { kind: 'status' } })).rejects.toMatchObject({ code: 'unsupported' });
+            expect(machineRequests).toBe(0);
+            await runtime.dispose();
+            expect(selected.isCurrent()).toBe(false);
+        } finally { await runtime?.dispose(); restore(); await app.close(); await rm(home, { recursive: true, force: true }); }
+    });
+
     it('keeps Machine Agents and daemon-only Resources out of Account execution while retaining their package custody', async () => {
         const home = await mkdtemp(join(tmpdir(), 'account-resource-realm-'));
         const app = fastify();
@@ -253,7 +318,7 @@ describe('Account activation source assembly', () => {
                 happyHomeDir: home, sessionId: 'cli-global', mode: 'plain', ctx: null,
                 serverId: 'account-corrupt-source', serverHttpBaseUrl: 'http://account-corrupt-source.test' });
             expect(await cli.execute('action.invoke', { action: { pluginId, localId: 'echo' }, input: { key: 'cold' } }, { surface: 'cli' }))
-                .toMatchObject({ ok: false, errorCode: 'plugin_action_handler_missing' });
+                .toMatchObject({ ok: false, errorCode: 'plugin_daemon_module_load_failed' });
             expect(artifactReads).toBeGreaterThan(0);
             expect(daemon).not.toHaveBeenCalled();
             const runtime = await resolveExecutablePluginRuntimeRegistry({ happyHomeDir: home,

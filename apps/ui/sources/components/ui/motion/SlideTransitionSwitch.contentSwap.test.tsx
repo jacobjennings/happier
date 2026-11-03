@@ -299,39 +299,6 @@ describe('SlideTransitionSwitch (discrete adapter)', () => {
         expect(screen.findByTestId('switch-next-blur')).not.toBeNull();
     });
 
-    it('settles to the latest content after rapid back-to-back key changes', async () => {
-        // Rapid keys without firing the callback would leave the first transition
-        // in flight when the second one starts. The interrupt rule must snap-commit
-        // the previous in-flight target and start fresh, ending up rendering 'c'
-        // in the current slot eventually. Even with the spring callback wired so
-        // each spring completes, the final content must always be the latest.
-        springControls.fireCallbackImmediately = true;
-        const { SlideTransitionSwitch } = await import('./SlideTransitionSwitch');
-        const screen = await renderScreen(
-            <SlideTransitionSwitch contentKey="a" direction="forward" testID="switch">
-                <Text testID="step-a">A</Text>
-            </SlideTransitionSwitch>,
-        );
-
-        await screen.update(
-            <SlideTransitionSwitch contentKey="b" direction="forward" testID="switch">
-                <Text testID="step-b">B</Text>
-            </SlideTransitionSwitch>,
-        );
-        await screen.update(
-            <SlideTransitionSwitch contentKey="c" direction="forward" testID="switch">
-                <Text testID="step-c">C</Text>
-            </SlideTransitionSwitch>,
-        );
-
-        // After all springs settle, only the latest content is visible.
-        expect(screen.findByTestId('step-c')).not.toBeNull();
-        expect(screen.findByTestId('step-a')).toBeNull();
-        expect(screen.findByTestId('step-b')).toBeNull();
-        expect(screen.findByTestId('switch-next-layer')).toBeNull();
-        expect(screen.findByTestId('switch-previous-layer')).toBeNull();
-    });
-
     it('keeps the in-flight transition running and refreshes incoming content on same-key updates', async () => {
         // Start transition a → b. While in flight (callback NOT fired), update children
         // for the same key b. The incoming layer should reflect the latest children

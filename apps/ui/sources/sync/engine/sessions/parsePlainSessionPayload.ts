@@ -1,4 +1,5 @@
 import { AgentStateSchema, MetadataSchema, type AgentState, type Metadata } from '@happier-dev/session-core/state';
+import type { AgentStateOpenResult } from '@/sync/encryption/sessionEncryption';
 import {
     SESSION_METADATA_LAYOUT_VERSION_V1,
     StoredSessionSharedMetadataV1Schema,
@@ -95,4 +96,12 @@ export function tryParsePlainSessionAgentState(value: string | null): AgentState
 
 export function parsePlainSessionAgentState(value: string | null): AgentState {
     return tryParsePlainSessionAgentState(value) ?? {};
+}
+
+/** Full document admission distinguishes an explicit clear from malformed or omitted data. */
+export function parsePlainSessionAgentStateResult(value: string | null | undefined): AgentStateOpenResult {
+    if (value === null) return { status: 'available', value: null };
+    if (typeof value !== 'string' || !value.trim()) return { status: 'unavailable' };
+    const parsed = tryParsePlainSessionAgentState(value);
+    return parsed === undefined ? { status: 'unavailable' } : { status: 'available', value: parsed };
 }

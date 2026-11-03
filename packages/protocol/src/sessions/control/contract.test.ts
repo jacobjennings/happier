@@ -11,9 +11,37 @@ import {
   V2SessionByIdResponseSchema,
   V2SessionRecordSchema,
   V2SessionResourceAccessResponseSchema,
+  V2SessionListResponseSchema,
 } from './contract.js';
 
 describe('sessionControl contract exports', () => {
+  it('admits compact list descriptors without treating omitted documents as full snapshots', () => {
+    const row = { id: 'session', seq: 4, createdAt: 1, updatedAt: 2, active: false, activeAt: 2,
+      dataEncryptionKey: null, documents: 'omitted', metadataAudience: 'owner', agentStateDocument: 'omitted',
+      metadataVersion: 7, metadataLayoutVersion: 1, agentStateVersion: 8, share: null };
+    expect(V2SessionListResponseSchema.safeParse({ sessions: [row] }).success).toBe(true);
+    expect(V2SessionRecordSchema.safeParse(row).success).toBe(false);
+    expect(V2SessionListResponseSchema.safeParse({ sessions: [{ ...row, metadata: '{}' }] }).success).toBe(false);
+    expect(V2SessionListResponseSchema.safeParse({ sessions: [{ ...row, agentState: null }] }).success).toBe(false);
+    expect(V2SessionListResponseSchema.safeParse({ sessions: [{ ...row, metadataAudience: 'shared',
+      agentStateDocument: 'redacted', share: { accessLevel: 'view', canApprovePermissions: false } }] }).success).toBe(true);
+    expect(V2SessionListResponseSchema.safeParse({ sessions: [{ ...row, metadataAudience: 'shared' }] }).success).toBe(false);
+    expect(V2SessionListResponseSchema.safeParse({ sessions: [{ ...row, metadataLayoutVersion: 2 }] }).success).toBe(false);
+  });
+  it('pairs predecessor provider-field issues and unknown-provider recovery without guessing an Agent', () => {
+    // ../0.2 a487b2ec48873bfc0ad67bb1d31be0a2cffd3c92, sessionMetadata/sessionUsageLimitRecoveryV1.ts.
+    const rawIssue = { v: 1, scope: 'primary_session', status: 'failed', source: 'usage_limit', code: 'usage_limit',
+      occurredAt: 2_000 };
+    const issue = protocol.SessionRuntimeIssueV1Schema.parse(rawIssue);
+    const recovery = { v: 1, status: 'waiting', issueFingerprint: 'usage-limit:unknown-provider:unknown-turn:2000:no-reset',
+      armedAtMs: 2_000, resetAtMs: null, nextCheckAtMs: null, attemptCount: 0, maxAttempts: 3,
+      lastProbeError: null, selectedAuth: { kind: 'native' } };
+    expect(protocol.readSessionUsageLimitRecoveryForIssue(recovery, issue)?.issueFingerprint).toBe(recovery.issueFingerprint);
+    expect(protocol.readSessionUsageLimitRecoveryForIssue(recovery, { ...issue, occurredAt: 2_001 })).toBeNull();
+    const providerIssue = protocol.SessionRuntimeIssueV1Schema.parse({ ...rawIssue, provider: 'codex', providerTurnId: 'turn-a' });
+    expect(protocol.readSessionUsageLimitRecoveryForIssue({ ...recovery,
+      issueFingerprint: 'usage-limit:codex:turn-a:2000:no-reset' }, providerIssue)).not.toBeNull();
+  });
   it('shares exact failure identity between recovery producers and readers', () => {
     const issue = protocol.SessionRuntimeIssueV1Schema.parse({
       v: 1, scope: 'primary_session', status: 'failed', source: 'usage_limit', code: 'usage_limit',
@@ -1201,9 +1229,11 @@ describe('sessionControl contract exports', () => {
           activeAt: 3,
           archivedAt: null,
           encryptionMode: 'plain',
-          metadata: 'm',
+          documents: 'omitted',
+          metadataAudience: 'shared',
+          agentStateDocument: 'redacted',
+          metadataLayoutVersion: 1,
           metadataVersion: 1,
-          agentState: null,
           agentStateVersion: 0,
           lastViewedSessionSeq: 4,
           pendingPermissionRequestCount: 2,

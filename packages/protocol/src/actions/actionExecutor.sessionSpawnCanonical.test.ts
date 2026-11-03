@@ -14,12 +14,13 @@ import { DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1 } from '../account/settings/sessi
 import { buildBackendTargetKeyV2 } from '../backends/targets/backendTargetRefV2.js';
 import { ActionDefinitionV1Schema } from './actionDefinitionV1.js';
 import { normalizeActionsSettingsV1 } from './actionSettings.js';
+import { admitSessionSpawnNewActionInputV2, SessionSpawnNewActionInputV2Schema } from '../sessions/creation/sessionSpawnNewInputV2.js';
 
 const canonicalInput = {
   creationKey: 'plugin-operation-7',
   executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
   directory: { kind: 'path', path: '/workspace/project' },
-  organizationPlacement: { folderId: null, tagIds: [] },
+  organizationPlacement: { sectionId: null, tagIds: [] },
   agentTarget: {
     kind: 'agent',
     identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -29,12 +30,14 @@ const canonicalInput = {
 const apiSpawnInput = {
   creationKey: 'api-operation-7',
   directory: { kind: 'path', path: '/workspace/project' },
-  organizationPlacement: { folderId: null, tagIds: [] },
+  organizationPlacement: { sectionId: null, tagIds: [] },
   agentTarget: {
     kind: 'agent',
     identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
   },
 } as const;
+
+const canonicalBirthInput = admitSessionSpawnNewActionInputV2(SessionSpawnNewActionInputV2Schema.parse(canonicalInput));
 
 const agentStartContext = {
   caller: { kind: 'session', sessionId: 'parent-session', starterDepth: 0, turnDepth: 0 },
@@ -111,7 +114,7 @@ describe('session.spawn_new canonical execution', () => {
     }
     expect(births).toHaveLength(3);
     for (const [index, surface] of ['ui', 'cli', 'plugin'].entries()) {
-      expect(births[index]?.admittedInput).toEqual({ ...canonicalInput,
+      expect(births[index]?.admittedInput).toEqual({ ...canonicalBirthInput,
         creationKey: `lost-response-${surface}`, discussionParticipant });
     }
     const expectedTag = births[0]?.sessionCreationTag;
@@ -186,7 +189,7 @@ describe('session.spawn_new canonical execution', () => {
     });
   });
 
-  it.each(['omitted', 'pool', 'explicit', 'native', 'otherAgent'] as const)(
+  it.each(['omitted', 'pool', 'explicit', 'native', 'otherAgent', 'otherMachine'] as const)(
     'resolves a Session child Connected choice at canonical admission: %s', async choice => {
     const inherited = { v: 2 as const, bindingsByServiceId: {
       'acme.auth/subscription': choice === 'pool'
@@ -206,7 +209,8 @@ describe('session.spawn_new canonical execution', () => {
       ...(choice === 'explicit' || choice === 'native' ? { connectedServices: explicit } : {}),
     }, { surface: 'agent', authority: 'account_automation', serverId: 'server-1', runtimeAccountId: 'account-1',
       defaultSessionId: 'parent-session', actionCaller: agentStartContext.caller,
-      agentStartContext: { ...agentStartContext, baseline: { ...agentStartContext.baseline, configuration: {
+      agentStartContext: { ...agentStartContext, baseline: { ...agentStartContext.baseline,
+        machineId: choice === 'otherMachine' ? 'other-machine' : canonicalInput.executionTarget.machineId, configuration: {
         agentTarget: { ...target, identity: { ...target.identity, localId: 'reviewer' } }, connectedServices: inherited,
       } } }, callerPermissionMode: 'default',
       causalPermissionAuthority: { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'default' },
@@ -216,7 +220,7 @@ describe('session.spawn_new canonical execution', () => {
     expect(launched?.connectedServices).toEqual(choice === 'pool' ? { v: 2, bindingsByServiceId: {
       'acme.auth/subscription': { source: 'connected', selection: 'group', groupId: 'parent-pool' },
     } } : choice === 'omitted' ? inherited
-      : choice === 'otherAgent' ? undefined : explicit);
+      : choice === 'otherAgent' || choice === 'otherMachine' ? undefined : explicit);
   });
 
   it('carries attestation only for the host-stamped plugin spawn caller', async () => {
@@ -1028,8 +1032,8 @@ describe('session.spawn_new canonical execution', () => {
       },
     });
     expect(sessionSpawnNew).toHaveBeenCalledWith({
-      ...canonicalInput,
-      admittedInput: canonicalInput,
+      ...canonicalBirthInput,
+      admittedInput: canonicalBirthInput,
       creationKey: 'plugin-operation-7',
       sessionCreationTag: deriveSessionCreationTagV1({
         callerCreationNamespace: 'plugin:plugin.example',

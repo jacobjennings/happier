@@ -35,6 +35,7 @@ import { bindHerdrAgentIfNeeded } from '@/integrations/herdr/bindManagedSession'
 import { readSessionCreateOriginFromEnv } from '@/session/shared/sessionCreateOrigin'
 import { readSessionCreateManagerFromEnv } from '@/session/shared/sessionCreateManager'
 import { readSessionCreateRolesFromEnv } from '@/session/shared/sessionCreateRoles'
+import { readSessionCreateAuthoringOriginFromEnv } from '@/session/shared/sessionCreateAuthoringOrigin'
 import { claimSessionRunnerOwnership, readSessionRunnerLockStatus } from '@/daemon/sessionRunnerLock'
 import { configuration } from '@/configuration'
 import { readTerminalHostAttachmentState, terminalMetadataMatchesHostHandle } from '@/terminal/attachment/terminalAttachmentInfo'
@@ -562,9 +563,13 @@ export async function initializeBackendRunSession(
     { credentials: opts.credentials, signal: opts.signal }) : undefined
   recordStartupPhase('birth_skills')
   const birthSkillMigration = preparedBirthSkills?.status === 'ready' ? preparedBirthSkills.migration : undefined
-  const birthMetadata = birthSkillMigration ? mergeSessionMetadataForStartup({
+  const preparedBirthMetadata = birthSkillMigration ? mergeSessionMetadataForStartup({
     current: opts.metadata, next: opts.metadata, nowMs: nowFn(), mode: 'start', stackSkillMigration: birthSkillMigration,
   }) : opts.metadata
+  const authoringOrigin = readSessionCreateAuthoringOriginFromEnv()
+  const birthMetadata = authoringOrigin === undefined ? preparedBirthMetadata : {
+    ...preparedBirthMetadata, work: { ...preparedBirthMetadata.work, authoringOriginV1: authoringOrigin },
+  }
   let response: Awaited<ReturnType<ApiClient['getOrCreateSession']>>
   try {
     const manager = opts.manager ?? readSessionCreateManagerFromEnv();

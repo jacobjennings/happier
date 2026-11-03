@@ -1,7 +1,7 @@
 import type { ActivitySurfacePolicy } from '@/activity/attention/resolveActivitySurfacePolicy';
 import type { ActivitySurfaceCandidatePrivacyModeResolver } from '@/activity/presentation/buildActivitySurfaceViewModel';
 import type { ActivityOverviewSnapshot } from '@/activity/attention/activityAttentionTypes';
-import type { Session } from '@/sync/domains/state/storageTypes';
+import type { SessionPresentationRecord as Session } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import { buildLiveActivitySnapshots, type LiveActivitySnapshot } from './buildLiveActivitySnapshots';

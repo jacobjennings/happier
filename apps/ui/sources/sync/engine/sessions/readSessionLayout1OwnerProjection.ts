@@ -8,7 +8,7 @@ import { ComposerOptionsInputV1Schema, projectComposerOptionsInputV1, type Compo
 
 import { isDataKeyAuthCredentials, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { MetadataSchema, type Metadata } from '@happier-dev/session-core/state';
-import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
+import { resolveCurrentAccountScopedCryptoMaterialSnapshot } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 import { isSessionContentReadable, type SessionContentAvailability } from '@/sync/domains/session/encryptedContentAvailability';
 import { readSessionMetadataLayoutVersion } from './parsePlainSessionPayload';
 import { SESSION_OWNER_METADATA_PROJECTION, type SessionOwnerMetadataAuthority, type SessionOwnerMetadataProjection } from '@/sync/domains/session/readSessionOwnerMetadataView';
@@ -162,7 +162,9 @@ export function readSessionLayout1OwnerMetadata(params: Readonly<{
     const material = validated.envelope.t === 'encrypted'
         ? (() => {
             try {
-                return resolveAccountScopedCryptoMaterialFromCredentials(params.credentials);
+                return params.accountCurrentness
+                    ? resolveCurrentAccountScopedCryptoMaterialSnapshot({ credentials: params.credentials, accountCurrentness: params.accountCurrentness })?.material ?? null
+                    : null;
             } catch {
                 return null;
             }
@@ -252,18 +254,4 @@ export function projectSessionLayout1OwnerMetadata(params: Readonly<{
         ownerMetadataView: ownerMetadataView.data,
         composerOptionsInput: projectComposerOptionsInputV1(ownerMetadataView.data),
     };
-}
-
-export function readSessionLayout1OwnerProjection(params: Readonly<{
-    access: NormalizedSessionAccessProjection | null;
-    accountMode?: AccountEncryptionCurrentnessResponse['mode'];
-    sharedMetadata: SessionSharedMetadataV1;
-    ownerMetadataEnvelope: unknown;
-    credentials: AuthCredentials;
-    composerOptionsInput?: ComposerOptionsInputV1 | null;
-}>): SessionLayout1OwnerProjection {
-    return projectSessionLayout1OwnerMetadata({
-        sharedMetadata: params.sharedMetadata,
-        ownerMetadataRead: readSessionLayout1OwnerMetadata(params),
-    });
 }

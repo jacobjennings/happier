@@ -173,7 +173,8 @@ function projectCapturedReports<T extends SessionManagerProjectionRow>(sessions:
 }
 
 /** Redact revoked endpoints without refreshing captured operational facts. */
-export async function readmitCapturedSessionManagerReferencesInTx<T extends V2SessionRecord>(tx: Tx, input: Readonly<{
+export async function readmitCapturedSessionManagerReferencesInTx<T extends Pick<V2SessionRecord,
+    'id' | 'manager' | 'managedSessions'>>(tx: Tx, input: Readonly<{
     accountId: string; authentication: SessionAccessAuthentication;
     accessMode: 'legacy_owner_or_direct' | 'effective_access_v1'; sessions: readonly T[];
     contributions: readonly SessionManagerContribution[];

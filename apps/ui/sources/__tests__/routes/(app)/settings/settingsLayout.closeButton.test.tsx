@@ -49,12 +49,6 @@ vi.mock('@/utils/platform/platform', async (importOriginal) => ({
     isRunningOnMac: () => false,
 }));
 
-vi.mock('@/components/navigation/AppHeaderCloseButton', () => ({
-    AppHeaderCloseButton: (props: Record<string, unknown>) => React.createElement('AppHeaderCloseButton', props),
-}));
-
-vi.mock('@/utils/navigation/safeRouterBack', () => ({ safeRouterBack: vi.fn() }));
-
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 
 function indexScreenOptions(screen: Awaited<ReturnType<typeof renderScreen>>): Record<string, unknown> {
@@ -65,7 +59,7 @@ function indexScreenOptions(screen: Awaited<ReturnType<typeof renderScreen>>): R
     return node.props.options as Record<string, unknown>;
 }
 
-describe('settings layout modal close affordance', () => {
+describe('settings layout modal presentation', () => {
     beforeEach(() => {
         deviceTypeState.value = 'tablet';
     });

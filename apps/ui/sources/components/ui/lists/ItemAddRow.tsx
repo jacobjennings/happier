@@ -7,7 +7,7 @@ import { Item } from '@/components/ui/lists/Item';
 
 /**
  * The one "add" row of a settings sheet ("Add env var", "Add variable", "Add model", "New role"): a plus
- * glyph in the row's leading column, in the item ink, and the title in the row's own type. It opens an
+ * glyph in the row's own leading column (it never makes its section reserve one), in the item ink, and the title in the row's own type. It opens an
  * inline form or the add flow; it never carries a chevron.
  */
 export const ItemAddRow = React.memo(function ItemAddRow(
@@ -18,7 +18,8 @@ export const ItemAddRow = React.memo(function ItemAddRow(
     <HappierItemAddRow
       {...props}
       renderIcon={(icon) => <Icon {...icon} color={theme.colors.text.secondary} />}
-      renderRow={({ accessibilityExpanded, ...row }) => <Item {...row}
+      // The plus keeps to the add row's own column, so the rows it adds to keep their section's edge.
+      renderRow={({ accessibilityExpanded, ...row }) => <Item {...row} reservesSectionLeadingColumn={false}
         {...(accessibilityExpanded === undefined ? {} : { accessibilityState: { expanded: accessibilityExpanded } })}
       />}
     />

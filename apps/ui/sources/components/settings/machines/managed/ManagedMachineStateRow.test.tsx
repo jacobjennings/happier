@@ -18,7 +18,61 @@ installSettingsViewCommonModuleMocks({
 });
 afterEach(() => standardCleanup());
 
+const { ManagedCreationProgress } = await import('./ManagedCreationProgress');
+
 describe('managed lifecycle presentation', () => {
+  it.each(['newer-unknown', 'no-observation', 'older-observation', 'same-time-observation', 'confirmed-absent', 'absent-without-operation', 'newer-clear'] as const)(
+    'shows current acquisition Details for %s', async scenario => {
+      const { ManagedMachineV1Schema } = await import('@happier-dev/protocol/machines/managed/managedMachineV1');
+      const { ActionOperationSnapshotV1Schema } = await import('@happier-dev/protocol/actions/operations/v1');
+      const { t } = await import('@/text');
+      const absent = scenario === 'confirmed-absent' || scenario === 'absent-without-operation';
+      const currentObservation = scenario === 'newer-unknown' || absent;
+      const reason = absent ? 'native_acquisition_absent' : 'native_acquisition_unconfirmed';
+      const machine = ManagedMachineV1Schema.parse({ id: 'acquisition-details', homeId: 'home', custodianAccountId: 'owner',
+        launch: { provider: { pluginId: 'custom.provisioner', localId: 'native' }, schemaVersion: 1, name: 'Build guest', choices: {} },
+        controller: { machineId: 'controller', installationId: 'installation' },
+        allocation: absent ? 'confirmed-absent' : 'may-exist', creationState: 'active',
+        desired: 'start', desiredWhen: 'now', intentRevision: 1, retention: { kind: 'until-delete' }, wakeOnAcceptedMessage: false,
+        observation: scenario === 'no-observation' ? undefined : {
+          observedAt: scenario === 'older-observation' ? 15 : scenario === 'same-time-observation' ? 20 : 30,
+          availability: absent ? 'absent' : scenario === 'newer-clear' ? 'present' : 'unavailable',
+          reason: scenario === 'newer-clear' ? undefined : reason,
+          nativeCause: scenario === 'newer-clear' ? undefined : { localCause: 'native_command_failed', command: 'restart',
+            exitCode: 1, stderr: 'native start still unconfirmed' },
+        } });
+      const operation = scenario === 'absent-without-operation' ? undefined : {
+        serverId: machine.homeId, observation: 'available' as const, isUnavailableProjection: false,
+        snapshot: ActionOperationSnapshotV1Schema.parse({ version: 1, operationId: 'creation-operation', revision: 1,
+          actionId: 'machines.managed.acquire', state: 'failed', scope: { accountId: 'owner', machineId: 'controller' },
+          title: 'Create', createdAt: 10, startedAt: 11, settledAt: 20, cancellation: 'supported',
+          domainRef: { kind: 'managedMachine', id: machine.id },
+          error: { errorCode: 'old_creation_failure', error: 'previous creation failed',
+            details: { kind: 'managedNative', nativeCause: { localCause: 'native_command_failed', command: 'create',
+              exitCode: 2, stderr: 'old creation output' } } } }),
+      };
+      const screen = await renderScreen(<ManagedCreationProgress machine={machine} operation={operation} />);
+      if (absent) expect(screen.getTextContent()).toContain(t('managedPower.resourceAbsent'));
+      if (scenario === 'newer-clear') {
+        expect(screen.findByTestId('managed-machine.installation-error')).toBeNull();
+        return;
+      }
+      await screen.pressByTestIdAsync('managed-machine.installation-error-details-toggle');
+      const text = screen.getTextContent();
+      if (currentObservation) {
+        expect(text).toContain(reason);
+        expect(text).toContain('restart · exit 1 · native start still unconfirmed');
+        expect(text).not.toContain('old_creation_failure');
+        expect(text).not.toContain('old creation output');
+      } else {
+        expect(text).toContain('old_creation_failure');
+        expect(text).toContain('create · exit 2 · old creation output');
+        expect(text).not.toContain('native start still unconfirmed');
+      }
+    },
+  );
+
+
   it('keeps confirmed-absent recovery enabled inside a noninteractive historical resource row', async () => {
     const { ManagedCreationProgress } = await import('./ManagedCreationProgress');
     const { ManagedMachineV1Schema } = await import('@happier-dev/protocol/machines/managed/managedMachineV1');
@@ -178,6 +232,44 @@ describe('created machine resource rows (UIR5)', () => {
   }
   const testIds = (screen: Awaited<ReturnType<typeof renderScreen>>, id: string) =>
     screen.tree.findAll(node => typeof node.type === 'string' && node.props.testID === id);
+
+  it.each([
+    ['running', 'bootstrap.incomplete'],
+    ['failed', 'bootstrap.incomplete'],
+    ['failed', 'bootstrap.native_command_failed'],
+  ] as const)('presents %s bootstrap evidence (%s) through the operation lifecycle', async (state, reason) => {
+    const { ActionOperationSnapshotV1Schema } = await import('@happier-dev/protocol/actions/operations/v1');
+    const machine = await boundMachine({ enrolledMachineId: undefined, desired: 'start', observation: {
+      observedAt: 30, availability: 'unavailable', reason,
+      ...(reason === 'bootstrap.native_command_failed' ? { nativeCause: {
+        localCause: 'native_command_failed', command: 'run', exitCode: 1, stderr: 'guest installation failed',
+      } } : {}),
+    } });
+    const operation = { serverId: machine.homeId, observation: 'available' as const, isUnavailableProjection: false,
+      snapshot: ActionOperationSnapshotV1Schema.parse({ version: 1, operationId: 'bootstrap', revision: 1,
+        actionId: 'machines.managed.acquire', state, scope: { accountId: 'owner', machineId: 'controller' },
+        title: 'Create', createdAt: 10, startedAt: 20, cancellation: 'supported',
+        domainRef: { kind: 'managedMachine', id: machine.id, resource: machine.resource, controller: machine.controller },
+        progress: { kind: 'phase', phase: 'managed.bootstrap.install', label: 'Installing Happier' },
+        ...(state === 'failed' ? { settledAt: 40, error: { errorCode: 'action_failed', error: 'bootstrap failed' } } : {}),
+      }) };
+    const screen = await renderScreen(<ManagedCreationProgress machine={machine} operation={operation} />);
+    if (state === 'running') {
+      expect(screen.findByTestId('managed-machine.installation-error')).toBeNull();
+      expect(screen.findByTestId('managed-machine.installation')).not.toBeNull();
+      expect(screen.getTextContent()).toContain('Installing Happier');
+      expect(screen.findByTestId('managed-machine.progress')).toBeNull();
+      return;
+    }
+    expect(screen.findByTestId('managed-machine.installation-error')).not.toBeNull();
+    expect(screen.getTextContent()).not.toContain(reason);
+    expect(screen.getTextContent()).not.toContain('guest installation failed');
+    await screen.pressByTestIdAsync('managed-machine.installation-error-details-toggle');
+    expect(screen.getTextContent()).toContain(reason);
+    if (reason === 'bootstrap.native_command_failed') {
+      expect(screen.getTextContent()).toContain('run · exit 1 · guest installation failed');
+    }
+  });
 
   it('keeps native identity out of a healthy created machine and names the row after the machine', async () => {
     const { ManagedCreationProgress } = await import('./ManagedCreationProgress');

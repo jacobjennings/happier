@@ -432,8 +432,6 @@ export function createSystemTaskRunner(options: Readonly<{
     };
 }
 
-export const createSystemTasksRunner = createSystemTaskRunner;
-
 /**
  * Await the terminal result for a task that was started through this runner.
  * System-task failures remain data (`ok: false`) so callers can preserve the

@@ -44,7 +44,7 @@ function makePlan(transitionKey: string, optionCount: number): ReadonlyArray<Sec
 }
 
 describe('SelectionList virtualized drill animation (FR3-9)', () => {
-    it('wraps a virtualized + transitionKey section in a slide transition surface', async () => {
+    it('wraps a virtualized + transitionKey section, list host included, in a slide transition surface', async () => {
         const { SelectionListBody } = await import('../SelectionListBody');
         const plan = makePlan('/home/user/dir-a', 80);
         const screen = await renderScreen(
@@ -64,29 +64,14 @@ describe('SelectionList virtualized drill animation (FR3-9)', () => {
         // `${sectionTestId}:transition` — so the virtualized branch
         // participates in the shared transition surface. The testID is
         // emitted by `SlideTransitionSwitch` via its `testID` prop.
-        expect(screen.findByTestId('sl:section:dir:transition')).not.toBeNull();
-    });
-
-    it('mounts the virtualized rows inside the transition surface (host preserved)', async () => {
-        const { SelectionListBody } = await import('../SelectionListBody');
-        const plan = makePlan('/home/user/dir-a', 80);
-        const screen = await renderScreen(
-            <SelectionListBody
-                step={{ id: 'root', sections: [] }}
-                rootTestID="sl"
-                selectedOptionIds={new Set<string>()}
-                plan={plan}
-                focusedOptionId={null}
-                listboxId="sl:listbox"
-                onSelect={() => {}}
-                onPushStep={() => {}}
-            />,
-        );
-        // The transition surface must contain the virtualized FlashList host
-        // so virtualized scrolling and recycling still work inside the
-        // sliding layer.
-        const transition = screen.findByTestId('sl:section:dir:transition');
+        const transition = screen.findByTestId('sl:section:dir:transition') as unknown as {
+            findAll: (predicate: (node: { props: Record<string, unknown> }) => boolean) => unknown[];
+        } | null;
         expect(transition).not.toBeNull();
+        // The virtualized list host slides WITH the layer (not beside it), so
+        // recycling and scrolling keep working inside the transition.
+        expect(transition?.findAll((node) => node.props?.testID === 'sl:section:dir:virtualized').length)
+            .toBeGreaterThan(0);
     });
 
     it('does NOT wrap a virtualized section in the transition surface when no transitionKey is set (static sections)', async () => {

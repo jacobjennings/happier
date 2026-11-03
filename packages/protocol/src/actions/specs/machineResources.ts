@@ -1,10 +1,10 @@
+import { MACHINE_RESOURCES_ACTION_IDS } from './machineResourcesActionIdsV1.js';
+export { MACHINE_RESOURCES_ACTION_IDS } from './machineResourcesActionIdsV1.js';
 import { z } from 'zod/mini';
 import { lazyZodSchema } from '../../lazyZodSchema.js';
 import { MachineResourcesPolicyMutationV1Schema, MachineResourcesPolicyGetResultV1Schema, MachineResourcesPolicyMutationResultV1Schema } from '../../machines/resources/machineResourcesPolicyV1.js';
 import { RPC_METHODS } from '../../rpc/methods.js';
 import type { PreNormalizedActionSpec } from '../actionSpecs.js';
-
-export const MACHINE_RESOURCES_ACTION_IDS = ['machines.resources.policy.get', 'machines.resources.policy.set'] as const;
 export type MachineResourcesActionId = typeof MACHINE_RESOURCES_ACTION_IDS[number];
 export const MachineResourcesActionIdSchema = lazyZodSchema(() => z.enum(MACHINE_RESOURCES_ACTION_IDS));
 export const MachineResourcesPolicyGetInputV1Schema = lazyZodSchema(() => z.strictObject({ serverId: z.optional(z.string().check(z.trim(), z.minLength(1))), machineId: z.string().check(z.trim(), z.minLength(1)) }));
@@ -39,7 +39,7 @@ export const MACHINE_RESOURCES_ACTION_SPECS = [
     inputHints: { fields },
   },
   {
-    id: 'machines.resources.policy.set', approvalPolicy: { agentDefault: 'authority' }, approval: {result: 'required'}, title: 'Change resource settings',
+    id: 'machines.resources.policy.set', approvalPolicy: { agentDefault: 'authority', requiredSurfaces: ['mcp', 'plugin'] }, approval: {result: 'required'}, title: 'Change resource settings',
     toolExposure: { agent: 'discoverable_only' },
     prompting: { agentGuidance: 'Read machines.resources.policy.get first, then submit one minimal patch with its expectedRevision. Change only the policy the person asked to change; approval follows this Action’s own user setting.' },
     description: 'Changes a machine’s alerts, guard and cleanup settings. If they changed meanwhile, you see the current ones first.',

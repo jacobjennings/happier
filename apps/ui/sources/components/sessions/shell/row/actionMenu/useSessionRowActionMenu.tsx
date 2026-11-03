@@ -1,5 +1,6 @@
 import { useSessionArchivePending } from '@/hooks/session/useSessionArchivePending';
 import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
+import { confirmSessionDelete } from '@/components/sessions/actions/confirmSessionDelete';
 import { confirmSessionArchive } from '@/components/sessions/actions/confirmSessionArchive';
 import * as React from 'react';
 import type { View } from 'react-native';
@@ -8,6 +9,7 @@ import type { DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMe
 import { executeSessionAction } from '@/components/sessions/actions/sessionActionExecution';
 import {
     SESSION_ACTION_ARCHIVE_ID,
+    SESSION_ACTION_DELETE_ID,
     SESSION_ACTION_CLEAR_ATTENTION_STANDING_ID,
     SESSION_ACTION_EDIT_TAGS_ID,
     SESSION_ACTION_PUT_UNDER_ID,
@@ -71,6 +73,7 @@ function resolveActionIdFromMenuItemId(itemId: string): SessionActionId | null {
         case SESSION_ACTION_STOP_ID:
         case SESSION_ACTION_ARCHIVE_ID:
         case SESSION_ACTION_UNARCHIVE_ID:
+        case SESSION_ACTION_DELETE_ID:
         case SESSION_ACTION_PIN_ID:
         case SESSION_ACTION_UNPIN_ID:
         case SESSION_ACTION_EDIT_TAGS_ID:
@@ -277,6 +280,23 @@ export function useSessionRowActionMenu(params: Readonly<{
         }
     }, [target]);
 
+    const [deletingSession, performDeleteMutation] = useHappyAction(async (deleteTarget: SessionActionTarget) => {
+        await executeSessionAction({
+            actionId: SESSION_ACTION_DELETE_ID,
+            target: deleteTarget,
+            context: { confirmed: true },
+        });
+    });
+    const handleDeleteSession = React.useCallback(async () => {
+        const deleteTarget = target;
+        try {
+            const confirmed = await confirmSessionDelete({ target: deleteTarget });
+            if (confirmed) await performDeleteMutation(deleteTarget);
+        } catch (error) {
+            showActionError(error);
+        }
+    }, [performDeleteMutation, target]);
+
     const moreMenuItems = React.useMemo(() => {
         const selectItem = (
             !params.isNativeMobile
@@ -402,6 +422,9 @@ export function useSessionRowActionMenu(params: Readonly<{
             case SESSION_ACTION_UNARCHIVE_ID:
                 await handleUnarchiveSession();
                 return;
+            case SESSION_ACTION_DELETE_ID:
+                await handleDeleteSession();
+                return;
             case SESSION_ACTION_WORK_OPEN_ID:
             case SESSION_ACTION_TALK_ID:
             case SESSION_ACTION_PUT_UNDER_ID:
@@ -426,6 +449,7 @@ export function useSessionRowActionMenu(params: Readonly<{
         handleReadStateAction,
         handleRenameSession,
         handleUnarchiveSession,
+        handleDeleteSession,
         target,
         params.onEnterSelectionMode,
         params.onOpen,
@@ -509,6 +533,6 @@ export function useSessionRowActionMenu(params: Readonly<{
         handleMoreMenuSelect,
         contextMenuItems,
         handleContextMenuSelect,
-        mutatingSession: stoppingSession || archivingSession || archivePending,
+        mutatingSession: stoppingSession || archivingSession || deletingSession || archivePending,
     };
 }

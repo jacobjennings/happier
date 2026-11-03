@@ -40,6 +40,7 @@ describe('password envelope recovery-secret reader', () => {
         const { envelope, key } = await fixture(new Uint8Array(32).fill(4));
         for (const candidate of [
             { ...envelope, cipher: { ...envelope.cipher, ciphertext: encodePasswordCredentialFieldV1(new Uint8Array(48)) } },
+            { ...envelope, kdf: { ...kdf, salt: encodePasswordCredentialFieldV1(new Uint8Array(16).fill(9)) } },
             { ...envelope, kdf: { ...kdf, opsLimit: 4 } },
             { ...envelope, kdf: { ...kdf, memLimitBytes: 1024 ** 4 } },
             { ...envelope, accountId: 'untrusted' },

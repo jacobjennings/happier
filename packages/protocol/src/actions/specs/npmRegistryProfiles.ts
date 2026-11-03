@@ -14,6 +14,7 @@ const titles = {
 export const NPM_REGISTRY_PROFILE_ACTION_SPECS_V1 = NPM_REGISTRY_PROFILE_ACTION_IDS_V1.map((id): PreNormalizedActionSpec => ({
   id, title: titles[id], description: 'Manage the exact selected Machine’s revisioned npm registry profiles. Sign-in credentials are acquired privately by the answering app.',
   approval: { result: 'required' }, safety: id.endsWith('.remove') ? 'danger' : 'safe',
+  ...(id === 'plugins.npm_registry_profiles.remove' ? { irreversible: true as const } : {}),
   ...(id.endsWith('.list') ? {} : { approvalPolicy: { retainUiFieldIntent: true } }),
   sideEffectClass: id.endsWith('.list') ? 'read' : 'write',
   requiredAuthority: 'account_automation', executionPlacement: 'client', placements: [],

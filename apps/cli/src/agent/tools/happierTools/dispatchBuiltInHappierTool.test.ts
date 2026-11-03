@@ -17,6 +17,11 @@ import { dispatchBuiltInHappierTool } from './dispatchBuiltInHappierTool';
 import type { HappierBuiltInToolDispatchResult } from './types';
 import { PUBLIC_ACTION_OUTPUT_SCHEMAS } from '@happier-dev/protocol/actions/actionSpecs';
 
+const directMcpExecutionSettings = ActionsSettingsV1Schema.parse({ v: 1, actions: {
+  'review.start': { toolExposureModes: { mcp: 'direct' } },
+  'execution.run.start': { toolExposureModes: { mcp: 'direct' } },
+} });
+
 function ok(result: unknown): HappierBuiltInToolDispatchResult {
   return { ok: true, result };
 }
@@ -503,6 +508,7 @@ describe('built-in Happier tools', () => {
       args: { instructions: 'Check this' },
       sessionId: 'sess-1',
       surface: 'mcp',
+      actionsSettings: directMcpExecutionSettings,
       deps: {
         changeTitle: async () => ({ success: true }),
         executeActionByToolName,
@@ -732,6 +738,7 @@ describe('built-in Happier tools', () => {
       },
       sessionId: 'sess-1',
       surface: 'mcp',
+      actionsSettings: directMcpExecutionSettings,
       deps: {
         changeTitle: async () => ({ success: true }),
         executeActionByToolName,
@@ -780,6 +787,7 @@ describe('built-in Happier tools', () => {
       },
       sessionId: 'sess-1',
       surface: 'mcp',
+      actionsSettings: directMcpExecutionSettings,
       deps: {
         changeTitle: async () => ({ success: true }),
         executeActionByToolName,
@@ -816,6 +824,7 @@ describe('built-in Happier tools', () => {
       },
       sessionId: 'sess-1',
       surface: 'mcp',
+      actionsSettings: directMcpExecutionSettings,
       deps: {
         changeTitle: async () => ({ success: true }),
         executeActionByToolName,
@@ -852,6 +861,7 @@ describe('built-in Happier tools', () => {
       },
       sessionId: 'sess-1',
       surface: 'mcp',
+      actionsSettings: directMcpExecutionSettings,
       deps: {
         changeTitle: async () => ({ success: true }),
         executeActionByToolName,
@@ -885,6 +895,7 @@ describe('built-in Happier tools', () => {
       },
       sessionId: 'sess-1',
       surface: 'mcp',
+      actionsSettings: directMcpExecutionSettings,
       deps: {
         changeTitle: async () => ({ success: true }),
         executeActionByToolName,
@@ -901,6 +912,7 @@ describe('built-in Happier tools', () => {
     const actionsSettings = ActionsSettingsV1Schema.parse({
       v: 1,
       actions: {
+        'execution.run.start': { toolExposureModes: { mcp: 'direct' } },
         'review.start': {
           disabledSurfaces: ['mcp'],
         },

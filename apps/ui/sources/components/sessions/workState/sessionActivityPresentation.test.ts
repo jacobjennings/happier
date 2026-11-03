@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SessionWorkflowRunSnapshotV1 } from '@happier-dev/protocol';
+import { projectSessionWorkDisplayV1 } from '@happier-dev/protocol/sessions/work/state/sessionWorkStatePrimary';
 import {
     makeSessionWorkflowActivityHeadline,
     makeSessionWorkflowRunHeadline,
@@ -76,6 +77,20 @@ function resolve(input: Partial<Parameters<typeof resolveSessionActivityStatusBa
 }
 
 describe('resolveSessionActivityStatusBadgePresentation', () => {
+    it('preserves the same primary and active-goal badges from compact work display', () => {
+        const snapshot = workState([
+            workStateItem({ id: 'goal', kind: 'goal', status: 'active', title: 'Ship' }),
+            workStateItem({ id: 'task', kind: 'task', status: 'blocked', title: 'Needs migration', statusReason: 'blocked' }),
+            workStateItem({ id: 'history', kind: 'task', status: 'complete', title: 'Private completed history' }),
+        ], 'task');
+        const compact = projectSessionWorkDisplayV1(snapshot);
+        for (const workflowHeadline of [null, headline([runHeadline({ runId: 'run', totalAgents: 4, completedAgents: 2 })])]) {
+            const full = resolve({ workStateSnapshot: snapshot, workflowHeadline });
+            expect(full).not.toBeNull();
+            expect(resolve({ workStateSnapshot: compact, workflowHeadline })).toEqual(full);
+        }
+    });
+
     it('returns null when there is nothing to show', () => {
         expect(resolve({})).toBeNull();
     });

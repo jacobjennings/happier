@@ -2,6 +2,7 @@ import type { ComponentType, ReactElement } from 'react';
 import { Pressable, View } from 'react-native';
 
 import { HAPPIER_SPACE_STEPS } from '../../environment/spacing.js';
+import { HappierPressable } from '../interaction/Pressable.js';
 import type { HappierStyleProp } from '../portableTypes.js';
 
 /** What saving does to the saved fact it resembles. */
@@ -28,10 +29,12 @@ export type HappierMemoryDuplicateChoiceLabels = Readonly<{
   options: Readonly<Record<HappierMemoryDuplicateChoiceKind, string>>;
   /** One line saying what the chosen effect does. */
   effects: Readonly<Record<HappierMemoryDuplicateChoiceKind, string>>;
+  /** The control that opens the caller's view of a saved fact; shown only with `onViewCandidate`. */
+  view?: string;
 }>;
 
 export type HappierMemoryDuplicateChoiceTextProps = Readonly<{
-  role: 'title' | 'label' | 'text' | 'meta' | 'effect';
+  role: 'title' | 'label' | 'text' | 'meta' | 'effect' | 'action';
   /** The saved text the chosen Replace retires. */
   retired?: boolean;
   numberOfLines?: number;
@@ -63,6 +66,11 @@ export type HappierMemoryDuplicateChoiceProps = Readonly<{
   onCandidateChange: (id: string) => void;
   choice: HappierMemoryDuplicateChoiceKind;
   onChoiceChange: (choice: HappierMemoryDuplicateChoiceKind) => void;
+  /**
+   * Opens the caller's own view of a saved fact (its source, approval, history). The caller decides
+   * what may be shown and keeps the draft and choice while it is open; viewing never chooses the fact.
+   */
+  onViewCandidate?: (id: string) => void;
   disabled?: boolean;
   labels: HappierMemoryDuplicateChoiceLabels;
   Text: ComponentType<HappierMemoryDuplicateChoiceTextProps>;
@@ -95,6 +103,8 @@ export function HappierMemoryDuplicateChoice(
   const space = props.space ?? HAPPIER_SPACE_STEPS;
   const disabled = props.disabled === true;
   const chosenId = props.candidateId ?? candidates[0]?.id ?? null;
+  const view = props.onViewCandidate && labels.view
+    ? { open: props.onViewCandidate, label: labels.view } : null;
   // Picking among several saved facts matters only when the effect touches one of them.
   const selectable = candidates.length > 1 && choice !== 'keep_both';
   const row = {
@@ -162,10 +172,28 @@ export function HappierMemoryDuplicateChoice(
                 >
                   {candidate.text}
                 </Text>
-                {candidate.meta ? (
-                  <Text role="meta" numberOfLines={1}>
-                    {candidate.meta}
-                  </Text>
+                {candidate.meta || view ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: space.s8 }}>
+                    {candidate.meta ? (
+                      <View style={{ flexShrink: 1, minWidth: 0 }}>
+                        <Text role="meta" numberOfLines={1}>
+                          {candidate.meta}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {view ? (
+                      <HappierPressable
+                        testID={`${props.testID}.candidate.${candidate.id}.view`}
+                        accessibilityRole="button"
+                        // Inside a selectable row: the link reaches only into the row's own gaps (half the body gap above,
+                        // the row padding below and beside), never into the text that selects the row.
+                        hitReach={{ top: space.s2 / 2, bottom: space.s4, left: space.s8 / 2, right: space.s4 }}
+                        onPress={() => view.open(candidate.id)}
+                      >
+                        <Text role="action">{view.label}</Text>
+                      </HappierPressable>
+                    ) : null}
+                  </View>
                 ) : null}
               </View>
             </Pressable>

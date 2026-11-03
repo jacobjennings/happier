@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
+import { readHappierVisibleLayoutWidth } from '@happier-dev/plugin-ui/presentation/pageMetrics';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import {
   Collection,
@@ -49,13 +50,12 @@ import { shadowLevelStyle } from '@/shadowElevation';
 import { Typography } from '@/constants/Typography';
 import { Modal } from '@/modal';
 import { useMachineResourcesPolicy } from '@/sync/domains/machines/resources/useMachineResourcesPolicy';
+import { StorageScanStartNotice } from '@/components/machines/storage/StorageScanStartNotice';
 import { useMachineStorageScan } from '@/sync/domains/machines/storage/useMachineStorageScan';
 import { useMachineStorageSummary } from '@/sync/domains/machines/storage/useMachineStorageSummary';
 import { getPreferredLanguage, t } from '@/text';
 import { usePreferredLanguage } from '@/text/usePreferredLanguage';
-import { useAllSessionListRenderables, useAuthoringMemoryField, useProjectAccountRows } from '@/sync/store/hooks';
 import { formatPathRelativeToHome } from '@/utils/sessions/formatPathRelativeToHome';
-import { useStableRecentPathsForMachine } from '@/utils/sessions/useStableRecentPathsForMachine';
 import { formatRelativeTime } from '@/utils/time/formatShortRelativeTime';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
@@ -113,8 +113,6 @@ const MARK_ICONS: Readonly<Record<StorageDiskMark, IconName>> = {
   reserved: 'circle-half',
 };
 const LARGE_MIN_BYTES = [10_000_000, 100_000_000, 1_000_000_000] as const;
-/** Shortcuts are a few quick ways in, beside "Choose a folder…" which reaches every other folder. */
-const RECENT_FOLDER_SHORTCUTS = 4;
 const OLD_MONTHS = [3, 6, 12] as const;
 const OLD_AGE_GROUPS = ['year', 'months6', 'months3', 'recent', 'unknown'] as const;
 const DAY_MS = 86_400_000;
@@ -159,6 +157,8 @@ export const StorageWholeDiskView = React.memo(function StorageWholeDiskView(
     offline: boolean;
     params: StorageParams;
     setParams: (next: MachinePageTabParams) => void;
+    /** The Happier view's disk sentence; a disk never scanned leads with it as Happier's does (lab `rs` MS 1). */
+    sentence?: React.ReactNode;
   }>,
 ) {
   usePreferredLanguage();
@@ -203,7 +203,7 @@ export const StorageWholeDiskView = React.memo(function StorageWholeDiskView(
   const customAge = React.useCallback(() => {
     fireAndForget((async () => {
       const raw = await Modal.prompt(t('machineStorage.disk.olderThan'), t('machineStorage.tidy.customDays.body'), {
-        defaultValue: 'days' in oldAge ? String(oldAge.days) : '', confirmText: t('common.save'),
+        defaultValue: 'days' in oldAge ? `${oldAge.days} d` : '', confirmText: t('common.save'),
       });
       if (raw === null) return;
       const days = parseCustomStorageDays(raw);
@@ -247,11 +247,13 @@ export const StorageWholeDiskView = React.memo(function StorageWholeDiskView(
     (
       request: Readonly<{ volumeId: string } | { folderPath: string }>,
       resume?: boolean,
+      // The machine just refused for being opted out: its policy, not this view's copy of it, is what to change.
+      turnOn?: boolean,
     ) => {
       setStarting(true);
       fireAndForget(
         (async () => {
-          if (!enabled) {
+          if (!enabled || turnOn) {
             const saved = await setPolicy({
               storage: { wholeDiskEnabled: true },
             });
@@ -271,6 +273,21 @@ export const StorageWholeDiskView = React.memo(function StorageWholeDiskView(
     },
     [enabled, scanState, setPolicy],
   );
+  const startFailure = scanState.startFailure;
+  const retryStart = React.useCallback(
+    (turnOn: boolean) => {
+      if (startFailure) startScan(startFailure.target, startFailure.resume, turnOn);
+    },
+    [startFailure, startScan],
+  );
+  const startNotice = startFailure && !props.offline ? (
+    <StorageScanStartNotice
+      failure={startFailure}
+      machineName={props.machineName}
+      onRetry={() => retryStart(false)}
+      onTurnOn={() => retryStart(true)}
+    />
+  ) : null;
   const chooseFolder = React.useCallback(() => {
     fireAndForget((async () => {
       const path = await openMachinePathBrowserModal({ machineId: props.machineId, serverId: props.serverId,
@@ -294,6 +311,7 @@ export const StorageWholeDiskView = React.memo(function StorageWholeDiskView(
   if (!scan || (!enabled && scan.status !== 'complete')) {
     return (
       <View testID="machine-storage-disk-never">
+        {props.sentence}
         {props.offline ? (
           // Offline: nothing can start a scan, so the page says why in the invite's place, and nothing else.
           <ItemGroup>
@@ -345,6 +363,7 @@ export const StorageWholeDiskView = React.memo(function StorageWholeDiskView(
                 testID: 'machine-storage-disk-folder',
               }}
             />
+            {startNotice}
           </ItemGroup>
         )}
         {props.offline ? null : <StorageHint icon="info" text={t('machineStorage.disk.neverHint')} />}
@@ -393,7 +412,7 @@ export const StorageWholeDiskView = React.memo(function StorageWholeDiskView(
         lead={volume ? t('machineStorage.sentence.free', { free: formatMachineBytes(volume.freeBytes, 'storage') }) : null}
         text={[
           running
-            ? scan.progress.usedBytes > 0
+            ? scan.progress.usedBytes !== undefined
               ? t('machineStorage.disk.scanningSentence', {
                   volume: targetName,
                   sized: formatMachineBytes(scan.progress.sizedBytes, 'storage'),
@@ -442,13 +461,14 @@ export const StorageWholeDiskView = React.memo(function StorageWholeDiskView(
           machineName={props.machineName}
         />
       ) : null}
+      {startNotice ? <ItemGroup>{startNotice}</ItemGroup> : null}
       {stopped ? (
         <ItemGroup>
           <SurfaceStateCard
             testID="machine-storage-disk-stopped"
             kind="error"
             title={
-              scan.progress.usedBytes > 0
+              scan.progress.usedBytes !== undefined && scan.progress.usedBytes > 0
                 ? t('machineStorage.disk.stoppedTitle', {
                     percent: Math.round(
                       (scan.progress.sizedBytes / scan.progress.usedBytes) *
@@ -494,7 +514,6 @@ export const StorageWholeDiskView = React.memo(function StorageWholeDiskView(
       <View style={[styles.tools, layout.compact ? styles.toolsCompact : null]}>
         <SegmentedTabBar<Files>
           role="tablist"
-          targetSize="platform"
           segmentSizing="content"
           accessibilityLabel={t('machineStorage.disk.filesLabel')}
           testIDPrefix="machine-storage-disk-files"
@@ -551,7 +570,6 @@ export const StorageWholeDiskView = React.memo(function StorageWholeDiskView(
         {!layout.compact && files === 'folders' ? (
           <SegmentedTabBar<Shape>
             role="radiogroup"
-            targetSize="platform"
             segmentSizing="content"
             iconPlacement="leading"
             accessibilityLabel={t('machineStorage.disk.shapeLabel')}
@@ -623,6 +641,7 @@ export const StorageWholeDiskView = React.memo(function StorageWholeDiskView(
           compact={layout.compact}
           homeDir={facts.homeDir}
           loading={scanState.scanStatus === 'loading' && !scanState.page}
+          {...(root ? { expectedRows: root.childCount } : {})}
           reading={reading}
           previousScanAt={scan.previousScanAt ?? null}
           onOpen={open}
@@ -653,9 +672,9 @@ function ScanProgress(
   const { theme } = useUnistyles();
   const pluginTheme = usePluginUiTheme(theme);
   const { progress } = props.scan;
-  // A folder scan has no total to divide by (the machine reports 0): the bar stays indeterminate, never a made-up share.
+  // Missing totals and measured zero have no percentage denominator.
   const percent =
-    progress.usedBytes > 0
+    progress.usedBytes !== undefined && progress.usedBytes > 0
       ? Math.min(
           100,
           Math.round((progress.sizedBytes / progress.usedBytes) * 100),
@@ -674,7 +693,7 @@ function ScanProgress(
             <ActivitySpinner size="small" color={theme.colors.text.secondary} />
             {percent === null ? null : <Text style={styles.progressPercent}>{`${percent}%`}</Text>}
             <Text style={styles.progressMeta}>
-              {percent === null
+              {progress.usedBytes === undefined
                 ? t('machineStorage.disk.progressMetaOpen', {
                     sized: formatMachineBytes(progress.sizedBytes, 'storage'),
                     items: progress.items.toLocaleString(getPreferredLanguage()),
@@ -694,12 +713,12 @@ function ScanProgress(
               onPress={props.onCancel}
             />
           </View>
-          {percent === null ? null : (
+          {percent === null || progress.usedBytes === undefined ? null : (
             <CapacityBar
               theme={pluginTheme}
               label={t('machineStorage.disk.progressLabel')}
               value={progress.sizedBytes}
-              capacity={Math.max(1, progress.usedBytes)}
+              capacity={progress.usedBytes}
               size="inline"
               showCaption={false}
               color={pluginTheme.colors.accent}
@@ -962,7 +981,10 @@ function DiskChart(
     <View
       testID={`machine-storage-disk-${props.shape}`}
       style={styles.chart}
-      onLayout={(event) => setWidth(Math.round(event.nativeEvent.layout.width))}
+      onLayout={(event) => {
+        const visibleWidth = readHappierVisibleLayoutWidth(event.nativeEvent.layout.width);
+        if (visibleWidth !== null) setWidth(Math.round(visibleWidth));
+      }}
     >
       {chartWidth > 0 ? (
         props.shape === 'map' ? (
@@ -1094,8 +1116,7 @@ function folderName(path: string): string {
 
 /**
  * Quick ways into the same folder scan, beside "Choose a folder…": the machine's home folder and the folders
- * Happier has worked in there (the recent folders every path picker offers). Each starts the one daemon scan
- * on that folder. Nothing here when the machine reports neither.
+ * the daemon verified still exist. Each starts the one daemon scan on that folder.
  */
 function ScanFolderShortcuts(
   props: Readonly<{
@@ -1108,31 +1129,16 @@ function ScanFolderShortcuts(
   }>,
 ) {
   usePreferredLanguage();
-  const sessions = useAllSessionListRenderables();
-  const projects = useProjectAccountRows();
-  const recentMachinePaths = useAuthoringMemoryField('recentMachinePaths');
-  const recent = useStableRecentPathsForMachine({ machineId: props.machineId, recentMachinePaths, sessions });
   const places = React.useMemo(() => {
     const out: { path: string; title: string; icon: IconName }[] = [];
     if (props.homeDir) out.push({ path: props.homeDir, title: t('machineStorage.disk.shortcutHome'), icon: 'house' });
     for (const shortcut of props.shortcuts ?? []) {
       if (out.some(place => place.path === shortcut.path)) continue;
-      out.push({ path: shortcut.path, title: t(shortcut.kind === 'downloads'
-        ? 'machineStorage.disk.shortcutDownloads' : 'machineStorage.disk.shortcutCache'), icon: 'folder' });
-    }
-    for (const project of projects?.workspaceRefs ?? []) {
-      if (project.serverId !== props.serverId || project.machineId !== props.machineId
-        || out.some(place => place.path === project.rootPath)) continue;
-      out.push({ path: project.rootPath, title: project.label || folderName(project.rootPath), icon: 'folder' });
-    }
-    const firstRecent = out.length;
-    for (const path of recent) {
-      if (out.length - firstRecent >= RECENT_FOLDER_SHORTCUTS) break;
-      if (out.some((place) => place.path === path)) continue;
-      out.push({ path, title: folderName(path), icon: 'folder' });
+      out.push({ path: shortcut.path, title: shortcut.kind === 'folder' ? folderName(shortcut.path)
+        : t(shortcut.kind === 'downloads' ? 'machineStorage.disk.shortcutDownloads' : 'machineStorage.disk.shortcutCache'), icon: 'folder' });
     }
     return out;
-  }, [props.homeDir, props.shortcuts, props.serverId, props.machineId, projects, recent]);
+  }, [props.homeDir, props.shortcuts]);
   if (places.length === 0) return null;
   return (
     <ItemGroup
@@ -1175,6 +1181,8 @@ function DiskList(
     compact: boolean;
     homeDir: string | undefined;
     loading: boolean;
+    /** The open folder's known child count: its loading rows reserve that many. */
+    expectedRows?: number;
     reading: boolean;
     previousScanAt: number | null;
     onOpen: (nodeId: string) => void;
@@ -1434,6 +1442,7 @@ function DiskList(
         preferredListRatio={1}
         sort={sort}
         loading={props.loading}
+        {...(props.expectedRows === undefined ? {} : { loadingRows: props.expectedRows })}
         selection={{ isItemActivatable: (row) => row.drillable }}
         empty={
           props.reading ? (

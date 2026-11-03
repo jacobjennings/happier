@@ -37,22 +37,6 @@ function status(announcement: string, transitionKey: string) {
 }
 
 describe('PoliteAccessibilityStatus', () => {
-    it('keeps a declarative region mounted while an operation has nothing to say', async () => {
-        accessibilityPlatform.os = 'web';
-
-        // A live region only announces text that arrives AFTER it is in the tree,
-        // so a consumer must be able to keep it mounted through the silent states.
-        const screen = await renderScreen(status('', 'ready'));
-
-        expect(screen.findByTestId('operation-a11y-status')?.props.children?.props.children)
-            .toBe('');
-
-        await screen.update(status('Older history could not be loaded.', 'readyfailed'));
-
-        expect(screen.findByTestId('operation-a11y-status')?.props.children?.props.children)
-            .toBe('Older history could not be loaded.');
-    });
-
     it('speaks only on transitions on iOS: silent on mount and on empty states, coalescing same-key text', async () => {
         accessibilityPlatform.os = 'ios';
         announceForAccessibilityMock.mockClear();

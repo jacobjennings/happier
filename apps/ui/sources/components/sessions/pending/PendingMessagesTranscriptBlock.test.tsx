@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 import { invokeTestInstanceHandler, renderScreen } from '@/dev/testkit/render/renderScreen';
+import { SessionFollowInputV1Schema } from '@happier-dev/protocol/sessions/follow/sessionFollowInputV1';
 import type { PendingMessage } from '@/sync/domains/state/storageTypes';
 import { t } from '@/text';
 import {
@@ -22,8 +23,7 @@ const QUEUE_CAP_PX = resolvePendingQueueHeadMaxHeightPx(LINE_PX) + 80;
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function loadPendingMessagesTranscriptBlock() {
-    const mod = await import('./PendingMessagesTranscriptBlock');
-    return mod.PendingMessagesTranscriptBlock;
+    return PendingMessagesTranscriptBlockComponent;
 }
 
 vi.mock('./PendingMessagesDragReorderList', () => ({
@@ -133,6 +133,9 @@ installPendingMessagesCommonModuleMocks({
         Ionicons: 'Ionicons',
     }),
 });
+
+// Install the suite's boundary fixtures before import, and charge cold transforms to collection.
+const { PendingMessagesTranscriptBlock: PendingMessagesTranscriptBlockComponent } = await import('./PendingMessagesTranscriptBlock');
 
 vi.mock('@/sync/sync', () => ({
     sync: {
@@ -504,11 +507,28 @@ describe('PendingMessagesTranscriptBlock', () => {
                 discardedMessages: [],
             }));
 
-        const affordance = screen.findByTestId('pendingMessages.pendingAffordance:p1');
-        expect(affordance).toBeTruthy();
-        const affordanceStyle = flattenStyle(affordance!.props.style);
-        expect(affordanceStyle.position).toBe('absolute');
-        expect(affordanceStyle.borderWidth).toBe(0);
+        expect(screen.findByTestId('pendingMessages.pendingAffordance:p1')).toBeTruthy();
+        expect(screen.findByTestId('pendingMessages.pendingAffordanceLabel:p1')).toBeTruthy();
+    });
+
+    it('paints several queued updates from one worker as one counted notice without touching the queue', async () => {
+        const PendingMessagesTranscriptBlock = await loadPendingMessagesTranscriptBlock();
+        const { AppSessionTranscriptSourceProvider } = await import('@/components/sessions/transcript/source/appSessionTranscriptSource');
+        const followed = (id: string, createdAt: number, sourceSessionId: string): PendingMessage => ({
+            ...queuedMessage(id, createdAt),
+            pendingHostFollowInput: SessionFollowInputV1Schema.parse({
+                v: 1, delivery: 'next_turn',
+                original: { sourceSessionId, sourceTurn: { id: `turn-${id}`, status: 'completed' } },
+                event: { kind: 'finished' },
+            }),
+        });
+        const pendingMessages = [followed('a1', 1, 'worker-a'), followed('b1', 2, 'worker-b'), followed('a2', 3, 'worker-a'), followed('a3', 4, 'worker-a')];
+        const screen = await renderScreen(React.createElement(AppSessionTranscriptSourceProvider, { sessionId: 's1',
+            children: React.createElement(PendingMessagesTranscriptBlock, { sessionId: 's1', pendingMessages, discardedMessages: [] }) }));
+        expect(['a1', 'b1', 'a2', 'a3'].map((id) => screen.findAllByTestId(`pendingMessages.row:${id}`).length)).toEqual([1, 1, 0, 0]);
+        expect(screen.getTextContent()).toContain(t('sessionWork.workerUpdate.updateCount', { count: 3 }));
+        expect(screen.getTextContent()).not.toContain(t('sessionWork.workerUpdate.updateCount', { count: 4 }));
+        expect(renderedPendingOrder(screen)).toEqual(['a1', 'b1', 'a2', 'a3']);
     });
 
     it('exposes pending and discarded rows by their message-specific accessible names', async () => {
@@ -1131,6 +1151,7 @@ describe('PendingMessagesTranscriptBlock', () => {
             source: 'server_pending',
             pendingDeliveryStatus: 'blocked',
             pendingDeliveryBlockedReason,
+            pendingRecovery: { canSendAsNew: true },
         } as PendingMessage;
         const screen = await renderScreen(React.createElement(PendingMessagesTranscriptBlock, {
             sessionId: 's1',
@@ -1173,6 +1194,26 @@ describe('PendingMessagesTranscriptBlock', () => {
         expect(sessionAbort).not.toHaveBeenCalled();
     });
 
+    it.each([true, false])('uses projected Send as new eligibility on the uncertain row and its menu (%s)', async canSendAsNew => {
+        const PendingMessagesTranscriptBlock = await loadPendingMessagesTranscriptBlock();
+        const pendingMessage: PendingMessage = {
+            id: 'reply-custody', localId: 'reply-custody', text: 'uncertain original',
+            createdAt: 0, updatedAt: 0, rawRecord: {}, source: 'server_pending',
+            pendingDeliveryStatus: 'blocked', pendingDeliveryBlockedReason: 'delivery_outcome_uncertain',
+            pendingRecovery: { canSendAsNew },
+        };
+        const screen = await renderScreen(React.createElement(PendingMessagesTranscriptBlock, {
+            sessionId: 's1', serverId: 'home-a', pendingMessages: [pendingMessage], discardedMessages: [],
+        }));
+        await hoverPendingMessageRow(screen, pendingMessage.id);
+        expect(Boolean(screen.findByTestId('pendingMessages.sendAsNew:reply-custody'))).toBe(canSendAsNew);
+        expect(screen.findByTestId('pendingMessages.dismissDelivery:reply-custody')).toBeTruthy();
+        await screen.pressByTestIdAsync('pendingMessages.message:reply-custody');
+        const menuItems = screen.findAllByType('DropdownMenuItem');
+        expect(menuItems.some(item => item.props.testID === 'pendingMessages.sendAsNew:reply-custody')).toBe(canSendAsNew);
+        expect(menuItems.some(item => item.props.testID === 'pendingMessages.dismissDelivery:reply-custody')).toBe(true);
+    });
+
     it.each([undefined, { kind: 'execution_run' as const, runId: 'run-a' }])('dismisses or sends an uncertain delivery as a new identity without retrying the original (%j)', async recipient => {
         const PendingMessagesTranscriptBlock = await loadPendingMessagesTranscriptBlock();
         dismissPendingDelivery.mockResolvedValueOnce(undefined);
@@ -1181,6 +1222,7 @@ describe('PendingMessagesTranscriptBlock', () => {
             id: 'p1', localId: 'wire-local', recipient, text: 'uncertain delivery', displayText: undefined,
             createdAt: 0, updatedAt: 0, rawRecord: {}, source: 'server_pending',
             pendingDeliveryStatus: 'blocked', pendingDeliveryBlockedReason: 'delivery_outcome_uncertain',
+            pendingRecovery: { canSendAsNew: true },
         } as PendingMessage;
 
         const dismissScreen = await renderScreen(React.createElement(PendingMessagesTranscriptBlock, {
@@ -1324,6 +1366,7 @@ describe('PendingMessagesTranscriptBlock', () => {
             rawRecord: {},
             source: 'server_pending',
             pendingDeliveryStatus: 'server_delivering',
+            pendingRecovery: { canSendAsNew: true },
         } as PendingMessage;
         const screen = await renderScreen(React.createElement(PendingMessagesTranscriptBlock, {
             sessionId: 's1',

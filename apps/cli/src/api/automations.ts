@@ -2,8 +2,8 @@ import axios from 'axios';
 import type { ExternalActionExecutionAuthorizationV1 } from '@happier-dev/protocol/actions/externalActionApi';
 import { WorkflowHttpErrorDetailsV1Schema } from '@happier-dev/protocol/workflows/workflowProgressV1';
 import { normalizeWorkflowActionThrownError } from '@happier-dev/protocol/actions/executor/workflowAccountActions';
-import { AutomationDefinitionListRequestSchema, AutomationDefinitionListResponseSchema, AutomationDefinitionDetailSchema, AutomationDefinitionCreateRequestSchema, AutomationDefinitionReconcileRequestSchema, AutomationDeleteResponseSchema, AutomationV3RunMutationResponseSchema, type AutomationV3RunMutationResponse, type AutomationDeleteResponse } from '@happier-dev/protocol/automations/automationApiV3';
-import type { AutomationDefinitionListResponse, AutomationDefinitionListRequest, AutomationDefinitionDetail, AutomationDefinitionCreateRequest, AutomationDefinitionReconcileRequest } from '@happier-dev/protocol';
+import { AutomationDefinitionListRequestSchema, AutomationDefinitionListResponseSchema, AutomationDefinitionDetailSchema, AutomationDefinitionCreateRequestSchema, AutomationDefinitionPatchRequestSchema, AutomationDefinitionReconcileRequestSchema, AutomationDeleteResponseSchema, AutomationV3RunMutationResponseSchema, type AutomationV3RunMutationResponse, type AutomationDeleteResponse } from '@happier-dev/protocol/automations/automationApiV3';
+import type { AutomationDefinitionListResponse, AutomationDefinitionListRequest, AutomationDefinitionDetail, AutomationDefinitionCreateRequest, AutomationDefinitionPatchRequest, AutomationDefinitionReconcileRequest } from '@happier-dev/protocol';
 
 import {
   createAuthenticationHttpStatusError,
@@ -48,6 +48,7 @@ function automationHttpError(status: number, body: unknown) {
 
 export async function listAutomationDefinitions(params: Readonly<Partial<AutomationDefinitionListRequest> & {
   token: string;
+  signal?: AbortSignal;
 }>): Promise<AutomationDefinitionListResponse> {
   const query = AutomationDefinitionListRequestSchema.parse({
     ...(params.limit === undefined ? {} : { limit: params.limit }),
@@ -55,6 +56,9 @@ export async function listAutomationDefinitions(params: Readonly<Partial<Automat
     ...(params.workflowDefinitionId === undefined ? {} : { workflowDefinitionId: params.workflowDefinitionId }),
     ...(params.scopeSessionId === undefined ? {} : { scopeSessionId: params.scopeSessionId }),
     ...(params.scope === undefined ? {} : { scope: params.scope }),
+    ...(params.managedTarget === undefined ? {} : { managedTarget: params.managedTarget }),
+    ...(params.includeUnindexedManagedTargets === undefined ? {} : { includeUnindexedManagedTargets: params.includeUnindexedManagedTargets }),
+    ...(params.managedTargetUnindexed === undefined ? {} : { managedTargetUnindexed: params.managedTargetUnindexed }),
   });
   const search = new URLSearchParams({ limit: String(query.limit) });
   if (query.cursor) search.set('cursor', query.cursor);
@@ -63,11 +67,7 @@ export async function listAutomationDefinitions(params: Readonly<Partial<Automat
   if (query.scope) search.set('scope', query.scope);
   const response = await axios.get(
     `${resolveServerHttpBaseUrl()}/v3/automations?${search.toString()}`,
-    {
-      headers: { Authorization: `Bearer ${params.token}` },
-      timeout: AUTOMATION_HTTP_TIMEOUT_MS,
-      validateStatus: () => true,
-    },
+    options,
   );
 
   if (response.status < 200 || response.status >= 300) {
@@ -126,7 +126,7 @@ export async function runAutomationNowReceipt(params: Readonly<{
 
 /** Account trigger writes use the current Automation owner, never a daemon-private store. */
 async function requestAutomationDefinition(params: Readonly<{
-  token: string; method: 'GET' | 'POST' | 'PUT' | 'DELETE'; automationId?: string; body?: unknown;
+  token: string; method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; automationId?: string; body?: unknown; signal?: AbortSignal;
 }>): Promise<unknown | null> {
   const response = await axios.request({
     method: params.method,
@@ -134,6 +134,7 @@ async function requestAutomationDefinition(params: Readonly<{
     headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), Authorization: `Bearer ${params.token}`,
       ...(params.body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     ...(params.body === undefined ? {} : { data: params.body }), timeout: AUTOMATION_HTTP_TIMEOUT_MS, validateStatus: () => true,
+    ...(params.signal === undefined ? {} : { signal: params.signal }),
   }).catch((cause: unknown) => {
     if (params.method === 'GET') throw cause;
     return unresolvedMutationReceipt(cause);
@@ -146,7 +147,7 @@ async function requestAutomationDefinition(params: Readonly<{
   return response.data;
 }
 
-export async function getAutomationDefinition(params: Readonly<{ token: string; automationId: string }>): Promise<AutomationDefinitionDetail | null> {
+export async function getAutomationDefinition(params: Readonly<{ token: string; automationId: string; signal?: AbortSignal }>): Promise<AutomationDefinitionDetail | null> {
   const raw = await requestAutomationDefinition({ ...params, method: 'GET' });
   return raw === null ? null : AutomationDefinitionDetailSchema.parse(raw);
 }
@@ -154,9 +155,14 @@ export async function createAutomationDefinition(params: Readonly<{ token: strin
   return parseMutationReceipt(await requestAutomationDefinition({ token: params.token,
     method: 'POST', body: AutomationDefinitionCreateRequestSchema.parse(params.input) }), raw => AutomationDefinitionDetailSchema.parse(raw));
 }
-export async function reconcileAutomationDefinition(params: Readonly<{ token: string; automationId: string; input: AutomationDefinitionReconcileRequest }>): Promise<AutomationDefinitionDetail> {
+/** Recipe-only backfill patches leave concurrently edited definition metadata with its current owner. */
+export async function updateAutomationDefinition(params: Readonly<{ token: string; automationId: string; input: AutomationDefinitionPatchRequest; signal?: AbortSignal }>): Promise<AutomationDefinitionDetail> {
   return parseMutationReceipt(await requestAutomationDefinition({ token: params.token, automationId: params.automationId,
-    method: 'PUT', body: AutomationDefinitionReconcileRequestSchema.parse(params.input) }), raw => AutomationDefinitionDetailSchema.parse(raw));
+    signal: params.signal, method: 'PATCH', body: AutomationDefinitionPatchRequestSchema.parse(params.input) }), raw => AutomationDefinitionDetailSchema.parse(raw));
+}
+export async function reconcileAutomationDefinition(params: Readonly<{ token: string; automationId: string; input: AutomationDefinitionReconcileRequest; signal?: AbortSignal }>): Promise<AutomationDefinitionDetail> {
+  return parseMutationReceipt(await requestAutomationDefinition({ token: params.token, automationId: params.automationId,
+    signal: params.signal, method: 'PUT', body: AutomationDefinitionReconcileRequestSchema.parse(params.input) }), raw => AutomationDefinitionDetailSchema.parse(raw));
 }
 export async function deleteAutomationDefinition(params: Readonly<{ token: string; automationId: string }>): Promise<AutomationDeleteResponse> {
   return parseMutationReceipt(await requestAutomationDefinition({ ...params, method: 'DELETE' }), raw => AutomationDeleteResponseSchema.parse(raw));

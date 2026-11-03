@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 import { MACHINE_RPC_TIMEOUT_ERROR_CODE } from '@happier-dev/protocol/rpcErrors';
+import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
+import { clearMachineRequestReachabilityForMachine } from '@/sync/domains/machines/reachability/machineReachability';
 import type { MachineVitalsSampleV1 } from '@happier-dev/protocol/machines/vitals/machineVitalsSampleV1';
 import type { MachineVitalsHistoryV1 } from '@happier-dev/protocol/machines/vitals/machineVitalsHistoryV1';
 import type {
@@ -110,6 +112,28 @@ describe('machine resources subscription owner', () => {
     vi.useRealTimers();
   });
 
+  it('reads a fresh sample on its Home reconnect without waiting for the held watch or looping on request success', async () => {
+    const h = harness(() => 75_000);
+    const release = h.store.demand(key);
+    try {
+      await settle();
+      expect(h.watches).toHaveLength(1);
+      h.snapshotClient.mockResolvedValue({ ok: true, value: snapshot(75_000) });
+      publishHomeAccountChange('unrelated-home', undefined, { source: 'connected' });
+      await settle();
+      expect(h.snapshotClient).toHaveBeenCalledTimes(1);
+      publishHomeAccountChange(key.serverId, undefined, { source: 'connected' });
+      await settle();
+      expect(h.store.getState(key).snapshot?.sample?.sampledAt).toBe(75_000);
+      expect(h.snapshotClient).toHaveBeenCalledTimes(2);
+      expect(h.watches).toHaveLength(1);
+      clearMachineRequestReachabilityForMachine({ serverId: key.serverId, accountId: 'account-a' }, key.machineId);
+      await settle();
+      expect(h.snapshotClient).toHaveBeenCalledTimes(2);
+      expect(h.watches).toHaveLength(1);
+    } finally { release(); h.store.reset(); }
+  });
+
   it('keeps cached summaries while one revalidation serves returning consumers', async () => {
     const h = harness();
     const first = h.store.demand(key);
@@ -163,6 +187,7 @@ describe('machine resources subscription owner', () => {
       await settle();
     }
     const elapsedMs = performance.now() - start;
+    console.info('FX87 retained-hour / 30 live publications', { elapsedMs, historicalBodyReads });
     const current = h.store.getState(key);
     expect(current.snapshot?.sample?.sampledAt).toBe(3_718_000);
     expect(current.samples[0]).toBe(held.samples[29]);

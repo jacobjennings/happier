@@ -68,7 +68,7 @@ async function mount(options: Readonly<{ params?: React.ComponentProps<typeof Gu
     transport.rpc.mockImplementation(async ({ method, payload }: { method: string; payload: Record<string, unknown> }) => {
         const answer = options.rpc?.(method, payload);
         if (answer !== undefined) return answer;
-        if (method === RPC_METHODS.DAEMON_GUARD_WATCH) return new Promise(() => {});
+        if (method === RPC_METHODS.DAEMON_GUARD_WATCH || method === RPC_METHODS.DAEMON_GUARD_ACTIVITY_WATCH) return new Promise(() => {});
         if (method === RPC_METHODS.MACHINES_GUARD_GET) return guardAnswer.current;
         if (method === RPC_METHODS.MACHINES_GUARD_ACTIVITY_LIST) return { entries: [], counts: { stopped: 0, cleanedUp: 0, needsLook: 0, others: 0 }, asOf: Date.now() };
         throw new Error(`unexpected ${method}`);
@@ -156,8 +156,12 @@ describe('GuardTab', () => {
             return { status: 'conflict', policy: MachineResourcesPolicyV1Schema.parse({ v: 1 }), revision: writes.length + 1 };
         } });
         await act(async () => { await vi.waitFor(() => expect(screen.findByTestId('machine-guard-tool-idle-select')).not.toBeNull()); });
-        const prompt = vi.spyOn(Modal, 'prompt').mockResolvedValueOnce('1001 ms').mockResolvedValueOnce('12');
+        const prompt = vi.spyOn(Modal, 'prompt').mockResolvedValueOnce('5000').mockResolvedValueOnce('1.001 s').mockResolvedValueOnce('12');
+        const alert = vi.spyOn(Modal, 'alert').mockImplementation(() => {});
         try {
+            await act(async () => { policyControl(screen, 'machine-guard-tool-idle-select').props.onSelect('custom'); });
+            await act(async () => { await vi.waitFor(() => expect(alert).toHaveBeenCalled()); });
+            expect(writes).toHaveLength(0);
             await act(async () => { policyControl(screen, 'machine-guard-tool-idle-select').props.onSelect('custom'); });
             await act(async () => { await vi.waitFor(() => expect(writes).toHaveLength(1)); });
             expect(writes[0]).toEqual({ processes: { toolIdleCloseMs: 1001 } });
@@ -166,7 +170,7 @@ describe('GuardTab', () => {
             await act(async () => { policyControl(screen, 'machine-guard-browser-limit-select').props.onSelect('custom'); });
             await act(async () => { await vi.waitFor(() => expect(writes).toHaveLength(2)); });
             expect(writes[1]).toEqual({ processes: { browserMaxConcurrent: 12 } });
-        } finally { prompt.mockRestore(); }
+        } finally { prompt.mockRestore(); alert.mockRestore(); }
     });
     it('saves tool idle close and browser concurrency through the sole resources policy Action', async () => {
         const writes: unknown[] = [];

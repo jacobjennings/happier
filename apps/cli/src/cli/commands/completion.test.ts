@@ -6,11 +6,11 @@ import { handleCompletionCliCommand } from './completion';
 
 describe('completion command', () => {
   it.each([
-    ['bash', 'complete -F _happier_completion happier'],
-    ['zsh', 'compdef _happier_completion happier'],
-    ['fish', 'complete -c happier'],
-    ['powershell', 'Register-ArgumentCompleter -Native -CommandName happier'],
-  ] as const)('emits a pure %s completion script', async (shell, marker) => {
+    ['bash', 'complete -F _happier_completion happier', /2>\/dev\/null/u],
+    ['zsh', 'compdef _happier_completion happier', /2>\/dev\/null/u],
+    ['fish', 'complete -c happier', /2>\/dev\/null/u],
+    ['powershell', 'Register-ArgumentCompleter -Native -CommandName happier', /2>\$null/u],
+  ] as const)('emits a pure %s completion script that keeps completion failures quiet', async (shell, marker, quietStderrRedirect) => {
     const output = captureStdout();
     try {
       await handleCompletionCliCommand({
@@ -20,6 +20,7 @@ describe('completion command', () => {
       expect(output.text()).toContain(marker);
       expect(output.text()).not.toContain('node ');
       expect(output.text()).not.toContain('npm ');
+      expect(output.text()).toMatch(quietStderrRedirect);
     } finally {
       output.restore();
     }
@@ -66,18 +67,6 @@ describe('completion command', () => {
       expect(output.text()).toContain('$element.Value');
       expect(output.text()).not.toContain('ForEach-Object { $_.Extent.Text }');
       expect(output.text()).not.toContain('Where-Object');
-    } finally {
-      output.restore();
-    }
-  });
-
-  it.each(['bash', 'zsh', 'fish', 'powershell'] as const)('keeps %s completion failures quiet', async (shell) => {
-    const output = captureStdout();
-    try {
-      await handleCompletionCliCommand({
-        args: ['completion', shell], rawArgv: ['happier', 'completion', shell], terminalRuntime: null,
-      });
-      expect(output.text()).toMatch(shell === 'powershell' ? /2>\$null/u : /2>\/dev\/null/u);
     } finally {
       output.restore();
     }

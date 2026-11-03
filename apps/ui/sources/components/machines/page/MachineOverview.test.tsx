@@ -2,6 +2,7 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createMachineFixture, renderHook, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 import { createHomeGovernanceHarness, installHomeGovernanceBoundaries } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { installDisconnectedServerSocketBoundary, restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import type { MachinePageState } from './machinePageContext';
@@ -73,8 +74,8 @@ it('shares the Account-qualified Overview sample and retries the same retained r
         managedEnrolled: useManagedEnrolledMachine({ enrolledMachineId: machine.id, serverId }) }));
     await vi.waitFor(() => expect(authority.getCurrent().binding?.isCurrent()).toBe(true));
     const key = { serverId, expectedAccountId: 'owner', machineId: machine.id, view: 'overview' as const };
-    const sampledAt = Date.now();
-    const snapshot = { state: 'reporting', sample: { v: 1, sampledAt, intervalMs: 15_000,
+    let sampledAt = Date.now() - 60_000;
+    let snapshot = { state: 'reporting', sample: { v: 1, sampledAt, intervalMs: 15_000,
         cpu: { reported: true, busyPct: 12 },
         memory: { reported: true, totalBytes: 128e9, availableBytes: 71e9, usedBytes: 57e9, pressure: { level: 'calm', source: 'psi' } },
         disk: { reported: true, volumes: [] }, network: { reported: true, rxBps: 12, txBps: 3 } },
@@ -88,8 +89,18 @@ it('shares the Account-qualified Overview sample and retries the same retained r
     const screen = await renderScreen(<MachinePageStateContext.Provider value={state}>
         <MachineVitalsBarAccessory serverId={serverId} machineId={machine.id} online />
     </MachinePageStateContext.Provider>);
-    expect(screen.findByTestId('machine-vitals-live')).not.toBeNull();
+    expect(screen.findByTestId('machine-vitals-retry')).not.toBeNull();
     expect(screen.findByTestId('machine-vitals-range:1h')).not.toBeNull();
+    const pending = createDeferred<unknown>();
+    boundary.rpc.mockImplementation(() => pending.promise);
+    let refreshing!: Promise<void>;
+    await act(async () => { refreshing = machineResourceStore.retry(key); });
+    expect(screen.findByTestId('machine-vitals-checking')).not.toBeNull();
+    expect(screen.findByTestId('machine-vitals-retry')).toBeNull();
+    sampledAt = Date.now();
+    snapshot = { ...snapshot, sample: { ...snapshot.sample, sampledAt } };
+    await act(async () => { pending.resolve(snapshot); await refreshing; });
+    expect(screen.findByTestId('machine-vitals-live')).not.toBeNull();
     boundary.rpc.mockRejectedValue(new Error('transport unavailable'));
     await act(async () => { await machineResourceStore.retry(key); });
     expect(machineResourceStore.getState(key).snapshot?.sample?.sampledAt).toBe(sampledAt);

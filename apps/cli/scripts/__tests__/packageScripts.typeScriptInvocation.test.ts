@@ -83,7 +83,7 @@ describe('apps/cli package scripts', () => {
     // The CLI dist build inside prepack must not re-enter the shared build through a
     // package-manager lifecycle hook: that nested invocation carries no `--artifact`.
     for (const step of steps) {
-      const runScriptMatch = /^yarn\s+(?:-s\s+)?([\w:.-]+)$/u.exec(step);
+      const runScriptMatch = /^(?:pnpm|yarn)\s+(?:(?:-s|--silent)\s+)?(?:run\s+)?([\w:.-]+)$/u.exec(step);
       if (!runScriptMatch) continue;
       const hookName = `pre${runScriptMatch[1]!}`;
       expect(String(packageJson.scripts?.[hookName] ?? '')).not.toMatch(

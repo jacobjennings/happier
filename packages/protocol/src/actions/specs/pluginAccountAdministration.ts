@@ -11,6 +11,7 @@ const titles = {
 };
 export const PLUGIN_ACCOUNT_ADMINISTRATION_ACTION_SPECS = PLUGIN_ACCOUNT_ADMINISTRATION_ACTION_IDS.map((id): PreNormalizedActionSpec => ({
   id, title: titles[id], approval: { result: 'required' },
+  ...(id === 'plugins.account.hosting.remove' ? { irreversible: true as const } : {}),
   description: 'Use the answering app’s Account Availability selector, intent CAS, exact hosted artifact removal and device download cache owners.',
   safety: id === 'plugins.account.hosting.remove' ? 'danger' : 'safe',
   sideEffectClass: id === 'plugins.account.hosting.remove' ? 'danger' : 'write',

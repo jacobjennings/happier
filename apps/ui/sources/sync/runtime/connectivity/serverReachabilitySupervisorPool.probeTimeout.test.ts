@@ -39,106 +39,51 @@ describe('serverReachabilitySupervisorPool (slow successful probes)', () => {
     });
 
     afterEach(async () => {
-        process.env.EXPO_PUBLIC_HAPPIER_SERVER_REACHABILITY_PROBE_TIMEOUT_MS = previousProbeTimeout;
+        if (previousProbeTimeout === undefined) delete process.env.EXPO_PUBLIC_HAPPIER_SERVER_REACHABILITY_PROBE_TIMEOUT_MS;
+        else process.env.EXPO_PUBLIC_HAPPIER_SERVER_REACHABILITY_PROBE_TIMEOUT_MS = previousProbeTimeout;
         resetRuntimeFetch();
         await resetServerReachabilitySupervisors();
         vi.useRealTimers();
     });
 
-    it('keeps a slow /health probe pending until the Home answers', async () => {
+    it.each([
+        { name: 'tokenless /health', token: null, slowPath: '/health', fastPath: null },
+        { name: 'authenticated /v1/auth/ping', token: 'token', slowPath: '/v1/auth/ping', fastPath: '/health' },
+    ])('keeps a slow $name probe pending until the Home answers', async ({ token, slowPath, fastPath }) => {
+        const okJson = () => new Response('{"ok":true}', { status: 200, headers: { 'Content-Type': 'application/json' } });
         setRuntimeFetch((input, init) => {
             const url = String(input);
-            if (url.endsWith('/health')) {
-                return delayedResponse({
-                    ms: 20_000,
-                    response: new Response('{"ok":true}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
-                    signal: init?.signal ?? undefined,
-                });
+            if (url.endsWith(slowPath)) {
+                return delayedResponse({ ms: 20_000, response: okJson(), signal: init?.signal ?? undefined });
             }
+            if (fastPath && url.endsWith(fastPath)) return Promise.resolve(okJson());
             throw new Error(`Unexpected probe URL: ${url}`);
         });
 
         let lastPhase: string | null = null;
         const unsubscribe = subscribeServerReachabilityState('https://example.test', (state) => {
             lastPhase = state.phase;
-        });
+        }, token ?? undefined);
 
-        const startPromise = startServerReachabilitySupervisor({
-            serverUrl: 'https://example.test',
-            token: null,
-        });
+        const startPromise = startServerReachabilitySupervisor({ serverUrl: 'https://example.test', token });
         let reachable = false;
-        const wait = waitForServerReachable({ serverUrl: 'https://example.test', token: null })
+        const wait = waitForServerReachable({ serverUrl: 'https://example.test', token })
             .then(() => { reachable = true; });
         void wait.catch(() => {});
 
-        let assertionError: unknown = null;
         try {
             await vi.advanceTimersByTimeAsync(16_000);
-            try {
-                // The generic supervisor stays idle while its initial readiness
-                // probe is pending; neither idle nor connecting is an outage.
-                expect(['idle', 'connecting']).toContain(lastPhase);
-                expect(reachable).toBe(false);
-            } catch (error) {
-                assertionError = error;
-            }
+            // The generic supervisor stays idle while its initial readiness
+            // probe is pending; neither idle nor connecting is an outage.
+            expect(['idle', 'connecting']).toContain(lastPhase);
+            expect(reachable).toBe(false);
         } finally {
             await vi.advanceTimersByTimeAsync(4_000);
             await startPromise.catch(() => {});
             unsubscribe();
         }
 
-        if (assertionError) {
-            throw assertionError;
-        }
         await wait;
-        expect(lastPhase).toBe('online');
-    });
-
-    it('keeps a slow authenticated /v1/auth/ping probe pending until the Home answers', async () => {
-        setRuntimeFetch((input, init) => {
-            const url = String(input);
-            if (url.endsWith('/health')) {
-                return Promise.resolve(new Response('{"ok":true}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
-            }
-            if (url.endsWith('/v1/auth/ping')) {
-                return delayedResponse({
-                    ms: 20_000,
-                    response: new Response('{"ok":true}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
-                    signal: init?.signal ?? undefined,
-                });
-            }
-            throw new Error(`Unexpected probe URL: ${url}`);
-        });
-
-        let lastPhase: string | null = null;
-        const unsubscribe = subscribeServerReachabilityState('https://example.test', (state) => {
-            lastPhase = state.phase;
-        }, 'token');
-
-        const startPromise = startServerReachabilitySupervisor({
-            serverUrl: 'https://example.test',
-            token: 'token',
-        });
-
-        let assertionError: unknown = null;
-        try {
-            await vi.advanceTimersByTimeAsync(16_000);
-            try {
-                expect(['idle', 'connecting']).toContain(lastPhase);
-            } catch (error) {
-                assertionError = error;
-            }
-        } finally {
-            await vi.advanceTimersByTimeAsync(4_000);
-            await startPromise.catch(() => {});
-            unsubscribe();
-        }
-
-        if (assertionError) {
-            throw assertionError;
-        }
         expect(lastPhase).toBe('online');
     });
 });

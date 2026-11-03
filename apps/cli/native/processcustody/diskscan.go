@@ -1052,9 +1052,54 @@ func diskMembershipPathKey(path string) string {
 	}, path)
 }
 
+// Directory identities and single-link selected-file identities prove root
+// aliases (case variants, bind mounts). Multi-link file names remain distinct
+// link evidence. Only selected ancestors can change a root's physical spelling.
+func diskMeasureRootAliases(roots []string, metadata map[string]diskMetadata) map[string]string {
+	aliases := map[string]string{}
+	byIdentity := map[string]string{}
+	directoryRootsByPath := map[string][]string{}
+	for _, root := range roots {
+		meta, ok := metadata[root]
+		if !ok {
+			continue
+		}
+		aliases[root] = root
+		if meta.identity != "" && (meta.kind == "folder" || meta.kind == "package" || meta.kind == "file" && meta.nlink == 1) {
+			if canonical := byIdentity[meta.identity]; canonical != "" {
+				aliases[root] = canonical
+			} else {
+				byIdentity[meta.identity] = root
+			}
+		}
+		if meta.kind == "folder" || meta.kind == "package" {
+			key := diskMembershipPathKey(filepath.Clean(root))
+			directoryRootsByPath[key] = append(directoryRootsByPath[key], root)
+		}
+	}
+	for _, root := range roots {
+		// Prefer the nearest alias, retaining deterministic root order for case aliases.
+		for ancestor := filepath.Clean(root); ; ancestor = filepath.Dir(ancestor) {
+			matched := false
+			for _, selected := range directoryRootsByPath[diskMembershipPathKey(ancestor)] {
+				canonical := aliases[selected]
+				if canonical != "" && canonical != selected {
+					if relative, err := filepath.Rel(selected, root); err == nil {
+						aliases[root] = filepath.Join(canonical, relative)
+						matched = true
+					}
+				}
+			}
+			if matched || filepath.Dir(ancestor) == ancestor {
+				break
+			}
+		}
+	}
+	return aliases
+}
+
 func diskWalk(ctx context.Context, roots []string, lowPower bool, request diskScanRequest) (diskWalkResult, error) {
 	result := diskWalkResult{observations: map[string]*diskObservation{}, summary: diskEmptySummary(), incomplete: map[string]bool{}, direct: map[string]*diskDirectMeasure{}}
-	result.aliases = map[string]string{}
 	control := &diskControl{skipped: map[string]bool{}}
 	visited := map[string]map[string]bool{}
 	tasks := []diskTask{}
@@ -1165,36 +1210,7 @@ func diskWalk(ctx context.Context, roots []string, lowPower bool, request diskSc
 			linkCounts[diskAllocationKey(root, meta)] = meta.nlink
 		}
 	}
-	// Directory identities and single-link selected-file identities prove root
-	// aliases (case variants, bind mounts). Multi-link file names remain distinct
-	// link evidence. This map scales with selected roots, not ordinary files.
-	byIdentity := map[string]string{}
-	for _, root := range roots {
-		meta, ok := rootMetadata[root]
-		if !ok {
-			continue
-		}
-		result.aliases[root] = root
-		if meta.identity != "" && (meta.kind == "folder" || meta.kind == "package" || meta.kind == "file" && meta.nlink == 1) {
-			if canonical := byIdentity[meta.identity]; canonical != "" {
-				result.aliases[root] = canonical
-			} else {
-				byIdentity[meta.identity] = root
-			}
-		}
-	}
-	for _, root := range roots {
-		for _, ancestor := range roots {
-			meta := rootMetadata[ancestor]
-			canonical := result.aliases[ancestor]
-			if canonical != "" && canonical != ancestor && (meta.kind == "folder" || meta.kind == "package") && diskPathContains(ancestor, root) {
-				relative, err := filepath.Rel(ancestor, root)
-				if err == nil {
-					result.aliases[root] = filepath.Join(canonical, relative)
-				}
-			}
-		}
-	}
+	result.aliases = diskMeasureRootAliases(roots, rootMetadata)
 	for index, root := range roots {
 		physical := result.aliases[root]
 		if physical == "" {
@@ -1210,12 +1226,16 @@ func diskWalk(ctx context.Context, roots []string, lowPower bool, request diskSc
 			continue
 		}
 		covered := result.aliases[root] != root
-		for _, parent := range roots {
-			ancestor, ok := rootMetadata[parent]
-			if ok && parent != root && diskPathContains(result.aliases[parent], result.aliases[root]) && !diskPathContains(result.aliases[root], result.aliases[parent]) && (ancestor.kind == "folder" || ancestor.kind == "package") && !ancestor.cloudOnly && ancestor.device == meta.device {
-				covered = true
-				break
+		for child := result.aliases[root]; !covered && filepath.Dir(child) != child; {
+			parent := filepath.Dir(child)
+			for _, selected := range rootsByPhysicalPath[diskMembershipPathKey(parent)] {
+				ancestor := rootMetadata[selected]
+				if (ancestor.kind == "folder" || ancestor.kind == "package") && !ancestor.cloudOnly && ancestor.device == meta.device {
+					covered = true
+					break
+				}
 			}
+			child = parent
 		}
 		if covered {
 			continue

@@ -4,11 +4,51 @@ import test from 'node:test';
 
 import YAML from 'yaml';
 
+import { withoutV03GateSkip } from './testsWorkflowTestkit.mjs';
+
 const root = new URL('../../', import.meta.url);
 
 async function readWorkflow(path) {
   return readFile(new URL(path, root), 'utf8');
 }
+
+// Evaluates the small `==`/`&&`/`||` GitHub expression grammar the concurrency key uses.
+function evaluateWorkflowExpression(expression, context) {
+  const body = String(expression).replace(/^\$\{\{\s*|\s*\}\}$/gu, '')
+    .replace(/github\.(event_name|ref_name)/gu, (_, key) => JSON.stringify(context[key]))
+    .replaceAll('==', '===');
+  assert.match(body, /^[\s"'a-z0-9_./=|&()-]*$/iu, `unsupported concurrency expression: ${expression}`);
+  return Function(`return (${body});`)();
+}
+
+test('push runs keep their complete verdict; only superseded pull request runs stop', async () => {
+  const parsed = YAML.parse(await readWorkflow('.github/workflows/tests.yml'));
+  assert.equal(
+    parsed?.concurrency?.group,
+    'tests-${{ github.workflow }}-${{ github.ref }}',
+    'the reusable tests workflow must not share its caller concurrency group and cancel the caller',
+  );
+  const cancels = (event_name, ref_name) => evaluateWorkflowExpression(parsed.concurrency['cancel-in-progress'], { event_name, ref_name });
+
+  // Every exact-SHA push verdict consumer names its branch: nightly through
+  // --source-branch, release source validation through the dispatch's sourceRef.
+  const nightly = await readWorkflow('.github/workflows/nightly-dev.yml');
+  const dispatch = await readWorkflow('scripts/pipeline/release/validate-release-dispatch.mjs');
+  const consumed = new Set([
+    ...[...nightly.matchAll(/--source-branch (\w[\w.-]*)/gu)].map((match) => match[1]),
+    ...[...dispatch.matchAll(/sourceRef = '([^']+)'/gu)].map((match) => match[1]),
+  ]);
+  assert.deepEqual([...consumed].sort(), ['dev', 'preview']);
+  for (const branch of consumed) {
+    assert.equal(cancels('push', branch), false, `a later ${branch} push must not discard the consumed exact-SHA verdict`);
+  }
+  for (const branch of parsed.on.push.branches.filter((branch) => !consumed.has(branch))) {
+    assert.equal(cancels('push', branch), false, `${branch} push runs keep their complete verdict`);
+  }
+  assert.equal(cancels('push', 'v0.3'), false, 'v0.3 pushes arrive faster than a run lasts; cancelling would leave no completed verdict');
+  assert.equal(cancels('pull_request', '42/merge'), true);
+  assert.equal(cancels('workflow_dispatch', 'v0.3'), false, 'a focused manual dispatch is never cancelled by the push policy');
+});
 
 test('setup-package changes select the composed real-hsetup UI E2E suite', async () => {
   const workflow = YAML.parse(await readWorkflow('.github/workflows/tests.yml'));
@@ -41,16 +81,6 @@ test('reusable tests callers explicitly select jobs without inheriting caller ev
     default: false,
     type: 'boolean',
   });
-  assert.equal(
-    parsed?.concurrency?.group,
-    'tests-${{ github.workflow }}-${{ github.ref }}',
-    'the reusable tests workflow must not share its caller concurrency group and cancel the caller',
-  );
-  assert.equal(
-    parsed?.concurrency?.['cancel-in-progress'],
-    false,
-    'an active full collector must finish; GitHub may replace the single pending run, but a later push must not discard in-flight evidence',
-  );
 
   const defaultJobs = {
     'ui-e2e': 'run_ui_e2e',
@@ -76,8 +106,14 @@ test('reusable tests callers explicitly select jobs without inheriting caller ev
     const expected = job === 'ui'
       ? `\${{ always() && (!inputs.select_jobs_explicitly || inputs.${input}) }}`
       : `\${{ !inputs.select_jobs_explicitly || inputs.${input} }}`;
+    const condition = parsed?.jobs?.[job]?.if;
+    if (job === 'server-db-contract') {
+      // The DB contract also serves the v0.3 Gate when its selection requires it.
+      assert.ok(condition.includes(`(!inputs.select_jobs_explicitly || inputs.${input})`), condition);
+      continue;
+    }
     assert.equal(
-      parsed?.jobs?.[job]?.if,
+      withoutV03GateSkip(condition),
       expected,
       `${job} must obey the explicit reusable-workflow selection boundary`,
     );
@@ -96,7 +132,7 @@ test('reusable tests callers explicitly select jobs without inheriting caller ev
     ['providers', 'run_providers'],
   ]) {
     assert.equal(
-      parsed?.jobs?.[job]?.if,
+      withoutV03GateSkip(parsed?.jobs?.[job]?.if),
       `\${{ inputs.select_jobs_explicitly && inputs.${input} }}`,
       `${job} must honor explicit reusable inputs even when GitHub preserves the caller event`,
     );
@@ -119,7 +155,7 @@ test('reusable tests callers explicitly select jobs without inheriting caller ev
   }
 
   assert.equal(
-    parsed?.jobs?.stress?.if,
+    withoutV03GateSkip(parsed?.jobs?.stress?.if),
     '${{ inputs.run_stress }}',
     'scheduled reusable callers must be able to enable the stress job through its authoritative run flag',
   );
@@ -153,76 +189,6 @@ test('reusable tests callers explicitly select jobs without inheriting caller ev
   }
 });
 
-test('real workspace sync obeys the explicit reusable-workflow selection boundary', async () => {
-  const parsed = YAML.parse(await readWorkflow('.github/workflows/tests.yml'));
-  assert.equal(
-    parsed?.jobs?.['workspace-sync-real']?.if,
-    '${{ !inputs.select_jobs_explicitly || inputs.run_workspace_sync_real || inputs.run_workspace_sync_performance }}',
-  );
-});
-
-test('the existing Home Iroh real lane runs native, Chromium, and Docker relay journeys', async () => {
-  const parsed = YAML.parse(await readWorkflow('.github/workflows/tests.yml'));
-  const dispatch = YAML.parse(await readWorkflow('.github/workflows/tests-dispatch.yml'));
-  const uiPackage = JSON.parse(await readWorkflow('apps/ui/package.json'));
-  const irohPackage = JSON.parse(await readWorkflow('packages/iroh-native/package.json'));
-  const job = parsed?.jobs?.['home-iroh-real'];
-  assert.equal(job?.if, '${{ !inputs.select_jobs_explicitly || inputs.run_home_iroh_real }}');
-  assert.equal(job?.name, 'Iroh real transport (native + Chromium + Docker relay)');
-
-  const dispatchCall = Object.values(dispatch?.jobs ?? {}).find(
-    (candidate) => candidate?.uses === './.github/workflows/tests.yml',
-  );
-  assert.match(
-    dispatch?.on?.workflow_dispatch?.inputs?.custom_checks?.description ?? '',
-    /home_iroh_real/u,
-    'the existing manual dispatch must advertise the Home Iroh real selector',
-  );
-  assert.equal(
-    dispatchCall?.with?.run_home_iroh_real,
-    "${{ needs.resolve.outputs.run_home_iroh_real == 'true' }}",
-    'the existing manual dispatch selector must forward to the reusable Home Iroh real lane',
-  );
-  const resolveStep = dispatch?.jobs?.resolve?.steps?.find((step) => step?.id === 'flags');
-  assert.equal(
-    resolveStep?.run,
-    'node scripts/pipeline/checks/resolve-checks-plan.mjs --target hosted',
-    'manual dispatch must invoke the canonical hosted checks resolver',
-  );
-
-  const steps = job?.steps ?? [];
-  const nativeBuildStepIndex = steps.findIndex((step) => /test:home-iroh:real/u.test(step?.run ?? ''));
-  const ownerTestStepIndex = steps.findIndex((step) => /@happier-dev\/iroh-native test$/u.test(step?.run ?? ''));
-  assert.ok(nativeBuildStepIndex >= 0 && ownerTestStepIndex > nativeBuildStepIndex,
-    'Iroh owner tests must run after the real lane builds the native addon');
-  assert.equal(
-    steps[ownerTestStepIndex]?.env?.HAPPIER_IROH_REQUIRE_NODE_ADDON,
-    '1',
-    'Iroh owner tests must fail instead of skipping addon-backed lifecycle coverage',
-  );
-  assert.ok(
-    steps.some((step) => /playwright install --with-deps chromium/u.test(step?.run ?? '')),
-    'the existing lane must provision real Chromium',
-  );
-  assert.ok(
-    steps.some((step) => /proof:browser-iroh-real-verticals/u.test(step?.run ?? '')),
-    'the existing lane must invoke the combined browser completion command',
-  );
-  const dockerStepIndex = steps.findIndex((step) => /test:home-iroh:docker/u.test(step?.run ?? ''));
-  assert.ok(dockerStepIndex > nativeBuildStepIndex,
-    'the Docker relay journey must run after the native addon is built',
-  );
-  assert.match(
-    irohPackage?.scripts?.['test:home-iroh:docker'] ?? '',
-    /hstack-exec/u,
-    'the Docker relay journey must use the existing remote execution owner',
-  );
-  assert.equal(
-    uiPackage?.scripts?.['proof:browser-iroh-real-verticals'],
-    'node --test ./tools/iroh/browserMachineTransferJourney.test.mjs && node ./tools/iroh/runBrowserIrohSharedEndpointProof.mjs --real-home-vertical --machine-transfer-vertical',
-    'the real lane must run the Machine contract test before both completion verticals',
-  );
-});
 
 
 test('native Windows service tests run on ordinary source CI while installer certification keeps its release selection', async () => {

@@ -6,7 +6,8 @@ import { admitAgentStartV1, AgentStartSessionCallerV1Schema, type AgentStartFact
 import { SessionAgentSpawnPolicyV1StrictSchema } from '../../account/settings/sessionAgentSpawnPolicyV1.js';
 import { BackendTargetKeyV2Schema, PersistedBackendTargetRefV2Schema, buildBackendTargetKeyV2, parseBackendTargetKeyV2, type PersistedBackendTargetRefV2 } from '../../backends/targets/backendTargetRefV2.js';
 import { normalizeConnectedServiceSelectionInput } from '../../connect/normalizeConnectedServiceSelectionInput.js';
-import { resolveConnectedServiceBindingsForChild } from '../../connect/connectedServiceBindings.js';
+import { AgentStartBaselineSelectionErrorV1, resolveAgentStartBaselineSelectionV1 } from './agentStartBaselineSelectionV1.js';
+export { resolveAgentStartBaselineSelectionV1 } from './agentStartBaselineSelectionV1.js';
 import { ProviderBoundModelRefSchema, type ProviderBoundModelRef } from '../../providers/selection/v1.js';
 import { parseAgentPermissionIntentV1Alias } from '../../runtime/permissionIntentV1.js';
 import { AcpConfigOptionOverridesV1Schema } from '../../sessions/metadata/metadataOverridesV1.js';
@@ -19,6 +20,7 @@ import { SpawnConfigOptionValueSchema } from '../sessionSpawnConfigOptions.js';
 import { resolveExecutionBackendTargetSelectionForValue } from '../resolveActionBackendTargetSelection.js';
 import { TeamCredentialProviderModelSelectionV1Schema } from '../../teams/credentials/resourceV1.js';
 import { ExecutionRunIntentSchema } from '../../execution/runs/runPrimitives.js';
+import { projectExecutionRunChildChoiceV1, withExecutionRunStartFailureDetails } from '../../execution/runs/responseSchemas.js';
 import type { WorkflowResolvedStepSelectionV1 } from '../../workflows/workflowStepSelectionV1.js';
 import type { RoleEngineV1 } from '../../prompts/roles/roleArtifactV1.js';
 import { parseQualifiedPluginContributionKey } from '../../plugins/contributionIdentity.js';
@@ -112,8 +114,10 @@ export function projectActionWorkflowSelectionInputV1(
     for (const key of ['permissionMode', 'allowedTools', 'unlistedTools', 'connectedServices', 'capabilitySelection', 'transcriptStorage'] as const) {
         if (projected[key] === undefined && selected[key] !== undefined) projected[key] = selected[key];
     }
-    if (actionId === 'session.spawn_new' && projected.profileId === undefined && selected.profileId !== undefined)
-        projected.profileId = selected.profileId;
+    const profileField = actionId === 'session.spawn_new' ? 'profileId' : 'launchProfileId';
+    if (projected[profileField] === undefined && selected.profileId !== undefined
+        && (actionId === 'session.spawn_new' || selected.profileId !== null))
+        projected[profileField] = selected.profileId;
     if (projected.agentModeId === undefined && projected.acpSessionModeId === undefined && selected.acpSessionModeId !== undefined)
         projected.agentModeId = selected.acpSessionModeId;
     if (projected.modelSelection === undefined && projected.modelId === undefined && projected.teamCredentialModel === undefined
@@ -168,7 +172,7 @@ export function resolveActionAgentStartRequestsV1(params: Readonly<{
     knownRequests?: readonly AgentStartRequestV1[];
 }> {
     const { actionId, input: request, context, baseline } = params;
-    if (actionId === 'session.goal.set') {
+    if (actionId === 'session.goal.set' || actionId === 'session.goal.clear') {
         return { ok: true, effectiveInput: request,
             requests: [{ kind: 'session_target', targetSessionId: String(request.sessionId) }] };
     }
@@ -481,18 +485,31 @@ export function stampAgentStartSelectionV1(input: Readonly<Record<string, unknow
     const selected = stamped.roleId && stamped.engine
         ? projectAgentStartSelectionV1(input, { ...stamped, engine: stamped.engine }, kind, baseline)
         : input;
-    // Freeze an omitted Session-child choice at admission, before the launch
-    // owner considers Account defaults. An explicit empty/native selection wins.
-    const parent = baseline.configuration;
-    const target = readAgentStartTargetV1(selected.agentTarget);
-    if (kind !== 'spawn_new') return selected;
-    const connectedServices = resolveConnectedServiceBindingsForChild({
-        explicitSelection: selected.connectedServices,
-        resolvedTargetKey: target ? buildBackendTargetKeyV2(target) : undefined,
-        originTargetKey: parent?.agentTarget ? buildBackendTargetKeyV2(parent.agentTarget) : undefined,
-        originBindings: parent?.connectedServices,
-    });
-    return connectedServices === selected.connectedServices ? selected : { ...selected, connectedServices };
+    const target = readAgentStartTargetV1(kind === 'spawn_new' ? selected.agentTarget : selected.backendTarget);
+    const profileField = kind === 'spawn_new' ? 'profileId' : 'launchProfileId';
+    const machineId = kind === 'spawn_new' && selected.executionTarget && typeof selected.executionTarget === 'object'
+        && 'machineId' in selected.executionTarget ? selected.executionTarget.machineId : selected.machineId;
+    try {
+        const inherited = resolveAgentStartBaselineSelectionV1({
+            targetKey: target ? buildBackendTargetKeyV2(target) : undefined,
+            profileId: selected[profileField], connectedServices: selected.connectedServices,
+            connectedServicesDefaultServiceIds: selected.connectedServicesDefaultServiceIds,
+            modelSelection: selected.modelSelection, teamCredentialModel: selected.teamCredentialModel, childSelection: selected.childSelection,
+        }, machineId !== undefined && machineId !== baseline.machineId ? undefined : baseline.configuration);
+        return { ...selected,
+            ...(inherited.profileId !== undefined ? { [profileField]: inherited.profileId } : {}),
+            ...(inherited.connectedServices !== undefined ? { connectedServices: inherited.connectedServices } : {}),
+        };
+    } catch (error) {
+        if (error instanceof AgentStartBaselineSelectionErrorV1 && target) {
+            const parentModel = baseline.configuration?.modelSelection;
+            Object.assign(error, { details: withExecutionRunStartFailureDetails({ childChoice: projectExecutionRunChildChoiceV1({
+                agentTargetKey: buildBackendTargetKeyV2(target), parentRouteCompatibility: 'incompatible',
+                parentModelSelection: parentModel && 'ref' in parentModel ? parentModel.ref : parentModel ?? null,
+            }) }, 'noRunCreated') });
+        }
+        throw error;
+    }
 }
 export function projectAgentStartSelectionV1(input: Readonly<Record<string, unknown>>, selection: Readonly<{
     engine: RoleEngineV1;
@@ -508,11 +525,11 @@ export function projectAgentStartSelectionV1(input: Readonly<Record<string, unkn
     delete result.modelId;
     delete result.teamCredentialModel;
     delete result.teamCredentialSessionBindingConsent;
-    if (kind === 'spawn_new') {
+    if (kind === 'spawn_new' && stamped.profileId !== undefined) {
         delete result.profileId;
         delete result.profileSourceCustody;
     }
-    else {
+    else if (kind === 'execution_run' && stamped.profileId !== undefined) {
         delete result.launchProfileId;
     }
     if (kind === 'spawn_new') {

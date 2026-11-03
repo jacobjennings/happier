@@ -1,18 +1,20 @@
 /**
- * Lane G4 — `PlanSuccessRows` cell layout.
+ * Lane G4 — `PlanSuccessRows` row identity and column count.
  *
- * `PlanSuccessRows` uses no hooks, so it can be invoked as a plain function
- * and its returned element tree compared structurally. That is what lets the
- * single-column IDENTITY claim be an assertion rather than a promise: the
- * columns variant must not create a second rendering path for the layout
- * every existing consumer (and all of mobile) still uses.
+ * `PlanSuccessRows` uses no hooks, so it can be invoked as a plain function and
+ * its returned element tree read directly: that is the only place a visual
+ * row's React key is observable. The rendered layout itself — no column
+ * wrapper at one column, row-major cells, disabled options kept as cells, a
+ * trailing partial row — is proven through the public SelectionList by
+ * `SelectionList.columns.test.tsx`, `SelectionListCardRowGap.test.tsx`,
+ * `SelectionList.columnsWithExpandedContent.test.tsx` and
+ * `SelectionList.a11yPatternStability.test.tsx`.
  */
 
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { PlanSuccessRows, type RenderPlanRowsProps } from '../SelectionListOptionRow';
-import { SelectionListColumnRow } from '../SelectionListColumnRow';
 import type { SectionRenderPlan } from '../SelectionListRenderPlan';
 
 vi.mock('react-native', async () => {
@@ -51,49 +53,7 @@ function childrenOf(element: React.ReactElement): React.ReactElement[] {
     return React.Children.toArray(children) as React.ReactElement[];
 }
 
-describe('PlanSuccessRows — single column is the untouched path', () => {
-    it('returns an identical tree whether columnCount is 1 or omitted entirely', () => {
-        const props = makeProps();
-        expect(PlanSuccessRows({ ...props, columnCount: 1 }))
-            .toEqual(PlanSuccessRows(props));
-    });
-
-    it('returns an identical tree for columnCount 0 and negative values', () => {
-        const props = makeProps();
-        const baseline = PlanSuccessRows(props);
-        expect(PlanSuccessRows({ ...props, columnCount: 0 })).toEqual(baseline);
-        expect(PlanSuccessRows({ ...props, columnCount: -2 })).toEqual(baseline);
-    });
-
-    it('wraps nothing around the rows at a single column', () => {
-        const rows = childrenOf(PlanSuccessRows(makeProps()));
-        expect(rows).toHaveLength(5);
-        for (const row of rows) {
-            expect(row.type).not.toBe(SelectionListColumnRow);
-        }
-    });
-});
-
 describe('PlanSuccessRows — multi-column layout', () => {
-    it('groups options into visual rows of columnCount cells, row-major', () => {
-        const visualRows = childrenOf(PlanSuccessRows(makeProps({ columnCount: 2 })));
-        expect(visualRows).toHaveLength(3);
-        for (const visualRow of visualRows) {
-            expect(visualRow.type).toBe(SelectionListColumnRow);
-        }
-        const cellIdsPerRow = visualRows.map((visualRow) => (
-            (visualRow.props as { children: React.ReactElement[] }).children.map(
-                (cell) => (cell.props as { option: { id: string } }).option.id,
-            )
-        ));
-        // Row-major: 0 1 | 2 3 | 4. A column-major fill would produce 0 3 | 1 4 | 2.
-        expect(cellIdsPerRow).toEqual([
-            ['opt-0', 'opt-1'],
-            ['opt-2', 'opt-3'],
-            ['opt-4'],
-        ]);
-    });
-
     it('keys each visual row by its leading option so rows keep identity', () => {
         // Read the raw children array: `React.Children.toArray` rewrites keys
         // with its own prefix, which would hide the key we actually assign.
@@ -104,24 +64,6 @@ describe('PlanSuccessRows — multi-column layout', () => {
             'column-row:opt-2',
             'column-row:opt-4',
         ]);
-    });
-
-    it('keeps disabled options as cells rather than dropping them from the grid', () => {
-        const plan: SectionRenderPlan = {
-            id: 'models',
-            options: [
-                { id: 'a', label: 'A' },
-                { id: 'locked', label: 'Locked', disabled: true },
-                { id: 'c', label: 'C' },
-            ],
-        };
-        const visualRows = childrenOf(PlanSuccessRows(makeProps({ plan, columnCount: 2 })));
-        const renderedIds = visualRows.flatMap((visualRow) => (
-            (visualRow.props as { children: React.ReactElement[] }).children.map(
-                (cell) => (cell.props as { option: { id: string } }).option.id,
-            )
-        ));
-        expect(renderedIds).toEqual(['a', 'locked', 'c']);
     });
 
     it('carries three columns through when the layout resolved three', () => {

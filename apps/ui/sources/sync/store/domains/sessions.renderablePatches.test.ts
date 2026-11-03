@@ -208,7 +208,7 @@ describe('sessions domain: renderable patches', () => {
         expect(saveWarmCache).toHaveBeenCalledTimes(1);
 
         const baseline = { ...(get().sessionListRowsByServerId.server_1 ?? {}) };
-        domain.reconcileSessionListRowsForServerScope('server_1', [], baseline);
+        domain.reconcileSessionListRowsForServerScope('server_1', [], baseline, {});
         expect(get().sessionListRenderableDelta).toEqual(expect.objectContaining({
             changedSessionIds: [],
             removedSessionIds: ['s1'],

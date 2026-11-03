@@ -276,6 +276,11 @@ export const VoiceAnnouncer = React.memo(function VoiceAnnouncer(): React.ReactE
 
     const stateAnnouncements = React.useMemo<readonly VoiceStateAnnouncement[]>(() => [
         {
+            id: 'session-attention',
+            transitionKey: `voice-session-attention:${control.statusCell ?? 'none'}`,
+            text: control.statusCell === 'working' || control.statusCell === 'needs_you' ? control.statusWord : null,
+        },
+        {
             id: 'microphone',
             transitionKey: `voice-microphone:${control.muted ? 'muted' : control.capturing ? 'active' : 'inactive'}`,
             text: control.micStateLabel,
@@ -288,6 +293,8 @@ export const VoiceAnnouncer = React.memo(function VoiceAnnouncer(): React.ReactE
             text: control.recoveryAvailable ? control.recoveryLabel : null,
         },
     ], [
+        control.statusCell,
+        control.statusWord,
         control.capturing,
         control.micStateLabel,
         control.muted,
@@ -298,7 +305,7 @@ export const VoiceAnnouncer = React.memo(function VoiceAnnouncer(): React.ReactE
         <VoiceAnnouncerSurface
             announcementScopeKey={announcementScopeKey}
             statusAnnouncement={control.statusLabel}
-            statusTransitionKey={`voice-status:${control.surfaceState}:${control.statusCell ?? 'none'}`}
+            statusTransitionKey={`voice-status:${control.surfaceState}`}
             stateAnnouncements={stateAnnouncements}
             transcriptEntries={visibleTranscriptEntries}
         />

@@ -4,8 +4,8 @@ import { createIrohHomeTunnelSupervisor } from './supervisor';
 import type { IrohHomeTunnelRequest } from './types';
 import { readIrohHomeTransportDiagnostics } from '@/sync/runtime/irohHomeTransportDiagnostics';
 
-function homeIdentity(scope: string, index: number): string {
-    return `srv_${scope}_${String(index).padStart(3, '0')}`;
+function homeIdentity(scope: string, index: number | string): string {
+    return `srv_${scope}_${typeof index === 'number' ? String(index).padStart(3, '0') : index}`;
 }
 
 function readScopeDiagnostics(scope: string) {
@@ -58,25 +58,13 @@ describe('Iroh Home transport diagnostics retention', () => {
         vi.restoreAllMocks();
     });
 
-    it('retains diagnostics for every Home holding an active lease, past the inactive history bound', async () => {
+    it('retains inactive Home history without an arbitrary eviction bound and never evicts a Home holding an active lease', async () => {
         const supervisor = createSupervisorUnderTest();
-        const scope = 'active';
+        const scope = 'retention';
         const activeHomes = 70;
         for (let index = 0; index < activeHomes; index += 1) {
-            await supervisor.ensureTunnel(makeRequest(homeIdentity(scope, index)));
+            await supervisor.ensureTunnel(makeRequest(homeIdentity(scope, `active${index}`)));
         }
-
-        const diagnostics = readScopeDiagnostics(scope);
-        expect(diagnostics).toHaveLength(activeHomes);
-        // The first (oldest transition) Home still holds a live lease and must
-        // never be evicted to make room for a newer one.
-        expect(diagnostics.map((entry) => entry.homeServerIdentityId)).toContain(homeIdentity(scope, 0));
-        expect(diagnostics.every((entry) => entry.state === 'connected')).toBe(true);
-    });
-
-    it('retains inactive Home history without an arbitrary eviction bound', async () => {
-        const supervisor = createSupervisorUnderTest();
-        const scope = 'inactive';
         const releasedHomes = 80;
         for (let index = 0; index < releasedHomes; index += 1) {
             const lease = await supervisor.ensureTunnel(makeRequest(homeIdentity(scope, index)));
@@ -85,19 +73,31 @@ describe('Iroh Home transport diagnostics retention', () => {
 
         const diagnostics = readScopeDiagnostics(scope);
         // Diagnostics are a technical projection, not a product quota. Keep
-        // every released Home until its owner is replaced, rather than silently
-        // evicting valid support data at an invented count.
-        expect(diagnostics.length).toBe(releasedHomes);
+        // every Home until its owner is replaced, rather than silently
+        // evicting valid support data at an invented count; the oldest-transition
+        // Homes still hold live leases and are never evicted for newer ones.
+        expect(diagnostics.length).toBe(activeHomes + releasedHomes);
         const retained = diagnostics.map((entry) => entry.homeServerIdentityId);
         expect(retained).toContain(homeIdentity(scope, releasedHomes - 1));
         expect(retained).toContain(homeIdentity(scope, 0));
+        const active = diagnostics.filter((entry) => entry.homeServerIdentityId.includes('active'));
+        expect(active).toHaveLength(activeHomes);
+        expect(active.every((entry) => entry.state === 'connected')).toBe(true);
     });
 
     it('ages a Home fact through the existing release lifecycle and keeps its proven last-known path', async () => {
         const supervisor = createSupervisorUnderTest();
         const scope = 'release';
-        const lease = await supervisor.ensureTunnel(makeRequest(homeIdentity(scope, 1)));
-        expect(readScopeDiagnostics(scope)[0]?.state).toBe('connected');
+        const lease = await supervisor.ensureTunnel({
+            ...makeRequest(homeIdentity(scope, 1)),
+            relayUrls: ['https://relay.example.test'],
+        });
+        expect(readScopeDiagnostics(scope)[0]).toMatchObject({
+            state: 'connected',
+            remoteEndpointId: `endpoint-${homeIdentity(scope, 1)}`,
+            effectiveConfiguration: { policy: 'automatic', relayUrls: ['https://relay.example.test'] },
+            current: { carrier: 'iroh' },
+        });
 
         await supervisor.releaseTunnel(lease.leaseId);
 

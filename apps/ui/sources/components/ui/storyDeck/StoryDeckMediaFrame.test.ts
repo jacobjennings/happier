@@ -9,6 +9,7 @@ describe('clampMediaSize', () => {
 
     it('uses the full available width by default', () => {
         expect(clampMediaSize(2000)).toBe(2000 - 60);
+        expect(clampMediaSize(360)).toBe(360 - 60);
     });
 
     it('supports an explicit maximum cap when needed', () => {
@@ -19,11 +20,7 @@ describe('clampMediaSize', () => {
         expect(clampMediaSize(370, 370, 0)).toBe(370);
     });
 
-    it('uses the container width when within range', () => {
-        expect(clampMediaSize(360)).toBe(360 - 60);
-    });
-
-    it('never returns a negative size', () => {
-        expect(clampMediaSize(0)).toBeGreaterThan(0);
+    it('never returns a negative size when the cap is narrower than the padding', () => {
+        expect(clampMediaSize(0, 40)).toBe(0);
     });
 });

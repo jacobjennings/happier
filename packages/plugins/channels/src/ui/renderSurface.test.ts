@@ -879,11 +879,11 @@ async function expectBindingCreateStage(
     hasBack: boolean;
   }>,
 ): Promise<void> {
-  const announcement = document.querySelector<HTMLElement>('[data-testid="channels-binding-create-stage"]');
-  expect(announcement, 'Expected the current binding-create step to be announced.').not.toBeNull();
-  expect(announcement?.getAttribute('role')).toBe('status');
-  expect(announcement?.getAttribute('aria-live')).toBe('polite');
-  expect(announcement?.textContent).toContain(`Current step: ${input.title}`);
+  // The step is named once, by its heading; no second "Current step" line repeats it.
+  await expect(fixture.getByRole('heading', { name: input.title })).resolves.toBeDefined();
+  expect(document.body.textContent).not.toContain('Current step');
+  const actions = document.querySelector<HTMLElement>('[data-testid="channels-binding-create-step-actions"]');
+  expect(actions, 'Expected one action row for the step.').not.toBeNull();
 
   await expect(fixture.getByRole('button', { name: 'Cancel' })).resolves.toBeDefined();
   if (input.hasBack) {
@@ -1170,6 +1170,35 @@ function createOfflineChannelStateFixture() {
 }
 
 describe('Channels mounted provider setup recovery', () => {
+  it('names an installed provider by its admitted descriptor in the setup picker', async () => {
+    const surfaceContext = createChannelsSurfaceContext();
+    Object.assign(surfaceContext.targetedContributions!.points[0]!.protocols[0]!.contributions[0]!, {
+      descriptor: { v: 1, displayName: 'Comet Chat' },
+    });
+    const fixture = await createPluginUiTestkit({
+      identity: { instanceId: 'provider-name-instance', mountNonce: 'provider-name-mount' },
+      authorPlugin: { id: 'happier.channels', version: '0.0.0' },
+      surface: renderSurface,
+      surfaceContext,
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => ({ kind: 'cancelled' as const }),
+        readResource: bindingResourceReader(),
+      },
+    });
+    try {
+      const picker = document.querySelector('[data-testid="channels-provider-setup-picker"]');
+      expect(picker?.textContent).toContain('Comet Chat');
+      await expect(fixture.getByRole('button', { name: 'Set up Comet Chat' })).resolves.toBeDefined();
+      await vi.waitFor(() => {
+        const connection = document.querySelector('[data-testid="channels-connection-connection-1"]');
+        expect(connection?.textContent).toContain('Comet Chat');
+      });
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   it.each(['empty provider snapshot', 'Account presentation without an occurrence'] as const)(
     'offers a next step instead of an empty surface with %s', async (scope) => {
     // A fresh Account, or a machine with no conversation integration enabled,
@@ -6319,7 +6348,7 @@ describe('Channels thread router conversation', () => {
     'session-thread-2': {
       sessionId: 'session-thread-2', title: 'Rendez-vous showroom Morges',
       lifecycle: 'active', runtime: 'working', operational: 'working', pendingPermissions: [],
-      workStatus: { bucket: 'needs_you', tone: 'attention', word: 'Needs you' },
+      workStatus: { state: 'action_required', bucket: 'needs_you', tone: 'attention', attentionType: 'decision', word: 'Needs you' },
     },
   };
 
@@ -6492,14 +6521,14 @@ describe('Channels thread router conversation', () => {
       ],
     }, 'c');
     const base = { lifecycle: 'active' as const, runtime: 'idle' as const, operational: 'none' as const, pendingPermissions: [] };
-    const idle = { bucket: 'idle' as const, tone: 'neutral' as const, word: 'Idle' };
+    const idle = { state: 'waiting', bucket: 'idle' as const, tone: 'neutral' as const, attentionType: null, word: 'Idle' };
     const sessions: Readonly<Record<string, SessionStateV1>> = {
       [longId('session-old')]: { ...base, sessionId: longId('session-old'), workStatus: idle, hasUnreadMessages: false,
         latestActivity: { kind: 'ready', text: 'Pièce jointe reçue', createdAt: replyAt(8) } },
       [longId('session-new')]: { ...base, sessionId: longId('session-new'), workStatus: idle, hasUnreadMessages: true,
         latestActivity: { kind: 'ready', text: 'Le devis est prêt', createdAt: replyAt(11) } },
       [longId('session-working')]: { ...base, sessionId: longId('session-working'), runtime: 'working', operational: 'working',
-        workStatus: { bucket: 'working', tone: 'neutral', word: 'Working' }, hasUnreadMessages: false,
+        workStatus: { state: 'thinking', bucket: 'working', tone: 'neutral', attentionType: null, word: 'Working' }, hasUnreadMessages: false,
         latestActivity: { kind: 'ready', text: 'Je regarde le planning', createdAt: replyAt(10) } },
     };
     const readReply = ConversationBindingReadResultV1Schema.parse({ kind: 'ready', revision: 1, binding: routerBinding });
@@ -7050,7 +7079,8 @@ describe('Channels connection policy editing across a source change', () => {
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
-      adapter: createChannelsSemanticAdapter(),
+      // The observation-age field opens its choices through the host popover, which the testkit draws only with overlays.
+      adapter: createChannelsSemanticAdapter(emptyDataClient, undefined, { overlays: true }),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
         executeAction,
@@ -7127,7 +7157,8 @@ describe('Channels connection policy editing across a source change', () => {
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
-      adapter: createChannelsSemanticAdapter(),
+      // The observation-age field opens its choices through the host popover, which the testkit draws only with overlays.
+      adapter: createChannelsSemanticAdapter(emptyDataClient, undefined, { overlays: true }),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
         executeAction,
@@ -7173,7 +7204,8 @@ describe('Channels connection policy editing across a source change', () => {
       authorPlugin: { id: 'happier.channels', version: '0.0.0' },
       surface: renderSurface,
       surfaceContext: createChannelsSurfaceContext(),
-      adapter: createChannelsSemanticAdapter(),
+      // The observation-age field opens its choices through the host popover, which the testkit draws only with overlays.
+      adapter: createChannelsSemanticAdapter(emptyDataClient, undefined, { overlays: true }),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
         executeAction: async () => {
@@ -9868,17 +9900,17 @@ describe('Channels collapsed row identity', () => {
           inputMode: 'allAllowedMessages', deliveryMode: 'repliesOnly', approval: { kind: 'off' }, enabled: true, deletionState: 'none' },
       ],
     }, '7');
-    const idle = { bucket: 'idle' as const, tone: 'neutral' as const, word: 'Idle' };
+    const idle = { state: 'waiting', bucket: 'idle' as const, tone: 'neutral' as const, attentionType: null, word: 'Idle' };
     const base = { lifecycle: 'active' as const, runtime: 'idle' as const, operational: 'none' as const, pendingPermissions: [] };
     const sessions: Readonly<Record<string, SessionStateV1>> = {
       'session-ready': { ...base, sessionId: 'session-ready', workStatus: idle, hasUnreadMessages: true,
         latestActivity: { kind: 'ready', text: 'Le devis est prêt,\n je l’envoie ce soir.', createdAt: replyAt } },
       'session-working': { ...base, sessionId: 'session-working', runtime: 'working', operational: 'working',
-        workStatus: { bucket: 'needs_you', tone: 'attention', word: 'Needs you' }, hasUnreadMessages: false,
+        workStatus: { state: 'action_required', bucket: 'needs_you', tone: 'attention', attentionType: 'decision', word: 'Needs you' }, hasUnreadMessages: false,
         latestActivity: { kind: 'ready', text: 'Puis-je lire le dossier ?', createdAt: replyAt } },
       'session-hidden': { ...base, sessionId: 'session-hidden', title: 'Private title', workStatus: idle, latestActivity: { kind: 'hidden' } },
       'session-empty': { ...base, sessionId: 'session-empty', workStatus: idle, hasUnreadMessages: false, latestActivity: { kind: 'empty' } },
-      'session-thread': { ...base, sessionId: 'session-thread', workStatus: { bucket: 'needs_you', tone: 'attention', word: 'Needs you' },
+      'session-thread': { ...base, sessionId: 'session-thread', workStatus: { state: 'action_required', bucket: 'needs_you', tone: 'attention', attentionType: 'decision', word: 'Needs you' },
         hasUnreadMessages: true, latestActivity: { kind: 'ready', text: 'Thread reply', createdAt: replyAt } },
     };
     const readSessionIds: string[] = [];
@@ -10632,7 +10664,7 @@ describe('Channels page (the one owner of linked conversations)', () => {
           readSessionIds.push(requested);
           return requested === sessionId
             ? { sessionId, title: 'Chantier Morges', lifecycle: 'active', runtime: 'idle', operational: 'none', pendingPermissions: [],
-              workStatus: { bucket: 'idle', tone: 'neutral', word: 'Idle' } }
+              workStatus: { state: 'waiting', bucket: 'idle', tone: 'neutral', attentionType: null, word: 'Idle' } }
             : null;
         },
       },

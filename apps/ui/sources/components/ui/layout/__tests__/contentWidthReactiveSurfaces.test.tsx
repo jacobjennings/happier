@@ -101,15 +101,6 @@ vi.mock('@/sync/domains/state/storageStore', () => ({
     }),
 }));
 
-vi.mock('@/components/ui/navigation/SegmentedTabBar', () => ({
-    SegmentedTabBar: (props: Record<string, unknown>) => React.createElement('SegmentedTabBar', props),
-}));
-
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: (props: Record<string, unknown> & { children?: React.ReactNode }) =>
-        React.createElement('Text', props, props.children),
-}));
-
 function flattenStyle(style: unknown): Record<string, unknown> {
     if (Array.isArray(style)) return Object.assign({}, ...style.map((entry) => flattenStyle(entry)));
     if (style && typeof style === 'object') return style as Record<string, unknown>;

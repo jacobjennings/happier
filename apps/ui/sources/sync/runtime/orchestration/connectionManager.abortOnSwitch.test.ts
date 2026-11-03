@@ -3,6 +3,12 @@ import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
 import { createDesktopSecureStorageBoundary } from '@/dev/testkit/mocks/desktopSecureStorage';
 import { installBrowserRuntimeForTests } from '@/dev/testkit/harness/browserRuntimeHarness';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import tweetnacl from 'tweetnacl';
+import { createAccountScopedCryptoMaterialSnapshotV1 } from '@happier-dev/protocol/crypto/accountScopedCipher';
+import { convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1 } from '@happier-dev/protocol/account/encryptionKeyFingerprintV1';
+import { PROJECT_ACCOUNT_ROWS_ROUTE_V1, ProjectAccountRowListResponseV1Schema } from '@happier-dev/protocol/projects/projectAccountRowsV1';
+import { encodeBase64 } from '@/encryption/base64';
 
 vi.mock('react-native', async () =>
     (await import('@/dev/testkit/mocks/reactNative')).createReactNativeWebMock());
@@ -351,5 +357,56 @@ describe('switchConnectionToActiveServer', () => {
         await pendingSwitch;
         expect(connection.getAppliedActiveServerSnapshot()).toEqual(expect.objectContaining({ serverId: homeB.serverId }));
         expect(connection.isAppliedActiveServerRuntimeAvailable()).toBe(true);
+    });
+
+    it('reapplies valid E2EE material when the same Account bearer changes its content key', async () => {
+        const { createAccountTokenForTests } = await import('@/dev/testkit/harness/homeGovernanceHarness');
+        const token = createAccountTokenForTests('account-a');
+        const credentialsFor = (seed: number) => {
+            const pair = tweetnacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(seed));
+            const material = createAccountScopedCryptoMaterialSnapshotV1({ accountEncryptionMode: 'e2ee',
+                material: { type: 'dataKey', machineKey: pair.secretKey }, dataKeyPublicKey: pair.publicKey });
+            return { credentials: { token, encryption: { publicKey: encodeBase64(pair.publicKey), machineKey: encodeBase64(pair.secretKey) } },
+                fingerprint: convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(material.contentPublicKeyFingerprint) };
+        };
+        const original = credentialsFor(7);
+        const refreshed = credentialsFor(8);
+        let binding = original;
+        const mode = createDeferred<void>();
+        let holdMode = false;
+        const serverId = await homes.addHome({ name: 'material', serverUrl: 'https://material.example.test',
+            accountId: 'account-a', credentials: original.credentials, accountEncryptionMode: 'e2ee' });
+        homes.answer(serverId, '/v1/account/encryption', { body: { mode: 'e2ee', updatedAt: 1 },
+            select: () => holdMode ? { body: { mode: 'e2ee', updatedAt: 1 }, respondAfter: mode.promise } : undefined });
+        homes.answer(serverId, '/v1/account/encryption/currentness', { select: () => ({ body: { mode: 'e2ee', version: 1,
+            signingKeyFingerprint: null, contentKeyFingerprint: binding.fingerprint, updatedAt: 1,
+            recipientEnvelopeReadiness: { status: 'available' } } }) });
+        homes.answer(serverId, `POST ${PROJECT_ACCOUNT_ROWS_ROUTE_V1}/list`, { body: ProjectAccountRowListResponseV1Schema.parse({
+            status: 'listed', coverage: 'complete', rows: [],
+        }) });
+        await runtime.setActiveServer({ serverId });
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const home = (await import('@/sync/domains/server/serverProfiles')).getServerProfileById(serverId)!;
+        expect(await TokenStorage.setCredentialsForServerUrl(home.serverUrl, { serverId }, original.credentials)).toBe(true);
+        await connection.switchConnectionToActiveServer();
+        const { storage } = await import('@/sync/domains/state/storage');
+        const { resolveServerProfileScopeIdForIdentifier } = await import('@/sync/domains/server/serverProfiles');
+        storage.getState().activateProfileScope({ serverId: resolveServerProfileScopeIdForIdentifier(serverId), accountId: 'account-a' });
+        const lifetime = scope.captureActiveServerAccountScopeLifetime();
+        if (!lifetime) throw new Error('Expected current E2EE Account owner');
+        binding = refreshed;
+        expect(await TokenStorage.setCredentialsForServerUrl(home.serverUrl, { serverId }, refreshed.credentials)).toBe(true);
+        holdMode = true;
+        const switching = connection.switchConnectionToActiveServer();
+        try {
+            await flushHookEffects({ cycles: 30 });
+            expect(lifetime.isCurrent()).toBe(false);
+            mode.resolve();
+            expect(await switching).toEqual(refreshed.credentials);
+            expect(connection.isAppliedActiveServerRuntimeAvailable()).toBe(true);
+        } finally {
+            mode.resolve();
+            await switching;
+        }
     });
 });

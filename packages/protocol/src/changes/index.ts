@@ -1,4 +1,5 @@
 import { lazyZodSchema } from '../lazyZodSchema.js';
+export { buildChangesReadRequest, CHANGES_AFTER_CURSOR_HTTP_HEADER } from './readRequest.js';
 import { z } from 'zod/mini';
 
 import { SessionIdSchema } from '../sessions/idsV1.js';
@@ -6,6 +7,9 @@ import { formatSharedSavedSecretRefV1 } from '../account/settings/savedSecretRef
 import { PluginDomainChangeEntrySchema } from './pluginDomain.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
 import { ProviderAccountUsageRecordIdSchema } from '../connect/providerAccountUsagePrimitives.js';
+import { ConnectedAccountServiceIdentityV1Schema } from '../connect/qualifiedConnectedAccountPersistence.js';
+import type { QualifiedConnectedAccountServiceRef } from '../connect/qualifiedConnectedAccountsV4.js';
+import { buildQualifiedPluginContributionKey } from '../plugins/contributionKey.js';
 
 export {
   PluginDomainAvailabilityChangeHintSchema,
@@ -25,6 +29,9 @@ export {
   type PluginDomainWebhookChangeHint,
 } from './pluginDomain.js';
 
+/** Recipient/access-specific Machine projection invalidation on the existing AccountChange feed. */
+export const MACHINE_RECIPIENT_ACCESS_CHANGE_KIND_V1 = 'machineRecipientAccess' as const;
+
 export const ChangeKindSchema = lazyZodSchema(() => z.enum([
   'account',
   'automation',
@@ -36,6 +43,7 @@ export const ChangeKindSchema = lazyZodSchema(() => z.enum([
   'friend_accepted',
   'kv',
   'machine',
+  MACHINE_RECIPIENT_ACCESS_CHANGE_KIND_V1,
   'machinePool',
   'pet',
   'pluginDomain',
@@ -46,9 +54,72 @@ export const ChangeKindSchema = lazyZodSchema(() => z.enum([
 
 export type ChangeKind = z.infer<typeof ChangeKindSchema>;
 
+export function isMachineProjectionChangeKindV1(kind: string): kind is 'machine' | typeof MACHINE_RECIPIENT_ACCESS_CHANGE_KIND_V1 {
+  return kind === 'machine' || kind === MACHINE_RECIPIENT_ACCESS_CHANGE_KIND_V1;
+}
+
 /** AccountChange entity identities for reconstructible Home administration projections. */
 export const HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1 = 'home-governance' as const;
 export const TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 = 'teams' as const;
+/** Delivered/withdrawn credential material changes no Team or source authority.
+ * A separate coalescing row preserves any pending Team-authority invalidation. */
+export const TEAM_CREDENTIAL_MATERIAL_ACCOUNT_CHANGE_ENTITY_ID_V1 = 'team-credential-material' as const;
+/** Separate coalescing rows keep service invalidations relative to the reader's cursor. */
+const CONNECTED_SERVICE_ACCOUNT_CHANGE_PREFIX_V1 = 'connected-service:';
+const CONNECTED_SERVICES_ACCOUNT_CHANGE_ENTITY_ID_V1 = 'connected-services';
+export const ConnectedServicesAccountChangeV1Schema = lazyZodSchema(() => z.union([
+  z.strictObject({
+    kind: z.literal('account'),
+    entityId: z.literal(CONNECTED_SERVICES_ACCOUNT_CHANGE_ENTITY_ID_V1),
+    hint: z.strictObject({ connectedServices: z.literal(true) }),
+  }),
+  z.strictObject({
+    kind: z.literal('account'),
+    entityId: z.string(),
+    hint: z.strictObject({
+      connectedServices: z.literal(true),
+      connectedServiceRef: asProtocolZod(ConnectedAccountServiceIdentityV1Schema),
+    }),
+  }).check(z.refine(change => change.entityId === `${CONNECTED_SERVICE_ACCOUNT_CHANGE_PREFIX_V1}${buildQualifiedPluginContributionKey(change.hint.connectedServiceRef)}`)),
+]));
+
+export function buildConnectedServicesAccountChangeV1(service?: QualifiedConnectedAccountServiceRef) {
+  return ConnectedServicesAccountChangeV1Schema.parse(service
+    ? { kind: 'account', entityId: `${CONNECTED_SERVICE_ACCOUNT_CHANGE_PREFIX_V1}${buildQualifiedPluginContributionKey(service)}`,
+      hint: { connectedServices: true, connectedServiceRef: service } }
+    : { kind: 'account', entityId: CONNECTED_SERVICES_ACCOUNT_CHANGE_ENTITY_ID_V1, hint: { connectedServices: true } });
+}
+
+export type ConnectedServicesAccountChangeScopeV1 =
+  | Readonly<{ scope: 'service'; ref: QualifiedConnectedAccountServiceRef }>
+  | Readonly<{ scope: 'all' }>;
+
+/** Also reads content-free wake identities; a supplied durable hint must agree with its entity. */
+export function readConnectedServicesAccountChangeV1(
+  change: Readonly<{ kind: string; entityId: string; hint?: unknown }>,
+): ConnectedServicesAccountChangeScopeV1 | null {
+  if (change.kind !== 'account') return null;
+  // Retained rows and 0.2 servers publish the coarse self flag. Never narrow it from extra fields.
+  if (change.entityId === 'self') {
+    const hint = change.hint;
+    return hint !== null && typeof hint === 'object' && !Array.isArray(hint)
+      && 'connectedServices' in hint && hint.connectedServices === true ? { scope: 'all' } : null;
+  }
+  if (change.entityId !== CONNECTED_SERVICES_ACCOUNT_CHANGE_ENTITY_ID_V1
+    && !change.entityId.startsWith(CONNECTED_SERVICE_ACCOUNT_CHANGE_PREFIX_V1)) return null;
+  if (change.hint === undefined) {
+    if (change.entityId === CONNECTED_SERVICES_ACCOUNT_CHANGE_ENTITY_ID_V1) return { scope: 'all' };
+    const key = change.entityId.slice(CONNECTED_SERVICE_ACCOUNT_CHANGE_PREFIX_V1.length);
+    const separator = key.indexOf('/');
+    const ref = ConnectedAccountServiceIdentityV1Schema.safeParse({ pluginId: key.slice(0, separator), localId: key.slice(separator + 1) });
+    return separator > 0 && ref.success ? { scope: 'service', ref: ref.data } : null;
+  }
+  const parsed = ConnectedServicesAccountChangeV1Schema.safeParse({ kind: change.kind, entityId: change.entityId, hint: change.hint });
+  if (!parsed.success) return null;
+  return 'connectedServiceRef' in parsed.data.hint
+    ? { scope: 'service', ref: parsed.data.hint.connectedServiceRef } : { scope: 'all' };
+}
+
 /** Content-free invalidation for accepted material Provider Account allowance observations. */
 export const PROVIDER_ACCOUNT_USAGE_ACCOUNT_CHANGE_ENTITY_ID_V1 = 'provider-account-usage' as const;
 /** Advisory refresh routing on the existing Account feed; never credential authority. */
@@ -81,7 +152,7 @@ export const EPHEMERAL_RUNNER_ACTIVATION_ACCOUNT_CHANGE_ENTITY_ID_V1 = 'ephemera
 /** Additive-open advisory hint for the canonical Session Organization owner. */
 export const SessionOrganizationChangeHintSchema = lazyZodSchema(() => z.looseObject({
   sessionOrganization: z.literal(true),
-  scope: z.enum(['pins', 'folders', 'folderAssignments', 'tags', 'tagAssignments', 'order', 'labels', 'attentionStandings']),
+  scope: z.enum(['pins', 'folders', 'folderAssignments', 'tags', 'tagAssignments', 'order', 'labels', 'attentionStandings', 'sessionAppearances']),
   sessionIds: z.optional(z.array(z.string().check(z.trim(), z.minLength(1)))),
   folderIds: z.optional(z.array(z.string().check(z.trim(), z.minLength(1)))),
   tagIds: z.optional(z.array(z.string().check(z.trim(), z.minLength(1)))),
@@ -127,6 +198,39 @@ export const ChangeEntrySchema = lazyZodSchema(() => z.strictObject({
 })));
 
 export type ChangeEntry = z.infer<typeof ChangeEntrySchema>;
+
+/** The existing Account cursor preceding a run of projection-only Session writes. */
+export function readSessionFollowProjectionOnlySinceCursorV1(hint: unknown): number | null {
+  if (!hint || typeof hint !== 'object' || Array.isArray(hint)) return null;
+  const record = hint as Record<string, unknown>;
+  const cursor = record.followSourceUnchangedSinceCursor;
+  return record.followSourceChanged === false && typeof cursor === 'number'
+    && Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : null;
+}
+
+/** A coalesced title/read projection cannot hide a source fact not yet consumed. */
+export function readSessionFollowSourceChangedV1(
+  change: Readonly<{ kind: string; cursor: number; hint?: unknown }>, afterCursor: number,
+): boolean {
+  const since = change.kind === 'session' ? readSessionFollowProjectionOnlySinceCursorV1(change.hint) : null;
+  return since === null || !Number.isSafeInteger(afterCursor) || afterCursor < since || since >= change.cursor;
+}
+
+/** Availability is advisory; a retained event is relevant only before its Account cursor. */
+export function readSessionFollowReceiverAvailabilityChangedV1(
+  change: Readonly<{ kind: string; cursor: number; hint?: unknown }>, afterCursor: number,
+): boolean | undefined {
+  if (change.kind !== 'session') return false;
+  if (!change.hint || typeof change.hint !== 'object' || Array.isArray(change.hint)) return undefined;
+  const hint = change.hint as Record<string, unknown>;
+  if (hint.followReceiverAvailabilityChanged === false) return false;
+  if (hint.followReceiverAvailabilityChanged === undefined) return undefined;
+  if (hint.followReceiverAvailabilityChanged !== true) return false;
+  const eventCursor = hint.followReceiverAvailabilityChangedAtCursor;
+  const at = typeof eventCursor === 'number' && Number.isSafeInteger(eventCursor)
+    && eventCursor > 0 && eventCursor <= change.cursor ? eventCursor : change.cursor;
+  return !Number.isSafeInteger(afterCursor) || afterCursor < at;
+}
 
 /** Append and revision hints share the existing Session transcript carrier. */
 export function readSessionTranscriptChangeHintV1(
@@ -300,3 +404,20 @@ export const CursorGoneErrorSchema = lazyZodSchema(() => z.strictObject({
 }));
 
 export type CursorGoneError = z.infer<typeof CursorGoneErrorSchema>;
+
+export const ACCOUNT_IDENTITIES_ACCOUNT_CHANGE_ENTITY_ID_V1 = 'linked-identities' as const;
+export function readAccountIdentitiesChangeV1(change: Readonly<{ kind: string; entityId: string; hint?: unknown }>): boolean {
+  if (change.kind !== 'account') return false;
+  if (change.entityId === ACCOUNT_IDENTITIES_ACCOUNT_CHANGE_ENTITY_ID_V1) return true;
+  const hint = change.hint;
+  return change.entityId === 'self' && hint !== null && typeof hint === 'object' && !Array.isArray(hint)
+    && 'linkedProviders' in hint && hint.linkedProviders === true;
+}
+
+/**
+ * Content-free wake/feed-id form of Account currentness, for readers that ignore hints:
+ * a `self` id or the linked-identities id can change Team/Home qualification.
+ */
+export function isAccountCurrentnessEntityIdV1(entityId: string): boolean {
+  return entityId === 'self' || entityId === ACCOUNT_IDENTITIES_ACCOUNT_CHANGE_ENTITY_ID_V1;
+}

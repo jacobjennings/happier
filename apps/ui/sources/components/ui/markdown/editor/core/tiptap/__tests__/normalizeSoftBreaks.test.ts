@@ -114,15 +114,22 @@ describe('normalizeSoftBreaks', () => {
         }
     });
 
-    it('does not modify list items or blockquotes structurally', () => {
-        const editor = createEditor('- Item 1\n- Item 2\n');
+    it('splits soft breaks inside a blockquote without changing list or blockquote structure', () => {
+        const editor = createEditor('- Item 1\n- Item 2\n\n> Quote one\n> Quote two\n');
 
         try {
-            const docBefore = editor.state.doc.toJSON();
+            const listBefore = editor.state.doc.child(0).toJSON();
             normalizeSoftBreaks(editor);
-            const docAfter = editor.state.doc.toJSON();
 
-            expect(docAfter).toEqual(docBefore);
+            expect(editor.state.doc.child(0).toJSON()).toEqual(listBefore);
+            expect(editor.state.doc.child(0).type.name).toBe('bulletList');
+            expect(editor.state.doc.child(1).toJSON()).toEqual({
+                type: 'blockquote',
+                content: [
+                    { type: 'paragraph', content: [{ type: 'text', text: 'Quote one' }] },
+                    { type: 'paragraph', content: [{ type: 'text', text: 'Quote two' }] },
+                ],
+            });
         } finally {
             editor.destroy();
         }

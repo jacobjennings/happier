@@ -84,14 +84,6 @@ describe('stage surface registry', () => {
         }
     });
 
-    it('gives each feature-showcase Tier-B surface a deliberate camera frame', () => {
-        const tierBSurfaceIds = stageSurfaces.filter((surface) => surface.tier === 'B').map((surface) => surface.id);
-        for (const surfaceId of tierBSurfaceIds) {
-            const frames = stageFrames.filter((frame) => frame.surface === surfaceId);
-            expect(frames.length).toBeGreaterThanOrEqual(1);
-        }
-    });
-
     it('provides a phone session frame for the A4 cockpit beat', () => {
         expect(stageFrames.find((frame) => frame.id === 'session-view.phone')).toMatchObject({
             surface: 'session-view',

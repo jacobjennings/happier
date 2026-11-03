@@ -48,7 +48,7 @@ const pickerMachineMetadata = {
     platform: 'darwin',
     happyCliVersion: '0.0.0-test',
     happyHomeDir: '/Users/tester/.happy-dev',
-    homeDir: '/home',
+    homeDir: '/Users/picker',
 } as const;
 const pickerMachine = createMachineFixture({
     id: 'm1',
@@ -151,41 +151,13 @@ describe('PathPickerScreen', () => {
         return renderScreen(React.createElement(PathPickerScreen));
     }
 
-    it('defaults favoriteDirectories to an empty array when setting is undefined', async () => {
-        await renderPathPicker();
-
-        expect(lastPathSelectionListProps).toBeTruthy();
-        expect(lastPathSelectionListProps?.favorites).toEqual([]);
-        expect(typeof lastPathSelectionListProps?.onToggleFavorite).toBe('function');
-    });
-
-    it('passes machine browse config to PathSelectionList for the current machine', async () => {
+    it('hands the path list the route machine for browsing', async () => {
         await renderPathPicker();
 
         expect(lastPathSelectionListProps?.machineId).toBe('m1');
     });
 
-    it('sets the selected path on the previous route params when confirming', async () => {
-        await renderPathPicker();
-
-        expect(lastPathSelectionListProps).toBeTruthy();
-        await act(async () => {
-            await lastPathSelectionListProps?.onCommit('/Users/leeroy/Documents/Development/happier/dev/apps/stack');
-        });
-
-        expect(navigationMock.dispatch).toHaveBeenCalledWith(expect.objectContaining({
-            type: 'SET_PARAMS',
-            source: 'new-route',
-            payload: expect.objectContaining({
-                params: expect.objectContaining({
-                    directory: '/Users/leeroy/Documents/Development/happier/dev/apps/stack',
-                }),
-            }),
-        }));
-        expect(navigationMock.goBack).toHaveBeenCalled();
-    });
-
-    it('falls back to router params update when there is no previous route', async () => {
+    it('commits an empty path as the machine home folder when there is no previous route', async () => {
         navigationState = { index: 0, routes: [{ key: 'only' }] };
         localSearchParams = {
             dataId: 'draft-1',
@@ -210,7 +182,7 @@ describe('PathPickerScreen', () => {
                 dataId: 'draft-1',
                 machineId: 'm1',
                 directoryKind: 'path',
-                directory: '/home',
+                directory: '/Users/picker',
                 path: undefined,
                 spawnServerId: 'server-b',
             },

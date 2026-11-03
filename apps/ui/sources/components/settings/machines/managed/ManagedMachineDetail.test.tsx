@@ -1108,11 +1108,11 @@ describe('managed Machine detail', () => {
                 }
                 if (actionId === 'machines.managed.retention.update') policyWrites.push(request.input);
                 const result = actionId === 'machines.provisioners.list' ? { provisioners: [provisioner] }
-                    : actionId === 'machines.provisioners.options' ? MachineProvisionerOptionsResultV1Schema.parse({ choices: [{ id: 'native-variant', title: 'Native variant',
+                    : actionId === 'machines.provisioners.options' ? MachineProvisionerOptionsResultV1Schema.parse({ base: {
                         launch: variant === 'different-launch' ? { ...choices, nativeSizeId: 'other-native-size' } : launch.choices,
                         available: variant !== 'unavailable' && !refreshFailed, ...(variant === 'descriptor-fallback' ? {} : {
                             retention: finite ? { supportedIntents: ['delete'], finiteOnly: true } : { supportedIntents: ['start', 'stop', 'delete'], finiteOnly: false },
-                        }) }] }) : actionId === 'machines.managed.inspect' ? { machine } : { available: true };
+                        }) }, dimensions: { size: [], image: [], location: [], network: [], duration: [] } }) : actionId === 'machines.managed.inspect' ? { machine } : { available: true };
                 return Response.json(ExternalActionResponseEnvelopeV1Schema.parse({ v: 1, requestId: request.requestId, actionId,
                     execution: { ok: true, result } }));
             }
@@ -2038,13 +2038,12 @@ describe('managed Machine detail', () => {
                 if (actionId === 'machines.provisioners.options') expect(request.input).toMatchObject({ selectors });
                 const result = actionId === 'machines.provisioners.list' ? MachineProvisionersListResultV1Schema.parse({
                     provisioners: [{ contribution: provider, occurrenceId: 'container-occurrence', descriptor }] })
-                    : actionId === 'machines.provisioners.options' ? MachineProvisionerOptionsResultV1Schema.parse({ choices: [{
-                        id: 'current-config', title: 'Devcontainer', available: true,
+                    : actionId === 'machines.provisioners.options' ? MachineProvisionerOptionsResultV1Schema.parse({ base: { available: true,
                         launch: { ...selectors, reviewedEffectDigest: 'b'.repeat(64) }, effectReview: { kind: 'devcontainer',
                             reviewedEffectDigest: 'b'.repeat(64), effects: [
                                 { scope: 'host', kind: 'initialize', title: 'Initialize on controller', details: ['touch /source/ready'] },
                                 { scope: 'child', kind: 'lifecycle', title: 'Set up child', details: ['make setup'] },
-                            ] } }] }) : actionId === 'machines.managed.rebuild' ? {
+                            ] } }, dimensions: { size: [], image: [], location: [], network: [], duration: [] } }) : actionId === 'machines.managed.rebuild' ? {
                         kind: 'approval_request_created', artifactId: 'rebuild-approval', actionId,
                     } : { available: true };
                 return Response.json(ExternalActionResponseEnvelopeV1Schema.parse({ v: 1, requestId: request.requestId,
@@ -2341,27 +2340,33 @@ describe('managed Machine detail', () => {
         await screen.update(<Probe />);
         expect(seen.at(-1)).toBeNull();
     });
-    it('reads uptime and the provider\'s own id into the header only from real facts (lab m-detail)', async () => {
+    it('reads uptime into the managed header while leaving native resource identities in Details', async () => {
         const { managedMachineHeaderMeta } = await import('./ManagedMachineSections');
         const machine = { observation: { availability: 'present' as const, observedAt: 1, power: 'running' as const },
             resource: { value: { serverId: 58213904, owned: { volumeIds: [] } } } };
         const now = 10 * 3_600_000;
-        const meta = managedMachineHeaderMeta({ machine, provider: 'Hetzner', kindTitle: 'Server', resourceIdPath: 'serverId',
+        const meta = managedMachineHeaderMeta({ machine, provider: 'Hetzner', kindTitle: 'Server',
             runningSince: now - 3.4 * 3_600_000, now });
         expect(meta.find(fact => fact.key === 'managed-power')?.text)
             .toBe(t('managedMachines.detail.runningFor', { duration: t('managedRetention.hours', { count: 3 }) }));
-        expect(meta.find(fact => fact.key === 'managed-kind')?.text)
-            .toBe(t('managedMachines.detail.kindFactWithId', { fact: t('managedMachines.detail.kindFact', { provider: 'Hetzner', kind: 'Server' }), id: '58213904' }));
-        // No start time, a stopped machine, or an undeclared id path: the header says only what it knows.
+        // The native identity remains available in Details without becoming another name in the header.
+        expect(meta.find(fact => fact.key === 'managed-kind')?.text).toBe(t('managedMachines.detail.kindFact', { provider: 'Hetzner', kind: 'Server' }));
+        expect(meta.some(fact => fact.key === 'managed-native-id')).toBe(false);
+        const guest = managedMachineHeaderMeta({ machine: { ...machine, resource: { value: { name: 'happier-generated-guest' } } },
+            provider: 'Lima', kindTitle: 'Machine', now });
+        expect(guest.some(fact => fact.text.includes('happier-generated-guest'))).toBe(false);
+        // No start time or a stopped machine: the header says only what it knows.
         const bare = managedMachineHeaderMeta({ machine, provider: 'Hetzner', kindTitle: 'Server', now });
         expect(bare.find(fact => fact.key === 'managed-power')?.text).toBe(t('managedMachines.detail.power.running'));
         expect(bare.find(fact => fact.key === 'managed-kind')?.text).toBe(t('managedMachines.detail.kindFact', { provider: 'Hetzner', kind: 'Server' }));
+        expect(bare.some(fact => fact.key === 'managed-native-id')).toBe(false);
         const stopped = managedMachineHeaderMeta({ machine: { ...machine, observation: { ...machine.observation, power: 'stopped' as const } },
             provider: 'Hetzner', kindTitle: 'Server', runningSince: now - 3_600_000, now });
         expect(stopped.find(fact => fact.key === 'managed-power')?.text).toBe(t('managedMachines.detail.power.stopped'));
         const missing = managedMachineHeaderMeta({ machine: { ...machine, resource: { value: { owned: {} } } }, provider: 'Hetzner',
-            kindTitle: 'Server', resourceIdPath: 'serverId', now });
+            kindTitle: 'Server', now });
         expect(missing.find(fact => fact.key === 'managed-kind')?.text).toBe(t('managedMachines.detail.kindFact', { provider: 'Hetzner', kind: 'Server' }));
+        expect(missing.some(fact => fact.key === 'managed-native-id')).toBe(false);
     });
     it('does not imply continuing billing after confirmed absence, even with a retained cleanup marker', async () => {
         const screen = await renderScreen(<ManagedCreationProgress machine={{ id: 'absent', homeId: 'home', custodianAccountId: 'owner',

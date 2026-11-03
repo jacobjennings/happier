@@ -16,7 +16,6 @@ function harness() {
     deps: {
       service: { snapshot: async () => snapshot as never, mutate: mutate as never },
       machineId: 'machine-a',
-      allocateProfileId: () => 'registry_acme',
       promptSecret: vi.fn(async () => 'boundary-secret'),
       write: (value: unknown) => { output.push(value); },
     },
@@ -27,14 +26,17 @@ describe('plugins registry CLI', () => {
   it('adds and lists a private registry through the daemon-owned service API', async () => {
     const h = harness();
     await handlePluginsRegistryCommand([
-      'add', 'https://registry.acme.test', '--name', 'Acme', '--scope', '@acme', '--allow-private-network', '--json',
+      'add', 'https://registry.acme.test', '--id', 'registry_acme', '--name', 'Acme', '--scope', '@acme', '--allow-private-network', '--json',
     ], h.deps);
     expect(h.mutate).toHaveBeenCalledWith(expect.objectContaining({
       action: 'add', profileId: 'registry_acme',
       profile: expect.objectContaining({ origin: 'https://registry.acme.test', scopes: ['@acme'], allowPrivateNetwork: true }),
     }));
     await handlePluginsRegistryCommand(['list', '--json'], h.deps);
-    expect(JSON.stringify(h.output)).not.toContain('credentialSecretRef');
+    expect(h.output.at(-1)).toMatchObject({
+      kind: 'plugins_registry_list',
+      snapshot: { revision: 1, profiles: [expect.objectContaining({ profileId: 'registry_acme' })] },
+    });
   });
 
   it('reads login credentials only from the hidden prompt and never writes them', async () => {

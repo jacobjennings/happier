@@ -1,5 +1,8 @@
 import { execFileSync } from 'child_process';
 import { randomBytes } from 'node:crypto';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { socketRpcCodec, type SocketRpcContent } from '@happier-dev/sync-client';
 import type { SocketRpcAuthorizationContext } from '@happier-dev/protocol/rpc';
 
@@ -80,6 +83,15 @@ export function runGit(cwd: string, args: string[]): string {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
+}
+
+/** Fresh temp Git repository with a local committer identity (left on disk like the other RPC fixtures). */
+export function createGitWorkspace(prefix = 'happier-git-rpc-'): string {
+    const workspace = mkdtempSync(join(tmpdir(), prefix));
+    runGit(workspace, ['init']);
+    runGit(workspace, ['config', 'user.email', 'test@example.com']);
+    runGit(workspace, ['config', 'user.name', 'Test User']);
+    return workspace;
 }
 
 export function runSapling(cwd: string, args: string[]): string {

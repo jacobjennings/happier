@@ -1,4 +1,6 @@
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -6,6 +8,7 @@ import { loadDevTargetExecutionConfig, loadDevTargetsConfig, parseDevTargetsConf
 import { resolveRepoStackIdentity, resolveStacksStorageRoot } from '../stack/repo_stack_identity.mjs';
 import { resolveDevTargetServicePlans } from './service_placement.mjs';
 import { resolveMutagenSessionName } from './mutagen_project.mjs';
+import { startRemovedCommandRepositoryRetirement } from './command_replica_retirement.mjs';
 import { renderNativeCommandPolicy } from './remote_commands.mjs';
 import { isYarnWorkspace, readWorkspacePatterns } from '../proc/workspace_package_manifests.mjs';
 import { renderNativeSyncReadinessPolicy, resolveDevTargetMutagenRuntime } from './mutagen_runtime.mjs';
@@ -106,6 +109,22 @@ export function renderNativeExecutionProjection(config, { repoRoot = '', executo
   return `${lines.join('\n')}\n`;
 }
 
+// A sibling checkout (typically a fresh scratch worktree) is the replica's
+// alpha. Workers write `.project/tmp` under the replica root; without a source
+// `.project` the one-way replica cannot delete that directory and every later
+// flush reports a conflict. Git-ignored source inputs that test configuration
+// imports at load time come from the checkout's own dependency-free generator,
+// which rewrites only changed bytes, so they synchronize like the primary's.
+async function prepareCommandRepositorySource(repository) {
+  await mkdir(join(repository, '.project'), { recursive: true });
+  const generator = join(repository, 'packages/protocol/scripts/generate-embedded-feature-policies.mjs');
+  if (!existsSync(generator)) return;
+  const result = spawnSync(process.execPath, [generator], { cwd: repository, stdio: ['ignore', 2, 2] });
+  if (result.error || result.status !== 0) {
+    throw new Error(`[dev-targets] ${generator} failed (${result.error?.message ?? `exit ${result.status}`})`);
+  }
+}
+
 export async function prepareCommandRepository({ configPath, repoRoot, executorRepoRoot, synchronize = true, env = process.env }) {
   const repository = resolve(repoRoot);
   // Source identity must be checked before creating a replica or state directory.
@@ -137,6 +156,9 @@ export async function prepareCommandRepository({ configPath, repoRoot, executorR
   }
   const outputPath = join(directory, 'dev-target-exec-v1.sh');
   await writeNativeExecutionProjection({ configPath: path, outputPath, repoRoot: repository, skipUnchanged: true, env });
+  await prepareCommandRepositorySource(repository);
+  // Removed sibling worktrees are retired off this dispatch's path.
+  if (synchronize) startRemovedCommandRepositoryRetirement({ stackDir: dirname(configPath), executorRepoRoot, env });
   const syncTargets = resolveDevTargetServicePlans({ targets: config.targets,
     policy: resolveDevTargetExecutionPolicy(config), requested: { server: true, expo: true, daemon: true },
   }).targets.map(plan => plan.target);

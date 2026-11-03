@@ -30,6 +30,54 @@ describe('runAutomationNow', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
+  it('patches only the admitted recipe through the existing Automation definition owner', async () => {
+    const controller = new AbortController();
+    const executionRecipe = { v: 2 as const, templateVersion: 2, triggerEvidence: null,
+      managedTarget: null, workflow: { t: 'plain' as const, v: { workspace: { directory: '/repo' },
+        executionTarget: { kind: 'session' as const }, inlineDefinition: { version: 1 as const,
+          blocks: [{ kind: 'wait' as const, id: 'wait', document: { text: 'Wait', references: [], attachments: [] } }] } } } };
+    const row = { id: 'automation-1', name: 'Renamed', description: null, enabled: false,
+      workflowDefinitionId: null, scopeSessionId: null, targetType: null, existingSessionId: null,
+      templateVersion: 2, lastRunAt: null, createdAt: 1, updatedAt: 1, assignments: [], triggers: [], executionRecipe };
+    request.mockResolvedValue({ status: 200, data: row });
+    const { updateAutomationDefinition } = await import('./automations');
+    await expect(updateAutomationDefinition({ token: 'token-1', automationId: row.id, signal: controller.signal,
+      input: { expectedTemplateVersion: 1, executionRecipe } })).resolves.toEqual(row);
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: 'PATCH',
+      url: 'https://api.example.test/v3/automations/automation-1', signal: controller.signal,
+      data: { expectedTemplateVersion: 1, executionRecipe } }));
+  });
+
+  it.each([
+    { managedTarget: { homeId: 'home-one', managedId: 'managed-one' }, includeUnindexedManagedTargets: true as const },
+    { managedTargetUnindexed: true as const },
+  ])('sends a managed relationship select through the structured query owner', async query => {
+    post.mockResolvedValue({ status: 200, data: { automations: [], nextCursor: null } });
+    get.mockResolvedValue({ status: 200, data: { automations: [], nextCursor: null } });
+    await listAutomationDefinitions({ token: 'token-1', ...query });
+    expect(get).not.toHaveBeenCalled();
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls[0]?.slice(0, 2)).toEqual(['https://api.example.test/v3/automations/query', expect.objectContaining(query)]);
+  });
+
+  it.each(['list', 'get', 'reconcile'] as const)('cancels an authenticated %s operation at its HTTP boundary', async operation => {
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = new Error('cancelled');
+    const response = { status: 200, data: { automations: [], nextCursor: null } };
+    const observeCancellation = (options: { signal?: AbortSignal }) => options.signal?.aborted
+      ? Promise.reject(aborted) : Promise.resolve(response);
+    post.mockImplementation((_url, _body, options) => observeCancellation(options));
+    request.mockImplementation(options => observeCancellation(options));
+    const pending = operation === 'list' ? listAutomationDefinitions({ token: 'token-1', managedTargetUnindexed: true, signal: controller.signal })
+      : operation === 'get' ? getAutomationDefinition({ token: 'token-1', automationId: 'automation-1', signal: controller.signal })
+        : reconcileAutomationDefinition({ token: 'token-1', automationId: 'automation-1', signal: controller.signal, input: {
+          expectedTemplateVersion: 1, name: 'Triggers', description: null, enabled: true, assignments: [], triggers: [], removedTriggers: [],
+        } });
+    if (operation === 'reconcile') await expect(pending).rejects.toMatchObject({ code: 'workflow_outcome_unresolved', cause: aborted });
+    else await expect(pending).rejects.toBe(aborted);
+  });
+
   it.each(['run', 'list', 'get', 'create', 'reconcile', 'delete'] as const)(
     'preserves typed HTTP refusal through the Workflow failure consumer for %s without disclosing raw content', async operation => {
       const response = { status: 400, data: { code: 'FST_ERR_VALIDATION', error: 'Bad Request',

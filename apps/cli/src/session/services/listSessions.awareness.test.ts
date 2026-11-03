@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionAwarenessListResultV1Schema, parseSessionListQueryActionResultV1 } from '@happier-dev/protocol';
 
 import { resetInMemoryAccountSettingsContextForTests } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
-import { createAccountEncryptionCurrentnessFixture, createSessionRecordFixture, createSessionNotificationContextFixture } from '@/testkit/backends/sessionFixtures';
+import { createAccountEncryptionCurrentnessFixture, createSessionRecordFixture, createSessionNotificationContextFixture, createSessionRuntimeManagedSubtreeRecordFixture, createCompactSessionListRowFixture, createCompactSessionListQueryResponseFixture, createSessionReadBatchResponseFixture } from '@/testkit/backends/sessionFixtures';
 import { createSessionListActionDeps } from '@/session/actions/sessionListActionDependency';
 import { listSessions } from './listSessions';
 import { createRestrictedCurrentSessionListActionDependency } from '@/session/actions/sessionListActionDependency';
@@ -12,12 +12,16 @@ import { encrypt, encodeBase64 } from '@/api/encryption';
 describe('Session awareness Action acquisition', () => {
   it('keeps encrypted workers unreadable with the coordinator key and retains the server continuation', async () => {
     const key = new Uint8Array(32).fill(7);
-    const { viewer: _viewer, ...worker } = createSessionNotificationContextFixture('encrypted-worker');
-    vi.spyOn(axios, 'post').mockResolvedValue({ status: 200, data: {
-      sessions: [{ ...worker, encryptionMode: 'e2ee', metadata: encodeBase64(encrypt(key, 'dataKey', {
-        summary: { text: 'Must not open with the coordinator key' },
-      })) }], nextCursor: 'next-worker', hasNext: true, attentionNextCursor: null, attentionHasNext: false,
-    } });
+    const fullWorker = createSessionRuntimeManagedSubtreeRecordFixture({ id: 'encrypted-worker', encryptionMode: 'e2ee',
+      metadata: encodeBase64(encrypt(key, 'dataKey', { v: 1, summary: { text: 'Must not open with the coordinator key' } })) });
+    vi.spyOn(axios, 'post').mockImplementation(async (url, body) => {
+      if (String(url).endsWith('/v2/sessions/read-batch')) {
+        expect(body).toMatchObject({ underSessionId: 'coordinator' });
+        return { status: 200, data: createSessionReadBatchResponseFixture({ request: body, sessions: [fullWorker] }) };
+      }
+      return { status: 200, data: { sessions: [createCompactSessionListRowFixture(fullWorker)], nextCursor: 'next-worker', hasNext: true,
+        attentionNextCursor: null, attentionHasNext: false } };
+    });
     vi.spyOn(axios, 'get').mockImplementation(async () => { throw new Error('Restricted listing must not read Account state'); });
     const sessionList = createRestrictedCurrentSessionListActionDependency({ credentials: { token: 'runtime-token', encryption: null },
       sessionId: 'coordinator', serverId: 'home-a', serverHttpBaseUrl: 'https://home-a.example.test',
@@ -30,15 +34,18 @@ describe('Session awareness Action acquisition', () => {
         nextCursor: 'next-worker', hasNext: true, view: 'awareness', projectionVersion: 1 });
   });
   it('uses the Home subtree query for Under-self even when the credentialed host admits a current-Session corpus', async () => {
-    const worker = { ...createSessionNotificationContextFixture('worker'), encryptionMode: 'plain', metadata: '{}' };
+    const worker = { ...createSessionNotificationContextFixture('worker'), encryptionMode: 'plain' as const, metadata: '{}' };
     vi.spyOn(axios, 'get').mockImplementation(async url => {
       if (String(url).endsWith('/v1/account/encryption/currentness')) {
         return { status: 200, data: createAccountEncryptionCurrentnessFixture() };
       }
       throw new Error(`Unexpected detail/Account read: ${url}`);
     });
-    vi.spyOn(axios, 'post').mockResolvedValue({ status: 200, data: { sessions: [worker], nextCursor: null, hasNext: false,
-      attentionNextCursor: null, attentionHasNext: false } });
+    vi.spyOn(axios, 'post').mockImplementation(async (url, body) => ({ status: 200, data:
+      String(url).endsWith('/v2/sessions/read-batch')
+        ? createSessionReadBatchResponseFixture({ request: body, sessions: [worker] })
+        : createCompactSessionListQueryResponseFixture({ sessions: [worker], nextCursor: null, hasNext: false,
+          attentionNextCursor: null, attentionHasNext: false }) }));
     const { sessionList } = createSessionListActionDeps({ credentials: { token: 'token', encryption: null } });
     await expect(sessionList({ context: { surface: 'agent', authority: 'account_automation', defaultSessionId: 'coordinator',
       sessionListAccess: 'current_session' }, query: { v: 1, storage: 'active', includeInactive: true, scope: 'all_accessible',
@@ -98,11 +105,13 @@ describe('Session awareness Action acquisition', () => {
           sessions: [], nextCursor: 'cursor_v1_readable', hasNext: true, metadataUpgradeRequiredCount: 1,
         } };
         if (cursor === 'cursor_v1_readable') return { status: 200, data: {
-          sessions: [row], nextCursor: null, hasNext: false,
+          sessions: [createCompactSessionListRowFixture(row)], nextCursor: null, hasNext: false,
         } };
       }
       throw new Error(`Unexpected HTTP request: ${url}`);
     });
+    vi.spyOn(axios, 'post').mockImplementation(async (_url, body) => ({ status: 200,
+      data: createSessionReadBatchResponseFixture({ request: body, sessions: [row] }) }));
     const result = await listSessions({
       credentials: { token: 'token', encryption: null }, view,
       activeOnly: false, includeSystem: false, resumableOnly: false, limit: 1,
@@ -162,13 +171,16 @@ describe('Session awareness Action acquisition', () => {
       }
       if (path === '/v2/sessions') {
         return { status: 200, data: {
-          sessions: [row], nextCursor: 'cursor-next', hasNext: true,
+          sessions: [createCompactSessionListRowFixture(row)], nextCursor: 'cursor-next', hasNext: true,
           attentionNextCursor: 'attention-next', attentionHasNext: true,
         } };
       }
       throw new Error(`Unexpected HTTP request: ${path}`);
     });
-
+    vi.spyOn(axios, 'post').mockImplementation(async (url, body) => {
+      requests.push(new URL(String(url)).pathname);
+      return { status: 200, data: createSessionReadBatchResponseFixture({ request: body, sessions: [row] }) };
+    });
     const { sessionList: list } = createSessionListActionDeps({ credentials: { token: 'token', encryption: null } });
     const result = await list({
       context: { surface: 'cli', authority: 'present_user' },
@@ -185,7 +197,7 @@ describe('Session awareness Action acquisition', () => {
     expect(result).not.toHaveProperty('attentionNextCursor');
     expect(result).not.toHaveProperty('attentionHasNext');
     expect(result).not.toHaveProperty('queryVersion');
-    expect(requests.sort()).toEqual(['/v1/account/encryption/currentness', '/v2/sessions']);
+    expect(requests.sort()).toEqual(['/v1/account/encryption/currentness', '/v2/sessions', '/v2/sessions/read-batch']);
   });
 
   it('preserves strict-query attention continuation in the awareness contract', async () => {
@@ -197,8 +209,7 @@ describe('Session awareness Action acquisition', () => {
       }
       throw new Error(`Unexpected GET request: ${path}`);
     });
-    vi.spyOn(axios, 'post').mockResolvedValue({ status: 200, data: {
-      sessions: [{
+    const fullRow = {
         ...row,
         effectiveAccess: {
           v: 1,
@@ -229,9 +240,12 @@ describe('Session awareness Action acquisition', () => {
         },
         responsibleAccountId: null,
         responsibleAccount: null,
-      }], nextCursor: null, hasNext: false,
-      attentionNextCursor: 'cursor_v1_attention', attentionHasNext: true,
-    } });
+      } satisfies Parameters<typeof createCompactSessionListRowFixture>[0];
+    vi.spyOn(axios, 'post').mockImplementation(async (url, body) => ({ status: 200, data:
+      String(url).endsWith('/v2/sessions/read-batch')
+        ? createSessionReadBatchResponseFixture({ request: body, sessions: [fullRow] })
+        : createCompactSessionListQueryResponseFixture({ sessions: [fullRow], nextCursor: null, hasNext: false,
+          attentionNextCursor: 'cursor_v1_attention', attentionHasNext: true }) }));
 
     const result = await listSessions({
       credentials: { token: 'token', encryption: null }, includeSystem: true, resumableOnly: false,
@@ -291,9 +305,11 @@ describe('Session awareness Action acquisition', () => {
           mode: 'e2ee', recipientEnvelopeReadiness: { status: 'available' },
         }) };
       }
-      if (path === '/v2/sessions') return { status: 200, data: { sessions: [row], nextCursor: null, hasNext: false } };
+      if (path === '/v2/sessions') return { status: 200, data: { sessions: [createCompactSessionListRowFixture(row)], nextCursor: null, hasNext: false } };
       throw new Error(`Unexpected HTTP request: ${path}`);
     });
+    vi.spyOn(axios, 'post').mockImplementation(async (_url, body) => ({ status: 200,
+      data: createSessionReadBatchResponseFixture({ request: body, sessions: [row] }) }));
 
     const { sessionList: list } = createSessionListActionDeps({ credentials: { token: 'token', encryption: null } });
     const result = await list({
@@ -321,7 +337,7 @@ describe('Session awareness Action acquisition', () => {
       if (path === '/v1/account/encryption/currentness') {
         return { status: 200, data: createAccountEncryptionCurrentnessFixture({ version: 1, updatedAt: 1 }) };
       }
-      if (path === '/v2/sessions') return { status: 200, data: { sessions: rows, nextCursor: null, hasNext: false } };
+      if (path === '/v2/sessions') return { status: 200, data: { sessions: rows.map(createCompactSessionListRowFixture), nextCursor: null, hasNext: false } };
       const row = rows.find((entry) => path === `/v2/sessions/${entry.id}`);
       if (row) return { status: 200, data: { session: row } };
       if (path.endsWith('/messages')) {
@@ -336,6 +352,8 @@ describe('Session awareness Action acquisition', () => {
       }
       throw new Error(`Unexpected HTTP request: ${path}`);
     });
+    vi.spyOn(axios, 'post').mockImplementation(async (_url, body) => ({ status: 200,
+      data: createSessionReadBatchResponseFixture({ request: body, sessions: rows }) }));
     const result = await listSessions({
       credentials: { token: 'token', encryption: null }, includeSystem: true, resumableOnly: false,
       includeLastMessagePreview: true,

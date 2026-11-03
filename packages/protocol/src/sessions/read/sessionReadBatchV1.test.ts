@@ -2,6 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { SessionReadBatchRequestV1Schema, SessionReadBatchResponseV1Schema } from './sessionReadBatchV1.js';
 
 describe('Session read batch V1', () => {
+  it('bounds managed-subtree document demand without admitting turns or messages', () => {
+    const demand = { sessionIds: ['child'], underSessionId: 'root', includeSnapshot: true, includeTurns: false, includeMessages: false };
+    expect(SessionReadBatchRequestV1Schema.safeParse(demand).success).toBe(true);
+    for (const change of [{ includeTurns: true }, { includeTurns: undefined }, { includeMessages: true }, { includeSnapshot: false }, { underSessionId: '' }]) {
+      expect(SessionReadBatchRequestV1Schema.safeParse({ ...demand, ...change }).success).toBe(false);
+    }
+  });
+
   it('admits explicit detail-only demand without weakening snapshot or messages-only defaults', () => {
     expect(SessionReadBatchRequestV1Schema.safeParse({ sessionIds: ['session'], includeSnapshot: true, includeTurns: false }).success).toBe(true);
     expect(SessionReadBatchRequestV1Schema.safeParse({ sessionIds: ['session'], includeSnapshot: false, includeMessages: true }).success).toBe(true);

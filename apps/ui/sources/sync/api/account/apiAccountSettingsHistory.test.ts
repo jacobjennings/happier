@@ -90,17 +90,26 @@ describe('fetchAccountSettingsHistory', () => {
         expect(http).not.toHaveBeenCalled();
     });
 
-    it('ignores delayed response decoding after a Home switch and keeps the admitted request on A', async () => {
+    it('ignores a delayed response body after a Home switch and keeps the admitted request on A', async () => {
         const expectedScope = scope;
         let finish!: (value: unknown) => void;
-        let decoding = false;
+        let readingBody = false;
         http.mockImplementation(async () => {
-            const response = Response.json({ snapshots });
-            response.json = () => { decoding = true; return new Promise((resolve) => { finish = resolve; }); };
-            return response;
+            let cancelled = false;
+            return new Response(new ReadableStream<Uint8Array>({
+                start(body) {
+                    readingBody = true;
+                    finish = value => {
+                        if (cancelled) return;
+                        body.enqueue(new TextEncoder().encode(JSON.stringify(value)));
+                        body.close();
+                    };
+                },
+                cancel() { cancelled = true; },
+            }), { headers: { 'Content-Type': 'application/json' } });
         });
         const pending = fetchAccountSettingsHistory(credentials, { settingsScope: expectedScope });
-        await vi.waitFor(() => expect(decoding).toBe(true));
+        await vi.waitFor(() => expect(readingBody).toBe(true));
         await activateHome('b');
         finish({ snapshots });
         await expect(pending).resolves.toEqual({ status: 'unavailable' });

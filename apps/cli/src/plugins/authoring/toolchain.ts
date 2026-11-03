@@ -2,12 +2,13 @@ import { spawn as spawnChild } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHappierTempDir, removeHappierTempDirAsync } from '@happier-dev/cli-common/tempDirs';
 import { runPluginAuthorPhase } from './phaseLog';
+import { resolveNativeTypeScriptBin, resolvePluginUiBuildBin } from './toolEntrypoints';
+export { resolveNativeTypeScriptBin, resolvePluginUiBuildBin } from './toolEntrypoints';
 
 import {
   buildManagedPnpmEnvironment,
@@ -21,7 +22,7 @@ import {
 import {
   resolveAuthoritativePackagedRuntimeProjectRoot,
 } from '@/packagedRuntime/resolvePackagedRuntimeEntrypoint';
-import { canonicalAbsolutePathsEqual, isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
+import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
 import { resolveWindowsCommandInvocation } from '@happier-dev/cli-common/process';
 import {
   findRepoRoot,
@@ -67,6 +68,8 @@ import {
   readRuntimePackageJson,
   resolvePackagedCliBundledWorkspacePackageRoot,
   resolvePhysicalBundledWorkspacePackageRoot,
+  resolvePluginAuthorSourceWorkspace,
+  resolvePluginUiBuildArguments,
   type RuntimePackageJson,
 } from './hostSdkResolution';
 
@@ -512,85 +515,6 @@ async function prepareBundledPrepublicationResolution(params: Readonly<{
   }
 }
 
-export function resolveNativeTypeScriptBin(projectRoot: string): string {
-  const require = createRequire(join(projectRoot, 'package.json'));
-  const packageJsonPath = require.resolve('@typescript/native/package.json');
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as {
-    bin?: { tsc?: unknown };
-    version?: unknown;
-  };
-  const projectNodeModulesRoot = join(realpathSync(projectRoot), 'node_modules');
-  if (!isCanonicalAbsolutePathInsideRoot(projectNodeModulesRoot, packageJsonPath)) {
-    throw new Error('Resolved @typescript/native package must be project-local');
-  }
-  if (typeof packageJson.version !== 'string' || !/^7\./u.test(packageJson.version)) {
-    throw new Error('Resolved @typescript/native package must provide TypeScript 7');
-  }
-  const relativeBin = packageJson.bin?.tsc;
-  if (typeof relativeBin !== 'string' || !relativeBin.trim()) {
-    throw new Error('@typescript/native does not declare the TypeScript compiler entrypoint');
-  }
-  const packageRoot = realpathSync(dirname(packageJsonPath));
-  if (!isCanonicalAbsolutePathInsideRoot(projectNodeModulesRoot, packageRoot)) {
-    throw new Error('Resolved @typescript/native package root must remain inside project-local node_modules');
-  }
-  const compilerPath = resolve(packageRoot, relativeBin);
-  if (!isCanonicalAbsolutePathInsideRoot(packageRoot, compilerPath)) {
-    throw new Error('Resolved TypeScript compiler entrypoint must remain inside the installed @typescript/native package');
-  }
-  const resolvedCompilerPath = realpathSync(compilerPath);
-  if (!statSync(resolvedCompilerPath).isFile() || !isCanonicalAbsolutePathInsideRoot(packageRoot, resolvedCompilerPath)) {
-    throw new Error('Resolved TypeScript compiler entrypoint must be a contained regular file inside @typescript/native');
-  }
-  return resolvedCompilerPath;
-}
-
-export function resolvePluginUiBuildBin(projectRoot: string): string | null {
-  const resolvedProjectRoot = realpathSync(projectRoot);
-  const projectPackageJson = JSON.parse(readFileSync(join(resolvedProjectRoot, 'package.json'), 'utf8')) as {
-    dependencies?: Record<string, unknown>;
-    devDependencies?: Record<string, unknown>;
-  };
-  if (
-    typeof projectPackageJson.dependencies?.[PLUGIN_SDK_PACKAGE_NAME] !== 'string'
-    && typeof projectPackageJson.devDependencies?.[PLUGIN_SDK_PACKAGE_NAME] !== 'string'
-  ) {
-    return null;
-  }
-  const projectNodeModulesRoot = realpathSync(join(resolvedProjectRoot, 'node_modules'));
-  const packageJsonPath = realpathSync(join(
-    resolvedProjectRoot,
-    'node_modules',
-    '@happier-dev',
-    'plugin-sdk',
-    'package.json',
-  ));
-  if (!isCanonicalAbsolutePathInsideRoot(projectNodeModulesRoot, packageJsonPath)) {
-    throw new Error('Resolved Plugin SDK package must be project-local');
-  }
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as {
-    name?: unknown;
-    bin?: Record<string, unknown>;
-  };
-  if (packageJson.name !== '@happier-dev/plugin-sdk') {
-    throw new Error('Resolved Plugin UI builder must come from @happier-dev/plugin-sdk');
-  }
-  const relativeBin = packageJson.bin?.['happier-plugin-build-ui'];
-  if (typeof relativeBin !== 'string' || !relativeBin.trim()) {
-    throw new Error('@happier-dev/plugin-sdk does not declare the Plugin UI builder entrypoint');
-  }
-  const packageRoot = dirname(packageJsonPath);
-  const builderPath = resolve(packageRoot, relativeBin);
-  if (!isCanonicalAbsolutePathInsideRoot(packageRoot, builderPath)) {
-    throw new Error('Resolved Plugin UI builder entrypoint must remain inside @happier-dev/plugin-sdk');
-  }
-  const resolvedBuilderPath = realpathSync(builderPath);
-  if (!statSync(resolvedBuilderPath).isFile() || !isCanonicalAbsolutePathInsideRoot(packageRoot, resolvedBuilderPath)) {
-    throw new Error('Resolved Plugin UI builder entrypoint must be a contained regular file');
-  }
-  return resolvedBuilderPath;
-}
-
 export function resolvePluginAuthorToolchainSpawnInvocation(
   input: PluginAuthorToolchainSpawnInput,
 ): PluginAuthorToolchainSpawnInvocation {
@@ -654,6 +578,7 @@ export type ManagedPluginPnpmRunResult =
 
 /** Source-workspace dependencies belong to the repository installer, not pnpm's author install. */
 function prepareSourceWorkspacePluginDependencies(projectRoot: string): boolean {
+  if (!resolvePluginAuthorSourceWorkspace(projectRoot)) return false;
   let packageJson: unknown;
   try {
     packageJson = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8'));
@@ -663,22 +588,6 @@ function prepareSourceWorkspacePluginDependencies(projectRoot: string): boolean 
   }
   if (!isRecord(packageJson) || typeof packageJson.name !== 'string'
     || !packageJson.name.startsWith('@happier-dev/plugins-')) return false;
-  let repoRoot: string;
-  try {
-    repoRoot = findRepoRoot(projectRoot);
-  } catch {
-    return false;
-  }
-  const workspaceRoot = resolveWorkspaceSourceDir({ repoRoot, packageName: packageJson.name });
-  try {
-    const physicalProjectRoot = realpathSync(projectRoot);
-    if (!isCanonicalAbsolutePathInsideRoot(realpathSync(repoRoot), physicalProjectRoot)
-      || !canonicalAbsolutePathsEqual(physicalProjectRoot, realpathSync(workspaceRoot))) return false;
-  } catch (error) {
-    if (error && typeof error === 'object' && Reflect.get(error, 'code') === 'ENOENT') return false;
-    throw error;
-  }
-
   // Check the declarations through ordinary package resolution. No host alias,
   // public-author override, install or shared-tree refresh is involved. Missing
   // required dependencies remain an explicit preparation failure.
@@ -1120,7 +1029,7 @@ export async function runPluginUiArtifactBuild(
       }
       result = await deps.spawn({
         command: runtimeCommand,
-        args: [uiBuildBin, '--project-root', projectRoot, ...(manifestPath ? ['--manifest-path', manifestPath] : [])],
+        args: resolvePluginUiBuildArguments({ projectRoot, builderPath: uiBuildBin, manifestPath }),
         cwd: projectRoot,
         env: deps.processEnv,
         ...(params.signal ? { signal: params.signal } : {}),

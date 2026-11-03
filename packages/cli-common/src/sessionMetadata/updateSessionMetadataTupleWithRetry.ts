@@ -1,5 +1,6 @@
 import { SessionSharedMetadataV1Schema, createSessionOwnerMetadataV1, projectSessionOwnerCompatibilityViewV1, projectSessionSharedMetadataV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
-import type { SessionMetadataTuplePatchV1, SessionMetadataOwnerMigrationPatchV1, SessionOwnerMetadataEnvelopeV1, SessionOwnerMetadataV1, SessionSharedMetadataV1 } from '@happier-dev/protocol';
+import { projectSessionDisplayV1, SessionDisplayProjectionV1Schema, SessionSharedDisplayEnvelopeV1Schema, SessionOwnerDisplayEnvelopeV1Schema } from '@happier-dev/protocol';
+import type { SessionMetadataTuplePatchV1, SessionMetadataOwnerMigrationPatchV1, SessionOwnerMetadataEnvelopeV1, SessionOwnerMetadataV1, SessionSharedMetadataV1, SessionDisplayProjectionV1, SessionSharedDisplayV1, SessionOwnerDisplayV1, SessionSharedDisplayEnvelopeV1, SessionOwnerDisplayEnvelopeV1 } from '@happier-dev/protocol';
 
 export type SessionMetadataOwnerTupleMutationValueV1<M, A> = Readonly<{
   metadata: M;
@@ -42,6 +43,9 @@ export type SessionMetadataOwnerTupleMutationSnapshotV1<M, A> = Readonly<{
   ownerMetadataEnvelope: SessionOwnerMetadataEnvelopeV1;
   agentStateVersion: number;
   agentStateCiphertext: string | null;
+  displayProjectionV1?: SessionDisplayProjectionV1 | null;
+  /** Actual leaf-open results from this captured full read; never wire authority. */
+  displayProjectionV1Availability?: Readonly<{ shared: boolean; owner: boolean }>;
   value: SessionMetadataOwnerTupleMutationValueV1<M, A>;
 }>;
 
@@ -51,6 +55,7 @@ export type SessionMetadataSharedEditorTupleMutationSnapshotV1<M> =
     metadataLayoutVersion: 1;
     metadataVersion: number;
     sharedMetadataCiphertext: string;
+    displayProjectionV1?: SessionDisplayProjectionV1 | null;
     value: SessionMetadataSharedEditorTupleMutationValueV1<M>;
   }>;
 
@@ -79,6 +84,10 @@ export type SessionMetadataTupleMutationV1<M, A> =
    */
   | Readonly<{
       kind: 'ownerMigration';
+    }>
+  /** Repair retained display through the same owner tuple CAS, without a value edit. */
+  | Readonly<{
+      kind: 'ensureDisplayProjection';
     }>;
 
 export type SessionMetadataTupleMutationCryptoV1 = Readonly<{
@@ -87,6 +96,10 @@ export type SessionMetadataTupleMutationCryptoV1 = Readonly<{
     ownerMetadata: SessionOwnerMetadataV1,
   ) => SessionOwnerMetadataEnvelopeV1
     | Promise<SessionOwnerMetadataEnvelopeV1>;
+  /** Seal only the canonical projected value with the captured Session key/mode. */
+  encodeSharedDisplay?: (display: SessionSharedDisplayV1) => SessionSharedDisplayEnvelopeV1 | Promise<SessionSharedDisplayEnvelopeV1>;
+  /** Owner authority only. Shared editors never call this Account-domain encoder. */
+  encodeOwnerDisplay?: (display: SessionOwnerDisplayV1) => SessionOwnerDisplayEnvelopeV1 | Promise<SessionOwnerDisplayEnvelopeV1>;
 }>;
 
 export type SessionMetadataOwnerMigrationCurrentnessV1 =
@@ -199,6 +212,52 @@ function tupleValuesEqual(left: unknown, right: unknown): boolean {
     && tupleValuesEqual(leftRecord[key], rightRecord[key]));
 }
 
+/** Produce display from this exact tuple transition, never from an adapter-owned summary. */
+async function prepareDisplayProjection<M, A>(params: Readonly<{
+  current?: SessionMetadataOwnerTupleMutationSnapshotV1<M, A> | SessionMetadataSharedEditorTupleMutationSnapshotV1<M>;
+  sharedMetadata: SessionSharedMetadataV1;
+  ownerMetadata?: SessionOwnerMetadataV1;
+  sourceMetadataVersion: number;
+  crypto: SessionMetadataTupleMutationCryptoV1;
+  requireAvailableProof?: true;
+}>): Promise<SessionDisplayProjectionV1 | null> {
+  try {
+    const next = projectSessionDisplayV1(params);
+    const parsed = SessionDisplayProjectionV1Schema.safeParse(params.current?.displayProjectionV1);
+    const current = parsed.success && params.current
+      && parsed.data.sourceMetadataVersion === params.current.metadataVersion
+      && parsed.data.metadataLayoutVersion === params.current.metadataLayoutVersion ? parsed.data : null;
+    // Derive both semantic values before any crypto callback. The tuple's existing
+    // CAS proves the unchanged full source; the sidecar has no independent writer.
+    const previous = current && params.current ? projectSessionDisplayV1({
+      sharedMetadata: params.current.value.sharedMetadata,
+      ...(params.current.mode === 'owner' ? { ownerMetadata: params.current.value.ownerMetadata } : {}),
+    }) : null;
+    const availability = params.current?.mode === 'owner' ? params.current.displayProjectionV1Availability : undefined;
+    const shared = current && previous && (!params.requireAvailableProof || availability?.shared === true)
+      && tupleValuesEqual(previous.shared, next.shared)
+      ? current.shared
+      : params.crypto.encodeSharedDisplay
+        ? SessionSharedDisplayEnvelopeV1Schema.parse(await params.crypto.encodeSharedDisplay(next.shared)) : null;
+    if (!shared) return null;
+    const owner = next.owner
+      ? current?.owner && previous?.owner && (!params.requireAvailableProof || availability?.owner === true)
+        && tupleValuesEqual(previous.owner, next.owner)
+        ? current.owner
+        : params.crypto.encodeOwnerDisplay
+          ? SessionOwnerDisplayEnvelopeV1Schema.parse(await params.crypto.encodeOwnerDisplay(next.owner)) : undefined
+      : undefined;
+    return SessionDisplayProjectionV1Schema.parse({ v: 1, metadataLayoutVersion: 1,
+      sourceMetadataVersion: params.sourceMetadataVersion, shared, ...(owner ? { owner } : {}) });
+  } catch (error) {
+    if (params.requireAvailableProof) throw error;
+    // Display is a derived leaf; a failed projection or seal withdraws it from
+    // this CAS without preventing the authoritative full tuple mutation.
+    console.warn('[SessionDisplay] Projection unavailable; withdrawing display from metadata tuple write');
+    return null;
+  }
+}
+
 function applyMetadataUpdate<M>(metadata: M, update: (metadata: M) => M | Promise<M>): M | Promise<M> {
   const readContext = (value: unknown): unknown => value !== null && typeof value === 'object'
     ? Reflect.get(value, 'attestedContext') : undefined;
@@ -244,13 +303,15 @@ function tupleSourceIsExact<M, A>(
         right.ownerMetadataEnvelope,
       )
       && left.agentStateVersion === right.agentStateVersion
-      && left.agentStateCiphertext === right.agentStateCiphertext;
+      && left.agentStateCiphertext === right.agentStateCiphertext
+      && tupleValuesEqual(left.displayProjectionV1 ?? null, right.displayProjectionV1 ?? null);
   }
   return left.mode === 'shared_editor'
     && right.mode === 'shared_editor'
     && left.metadataVersion === right.metadataVersion
     && left.sharedMetadataCiphertext
-      === right.sharedMetadataCiphertext;
+      === right.sharedMetadataCiphertext
+    && tupleValuesEqual(left.displayProjectionV1 ?? null, right.displayProjectionV1 ?? null);
 }
 
 function tupleIsExactPreparedResult<M, A>(params: Readonly<{
@@ -275,7 +336,8 @@ function tupleIsExactPreparedResult<M, A>(params: Readonly<{
       )
       && refreshed.agentStateVersion === source.agentStateVersion + 1
       && refreshed.agentStateCiphertext
-        === prepared.agentStateCiphertext;
+        === prepared.agentStateCiphertext
+      && tupleValuesEqual(refreshed.displayProjectionV1 ?? null, prepared.displayProjectionV1);
   }
   if (
     source.mode === 'owner'
@@ -289,16 +351,19 @@ function tupleIsExactPreparedResult<M, A>(params: Readonly<{
         refreshed.ownerMetadataEnvelope,
         prepared.ownerMetadataEnvelope,
       )
-      && refreshed.agentStateVersion === source.agentStateVersion + 1
+      && refreshed.agentStateVersion === source.agentStateVersion
+        + (prepared.agentStateCiphertext === source.agentStateCiphertext ? 0 : 1)
       && refreshed.agentStateCiphertext
-        === prepared.agentStateCiphertext;
+        === prepared.agentStateCiphertext
+      && tupleValuesEqual(refreshed.displayProjectionV1 ?? null, prepared.displayProjectionV1);
   }
   return source.mode === 'shared_editor'
     && prepared.mode === 'shared_editor'
     && refreshed.mode === 'shared_editor'
     && refreshed.metadataVersion === source.metadataVersion + 1
     && refreshed.sharedMetadataCiphertext
-      === prepared.sharedMetadataCiphertext;
+      === prepared.sharedMetadataCiphertext
+    && tupleValuesEqual(refreshed.displayProjectionV1 ?? null, prepared.displayProjectionV1);
 }
 
 type PreparedOwnerMutation<M, A> = Readonly<{
@@ -307,12 +372,15 @@ type PreparedOwnerMutation<M, A> = Readonly<{
   sharedMetadataCiphertext: string;
   ownerMetadataEnvelope: SessionOwnerMetadataEnvelopeV1;
   agentStateCiphertext: string | null;
+  displayProjectionV1: SessionDisplayProjectionV1 | null;
+  displayProjectionV1Availability?: Readonly<{ shared: boolean; owner: boolean }>;
 }>;
 
 type PreparedSharedEditorMutation<M> = Readonly<{
   mode: 'shared_editor';
   value: SessionMetadataSharedEditorTupleMutationValueV1<M>;
   sharedMetadataCiphertext: string;
+  displayProjectionV1: SessionDisplayProjectionV1 | null;
 }>;
 
 function assertReviewedMetadataRevision<M, A>(current: SessionMetadataTupleMutationSnapshotV1<M, A>, mutation: SessionMetadataTupleMutationV1<M, A>): void {
@@ -361,6 +429,14 @@ async function prepareLegacyOwnerMigration<M, A>(params: Readonly<{
     metadata: updatedMetadata,
     agentState: updatedAgentState,
   });
+  const displayProjectionV1 = await prepareDisplayProjection({
+    sharedMetadata, ownerMetadata: createdOwnerMetadata.ownerMetadata,
+    sourceMetadataVersion: current.metadataVersion + 1, crypto,
+    ...(mutation.kind === 'ensureDisplayProjection' ? { requireAvailableProof: true } : {}),
+  });
+  if (mutation.kind === 'ensureDisplayProjection' && !displayProjectionV1?.owner) {
+    throw createTupleMutationError('Session display production requires shared and owner encoders', 'metadata_privacy_upgrade_required');
+  }
   return {
     mode: 'owner',
     value: {
@@ -372,6 +448,9 @@ async function prepareLegacyOwnerMigration<M, A>(params: Readonly<{
       ownerMetadata: createdOwnerMetadata.ownerMetadata,
       agentState: updatedAgentState,
     },
+    displayProjectionV1,
+    ...(mutation.kind === 'ensureDisplayProjection'
+      ? { displayProjectionV1Availability: { shared: true, owner: true } } : {}),
     sharedMetadataCiphertext: await crypto.encryptPayload(sharedMetadata),
     ownerMetadataEnvelope:
       await crypto.encodeOwnerMetadata(createdOwnerMetadata.ownerMetadata),
@@ -403,6 +482,7 @@ function buildOwnerMigrationPatchV1<M, A>(params: Readonly<{
     },
     target: {
       metadataLayoutVersion: 1,
+      displayProjectionV1: params.prepared.displayProjectionV1,
       sharedMetadata: {
         ciphertext: params.prepared.sharedMetadataCiphertext,
       },
@@ -423,6 +503,10 @@ function buildCommittedOwnerSnapshot<M, A>(params: Readonly<{
     mode: 'owner',
     metadataLayoutVersion: 1,
     metadataVersion: params.metadataVersion,
+    displayProjectionV1: params.prepared.displayProjectionV1 === null ? null
+      : { ...params.prepared.displayProjectionV1, sourceMetadataVersion: params.metadataVersion },
+    ...(params.prepared.displayProjectionV1Availability
+      ? { displayProjectionV1Availability: params.prepared.displayProjectionV1Availability } : {}),
     sharedMetadataCiphertext: params.prepared.sharedMetadataCiphertext,
     ownerMetadataEnvelope: params.prepared.ownerMetadataEnvelope,
     agentStateVersion: params.agentStateVersion,
@@ -457,6 +541,27 @@ async function prepareTupleMutation<M, A>(params: Readonly<{
   // A layout-1 tuple has already been migrated; the explicit request is complete.
   if (mutation.kind === 'ownerMigration') return null;
 
+  if (mutation.kind === 'ensureDisplayProjection') {
+    if (current.mode !== 'owner') {
+      throw createTupleMutationError('Display backfill requires the full owner tuple', 'metadata_privacy_upgrade_required');
+    }
+    const parsed = SessionDisplayProjectionV1Schema.safeParse(current.displayProjectionV1);
+    if (parsed.success && parsed.data.sourceMetadataVersion === current.metadataVersion
+      && parsed.data.metadataLayoutVersion === current.metadataLayoutVersion && parsed.data.owner
+      && current.displayProjectionV1Availability?.shared === true && current.displayProjectionV1Availability.owner === true) return null;
+    const displayProjectionV1 = await prepareDisplayProjection({ current,
+      sharedMetadata: current.value.sharedMetadata, ownerMetadata: current.value.ownerMetadata,
+      sourceMetadataVersion: current.metadataVersion + 1, crypto, requireAvailableProof: true,
+    });
+    if (!displayProjectionV1?.owner) {
+      throw createTupleMutationError('Session display production requires shared and owner encoders', 'metadata_privacy_upgrade_required');
+    }
+    return { mode: 'owner', value: current.value, displayProjectionV1,
+      displayProjectionV1Availability: { shared: true, owner: true },
+      sharedMetadataCiphertext: current.sharedMetadataCiphertext,
+      ownerMetadataEnvelope: current.ownerMetadataEnvelope, agentStateCiphertext: current.agentStateCiphertext };
+  }
+
   if (current.mode === 'shared_editor') {
     if (mutation.kind !== 'metadata') {
       throw createTupleMutationError(
@@ -485,6 +590,8 @@ async function prepareTupleMutation<M, A>(params: Readonly<{
         ownerMetadata: null,
         agentState: null,
       },
+      displayProjectionV1: await prepareDisplayProjection({ current, sharedMetadata: strictShared.data,
+        sourceMetadataVersion: current.metadataVersion + 1, crypto }),
       sharedMetadataCiphertext:
         await crypto.encryptPayload(strictShared.data),
     };
@@ -538,15 +645,18 @@ async function prepareTupleMutation<M, A>(params: Readonly<{
   const ownerMetadata = ownerMetadataChanged
     ? createdOwnerMetadata.ownerMetadata
     : current.value.ownerMetadata;
-  const ownerMetadataEnvelope = ownerMetadataChanged
-    ? await crypto.encodeOwnerMetadata(ownerMetadata)
-    : current.ownerMetadataEnvelope;
   const canonicalMetadata = projectSessionOwnerCompatibilityViewV1({
     sharedMetadata,
     ownerMetadata,
   }) as unknown as M;
+  const displayProjectionV1 = await prepareDisplayProjection({ current, sharedMetadata, ownerMetadata,
+    sourceMetadataVersion: current.metadataVersion + 1, crypto });
+  const ownerMetadataEnvelope = ownerMetadataChanged
+    ? await crypto.encodeOwnerMetadata(ownerMetadata)
+    : current.ownerMetadataEnvelope;
   return {
     mode: 'owner',
+    displayProjectionV1,
     value: {
       metadata: canonicalMetadata,
       sharedMetadata,
@@ -555,9 +665,12 @@ async function prepareTupleMutation<M, A>(params: Readonly<{
     },
     sharedMetadataCiphertext: await crypto.encryptPayload(sharedMetadata),
     ownerMetadataEnvelope,
-    agentStateCiphertext: updatedAgentState === null
-      ? null
-      : await crypto.encryptPayload(updatedAgentState),
+    // Metadata mutations carry the exact stored request bytes. Resealing an
+    // unchanged Agent state would advance its version and stale in-flight
+    // Follow originals even though no request changed.
+    agentStateCiphertext: mutation.kind === 'metadata'
+      ? current.agentStateCiphertext
+      : updatedAgentState === null ? null : await crypto.encryptPayload(updatedAgentState),
   };
 }
 
@@ -580,6 +693,7 @@ function buildPreparedSessionMetadataTuplePatchV1<M, A>(
     return {
       mode: 'owner',
       metadataLayoutVersion: 1,
+      displayProjectionV1: prepared.displayProjectionV1,
       expectedOwnerMetadata: current.ownerMetadataEnvelope,
       sharedMetadata: {
         ciphertext: prepared.sharedMetadataCiphertext,
@@ -599,6 +713,7 @@ function buildPreparedSessionMetadataTuplePatchV1<M, A>(
     return {
       mode: 'shared_editor',
       metadataLayoutVersion: 1,
+      displayProjectionV1: prepared.displayProjectionV1,
       sharedMetadata: {
         ciphertext: prepared.sharedMetadataCiphertext,
         expectedVersion: current.metadataVersion,
@@ -617,14 +732,14 @@ export async function prepareSessionMetadataTuplePatchV1<M, A>(
       SessionMetadataTupleMutationSnapshotV1<M, A>,
       SessionMetadataLegacyOwnerTupleMutationSnapshotV1<M, A>
     >;
-    mutation: SessionMetadataTupleMutationV1<M, A>;
+    mutation: Exclude<SessionMetadataTupleMutationV1<M, A>, Readonly<{ kind: 'ensureDisplayProjection' }>>;
     crypto: SessionMetadataTupleMutationCryptoV1;
   }>,
 ): Promise<SessionMetadataTuplePatchV1 | null> {
-  const prepared = await prepareTupleMutation(params);
+  const prepared = await prepareTupleMutation<M, A>(params);
   return prepared === null
     ? null
-    : buildPreparedSessionMetadataTuplePatchV1(params.current, prepared);
+    : buildPreparedSessionMetadataTuplePatchV1<M, A>(params.current, prepared);
 }
 
 /**
@@ -632,15 +747,19 @@ export async function prepareSessionMetadataTuplePatchV1<M, A>(
  *
  * This owner applies the requested semantic mutation, splits owner/shared
  * projections, preserves an unchanged exact owner envelope, encrypts the
- * rebuilt tuple through typed client callbacks, serializes the CAS PATCH, and
+ * rebuilt tuple and its recipient-scoped display through typed client callbacks,
+ * serializes one CAS PATCH, and
  * reapplies the same semantic mutation after an explicit conflict refresh.
  * Transport adapters only open/seal/encrypt, commit, refetch, and update state.
  *
  * Ordinary layout 0 delegates to the compatible legacy owner unless owner
  * migration currentness is available, in which case the mutation commits the
  * layout-0 → layout-1 split. An explicit `ownerMigration` request performs that
- * split with no value change. Ordinary owner and shared-editor conflicts retain
- * their bounded retry behavior.
+ * split with no value change. `ensureDisplayProjection` additionally repairs an
+ * unavailable display from an authorized full-owner snapshot, requiring actual
+ * Account-material currentness even for layout 1. Its leaf availability is
+ * read-local proof, not a new authority or a wire field. Ordinary owner and
+ * shared-editor conflicts retain their bounded retry behavior.
  */
 export async function updateSessionMetadataTupleWithRetry<M, A>(
   params: Readonly<{
@@ -698,6 +817,13 @@ export async function updateSessionMetadataTupleWithRetry<M, A>(
       const source:
         SessionMetadataLegacyOwnerTupleMutationSnapshotV1<M, A> =
           current;
+      // Ensure cannot inherit an ordinary layout-one writer's mode-only input.
+      // Its adapter proves actual Account material against captured currentness.
+      const ensureCurrentness = params.mutation.kind === 'ensureDisplayProjection'
+        ? await params.resolveOwnerMigrationCurrentness?.() ?? params.ownerMigrationCurrentness : undefined;
+      if (params.mutation.kind === 'ensureDisplayProjection' && !ensureCurrentness) {
+        throw createTupleMutationError('Session display owner currentness is unavailable', 'metadata_privacy_upgrade_required');
+      }
       const prepared = await prepareLegacyOwnerMigration({
         current: source,
         mutation: params.mutation,
@@ -706,7 +832,7 @@ export async function updateSessionMetadataTupleWithRetry<M, A>(
       if (prepared === null) return source;
       params.assertCurrent?.();
       const ownerMigrationCurrentness =
-        await params.resolveOwnerMigrationCurrentness?.()
+        ensureCurrentness ?? await params.resolveOwnerMigrationCurrentness?.()
         ?? params.ownerMigrationCurrentness;
       if (!ownerMigrationCurrentness) {
         throw createTupleMutationError(
@@ -738,6 +864,7 @@ export async function updateSessionMetadataTupleWithRetry<M, A>(
         }
         if (
           refreshed
+          && params.mutation.kind !== 'ensureDisplayProjection'
           && tupleIsExactPreparedResult({
             source,
             prepared,
@@ -789,6 +916,7 @@ export async function updateSessionMetadataTupleWithRetry<M, A>(
         })();
       if (
         refreshed
+        && params.mutation.kind !== 'ensureDisplayProjection'
         && tupleIsExactPreparedResult({
           source,
           prepared,
@@ -825,7 +953,7 @@ export async function updateSessionMetadataTupleWithRetry<M, A>(
   }
 
   if (current.mode === 'legacy_owner') {
-    if (params.mutation.kind === 'ownerMigration') {
+    if (params.mutation.kind === 'ownerMigration' || params.mutation.kind === 'ensureDisplayProjection') {
       throw createTupleMutationError(
         'Session metadata owner migration currentness is unavailable',
         'metadata_privacy_upgrade_required',
@@ -868,6 +996,13 @@ export async function updateSessionMetadataTupleWithRetry<M, A>(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     params.assertCurrent?.();
+    if (params.mutation.kind === 'ensureDisplayProjection') {
+      const ownerCurrentness = await params.resolveOwnerMigrationCurrentness?.() ?? params.ownerMigrationCurrentness;
+      if (current.mode !== 'owner' || !ownerCurrentness) {
+        throw createTupleMutationError('Session display owner currentness is unavailable', 'metadata_privacy_upgrade_required');
+      }
+      params.assertCurrent?.();
+    }
     const prepared:
       | PreparedOwnerMutation<M, A>
       | PreparedSharedEditorMutation<M>
@@ -912,6 +1047,7 @@ export async function updateSessionMetadataTupleWithRetry<M, A>(
       }
       if (
         refreshed
+        && params.mutation.kind !== 'ensureDisplayProjection'
         && tupleIsExactPreparedResult({
           source: current,
           prepared,
@@ -948,19 +1084,8 @@ export async function updateSessionMetadataTupleWithRetry<M, A>(
             'metadata_privacy_upgrade_required',
           );
         }
-        return {
-          mode: 'owner',
-          metadataLayoutVersion: 1,
-          metadataVersion: result.metadataVersion,
-          sharedMetadataCiphertext:
-            prepared.sharedMetadataCiphertext,
-          ownerMetadataEnvelope:
-            prepared.ownerMetadataEnvelope,
-          agentStateVersion: result.agentStateVersion,
-          agentStateCiphertext:
-            prepared.agentStateCiphertext,
-          value: prepared.value,
-        };
+        return buildCommittedOwnerSnapshot({ prepared,
+          metadataVersion: result.metadataVersion, agentStateVersion: result.agentStateVersion });
       }
       if (prepared.mode !== 'shared_editor') {
         throw createTupleMutationError(
@@ -972,6 +1097,8 @@ export async function updateSessionMetadataTupleWithRetry<M, A>(
         mode: 'shared_editor',
         metadataLayoutVersion: 1,
         metadataVersion: result.metadataVersion,
+        displayProjectionV1: prepared.displayProjectionV1 === null ? null
+          : { ...prepared.displayProjectionV1, sourceMetadataVersion: result.metadataVersion },
         sharedMetadataCiphertext:
           prepared.sharedMetadataCiphertext,
         value: prepared.value,
@@ -980,6 +1107,14 @@ export async function updateSessionMetadataTupleWithRetry<M, A>(
 
     params.assertCurrent?.();
     if (attempt >= maxAttempts) break;
+    // Read the retry snapshot after contention backoff. Waiting after the read
+    // makes each retry stale again while the runner keeps publishing.
+    await params.waitBeforeRetry?.({
+      attempt,
+      nextAttempt: attempt + 1,
+      maxAttempts,
+    });
+    params.assertCurrent?.();
     const next: SessionMetadataTupleMutationSnapshotV1<M, A> | undefined =
       result.currentSnapshot
       ?? await (async (): Promise<
@@ -1000,12 +1135,6 @@ export async function updateSessionMetadataTupleWithRetry<M, A>(
       );
     }
     current = next;
-    params.assertCurrent?.();
-    await params.waitBeforeRetry?.({
-      attempt,
-      nextAttempt: attempt + 1,
-      maxAttempts,
-    });
     params.assertCurrent?.();
   }
 

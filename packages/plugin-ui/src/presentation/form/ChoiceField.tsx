@@ -212,7 +212,7 @@ export function HappierChoiceField<Value = string>(
   const noMatches = localization?.translate('happier.plugin-ui.select.noMatches', 'No matches') ?? 'No matches';
   const searchLabel = localization?.translate('happier.plugin-ui.select.search', 'Search') ?? 'Search';
   return (
-    <View ref={anchorRef} collapsable={false} style={{ gap: theme.spacing.small, alignSelf: 'stretch' }}>
+    <View style={{ gap: theme.spacing.small, alignSelf: 'stretch' }}>
       <HappierPressable
         testID={
           props.testID === undefined
@@ -235,6 +235,8 @@ export function HappierChoiceField<Value = string>(
       >
         {(state) => (
           <HappierFieldBoxTrigger
+            // The choices hang from the drawn box at its width, not from the wider press row.
+            boxRef={anchorRef}
             span="column"
             colors={{
               borderColor: palette.controlBorder,
@@ -275,6 +277,8 @@ export function HappierChoiceField<Value = string>(
             autoFocusOnOpen: true,
             onRequestClose: () => setOpen(false),
             content: (controls) => (
+              // The choices stand on the host's menu step, like every anchored menu (absent, they float flat).
+              <View style={[{ borderRadius: theme.radii.panel }, palette.menuLift ?? null]}>
               <HappierSurface
                 materialRole="floating"
                 nested
@@ -321,6 +325,7 @@ export function HappierChoiceField<Value = string>(
                   </HappierScrollArea>
                 </View>
               </HappierSurface>
+              </View>
             ),
           })
         : null}

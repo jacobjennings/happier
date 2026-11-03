@@ -19,6 +19,8 @@ import { ProviderOriginRelativePathSchema } from '../originRelativePathSchema.js
 import { ProviderEndpointUrlSyntaxSchema } from '../endpointUrlSchema.js';
 import { ProviderHttpsUrlSchema } from '../httpsUrlSchema.js';
 import { ProviderPublicHeadersV1Schema } from '../publicHeadersSchema.js';
+import { ProviderEndpointPolicyV1Shape } from '../endpointPolicyV1.js';
+export { ProviderEndpointAddressConstraintV1Schema, ProviderModelIdPatternV1Schema, ProviderPublicHeaderHintsV1Schema, providerEndpointPolicySecurityFactsV1 } from '../endpointPolicyV1.js';
 import { ProviderModelIdSchema } from '../ids.js';
 import { ProviderAgentTargetKeySchema } from '../ids.js';
 import { EnvironmentVariableSchema } from '../../profiles/environmentVariables.js';
@@ -96,10 +98,11 @@ export const ProviderEndpointTemplateV1Schema = lazyZodSchema(() => z.strictObje
   baseUrl: z.optional(ProviderEndpointUrlSyntaxSchema),
   localUrlCandidates: z.optional(z.array(ProviderEndpointUrlSyntaxSchema).check(z.minLength(1), z.maxLength(16))),
   publicHeaders: z.optional(ProviderPublicHeadersV1Schema),
+  ...ProviderEndpointPolicyV1Shape,
   capabilities: ProviderCompatibilityCapabilitiesV1Schema,
 }).check(z.superRefine((value, ctx) => {
-  if (Boolean(value.baseUrl) === Boolean(value.localUrlCandidates)) {
-    ctx.addIssue({ code: 'custom', message: 'Exactly one of baseUrl or localUrlCandidates is required' });
+  if ([Boolean(value.baseUrl), Boolean(value.localUrlCandidates), value.requiresEndpointOverride === true].filter(Boolean).length !== 1) {
+    ctx.addIssue({ code: 'custom', message: 'Exactly one endpoint location is required' });
   }
 })));
 export type ProviderEndpointTemplateV1 = z.infer<typeof ProviderEndpointTemplateV1Schema>;
@@ -127,6 +130,8 @@ export const ProviderManagedRuntimeDeclarationV1Schema = lazyZodSchema(() => z.s
   kind: z.literal('managed'),
   /** Opts connected-account request-auth consumers into daemon connection custody. */
   sharing: z.optional(z.literal('connectionMachine')),
+  /** Implements the private exact-source envelope consumed by the host broker. */
+  sourceEnvelopeTransport: z.optional(z.literal('cpx-v1')),
   dependencies: z.optional(z.array(asProtocolZod(PluginContributionLocalIdSchema)).check(z.maxLength(16))),
   connectedAccounts: z.optional(z.array(z.extend(ConnectedAccountPurposeDeclarationV1Schema, {
     /** Exact managed endpoints supported by this upstream purpose; absent means no broker route. */
@@ -223,6 +228,7 @@ export type ResolvedProviderManagedConnectedAccountPurposeDeclarationV1 =
 export type ResolvedProviderManagedRuntimeDeclarationV1 = Readonly<{
   kind: 'managed';
   sharing?: 'connectionMachine';
+  sourceEnvelopeTransport?: 'cpx-v1';
   dependencies: string[];
   connectedAccounts:
     ResolvedProviderManagedConnectedAccountPurposeDeclarationV1[];
@@ -371,6 +377,7 @@ export function resolveProviderManagedRuntimeDeclarationV1(input: Readonly<{
   return Object.freeze({
     kind: 'managed',
     ...(parsed.sharing === undefined ? {} : { sharing: parsed.sharing }),
+    ...(parsed.sourceEnvelopeTransport === undefined ? {} : { sourceEnvelopeTransport: parsed.sourceEnvelopeTransport }),
     dependencies,
     connectedAccounts,
     ...(connectedAccountPurposeBindingPolicy === undefined

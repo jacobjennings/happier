@@ -50,7 +50,6 @@ export type ResolveEntryRestoreTargetParams<TItem> = Readonly<{
     anchorIndexResolver: (anchor: EntryRestoreAnchorSnapshot, items: readonly TItem[]) => number | null;
     anchorSeqLoadedResolver?: (anchorSeq: number, items: readonly TItem[]) => boolean;
     nearestSurvivingResolver: (anchor: EntryRestoreAnchorSnapshot, items: readonly TItem[]) => number | null;
-    anchorSeqResolver?: (anchor: EntryRestoreAnchorSnapshot) => number | null;
 }>;
 
 export function resolveEntryRestoreTarget<TItem>(
@@ -69,7 +68,7 @@ export function resolveEntryRestoreTarget<TItem>(
         anchor.itemOffsetPx,
         params.items.length,
     ) : null;
-    const anchorSeqHint = anchor ? resolveDurableAnchorSeqHint(anchor, params.anchorSeqResolver) : null;
+    const anchorSeqHint = anchor ? resolveDurableAnchorSeqHint(anchor) : null;
     if (
         !params.snapshot.shouldFollowBottom &&
         params.canMaterializeOlder &&
@@ -179,13 +178,8 @@ function normalizeDimension(value: number): number {
     return Number.isFinite(value) ? value : 0;
 }
 
-function resolveDurableAnchorSeqHint(
-    anchor: EntryRestoreAnchorSnapshot,
-    resolver: ((anchor: EntryRestoreAnchorSnapshot) => number | null) | undefined,
-): number | null {
-    const stampedSeq = normalizeSeq(anchor.seq);
-    if (stampedSeq !== null) return stampedSeq;
-    return normalizeSeq(resolver?.(anchor));
+function resolveDurableAnchorSeqHint(anchor: EntryRestoreAnchorSnapshot): number | null {
+    return normalizeSeq(anchor.seq);
 }
 
 function normalizeSeq(value: unknown): number | null {

@@ -1,9 +1,7 @@
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import renderer, { act } from 'react-test-renderer';
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { installRestoreRouteCommonModuleMocks, resetRestoreRouteTestState } from './restoreRouteTestHelpers';
-
 
 type ReactActEnvironmentGlobal = typeof globalThis & {
     IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -34,7 +32,7 @@ installRestoreRouteCommonModuleMocks({
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         const routerMock = createExpoRouterMock({
-            router: { back: vi.fn(), push: pushSpy, replace: vi.fn() },
+            router: { back: vi.fn(), push: vi.fn(), replace: vi.fn() },
             params: {
                 provider: 'github',
                 reason: 'provider_already_linked',
@@ -44,6 +42,7 @@ installRestoreRouteCommonModuleMocks({
     },
 });
 
+// Camera permission and the server capability fetch are native/network boundaries.
 vi.mock('expo-camera', () => ({
     useCameraPermissions: () => [{ granted: true }, vi.fn(async () => ({ granted: true }))],
     CameraView: {
@@ -53,96 +52,31 @@ vi.mock('expo-camera', () => ({
         onModernBarcodeScanned: vi.fn(() => ({ remove: () => {} })),
     },
 }));
-const pushSpy = vi.fn();
-
-vi.mock('@/hooks/server/useFeatureDecision', () => ({
-    useFeatureDecision: () => ({ state: 'enabled' }),
-}));
-
-vi.mock('@/auth/context/AuthContext', () => ({
-    useAuth: () => ({ login: vi.fn(async () => {}) }),
-}));
-
-vi.mock('@/auth/providers/registry', () => ({
-    getAuthProvider: () => ({
-        id: 'github',
-        displayName: 'GitHub',
-        getRestoreRedirectNotice: () => ({
-            title: 'GitHub verified',
-            body: 'Restore your account key to finish signing in.',
-        }),
-    }),
-}));
-
-vi.mock('@/components/ui/buttons/RoundButton', () => ({
-    RoundButton: 'RoundButton',
-}));
-
-vi.mock('@/components/ui/layout/layout', () => ({
-    layout: { maxWidth: 1024 },
-    useLayoutMaxWidth: () => 1024,
-    useLayoutMaxWidthStyle: () => ({ maxWidth: 1024 }),
-}));
-
-vi.mock('@/auth/flows/qrStart', () => ({
-    generateAuthKeyPair: () => ({ publicKey: new Uint8Array([1]), secretKey: new Uint8Array([2]) }),
-    authQRStart: vi.fn(async () => ({ ok: false, reason: 'rejected', status: 401 })),
-}));
-
-vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
-    getActiveServerUrl: () => 'https://stack.example.test',
-    adoptHomeProfile: vi.fn(async () => ({ id: 'srv', serverUrl: 'https://stack.example.test' })),
-}));
-
-vi.mock('@/auth/flows/qrWait', () => ({
-    authQRWait: vi.fn(async () => null),
-}));
-
-vi.mock('@/encryption/base64', () => ({
-    encodeBase64: () => 'x',
-}));
-
-vi.mock('@/components/qr/QRCode', () => ({
-    QRCode: 'QRCode',
-}));
 
 vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
     getReadyServerFeatures: vi.fn(async () => null),
 }));
 
-vi.mock('@/utils/system/fireAndForget', () => ({
-    fireAndForget: (promise: Promise<unknown>) => {
-        void promise;
-    },
-}));
-
-afterEach(() => {
+afterEach(async () => {
+    await standardCleanup();
     vi.restoreAllMocks();
     resetRestoreRouteTestState();
 });
 
+const { InjectedAuthProvider } = await import('@/auth/context/AuthContext');
+const { githubAuthProvider } = await import('@/auth/providers/github');
+const { default: Screen } = await import('@/app/(app)/restore/index');
+
 describe('/restore', () => {
-    it('shows provider-specific restore notice when redirected after external auth', async () => {
-        vi.resetModules();
-        const { default: Screen } = await import('@/app/(app)/restore/index');
+    it('shows the real provider restore notice when redirected after external auth', async () => {
+        const screen = await renderScreen(<InjectedAuthProvider credentials={null}><Screen /></InjectedAuthProvider>);
 
-        let tree: ReturnType<typeof renderer.create> | undefined;
-        try {
-            const screen = await renderScreen(<Screen />);
-            tree = screen.tree;
-            if (!tree) throw new Error('Expected renderer');
+        expect(screen.findByTestId('restore-wizard')).toBeTruthy();
 
-            expect(screen.findByTestId('restore-wizard')).toBeTruthy();
-
-            const joined = screen.getTextContent();
-
-            expect(joined).toContain('GitHub verified');
-            expect(joined).toContain('Restore your account key to finish signing in.');
-        } finally {
-            act(() => {
-                tree?.unmount();
-            });
-        }
+        const notice = githubAuthProvider.getRestoreRedirectNotice?.({ reason: 'provider_already_linked' });
+        if (!notice) throw new Error('Expected the github provider restore notice');
+        const joined = screen.getTextContent();
+        expect(joined).toContain(notice.title);
+        expect(joined).toContain(notice.body);
     });
 });

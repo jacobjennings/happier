@@ -5,7 +5,6 @@ import { settingsParse } from '@/sync/domains/settings/settings';
 import {
   applyAccountVoiceCredentialSourceSelection,
   saveAndUseAccountVoiceCredential,
-  upsertAccountVoiceCredential,
 } from '@/voice/credentials/accountVoiceCredential';
 
 import { createDefaultVoiceProviderRegistry } from './defaultRegistry';
@@ -469,6 +468,7 @@ describe('projectVoiceSpeechCredentialReadiness', () => {
       executionMachineId: 'machine-a',
       rawAuthorization,
     })).toBe('ready');
+    // A raw grant inspected on another Machine never authorizes this execution Machine.
     expect(projectVoiceSpeechCredentialReadiness({
       connectedPurposes: { v: 1, bindings: [] },
       registry,
@@ -476,7 +476,7 @@ describe('projectVoiceSpeechCredentialReadiness', () => {
       providerId: qualifiedProviderId,
       settings: ready,
       executionMachineId: 'machine-a',
-      rawAuthorization,
-    })).toBe('ready');
+      rawAuthorization: { ...rawAuthorization, machineId: 'machine-b' },
+    })).toBe('unknown');
   });
 });

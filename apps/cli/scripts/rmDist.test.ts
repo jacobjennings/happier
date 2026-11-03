@@ -13,30 +13,17 @@ const workspaceBundleLockModulePath = fileURLToPath(
 );
 
 describe('rmDist', () => {
-  it('defaults to dist when no directory is provided', () => {
-    expect(resolveDistDir(['node', 'rmDist.mjs'])).toBe('dist');
-  });
-
-  it('defaults to dist when the first arg looks like a flag', () => {
-    expect(resolveDistDir(['node', 'rmDist.mjs', '--foo'])).toBe('dist');
-  });
-
-  it('uses the first arg when it looks like a directory name', () => {
-    expect(resolveDistDir(['node', 'rmDist.mjs', 'build-out'])).toBe('build-out');
-  });
-
-  it('rejects absolute paths', () => {
-    expect(resolveDistDir(['node', 'rmDist.mjs', '/'])).toBe('dist');
-  });
-
-  it('rejects path traversal segments', () => {
-    expect(resolveDistDir(['node', 'rmDist.mjs', '../../..'])).toBe('dist');
-    expect(resolveDistDir(['node', 'rmDist.mjs', 'dist/../..'])).toBe('dist');
-  });
-
-  it('rejects dot segments (avoid deleting the current directory)', () => {
-    expect(resolveDistDir(['node', 'rmDist.mjs', '.'])).toBe('dist');
-    expect(resolveDistDir(['node', 'rmDist.mjs', './dist'])).toBe('dist');
+  it.each([
+    { argv: [], expected: 'dist' },
+    { argv: ['--foo'], expected: 'dist' },
+    { argv: ['build-out'], expected: 'build-out' },
+    { argv: ['/'], expected: 'dist' },
+    { argv: ['../../..'], expected: 'dist' },
+    { argv: ['dist/../..'], expected: 'dist' },
+    { argv: ['.'], expected: 'dist' },
+    { argv: ['./dist'], expected: 'dist' },
+  ])('resolves $argv to the removable directory $expected (flags, absolute, traversal and dot segments fall back to dist)', ({ argv, expected }) => {
+    expect(resolveDistDir(['node', 'rmDist.mjs', ...argv])).toBe(expected);
   });
 
   it('keeps the previous package-dist entrypoint available while removing dist', async () => {
@@ -49,8 +36,9 @@ describe('rmDist', () => {
       writeFileSync(join(rootDir, 'package-dist', 'index.mjs'), 'export const previous = true;\n', 'utf8');
       process.chdir(rootDir);
 
+      // This case covers dist removal only; the lock owner has its own case below.
       await main(['node', 'rmDist.mjs'], {
-        lockModulePath: '',
+        skipLock: true,
       });
 
       expect(existsSync(join(rootDir, 'dist', 'index.mjs'))).toBe(false);

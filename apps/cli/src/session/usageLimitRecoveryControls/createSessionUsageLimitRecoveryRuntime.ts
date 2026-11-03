@@ -1,6 +1,9 @@
-import { accountSettingsParse, buildUsageLimitIssueFingerprint, SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY, SessionUsageLimitRecoveryV1Schema,
-  type AccountSettings, type SessionRuntimeIssueV1,
-  type SessionUsageLimitRecoveryV1 } from '@happier-dev/protocol';
+import { accountSettingsParse, type AccountSettings } from '@happier-dev/protocol/account/settings/accountSettings';
+import type { SessionRuntimeIssueV1 } from '@happier-dev/protocol/sessions/control/runtimeIssueV1';
+import {
+  buildUsageLimitIssueFingerprint, SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY, SessionUsageLimitRecoveryV1Schema,
+  type SessionUsageLimitRecoveryV1,
+} from '@happier-dev/protocol/sessions/state/valueSchemas/usageLimitRecovery';
 import { createStoredReadSchema } from '@happier-dev/protocol/json/storedReadSchema';
 import { AccountSettingMutationV1Schema } from '@happier-dev/protocol/account/settings/accountSettingMutationV1';
 import type { Metadata } from '@/api/types';
@@ -55,8 +58,6 @@ export function createSessionUsageLimitRecoveryRuntime(deps: Readonly<{
   const persist = async (intent: SessionUsageLimitRecoveryV1) => {
     const baseMetadata = deps.getMetadata() ?? {};
     await deps.updateMetadata((metadata) => {
-      const current = storedUsageLimitRecoverySchema.safeParse(metadata[SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY]);
-      if (current.success && current.data.runtimeAuthRecoveryAttemptId) return metadata;
       return mergeUsageLimitRecoveryFieldIntoMetadata({ latestMetadata: metadata,
         baseMetadata, candidateMetadata: { [SESSION_USAGE_LIMIT_RECOVERY_METADATA_KEY]: intent } }) as Metadata;
     });
@@ -222,7 +223,7 @@ export function createSessionUsageLimitRecoveryRuntime(deps: Readonly<{
       acceptedFailure = issue.source === 'usage_limit' ? issue : null;
       if (disposed || issue.source !== 'usage_limit' || !issue.usageLimit
         || issue.usageLimit.recoverability !== 'wait' || deps.getAccountSettings()?.usageLimitRecoverySettingsV1?.mode !== 'auto_wait') return;
-      if (!await (deps.isFeatureEnabled ?? resolveUsageLimitRecoveryEnabled)() || disposed || acceptedFailure !== issue || read()?.runtimeAuthRecoveryAttemptId) return;
+      if (!await (deps.isFeatureEnabled ?? resolveUsageLimitRecoveryEnabled)() || disposed || acceptedFailure !== issue) return;
       const existing = read();
       if (existing?.issueFingerprint === buildUsageLimitIssueFingerprint(issue)) return;
       const resumePromptMode = await resolveRoutedUsageLimitRecoveryResumePromptMode({ existingIntent: existing,

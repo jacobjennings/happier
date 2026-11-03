@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { resolveRepositoryCheckpointAvailability } from './availability';
 import { pruneRepositoryCheckpointRefs } from './cleanup';
 import { diffGitRepositoryCheckpoints } from './gitRepositoryCheckpointDiff';
-import { REPOSITORY_CHECKPOINT_RECEIPT_IDS } from './receipts';
 import { buildRepositoryCheckpointRef, buildRepositoryCheckpointRefs, parseRepositoryCheckpointRef } from './refs';
 import type { RepositoryCheckpointRef } from './types';
 import { scmDiffSummaryCacheStore } from '@/agent/executionRuns/tasks/scmDiffSummary/cache/cacheStore';
@@ -54,16 +53,6 @@ describe('repository checkpoint primitives', () => {
             phase: 'custom' as never,
             checkpointId: 'turn-1',
         })).toThrow('checkpoint phase is not supported');
-    });
-
-    it('declares every FD-0051 checkpoint receipt id in one module', () => {
-        expect(REPOSITORY_CHECKPOINT_RECEIPT_IDS).toEqual({
-            captured: 'checkpoint.captured',
-            aliased: 'checkpoint.aliased',
-            finalized: 'checkpoint.finalized',
-            diffComputed: 'checkpoint.diff_computed',
-            cleanupPruned: 'checkpoint.cleanup_pruned',
-        });
     });
 
     it('returns structured availability instead of throwing for unsupported repository states', () => {

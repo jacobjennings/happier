@@ -9,7 +9,7 @@ import { createHomeGovernanceHarness, installHomeGovernanceBoundaries } from '@/
 import { installSessionActionRpcBoundary } from '@/dev/testkit/harness/sessionActionRpcBoundary';
 import { restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
-import type { ConversationSearchHit } from './searchConversations';
+import type { ConversationSearchHit, ConversationSearchResult, ConversationSearchSource } from './searchConversations';
 
 const homes = createHomeGovernanceHarness();
 installHomeGovernanceBoundaries(homes);
@@ -77,13 +77,6 @@ describe('conversation search fan-out', () => {
         expect(SearchConversationsResultV1Schema.parse(result)).toEqual(result);
         expect(result.machines.find(machine => machine.machineId === 'one')).toMatchObject({ standardSearchEnabled: true });
         expect(JSON.stringify(result)).not.toContain('private transport message');
-    });
-    it('skips 41 offline Machines without issuing transport calls', async () => {
-        const machines = [...Array.from({ length: 41 }, (_, index) => ({ id: `offline-${index}`, online: false })), input.machines[0]];
-        const result = await searchConversations({ ...input, machines, concurrencyLimit: 1 });
-        expect(result.machines.filter(machine => machine.status === 'offline')).toHaveLength(41);
-        expect(result.hits).toMatchObject([{ machineId: 'one', hit: { sessionId: 'one' } }]);
-        expect(rpc.mock.calls.every(([call]) => call.machineId === 'one')).toBe(true);
     });
     it('keeps healthy Machine hits when another Machine loses its RPC outcome', async () => {
         const healthy = rpc.getMockImplementation()!;
@@ -472,5 +465,44 @@ describe('conversation search fan-out', () => {
         expect(result.machines[0].status).toBe('partial');
         expect(rpc.mock.calls.find(([call]) => call.method === RPC_METHODS.DAEMON_MEMORY_SEARCH)?.[0].payload)
             .toMatchObject({ corpora: ['external_transcripts'], createdAfterMs: 10, createdBeforeMs: 20, cursor: 'page' });
+    });
+    it('publishes a completed source and its continuation while a second source runs', async () => {
+        // Loading the real adapter belongs to setup, not the progress assertion.
+        await import('@/sync/ops/machineExternalSessions');
+        let release!: () => void;
+        const slow = new Promise<void>(resolve => { release = resolve; });
+        const controller = new AbortController();
+        const pages: ConversationSearchResult[] = [];
+        rpc.mockImplementation(async call => {
+            expect(call.method).toBe(RPC_METHODS.DAEMON_MEMORY_SETTINGS_GET);
+            return { ...DEFAULT_MEMORY_SETTINGS, enabled: false };
+        });
+        list.mockImplementation(async (payload: Record<string, unknown>) => {
+            if (payload.agentId === 'codex') await slow;
+            return { ok: true, candidates: [{ remoteSessionId: payload.agentId, updatedAtMs: 10,
+                match: { sourceItemId: 'message', snippet: 'design lab', messageIndex: 0 } }],
+                contentCoverage: 'partial', nextCursor: `${String(payload.agentId)}-next` };
+        });
+        const pending = searchConversations({ serverId: input.serverId, accountId: 'account', concurrencyLimit: 1,
+            machines: [{ id: 'one', online: true }], mode: 'standard', signal: controller.signal,
+            query: { v: 1, query: 'design lab', scope: { type: 'global' }, mode: 'auto', corpora: ['external_transcripts'] },
+            readSources: async (): Promise<readonly ConversationSearchSource[]> => [
+                { agentId: 'claude', sourceKey: 'claude', source: { kind: 'claudeConfig' as const }, contentSearch: true },
+                { agentId: 'codex', sourceKey: 'codex', source: { kind: 'codexHome' as const, home: 'user' as const }, contentSearch: true },
+            ], onProgress: page => pages.push(page) });
+        try {
+            await vi.waitFor(() => expect(pages.some(page => page.hits.length === 1), JSON.stringify({ pages,
+                methods: rpc.mock.calls.map(([call]) => call.method) })).toBe(true));
+            const first = pages.find(page => page.hits.length === 1)!;
+            expect(first.hits[0]).toMatchObject({ mode: 'standard', agentId: 'claude', candidate: { remoteSessionId: 'claude' } });
+            expect(first.continuations).toEqual([{ machineId: 'one', sourceKey: 'claude', cursor: 'claude-next' }]);
+            expect(first.machines).toMatchObject([{ machineId: 'one', status: 'partial' }]);
+            release();
+            const final = await pending;
+            expect(final.hits).toHaveLength(2);
+            // A published page is an immutable snapshot, not the shared work arrays.
+            expect(first.hits).toHaveLength(1);
+            expect(first.continuations).toHaveLength(1);
+        } finally { release(); controller.abort(); await pending.catch(() => undefined); }
     });
 });

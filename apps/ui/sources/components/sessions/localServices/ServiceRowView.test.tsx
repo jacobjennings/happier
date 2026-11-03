@@ -3,6 +3,7 @@ import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LocalServiceLaunchTargetV1Schema } from '@happier-dev/protocol/local/services/launcher/v1';
 
+import { Item } from '@/components/ui/lists/Item';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import { Text } from '@/components/ui/text/Text';
 import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
@@ -83,6 +84,10 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     return {};
 }
 
+function collectMetaText(node: { children: ReadonlyArray<unknown> }): string {
+    return node.children.map((child) => typeof child === 'string' ? child : collectMetaText(child as { children: ReadonlyArray<unknown> })).join(' ');
+}
+
 describe('ServiceRowView', () => {
     it('shows pending binding discovery as loading without an unavailable reason or Start', async () => {
         const target = LocalServiceLaunchTargetV1Schema.parse(launchTarget({ source: 'managed_service',
@@ -91,7 +96,12 @@ describe('ServiceRowView', () => {
             unavailableReason: 'project_service_binding_pending' }));
         const [row] = buildLocalServiceRows({ inventoryRows: [], launchTargets: [target], sessionId: null, scope: 'workspace' });
         const screen = await renderScreen(<ServiceRowView row={row!} onStartLauncherTarget={vi.fn()} testID="row" />);
-        expect(screen.findByTestId('row-status-loading')).not.toBeNull();
+        // Hydration is not a state of the service: no status word beside the name, just the row's own spinner,
+        // with the same facts line the idle row draws so the row keeps its height.
+        expect(screen.findByTestId('row-status-loading')).toBeNull();
+        expect(screen.getTextContent()).not.toContain('Loading');
+        expect(screen.findByType(Item).props.loading).toBe(true);
+        expect(screen.findByTestId('row-source')).toBeTruthy();
         expect(screen.findByTestId('row-start')).toBeNull();
         expect(screen.findByTestId('row-reason')).toBeNull();
         expect(screen.findByTestId('row-dot-halo')).toBeNull();
@@ -182,9 +192,12 @@ describe('ServiceRowView', () => {
         const start = vi.fn(() => new Promise<unknown>((resolve) => { settle = resolve; }));
         const screen = await renderScreen(<ServiceRowView row={row} machineName="devbox" onStartLauncherTarget={start} testID="row" />);
         expect(screen.getTextContent()).not.toContain('Starting');
+        const idleMeta = collectMetaText(screen.findByTestId('row-meta')!).replace(/\s+/g, ' ');
         await act(async () => { void pressTestInstanceAsync(screen.findByTestId('row-start'), 'row-start'); });
         expect(screen.getTextContent()).toContain('Starting');
         expect(screen.getTextContent()).toContain('Starting on devbox');
+        expect(collectMetaText(screen.findByTestId('row-meta')!).replace(/\s+/g, ' ')).toBe(idleMeta);
+        expect(screen.findByTestId('row-source')).toBeTruthy();
         await screen.update(<ServiceRowView row={{ ...row, status: 'unavailable', primaryAction: null,
             reasonCode: 'project_service_binding_unavailable' }} machineName="devbox" onStartLauncherTarget={start} testID="row" />);
         expect(screen.findByTestId('row-status-starting')).toBeTruthy();
@@ -414,6 +427,44 @@ describe('ServiceRowView', () => {
         expect(screen.findByTestId('row-copy-address-feedback')).toBeTruthy();
     });
 
+    /**
+     * Lab RUNSONp: the phone's pushed detail is one grouped list. Address is a row that opens the
+     * service (the secondary line says where), copying is a menu action, and nothing in the group is a
+     * hand-built button; the Service's Stop is the destructive row under the group, not a menu entry.
+     */
+    it('draws the phone detail as a grouped list: Address opens the service and Copy address moves into the menu', async () => {
+        const row = { ...openableRow(), scheme: 'http' as const };
+        const onOpen = vi.fn(async () => undefined);
+        const screen = await renderScreen(
+            <ServiceRowView row={row} presentation="detail" onOpenServiceInBrowser={onOpen}
+                placement={<PlacementProbe />} testID="row" />,
+        );
+        expect(screen.findAllByTestId('row-copy-address')).toHaveLength(0);
+        expect(screen.findAllByTestId('row-open')).toHaveLength(0);
+        expect(screen.findByTestId('placement-probe')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('Address');
+        await pressTestInstanceAsync(screen.findByTestId('row-address'), 'row-address');
+        expect(onOpen).toHaveBeenCalledExactlyOnceWith(row.primaryAction?.kind === 'open' ? row.primaryAction.openTarget : undefined);
+        const copy = rowOverflowActions(screen).find((action) => action.id === 'copy-address');
+        expect(copy).toBeTruthy();
+        await act(async () => { await (copy?.onPress as () => unknown)(); });
+        expect(clipboardSpies.setClipboardStringSafe).toHaveBeenCalledExactlyOnceWith('http://127.0.0.1:5173');
+    });
+
+    it('ends the phone detail with the Service\'s own Stop as a destructive row, out of the menu', async () => {
+        const target = projectTarget({ state: 'available', serviceState: 'running', actions: ['manage'] });
+        const onStop = vi.fn(async () => ({ status: 'succeeded' }));
+        const screen = await renderScreen(
+            <ServiceRowView row={projectRow(target)} presentation="detail" machineName="devbox" onStopManagedService={onStop}
+                onRestartManagedService={vi.fn()} onForgetDetectedService={vi.fn()} placement={<PlacementProbe />} testID="row" />,
+        );
+        expect(rowOverflowActions(screen).map((action) => action.id)).toEqual(['restart', 'forget']);
+        const stop = screen.findAllByType(Item).find((item) => item.props.testID === 'row-stop');
+        expect(stop?.props.destructive).toBe(true);
+        await pressTestInstanceAsync(screen.findByTestId('row-stop'), 'row-stop');
+        expect(onStop).toHaveBeenCalledExactlyOnceWith(target);
+    });
+
     it('shows and copies a wildcard-bound service as localhost, never as its bind address', async () => {
         const target = launchTarget({
             id: 'inventory:entry-a',
@@ -631,6 +682,24 @@ describe('ServiceRowView', () => {
         expect(onExpandedChange).not.toHaveBeenCalled();
     });
 
+    it('keeps Stop reachable from the collapsed row beside Open, and the overflow in one place when expanded', async () => {
+        const row = projectRow(projectTarget({ state: 'available', serviceState: 'running', actions: ['manage'],
+            endpointUrl: 'http://localhost:5173/',
+            browserTarget: { kind: 'localServicePreview', targetId: 'preview_web', sessionId: 'session-a', machineId: 'machine-a' } }));
+        const handlers = { onOpenServiceInBrowser: vi.fn(), onStopManagedService: vi.fn(), onRestartManagedService: vi.fn() };
+        const collapsed = await renderScreen(<ServiceRowView row={row} machineName="devbox" {...handlers}
+            expanded={false} onExpandedChange={vi.fn()} testID="row" />);
+        expect(collapsed.findByTestId('row-open')).not.toBeNull();
+        expect(collapsed.findByTestId('row-overflow')).not.toBeNull();
+        expect(rowOverflowActions(collapsed).map((action) => action.id)).toContain('stop');
+        await collapsed.unmount();
+
+        const expanded = await renderScreen(<ServiceRowView row={row} machineName="devbox" {...handlers}
+            expanded onExpandedChange={vi.fn()} testID="row" />);
+        expect(expanded.findAllByType(ItemRowActions)).toHaveLength(1);
+        expect(expanded.findByTestId('row-copy-address')).toBeTruthy();
+    });
+
     it('keeps one Open when the row is expanded: the expansion does not repeat it', async () => {
         const screen = await renderScreen(
             <ServiceRowView
@@ -785,6 +854,50 @@ describe('ServiceRowView', () => {
         expect(rowOverflowActions(screen).map((action) => action.id)).not.toContain('stop');
     });
 
+    it('offers a failed start\'s sanitized output behind Review output, and nothing once it recovers', async () => {
+        const diagnostics = [{ code: 'native_service_output', severity: 'info', message: 'EADDRINUSE: address already in use :::3005' }] as const;
+        const failed = projectRow(projectTarget({ state: 'available', serviceState: 'failed', actions: ['manage'], diagnostics: [...diagnostics] }));
+        const screen = await renderScreen(<ServiceRowView row={failed} onStartLauncherTarget={vi.fn()} testID="row" />);
+        // Failed is said once, by the status beside the name, not again as a tail.
+        expect(screen.findByTestId('row-status-failed')).toBeTruthy();
+        expect(screen.getTextContent()).not.toContain('Service could not start.');
+        expect(screen.getTextContent()).toContain('Review output');
+        // The output stays closed until asked for, and a code never stands in for a sentence.
+        expect(screen.getTextContent()).not.toContain('EADDRINUSE');
+        await pressTestInstanceAsync(screen.findByTestId('row-output-toggle'), 'row-output-toggle');
+        expect(screen.getTextContent()).toContain('EADDRINUSE: address already in use :::3005');
+
+        const recovered = projectRow(projectTarget({ state: 'available', serviceState: 'running', actions: ['manage'] }));
+        const after = await renderScreen(<ServiceRowView row={recovered} testID="row" />);
+        expect(after.findByTestId('row-output-toggle')).toBeNull();
+        expect(after.getTextContent()).not.toContain('Review output');
+
+        const bare = projectRow(projectTarget({ state: 'available', serviceState: 'failed', actions: ['manage'] }));
+        const quiet = await renderScreen(<ServiceRowView row={bare} onStartLauncherTarget={vi.fn()} testID="row" />);
+        expect(quiet.findByTestId('row-output-toggle')).toBeNull();
+    });
+
+    it('does not offer the previous attempt\'s output while a retry is starting', async () => {
+        const diagnostics = [{ code: 'native_service_output', severity: 'info', message: 'EADDRINUSE: address already in use :::3005' }] as const;
+        const retrying = projectRow(projectTarget({ state: 'starting', actions: ['manage'], diagnostics: [...diagnostics] }));
+        const screen = await renderScreen(<ServiceRowView row={retrying} testID="row" />);
+        expect(screen.findByTestId('row-status-starting')).toBeTruthy();
+        expect(screen.findByTestId('row-output-toggle')).toBeNull();
+        expect(screen.getTextContent()).not.toContain('Review output');
+    });
+
+    it('drops the failed attempt\'s output the moment Retry is pressed, before the feed reports Starting', async () => {
+        const diagnostics = [{ code: 'native_service_output', severity: 'info', message: 'EADDRINUSE: address already in use :::3005' }] as const;
+        const failed = projectRow(projectTarget({ state: 'available', serviceState: 'failed', actions: ['manage'], diagnostics: [...diagnostics] }));
+        const start = vi.fn(() => new Promise<unknown>(() => {}));
+        const screen = await renderScreen(<ServiceRowView row={failed} onStartLauncherTarget={start} testID="row" />);
+        expect(screen.findByTestId('row-output-toggle')).toBeTruthy();
+        await act(async () => { void pressTestInstanceAsync(screen.findByTestId('row-start'), 'row-start'); });
+        expect(screen.findByTestId('row-status-starting')).toBeTruthy();
+        expect(screen.findByTestId('row-output-toggle')).toBeNull();
+        expect(screen.getTextContent()).not.toContain('Review output');
+    });
+
     /**
      * R2a-F2 / R2b-01: Runs on is reachable from every service row. A never-started declaration and
      * a live worker with no address grow into their placement; the worker keeps its overflow on the row.
@@ -825,7 +938,8 @@ describe('ServiceRowView', () => {
             startedAtMs, startedByAccountId: 'viewer-account' }));
         const ownScreen = await renderScreen(<ServiceRowView row={own} machineName="devbox"
             startedByName={null} testID="row" />);
-        expect(ownScreen.getTextContent()).toContain('42m ago');
+        expect(ownScreen.getTextContent()).toContain('42 min');
+        expect(ownScreen.getTextContent()).not.toContain('ago');
         expect(ownScreen.getTextContent()).not.toContain('Started by');
 
         const teammate = projectRow(projectTarget({ state: 'available', serviceState: 'running', actions: ['manage'],

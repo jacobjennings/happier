@@ -20,8 +20,14 @@ import { AccountProfileSchema } from '@happier-dev/protocol/account/profile';
 import { parseToken } from '@/utils/auth/parseToken';
 import { openSessionSystemRecord } from './domains/sessionSystemRecords/codec';
 import { createPlainSessionCurrentProjectionRecordFixture } from '@/dev/testkit/fixtures/sessionFixtures';
-import { createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit/fixtures/accountEncryptionCurrentness';
+import { createPlainAccountEncryptionCurrentnessFixture, createLegacyAccountEncryptionCurrentnessFixture } from '@/dev/testkit/fixtures/accountEncryptionCurrentness';
+import { sealSessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol';
+import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
+import { buildRenderableFromRowAndCache, createSessionListDocumentAdmission } from './engine/sessions/sessionSnapshot';
+import { createCompactSessionListRowFixture } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { readSessionFullPublicationUpdatedAt } from '@/sync/domains/session/sessionRuntimeObservation';
+import { hasAuthoritativeSessionRouteData, isHydratedSessionCurrentForListState } from '@/sync/domains/session/hasAuthoritativeSessionRouteData';
 
 installDisconnectedServerSocketBoundary();
 
@@ -200,6 +206,263 @@ async function createEncryptedSessionFixture(sessionId: string) {
 }
 
 describe('sync.ensureSessionVisibleForMessageRoute', () => {
+    it.each(['plain', 'e2ee'] as const)('presents a freshly created %s Session regardless of list order or stored witness', async (mode) => {
+        const { sync } = await import('./sync');
+        for (const order of ['list-first', 'detail-first'] as const) {
+            for (const storedWitness of [false, true]) {
+                const sessionId = `staleresp-${mode}-${order}-${storedWitness}`;
+                const encrypted = await createEncryptedSessionFixture(sessionId);
+                const credentials = mode === 'plain' ? { token: tokenForSub('account-a') } : encrypted.credentials;
+                const currentness = mode === 'plain' ? createPlainAccountEncryptionCurrentnessFixture()
+                    : createLegacyAccountEncryptionCurrentnessFixture({ secret: new Uint8Array(32).fill(7) });
+                const plain = createPlainSessionCurrentProjectionRecordFixture({ id: sessionId, updatedAt: 20 });
+                let row = mode === 'plain' ? plain : { ...plain, encryptionMode: 'e2ee' as const,
+                    dataEncryptionKey: encrypted.row.dataEncryptionKey,
+                    metadata: await (async () => {
+                        const writer = await Encryption.create(new Uint8Array(32).fill(7));
+                        await writer.initializeSessions(new Map([[sessionId, encrypted.dataKey]]));
+                        return writer.getSessionEncryption(sessionId)!.encryptRaw(JSON.parse(plain.metadata));
+                    })(),
+                    ownerMetadata: sealSessionOwnerMetadataEnvelopeV1({
+                        material: resolveAccountScopedCryptoMaterialFromCredentials(credentials),
+                        ownerMetadata: plain.ownerMetadata!.t === 'plain' ? plain.ownerMetadata!.v : { v: 1 },
+                        randomBytes: length => new Uint8Array(length).fill(3),
+                    }),
+                };
+                Reflect.set(sync, 'credentials', credentials);
+                Reflect.set(sync, 'encryption', encrypted.encryption);
+                const serverId = getActiveServerSnapshot().serverId!;
+                const publishList = (updatedAt = row.updatedAt) => storage.getState().applyServerScopedSessionListRows(serverId,
+                    [buildRenderableFromRowAndCache(createCompactSessionListRowFixture({ ...row, updatedAt }), credentials, currentness,
+                        undefined, storage.getState().sessions[sessionId], undefined,
+                        createSessionListDocumentAdmission({ row, serverId, credentials, accountCurrentness: currentness }).scope)],
+                    { source: 'ordinary', mode: 'append' });
+                const originalFetch = runtimeFetchMock.getMockImplementation()!;
+                runtimeFetchMock.mockImplementation(async (url: string, init?: RequestInit) =>
+                    new URL(url).pathname === '/v1/account/encryption/currentness' ? Response.json(currentness) : originalFetch(url, init));
+                requestMock.mockImplementation(async (path: string) => path === `/v2/sessions/${sessionId}`
+                    ? Response.json({ session: row }) : undefined);
+                if (storedWitness) await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, { hydrateMessages: false }))
+                    .resolves.toMatchObject({ kind: 'available' });
+                requestMock.mockClear();
+                if (order === 'list-first') publishList();
+                const result = await sync.ensureSessionVisibleForMessageRoute(sessionId, { forceRefresh: true, hydrateMessages: false });
+                if (order === 'detail-first') publishList();
+                expect(result, `${mode}/${order}/witness=${storedWitness}`).toMatchObject({ kind: 'available' });
+                expect(hasAuthoritativeSessionRouteData(storage.getState().sessions[sessionId], {
+                    hasSessionEncryption: mode === 'e2ee',
+                })).toBe(true);
+                if (order === 'list-first' && !storedWitness) {
+                    publishList(row.updatedAt + 1);
+                    await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, { forceRefresh: true, hydrateMessages: false }))
+                        .resolves.toMatchObject({ kind: 'available' });
+                    row = { ...row, updatedAt: row.updatedAt + 1 };
+                    await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, { forceRefresh: true, hydrateMessages: false }))
+                        .resolves.toMatchObject({ kind: 'available' });
+                }
+            }
+        }
+    });
+
+
+
+
+
+    it('keeps a newly created Session route available while its first turn advances the compact list', async () => {
+        const { sync } = await import('./sync');
+        const sessionId = 'spawned-first-turn-list-advance';
+        const row = createPlainSessionCurrentProjectionRecordFixture({ id: sessionId, updatedAt: 20, seq: 1 });
+        const credentials = { token: tokenForSub('account-a') };
+        const currentness = createPlainAccountEncryptionCurrentnessFixture();
+        Reflect.set(sync, 'credentials', credentials);
+        const serverId = getActiveServerSnapshot().serverId!;
+        const requested = createDeferred<void>();
+        const response = createDeferred<void>();
+        requestMock.mockImplementation(async (path: string) => {
+            if (path !== `/v2/sessions/${sessionId}`) return undefined;
+            requested.resolve();
+            await response.promise;
+            return Response.json({ session: row });
+        });
+        const hydration = sync.ensureSessionVisibleForMessageRoute(sessionId, { forceRefresh: true, hydrateMessages: false });
+        await requested.promise;
+        storage.getState().applyServerScopedSessionListRows(serverId,
+            [buildRenderableFromRowAndCache(createCompactSessionListRowFixture({ ...row, updatedAt: 21, seq: 2 }), credentials,
+                currentness, undefined, undefined, undefined,
+                createSessionListDocumentAdmission({ row, serverId, credentials, accountCurrentness: currentness }).scope)],
+            { source: 'ordinary', mode: 'append' });
+        expect(readSessionFullPublicationUpdatedAt({ id: sessionId, serverId })).toBe(0);
+        response.resolve();
+        await expect(hydration).resolves.toMatchObject({ kind: 'available', sessionId });
+        expect(hasAuthoritativeSessionRouteData(storage.getState().sessions[sessionId])).toBe(true);
+    });
+
+    it('presents an unchanged encrypted row on its first authoritative publication and then needs no route refetch', async () => {
+        const sessionId = 'postsend_publication_retained_content';
+        const fixture = await createEncryptedSessionFixture(sessionId);
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', fixture.credentials);
+        Reflect.set(sync, 'encryption', fixture.encryption);
+        let row = fixture.row;
+        requestMock.mockImplementation(async (path: string) => path === `/v2/sessions/${sessionId}`
+            ? Response.json({ session: row }) : undefined);
+        const options = { forceRefresh: true, hydrateMessages: false };
+        await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, options)).resolves.toMatchObject({ kind: 'available' });
+        // Warm the same exact read before exercising a clock-only publication.
+        await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, options)).resolves.toMatchObject({ kind: 'available' });
+        const retained = storage.getState().sessions[sessionId];
+        expect(hasAuthoritativeSessionRouteData(retained, { hasSessionEncryption: true })).toBe(true);
+        expect(fixture.encryption.getSessionEncryption(sessionId)).not.toBeNull();
+
+        row = { ...row, updatedAt: 200 };
+        requestMock.mockClear();
+        const presented = await sync.ensureSessionVisibleForMessageRoute(sessionId, options);
+        expect(storage.getState().sessions[sessionId].updatedAt).toBe(retained.updatedAt);
+        expect(readSessionFullPublicationUpdatedAt(storage.getState().sessions[sessionId])).toBe(200);
+        expect(presented).toMatchObject({ kind: 'available', sessionId });
+        requestMock.mockClear();
+        await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, { hydrateMessages: false })).resolves.toMatchObject({ kind: 'available' });
+        expect(requestMock).not.toHaveBeenCalled();
+        const { useHydrateSessionForRoute } = await import('@/hooks/session/useHydrateSessionForRoute');
+        const observedStates: string[] = [];
+        const hook = await renderHook(() => {
+            const state = useHydrateSessionForRoute(sessionId, 'postsend-publication', { hydrateMessages: false });
+            observedStates.push(state.kind);
+            return state;
+        });
+        try {
+            expect(observedStates[0]).toBe('available');
+            expect(hook.getCurrent()).toMatchObject({ kind: 'available', sessionId });
+            expect(requestMock).not.toHaveBeenCalled();
+        } finally { await hook.unmount(); }
+    });
+
+    it('does not let an older in-flight route response borrow a later full-publication witness', async () => {
+        const sessionId = 'postsend_publication_delayed_response';
+        const fixture = await createEncryptedSessionFixture(sessionId);
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', fixture.credentials);
+        Reflect.set(sync, 'encryption', fixture.encryption);
+        requestMock.mockImplementation(async (path: string) => path === `/v2/sessions/${sessionId}`
+            ? Response.json({ session: fixture.row }) : undefined);
+        await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, { forceRefresh: true, hydrateMessages: false }))
+            .resolves.toMatchObject({ kind: 'available' });
+        const requested = createDeferred<void>();
+        const response = createDeferred<Response>();
+        requestMock.mockImplementation(async (path: string) => {
+            if (path !== `/v2/sessions/${sessionId}`) return undefined;
+            requested.resolve();
+            return await response.promise;
+        });
+        const delayed = sync.ensureSessionVisibleForMessageRoute(sessionId, { forceRefresh: true, hydrateMessages: false });
+        await requested.promise;
+        storage.getState().applySessions([{ ...storage.getState().sessions[sessionId], updatedAt: 300, activeAt: 300 }]);
+        response.resolve(Response.json({ session: { ...fixture.row, updatedAt: 200, activeAt: 200 } }));
+        expect(await delayed).toMatchObject({ kind: 'awaiting_push', sessionId, errorCode: 'stale_response' });
+        expect(readSessionFullPublicationUpdatedAt(storage.getState().sessions[sessionId])).toBe(300);
+    });
+
+    it('keeps a created Session route available after a socket lifecycle publication advances its shell', async () => {
+        const { sync } = await import('./sync');
+        const sessionId = 'spawned-socket-lifecycle-advance';
+        const row = createPlainSessionCurrentProjectionRecordFixture({ id: sessionId, updatedAt: 20, seq: 1 });
+        requestMock.mockImplementation(async (path: string) => path === `/v2/sessions/${sessionId}`
+            ? Response.json({ session: row }) : undefined);
+        await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, { forceRefresh: true, hydrateMessages: false }))
+            .resolves.toMatchObject({ kind: 'available' });
+        const requested = createDeferred<void>();
+        const response = createDeferred<void>();
+        requestMock.mockImplementation(async (path: string) => {
+            if (path !== `/v2/sessions/${sessionId}`) return undefined;
+            requested.resolve();
+            await response.promise;
+            return Response.json({ session: row });
+        });
+        const hydration = sync.ensureSessionVisibleForMessageRoute(sessionId, { forceRefresh: true, hydrateMessages: false });
+        await requested.promise;
+        const socketOwner = sync as unknown as { handleUpdate(update: unknown): Promise<void> };
+        await socketOwner.handleUpdate({ id: 'socket-lifecycle-advance', seq: 2, createdAt: 21,
+            body: { t: 'update-session', id: sessionId, active: true, activeAt: 21 } });
+        await waitForAssertion(() => expect(storage.getState().sessions[sessionId]?.updatedAt).toBe(21));
+        response.resolve();
+        await expect(hydration).resolves.toMatchObject({ kind: 'available', sessionId });
+        expect(readSessionFullPublicationUpdatedAt({ id: sessionId, serverId: getActiveServerSnapshot().serverId })).toBe(20);
+    });
+
+    it('refuses a genuinely stale route tuple even when its publication timestamp is current', async () => {
+        const sessionId = 'postsend_publication_stale_tuple';
+        const fixture = await createEncryptedSessionFixture(sessionId);
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', fixture.credentials);
+        Reflect.set(sync, 'encryption', fixture.encryption);
+        requestMock.mockImplementation(async (path: string) => path === `/v2/sessions/${sessionId}`
+            ? Response.json({ session: fixture.row }) : undefined);
+        await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, { forceRefresh: true, hydrateMessages: false }))
+            .resolves.toMatchObject({ kind: 'available' });
+        const state = storage.getState();
+        const serverId = state.sessions[sessionId].serverId!;
+        const current = state.sessionListRowsByServerId[serverId][sessionId];
+        state.mergeSessionListRowsForServerScope(serverId, [{ ...current, metadataVersion: current.metadataVersion + 1 }]);
+        const stale = storage.getState().sessions[sessionId];
+        expect(isHydratedSessionCurrentForListState(stale,
+            () => storage.getState().sessionListRowsByServerId[serverId][sessionId], readSessionFullPublicationUpdatedAt(stale))).toBe(false);
+        await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, { forceRefresh: true, hydrateMessages: false }))
+            .resolves.toMatchObject({ kind: 'awaiting_push', sessionId, errorCode: 'stale_response' });
+    });
+
+    it.each(['list-tuple', 'retired-reader'] as const)('settles stale document demand without polling and accepts a fresh publication (%s)', async (cause) => {
+        const sessionId = 'staleresp-await-push';
+        const fixture = await createEncryptedSessionFixture(sessionId);
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'credentials', fixture.credentials);
+        Reflect.set(sync, 'encryption', fixture.encryption);
+        requestMock.mockImplementation(async (path: string) => path === `/v2/sessions/${sessionId}`
+            ? Response.json({ session: fixture.row }) : undefined);
+        await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, { hydrateMessages: false }))
+            .resolves.toMatchObject({ kind: 'available' });
+        const state = storage.getState();
+        const serverId = state.sessions[sessionId].serverId!;
+        const row = state.sessionListRowsByServerId[serverId][sessionId];
+        if (cause === 'retired-reader') fixture.encryption.retireAccountMaterial();
+        else state.mergeSessionListRowsForServerScope(serverId, [{ ...row, metadataVersion: row.metadataVersion + 1 }]);
+        const { useHydrateSession } = await import('@/hooks/session/useHydrateSessionForRoute');
+        const { flushHookEffects } = await import('@/dev/testkit');
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        const hook = await renderHook(() => useHydrateSession(sessionId, 'staleresp-await-push', { hydrateMessages: false }));
+        try {
+            await act(async () => {
+                const refusal = await sync.ensureSessionVisibleForMessageRoute(sessionId, { hydrateMessages: false });
+                expect(refusal).toMatchObject({ kind: 'awaiting_push', errorCode: 'stale_response' });
+            });
+            await flushHookEffects();
+            expect(hook.getCurrent()).toMatchObject({ kind: 'retrying' });
+            const countDetailReads = () => requestMock.mock.calls.filter(([path]) => path === `/v2/sessions/${sessionId}`).length;
+            const reads = countDetailReads();
+            await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+            expect(countDetailReads()).toBe(reads);
+            const { requireSpawnedSessionVisibleForRoute } = await import('./runtime/orchestration/serverScopedRpc/localSessionRouteReadiness');
+            const spawned = requireSpawnedSessionVisibleForRoute({ sessionId, serverId,
+                getStoredSession: id => storage.getState().sessions[id] ?? null,
+                ensureSessionVisibleForMessageRoute: sync.ensureSessionVisibleForMessageRoute,
+            }).catch((error: unknown) => error);
+            await act(async () => {
+                expect(await spawned).toMatchObject({ code: 'stale_response', retryable: false });
+            });
+            const settledReads = countDetailReads();
+            await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+            expect(countDetailReads()).toBe(settledReads);
+            await act(async () => {
+                if (cause === 'retired-reader') Reflect.set(sync, 'encryption', await Encryption.create(new Uint8Array(32).fill(7)));
+                requestMock.mockImplementation(async (path: string) => path === `/v2/sessions/${sessionId}`
+                    ? Response.json({ session: { ...fixture.row, metadataVersion: row.metadataVersion + 1, updatedAt: 300 } }) : undefined);
+                await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, { hydrateMessages: false }))
+                    .resolves.toMatchObject({ kind: 'available' });
+            });
+            await flushHookEffects();
+            expect(hook.getCurrent()).toMatchObject({ kind: 'available' });
+        } finally { await hook.unmount(); vi.useRealTimers(); }
+    });
+
     it('opens encrypted System Records for both concurrent observers and again after route re-entry', async () => {
         const sessionId = 'encrypted_board_reentry';
         const home = await upsertServerProfile({ serverUrl: 'https://encrypted-board-reentry.test', name: 'Board re-entry' });
@@ -2293,7 +2556,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
             expect(fixture.encryption.getSessionEncryption(sessionId)).toBeNull();
             if (encryptionMode === 'plain') response.resolve(staleResponse);
             else decryptRelease.resolve();
-            await expect(hydration).resolves.toMatchObject({ kind: 'retryable_failure', sessionId });
+            await expect(hydration).resolves.toMatchObject({ kind: 'awaiting_push', sessionId, errorCode: 'stale_response' });
             expect(storage.getState().sessions[sessionId]).toBeUndefined();
             expect((sync as any).sessionDataKeys.has(sessionId)).toBe(false);
             expect((sync as any).sessionDataKeyEnvelopes.has(sessionId)).toBe(false);
@@ -2321,7 +2584,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         });
         onTestFinished(() => boundary.mockRestore());
         await expect(sync.ensureSessionVisibleForMessageRoute(sessionId)).resolves.toMatchObject({
-            kind: 'retryable_failure', sessionId,
+            kind: 'awaiting_push', sessionId, errorCode: 'stale_response',
         });
         expect(Reflect.get(sync, 'encryption')).toBe(replacement);
         expect(replacement.getSessionEncryption(sessionId)).toBeNull();
@@ -2364,7 +2627,8 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
             ),
         );
 
-        await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, { forceRefresh: true })).resolves.toMatchObject({
+        const hydrated = await sync.ensureSessionVisibleForMessageRoute(sessionId, { forceRefresh: true });
+        expect(hydrated, JSON.stringify(hydrated)).toMatchObject({
             kind: 'available',
             sessionId,
         });

@@ -65,13 +65,36 @@ describe('native email/password failure copy', () => {
         });
         expect(describeEmailPasswordFailure(failure, { credentialField: 'currentPassword' }).field).toBe('currentPassword');
     });
-    it('keeps unknown addresses and wrong passwords indistinguishable', () => {
-        const wrongPassword = new HappyError('x', false, { kind: 'auth', status: 401, code: 'authentication_failed' });
-        const unknownAddress = new HappyError('x', false, { kind: 'auth', status: 401, code: 'authentication_failed' });
-
-        expect(describeEmailPasswordFailure(wrongPassword))
-            .toEqual(describeEmailPasswordFailure(unknownAddress));
-        expect(describeEmailPasswordFailure(wrongPassword).messageKey).toBe('settingsAccount.nativePassword.signInFailed');
+    it.each([
+        {
+            name: 'maps the canonical Action outcome-unknown settlement to an unconfirmed outcome',
+            error: new HappyError('unknown', false, { kind: 'auth', code: 'outcome_unknown' }),
+            context: undefined,
+            problem: { field: 'form', messageKey: 'settingsAccount.nativePassword.outcomeUnconfirmed' },
+        },
+        {
+            name: 'keeps an untyped preflight failure determinate',
+            error: new TypeError('Network request failed'),
+            context: undefined,
+            problem: { field: 'form', messageKey: 'settingsAccount.nativePassword.offline' },
+        },
+        {
+            // The Home refused for a reason this client cannot name: say the Home did not complete it,
+            // not that the method is unavailable and not that the password was wrong.
+            name: 'keeps an untyped mutation refusal off the password field',
+            error: new HappyError('nope', false, { kind: 'auth', code: 'something_unmapped', status: 400 }),
+            context: { credentialField: 'currentPassword' } as const,
+            problem: { field: 'form', messageKey: 'settingsAccount.nativePassword.serverUnavailable' },
+        },
+        {
+            // Unknown addresses and wrong passwords share this one existence-neutral answer.
+            name: 'answers a refused sign-in with the existence-neutral failure on the password field',
+            error: new HappyError('nope', false, { kind: 'auth', code: 'authentication_failed', status: 401 }),
+            context: undefined,
+            problem: { field: 'password', messageKey: 'settingsAccount.nativePassword.signInFailed' },
+        },
+    ])('$name', ({ error, context, problem }) => {
+        expect(describeEmailPasswordFailure(error, context)).toEqual(problem);
     });
 
     it('never blames the credentials for a failure the credentials did not cause', () => {

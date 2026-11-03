@@ -11,33 +11,14 @@ import { getCurrentAuth, setCurrentAuth } from '@/auth/context/currentAuth';
 
 const mocks = vi.hoisted(() => ({
     show: vi.fn(),
-    push: vi.fn(),
     abandon: vi.fn(),
     recoverRejectedCredential: vi.fn(),
     loginWithCredentials: vi.fn<AuthContextType['loginWithCredentials']>(),
     refreshFromActiveServer: vi.fn(async () => {}),
-    setActiveServerAndSwitch: vi.fn(async () => 'switched' as const),
-    profiles: [] as ReadonlyArray<Readonly<{
-        id: string;
-        serverUrl: string;
-    }>>,
-}));
-
-vi.mock('expo-router', () => ({
-    router: { push: mocks.push },
 }));
 
 vi.mock('@/modal', () => ({
     Modal: { show: mocks.show },
-}));
-
-vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
-    setActiveServerAndSwitch: mocks.setActiveServerAndSwitch,
-}));
-
-vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
-    listServerProfiles: () => mocks.profiles,
 }));
 
 const authFixture = {
@@ -112,7 +93,6 @@ describe('presentFirstKeyCredentialLifecycle', () => {
         previousAuth = getCurrentAuth();
         setCurrentAuth(authFixture);
         vi.clearAllMocks();
-        mocks.profiles = [];
         mocks.recoverRejectedCredential
             .mockResolvedValue({
                 kind: 'not_applicable',
@@ -171,78 +151,7 @@ describe('presentFirstKeyCredentialLifecycle', () => {
         expect(onFinishCompleted).toHaveBeenCalledTimes(1);
     });
 
-    it('uses Account-bound recovery for rejected first-key credentials without a Settings detour', async () => {
-        mocks.profiles = [{
-            id: 'server-b',
-            serverUrl:
-                'https://server-b.example.test',
-        }];
-        mocks.recoverRejectedCredential
-            .mockImplementationOnce(
-                async ({ persistCredentials }) => {
-                    await persistCredentials(
-                        {
-                            token: 'recovered-token',
-                            secret: 'recovered-secret',
-                        },
-                        {
-                            firstKeyRecoveryAuthorization:
-                                {} as never,
-                        },
-                    );
-                    return {
-                        kind: 'completed',
-                        mode: 'e2ee',
-                        returnTo:
-                            '/settings/account',
-                    };
-                },
-            );
-        mocks.loginWithCredentials
-            .mockResolvedValue({
-                kind: 'completed',
-            });
-        const recovery = {
-            serverId: 'server-b',
-            serverUrl:
-                'https://server-b.example.test',
-        } as never;
-        const presented =
-            presentFirstKeyCredentialLifecycle({
-                run: async () => ({
-                    kind:
-                        'finish_encryption_setup',
-                    recovery,
-                }),
-            });
-        await vi.waitFor(() => {
-            expect(mocks.show).toHaveBeenCalledTimes(1);
-        });
-
-        await expect(
-            shownConfig().props.finish(),
-        ).resolves.toEqual({ kind: 'completed' });
-        expect(
-            mocks.loginWithCredentials,
-        ).toHaveBeenCalledWith(
-            {
-                token: 'recovered-token',
-                secret: 'recovered-secret',
-            },
-            expect.anything(),
-        );
-        expect(mocks.push).not.toHaveBeenCalled();
-        expect(mocks.setActiveServerAndSwitch).not.toHaveBeenCalled();
-        shownConfig().onHostUnmount();
-        await presented;
-    });
-
     it('keeps the modal and custody when Account-bound Finish recovery fails', async () => {
-        mocks.profiles = [{
-            id: 'server-b',
-            serverUrl:
-                'https://server-b.example.test',
-        }];
         mocks.recoverRejectedCredential
             .mockResolvedValueOnce({
                 kind: 'recovery_failed',
@@ -268,19 +177,18 @@ describe('presentFirstKeyCredentialLifecycle', () => {
         ).resolves.toEqual({
             kind: 'recovery_failed',
         });
-        expect(mocks.push).not.toHaveBeenCalled();
         shownConfig().onRequestClose();
         await presented;
     });
 
-    it('fails the default Finish action safely when its retained target is unavailable', async () => {
+    it('fails the default Finish safely when the retained recovery names no Home', async () => {
         const presented =
             presentFirstKeyCredentialLifecycle({
                 run: async () => ({
                     kind:
                         'finish_encryption_setup',
                     recovery: {
-                        serverId: 'missing',
+                        serverId: '',
                         serverUrl:
                             'https://missing.example.test',
                     } as never,
@@ -295,9 +203,38 @@ describe('presentFirstKeyCredentialLifecycle', () => {
         ).resolves.toEqual({
             kind: 'recovery_failed',
         });
-        expect(mocks.setActiveServerAndSwitch)
-            .not.toHaveBeenCalled();
-        expect(mocks.push).not.toHaveBeenCalled();
+        expect(mocks.recoverRejectedCredential).not.toHaveBeenCalled();
+        shownConfig().onRequestClose();
+        await presented;
+    });
+
+    it('fails the default Finish safely when nothing is stored for the retained Home', async () => {
+        const target = {
+            serverId: 'missing',
+            serverUrl:
+                'https://missing.example.test',
+        };
+        const presented =
+            presentFirstKeyCredentialLifecycle({
+                run: async () => ({
+                    kind:
+                        'finish_encryption_setup',
+                    recovery: target as never,
+                }),
+            });
+        await vi.waitFor(() => {
+            expect(mocks.show).toHaveBeenCalledTimes(1);
+        });
+
+        // No rejected credential applies, and the device holds no credential for the Home whose
+        // pending first-key setup could be retried.
+        await expect(
+            shownConfig().props.finish(),
+        ).resolves.toEqual({
+            kind: 'recovery_failed',
+        });
+        expect(mocks.recoverRejectedCredential).toHaveBeenCalledWith(expect.objectContaining({ target }));
+        expect(mocks.loginWithCredentials).not.toHaveBeenCalled();
         shownConfig().onRequestClose();
         await presented;
     });

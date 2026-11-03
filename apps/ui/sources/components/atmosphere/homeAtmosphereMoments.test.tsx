@@ -204,7 +204,7 @@ describe('session-finished ripple (Home owner, fake clock)', () => {
         const id = `producer-${source}`;
         const entry = createSessionFixture({ id, serverId: 'server-a', lastTurnCompletedAt: 50,
           archivedAt: source === 'archived' ? 1 : null });
-        await act(async () => storage.getState().applyServerScopedSessionListRows('server-a', [buildSessionListRenderableFromSession(entry)], { source, mode: 'append' }));
+        await act(async () => { storage.getState().applyServerScopedSessionListRows('server-a', [buildSessionListRenderableFromSession(entry)], { source, mode: 'append' }); });
         expect(storage.getState().sessionListRenderableDelta.ordinaryMembershipChanges).toEqual([
           { serverId: 'server-a', addedSessionIds: source === 'ordinary' ? [id] : [], removedSessionIds: [] },
         ]);

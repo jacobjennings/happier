@@ -1,0 +1,100 @@
+import type { CliActionDepsParams } from './cliActionDeps/types';
+import { isWorkflowRunExecutorStorageOperationV1 } from '@happier-dev/protocol/workflows/workflowRunStorageV1';
+import type { ActionExecutorContext } from '@happier-dev/protocol';
+import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { createWorkflowRunStorageClient } from '@/daemon/workflows/workflowRunStorageClient';
+import type { WorkflowAccountRunActionDeps } from '@happier-dev/protocol';
+import type { readSettings } from '@/persistence';
+import type { WorkflowCombinedRunStartV1 } from '@happier-dev/protocol/actions/executor/workflowRunActions';
+import { readRequesterAccountActionContext } from '@/daemon/sessionEncryption/requesterAccountActionContext';
+
+
+export type CliWorkflowRequestHeaders = (context: ActionExecutorContext | undefined, effectActionId: string, request: Readonly<{ method: string; path: string; body?: unknown }>) => Readonly<Record<string, string>> | null;
+export type CliWorkflowCurrentSessionValue = (key: 'path' | 'host' | 'machineId', signal?: AbortSignal) => Promise<string | null>;
+export type CliWorkflowRunStorageFactory = (caller?: Readonly<{ actionId: string; context: ActionExecutorContext }>
+  | Pick<WorkflowCombinedRunStartV1, 'parent' | 'context'>) => WorkflowAccountRunActionDeps['storage'];
+export type CliWorkflowRunStorage = Readonly<{
+  workflowRunServerHttpBaseUrl: string;
+  createWorkflowRunStorage: CliWorkflowRunStorageFactory;
+  workflowRunStorage: WorkflowAccountRunActionDeps['storage'];
+}>;
+export function createCliWorkflowRunStorage(
+  params: Pick<CliActionDepsParams, 'token' | 'serverHttpBaseUrl'>,
+  resolveCurrentSessionValue: CliWorkflowCurrentSessionValue,
+  resolveServerRequestHeaders: CliWorkflowRequestHeaders,
+  normalizeStringValue: (value: unknown) => string | null,
+): CliWorkflowRunStorage {
+
+  const workflowRunServerHttpBaseUrl = params.serverHttpBaseUrl ?? resolveServerHttpBaseUrl();
+  const createWorkflowRunStorage: CliWorkflowRunStorageFactory = (caller) => {
+    // Combined parents retain their exact approval context, but Run storage
+    // spends the admitted requester's ordinary Run access, not preparation proof.
+    const combined = caller && 'parent' in caller ? caller : undefined;
+    const requester = combined ? readRequesterAccountActionContext(combined.context.externalActionExecutionAuthorization) : null;
+    const token = requester?.credentials.token ?? params.token;
+    const serverHttpBaseUrl = requester?.serverHttpBaseUrl ?? workflowRunServerHttpBaseUrl;
+    const assertCombinedCurrent = async () => {
+      if (combined && ((combined.context.externalActionExecutionAuthorization || combined.context.externalActionCredential) && !requester
+        || requester && !await requester.isCurrent())) {
+        throw Object.assign(new Error('run_access_denied'), { code: 'run_access_denied' });
+      }
+    };
+    const storage: WorkflowAccountRunActionDeps['storage'] = {
+    observeChanges: (runId, onChange, onError) => {
+      if (!combined) return createWorkflowRunStorageClient({ token, serverHttpBaseUrl }).observeChanges(runId, onChange, onError);
+      let disposed = false;
+      let observation: ReturnType<ReturnType<typeof createWorkflowRunStorageClient>['observeChanges']> | undefined;
+      const failed = (error: unknown) => {
+        if (disposed) return;
+        disposed = true;
+        void observation?.dispose().catch(onError);
+        onError(error);
+      };
+      const started = (async () => {
+        await assertCombinedCurrent();
+        if (disposed) return;
+        observation = createWorkflowRunStorageClient({ token, serverHttpBaseUrl }).observeChanges(runId, () => {
+          void assertCombinedCurrent().then(() => { if (!disposed) onChange(); }).catch(failed);
+        }, failed);
+      })().catch(failed);
+      return { dispose: async () => { disposed = true; await started; await observation?.dispose(); } };
+    },
+    execute: async (operation, options) => {
+      await assertCombinedCurrent();
+      let machineId: string | undefined;
+      const authorizationMachineId = caller?.context.externalActionExecutionAuthorization?.binding.machineId;
+      if (isWorkflowRunExecutorStorageOperationV1(operation.operation) || authorizationMachineId) {
+        const publisherMachineId = normalizeStringValue(options?.publisherMachineId);
+        const operationMachineId = publisherMachineId ?? (typeof operation.machineId === 'string' && operation.machineId.trim()
+          ? operation.machineId.trim()
+          : null);
+        if (authorizationMachineId && operationMachineId && authorizationMachineId !== operationMachineId) {
+          throw Object.assign(new Error('target_unavailable'), { code: 'target_unavailable',
+            details: { code: 'target_unavailable', reason: 'target_binding_mismatch' } });
+        }
+        const { readSettings } = await import("@/persistence");
+        const settingsMachineId = operationMachineId || authorizationMachineId ? null : normalizeStringValue((await readSettings()).machineId);
+        const resolvedMachineId = operationMachineId ?? authorizationMachineId ?? settingsMachineId ?? await resolveCurrentSessionValue('machineId');
+        if (!resolvedMachineId) throw Object.assign(new Error('target_unavailable'), { code: 'target_unavailable',
+          details: { code: 'target_unavailable', reason: 'publisher_machine_unavailable' } });
+        machineId = resolvedMachineId;
+      }
+      const result = await createWorkflowRunStorageClient({
+        token,
+        ...(machineId ? { machineId } : {}),
+        serverHttpBaseUrl,
+        ...(caller && 'actionId' in caller ? { resolveAuthorizationHeaders: (request) => resolveServerRequestHeaders(caller.context, caller.actionId, request) } : {}),
+      }).execute(
+        operation as Parameters<ReturnType<typeof createWorkflowRunStorageClient>['execute']>[0],
+        { ...(options?.signal ? { signal: options.signal } : {}),
+          ...(authorizationMachineId ? { publisherMachineId: machineId } : {}) },
+      );
+      await assertCombinedCurrent();
+      return result;
+    },
+    };
+    return storage;
+  };
+  const workflowRunStorage = createWorkflowRunStorage();
+  return { workflowRunServerHttpBaseUrl, createWorkflowRunStorage, workflowRunStorage };
+}

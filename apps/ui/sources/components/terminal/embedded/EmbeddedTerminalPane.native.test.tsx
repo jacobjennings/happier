@@ -230,9 +230,7 @@ describe('EmbeddedTerminalPane native renderer selection', () => {
                 nativeRenderer={{
                     featureEnabled: true,
                     platform: 'ios',
-                    packageProofAccepted: true,
                     accessibilityAccepted: true,
-                    crashFallbackAvailable: true,
                     availability: {
                         available: true,
                         platform: 'ios',
@@ -568,10 +566,10 @@ describe('EmbeddedTerminalPane native renderer selection', () => {
         expect(clipboardState.setClipboardStringSafe).not.toHaveBeenCalled();
     });
 
-    it('persists a next-launch quarantine only for an attributed fatal native renderer termination', async () => {
+    it.each(['native', 'auto'] as const)('persists a next-launch quarantine only for an attributed fatal native renderer termination (%s preference)', async (preference) => {
         platformState.os = 'ios';
         resetSurfaceState();
-        localSettingState.terminalRendererPreference = 'native';
+        localSettingState.terminalRendererPreference = preference;
         featureState.enabled = {
             'terminal.transport.byteStream': true,
             'terminal.renderer.native': true,
@@ -594,6 +592,7 @@ describe('EmbeddedTerminalPane native renderer selection', () => {
                     terminalRef={{ current: null }}
                 />,
             );
+            expect(surfaceState.ghosttyProps).not.toBeNull();
 
             await act(async () => {
                 (surfaceState.ghosttyProps as {
@@ -747,6 +746,8 @@ describe('EmbeddedTerminalPane native renderer selection', () => {
         });
 
         expect(surfaceState.xtermProps).not.toBeNull();
+        expect(surfaceState.ghosttyProps).toBeNull();
+        expect(surfaceState.termuxProps).toBeNull();
         expect(storage.getState().localSettings.terminalNativeRendererQuarantine).toBeNull();
     });
 
@@ -875,99 +876,21 @@ describe('EmbeddedTerminalPane native renderer selection', () => {
         expect(surfaceState.termuxProps).toBeNull();
     });
 
-    it('falls back to xterm WebView after a selected native renderer reports unavailable', async () => {
-        platformState.os = 'ios';
-        resetSurfaceState();
-        localSettingState.terminalRendererPreference = 'native';
-        featureState.enabled = {
-            'terminal.transport.byteStream': true,
-            'terminal.renderer.native': true,
-            'terminal.renderer.iosGhostty': true,
-        };
-        nativeAvailabilityState.availability = {
-            available: true,
-            platform: 'ios',
-            renderer: 'ios-ghosttykit',
-            moduleVersion: '0.0.0',
-            accessibility: 'fallback-required',
-        };
-
-        await renderScreen(
-            <EmbeddedTerminalPane
-                title="Terminal"
-                controller={makeController()}
-                terminalRef={{ current: null }}
-                nativeRenderer={{
-                    featureEnabled: true,
-                    platform: 'ios',
-                    packageProofAccepted: true,
-                    accessibilityAccepted: true,
-                    crashFallbackAvailable: true,
-                    availability: {
-                        available: true,
-                        platform: 'ios',
-                        renderer: 'ios-ghosttykit',
-                        moduleVersion: '0.0.0',
-                        accessibility: 'fallback-required',
-                    },
-                }}
-            />,
-        );
-
-        expect(surfaceState.ghosttyProps).not.toBeNull();
-        expect(surfaceState.xtermProps).toBeNull();
-        expect(surfaceState.termuxProps).toBeNull();
-
-        await act(async () => {
-            (surfaceState.ghosttyProps as { onUnavailable?: (reason: string) => void }).onUnavailable?.('renderer-unavailable');
-        });
-
-        expect(surfaceState.xtermProps).not.toBeNull();
-        expect(surfaceState.termuxProps).toBeNull();
-        expect(surfaceState.ghosttyProps).toBeNull();
-    });
-
-    it('keeps xterm WebView selected when byte-stream transport is disabled', async () => {
-        platformState.os = 'android';
+    it.each([
+        { os: 'android', rendererFeature: 'terminal.renderer.androidTermux', renderer: 'android-termux' },
+        { os: 'ios', rendererFeature: 'terminal.renderer.iosGhostty', renderer: 'ios-ghosttykit' },
+    ] as const)('keeps xterm WebView selected on $os when byte-stream transport is disabled', async ({ os, rendererFeature, renderer }) => {
+        platformState.os = os;
         resetSurfaceState();
         localSettingState.terminalRendererPreference = 'native';
         featureState.enabled = {
             'terminal.renderer.native': true,
-            'terminal.renderer.androidTermux': true,
+            [rendererFeature]: true,
         };
         nativeAvailabilityState.availability = {
             available: true,
-            platform: 'android',
-            renderer: 'android-termux',
-            moduleVersion: '0.0.0',
-            accessibility: 'native',
-        };
-
-        await renderScreen(
-            <EmbeddedTerminalPane
-                title="Terminal"
-                controller={makeController()}
-                terminalRef={{ current: null }}
-            />,
-        );
-
-        expect(surfaceState.xtermProps).not.toBeNull();
-        expect(surfaceState.termuxProps).toBeNull();
-        expect(surfaceState.ghosttyProps).toBeNull();
-    });
-
-    it('keeps xterm WebView selected on iOS when byte-stream transport is disabled', async () => {
-        platformState.os = 'ios';
-        resetSurfaceState();
-        localSettingState.terminalRendererPreference = 'native';
-        featureState.enabled = {
-            'terminal.renderer.native': true,
-            'terminal.renderer.iosGhostty': true,
-        };
-        nativeAvailabilityState.availability = {
-            available: true,
-            platform: 'ios',
-            renderer: 'ios-ghosttykit',
+            platform: os,
+            renderer,
             moduleVersion: '0.0.0',
             accessibility: 'native',
         };
@@ -1095,8 +1018,6 @@ describe('EmbeddedTerminalPane native renderer selection', () => {
                     featureEnabled: true,
                     platform: 'ios',
                     accessibilityAccepted: false,
-                    packageProofAccepted: true,
-                    crashFallbackAvailable: true,
                     availability: {
                         available: true,
                         platform: 'ios',
@@ -1201,52 +1122,5 @@ describe('EmbeddedTerminalPane native renderer selection', () => {
         expect(surfaceState.xtermProps).not.toBeNull();
         expect(surfaceState.ghosttyProps).toBeNull();
         expect(surfaceState.termuxProps).toBeNull();
-    });
-
-    it('routes the auto-default native renderer through the same fatal quarantine fallback', async () => {
-        platformState.os = 'ios';
-        resetSurfaceState();
-        featureState.enabled = {
-            'terminal.transport.byteStream': true,
-            'terminal.renderer.native': true,
-            'terminal.renderer.iosGhostty': true,
-        };
-        nativeAvailabilityState.availability = {
-            available: true,
-            platform: 'ios',
-            renderer: 'ios-ghosttykit',
-            moduleVersion: '0.0.0',
-            accessibility: 'fallback-required',
-        };
-        const now = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
-
-        try {
-            await renderScreen(
-                <EmbeddedTerminalPane
-                    title="Terminal"
-                    controller={makeController()}
-                    terminalRef={{ current: null }}
-                />,
-            );
-            expect(surfaceState.ghosttyProps).not.toBeNull();
-
-            await act(async () => {
-                (surfaceState.ghosttyProps as {
-                    onRendererCrash?: (event: Readonly<{ surfaceId: string; reason: string; fatal?: boolean }>) => void;
-                }).onRendererCrash?.({
-                    surfaceId: 'embedded-terminal:ios-ghosttykit:embedded-terminal',
-                    reason: 'renderer-terminated',
-                    fatal: true,
-                });
-            });
-
-            expect(surfaceState.xtermProps).not.toBeNull();
-            expect(storage.getState().localSettings.terminalNativeRendererQuarantine).toEqual({
-                renderer: 'ios-ghosttykit',
-                expiresAtMs: 1_700_086_400_000,
-            });
-        } finally {
-            now.mockRestore();
-        }
     });
 });

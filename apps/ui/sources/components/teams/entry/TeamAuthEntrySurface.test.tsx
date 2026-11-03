@@ -223,9 +223,12 @@ describe('TeamAuthEntrySurface', () => {
         ));
         authorityFetch.mockImplementation(async () => readyResponse(entryScope));
         runWithServerRequestAuthorityForServerAccountScope.mockReset();
+        // The authenticated transport records the exact Account scope its authority was bound to.
         runWithServerRequestAuthorityForServerAccountScope.mockImplementation(
-            async (_params: unknown, operation: (authority: unknown) => Promise<unknown>) =>
-                await operation({ request: authorityFetch }),
+            async (params: Readonly<{ scope: unknown }>, operation: (authority: unknown) => Promise<unknown>) =>
+                await operation({
+                    request: (path: string, init?: RequestInit) => authorityFetch(path, init, { accountScope: params.scope }),
+                }),
         );
     });
 
@@ -650,10 +653,7 @@ describe('TeamAuthEntrySurface', () => {
         await waitForTestId(screen, 'team-auth-entry-ready');
 
         // The projection is asked for as this exact Account, not anonymously.
-        expect(runWithServerRequestAuthorityForServerAccountScope).toHaveBeenCalledWith(
-            expect.objectContaining({ scope: accountScope }),
-            expect.any(Function),
-        );
+        expect(authorityFetch).toHaveBeenCalledWith('/v1/auth/entry', expect.anything(), { accountScope });
         expect(endpointFetch).not.toHaveBeenCalled();
         expect(screen.findAllByTestId('team-auth-entry-action:home-password')).toHaveLength(0);
         expect(screen.findByTestId('team-auth-entry-account-label')?.props.children)
@@ -820,10 +820,7 @@ describe('TeamAuthEntrySurface', () => {
         await waitForTestId(screen, 'team-auth-entry-ready');
 
         expect(acceptTeamInvitation).not.toHaveBeenCalled();
-        expect(runWithServerRequestAuthorityForServerAccountScope).toHaveBeenCalledWith(
-            expect.objectContaining({ scope: accountScope }),
-            expect.any(Function),
-        );
+        expect(authorityFetch).toHaveBeenCalledWith('/v1/auth/entry', expect.anything(), { accountScope });
 
         // The consequences of joining are stated before the confirmation exists.
         await waitForTestId(screen, 'team-join-preview');
@@ -939,10 +936,7 @@ describe('TeamAuthEntrySurface', () => {
         await waitForTestId(screen, 'team-auth-entry-ready');
         await waitForTestId(screen, 'team-join-preview');
 
-        expect(runWithServerRequestAuthorityForServerAccountScope).toHaveBeenCalledWith(
-            expect.objectContaining({ scope: accountScope }),
-            expect.any(Function),
-        );
+        expect(authorityFetch).toHaveBeenCalledWith('/v1/auth/entry', expect.anything(), { accountScope });
         expect(screen.findByTestId('team-auth-entry-join')).toBeTruthy();
         expect(screen.getTextContent()).toContain('Join with this Account');
         expect(screen.getTextContent())

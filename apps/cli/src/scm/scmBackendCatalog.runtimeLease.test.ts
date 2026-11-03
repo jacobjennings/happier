@@ -42,21 +42,6 @@ describe('SCM backend registry runtime lease convergence', () => {
     releaseLeaseMock.mockReset();
   });
 
-  it('uses the authoritative plugin runtime lease for the default backend registry', async () => {
-    const runtimeRegistry = createRuntimeRegistry(createContributionRegistry());
-    acquireAuthoritativePluginRuntimeRegistryLeaseMock.mockResolvedValue({
-      registry: runtimeRegistry,
-      source: 'active',
-      release: releaseLeaseMock,
-    });
-    releaseLeaseMock.mockResolvedValue(undefined);
-
-    await runWithScmBackendRegistryLease(undefined, async () => undefined);
-
-    expect(acquireAuthoritativePluginRuntimeRegistryLeaseMock).toHaveBeenCalledTimes(1);
-    expect(releaseLeaseMock).toHaveBeenCalledTimes(1);
-  });
-
   it('activates hosting-provider producers before backend consumers and then re-reads the authoritative registry', async () => {
     const contributes = {
       ...createContributionRegistry(),

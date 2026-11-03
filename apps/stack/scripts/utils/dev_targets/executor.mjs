@@ -11,6 +11,7 @@ import {
 } from './remote_commands.mjs';
 import {
   MUTAGEN_SYNC_LIST_JSON_TEMPLATE,
+  describeDevTargetSyncRecovery,
   parseMutagenSyncList,
   resolveDevTargetMutagenRuntime,
   resolveDevTargetSshConfigFile,
@@ -37,16 +38,17 @@ async function defaultStopProcess(child, signal) {
   return await killProcessTree(child, signal, { graceMs: 2_000 });
 }
 
-function assertReadySyncStatus(status, { allowSynchronizing = false, allowRescan = false, allowNeedsFlush = false } = {}) {
+function assertReadySyncStatus(status, { targetName, allowSynchronizing = false, allowRescan = false, allowNeedsFlush = false } = {}) {
   if (status.state === 'ready' || (allowSynchronizing && status.state === 'synchronizing')) return;
   if (allowNeedsFlush && status.state === 'needs-flush') return;
   if (allowRescan && status.recovery === 'rescan') return;
   const reason = status.lastError || status.error;
   const detail = reason ? `: ${reason}` : '';
+  const recovery = describeDevTargetSyncRecovery(status, targetName);
   throw new Error(
     `[dev-targets] ${status.sessionName} synchronization is ${status.state}${detail}; `
-      + 'run hstack dev-targets sync-service start --detached to resume synchronization, '
-      + 'or run hstack dev-targets status for details',
+      + (recovery || 'run hstack dev-targets sync-service start --detached to resume synchronization, '
+        + `or run hstack dev-targets status ${targetName} for details`),
   );
 }
 
@@ -106,7 +108,7 @@ export async function prepareDevTargetSourceCommand(
   let status = { state: 'unknown', successfulCycles: 0 };
   if (!syncAlreadyVerified) {
     status = await inspectDevTargetSync({ target, stackBaseDir, sourceDir, env: syncEnv }, { runCaptureResult: runCaptureResultImpl });
-    assertReadySyncStatus(status, { allowRescan: flush !== false, allowNeedsFlush: flush !== false });
+    assertReadySyncStatus(status, { targetName: target.name, allowRescan: flush !== false, allowNeedsFlush: flush !== false });
   }
   if (flush === true || (flush === null && !syncAlreadyVerified)) {
     await flushDevTarget({ target, stackBaseDir, env: syncEnv }, { runCaptureResult: runCaptureResultImpl });
@@ -117,7 +119,7 @@ export async function prepareDevTargetSourceCommand(
 /** Read-only worker observation, independent of admission and sync readiness. */
 export async function inspectDevTargetAdmission({ target, env = process.env },
   { runCaptureResult: capture = defaultRunCaptureResult } = {}) {
-  if (target.platform === 'windows') return { state: 'unsupported', owners: [] };
+  if (target.platform === 'windows') return { state: 'unsupported' };
   const remoteCommand = buildRemoteExecCommand(target, {
     executionId: randomUUID(), commandArgs: ['node', './apps/stack/scripts/utils/proc/service_memory.mjs', '--admission-status'],
     environment: { HAPPIER_STACK_PM_CACHE_BASE_DIR: `${target.cliHomeDir.replace(/[\\/]+$/, '')}/cache` },
@@ -128,11 +130,10 @@ export async function inspectDevTargetAdmission({ target, env = process.env },
     }), env });
     if (!result?.ok) return { state: 'unavailable', error: result?.err || 'worker admission observation failed' };
     const progress = JSON.parse(result.out);
-    if (!['observed', 'unsupported'].includes(progress?.state) || !Array.isArray(progress.owners)
-      || progress.owners.some(owner => !Number.isSafeInteger(owner.pid) || owner.pid <= 1
-        || typeof owner.token !== 'string' || !/^\d+$/.test(owner.token)
-        || typeof owner.className !== 'string' || !/^[a-z][a-z-]*$/.test(owner.className)
-        || ![owner.ageSeconds, owner.cpuSeconds, owner.recentCpuPercent].every(value => value === null || (Number.isFinite(value) && value >= 0)))) {
+    if (progress?.state === 'unsupported') return { state: 'unsupported' };
+    const fields = ['activeCount', 'waitingCount', 'sampleCount', 'availableMemoryKiB', 'totalMemoryKiB',
+      'reservedMemoryKiB', 'unreservedMemoryKiB', 'achievableMemoryKiB', 'residentMemoryKiB', 'queuedMemoryKiB'];
+    if (progress?.state !== 'observed' || fields.some(field => !Number.isSafeInteger(progress[field]) || progress[field] < 0)) {
       return { state: 'unavailable', error: 'invalid worker admission observation' };
     }
     return progress;
@@ -177,7 +178,7 @@ async function flushDevTarget(
         console.error(`[dev-targets] ${target.name} retrying transient problems through one fresh flush`);
         continue;
       }
-      assertReadySyncStatus(postFlushStatus);
+      assertReadySyncStatus(postFlushStatus, { targetName: target.name });
     }
     return { state: 'ready', sessionName, flushed: true };
   }
@@ -188,7 +189,7 @@ export async function syncDevTarget(
   dependencies = {},
 ) {
   const status = await inspectDevTargetSync(options, dependencies);
-  assertReadySyncStatus(status, { allowSynchronizing: true, allowRescan: true, allowNeedsFlush: true });
+  assertReadySyncStatus(status, { targetName: options.target.name, allowSynchronizing: true, allowRescan: true, allowNeedsFlush: true });
   return await flushDevTarget(options, dependencies);
 }
 

@@ -9,6 +9,8 @@ import { describeAuthoredWidgetDefinitionV1, readWidgetDescriptor, type WidgetCa
 import { useConfiguredWidgetTarget } from '@/sync/domains/widgets/useConfiguredWidgetTarget';
 import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
 import { areServerAccountScopesEqual } from '@/sync/domains/scope/serverAccountScope';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { readMountedComposerPresentationSnapshot } from '@/components/sessions/presentation/sessionComposerPresentationTargets';
 import { appendMountedComposerDraft } from '@/sync/ops/actions/appendMountedComposerDraft';
 import { ItemLoadStateRows } from '@/components/ui/lists/ItemLoadStateRows';
@@ -70,6 +72,9 @@ function readDraftTarget(scope: WidgetSurfaceRefV1, definition: WidgetDefinition
 export function useWidgetDefinitionFlows(input: Readonly<{
     instance: WidgetInstanceV1 | null;
     scope: WidgetSurfaceRefV1 | null;
+    /** The containing layout's admitted viewer is distinct from its stored owner. */
+    admittedViewer?: ServerAccountScope;
+    isCurrent?: () => boolean;
     anchorRef: React.RefObject<View | null>;
     /**
      * A card that sits among siblings opens every flow on its own card, not at the ⋯: the card's own
@@ -125,7 +130,8 @@ export function useWidgetDefinitionFlows(input: Readonly<{
     if (flow === 'about' && scope && instance) {
         // The read belongs to the open flow, above the shell that recomposes on resize.
         panel = <AboutFlow key={`${scope.serverId}/${scope.accountId}/${instance.id}/${artifactId ?? instance.definition.kind}`}
-            account={{ serverId: scope.serverId, accountId: scope.accountId }} scope={scope} instance={instance} artifactId={artifactId}
+            account={input.admittedViewer ?? { serverId: scope.serverId, accountId: scope.accountId }}
+            isCurrent={input.isCurrent} scope={scope} instance={instance} artifactId={artifactId}
             anchorRef={anchorRef} editInputs={editInputs} providedContext={input.providedContext} onClose={close} testID={`${testID}.about`} />;
     } else if (flow === 'addTo' && scope && instance && copyTo === null) {
         panel = <WidgetCopyChooser instance={instance} current={scope} anchorRef={anchorRef} onChoose={setCopyTo} onClose={close} testID={`${testID}.addTo`} />;
@@ -175,6 +181,7 @@ export function useWidgetDefinitionFlows(input: Readonly<{
 
 function AboutFlow(props: Readonly<{
     account: Readonly<{ serverId: string; accountId: string }>;
+    isCurrent?: () => boolean;
     scope: WidgetSurfaceRefV1;
     instance: WidgetInstanceV1;
     artifactId: string | null;
@@ -188,7 +195,10 @@ function AboutFlow(props: Readonly<{
     const { account, artifactId } = props;
     const { serverId, accountId } = account;
     const viewer = useActiveServerAccountScope();
-    const current = areServerAccountScopesEqual(viewer, account);
+    const current = props.isCurrent?.() !== false && areServerAccountScopesEqual(viewer, account)
+        && areServerProfileIdentifiersEquivalent(serverId, props.scope.serverId)
+        // Layout access does not grant access to its owner's private definition Artifacts.
+        && (!artifactId || accountId === props.scope.accountId);
     React.useEffect(() => {
         if (!artifactId || !current) return;
         const controller = new AbortController();
@@ -251,7 +261,8 @@ function AboutBoundFlow(props: Parameters<typeof AboutResolvedFlow>[0] & Readonl
 }
 
 function AboutAdmittedFlow(props: Parameters<typeof AboutBoundFlow>[0] & Readonly<{ descriptor: WidgetCandidate }>): React.ReactElement {
-    const resolution = useConfiguredWidgetTarget({ scope: props.scope, instance: props.instance, descriptor: props.descriptor,
+    const resolution = useConfiguredWidgetTarget({ scope: props.scope, admittedViewer: props.account,
+        instance: props.instance, descriptor: props.descriptor,
         providedContext: props.providedContext, appRuntime: props.runtime });
     return <AboutPanelContent {...props} resolution={resolution} />;
 }

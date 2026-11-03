@@ -4,6 +4,7 @@ import { createSessionOwnerMetadataV1, projectSessionOwnerCompatibilityViewV1,
   projectSessionSharedMetadataV1 } from './sessionMetadataSchemasV1.js';
 
 import {
+  buildSessionStopHoldV1,
   clearSessionExplicitStopV1FromMetadata,
   readSessionExplicitStopV1FromMetadata,
   resolveSessionExplicitControlIntent,
@@ -24,6 +25,29 @@ describe('explicit Session Stop intent', () => {
       actionContext: { ...actionContext, agentStartContext: undefined } })).toBe('unauthorized');
     expect(resolveSessionExplicitControlIntent({ rawSession: { id: 'lead' }, actionContext: { ...actionContext,
       agentStartContext: { ...agentStartContext, caller: { ...caller, sessionId: 'other' } } } })).toBe('unauthorized');
+  });
+
+  it('builds the one Stop hold record from the declared intent and the classified author', () => {
+    const caller = { kind: 'session', sessionId: 'lead', starterDepth: 0, turnDepth: 1 } as const;
+    const agentStartContext = { caller, baseline: { machineId: 'machine', directory: '/repo' },
+      ledSubtreeSessionIds: ['child'], workDepthLimit: 4, roles: {}, callerPermissionCeiling: 'default' } as const;
+    const manager = { surface: 'agent', actionCaller: caller, agentStartContext } as const;
+    const at = { requestId: 'stop-request-1', requestedAtMs: 123 } as const;
+    expect(buildSessionStopHoldV1({ ...at, stopIntent: 'explicit_stop', rawSession: { id: 'child' } }))
+      .toEqual({ kind: 'hold', stop });
+    expect(buildSessionStopHoldV1({ ...at, stopIntent: 'explicit_stop', rawSession: { id: 'child' }, actionContext: manager }))
+      .toEqual({ kind: 'hold', stop: { ...stop, managerSessionId: 'lead' } });
+    // A resource/lifecycle Stop never holds, for a person or a manager; automation never holds.
+    expect(buildSessionStopHoldV1({ ...at, stopIntent: 'lifecycle_control', rawSession: { id: 'child' } })).toEqual({ kind: 'no_hold' });
+    expect(buildSessionStopHoldV1({ ...at, stopIntent: 'lifecycle_control', rawSession: { id: 'child' }, actionContext: manager }))
+      .toEqual({ kind: 'no_hold' });
+    expect(buildSessionStopHoldV1({ ...at, stopIntent: 'explicit_stop', rawSession: { id: 'child' },
+      actionContext: { surface: 'agent', authority: 'account_automation' } })).toEqual({ kind: 'no_hold' });
+    // An unadmitted author is refused whatever the intent.
+    for (const stopIntent of ['explicit_stop', 'lifecycle_control'] as const) {
+      expect(buildSessionStopHoldV1({ ...at, stopIntent, rawSession: { id: 'lead' }, actionContext: manager }))
+        .toEqual({ kind: 'refused', reason: 'self_stop_forbidden' });
+    }
   });
 
   it.each([undefined, 'manager-session'])('survives the persisted owner metadata projection and is readable after reload (manager %s)', managerSessionId => {

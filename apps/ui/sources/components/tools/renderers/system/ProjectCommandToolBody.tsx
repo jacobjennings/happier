@@ -50,6 +50,7 @@ export const ProjectCommandToolBody = React.memo(
     return (
       <ProjectCommandOutputPane
         operation={operation}
+        ownerStatesExit={call.kind === 'start'}
         title={attachment.script?.name ?? operation.snapshot.title}
         height={160}
         onOpenDetail={openDetail}

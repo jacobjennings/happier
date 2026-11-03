@@ -31,6 +31,7 @@ import { SpawnSessionExecutionAuthorizationSchema } from '@happier-dev/protocol/
 import { buildBackendTargetKeyV2 } from '@happier-dev/protocol/backends/targets/backendTargetRefV2';
 import type { AgentExecutionTargetV1, BackendTargetRefV2 } from '@happier-dev/protocol';
 import { SessionTeamCredentialBindingIntentsV1Schema } from '@happier-dev/protocol/teams/credentials/sessionBindingIntentV1';
+import { PluginUiNewSessionSeedOriginV1Schema } from '@happier-dev/protocol/plugins/ui';
 
 import { PERMISSION_MODES } from '@/api/types';
 import type { CatalogAgentId } from '@/agent/catalog/ids';
@@ -205,6 +206,7 @@ const SpawnDaemonSessionRequestCompatSchema = (<I extends z.core.$ZodType, O ext
   sessionCreationCorrespondence: z.optional(SessionCreationCorrespondenceV1Schema),
   placementOrigin: z.optional(MachinePoolSelectionOriginV1Schema),
   initialTitle: z.optional(z.string().check(z.trim(), z.minLength(1))),
+  authoringOrigin: z.optional(asHostProtocolZod(PluginUiNewSessionSeedOriginV1Schema)),
   identity: z.optional(asHostProtocolZod(SessionIdentityAdditionsV1Schema)),
   memoryEnabled: z.optional(z.boolean()),
   promptStack: z.optional(asHostProtocolZod(SessionPromptStackV1Schema)),
@@ -307,6 +309,10 @@ export const SpawnDaemonSessionRequestSchema = z.pipe(SpawnDaemonSessionRequestC
   }
   if (request.manager !== undefined && (request.existingSessionId || request.type === 'resume-session')) {
     ctx.issues.push({ code: "custom", path: ['manager'], message: 'The lead relation requires fresh Session creation', input: ctx.value });
+    return z.NEVER;
+  }
+  if (request.authoringOrigin !== undefined && (request.existingSessionId || request.type === 'resume-session')) {
+    ctx.issues.push({ code: 'custom', path: ['authoringOrigin'], message: 'Authoring provenance requires fresh Session creation', input: ctx.value });
     return z.NEVER;
   }
   if (request.initialSessionRolesV1 !== undefined && (request.existingSessionId || request.type === 'resume-session')) {
@@ -436,6 +442,7 @@ const SPAWN_SESSION_OPTION_KEYS = [
   'sessionCreationCorrespondence',
   'placementOrigin',
   'initialTitle',
+  'authoringOrigin',
   'identity',
   'memoryEnabled',
   'promptStack',

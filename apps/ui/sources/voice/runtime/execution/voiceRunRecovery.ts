@@ -1,10 +1,10 @@
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { resolveVoiceAgentRunBackendId } from '@happier-dev/protocol/voice/voiceAgentRunMetadataV1';
+import { isExecutionRunTerminalStatus } from '@happier-dev/protocol/execution/runs/waitForTerminal';
 import type { VoiceAgentHandle } from '@/voice/agent/types';
 import { VOICE_AGENT_GLOBAL_SESSION_ID } from '@/voice/agent/voiceAgentGlobalSessionId';
 import { isVoiceAgentNotFoundError } from '@/voice/agent/voiceAgentErrorGuards';
 import { readPersistedVoiceConversationRuntimeState } from '@/voice/binding/voiceConversationBindingPersistence';
-import { readVoiceAgentRunMetadataFromSession } from '@/voice/persistence/voiceAgentRunMetadata';
 import {
   sessionExecutionRunGet,
   sessionExecutionRunList,
@@ -13,11 +13,11 @@ import {
 import { normalizeNonEmptyString } from '@/voice/shared/normalizeNonEmptyString';
 import { createAbortRacer } from '@/voice/agent/voiceAgentAbort';
 import type { ServerAccountScopeLifetime } from '@/sync/domains/scope/serverAccountScope';
-import { createRpcCallError } from '@/sync/runtime/rpcErrors';
+import { createRpcCallError, readRpcErrorCode } from '@/sync/runtime/rpcErrors';
+import { reconcileUnavailableVoiceRunStop, VoiceRunStopUnconfirmedError } from './voiceRunStopReconciliation';
 import {
   clearVoiceAgentRunMetadata,
   persistVoiceAgentRunMetadata,
-  resolveVoiceRunMetadataSessionId,
 } from '@/voice/agent/voiceAgentRunState';
 
 export function createVoiceRunRecovery(
@@ -125,18 +125,13 @@ export function createVoiceRunRecovery(
     reason?: 'continued_elsewhere',
   ) => {
     const admittedLifetime = captureActiveServerAccountScopeLifetime();
+    const existingHandle = args.voiceAgentBySessionId.get(sessionId) ?? null;
     const persistedRuntimeState = readPersistedVoiceConversationRuntimeState({
       managedSessionId: sessionId,
+      conversationSessionId: existingHandle?.rpcSessionId,
     });
-    const metadataSessionId =
-      persistedRuntimeState?.metadataSessionId ??
-      resolveVoiceRunMetadataSessionId(sessionId, 'daemon');
-    const persistedRunMeta =
-      persistedRuntimeState?.runMetadata ??
-      (metadataSessionId
-        ? readVoiceAgentRunMetadataFromSession({ sessionId: metadataSessionId })
-        : null);
-    const existingHandle = args.voiceAgentBySessionId.get(sessionId) ?? null;
+    const metadataSessionId = persistedRuntimeState?.metadataSessionId ?? null;
+    const persistedRunMeta = persistedRuntimeState?.runMetadata ?? null;
     const pendingInit = args.voiceAgentInitBySessionId.get(sessionId) ?? null;
     args.voiceAgentInitBySessionId.delete(sessionId);
     args.voiceAgentBySessionId.delete(sessionId);
@@ -162,28 +157,42 @@ export function createVoiceRunRecovery(
       const accountLifetime = handle?.accountLifetime ?? admittedLifetime;
       if (!accountLifetime) return;
       const runOptions = { scope: accountLifetime.scope, signal };
-      // Unobserved cleanup remains best effort. An ordered caller must know
-      // when Stop was not acknowledged before it may admit a successor.
+      let unconfirmedStop: VoiceRunStopUnconfirmedError | null = null;
+      // Unavailability must retain its exact recovery fact even for an
+      // unobserved cleanup. Other ordered failures still own their barrier.
       const cleanupFailure = (error: unknown): undefined => {
-        if (signal && !isVoiceAgentNotFoundError(error)) throw error;
+        if ((signal || readRpcErrorCode(error) === 'target_unavailable') && !isVoiceAgentNotFoundError(error)) throw error;
         return undefined;
+      };
+      const reconcileStopFailure = async (error: unknown, rpcSessionId: string, runId: string): Promise<void> => {
+        if (readRpcErrorCode(error) === 'target_unavailable') {
+          const target = await reconcileUnavailableVoiceRunStop({ accountLifetime, rpcSessionId, runId, signal });
+          if (target === 'unreachable') unconfirmedStop ??= new VoiceRunStopUnconfirmedError(rpcSessionId, runId, error);
+          return;
+        }
+        if (readRpcErrorCode(error) === 'execution_run_not_allowed') {
+          // Stop rejects an already-terminal Run. Only its current exact
+          // Account/Run observation, never the refusal code alone, settles
+          // this client's retirement barrier. Host resource cleanup remains
+          // with the execution owner.
+          const observed = await sessionExecutionRunGet(
+            rpcSessionId, { runId, includeStructured: false }, runOptions,
+          ).catch(() => null);
+          caller.throwIfAborted();
+          if (observed && 'run' in observed && observed.run.runId === runId
+            && isExecutionRunTerminalStatus(observed.run.status)) return;
+        }
+        cleanupFailure(error);
       };
       const stopRun = async (
         rpcSessionId: string,
         runId: string,
       ): Promise<void> => {
-        const stopped = await sessionExecutionRunStop(
-          rpcSessionId,
-          { runId },
-          runOptions,
-        ).catch(cleanupFailure);
-        if (stopped?.ok === false) {
-          cleanupFailure(
-            createRpcCallError({
-              error: stopped.error,
-              errorCode: stopped.errorCode,
-            }),
-          );
+        try {
+          const stopped = await sessionExecutionRunStop(rpcSessionId, { runId }, runOptions);
+          if (stopped.ok === false) throw createRpcCallError({ error: stopped.error, errorCode: stopped.errorCode });
+        } catch (error) {
+          await reconcileStopFailure(error, rpcSessionId, runId);
         }
       };
       const cleanupMetadataSessionId = handle
@@ -212,23 +221,25 @@ export function createVoiceRunRecovery(
             signal,
           });
         } catch (error) {
-          cleanupFailure(error);
+          await reconcileStopFailure(error, handle.rpcSessionId, handle.voiceAgentId);
         }
       } else if (persistedRunMeta?.runId) {
         await stopRun(fallbackRpcSessionId, persistedRunMeta.runId);
       }
 
       if (daemonBackendId) {
-        const listed = await Promise.resolve(
-          sessionExecutionRunList(daemonRpcSessionId, {}, runOptions),
-        ).catch(cleanupFailure);
+        // The exact primary Run owns the Stop result. Other matching Runs are
+        // best-effort cleanup; a failed sweep does not undo that result.
+        const inventoryFailure = (error: unknown): undefined => {
+          caller.throwIfAborted();
+          console.warn('[voiceRunRecovery] Additional Voice Run cleanup could not be confirmed', {
+            errorCode: readRpcErrorCode(error),
+          });
+          return undefined;
+        };
+        const listed = await sessionExecutionRunList(daemonRpcSessionId, {}, runOptions).catch(inventoryFailure);
         if (listed && !('runs' in listed)) {
-          cleanupFailure(
-            createRpcCallError({
-              error: listed.error,
-              errorCode: listed.errorCode,
-            }),
-          );
+          inventoryFailure(createRpcCallError({ error: listed.error, errorCode: listed.errorCode }));
         }
         const runs = listed && 'runs' in listed ? listed.runs : [];
         const matchingRunIds: string[] = Array.from(
@@ -238,6 +249,9 @@ export function createVoiceRunRecovery(
                 (run) =>
                   run.intent === 'voice_agent' &&
                   run.status === 'running' &&
+                  // The primary Stop was already reconciled above; inventory
+                  // cleanup is a sweep of the remaining Runs, never a retry.
+                  run.runId !== (handle?.voiceAgentId ?? persistedRunMeta?.runId) &&
                   resolveVoiceAgentRunBackendId(run.backendTarget) ===
                     daemonBackendId,
               )
@@ -245,9 +259,13 @@ export function createVoiceRunRecovery(
           ),
         );
         for (const runId of matchingRunIds) {
-          await stopRun(daemonRpcSessionId, runId);
+          const stopped = await sessionExecutionRunStop(daemonRpcSessionId, { runId }, runOptions).catch(inventoryFailure);
+          if (stopped?.ok === false) inventoryFailure(createRpcCallError({ error: stopped.error, errorCode: stopped.errorCode }));
         }
       }
+      // One unresolved Stop never prevents cleanup of the other observed Runs.
+      // Preserve the exact retained pointer and report uncertainty after the sweep.
+      if (unconfirmedStop) throw unconfirmedStop;
 
       await clearVoiceAgentRunMetadata(
         cleanupMetadataSessionId,

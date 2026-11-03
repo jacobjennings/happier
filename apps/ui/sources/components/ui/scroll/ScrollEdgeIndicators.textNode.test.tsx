@@ -17,10 +17,6 @@ vi.mock('react-native', async () => {
     );
 });
 
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: 'Text',
-}));
-
 vi.mock('@expo/vector-icons', () => ({
     Ionicons: () => <>{'.'}</>,
 }));

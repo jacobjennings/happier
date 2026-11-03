@@ -14,31 +14,25 @@ import { adoptHomeProfile, getActiveServerId, setActiveServerId } from '@/sync/d
 import { AccountDirectorySession } from '@/sync/domains/accountDirectory/accountDirectorySession';
 import { resumeAccountServicePostAuth, type AccountPostAuthResult } from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
 import { createDirectoryHttpFixture } from '@/sync/ops/accountDirectory/accountDirectoryTestFixtures';
+import { InjectedAuthProvider } from '@/auth/context/AuthContext';
+import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { RestoreScanComputerQrView } from './RestoreScanComputerQrView';
 
 installTokenStorageWebPlatformMocks();
-const boundary = vi.hoisted(() => ({ request: vi.fn() }));
+// The network boundary: every request the real HTTP client issues, keyed by observed origin and path.
+const boundary = { request: vi.fn() };
 
 /** Non-secret binding to the Account credential a continuation was created under. */
 const ACCOUNT_CREDENTIAL_TOKEN_DIGEST = 'C0jknAf55a-WIBFlxj8xId4cq00hoNQDzcbt4__9tlM';
-vi.mock('@/sync/http/client', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/http/client')>(),
-    createServerFetchAtEndpoint: (target: { endpointUrl: string }) => (path: string, init?: RequestInit) => boundary.request(target.endpointUrl, path, init),
-    serverFetch: (path: string, init?: RequestInit) => boundary.request('ambient', path, init),
-}));
 vi.mock('expo-router', async () => (await import('@/dev/testkit/mocks/router')).createExpoRouterMock().module);
 vi.mock('@react-navigation/native', async () => (await import('@/dev/testkit/mocks/reactNavigation')).createReactNavigationNativeMock());
 vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock());
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
 vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal')).createModalModuleMock().module);
-// No AuthProvider is mounted; the scanner reads auth refresh from context.
-vi.mock('@/auth/context/AuthContext', () => ({
-    useAuth: () => ({ refreshFromActiveServer: async () => {} }),
-}));
 
 let screen: Awaited<ReturnType<typeof renderScreen>> | undefined;
 let restore: (() => void) | undefined;
-afterEach(async () => { await screen?.unmount(); restore?.(); });
+afterEach(async () => { await screen?.unmount(); resetRuntimeFetch(); restore?.(); });
 
 it('resumes no-Homes recovery only after exact QR credentials commit, without enrollment or focus', async () => {
     restore = installLocalStorageMock().restore;
@@ -58,6 +52,10 @@ it('resumes no-Homes recovery only after exact QR credentials commit, without en
         pairId: 'pair-home-b', home: fixture.home.connectionDescriptor,
         qrSecretBase64Url: encodeBase64(secret, 'base64url'), issuedAtMs, expiresAtMs };
     const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
+    setRuntimeFetch(async (input, init) => {
+        const url = new URL(String(input));
+        return boundary.request(url.origin, url.pathname, init);
+    });
     boundary.request.mockImplementation(async (endpoint: string, path: string, init?: RequestInit) => {
         if (path === '/v1/features') {
             const descriptor = endpoint === homeA.serverUrl ? descriptorA : fixture.home.connectionDescriptor;
@@ -86,13 +84,15 @@ it('resumes no-Homes recovery only after exact QR credentials commit, without en
         session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
         intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId } };
     let result: AccountPostAuthResult | undefined;
-    screen = await renderScreen(<RestoreScanComputerQrView embedded entryIntent="add_home"
-        initialPairingLink={buildHomeQrInviteDeepLink({ invite })}
-        onAuthenticated={async (authenticatedHome) => {
-            expect(await TokenStorage.getCredentialsForServerUrl(fixture.home.canonicalServerUrl,
-                { serverId: fixture.home.homeServerIdentityId })).toEqual(authenticatedHome.credentials);
-            result = await resumeAccountServicePostAuth(input, { kind: 'account_connected_no_homes' }, authenticatedHome);
-        }} />);
+    screen = await renderScreen(<InjectedAuthProvider credentials={null}>
+        <RestoreScanComputerQrView embedded entryIntent="add_home"
+            initialPairingLink={buildHomeQrInviteDeepLink({ invite })}
+            onAuthenticated={async (authenticatedHome) => {
+                expect(await TokenStorage.getCredentialsForServerUrl(fixture.home.canonicalServerUrl,
+                    { serverId: fixture.home.homeServerIdentityId })).toEqual(authenticatedHome.credentials);
+                result = await resumeAccountServicePostAuth(input, { kind: 'account_connected_no_homes' }, authenticatedHome);
+            }} />
+    </InjectedAuthProvider>);
     await vi.waitFor(async () => expect(await TokenStorage.getCredentialsForServerUrl(fixture.home.canonicalServerUrl,
         { serverId: fixture.home.homeServerIdentityId })).toEqual({ token: fixture.token }));
     expect(result).toEqual({ kind: 'home_enrolled', homeServerIdentityId: fixture.home.homeServerIdentityId });

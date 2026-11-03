@@ -1,6 +1,5 @@
 import type { CheckpointCodeRollbackRequest } from '@happier-dev/protocol';
 
-import { CHECKPOINT_ROLLBACK_RECEIPT_IDS } from './receipts';
 import type { CheckpointCodeRollbackPlan } from './types';
 
 function isConversationMode(mode: CheckpointCodeRollbackRequest['codeMode']): boolean {
@@ -61,5 +60,3 @@ export function planCheckpointCodeRollback(input: Readonly<{
         receipts: [],
     };
 }
-
-export { CHECKPOINT_ROLLBACK_RECEIPT_IDS };

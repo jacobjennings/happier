@@ -45,7 +45,7 @@ describe('local service inventory store', () => {
         expect(selectLocalServiceInventoryRows(tick)[0]?.lastSeenAt).toBe(2_000);
         expect(selectLocalServiceInventoryRows(tick)[0]?.endpoint?.probedAt).toBe(2_000);
         expect(selectLocalServiceInventoryPresentationRows(tick)).toBe(presentation);
-        const changed = applyLocalServiceInventorySnapshot(tick, { ...snapshot, entries: [entry({ state: 'gone' })] });
+        const changed = applyLocalServiceInventorySnapshot(tick, { ...snapshot, generatedAt: 3_000, entries: [entry({ state: 'gone' })] });
         expect(selectLocalServiceInventoryPresentationRows(changed)).not.toBe(presentation);
         expect(selectLocalServiceInventoryPresentationRows(changed)[0]?.state).toBe('gone');
     });
@@ -113,6 +113,7 @@ describe('local service inventory store', () => {
         // caught at the selector contract boundary with a clear error, not crash the Local
         // Services tab via `rowsById.get is not a function` mid-render.
         const malformed = {
+            summary: null,
             machineId: 'machine-a',
             generatedAt: 1_000,
             refreshState: 'idle' as const,

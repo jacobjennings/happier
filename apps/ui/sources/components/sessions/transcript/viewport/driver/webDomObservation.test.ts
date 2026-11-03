@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { WebTranscriptScrollMetrics } from '@/components/sessions/transcript/webTranscriptScrollMetrics';
+import { createTranscriptUserScrollIntentOwner } from './userScrollIntentOwner';
 import { createWebDomScrollObservation } from './webDomObservation';
 
 class FakeScroller {
@@ -351,5 +352,82 @@ describe('createWebDomScrollObservation', () => {
         };
 
         expect(runGestureAcrossWrite()).toBe(false);
+    });
+
+    it('keeps certifying a live gesture frame after a programmatic write cleared movement authority', () => {
+        // Paired positive of the stale-input revocation above. The measured failure chain: a pin
+        // write during the reader's own wheel gesture wipes `pendingUserInput`/`lastUserMovement`,
+        // so the NEXT frame of that same gesture is unclassified — bottom-follow is never released
+        // and the auto-pin snaps the reader back.
+        const observation = createWebDomScrollObservation();
+        const owner = createTranscriptUserScrollIntentOwner();
+        let nowMs = 1_000;
+
+        observation.observeGenuineScrollMovement({
+            distanceFromBottom: 400,
+            fallbackObservedScrollTop: null,
+            isTrusted: true,
+            metrics: metrics(new FakeScroller(40_000, 600, 39_000)),
+            pinThresholdPx: 60,
+            semanticContext: { atEndNonUserCause: 'layout', isUserInputActive: false, nowMs },
+            sustainFrames: 2,
+        });
+
+        owner.recordInput({ atMs: nowMs });
+        // The write lands while the content already measures 40_200 (the user frame's height),
+        // so the next frame is not a layout-churn frame.
+        observation.recordProgrammaticScrollTopWrite({
+            element: new FakeScroller(40_200, 600, 39_000),
+            targetScrollTop: 39_400,
+        });
+
+        nowMs += 40;
+        const userFrame = observation.observeGenuineScrollMovement({
+            distanceFromBottom: 1_100,
+            fallbackObservedScrollTop: null,
+            isTrusted: true,
+            metrics: metrics(new FakeScroller(40_200, 600, 38_500)),
+            pinThresholdPx: 60,
+            semanticContext: {
+                atEndNonUserCause: 'layout',
+                isUserInputActive: owner.isLive(nowMs),
+                nowMs,
+            },
+            sustainFrames: 2,
+        });
+
+        expect(userFrame.isGenuineUserMovement).toBe(true);
+        expect(userFrame.upwardIntent).toBe(true);
+    });
+
+    it('still refuses user authority for our own command write echo during a live gesture', () => {
+        // Q1-WEB-1 must survive: RN-web marks the echo of the app's OWN programmatic write
+        // `isTrusted: true`. Witnessed input is not a licence to attribute a command frame to
+        // the reader, otherwise a pin under-shoot masquerades as a user scroll again.
+        const observation = createWebDomScrollObservation();
+        const nowMs = 1_000;
+
+        observation.observeGenuineScrollMovement({
+            distanceFromBottom: 400,
+            fallbackObservedScrollTop: null,
+            isTrusted: true,
+            metrics: metrics(new FakeScroller(40_000, 600, 39_000)),
+            pinThresholdPx: 60,
+            semanticContext: { atEndNonUserCause: 'layout', isUserInputActive: true, nowMs },
+            sustainFrames: 2,
+        });
+
+        const commandFrame = observation.observeGenuineScrollMovement({
+            distanceFromBottom: 0,
+            fallbackObservedScrollTop: null,
+            isTrusted: true,
+            metrics: metrics(new FakeScroller(40_000, 600, 39_400)),
+            pinThresholdPx: 60,
+            semanticContext: { atEndNonUserCause: 'command', isUserInputActive: true, nowMs: nowMs + 16 },
+            sustainFrames: 2,
+        });
+
+        expect(commandFrame.isGenuineUserMovement).toBe(false);
+        expect(commandFrame.atEndPublicationCause).toBe('command');
     });
 });

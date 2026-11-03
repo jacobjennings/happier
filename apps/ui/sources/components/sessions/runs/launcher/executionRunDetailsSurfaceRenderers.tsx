@@ -66,7 +66,7 @@ export function createExecutionRunDetailsSurfaceRenderers(options: Readonly<{
             if (resource.source && (!options.serverId || !areServerProfileIdentifiersEquivalent(resource.source.serverId, options.serverId))) return null;
             const scope = scopeFor(resource);
             return <SessionInteractiveExecutionRunDraftView {...scope} serverId={options.serverId} autoFocusComposer
-                intent={resource.mode === 'conversation' ? null : resource.intent ?? 'review'} roleId={resource.roleId ?? null}
+                intent={resource.mode === 'conversation' ? null : resource.intent ?? 'review'} roleId={resource.roleId ?? null} heading={resource.roleId ? input.tab.title : null}
                 initialText={resource.initialInstructions}
                 launchOrigin={resource.source && 'draftCorrelationId' in resource.source
                     ? resource.source as DiscussionSelectionSourceV1 & Readonly<{ draftCorrelationId: string }> : undefined}

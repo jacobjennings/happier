@@ -21,6 +21,7 @@ import {
   createMcpActionSettingsProvider,
 } from '@/mcp/server/createMcpActionEnablement';
 import { registerHappierMcpBuiltInTools } from '@/mcp/server/registerHappierMcpBuiltInTools';
+import { cacheMcpToolList } from '@/mcp/server/cacheMcpToolList';
 import { createCliActionExecutorHarness } from '@/session/actions/createCliActionExecutorHarness';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import { resolveSessionEncryptionContextFromCredentials } from '@/session/transport/encryption/sessionEncryptionContext';
@@ -41,6 +42,7 @@ import {
   runWithServerHttpBaseUrl,
 } from '@/api/client/serverHttpBaseUrl';
 import { configuration } from '@/configuration';
+import { isServerProfileHomeIdentity } from '@/server/serverProfiles';
 import { fetchServerFeaturesSnapshot, type CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { createSessionFollowSourceKeyPreparationAfterSet } from '@/agent/runtime/session/follow/createSessionFollowSourceKeyPreparationAfterSet';
 import { logger } from '@/ui/logger';
@@ -261,7 +263,8 @@ export function createExternalMcpServer(params: Readonly<{
                 && 'ok' in cursor && cursor.ok === true && 'status' in cursor && cursor.status === 'ok'
                 && 'sessionId' in cursor && 'serverId' in cursor) {
                 if (cursor.sessionId === null && cursor.serverId === null) defaultSessionAddress = null;
-                else if (cursor.serverId === serverId && typeof cursor.sessionId === 'string' && cursor.sessionId.trim()) {
+                else if (typeof cursor.serverId === 'string' && await isServerProfileHomeIdentity(serverId, cursor.serverId)
+                  && typeof cursor.sessionId === 'string' && cursor.sessionId.trim()) {
                   defaultSessionAddress = { serverId, sessionId: cursor.sessionId.trim() };
                 }
               }
@@ -276,6 +279,7 @@ export function createExternalMcpServer(params: Readonly<{
     name: 'Happier MCP',
     version: '1.0.0',
   }, { capabilities: { resources: { subscribe: true } } });
+  cacheMcpToolList(mcp);
 
   const actionToolBridge = createActionToolExecutorBridge({
     executor,

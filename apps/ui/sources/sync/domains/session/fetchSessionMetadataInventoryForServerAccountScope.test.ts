@@ -5,6 +5,8 @@ import { storage } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { createCompactSessionListFetchBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
+import { sessionRuntimeObservations } from './sessionRuntimeObservation';
 
 const boundary = vi.hoisted(() => ({
     captureAuthority: vi.fn(),
@@ -61,6 +63,15 @@ function response(sessions: readonly V2SessionRecord[], nextCursor: string | nul
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 }
 
+function createInventoryRequestBoundary(request: (path: string, init: RequestInit) => Promise<Response>) {
+    // The route spy observes list progression; full source facts are served only
+    // beneath the canonical compact-list/read-batch HTTP fixture boundary.
+    return createCompactSessionListFetchBoundary(async (path, init) => {
+        if (new URL(path, 'https://home-b.example.test').pathname === '/v2/sessions/read-batch') return undefined;
+        return request(path, init);
+    });
+}
+
 function createLifetime() {
     let current = true;
     const listeners = new Set<() => void>();
@@ -85,10 +96,90 @@ afterEach(() => {
         listener({ kind: 'credentials_removed', serverId: 'home-b', serverUrl: 'https://home-b.example.test' });
     }
     boundary.credentialListeners.clear();
+    sessionRuntimeObservations.clear();
     storage.setState(storage.getInitialState(), true);
 });
 
 describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
+    it('publishes admitted pages while later pages remain pending without claiming complete membership', async () => {
+        const secondPage = createDeferred<void>();
+        const archivedPage = createDeferred<void>();
+        let retired = false;
+        let refreshedInventory = false;
+        const request = vi.fn(async (path: string) => {
+            const url = new URL(path, 'https://home-b.example.test');
+            if (url.pathname === '/v2/sessions/active') return response([], null);
+            if (url.pathname === '/v2/sessions/archived') {
+                await archivedPage.promise;
+                return response([row('archived-page', 2), {
+                    ...row('first-page', 2), metadataVersion: 2, updatedAt: 2,
+                    metadata: JSON.stringify({ name: 'First page refreshed', path: '/work/first-page' }),
+                }], null);
+            }
+            if (url.searchParams.has('cursor')) {
+                await secondPage.promise;
+                return response([row('second-page')], null);
+            }
+            return response(refreshedInventory ? [] : [row('first-page'), ...(retired ? [] : [row('retired-before-completion')])], 'second-page');
+        });
+        boundary.captureAuthority.mockResolvedValue({
+            scope: { serverId: 'home-b', accountId: 'account-b' },
+            context: { credentials: { token: 'token-b' } }, request: createInventoryRequestBoundary(request), release: vi.fn(async () => {}),
+        });
+        storage.getState().applyServerScopedSessionListRows('home-b', [createSessionListRenderableSessionFixture({
+            id: 'removed-after-completion', metadata: { path: '/previous', name: 'Previous member' },
+        })], { source: 'ordinary', mode: 'replace' });
+        const initialMembership = storage.getState().ordinarySessionListMembershipByServerId['home-b'];
+        const initialIndex = storage.getState().sessionListIndexByServerId['home-b'];
+        const account = createLifetime();
+        let complete = false;
+        const work = ensureSessionMetadataInventoryForServerAccountScope({
+            scope: { serverId: 'home-b', accountId: 'account-b' }, accountLifetime: account.lifetime, refresh: true,
+        }).then(() => { complete = true; });
+        try {
+            await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(3));
+            expect(storage.getState().sessionListRowsByServerId['home-b']?.['first-page']?.metadata?.name).toBe('first-page');
+            expect(complete).toBe(false);
+            expect(storage.getState().ordinarySessionListMembershipByServerId['home-b']).toBe(initialMembership);
+            expect(storage.getState().sessionListIndexByServerId['home-b']).toBe(initialIndex);
+            expect(storage.getState().sessions).toEqual({});
+            retired = true;
+            storage.getState().deleteSession('retired-before-completion', 'home-b');
+            secondPage.resolve(undefined);
+            await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(4));
+            expect(storage.getState().sessionListRowsByServerId['home-b']?.['second-page']).toBeDefined();
+            expect(complete).toBe(false);
+            archivedPage.resolve(undefined);
+            await work;
+            refreshedInventory = true;
+            const rows = storage.getState().sessionListRowsByServerId['home-b'];
+            expect(Object.keys(rows ?? {}).sort()).toEqual(['archived-page', 'first-page', 'second-page']);
+            expect([...(storage.getState().ordinarySessionListMembershipByServerId['home-b'] ?? [])].sort())
+                .toEqual(['archived-page', 'first-page', 'second-page']);
+            expect(rows?.['first-page']?.metadata?.name).toBe('First page refreshed');
+            expect(storage.getState().sessions).toEqual({});
+
+            let notifications = 0;
+            const stop = storage.subscribe((next, previous) => {
+                if (next.sessionListRowsByServerId !== previous.sessionListRowsByServerId) notifications += 1;
+            });
+            try {
+                for (let refresh = 0; refresh < 3; refresh++) await ensureSessionMetadataInventoryForServerAccountScope({
+                    scope: { serverId: 'home-b', accountId: 'account-b' }, accountLifetime: account.lifetime, refresh: true,
+                });
+                expect(storage.getState().sessionListRowsByServerId['home-b']).toBe(rows);
+                expect(notifications).toBe(0);
+            } finally { stop(); }
+            expect(request.mock.calls.every(([path]) => ['/v2/sessions', '/v2/sessions/active', '/v2/sessions/archived']
+                .includes(new URL(path, 'https://home-b.example.test').pathname))).toBe(true);
+            expect(request).toHaveBeenCalledTimes(16);
+        } finally {
+            secondPage.resolve(undefined);
+            archivedPage.resolve(undefined);
+            await work;
+        }
+    });
+
     it('publishes same-id inactive-Home metadata only to that server partition', async () => {
         const activeSession = {
             id: 'session-1',
@@ -126,7 +217,7 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
         boundary.captureAuthority.mockResolvedValue({
             scope: { serverId: 'home-b', accountId: 'account-b' },
             context: { credentials: { token: 'token-b' } },
-            request,
+            request: createInventoryRequestBoundary(request),
             release: vi.fn(async () => {}),
         });
         const account = createLifetime();
@@ -141,6 +232,48 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
         expect(storage.getState().sessionListRowsByServerId['home-b']?.['session-1']).toMatchObject({
             metadata: { name: 'Home B title', path: '/work/b' },
         });
+    });
+
+    it('keeps its own full-publication baseline current across a heartbeat and a later metadata page', async () => {
+        const archivedPage = createDeferred<void>();
+        let refreshing = false;
+        const request = vi.fn(async (path: string) => {
+            const pathname = new URL(path, 'https://home-b.example.test').pathname;
+            if (pathname === '/v2/sessions/active') return response([], null);
+            if (pathname === '/v2/sessions') return response([{
+                ...row('heartbeat-row'), meaningfulActivityAt: 1,
+                ...(refreshing ? { activeAt: 2, updatedAt: 2 } : {}),
+            }], null);
+            if (!refreshing) return response([], null);
+            await archivedPage.promise;
+            return response([{
+                ...row('heartbeat-row', 3), activeAt: 2, updatedAt: 3, meaningfulActivityAt: 1, metadataVersion: 2,
+                metadata: JSON.stringify({ name: 'Later metadata', path: '/work/heartbeat-row' }),
+            }], null);
+        });
+        boundary.captureAuthority.mockResolvedValue({
+            scope: { serverId: 'home-b', accountId: 'account-b' },
+            context: { credentials: { token: 'token-b' } }, request: createInventoryRequestBoundary(request), release: vi.fn(async () => {}),
+        });
+        const account = createLifetime();
+        const ensure = () => ensureSessionMetadataInventoryForServerAccountScope({
+            scope: { serverId: 'home-b', accountId: 'account-b' }, accountLifetime: account.lifetime, refresh: true,
+        });
+        await ensure();
+        const first = storage.getState().sessionListRowsByServerId['home-b']?.['heartbeat-row'];
+        refreshing = true;
+        const work = ensure();
+        try {
+            await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(6));
+            expect(storage.getState().sessionListRowsByServerId['home-b']?.['heartbeat-row']).toBe(first);
+            expect(sessionRuntimeObservations.read({ serverId: 'home-b', sessionId: 'heartbeat-row' })?.fullPublicationUpdatedAt).toBe(2);
+            archivedPage.resolve(undefined);
+            await work;
+            expect(storage.getState().sessionListRowsByServerId['home-b']?.['heartbeat-row']?.metadata?.name).toBe('Later metadata');
+        } finally {
+            archivedPage.resolve(undefined);
+            await work;
+        }
     });
 
     it('exhausts current and archived list cursors through one exact Account authority and applies scoped metadata rows', async () => {
@@ -161,7 +294,7 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
         boundary.captureAuthority.mockResolvedValue({
             scope: { serverId: 'home-b', accountId: 'account-b' },
             context: { credentials: { token: 'token-b' } },
-            request,
+            request: createInventoryRequestBoundary(request),
             release,
         });
         const account = createLifetime();
@@ -199,15 +332,20 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
     });
 
     it('aborts and fences late publication when the exact Home credential retires', async () => {
-        const request = vi.fn((_path: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        const request = vi.fn(async (path: string, init: RequestInit) => {
+            const pathname = new URL(path, 'https://home-b.example.test').pathname;
+            if (pathname === '/v2/sessions/active') return response([], null);
+            if (pathname === '/v2/sessions') return response([row('must-not-publish')], null);
+            return await new Promise<Response>((_resolve, reject) => {
             expect(init.signal).toBeInstanceOf(AbortSignal);
             init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
-        }));
+            });
+        });
         const release = vi.fn(async () => {});
         boundary.captureAuthority.mockResolvedValue({
             scope: { serverId: 'home-b', accountId: 'account-b' },
             context: { credentials: { token: 'token-b' } },
-            request,
+            request: createInventoryRequestBoundary(request),
             release,
         });
         const account = createLifetime();
@@ -216,7 +354,7 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
             accountLifetime: account.lifetime,
             refresh: true,
         });
-        await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(3));
 
         for (const listener of boundary.credentialListeners) {
             listener({ kind: 'credentials_removed', serverId: 'home-b', serverUrl: 'https://home-b.example.test' });
@@ -224,25 +362,82 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
         await expect(work).rejects.toMatchObject({ name: 'AbortError' });
 
         expect(storage.getState().sessions['must-not-publish']).toBeUndefined();
+        expect(storage.getState().sessionListRowsByServerId['home-b']).toBeUndefined();
         await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
     });
 
+    it('settles metadata inventory when a newer full-publication witness overtakes the list response', async () => {
+        const sessionId = 'metadata-current-full-publication-newer';
+        let metadataVersion = 2;
+        const address = { serverId: 'home-b', sessionId };
+        storage.getState().applyServerScopedSessionListRows('home-b', [createSessionListRenderableSessionFixture({
+            id: sessionId, serverId: 'home-b', seq: 1, updatedAt: 1, metadataVersion: 1, agentStateVersion: 1,
+            metadata: { name: 'Previous metadata', path: '/work/previous' },
+        })], { source: 'ordinary', mode: 'replace' });
+        sessionRuntimeObservations.observe(address, { active: true, activeAt: 1 });
+        sessionRuntimeObservations.recordFullPublication(address, 3);
+        const request = vi.fn(async (path: string) => {
+            const pathname = new URL(path, 'https://home-b.example.test').pathname;
+            return response(pathname === '/v2/sessions' ? [{ ...row(sessionId), metadataVersion,
+                metadata: JSON.stringify({ name: metadataVersion === 2 ? sessionId : 'Changed metadata', path: `/work/${sessionId}` }),
+            }, row('unchanged-sibling')] : [], null);
+        });
+        boundary.captureAuthority.mockResolvedValue({
+            scope: { serverId: 'home-b', accountId: 'account-b' },
+            context: { credentials: { token: 'token-b' } }, request: createInventoryRequestBoundary(request), release: vi.fn(async () => {}),
+        });
+        const account = createLifetime();
+        await ensureSessionMetadataInventoryForServerAccountScope({
+            scope: { serverId: 'home-b', accountId: 'account-b' },
+            accountLifetime: account.lifetime, refresh: true,
+        });
+        const first = storage.getState().sessionListRowsByServerId['home-b']?.[sessionId];
+        const firstRows = storage.getState().sessionListRowsByServerId['home-b'];
+        const sibling = firstRows?.['unchanged-sibling'];
+        const membership = storage.getState().ordinarySessionListMembershipByServerId['home-b'];
+        expect(first?.metadata).toMatchObject({ name: sessionId, path: `/work/${sessionId}` });
+        expect(storage.getState().sessions[sessionId]).toBeUndefined();
+        let publications = 0;
+        const stop = storage.subscribe((next, previous) => {
+            if (next.sessionListRowsByServerId !== previous.sessionListRowsByServerId) publications += 1;
+        });
+        try {
+            for (let refresh = 0; refresh < 3; refresh++) await ensureSessionMetadataInventoryForServerAccountScope({
+                scope: { serverId: 'home-b', accountId: 'account-b' }, accountLifetime: account.lifetime, refresh: true,
+            });
+            expect(storage.getState().sessionListRowsByServerId['home-b']).toBe(firstRows);
+            expect(storage.getState().sessionListRowsByServerId['home-b']?.[sessionId]).toBe(first);
+            expect(storage.getState().ordinarySessionListMembershipByServerId['home-b']).toBe(membership);
+            expect(publications).toBe(0);
+            metadataVersion = 3;
+            await ensureSessionMetadataInventoryForServerAccountScope({
+                scope: { serverId: 'home-b', accountId: 'account-b' }, accountLifetime: account.lifetime, refresh: true,
+            });
+            expect(storage.getState().sessionListRowsByServerId['home-b']?.[sessionId]?.metadata?.name).toBe('Changed metadata');
+            expect(storage.getState().sessionListRowsByServerId['home-b']?.['unchanged-sibling']).toBe(sibling);
+            expect(storage.getState().ordinarySessionListMembershipByServerId['home-b']).toBe(membership);
+            expect(publications).toBe(1);
+            expect(storage.getState().sessions[sessionId]).toBeUndefined();
+        } finally { stop(); }
+        expect(request.mock.calls.every(([path]) => ['/v2/sessions', '/v2/sessions/active', '/v2/sessions/archived']
+            .includes(new URL(path, 'https://home-b.example.test').pathname))).toBe(true);
+    });
+
     it('does not overwrite a newer scoped Sync create or update that lands while inventory is paging', async () => {
+        const ordinaryPage = createDeferred<Response>();
         const archivedPage = createDeferred<Response>();
         const request = vi.fn(async (path: string) => {
             const pathname = new URL(path, 'https://home-b.example.test').pathname;
             if (pathname === '/v2/sessions/active') return response([], null);
             if (pathname === '/v2/sessions') {
-                return response([
-                    { ...row('updated-during-inventory'), updatedAt: 10 },
-                ], null);
+                return await ordinaryPage.promise;
             }
             return await archivedPage.promise;
         });
         boundary.captureAuthority.mockResolvedValue({
             scope: { serverId: 'home-b', accountId: 'account-b' },
             context: { credentials: { token: 'token-b' } },
-            request,
+            request: createInventoryRequestBoundary(request),
             release: vi.fn(async () => {}),
         });
         const account = createLifetime();
@@ -259,14 +454,22 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
                 archivedAt: null,
                 metadata: { name: 'Removed remotely', path: '/work/removed', host: 'home-b-host' },
             }),
+            createSessionListRenderableSessionFixture({
+                id: 'full-publication-during-inventory',
+                metadata: { name: 'Full publication', path: '/work/full' },
+            }),
         ]);
+        const fullAddress = { serverId: 'home-b', sessionId: 'full-publication-during-inventory' };
+        sessionRuntimeObservations.observe(fullAddress, { active: false, activeAt: 1 });
+        sessionRuntimeObservations.recordFullPublication(fullAddress, 1);
+        const fullRow = storage.getState().sessionListRowsByServerId['home-b']?.[fullAddress.sessionId];
 
         const work = ensureSessionMetadataInventoryForServerAccountScope({
             scope: { serverId: 'home-b', accountId: 'account-b' },
             accountLifetime: account.lifetime,
             refresh: true,
         });
-        await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(3));
+        await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
 
         storage.getState().mergeSessionListRowsForServerScope('home-b', [
             createSessionListRenderableSessionFixture({
@@ -282,6 +485,15 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
                 metadata: { name: 'New Sync session', path: '/work/new', host: 'home-b-host' },
             }),
         ]);
+        sessionRuntimeObservations.recordFullPublication(fullAddress, 2);
+        ordinaryPage.resolve(response([
+            { ...row('updated-during-inventory'), metadataVersion: 50, updatedAt: 50 },
+            { ...row(fullAddress.sessionId), metadataVersion: 50, updatedAt: 50 },
+        ], null));
+        await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(3));
+        expect(storage.getState().sessionListRowsByServerId['home-b']?.['updated-during-inventory']?.metadata?.name)
+            .toBe('Newer Sync title');
+        expect(storage.getState().sessionListRowsByServerId['home-b']?.[fullAddress.sessionId]).toBe(fullRow);
         archivedPage.resolve(response([], null));
         await work;
 
@@ -294,8 +506,10 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
             metadata: { name: 'New Sync session' },
         });
         expect(rows?.['unchanged-before-inventory']).toBeUndefined();
+        expect(rows?.[fullAddress.sessionId]).toBe(fullRow);
         expect(storage.getState().ordinarySessionListMembershipByServerId['home-b']).toEqual([
             'updated-during-inventory',
+            'full-publication-during-inventory',
             'created-during-inventory',
         ]);
     });
@@ -311,7 +525,7 @@ describe('ensureSessionMetadataInventoryForServerAccountScope', () => {
         boundary.captureAuthority.mockResolvedValue({
             scope: { serverId: 'home-b', accountId: 'account-b' },
             context: { credentials: { token: 'token-b' } },
-            request,
+            request: createInventoryRequestBoundary(request),
             release: vi.fn(async () => {}),
         });
         const first = createLifetime();

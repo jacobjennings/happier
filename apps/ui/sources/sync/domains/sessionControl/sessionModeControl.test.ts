@@ -92,13 +92,6 @@ describe('sessionModeControl', () => {
     expect(getSessionModePickerOptions(control?.options ?? [], 'opencode').map((option) => option.id))
       .toEqual(['default', 'plan']);
   });
-  it('supportsSessionModeOverrides reflects agent catalog intent', async () => {
-    const { supportsSessionModeOverrides } = await import('./sessionModeControl');
-    expect(supportsSessionModeOverrides('opencode')).toBe(true);
-    expect(supportsSessionModeOverrides('claude')).toBe(true);
-    expect(supportsSessionModeOverrides('codex')).toBe(true);
-  });
-
   it('computeSessionModePickerControl returns ACP modes and effective selection', async () => {
     const { computeSessionModePickerControl } = await import('./sessionModeControl');
     const metadata = createMetadata({

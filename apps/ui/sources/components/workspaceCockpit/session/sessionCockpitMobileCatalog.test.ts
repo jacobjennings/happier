@@ -71,17 +71,6 @@ describe('sessionCockpitMobileCatalog', () => {
         expect(visibility.overflow.map((entry) => entry.id)).toContain('browse');
         expect([...visibility.visible, ...visibility.held, ...visibility.overflow].map((entry) => entry.id)).not.toContain('git');
     });
-    it('publishes Board on mobile only when the exact Home enables it', () => {
-        expect(resolveSessionCockpitMobileCatalog({
-            terminalTabAvailable: false,
-        }).map((entry) => entry.id)).not.toContain('board');
-
-        expect(resolveSessionCockpitMobileCatalog({
-            terminalTabAvailable: false,
-            boardFeatureEnabled: true,
-        }).map((entry) => entry.id)).toContain('board');
-    });
-
     it('publishes the Companion destination on every Home while Board stays behind its decision', () => {
         // Companion is host-owned like Chat and Tabs: its first-party Session
         // Summary needs no Board record, so a missing or refused `sessions.board`

@@ -1,8 +1,8 @@
 import * as React from 'react';
 
-export const DEFAULT_HOSTED_FRAME_READY_TIMEOUT_MS = 30_000;
+const DEFAULT_HOSTED_FRAME_READY_TIMEOUT_MS = 30_000;
 
-export function scheduleHostedFrameReadyTimeout(input: Readonly<{
+function scheduleHostedFrameReadyTimeout(input: Readonly<{
     timeoutMs?: number;
     onTimeout: () => void;
 }>): () => void {

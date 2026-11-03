@@ -49,7 +49,8 @@ import { useDeviceType } from '@/utils/platform/responsive';
 import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
-import { collectMachineAttention, type MachineAttentionEntry } from '@/components/machines/attention/collectMachineAttention';
+import type { MachineAttentionEntry } from '@/components/machines/attention/collectMachineAttention';
+import { useMachineAttention } from '@/sync/domains/machines/resources/useMachineAttention';
 import { MachinesNeedsYouList } from '@/components/machines/attention/MachinesNeedsYouList';
 import type { MachinePageTabParams } from '@/components/machines/page/machinePageTabQuery';
 import { describeFleetDescription, describeFleetTitle, readMachinePublishedResources, selectAttentionSubjects } from '@/components/machines/summary/machineResourceSentences';
@@ -118,12 +119,13 @@ function AllMachinesIndexBody() {
         groups: viewModel.visibleMachineGroups,
         groupedByHome: viewModel.showMachinesGroupedByServer,
         managedByServerId: viewModel.managedByServerId,
+        managedFirstAnswerPending: viewModel.managedFirstAnswerPending,
     });
     // The same groups the list column draws (one list model): Your machines, Created by Happier, Shared
     // with you, each Home. Retired created machines stay in the column's archive, not in the fleet.
     const sections = React.useMemo(() => collection.sections.filter(section => !section.archived), [collection.sections]);
     // What each machine publishes (plan 20): the fleet sentence and Needs you first.
-    const attention = React.useMemo(() => collectMachineAttention(viewModel.visibleMachineGroups), [collection, viewModel.reachabilityRevision, viewModel.visibleMachineGroups]);
+    const attention = useMachineAttention(viewModel.visibleMachineGroups);
     const needsYouSubjectKeys = useReconciledStableRows(selectAttentionSubjects(attention.entries).map(entry => entry.key), String);
     const needsYouKeys = React.useMemo(() => new Set(needsYouSubjectKeys), [needsYouSubjectKeys]);
     const fleetTitle = describeFleetTitle({ subjects: attention.entries, reportingCount: attention.reportingCount });
@@ -156,13 +158,13 @@ function AllMachinesIndexBody() {
     }))), [factsByMachine, sections, thisComputerMachineId]), readKey);
     // The first answer is held whole behind the Collection's loading contract: rows, headline and count land once,
     // together, and a later re-read keeps what is already shown (same first load as the list column).
-    const answerPending = (viewModel.isLoadingMachines && answeredItems.length === 0) || collection.namesPending || viewModel.managedFirstAnswerPending;
+    const answerPending = (viewModel.isLoadingMachines && answeredItems.length === 0) || collection.firstAnswerPending;
     const [answered, setAnswered] = React.useState(false);
     if (!answerPending && !answered) setAnswered(true);
     const holding = answerPending && !answered;
     const items = holding ? NO_ITEMS : answeredItems;
     const searchable = items.length > SEARCH_THRESHOLD;
-    const normalizedQuery = searchable ? query.trim().toLocaleLowerCase() : '';
+    const normalizedQuery = searchable && !besideList ? query.trim().toLocaleLowerCase() : '';
     // A long fleet keeps its offline machines out of the table until asked for, as the list column folds them
     // (real fleets carry dozens of retired or sleeping machines); a search still reaches every machine.
     const [showOffline, setShowOffline] = React.useState(false);
@@ -225,7 +227,8 @@ function AllMachinesIndexBody() {
             />
             {/* What needs you leads, once (plan 60 D5: the dashboard no longer repeats it); the Grid says it as its own cards. */}
             {view === 'list' ? <MachinesNeedsYouList entries={holding ? NO_ATTENTION_ENTRIES : attention.entries} nowMs={nowMs} onOpen={openAttention} compact={deviceType === 'phone'} testID="machines.index.needs-you" /> : null}
-            {searchable ? (
+            {/* Beside the machine list the list's own search finds every machine; a second field would repeat it. */}
+            {searchable && !besideList ? (
                 <CompactSearchField
                     testID="machines.index.search"
                     value={query}
@@ -375,7 +378,6 @@ const AllMachinesHeader = React.memo(function AllMachinesHeader(props: Readonly<
                 testIDPrefix="machines.index.view"
                 accessibilityLabel={t('allMachines.viewLabel')}
                 segmentSizing="content"
-                targetSize="platform"
             />
         </SettingAnchor>
     );

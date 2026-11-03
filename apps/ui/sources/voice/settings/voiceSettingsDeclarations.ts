@@ -68,6 +68,12 @@ export const VOICE_CONVERSATIONS_SETTINGS = defineSettingsPage({
                 greeting: { storage: voiceGreetingBinding },
             },
         },
+        approvals: {
+            titleKey: 'settingsVoice.pages.conversations.approvalsTitle',
+            settings: {
+                canApproveRequests: { storage: voiceSettingBinding('canApproveRequests') },
+            },
+        },
         language: {
             titleKey: 'settingsVoice.languageTitle',
             settings: {
@@ -181,7 +187,7 @@ export const VOICE_PRIVACY_SETTINGS = defineSettingsPage({
         history: {
             titleKey: 'settingsVoice.history.sectionTitle',
             settings: {
-                voiceHistory: {},
+                voiceHistory: { operation: voiceSettingsOperation('history_inspect') },
                 privacyPolicy: { operation: voiceSettingsOperation('privacy_policy_open') },
             },
         },

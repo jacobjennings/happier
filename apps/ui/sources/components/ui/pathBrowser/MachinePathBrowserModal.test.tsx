@@ -15,6 +15,7 @@ import { createMachineFixture, createPlainMachineRowFixture } from '@/dev/testki
 import { encodePlainMachineStoredContent, MACHINE_PLAIN_DATA_KEY_MARKER } from '@happier-dev/protocol/machines/machineStoredContent';
 import { createHomeGovernanceHarness, installHomeGovernanceBoundaries } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { installSessionActionRpcBoundary } from '@/dev/testkit/harness/sessionActionRpcBoundary';
+import { createExternalActionAccountHttpBoundary } from '@/dev/testkit/harness/externalActionAccountHttpBoundary';
 import { restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
 import { installBrowserRuntimeForTests } from '@/dev/testkit/harness/browserRuntimeHarness';
@@ -61,7 +62,9 @@ async function waitForTestId(screen: ReturnType<typeof renderScreen> extends Pro
         }
         await flushHookEffects({ cycles: 1, turns: 1 });
     }
-    return screen.findByTestId(testID);
+    const target = screen.findByTestId(testID);
+    if (!target) throw new Error(`Expected test ID ${testID} to render`);
+    return target;
 }
 
 const listMachineFileBrowserRootsMock = vi.hoisted(() => vi.fn<(params: unknown) => Promise<DaemonFilesystemListRootsResponse>>(async () => ({
@@ -110,6 +113,8 @@ const machineWorkspaceFileListMock = vi.hoisted(() => vi.fn<(machineId: string, 
 const modalPromptMock = vi.hoisted(() => vi.fn<(...args: any[]) => Promise<string | null>>(async () => null));
 const modalAlertMock = vi.hoisted(() => vi.fn());
 const itemRenderCounts = vi.hoisted(() => new Map<string, number>());
+// Platform.OS is read at render time; a test may switch to iOS for a native-only contract.
+const platformOS = vi.hoisted(() => ({ current: 'web' as 'web' | 'ios' }));
 
 vi.mock('@legendapp/list/react-native', async (importOriginal) => {
     const { createCapturingLegendListMock } = await import('@/dev/testkit/mocks/legendList');
@@ -151,8 +156,12 @@ vi.mock('react-native', async () => {
             );
         }),
         Platform: {
-            OS: 'web',
-            select: (options: { web?: unknown; default?: unknown }) => options.web ?? options.default,
+            get OS() {
+                return platformOS.current;
+            },
+            select: (options: { ios?: unknown; native?: unknown; web?: unknown; default?: unknown }) => platformOS.current === 'ios'
+                ? options.ios ?? options.native ?? options.default
+                : options.web ?? options.default,
         },
     });
 });
@@ -241,6 +250,10 @@ const machineRequests = installSessionActionRpcBoundary(async (request, context)
         }
 });
 
+// Present-user folder creation is an external Account Action (one admitted filesystem owner): the
+// Home mints its authorization and the daemon executes the decoded input. Only that daemon reply is replaced.
+const folderActionRequests: Array<Readonly<{ machineId: string; input: unknown }>> = [];
+
 const defaultDirectoryEntries = listMachineFileBrowserDirectoryEntriesMock.getMockImplementation()!;
 const defaultRoots = listMachineFileBrowserRootsMock.getMockImplementation()!;
 const initialState = storage.getState();
@@ -270,8 +283,26 @@ async function addPathHome(options: Readonly<{ serverUrl: string; name: string; 
         metadata: { host: 'path-browser.test', platform: 'darwin', happyCliVersion: 'test',
             happyHomeDir: '/Users/leeroy/.happier', homeDir: '/Users/leeroy' },
     });
+    const folderAction = await createExternalActionAccountHttpBoundary({ serverUrl: options.serverUrl,
+        serverIdentityId: options.serverIdentityId, accountId: 'target-account', machineId: machine.id,
+        actionId: 'daemon.filesystem.createDirectory', tokenEpoch: 0,
+        execute: async (input, context) => {
+            const payload = FilesystemCreateDirectoryInputSchema.parse(input);
+            folderActionRequests.push({ machineId: context.target.machineId, input: payload });
+            return machineCreateDirectoryMock(context.target.machineId, payload.path,
+                { serverId: id, accountId: 'target-account', signal: context.signal ?? undefined });
+        },
+    });
     const row = { ...createPlainMachineRowFixture({ id: machine.id, accountId: 'target-account' }),
+        installationPublicKey: folderAction.machine.installationPublicKey,
         metadata: encodePlainMachineStoredContent(machine.metadata) };
+    for (const path of ['/v1/actions/daemon.filesystem.createDirectory/execution-authorization', '/v1/actions/daemon.filesystem.createDirectory']) {
+        homes.answer(id, path, { select: async (_body, request) => {
+            const response = await folderAction.handle(new URL(request.url), request.init);
+            if (!response) throw new Error('Unhandled folder Action request');
+            return { status: response.status, body: await response.json() };
+        } });
+    }
     homes.answer(id, '/v1/machines', { body: [row] });
     homes.answer(id, `/v1/machines/${machine.id}`, { body: { machine: row } });
     storage.getState().applyMachines([{ ...machine, access: row.access }], true, { sourceServerId: id, sourceAccountId: 'target-account' });
@@ -287,6 +318,7 @@ const { MachinePathBrowserModal, MachinePathBrowserView } = await import('./Mach
 describe('MachinePathBrowserModal', () => {
     afterEach(async () => {
         vi.useRealTimers();
+        platformOS.current = 'web';
         standardCleanup();
         try {
             await connection?.dispose(); connection = undefined;
@@ -322,6 +354,7 @@ describe('MachinePathBrowserModal', () => {
         flatListScrollToIndexMock.mockClear();
         machineCreateDirectoryMock.mockClear();
         machineRequests.length = 0;
+        folderActionRequests.length = 0;
         machineWorkspaceFileListMock.mockReset().mockResolvedValue({ ok: true, paths: [], truncated: false });
         modalPromptMock.mockReset().mockResolvedValue(null);
         modalAlertMock.mockClear();
@@ -684,33 +717,6 @@ describe('MachinePathBrowserModal', () => {
         vi.useRealTimers();
     });
 
-    it('renders nested directories when expanding a child folder', async () => {
-
-        const screen = await renderInModalChrome(<MachinePathBrowserModal
-                    machineId="machine-1"
-                    onResolve={vi.fn()}
-                    onClose={vi.fn()}
-                />);
-
-        await waitForTestId(screen, getPathBrowserToggleTestId('/'));
-        await screen.pressByTestIdAsync(getPathBrowserToggleTestId('/'));
-
-        await waitForTestId(screen, getPathBrowserRowTestId('/Users'));
-
-        await screen.pressByTestIdAsync(getPathBrowserToggleTestId('/Users'));
-
-        await waitForTestId(screen, getPathBrowserRowTestId('/Users/leeroy'));
-
-        expect(listMachineFileBrowserDirectoryEntriesMock.mock.calls).toEqual(expect.arrayContaining([
-            [expect.objectContaining({
-                machineId: 'machine-1',
-                directoryPath: '/Users',
-                includeFiles: false,
-            })],
-        ]));
-        expect(screen.findByTestId(getPathBrowserRowTestId('/Users/leeroy'))).toBeTruthy();
-    });
-
     it('does not rerender unchanged ancestor rows when expanding a descendant directory', async () => {
 
         const screen = await renderInModalChrome(<MachinePathBrowserModal
@@ -727,7 +733,14 @@ describe('MachinePathBrowserModal', () => {
         expect(rootRenderCountAfterRootExpand).toBeGreaterThan(0);
 
         await screen.pressByTestIdAsync(getPathBrowserToggleTestId('/Users'));
-        await waitForTestId(screen, getPathBrowserRowTestId('/Users/leeroy'));
+        expect(await waitForTestId(screen, getPathBrowserRowTestId('/Users/leeroy'))).not.toBeNull();
+        expect(listMachineFileBrowserDirectoryEntriesMock.mock.calls).toEqual(expect.arrayContaining([
+            [expect.objectContaining({
+                machineId: 'machine-1',
+                directoryPath: '/Users',
+                includeFiles: false,
+            })],
+        ]));
 
         expect(itemRenderCounts.get(getPathBrowserRowTestId('/')) ?? 0).toBe(rootRenderCountAfterRootExpand);
     });
@@ -775,7 +788,7 @@ describe('MachinePathBrowserModal', () => {
                     onClose={vi.fn()}
                 />);
 
-        let confirmButton = await waitForTestId(screen, PATH_BROWSER_CONFIRM_TEST_ID);
+        let confirmButton: ReturnType<typeof screen.findByTestId> = await waitForTestId(screen, PATH_BROWSER_CONFIRM_TEST_ID);
         for (let index = 0; index < 8 && confirmButton?.props?.disabled !== false; index += 1) {
             await flushHookEffects({ cycles: 1, turns: 1 });
             confirmButton = screen.findByTestId(PATH_BROWSER_CONFIRM_TEST_ID);
@@ -803,7 +816,7 @@ describe('MachinePathBrowserModal', () => {
                     onResolve={vi.fn()}
                     onClose={vi.fn()}
                 />);
-        let confirmButton = await waitForTestId(screen, PATH_BROWSER_CONFIRM_TEST_ID);
+        let confirmButton: ReturnType<typeof screen.findByTestId> = await waitForTestId(screen, PATH_BROWSER_CONFIRM_TEST_ID);
         for (let index = 0; index < 8 && confirmButton?.props?.disabled !== false; index += 1) {
             await flushHookEffects({ cycles: 1, turns: 1 });
             confirmButton = screen.findByTestId(PATH_BROWSER_CONFIRM_TEST_ID);
@@ -919,7 +932,7 @@ describe('MachinePathBrowserModal', () => {
         expect(titledInfoRows[0]?.props?.title).toBe('newSession.pathPicker.truncatedDirectoryInfo:1');
     });
 
-    it('lets the browser body shrink inside the shared card and keeps the footer buttons at normal size', async () => {
+    it('publishes no card container of its own and hands both footer actions to the shared chrome', async () => {
 
         const screen = await renderInModalChrome(<MachinePathBrowserModal
                     machineId="machine-1"
@@ -930,19 +943,43 @@ describe('MachinePathBrowserModal', () => {
         // The card is the shared chrome's: the browser names it and publishes no container of its own.
         expect(screen.findByTestId(PATH_BROWSER_MODAL_TEST_ID)?.type).toBe('ChromeHost');
 
-        const body = screen.findAll((node) => {
-            return node.props?.style
-                && node.props.style.flex === 1
-                && node.props.style.minHeight === 0;
-        })[0];
-
-        expect(body).toBeTruthy();
-
         const footerButtons = screen.findAll((node) => {
             return node.props?.title === 'common.cancel' || node.props?.title === 'common.use';
         });
-        expect(footerButtons.length).toBeGreaterThanOrEqual(2);
-        expect(footerButtons.every((node) => node.props.size === 'normal')).toBe(true);
+        expect(new Set(footerButtons.map((node) => node.props.title))).toEqual(new Set(['common.cancel', 'common.use']));
+    });
+
+    it('does not republish card chrome on iOS when the host re-renders after applying it', async () => {
+        platformOS.current = 'ios';
+        let publishCount = 0;
+        const host: { rerender?: () => void } = {};
+
+        // Like the modal host, every applied chrome update re-renders the host.
+        function Harness() {
+            const [, forceRender] = React.useReducer((value: number) => value + 1, 0);
+            React.useEffect(() => {
+                host.rerender = forceRender;
+            }, []);
+            const setChrome = React.useCallback(() => {
+                publishCount += 1;
+                forceRender();
+            }, []);
+            const onClose = React.useCallback(() => {}, []);
+            const onResolve = React.useCallback(() => {}, []);
+            return <MachinePathBrowserModal machineId="machine-1" onClose={onClose} onResolve={onResolve} setChrome={setChrome} />;
+        }
+
+        await renderScreen(<Harness />);
+        await flushHookEffects({ cycles: 8, turns: 2 });
+        const settledPublishCount = publishCount;
+        expect(settledPublishCount).toBeGreaterThan(0);
+
+        await act(async () => {
+            host.rerender?.();
+        });
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(publishCount).toBe(settledPublishCount);
     });
 
     it('requests body-owned scrolling when rendered through shared modal chrome', async () => {
@@ -993,9 +1030,8 @@ describe('MachinePathBrowserModal', () => {
         await flushHookEffects({ cycles: 2, turns: 2 });
 
         if (mode === 'allowed') {
-            await vi.waitFor(() => expect(machineRequests).toContainEqual(expect.objectContaining({
-                method: 'machine-1:daemon.filesystem.createDirectory',
-                params: { rootPath: '/Users', path: '/Users/new-folder' },
+            await vi.waitFor(() => expect(folderActionRequests).toContainEqual(expect.objectContaining({
+                machineId: 'machine-1', input: { rootPath: '/Users', path: '/Users/new-folder' },
             })));
             expect(machineCreateDirectoryMock).toHaveBeenCalledWith('machine-1', '/Users/new-folder', expect.anything());
             expect(modalAlertMock).not.toHaveBeenCalled();
@@ -1003,6 +1039,7 @@ describe('MachinePathBrowserModal', () => {
             await vi.waitFor(() => expect(modalAlertMock).toHaveBeenCalled());
             expect(machineCreateDirectoryMock).not.toHaveBeenCalled();
             expect(machineRequests.some(request => request.method.endsWith(`:${RPC_METHODS.CREATE_DIRECTORY}`))).toBe(false);
+            expect(folderActionRequests).toEqual([]);
             if (mode === 'ask') {
                 expect(homes.artifacts(scope.serverId).list()).toHaveLength(1);
             }

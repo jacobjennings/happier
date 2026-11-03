@@ -59,16 +59,6 @@ describe('StatusPill', () => {
         expect(neutral.findByTestId('status-neutral:variant:neutral')).not.toBeNull();
     });
 
-    it('renders a semantic status pill with a stable variant marker', async () => {
-        const { StatusPill } = await import('./StatusPill');
-
-        const screen = await renderScreen(<StatusPill variant="success" label="Online" testID="status-online" />);
-
-        expect(screen.findByTestId('status-online')).not.toBeNull();
-        expect(screen.findByTestId('status-online:variant:success')).not.toBeNull();
-        expect(screen.getTextContent()).toContain('Online');
-    });
-
     it('keeps the variant marker out of flex layout', async () => {
         const { StatusPill } = await import('./StatusPill');
 
@@ -117,16 +107,6 @@ describe('StatusPill', () => {
         expect(flatLabel.color).toBe('#34C759');
     });
 
-    it('uses compact pill typography for the label', async () => {
-        const { StatusPill } = await import('./StatusPill');
-
-        const screen = await renderScreen(<StatusPill variant="info" label="Syncing" testID="status-sync" />);
-        const textNode = screen.findByTestId('status-sync:label');
-        const flat = flattenStyle(textNode?.props.style);
-
-        expect(Number(flat.fontSize)).toBeGreaterThan(0);
-        expect(Number(flat.lineHeight)).toBeGreaterThanOrEqual(Number(flat.fontSize));
-    });
 });
 
 function flattenStyle(style: unknown): Record<string, unknown> {

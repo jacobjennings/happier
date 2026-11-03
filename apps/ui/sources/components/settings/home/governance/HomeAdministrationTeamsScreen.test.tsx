@@ -269,7 +269,10 @@ describe('HomeAdministrationTeamsScreen', () => {
         });
         await harness.selectHomes([home]);
         harness.answer(home, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
-        harness.answer(home, TEAMS_LIST_PATH, { status: 503, body: { error: 'teams_unavailable' } });
+        // A transient server answer. `teams_unavailable` is the Home's 404 "no Teams here" refusal
+        // (`teamErrorHttpStatusV1`): the Action front door classifies it by code as unsupported,
+        // which no retry can change, so a 503 carrying it is not a Home that could not answer.
+        harness.answer(home, TEAMS_LIST_PATH, { status: 503, body: { error: 'service_unavailable' } });
 
         const screen = await renderHomeTeams(home);
         await waitForHomeGovernance(() => {
@@ -353,22 +356,6 @@ describe('HomeAdministrationTeamsScreen', () => {
             scope: 'administered',
             archived: 'archived',
             cursor: null,
-        });
-    });
-
-    it('says the Home has no Teams rather than showing an empty surface', async () => {
-        const home = await harness.addHome({
-            name: 'Home A',
-            serverUrl: 'https://home-a.example',
-            teamsEnabled: true,
-        });
-        await harness.selectHomes([home]);
-        harness.answer(home, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
-        harness.answer(home, TEAMS_LIST_PATH, { body: { items: [], nextCursor: null } });
-
-        const screen = await renderHomeTeams(home);
-        await waitForHomeGovernance(() => {
-            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-teams-empty');
         });
     });
 

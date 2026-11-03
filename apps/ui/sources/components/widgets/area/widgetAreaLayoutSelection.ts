@@ -2,10 +2,15 @@ import type { ActionExecuteFailure, ActionExecuteResult } from '@happier-dev/pro
 import { sameStrictJsonValue } from '@happier-dev/protocol/json/strictJsonValue';
 import { WidgetSurfaceReadV1Schema, type WidgetSurfaceRefV1 } from '@happier-dev/protocol/widgets';
 import { resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
+import type { JsonValue } from '@happier-dev/protocol/json/strictJsonValue';
 
 /** Selection lives in the mounted page's route/state; this is only its answering-client address. */
 export type WidgetAreaLayoutSelectionOwner = Readonly<{
     surface: WidgetSurfaceRefV1;
+    /** A Project destination can display a separately owned, admitted shared document. */
+    displayedSurface?: WidgetSurfaceRefV1;
+    /** The same captured page values used by the mounted area's Action port. */
+    providedContext: Readonly<Record<string, readonly JsonValue[]>>;
     isCurrent(): boolean;
     read(surface: WidgetSurfaceRefV1, signal?: AbortSignal): Promise<ActionExecuteResult>;
     select(surface: WidgetSurfaceRefV1): void;
@@ -16,7 +21,8 @@ export function widgetAreaLayoutBaseSurface(surface: WidgetSurfaceRefV1): Widget
     const owner = surface.owner;
     if (owner.kind !== 'project' && owner.kind !== 'corePage' && owner.kind !== 'pluginArea') return surface;
     const { layoutId: _layoutId, ...base } = owner;
-    return { serverId: resolveServerProfileScopeIdForIdentifier(surface.serverId), accountId: surface.accountId, owner: base };
+    return { serverId: resolveServerProfileScopeIdForIdentifier(surface.serverId), accountId: surface.accountId,
+        ...(surface.artifactId ? { artifactId: surface.artifactId } : {}), owner: base };
 }
 
 export function registerWidgetAreaLayoutSelectionOwner(owner: WidgetAreaLayoutSelectionOwner): () => void {
@@ -26,7 +32,8 @@ export function registerWidgetAreaLayoutSelectionOwner(owner: WidgetAreaLayoutSe
 
 export function resolveMountedWidgetAreaLayoutSelectionOwner(surface: WidgetSurfaceRefV1): WidgetAreaLayoutSelectionOwner | ActionExecuteFailure {
     const base = widgetAreaLayoutBaseSurface(surface);
-    const matches = [...mountedOwners].filter(owner => owner.isCurrent() && sameStrictJsonValue(widgetAreaLayoutBaseSurface(owner.surface), base));
+    const matches = [...mountedOwners].filter(owner => owner.isCurrent()
+        && [owner.surface, owner.displayedSurface].some(address => address && sameStrictJsonValue(widgetAreaLayoutBaseSurface(address), base)));
     if (matches.length === 1) return matches[0]!;
     const errorCode = matches.length ? 'widget_area_layout_owner_ambiguous' : 'widget_area_layout_owner_unavailable';
     return { ok: false, errorCode, error: errorCode };

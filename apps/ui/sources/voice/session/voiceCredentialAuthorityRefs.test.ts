@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { resolveAgentConnectedServicesDefaultBindings } from '@/sync/domains/connectedServices/resolveAgentConnectedServicesDefaultBindings';
+import { resolveAgentCatalogProjection } from '@/agents/backendCatalog/agentCatalogProjection';
+import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
 
 import {
   createVoiceCredentialRuntimeAuthoritySnapshot,
-  createVoiceSelectedCredentialAuthorityFingerprint,
   hasVoiceCredentialRuntimeAuthorityChanged,
   readVoiceCredentialAuthorityRefs,
 } from './voiceCredentialAuthorityRefs';
@@ -111,6 +113,23 @@ describe('readVoiceCredentialAuthorityRefs', () => {
 });
 
 describe('Voice credential runtime authority', () => {
+  it('observes the fixed Agent effective purpose default and ignores other Agents defaults', () => {
+    const consumer = { pluginId: 'happier.agent.codex', localId: 'codex' };
+    const agent = resolveAgentCatalogProjection('codex', { enabledAgentIds: [] });
+    const declaration = agent.connectedAccounts[0];
+    if (!declaration) throw new Error('Codex connected-account declaration missing');
+    const binding = (localId: string) => ({ purpose: { consumer: { pluginId: `happier.agent.${localId}`, localId }, purpose: declaration.purpose },
+      target: { kind: 'group' as const, service: declaration.service, groupId: 'work-pool' } });
+    const authority = (bindings: ReturnType<typeof binding>[]) => createVoiceCredentialRuntimeAuthoritySnapshot({
+      accountScope: { serverId: 'server-1', accountId: 'account-1' },
+      agentConnectedServiceBindingAuthority: 'unbound', credentialBinding: null,
+      providerEnvelope: null, selectedCredentialAuthority: 'unbound',
+      agentDefaultAuthority: stableJsonStringify(resolveAgentConnectedServicesDefaultBindings({ settings: {},
+        agentId: 'codex', consumer, declarations: agent.connectedAccounts, purposeBindings: { v: 1, bindings } })),
+    });
+    expect(hasVoiceCredentialRuntimeAuthorityChanged(authority([]), authority([binding('claude')]))).toBe(false);
+    expect(hasVoiceCredentialRuntimeAuthorityChanged(authority([]), authority([binding('codex')]))).toBe(true);
+  });
   const runtimeBinding = {
     contribution: {
       pluginId: 'happier.voice.openai',
@@ -161,19 +180,5 @@ describe('Voice credential runtime authority', () => {
     });
 
     expect(hasVoiceCredentialRuntimeAuthorityChanged(first, changed)).toBe(true);
-  });
-
-  it('ignores unrelated credential collections after canonical selection', () => {
-    const selected = createVoiceSelectedCredentialAuthorityFingerprint({
-      sourceResolution: { selection: { kind: 'savedSecret' }, savedSecret: { secretId: 'selected' } },
-      selectedSavedSecret: { id: 'selected', updatedAt: 2 },
-      selectedConnectedAccountAuthority: 'unbound',
-    });
-    const afterUnrelatedChange = createVoiceSelectedCredentialAuthorityFingerprint({
-      sourceResolution: { selection: { kind: 'savedSecret' }, savedSecret: { secretId: 'selected' } },
-      selectedSavedSecret: { id: 'selected', updatedAt: 2 },
-      selectedConnectedAccountAuthority: 'unbound',
-    });
-    expect(afterUnrelatedChange).toBe(selected);
   });
 });

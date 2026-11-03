@@ -198,7 +198,7 @@ describe('apiSocket transports and roles', () => {
 
     it('keeps the default account handshake and Engine.IO upgrade lifecycle through apiSocket', async () => {
         const { socket } = await boot();
-        expect(socket.io.timeout()).toBe(false);
+        expect(socket.io.timeout()).toBe(15_000 + 45_000);
         expect(ioSpy).toHaveBeenCalledWith('https://server.example.test', expect.objectContaining({
             path: '/v1/updates/', auth: expect.objectContaining({ clientType: 'user-scoped', clientPurpose: 'sync' }),
             forceNew: true, multiplex: false, reconnection: false, autoConnect: false, withCredentials: false,
@@ -268,7 +268,7 @@ describe('apiSocket transports and roles', () => {
         expect(auth).not.toHaveProperty('machineId');
         expect(listeners.has(SOCKET_RPC_EVENTS.REQUEST)).toBe(false);
         expect(listeners.has(SESSION_HUMAN_PRESENCE_SNAPSHOT_EVENT)).toBe(false);
-        const update = { body: { t: 'new-message', sid: 'viewed-session' } };
+        const update = { body: { t: 'new-message', delivery: 'full' as const, sid: 'viewed-session' } };
         const onUpdate = vi.fn();
         const detachUpdate = apiSocket.onMessage('update', onUpdate);
         trigger('update', update);

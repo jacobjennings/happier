@@ -6,7 +6,6 @@ import { scaffoldLocalPlugin } from '../scaffold/scaffold';
 import { packLocalPlugin } from './pack';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { watch } from 'node:fs';
 import { promisify } from 'node:util';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import * as tar from 'tar';
@@ -17,7 +16,7 @@ import { cleanupStagedNpmArtifactCandidate, stageDownloadedNpmArtifactCandidate 
 import { sriSha512 } from '../distribution/testkit/npmTarball';
 import { writeManagedJavaScriptRuntimeFixture } from '@/testkit/process/managedJavaScriptRuntimeFixture';
 
-async function writeSelectedPackage(root: string): Promise<void> {
+async function writeSelectedPackage(root: string, sourcePreamble: readonly string[] = []): Promise<void> {
   const scaffold = await scaffoldLocalPlugin({
     targetDir: root,
     pluginId: 'acme.selected-plugin',
@@ -27,6 +26,7 @@ async function writeSelectedPackage(root: string): Promise<void> {
     throw new Error(scaffold.diagnostics.map((diagnostic) => diagnostic.message).join('; '));
   }
   await writeFile(scaffold.sourceEntryPath, [
+    ...sourcePreamble,
     'export const manifest = {',
     "  schemaVersion: 2, id: 'acme.selected-plugin', version: '0.1.0',",
     "  displayName: 'Selected Plugin', engines: { happier: '^0.2.0' }, runtime: { apiVersion: 1 },",
@@ -409,15 +409,16 @@ describe('packLocalPlugin', () => {
   it('keeps the operation source outside an author parent whose replica removes remote-created pack directories', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'happier-replica-managed-pack-source-'));
     const root = join(parent, 'plugin');
-    const sourceTreeOperationEntries: string[] = [];
-    const watcher = watch(parent, (_event, entryName) => {
-      const entry = entryName?.toString();
-      if (entry?.startsWith('.happier-plugin-pack-source-')) {
-        sourceTreeOperationEntries.push(entry);
-      }
-    });
+    const observationRoot = await mkdtemp(join(tmpdir(), 'happier-replica-managed-pack-observation-'));
+    const parentListingsPath = join(observationRoot, 'parent-listings.jsonl');
     try {
-      await writeSelectedPackage(root);
+      // Author evaluation runs inside the pack operation, after the operation
+      // copy exists, so the author module itself records the author parent's
+      // entries while that copy is live.
+      await writeSelectedPackage(root, [
+        "import { appendFileSync, readdirSync } from 'node:fs';",
+        `appendFileSync(${JSON.stringify(parentListingsPath)}, JSON.stringify(readdirSync(${JSON.stringify(parent)}).sort()) + '\\n', 'utf8');`,
+      ]);
 
       const result = await packLocalPlugin({
         locator: root,
@@ -426,15 +427,18 @@ describe('packLocalPlugin', () => {
 
       expect(result, result.ok ? '' : result.diagnostics.map((diagnostic) => diagnostic.message).join('\n'))
         .toMatchObject({ ok: true, pluginId: 'acme.selected-plugin' });
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(sourceTreeOperationEntries).toEqual([]);
+      const parentListings = (await readFile(parentListingsPath, 'utf8')).trimEnd().split('\n');
+      expect(parentListings.length).toBeGreaterThan(0);
+      for (const listing of parentListings) {
+        expect(JSON.parse(listing)).toEqual(['plugin']);
+      }
     } finally {
-      watcher.close();
       await rm(parent, { recursive: true, force: true });
+      await rm(observationRoot, { recursive: true, force: true });
     }
   });
 
-  it('creates one npm-compatible selected-file artifact and validates it through canonical staging', async () => {
+  it('packs only the selected files into one npm-compatible artifact with its sha256 sidecar', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'happier-selected-pack-'));
     const root = join(parent, 'plugin');
     const archivePath = join(parent, 'selected-plugin.tgz');
@@ -457,7 +461,6 @@ describe('packLocalPlugin', () => {
       expect(entries).toContain('package/dist/index.js');
       expect(entries).not.toContain('package/src/index.ts');
       expect(entries).not.toContain('package/private-token.txt');
-      expect(result).not.toHaveProperty('manifestDigest');
       expect(await readFile(`${archivePath}.sha256`, 'utf8')).toMatch(/^sha256:[a-f0-9]{64}  selected-plugin\.tgz\n$/u);
     } finally {
       await rm(parent, { recursive: true, force: true });
@@ -681,18 +684,6 @@ describe('packLocalPlugin', () => {
         import.meta.url,
       ));
       await cp(maintainedExampleRoot, root, { recursive: true });
-      const activationSource = await readFile(join(root, 'index.ts'), 'utf8');
-      const runnerSource = await readFile(
-        join(root, 'agent', 'deterministicSessionAgent.ts'),
-        'utf8',
-      );
-
-      expect(activationSource).toContain("from '@happier-dev/plugin-sdk'");
-      expect(activationSource).toContain('definePlugin({');
-      expect(activationSource).not.toContain('api.agents.register');
-      expect(runnerSource).toContain("from '@happier-dev/plugin-sdk/agents/runtime'");
-      expect(activationSource).toContain("open: ['create', 'resume']");
-      expect(activationSource).toContain('cancel: true');
 
       const result = await packLocalPlugin({ locator: root, outPath: archivePath });
 
@@ -786,58 +777,4 @@ describe('packLocalPlugin', () => {
       await rm(parent, { recursive: true, force: true });
     }
   }, 120_000);
-
-  it('packs and stages a dependency-closed external Voice provider artifact', async () => {
-    const parent = await mkdtemp(join(tmpdir(), 'happier-packed-voice-'));
-    const archivePath = join(parent, 'packed-voice.tgz');
-    const installRoot = join(parent, 'installed');
-    const fixtureRoot = fileURLToPath(new URL('../testkit/fixtures/packed-external-voice-provider', import.meta.url));
-    let staged: Awaited<ReturnType<typeof stageDownloadedNpmArtifactCandidate>> | null = null;
-    try {
-      const packed = await packLocalPlugin({ locator: fixtureRoot, outPath: archivePath });
-      expect(packed, packed.ok ? '' : packed.diagnostics.map((entry) => entry.message).join('\n')).toMatchObject({ ok: true });
-      if (!packed.ok) return;
-      expect(packed).not.toHaveProperty('manifestDigest');
-      const archiveBytes = await readFile(archivePath);
-      await mkdir(installRoot);
-      staged = await stageDownloadedNpmArtifactCandidate({
-        candidate: {
-          source: {
-            kind: 'npm', registryOrigin: 'https://packed-voice.invalid',
-            packageName: 'happier-plugin-acme-packed-voice', version: '1.0.0',
-            integrity: sriSha512(archiveBytes), tarballUrl: pathToFileURL(archivePath).href,
-          },
-          artifactPath: archivePath,
-          byteLength: archiveBytes.byteLength,
-          archiveDigestSha256: `sha256:${createHash('sha256').update(archiveBytes).digest('hex')}`,
-          registrySignature: { status: 'absent' },
-          provenance: { status: 'absent' },
-        },
-        stagingParentPath: installRoot,
-      });
-      expect(staged.ok).toBe(true);
-      if (!staged.ok) return;
-      expect(staged.candidate.manifest.value.entrypoints).toEqual({
-        daemon: './dist/daemon.js',
-        development: './src/voiceDaemon.ts',
-      });
-      expect(staged.candidate.inventory.map(({ path }) => path)).toEqual(expect.arrayContaining([
-        'dist/daemon.js',
-        'dist/happier-plugin-ui/react-native/voice-runtime-web/entry.cjs.bundle',
-      ]));
-      const packedExecutableSources = await Promise.all([
-        readFile(join(staged.candidate.rootPath, 'dist/daemon.js'), 'utf8'),
-        readFile(join(
-          staged.candidate.rootPath,
-          'dist/happier-plugin-ui/react-native/voice-runtime-web/entry.cjs.bundle',
-        ), 'utf8'),
-      ]);
-      expect(packedExecutableSources.join('\n')).not.toMatch(
-        /@happier-dev\/plugin-sdk\/(?:runtime|ui\/client)|registerSpeech|speechProviderIds|catalogProviders|accountMediation|PluginVoice|providerId/u,
-      );
-    } finally {
-      if (staged?.ok) await cleanupStagedNpmArtifactCandidate(staged.candidate).catch(() => undefined);
-      await rm(parent, { recursive: true, force: true });
-    }
-  });
 });

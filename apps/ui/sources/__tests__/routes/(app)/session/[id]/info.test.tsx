@@ -25,7 +25,7 @@ import { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { createPlainSessionCurrentProjectionRecordFixture, createSessionAccessFixture, createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
-import { createPlainSessionByIdResponseFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createPlainSessionByIdResponseFixture, createSessionOwnerViewerFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { encodePlainMachineStoredContent } from '@happier-dev/protocol/machines/machineStoredContent';
 import { createMachineFixture, createMachineReadBatchResponseFixture, createPlainMachineRowFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { createAccountTokenForTests } from '@/dev/testkit/harness/homeGovernanceHarness';
@@ -43,7 +43,7 @@ import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLo
 import { tryWriteServerEnabledBitInPlace } from '@happier-dev/protocol/features/serverEnabledBit';
 import { machinePoolActionEndpointPathV1 } from '@happier-dev/protocol/machines/pools/actionsV1';
 import { V2SessionByIdNotFoundSchema } from '@happier-dev/protocol/sessions/control/contract';
-import { SESSION_ACTION_MARK_UNREAD_ID, SESSION_ACTION_MOVE_TO_FOLDER_ID } from '@/components/sessions/actions/sessionActionIds';
+import { SESSION_ACTION_MARK_READ_ID, SESSION_ACTION_MARK_UNREAD_ID, SESSION_ACTION_MOVE_TO_FOLDER_ID } from '@/components/sessions/actions/sessionActionIds';
 import { ACP_CATALOG_ROWS_ROUTE_V1, AcpCatalogRowReadResponseV1Schema } from '@happier-dev/protocol/acp/catalog/catalogRowsV1';
 import { createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit/fixtures/accountEncryptionCurrentness';
 import { ServerIdentityCapabilitiesSchema } from '@happier-dev/protocol/features/payload/capabilities/serverIdentityCapabilities';
@@ -51,6 +51,7 @@ import type { PluginMachineExecutionOriginV1, PluginSourceCustodyV1 } from '@hap
 import { waitForHomeGovernance } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { waitForNetworkResponseForTests } from '@/dev/testkit/mocks/runtimeFetch';
 import { tryParseDecryptedSessionMetadata } from '@/sync/engine/sessions/parsePlainSessionPayload';
+import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 
 vi.mock('@/sync/domains/state/browserRecordStorage', async () => {
     const { createBrowserRecordStorageModuleMock } = await import('@/dev/testkit/mocks/browserRecordStorage');
@@ -66,6 +67,7 @@ let mockProfile = { ...profileDefaults, id: 'viewer-account' };
 let isDataReady = true;
 let routeHydrationState: SessionRouteHydrationState = { kind: 'available', sessionId: 'session-1' };
 let sessionIsConnected = true;
+let machinePresenceObserved = true;
 let localDevModeEnabled = false;
 const machineListByServerIdState = vi.hoisted(() => ({
     current: {} as Record<string, any[]>,
@@ -452,6 +454,7 @@ describe('/session/[id]/info', () => {
         isDataReady = true;
         routeHydrationState = { kind: 'available', sessionId: 'session-1' };
         sessionIsConnected = true;
+        machinePresenceObserved = true;
         localDevModeEnabled = false;
         routerPushSpy.mockReset();
         routerBackSpy.mockReset();
@@ -553,8 +556,14 @@ describe('/session/[id]/info', () => {
                 snapshot: buildSessionOrganizationSnapshotFromFixtures(fixtureHomeId),
             }));
             if (/^\/v2\/sessions\/[^/]+\/read-state$/.test(url.pathname) && method === 'POST') {
-                return Response.json({ success: true, state: isPlainRecord(body) ? body.state : 'unread',
-                    lastViewedSessionSeq: 0, didChange: true });
+                const state = isPlainRecord(body) && body.state === 'read' ? 'read' : 'unread';
+                const lastViewedSessionSeq = state === 'read' ? sessionRecordForHttp?.seq ?? 0 : 0;
+                return Response.json({ success: true, state, lastViewedSessionSeq, didChange: true,
+                    ...(sessionRecordForHttp ? { viewer: createSessionOwnerViewerFixture({
+                        ...sessionRecordForHttp, viewer: undefined, lastViewedSessionSeq,
+                        unreadSince: state === 'unread' ? Date.now() : null,
+                    }) } : {}),
+                });
             }
             if (url.pathname === '/v2/sessions' || url.pathname === '/v2/sessions/active') return answerSessionHttp(Response.json({ sessions: sessionRecordForHttp?.serverId === fixtureHomeId && sessionRecordForHttp.encryptionMode === 'plain'
                     ? [sessionByIdForHttp!.session] : [], next: null, hasNext: false }), init?.signal);
@@ -758,7 +767,7 @@ describe('/session/[id]/info', () => {
         }
     }
 
-    async function renderInfoScreen(options?: Readonly<{ publishMachineCensus: true }>) {
+    async function renderInfoScreen(options?: Readonly<{ publishMachineCensus?: true; onRender?: React.ProfilerOnRenderCallback }>) {
         await restoreInfoAccountIfNeeded();
         const { getActiveServerAccountScope } = await import('@/sync/domains/scope/activeServerAccountScope');
         const { getStorage } = await import('@/sync/domains/state/storageStore');
@@ -769,7 +778,21 @@ describe('/session/[id]/info', () => {
             expect(getStorage().getState().endpointStatus).toBe('online');
         });
         await applyInfoSessionFixture(options?.publishMachineCensus);
-        const screen = await renderScreen(<SessionInfoScreen />, { wrapper: SessionInfoTestProviders, createNodeMock: browserHostNode });
+        const content = options?.onRender
+            ? <React.Profiler id="session-info" onRender={options.onRender}><SessionInfoScreen /></React.Profiler>
+            : <SessionInfoScreen />;
+        const screen = await renderScreen(content, { wrapper: SessionInfoTestProviders, createNodeMock: browserHostNode });
+        if (!machinePresenceObserved) {
+            const serverId = mockSession?.serverId ?? mockServerId ?? resolvedServerId;
+            // Settle the active Home's HTTP ingress before withdrawing it; a fresh
+            // census is a legitimate new presence observation after withdrawal.
+            await sync.refreshMachines();
+            const { resolveServerProfileScopeIdForIdentifier } = await import('@/sync/domains/server/serverProfiles');
+            const { withdrawMachinePresenceForScope } = await import('@/sync/domains/machines/reachability/machineReachability');
+            await act(async () => withdrawMachinePresenceForScope({
+                serverId: resolveServerProfileScopeIdForIdentifier(serverId), accountId: 'viewer-account',
+            }));
+        }
         if (routeHydrationState.kind === 'missing' || (!mockSession && routeHydrationState.kind === 'available')) {
             await vi.waitFor(() => expect(screen.getTextContent()).toContain('errors.sessionDeleted'));
         }
@@ -1048,7 +1071,7 @@ describe('/session/[id]/info', () => {
             inlineMount: { role: 'sessionInfoSection', presentation: 'content' },
             sessionId: 'session-1',
             machineId: 'machine-1',
-            serverId: 'server-1',
+            serverId: sessionInfoProjectionHomeIdentity,
             projectionInteractionEnabled: true,
         }));
         await vi.waitFor(() => expect(machineRpcWithServerScopeSpy.mock.calls.some(([input]) =>
@@ -1458,6 +1481,7 @@ describe('/session/[id]/info', () => {
         mockSession = {
             ...mockSession,
             updatedAt: 2,
+            metadataVersion: mockSession.metadataVersion + 1,
             metadata: {
                 ...mockSession.metadata,
                 name: 'refreshed-value',
@@ -1517,6 +1541,7 @@ describe('/session/[id]/info', () => {
 
     it('fails closed and hides the handoff quick action when direct peer truth is runtime-unknown and server-routed fallback would make the UI untruthful', async () => {
         sessionHandoffFeatureEnabled = true;
+        machinePresenceObserved = false;
         serverFeaturesSnapshot = {
             status: 'ready',
             features: {
@@ -1564,6 +1589,7 @@ describe('/session/[id]/info', () => {
 
     it('fails closed and hides the handoff quick action when the selected server only exposes direct-peer handoff transport', async () => {
         sessionHandoffFeatureEnabled = true;
+        machinePresenceObserved = false;
         serverFeaturesSnapshot = {
             status: 'ready',
             features: {
@@ -1610,9 +1636,10 @@ describe('/session/[id]/info', () => {
         expect(handoffItems).toHaveLength(0);
     });
 
-    it('shows manual mark-unread in quick actions for read sessions and uses scoped server mutations', async () => {
+    it('updates mounted read-state actions and status after scoped mark-unread and mark-read', async () => {
         // The suite already owns this exact restored Home/Account. A second
         // restoration would compete for its physical connection and cleanup.
+        mockServerId = 'server-1';
         mockSession = {
             id: 'session-read-state',
             active: false,
@@ -1627,9 +1654,9 @@ describe('/session/[id]/info', () => {
                 flavor: 'claude',
             },
         };
-        cachedSessionServerId = 'server-cached';
-
-        const screen = await renderInfoScreen();
+        let commits = 0;
+        const screen = await renderInfoScreen({ onRender: () => { commits += 1; } });
+        await flushHookEffects({ frames: 1 });
         const item = screen.findByProps({ testID: 'session-info-mark-unread' });
         expect(item).toBeTruthy();
 
@@ -1642,6 +1669,34 @@ describe('/session/[id]/info', () => {
             serverUrl: 'https://server-1.example', method: 'POST',
             path: '/v2/sessions/session-read-state/read-state', body: { state: 'unread' },
         }));
+        // The same mounted Info must consume the read-state owner's publication.
+        // Reopening would hide the shell's intentionally stable Session snapshot.
+        expect(screen.findAllByProps({ testID: 'session-info-mark-unread' })).toHaveLength(0);
+        expect(screen.findByProps({ testID: 'session-info-mark-read' })).toBeTruthy();
+        expect(screen.findByProps({ testID: 'session-info-status' }).props.children).toBe('status.unread');
+
+        await act(async () => { screen.findByProps({ testID: 'session-info-mark-read' }).props.onPress(); });
+        await settleSessionAction(SESSION_ACTION_MARK_READ_ID);
+        expect(screen.findAllByProps({ testID: 'session-info-mark-read' })).toHaveLength(0);
+        expect(screen.findByProps({ testID: 'session-info-mark-unread' })).toBeTruthy();
+        expect(screen.findByProps({ testID: 'session-info-status' }).props.children).not.toBe('status.unread');
+
+        // An unrelated Session's read frontier must not invalidate this Info tree.
+        const { getStorage } = await import('@/sync/domains/state/storageStore');
+        const store = getStorage();
+        const unrelated = createSessionFixture({ id: 'unrelated-read-state', serverId: mockSession.serverId, seq: 4, lastViewedSessionSeq: 4 });
+        await act(async () => { store.getState().applySessions([unrelated], 'projection'); });
+        await flushHookEffects();
+        commits = 0;
+        await act(async () => { store.getState().applySessions([{ ...unrelated, lastViewedSessionSeq: 0 }], 'projection'); });
+        await flushHookEffects();
+        expect(commits).toBe(0);
+
+        const current = store.getState().sessions[mockSession.id]!;
+        commits = 0;
+        await act(async () => { store.getState().applySessions([{ ...current, seq: current.seq + 1 }], 'projection'); });
+        await flushHookEffects();
+        expect(commits).toBe(0);
     });
 
     it('hides manual read-state quick actions for archived sessions', async () => {
@@ -1708,6 +1763,7 @@ describe('/session/[id]/info', () => {
         const screen = await renderInfoScreen();
 
         await screen.pressByTestIdAsync('session-info-session-pin');
+        await settleSessionAction('ui.session.pin');
         expect(requestsFor('/v2/session-organization/pins/session-1')).toEqual([expect.objectContaining({
             serverUrl: 'https://server-b.example', method: 'PUT',
             body: expect.objectContaining({ pinned: true }),
@@ -1718,9 +1774,9 @@ describe('/session/[id]/info', () => {
             await new Promise((resolve) => setTimeout(resolve, 0));
         });
         await screen.pressByTestIdAsync('session-tags-menu-item:fixture-tag-1');
-        expect(requestsFor('/v2/session-organization/tag-assignments/session-1')).toEqual([expect.objectContaining({
+        await waitForHeaderMenuOutcome(() => expect(requestsFor('/v2/session-organization/tag-assignments/session-1')).toEqual([expect.objectContaining({
             serverUrl: 'https://server-b.example', method: 'PUT', body: { tagIds: [] },
-        })]);
+        })]));
     });
 
     it('surfaces the existing info-screen error when organization mutation scope is unavailable', async () => {
@@ -1819,7 +1875,7 @@ describe('/session/[id]/info', () => {
                     ];
                     expect(folder?.display).toMatchObject({ t: 'plain', v: { workspace: {
                         t: 'workspaceScope', serverId: addressedHomeId,
-                        machineId: session?.metadata?.machineId, rootPath: session?.metadata?.path,
+                        machineId: session ? readSessionOwnerMetadataView(session)?.machineId : undefined, rootPath: session?.metadata?.path,
                     } } });
                 });
                 expect(network.httpRequests).toContainEqual(expect.objectContaining({
@@ -1902,6 +1958,7 @@ describe('/session/[id]/info', () => {
 
     it('reacts when machine-rpc direct-peer viability becomes available for the reachable machine target after metadata goes stale', async () => {
         sessionHandoffFeatureEnabled = true;
+        machinePresenceObserved = false;
         resolvedServerId = 'server_reactive_info';
         machineTargetFixture = {
             machineId: 'machine_rebound',
@@ -2147,7 +2204,7 @@ describe('/session/[id]/info', () => {
 
         pressTestInstance(runOnItem);
 
-        expect(routerPushSpy).toHaveBeenCalledWith('/machines/machine-target?serverId=server-1');
+        expect(routerPushSpy).toHaveBeenCalledWith(`/machines/machine-target?serverId=${sessionInfoProjectionHomeIdentity}`);
     });
 
     it('opens a new session seeded from the current session configuration', async () => {
@@ -2809,6 +2866,43 @@ describe('/session/[id]/info', () => {
         const screen = await renderInfoScreen();
         expect(screen.findByTestId('session-info-delete')).toBeNull();
         expect(screen.findByTestId('sessionInfo.deleteSession')).toBeNull();
+    });
+
+    it.each([
+        { reason: 'active', active: true, connected: false, retired: true, canDelete: true, stopFirst: true },
+        { reason: 'disconnected', active: false, connected: false, retired: true, canDelete: true, stopFirst: false },
+        { reason: 'recoverable', active: false, connected: false, retired: false, canDelete: true, stopFirst: true },
+        { reason: 'without deletion rights', active: false, connected: false, retired: true, canDelete: false, stopFirst: false },
+    ])('uses the owning delete flow for a session that is $reason', async ({ active, connected, retired, canDelete, stopFirst }) => {
+        sessionIsConnected = connected;
+        modalConfirmSpy.mockResolvedValueOnce(false);
+        mockSession = createSessionFixture({
+            active,
+            access: createSessionAccessFixture('owner', { deleteSession: canDelete }),
+            metadataLayoutVersion: 1,
+            ownerMetadataView: {
+                path: '/repo',
+                host: 'tester.local',
+                terminal: { mode: 'plain', controlServiceabilityV1: { v: 1, state: retired ? 'unknown' : 'recoverable_unservable', observedAt: 1, retired } },
+            },
+        });
+
+        const screen = await renderInfoScreen();
+        expect(screen.findByTestId('session-info-delete')).toBeNull();
+        if (!canDelete) {
+            expect(screen.findByTestId('sessionInfo.deleteSession')).toBeNull();
+            return;
+        }
+        expect(screen.findByTestId('sessionInfo.deleteSession')).not.toBeNull();
+        await screen.pressByTestIdAsync('sessionInfo.deleteSession');
+        await waitForHeaderMenuOutcome(() => expect(modalConfirmSpy).toHaveBeenCalledWith(
+            'sessionInfo.deleteSession',
+            stopFirst ? 'sessionInfo.stopAndDeleteSessionWarning' : 'sessionInfo.deleteSessionWarning',
+            expect.objectContaining({ destructive: true, confirmText: stopFirst ? 'sessionInfo.stopAndDeleteSession' : 'sessionInfo.deleteSession' }),
+        ));
+        expect(requestsFor('/v1/sessions/session-1').filter(request => request.method === 'DELETE')).toEqual([]);
+        expect(network.requests.filter(request => request.method === RPC_METHODS.STOP_SESSION)).toEqual([]);
+        expect(safeRouterBackSpy).not.toHaveBeenCalled();
     });
 
     it.each(['view', 'edit'] as const)('hides rename quick action for %s shared sessions', async (accessLevel) => {

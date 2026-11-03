@@ -2,11 +2,34 @@ import {
     AutomationDefinitionCreateRequestSchema,
     AutomationDefinitionDetailSchema,
     AutomationDefinitionListItemSchema,
+    AutomationDefinitionListRequestSchema,
+    AutomationDefinitionListResponseSchema,
+    AutomationDefinitionPatchRequestSchema,
     AutomationDefinitionReconcileRequestSchema,
     AutomationTriggerDetailSchema,
     type AutomationDefinitionDetail,
+    type AutomationDefinitionListResponse,
 } from '@happier-dev/protocol/automations/automationApiV3';
 import type { WorkflowDefinitionV1 } from '@happier-dev/protocol/workflows/workflowV1';
+
+/** Indexed selection stays at the HTTP boundary, beneath the real trigger read owner. */
+export function selectWorkflowAutomationListFixture(rows: readonly AutomationDefinitionDetail[], raw: unknown): AutomationDefinitionListResponse {
+    const query = AutomationDefinitionListRequestSchema.parse(raw);
+    const filtered = rows.filter(row => (query.workflowDefinitionId === undefined || row.workflowDefinitionId === query.workflowDefinitionId)
+        && (query.workflowDefinitionIds === undefined || query.workflowDefinitionIds.includes(row.workflowDefinitionId ?? ''))
+        && (query.scopeSessionId === undefined || row.scopeSessionId === query.scopeSessionId)
+        && (query.scope !== 'account_inline' || (row.scopeSessionId == null && row.workflowDefinitionId == null))
+        && (query.managedTargetUnindexed !== true || row.managedTarget === undefined)
+        && (query.managedTarget === undefined
+            || (row.managedTarget?.homeId === query.managedTarget.homeId && row.managedTarget.managedId === query.managedTarget.managedId)
+            || (query.includeUnindexedManagedTargets === true && row.managedTarget === undefined)));
+    const offset = query.cursor === undefined ? 0 : Number(query.cursor.replace('fixture-page-', ''));
+    const page = filtered.slice(offset, offset + query.limit);
+    return AutomationDefinitionListResponseSchema.parse({ automations: page.map(({ executionRecipe: _recipe,
+        templateCiphertext: _template, triggers, ...row }) => AutomationDefinitionListItemSchema.parse({ ...row,
+            triggers: triggers.map(({ triggerDefinitionEnvelope: _envelope, ...trigger }) => trigger) })),
+        nextCursor: offset + page.length < filtered.length ? `fixture-page-${offset + page.length}` : null });
+}
 
 export function createWorkflowAutomationDetailFixture(params: Readonly<{
     id: string; revision: number; triggerId?: string; workflowDefinitionId?: string; definition?: WorkflowDefinitionV1;
@@ -29,6 +52,7 @@ export function createWorkflowAutomationDetailFixture(params: Readonly<{
 export function createWorkflowAutomationHttpBoundary(): {
     creates: Array<ReturnType<typeof AutomationDefinitionCreateRequestSchema.parse>>;
     reconciles: Array<Readonly<{ automationId: string; input: ReturnType<typeof AutomationDefinitionReconcileRequestSchema.parse> }>>;
+    patches: Array<Readonly<{ automationId: string; input: ReturnType<typeof AutomationDefinitionPatchRequestSchema.parse> }>>;
     rows: Map<string, AutomationDefinitionDetail>;
     respondWith(response: ((method: string, input: unknown) => Response | undefined) | undefined): void;
     clear(): void;
@@ -37,22 +61,46 @@ export function createWorkflowAutomationHttpBoundary(): {
     const rows = new Map<string, AutomationDefinitionDetail>();
     const creates: Array<ReturnType<typeof AutomationDefinitionCreateRequestSchema.parse>> = [];
     const reconciles: Array<Readonly<{ automationId: string; input: ReturnType<typeof AutomationDefinitionReconcileRequestSchema.parse> }>> = [];
+    const patches: Array<Readonly<{ automationId: string; input: ReturnType<typeof AutomationDefinitionPatchRequestSchema.parse> }>> = [];
     let respond: ((method: string, input: unknown) => Response | undefined) | undefined;
     return {
-        creates, reconciles, rows,
+        creates, reconciles, patches, rows,
         respondWith(response: typeof respond) { respond = response; },
-        clear() { rows.clear(); creates.length = 0; reconciles.length = 0; respond = undefined; },
+        clear() { rows.clear(); creates.length = 0; reconciles.length = 0; patches.length = 0; respond = undefined; },
         async handle(url: URL, init?: RequestInit): Promise<Response | undefined> {
             const method = init?.method ?? 'GET';
+            if (url.pathname === '/v3/automations/query' && method === 'POST') {
+                return Response.json(selectWorkflowAutomationListFixture([...rows.values()], JSON.parse(String(init?.body))));
+            }
             const id = /^\/v3\/automations\/([^/]+)$/.exec(url.pathname)?.[1];
             if (url.pathname !== '/v3/automations' && !id) return undefined;
             if (method === 'GET') {
                 if (id) return rows.has(id) ? Response.json(rows.get(id)) : Response.json({ error: 'not-found' }, { status: 404 });
-                const filtered = [...rows.values()].filter(row => !url.searchParams.has('workflowDefinitionId')
-                    || row.workflowDefinitionId === url.searchParams.get('workflowDefinitionId'));
-                return Response.json({ automations: filtered.map(({ executionRecipe: _recipe, templateCiphertext: _template,
-                    triggers, ...row }) => AutomationDefinitionListItemSchema.parse({ ...row,
-                        triggers: triggers.map(({ triggerDefinitionEnvelope: _envelope, ...trigger }) => trigger) })), nextCursor: null });
+                return Response.json(selectWorkflowAutomationListFixture([...rows.values()], Object.fromEntries(url.searchParams)));
+            }
+            if (method === 'PATCH' && id) {
+                const input = AutomationDefinitionPatchRequestSchema.parse(JSON.parse(String(init?.body)));
+                patches.push({ automationId: id, input });
+                const failure = respond?.(method, input);
+                if (failure) return failure;
+                const current = rows.get(id);
+                if (!current) return Response.json({ error: 'automation_not_found' }, { status: 404 });
+                if (current.templateVersion !== input.expectedTemplateVersion) {
+                    return Response.json({ error: 'automation_template_version_conflict' }, { status: 409 });
+                }
+                if (input.executionRecipe && input.executionRecipe.templateVersion !== current.templateVersion + 1) {
+                    return Response.json({ error: 'invalid_template' }, { status: 400 });
+                }
+                const { expectedTemplateVersion: _expected, assignments, ...patch } = input;
+                const detail = AutomationDefinitionDetailSchema.parse({ ...current, ...patch,
+                    templateVersion: input.executionRecipe?.templateVersion ?? current.templateVersion,
+                    ...(input.executionRecipe?.v === 2 && input.executionRecipe.managedTarget !== undefined
+                        ? { managedTarget: input.executionRecipe.managedTarget } : {}),
+                    assignments: assignments?.map(row => ({ ...row, enabled: row.enabled ?? true, priority: row.priority ?? 0, updatedAt: 1 }))
+                        ?? current.assignments,
+                });
+                rows.set(id, detail);
+                return Response.json(detail);
             }
             if (method === 'POST' && !id) {
                 const created = AutomationDefinitionCreateRequestSchema.parse(JSON.parse(String(init?.body)));
@@ -64,6 +112,8 @@ export function createWorkflowAutomationHttpBoundary(): {
                     workflowDefinitionId: created.workflowDefinitionId ?? null, scopeSessionId: created.scopeSessionId ?? null,
                     targetType: null, existingSessionId: null, templateVersion: created.executionRecipe.templateVersion,
                     lastRunAt: null, createdAt: 1, updatedAt: 1, executionRecipe: created.executionRecipe,
+                    ...(created.executionRecipe.v === 2 && created.executionRecipe.managedTarget !== undefined
+                        ? { managedTarget: created.executionRecipe.managedTarget } : {}),
                     assignments: (created.assignments ?? []).map(row => ({ ...row, enabled: row.enabled ?? true, priority: row.priority ?? 0, updatedAt: 1 })),
                     triggers: created.triggers.map(row => AutomationTriggerDetailSchema.parse({ ...row.trigger, id: row.triggerId,
                         revision: 1, createdAt: 1, updatedAt: 1, nextRunAt: null, triggerDefinitionEnvelope: null })),
@@ -83,6 +133,8 @@ export function createWorkflowAutomationHttpBoundary(): {
                     enabled: input.enabled, workflowDefinitionId: input.workflowDefinitionId ?? null,
                     scopeSessionId: input.scopeSessionId ?? null, templateVersion: current.templateVersion + 1,
                     executionRecipe: input.executionRecipe,
+                    ...(input.executionRecipe?.v === 2 && input.executionRecipe.managedTarget !== undefined
+                        ? { managedTarget: input.executionRecipe.managedTarget } : {}),
                     assignments: input.assignments.map(row => ({ ...row, enabled: row.enabled ?? true, priority: row.priority ?? 0, updatedAt: 1 })),
                     triggers: input.triggers.map(row => {
                         const saved = current.triggers.find(trigger => trigger.id === row.triggerId);

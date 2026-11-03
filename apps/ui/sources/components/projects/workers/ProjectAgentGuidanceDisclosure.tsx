@@ -15,7 +15,9 @@ import { CodeBlockView } from '@/components/ui/code/blocks/CodeBlockView';
 import { t } from '@/text';
 import { describeMachineDestinationWorkerFacts } from '@/components/sessions/new/components/machineSelection/buildMachineDestinationModel';
 
-const RUN_COMMAND = 'happier project script run <name> [--on <machine>]';
+/** The command agents run a Project script with, shared by the guide and the Scripts page's Agents sentence. */
+export const PROJECT_SCRIPT_RUN_COMMAND = 'happier project script run';
+const RUN_COMMAND = `${PROJECT_SCRIPT_RUN_COMMAND} <name> [--on <machine>]`;
 const EXEC_COMMAND = 'happier project compute exec -- <argv>';
 
 /**
@@ -111,6 +113,9 @@ export function describeProjectAgentGuidance(
       : []),
     ...(guidance.scripts === null ? [t('projectWorkers.guideUnavailable'), t('common.retry')]
       : scripts.length === 0 ? [t('projectWorkers.guideNoScripts')] : []),
+    ...((guidance.services?.length ?? 0) > 0
+      ? [`${t('projects.pages.services')}: ${guidance.services!.map(service => service.name).join(', ')}`]
+      : []),
     ...scriptTargetLines,
     ...targetLines,
     '',

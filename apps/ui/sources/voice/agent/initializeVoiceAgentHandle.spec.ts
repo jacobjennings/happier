@@ -18,12 +18,20 @@ import { readVoiceSessionOwnerMetadataFromState } from '@/voice/shared/readVoice
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { readLocalConversationSettingsFromAccountSettings } from '@/voice/local/localVoiceSettings';
 import { voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
+import { settingsParse } from '@/sync/domains/settings/settings';
 import { SessionAppliedModelV1Schema } from '@happier-dev/protocol/providers/model-selection';
+import { SessionActiveModelSelectionSchema } from '@happier-dev/protocol/providers/selection/v2';
+import { buildSystemSessionMetadataV1 } from '@happier-dev/protocol/sessions/control/contract';
+import type { ConnectedServiceBindingsV2 } from '@happier-dev/protocol/connect/connected-service-bindings';
 import { createDeferred } from '@/dev/testkit';
+import { createAccountKvHttpFixture } from '@/dev/testkit/fixtures/accountKvHttpFixture';
+import { encodeBase64StoredJsonContentEnvelope } from '@/sync/encryption/base64StoredJsonContent';
+import { VOICE_TRANSCRIPT_MEMORY_KEY } from '@/voice/persistence/voiceTranscriptMemory';
 
 // Synthetic daemon ACKs only; the client, Run operations and installable owners stay real.
 const start = vi.fn(async (_request: ExecutionRunEnsureOrStartRequest) => ({ ok: true as const, runId: 'voice-agent-1', created: true }));
 const rpcTargets: Array<{ sessionId: string; method: string }> = [];
+const transcriptMemory = createAccountKvHttpFixture();
 let rootRunnerPid = 123;
 let stallRootRunnerStatus = false;
 let rootRunnerStatusEntered = createDeferred<void>();
@@ -173,6 +181,7 @@ describe('initializeVoiceAgentHandle', () => {
         vi.restoreAllMocks();
     });
     beforeEach(async () => {
+        transcriptMemory.reset();
         const previousServerId = state.profileScope?.serverId ?? 'server-a';
         sessionHttp = createSessionMetadataHttpBoundary(() => Object.fromEntries(
             Object.entries(storage.getState().sessions).map(([id, session]) => [id, createSessionFixture({ ...session, id,
@@ -185,12 +194,15 @@ describe('initializeVoiceAgentHandle', () => {
             // Session HTTP is a genuine boundary. Retained-run adoption writes
             // its pointer through the real metadata tuple owner, not a stub.
             request: createSessionReadBatchFetchBoundary(async (url, init) => {
+                const memoryResponse = await transcriptMemory.handleFetch(url, init);
+                if (memoryResponse) return memoryResponse;
                 const path = new URL(String(url)).pathname;
                 const respond = (body: unknown) => Response.json(body);
                 if (path === '/health') return respond({ status: 'ok' });
                 if (path === '/v2/cursor') return respond({ cursor: 0, changesFloor: 0 });
                 if (path === '/v1/features' || path === '/v1/features/authenticated') return respond(FeaturesResponseSchema.parse({ features: { voice: { enabled: true } }, capabilities: {} }));
                 if (path === '/v1/account/encryption') return respond({ mode: 'plain', updatedAt: 0 });
+                if (path === '/v2/account/settings') return respond({ content: { t: 'plain', v: state.settings }, version: 1 });
                 if (path === '/v1/machines') return respond([createPlainMachineRowFixture({ id: 'machine-1', accountId: 'account-a' })]);
                 if (path === '/v1/machines/read-batch' && init?.method === 'POST') return createMachineReadBatchResponseFixture(init.body,
                     id => id === 'machine-1' ? createPlainMachineRowFixture({ id, accountId: 'account-a' }) : null);
@@ -209,8 +221,8 @@ describe('initializeVoiceAgentHandle', () => {
             ]));
         storage.setState({
             ...state,
-            settings: { experiments: true,
-                featureToggles: { voice: true, 'voice.agent': true, 'execution.runs': true }, ...state.settings },
+            settings: settingsParse({ experiments: true,
+                featureToggles: { voice: true, 'voice.agent': true, 'execution.runs': true }, ...state.settings }),
             profileScope: { serverId: home.id, accountId: 'account-a' },
             sessions: normalizeSessions(state.sessions),
             sessionListRowsByServerId: { [home.id]: normalizeSessions(state.sessionListRowsByServerId[previousServerId]) },
@@ -264,6 +276,20 @@ describe('initializeVoiceAgentHandle', () => {
         await getServerFeaturesSnapshot({ serverId: home.id, force: true });
     });
 
+    it('takes the transcript epoch from Account memory when starting a different carrier', async () => {
+        omitIncidentalProfile();
+        await transcriptMemory.handleFetch('https://voice-initialize.example.test/v1/kv', { method: 'POST',
+            body: JSON.stringify({ mutations: [{ key: VOICE_TRANSCRIPT_MEMORY_KEY, version: -1,
+                value: encodeBase64StoredJsonContentEnvelope({ t: 'plain', v: { v: 1, epoch: 7, futureField: true } }),
+            }] }),
+        });
+        const { initializeVoiceAgentHandle } = await import('./initializeVoiceAgentHandle');
+        await initializeVoiceAgentHandle({ sessionId: 's1', getDaemonVoiceAgentClient: scope => new DaemonVoiceAgentClient(scope),
+            setDeferredTargetSessionContext: () => {} });
+        expect(admittedStart().transcript)
+            .toEqual({ persistenceMode: 'persistent', epoch: 7 });
+    });
+
     it('prefers visible lookup session metadata when deriving daemon startup models and profile data', async () => {
         expect(readLocalConversationSettingsFromAccountSettings(storage.getState().settings).agent.transcript.persistenceMode).toBe('ephemeral');
         const { initializeVoiceAgentHandle } = await import('./initializeVoiceAgentHandle');
@@ -288,7 +314,7 @@ describe('initializeVoiceAgentHandle', () => {
         expect(admittedStart().chatModelId).toBeUndefined();
     });
 
-    it.each(['current', 'missing', 'stale', 'cancelled'])('starts on a hidden carrier with the bound root Agent, model and Launch Profile only when applied model is known (%s)', async applied => {
+    it.each(['current', 'missing', 'stale', 'cancelled', 'team', 'team_stale'])('starts on a hidden carrier with the bound root Agent, model and Launch Profile only when applied model is known (%s)', async applied => {
         const { voiceSessionBindingStore } = await import('@/voice/binding/voiceConversationBindingStore');
         const { VOICE_AGENT_GLOBAL_SESSION_ID } = await import('@/voice/agent/voiceAgentGlobalSessionId');
         const carrierId = 'hidden-selection-carrier';
@@ -297,7 +323,7 @@ describe('initializeVoiceAgentHandle', () => {
         const previousRoot = current.sessions.s1;
         if (!previousRoot.metadata) throw new Error('The coding root requires owner metadata');
         const localSettings = readLocalConversationSettingsFromAccountSettings(previousSettings);
-        if (applied === 'stale') rootRunnerPid = 124;
+        if (applied === 'stale' || applied === 'team_stale') rootRunnerPid = 124;
         const targetAddress = { serverId: connection.home.id, sessionId: 's1' };
         const rootMetadata = { ...previousRoot.metadata, flavor: 'claude', profileId: 'root-launch-profile',
             modelOverrideV1: { v: 1 as const, modelId: 'pending-unapplied-model', updatedAt: 20 },
@@ -314,10 +340,16 @@ describe('initializeVoiceAgentHandle', () => {
             },
             sessionModelsV1: { v: 1 as const, agentId: 'claude', updatedAt: 30, currentModelId: 'claude-haiku-4-5',
                 availableModels: [{ id: 'claude-haiku-4-5', name: 'Haiku' }],
-                ...(applied !== 'missing' ? { activeSelectionV1: { v: 1 as const, source: 'runtime_apply' as const,
+                ...(applied !== 'missing' ? { activeSelectionV1: SessionActiveModelSelectionSchema.parse({
+                    v: applied.startsWith('team') ? 2 : 1, source: 'runtime_apply',
                     selection: { agentTargetKey: buildAgentUniverseBackendTargetKey('claude'), providerConnectionId: null, modelId: 'claude-haiku-4-5' },
                     runner: { pid: 123, processStartTimeMs: 1000 },
-                } } : {}),
+                    ...(applied.startsWith('team') ? { teamCredentialModel: {
+                        kind: 'team_credential_provider_model', resourceId: 'team-resource', teamId: 'team-1',
+                        expectedResourceRevision: 0, deliveryMode: 'brokered',
+                        agentTargetKey: buildAgentUniverseBackendTargetKey('claude'), modelId: 'claude-haiku-4-5',
+                    } } : {}),
+                }) } : {}),
             },
             sessionAppliedModelV1: SessionAppliedModelV1Schema.parse({ v: 1, provider: 'claude', modelId: 'last-accepted-model', updatedAt: 10,
                 selection: { agentTargetKey: buildAgentUniverseBackendTargetKey('claude'),
@@ -362,7 +394,8 @@ describe('initializeVoiceAgentHandle', () => {
                 return;
             }
             if (applied !== 'current') {
-                await expect(initializing).rejects.toMatchObject({ code: 'VOICE_AGENT_SELECTION_UNAVAILABLE' });
+                await expect(initializing).rejects.toMatchObject({ code: applied === 'team'
+                    ? 'VOICE_AGENT_TEAM_MODEL_UNSUPPORTED' : 'VOICE_AGENT_SELECTION_UNAVAILABLE' });
                 expect(start).not.toHaveBeenCalled();
                 return;
             }
@@ -388,6 +421,60 @@ describe('initializeVoiceAgentHandle', () => {
             const sessions: typeof current.sessions = { ...storage.getState().sessions, s1: previousRoot };
             delete sessions[carrierId];
             storage.setState({ sessions, settings: previousSettings });
+            state = storage.getState();
+        }
+    });
+
+    it.each(['connected', 'native', 'ordinary', 'other_agent'] as const)(
+        'R41 preserves the fixed Agent carrier credential choice only for its exact Voice target (%s)', async scenario => {
+        const { voiceSessionBindingStore } = await import('@/voice/binding/voiceConversationBindingStore');
+        const { VOICE_AGENT_GLOBAL_SESSION_ID } = await import('@/voice/agent/voiceAgentGlobalSessionId');
+        const carrierId = 'fixed-credential-carrier';
+        const current = storage.getState();
+        const previousSettings = current.settings;
+        const local = readLocalConversationSettingsFromAccountSettings(previousSettings);
+        const connectedServices: ConnectedServiceBindingsV2 = { v: 2, bindingsByServiceId: scenario === 'native' ? {} : {
+            'happier.agent.claude/claude-subscription': {
+                source: 'connected' as const, selection: 'profile' as const, profileId: 'carrier-account',
+            },
+        } };
+        storage.setState({ sessions: { ...current.sessions,
+            [carrierId]: createSessionFixture({ id: carrierId, serverId: connection.home.id, active: true,
+                presence: 'online', encryptionMode: 'plain', metadata: {
+                    path: '/voice', host: 'voice.test', flavor: scenario === 'other_agent' ? 'codex' : 'claude',
+                    connectedServices,
+                    ...(scenario === 'ordinary' ? {} : buildSystemSessionMetadataV1({ key: 'voice_conversation', hidden: true })),
+                } }),
+        }, settings: { ...previousSettings, voice: voiceSettingsParse({ ...previousSettings.voice,
+            providers: { ...previousSettings.voice.providers, local_conversation: { schemaVersion: 1, config: {
+                ...local, agent: { ...local.agent, agentSource: 'agent', agentId: 'claude',
+                    chatModelSource: 'custom', chatModelId: 'claude-haiku-4-5' },
+            } } },
+        }) } });
+        voiceSessionBindingStore.getState().bind({ adapterId: 'local_conversation',
+            controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID, conversationSessionId: carrierId,
+            conversationSessionAddress: { serverId: connection.home.id, sessionId: carrierId },
+            lifetime: 'runtime_attempt', transcriptMode: 'synthetic',
+            targetSessionAddress: { serverId: connection.home.id, sessionId: 's1' }, updatedAt: 1 });
+        try {
+            const { initializeVoiceAgentHandle } = await import('./initializeVoiceAgentHandle');
+            const handle = await initializeVoiceAgentHandle({ sessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
+                getDaemonVoiceAgentClient: scope => new DaemonVoiceAgentClient(scope),
+                setDeferredTargetSessionContext: vi.fn() });
+            expect(handle.rpcSessionId).toBe(carrierId);
+            if (scenario === 'connected' || scenario === 'native') {
+                expect(admittedStart().connectedServices).toEqual(connectedServices);
+            } else {
+                expect(admittedStart().connectedServices).toBeUndefined();
+            }
+        } finally {
+            voiceSessionBindingStore.getState().unbind(carrierId);
+            const sessions = { ...storage.getState().sessions };
+            delete sessions[carrierId];
+            const rows = { ...storage.getState().sessionListRowsByServerId[connection.home.id] };
+            delete rows[carrierId];
+            storage.setState({ sessions, settings: previousSettings,
+                sessionListRowsByServerId: { ...storage.getState().sessionListRowsByServerId, [connection.home.id]: rows } });
             state = storage.getState();
         }
     });
@@ -527,7 +614,7 @@ describe('initializeVoiceAgentHandle', () => {
         }, settings: { ...previousSettings, voice: voiceSettingsParse({ ...previousSettings.voice,
             providers: { ...previousSettings.voice.providers, local_conversation: { schemaVersion: 1, config: {
                 ...local, agent: { ...local.agent, agentSource: 'session', agentId: 'codex',
-                    agentTargetKey: 'agent:happier.agent.codex/codex', agentIdentity: null, agentProjectionGeneration: null,
+                    agentTargetKey: 'agent:happier.agent.codex/codex', agentIdentity: null,
                     chatModelSource: 'custom', chatModelId: 'gpt-6-luna' },
             } } },
         }) } });
@@ -647,6 +734,49 @@ describe('initializeVoiceAgentHandle', () => {
                 sessionListRowsByServerId: state.sessionListRowsByServerId,
             });
             state = storage.getState();
+        }
+    });
+
+    it('consumes the Session Agent admitted before capture without re-deciding it at first Send', async () => {
+        state.sessions.s1.metadata = null;
+        state.sessionListRowsByServerId[state.profileScope.serverId].s1.metadata = null;
+        const { initializeVoiceAgentHandle } = await import('./initializeVoiceAgentHandle');
+        await initializeVoiceAgentHandle({ sessionId: 's1',
+            admittedSessionAgentTarget: { kind: 'builtInAgent', agentId: 'codex' },
+            getDaemonVoiceAgentClient: scope => new DaemonVoiceAgentClient(scope),
+            setDeferredTargetSessionContext: vi.fn(),
+        });
+        expect(admittedStart()).toMatchObject({ backendTarget: { kind: 'backend', backendId: 'codex' } });
+    });
+
+    it('admits the bound coding Session Agent once for Start and delayed Send', async () => {
+        const { createVoiceExecutionTransport } = await import('@/voice/runtime/execution/VoiceExecutionTransport');
+        const transport = createVoiceExecutionTransport();
+        await transport.prepareAgentSelection('s1', new AbortController().signal);
+        state.sessions.s1.metadata = null;
+        state.sessionListRowsByServerId[state.profileScope.serverId].s1.metadata = null;
+        await transport.prepareAgentSelection('s1', new AbortController().signal);
+        await transport.ensureRunning('s1');
+        expect(admittedStart()).toMatchObject({ backendTarget: { kind: 'backend', backendId: 'codex' } });
+        await transport.stop('s1');
+    });
+
+    it('refuses a retained unreadable coding root at capture preparation despite a healthy carrier', async () => {
+        const { voiceSessionBindingStore } = await import('@/voice/binding/voiceConversationBindingStore');
+        const { VOICE_AGENT_GLOBAL_SESSION_ID } = await import('@/voice/agent/voiceAgentGlobalSessionId');
+        voiceSessionBindingStore.getState().bind({ adapterId: 'local_conversation',
+            controlSessionId: VOICE_AGENT_GLOBAL_SESSION_ID, conversationSessionId: 's1',
+            conversationSessionAddress: { serverId: connection.home.id, sessionId: 's1' },
+            lifetime: 'runtime_attempt', transcriptMode: 'synthetic',
+            targetSessionAddress: { serverId: connection.home.id, sessionId: 'missing-coding-root' }, updatedAt: 1 });
+        try {
+            const { createVoiceExecutionTransport } = await import('@/voice/runtime/execution/VoiceExecutionTransport');
+            const transport = createVoiceExecutionTransport();
+            await expect(transport.prepareAgentSelection(VOICE_AGENT_GLOBAL_SESSION_ID, new AbortController().signal))
+                .rejects.toMatchObject({ code: 'VOICE_AGENT_SELECTION_UNAVAILABLE', message: 'voice_agent_selection_unavailable' });
+            expect(start).not.toHaveBeenCalled();
+        } finally {
+            voiceSessionBindingStore.getState().unbind('s1');
         }
     });
 

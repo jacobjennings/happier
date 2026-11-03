@@ -6,7 +6,7 @@ import { compilePluginJsonSchema, createPluginJsonSchemaZodValueAdapter } from '
 import { createStoredReadSchema } from '@happier-dev/protocol/json/storedReadSchema';
 import { convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1 } from '@happier-dev/protocol/account/encryptionKeyFingerprintV1';
 import { createAccountScopedCryptoMaterialSnapshotV1, type AccountScopedCryptoMaterial } from '@happier-dev/protocol/crypto/accountScopedCipher';
-import { decodePluginCollectionLogicalRowV1, encodePluginCollectionLogicalValueV1, preparePluginCollectionLogicalMutationRequestV1 } from '@happier-dev/protocol/plugins/data/collectionLogicalCodecV1';
+import { decodePluginCollectionLogicalRowV1, encodePluginCollectionLogicalValueV1, preparePluginCollectionLogicalMutationRequestV1, type PluginCollectionLogicalMutationRequestOutcomeV1 } from '@happier-dev/protocol/plugins/data/collectionLogicalCodecV1';
 import { isValidPluginJsonSchemaValue } from '@happier-dev/protocol/plugins/actions/protocol-composable-schema';
 import type { PluginCollectionContractRefV1 } from '@happier-dev/protocol/plugins/data/collectionContractRefV1';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
@@ -295,7 +295,7 @@ export async function readPluginCollectionHttpResponse(input: Readonly<{
     const transport = input.authority.readTransport;
     const requestInit = (signal = input.init.signal) => withAccountStoredContentCompatibilityRequestDeclaration(
         { ...input.init, signal }, PLUGIN_DATA_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION);
-    if (!transport) return await consume(await input.authority.request(input.path, requestInit()));
+    if (!transport) return await consume(await input.authority.request(input.path, requestInit(), { recoveryRead: 'unbounded' }));
     const transportKey = transport.key;
     const headers = [...new Headers(input.init.headers)].sort(([left], [right]) => left.localeCompare(right));
     const body: unknown = input.init.body === undefined ? null : JSON.parse(input.init.body);
@@ -415,7 +415,7 @@ export async function prepareCollectionOperation(
     try {
         authority = await captureServerRequestAuthorityForServerAccountScope({
             scope: lifetime.scope,
-            activeRequest: (path, init) => apiSocket.request(path, init),
+            activeRequest: (path, init, options) => apiSocket.request(path, init, options),
         });
         const capturedAuthority = authority;
         const currentnessAfterAuthority = isScopeAndServerCurrent(lifetime, serverSnapshot);
@@ -602,7 +602,6 @@ export function encodePluginCollectionLogicalValue<TValue extends PluginAccountC
 /** Shared direct-UI logical-row decoder for ordinary and candidate-bound reads. */
 export function mergeLogicalRow<TValue extends PluginAccountCollectionValue<PluginAccountCollectionDefinition>>(input: Readonly<{
     contract: NormalizedPluginAccountCollectionContractV1;
-    validate: ReturnType<typeof compilePluginJsonSchema>;
     storedReadSchema: ReturnType<typeof createPluginJsonSchemaZodValueAdapter>;
     row: PluginCollectionRowV1;
     encryptionMode: 'plain' | 'e2ee';
@@ -613,7 +612,8 @@ export function mergeLogicalRow<TValue extends PluginAccountCollectionValue<Plug
         parseStoredLogicalValue: (value) => {
             const parsed = input.storedReadSchema.safeParse(value);
             if (!parsed.success || parsed.data === null || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) return null;
-            return isLogicalCollectionValue<TValue>(input.validate, parsed.data) ? parsed.data : null;
+            // The canonical stored-read adapter already validates the projected logical object.
+            return parsed.data as TValue;
         },
         row: input.row,
         encryptionMode: input.encryptionMode,
@@ -642,10 +642,8 @@ function mapReadError(value: unknown): ActivePluginCollectionUnavailableV1 | Act
         case 'collection_unavailable':
             return unavailable('collection-unavailable');
         case 'collection_content_mode_mismatch':
-            return unavailable('account-content-mismatch');
         case 'collection_index_not_ready':
         case 'collection_contract_inconsistent':
-            return unavailable('collection-unavailable');
         case 'collection_query_invalid':
         case 'collection_cursor_invalid':
         case 'collection_update_required':
@@ -693,6 +691,19 @@ function mapMutationError(value: unknown, httpStatus: number): ActivePluginColle
             return rejected(parsed.data.error);
     }
     return unavailable('response-invalid');
+}
+
+function mapEncodeFailure(
+    failure: Extract<PluginCollectionLogicalMutationRequestOutcomeV1, { status: 'failed' }>,
+): ActivePluginCollectionRejectedV1 {
+    return failure.reason === 'private-payload-too-large'
+        ? rejected('collection_quota_incompatible', {
+            quotaIncompatibility: {
+                dimension: failure.dimension,
+                effectiveMaximum: failure.effectiveMaximum,
+            },
+        })
+        : rejected('collection_mutation_invalid');
 }
 
 export function contractMatchesRef(
@@ -831,7 +842,6 @@ export function createActivePluginCollectionClient<
                 ? null
                 : mergeLogicalRow<TValue>({
                     contract: params.contract,
-                    validate,
                     storedReadSchema,
                     row: result.data.row,
                     encryptionMode: prepared.operation.encryptionMode,
@@ -883,7 +893,6 @@ export function createActivePluginCollectionClient<
             for (const row of result.data.rows) {
                 const materialized = mergeLogicalRow<TValue>({
                     contract: params.contract,
-                    validate,
                     storedReadSchema,
                     row,
                     encryptionMode: prepared.operation.encryptionMode,
@@ -967,7 +976,7 @@ export function createActivePluginCollectionClient<
         if (prepared.status === 'unavailable') return prepared;
         try {
             const sealed = prepareMutationRequest(operations, prepared.operation, absence.absenceEpoch);
-            if (sealed.status === 'failed') return rejected('collection_mutation_invalid');
+            if (sealed.status === 'failed') return mapEncodeFailure(sealed);
             const response = await requestCollectionOperation({
                 operation: prepared.operation,
                 path: PLUGIN_COLLECTION_MUTATION_HTTP_PATH_V1,
@@ -1124,7 +1133,7 @@ export function createActivePluginCollectionClient<
                     prepared.operation,
                     absence.absenceEpoch,
                 );
-                if (sealed.status === 'failed') return rejected('collection_mutation_invalid');
+                if (sealed.status === 'failed') return mapEncodeFailure(sealed);
                 overheadEncodedBytes = sealed.measurement.overheadEncodedBytes;
                 operationEncodedBytes.push(...sealed.measurement.operationEncodedBytes);
             }

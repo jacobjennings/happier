@@ -1,3 +1,5 @@
+import { type AccessProviderContributionV1 } from './accessProviders.js';
+import type { MachineSetupPresetContributionV1 } from './machineSetupPresets.js';
 import { zodSchemaToJsonSchemaObject } from '../../actions/actionInputJsonSchema.js';
 import type { z } from 'zod/mini';
 
@@ -32,6 +34,7 @@ import { isBundledProviderCatalogParserV1 } from '../../providers/catalog/descri
 import { isBundledProviderCommandCatalogParserV1 } from '../../providers/detection/descriptorV1.js';
 import { normalizePluginWorkflowContributionV1 } from './workflows.js';
 import { parseQualifiedPluginContributionKey } from '../contributionIdentity.js';
+import { readDeploymentTargetReferenceRolesV1, type DeploymentTargetContributionV1 } from './deploymentTargets.js';
 import { readMachineProvisionerActionRolesV1, type MachineProvisionerContributionV1 } from './machineProvisioners.js';
 import type { ProjectNativeAdapterRoleV1 } from './projectNativeAdapters.js';
 
@@ -41,6 +44,8 @@ export type PluginContributionReferenceRuleV2 = Readonly<{
   many?: boolean;
 }>;
 export type PluginContributionReferenceCandidateV2 = Readonly<{
+  /** Exact immutable declaration revision when the target family versions its data. */
+  revision?: string;
   targetFamily: string;
   /** A closed alternative family set for one polymorphic reference. */
   targetFamilies?: readonly string[];
@@ -150,6 +155,7 @@ export type PluginContributionCatalogEntryV2 = Readonly<{
 }>;
 
 const REFERENCE_RULES: Readonly<Record<string, readonly PluginContributionReferenceRuleV2[]>> = Object.freeze({
+  healthCheckKinds: [{ field: 'action', targetFamily: 'actions' }],
   actions: [{ field: 'hostAccess', targetFamily: 'manifest.hostAccess', many: true }],
   hooks: [{ field: 'hostAccess', targetFamily: 'manifest.hostAccess', many: true }],
   resources: [{ field: 'hostAccess', targetFamily: 'manifest.hostAccess', many: true }],
@@ -191,9 +197,15 @@ type FamilyPolicy = Pick<PluginContributionCatalogEntryV2,
   'identityField' | 'disposition' | 'activationDemand' | 'projectionFamily' | 'allowedRuntimeRegistration' | 'consumer' | 'platforms'> &
   Readonly<{ registrationHost?: Exclude<PluginContributionCatalogEntryV2['registrationHost'], null> }>;
 const FAMILY_POLICIES = {
+  deploymentTargets: { identityField: 'id', disposition: 'retained', activationDemand: 'none', projectionFamily: 'deploymentTargets', allowedRuntimeRegistration: null, consumer: 'deployment-target-catalog', platforms: ALL_PLATFORMS },
+secretSources: { identityField: 'id', disposition: 'retained', activationDemand: 'registration', projectionFamily: null, allowedRuntimeRegistration: 'secretSources', registrationHost: 'daemon', consumer: 'saved-secret-acquisition', platforms: CLI_PLATFORMS },
+
+  healthCheckKinds: { identityField: 'id', disposition: 'retained', activationDemand: 'none', projectionFamily: 'healthCheckKinds', allowedRuntimeRegistration: null, consumer: 'health-check-source-catalog', platforms: ALL_PLATFORMS },
   agents: { identityField: 'id', disposition: 'reshaped', activationDemand: 'conditional', projectionFamily: null, allowedRuntimeRegistration: 'agents', consumer: 'agent-runtime', platforms: CLI_PLATFORMS },
   providers: { identityField: 'id', disposition: 'delegated', activationDemand: 'conditional', projectionFamily: 'providers', allowedRuntimeRegistration: 'providers', registrationHost: 'daemon', consumer: 'providers-first-class', platforms: CLI_PLATFORMS },
   machineProvisioners: { identityField: 'id', disposition: 'reshaped', activationDemand: 'declarative', projectionFamily: 'machineProvisioners', allowedRuntimeRegistration: null, consumer: 'managed-machine-admission', platforms: CLI_PLATFORMS },
+  machineRecipes: { identityField: 'id', disposition: 'retained', activationDemand: 'none', projectionFamily: 'machineRecipes', allowedRuntimeRegistration: null, consumer: 'machine-recipe-catalog', platforms: ALL_PLATFORMS },
+  machineSetupPresets: { identityField: 'id', disposition: 'retained', activationDemand: 'none', projectionFamily: 'machineSetupPresets', allowedRuntimeRegistration: null, consumer: 'machine-recipe-catalog', platforms: ALL_PLATFORMS },
   actions: { identityField: 'id', disposition: 'reshaped', activationDemand: 'registration', projectionFamily: null, allowedRuntimeRegistration: 'actions', registrationHost: 'discriminated', consumer: 'action-dispatch', platforms: ALL_PLATFORMS },
   commands: { identityField: 'id', disposition: 'reshaped', activationDemand: 'none', projectionFamily: null, allowedRuntimeRegistration: null, consumer: 'cli-commands', platforms: CLI_PLATFORMS },
   tools: { identityField: 'id', disposition: 'reshaped', activationDemand: 'none', projectionFamily: null, allowedRuntimeRegistration: null, consumer: 'agent-tools', platforms: CLI_PLATFORMS },
@@ -260,6 +272,20 @@ function extractRuleReferences(
 }
 
 function extractNestedReferences(family: string, value: Readonly<Record<string, unknown>>): PluginContributionReferenceCandidateV2[] {
+  if (family === 'deploymentTargets') {
+    return readDeploymentTargetReferenceRolesV1(value as DeploymentTargetContributionV1).map(binding => ({
+      targetFamily: binding.targetFamily, reference: binding.reference, path: binding.path, allowQualifiedCrossPlugin: false,
+    }));
+  }
+  if (family === 'machineSetupPresets') {
+    const preset = value as MachineSetupPresetContributionV1;
+    return (preset.setup.items ?? []).flatMap((item, index) => item.kind === 'app' ? [] : [{
+      targetFamily: 'machineRecipes', allowQualifiedSamePlugin: true, allowQualifiedCrossPlugin: true,
+      reference: { pluginId: item.selection.ref.pluginId, localId: item.selection.ref.recipeId },
+      revision: item.selection.ref.revision,
+      path: ['setup', 'items', index, 'selection', 'ref'],
+    }]);
+  }
   if (family === 'actions') {
     const parsed = PluginActionDeclaredExecutionV2Schema.safeParse(value.execution);
     if (!parsed.success || parsed.data.target === 'daemon') return [];
@@ -1249,3 +1275,15 @@ export function listDeclaredPluginContributionFamilies(
     .filter((entry) => entry.readEntries(contributes).length > 0)
     .map((entry) => entry.manifestKey));
 }
+
+export { AccessProviderRefV1Schema, type AccessProviderRefV1 } from './accessProviders.js';
+
+export { AccessProviderContributionV1 } from './accessProviders.js';
+
+export { AccessProviderSelectionV1Schema } from './accessProviders.js';
+
+export { accessProviderRefsEqualV1 } from './accessProviders.js';
+
+export type { AccessProviderSelectionV1 } from './accessProviders.js';
+
+export type { AccessCredentialPurposeRefV1 } from './accessProviders.js';

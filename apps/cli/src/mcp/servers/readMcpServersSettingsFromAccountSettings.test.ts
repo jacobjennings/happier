@@ -4,6 +4,15 @@ import type { McpServerCatalogEntryV1 } from '@happier-dev/protocol';
 
 import { readMcpServersSettingsFromAccountSettings, readMcpServersSettingsForStartup } from './readMcpServersSettingsFromAccountSettings';
 
+function catchRefusal(run: () => unknown): unknown {
+  try {
+    run();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('Expected the MCP catalog read to be refused');
+}
+
 describe('readMcpServersSettingsFromAccountSettings', () => {
   it('uses the admitted catalog after root removal and keeps strict policy separate', () => {
     const server: McpServerCatalogEntryV1 = { id: 'row-server', name: 'row-server', transport: 'stdio',
@@ -19,11 +28,11 @@ describe('readMcpServersSettingsFromAccountSettings', () => {
   });
 
   it('refuses an unavailable catalog instead of admitting an empty configuration', () => {
-    expect(() => readMcpServersSettingsFromAccountSettings({
+    expect(catchRefusal(() => readMcpServersSettingsFromAccountSettings({
       source: 'network', settings: accountSettingsParse({}), settingsVersion: 4, loadedAtMs: 1,
       settingsSecretsReadKeys: [], rawSettings: {},
       mcpServerCatalog: { status: 'unavailable', reason: 'unreachable' },
-    })).toThrow();
+    }))).toMatchObject({ code: 'mcp_catalog_unavailable', reason: 'unreachable' });
   });
 
   it('distinguishes optional unavailability from strict startup refusal without inventing an empty catalog', () => {
@@ -34,15 +43,15 @@ describe('readMcpServersSettingsFromAccountSettings', () => {
     expect(readMcpServersSettingsForStartup({ snapshot })).toMatchObject({
       status: 'unavailable', error: { code: 'mcp_catalog_unavailable', reason: 'unreachable' },
     });
-    expect(() => readMcpServersSettingsForStartup({ snapshot: { ...snapshot,
+    expect(catchRefusal(() => readMcpServersSettingsForStartup({ snapshot: { ...snapshot,
       settings: accountSettingsParse({ mcpServersStrictMode: true }) }, settings: snapshot.settings,
-    })).toThrow();
-    expect(() => readMcpServersSettingsForStartup({ snapshot: null,
+    }))).toMatchObject({ code: 'mcp_catalog_unavailable', reason: 'unreachable' });
+    expect(catchRefusal(() => readMcpServersSettingsForStartup({ snapshot: null,
       settings: accountSettingsParse({ mcpServersStrictMode: true }),
-    })).toThrow();
-    expect(() => readMcpServersSettingsForStartup({ snapshot: { ...snapshot,
+    }))).toMatchObject({ code: 'mcp_catalog_unavailable', reason: 'catalog-unobserved' });
+    expect(catchRefusal(() => readMcpServersSettingsForStartup({ snapshot: { ...snapshot,
       mcpServerCatalog: { status: 'unavailable', reason: 'account-mode-mismatch' },
-    } })).toThrow();
+    } }))).toMatchObject({ code: 'mcp_catalog_unavailable', reason: 'account-mode-mismatch' });
   });
 
   it('admits an observed empty destination', () => {
@@ -56,9 +65,9 @@ describe('readMcpServersSettingsFromAccountSettings', () => {
   });
 
   it('refuses an unobserved catalog even if a retained root is available', () => {
-    expect(() => readMcpServersSettingsFromAccountSettings({ source: 'network',
+    expect(catchRefusal(() => readMcpServersSettingsFromAccountSettings({ source: 'network',
       settings: accountSettingsParse({}), settingsVersion: 4, loadedAtMs: 1, settingsSecretsReadKeys: [],
       rawSettings: { mcpServersSettingsV1: { v: 1, strictMode: true, servers: [], bindings: [] } },
-    })).toThrow();
+    }))).toMatchObject({ code: 'mcp_catalog_unavailable', reason: 'catalog-unobserved' });
   });
 });

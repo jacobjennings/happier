@@ -11,6 +11,7 @@ import type {
 import type { ExecutionRunResumeHandle } from '@happier-dev/protocol';
 import type { ConnectedServiceBindingsV2 } from '@happier-dev/protocol';
 import type { PermissionIntent } from '@happier-dev/agents';
+import type { ConnectedServiceUxDiagnosticV1 } from '@happier-dev/protocol/connect/connectedServiceUxDiagnostics';
 
 export type Verbosity = 'short' | 'balanced';
 
@@ -62,6 +63,7 @@ export type VoiceAgentStartParams = Readonly<{
 
 export type VoiceAgentStartResult = Readonly<{
   voiceAgentId: string;
+  preparedInstructionsFor?: VoicePromptPreparation['preparedInstructionsFor'];
   effective: {
     chatModelId: string;
     commitModelId: string;
@@ -83,6 +85,7 @@ export type VoiceAgentTurnStreamReadResult = Readonly<{
   events: VoiceAgentTurnStreamEvent[];
   nextCursor: number;
   done: boolean;
+  preparedInstructionsFor?: VoicePromptPreparation['preparedInstructionsFor'];
   /** Canonical terminal record, independent of the caller's pagination page. */
   terminalEvent?: VoiceAgentTurnStreamEvent;
 }>;
@@ -94,11 +97,15 @@ export class VoiceAgentError extends Error {
     | 'VOICE_AGENT_INVALID_CURSOR'
     | 'VOICE_AGENT_TURN_COMPLETED'
     | 'VOICE_AGENT_UNSUPPORTED'
-    | 'VOICE_AGENT_START_FAILED';
+    | 'VOICE_AGENT_START_FAILED'
+    | ConnectedServiceUxDiagnosticV1['code'];
 
-  constructor(code: VoiceAgentError['code'], message: string) {
+  readonly details?: Readonly<{ uxDiagnostic: ConnectedServiceUxDiagnosticV1 }>;
+
+  constructor(code: VoiceAgentError['code'], message: string, readonly uxDiagnostic?: ConnectedServiceUxDiagnosticV1) {
     super(message);
     this.code = code;
+    if (uxDiagnostic) this.details = { uxDiagnostic };
   }
 }
 
@@ -124,6 +131,8 @@ export type VoicePromptPreparation = Readonly<{
   systemAppendBlocks: readonly string[];
   memoryRecallGuidanceEnabled: boolean;
   disabledActionIds: readonly string[];
+  /** Admitted reserved entry; carriers publish this only after successful delivery. */
+  preparedInstructionsFor?: Readonly<{ serverId: string; sessionId: string }>;
 }>;
 
 export type VoiceAgentTurn = { role: 'user' | 'assistant' | 'context'; text: string };
@@ -136,6 +145,7 @@ export type VoiceAgentTurnStreamState = {
   run: Promise<void>;
   completedHistory: boolean;
   cancelled: boolean;
+  preparedInstructionsFor?: VoicePromptPreparation['preparedInstructionsFor'];
   preparationAbortController: AbortController;
   deltaHold: string;
   outputSpeechBuffer: string;

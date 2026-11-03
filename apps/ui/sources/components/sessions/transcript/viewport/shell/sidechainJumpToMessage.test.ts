@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-    applySidechainJumpToMessage,
     applySidechainJumpToMessageRequest,
     resolveSidechainJumpToMessageTarget,
     SIDECHAIN_JUMP_TO_MESSAGE_MAX_OLDER_LOAD_ATTEMPTS,
@@ -51,61 +50,6 @@ describe('sidechain jump to message', () => {
             messageId: 'missing',
             ownsMessageId: (item, messageId) => item.owns.includes(messageId),
         })).toEqual({ ok: false });
-    });
-
-    it('centers the loaded target and does not scroll into footer chrome', () => {
-        const scrollToIndex = vi.fn(() => Promise.resolve());
-        const scrollToOffset = vi.fn();
-        const scrollToEnd = vi.fn();
-        const listRef = { scrollToEnd, scrollToIndex, scrollToOffset };
-
-        expect(applySidechainJumpToMessage({
-            estimatedItemSizePx: 88,
-            listRef,
-            targetIndex: 3,
-        })).toBe(true);
-
-        expect(scrollToIndex).toHaveBeenCalledWith({
-            animated: true,
-            index: 3,
-            viewPosition: 0.5,
-        });
-        expect(scrollToOffset).not.toHaveBeenCalled();
-        expect(scrollToEnd).not.toHaveBeenCalled();
-    });
-
-    it('falls back to the estimated animated offset when scrollToIndex rejects', async () => {
-        const scrollToIndex = vi.fn(() => Promise.reject(new Error('missing layout')));
-        const scrollToOffset = vi.fn();
-        const scrollToEnd = vi.fn();
-        const listRef = { scrollToEnd, scrollToIndex, scrollToOffset };
-
-        applySidechainJumpToMessage({
-            estimatedItemSizePx: 88,
-            listRef,
-            targetIndex: 3,
-        });
-        await Promise.resolve();
-
-        expect(scrollToOffset).toHaveBeenCalledWith({ animated: true, offset: 264 });
-        expect(scrollToEnd).not.toHaveBeenCalled();
-    });
-
-    it('swallows synchronous scroll failures as best-effort', () => {
-        const scrollToIndex = vi.fn(() => {
-            throw new Error('not ready');
-        });
-        const scrollToOffset = vi.fn();
-        const scrollToEnd = vi.fn();
-        const listRef = { scrollToEnd, scrollToIndex, scrollToOffset };
-
-        expect(applySidechainJumpToMessage({
-            estimatedItemSizePx: 88,
-            listRef,
-            targetIndex: 3,
-        })).toBe(false);
-        expect(scrollToOffset).not.toHaveBeenCalled();
-        expect(scrollToEnd).not.toHaveBeenCalled();
     });
 
     it('materializes older pages until the requested message is found', async () => {

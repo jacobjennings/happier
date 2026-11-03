@@ -3,13 +3,9 @@ import { SESSION_LOOKUP_BY_TAGS_TAG_MAX_CODE_UNITS_V2 } from '@happier-dev/proto
 import type { StoredCredentials } from '@/persistence';
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import {
-  tryDecryptSessionMetadata,
-  tryDecryptSessionOwnerMetadataView,
-} from '@/session/transport/encryption/sessionEncryptionContext';
-import {
   fetchSessionById,
-  fetchSessionsQueryPage,
-  fetchSessionsPage,
+  fetchSessionListQueryPage,
+  fetchSessionListPage,
   lookupSessionsByTags,
   resolveSessionDetailAccessProjectionVersion,
   type RawSessionRecord,
@@ -160,6 +156,7 @@ export async function resolveSessionIdOrPrefix(params: Readonly<{
       };
     }
   }
+  if (indexedTagLookup?.state === 'unavailable') return { ok: false, code: 'unsupported' };
 
   const maxPagesRaw = (process.env.HAPPIER_SESSION_ID_PREFIX_SCAN_MAX_PAGES ?? '').trim();
   const maxPagesParsed = maxPagesRaw ? Number.parseInt(maxPagesRaw, 10) : NaN;
@@ -167,14 +164,6 @@ export async function resolveSessionIdOrPrefix(params: Readonly<{
 
   let cursor: string | undefined;
   const prefixMatches = new Set<string>();
-  const fallbackTagMatches = new Set<string>();
-  const useOldServerTagFallback = indexedTagLookup?.state === 'unavailable';
-  // Exact and indexed reads do not open Account-scoped owner metadata. Let
-  // their HTTP overlap the caller's fresh mode read, consuming it only when
-  // the released-server tag fallback actually needs to open that metadata.
-  const accountEncryptionMode = useOldServerTagFallback
-    ? typeof params.accountEncryptionMode === 'function' ? await params.accountEncryptionMode() : params.accountEncryptionMode
-    : undefined;
   const useCurrentAccessQuery = resolveSessionDetailAccessProjectionVersion({
     serverFeaturesSnapshot: params.serverFeaturesSnapshot,
   }) === 1;
@@ -182,7 +171,7 @@ export async function resolveSessionIdOrPrefix(params: Readonly<{
   const recordPrefixMatch = (id: string): ResolveSessionIdResult | null => {
     if (prefixMatches.has(id)) return null;
     prefixMatches.add(id);
-    if (!useOldServerTagFallback && prefixMatches.size > 1) {
+    if (prefixMatches.size > 1) {
       return {
         ok: false,
         code: 'session_id_ambiguous',
@@ -196,9 +185,9 @@ export async function resolveSessionIdOrPrefix(params: Readonly<{
     cursor = undefined;
     for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
       params.signal?.throwIfAborted();
-      const page: Awaited<ReturnType<typeof fetchSessionsQueryPage>>
-        | Awaited<ReturnType<typeof fetchSessionsPage>> = useCurrentAccessQuery
-        ? await fetchSessionsQueryPage({
+      const page: Awaited<ReturnType<typeof fetchSessionListQueryPage>>
+        | Awaited<ReturnType<typeof fetchSessionListPage>> = useCurrentAccessQuery
+        ? await fetchSessionListQueryPage({
             token: params.credentials.token,
             query: {
               v: 1,
@@ -216,7 +205,7 @@ export async function resolveSessionIdOrPrefix(params: Readonly<{
               : {}),
             ...(params.signal ? { signal: params.signal } : {}),
           })
-        : await fetchSessionsPage({
+        : await fetchSessionListPage({
             token: params.credentials.token,
             cursor,
             limit: 200,
@@ -233,23 +222,6 @@ export async function resolveSessionIdOrPrefix(params: Readonly<{
           const res = recordPrefixMatch(id);
           if (res) return res;
         }
-
-        if (useOldServerTagFallback) {
-          const metadata = accountEncryptionMode
-            ? tryDecryptSessionOwnerMetadataView({
-                credentials: params.credentials,
-                accountEncryptionMode,
-                rawSession: row,
-              })
-            : tryDecryptSessionMetadata({
-                credentials: params.credentials,
-                rawSession: row,
-              });
-          const tag = typeof metadata?.tag === 'string' ? metadata.tag.trim() : '';
-          if (tag === input) {
-            fallbackTagMatches.add(id);
-          }
-        }
       }
       if (!page.hasNext || !page.nextCursor) break;
       cursor = page.nextCursor;
@@ -262,16 +234,6 @@ export async function resolveSessionIdOrPrefix(params: Readonly<{
   const archivedScan = await scan(true);
   if (archivedScan) return archivedScan;
 
-  if (fallbackTagMatches.size === 1) {
-    return { ok: true, sessionId: Array.from(fallbackTagMatches)[0]! };
-  }
-  if (fallbackTagMatches.size > 1) {
-    return {
-      ok: false,
-      code: 'session_id_ambiguous',
-      candidates: Array.from(fallbackTagMatches).slice(0, 10),
-    };
-  }
   if (prefixMatches.size === 1) {
     return { ok: true, sessionId: Array.from(prefixMatches)[0]! };
   }

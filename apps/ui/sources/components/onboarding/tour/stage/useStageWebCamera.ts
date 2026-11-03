@@ -24,13 +24,6 @@ export type StageWebHaloNode = Readonly<{
     };
 }>;
 
-export type StageWebVisibilityNode = Readonly<{
-    style: {
-        opacity: string;
-        willChange: string;
-    };
-}>;
-
 export type StageWebCameraStep = Readonly<{
     transform: StageWebCameraTransform;
     settled: boolean;
@@ -106,21 +99,6 @@ function writeHaloTransform(
     ].join(' ');
 }
 
-export function writeStageWebMotionVisibility(
-    liveNode: StageWebVisibilityNode | null | undefined,
-    frozenNode: StageWebVisibilityNode | null | undefined,
-    moving: boolean,
-): void {
-    if (liveNode?.style) {
-        liveNode.style.willChange = 'opacity';
-        liveNode.style.opacity = moving ? '0' : '1';
-    }
-    if (frozenNode?.style) {
-        frozenNode.style.willChange = 'transform, opacity';
-        frozenNode.style.opacity = moving ? '1' : '0';
-    }
-}
-
 function writeCameraTransform(
     outerNode: StageWebCameraNode | null,
     innerNode: StageWebCameraNode | null,
@@ -158,32 +136,9 @@ export function useStageWebCamera(params: Readonly<{
     haloRef?: React.RefObject<StageWebHaloNode | null>;
     haloSourceRect?: StageTargetRect | null;
     transformBounds: StageTargetRect;
-    freezeDuringMotion: boolean;
-    liveLayerRef?: React.RefObject<StageWebVisibilityNode | null>;
-    frozenLayerRef?: React.RefObject<StageWebVisibilityNode | null>;
     cameraNodeTranslationScale: number;
-    onMotionChange: (moving: boolean) => void;
-    onSettled: (frameId: string) => void;
 }>): void {
     const currentRef = React.useRef<StageWebCameraTransform | null>(null);
-    const onMotionChangeRef = React.useRef(params.onMotionChange);
-    const onSettledRef = React.useRef(params.onSettled);
-    onMotionChangeRef.current = params.onMotionChange;
-    onSettledRef.current = params.onSettled;
-
-    React.useLayoutEffect(() => {
-        if (!params.enabled || !params.freezeDuringMotion) return;
-        writeStageWebMotionVisibility(
-            params.liveLayerRef?.current,
-            params.frozenLayerRef?.current,
-            false,
-        );
-    }, [
-        params.enabled,
-        params.freezeDuringMotion,
-        params.frozenLayerRef,
-        params.liveLayerRef,
-    ]);
 
     React.useLayoutEffect(() => {
         if (!params.enabled) {
@@ -226,13 +181,6 @@ export function useStageWebCamera(params: Readonly<{
                 haloRect,
                 params.cameraNodeTranslationScale,
             );
-            if (params.freezeDuringMotion) {
-                writeStageWebMotionVisibility(
-                    params.liveLayerRef?.current,
-                    params.frozenLayerRef?.current,
-                    false,
-                );
-            }
             return undefined;
         }
 
@@ -241,14 +189,6 @@ export function useStageWebCamera(params: Readonly<{
         let animationFrame = 0;
         let recoveryTimeout: ReturnType<typeof setTimeout> | null = null;
         let previousAt = performance.now();
-        if (params.freezeDuringMotion) {
-            writeStageWebMotionVisibility(
-                params.liveLayerRef?.current,
-                params.frozenLayerRef?.current,
-                true,
-            );
-        }
-        onMotionChangeRef.current(true);
 
         const finishMotion = () => {
             if (cancelled || completed) return;
@@ -272,15 +212,6 @@ export function useStageWebCamera(params: Readonly<{
                 haloRect,
                 params.cameraNodeTranslationScale,
             );
-            if (params.freezeDuringMotion) {
-                writeStageWebMotionVisibility(
-                    params.liveLayerRef?.current,
-                    params.frozenLayerRef?.current,
-                    false,
-                );
-            }
-            onMotionChangeRef.current(false);
-            onSettledRef.current(params.frameId);
             cancelAnimationFrame(animationFrame);
         };
         recoveryTimeout = setTimeout(finishMotion, CAMERA_RECOVERY_TIMEOUT_MS);
@@ -327,16 +258,6 @@ export function useStageWebCamera(params: Readonly<{
             cancelled = true;
             if (recoveryTimeout) clearTimeout(recoveryTimeout);
             cancelAnimationFrame(animationFrame);
-            if (!completed) {
-                if (params.freezeDuringMotion) {
-                    writeStageWebMotionVisibility(
-                        params.liveLayerRef?.current,
-                        params.frozenLayerRef?.current,
-                        false,
-                    );
-                }
-                onMotionChangeRef.current(false);
-            }
         };
     }, [
         params.enabled,
@@ -345,9 +266,6 @@ export function useStageWebCamera(params: Readonly<{
         params.additionalOuterRef,
         params.haloRef,
         params.innerRef,
-        params.liveLayerRef,
-        params.frozenLayerRef,
-        params.freezeDuringMotion,
         params.cameraNodeTranslationScale,
         params.outerRef,
         params.target.scale,

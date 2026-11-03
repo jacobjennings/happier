@@ -2,10 +2,12 @@ import { randomBytes as nodeRandomBytes } from 'node:crypto';
 
 import { SESSION_METADATA_LAYOUT_VERSION_V1, createPlainSessionOwnerMetadataEnvelopeV1, createSessionOwnerMetadataV1, projectSessionSharedMetadataV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import { sealSessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataEnvelopesV1';
-import type { AccountScopedCryptoMaterial, SessionOwnerMetadataEnvelopeV1, SessionOwnerMetadataV1 } from '@happier-dev/protocol';
+import { projectSessionDisplayV1, sealSessionSharedDisplayEnvelopeV1Sync, sealSessionOwnerDisplayEnvelopeV1 } from '@happier-dev/protocol';
+import type { AccountScopedCryptoMaterial, SessionOwnerMetadataEnvelopeV1, SessionOwnerMetadataV1, SessionDisplayProjectionV1 } from '@happier-dev/protocol';
 
 import { encodeBase64, encrypt } from '@/api/encryption';
 import type { StoredCredentials } from '@/persistence';
+import { logger } from '@/ui/logger';
 
 export class SessionMetadataPrivacyUpgradeRequiredError extends Error {
   readonly code = 'metadata_privacy_upgrade_required' as const;
@@ -40,6 +42,7 @@ type SessionMetadataEnvelopeFields = Readonly<{
   sharedMetadata: Readonly<{ ciphertext: string }>;
   ownerMetadata: SessionOwnerMetadataEnvelopeV1;
   agentState: string | null;
+  displayProjectionV1: SessionDisplayProjectionV1 | null;
 }>;
 
 export type SessionMetadataEnvelopeTupleFields = SessionMetadataEnvelopeFields & Readonly<{
@@ -80,6 +83,37 @@ export function buildSessionMetadataEnvelopeFields(
       ownerMetadata.unsupportedFields,
     );
   }
+  // Both full documents and display leaves describe this exact create tuple.
+  // Projection precedes crypto; the existing Session key is already available
+  // even though the Home has not assigned the final Session identity yet.
+  let displayProjectionV1: SessionDisplayProjectionV1 | null = null;
+  try {
+    const display = projectSessionDisplayV1({ sharedMetadata, ownerMetadata: ownerMetadata.ownerMetadata });
+    if (!display.owner) throw new SessionMetadataPrivacyUpgradeRequiredError(['ownerDisplay']);
+    const sharedDisplay = sealSessionSharedDisplayEnvelopeV1Sync({
+      sessionMode: params.storedContentMode,
+      display: display.shared,
+      ...(params.storedContentMode === 'e2ee' ? {
+        encryptPayload: (payload: unknown) => encodeBase64(encrypt(params.encryptionKey, params.encryptionVariant, payload)),
+      } : {}),
+    });
+    const ownerDisplay = sealSessionOwnerDisplayEnvelopeV1({
+      accountMode: params.accountEncryptionMode,
+      display: display.owner,
+      ...(params.accountEncryptionMode === 'e2ee' ? { material: resolveAccountEncryptionMaterial(params.credentials) } : {}),
+      randomBytes: length => nodeRandomBytes(length),
+    });
+    if (!sharedDisplay.ok || !ownerDisplay.ok) {
+      throw new SessionMetadataPrivacyUpgradeRequiredError([
+        ...(!sharedDisplay.ok ? ['sharedDisplay'] : []),
+        ...(!ownerDisplay.ok ? ['ownerDisplay'] : []),
+      ]);
+    }
+    displayProjectionV1 = { v: 1, sourceMetadataVersion: 0, metadataLayoutVersion: 1,
+      shared: sharedDisplay.envelope, owner: ownerDisplay.envelope };
+  } catch {
+    logger.warn('[SessionDisplay] Projection unavailable; creating the full metadata tuple without display');
+  }
   const sharedMetadataCiphertext = params.storedContentMode === 'plain'
     ? JSON.stringify(sharedMetadata)
     : encodeBase64(encrypt(
@@ -112,6 +146,7 @@ export function buildSessionMetadataEnvelopeFields(
           randomBytes: (length) => nodeRandomBytes(length),
         }),
     agentState: agentStateCiphertext,
+    displayProjectionV1,
     ownerMetadataValue: ownerMetadata.ownerMetadata,
   };
 }

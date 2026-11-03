@@ -231,7 +231,7 @@ describe('ApiSessionClient provider-input settlement', () => {
       if (event === SESSION_FOLLOW_OBSERVE_PENDING_EVENT_V1) return { ok: true, v: 1, sessionId: 's1',
         publisherGeneration: '1', currentSourceSessionIds: detached || unavailable ? [] : ['source'], observations: !detached && !unavailable && pending.get(localId) === 'delivering' ? [{
           kind: 'admitted_input', localInputId: localId, delivery, sourceSessionId: 'source', destinationSessionId: 's1',
-          delivered: { ...observed, agentStateVersion: 0 }, observed,
+          delivered: { ...observed, agentStateVersion: 0 }, observed, effectiveDelivery: delivery.delivery,
         }] : [] };
       if (event === 'session-pending-admission-settlement-v1') {
         const input = SessionPendingAdmissionSettlementRequestV1Schema.parse(payload);
@@ -266,7 +266,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     const sendTurnPrompt = vi.fn(async () => { expect(activePending()).toEqual(['next-human-input']); });
     const runtime: PermissionModePromptLoopTurnOperations = {
       beginTurnLifecycle() {}, sendTurnPrompt, steerInFlightTurn: async () => {}, waitForTurnCompletion: async () => {},
-      subscribeRuntimeEvents: () => () => {}, respondToPermission: async () => {}, cancelTurn: async () => {},
+      subscribeRuntimeEvents: () => () => {}, respondToPermission: async () => ({ delivered: true as const }), cancelTurn: async () => {},
       readSessionIdentity: () => ({ sessionId: 'native-session' }), updateSessionRuntimeConfig: async () => {},
       resetOrDisposeRuntime: async () => {},
       prepareHostContext: async input => await reconcile(input),
@@ -1029,7 +1029,7 @@ describe('ApiSessionClient provider-input settlement', () => {
       undefined, undefined, {
         context, cwd: '/tmp/claude-project', connectedAccounts: [],
         capabilities: { open: ['create'], delivery: ['newTurn'], cancel: false },
-        cancellation: { declared: false }, configuration: { declared: false }, manualCompaction: { declared: false },
+        cancellation: { declared: false }, configuration: { declared: false }, compaction: { capability: null },
       }, publications, [], lifecycle);
     try {
       // Server materialization is already owned by the real Pending client before dispatch.

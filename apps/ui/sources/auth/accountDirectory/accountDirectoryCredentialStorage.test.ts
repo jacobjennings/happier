@@ -1,23 +1,27 @@
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { installWebLockManagerMock } from '@/auth/storage/tokenStorage.web.testHelpers';
 
-const storage = new Map<string, string>();
-let readFailure: Error | null = null;
-vi.mock('@/auth/storage/deviceLocalStorage', () => ({
-    readDeviceLocalStorageString: vi.fn(async (key: string) => {
-        if (readFailure) throw readFailure;
-        return storage.get(key) ?? null;
-    }),
-    writeDeviceLocalStorageString: vi.fn(async (key: string, value: string) => { storage.set(key, value); }),
-    removeDeviceLocalStorageString: vi.fn(async (key: string) => { storage.delete(key); }),
+// The native secure-store boundary under the real device-local storage adapter (Platform.OS is not web here).
+const secureStore = vi.hoisted(() => ({ values: new Map<string, string>(), readFailure: null as Error | null }));
+vi.mock('expo-secure-store', () => ({
+    getItemAsync: async (key: string) => {
+        if (secureStore.readFailure) throw secureStore.readFailure;
+        return secureStore.values.get(key) ?? null;
+    },
+    setItemAsync: async (key: string, value: string) => { secureStore.values.set(key, value); },
+    deleteItemAsync: async (key: string) => { secureStore.values.delete(key); },
 }));
+
+const { accountDirectoryCredentialStorage } = await import('./accountDirectoryCredentialStorage');
+const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+const storage = secureStore.values;
 
 describe('account directory credential storage', () => {
     const webLocks = installWebLockManagerMock();
 
     afterEach(() => {
         storage.clear();
-        readFailure = null;
+        secureStore.readFailure = null;
         delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
     });
 
@@ -25,21 +29,7 @@ describe('account directory credential storage', () => {
         webLocks.restore();
     });
 
-    it('isolates credentials by endpoint and supports independent removal', async () => {
-        const { accountDirectoryCredentialStorage } = await import('./accountDirectoryCredentialStorage');
-        await accountDirectoryCredentialStorage.set({ endpoint: 'https://directory-a.test', serverIdentityId: 'directory-a' }, { token: 'a' });
-        await accountDirectoryCredentialStorage.set({ endpoint: 'https://directory-b.test', serverIdentityId: 'directory-b' }, { token: 'b' });
-
-        await expect(accountDirectoryCredentialStorage.get({ endpoint: 'https://directory-a.test', serverIdentityId: 'directory-a' })).resolves.toEqual({ token: 'a' });
-        await expect(accountDirectoryCredentialStorage.get({ endpoint: 'https://directory-b.test', serverIdentityId: 'directory-b' })).resolves.toEqual({ token: 'b' });
-
-        await accountDirectoryCredentialStorage.remove({ endpoint: 'https://directory-a.test', serverIdentityId: 'directory-a' });
-        await expect(accountDirectoryCredentialStorage.get({ endpoint: 'https://directory-a.test', serverIdentityId: 'directory-a' })).resolves.toBeNull();
-        await expect(accountDirectoryCredentialStorage.get({ endpoint: 'https://directory-b.test', serverIdentityId: 'directory-b' })).resolves.toEqual({ token: 'b' });
-    });
-
     it('serializes disjoint native Account Service writes through the process-local tail', async () => {
-        const { accountDirectoryCredentialStorage } = await import('./accountDirectoryCredentialStorage');
         const first = { endpoint: 'https://directory-a.test', serverIdentityId: 'directory-a' };
         const second = { endpoint: 'https://directory-b.test', serverIdentityId: 'directory-b' };
 
@@ -53,8 +43,6 @@ describe('account directory credential storage', () => {
     });
 
     it('distinguishes absent, valid, corrupt, and unavailable custody', async () => {
-        const { writeDeviceLocalStorageString } = await import('@/auth/storage/deviceLocalStorage');
-        const { accountDirectoryCredentialStorage } = await import('./accountDirectoryCredentialStorage');
         const target = { endpoint: 'https://directory.test', serverIdentityId: 'srv_directory-1' };
 
         await expect(accountDirectoryCredentialStorage.read(target)).resolves.toEqual({ kind: 'absent' });
@@ -64,29 +52,26 @@ describe('account directory credential storage', () => {
             value: { token: 'directory-token' },
         });
 
-        await writeDeviceLocalStorageString('account_directory_auth_credentials', '{"bad":true}');
+        storage.set('account_directory_auth_credentials', '{"bad":true}');
         await expect(accountDirectoryCredentialStorage.read(target)).resolves.toEqual({ kind: 'corrupt' });
 
-        readFailure = new Error('secure storage unavailable');
+        secureStore.readFailure = new Error('secure storage unavailable');
         await expect(accountDirectoryCredentialStorage.read(target)).resolves.toEqual({ kind: 'unavailable' });
     });
 
     it('does not mutate credentials after corrupt or unavailable custody reads', async () => {
-        const { writeDeviceLocalStorageString } = await import('@/auth/storage/deviceLocalStorage');
-        const { accountDirectoryCredentialStorage } = await import('./accountDirectoryCredentialStorage');
         const target = { endpoint: 'https://directory.test', serverIdentityId: 'directory-1' };
 
-        await writeDeviceLocalStorageString('account_directory_auth_credentials', '{"bad":true}');
+        storage.set('account_directory_auth_credentials', '{"bad":true}');
         await expect(accountDirectoryCredentialStorage.set(target, { token: 'replacement' })).resolves.toBe(false);
         expect(storage.get('account_directory_auth_credentials')).toBe('{"bad":true}');
 
-        readFailure = new Error('secure storage unavailable');
+        secureStore.readFailure = new Error('secure storage unavailable');
         await expect(accountDirectoryCredentialStorage.remove(target)).resolves.toBe(false);
         expect(storage.get('account_directory_auth_credentials')).toBe('{"bad":true}');
     });
 
     it('preflights both custody records before logout mutates either key', async () => {
-        const { accountDirectoryCredentialStorage } = await import('./accountDirectoryCredentialStorage');
         const target = { endpoint: 'https://directory.test', serverIdentityId: 'directory-1' };
         await accountDirectoryCredentialStorage.set(target, { token: 'directory-token' });
         storage.set('pending_account_directory_auth', '{"bad":true}');
@@ -101,8 +86,6 @@ describe('account directory credential storage', () => {
 
     it('scopes both Directory custody keys through the canonical storage-scope owner', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = 'profile-a';
-        const { accountDirectoryCredentialStorage } = await import('./accountDirectoryCredentialStorage');
-        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
         const target = { endpoint: 'https://directory.test', serverIdentityId: 'srv_directory-1' };
         const now = Date.now();
 

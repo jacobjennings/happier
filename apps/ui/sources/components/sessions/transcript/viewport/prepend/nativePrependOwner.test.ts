@@ -172,7 +172,7 @@ describe('native prepend owner', () => {
             sessionId: 'session-a',
             type: 'close-prepend-ownership',
         });
-        expect(effects).toContainEqual(expect.objectContaining({
+        expect(effectsOfType(effects, 'record-restore-decision-for-session')).toEqual([{
             anchorDeltaPx: 0,
             anchorItemOffsetPx: 80,
             correctorAppliedDiffTotalPx: 0,
@@ -181,7 +181,7 @@ describe('native prepend owner', () => {
             reason: 'mvcp-preserved',
             sessionId: 'session-a',
             type: 'record-restore-decision-for-session',
-        }));
+        }]);
         expect(effectTypes(effects)).toContain('clear-layout-timeout');
         expect(effectTypes(effects)).toContain('bump-transaction-revision');
         expect(owner.telemetryState('session-a')).toBe('closed');
@@ -240,14 +240,16 @@ describe('native prepend owner', () => {
         expect(effectsOfType(effects, 'close-prepend-ownership')).toEqual([
             { outcome: 'mvcp-preserved', sessionId: 'session-a', type: 'close-prepend-ownership' },
         ]);
-        expect(effects).toContainEqual(expect.objectContaining({
+        expect(effectsOfType(effects, 'record-restore-decision-for-session')).toEqual([{
             anchorDeltaPx: 820,
+            anchorItemOffsetPx: 80,
             correctorAppliedDiffTotalPx: 820,
             correctorEventCount: 1,
+            mode: 'restore-anchor',
             reason: 'mvcp-preserved',
             sessionId: 'session-a',
             type: 'record-restore-decision-for-session',
-        }));
+        }]);
         expect(effectTypes(effects)).toContain('clear-corrector-reobserve');
     });
 
@@ -267,12 +269,22 @@ describe('native prepend owner', () => {
             sessionId: 'session-a',
             type: 'record-restore-decision-for-session',
         }));
+
+        // A conclusive observation after the user took over must not write.
+        expect(executeEffects(owner.observe(observationInput({
+            postCommit: misalignedObservation(),
+        })))).toEqual([]);
     });
 
     it('invalidate and dispose telemeter the transaction session and cannot write into the next session', () => {
         const invalidated = createNativePrependOwner();
         invalidated.begin(beginInput({ sessionId: 'session-a' }));
         invalidated.armCommit({ layoutTimeoutMs: 750, sessionId: 'session-a' });
+        // A not-ready observation window keeps the transaction open until the host invalidates it.
+        expect(invalidated.observe(observationInput({
+            postCommit: postCommit({ absoluteScrollOffset: 0, layoutYByIndex: { 0: 0, 1: 450 } }),
+        }))).toEqual([]);
+        expect(invalidated.hasOpenTransaction('session-a')).toBe(true);
 
         const invalidateEffects = invalidated.invalidate({
             activeOwner: 'prepend',
@@ -288,6 +300,9 @@ describe('native prepend owner', () => {
         }));
         expect(invalidated.telemetryState('session-a')).toBe('closed');
         expect(invalidated.telemetryState('session-b')).toBe('none');
+        expect(executeEffects(invalidated.observe(observationInput({
+            postCommit: misalignedObservation(),
+        })))).toEqual([]);
 
         const disposed = createNativePrependOwner();
         disposed.begin(beginInput({ sessionId: 'session-a' }));

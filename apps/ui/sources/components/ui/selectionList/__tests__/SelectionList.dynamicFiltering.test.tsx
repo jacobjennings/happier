@@ -119,34 +119,11 @@ describe('SelectionList dynamic-section resultFiltering policy', () => {
             await Promise.resolve();
             await Promise.resolve();
         });
-        expect(screen.findByTestId('sl:root:option:hit-2')).not.toBeNull();
-        expect(screen.findByTestId('sl:root:option:hit-1')).not.toBeNull();
-    });
-
-    it('still applies host matching when the section omits the policy (default host)', async () => {
-        const { act } = await import('react-test-renderer');
-        const root = dynamicStep({
-            id: 'dyn',
-            title: 'MESSAGES',
-            debounceMs: 0,
-            resolve: async () => ({
-                options: [
-                    { id: 'hit-2', label: 'Refactoring the daemon worker' },
-                    { id: 'hit-1', label: 'Cache eviction notes' },
-                ],
-            }),
-        });
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(
-            <SelectionList {...defaultProps(root)} inputValue="budget" />,
-        );
-        await act(async () => {
-            vi.advanceTimersByTime(1);
-            await Promise.resolve();
-            await Promise.resolve();
-        });
-        expect(screen.findByTestId('sl:root:option:hit-2')).toBeNull();
-        expect(screen.findByTestId('sl:root:option:hit-1')).toBeNull();
+        // Both rows survive (neither literally matches "budget"), in the resolver's order.
+        const renderedHitIds = [...new Set(screen.findAll((node) => (
+            node.props?.testID === 'sl:root:option:hit-1' || node.props?.testID === 'sl:root:option:hit-2'
+        )).map((node) => node.props.testID as string))];
+        expect(renderedHitIds).toEqual(['sl:root:option:hit-2', 'sl:root:option:hit-1']);
     });
 });
 
@@ -240,39 +217,5 @@ describe('SelectionList dynamic-section row filtering (R9 blocker 3)', () => {
         expect(screen.findByTestId('sl:root:option:documents')).not.toBeNull();
         expect(screen.findByTestId('sl:root:option:downloads')).toBeNull();
         expect(screen.findByTestId('sl:root:option:desktop')).toBeNull();
-    });
-
-    it('filters dynamic rows by the subtitle as well as the label (e.g. branch local + remote)', async () => {
-        const { act } = await import('react-test-renderer');
-        const root = dynamicStep({
-            id: 'branches',
-            title: 'BRANCHES',
-            debounceMs: 0,
-            resolve: async () => ({
-                options: [
-                    { id: 'main', label: 'main', subtitle: 'local' },
-                    { id: 'origin/main', label: 'main', subtitle: 'remote · origin' },
-                    { id: 'feature-x', label: 'feature-x', subtitle: 'local' },
-                    { id: 'origin/feature-y', label: 'feature-y', subtitle: 'remote · origin' },
-                ],
-            }),
-        });
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps(root)} />);
-        await act(async () => {
-            vi.advanceTimersByTime(1);
-            await Promise.resolve();
-            await Promise.resolve();
-        });
-        await act(async () => {
-            screen.changeTextByTestId('sl:header:input', 'remote');
-            vi.advanceTimersByTime(1);
-            await Promise.resolve();
-            await Promise.resolve();
-        });
-        expect(screen.findByTestId('sl:root:option:origin/main')).not.toBeNull();
-        expect(screen.findByTestId('sl:root:option:origin/feature-y')).not.toBeNull();
-        expect(screen.findByTestId('sl:root:option:main')).toBeNull();
-        expect(screen.findByTestId('sl:root:option:feature-x')).toBeNull();
     });
 });

@@ -1,10 +1,28 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { __internal, runBugReportCommand, type BugReportCommandDependencies } from './bugReport';
+import { collectBugReportMachineDiagnosticsSnapshot } from '@/diagnostics/bugReportMachineDiagnostics';
+import { createEnvKeyScope } from '@/testkit/env/envScope';
+import { withTempDir } from '@/testkit/fs/tempDir';
+
+import { runBugReportCommand, type BugReportCommandDependencies } from './bugReport';
+
+const STACK_CONTEXT_ENV_KEYS = ['HAPPIER_STACK_STACK', 'HAPPIER_STACK_ENV_FILE', 'HAPPIER_STACK_RUNTIME_STATE_PATH'] as const;
+
+async function withStackContextEnv<T>(
+  values: Readonly<Record<(typeof STACK_CONTEXT_ENV_KEYS)[number], string>>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const envScope = createEnvKeyScope(STACK_CONTEXT_ENV_KEYS);
+  envScope.patch(values);
+  try {
+    return await run();
+  } finally {
+    envScope.restore();
+  }
+}
 
 function createDeps(overrides: Partial<BugReportCommandDependencies> = {}): BugReportCommandDependencies {
   return {
@@ -89,30 +107,21 @@ describe('runBugReportCommand', () => {
     });
   });
 
-  it('rejects deprecated allow-maintainer-follow-up flags', async () => {
-    const deps = createDeps();
-
+  it.each([
+    ['the deprecated --allow-maintainer-follow-up flag', ['--allow-maintainer-follow-up']],
+    ['--labels', ['--labels', 'bug,security']],
+    ['--issue-owner', ['--issue-owner', '../owner']],
+    ['--issue-repo', ['--issue-repo', 'repo?bad=1']],
+  ])('rejects removed flag %s as an unknown argument', async (_flag, removedFlagArgs) => {
     await expect(runBugReportCommand([
-      '--title', 'Deprecated flags',
+      '--title', 'Removed flag',
       '--summary', 'summary',
-      '--current-behavior', 'current',
-      '--expected-behavior', 'expected',
+      '--current-behavior', 'current behavior',
+      '--expected-behavior', 'expected behavior',
+      '--repro-step', 'Open app',
       '--accept-privacy-notice',
-      '--allow-maintainer-follow-up',
-    ], deps)).rejects.toThrow(/unknown argument/i);
-  });
-
-  it('rejects --labels flag as an unknown argument', async () => {
-    const deps = createDeps();
-
-    await expect(runBugReportCommand([
-      '--title', 'Labels unsupported',
-      '--summary', 'summary',
-      '--current-behavior', 'current',
-      '--expected-behavior', 'expected',
-      '--no-include-diagnostics',
-      '--labels', 'bug,security',
-    ], deps)).rejects.toThrow(/unknown argument/i);
+      ...removedFlagArgs,
+    ], createDeps())).rejects.toThrow(/unknown argument/i);
   });
 
   it('prompts for missing required fields and submits report payload', async () => {
@@ -319,150 +328,72 @@ describe('runBugReportCommand', () => {
   });
 
   it('collects stack runtime diagnostics artifacts when stack context is active', async () => {
-    const collectBugReportMachineDiagnosticsSnapshot = (
-      __internal as unknown as {
-        collectBugReportMachineDiagnosticsSnapshot?: (input?: {
-          daemonLogLimit?: number;
-          stackLogLimit?: number;
-          stackRuntimeMaxChars?: number;
-        }) => Promise<{
-          stackContext?: {
-            stackName: string | null;
-            stackEnvPath: string | null;
-            runtimeStatePath: string | null;
-            runtimeState: string | null;
-            logCandidates: string[];
-          } | null;
-        }>;
-      }
-    ).collectBugReportMachineDiagnosticsSnapshot;
-    expect(typeof collectBugReportMachineDiagnosticsSnapshot).toBe('function');
+    await withTempDir('bug-report-stack-diagnostics-', async (stackHome) => {
+      const stackName = 'exp-stack';
+      const stackBaseDir = join(stackHome, stackName);
+      const stackLogsDir = join(stackBaseDir, 'logs');
+      const envPath = join(stackBaseDir, 'env');
+      const runtimeStatePath = join(stackBaseDir, 'stack.runtime.json');
+      const runnerLogPath = join(stackLogsDir, 'dev.1.log');
 
-    const stackHome = await mkdtemp(join(os.tmpdir(), 'bug-report-stack-diagnostics-'));
-    const stackName = 'exp-stack';
-    const stackBaseDir = join(stackHome, stackName);
-    const stackLogsDir = join(stackBaseDir, 'logs');
-    const envPath = join(stackBaseDir, 'env');
-    const runtimeStatePath = join(stackBaseDir, 'stack.runtime.json');
-    const runnerLogPath = join(stackLogsDir, 'dev.1.log');
-
-    await mkdir(stackLogsDir, { recursive: true });
-    await writeFile(envPath, `HAPPIER_STACK_STACK=${stackName}\n`, 'utf8');
-    await writeFile(
-      runtimeStatePath,
-      JSON.stringify(
-        {
-          stackName,
-          logs: {
-            runner: runnerLogPath,
+      await mkdir(stackLogsDir, { recursive: true });
+      await writeFile(envPath, `HAPPIER_STACK_STACK=${stackName}\n`, 'utf8');
+      await writeFile(
+        runtimeStatePath,
+        JSON.stringify(
+          {
+            stackName,
+            logs: {
+              runner: runnerLogPath,
+            },
           },
-        },
-        null,
-        2,
-      ),
-      'utf8',
-    );
-    await writeFile(runnerLogPath, 'stack runner started\n', 'utf8');
+          null,
+          2,
+        ),
+        'utf8',
+      );
+      await writeFile(runnerLogPath, 'stack runner started\n', 'utf8');
 
-    const previousStackName = process.env.HAPPIER_STACK_STACK;
-    const previousEnvPath = process.env.HAPPIER_STACK_ENV_FILE;
-    const previousRuntimePath = process.env.HAPPIER_STACK_RUNTIME_STATE_PATH;
-    process.env.HAPPIER_STACK_STACK = stackName;
-    process.env.HAPPIER_STACK_ENV_FILE = envPath;
-    process.env.HAPPIER_STACK_RUNTIME_STATE_PATH = runtimeStatePath;
-
-    try {
-      const snapshot = await collectBugReportMachineDiagnosticsSnapshot!({
+      const snapshot = await withStackContextEnv({
+        HAPPIER_STACK_STACK: stackName,
+        HAPPIER_STACK_ENV_FILE: envPath,
+        HAPPIER_STACK_RUNTIME_STATE_PATH: runtimeStatePath,
+      }, async () => await collectBugReportMachineDiagnosticsSnapshot({
         daemonLogLimit: 3,
         stackLogLimit: 3,
         stackRuntimeMaxChars: 64 * 1024,
-      });
+      }));
       expect(snapshot.stackContext?.stackName).toBe(stackName);
       expect(snapshot.stackContext?.runtimeStatePath).toBe(runtimeStatePath);
       expect(snapshot.stackContext?.logCandidates).toContain(runnerLogPath);
       expect(typeof snapshot.stackContext?.runtimeState).toBe('string');
-    } finally {
-      if (previousStackName === undefined) {
-        delete process.env.HAPPIER_STACK_STACK;
-      } else {
-        process.env.HAPPIER_STACK_STACK = previousStackName;
-      }
-      if (previousEnvPath === undefined) {
-        delete process.env.HAPPIER_STACK_ENV_FILE;
-      } else {
-        process.env.HAPPIER_STACK_ENV_FILE = previousEnvPath;
-      }
-      if (previousRuntimePath === undefined) {
-        delete process.env.HAPPIER_STACK_RUNTIME_STATE_PATH;
-      } else {
-        process.env.HAPPIER_STACK_RUNTIME_STATE_PATH = previousRuntimePath;
-      }
-    }
+    });
   });
 
   it('keeps raw stack runtime state text when runtime JSON is malformed', async () => {
-    const collectBugReportMachineDiagnosticsSnapshot = (
-      __internal as unknown as {
-        collectBugReportMachineDiagnosticsSnapshot?: (input?: {
-          daemonLogLimit?: number;
-          stackLogLimit?: number;
-          stackRuntimeMaxChars?: number;
-        }) => Promise<{
-          stackContext?: {
-            stackName: string | null;
-            stackEnvPath: string | null;
-            runtimeStatePath: string | null;
-            runtimeState: string | null;
-            logCandidates: string[];
-          } | null;
-        }>;
-      }
-    ).collectBugReportMachineDiagnosticsSnapshot;
-    expect(typeof collectBugReportMachineDiagnosticsSnapshot).toBe('function');
+    await withTempDir('bug-report-stack-runtime-malformed-', async (stackHome) => {
+      const stackName = 'exp-stack';
+      const stackBaseDir = join(stackHome, stackName);
+      const stackLogsDir = join(stackBaseDir, 'logs');
+      const envPath = join(stackBaseDir, 'env');
+      const runtimeStatePath = join(stackBaseDir, 'stack.runtime.json');
 
-    const stackHome = await mkdtemp(join(os.tmpdir(), 'bug-report-stack-runtime-malformed-'));
-    const stackName = 'exp-stack';
-    const stackBaseDir = join(stackHome, stackName);
-    const stackLogsDir = join(stackBaseDir, 'logs');
-    const envPath = join(stackBaseDir, 'env');
-    const runtimeStatePath = join(stackBaseDir, 'stack.runtime.json');
+      await mkdir(stackLogsDir, { recursive: true });
+      await writeFile(envPath, `HAPPIER_STACK_STACK=${stackName}\n`, 'utf8');
+      await writeFile(runtimeStatePath, '{"logs":{"runner":"/tmp/runner.log"', 'utf8');
 
-    await mkdir(stackLogsDir, { recursive: true });
-    await writeFile(envPath, `HAPPIER_STACK_STACK=${stackName}\n`, 'utf8');
-    await writeFile(runtimeStatePath, '{"logs":{"runner":"/tmp/runner.log"', 'utf8');
-
-    const previousStackName = process.env.HAPPIER_STACK_STACK;
-    const previousEnvPath = process.env.HAPPIER_STACK_ENV_FILE;
-    const previousRuntimePath = process.env.HAPPIER_STACK_RUNTIME_STATE_PATH;
-    process.env.HAPPIER_STACK_STACK = stackName;
-    process.env.HAPPIER_STACK_ENV_FILE = envPath;
-    process.env.HAPPIER_STACK_RUNTIME_STATE_PATH = runtimeStatePath;
-
-    try {
-      const snapshot = await collectBugReportMachineDiagnosticsSnapshot!({
+      const snapshot = await withStackContextEnv({
+        HAPPIER_STACK_STACK: stackName,
+        HAPPIER_STACK_ENV_FILE: envPath,
+        HAPPIER_STACK_RUNTIME_STATE_PATH: runtimeStatePath,
+      }, async () => await collectBugReportMachineDiagnosticsSnapshot({
         daemonLogLimit: 3,
         stackLogLimit: 3,
         stackRuntimeMaxChars: 64 * 1024,
-      });
+      }));
       expect(snapshot.stackContext?.runtimeState).toContain('"logs"');
       expect(snapshot.stackContext?.logCandidates).toEqual([]);
-    } finally {
-      if (previousStackName === undefined) {
-        delete process.env.HAPPIER_STACK_STACK;
-      } else {
-        process.env.HAPPIER_STACK_STACK = previousStackName;
-      }
-      if (previousEnvPath === undefined) {
-        delete process.env.HAPPIER_STACK_ENV_FILE;
-      } else {
-        process.env.HAPPIER_STACK_ENV_FILE = previousEnvPath;
-      }
-      if (previousRuntimePath === undefined) {
-        delete process.env.HAPPIER_STACK_RUNTIME_STATE_PATH;
-      } else {
-        process.env.HAPPIER_STACK_RUNTIME_STATE_PATH = previousRuntimePath;
-      }
-    }
+    });
   });
 
   it('falls back to GitHub issue flow when server has no provider url', async () => {
@@ -511,7 +442,10 @@ describe('runBugReportCommand', () => {
     expect(collectDiagnosticsSpy).not.toHaveBeenCalled();
   });
 
-  it('throws a clear error when --provider-url is invalid', async () => {
+  it.each([
+    ['is not a URL', 'not-a-valid-url'],
+    ['uses a non-http scheme', 'file:///tmp/reports'],
+  ])('throws a clear error when --provider-url %s', async (_case, providerUrl) => {
     await expect(runBugReportCommand([
       '--title', 'Invalid provider URL',
       '--summary', 'summary',
@@ -519,44 +453,8 @@ describe('runBugReportCommand', () => {
       '--expected-behavior', 'expected behavior',
       '--repro-step', 'Open app',
       '--accept-privacy-notice',
-      '--provider-url', 'not-a-valid-url',
+      '--provider-url', providerUrl,
     ], createDeps())).rejects.toThrow(/invalid --provider-url/i);
-  });
-
-  it('throws a clear error when --provider-url uses a non-http scheme', async () => {
-    await expect(runBugReportCommand([
-      '--title', 'Invalid provider scheme',
-      '--summary', 'summary',
-      '--current-behavior', 'current behavior',
-      '--expected-behavior', 'expected behavior',
-      '--repro-step', 'Open app',
-      '--accept-privacy-notice',
-      '--provider-url', 'file:///tmp/reports',
-    ], createDeps())).rejects.toThrow(/invalid --provider-url/i);
-  });
-
-  it('rejects --issue-owner flag as an unknown argument', async () => {
-    await expect(runBugReportCommand([
-      '--title', 'Invalid owner',
-      '--summary', 'summary',
-      '--current-behavior', 'current behavior',
-      '--expected-behavior', 'expected behavior',
-      '--repro-step', 'Open app',
-      '--accept-privacy-notice',
-      '--issue-owner', '../owner',
-    ], createDeps())).rejects.toThrow(/unknown argument/i);
-  });
-
-  it('rejects --issue-repo flag as an unknown argument', async () => {
-    await expect(runBugReportCommand([
-      '--title', 'Invalid repo',
-      '--summary', 'summary',
-      '--current-behavior', 'current behavior',
-      '--expected-behavior', 'expected behavior',
-      '--repro-step', 'Open app',
-      '--accept-privacy-notice',
-      '--issue-repo', 'repo?bad=1',
-    ], createDeps())).rejects.toThrow(/unknown argument/i);
   });
 
   it('prompts to include diagnostics when flag is omitted and skips diagnostics when answered no', async () => {

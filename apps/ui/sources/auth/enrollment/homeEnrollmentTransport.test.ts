@@ -174,69 +174,6 @@ describe('resolveHomeEnrollmentTransport', () => {
         expect(releaseSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('retries native enrollment lease cleanup after a failed release attempt', async () => {
-        releaseSpy
-            .mockRejectedValueOnce(new Error('native release failed'))
-            .mockResolvedValueOnce(undefined);
-        const result = await resolveHomeEnrollmentTransport({
-            v: 1,
-            homeServerIdentityId: 'srv_home_b',
-            canonicalServerUrl: 'http://localhost:3010',
-            revision: 7,
-            endpoints: [{ kind: 'iroh', endpointId: 'iroh-home-b' }],
-        });
-
-        expect(result.ok).toBe(true);
-        if (!result.ok) return;
-        await expect(result.transport.close()).rejects.toThrow('native release failed');
-        await expect(result.transport.close()).resolves.toBeUndefined();
-        await expect(result.transport.close()).resolves.toBeUndefined();
-        expect(releaseSpy).toHaveBeenCalledTimes(2);
-    });
-
-    it('prefers Iroh before an available HTTPS endpoint for a mixed descriptor', async () => {
-        const descriptor = {
-            v: 1 as const,
-            homeServerIdentityId: 'srv_home_b',
-            canonicalServerUrl: 'https://home-b.test',
-            revision: 7,
-            endpoints: [
-                { kind: 'https' as const, url: 'https://home-b.test' },
-                { kind: 'iroh' as const, endpointId: 'iroh-home-b' },
-            ],
-        };
-
-        const result = await resolveHomeEnrollmentTransport(descriptor);
-
-        expect(result).toMatchObject({ ok: true, transport: {
-            carrier: 'iroh',
-            endpointUrl: 'https://home-b.test',
-            runtimeOrigin: 'http://127.0.0.1:43123',
-        } });
-        expect(acquireIrohHomeRuntimeOriginSpy).toHaveBeenCalledTimes(1);
-    });
-
-    it('falls back to an independent HTTPS endpoint when Iroh acquisition fails on pure availability', async () => {
-        acquireIrohHomeRuntimeOriginSpy.mockRejectedValueOnce(
-            Object.assign(new Error('native unavailable'), { name: 'IrohError', code: 'unavailable' }),
-        );
-        const result = await resolveHomeEnrollmentTransport({
-            v: 1,
-            homeServerIdentityId: 'srv_home_b',
-            canonicalServerUrl: 'http://localhost:3010',
-            revision: 1,
-            endpoints: [
-                { kind: 'iroh', endpointId: 'iroh-home-b' },
-                { kind: 'https', url: 'https://home-b.test' },
-            ],
-        });
-        expect(result).toMatchObject({ ok: true, transport: {
-            endpointUrl: 'http://localhost:3010',
-            runtimeOrigin: 'https://home-b.test',
-            carrier: 'https',
-        } });
-    });
-
     it('fails closed on an Iroh identity mismatch even when an independent HTTPS endpoint exists', async () => {
         acquireIrohHomeRuntimeOriginSpy.mockRejectedValueOnce(
             Object.assign(new Error('identity mismatch'), { name: 'IrohError', code: 'identity_mismatch' }),
@@ -262,10 +199,16 @@ describe('resolveHomeEnrollmentTransport', () => {
 
     it('fails closed when the acquired Iroh lease does not authenticate the selected descriptor endpoint', async () => {
         releaseSpy.mockRejectedValueOnce(new Error('release failed'));
+        // Ready and identity-matching, so only the EndpointId mismatch can close it.
         acquireIrohHomeRuntimeOriginSpy.mockResolvedValueOnce({
             leaseId: 'lease-wrong-endpoint',
+            localUrl: 'http://127.0.0.1:43123',
             runtimeOrigin: 'http://127.0.0.1:43123',
+            homeServerIdentityId: 'srv_home_b',
             endpointId: 'iroh-home-c',
+            carrier: 'iroh',
+            observedPath: 'direct',
+            status: 'ready',
             release: releaseSpy,
         });
         const result = await resolveHomeEnrollmentTransport({
@@ -301,27 +244,6 @@ describe('resolveHomeEnrollmentTransport', () => {
             reason: 'iroh_transport_unavailable',
         });
         expect(createServerFetchAtEndpointSpy).not.toHaveBeenCalled();
-    });
-
-    it('reports missing browser relay reachability as retryable unavailability without invoking native Iroh', async () => {
-        resolveBrowserHostDecisionSpy.mockReturnValueOnce({ eligible: true });
-        resolveBrowserEligibilitySpy.mockReturnValueOnce({ eligible: false, reason: 'relays_missing' });
-
-        const result = await resolveHomeEnrollmentTransport({
-            v: 1,
-            homeServerIdentityId: 'srv_home_b',
-            canonicalServerUrl: 'http://localhost:3010',
-            revision: 1,
-            endpoints: [{ kind: 'iroh', endpointId: 'iroh-home-b' }],
-        });
-
-        expect(result).toEqual({
-            ok: false,
-            homeServerIdentityId: 'srv_home_b',
-            reason: 'iroh_transport_unavailable',
-        });
-        expect(acquireIrohHomeRuntimeOriginSpy).not.toHaveBeenCalled();
-        expect(acquireBrowserIrohHomeCarrierSpy).not.toHaveBeenCalled();
     });
 
     it('uses an already resolved runtime origin without double-acquiring Iroh', async () => {

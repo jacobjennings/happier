@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import {
     AccountSettingsV2UpdateRequestSchema,
@@ -18,6 +18,7 @@ import type { Settings } from './domains/settings/settings';
 import { profileDefaults } from './domains/profiles/profile';
 import { createPlainProjectAccountRowListFixture } from '@/dev/testkit/fixtures/projectAccountRows';
 import { createEmptyAccountBootstrapHttpResponse } from '@/dev/testkit/fixtures/accountBootstrapHttpBoundary';
+import { createDeferred } from '@/dev/testkit';
 
 // MMKV/native SDK and the prepared HTTP adapter are the real system boundaries.
 vi.mock('react-native-mmkv', () => {
@@ -87,6 +88,88 @@ afterEach(() => {
 });
 
 describe('Sync authoring-memory runtime', () => {
+    it('retains an admitted Project census only across transient reads and revokes it for auth or Account-mode changes', async () => {
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+        onTestFinished(() => { clock.mockRestore(); });
+        owner.credentials = { token: 'project-admission-account' };
+        owner.pendingSettings = {};
+        owner.appliedServerTarget = { serverId: 'https://project-admission.test', serverUrl: 'https://project-admission.test', generation: 1 };
+        const scope = createAccountSettingsScope(owner.appliedServerTarget.serverId, 'project-admission-account');
+        if (!scope) throw new Error('Expected valid Account/Home scope');
+        owner.pendingSettingsScope = scope;
+        owner.projectAccountRowsRuntime = null;
+        owner.authoringMemoryRuntime = null;
+        await storage.getState().activateSettingsScope(scope);
+        storage.setState({ profileScope: scope, projectAccountRows: null });
+        const ref = { id: 'accepted', serverId: scope.serverId, machineId: 'm1', rootPath: '/repo', createdAtMs: 1 };
+        let rowStatus = 200;
+        let mode: 'plain' | 'e2ee' = 'plain';
+        let pendingRows: ReturnType<typeof createDeferred<Response>> | null = null;
+        network.request.mockImplementation(async path => {
+            if (path === '/v1/account/encryption') return Response.json({ mode, updatedAt: 1 });
+            if (path === '/v1/account/authoring-memory') return Response.json({ rows: [{
+                key: buildProjectLastOpenedMemoryKeyV1({ serverId: scope.serverId, projectKey: ref.id }),
+                revision: 1, content: { t: 'plain', v: 42 },
+            }] });
+            if (path === '/v2/account/settings') return Response.json({ content: { t: 'plain', v: {} }, version: 1 });
+            if (path === '/v1/account/project-rows/list' && pendingRows) return pendingRows.promise;
+            if (path === '/v1/account/project-rows/list') return rowStatus === 200
+                ? Response.json(createPlainProjectAccountRowListFixture({ workspaceRefs: [ref] }))
+                : Response.json({}, { status: rowStatus });
+            throw new Error(`Unexpected Project admission request: ${path}`);
+        });
+
+        await sync.refreshProjectAccountRows();
+        const admitted = storage.getState().projectAccountRows?.workspaceRefs;
+        expect(admitted).toEqual([ref]);
+        pendingRows = createDeferred<Response>();
+        const refreshing = sync.refreshProjectAccountRows();
+        await vi.waitFor(() => expect(storage.getState().projectAccountRows?.status).toBe('loading'));
+        expect(storage.getState().projectAccountRows?.workspaceRefs).toBe(admitted);
+        expect(storage.getState().projectAccountRows?.coverage).toBe('complete');
+        pendingRows.resolve(Response.json(createPlainProjectAccountRowListFixture({ workspaceRefs: [ref] })));
+        pendingRows = null;
+        await refreshing;
+        expect(storage.getState().projectAccountRows?.status).toBe('ready');
+        const refreshed = storage.getState().projectAccountRows?.workspaceRefs;
+        expect(storage.getState().projectAccountRows?.lastReadyAtMs).toBe(1_000);
+        clock.mockReturnValue(2_000);
+        rowStatus = 503;
+        await expect(sync.refreshProjectAccountRows()).rejects.toThrow();
+        const transient = storage.getState().projectAccountRows;
+        clock.mockReturnValue(3_000);
+        const rowReads = () => network.request.mock.calls.filter(([path]) => path === '/v1/account/project-rows/list').length;
+        const readsBeforeRecency = rowReads();
+        // A real memory observation invokes Sync's production recency wiring; no row read succeeds.
+        await sync.applyAuthoringMemoryDelta({});
+        await vi.waitFor(() => expect(storage.getState().projectAccountRows?.workspaceRefs).toEqual([{ ...ref, lastOpenedAtMs: 42 }]));
+        expect(rowReads()).toBe(readsBeforeRecency);
+        expect(storage.getState().projectAccountRows).toMatchObject({ status: 'error', coverage: 'complete', lastReadyAtMs: 1_000 });
+        clock.mockReturnValue(4_000);
+        rowStatus = 200;
+        await sync.refreshProjectAccountRows();
+        expect(storage.getState().projectAccountRows).toMatchObject({ status: 'ready', coverage: 'complete', lastReadyAtMs: 4_000,
+            workspaceRefs: [{ ...ref, lastOpenedAtMs: 42 }] });
+        rowStatus = 401;
+        await expect(sync.refreshProjectAccountRows()).rejects.toThrow();
+        const refused = storage.getState().projectAccountRows;
+
+        rowStatus = 200;
+        await sync.refreshProjectAccountRows();
+        expect(storage.getState().projectAccountRows?.workspaceRefs).toEqual([{ ...ref, lastOpenedAtMs: 42 }]);
+        sync.reconfigureAuthoringMemoryForAccountMode(owner.credentials, 'e2ee');
+        const afterModeSwitch = storage.getState().projectAccountRows;
+        // A newly read E2EE mode without Account material is not a transient outage.
+        mode = 'e2ee';
+        await expect(sync.refreshProjectAccountRows()).rejects.toThrow();
+        expect(transient?.workspaceRefs).toBe(refreshed);
+        expect(refused?.workspaceRefs ?? []).toEqual([]);
+        expect(refused?.coverage).not.toBe('complete');
+        expect(afterModeSwitch).toBeNull();
+        expect(transient).toMatchObject({ status: 'error', coverage: 'complete' });
+        expect(storage.getState().projectAccountRows?.workspaceRefs ?? []).toEqual([]);
+        expect(storage.getState().projectAccountRows?.coverage).not.toBe('complete');
+    });
     it('starts independent Account projection reads while Settings is pending, keeping Sessions and readiness behind Settings', async () => {
         // Capability HTTP reads are outside the prepared Account adapter. An
         // unsupported endpoint disables optional projections without live I/O.

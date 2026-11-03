@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AccountDirectoryAuthenticationAction } from '@/auth/accountDirectory/accountDirectoryAuthClient';
-import { asIconName } from '@/components/ui/icons/asIconName';
+import { getAuthProvider } from '@/auth/providers/registry';
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -93,7 +93,8 @@ describe('account-service sign-in methods', () => {
         const presentation = describeAccountServiceAuthenticationAction(oauth('github', 'login'), 'Happier Cloud');
 
         expect(presentation.title).toBe('welcome.signUpWithProvider');
-        expect(presentation.iconName).not.toBe('sign-in');
-        expect(asIconName(presentation.iconName)).toBe(presentation.iconName);
+        const registeredGlyph = getAuthProvider('github')?.badgeIconName;
+        expect(registeredGlyph).toBeTruthy();
+        expect(presentation.iconName).toBe(registeredGlyph);
     });
 });

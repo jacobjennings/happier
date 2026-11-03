@@ -48,40 +48,34 @@ describe('resolvePluginDaemonEntryPath', () => {
         expect(result.diagnostic.message).toMatch(/escapes the plugin root/i);
     });
 
-    it('fails closed when the daemon entry is a symlink that resolves outside the plugin root', async () => {
+    it.each([
+        ['daemon', 'outside.mjs', 'daemon.mjs', { daemon: './daemon.mjs' }, false],
+        ['development', 'outside.ts', join('src', 'daemon.ts'), { development: './src/daemon.ts' }, true],
+    ] as const)('fails closed when a %s entry symlink resolves outside the plugin root', async (
+        _label,
+        outsideName,
+        linkPath,
+        entrypoints,
+        resolveDevEntrypoint,
+    ) => {
         const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-root-'));
         const outsideDir = await mkdtemp(join(tmpdir(), 'happier-plugin-outside-'));
-        const outsideFile = join(outsideDir, 'outside.mjs');
+        const outsideFile = join(outsideDir, outsideName);
         await writeFileFixture(outsideFile);
-
-        const daemonEntry = join(pluginRoot, 'daemon.mjs');
-        await symlink(outsideFile, daemonEntry);
+        const entryLink = join(pluginRoot, linkPath);
+        await mkdir(dirname(entryLink), { recursive: true });
+        await symlink(outsideFile, entryLink);
 
         const result = await resolvePluginDaemonEntryPath({
             pluginRootPath: pluginRoot,
-            manifest: createManifestWithEntrypoints({ daemon: './daemon.mjs' }),
+            manifest: createManifestWithEntrypoints(entrypoints),
+            resolveDevEntrypoint,
         });
 
         expect(result.ok).toBe(false);
         if (result.ok) return;
         expect(result.diagnostic.code).toBe('plugin_manifest_semantic_invalid');
         expect(result.diagnostic.message).toMatch(/escapes the plugin root/i);
-    });
-
-    it('accepts an existing daemon entry file inside the plugin root', async () => {
-        const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-root-'));
-        const daemonEntry = join(pluginRoot, 'daemon.mjs');
-        await writeFileFixture(daemonEntry);
-
-        const result = await resolvePluginDaemonEntryPath({
-            pluginRootPath: pluginRoot,
-            manifest: createManifestWithEntrypoints({ daemon: './daemon.mjs' }),
-        });
-
-        expect(result.ok).toBe(true);
-        if (!result.ok) return;
-        expect(typeof result.daemonEntryPath).toBe('string');
-        expect(result.daemonEntryPath).toMatch(/daemon\.mjs$/);
     });
 
     it('accepts an in-root daemon entry whose directory starts with dot-dot', async () => {
@@ -188,43 +182,14 @@ describe('resolvePluginDaemonEntryPath', () => {
         expect(result.devDaemonEntryPath).toMatch(/src[/\\]daemon\.ts$/);
     });
 
-    it('rejects a Windows-absolute development entry on every host platform', async () => {
+    it.each([
+        ['Windows-absolute', 'C:\\outside\\daemon.ts'],
+        ['Windows drive-relative', 'C:daemon.ts'],
+    ] as const)('rejects a %s development entry on every host platform', async (_label, development) => {
         const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-root-'));
         const result = await resolvePluginDaemonEntryPath({
             pluginRootPath: pluginRoot,
-            manifest: createManifestWithEntrypoints({ development: 'C:\\outside\\daemon.ts' }),
-            resolveDevEntrypoint: true,
-        });
-
-        expect(result.ok).toBe(false);
-        if (result.ok) return;
-        expect(result.diagnostic.code).toBe('plugin_manifest_semantic_invalid');
-    });
-
-    it('rejects a Windows drive-relative development entry on every host platform', async () => {
-        const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-root-'));
-        const result = await resolvePluginDaemonEntryPath({
-            pluginRootPath: pluginRoot,
-            manifest: createManifestWithEntrypoints({ development: 'C:daemon.ts' }),
-            resolveDevEntrypoint: true,
-        });
-
-        expect(result.ok).toBe(false);
-        if (result.ok) return;
-        expect(result.diagnostic.code).toBe('plugin_manifest_semantic_invalid');
-    });
-
-    it('fails closed when a development entry symlink resolves outside the plugin root', async () => {
-        const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-root-'));
-        const outsideDir = await mkdtemp(join(tmpdir(), 'happier-plugin-outside-'));
-        const outsideFile = join(outsideDir, 'outside.ts');
-        await writeFileFixture(outsideFile);
-        await mkdir(join(pluginRoot, 'src'), { recursive: true });
-        await symlink(outsideFile, join(pluginRoot, 'src', 'daemon.ts'));
-
-        const result = await resolvePluginDaemonEntryPath({
-            pluginRootPath: pluginRoot,
-            manifest: createManifestWithEntrypoints({ development: './src/daemon.ts' }),
+            manifest: createManifestWithEntrypoints({ development }),
             resolveDevEntrypoint: true,
         });
 

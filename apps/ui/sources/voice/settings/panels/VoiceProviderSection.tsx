@@ -6,7 +6,8 @@ import { Platform } from 'react-native';
 
 
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { SettingAnchor } from '@/components/settings/shell/SettingRow';
+import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
+import { Switch } from '@/components/ui/forms/Switch';
 import { VOICE_CONVERSATIONS_SETTINGS } from '@/voice/settings/voiceSettingsDeclarations';
 import { useVoiceSettingsSearchPrerequisite } from '@/voice/settings/VoiceSettingsSearchPrerequisite';
 import { getVoiceContributedSettingRefs, useVoiceContributedSettingsDeclarations } from '@/voice/settings/useVoiceContributedSettingRefs';
@@ -20,6 +21,8 @@ import { isValidPluginJsonSchemaValue } from '@happier-dev/protocol/plugins/acti
 import { resolveRequiredRecipientContractApprovalDigestV1 } from '@happier-dev/protocol/plugins/recipientContractV1';
 import type { VoiceCredentialSourceSelection } from '@happier-dev/protocol/account/settings/savedSecretMutationOwner';
 import type { VoiceProviderContribution } from '@happier-dev/protocol/plugins/contributions/voice';
+import { SettingsDeclarationActionOutputSchemasV1 } from '@happier-dev/protocol/actions/settingsDeclarationActionFamily';
+import { Modal } from '@/modal';
 import {
   resolvePluginProjectionEditableSettingsGroup,
   type PluginProjectionEditableSettingField,
@@ -27,7 +30,10 @@ import {
   type ResolvedPluginProjectionEditableSettingsGroup,
 } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import { useProjectedPluginLocalizedTextResolver } from '@/components/appShell/plugins/AppShellPluginUiProjection';
-import { useSettingsSelector } from '@/sync/domains/state/storage';
+import { useSetting } from '@/sync/domains/state/storage';
+import { useMountedActionExecution } from '@/components/approvals/useMountedActionExecution';
+import { fireAndForget } from '@/utils/system/fireAndForget';
+import { presentActionTurnedOffNoticeIfOff } from '@/sync/ops/actions/actionTurnedOffNotice';
 import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 import { useConnectedAccountCatalog } from '@/sync/store/settings/useConnectedAccountCatalog';
 import { selectConnectedMetadataLabels, useConnectedMetadataCatalog } from '@/hooks/server/connectedServices/useConnectedMetadataCatalog';
@@ -52,6 +58,7 @@ import { resolveVoiceServiceTitle } from '@/voice/registry/voiceProviderPresenta
 import { useVoiceExecutionMachinePresentation } from '@/voice/credentials/useExecutionMachinePresentation';
 import { VoicePipelineView } from '@/voice/settings/pipeline/VoicePipelineView';
 import { buildVoiceConversationsPipeline } from '@/voice/settings/pipeline/voicePipelineSteps';
+import { presentVoicePipeline } from '@/voice/settings/pipeline/presentVoicePipeline';
 import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import {
   resolveAccountVoiceCredentialSourceSelection,
@@ -120,12 +127,6 @@ import { resolveVoiceProviderReadinessPresentation, translateVoiceReadiness } fr
 import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 
 const registry = createDefaultVoiceProviderRegistry();
-
-const selectReadinessAccountSettings = (settings: Settings) => ({
-  voiceSettingsV1: settings.voiceSettingsV1,
-  secrets: settings.secrets,
-  backendEnabledByTargetKey: settings.backendEnabledByTargetKey,
-});
 
 type CheckedVoiceProviderReadinessResult =
   | Readonly<{
@@ -234,6 +235,7 @@ function createVoiceProviderReadinessCheckKey(input: Readonly<{
   providerId: string | null;
   modeId: string | null;
   executionMachineId: string | null;
+  executionMachineOnline: boolean;
   daemonStateVersion: number;
   connectedServices: unknown;
   /** Local voice's Hear/Speak engines: a different engine is a different setup to check. */
@@ -246,6 +248,7 @@ function createVoiceProviderReadinessCheckKey(input: Readonly<{
     providerId: input.providerId,
     modeId: input.modeId,
     executionMachineId: input.executionMachineId,
+    executionMachineOnline: input.executionMachineOnline,
     daemonStateVersion: input.daemonStateVersion,
     connectedServices: input.connectedServices,
     speechEngines: input.speechEngines,
@@ -319,7 +322,7 @@ export function useVoiceConversationsReadinessModel(props: {
   selectedDeclarativeConfig: Readonly<Record<string, unknown>> | null;
   selectedDeclarativeSettingsRow: VoiceReadinessSelectionRow | undefined;
   localizePluginText: ReturnType<typeof useProjectedPluginLocalizedTextResolver>;
-  writeExternalSetting: (fieldId: string, value: unknown) => void;
+  writeExternalSetting: (fieldId: string, value: unknown, expectedSettingsVersion?: number | null) => void;
   selectedProviderRow: VoiceReadinessSelectionRow | null;
   selectedUnavailableProvider: SelectedUnavailableVoiceProvider | null;
   localAdapterSettings: ReturnType<typeof resolveLocalVoiceAdapterSettingsFromVoice>;
@@ -334,8 +337,13 @@ export function useVoiceConversationsReadinessModel(props: {
     registry.getRevision ?? (() => 0),
   );
   const localizePluginText = useProjectedPluginLocalizedTextResolver();
-  const accountSettings = useSettingsSelector(selectReadinessAccountSettings);
+  const voiceSettingsV1 = useSetting('voiceSettingsV1');
+  const secrets = useSetting('secrets');
+  const backendEnabledByTargetKey = useSetting('backendEnabledByTargetKey');
+  const accountSettings = React.useMemo(() => ({ voiceSettingsV1, secrets, backendEnabledByTargetKey }),
+    [voiceSettingsV1, secrets, backendEnabledByTargetKey]);
   const settingsScope = useAccountSettingsScope();
+  const credentialSelectionAction = useMountedActionExecution(settingsScope, { openOnRequest: true });
   const purposes = useConnectedAccountCatalog('purposes', settingsScope);
   const connectedPurposes = purposes.status === 'ready' && !purposes.stale ? purposes.value : null;
   const labelsByKey = useConnectedMetadataCatalog(undefined, selectConnectedMetadataLabels);
@@ -678,11 +686,15 @@ export function useVoiceConversationsReadinessModel(props: {
     providerId: selectedProviderRow?.providerId ?? selectedUnavailableProvider?.providerId ?? null,
     modeId: selectedProviderRow?.modeId ?? selectedUnavailableProvider?.modeId ?? null,
     executionMachineId: executionMachineSelectedId,
+    executionMachineOnline: executionMachineTarget.isOnline,
     daemonStateVersion: executionMachineTarget.daemonStateVersion,
     connectedServices: selectedPassiveConnectedServicesBinding,
     speechEngines: selectedProviderRow?.providerId === 'local_conversation' ? selectedSpeechProviderIds : null,
     accountScope: activeAccountScopeLifetime?.scope ?? null,
-    credentialAuthority: {
+    // A provider-declared passive probe consumes its Connected Service binding
+    // above. Saved Secret/purpose catalogs govern Local raw-credential checks,
+    // and their own refresh lifecycle must not restart an unrelated probe.
+    credentialAuthority: selectedPassiveSetup ? null : {
       voiceCredentialBindings: accountSettings.voiceSettingsV1.credentialBindings,
       purposes,
       savedSecretCatalog: {
@@ -911,8 +923,34 @@ export function useVoiceConversationsReadinessModel(props: {
         }),
       }, localizePluginText)
     : null;
-  const writeExternalSetting = (fieldId: string, value: unknown): void => {
+  const writeExternalSetting = (fieldId: string, value: unknown, expectedSettingsVersion?: number | null): void => {
     if (!selectedDeclarativeSettingsRow || !isRecord(selectedDeclarativeConfig)) return;
+    if (fieldId === selectedDeclarativeSettings?.connectedServicesBinding?.id) {
+      if (expectedSettingsVersion == null) {
+        Modal.alert(t('common.error'), t('settingsVoice.local.voiceCredential.operationFailed'));
+        return;
+      }
+      fireAndForget(credentialSelectionAction.execute('settings.invoke', {
+        anchor: `voiceConversations.provider.${selectedDeclarativeSettingsRow.providerId}.${fieldId}`,
+        input: { kind: 'voice_connected_services', expectedSettingsVersion, value },
+      }, { retainInvocation: true }).then(result => {
+        if (!result.ok) {
+          if (presentActionTurnedOffNoticeIfOff(result, 'settings.invoke')) return;
+          throw new Error('voice_credential_selection_failed');
+        }
+        const receipt = SettingsDeclarationActionOutputSchemasV1['settings.invoke'].parse(result.result);
+        const value = receipt.value;
+        const status = value && typeof value === 'object' && !Array.isArray(value) && 'status' in value ? value.status : null;
+        if (receipt.status === 'completed' && status === 'outcomeUnknown') {
+          Modal.alert(t('common.error'), t('settingsProviders.errors.mutationOutcomeUnknownDescription'));
+          return;
+        }
+        if (receipt.status !== 'completed' || status !== 'applied') throw new Error('voice_credential_selection_unapplied');
+      }), { tag: 'VoiceProviderSection.connectedServicesSelection',
+        onError: () => Modal.alert(t('common.error'), t('settingsVoice.local.voiceCredential.operationFailed')),
+      });
+      return;
+    }
     select(writeVoiceProviderSettingsConfig(voice, selectedDeclarativeSettingsRow.providerId, {
       ...selectedDeclarativeConfig,
       [fieldId]: value,
@@ -1007,6 +1045,30 @@ export function useVoiceConversationsReadinessModel(props: {
   }
   const resolveServiceTitle = (serviceRows: readonly typeof visibleRows[number][]): string =>
     resolveVoiceServiceTitle(serviceRows[0]!.entry, tLoose, localizePluginText);
+  const effectiveSelectedProviderReadiness = showCheckedReadiness ? checkedProviderReadiness : selectedProviderReadiness;
+  const selectedLocalSpeechReadiness = checkedReadiness?.rawCredentialAuthorizationByContribution
+    && !checkedReadinessIsCurrent ? null : localConversationReadinessFacts.speechReadiness;
+  const selectedServiceTitle = selectedProviderRow
+    ? resolveVoiceServiceTitle(selectedProviderRow.entry, tLoose, localizePluginText)
+    : selectedUnavailableProvider ? tLoose(selectedUnavailableProvider.titleKey) : null;
+  // The selected Service, its card and the passive hub consume the same pipeline facts and
+  // presenter. Configuration-only row readiness cannot establish that every role is ready.
+  const selectedPipeline = buildVoiceConversationsPipeline({
+    voice, serviceTitle: selectedServiceTitle, readiness: effectiveSelectedProviderReadiness,
+    localSpeechReadiness: selectedLocalSpeechReadiness,
+    localThinkReadiness: localConversationReadinessFacts.thinkReadiness,
+    machine: { machineId: executionMachineSelectedId, machineLabel: null },
+  });
+  const selectedPipelinePresentation = selectedPipeline
+    ? presentVoicePipeline(selectedPipeline.pipeline, translateVoiceReadiness, selectedPipeline.cardReadiness,
+        selectedServiceTitle ?? undefined)
+    : null;
+  const selectedServiceStatus: VoiceServiceTile['status'] = selectedPipelinePresentation ? {
+    tone: selectedPipelinePresentation.tone,
+    text: selectedPipelinePresentation.statusWord,
+    detail: selectedPipelinePresentation.card?.message
+      ?? selectedPipelinePresentation.steps.find(step => step.readiness)?.readiness?.message,
+  } : null;
   const serviceTiles: VoiceServiceTile[] = [
     ...(selectedUnavailableProvider ? [{
       id: selectedUnavailableProvider.providerId,
@@ -1030,7 +1092,7 @@ export function useVoiceConversationsReadinessModel(props: {
           : serviceRows.length > 1 || !shown.subtitleKey ? undefined : tLoose(shown.subtitleKey),
         mark: identity ? <VoiceServiceMark identity={identity} /> : undefined,
         badge: badgeKey ? tLoose(badgeKey) : undefined,
-        status: ready
+        status: shown.selected ? selectedServiceStatus : ready
           ? { tone: 'ready', text: shown.detail ?? t('settingsVoice.pages.conversations.serviceReady') }
           : {
               tone: 'needs_you',
@@ -1059,7 +1121,7 @@ export function useVoiceConversationsReadinessModel(props: {
 
   return {
     serviceTiles, isOff, select, selectService, voice, visibleRows, selectedServiceBillingRows,
-    selectedProviderReadiness: showCheckedReadiness ? checkedProviderReadiness : selectedProviderReadiness,
+    selectedProviderReadiness: effectiveSelectedProviderReadiness,
     isCheckingPassiveSetup, checkProviderReadiness, showCheckedReadiness, checkedReadinessRecoveryHandler,
     checkedProviderResult, checkedReadinessRecoveryAction, checkedReadinessRevision, checkedReadiness,
     selectedExternalRow, selectedExternalDeclaration, selectedExternalCredentials, selectedExternalContribution,
@@ -1070,11 +1132,35 @@ export function useVoiceConversationsReadinessModel(props: {
     selectedProviderRow, selectedUnavailableProvider, localAdapterSettings, selectedSpeechProviderIds,
     selectedReadinessCheckKey,
     selectedLocalThinkReadiness: localConversationReadinessFacts.thinkReadiness,
-    selectedLocalSpeechReadiness: checkedReadiness?.rawCredentialAuthorizationByContribution
-      && !checkedReadinessIsCurrent
-      ? null
-      : localConversationReadinessFacts.speechReadiness,
+    selectedLocalSpeechReadiness,
   };
+}
+
+/**
+ * Whether the Voice agent may answer a pending request for the person (A-VI04-2). It applies to every
+ * Voice service, so it is its own section at the end of the page rather than part of one service's
+ * pipeline sections.
+ */
+export function VoiceAgentApprovalsSection(props: Readonly<{ voice: VoiceSettings; setVoice: (next: VoiceSettings) => void }>) {
+  const { voice } = props;
+  return (
+    <ItemGroup
+      title={t('settingsVoice.pages.conversations.approvalsTitle')}
+      description={t('settingsVoice.pages.conversations.approvalsDescription')}
+    >
+      <SettingRow
+        setting={VOICE_CONVERSATIONS_SETTINGS.settings.canApproveRequests}
+        rightElement={(
+          <Switch
+            testID="settings.voice.canApproveRequests"
+            accessibilityLabel={t(VOICE_CONVERSATIONS_SETTINGS.settings.canApproveRequests.titleKey)}
+            value={voice.canApproveRequests}
+            onValueChange={(canApproveRequests) => props.setVoice({ ...voice, canApproveRequests })}
+          />
+        )}
+      />
+    </ItemGroup>
+  );
 }
 
 export function VoiceProviderSection(props: Parameters<typeof useVoiceConversationsReadinessModel>[0] & Readonly<{
@@ -1295,9 +1381,10 @@ export function VoiceProviderSection(props: Parameters<typeof useVoiceConversati
                       )
                     : undefined}
                   value={selectedDeclarativeConfig[selectedDeclarativeSettings.connectedServicesBinding.id]}
-                  onChange={(value) => writeExternalSetting(
+                  onChange={(value, expectedSettingsVersion) => writeExternalSetting(
                     selectedDeclarativeSettings.connectedServicesBinding!.id,
                     value,
+                    expectedSettingsVersion,
                   )}
                 />
               )

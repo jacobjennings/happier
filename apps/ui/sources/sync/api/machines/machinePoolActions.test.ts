@@ -13,7 +13,7 @@ describe('machinePoolActions', () => {
         expect(request).toHaveBeenCalledWith('/v1/machines/pools/list', expect.objectContaining({
             method: 'POST',
             body: '{}',
-        }), { includeAuth: true });
+        }), { includeAuth: true, recoveryRead: 'unbounded' });
     });
 
     it('preserves the structured conflict result for editor recovery', async () => {

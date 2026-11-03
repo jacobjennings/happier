@@ -15,6 +15,7 @@ import { MessageActionDurableResolutionV1Schema, MessageActionReferenceV1Schema 
 import { ExternalShareableActorV1Schema, EXTERNAL_SHAREABLE_TRANSCRIPT_MAX_PAGE_ROWS_V1, EXTERNAL_SHAREABLE_TRANSCRIPT_MAX_REFERENCED_USER_ROWS_V1, EXTERNAL_SHAREABLE_TRANSCRIPT_MAX_SNAPSHOT_TURNS_V1, ExternalShareableTranscriptSnapshotV1Schema, deriveExternalShareableActorFromAdmissionReceiptV1 } from '@happier-dev/protocol/sessions/messages/sessionExternalShareableTranscriptV1';
 import { SessionMessageAccountActorV1Schema } from '@happier-dev/protocol/sessions/messages/sessionMessageAccountActorV1';
 import { SessionInputAdmissionReceiptV1Schema } from '@happier-dev/protocol/sessions/messages/sessionInputAdmission';
+import { SessionTurnV1Schema } from '@happier-dev/protocol/sessions/turns/sessionTurnV1';
 import { SESSION_TRANSCRIPT_MAX_PAGE_ROWS_V1 } from '@happier-dev/protocol/sessions/messages/sessionTranscriptPageLimits';
 import { SessionStoredMessageContentSchema } from '@happier-dev/protocol/sessions/messages/sessionStoredMessageContent';
 import { SessionTranscriptObservationProvenanceV1Schema, isRecoveredHistoryTranscriptObservationProvenance } from '@happier-dev/protocol/sessions/messages/transcriptObservationV1';
@@ -62,9 +63,10 @@ import { type Fastify } from "../../types";
 import { PRESENT_USER_REQUIRED_ERROR } from "@/app/api/utils/apiTokenRouteAdmission";
 import { projectSessionInputAdmissionReceipt } from "@/app/session/messages/sessionInputAdmission";
 import { projectSessionFollowWakeBatchDelivery } from "@/app/session/follow/projectSessionFollowWakeBatchDelivery";
-import { readSessionMessageReplyInTx, mutateSessionMessageReplyForAccountInTx, listSessionMessageRepliesPendingInTx } from '@/app/session/messages/sessionMessageReply';
+import { readSessionMessageRepliesInTx, readSessionMessageReplyInTx, mutateSessionMessageReplyForAccountInTx, listSessionMessageRepliesPendingInTx } from '@/app/session/messages/sessionMessageReply';
 import { readCommittedSessionMessageInTx } from '@/app/session/messages/readCommittedSessionMessage';
-import { SessionMessageReplyReadResultV1Schema, SessionMessageReplyMutationResultV1Schema, SessionMessageReplyPendingPageV1Schema, SessionMessageReplyCapabilityV1Schema, SessionMessageReplyAccountMutationV1Schema } from '@happier-dev/protocol/sessions/messages/sessionMessageReplyV1';
+import { SessionMessageReplyReadResultV1Schema, SessionMessageReplyMutationResultV1Schema, SessionMessageReplyPendingPageV1Schema, SessionMessageReplyCapabilityV1Schema, SessionMessageReplyAccountMutationV1Schema,
+    SessionMessageReplyReadBatchRequestV1Schema, SessionMessageReplyReadBatchResponseV1Schema } from '@happier-dev/protocol/sessions/messages/sessionMessageReplyV1';
 
 type SessionStoredMessageContent = z.infer<typeof SessionStoredMessageContentSchema>;
 
@@ -781,6 +783,19 @@ export function registerSessionMessageRoutes(app: Fastify) {
         return reply.send(SessionMessageReplyCapabilityV1Schema.parse({ v: 1, protocolVersions: [1] }));
     });
 
+    app.post('/v2/sessions/messages/replies/read-batch', {
+        preHandler: app.authenticate,
+        // Account UI transport, like the existing Session read batch. Restricted
+        // credentials keep using the exact Session-bound reply endpoint.
+        schema: { body: SessionMessageReplyReadBatchRequestV1Schema, response: { 200: SessionMessageReplyReadBatchResponseV1Schema } },
+    }, async (request, reply) => {
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
+        const results = await inReadSnapshot(tx => readSessionMessageRepliesInTx(tx, {
+            requests: request.body.requests, accountId: request.userId, authentication,
+        }));
+        return reply.header('Cache-Control', 'no-store').send({ results });
+    });
+
     app.get('/v2/sessions/:sessionId/messages/replies/pending', {
         preHandler: app.authenticate,
         config: { restrictedCredentialBinding: { scope: 'session', session: 'params.sessionId' }, apiTokenSessionAction: 'session.transcript.get' },
@@ -854,6 +869,9 @@ export function registerSessionMessageRoutes(app: Fastify) {
                         transcriptObservationProvenance: z.optional(SessionTranscriptObservationProvenanceV1Schema),
                         accountActor: z.nullable(SessionMessageAccountActorV1Schema),
                         inputAdmissionReceipt: z.optional(SessionInputAdmissionReceiptV1Schema),
+                        acceptedTurnId: z.optional(z.string()),
+                        turnStartWitnessId: z.optional(z.string()),
+                        turn: z.optional(SessionTurnV1Schema),
                     }),
                 }),
                 404: z.looseObject({ error: z.string() }),
@@ -907,6 +925,9 @@ export function registerSessionMessageRoutes(app: Fastify) {
                 content: row.content,
                 accountActor,
                 ...projectSessionInputAdmissionReceipt(row.inputAdmissionReceipt),
+                ...(row.acceptedTurnId ? { acceptedTurnId: row.acceptedTurnId } : {}),
+                ...(row.turnStartWitnessId ? { turnStartWitnessId: row.turnStartWitnessId } : {}),
+                ...(row.turn ? { turn: row.turn } : {}),
                 ...(() => {
                     const deliveryResolution = readStoredSessionMessageDeliveryResolutionV1(row.deliveryResolution);
                     return deliveryResolution ? { deliveryResolution } : {};

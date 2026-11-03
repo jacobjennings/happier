@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createPdfCanvasViewer, type PdfCanvasDocument } from './pdfCanvasViewer';
 
 describe('PDF canvas visibility and teardown', () => {
@@ -28,13 +28,12 @@ describe('PDF canvas visibility and teardown', () => {
             expect(container.querySelectorAll('canvas')).toHaveLength(0);
             const page = container.querySelector('[data-pdf-page="2"]')!;
             observer([{ target: page, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
-            await Promise.resolve(); await Promise.resolve();
-            expect(container.querySelectorAll('canvas')).toHaveLength(1);
+            await vi.waitFor(() => expect(container.querySelectorAll('canvas')).toHaveLength(1));
             observer([{ target: page, isIntersecting: false } as IntersectionObserverEntry], {} as IntersectionObserver);
             expect(cancelled).toBe(1);
             expect(container.querySelectorAll('canvas')).toHaveLength(0);
             observer([{ target: page, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
-            await Promise.resolve(); await Promise.resolve();
+            await vi.waitFor(() => expect(container.querySelectorAll('canvas')).toHaveLength(1));
             viewer.dispose();
             expect(cancelled).toBe(2);
             expect(disconnected).toBe(true);

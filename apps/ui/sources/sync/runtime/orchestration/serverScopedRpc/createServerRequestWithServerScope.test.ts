@@ -3,6 +3,7 @@ import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { createAccountTokenForTests } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { installDisconnectedServerSocketBoundary } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
+import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
 import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 import { upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
 import { disconnectActiveServerConnection, restoreConnectionToActiveServer } from '@/sync/runtime/orchestration/connectionManager';
@@ -31,6 +32,13 @@ beforeEach(async () => {
     setRuntimeFetch(async (input, init) => {
         const url = new URL(String(input));
         if (url.pathname === '/v1/auth/ping') return Response.json({});
+        // Bootstrap owns these requests independently of the authority under test.
+        // Capture its real initial cursor and discovery response before counting
+        // operation HTTP; neither is a scoped authority fallback.
+        if (url.origin === 'https://active.example') {
+            if (url.pathname === '/v2/cursor') return Response.json({ cursor: 0, changesFloor: 0 });
+            if (url.pathname === '/v1/features') return Response.json(createRootLayoutFeaturesResponse());
+        }
         // The cold Socket.IO boundary publishes no background domain rows.
         if (['/v1/profile', '/v2/account/settings', '/v2/sessions', '/v1/machines'].includes(url.pathname)) {
             return Response.json({}, { status: 404 });

@@ -1,16 +1,14 @@
-import { readFile } from 'node:fs/promises';
-
 import { describe, expect, it } from 'vitest';
 
 import type { RpcActionExecutor } from './_actionDispatchAdapter';
 import { registerSessionPermissionRpcHandlers } from './sessionPermissions';
 
 function createRpcHarness() {
-  const handlers = new Map<string, (input: unknown) => Promise<unknown>>();
+  const handlers = new Map<string, (input: unknown, context?: unknown) => Promise<unknown>>();
   return {
     handlers,
     rpcHandlerManager: {
-      registerHandler(method: string, handler: (input: unknown) => Promise<unknown>) {
+      registerHandler(method: string, handler: (input: unknown, context?: unknown) => Promise<unknown>) {
         handlers.set(method, handler);
       },
     },
@@ -18,12 +16,6 @@ function createRpcHarness() {
 }
 
 describe('session permission RPC handlers', () => {
-  it('does not own a static RPC binding table', async () => {
-    const source = await readFile(new URL('./sessionPermissions.ts', import.meta.url), 'utf8');
-
-    expect(source).not.toContain('SESSION_PERMISSION_RPC_BINDINGS');
-  });
-
   it('dispatches canonical permission RPC methods through the ActionSpec adapter', async () => {
     const calls: unknown[] = [];
     const actionExecutor: RpcActionExecutor = {
@@ -44,11 +36,14 @@ describe('session permission RPC handlers', () => {
       requestId: 'permission-1',
       decision: 'allow',
     })).resolves.toEqual({ ok: true, actionId: 'session.permission.respond' });
+    // Answering a Session's user action is a Session-routed Action: the host stamps its original origin.
+    const sessionActionOrigin = { v: 1 as const, caller: { kind: 'session' as const, sessionId: 'session-1', starterDepth: 0, turnDepth: 0 },
+      sourceTurnId: 'turn-1', callerPermissionMode: null, requestId: 'origin-request-1' };
     await expect(handlers.get('session.user_action.answer')?.({
       sessionId: 'session-1',
       requestId: 'user-action-1',
       decision: 'approve',
-    })).resolves.toEqual({ ok: true, actionId: 'session.user_action.answer' });
+    }, { signal: new AbortController().signal, sessionActionOrigin })).resolves.toEqual({ ok: true, actionId: 'session.user_action.answer' });
     await expect(handlers.get('session.permission_mode.set')?.({
       sessionId: 'session-1',
       permissionMode: 'read_only',
@@ -63,7 +58,9 @@ describe('session permission RPC handlers', () => {
       {
         actionId: 'session.user_action.answer',
         input: { sessionId: 'session-1', requestId: 'user-action-1', decision: 'approve' },
-        context: { authority: 'account_automation', defaultSessionId: 'session-1', surface: 'rpc' },
+        // The host projects the stamped origin into the Action caller; the surface follows it.
+        context: expect.objectContaining({ authority: 'account_automation', defaultSessionId: 'session-1', surface: 'agent',
+          actionCaller: sessionActionOrigin.caller, actionRequestId: sessionActionOrigin.requestId }),
       },
       {
         actionId: 'session.permission_mode.set',

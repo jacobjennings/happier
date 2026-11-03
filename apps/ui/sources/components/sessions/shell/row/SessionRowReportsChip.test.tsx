@@ -7,9 +7,10 @@ import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { selectSessionReportSubtree } from '@/components/sessions/work/reportSubtree';
+import { readSessionPresentationRecord, readSessionPresentationInputSource } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { readSessionWorkStatusFacts, readSessionWorkStalled } from '@/components/work/status/sessionWorkStatusFacts';
 import { projectWork, groupWorkByState, readWorkWorkingCount } from '@/components/sessions/work/workProjection';
-import { readSessionAwarenessWorkStatusV1 } from '@happier-dev/protocol/sessions/awareness/presentationV1';
+import { readSessionAwarenessPresentationV1, readSessionAwarenessWorkStatusV1 } from '@happier-dev/protocol/sessions/awareness/presentationV1';
 
 import {
   SessionRowReportsChip,
@@ -29,13 +30,17 @@ describe('SessionRowReportsChip', () => {
       active: false, activeAt: now, presence: 0, latestTurnStatus: 'in_progress', latestTurnStatusObservedAt: now });
     const row = buildSessionListRenderableFromSession(child);
     const reports = selectSessionReportSubtree({}, 'lead', 'home', { home: { child: row } });
-    const status = readSessionAwarenessWorkStatusV1({ awareness: readSessionWorkStatusFacts(row, now).awareness });
+    const awareness = readSessionWorkStatusFacts(row, now).awareness;
+    const status = readSessionAwarenessWorkStatusV1({ awareness });
     const stalled = readSessionWorkStalled(row, now);
-    const counts = SessionManagedSessionsV1Schema.parse({ total: 1, working: Number(status.bucket === 'working'), needsYou: Number(status.bucket === 'needs_you'), stalled: Number(stalled), finished: 0, attentionPrimary: null });
-    const work = projectWork({ sessionId: 'lead', reportSessions: reports.map(session => ({
-      sessionId: session.id, managerSessionId: 'lead', title: 'Payment retries', agentId: null, facts: [],
-      statusFacts: readSessionWorkStatusFacts(session, now), stalled: readSessionWorkStalled(session, now), archived: false,
-    })), agentEntries: [], workflowHeadlineRuns: [], managedRuns: [], ownTriggerRunIds: new Set(),
+    // The rollup carries its strongest report state; the chip presents that state's count.
+    const counts = SessionManagedSessionsV1Schema.parse({ total: 1, working: Number(status.bucket === 'working'), needsYou: Number(status.bucket === 'needs_you'), stalled: Number(stalled), finished: 0, attentionPrimary: readSessionAwarenessPresentationV1(awareness) });
+    const work = projectWork({ sessionId: 'lead', reportSessions: reports.map(input => {
+      const session = readSessionPresentationRecord(input);
+      const source = readSessionPresentationInputSource(input);
+      return { sessionId: session.id, managerSessionId: 'lead', title: 'Payment retries', agentId: null, facts: [],
+        statusFacts: readSessionWorkStatusFacts(session, now, source), stalled: readSessionWorkStalled(session, now, source), archived: false };
+    }), agentEntries: [], workflowHeadlineRuns: [], managedRuns: [], ownTriggerRunIds: new Set(),
       describeAgentStatus: () => '', describeProgress: () => '' });
     expect(groupWorkByState(work).recent.map(item => item.status.bucket)).toEqual(['offline']);
     expect(readWorkWorkingCount(work.summary)).toBe(0);

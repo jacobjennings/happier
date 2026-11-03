@@ -183,3 +183,32 @@ it.each([620, 1200])('keeps mark, title and meta one identity block when the act
         host.remove();
     }
 });
+
+async function measureDescribedHeader(actionsLayout: 'inline' | 'hang') {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+        await act(async () => root.render(<HappierPageHeader testID="header" actionsLayout={actionsLayout}
+            title={<Text testID="name" style={{ fontSize: 32, lineHeight: 38 }}>Gather and review changes</Text>}
+            description={<Text testID="sentence" style={{ fontSize: 15, lineHeight: 22 }}>Calm. Two sessions are working and nothing on this machine needs you right now, so there is room here.</Text>}
+            leading={<View style={{ width: 40, height: 40 }} />}
+            actions={<View testID="controls" style={{ width: 240, height: 32 }} />} />));
+        return await measureWebLayout(host, { viewport: { width: 1200, height: 900 } });
+    } finally {
+        await act(async () => root.unmount());
+        host.remove();
+    }
+}
+
+it('keeps the description beside the controls under the title for inline and runs it beneath both only when the header hangs', async () => {
+    const inline = await measureDescribedHeader('inline');
+    // Inline: the sentence belongs to the title's column, beside the controls.
+    expect(inline.rect('sentence').right).toBeLessThanOrEqual(inline.rect('controls').left);
+    expect(inline.rect('sentence').top).toBeLessThan(inline.rect('controls').bottom + 40);
+
+    const hang = await measureDescribedHeader('hang');
+    // Hanging: mark and controls hang from the title's line, the sentence runs beneath at the identity's full width.
+    expect(hang.rect('sentence').top).toBeGreaterThanOrEqual(hang.rect('controls').bottom);
+    expect(hang.rect('sentence').right).toBeGreaterThan(hang.rect('controls').left);
+});

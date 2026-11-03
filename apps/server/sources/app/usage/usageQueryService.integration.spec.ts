@@ -196,18 +196,33 @@ describe("usageQueryService scoped aggregation", () => {
             { ...row, source: "native", metadata: { accountingSubject: subject, usageAccounting: { path: "native", inferenceId: "same" } } },
             { ...row, source: "native", metadata: { accountingSubject: subject, usageAccounting: { path: "native", inferenceId: "linked" } } },
             { ...row, sessionId: null, source: "native", metadata: { accountingSubject: { kind: "native", machineId: "machine", agent: subject.agent, sourceRootKey: "root", nativeSessionKey: "outside" }, usageAccounting: { path: "native", inferenceId: "outside" } } },
+            // A producer named runtime is not execution evidence.
+            { ...row, source: "runtime", metadata: {} },
         ] });
         const result = await queryUsageAnalytics(owner.accountId, UsageAnalyticsQueryRequestSchema.parse({ granularity: "day", includeModelTimeline: true }));
-        expect(result.totals.tokens.total).toBe(30);
+        expect(result.totals.tokens.total).toBe(40);
         expect(result.engineTimeline?.[0]?.leaders[0]?.sources).toEqual([
             expect.objectContaining({ source: "native", path: "native", execution: "happier", tokens: expect.objectContaining({ total: 10 }) }),
             expect.objectContaining({ source: "native", path: "native", execution: "outside", tokens: expect.objectContaining({ total: 10 }) }),
             expect.objectContaining({ source: "runtime", path: "runtime", execution: "happier", tokens: expect.objectContaining({ total: 10 }) }),
+            expect.objectContaining({ source: "runtime", path: "unknown", execution: "unknown", tokens: expect.objectContaining({ total: 10 }) }),
         ]);
-        expect(result.contributions?.map(row => row.sourceContext?.execution).sort()).toEqual(["happier", "happier", "outside"]);
+        expect(result.contributions?.map(row => row.sourceContext?.execution).sort()).toEqual(["happier", "happier", "outside", "unknown"]);
         const filtered = await queryUsageAnalytics(owner.accountId, UsageAnalyticsQueryRequestSchema.parse({ filters: { sources: ["native"] }, includeModelTimeline: true }));
         expect(filtered.totals.tokens.total).toBe(20);
         expect(filtered.engineTimeline?.[0]?.leaders[0]?.sources?.map(part => part.execution)).toEqual(["happier", "outside"]);
+        for (const [execution, total] of [["happier", 20], ["outside", 10], ["unknown", 10]] as const) {
+            const selected = await queryUsageAnalytics(owner.accountId, UsageAnalyticsQueryRequestSchema.parse({
+                filters: { execution }, includeActivity: true, includeModelTimeline: true, breakdowns: ["source"],
+                includeInsights: true, includeMessageStats: true,
+            }));
+            expect(selected.totals.tokens.total).toBe(total);
+            expect(selected.contributions?.every(row => row.sourceContext?.execution === execution)).toBe(true);
+            expect(selected.series?.reduce((sum, row) => sum + row.tokens.total, 0)).toBe(total);
+            expect(selected.engineTimeline?.[0]?.leaders[0]?.sources?.every(row => row.execution === execution)).toBe(true);
+            expect(selected.insights).toBeUndefined();
+            expect(selected.messageStats).toBeUndefined();
+        }
     });
 
     it("retains witnessed Provider binding separately from Agent identity without attributing unknown counters", async () => {
@@ -369,7 +384,7 @@ describe("usageQueryService scoped aggregation", () => {
         expect(result.breakdowns?.machine?.map((entry) => [entry.key, entry.tokens.total])).toEqual([["machine-one", 30], ["unknown", 10]]);
         expect(result.coverage?.status).not.toBe("complete");
         const filtered = await querySession(owner.accountId, owner.sessionId, { filters: { sessionIds: [owner.sessionId], sources: ["runtime"] } });
-        expect(filtered.totals.tokens.total).toBeLessThanOrEqual(40);
+        expect(filtered.totals.tokens.total).toBe(40);
     });
 
     it("returns separate cost facts and explicit unpriced/ranked coverage rather than a blended price", async () => {
@@ -399,20 +414,6 @@ describe("usageQueryService scoped aggregation", () => {
         const result = await querySession(owner.accountId, owner.sessionId);
 
         expect(result.totals.tokens.total).toBe(100);
-    });
-
-    it("uses only the latest cumulative snapshot", async () => {
-        const owner = await createUsageOwner("cumulative");
-        await db.usageEvent.createMany({
-            data: [
-                buildUsageEvent({ ...owner, observedAt: "2026-07-01T10:00:00.000Z", scope: "session_cumulative", totalTokens: 100 }),
-                buildUsageEvent({ ...owner, observedAt: "2026-07-01T10:05:00.000Z", scope: "session_cumulative", totalTokens: 140 }),
-            ],
-        });
-
-        const result = await querySession(owner.accountId, owner.sessionId);
-
-        expect(result.totals.tokens.total).toBe(140);
     });
 
     it("returns the latest context values on each session breakdown row", async () => {
@@ -592,6 +593,7 @@ describe("usageQueryService scoped aggregation", () => {
 
         const result = await querySession(owner.accountId, owner.sessionId);
 
+        expect(result.totals.tokens.total).toBe(140);
         expect(result.series?.map((bucket) => bucket.tokens.total)).toEqual([100, 40]);
         expect(result.series?.reduce((sum, bucket) => sum + bucket.tokens.total, 0)).toBe(140);
     });
@@ -685,7 +687,9 @@ describe("usageQueryService scoped aggregation", () => {
                 includeModelTimeline: true,
             });
 
-            expect(result.series?.[0]?.bucketStartMs).toBe(result.modelTimeline?.[0]?.bucketStartMs);
+            const bucketStartMs = Date.UTC(2026, 6, 1);
+            expect(result.series).toMatchObject([{ bucketStartMs, tokens: { total: 10 } }]);
+            expect(result.modelTimeline).toMatchObject([{ bucketStartMs, leaders: [{ tokens: { total: 10 } }] }]);
         } finally {
             process.env.TZ = previousTimeZone;
         }

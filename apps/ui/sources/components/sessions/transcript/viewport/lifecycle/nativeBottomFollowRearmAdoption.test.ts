@@ -13,31 +13,36 @@ const rearmEffect = (overrides: Partial<NativeBottomFollowRearmAdoptionInputEffe
 });
 
 describe('native bottom-follow rearm adoption', () => {
-    it('returns not consumed when no matching rearm effect exists', () => {
+    it.each([
+        { case: 'no rearm effect exists', effects: [] },
+        { case: 'the only rearm effect is from a stale session', effects: [rearmEffect({ sessionId: 'session-b' })] },
+    ])('returns not consumed when $case', ({ effects }) => {
         expect(resolveNativeBottomFollowRearmAdoptionDecision({
-            effects: [],
+            effects,
             hasRearmedNativeBottomFollow: false,
             sessionId: 'session-a',
         })).toEqual({ consumed: false, effects: [] });
     });
 
-    it('ignores stale-session rearm effects', () => {
+    it.each([
+        { case: 'a single matching rearm', effects: [rearmEffect()], expectedDistancePx: 9.5 },
+        {
+            case: 'the first of several matching rearms',
+            effects: [
+                rearmEffect({ distanceFromLiveTailPx: 4 }),
+                rearmEffect({ distanceFromLiveTailPx: 1 }),
+            ],
+            expectedDistancePx: 4,
+        },
+    ])('returns one adoption from $case when not already applied', ({ effects, expectedDistancePx }) => {
         expect(resolveNativeBottomFollowRearmAdoptionDecision({
-            effects: [rearmEffect({ sessionId: 'session-b' })],
-            hasRearmedNativeBottomFollow: false,
-            sessionId: 'session-a',
-        })).toEqual({ consumed: false, effects: [] });
-    });
-
-    it('returns adoption when a matching rearm is not already applied', () => {
-        expect(resolveNativeBottomFollowRearmAdoptionDecision({
-            effects: [rearmEffect()],
+            effects,
             hasRearmedNativeBottomFollow: false,
             sessionId: 'session-a',
         })).toEqual({
             consumed: true,
             effects: [{
-                distanceFromLiveTailPx: 9.5,
+                distanceFromLiveTailPx: expectedDistancePx,
                 sessionId: 'session-a',
                 type: 'adopt-native-bottom-follow-rearm',
             }],
@@ -50,16 +55,5 @@ describe('native bottom-follow rearm adoption', () => {
             hasRearmedNativeBottomFollow: true,
             sessionId: 'session-a',
         })).toEqual({ consumed: true, effects: [] });
-    });
-
-    it('uses the first matching rearm effect for the current session', () => {
-        expect(resolveNativeBottomFollowRearmAdoptionDecision({
-            effects: [
-                rearmEffect({ distanceFromLiveTailPx: 4 }),
-                rearmEffect({ distanceFromLiveTailPx: 1 }),
-            ],
-            hasRearmedNativeBottomFollow: false,
-            sessionId: 'session-a',
-        }).effects[0]?.distanceFromLiveTailPx).toBe(4);
     });
 });

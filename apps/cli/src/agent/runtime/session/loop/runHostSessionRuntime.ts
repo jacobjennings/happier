@@ -185,6 +185,8 @@ import {
 } from '@/agent/runtime/session/loop/factoryResult';
 import { createSwapAwareRpcHandlerRegistrar } from '@/agent/runtime/session/loop/createSwapAwareRpcHandlerRegistrar';
 import { createSessionProviderInputConsumer } from '@/agent/runtime/session/input/sessionProviderInputConsumer';
+import { createSessionIdleCompactionScheduler } from '@/agent/runtime/session/createSessionIdleCompactionScheduler';
+import { resolveSessionIdleCompactionSeed } from '@/settings/agents/idleCompactionSeed';
 import {
   publishSessionFollowWakeInvalidation,
   readSessionFollowWakeInvalidationGeneration,
@@ -1241,6 +1243,7 @@ export async function runHostSessionRuntime(
   let applyMcpAccountPolicyUpdate: (() => void) | null = null;
   let runtimeForSessionRollback: HostSessionRuntimeHookRuntime | null = null;
   let runtimeActivityProjection: HostRuntimeActivityProjection | null = null;
+  let idleCompactionScheduler: ReturnType<typeof createSessionIdleCompactionScheduler> | null = null;
   let agentRuntimeActivityBinding: ReturnType<HostRuntimeActivityProjection['bindAgentRuntime']> | null = null;
   let executionRunsActivityBinding: ReturnType<HostRuntimeActivityProjection['bindExecutionRuns']> | null = null;
   let unsubscribeExecutionRunActivity: (() => void) | null = null;
@@ -1335,6 +1338,7 @@ export async function runHostSessionRuntime(
     newSession.setOwnerActivityDelivery(ownerActivityDelivery);
     if (previousSession && previousSession.sessionId !== newSession.sessionId) {
       latestSessionContextUsage = null;
+      idleCompactionScheduler?.dispose();
     }
     const retainsRuntimeActivityProjection = runtimeActivityProjection !== null
       && previousSession?.sessionId === newSession.sessionId;
@@ -1731,6 +1735,7 @@ export async function runHostSessionRuntime(
         unsubscribeExecutionRunActivity = null;
       });
       await runCleanupStep('dispose runtime Activity projection', () => {
+        idleCompactionScheduler?.dispose();
         runtimeActivityProjection?.dispose();
         runtimeActivityProjection = null;
       });
@@ -1924,7 +1929,7 @@ export async function runHostSessionRuntime(
         ...(config.runtimeActionSettingsProvider ? { actionsSettingsProvider: config.runtimeActionSettingsProvider } : {}) });
     }
     if (!isSessionOpenAccountCurrent()) return null;
-    const result = await referenceActionExecutor.execute(actionId, input, { surface: 'cli', actionCaller: { kind: 'host' }, signal });
+    const result = await referenceActionExecutor.execute(actionId, input, { surface: 'cli', authority: 'account_automation', actionCaller: { kind: 'host' }, signal });
     signal?.throwIfAborted();
     return isSessionOpenAccountCurrent() && result.ok ? result.result : null;
   };
@@ -3013,9 +3018,25 @@ export async function runHostSessionRuntime(
     admittedProviderBindingHandoff,
     skillsDelivered,
   } = resolveHostSessionRuntimeFactoryResult(createdRuntime);
-  let terminalRemoteModeLoop = initialTerminalRemoteModeLoop;
-  let presentationOwnsCurrentTerminalDisplay = false;
   const hookRuntime = (nativeRuntime ?? runtime) as HostSessionRuntimeHookRuntime;
+  const idleCompactionCapability = hookRuntime.readSessionCompactionCapability?.()?.idle;
+  const idleCompactionPreference = resolveSessionIdleCompactionSeed({
+    accountSettings,
+    backendTarget: runtimeOpts.backendTarget ?? { kind: 'backend', backendId: policyAgentId, sourceKind: 'built_in' },
+    idle: idleCompactionCapability,
+  });
+  if (idleCompactionPreference && idleCompactionCapability?.mode === 'host') {
+    idleCompactionScheduler = createSessionIdleCompactionScheduler({
+      mode: idleCompactionCapability.mode,
+      preference: idleCompactionPreference,
+      signal: startupRegistrationLifetime.signal,
+      compact: hookRuntime.compact?.bind(hookRuntime),
+      readLiveWork: () => inputConsumer!.readLiveWork(),
+      onError: () => logger.debug(`${config.uiLogPrefix} Idle compaction attempt failed`, {
+        error: 'session_idle_compaction_failed',
+      }),
+    });
+  }
   if (skillsDelivered === false && runnerSkills?.delivery) {
     await publishRunnerSkillNotice(currentLifecycleSession, runnerSkills, false);
   }
@@ -3503,12 +3524,6 @@ export async function runHostSessionRuntime(
     await preparation,
   );
   recordStartupPhase('model_authority_publication');
-  if (createdRuntime.prepareStartupPresentation) {
-    const presentation = await createdRuntime.prepareStartupPresentation();
-    terminalRemoteModeLoop = presentation.terminalRemoteModeLoop;
-    presentationOwnsCurrentTerminalDisplay = presentation.ownsCurrentTerminalDisplay;
-  }
-  recordStartupPhase('startup_presentation');
   const initialGoal = readInitialGoalFromEnv();
   if (initialGoal || commitPendingFirstInputAfterRuntimeReady) {
     startupCoordinatorStart = async () => {
@@ -3670,20 +3685,21 @@ export async function runHostSessionRuntime(
           rpc: currentControlRpcRegistrar.registrar,
           runtime: nativeRuntime,
           getHappierSessionId: () => session.sessionId,
-          resolveSystemAppendBlocks: async ({ sessionId, signal }) => {
+          resolvePromptPreparation: async ({ sessionId, signal }) => {
             if (currentLifecycleSession.sessionId !== sessionId) throw new Error('Voice Session changed');
             const credentials = runtimeAuthority.scope === 'account' ? runtimeAuthority.accountCredentials : runtimeAuthority.sessionCredentials;
             const accountId = credentials ? readAccountIdFromToken(credentials.token) : null;
             const serverId = credentials?.requesterSessionCredentialScope?.serverId ?? configuration.activeServerId;
             const prepared = await resolveCliVoicePromptPreparation({
               credentials,
+              sessionId,
               sessionMetadata: currentLifecycleSession.getMetadataSnapshot?.() ?? runtimeMetadata,
               roleContext: await sessionRoleContext.resolvePromptContext(signal, { modality: 'voice' }),
               machineId, directory: runtimeDirectory, signal,
               serverId, scope: accountId ? { serverId, accountId, sessionId } : null,
             });
             if (currentLifecycleSession.sessionId !== sessionId) throw new Error('Voice Session changed');
-            return prepared.systemAppendBlocks;
+            return prepared;
           },
           ownerId: sessionTag,
           agentGeneration: voiceAuthority.occurrenceId,
@@ -3893,7 +3909,6 @@ export async function runHostSessionRuntime(
           ? { accountId: readAccountIdFromToken(runtimeAuthority.accountCredentials.token)!,
               serverHttpBaseUrl: currentLifecycleSession.getServerBinding().serverUrl }
           : undefined,
-        ...(presentationOwnsCurrentTerminalDisplay ? { shouldRenderTerminalDisplay: () => false } : {}),
         onRuntimeStopReady: (stop) => {
           runtimeStopDelegate = stop;
           dispatchRuntimeStop();
@@ -3901,6 +3916,10 @@ export async function runHostSessionRuntime(
         publishHostRuntimeEvent: (event) => {
           observeAgentRuntimeActivityEvent(event);
           unsubscribeRuntimePublication.observeRuntimeEvent(event);
+          if (event.kind === 'turn-start' || event.kind === 'input-accepted') {
+            idleCompactionScheduler?.notifyForegroundActivity();
+          }
+          if (event.kind === 'usage-observed') idleCompactionScheduler?.observeUsage(event);
           if (event.kind === 'usage-observed' && event.context) {
             latestSessionContextUsage = event.context;
             publishSessionFollowWakeInvalidation();
@@ -3913,7 +3932,15 @@ export async function runHostSessionRuntime(
       sessionIsNew: currentLifecycleSession.sessionId === initialSessionId ? sessionIsNew : false,
       runtime,
       hookRuntime,
-      terminalRemoteModeLoop,
+      terminalRemoteModeLoop: initialTerminalRemoteModeLoop,
+      prepareStartupPresentation: async () => {
+        const presentation = await createdRuntime.prepareStartupPresentation?.();
+        recordStartupPhase('startup_presentation');
+        return presentation ?? {
+          terminalRemoteModeLoop: initialTerminalRemoteModeLoop ?? null,
+          ownsCurrentTerminalDisplay: false,
+        };
+      },
       capabilitySelection: {
         agent: capabilitySelectionAgentFacts,
         initialSkillRules: runnerSkills?.reach,
@@ -4042,6 +4069,7 @@ export async function runHostSessionRuntime(
       },
     });
   } finally {
+    idleCompactionScheduler?.dispose();
     await modelTransitionCoordinator.dispose();
     modelTransitionOwnerCurrent = false;
     modelTransitionCoordinator = null;

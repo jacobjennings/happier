@@ -1,73 +1,45 @@
 import { describe, expect, it } from 'vitest';
 
 import { createTranscriptViewportLifecycle } from './lifecycle';
-import {
-    resolveNativeScrollFactsObservationDecision,
-    resolveNativeScrollFactsObservationEffects,
-} from './nativeScrollFactsObservation';
+import { resolveNativeScrollFactsObservationEffects } from './nativeScrollFactsObservation';
+
+function enterNativeSession(params: Readonly<{ gestureStarted: boolean; shouldFollowLiveTail: boolean }>) {
+    const lifecycle = createTranscriptViewportLifecycle();
+    lifecycle.dispatch({
+        platform: 'native',
+        sessionId: 'session-a',
+        shouldFollowLiveTail: params.shouldFollowLiveTail,
+        type: 'session-entry',
+    });
+    if (params.gestureStarted) {
+        lifecycle.dispatch({ sessionId: 'session-a', type: 'gesture-start' });
+    }
+    return lifecycle;
+}
 
 describe('native scroll facts observation decision', () => {
-    it('dispatches trusted away facts when moved away with recent user intent', () => {
-        expect(resolveNativeScrollFactsObservationDecision({
+    it.each([
+        { case: 'a trusted frame', isTrusted: true },
+        { case: 'an untrusted frame with recent user intent', isTrusted: false },
+    ])('emits release effects for active native drag away facts from $case', ({ isTrusted }) => {
+        const lifecycle = enterNativeSession({ gestureStarted: true, shouldFollowLiveTail: true });
+
+        expect(resolveNativeScrollFactsObservationEffects({
+            dispatch: lifecycle.dispatch,
             distanceFromLiveTailPx: 96,
-            isTrusted: false,
+            isTrusted,
             movedAwayFromLiveTail: true,
             movedTowardLiveTail: false,
             pinThresholdPx: 72,
             recentUserIntent: true,
-        })).toEqual({
-            movement: 'away-from-live-tail',
-            trustedUserMovement: true,
-            type: 'dispatch',
-        });
+            sessionId: 'session-a',
+        })).toEqual(expect.arrayContaining([
+            expect.objectContaining({ type: 'native-scroll-release-live-tail' }),
+        ]));
     });
 
-    it('dispatches trusted toward facts for trusted movement toward the live tail', () => {
-        expect(resolveNativeScrollFactsObservationDecision({
-            distanceFromLiveTailPx: 48,
-            isTrusted: true,
-            movedAwayFromLiveTail: false,
-            movedTowardLiveTail: true,
-            pinThresholdPx: 72,
-            recentUserIntent: false,
-        })).toEqual({
-            movement: 'toward-live-tail',
-            trustedUserMovement: true,
-            type: 'dispatch',
-        });
-    });
-
-    it('dispatches passive steady facts for untrusted near-bottom observations', () => {
-        expect(resolveNativeScrollFactsObservationDecision({
-            distanceFromLiveTailPx: 72,
-            isTrusted: false,
-            movedAwayFromLiveTail: false,
-            movedTowardLiveTail: false,
-            pinThresholdPx: 72,
-            recentUserIntent: false,
-        })).toEqual({
-            movement: 'none',
-            trustedUserMovement: false,
-            type: 'dispatch',
-        });
-    });
-
-    it('ignores untrusted away churn without recent user intent', () => {
-        expect(resolveNativeScrollFactsObservationDecision({
-            distanceFromLiveTailPx: 96,
-            isTrusted: false,
-            movedAwayFromLiveTail: true,
-            movedTowardLiveTail: false,
-            pinThresholdPx: 72,
-            recentUserIntent: false,
-        })).toEqual({
-            reason: 'no-lifecycle-fact',
-            type: 'ignore',
-        });
-    });
-
-    it('returns no effects for ignored untrusted away churn without recent user intent', () => {
-        const lifecycle = createTranscriptViewportLifecycle();
+    it('returns no effects for untrusted away churn without recent user intent during a drag', () => {
+        const lifecycle = enterNativeSession({ gestureStarted: true, shouldFollowLiveTail: true });
 
         expect(resolveNativeScrollFactsObservationEffects({
             dispatch: lifecycle.dispatch,
@@ -81,40 +53,30 @@ describe('native scroll facts observation decision', () => {
         })).toEqual([]);
     });
 
-    it('emits release effects for active native drag away facts', () => {
-        const lifecycle = createTranscriptViewportLifecycle();
-        lifecycle.dispatch({
-            sessionId: 'session-a',
-            shouldFollowLiveTail: true,
-            type: 'session-entry',
-        });
-        lifecycle.dispatch({ sessionId: 'session-a', type: 'gesture-start' });
+    it('returns a released reader to the live tail on trusted movement toward it', () => {
+        const lifecycle = enterNativeSession({ gestureStarted: false, shouldFollowLiveTail: false });
 
         expect(resolveNativeScrollFactsObservationEffects({
             dispatch: lifecycle.dispatch,
-            distanceFromLiveTailPx: 96,
+            distanceFromLiveTailPx: 48,
             isTrusted: true,
-            movedAwayFromLiveTail: true,
-            movedTowardLiveTail: false,
+            movedAwayFromLiveTail: false,
+            movedTowardLiveTail: true,
             pinThresholdPx: 72,
-            recentUserIntent: true,
+            recentUserIntent: false,
             sessionId: 'session-a',
-        })).toEqual(expect.arrayContaining([
-            expect.objectContaining({ type: 'native-scroll-release-live-tail' }),
-        ]));
+        })).toEqual([
+            expect.objectContaining({ distanceFromLiveTailPx: 48, isPinned: true, type: 'viewport-change' }),
+            expect.objectContaining({ distanceFromLiveTailPx: 48, isPinned: true, type: 'drain-deferred-newer' }),
+        ]);
     });
 
-    it('emits observed viewport-state effects for passive near-bottom native facts', () => {
-        const lifecycle = createTranscriptViewportLifecycle();
-        lifecycle.dispatch({
-            sessionId: 'session-a',
-            shouldFollowLiveTail: true,
-            type: 'session-entry',
-        });
+    it.each([24, 72])('emits observed viewport-state effects for passive native facts at distance %s', (distanceFromLiveTailPx) => {
+        const lifecycle = enterNativeSession({ gestureStarted: false, shouldFollowLiveTail: true });
 
         expect(resolveNativeScrollFactsObservationEffects({
             dispatch: lifecycle.dispatch,
-            distanceFromLiveTailPx: 24,
+            distanceFromLiveTailPx,
             isTrusted: false,
             movedAwayFromLiveTail: false,
             movedTowardLiveTail: false,

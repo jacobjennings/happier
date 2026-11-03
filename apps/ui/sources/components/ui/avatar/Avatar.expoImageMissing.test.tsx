@@ -3,23 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 
-import { installAvatarCommonModuleMocks } from './avatarTestHelpers';
-
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-installAvatarCommonModuleMocks({
-    storage: async () => {
-        const { createStorageModuleStub, createUseSettingMock } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleStub({
-            useSetting: createUseSettingMock({
-                values: {
-                    avatarStyle: 'gradient',
-                    showFlavorIcons: false,
-                },
-            }),
-        });
-    },
-});
 
 vi.mock('expo-image', () => ({
     Image: undefined,
@@ -67,7 +51,7 @@ describe('Avatar (expo-image missing)', () => {
         ).resolves.toBeTruthy();
     });
 
-    it('renders the generated gradient path without crashing when expo-image omits Image', async () => {
+    it('renders the generated artwork path without crashing when expo-image omits Image', async () => {
         const { Avatar } = await import('./Avatar');
 
         await expect(

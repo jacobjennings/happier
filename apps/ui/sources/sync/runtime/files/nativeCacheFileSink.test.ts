@@ -19,30 +19,23 @@ describe('createNativeCacheFileSink', () => {
     });
 
     it('offers a local PDF to the iOS share sheet and reports unavailable sharing', async () => {
-        const shareAsync = vi.fn(async () => ({ action: 'sharedAction' }));
+        const share = vi.fn(async () => ({ action: 'sharedAction' }));
         vi.doMock('react-native', async () => ({
             ...(await (await import('@/dev/testkit/mocks/reactNative')).createReactNativeNativeMock({ platformOS: 'ios' })),
-            Share: { share: shareAsync, sharedAction: 'sharedAction', dismissedAction: 'dismissedAction' },
+            Share: { share, sharedAction: 'sharedAction', dismissedAction: 'dismissedAction' },
         }));
-        const { Platform } = await import('react-native');
-        const previous = Platform.OS;
-        Object.defineProperty(Platform, 'OS', { configurable: true, value: 'ios' });
         let available = true;
-        vi.doMock('expo-sharing', () => ({ isAvailableAsync: async () => available, shareAsync }));
-        try {
-            const { shareNativeCacheFile } = await import('./nativeCacheFileSink');
-            const input = { fileUri: 'file:///cache/document.pdf', name: 'document.pdf', mimeType: 'application/pdf' };
-            await expect(shareNativeCacheFile(input)).resolves.toEqual({ status: 'shared', retainCacheFile: false, completion: 'confirmed' });
-            expect(shareAsync).toHaveBeenCalledWith({ url: input.fileUri });
-            const zip = { fileUri: 'file:///cache/package.zip', name: 'package.zip', mimeType: 'application/zip', UTI: 'public.zip-archive', dialogTitle: 'Export package' };
-            await expect(shareNativeCacheFile(zip)).resolves.toEqual({ status: 'shared', retainCacheFile: false, completion: 'confirmed' });
-            expect(shareAsync).toHaveBeenLastCalledWith({ url: zip.fileUri });
-            available = false;
-            await expect(shareNativeCacheFile(input)).resolves.toEqual({ status: 'unavailable' });
-            expect(shareAsync).toHaveBeenCalledTimes(2);
-        } finally {
-            Object.defineProperty(Platform, 'OS', { configurable: true, value: previous });
-        }
+        vi.doMock('expo-sharing', () => ({ isAvailableAsync: async () => available, shareAsync: share }));
+        const { shareNativeCacheFile } = await import('./nativeCacheFileSink');
+        const input = { fileUri: 'file:///cache/document.pdf', name: 'document.pdf', mimeType: 'application/pdf' };
+        await expect(shareNativeCacheFile(input)).resolves.toEqual({ status: 'shared', retainCacheFile: false, completion: 'confirmed' });
+        expect(share).toHaveBeenCalledWith({ url: input.fileUri });
+        const zip = { fileUri: 'file:///cache/package.zip', name: 'package.zip', mimeType: 'application/zip', UTI: 'public.zip-archive', dialogTitle: 'Export package' };
+        await expect(shareNativeCacheFile(zip)).resolves.toEqual({ status: 'shared', retainCacheFile: false, completion: 'confirmed' });
+        expect(share).toHaveBeenLastCalledWith({ url: zip.fileUri });
+        available = false;
+        await expect(shareNativeCacheFile(input)).resolves.toEqual({ status: 'unavailable' });
+        expect(share).toHaveBeenCalledTimes(2);
     });
 
     it('surfaces exact cache-file removal failures and accepts a later confirmed absence', async () => {
@@ -70,7 +63,7 @@ describe('createNativeCacheFileSink', () => {
         vi.doMock('expo-file-system', () => { throw new Error('native file system unavailable'); });
         const { removeNativeCacheFileCustody } = await import('./nativeCacheFileSink');
         await expect(removeNativeCacheFileCustody('file:///cache/sensitive.zip'))
-            .rejects.toThrow();
+            .rejects.toMatchObject({ cause: { message: 'native file system unavailable' } });
     });
 });
 

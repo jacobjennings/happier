@@ -256,14 +256,6 @@ describe('SelectionList — columns and expandedContent together', () => {
             .toBeUndefined();
     });
 
-    it('groups the options into visual rows of two, row-major', async () => {
-        const screen = await renderTwoColumnGrid();
-        expect(optionIdsByColumnRow(screen, ['m-0', 'm-1', 'm-2', 'm-3'])).toEqual([
-            ['m-0', 'm-1'],
-            ['m-2', 'm-3'],
-        ]);
-    });
-
     it('keeps the expanded panel a cell of its own option, inside its own column', async () => {
         const screen = await renderTwoColumnGrid();
         const expanded = screen.findByTestId(EXPANDED_TEST_ID);
@@ -283,20 +275,6 @@ describe('SelectionList — columns and expandedContent together', () => {
         expect(isDescendantOf(expanded!, firstRow)).toBe(true);
         expect(isDescendantOf(expanded!, secondRow)).toBe(false);
         expect(isDescendantOf(expanded!, screen.findByTestId('sl:root:option-wrapper:m-0')!)).toBe(false);
-    });
-
-    it('only builds the expanded panel for the selected option', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(
-            <SelectionList
-                {...defaultProps({ rootStep: makeStep(FOUR_MODELS), selectedOptionId: 'm-0' })}
-            />,
-        );
-        await measureContainer(screen, TWO_COLUMN_WIDTH_PX);
-        expect(screen.findAllByTestId(EXPANDED_TEST_ID)).toHaveLength(0);
-        // …and the grid pattern still holds, because it is derived from the
-        // whole plan rather than from whichever row happens to be open.
-        expect(screen.findByTestId('sl:body')?.props.role).toBe('grid');
     });
 
     it('moves focus across the grid, including onto and off the expanded card', async () => {

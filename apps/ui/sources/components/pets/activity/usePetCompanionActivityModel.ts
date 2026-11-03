@@ -9,7 +9,7 @@ import { useActivityAttentionSource } from '@/activity/source/useActivityAttenti
 import { derivePendingRequestFlagsFromSession } from '@/sync/domains/session/pending/listPendingSessionRequests';
 import type { Message } from "@happier-dev/session-core/messages";
 import { deriveSessionListMeaningfulActivityAt } from '@/sync/domains/session/listing/deriveSessionListActivity';
-import type { Session } from '@/sync/domains/state/storageTypes';
+import { readSessionListPresentationPendingFlags } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import type { SessionMessages } from '@/sync/store/domains/messages';
 import type { SessionPending } from '@/sync/store/domains/pending';
@@ -21,7 +21,7 @@ import type {
 } from './petCompanionActivityTypes';
 
 function selectCompanionSessionAddress(candidates: readonly SessionActivityAttention[]): SessionAddress | null {
-    return candidates.find((candidate) => candidate.session.active)?.address
+    return candidates.find((candidate) => candidate.presentationSource?.lifecycle.active ?? candidate.session.active)?.address
         ?? candidates[0]?.address
         ?? null;
 }
@@ -120,7 +120,8 @@ function buildSessionSignalsByAddressKey(
             latestPendingMessageCreatedAt =
                 latestPendingMessageCreatedAt == null ? createdAt : Math.max(latestPendingMessageCreatedAt, createdAt);
         }
-        const pendingRequestFlags = derivePendingRequestFlagsFromSession(session, messages);
+        const pendingRequestFlags = candidate.presentationSource ? readSessionListPresentationPendingFlags(candidate.presentationSource, messages)
+            : 'agentState' in session ? derivePendingRequestFlagsFromSession(session, messages) : session;
 
         signalsByAddressKey[sessionAddressKey(candidate.address)] = {
             hasFailure: candidate.attentionState === 'failed',
@@ -131,7 +132,7 @@ function buildSessionSignalsByAddressKey(
             hasUnreadMessages: candidate.reasons.hasUnread,
             latestThinkingActivityAtMs: transcript?.latestThinkingMessageActivityAtMs ?? null,
             latestMeaningfulActivityAtMs: deriveSessionListMeaningfulActivityAt({
-                sessionMeaningfulActivityAt: session.meaningfulActivityAt,
+                sessionMeaningfulActivityAt: candidate.presentationSource?.lifecycle.meaningfulActivityAt ?? session.meaningfulActivityAt,
                 sessionCreatedAt: session.createdAt,
                 latestCommittedMessageCreatedAt,
                 latestPendingMessageCreatedAt,
@@ -162,7 +163,7 @@ export function usePetCompanionActivityModel(input?: Readonly<{
     const activityCandidates = overview.candidates;
     const activitySessions = React.useMemo(
         () => activityCandidates.flatMap((candidate) => candidate.address
-            ? [{ ...candidate.session, serverId: candidate.address.serverId }]
+            ? [{ record: candidate.session, serverId: candidate.address.serverId, baseSession: candidate.presentationSource?.baseSession }]
             : []),
         [activityCandidates],
     );

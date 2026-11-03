@@ -24,7 +24,8 @@ export function bootstrapTerminalConnectWebHash(params: Readonly<{
     if (!isTerminalConnectPath(params.url.pathname)) return;
     const hash = String(params.url.hash ?? '');
     if (!hash) return;
-    if (!hash.includes('key=')) return;
+    // Key links (`#key=`) and descriptor links (`#v4=`, buildTerminalConnectWebHref) both carry the pairing payload.
+    if (!/[#&](?:key|v4)=/.test(hash)) return;
 
     try {
         params.sessionStorage.setItem(TERMINAL_CONNECT_WEB_BOOTSTRAP_STORAGE_KEY, hash);

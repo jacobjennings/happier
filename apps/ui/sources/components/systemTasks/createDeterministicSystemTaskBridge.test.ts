@@ -1,7 +1,8 @@
+import { createBuiltinRelayAccessSelection } from '@happier-dev/cli-common/relayAccess/catalog';
 import { describe, expect, it, vi } from 'vitest';
 
 import { buildLocalRelayRuntimeSystemTaskSpec } from './specs/localControl/buildLocalRelayRuntimeSystemTaskSpec';
-import { buildLocalTailscaleSecureAccessSystemTaskSpec } from './specs/localControl/buildLocalTailscaleSecureAccessSystemTaskSpec';
+import { buildRelayAccessTailscaleSecureAccessSystemTaskSpec } from './specs/relayAccess/buildRelayAccessTailscaleSecureAccessSystemTaskSpec';
 import {
     buildRelayAccessConfigureSystemTaskSpec,
     buildRelayAccessStatusSystemTaskSpec,
@@ -56,8 +57,9 @@ describe('createDeterministicSystemTaskBridge', () => {
     it('can simulate tailscale secure access for the deterministic setup runner', async () => {
         const bridge = createDeterministicSystemTaskBridge();
         const runner = createSystemTaskRunner({ bridge, mode: 'dev' });
-        const taskId = await runner.start(buildLocalTailscaleSecureAccessSystemTaskSpec({
+        const taskId = await runner.start(buildRelayAccessTailscaleSecureAccessSystemTaskSpec({
             upstreamUrl: 'https://relay.example.test',
+            providerId: 'tailscaleServe',
         }));
 
         await new Promise((resolve) => setTimeout(resolve, 250));
@@ -93,8 +95,9 @@ describe('createDeterministicSystemTaskBridge', () => {
         try {
             const bridge = createDeterministicSystemTaskBridge();
             const runner = createSystemTaskRunner({ bridge, mode: 'dev' });
-            const taskId = await runner.start(buildLocalTailscaleSecureAccessSystemTaskSpec({
+            const taskId = await runner.start(buildRelayAccessTailscaleSecureAccessSystemTaskSpec({
                 upstreamUrl: 'https://relay.example.test',
+                providerId: 'tailscaleServe',
             }));
 
             await vi.advanceTimersByTimeAsync(250);
@@ -203,12 +206,10 @@ describe('createDeterministicSystemTaskBridge', () => {
     it('persists configured relay-access status for follow-up status checks', async () => {
         const bridge = createDeterministicSystemTaskBridge();
         const runner = createSystemTaskRunner({ bridge, mode: 'dev' });
+        const config = createBuiltinRelayAccessSelection('lan', { url: 'https://relay.example.test/relay?route=office#status' });
+        const selection = createBuiltinRelayAccessSelection('lan', { url: 'https://relay.example.test/relay' });
         const configureTaskId = await runner.start(buildRelayAccessConfigureSystemTaskSpec({
-            providerId: 'lan',
-            config: {
-                providerId: 'lan',
-                url: 'https://relay.example.test',
-            },
+            config,
             upstreamUrl: 'http://127.0.0.1:53288',
         }));
 
@@ -221,9 +222,10 @@ describe('createDeterministicSystemTaskBridge', () => {
             data: {
                 configured: true,
                 providerId: 'lan',
+                selection,
                 status: {
                     state: 'enabled',
-                    shareUrl: 'https://relay.example.test',
+                    shareUrl: 'https://relay.example.test/relay',
                 },
             },
         });
@@ -238,9 +240,10 @@ describe('createDeterministicSystemTaskBridge', () => {
             data: {
                 configured: true,
                 providerId: 'lan',
+                selection,
                 status: {
                     state: 'enabled',
-                    shareUrl: 'https://relay.example.test',
+                    shareUrl: 'https://relay.example.test/relay',
                 },
             },
         });

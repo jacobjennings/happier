@@ -2,7 +2,6 @@ import type { ScmBackendRegistry } from '../registry';
 import { runWithScmBackendRegistryLease } from '../scmBackendCatalog';
 import {
     createScmWorkspaceIntegrationPortableWorkspacePathRequest,
-    resolveScmWorkspaceIntegrationPortableWorkspacePathRelativePath,
     type ScmWorkspaceIntegrationPortableWorkspacePathClassification,
 } from './portableWorkspacePath';
 
@@ -74,20 +73,5 @@ export function classifyPortableWorkspacePathWithScmWorkspace(input: Readonly<{
         }
     }
 
-    if (resolveScmWorkspaceIntegrationPortableWorkspacePathRelativePath(request).length === 0) {
-        return 'unknown';
-    }
-
     return 'unknown';
-}
-
-export async function resolveClassifyPortableWorkspacePathWithScmWorkspace(input: Readonly<{
-    relativePath: string;
-    registry?: ScmBackendRegistry;
-}>): Promise<ScmWorkspaceIntegrationPortableWorkspacePathClassification> {
-    return runWithScmBackendRegistryLease(input.registry, async (registry) =>
-        classifyPortableWorkspacePathWithScmWorkspace({
-            relativePath: input.relativePath,
-            registry,
-        }));
 }

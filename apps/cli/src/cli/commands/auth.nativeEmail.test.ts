@@ -14,10 +14,18 @@ import {
   verifyAccountContentKeyBindingV1,
 } from '@happier-dev/protocol';
 
+// Load the Ink auth UI eagerly so module-readiness errors surface instead of
+// the command's secret-safe projection.
+import '@/ui/auth';
+import { reloadConfiguration } from '@/configuration';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
 import { captureConsoleJsonOutput, captureConsoleText } from '@/testkit/logger/captureOutput';
+import { expandAuthSecretsFromStdin } from './auth/stdinSecrets';
+import { handleAuthCommand } from './auth';
+import { logger } from '@/ui/logger';
+import { readStoredCredentials, writeCredentialsTokenOnly } from '@/persistence';
 
 const terminalBearer = `header.${Buffer.from(JSON.stringify({ sub: 'account-1', tokenEpoch: 0,
   provenance: { v: 1, kind: 'terminal', authority: 'account_automation' },
@@ -73,13 +81,14 @@ describe('native email and recovery CLI commands', () => {
       },
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     }));
-    vi.resetModules();
+    reloadConfiguration();
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     env.restore();
+    reloadConfiguration();
     process.exitCode = 0;
     await removeTempDir(home);
   });
@@ -95,14 +104,10 @@ describe('native email and recovery CLI commands', () => {
     const restore = installNativeAuthTransport(app);
     const output = captureConsoleJsonOutput<unknown>();
     try {
-      // Surface module-readiness errors instead of the command's secret-safe projection.
-      await import('@/ui/auth');
-      const { expandAuthSecretsFromStdin } = await import('./auth/stdinSecrets');
       const args = await expandAuthSecretsFromStdin(
         ['login', '--email', 'person@example.test', '--json', '--secrets-json-stdin'],
         Readable.from([JSON.stringify({ v: 1, secrets: { password } })]),
       );
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(args);
       const envelope = output.json();
       expect(envelope).toEqual(expect.objectContaining({ ok: true, data: expect.objectContaining({ accountId: 'account-1' }) }));
@@ -123,6 +128,7 @@ describe('native email and recovery CLI commands', () => {
     { canonicalUrl: 'https://public.account.test', audienceOrigin: 'https://public.account.test', identity: 'srv_home', succeeds: true, failRegistration: true },
   ])('binds recovery login to canonical $canonicalUrl and audience $audienceOrigin / $identity ($failRegistration)', async ({ canonicalUrl, audienceOrigin, identity, succeeds, failRegistration }) => {
     env.patch({ HAPPIER_PUBLIC_SERVER_URL: canonicalUrl, HAPPIER_LOCAL_SERVER_URL: 'http://account.test', HAPPIER_ACTIVE_SERVER_ID: 'stack_qa__id_default' });
+    reloadConfiguration();
     const app = fastify();
     const recoverySecret = new Uint8Array(32).fill(7);
     const recoveryKey = formatRecoveryKey(recoverySecret);
@@ -171,12 +177,10 @@ describe('native email and recovery CLI commands', () => {
     });
     const output = captureConsoleJsonOutput<unknown>();
     try {
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(['recovery-key', 'login', '--key', recoveryKey, '--json']);
       const envelope = output.json();
       if (failRegistration) {
         expect(envelope).toMatchObject({ ok: false, error: { code: 'ERR_BAD_RESPONSE', phase: 'machine_registration' } });
-        const { logger } = await import('@/ui/logger');
         logger.flushSync();
         const log = await readFile(logger.logFilePath, 'utf8');
         expect(log).toContain('ERR_BAD_RESPONSE');
@@ -187,15 +191,12 @@ describe('native email and recovery CLI commands', () => {
         expect(log).not.toContain(recoveryKey);
         expect(log).not.toContain(terminalBearer);
         expect(log).not.toContain(Buffer.from(recoverySecret).toString('base64'));
-        const { readStoredCredentials } = await import('@/persistence');
         expect(await readStoredCredentials()).toBeNull();
       } else if (succeeds) {
         expect(envelope).toEqual(expect.objectContaining({ ok: true, data: expect.objectContaining({ accountId: 'account-1' }) }));
-        const { readStoredCredentials } = await import('@/persistence');
         expect(await readStoredCredentials()).toMatchObject({ token: terminalBearer, encryption: { type: 'legacy', secret: recoverySecret } });
       } else {
         expect(envelope).toMatchObject({ ok: false, error: { code: 'authentication_failed' } });
-        const { readStoredCredentials } = await import('@/persistence');
         expect(await readStoredCredentials()).toBeNull();
       }
       expect(redeemed).toBe(succeeds);
@@ -217,7 +218,6 @@ describe('native email and recovery CLI commands', () => {
     const restore = installNativeAuthTransport(app);
     const output = captureConsoleText();
     try {
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(['email', 'reset-request', '--email', 'Person@Example.Test', '--json']);
       expect(JSON.parse(output.text())).toEqual({
         v: 1,
@@ -249,14 +249,13 @@ describe('native email and recovery CLI commands', () => {
     // adapter deliberately does not model socket timeout behavior.
     const origin = await app.listen({ host: '127.0.0.1', port: 0 });
     env.patch({ HAPPIER_LOCAL_SERVER_URL: origin });
+    reloadConfiguration();
     vi.unstubAllGlobals();
     const output = captureConsoleJsonOutput<unknown>();
     try {
       if (operation === 'change-complete') {
-        const { writeCredentialsTokenOnly } = await import('@/persistence');
         await writeCredentialsTokenOnly({ token: 'interactive' });
       }
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(operation === 'reset-request'
         ? ['email', operation, '--email', 'person@example.test', '--json']
         : ['email', operation, '--verification-token', 'V'.repeat(43), '--json']);
@@ -281,11 +280,8 @@ describe('native email and recovery CLI commands', () => {
     const restore = installNativeAuthTransport(app, 'e2ee');
     const output = captureConsoleText();
     try {
-      await import('@/ui/auth');
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(['email', 'provision', '--email', 'person@example.test', '--mode', 'e2ee',
         '--password', 'private-password', '--verification-token', verificationToken, ...(json ? ['--json'] : [])]);
-      const { readStoredCredentials } = await import('@/persistence');
       const credentials = await readStoredCredentials();
       if (!credentials) throw new Error(`Provisioning fixture failed: ${output.text()}`);
       expect(credentials).toMatchObject({ token: terminalBearer, encryption: { type: 'legacy' } });
@@ -321,7 +317,6 @@ describe('native email and recovery CLI commands', () => {
     const restore = installNativeAuthTransport(app);
     const output = captureConsoleText();
     try {
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'email', 'provision',
         '--email', 'person@example.test',
@@ -354,12 +349,10 @@ describe('native email and recovery CLI commands', () => {
     const restore = installNativeAuthTransport(app);
     const output = captureConsoleText();
     try {
-      const { expandAuthSecretsFromStdin } = await import('./auth/stdinSecrets');
       const args = await expandAuthSecretsFromStdin(
         ['email', 'reset-submit', '--json', '--secrets-json-stdin'],
         Readable.from([JSON.stringify({ v: 1, secrets: { resetToken, newPassword: password } })]),
       );
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(args);
       const envelope = JSON.parse(output.text());
       expect(envelope).toMatchObject({ ok: false, kind: 'auth_password_reset_submit', error: { code: 'invalid_reset' } });
@@ -383,14 +376,11 @@ describe('native email and recovery CLI commands', () => {
     const restore = installNativeAuthTransport(app);
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { expandAuthSecretsFromStdin } = await import('./auth/stdinSecrets');
       const args = await expandAuthSecretsFromStdin(
         ['email', 'change-complete', '--json', '--secrets-json-stdin'],
         Readable.from([JSON.stringify({ v: 1, secrets: { verificationToken } })]),
       );
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(args);
       const envelope = JSON.parse(output.text());
       expect(envelope).toMatchObject({ ok: false, kind: 'auth_email_change_complete', error: { code: 'verification_invalid' } });

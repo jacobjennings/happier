@@ -1,12 +1,8 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { core } from 'zod/mini';
-import { isDataKeyAuthCredentials } from '@/auth/storage/tokenStorage';
 import { resolveAuthCredentialsScopeKey } from '@/auth/storage/resolveAuthCredentialsScopeKey';
-import { createAccountScopedCryptoMaterialSnapshotV1 } from '@happier-dev/protocol/crypto/accountScopedCipher';
-import { convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1 } from '@happier-dev/protocol/account/encryptionKeyFingerprintV1';
-import { decodeBase64 } from '@/encryption/base64';
 import { AccountEncryptionCurrentnessReadinessError, fetchAccountEncryptionIdentity, type AccountEncryptionReadUsage } from '@/sync/api/account/apiAccountEncryptionMode';
-import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
+import { resolveCurrentAccountScopedCryptoMaterialSnapshot } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 import type { ServerFetch } from '@/sync/http/client';
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import { HappyError } from '@/utils/errors/errors';
@@ -109,22 +105,10 @@ export async function resolveAccountStorageContext(
                 new Error('The mounted Account cipher belongs to another credential scope'), 'scope-retired',
             );
         }
-        try {
-            const material = resolveAccountScopedCryptoMaterialFromCredentials(credentials);
-            const snapshot = createAccountScopedCryptoMaterialSnapshotV1({
-                accountEncryptionMode: 'e2ee',
-                material,
-                ...(isDataKeyAuthCredentials(credentials) ? {
-                    dataKeyPublicKey: decodeBase64(credentials.encryption.publicKey, 'base64'),
-                } : {}),
-            });
-            if (convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(
-                snapshot.contentPublicKeyFingerprint,
-            ) !== currentness.contentKeyFingerprint) {
-                throw new Error('Account content-key fingerprint mismatch');
-            }
-        } catch (error) {
-            throw new AccountStorageCurrentnessUnavailableError(error, 'encryption-material-unavailable');
+        if (!resolveCurrentAccountScopedCryptoMaterialSnapshot({ credentials, accountCurrentness: currentness })) {
+            throw new AccountStorageCurrentnessUnavailableError(
+                new Error('Account encryption material does not match current Account state'), 'encryption-material-unavailable',
+            );
         }
         return { mode: 'e2ee', encryption };
     } catch (error) {
@@ -135,7 +119,8 @@ export async function resolveAccountStorageContext(
                 : error instanceof AccountEncryptionCurrentnessReadinessError
                     || (error instanceof HappyError && error.status === 200 && error.kind === 'server'
                         && error.code === 'account-encryption-currentness-unavailable')
-                    ? 'encryption-material-unavailable' : 'unreachable');
+                    ? 'encryption-material-unavailable'
+                    : classifyAccountStorageReadFailure(error) === 'scope-retired' ? 'scope-retired' : 'unreachable');
         throw new AccountStorageCurrentnessUnavailableError(error, reason);
     }
 }

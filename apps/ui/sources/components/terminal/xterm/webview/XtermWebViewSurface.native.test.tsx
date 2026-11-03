@@ -842,41 +842,6 @@ describe('XtermWebViewSurface (native)', () => {
         });
     });
 
-    it('ignores byte write completion events with inconsistent acknowledged offsets', async () => {
-        postMessageSpy.mockClear();
-        lastWebViewProps = null;
-        webViewRenderCount = 0;
-
-        const onInput = vi.fn();
-        const onResize = vi.fn();
-        const onReady = vi.fn();
-        const onWriteComplete = vi.fn();
-
-        await renderScreen(React.createElement(XtermWebViewSurface, {
-                    fontSize: 12,
-                    lineHeightPx: 18,
-                    onInput,
-                    onResize,
-                    onReady,
-                    onWriteComplete,
-                    bridgeMaxChunkBytes: 64_000,
-                }));
-
-        emitEnvelope({
-            v: 1,
-            type: 'writeComplete',
-            payload: {
-                terminalId: 'native-terminal',
-                seq: 4,
-                byteOffset: 20,
-                byteLength: 6,
-                ackedByteOffset: 99,
-            },
-        });
-
-        expect(onWriteComplete).not.toHaveBeenCalled();
-    });
-
     it('decodes chunked incoming messages', async () => {
         postMessageSpy.mockClear();
         lastWebViewProps = null;

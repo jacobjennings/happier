@@ -1,5 +1,7 @@
 import * as systemTasks from '@happier-dev/cli-common/systemTasks';
 import {
+  isTailscaleSecureAccessProviderId,
+  type TailscaleSecureAccessProviderId,
   type TailscaleSecureAccessTaskResult,
 } from '@happier-dev/cli-common/tailscale';
 import {
@@ -9,11 +11,11 @@ import {
 } from '@happier-dev/cli-common/systemTasks';
 import {
   createRelayAccessDeadline,
+  createBuiltinRelayAccessSelection,
   getRelayAccessProvider,
   type RelayAccessConfig,
   type RelayAccessExecutionContext,
   type RelayAccessProvider,
-  type RelayAccessProviderId,
 } from '@happier-dev/cli-common/relayAccess';
 import {
   createTailscaleReadinessRuntimeDeps,
@@ -32,7 +34,7 @@ import {
 type SecureAccessTailscaleParams = Readonly<{
   target: RelayAccessTaskTarget;
   upstreamUrl: string;
-  providerId: 'tailscaleServe' | 'tailscaleFunnel';
+  providerId: TailscaleSecureAccessProviderId;
   servePath: string;
   installPolicy: 'skip' | 'installIfMissing';
   loginPolicy: 'skip' | 'interactive';
@@ -42,7 +44,7 @@ type SecureAccessTailscaleParams = Readonly<{
 type SecureAccessTailscaleDeps = Readonly<{
   inspectState: (params: SecureAccessTailscaleParams, options?: TailscaleReadinessInspectionOptions) => Promise<TailscaleReadinessState>;
   relayAccess: Readonly<{
-    getProvider: (providerId: RelayAccessProviderId) => RelayAccessProvider;
+    getProvider: (provider: RelayAccessConfig['provider']) => RelayAccessProvider;
     writeConfig: (params: Readonly<{ target: RelayAccessTaskTarget; config: RelayAccessConfig | null }>) => Promise<void>;
     createExecutionContext: (params: Readonly<{ target: RelayAccessTaskTarget; upstreamUrl: string | null }>) => RelayAccessExecutionContext;
   }>;
@@ -107,8 +109,7 @@ export function createSecureAccessTailscaleHandler(overrides?: Partial<SecureAcc
       params: {
         target: serializeSecureAccessTailscaleTarget(parsed.target),
         upstreamUrl: parsed.upstreamUrl,
-        providerId: parsed.providerId,
-        config: { providerId: parsed.providerId },
+        config: createBuiltinRelayAccessSelection(parsed.providerId),
       },
       ...(context?.signal ? { signal: context.signal } : {}),
       emit: () => undefined,
@@ -243,7 +244,7 @@ export function createSecureAccessTailscaleHandler(overrides?: Partial<SecureAcc
 
 function createSecureAccessTailscaleDeps(overrides?: Partial<SecureAccessTailscaleDeps>): SecureAccessTailscaleDeps {
   const relayAccess = overrides?.relayAccess ?? {
-    getProvider: (providerId: RelayAccessProviderId) => getRelayAccessProvider(providerId),
+    getProvider: getRelayAccessProvider,
     writeConfig: async () => undefined,
     createExecutionContext: (params: Readonly<{ target: RelayAccessTaskTarget; upstreamUrl: string | null }>) => ({
       env: process.env,
@@ -322,9 +323,10 @@ async function inspectSecureAccessTailscaleState(
     };
   }
 
-  const relayAccessProvider = relayAccess.getProvider(params.providerId);
+  const config = createBuiltinRelayAccessSelection(params.providerId);
+  const relayAccessProvider = relayAccess.getProvider(config.provider);
   const relayAccessStatus = await relayAccessProvider.status({
-    config: { providerId: params.providerId },
+    config,
     ctx: executionContext,
     ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     ...(options?.deadline ? { deadline: options.deadline } : {}),
@@ -366,10 +368,18 @@ function parseSecureAccessTailscaleParams(params: unknown): SecureAccessTailscal
     }
   }
 
+  // The reachable 0.2 native v1 task omitted this field and meant Serve.
+  // Remove this translation when 0.2 native-task interoperability is retired.
+  // Explicit invalid methods never acquire that historical meaning.
+  const providerId = record.providerId === undefined ? 'tailscaleServe' : record.providerId;
+  if (!isTailscaleSecureAccessProviderId(providerId)) {
+    throw new systemTasks.SystemTaskExecutionError('invalid_params', 'Invalid Tailscale access method.');
+  }
+
   return {
     target: parseSecureAccessTailscaleTarget(record.target),
     upstreamUrl: ensureNonEmptyString(record.upstreamUrl, 'upstreamUrl'),
-    providerId: record.providerId === 'tailscaleFunnel' ? 'tailscaleFunnel' : 'tailscaleServe',
+    providerId,
     servePath: normalizeServePath(record.servePath),
     installPolicy: record.installPolicy === 'installIfMissing' ? 'installIfMissing' : 'skip',
     loginPolicy: record.loginPolicy === 'skip' ? 'skip' : 'interactive',

@@ -12,7 +12,7 @@ import { ItemGroupColumn, ItemGroupColumns, type ItemGroupColumnProps } from '@/
  * label wraps away from its value. Sized so a phone-width grid still collapses
  * to one card per line.
  */
-export const CARD_GRID_COLUMN_MIN_WIDTH_PX = 200;
+const CARD_GRID_COLUMN_MIN_WIDTH_PX = 200;
 
 type CardGridProps = Readonly<{
     children: React.ReactNode;

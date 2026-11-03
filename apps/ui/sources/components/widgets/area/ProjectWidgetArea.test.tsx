@@ -68,6 +68,11 @@ vi.mock(
   async () =>
     (await import('@/dev/testkit/mocks/router')).createExpoRouterMock().module,
 );
+// Popover placement is a browser layout boundary absent from the host renderer.
+vi.mock('@/components/ui/popover', async importOriginal =>
+  (await import('@/dev/testkit/mocks/popover')).createInlinePopoverModuleMock(importOriginal, {
+    maxHeight: 624, maxWidth: 960, placement: 'bottom',
+  }));
 afterEach(standardCleanup);
 beforeEach(() => {
   windowSize.width = 1024;
@@ -107,6 +112,7 @@ it('mounts following Usage widgets with the Project scope without requiring a So
       { kind: 'widget', instance: instance('single'), area: 'main' },
       { kind: 'group', id: 'group', width: 'full', area: 'main', children: [
         { kind: 'widget', instance: instance('group-child') },
+        { kind: 'widget', instance: { v: 1, id: 'private-group-child-id', definition: { kind: 'artifact', artifactId: 'missing-private-definition' }, bindings: {} } },
       ] },
     ] });
     area = createLayoutArtifactHttpBoundary('viewer', {
@@ -142,6 +148,11 @@ it('mounts following Usage widgets with the Project scope without requiring a So
         ]);
     });
     expect(area.writes).toEqual([]);
+    const { WidgetGroupFrame } = await import('@/components/widgets/group/WidgetGroupFrame');
+    const groupLabel = screen.findAllByType(WidgetGroupFrame)[0]!.props.accessibilityLabel;
+    const { t } = await import('@/text');
+    expect(groupLabel).toContain(t('composerReferences.kindWidget'));
+    expect(groupLabel).not.toContain('private-group-child-id');
     await screen.unmount();
   } finally { restoreLoader(); await connection.dispose(); }
 });
@@ -500,7 +511,16 @@ it('binds the authorized portable Source reactively without losing a Source-free
     await flushHookEffects({ cycles: 12 });
     expect(resolve('project')).toEqual({
       status: 'ready',
-      input: { target: { serverId: connection.home.id, ...source } },
+      input: {
+        target: {
+          serverId: connection.home.id,
+          ...source,
+          repository: {
+            ...source.repository,
+            provider: { ...source.repository.provider, id: 'happier.scm.forge.github/github' },
+          },
+        },
+      },
     });
     expect(
       reads.every(
@@ -515,6 +535,18 @@ it('binds the authorized portable Source reactively without losing a Source-free
         (value) => value === `Bearer ${connection.credentials.token}`,
       ),
     ).toBe(true);
+
+    // These are relevant, freshly admitted Source responses, not unrelated store arrivals.
+    // Equal facts must preserve the real widget binding and its in-flight read authority.
+    const stableBinding = hook.getCurrent();
+    const sourceReadsBeforeRefresh = reads.length;
+    for (let index = 0; index < 3; index += 1) {
+      await act(async () => publishHomeAccountChange(connection.home.id, [PROJECT_SOURCES_ACCOUNT_CHANGE_ENTITY_ID_V1]));
+      await flushHookEffects({ cycles: 12 });
+      expect(hook.getCurrent().port).toBe(stableBinding.port);
+      expect(hook.getCurrent().context).toBe(stableBinding.context);
+    }
+    expect(reads.length - sourceReadsBeforeRefresh).toBe(3);
 
     revoked = true;
     holdSourceRead = true;
@@ -774,8 +806,8 @@ it.each(['owner', 'view'] as const)(
       expect(frame().props.disclosure.collapsed).toBe(false);
       await act(async () => frame().props.disclosure.onCollapsedChange(true));
       // Only README carries its caret at rest (lab p-overview): another expanded widget collapses from
-      // its ⋯ ("Collapse widget"), and only then shows the caret that brings it back. A viewer without
-      // the ⋯ keeps the caret, so collapse stays theirs either way.
+      // its ⋯ ("Collapse widget"), and only then shows the caret that brings it back. A viewer's ⋯ holds
+      // About and Mention, no collapse, so they keep the caret and collapse stays theirs either way.
       const about = () =>
         screen
           .findAllByType(WidgetFrame)
@@ -806,7 +838,12 @@ it.each(['owner', 'view'] as const)(
         );
         expect(about().props.disclosure).toBeUndefined();
       } else {
-        expect(aboutMenu()).toBeUndefined();
+        // Plan 12: authorized About stays reachable for a viewer. Their ⋯ offers it (and Mention) but no
+        // edit entry, and the caret keeps collapse theirs.
+        const viewerActionIds = aboutMenu()!.props.actions.map((action: { id: string }) => action.id);
+        expect(viewerActionIds).toContain('about');
+        expect(viewerActionIds).not.toContain('rename');
+        expect(viewerActionIds).not.toContain('editInputs');
         expect(about().props.disclosure.collapsed).toBe(false);
       }
       expect(area.layout()).toEqual(saved);
@@ -1028,9 +1065,13 @@ it.each(['stacked', 'phone'] as const)(
       const { WidgetSetupStep } = await import('@/components/widgets/add/WidgetSetupStep');
       const step = screen.root.findAllByType(WidgetSetupStep)[0];
       if (step) await screen.pressByTestIdAsync(`${step.props.testID}.submit`);
-      await flushHookEffects({ cycles: 6 });
-      const asideItems = (area.layout() as WidgetAreaLayoutV1).items.filter((item) => item.area === 'aside');
-      expect(JSON.stringify(asideItems)).toContain('project_readme');
+      // The button starts an asynchronous Action; wait for its acknowledged
+      // Artifact write rather than a fixed number of React microtasks.
+      const layoutArtifact = area;
+      await vi.waitFor(() => {
+        const asideItems = (layoutArtifact.layout() as WidgetAreaLayoutV1).items.filter((item) => item.area === 'aside');
+        expect(JSON.stringify(asideItems), screen.getTextContent()).toContain('project_readme');
+      });
       vi.unstubAllGlobals();
       await hook.unmount();
     } finally {
@@ -1285,25 +1326,53 @@ it('keeps an attached shared Project dashboard owner distinct from its viewer un
       source: { sourceId: 'team-source', revision: 1 },
     };
     applyProjectAccountRowsFixture(storage, { workspaceRefs: [checkout] });
+    const selectedLayouts: (string | null)[] = [];
     const hook = await renderHook(() =>
       useProjectWidgetAreaBinding({
         serverId,
         projectName: 'Project',
         activeCheckout: checkout,
         attachedDashboard: { sourceId: 'team-source', artifactId },
+        onSelectLayout: layoutId => { selectedLayouts.push(layoutId); },
       }),
     );
     await vi.waitFor(() => expect(hook.getCurrent().port).not.toBeNull());
-    expect(
-      await hook.getCurrent().port!.execute({ actionId: 'widgets.item.list' }),
-    ).toMatchObject({
-      ok: true,
-      result: {
-        surface: { ...storedSurface, artifactId },
-        canEdit: false,
-        isShared: true,
-      },
+    // The read publishes its Artifact into the real store. Commit that publication
+    // and the mounted owner's effects before reverse-dispatching the next Action.
+    await act(async () => {
+      expect(
+        await hook.getCurrent().port!.execute({ actionId: 'widgets.item.list' }),
+      ).toMatchObject({
+        ok: true,
+        result: {
+          surface: { ...storedSurface, artifactId },
+          canEdit: false,
+          isShared: true,
+        },
+      });
     });
+    const { createDefaultActionExecutor } = await import('@/sync/ops/actions/defaultActionExecutor');
+    const sharedRef = { surface: { ...storedSurface, artifactId }, instanceId: instance.id };
+    // Publication retires the previous captured document until its fresh read
+    // admits the displayed owner again, as it does before a mounted interaction.
+    await vi.waitFor(() => expect(hook.getCurrent().port).not.toBeNull());
+    // Reverse dispatch carries the displayed owner's address, not the recipient's Project address.
+    await act(async () => {
+      expect(await createDefaultActionExecutor().execute('widgets.item.refresh', { ref: sharedRef }, {
+        surface: 'ui', serverId: connection.home.id, expectedAccountId: 'viewer',
+      })).toMatchObject({ ok: false, errorCode: 'widget_refresh_unavailable' });
+    });
+    expect(await createDefaultActionExecutor().execute('widgets.item.refresh', {
+      ref: { ...sharedRef, surface: { ...sharedRef.surface, artifactId: 'another-dashboard' } },
+    }, { surface: 'ui', serverId: connection.home.id, expectedAccountId: 'viewer' }))
+      .toMatchObject({ ok: false, errorCode: 'widget_area_owner_mismatch' });
+    await vi.waitFor(() => expect(hook.getCurrent().port).not.toBeNull());
+    await act(async () => {
+      expect(await createDefaultActionExecutor().execute('widgets.area.layout.select', { surface: sharedRef.surface }, {
+        surface: 'ui', serverId: connection.home.id, expectedAccountId: 'viewer',
+      })).toMatchObject({ ok: true });
+    });
+    expect(selectedLayouts).toEqual([]);
     const { ProjectOverviewWidgets } =
       await import('@/components/projects/detail/ProjectOverviewWidgets');
     const { ProjectBuiltinWidgetBody } =
@@ -1377,6 +1446,10 @@ it('keeps an attached shared Project dashboard owner distinct from its viewer un
         screen.getTextContent(),
       ).not.toBeNull(),
     );
+    // The host renderer supplies geometry but does not dispatch the browser's layout event.
+    await act(async () => {
+      screen.findHostByTestId('project-overview-main.widget.shared-summary')!.props.onLayout();
+    });
     await vi.waitFor(() => {
       const bodyId = 'project-overview-main.widget.shared-summary.body';
       const native = screen
@@ -1406,6 +1479,19 @@ it('keeps an attached shared Project dashboard owner distinct from its viewer un
       ).not.toBeNull(),
     );
     expect(screen.findByTestId('project-overview-main.widget.code')).toBeNull();
+    const { ItemRowActions } = await import('@/components/ui/lists/ItemRowActions');
+    const { WidgetAboutPanel } = await import('@/components/widgets/definitions/WidgetAboutPanel');
+    const menu = screen.findAllByType(ItemRowActions).find(node =>
+      node.props.overflowTriggerTestID === 'project-overview-main.widget.shared-summary.menuTrigger');
+    const about = menu?.props.actions.find((entry: { id: string }) => entry.id === 'about');
+    expect(about?.onPress).toBeTypeOf('function');
+    await act(async () => { about.onPress(); });
+    const panels = screen.findAllByType(WidgetAboutPanel);
+    expect(panels).toHaveLength(1);
+    expect(panels[0]!.props.descriptor.definition).toEqual({ kind: 'builtin', id: 'project_about' });
+    expect(panels[0]!.props.inputs.onEdit).toBeUndefined();
+    expect(screen.findByTestId('project-overview-main.widget.shared-summary.about.refreshNow')).toBeNull();
+    await act(async () => { panels[0]!.props.onClose(); });
     expect(area.writes).toEqual([]);
     const { captureLazyActionAccountContext } =
       await import('@/sync/ops/actions/actionAccountContext');

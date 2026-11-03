@@ -6,7 +6,6 @@ import { machineScmBranchList } from '@/sync/ops/scm/machineScm';
 
 const storageGetStateMock = vi.hoisted(() => vi.fn());
 const sessionScmBranchListMock = vi.hoisted(() => vi.fn());
-const resolveRepoScmSessionRequestMock = vi.hoisted(() => vi.fn());
 const resolvePreferredServerIdForSessionIdMock = vi.hoisted(() => vi.fn());
 
 installRepositoryScmCommonModuleMocks({
@@ -23,10 +22,6 @@ vi.mock('@/sync/ops/scm/machineScm', () => ({
 
 vi.mock('@/sync/ops', () => ({
     sessionScmBranchList: (...args: unknown[]) => sessionScmBranchListMock(...args),
-}));
-
-vi.mock('./resolveRepoScmSessionRequest', () => ({
-    resolveRepoScmSessionRequest: (...args: unknown[]) => resolveRepoScmSessionRequestMock(...args),
 }));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId', () => ({
@@ -59,14 +54,6 @@ describe('repoScmBranchService', () => {
                     },
                 },
             },
-            getProjectForSession: (sessionId: string) => sessionId === 'session_1'
-                ? {
-                    key: {
-                        machineId: 'machine-a',
-                        path: '/Users/tester/repo',
-                    },
-                }
-                : null,
         };
     }
 
@@ -74,7 +61,6 @@ describe('repoScmBranchService', () => {
         storageGetStateMock.mockReset();
         storageGetStateMock.mockReturnValue({});
         sessionScmBranchListMock.mockReset();
-        resolveRepoScmSessionRequestMock.mockReset();
         resolvePreferredServerIdForSessionIdMock.mockReset();
         resolvePreferredServerIdForSessionIdMock.mockReturnValue(undefined);
         vi.restoreAllMocks();
@@ -105,8 +91,19 @@ describe('repoScmBranchService', () => {
             machineId: 'machine-a',
             path: '~/repo',
             homeDir: '/Users/server-b',
+            includeRemotes: true,
         });
 
+        expect(machineScmBranchList).toHaveBeenCalledWith(
+            'machine-a',
+            { cwd: '/Users/server-a/repo', includeRemotes: false },
+            { serverId: 'server-a' },
+        );
+        expect(machineScmBranchList).toHaveBeenCalledWith(
+            'machine-a',
+            { cwd: '/Users/server-b/repo', includeRemotes: true },
+            { serverId: 'server-b' },
+        );
         expect(service.readCachedBranchesForMachinePath({
             serverId: 'server-a',
             machineId: 'machine-a',
@@ -118,49 +115,8 @@ describe('repoScmBranchService', () => {
             machineId: 'machine-a',
             path: '~/repo',
             homeDir: '/Users/server-b',
-        })[0]?.name).toBe('server-b:/Users/server-b/repo');
-    });
-
-    it('fetches repo branches for a machine/path through the canonical machine SCM layer', async () => {
-        storageGetStateMock.mockReturnValue({
-            machines: {
-                'machine-a': {
-                    id: 'machine-a',
-                    metadata: {
-                        homeDir: '/Users/tester',
-                    },
-                },
-            },
-        } as any);
-        vi.mocked(machineScmBranchList).mockResolvedValue({
-            success: true,
-            branches: [
-                { name: 'main', type: 'local', isCurrent: true, upstream: 'origin/main' },
-                { name: 'origin/release', type: 'remote', isCurrent: false, upstream: null },
-            ],
-        } as any);
-
-        const { RepoScmBranchService } = await import('./repoScmBranchService');
-        const service = new RepoScmBranchService();
-        const branches = await service.fetchBranchesForMachinePath({
-            serverId: 'server-a',
-            machineId: 'machine-a',
-            path: '~/repo',
             includeRemotes: true,
-        });
-
-        expect(machineScmBranchList).toHaveBeenCalledWith(
-            'machine-a',
-            {
-                cwd: '/Users/tester/repo',
-                includeRemotes: true,
-            },
-            { serverId: 'server-a' },
-        );
-        expect(branches).toEqual([
-            { name: 'main', type: 'local', isCurrent: true, upstream: 'origin/main' },
-            { name: 'origin/release', type: 'remote', isCurrent: false, upstream: null },
-        ]);
+        })[0]?.name).toBe('server-b:/Users/server-b/repo');
     });
 
     it('deduplicates concurrent branch requests for the same machine/path and remote toggle', async () => {
@@ -211,12 +167,6 @@ describe('repoScmBranchService', () => {
 
     it('hydrates the shared machine/path branch cache when a session branch request resolves a repo identity', async () => {
         storageGetStateMock.mockReturnValue(createSessionBranchState() as any);
-        resolveRepoScmSessionRequestMock.mockReturnValue({
-            sessionId: 'session_1',
-            machineId: 'machine-a',
-            resolvedPath: '/Users/tester/repo',
-            repoIdentityKey: 'machine-a:/Users/tester/repo',
-        });
         vi.mocked(machineScmBranchList).mockResolvedValue({
             success: true,
             branches: [
@@ -247,12 +197,6 @@ describe('repoScmBranchService', () => {
     it('carries the preferred session server into machine-backed branch requests', async () => {
         storageGetStateMock.mockReturnValue(createSessionBranchState() as any);
         resolvePreferredServerIdForSessionIdMock.mockReturnValue('server-owned');
-        resolveRepoScmSessionRequestMock.mockReturnValue({
-            sessionId: 'session_1',
-            machineId: 'machine-a',
-            resolvedPath: '/Users/tester/repo',
-            repoIdentityKey: 'machine-a:/Users/tester/repo',
-        });
         vi.mocked(machineScmBranchList).mockResolvedValue({
             success: true,
             branches: [{ name: 'main', type: 'local', isCurrent: true, upstream: 'origin/main' }],
@@ -281,12 +225,6 @@ describe('repoScmBranchService', () => {
 
     it('deduplicates concurrent session and machine/path branch requests for the same repo identity', async () => {
         storageGetStateMock.mockReturnValue(createSessionBranchState() as any);
-        resolveRepoScmSessionRequestMock.mockReturnValue({
-            sessionId: 'session_1',
-            machineId: 'machine-a',
-            resolvedPath: '/Users/tester/repo',
-            repoIdentityKey: 'machine-a:/Users/tester/repo',
-        });
         const deferred = {
             resolve: (_value: any): void => {},
         };
@@ -323,12 +261,6 @@ describe('repoScmBranchService', () => {
 
     it('falls back to the session branch RPC when the machine branch RPC fails for a session-scoped request', async () => {
         storageGetStateMock.mockReturnValue(createSessionBranchState() as any);
-        resolveRepoScmSessionRequestMock.mockReturnValue({
-            sessionId: 'session_1',
-            machineId: 'machine-a',
-            resolvedPath: '/Users/tester/repo',
-            repoIdentityKey: 'machine-a:/Users/tester/repo',
-        });
         vi.mocked(machineScmBranchList).mockResolvedValue({
             success: false,
             error: 'Machine unavailable',
@@ -361,12 +293,6 @@ describe('repoScmBranchService', () => {
 
     it('does not let an invalidated in-flight request repopulate the branch cache with stale data', async () => {
         storageGetStateMock.mockReturnValue(createSessionBranchState() as any);
-        resolveRepoScmSessionRequestMock.mockReturnValue({
-            sessionId: 'session_1',
-            machineId: 'machine-a',
-            resolvedPath: '/Users/tester/repo',
-            repoIdentityKey: 'machine-a:/Users/tester/repo',
-        });
 
         let resolveBranches:
             | ((value: {
@@ -410,12 +336,6 @@ describe('repoScmBranchService', () => {
 
     it('keeps cached branches available after invalidation so callers can render immediately while refreshing', async () => {
         storageGetStateMock.mockReturnValue(createSessionBranchState() as any);
-        resolveRepoScmSessionRequestMock.mockReturnValue({
-            sessionId: 'session_1',
-            machineId: 'machine-a',
-            resolvedPath: '/Users/tester/repo',
-            repoIdentityKey: 'machine-a:/Users/tester/repo',
-        });
         vi.mocked(machineScmBranchList).mockResolvedValue({
             success: true,
             branches: [{ name: 'main', type: 'local', isCurrent: true, upstream: null }],

@@ -39,6 +39,18 @@ function source(): VoiceBriefSource {
 }
 
 describe('Voice brief from the mounted Inbox', () => {
+    it.each([undefined, true, false])('carries current delegated-approval guidance with the native exception (enabled=%s)', (canApproveRequests) => {
+        const brief = buildVoiceBrief({ inbox: source(), settings: { voice: { canApproveRequests } } });
+        const guidance: unknown = JSON.parse(brief.context).approval;
+        expect(guidance).toEqual(expect.stringContaining(canApproveRequests === false ? 'Voice approvals are off' : 'Voice approvals are enabled'));
+        expect(guidance).toEqual(expect.stringContaining('Native Codex Realtime cannot decide requests'));
+        if (canApproveRequests === false) {
+            expect(guidance).toEqual(expect.stringContaining('A tap in the request UI is required'));
+            expect(guidance).not.toEqual(expect.stringContaining('Use the canonical request tools to approve or deny'));
+        } else {
+            expect(guidance).toEqual(expect.stringContaining('Use the canonical request tools to approve or deny'));
+        }
+    });
     it.each([
         { total: 2, working: 0, needsYou: 0, stalled: 2, finished: 0, attentionPrimary: null },
         { total: 2, working: 0, needsYou: 2, stalled: 0, finished: 0, attentionPrimary: null },
@@ -79,11 +91,13 @@ describe('Voice brief from the mounted Inbox', () => {
     });
     it('uses the Inbox’s readable session identity even when notification previews are status-only', () => {
         const inbox = source();
-        const sessions = [...inbox.sessionPresentation.sessionsNeedingAttention.map(entry => entry.candidate.session),
-            ...inbox.sessionPresentation.readySessions.map(candidate => candidate.session)].map(session => createSessionFixture({
-                ...session, viewer: { ...session.viewer!, attention: { ...session.viewer!.attention, presentation: 'status_only' } },
-            }));
-        const sessionPresentation = buildInboxSessionPresentation({ overview: buildActivityOverviewSnapshot({ sessions, nowMs: 1000 }) });
+        const candidates = [...inbox.sessionPresentation.sessionsNeedingAttention.map(entry => entry.candidate),
+            ...inbox.sessionPresentation.readySessions].map(candidate => buildSessionActivityAttention({ session: {
+                ...candidate.session, viewer: { ...candidate.session.viewer!,
+                    attention: { ...candidate.session.viewer!.attention, presentation: 'status_only' as const } },
+            }, presentationSource: candidate.presentationSource, nowMs: 1_000 }));
+        const sessions = candidates.map(candidate => candidate.session);
+        const sessionPresentation = buildInboxSessionPresentation({ overview: buildActivityOverviewFromCandidates(candidates) });
         const brief = buildVoiceBrief({ inbox: { ...inbox, sessionPresentation }, settings: { voice: { privacy: { shareSessionSummary: true } } } });
         expect(brief.items).toHaveLength(3);
         for (const session of sessions) {

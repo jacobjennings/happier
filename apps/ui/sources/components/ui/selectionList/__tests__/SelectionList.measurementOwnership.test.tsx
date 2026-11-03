@@ -106,12 +106,6 @@ describe('SelectionList measurement ownership (R1)', () => {
         // One visible body + one offscreen measure mirror. A third mount is a
         // second measurer, i.e. a second owner of the same question.
         expect(screen.findAllByType(SelectionListBody).length).toBe(2);
-    });
-
-    it('renders exactly one offscreen measure host on the measured-native path', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps()} />);
-
         expect(countMeasureHosts(screen)).toBe(1);
     });
 

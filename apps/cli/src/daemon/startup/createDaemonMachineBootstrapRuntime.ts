@@ -310,7 +310,9 @@ export function createDaemonMachineBootstrapRuntime(
         DaemonProviderBrokerRuntime['checkRunnerCredentialSelectionCurrentness'];
       close(): Promise<void>;
     }>>;
-  }>,
+
+agentIsolation?: ApiMachineClientLifecycleDependencies['agentIsolation'];
+}>,
 ): BootstrapRuntime & Pick<ApiMachineClient, 'retireProjectFiniteExecution'> {
   // The same authenticated constructor facts used by Machine work-summary
   // composition. A later claim cannot choose its Account, Home or installation.
@@ -459,6 +461,8 @@ export function createDaemonMachineBootstrapRuntime(
             serviceManaged: params.startupSource === 'background-service',
             ...(params.serviceLabel ? { serviceLabel: params.serviceLabel } : null),
           }, {
+agentIsolation: params.agentIsolation,
+
             controlPort: params.controlPort,
             isDaemonQuiescing: params.isPublicationQuiescing ?? params.isShuttingDown,
             readSpawnFailureLimits: params.readSpawnFailureLimits,
@@ -547,6 +551,7 @@ export function createDaemonMachineBootstrapRuntime(
           await apiMachine.enqueueSessionPendingByMachine(request, options),
         machineActionDirectTargetTransport: {
           machineId: registeredMachine.id,
+          machineServiceAction: request => apiMachine.executeMachineServiceAction(request),
           invoke: async (method, request, options) => await apiMachine.invokeLocalMachineAction(method, request, options),
         },
       });
@@ -624,6 +629,7 @@ export function createDaemonMachineBootstrapRuntime(
               await automationApiMachine.enqueueSessionPendingByMachine(request, options),
             machineActionDirectTargetTransport: {
               machineId: runtimeMachineId,
+              machineServiceAction: request => automationApiMachine.executeMachineServiceAction(request),
               invoke: async (method, request, options) => {
                 const local = options?.localActionContext;
                 if (!local?.executionRunWorkflowRunId) return await automationApiMachine.invokeLocalMachineAction(method, request, options);

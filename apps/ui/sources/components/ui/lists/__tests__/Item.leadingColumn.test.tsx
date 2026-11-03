@@ -141,6 +141,23 @@ describe('Item leading column (page sections)', () => {
         expect(leadingColumn(screen, 'Show thinking')).toBeNull();
     });
 
+    it('keeps an add row\'s plus in its own column without moving the titles of the rows it adds to', async () => {
+        const { Item } = await import('../Item');
+        const { ItemAddRow } = await import('../ItemAddRow');
+        const { ItemGroup } = await import('../ItemGroup');
+        const { ListPresentationProvider } = await import('../listPresentation');
+        const screen = await renderScreen(
+            <ListPresentationProvider value="page">
+                <ItemGroup title="Setup">
+                    <Item title="Step 1" onPress={() => {}} />
+                    <ItemAddRow title="Add a step" onPress={() => {}} />
+                </ItemGroup>
+            </ListPresentationProvider>,
+        );
+        expect(leadingColumn(screen, 'Step 1')).toBeNull();
+        expect(leadingColumn(screen, 'Add a step')).not.toBeNull();
+    });
+
     it('leaves grouped lists (menus, pickers) with only their own icons', async () => {
         const screen = await renderSection('grouped', [
             { title: 'Rename', withIcon: true },

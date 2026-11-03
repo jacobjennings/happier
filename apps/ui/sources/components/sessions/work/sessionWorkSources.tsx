@@ -19,10 +19,11 @@ import {
 import { describeWorkflowRunState } from '@/components/workflows/presentation/workflowLifecyclePresentation';
 import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
 import { getStorage } from '@/sync/domains/state/storage';
-import type { Session } from '@/sync/domains/state/storageTypes';
+import { readSessionPresentationRecord, readSessionPresentationInputSource, readSessionPresentationInputDisplay,
+    type SessionRelationRecord, type SessionPresentationRecord } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { t } from '@/text';
 import { formatAsOfTime } from '@/utils/time/formatAsOfTime';
-import { readSessionWorkStalled, readSessionWorkStatusFacts } from '@/components/work/status/sessionWorkStatusFacts';
+import { sessionWorkStalledFromStatus, readSessionWorkStatusFacts } from '@/components/work/status/sessionWorkStatusFacts';
 import { getSessionWorkContext } from '@/utils/sessions/sessionUtils';
 import { sessionDisplayTitle } from '@/utils/sessions/sessionDisplayTitle';
 import { describeActionOperationStatusLabel, resolveActionOperationStatus } from '@/components/inbox/actionOperations/actionOperationPresentation';
@@ -76,26 +77,46 @@ export function useSessionWorkSources(): SessionWorkSources | null {
     return React.useContext(SessionWorkSourcesContext);
 }
 
-const EMPTY_SESSIONS: readonly Session[] = Object.freeze([]);
+const EMPTY_SESSIONS: readonly (SessionPresentationRecord | undefined)[] = Object.freeze([]);
+
+function mapReportInputs<T>(inputs: readonly (SessionPresentationRecord | undefined)[], serverId: string | null,
+    project: (source: SessionRelationRecord) => T): T[] {
+    const result: T[] = [];
+    for (let index = 0; index < inputs.length; index += 2) {
+        const record = inputs[index];
+        if (!record) continue;
+        const base = inputs[index + 1];
+        result.push(project({ record, serverId: serverId ?? undefined,
+            baseSession: base && 'agentState' in base ? base : undefined }));
+    }
+    return result;
+}
 
 function normalizeId(value: string | null | undefined): string | null {
     const trimmed = value?.trim();
     return trimmed ? trimmed : null;
 }
 
-export function toWorkReportSessionSource(session: Session, nowMs: number): WorkReportSessionSource {
-    const agentId = readSessionPresentationAgentId(session);
-    const context = getSessionWorkContext(session, session.serverId);
+export function toWorkReportSessionSource(
+    input: SessionRelationRecord,
+    nowMs: number,
+): WorkReportSessionSource {
+    const session = readSessionPresentationRecord(input);
+    const presentationSource = readSessionPresentationInputSource(input);
+    const display = readSessionPresentationInputDisplay(input);
+    const agentId = readSessionPresentationAgentId(display);
+    const context = getSessionWorkContext(display, display.serverId);
+    const statusFacts = readSessionWorkStatusFacts(session, nowMs, presentationSource);
     return {
         sessionId: session.id,
-        managerSessionId: normalizeId(readSessionManagerSessionIdV1(session)),
+        managerSessionId: normalizeId(readSessionManagerSessionIdV1(presentationSource?.relations ?? session)),
         // The one display-title owner: a row whose content is still undecided names itself like the sidebar does
         // ("Encrypted session"), not "Untitled session", until hydration settles it.
-        title: sessionDisplayTitle(session),
+        title: sessionDisplayTitle(display),
         agentId,
         facts: context ? [context] : [],
-        statusFacts: readSessionWorkStatusFacts(session, nowMs),
-        stalled: readSessionWorkStalled(session, nowMs),
+        statusFacts,
+        stalled: sessionWorkStalledFromStatus(presentationSource?.lifecycle ?? session, statusFacts),
         archived: typeof session.archivedAt === 'number',
     };
 }
@@ -152,11 +173,15 @@ export function useSessionWorkSourcesOwner(params: Readonly<{
     });
     const managedRuns = useSessionManagedWorkflowRuns({ sessionId: params.sessionId, serverId: params.serverId, enabled });
     const reportSessions = getStorage()(useShallow((state) => (
-        enabled ? selectSessionReportSubtree(state.sessions, params.sessionId, params.serverId, state.sessionListRowsByServerId) : EMPTY_SESSIONS
+        enabled ? selectSessionReportSubtree(state.sessions, params.sessionId, params.serverId, state.sessionListRowsByServerId)
+            .flatMap(input => [readSessionPresentationRecord(input), 'record' in input ? input.baseSession : undefined]) : EMPTY_SESSIONS
     )));
     // Identity also depends on the named machine/workspace, not just the Session record. Only
     // changed displayed facts invalidate Work; unrelated machine or settings updates stay local.
-    const reportContexts = getStorage()(useShallow(() => reportSessions.map(session => getSessionWorkContext(session, session.serverId))));
+    const reportContexts = getStorage()(useShallow(() => mapReportInputs(reportSessions, params.serverId, input => {
+        const display = readSessionPresentationInputDisplay(input);
+        return getSessionWorkContext(display, display.serverId);
+    })));
     const ownTriggerRunIds = React.useMemo(
         () => readOwnTriggerRunIds({ sessionId: params.sessionId, runs: managedRuns.runs }),
         [managedRuns.runs, params.sessionId],
@@ -175,7 +200,7 @@ export function useSessionWorkSourcesOwner(params: Readonly<{
             accountId: operationAccountId,
             actionOperations,
             describeOperationStatus,
-            reportSessions: reportSessions.map((session) => toWorkReportSessionSource(session, nowMs)),
+            reportSessions: mapReportInputs(reportSessions, params.serverId, input => toWorkReportSessionSource(input, nowMs)),
             agentEntries: entries,
             workflowHeadlineRuns: workflowActivity.activeRuns,
             managedRuns: toManagedRunSources(managedRuns),

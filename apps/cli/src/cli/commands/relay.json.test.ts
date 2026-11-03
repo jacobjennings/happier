@@ -4,13 +4,38 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
 import { reloadConfiguration } from '@/configuration';
-import { getActiveServerProfile } from '@/server/serverProfiles';
+import { addServerProfile, getActiveServerProfile, listServerProfiles } from '@/server/serverProfiles';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
 import { commandRegistry } from '@/cli/commandRegistry';
 // Prepare the real lazy command owner during collection, before output capture.
 import './relay';
+
+// Local-install cases substitute the relay host engine with one that reports a running relay at `relayUrl`;
+// every other case runs the real engine.
+const relayHostEngineFake = vi.hoisted(() => ({ relayUrl: null as string | null }));
+vi.mock('@happier-dev/cli-common/relayHost', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@happier-dev/cli-common/relayHost')>();
+    return {
+        ...actual,
+        createRelayHostEngine: (...args: Parameters<typeof actual.createRelayHostEngine>) => {
+            const relayUrl = relayHostEngineFake.relayUrl;
+            if (relayUrl === null) return actual.createRelayHostEngine(...args);
+            return {
+                readStatus: async () => ({
+                    installed: true,
+                    version: '0.2.4',
+                    service: { active: true, enabled: true },
+                    baseUrl: relayUrl,
+                    healthy: true,
+                }),
+                installOrUpdate: async () => ({ relayUrl, mode: 'user' }),
+                control: async () => undefined,
+            } as unknown as ReturnType<typeof actual.createRelayHostEngine>;
+        },
+    };
+});
 
 function createFakeSsh(scenario: Readonly<{
     outputs?: readonly Readonly<{ status?: number; stdout?: string; stderr?: string }>[];
@@ -160,6 +185,7 @@ describe('happier relay --json', () => {
     });
 
     afterEach(async () => {
+        relayHostEngineFake.relayUrl = null;
         envScope.restore();
         reloadConfiguration();
         if (home) {
@@ -246,39 +272,17 @@ describe('happier relay --json', () => {
         }
     });
 
-    it('returns a stable error code for invalid arguments', async () => {
+    it.each([
+        ['a missing relay URL', ['relay', 'set', '--json']],
+        ['an invalid relay URL', ['relay', 'set', 'notaurl', '--json']],
+    ])('returns the stable invalid_arguments error code for %s', async (_case, args) => {
         const output = captureConsoleLogAndMuteStdout();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
-            expect(commandRegistry.relay).toBeDefined();
-
             await commandRegistry.relay({
-                args: ['relay', 'set', '--json'],
-                rawArgv: ['node', 'happier', 'relay', 'set', '--json'],
-                terminalRuntime: null,
-            });
-
-            const parsed = JSON.parse(output.logs.join('\n').trim());
-            expect(parsed.ok).toBe(false);
-            expect(parsed.error?.code).toBe('invalid_arguments');
-            expect(process.exitCode).toBe(1);
-        } finally {
-            output.restore();
-            process.exitCode = prevExitCode;
-        }
-    });
-
-    it('returns invalid_arguments for an invalid relay URL', async () => {
-        const output = captureConsoleLogAndMuteStdout();
-        const prevExitCode = process.exitCode;
-        process.exitCode = undefined;
-        try {
-            expect(commandRegistry.relay).toBeDefined();
-
-            await commandRegistry.relay({
-                args: ['relay', 'set', 'notaurl', '--json'],
-                rawArgv: ['node', 'happier', 'relay', 'set', 'notaurl', '--json'],
+                args,
+                rawArgv: ['node', 'happier', ...args],
                 terminalRuntime: null,
             });
 
@@ -650,89 +654,13 @@ describe('happier relay --json', () => {
             const parsed = JSON.parse(output.logs.join('\n').trim());
             expect(parsed.ok).toBe(false);
             expect(parsed.kind).toBe('relay_host');
-            expect(parsed.error?.code).toBe('unknown_error');
+            expect(parsed.error?.code).toBe('invalid_arguments');
             expect(String(parsed.error?.message ?? '')).toContain('relay binary not found');
-            expect(process.exitCode).toBe(2);
+            expect(process.exitCode).toBe(1);
         } finally {
             output.restore();
             process.exitCode = prevExitCode;
         }
-    });
-
-    it('reconciles the active server profile to the installed local relay after relay host install', async () => {
-        const payloadRoot = await createTempDir('happier-first-party-payload-local-profile-');
-        writeFileSync(join(payloadRoot, 'happier-server'), '#!/usr/bin/env bash\necho stub\n', 'utf8');
-        chmodSync(join(payloadRoot, 'happier-server'), 0o755);
-
-        envScope.patch({
-            HAPPIER_TEST_FIRST_PARTY_PAYLOAD_ROOT: undefined,
-            HAPPIER_TEST_FIRST_PARTY_PAYLOAD_VERSION_ID: undefined,
-        });
-
-        const relayUrl = 'http://127.0.0.1:3005';
-        vi.resetModules();
-        vi.doMock('@happier-dev/cli-common/relayHost', () => ({
-            createRelayHostEngine: () => ({
-                readStatus: async () => ({
-                    installed: true,
-                    version: '0.2.4',
-                    service: { active: true, enabled: true },
-                    baseUrl: relayUrl,
-                    healthy: true,
-                }),
-                installOrUpdate: async () => ({
-                    relayUrl,
-                    mode: 'user',
-                }),
-                control: async () => undefined,
-            }),
-        }));
-
-        const { commandRegistry: freshCommandRegistry } = await import('@/cli/commandRegistry');
-
-        const installOutput = captureConsoleLogAndMuteStdout();
-        const prevExitCode = process.exitCode;
-        process.exitCode = undefined;
-        try {
-            await freshCommandRegistry.relay({
-                args: ['relay', 'host', 'install', '--server-binary', join(payloadRoot, 'happier-server'), '--json'],
-                rawArgv: ['node', 'happier', 'relay', 'host', 'install', '--server-binary', join(payloadRoot, 'happier-server'), '--json'],
-                terminalRuntime: null,
-            });
-
-            const installParsed = JSON.parse(installOutput.logs.join('\n').trim());
-            expect(installParsed.ok).toBe(true);
-            expect(installParsed.kind).toBe('relay_host_install');
-            expect(installParsed.data?.relayUrl).toBe(relayUrl);
-            expect(process.exitCode).toBe(0);
-        } finally {
-            installOutput.restore();
-            process.exitCode = prevExitCode;
-        }
-
-        const currentOutput = captureConsoleLogAndMuteStdout();
-        const currentPrevExitCode = process.exitCode;
-        process.exitCode = undefined;
-        try {
-            await freshCommandRegistry.server({
-                args: ['server', 'current', '--json'],
-                rawArgv: ['node', 'happier', 'server', 'current', '--json'],
-                terminalRuntime: null,
-            });
-
-            const currentParsed = JSON.parse(currentOutput.logs.join('\n').trim());
-            expect(currentParsed.ok).toBe(true);
-            expect(currentParsed.kind).toBe('server_current');
-            expect(currentParsed.data?.active?.serverUrl).toBe(relayUrl);
-            expect(currentParsed.data?.active?.id).not.toBe('cloud');
-            expect(process.exitCode).toBe(0);
-        } finally {
-            currentOutput.restore();
-            process.exitCode = currentPrevExitCode;
-            vi.unmock('@happier-dev/cli-common/relayHost');
-            vi.resetModules();
-        }
-        await removeTempDir(payloadRoot);
     });
 
     it('preserves the active server profile when relay host install uses --preserve-active-server', async () => {
@@ -746,33 +674,14 @@ describe('happier relay --json', () => {
         });
 
         const relayUrl = 'http://127.0.0.1:3005';
-        vi.resetModules();
-        const { getActiveServerProfile, listServerProfiles } = await import('@/server/serverProfiles');
         const activeBeforeInstall = await getActiveServerProfile();
-        vi.doMock('@happier-dev/cli-common/relayHost', () => ({
-            createRelayHostEngine: () => ({
-                readStatus: async () => ({
-                    installed: true,
-                    version: '0.2.4',
-                    service: { active: true, enabled: true },
-                    baseUrl: relayUrl,
-                    healthy: true,
-                }),
-                installOrUpdate: async () => ({
-                    relayUrl,
-                    mode: 'user',
-                }),
-                control: async () => undefined,
-            }),
-        }));
-
-        const { commandRegistry: freshCommandRegistry } = await import('@/cli/commandRegistry');
+        relayHostEngineFake.relayUrl = relayUrl;
 
         const installOutput = captureConsoleLogAndMuteStdout();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
-            await freshCommandRegistry.relay({
+            await commandRegistry.relay({
                 args: ['relay', 'host', 'install', '--server-binary', join(payloadRoot, 'happier-server'), '--preserve-active-server', '--json'],
                 rawArgv: ['node', 'happier', 'relay', 'host', 'install', '--server-binary', join(payloadRoot, 'happier-server'), '--preserve-active-server', '--json'],
                 terminalRuntime: null,
@@ -795,8 +704,6 @@ describe('happier relay --json', () => {
         const profiles = await listServerProfiles();
         expect(profiles.some((profile) => profile.id !== activeBeforeInstall.id && profile.serverUrl === relayUrl)).toBe(true);
 
-        vi.unmock('@happier-dev/cli-common/relayHost');
-        vi.resetModules();
         await removeTempDir(payloadRoot);
     });
 
@@ -814,9 +721,8 @@ describe('happier relay --json', () => {
             HAPPIER_TEST_FIRST_PARTY_PAYLOAD_VERSION_ID: undefined,
             HAPPIER_WEBAPP_URL: publicRelayUrl,
         });
+        reloadConfiguration();
 
-        vi.resetModules();
-        const { addServerProfile } = await import('@/server/serverProfiles');
         await addServerProfile({
             name: 'local relay',
             serverUrl: localRelayUrl,
@@ -830,31 +736,13 @@ describe('happier relay --json', () => {
             use: true,
         });
 
-        vi.resetModules();
-        vi.doMock('@happier-dev/cli-common/relayHost', () => ({
-            createRelayHostEngine: () => ({
-                readStatus: async () => ({
-                    installed: true,
-                    version: '0.2.4',
-                    service: { active: true, enabled: true },
-                    baseUrl: localRelayUrl,
-                    healthy: true,
-                }),
-                installOrUpdate: async () => ({
-                    relayUrl: localRelayUrl,
-                    mode: 'user',
-                }),
-                control: async () => undefined,
-            }),
-        }));
-
-        const { commandRegistry: freshCommandRegistry } = await import('@/cli/commandRegistry');
+        relayHostEngineFake.relayUrl = localRelayUrl;
 
         const installOutput = captureConsoleLogAndMuteStdout();
         const prevExitCode = process.exitCode;
         process.exitCode = undefined;
         try {
-            await freshCommandRegistry.relay({
+            await commandRegistry.relay({
                 args: ['relay', 'host', 'install', '--server-binary', join(payloadRoot, 'happier-server'), '--json'],
                 rawArgv: ['node', 'hprev', 'relay', 'host', 'install', '--server-binary', join(payloadRoot, 'happier-server'), '--json'],
                 terminalRuntime: null,
@@ -867,17 +755,14 @@ describe('happier relay --json', () => {
         } finally {
             installOutput.restore();
             process.exitCode = prevExitCode;
-            vi.unmock('@happier-dev/cli-common/relayHost');
         }
 
-        const { getActiveServerProfile } = await import('@/server/serverProfiles');
         const active = await getActiveServerProfile();
         expect(active.id).toBe(publicProfile.id);
         expect(active.serverUrl).toBe(publicRelayUrl);
         expect(active.localServerUrl).toBe(localRelayUrl);
         expect(active.webappUrl).toBe(publicRelayUrl);
 
-        vi.resetModules();
         await removeTempDir(payloadRoot);
     });
 
@@ -975,6 +860,13 @@ describe('happier relay --json', () => {
             expect(parsed.kind).toBe('relay_host_install');
             expect(parsed.data?.relayUrl).toBe('http://127.0.0.1:3005');
             expect(process.exitCode).toBe(0);
+
+            const remoteInstallCommands = fakeSsh.readInvocations()
+                .map((argv) => argv.join(' '))
+                .filter((command) => command.includes(' relay host install '));
+            expect(remoteInstallCommands).toHaveLength(1);
+            expect(remoteInstallCommands[0]).toContain('--env');
+            expect(remoteInstallCommands[0]).toContain('HAPPIER_DB_PROVIDER=sqlite');
         } finally {
             output.restore();
             process.exitCode = prevExitCode;

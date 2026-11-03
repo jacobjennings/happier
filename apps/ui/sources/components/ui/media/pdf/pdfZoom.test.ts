@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PDF_ZOOM_PRESETS, resolvePdfScale, resolvePdfCanvasSize, anchorPdfZoom, readPdfViewport } from './pdfZoom';
+import { resolvePdfScale, resolvePdfCanvasSize, anchorPdfZoom, readPdfViewport } from './pdfZoom';
 
 describe('PDF zoom', () => {
     it('resolves fit modes and presets while applying canvas bounds only to raster density', () => {
@@ -8,7 +8,6 @@ describe('PDF zoom', () => {
         expect(resolvePdfScale('fit-page', geometry)).toBe(0.75);
         expect(resolvePdfScale(0.1, geometry)).toBe(0.1);
         expect(resolvePdfScale(6, geometry)).toBe(6);
-        expect(PDF_ZOOM_PRESETS).toEqual([0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]);
         const canvas = resolvePdfCanvasSize({ width: 3000, height: 6000, devicePixelRatio: 3 });
         expect(canvas.height).toBe(4096);
         expect(canvas.width).toBe(2048);

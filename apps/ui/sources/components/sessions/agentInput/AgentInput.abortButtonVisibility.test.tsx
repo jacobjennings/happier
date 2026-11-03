@@ -1,10 +1,12 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// The static storage graph reaches the Socket.IO transport; register its external boundary before any import.
+vi.mock('socket.io-client', async (importOriginal) =>
+    (await import('@/dev/testkit/harness/serverAccountConnectionHarness')).createSocketIoClientBoundary(importOriginal));
 import { act } from 'react-test-renderer';
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import type { AutocompleteSuggestion } from '@/components/autocomplete/autocompleteTypes';
 import type { MultiTextInputProps } from '@/components/ui/forms/MultiTextInput';
-import { storage } from '@/sync/domains/state/storageStore';
 import { installSessionPaneRuntimeTestHarness } from '@/components/sessions/panes/sessionPaneRuntimeTestHarness';
 import { installAgentInputCommonModuleMocks } from './agentInputTestHelpers';
 
@@ -17,6 +19,7 @@ installAgentInputCommonModuleMocks({
     },
 });
 const runtime = installSessionPaneRuntimeTestHarness();
+const { storage } = await import('@/sync/domains/state/storageStore');
 let AgentInput: typeof import('./AgentInput')['AgentInput'];
 let MultiTextInput: typeof import('@/components/ui/forms/MultiTextInput')['MultiTextInput'];
 

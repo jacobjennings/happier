@@ -157,7 +157,7 @@ export async function commitDaemonLaunchSession(input: Readonly<{
       await archiveSessionOnceInactive({ token: input.credentials.token, sessionId: created.id })
         .catch(() => undefined);
     }
-    return { ok: false, result: !attach.ok ? mapExistingSessionAttachFailureToSpawnError(attach.reason) : {
+    return { ok: false, result: !attach.ok ? mapExistingSessionAttachFailureToSpawnError(attach) : {
       type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED,
       errorMessage: 'team_credential_provider_binding_unavailable',
     } };
@@ -198,6 +198,7 @@ export function withoutFreshSessionCreationFields(options: SpawnSessionOptions):
     initialAccess: _initialAccess,
     initialTriggers: _initialTriggers,
     initialTitle: _initialTitle,
+    authoringOrigin: _authoringOrigin,
     identity: _initialIdentity,
     memoryEnabled: _initialMemoryEnabled,
     promptStack: _initialPromptStack,

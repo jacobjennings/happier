@@ -6,7 +6,6 @@ import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { renderDropdownItemTriggerRightElement } from '@/components/ui/forms/dropdown/renderDropdownItemTriggerRightElement';
 import { resolveFieldBoxColors } from '@/components/ui/forms/fieldBox';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { Text } from '@/components/ui/text/Text';
 
@@ -17,6 +16,8 @@ export type ToolbarSelectItem = Readonly<{
     icon?: React.ReactNode;
     /** Quiet right-aligned facts in the menu row only ("Git · 16"). */
     detail?: string;
+    /** A choice that cannot be taken now keeps its place; its `detail` says why ("Offline"). */
+    disabled?: boolean;
 }>;
 
 /** An operation listed under the choices, after a hairline ("Add a registry…", "Manage registries"). */
@@ -48,6 +49,8 @@ export const ToolbarSelect = React.memo(function ToolbarSelect(props: Readonly<{
     fill?: boolean;
     /** Operations under the choices; picking one runs it and never changes the choice. */
     actions?: ReadonlyArray<ToolbarSelectAction>;
+    /** The trigger's words while nothing is chosen ("Choose a Machine"); without it the first choice stands in. */
+    placeholder?: string;
 }>) {
     const { theme } = useUnistyles();
     const [open, setOpen] = React.useState(false);
@@ -59,6 +62,7 @@ export const ToolbarSelect = React.memo(function ToolbarSelect(props: Readonly<{
             ...(item.detail
                 ? { rightElement: <ToolbarSelectDetail text={item.detail} checked={item.id === props.selectedId} /> }
                 : { checked: item.id === props.selectedId }),
+            ...(item.disabled ? { disabled: true } : {}),
             ...(props.actions?.length ? { category: 'choices' } : {}),
             testID: `${props.testID}:${item.id}`,
         })),
@@ -70,8 +74,9 @@ export const ToolbarSelect = React.memo(function ToolbarSelect(props: Readonly<{
             testID: `${props.testID}:action:${action.id}`,
         })),
     ], [props.actions, props.items, props.selectedId, props.testID]);
-    const selected = props.items.find((item) => item.id === props.selectedId) ?? props.items[0] ?? null;
-    const selectedTitle = selected?.title ?? '';
+    const selected = props.items.find((item) => item.id === props.selectedId)
+        ?? (props.placeholder === undefined ? props.items[0] ?? null : null);
+    const selectedTitle = selected?.title ?? props.placeholder ?? '';
     return (
         <DropdownMenu
             testID={props.testID}
@@ -103,7 +108,7 @@ export const ToolbarSelect = React.memo(function ToolbarSelect(props: Readonly<{
                     accessibilityLabel={`${props.label}: ${selectedTitle}`}
                     expanded={open}
                     hasPopup="menu"
-                    style={{ minHeight: resolveMinimumInteractiveTargetSize(Platform.OS), minWidth: resolveMinimumInteractiveTargetSize(Platform.OS), justifyContent: 'center', ...(props.fill ? { width: '100%' } : null) }}
+                    style={{ justifyContent: 'center', ...(props.fill ? { width: '100%' } : null) }}
                 >
                     {renderDropdownItemTriggerRightElement({
                         detail: selectedTitle,

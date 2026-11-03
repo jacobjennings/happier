@@ -7,6 +7,7 @@ import { useStore } from 'zustand';
 
 import { renderScreen } from '@/dev/testkit';
 import { usePluginSurfaceFocusEligibility } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
+import { useMachineTabCompactLayout } from '@/components/machines/page/useMachineTabCompactLayout';
 import { RetainedPanelSurface } from './RetainedPanelSurface';
 
 
@@ -17,6 +18,68 @@ declare global {
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 describe('RetainedPanelSurface', () => {
+    it.each([false, true])('retains responsive measurements through hidden layouts with suspension %s', async suspendWhenHidden => {
+        let initializations = 0;
+        function MeasuredBody() {
+            const layout = useMachineTabCompactLayout();
+            const [draft] = React.useState(() => { initializations += 1; return 'retained draft'; });
+            return React.createElement('MeasuredBody', { ...layout, draft });
+        }
+        const content = <MeasuredBody />;
+        const panel = (active: boolean) => <RetainedPanelSurface isActive={active} suspendWhenHidden={suspendWhenHidden}>{content}</RetainedPanelSurface>;
+        const tree = await renderScreen(panel(true));
+        const body = () => tree.findByType('MeasuredBody');
+        const onLayout = body().props.onLayout;
+        const measure = async (width: number) => act(async () => onLayout({ nativeEvent: { layout: { x: 0, y: 0, width, height: 200 } } }));
+        expect(body().props.measured).toBe(false);
+        await measure(0);
+        expect(body().props.measured).toBe(false);
+        await measure(900);
+        expect(body().props).toMatchObject({ measured: true, compact: false });
+        await tree.update(panel(false));
+        await measure(0);
+        await tree.update(panel(true));
+        expect(body().props).toMatchObject({ measured: true, compact: false, draft: 'retained draft' });
+        await measure(280);
+        expect(body().props).toMatchObject({ measured: true, compact: true });
+        expect(initializations).toBe(1);
+        await tree.unmount();
+    });
+
+    it('defers Activity content until first presentation, then withdraws effects and preserves its draft', async () => {
+        const store = createStore(() => ({ value: 0 }));
+        let initializations = 0;
+        let effects = 0;
+        let renders = 0;
+        function Editor() {
+            const value = useStore(store, state => state.value);
+            const [draft, setDraft] = React.useState(() => { initializations += 1; return ''; });
+            React.useEffect(() => { effects += 1; return () => { effects -= 1; }; }, []);
+            renders += 1;
+            return React.createElement('ActivityEditor', { value, draft, onChangeText: setDraft });
+        }
+        const content = <Editor />;
+        const panel = (active: boolean) => <RetainedPanelSurface isActive={active} hiddenMode="activity" testID="activity-panel">{content}</RetainedPanelSurface>;
+        const tree = await renderScreen(panel(false));
+        expect(initializations).toBe(0);
+        expect(effects).toBe(0);
+        await tree.update(panel(true));
+        await act(async () => tree.findByType('ActivityEditor').props.onChangeText('unsent draft'));
+        expect(effects).toBe(1);
+        await tree.update(panel(false));
+        expect(effects).toBe(0);
+        expect(tree.findHostByTestId('activity-panel')?.props.pointerEvents).toBe('none');
+        renders = 0;
+        await act(async () => { store.setState({ value: 3 }); });
+        expect(renders).toBe(0);
+        await tree.update(panel(true));
+        expect(tree.findByType('ActivityEditor').props).toMatchObject({ value: 3, draft: 'unsent draft' });
+        expect(initializations).toBe(1);
+        expect(effects).toBe(1);
+        await tree.unmount();
+        expect(effects).toBe(0);
+    });
+
     it('keeps a generic background result consumer live while the surface is hidden by default', async () => {
         const store = createStore(() => ({ result: 'pending' }));
         const observed: string[] = [];

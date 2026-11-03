@@ -9,8 +9,10 @@ import { installSessionRouteCommonModuleMocks } from './sessionRouteTestHelpers'
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let mockShaParam = '';
+let mockServerId: string | undefined;
 const routerReplaceSpy = vi.fn();
 const openDetailsTabSpy = vi.fn();
+const capturedPaneScopeIds: string[] = [];
 const routerMock = createCommitRouteRouterMock();
 
 function createCommitRouteRouterMock() {
@@ -23,6 +25,7 @@ function createCommitRouteRouterMock() {
         params: () => ({
             id: 'session-1',
             sha: mockShaParam,
+            ...(mockServerId ? { serverId: mockServerId } : {}),
         }),
     });
 }
@@ -67,9 +70,10 @@ vi.mock('@/components/ui/panels/shouldRedirectDetailsRouteToPanes', () => ({
 }));
 
 vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
-    useAppPaneScope: () => ({
-        openDetailsTab: openDetailsTabSpy,
-    }),
+    useAppPaneScope: (scopeId: string) => {
+        capturedPaneScopeIds.push(scopeId);
+        return { openDetailsTab: openDetailsTabSpy };
+    },
 }));
 
 vi.mock('@/components/sessions/files/views/SessionCommitDetailsView', () => ({
@@ -84,20 +88,10 @@ vi.mock('@/hooks/session/useHydrateSessionForRoute', () => ({
     }),
 }));
 
-vi.mock('@/components/sessions/panes/url/sessionPaneUrlState', () => ({
-    serializeSessionPaneUrlState: (state: any) => state?.details?.kind === 'commit'
-        ? { details: 'commit', sha: state.details.sha }
-        : {},
-}));
-
-vi.mock('@/components/sessions/shell/SessionInvalidLinkFallback', () => ({
-    SessionInvalidLinkFallback: () => React.createElement('SessionInvalidLinkFallback', { testID: 'session-invalid-link' }),
-}));
+const { default: CommitScreen } = await import('@/app/(app)/session/[id]/commit');
 
 describe('CommitScreen native route fallback', () => {
     it('renders the invalid link fallback when the sha param is missing', async () => {
-        vi.resetModules();
-        const { default: CommitScreen } = await import('@/app/(app)/session/[id]/commit');
         mockShaParam = '';
         routerMock.state.params = { id: 'session-1', sha: mockShaParam };
         routerReplaceSpy.mockClear();
@@ -119,8 +113,6 @@ describe('CommitScreen native route fallback', () => {
     });
 
     it('re-opens details when the sha param changes on the same native screen instance', async () => {
-        vi.resetModules();
-        const { default: CommitScreen } = await import('@/app/(app)/session/[id]/commit');
         mockShaParam = 'abc123';
         routerMock.state.params = { id: 'session-1', sha: mockShaParam };
         routerReplaceSpy.mockClear();
@@ -153,6 +145,21 @@ describe('CommitScreen native route fallback', () => {
                 params: { id: 'session-1', details: 'commit', sha: 'def456' },
             });
         } finally {
+            act(() => {
+                screen.tree.unmount();
+            });
+        }
+    });
+
+    it('opens the commit in the pane scope of the Home named by the route', async () => {
+        mockShaParam = 'abc123';
+        mockServerId = 'home-b';
+        capturedPaneScopeIds.length = 0;
+        const screen = await renderScreen(React.createElement(CommitScreen));
+        try {
+            expect(capturedPaneScopeIds.at(-1)).toBe('session:address:home-b:session-1');
+        } finally {
+            mockServerId = undefined;
             act(() => {
                 screen.tree.unmount();
             });

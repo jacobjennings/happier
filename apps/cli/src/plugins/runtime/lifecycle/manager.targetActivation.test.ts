@@ -32,6 +32,7 @@ import type { PluginContributionActivationDemand } from './activation/targets';
 import { resolveProjectNativeAdapter, type ProjectNativeAdapterProductionV1 } from './contributions/targetProjectNativeAdapters';
 import { createProjectDefinitionAction } from '@/rpc/handlers/projectDefinitions';
 import { createHostActionOperationRuntime } from '@/daemon/actionOperations/createHostActionOperationRuntime';
+import { projectAccountRowsReadHttpResponse } from '@/workspaces/projectAccountRows.testkit';
 import { executeProjectFiniteProcess } from '@/workspaces/projectSetup/projectSetupExecution';
 import { createProjectFiniteAction, type ProjectFiniteActionRuntime } from '@/workspaces/projectSetup/projectFiniteAction';
 import { prepareProjectSetup } from '@/workspaces/projectSetup/projectSetupPreparation';
@@ -50,7 +51,7 @@ import { createPluginRuntimeOccurrenceId } from '../runtimeSlots';
 import { pixiPlugin, pixiRuntime, pixiAdapter, importedPixiTask, importedPixiEnvironment, persistedQualifiedArms } from '../../../../../../packages/plugin-sdk/fixtures/external-targeted-packages/project-native-source';
 import { authorizePluginExecLaunchForHost, authorizeResolvedProjectExecLaunchForHost, createStablePluginExecService } from '../invocation/services/exec';
 import { createLoadedMachineProvisionerFixture, machineProvisionerFixtureRoleIds } from '../../projection/registry/machineProvisioners.testkit';
-import { projectLoadedPluginContributes } from '../../projection/registry/resolvePluginContributions';
+import { projectLoadedPluginContributes } from '../../projection/registry/fullProjection';
 import { buildPluginProjectionV2 } from '../../projection/registry/projection/v2';
 import { resolveExecutableManagedDependenciesRegistry } from '../../projection/registry/managedDependencyExecutables';
 import { createStableManagedExecutableResolver } from '../invocation/services/managedExecutableResolver';
@@ -316,7 +317,7 @@ describe('target activation publication', () => {
                 } });
                 let terminalPreparations = 0;
                 const terminalExec = createStablePluginExecService({
-                    allowedExecutables: [], signal: environmentSignal, isOccurrenceCurrent: environmentProduction.production.isCurrent,
+                     signal: environmentSignal, isOccurrenceCurrent: environmentProduction.production.isCurrent,
                     resolveExecutable: async () => { throw new Error('Installed Agent must not be resolved as the wrapper'); },
                     resolvePath: async () => projectRoot,
                     prepareAgentNativeLaunch: async () => {
@@ -483,8 +484,8 @@ describe('target activation publication', () => {
             expect(originalExecutableReleased).toBe(1);
             const originalExecutable = { kind: 'systemTool', id: 'pixi' } as const;
             const originalExec = createStablePluginExecService({
-                allowedExecutables: [originalExecutable], environment: { KEEP: 'base' },
-                allowedEnvKeys: ['KEEP'],
+                 environment: { KEEP: 'base' },
+
                 signal: new AbortController().signal, isOccurrenceCurrent: () => true,
                 resolveExecutable: reference => resolveExecutable(reference, pixiAdapter.pluginId),
                 resolvePath: async () => projectRoot,
@@ -504,8 +505,8 @@ describe('target activation publication', () => {
             const installedAgentRef = { kind: 'systemTool', id: 'fixture.agent' } as const;
             let installedAgentReleases = 0;
             const installedAgentExec = createStablePluginExecService({
-                allowedExecutables: [installedAgentRef], environment: { KEEP: 'base' },
-                allowedEnvKeys: ['KEEP'],
+                 environment: { KEEP: 'base' },
+
                 signal: new AbortController().signal, isOccurrenceCurrent: () => true,
                 resolveExecutable: async reference => {
                     expect(reference).toEqual(installedAgentRef);
@@ -671,9 +672,11 @@ describe('target activation publication', () => {
         const selectedFactories: NonNullable<ProjectFiniteActionRuntime['plugins']> = { resolveProjectNativeAdapter(reference, role) {
             return resolveProjectNativeAdapter({ reference, role, targets, registry,
             createInvocationContext(input) {
+                if (input.root === undefined) throw new Error('Expected workspace invocation');
                 const target = targets.find(candidate => occurrenceIds.get(candidate.pluginId) === input.occurrenceId)!;
                 const localId = target.pluginId === commandAdapter.pluginId ? commandAdapter.localId : pixiAdapter.localId;
-                const lifetime = createPluginInvocationLifetime(input.signal);
+                if (input.root === undefined) throw new Error('Expected workspace invocation');
+                    const lifetime = createPluginInvocationLifetime(input.signal);
                 const observation = { signal: lifetime.signal };
                 if (target.pluginId === pixiAdapter.pluginId) environmentInvocations.push(observation);
                 else commandInvocations.push(observation);
@@ -719,10 +722,10 @@ describe('target activation publication', () => {
                 trust = mutation.content;
                 return { status: 200, data: { status: 'updated', revision: 1, cursor: 1 } };
             }
-            expect(url).toBe(`${httpBaseUrl}${PROJECT_ACCOUNT_ROWS_ROUTE_V1}/list`);
-            expect(body).toEqual({});
+            // The exact accepted checkout is read by key; the shared Account HTTP adapter answers that route.
+            expect(String(url).startsWith(`${httpBaseUrl}${PROJECT_ACCOUNT_ROWS_ROUTE_V1}/`)).toBe(true);
             const key = { kind: 'workspace-ref', serverId: workspace.serverId, id: workspace.id };
-            return { status: 200, data: { status: 'listed', coverage: 'complete', rows: [{ key, revision: 1, content: { t: 'plain', v: { key, value: workspace } } }] } };
+            return projectAccountRowsReadHttpResponse([{ key, revision: 1, content: { t: 'plain', v: { key, value: workspace } } }], String(url), body);
         });
         cleanups.push(() => { httpPost.mockRestore(); });
         const spawned: Array<{ params: PtySpawnParams; exit(event: PtyExitEvent): void }> = [];
@@ -1049,6 +1052,7 @@ describe('target activation publication', () => {
             expect(registry.targetRegistrations).toEqual([expect.objectContaining({ pluginId, registration: expect.objectContaining({ family: 'projectNativeAdapters', localId: 'pixi' }) })]);
             const selected = await resolveProjectNativeAdapter({ reference: instance.adapter, role: 'resolveCommand', targets: contributes.activationTargets, registry,
                 createInvocationContext(input) {
+                    if (input.root === undefined) throw new Error('Expected workspace invocation');
                     const lifetime = createPluginInvocationLifetime(input.signal);
                     const seed = { plugin: { id: pluginId, version: '1.0.0' },
                         contribution: { id: 'pixi', qualifiedId: `${pluginId}/projectNativeAdapters/pixi` },

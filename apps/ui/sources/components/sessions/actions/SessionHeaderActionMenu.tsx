@@ -1,10 +1,13 @@
+import { useSessionActionNavigation } from '@/hooks/session/useSessionActionNavigation';
+import { confirmSessionDelete } from './confirmSessionDelete';
+import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { useSessionArchivePending } from '@/hooks/session/useSessionArchivePending';
 import { confirmSessionArchive } from '@/components/sessions/actions/confirmSessionArchive';
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 import * as React from 'react';
-import { ChatHeaderCompactContext } from '@/components/sessions/transcript/chatHeaderCompact';
+import { useDetailsTabHeaderActionsCompact } from '@/components/appShell/panes/details/header/DetailsTabHeader';
 import { useLayoutPresentationActive } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
-import { Platform, Pressable, View } from 'react-native';
+import { Platform, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { listActionSpecs } from '@happier-dev/protocol/actions/actionSpecs';
 import { useUnistyles } from 'react-native-unistyles';
@@ -67,6 +70,7 @@ import {
 } from '@/components/sessions/actions/sessionActionAvailability';
 import {
   SESSION_ACTION_ARCHIVE_ID,
+  SESSION_ACTION_DELETE_ID,
   SESSION_ACTION_RENAME_ID,
   SESSION_ACTION_RESUME_ID,
   resolveManualReadStateFromSessionActionId,
@@ -82,6 +86,7 @@ import {
 } from './pluginHeaderActions';
 import type { StorageState } from '@/sync/store/types';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { resolveSessionReadStateAction } from '@/sync/domains/session/readState/sessionReadState';
 import { buildSessionOrganizationListViewState } from '@/sync/domains/session/organization/viewState';
 import { resolveSessionAttentionStanding } from '@/sync/domains/session/organization/attentionStanding';
 import { useSessionAttentionStandingInputs } from '@/hooks/session/useSessionAttentionStandingInputs';
@@ -89,9 +94,13 @@ import { sessionTagKey } from '@/components/sessions/shell/sessionTagUtils';
 import {
   SESSION_HEADER_ACTION_SIZE_PX,
   SESSION_HEADER_ICON_SIZE_PX,
-  resolveSessionHeaderActionTargetPx,
 } from '@/components/sessions/actions/sessionHeaderIconMetrics';
+import { SessionHeaderActionButton } from '@/components/sessions/actions/SessionHeaderActionButton';
+import { useHappierHitArea } from '@happier-dev/plugin-ui/presentation';
 import { Icon } from '@/components/ui/icons/Icon';
+import { buildSessionDebugInformationForSession } from '@/components/sessions/debug/sessionDebugInformation';
+import { copySessionDebugInformationToClipboard } from '@/components/sessions/debug/sessionDebugClipboard';
+import { createCopySessionDebugInformationMenuItem, SESSION_COPY_DEBUG_INFORMATION_MENU_ITEM_ID } from '@/components/sessions/debug/sessionDebugMenuItem';
 import { emitSessionResumeRequest } from '@/components/sessions/model/sessionResumeRequests';
 import { useResumeCapabilityOptions } from '@/agents/hooks/useResumeCapabilityOptions';
 import { supportsExternalSessionBackgroundFollow } from '@/components/sessions/external/browse/resolveExternalSessionBrowseSourceOptions';
@@ -103,20 +112,13 @@ import {
   type SessionCompanionHeaderIntent,
 } from '@/components/sessions/companion/sessionCompanionHeaderIntent';
 import { SessionCompanionHeaderButton } from '@/components/sessions/companion/SessionCompanionHeaderButton';
-import {
-  applySessionCompanionMutationWithNotice,
-  buildSessionPresentationNoticeKeyPrefix,
-} from '@/components/sessions/companion/presentation/sessionCompanionPresentationAdapter';
+import { applySessionCompanionHumanIntent } from '@/components/sessions/companion/presentation/sessionCompanionHumanAction';
+import type { SessionCompanionMutationOutcome } from '@/components/sessions/companion/state/useSessionCompanionController';
 import { useSessionCompanionRevealPort } from '@/components/sessions/companion/presentation/SessionCompanionRevealPort';
-import { publishPresentationNotice } from '@/components/sessions/presentation/presentationNotices';
 import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
-import {
-  createSessionCollaborationHeaderMenuItem,
-  useSessionCollaborationHeaderState,
-} from '@/components/sessions/collaboration/SessionCollaborationHeaderEntry';
+import { createSessionPeopleMenuItem, useSessionPeopleAttentionLabel } from './sessionHeaderPeopleMenuItem';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
-import { motionTokens } from '@/components/ui/motion/motionTokens';
 import {
   SESSION_HEADER_MENU_SPEC_PRESENTATION,
   composeSessionHeaderMenu,
@@ -124,7 +126,7 @@ import {
   type SessionHeaderMenuGroup,
 } from './sessionHeaderMenuGroups';
 import { getSessionActionMetadata } from './sessionActionMetadata';
-import { useSessionComputerMenuEntry } from './SessionHeaderComputerButton';
+import { useOpenSessionComputerScreen } from '@/components/computer/useOpenSessionComputerScreen';
 
 const SESSION_FOLLOW_IN_ANOTHER_SESSION_ACTION_ID = 'follow.set';
 
@@ -180,6 +182,13 @@ type SessionHeaderActionMenuProps = Readonly<{
     target: SessionAddress;
     compact: boolean;
   }>;
+  /**
+   * The Session's right rail is not on screen: People and Computer, which the rail carries, are reached
+   * from this menu instead (calm-shell R2-1), through their own openers.
+   */
+  destinationsInMenu?: boolean;
+  /** A header control that sits just before the ⋯ (the no-rail (i)), after Follow (lab cshead H1p). */
+  beforeMenu?: React.ReactNode;
 }>;
 
 function readCurrentSessionForOpenMenu(sessionId: string, fallback: Session): Session {
@@ -194,70 +203,6 @@ function readCurrentSessionForOpenMenu(sessionId: string, fallback: Session): Se
     && areServerProfileIdentifiersEquivalent(currentServerId, fallbackServerId)
     ? current
     : fallback;
-}
-
-function signatureValue(value: unknown): string {
-  if (typeof value === 'number' && Number.isFinite(value)) return String(Math.trunc(value));
-  if (typeof value === 'string' || typeof value === 'boolean') return String(value);
-  return '';
-}
-
-function readLegacyReadStateMetadata(metadata: unknown): Readonly<{
-  sessionSeq: unknown;
-  pendingActivityAt: unknown;
-}> {
-  if (!metadata || typeof metadata !== 'object') {
-    return { sessionSeq: null, pendingActivityAt: null };
-  }
-  const readStateV1 = (metadata as { readStateV1?: unknown }).readStateV1;
-  if (!readStateV1 || typeof readStateV1 !== 'object') {
-    return { sessionSeq: null, pendingActivityAt: null };
-  }
-  return {
-    sessionSeq: (readStateV1 as { sessionSeq?: unknown }).sessionSeq,
-    pendingActivityAt: (readStateV1 as { pendingActivityAt?: unknown }).pendingActivityAt,
-  };
-}
-
-function buildSessionHeaderReadStateSignature(
-  state: Pick<StorageState, 'sessions' | 'sessionListRowsByServerId' | 'sessionMessages'>,
-  sessionId: string,
-  serverId: string | null,
-): string {
-  const normalizedServerId = typeof serverId === 'string' ? serverId.trim() : '';
-  const session = state.sessions[sessionId];
-  const renderable = normalizedServerId
-    ? state.sessionListRowsByServerId?.[normalizedServerId]?.[sessionId]
-    : undefined;
-  const messages = state.sessionMessages[sessionId] as Readonly<{
-    isLoaded?: unknown;
-    messageIdsOldestFirst?: ReadonlyArray<unknown>;
-    messagesVersion?: unknown;
-    reducerVersion?: unknown;
-    renderableAggregate?: unknown;
-  }> | undefined;
-  const readStateV1 = readLegacyReadStateMetadata(
-    session ? readSessionOwnerMetadataView(session) : null,
-  );
-
-  return [
-    signatureValue(session?.seq),
-    signatureValue(session?.lastViewedSessionSeq),
-    signatureValue(session?.latestReadyEventSeq),
-    signatureValue(session?.latestTurnStatus),
-    JSON.stringify(session?.access ?? null),
-    signatureValue(readStateV1.sessionSeq),
-    signatureValue(readStateV1.pendingActivityAt),
-    signatureValue(renderable?.hasUnreadMessages),
-    signatureValue(renderable?.seq),
-    signatureValue(renderable?.lastViewedSessionSeq),
-    signatureValue(renderable?.latestReadyEventSeq),
-    signatureValue(messages?.isLoaded),
-    signatureValue(messages?.messagesVersion),
-    signatureValue(messages?.reducerVersion),
-    signatureValue(messages?.messageIdsOldestFirst?.length),
-    signatureValue(messages?.renderableAggregate ? 1 : 0),
-  ].join('|');
 }
 
 function readCurrentSessionActionTargetSnapshot(
@@ -286,6 +231,56 @@ type WebActionMenuTriggerProps = React.ButtonHTMLAttributes<HTMLButtonElement> &
   ref?: React.Ref<HTMLButtonElement>;
   style: React.CSSProperties;
 }>;
+
+const WEB_MENU_TRIGGER_HIT_REACH = { left: 3, right: 3 } as const;
+const WEB_MENU_TRIGGER_STYLE: React.CSSProperties = {
+  position: 'relative',
+  width: SESSION_HEADER_ACTION_SIZE_PX,
+  height: SESSION_HEADER_ACTION_SIZE_PX,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: 0,
+  margin: 0,
+  border: 0,
+  background: 'transparent',
+  color: 'inherit',
+  cursor: 'pointer',
+  appearance: 'none',
+  WebkitAppearance: 'none',
+};
+const WEB_MENU_TRIGGER_RESTING_STYLE = { width: SESSION_HEADER_ACTION_SIZE_PX, height: SESSION_HEADER_ACTION_SIZE_PX };
+
+/**
+ * The header ⋯ on the web is a native `button` (its click opens the menu from the keyboard and the
+ * pointer alike). It is drawn at the header action square; a finger reaches past it through the
+ * shared hit-area frame, never through a larger button.
+ */
+function SessionHeaderMenuWebTrigger(props: Readonly<{
+  label: string;
+  onToggle: () => void;
+  triggerRef: { current: View | null };
+  children: React.ReactNode;
+}>) {
+  const hitArea = useHappierHitArea({
+    restingStyle: () => WEB_MENU_TRIGGER_RESTING_STYLE,
+    hitReach: WEB_MENU_TRIGGER_HIT_REACH,
+  });
+  const webTriggerProps: WebActionMenuTriggerProps = {
+    type: 'button',
+    ref: (node) => { props.triggerRef.current = node as unknown as View; },
+    'data-testid': 'session-header-action-menu-trigger',
+    role: 'button',
+    'aria-label': props.label,
+    onClick: (event) => {
+      if (!event) return;
+      event.stopPropagation();
+      props.onToggle();
+    },
+    style: WEB_MENU_TRIGGER_STYLE,
+  };
+  return React.createElement('button', webTriggerProps, hitArea.frame, props.children);
+}
 
 function areSessionActionMenuMetadataSemanticallyEqual(
   prev: Session,
@@ -317,6 +312,9 @@ function didSessionHeaderActionMenuPropsChange(
   if (prev.companionHeaderActionPlacement !== next.companionHeaderActionPlacement) return true;
   if (prev.companionHeaderIntent !== next.companionHeaderIntent) return true;
   if (prev.collaborationHeader !== next.collaborationHeader) return true;
+  if (prev.destinationsInMenu !== next.destinationsInMenu) return true;
+  // The header's resolved props are cached, so this element changes only with the header's own facts.
+  if (prev.beforeMenu !== next.beforeMenu) return true;
   if (prev.session.serverId !== next.session.serverId) return true;
   if (!areSessionActionMenuMetadataSemanticallyEqual(prev.session, next.session)) return true;
   if (prev.session.active !== next.session.active) return true;
@@ -351,9 +349,10 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
   const hasGlobalVoiceAgentConversation = useHasGlobalVoiceAgentConversation();
   const sessionHandoffEnabled = useFeatureEnabled('sessions.handoff');
   const [open, setOpen] = React.useState(false);
-  const collaborationHeaderState = useSessionCollaborationHeaderState(
-    props.collaborationHeader?.target ?? null,
-    props.collaborationHeader?.compact === true,
+  // People is a rail destination; the header's ⋯ carries it (with its conversation attention) only
+  // while the rail is not on screen. No named-viewer presence is read for a header entry any more.
+  const collaborationAttentionLabel = useSessionPeopleAttentionLabel(
+    props.destinationsInMenu === true ? props.collaborationHeader?.target ?? null : null,
   );
   const session = React.useMemo(
     () => open ? readCurrentSessionForOpenMenu(props.sessionId, props.session) : props.session,
@@ -367,6 +366,10 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     () => resolveSessionTargetServerId(props.sessionId, preferredSessionServerId ?? session.serverId ?? null),
     [preferredSessionServerId, session.serverId, props.sessionId],
   );
+  const navigateAfterDelete = useSessionActionNavigation({
+    sessionId: props.sessionId, serverId: sessionServerId ?? null,
+    onNavigate: React.useCallback(() => safeRouterBack({ router, fallbackHref: '/' }), [router]),
+  });
   const companionAddress = React.useMemo(
     () => normalizeSessionAddress(sessionServerId, props.sessionId),
     [props.sessionId, sessionServerId],
@@ -381,7 +384,9 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     serverId: sessionServerId,
     openFullSurface: openCompanionFullSurface,
   });
-  const openComputer = useSessionComputerMenuEntry({ sessionId: props.sessionId, serverId: sessionServerId ?? null });
+  // The one Computer opener; offline keeps the entry with its presence reason (calm-shell R2-2).
+  const computerOpener = useOpenSessionComputerScreen({ sessionId: props.sessionId, serverId: sessionServerId ?? null });
+  const openComputer = props.destinationsInMenu === true ? computerOpener : null;
   const showCompanionInOverflow = props.companionHeaderActionPlacement === 'overflow'
     && companionRevealPort !== null
     && companion.availability === 'ready'
@@ -393,61 +398,35 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     && props.companionHeaderIntent !== null
     && props.companionHeaderIntent !== undefined;
   const companionHeaderIntent = props.companionHeaderIntent;
-  const companionNoticeKeyPrefix = React.useMemo(() => buildSessionPresentationNoticeKeyPrefix(
-    normalizeSessionAddress(sessionServerId, props.sessionId),
-    props.sessionId,
-  ), [props.sessionId, sessionServerId]);
-  const applyCompanionHeaderIntent = React.useCallback(() => {
+  const applyCompanionHeaderIntent = React.useCallback(async () => {
     if (!companionHeaderIntent) return;
-    const mutate = (input: Readonly<{
-      kind: string;
-      message: string;
-      apply: Parameters<typeof applySessionCompanionMutationWithNotice>[0]['apply'];
-    }>) => applySessionCompanionMutationWithNotice({
-      companion,
-      publishNotice: publishPresentationNotice,
-      noticeKeyPrefix: companionNoticeKeyPrefix,
-      ...input,
-    });
     switch (companionHeaderIntent.operation) {
       case 'hide':
-        mutate({
-          kind: 'companion.hide',
-          message: t('sessionBoard.companion.notices.hidden'),
-          apply: (controller) => controller.hide(),
-        });
+        await applySessionCompanionHumanIntent({ address: companionAddress, intent: { kind: 'companion.hide' } });
         return;
       case 'expand':
-        mutate({
-          kind: 'companion.collapse.set',
-          message: t('sessionBoard.companion.actions.expand'),
-          apply: (controller) => controller.setCollapsed(false),
-        });
+        await applySessionCompanionHumanIntent({ address: companionAddress, intent: { kind: 'companion.collapse.set', collapsed: false } });
         return;
       case 'show':
+      case 'show_and_open_full':
         {
-          const outcome = mutate({
-            kind: 'companion.show',
-            message: t('sessionBoard.companion.notices.shown'),
-            apply: (controller) => controller.show(),
+          const mutation: { outcome: SessionCompanionMutationOutcome | null } = { outcome: null };
+          const admitted = await applySessionCompanionHumanIntent({
+            address: companionAddress,
+            intent: { kind: 'companion.show' },
+            onCompanionMutation: outcome => { mutation.outcome = outcome; },
           });
-          if (outcome) companionRevealPort?.revealAfterMutation(outcome);
+          if (admitted && mutation.outcome) {
+            if (companionHeaderIntent.operation === 'show') companionRevealPort?.revealAfterMutation(mutation.outcome);
+            else companionRevealPort?.openFullSurface();
+          }
         }
         return;
       case 'open_full':
         companionRevealPort?.openFullSurface();
         return;
-      case 'show_and_open_full':
-        {
-          const outcome = mutate({
-            kind: 'companion.show',
-            message: t('sessionBoard.companion.notices.shown'),
-            apply: (controller) => controller.show(),
-          });
-          if (outcome) companionRevealPort?.openFullSurface();
-        }
     }
-  }, [companion, companionHeaderIntent, companionNoticeKeyPrefix, companionRevealPort]);
+  }, [companionAddress, companionHeaderIntent, companionRevealPort]);
   const executionRunsEnabled = useFeatureEnabled('execution.runs', sessionServerId
     ? { scopeKind: 'spawn', serverId: sessionServerId }
     : undefined);
@@ -466,20 +445,19 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
   }) as React.RefObject<View | null>, []);
   const followEditor = useAccountSessionFollowEditorHost({ serverId: sessionServerId ?? null, sessionId: props.sessionId, anchorRef: followAnchorRef });
   // A tight header (a session column beside the editor) takes the chip's icon form too, so the title keeps its room.
-  const headerCompact = React.useContext(ChatHeaderCompactContext);
+  const headerCompact = useDetailsTabHeaderActionsCompact();
   const followChipCompact = !useIsTablet() || headerCompact;
-  const readStateSignature = storage((state) =>
-    buildSessionHeaderReadStateSignature(state, props.sessionId, sessionServerId ?? null),
-  );
-  const sessionActionSnapshot = React.useMemo(
-    () => readCurrentSessionActionTargetSnapshot(
-      storage.getState(),
-      props.sessionId,
-      sessionServerId ?? null,
-      session,
-    ),
-    [props.sessionId, readStateSignature, session, sessionServerId],
-  );
+  const sessionActionSnapshot = storage((state) => readCurrentSessionActionTargetSnapshot(
+    state,
+    props.sessionId,
+    sessionServerId ?? null,
+    session,
+  ));
+  // Loaded-message attention can change without replacing the Session row;
+  // text-only revisions do not change the canonical read action.
+  const readStateActionKind = storage((state) => resolveSessionReadStateAction(
+    readCurrentSessionActionTargetSnapshot(state, props.sessionId, sessionServerId ?? null, session),
+  ).kind);
   const currentUserId = typeof profile?.id === 'string' ? profile.id : null;
   const reachableMachineId = useSessionReachableMachineTarget(props.sessionId)?.machineId ?? null;
   const ownerMetadata = readSessionOwnerMetadataView(session);
@@ -517,6 +495,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     followEnabled: followEditor.enabled,
     attentionStanding: isAttentionStandingSession,
     resumeCapabilityOptions,
+    isPinned: organizationProjection?.pinsBySessionId[props.sessionId]?.listPinned === true,
     isRailPinned: organizationProjection?.pinsBySessionId[props.sessionId]?.railPinned === true,
   }), [
     attentionStandingEnabled,
@@ -525,6 +504,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     isAttentionStandingSession,
     resumeCapabilityOptions,
     organizationProjection,
+    readStateActionKind,
     session,
     sessionActionSnapshot,
     sessionServerId,
@@ -554,6 +534,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
   const externalSessionLink = readExternalSessionLink(ownerMetadata);
   const externalSessionFollowPolicy = readExternalSessionFollowPolicy(ownerMetadata);
   const daemonMergedProjection = useDaemonMergedProjectionInputs({
+    sections: ['agentsById'],
     machineId: externalSessionLink?.machineId ?? reachableMachineId ?? ownerMetadata?.machineId ?? null,
     serverId: sessionServerId,
     enabled: externalSessionLink !== null || declaredAgentId !== null,
@@ -632,14 +613,16 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     const push = (group: SessionHeaderMenuGroup, item: DropdownMenuItem) => { out.push({ group, item }); };
     push('open', { id: 'header.findChat', title: t('find.surface.chat'), icon: <Icon name="magnifying-glass" size={16} color={iconColor} /> });
     if (openComputer) {
-      push('open', { id: 'header.openComputer', title: t('computerUse.presentation.sourceComputer'), icon: <Icon name="desktop" size={16} color={iconColor} /> });
+      push('open', { id: 'header.openComputer', title: t('computerUse.presentation.sourceComputer'),
+        disabled: Boolean(openComputer.disabledReason), subtitle: openComputer.disabledReason ?? undefined,
+        icon: <Icon name="desktop" size={16} color={iconColor} /> });
     }
 
-    if (props.collaborationHeader && collaborationHeaderState.overflow) {
-      push('open', createSessionCollaborationHeaderMenuItem({
+    if (props.collaborationHeader && props.destinationsInMenu === true) {
+      push('open', createSessionPeopleMenuItem({
         iconColor: theme.colors.chrome.header.foreground,
         attentionColor: theme.colors.text.link,
-        attentionLabel: collaborationHeaderState.attentionLabel,
+        attentionLabel: collaborationAttentionLabel,
       }));
     }
 
@@ -678,6 +661,8 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
       });
       if (item) push(getSessionActionMetadata(actionId)?.group ?? 'session', item);
     }
+
+    push('session', createCopySessionDebugInformationMenuItem({ iconColor }));
 
     // After the session's own rows: "This session" opens with its name, the rail choice and Talk (lab
     // `b-promote`); following rows come after them.
@@ -718,8 +703,8 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
     return composeSessionHeaderMenu(out);
   }, [
     archivePending,
-    collaborationHeaderState.attentionLabel,
-    collaborationHeaderState.overflow,
+    collaborationAttentionLabel,
+    props.destinationsInMenu,
     props.collaborationHeader,
     props.extraItems,
     openComputer,
@@ -751,12 +736,8 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
   const directPluginHeaderActions = props.pluginHeaderActionPlacement === 'direct'
     ? props.pluginHeaderActions ?? []
     : [];
-  const headerInteractiveTargetSize = resolveSessionHeaderActionTargetPx();
-  const headerInteractiveHitSlop = headerInteractiveTargetSize > SESSION_HEADER_ACTION_SIZE_PX
-    ? undefined
-    : 15;
 
-  if (actions.length === 0 && directPluginHeaderActions.length === 0 && !showCompanionDirect) return null;
+  if (actions.length === 0 && directPluginHeaderActions.length === 0 && !showCompanionDirect) return <>{props.beforeMenu ?? null}</>;
 
   return (
     <>
@@ -767,7 +748,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
         />
       ) : null}
       {directPluginHeaderActions.map((action) => (
-        <Pressable
+        <SessionHeaderActionButton
           key={action.menuActionId}
           onPress={() => {
             if (action.enabled) {
@@ -775,25 +756,15 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
             }
           }}
           disabled={!action.enabled}
-          hitSlop={headerInteractiveHitSlop}
           testID={`session-header-plugin-action-${action.menuActionId}`}
-          accessibilityRole="button"
           accessibilityLabel={action.title}
-          accessibilityState={{ disabled: !action.enabled }}
-          style={({ pressed }) => ({
-            width: headerInteractiveTargetSize,
-            height: headerInteractiveTargetSize,
-            alignItems: 'center',
-            justifyContent: 'center',
-            opacity: !action.enabled ? 0.45 : pressed ? motionTokens.press.opacity : 1,
-          })}
         >
           <Icon
             name={action.iconName}
             size={SESSION_HEADER_ICON_SIZE_PX}
             color={theme.colors.chrome.header.foreground}
           />
-        </Pressable>
+        </SessionHeaderActionButton>
       ))}
       {followEditor.enabled && sessionServerId ? (
         <SessionFollowHeaderChip
@@ -806,6 +777,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
         />
       ) : null}
       {followEditor.editor}
+      {props.beforeMenu ?? null}
       {actions.length > 0 ? (
     <View ref={menuAnchorRef} collapsable={false}>
     <DropdownMenu
@@ -823,7 +795,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
           return;
         }
         if (actionId === 'header.openComputer') {
-          openComputer?.();
+          openComputer?.open();
           return;
         }
         if (actionId === 'header.openCompanion' && showCompanionInOverflow) {
@@ -831,6 +803,13 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
           return;
         }
         if (props.onSelectExtraItem?.(actionId) === true) return;
+        if (actionId === SESSION_COPY_DEBUG_INFORMATION_MENU_ITEM_ID) {
+          const currentSession = readCurrentSessionForOpenMenu(props.sessionId, session);
+          fireAndForget(copySessionDebugInformationToClipboard(buildSessionDebugInformationForSession(currentSession)), {
+            tag: 'SessionHeaderActionMenu.execute.copyInformation',
+          });
+          return;
+        }
         if (actionId.startsWith(PLUGIN_SESSION_HEADER_ACTION_MENU_PREFIX)) {
           invokePluginHeaderAction(actionId);
           return;
@@ -913,6 +892,13 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
                   target: sessionActionTarget,
                   input: { title: newName },
                 });
+                return;
+              }
+              if (actionId === SESSION_ACTION_DELETE_ID) {
+                if (!await confirmSessionDelete({ target: sessionActionTarget })) return;
+                const result = await executeSessionAction({ actionId, target: sessionActionTarget,
+                  context: { confirmed: true } });
+                if (result !== false) navigateAfterDelete();
                 return;
               }
               let alsoArchiveReports = false;
@@ -1012,64 +998,30 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
       trigger={({ toggle }) => {
         const label = t('session.actionMenu.openA11y');
         const icon = (
-          <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-            <Ionicons name="ellipsis-horizontal" size={SESSION_HEADER_ICON_SIZE_PX} color={theme.colors.chrome.header.foreground} />
-          </View>
+          <Ionicons name="ellipsis-horizontal" size={SESSION_HEADER_ICON_SIZE_PX} color={theme.colors.chrome.header.foreground} />
         );
 
         if (Platform.OS === 'web') {
-          const webTriggerProps: WebActionMenuTriggerProps = {
-            type: 'button',
-            ref: (node) => { followEditor.triggerRef.current = node as unknown as View; },
-            'data-testid': 'session-header-action-menu-trigger',
-            role: 'button',
-            'aria-label': label,
-            onClick: (event) => {
-              if (!event) return;
-              event.stopPropagation();
-              toggle();
-            },
-            style: {
-              width: 44,
-              height: 44,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: 0,
-              margin: 0,
-              border: 0,
-              background: 'transparent',
-              color: 'inherit',
-              cursor: 'pointer',
-              appearance: 'none',
-              WebkitAppearance: 'none',
-            },
-          };
-          return React.createElement(
-            'button',
-            webTriggerProps,
-            icon,
+          return (
+            <SessionHeaderMenuWebTrigger
+              label={label}
+              onToggle={toggle}
+              triggerRef={followEditor.triggerRef}
+            >
+              {icon}
+            </SessionHeaderMenuWebTrigger>
           );
         }
 
         return (
-          <Pressable
-            ref={followEditor.triggerRef}
+          <SessionHeaderActionButton
+            controlRef={(node) => { followEditor.triggerRef.current = node as unknown as View | null; }}
             onPress={toggle}
-            hitSlop={headerInteractiveHitSlop}
             testID="session-header-action-menu-trigger"
-            accessibilityRole="button"
             accessibilityLabel={label}
-            style={({ pressed }) => ({
-              width: headerInteractiveTargetSize,
-              height: headerInteractiveTargetSize,
-              alignItems: 'center',
-              justifyContent: 'center',
-              opacity: pressed ? motionTokens.press.opacity : 1,
-            })}
           >
             {icon}
-          </Pressable>
+          </SessionHeaderActionButton>
         );
       }}
       placement="bottom"

@@ -16,7 +16,7 @@ import { TEAM_CREDENTIAL_EXTERNAL_PROVIDER_OPERATION_RETIRE_EVENT_V1 } from "@ha
 import { auth } from "@/app/auth/auth";
 import { eventRouter } from "@/app/events/connectionEventRouter";
 import { setAccountStatusInTx } from "@/app/home/governance/accountLifecycle";
-import { db } from "@/storage/db";
+import { db, getActivePrismaRuntime } from "@/storage/db";
 import { inReadSnapshot, inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
@@ -32,7 +32,7 @@ import { withAuthenticatedTestApp } from "../testkit/sqliteFastify";
 import { currentAccountStoredContentCompatibilityHeaders } from "../testkit/accountStoredContentCompatibility";
 import { machinesRoutes } from "../routes/machines/machinesRoutes";
 import { MachinePublishedRowV1Schema } from "@happier-dev/protocol/machines/machineContentKeyTransitionV1";
-import { MACHINE_SESSION_TERMINAL_CAPTURE_EVENT_V1, MachineSessionTerminalCaptureResponseV1Schema } from "@happier-dev/protocol/sessions/control/machineSessionTerminalV1";
+import { MACHINE_SESSION_TERMINAL_CAPTURE_EVENT_V1, MACHINE_SESSION_TERMINAL_FINALIZE_EVENT_V1, MachineSessionTerminalCaptureResponseV1Schema, MachineSessionTerminalFinalizeResponseV1Schema } from "@happier-dev/protocol/sessions/control/machineSessionTerminalV1";
 import { SESSION_SERVER_START_INGRESS_EVENT_V1, SessionServerStartIngressRequestV1Schema, SessionServerStartIngressResponseV1Schema } from "@happier-dev/protocol/sessions/creation/sessionServerStartV1";
 import { SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1, SessionPendingEnqueueByMachineResponseV1Schema } from "@happier-dev/protocol/sessions/messages/sessionPendingMachineAdmissionV1";
 import { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
@@ -317,6 +317,86 @@ describe("Machine authority mutations on an established socket", () => {
         });
         expect((await db.session.findUniqueOrThrow({ where: { id: session.id } })).active).toBe(true);
     });
+
+    async function createForeignTerminalFixture() {
+        harness.resetEnv({ HAPPIER_SERVER_IDENTITY_ID: `srv_${randomUUID().replaceAll('-', '')}` });
+        const host = await createEstablishedMachineFixture("terminal-host");
+        const requester = await db.account.create({ data: { encryptionMode: 'plain' } });
+        await db.account.update({ where: { id: host.accountId }, data: { encryptionMode: 'plain' } });
+        await db.machine.update({ where: { id: host.machineId }, data: {
+            metadata: encodePlainMachineStoredContent(PUBLISHED_METADATA),
+            daemonState: encodePlainMachineStoredContent({ status: 'running' }),
+            dataEncryptionKey: decodeBase64(MACHINE_PLAIN_DATA_KEY_MARKER),
+        } });
+        await inTx(tx => machineAccess.setMachineAccessGrantInTx(tx, { actorAccountId: host.accountId,
+            machineId: host.machineId, principal: { kind: 'account', accountId: requester.id }, level: 'view' }));
+        const session = await db.session.create({ data: {
+            accountId: requester.id, tag: randomUUID(), metadata: '{}', active: false,
+        } });
+        const binding = { accountId: requester.id, machineId: host.machineId, sessionId: session.id };
+        await db.accessKey.create({ data: { ...binding, data: 'encrypted' } });
+        const presence = createSessionPublisherPresence();
+        const registered = await presence.registerPublisher({ socket: {}, binding,
+            completeActivitySnapshot: { state: 'active', activeCount: 1 } });
+        expect(registered.status).toBe('registered');
+        if (registered.status !== 'registered') throw new Error('expected foreign publisher');
+        await inTx(tx => machineAccess.removeMachineAccessGrantInTx(tx, { actorAccountId: host.accountId,
+            machineId: host.machineId, principal: { kind: 'account', accountId: requester.id } }));
+        machineUpdateHandler(host.accountId, host.socket as unknown as Socket, { ...HANDLER_OPTIONS,
+            sessionPublisherPresence: presence });
+        return { host, binding, presence, registered };
+    }
+
+    it("records only the installed host's process terminal fact after requester Machine access is revoked", async () => {
+        const f = await createForeignTerminalFixture();
+        const request = { v: 1, sessionId: f.binding.sessionId };
+        await expect(f.presence.captureExplicitMachineStop({ binding: f.binding }))
+            .resolves.toEqual({ status: 'rejected', reason: 'machine_control_unavailable' });
+        const captured = MachineSessionTerminalCaptureResponseV1Schema.parse(
+            (await emit(f.host, MACHINE_SESSION_TERMINAL_CAPTURE_EVENT_V1, request)).mock.calls[0][0]);
+        expect(captured.status).toBe('captured');
+        if (captured.status !== 'captured') throw new Error('expected host terminal capture after revocation');
+        await db.session.update({ where: { id: f.binding.sessionId }, data: {
+            latestTurnId: 'turn-after-capture', latestTurnStatus: 'in_progress', thinking: true,
+        } });
+        const ephemeral = vi.spyOn(eventRouter, 'emitEphemeral');
+        const finalized = MachineSessionTerminalFinalizeResponseV1Schema.parse(
+            (await emit(f.host, MACHINE_SESSION_TERMINAL_FINALIZE_EVENT_V1, { ...request, authority: captured.authority })).mock.calls[0][0]);
+        expect(finalized).toEqual({ ...request, status: 'closed' });
+        expect(ephemeral).toHaveBeenCalledWith(expect.objectContaining({ userId: f.binding.accountId,
+            payload: expect.objectContaining({ type: 'activity', id: f.binding.sessionId, active: false }) }));
+        expect(await db.session.findUniqueOrThrow({ where: { id: f.binding.sessionId }, select: {
+            active: true, publisherGenerationLastActiveAt: true, latestTurnId: true, latestTurnStatus: true, thinking: true,
+        } })).toEqual({ active: false, publisherGenerationLastActiveAt: null,
+            latestTurnId: 'turn-after-capture', latestTurnStatus: 'in_progress', thinking: true });
+        expect(await emit(f.host, MACHINE_SESSION_TERMINAL_FINALIZE_EVENT_V1, { ...request, authority: captured.authority }))
+            .toHaveBeenCalledWith({ ...request, status: 'already_inactive' });
+    });
+
+    it.each(['missing_installation', 'wrong_installation', 'wrong_owner', 'missing_target', 'wrong_target', 'wrong_home', 'stale_generation', 'stale_heartbeat', 'revoked_machine', 'revoked_credential'] as const)(
+        'refuses host terminal finalization with %s after requester access loss', async failure => {
+            const f = await createForeignTerminalFixture();
+            const request = { v: 1, sessionId: f.binding.sessionId, authority: {
+                kind: 'generation', publisherGeneration: f.registered.publisherGeneration.toString(),
+            } };
+            if (failure === 'missing_installation') delete f.host.socket.data![VERIFIED_MACHINE_INSTALLATION_ID_SOCKET_DATA_KEY];
+            if (failure === 'wrong_installation') f.host.socket.data![VERIFIED_MACHINE_INSTALLATION_ID_SOCKET_DATA_KEY] = randomUUID();
+            if (failure === 'wrong_owner') await db.machine.update({ where: { id: f.host.machineId }, data: { accountId: f.binding.accountId } });
+            if (failure === 'missing_target') await db.session.update({ where: { id: f.binding.sessionId }, data: { runtimeMachineTarget: getActivePrismaRuntime().DbNull } });
+            if (failure === 'wrong_target') await db.session.update({ where: { id: f.binding.sessionId }, data: { runtimeMachineTarget: {
+                homeId: process.env.HAPPIER_SERVER_IDENTITY_ID!, ...f.binding, machineId: randomUUID(),
+                installationId: f.host.socket.data![VERIFIED_MACHINE_INSTALLATION_ID_SOCKET_DATA_KEY] as string,
+            } } });
+            if (failure === 'wrong_home') process.env.HAPPIER_SERVER_IDENTITY_ID = `srv_${randomUUID().replaceAll('-', '')}`;
+            if (failure === 'stale_generation') await db.session.update({ where: { id: f.binding.sessionId }, data: { publisherGeneration: { increment: 1 } } });
+            if (failure === 'stale_heartbeat') await db.session.update({ where: { id: f.binding.sessionId }, data: { lastActiveAt: new Date(f.registered.committedFence.getTime() + 1) } });
+            if (failure === 'revoked_machine') await db.machine.update({ where: { id: f.host.machineId }, data: { revokedAt: new Date() } });
+            if (failure === 'revoked_credential') await suspend(f.host);
+            expect(await emit(f.host, MACHINE_SESSION_TERMINAL_FINALIZE_EVENT_V1, request))
+                .toHaveBeenCalledWith(expect.objectContaining({ status: failure.startsWith('stale_') ? 'superseded' : 'rejected' }));
+            expect((await db.session.findUniqueOrThrow({ where: { id: f.binding.sessionId } })).active).toBe(true);
+        },
+    );
 
     it("retires only the exact authenticated Machine operation and leaves a newer operation intact on stale replay", async () => {
         const subject = await createEstablishedMachineFixture("retire");

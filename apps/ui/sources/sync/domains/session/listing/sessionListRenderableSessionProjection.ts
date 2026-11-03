@@ -1,15 +1,91 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { Metadata } from '@happier-dev/session-core/state';
-import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
+import { compareSessionMetadataRevisions, readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import { isSessionAccessOwner, isSessionAccessRecipient } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 import { classifySessionTupleApplyCurrentness } from '@/sync/domains/session/sessionTupleApplyCurrentness';
 import { readSessionDisplayTitleField } from '@/sync/state/selectors';
-import { reconcileSessionLifecycleProjection } from '../sessionLifecycleProjection';
+import { reconcileSessionLifecycleProjection, type SessionLifecycleProjection } from '../sessionLifecycleProjection';
 import { SESSION_OWNER_METADATA_PROJECTION, type SessionOwnerMetadataAuthority } from '../readSessionOwnerMetadataView';
 import { isSessionContentReadable, readSessionContentAvailability } from '../encryptedContentAvailability';
 import type { AccountEncryptionCurrentnessResponse } from '@happier-dev/protocol/account/encryptionMode';
 
 import type { SessionListRenderableSession } from './sessionListRenderable';
+import type { Message } from '@happier-dev/session-core/messages';
+import { derivePendingRequestFlags, deriveLatestPendingRequestObservedAt, listPendingRequests,
+    readSharedMetadataActionConfirmationState, listPendingPermissionRequests as listCorePermissionRequests,
+    listPendingUserActionRequests as listCoreUserActionRequests, type PendingRequestFacts } from '@happier-dev/session-core/pending';
+import { readSessionPresentationCompletedRequests } from '../presentation/readSessionPresentationCompletedRequests';
+import { readPendingRequestFactsFromSession } from '../pending/listPendingSessionRequests';
+import { readSessionFullPublicationUpdatedAt } from '../sessionRuntimeObservation';
+import { SESSION_LIST_DOCUMENT_ADMISSION, areSessionListDocumentAdmissionsEqual,
+    mergeSessionListDocumentObservations, hasNewerObservedSessionMetadata } from '../sessionDocumentAdmission';
+
+export type SessionPresentationRecord = Session | SessionListRenderableSession;
+export type SessionPresentationInput = Readonly<{ record: SessionPresentationRecord; baseSession?: Session; serverId?: string }>;
+export type SessionRelationRecord = SessionPresentationRecord | SessionPresentationInput;
+
+export function readSessionPresentationRecord(input: SessionRelationRecord): SessionPresentationRecord {
+    return 'record' in input ? input.record : input;
+}
+
+export function readSessionPresentationServerId(input: SessionRelationRecord): string | undefined {
+    return input.serverId;
+}
+
+export function readSessionPresentationInputSource(input: SessionRelationRecord): SessionListPresentationSource | undefined {
+    const record = readSessionPresentationRecord(input);
+    return 'agentState' in record ? undefined : createSessionListPresentationSource(record, {
+        serverId: readSessionPresentationServerId(input), baseSession: 'record' in input ? input.baseSession : undefined,
+    });
+}
+
+export function readSessionPresentationInputDisplay(input: SessionRelationRecord) {
+    const source = readSessionPresentationInputSource(input);
+    return source ? readSessionListPresentationDisplay(source) : readSessionPresentationRecord(input);
+}
+
+/** Only the named held private leaf is read; never enumerate or clone a held Metadata body. */
+export function readSessionListPresentationOwnerMetadataField<K extends keyof Metadata>(source: SessionListPresentationSource, key: K) {
+    return source.metadataLayoutVersion === 0
+        ? readMetadataField(source.metadata, source.metadataFallback, key)
+        : readMetadataField(source.ownerMetadataView, source.ownerMetadataFallback, key);
+}
+
+/** A requested full control read, never the inventory/display projection. */
+export function readSessionPresentationControl(input: SessionRelationRecord): Session {
+    const record = readSessionPresentationRecord(input);
+    return 'agentState' in record ? record : buildSessionFromListRenderable(record, {
+        serverId: input.serverId, baseSession: 'record' in input ? input.baseSession : undefined,
+    });
+}
+
+function readPresentationRelations(record: SessionPresentationRecord, baseSession?: Session) {
+    return { manager: record.manager !== undefined ? record.manager : baseSession?.manager ?? null,
+        managedSessions: record.managedSessions ?? baseSession?.managedSessions ?? null,
+        origin: record.origin ?? baseSession?.origin };
+}
+
+export function readSessionPresentationInputRelations(input: SessionRelationRecord) {
+    return readPresentationRelations(readSessionPresentationRecord(input), 'record' in input ? input.baseSession : undefined);
+}
+
+/** Operation-local inputs, not another retained Session or row projection. */
+export type SessionListPresentationSource = Readonly<{
+    row: SessionListRenderableSession;
+    baseSession?: Session;
+    serverId?: string;
+    metadata: Metadata | null;
+    metadataLayoutVersion: number;
+    metadataFromRow: boolean;
+    ownerMetadataView: Metadata | null | undefined;
+    metadataFallback?: Metadata | null;
+    ownerMetadataFallback?: Metadata | null;
+    relations: ReturnType<typeof readPresentationRelations>;
+    lifecycle: SessionLifecycleProjection;
+    pending: PendingRequestFacts;
+    pendingObserved: boolean;
+    messages?: readonly Message[];
+}>;
 
 function normalizeProjectionSeq(value: unknown): number {
     return typeof value === 'number' && Number.isFinite(value)
@@ -19,9 +95,16 @@ function normalizeProjectionSeq(value: unknown): number {
 
 export function isSessionListRenderableNewerThanSession(
     renderable: SessionListRenderableSession,
-    session: Pick<Session, 'seq' | 'agentStateVersion'>,
+    session: Pick<Session, 'seq' | 'agentStateVersion' | 'metadataVersion' | 'metadataLayoutVersion'>,
 ): boolean {
+    const observation = hasNewerObservedSessionMetadata(renderable) ? renderable[SESSION_LIST_DOCUMENT_ADMISSION] : undefined;
     return normalizeProjectionSeq(renderable.seq) > normalizeProjectionSeq(session.seq)
+        || compareSessionMetadataRevisions({
+            incomingLayoutVersion: observation?.observedMetadataLayoutVersion ?? renderable.metadataLayoutVersion,
+            incomingMetadataVersion: observation?.observedMetadataVersion ?? renderable.metadataVersion,
+            storedLayoutVersion: session.metadataLayoutVersion,
+            storedMetadataVersion: session.metadataVersion,
+        }) > 0
         || !classifySessionTupleApplyCurrentness(renderable, {
             ...renderable,
             agentStateVersion: session.agentStateVersion,
@@ -108,7 +191,137 @@ function mergeRenderableMetadata(
     baseMetadata: Metadata | null | undefined,
     renderableMetadata: SessionListRenderableSession['metadata'],
 ): Metadata | null {
-    return renderableMetadata === null ? null : { ...baseMetadata, ...renderableMetadata } as Metadata;
+    return renderableMetadata === null ? null : baseMetadata
+        ? { ...baseMetadata, ...renderableMetadata } as Metadata : renderableMetadata as Metadata;
+}
+
+function resolveSessionListMetadataProjection(
+    renderable: SessionListRenderableSession,
+    baseSession: Session | undefined,
+    rowMetadata: Metadata | null,
+) {
+    const metadataCurrent = classifySessionTupleApplyCurrentness(baseSession, renderable).metadataCurrent;
+    const rowMetadataLayoutVersion = readSessionMetadataLayoutVersion(renderable.metadataLayoutVersion ?? baseSession?.metadataLayoutVersion);
+    const baseMetadataLayoutVersion = readSessionMetadataLayoutVersion(baseSession?.metadataLayoutVersion);
+    const metadataLayoutVersion = metadataCurrent || !baseSession ? rowMetadataLayoutVersion : baseMetadataLayoutVersion;
+    const metadataUnavailable = renderable.metadataUnavailable === true || rowMetadata === null;
+    const sameMetadataLayout = rowMetadataLayoutVersion === baseMetadataLayoutVersion;
+    const ownerMetadataView = metadataUnavailable ? null : metadataLayoutVersion === 0 ? undefined
+        : isSessionListRenderableOwnerProjection({ metadataLayoutVersion, access: renderable.access, accessLevel: renderable.accessLevel })
+            ? metadataCurrent
+                ? rowMetadata
+                : baseSession?.ownerMetadataView ?? null
+            : null;
+    const metadata = metadataUnavailable ? null : metadataCurrent
+        ? rowMetadata
+        : baseSession?.metadata ?? null;
+    return { metadataCurrent, metadataLayoutVersion, rowMetadataLayoutVersion, ownerMetadataView, metadata,
+        metadataFallback: metadata !== null && metadataCurrent && sameMetadataLayout ? baseSession?.metadata : undefined,
+        ownerMetadataFallback: ownerMetadataView && metadataCurrent && sameMetadataLayout ? baseSession?.ownerMetadataView : undefined };
+}
+
+function readAdmittedBaseSession(row: SessionListRenderableSession, base: Session | undefined): Session | undefined {
+    const admission = row[SESSION_LIST_DOCUMENT_ADMISSION];
+    return admission && !areSessionListDocumentAdmissionsEqual(base?.[SESSION_LIST_DOCUMENT_ADMISSION], admission)
+        ? undefined : base;
+}
+
+function readMetadataField<K extends keyof Metadata>(metadata: Metadata | null | undefined,
+    fallback: Metadata | null | undefined, key: K): Metadata[K] | undefined {
+    if (!metadata) return undefined;
+    return Object.prototype.hasOwnProperty.call(metadata, key) ? metadata[key] : fallback?.[key];
+}
+
+export function createSessionListPresentationSource(
+    row: SessionListRenderableSession,
+    options: Readonly<{ baseSession?: Session; serverId?: string | null;
+        /** A matching summary must not turn its unread bit into new Ready evidence. */
+        readyEvent?: Pick<Session, 'latestReadyEventSeq'> }> = {},
+): SessionListPresentationSource {
+    const baseSession = readAdmittedBaseSession(row, options.baseSession);
+    const serverId = options.serverId?.trim() || baseSession?.serverId || row.serverId;
+    const rowMetadata = readSessionListRenderableSharedMetadata(row);
+    const metadata = resolveSessionListMetadataProjection(row, baseSession, rowMetadata);
+    const seq = normalizeProjectionSeq(row.seq);
+    // Only lifecycle facts enter this adapter. Do not spread a Session/list body here.
+    const lifecycle = reconcileSessionLifecycleProjection(baseSession, {
+        serverId, seq: row.hasUnreadMessages === true ? Math.max(1, seq) : seq,
+        updatedAt: row.updatedAt, meaningfulActivityAt: row.meaningfulActivityAt,
+        lastTurnCompletedAt: row.lastTurnCompletedAt, active: row.active, activeAt: row.activeAt,
+        thinking: row.thinking, thinkingAt: row.thinkingAt,
+        latestTurnId: row.latestTurnId, latestTurnStatus: row.latestTurnStatus,
+        latestTurnStatusObservedAt: row.latestTurnStatusObservedAt,
+        latestReadyEventSeq: options.readyEvent ? options.readyEvent.latestReadyEventSeq
+            : row.hasUnreadMessages === true ? Math.max(1, seq) : row.latestReadyEventSeq,
+        latestReadyEventAt: row.latestReadyEventAt,
+        pendingVersion: row.pendingVersion, pendingCount: row.pendingCount, pendingOwnerCount: row.pendingOwnerCount,
+        pendingBlockedCount: row.pendingBlockedCount, pendingActivationAuthorization: row.pendingActivationAuthorization,
+        runtimeActivityState: row.runtimeActivityState, runtimeActivityActiveCount: row.runtimeActivityActiveCount,
+        runtimeActivityObservedAt: row.runtimeActivityObservedAt, runtimeActivityRevision: row.runtimeActivityRevision,
+    });
+    const basePending = baseSession ? readPendingRequestFactsFromSession(baseSession) : undefined;
+    const hasPendingSummary = typeof row.hasPendingPermissionRequests === 'boolean' || typeof row.hasPendingUserActionRequests === 'boolean';
+    const pending: PendingRequestFacts = {
+        sessionId: row.id, active: lifecycle.active,
+        agentState: baseSession && classifySessionTupleApplyCurrentness(row, baseSession).agentStateCurrent ? baseSession.agentState : null,
+        actionConfirmations: readSharedMetadataActionConfirmationState({
+            actionConfirmationsV1: readMetadataField(metadata.metadata, metadata.metadataFallback, 'actionConfirmationsV1'),
+        }, metadata.metadataLayoutVersion),
+        presentationCompletedRequests: baseSession ? readSessionPresentationCompletedRequests(baseSession) : null,
+        projected: {
+            permissionCount: typeof row.hasPendingPermissionRequests === 'boolean' ? row.hasPendingPermissionRequests ? 1 : 0 : basePending?.projected?.permissionCount ?? null,
+            userActionCount: typeof row.hasPendingUserActionRequests === 'boolean' ? row.hasPendingUserActionRequests ? 1 : 0 : basePending?.projected?.userActionCount ?? null,
+            observedAt: hasPendingSummary ? typeof row.pendingRequestObservedAt === 'number' && Number.isFinite(row.pendingRequestObservedAt)
+                && row.pendingRequestObservedAt > 0 ? row.pendingRequestObservedAt : null : basePending?.projected?.observedAt ?? null,
+            referenceAt: Number.isFinite(lifecycle.updatedAt)
+                ? Math.trunc(readSessionFullPublicationUpdatedAt({ id: row.id, serverId, updatedAt: lifecycle.updatedAt })) : null,
+        },
+    };
+    return { row, baseSession, serverId, metadata: metadata.metadata, metadataLayoutVersion: metadata.metadataLayoutVersion,
+        metadataFromRow: metadata.metadataCurrent || !baseSession, ownerMetadataView: metadata.ownerMetadataView,
+        metadataFallback: metadata.metadataFallback, ownerMetadataFallback: metadata.ownerMetadataFallback,
+        relations: readPresentationRelations(row, baseSession), lifecycle, pending,
+        pendingObserved: pending.agentState !== null || typeof pending.projected?.permissionCount === 'number'
+            && typeof pending.projected?.userActionCount === 'number' };
+}
+
+export function readSessionListPresentationOwnerMetadata(source: SessionListPresentationSource) {
+    return source.metadataLayoutVersion === 0 ? source.metadata : source.ownerMetadataView;
+}
+
+export function readSessionListPresentationRuntime(source: SessionListPresentationSource) {
+    return { ...source.lifecycle, id: source.row.id, serverId: source.serverId, archivedAt: source.row.archivedAt,
+        presence: source.row.presence, optimisticThinkingAt: source.row.optimisticThinkingAt,
+        resumingAt: source.row.resumingAt, thinkingGraceUntil: source.row.thinkingGraceUntil, lastRuntimeIssue: source.row.lastRuntimeIssue };
+}
+
+export function readSessionListPresentationPendingFlags(source: SessionListPresentationSource, messages = source.messages) {
+    return derivePendingRequestFlags(source.pending, messages ?? []);
+}
+
+export function readSessionListPresentationPendingObservedAt(source: SessionListPresentationSource, messages = source.messages) {
+    return deriveLatestPendingRequestObservedAt(source.pending, messages ?? []);
+}
+
+export function listSessionListPresentationPendingRequests(source: SessionListPresentationSource, messages = source.messages) {
+    return listPendingRequests(source.pending, messages ?? []);
+}
+
+export function listSessionListPresentationPermissionRequests(source: SessionListPresentationSource, messages = source.messages) {
+    return listCorePermissionRequests(source.pending, messages ?? []);
+}
+
+export function listSessionListPresentationUserActionRequests(source: SessionListPresentationSource, messages = source.messages) {
+    return listCoreUserActionRequests(source.pending, messages ?? []);
+}
+
+/** Display fields only: no reconstructed Session and no ambient Home lookup. */
+export function readSessionListPresentationDisplay(source: SessionListPresentationSource) {
+    const row = source.row;
+    return { id: row.id, serverId: source.serverId, metadata: source.metadata, metadataLayoutVersion: source.metadataLayoutVersion,
+        ownerMetadataView: source.ownerMetadataView, lockedDisplayTitle: row.lockedDisplayTitle,
+        access: row.access, accessLevel: row.accessLevel, encryptionMode: row.encryptionMode ?? source.baseSession?.encryptionMode,
+        encryptedContentAvailability: row.encryptedContentAvailability !== undefined ? row.encryptedContentAvailability : source.baseSession?.encryptedContentAvailability };
 }
 
 export function buildSessionFromListRenderable(
@@ -118,6 +331,8 @@ export function buildSessionFromListRenderable(
         serverId?: string | null;
     }> = {},
 ): Session {
+    const admittedBase = readAdmittedBaseSession(renderable, options.baseSession);
+    if (admittedBase !== options.baseSession) options = { ...options, baseSession: admittedBase };
     const {
         responsibleAccountId: _baseResponsibleAccountId,
         responsibleAccount: _baseResponsibleAccount,
@@ -142,47 +357,37 @@ export function buildSessionFromListRenderable(
     const agentStateVersion = hasCurrentCanonicalAgentState
         ? options.baseSession!.agentStateVersion
         : renderable.agentStateVersion;
-    const metadataCurrent = classifySessionTupleApplyCurrentness(options.baseSession, renderable).metadataCurrent;
-    const rowMetadataLayoutVersion = readSessionMetadataLayoutVersion(
-        renderable.metadataLayoutVersion ?? options.baseSession?.metadataLayoutVersion,
-    );
-    const baseMetadataLayoutVersion = readSessionMetadataLayoutVersion(options.baseSession?.metadataLayoutVersion);
-    const metadataLayoutVersion = metadataCurrent || !options.baseSession
-        ? rowMetadataLayoutVersion : baseMetadataLayoutVersion;
+    const rowMetadataLayoutVersion = readSessionMetadataLayoutVersion(renderable.metadataLayoutVersion ?? options.baseSession?.metadataLayoutVersion);
     const displayMetadata = readSessionListRenderableSharedMetadata({
         metadata: renderable.metadata, metadataLayoutVersion: rowMetadataLayoutVersion,
     });
     const rowMetadata = displayMetadata === null ? null : {
         ...displayMetadata,
-        sessionWorkStateV1: renderable.workState ?? null,
         sessionAgentActivityHeadlineV1: renderable.agentActivityHeadline ?? null,
         sessionWorkflowActivityHeadlineV1: renderable.workflowHeadline ?? null,
         ...(renderable.metadata?.terminalControlServiceabilityV1
             ? { terminal: { controlServiceabilityV1: renderable.metadata.terminalControlServiceabilityV1 } }
             : {}),
     };
-    // Explicit unreadability contracts privacy even while an older opened tuple remains cached.
-    const metadataUnavailable = renderable.metadataUnavailable === true || rowMetadata === null;
-    const sameMetadataLayout = rowMetadataLayoutVersion === baseMetadataLayoutVersion;
-    const ownerMetadataView = metadataUnavailable
-        ? null
-        : metadataLayoutVersion === 0
-            ? undefined
-            : isSessionListRenderableOwnerProjection({
-                metadataLayoutVersion,
-                access: renderable.access,
-                accessLevel: renderable.accessLevel,
-            })
-                ? metadataCurrent
-                    ? mergeRenderableMetadata(sameMetadataLayout ? options.baseSession?.ownerMetadataView : null, rowMetadata)
-                    : options.baseSession?.ownerMetadataView ?? null
-                : null;
-    const projectedMetadata = metadataUnavailable ? null : metadataCurrent
-        ? mergeRenderableMetadata(sameMetadataLayout ? options.baseSession?.metadata : null, rowMetadata)
-        : options.baseSession?.metadata ?? null;
+    const projection = resolveSessionListMetadataProjection(renderable, options.baseSession, rowMetadata);
+    const { metadataCurrent, metadataLayoutVersion } = projection;
+    // Full controls deliberately retain the complete held metadata overlay. Inventory/display
+    // consumers above read only their admitted raw metadata and the private leaves they need.
+    const rowAdmission = renderable[SESSION_LIST_DOCUMENT_ADMISSION];
+    const heldFullDocuments = options.baseSession && options.baseSession.metadataProjection !== 'displayOnly' && rowAdmission
+        && areSessionListDocumentAdmissionsEqual(options.baseSession[SESSION_LIST_DOCUMENT_ADMISSION], rowAdmission)
+        ? options.baseSession : undefined;
+    const ownerMetadataView = heldFullDocuments ? heldFullDocuments.ownerMetadataView
+        : projection.ownerMetadataView == null ? projection.ownerMetadataView
+        : mergeRenderableMetadata(projection.ownerMetadataFallback, projection.ownerMetadataView);
+    const projectedMetadata = heldFullDocuments ? heldFullDocuments.metadata : projection.metadata === null ? null
+        : mergeRenderableMetadata(projection.metadataFallback, projection.metadata);
 
     return reconcileSessionLifecycleProjection(options.baseSession, {
         ...baseSessionWithoutResponsibility,
+        ...(rowAdmission ? { [SESSION_LIST_DOCUMENT_ADMISSION]: heldFullDocuments
+            ? mergeSessionListDocumentObservations(heldFullDocuments[SESSION_LIST_DOCUMENT_ADMISSION]!, rowAdmission)
+            : rowAdmission } : {}),
         id: renderable.id,
         viewer: renderable.viewer,
         encryptionMode: renderable.encryptionMode ?? options.baseSession?.encryptionMode,
@@ -236,18 +441,21 @@ export function buildSessionFromListRenderable(
         managedSessions: renderable.managedSessions ?? options.baseSession?.managedSessions ?? null,
         receivedRuleCount: renderable.receivedRuleCount,
         metadata: projectedMetadata,
+        metadataProjection: heldFullDocuments ? heldFullDocuments.metadataProjection : 'displayOnly',
+        workDisplay: metadataCurrent || !options.baseSession
+            ? renderable.workDisplay : options.baseSession.workDisplay,
         // The row owns this ephemeral projection; a stale base must not revive a retired title.
         lockedDisplayTitle: metadataLayoutVersion === 1
             && renderable.metadata === null
             && isSessionAccessRecipient(renderable.access, renderable.accessLevel)
             ? readSessionDisplayTitleField({ lockedDisplayTitle: renderable.lockedDisplayTitle }).value
             : null,
-        metadataLayoutVersion: metadataLayoutVersion || undefined,
+        metadataLayoutVersion: heldFullDocuments ? heldFullDocuments.metadataLayoutVersion : metadataLayoutVersion || undefined,
         ownerMetadataView,
-        metadataVersion: metadataCurrent || !options.baseSession
+        metadataVersion: heldFullDocuments ? heldFullDocuments.metadataVersion : metadataCurrent || !options.baseSession
             ? renderable.metadataVersion : options.baseSession.metadataVersion,
-        agentState,
-        agentStateVersion,
+        agentState: heldFullDocuments ? heldFullDocuments.agentState : agentState,
+        agentStateVersion: heldFullDocuments ? heldFullDocuments.agentStateVersion : agentStateVersion,
         thinking: renderable.thinking,
         thinkingAt: renderable.thinkingAt,
         presence: renderable.presence,

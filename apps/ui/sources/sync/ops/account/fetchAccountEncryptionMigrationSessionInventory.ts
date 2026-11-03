@@ -1,4 +1,5 @@
 import { StoredSessionOwnerMetadataEnvelopeV1Schema } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
+import { SessionDisplayProjectionV1Schema } from '@happier-dev/protocol';
 
 import {
     fetchSessionListPageCompat,
@@ -8,6 +9,7 @@ import type {
 } from './buildAccountEncryptionMigrationStorageDirectives';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import { normalizeSessionAccessProjection } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
+import { readSessionParts, SessionPartsHttpError, SessionPartsInvalidResponseError } from '@/sync/runtime/orchestration/serverScopedRpc/readSessionBatchForAuthority';
 import {
     assertAccountEncryptionMigrationScopeCurrent,
     type AccountEncryptionMigrationScope,
@@ -37,6 +39,7 @@ export async function fetchAccountEncryptionMigrationSessionInventory(
     assertAccountEncryptionMigrationScopeCurrent(params.scope);
     const rows: AccountEncryptionMigrationSessionRow[] = [];
     const seenSessionIds = new Set<string>();
+    const ownedSessions = new Map<string, 'plain' | 'e2ee'>();
 
     for (const sessionListPath of SESSION_INVENTORY_PATHS) {
         let cursor: string | null = null;
@@ -76,26 +79,7 @@ export async function fetchAccountEncryptionMigrationSessionInventory(
                     );
                 }
                 if (access.role !== 'owner') continue;
-                const ownerMetadata =
-                    StoredSessionOwnerMetadataEnvelopeV1Schema.safeParse(
-                        row.ownerMetadata,
-                    );
-                if (
-                    !ownerMetadata.success
-                    || !Number.isSafeInteger(row.metadataVersion)
-                    || !Number.isSafeInteger(row.agentStateVersion)
-                ) {
-                    throw new Error(
-                        `Session migration snapshot is incomplete (${row.id})`,
-                    );
-                }
-                rows.push({
-                    id: row.id,
-                    metadataLayoutVersion: 1,
-                    metadataVersion: row.metadataVersion,
-                    agentStateVersion: row.agentStateVersion!,
-                    ownerMetadata: ownerMetadata.data,
-                });
+                ownedSessions.set(row.id, row.encryptionMode);
             }
             if (!page.hasNext) break;
             if (!page.nextCursor) {
@@ -111,6 +95,34 @@ export async function fetchAccountEncryptionMigrationSessionInventory(
             seenCursors.add(page.nextCursor);
             cursor = page.nextCursor;
         }
+    }
+    assertAccountEncryptionMigrationScopeCurrent(params.scope);
+    if (!ownedSessions.size) return rows;
+    const parts = await readSessionParts({
+        request: (path, init) => request(path, { ...init, headers: {
+            ...Object.fromEntries(new Headers(init.headers)), Authorization: `Bearer ${params.token}`,
+        } }),
+        sessionIds: [...ownedSessions.keys()], includeSnapshot: true, includeTurns: false, includeMessages: false,
+        assertCurrent: () => assertAccountEncryptionMigrationScopeCurrent(params.scope),
+    });
+    for (const [sessionId, encryptionMode] of ownedSessions) {
+        const detail = parts.get(sessionId)?.detail;
+        if (!detail) throw new SessionPartsInvalidResponseError();
+        if (detail.status !== 200) throw new SessionPartsHttpError(detail.status, detail.body);
+        const row = detail.body.session;
+        const access = normalizeSessionAccessProjection(row, { allowLegacy: true });
+        if (row.id !== sessionId || row.encryptionMode !== encryptionMode
+            || readSessionMetadataLayoutVersion(row.metadataLayoutVersion) !== 1 || access?.role !== 'owner') {
+            throw new SessionPartsInvalidResponseError();
+        }
+        const ownerMetadata = StoredSessionOwnerMetadataEnvelopeV1Schema.safeParse(row.ownerMetadata);
+        if (!ownerMetadata.success || !Number.isSafeInteger(row.metadataVersion) || !Number.isSafeInteger(row.agentStateVersion)) {
+            throw new Error(`Session migration snapshot is incomplete (${row.id})`);
+        }
+        const display = SessionDisplayProjectionV1Schema.safeParse(row.displayProjectionV1);
+        rows.push({ id: row.id, metadataLayoutVersion: 1, metadataVersion: row.metadataVersion,
+            agentStateVersion: row.agentStateVersion!, ownerMetadata: ownerMetadata.data, encryptionMode,
+            displayProjectionV1: display.success ? display.data : null });
     }
     assertAccountEncryptionMigrationScopeCurrent(params.scope);
     return rows;

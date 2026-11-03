@@ -73,7 +73,7 @@ describe('forkUiSupport', () => {
     })).toBe(true);
   });
 
-  it('does not allow fork-from-message for OpenCode ACP when replay and switching are both off', () => {
+  it('fails closed for fork-from-message when no Agent capability declaration is projected and replay and switching are off', () => {
     const session = makeSession({ machineId: 'm1', flavor: 'opencode', opencodeBackendMode: 'acp' });
     expect(canForkFromMessage({ session, messageSeq: 5, replayEnabled: false, agentSwitchingEnabled: false })).toBe(false);
   });
@@ -108,9 +108,15 @@ describe('forkUiSupport', () => {
     })).toBe(true);
   });
 
-  it('does not allow fork-from-message for Codex app-server when replay and switching are both off', () => {
+  it('does not allow fork-from-message for Codex app-server when its declaration forks conversations only', () => {
     const session = makeSession({ machineId: 'm1', flavor: 'codex', codexBackendMode: 'appServer' });
-    expect(canForkFromMessage({ session, messageSeq: 5, replayEnabled: false, agentSwitchingEnabled: false })).toBe(false);
+    expect(canForkFromMessage({
+      session,
+      messageSeq: 5,
+      replayEnabled: false,
+      agentSwitchingEnabled: false,
+      currentAgentCapabilities: codexCapabilities,
+    })).toBe(false);
   });
 
   it('allows fork conversation for OpenCode ACP when replay is disabled (ACP fork-latest)', () => {
@@ -194,17 +200,6 @@ describe('resolveSessionForkStrategyAvailability', () => {
       configure: false,
       nativeUnavailableReason: 'agent_unsupported',
     });
-  });
-
-  it('reports native for an Agent that can fork the conversation itself', () => {
-    const session = makeSession({ machineId: 'm1', flavor: 'codex', codexBackendMode: 'appServer' });
-    expect(resolveSessionForkStrategyAvailability({
-      session,
-      forkPoint: { type: 'latest' },
-      replayEnabled: false,
-      agentSwitchingEnabled: false,
-      currentAgentCapabilities: codexCapabilities,
-    })).toEqual({ native: true, replay: false, configure: false, nativeUnavailableReason: null });
   });
 
   it('resolves the exact-message cutoff against the from-message capability, not the conversation one', () => {

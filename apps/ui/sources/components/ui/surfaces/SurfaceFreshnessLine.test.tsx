@@ -17,6 +17,33 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     return typeof style === 'object' && style !== null ? style as Record<string, unknown> : {};
 }
 
+describe('SurfaceFreshnessLine content', () => {
+    it('keeps content honest: as of when, why, and one retry', async () => {
+        const { formatAsOfTime } = await import('@/utils/time/formatAsOfTime');
+        const retry = vi.fn();
+        const asOf = Date.now() - 60_000;
+        const screen = await renderScreen(
+            <SurfaceFreshnessLine
+                testID="fresh"
+                asOf={asOf}
+                reason="devbox isn’t answering"
+                action={{ label: 'Retry', onPress: retry }}
+            />,
+        );
+        expect(screen.getTextContent()).toContain(`As of ${formatAsOfTime(asOf)}`);
+        expect(screen.getTextContent()).toContain('devbox isn’t answering');
+        await act(async () => {
+            screen.pressByTestId('fresh-action');
+        });
+        expect(retry).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a working ring on the line while it reconnects', async () => {
+        const screen = await renderScreen(<SurfaceFreshnessLine testID="fresh" reason="Reconnecting to MacBook Pro…" busy />);
+        expect(screen.findByTestId('fresh-spinner')).not.toBeNull();
+    });
+});
+
 describe('SurfaceFreshnessLine recovery', () => {
     it('keeps Retry keyboard-visible and prevents reentry while its async action is pending', async () => {
         const deferred = createDeferred<void>();

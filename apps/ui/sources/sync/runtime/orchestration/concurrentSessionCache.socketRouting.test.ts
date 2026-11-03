@@ -7,6 +7,7 @@ import { encodeBase64 } from '@/encryption/base64';
 import { sealSessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataEnvelopesV1';
 import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { resolveScopedAccountEncryption } from '@/sync/encryption/scopedAccountEncryption';
+import { createDeferred, createSessionFixture } from '@/dev/testkit';
 
 vi.mock('react-native', async () => (await import('@/dev/testkit/mocks/reactNative')).createReactNativeWebMock());
 
@@ -20,6 +21,271 @@ const machines = () => h.storage.getState().machineListByServerId[h.homeB.id];
 const route = (serverId = h.homeB.id, remoteMachineId = 'machine-b') => ({ serverId, remoteMachineId });
 
 describe('concurrent session cache socket routing', () => {
+
+
+
+    it('consumes ongoing secondary Home bodies and stream checkpoints through the real Sync owner without hydrating foreign same-id transcripts', async () => {
+        const { registerSessionRealtimeTranscriptConsumer } = await import('@/sync/runtime/sessionRealtimeTranscriptConsumers');
+        const { UpdateContainerSchema } = await import('@happier-dev/protocol/updates');
+        const id = 'secondary-live';
+        h.setSessions(h.homeB, [h.session({ id, metadata: { path: '/repo', host: 'host', machineId: 'machine-b' } })]);
+        h.setMachines(h.homeB, [h.machine(h.homeB, 'machine-b')]);
+        h.setSessions(h.homeA, [h.session({ id, metadata: { path: '/foreign', host: 'host', machineId: 'machine-a' } })]);
+        h.setResponder(async input => {
+            const path = new URL(String(input)).pathname;
+            return path.endsWith('/messages') ? Response.json({ messages: [], hasMore: false })
+                : path.endsWith('/pending') ? Response.json({ pending: [], pendingVersion: 0 }) : null;
+        });
+        await h.start(); await h.ready();
+        const release = registerSessionRealtimeTranscriptConsumer(id, h.homeB.id);
+        const texts = () => Object.values(h.storage.getState().sessionMessages[id]?.messagesMap ?? {})
+            .flatMap(message => message.kind === 'agent-text' ? [message.text] : []);
+        const record = (text: string) => ({ role: 'agent', content: { type: 'acp', agentId: 'codex', data: { type: 'message', message: text } } });
+        try {
+            await vi.waitFor(() => expect(h.storage.getState().sessions[id]?.serverId).toBe(h.homeB.id));
+            const shellReads = h.requests(`/v2/sessions/${id}`).length;
+            h.socket().trigger('update', UpdateContainerSchema.parse({ id: 'secondary-full', seq: 1, createdAt: 2,
+                body: { t: 'new-message', sid: id, delivery: 'full', message: { id: 'message-live', seq: 1, localId: null,
+                    createdAt: 2, updatedAt: 2, content: { t: 'plain', v: record('secondary durable text') } } } }));
+            await vi.waitFor(() => expect(texts()).toContain('secondary durable text'));
+            h.socket().trigger('ephemeral', { type: 'transcript-stream-segment', sessionId: id,
+                message: { localId: 'stream-live', messageRole: 'agent', tick: 1, createdAt: 3, updatedAt: 3,
+                    content: { t: 'plain', v: { ...record('secondary streaming text'), meta: { happierStreamSegmentV1: {
+                        v: 1, segmentKind: 'assistant', segmentLocalId: 'stream-live', segmentState: 'streaming', startedAtMs: 3, updatedAtMs: 3,
+                    } } } } } });
+            await vi.waitFor(() => expect(texts()).toContain('secondary streaming text'));
+            expect(h.requests(`/v2/sessions/${id}`).length).toBe(shellReads);
+            const secondarySession = h.storage.getState().sessions[id];
+            if (!secondarySession) throw new Error('Expected the opened secondary carrier');
+            h.storage.getState().applySessions([{ ...secondarySession, serverId: h.homeA.id,
+                metadata: { ...secondarySession.metadata, path: '/foreign', host: 'host', machineId: 'machine-a' },
+            }]);
+            expect(h.storage.getState().sessions[id]?.serverId).toBe(h.homeA.id);
+            const foreignMessages = h.storage.getState().sessionMessages[id];
+            h.socket().trigger('update', UpdateContainerSchema.parse({ id: 'secondary-foreign', seq: 2, createdAt: 4,
+                body: { t: 'new-message', sid: id, delivery: 'full', message: { id: 'foreign-frame', seq: 2, localId: null,
+                    createdAt: 4, updatedAt: 4, content: { t: 'plain', v: record('must stay foreign') } } } }));
+            await Promise.resolve(); await Promise.resolve();
+            expect(h.storage.getState().sessionMessages[id]).toBe(foreignMessages);
+            expect(texts()).not.toContain('must stay foreign');
+            release();
+            const { useVoiceTargetStore } = await import('@/voice/runtime/voiceTargetStore');
+            useVoiceTargetStore.setState({ primaryActionSessionAddress: null, lastFocusedSessionAddress: null });
+            const { readMountedSessionRealtimeTranscriptConsumerSessionIds } = await import('@/sync/runtime/sessionRealtimeTranscriptConsumers');
+            expect(readMountedSessionRealtimeTranscriptConsumerSessionIds(h.homeB.id)).not.toContain(id);
+            const { isSessionSurfaceVisible } = await import('@/sync/domains/session/sessionSurfaceVisibility');
+            expect(isSessionSurfaceVisible(id, h.homeB.id)).toBe(false);
+            const { registerSessionRealtimeScmConsumerScope } = await import('@/sync/runtime/sessionRealtimeScmConsumers');
+            const { resolveWorkspaceTargetForSession } = await import('@/sync/domains/session/resolveWorkspaceTargetForSession');
+            const { scmDiffCache } = await import('@/scm/diffCache/scmDiffCacheSingleton');
+            const releaseScm = registerSessionRealtimeScmConsumerScope({ serverId: h.homeB.id, sessionId: 'scm-surface',
+                canonicalProjectKey: 'machine-b:/repo', machineScopeId: 'machine-b', repoRoot: '/repo' });
+            const { resolveSessionLiveConsumption, resolveSessionScmMutationSignal } = await import('@/sync/runtime/sessionLiveConsumption');
+            expect(resolveSessionLiveConsumption(id, h.homeB.id).isFullContentConsumer).toBe(false);
+            expect(resolveSessionScmMutationSignal(id, h.homeB.id)).toBe(true);
+            const target = resolveWorkspaceTargetForSession({ serverId: h.homeB.id, sessionId: id });
+            if (!target) throw new Error('Expected the admitted secondary workspace target');
+            const diffKey = { sessionId: target.workspaceCacheKey, snapshotSignature: 'before-edit', diffArea: 'pending' as const, path: '/repo/file.ts' };
+            scmDiffCache.set(diffKey, 'old diff');
+            try {
+                const editRecord = { role: 'agent', content: { type: 'output', data: {
+                    type: 'assistant', uuid: 'edit-record', message: { role: 'assistant', content: [{
+                        type: 'tool_use', id: 'edit-tool', name: 'Edit', input: { file_path: '/repo/file.ts', old_string: 'a', new_string: 'b' },
+                    }] },
+                } } };
+                h.socket().trigger('update', UpdateContainerSchema.parse({ id: 'secondary-scm-revision', seq: 3, createdAt: 6,
+                    body: { t: 'message-updated', sid: id, delivery: 'full', message: { id: 'scm-edit', seq: 1, localId: null,
+                        messageRole: 'agent', createdAt: 5, updatedAt: 6, content: { t: 'plain', v: editRecord },
+                    } },
+                }));
+                await vi.waitFor(() => expect(scmDiffCache.get(diffKey)).toBeNull());
+                expect(h.storage.getState().sessionMessages[id]).toBe(foreignMessages);
+            } finally { releaseScm(); scmDiffCache.invalidateSession(target.workspaceCacheKey); }
+        } finally { release(); }
+    });
+
+    it('retires the previous Home transcript and watermark when an ACK opens the same id in another Home', async () => {
+        const { registerSessionRealtimeTranscriptConsumer } = await import('@/sync/runtime/sessionRealtimeTranscriptConsumers');
+        const { getSyncSingleton } = await import('@/sync/runtime/getSyncSingleton');
+        const { captureServerRequestAuthorityForServerAccountScope } = await import('./serverScopedRpc/createServerRequestWithServerScope');
+        const { readSessionOwnerMetadataView } = await import('@/sync/domains/session/readSessionOwnerMetadataView');
+        const id = 'same-id-home-switch';
+        await h.select([h.homeA.id, h.homeB.id, h.homeC.id]);
+        h.setSessions(h.homeC, [h.session({ id, seq: 20, metadataVersion: 20,
+            metadata: { path: '/old-home', host: 'old-host' } })]);
+        h.setSessions(h.homeB, [h.session({ id, seq: 5, metadataVersion: 5,
+            metadata: { path: '/new-home', host: 'new-host' } })]);
+        const record = (home: string, seq: number) => ({ id: `${home}-${seq}`, seq, localId: null, createdAt: seq, updatedAt: seq,
+            content: { t: 'plain' as const, v: { role: 'user', content: { type: 'text', text: `${home} text ${seq}` } } } });
+        h.setResponder(async input => {
+            const url = new URL(String(input));
+            if (url.pathname.endsWith('/pending')) return Response.json({ pending: [], pendingVersion: 0 });
+            if (!url.pathname.endsWith('/messages')) return null;
+            const records = url.origin === h.homeC.serverUrl ? [record('old Home', 10), record('old Home', 20)] : [record('new Home', 5)];
+            const messages = url.searchParams.has('afterSeq') ? records.filter(row => row.seq > Number(url.searchParams.get('afterSeq')))
+                : url.searchParams.has('beforeSeq') ? records.filter(row => row.seq < Number(url.searchParams.get('beforeSeq'))) : records.slice(-1);
+            const hasMore = !url.searchParams.has('afterSeq') && messages[0]?.seq === 20;
+            return Response.json({ messages, hasMore, nextBeforeSeq: hasMore ? 20 : null });
+        });
+        await h.start(); await h.ready(); await h.ready(h.homeC);
+        const texts = () => Object.values(h.storage.getState().sessionMessages[id]?.messagesMap ?? {})
+            .flatMap(message => message.kind === 'user-text' ? [message.text] : []);
+        const releaseOld = registerSessionRealtimeTranscriptConsumer(id, h.homeC.id);
+        try {
+            await vi.waitFor(() => expect(h.storage.getState().sessionMessages[id]?.isLoaded).toBe(true));
+            expect(h.storage.getState().sessions[id]?.serverId).toBe(h.homeC.id);
+            expect(texts()).toContain('old Home text 20');
+            expect(await getSyncSingleton().loadOlderMessagesFromCursor(id, 20)).toMatchObject({ loaded: 1 });
+            expect(texts()).toContain('old Home text 10');
+            const authority = await captureServerRequestAuthorityForServerAccountScope({
+                serverId: h.homeC.id,
+                activeRequest: async () => { throw new Error('Secondary Home read must not use the active transport'); },
+            });
+            try {
+                await getSyncSingleton().ensureSessionVisibleForMessageRoute(id, { serverId: h.homeC.id, forceRefresh: true, authority });
+            } finally { await authority.release(); }
+            expect(texts()).toContain('old Home text 10');
+        } finally { releaseOld(); }
+        const { buildSessionMessageObservationFactsV1 } = await import('@happier-dev/protocol');
+        h.socket(h.homeC).trigger('update', { id: 'old-home-hidden-revision', seq: 21, createdAt: 21,
+            body: { t: 'message-updated', sid: id, delivery: 'hint', message: buildSessionMessageObservationFactsV1({
+                ...record('old Home', 20), updatedAt: 21,
+            }) } });
+        await Promise.resolve(); await Promise.resolve();
+        const releaseNew = registerSessionRealtimeTranscriptConsumer(id, h.homeB.id);
+        try {
+            await vi.waitFor(() => expect(h.storage.getState().sessions[id]?.serverId).toBe(h.homeB.id));
+            await vi.waitFor(() => expect(texts()).toEqual(['new Home text 5']));
+            expect(h.storage.getState().sessions[id]?.seq).toBe(5);
+            expect(h.storage.getState().sessions[id]?.metadataVersion).toBe(5);
+            expect(readSessionOwnerMetadataView(h.storage.getState().sessions[id]!)).toMatchObject({ path: '/new-home', host: 'new-host' });
+            const reads = h.requests(`/v1/sessions/${id}/messages`).filter(request => request.url.origin === h.homeB.serverUrl);
+            expect(reads.length).toBeGreaterThan(0);
+            expect(reads.some(request => Number(request.url.searchParams.get('afterSeq')) > 5
+                || Number(request.url.searchParams.get('beforeSeq')) > 6)).toBe(false);
+        } finally { releaseNew(); getSyncSingleton().retireLocalSession(id, h.homeB.id); }
+    });
+
+    it('opens encrypted secondary Home transcript windows and older pages with the exact Home cipher', async () => {
+        const { fetchSessionByIdWithServerScope } = await import('./serverScopedRpc/fetchSessionByIdWithServerScope');
+        const { getSyncSingleton } = await import('@/sync/runtime/getSyncSingleton');
+        const id = 'secondary-encrypted-transcript';
+        const secret = new Uint8Array(32).fill(71);
+        const encryption = await Encryption.create(secret);
+        const key = new Uint8Array(32).fill(72);
+        await encryption.initializeSessions(new Map([[id, key]]));
+        const cipher = encryption.getSessionEncryption(id)!;
+        await h.network.addHome(h.homeB.serverUrl, h.homeB.accountId, {
+            credentials: { token: h.homeB.token, secret: encodeBase64(secret, 'base64url') }, encryptionMode: 'e2ee',
+        });
+        const plain = h.session({ id, seq: 20 });
+        if (plain.ownerMetadata?.t !== 'plain') throw new Error('Expected owner metadata fixture');
+        const row = { ...plain, encryptionMode: 'e2ee' as const,
+            metadata: await cipher.encryptRaw(JSON.parse(plain.metadata)),
+            ownerMetadata: sealSessionOwnerMetadataEnvelopeV1({ material: { type: 'legacy', secret },
+                ownerMetadata: plain.ownerMetadata.v, randomBytes: length => new Uint8Array(length).fill(73) }),
+            dataEncryptionKey: encodeBase64(await encryption.encryptEncryptionKey(key)),
+        };
+        const message = async (seq: number) => ({ id: `encrypted-${seq}`, seq, localId: null, createdAt: seq, updatedAt: seq,
+            content: { t: 'encrypted' as const, c: await cipher.encryptRaw({ role: 'user', content: { type: 'text', text: `secondary text ${seq}` } }) } });
+        const older = await message(10);
+        let targetRow = await message(20);
+        let current = targetRow;
+        let heldRead: { started: ReturnType<typeof createDeferred<void>>; gate: ReturnType<typeof createDeferred<void>> } | null = null;
+        h.setSessions(h.homeB, [row]);
+        h.setResponder(async input => {
+            const url = new URL(String(input));
+            if (url.origin !== h.homeB.serverUrl) return null;
+            if (url.pathname === '/v1/account/encryption/currentness') return Response.json({ mode: 'e2ee', version: 1,
+                signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1,
+                recipientEnvelopeReadiness: { status: 'available' } });
+            if (url.pathname.endsWith('/messages')) {
+                const hold = heldRead;
+                heldRead = null;
+                if (hold) { hold.started.resolve(); await hold.gate.promise; }
+                const before = Number(url.searchParams.get('beforeSeq'));
+                const after = Number(url.searchParams.get('afterSeq'));
+                const records = [older, targetRow, ...(current.id === targetRow.id ? [] : [current])];
+                const latest = url.searchParams.has('beforeSeq') ? records.filter(item => item.seq < before).at(-1) : current;
+                const messages = url.searchParams.has('afterSeq') ? records.filter(item => item.seq > after) : latest ? [latest] : [];
+                const hasMore = !url.searchParams.has('afterSeq') && (messages[0]?.seq ?? 0) > older.seq;
+                return Response.json({ messages, hasMore, nextBeforeSeq: hasMore ? messages[0]?.seq : null, nextAfterSeq: null });
+            }
+            if (url.pathname === `/v2/sessions/${id}`) return Response.json({ session: row });
+            if (url.pathname.endsWith('/pending')) return Response.json({ pending: [], pendingVersion: 0 });
+            return null;
+        });
+        await h.start(); await h.refresh();
+        expect(h.storage.getState().concurrentSessionListCacheByServerId[h.homeB.id]?.listObservation).toMatchObject({ phase: 'ready' });
+        expect((await fetchSessionByIdWithServerScope({
+            sessionId: id, serverId: h.homeB.id, contentDemand: 'session', activeCredentials: { token: h.homeA.token },
+            activeRequest: async () => { throw new Error('Secondary transcript hydration must not use the active Home transport'); },
+            activeEncryption: null, sessionDataKeys: new Map(), sessionDataKeyEnvelopes: new Map(), includeTurnsProjection: false,
+            getExistingSession: sid => h.storage.getState().sessions[sid],
+            applySessions: sessions => h.storage.getState().applySessions(sessions), log: { log() {} },
+        })).ok).toBe(true);
+        const sync = getSyncSingleton();
+        expect(await sync.loadTargetWindowMessages(id, { kind: 'seq', seq: 20 })).toMatchObject({ status: 'loaded', targetPresent: true });
+        const texts = () => Object.values(h.storage.getState().sessionMessages[id]?.messagesMap ?? {})
+            .flatMap(item => item.kind === 'user-text' ? [item.text] : []);
+        expect(texts()).toContain('secondary text 20');
+        expect(await sync.loadOlderMessagesFromCursor(id, 20)).toMatchObject({ loaded: 1 });
+        expect(texts()).toContain('secondary text 10');
+        expect(h.httpRequests.filter(request => request.url.pathname.endsWith('/messages')).every(request => request.url.origin === h.homeB.serverUrl)).toBe(true);
+        const { registerSessionRealtimeTranscriptConsumer } = await import('@/sync/runtime/sessionRealtimeTranscriptConsumers');
+        const { buildSessionMessageObservationFactsV1 } = await import('@happier-dev/protocol');
+        const release = registerSessionRealtimeTranscriptConsumer(id, h.homeB.id);
+        try {
+            current = { ...current, updatedAt: 21, content: { t: 'encrypted', c: await cipher.encryptRaw({ role: 'user', content: { type: 'text', text: 'secondary revised text 20' } }) } };
+            targetRow = current;
+            h.socket().trigger('update', { id: 'secondary-encrypted-revision', seq: 2, createdAt: 21,
+                body: { t: 'message-updated', sid: id, delivery: 'hint', message: buildSessionMessageObservationFactsV1(current) } });
+            await vi.waitFor(() => expect(texts()).toContain('secondary revised text 20'));
+            await vi.waitFor(() => expect(h.storage.getState().sessionMessages[id]?.isLoaded).toBe(true));
+            current = await message(30);
+            h.socket().trigger('update', { id: 'secondary-encrypted-append', seq: 3, createdAt: 30,
+                body: { t: 'new-message', sid: id, delivery: 'hint', message: buildSessionMessageObservationFactsV1(current) } });
+            await vi.waitFor(() => expect(texts()).toContain('secondary text 30'));
+        } finally { release(); }
+        // A hidden edit behind the materialized tail must survive the secondary
+        // Home's row-only hint path, then repair when its real demand resumes.
+        const { readStaleTranscriptMessageIds } = await import('@/sync/domains/session/realtime/deferredTranscriptState');
+        const staleIds = () => readStaleTranscriptMessageIds((sync as unknown as {
+            deferredTranscriptState: import('@/sync/domains/session/realtime/deferredTranscriptState').DeferredTranscriptState;
+        }).deferredTranscriptState, id);
+        targetRow = { ...targetRow, updatedAt: 41, content: { t: 'encrypted', c: await cipher.encryptRaw({
+            role: 'user', content: { type: 'text', text: 'secondary edited while hidden' },
+        }) } };
+        const beforeHiddenEdit = h.httpRequests.filter(request => request.url.pathname.endsWith('/messages')).length;
+        h.socket().trigger('update', { id: 'secondary-hidden-revision', seq: 4, createdAt: 41,
+            body: { t: 'message-updated', sid: id, delivery: 'hint', message: buildSessionMessageObservationFactsV1(targetRow) } });
+        await vi.waitFor(() => expect(staleIds()).toContain(targetRow.id));
+        expect(texts()).not.toContain('secondary edited while hidden');
+        expect(h.httpRequests.filter(request => request.url.pathname.endsWith('/messages'))).toHaveLength(beforeHiddenEdit);
+        const reopen = registerSessionRealtimeTranscriptConsumer(id, h.homeB.id);
+        try {
+            await vi.waitFor(() => expect(texts()).toContain('secondary edited while hidden'));
+            expect(texts()).toContain('secondary text 10');
+            expect(texts()).toContain('secondary text 30');
+        } finally { reopen(); }
+        const hold = { started: createDeferred<void>(), gate: createDeferred<void>() };
+        heldRead = hold;
+        const pending = sync.loadTargetWindowMessages(id, { kind: 'seq', seq: 20 });
+        try {
+            await hold.started.promise;
+            h.storage.getState().applySessions([createSessionFixture({ id, serverId: h.homeA.id })]);
+            expect(h.storage.getState().sessions[id]?.serverId).toBe(h.homeA.id);
+            const foreignTranscript = h.storage.getState().sessionMessages[id];
+            hold.gate.resolve();
+            expect((await pending).status).not.toBe('loaded');
+            expect(h.storage.getState().sessionMessages[id]).toBe(foreignTranscript);
+        } finally { hold.gate.resolve(); await pending; }
+    });
+
+
+
+
+
     it.each(['existing cipher', 'first cipher'] as const)(
         'does not let a retained credential replace the current scoped Account owner (%s)', async initialMaterial => {
             const original = initialMaterial === 'existing cipher'
@@ -106,6 +372,7 @@ describe('concurrent session cache socket routing', () => {
             const url = new URL(String(input));
             if (url.origin !== h.homeB.serverUrl) return null;
             const path = url.pathname;
+            if (path === '/v2/sessions/read-batch') return null;
             if (path === '/v1/account/encryption/currentness') return Response.json({ mode: 'e2ee', version: 1,
                 signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1,
                 recipientEnvelopeReadiness: { status: 'available' } });

@@ -214,7 +214,7 @@ describe('Spotlight', () => {
         expect(warnSpy).toHaveBeenCalledWith('[DemoStage] Missing spotlight target "missing"; framing full surface.');
     });
 
-    it('frames a measured target with a single halo element and no four-rect cutout', async () => {
+    it('frames a measured target with a single halo element and no full-stage overlay', async () => {
         const targetRef = createMeasuredRef({ x: 10, y: 20, width: 30, height: 40 });
 
         function Probe(): React.ReactElement {
@@ -235,12 +235,9 @@ describe('Spotlight', () => {
             </SpotlightProvider>,
         );
 
-        // The four-rect cutout is gone; the giant-spread shadow dims everything around a single hole.
+        // A found target is dimmed only by the halo's spread shadow; the missing-target overlay would double-dim it.
         expect(screen.findByTestId('spotlight-overlay')).toBeNull();
-        expect(screen.findByTestId('spotlight-cutout-top')).toBeNull();
-        expect(screen.findByTestId('spotlight-cutout-left')).toBeNull();
-        expect(screen.findByTestId('spotlight-cutout-right')).toBeNull();
-        expect(screen.findByTestId('spotlight-cutout-bottom')).toBeNull();
+        expect(screen.findByTestId('spotlight-fallback-frame')).toBeNull();
 
         const halo = screen.findByTestId('spotlight-halo');
         expect(halo).not.toBeNull();

@@ -247,6 +247,12 @@ export function useExecutionRunLauncherOptionsModel(params: Readonly<{
         && targetMatchesParent;
     const inheritsRoute = inheritsModel && params.actionInput.connectedServices === undefined
         && params.actionInput.connectedServicesByBackendTargetKey === undefined;
+    // Review targets are explicitly chosen; an empty default is a missing reviewer, not a
+    // permission/scope failure. Send and the control that repairs it consume this one answer.
+    const targetRequirement = React.useMemo(() => (params.intent === 'review'
+        ? selectedBackendChoices.length > 0 : selectedBackendChoice !== null)
+        ? null : { code: params.intent === 'review' ? 'reviewer_required' : 'agent_required', fieldPath: targetFieldPath },
+    [params.intent, selectedBackendChoices.length, selectedBackendChoice, targetFieldPath]);
     return {
         catalogReady,
         actionId,
@@ -255,6 +261,7 @@ export function useExecutionRunLauncherOptionsModel(params: Readonly<{
         backendChoices,
         initialBackendChoice,
         selectedBackendChoice,
+        targetRequirement,
         targetMatchesParent,
         inheritedDraftSelection: inheritsModel && !params.inheritedTeamCredentialModel ? params.inheritedModelSelection ?? null : null,
         inheritedDraftTeamCredentialModel: inheritsModel ? params.inheritedTeamCredentialModel ?? null : null,

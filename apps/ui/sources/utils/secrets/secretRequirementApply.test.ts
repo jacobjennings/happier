@@ -30,17 +30,19 @@ describe('applySecretRequirementResult', () => {
     });
 
     it('selects a saved secret without changing defaults when setDefault=false', () => {
+        const bindings = { p1: { OPENAI_API_KEY: 's0' } };
         const out = applySecretRequirementResult({
             profileId: 'p1',
             result: { action: 'selectSaved', envVarName: 'OPENAI_API_KEY', secretId: 's1', setDefault: false },
             selectedSecretIdByProfileIdByEnvVarName: { p1: { OPENAI_API_KEY: '' } },
             sessionOnlySecretValueByProfileIdByEnvVarName: { p1: { OPENAI_API_KEY: 'abc' } },
-            secretBindingsByProfileId: { p1: { OPENAI_API_KEY: 's0' } },
+            secretBindingsByProfileId: bindings,
         });
 
         expect(out.nextSelectedSecretIdByProfileIdByEnvVarName.p1?.OPENAI_API_KEY).toBe('s1');
         expect(out.nextSessionOnlySecretValueByProfileIdByEnvVarName.p1?.OPENAI_API_KEY).toBeNull();
-        expect(out.nextSecretBindingsByProfileId.p1?.OPENAI_API_KEY).toBe('s0');
+        // The same object: the new-session flow persists bindings only when the reference changes.
+        expect(out.nextSecretBindingsByProfileId).toBe(bindings);
     });
 
     it('selects a saved secret and updates defaults when setDefault=true', () => {
@@ -56,14 +58,14 @@ describe('applySecretRequirementResult', () => {
         expect(out.nextSecretBindingsByProfileId.p1?.OPENAI_API_KEY).toBe('s1');
     });
 
-    it('keeps state unchanged for unknown action values', () => {
+    it('keeps state unchanged when the requirement prompt is cancelled', () => {
         const selected = { p1: { OPENAI_API_KEY: 's0' } };
         const once = { p1: { OPENAI_API_KEY: 'once' } };
         const bindings = { p1: { OPENAI_API_KEY: 's0' } };
 
         const out = applySecretRequirementResult({
             profileId: 'p1',
-            result: { action: 'unknown', envVarName: 'OPENAI_API_KEY' } as any,
+            result: { action: 'cancel' },
             selectedSecretIdByProfileIdByEnvVarName: selected,
             sessionOnlySecretValueByProfileIdByEnvVarName: once,
             secretBindingsByProfileId: bindings,
@@ -71,6 +73,6 @@ describe('applySecretRequirementResult', () => {
 
         expect(out.nextSelectedSecretIdByProfileIdByEnvVarName).toEqual(selected);
         expect(out.nextSessionOnlySecretValueByProfileIdByEnvVarName).toEqual(once);
-        expect(out.nextSecretBindingsByProfileId).toEqual(bindings);
+        expect(out.nextSecretBindingsByProfileId).toBe(bindings);
     });
 });

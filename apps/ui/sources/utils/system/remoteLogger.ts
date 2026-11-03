@@ -11,14 +11,8 @@ import { runtimeFetch } from '@/utils/system/runtimeFetch';
 import { readAiAutoDebugRemoteLoggingEnabled } from '@/utils/system/aiAutoDebuggingEnv';
 
 
-type RemoteLogEntry = Readonly<{
-  timestamp: string;
-  level: 'log' | 'info' | 'warn' | 'error' | 'debug';
-  message: unknown[];
-}>;
+type RemoteLogLevel = 'log' | 'info' | 'warn' | 'error' | 'debug';
 
-let logBuffer: RemoteLogEntry[] = [];
-const MAX_BUFFER_SIZE = 1000
 const LEGACY_VOICE_DEBUG_PREFIX = '🎤 Voice:';
 const REDACTED_VOICE_PAYLOAD = '[voice_payload_redacted]';
 
@@ -68,7 +62,7 @@ export function monkeyPatchConsoleForRemoteLoggingForFasterAiAutoDebuggingOnlyIn
     return
   }
 
-  const sendLog = async (level: RemoteLogEntry['level'], sanitizedArgs: unknown[]) => {
+  const sendLog = async (level: RemoteLogLevel, sanitizedArgs: unknown[]) => {
     try {
       await runtimeFetch(url + '/logs-combined-from-cli-and-mobile-for-simple-ai-debugging', {
         method: 'POST',
@@ -94,30 +88,10 @@ export function monkeyPatchConsoleForRemoteLoggingForFasterAiAutoDebuggingOnlyIn
       originalConsole[level](...args as never[])
       const sanitizedArgs = sanitizeRemoteLogArgs(args);
 
-      // Buffer for developer settings
-      const entry = {
-        timestamp: new Date().toISOString(),
-        level,
-        message: sanitizedArgs,
-      } satisfies RemoteLogEntry;
-      logBuffer.push(entry)
-      if (logBuffer.length > MAX_BUFFER_SIZE) {
-        logBuffer.shift()
-      }
-
       // Send to remote
       sendLog(level, sanitizedArgs)
     }
   })
 
   console.log('[RemoteLogger] Initialized with server:', url)
-}
-
-// For developer settings UI
-export function getLogBuffer() {
-  return [...logBuffer]
-}
-
-export function clearLogBuffer() {
-  logBuffer = []
 }

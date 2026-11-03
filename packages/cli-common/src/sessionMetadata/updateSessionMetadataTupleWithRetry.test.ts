@@ -8,6 +8,14 @@ import {
 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import { ExternalSessionOperationProgressV1Schema, projectExternalSessionOperationSharedPresentationV1 } from '@happier-dev/protocol/sessions/external/operationV1';
 import { describe, expect, it, vi } from 'vitest';
+import { randomBytes } from 'node:crypto';
+import { projectSessionDisplayV1, SessionDisplayProjectionV1Schema,
+  sealSessionSharedDisplayEnvelopeV1Sync, sealSessionOwnerDisplayEnvelopeV1,
+  openSessionOwnerDisplayEnvelopeV1, openSessionSharedDisplayEnvelopeV1Sync,
+  sealSessionOwnerMetadataEnvelopeV1,
+  createAccountScopedCryptoMaterialSnapshotV1,
+  type SessionSharedDisplayV1, type SessionOwnerDisplayV1,
+} from '@happier-dev/protocol';
 
 import {
   prepareSessionMetadataTuplePatchV1,
@@ -71,6 +79,48 @@ function cryptoAdapter() {
   };
 }
 
+const displayAccountMaterial = { type: 'legacy' as const, secret: new Uint8Array(32).fill(7) };
+const displayOwnerCurrentness = {
+  expectedAccountEncryptionMode: 'e2ee' as const,
+  expectedAccountContentPublicKeyFingerprint: createAccountScopedCryptoMaterialSnapshotV1({
+    accountEncryptionMode: 'e2ee', material: displayAccountMaterial,
+  }).contentPublicKeyFingerprint,
+};
+function displayCryptoAdapter() {
+  return {
+    encryptPayload: async (payload: unknown) => JSON.stringify(payload),
+    encodeOwnerMetadata: (ownerMetadata: SessionOwnerMetadataV1) => sealSessionOwnerMetadataEnvelopeV1({
+      material: displayAccountMaterial, ownerMetadata, randomBytes,
+    }),
+    encodeSharedDisplay: (display: SessionSharedDisplayV1) => {
+      const sealed = sealSessionSharedDisplayEnvelopeV1Sync({ sessionMode: 'plain', display });
+      if (!sealed.ok) throw new Error(sealed.reason);
+      return sealed.envelope;
+    },
+    encodeOwnerDisplay: (display: SessionOwnerDisplayV1) => {
+      const sealed = sealSessionOwnerDisplayEnvelopeV1({ accountMode: 'e2ee', display,
+        material: displayAccountMaterial, randomBytes });
+      if (!sealed.ok) throw new Error(sealed.reason);
+      return sealed.envelope;
+    },
+  };
+}
+
+function linkedDisplaySnapshot(params: Parameters<typeof ownerSnapshot>[0] = {}) {
+  const current = ownerSnapshot(params);
+  if (current.mode !== 'owner') throw new Error('Expected owner fixture');
+  const display = projectSessionDisplayV1(current.value);
+  if (!display.owner) throw new Error('Expected owner display');
+  const crypto = displayCryptoAdapter();
+  return { ...current,
+    sharedMetadataCiphertext: JSON.stringify(current.value.sharedMetadata),
+    ownerMetadataEnvelope: crypto.encodeOwnerMetadata(current.value.ownerMetadata),
+    displayProjectionV1: SessionDisplayProjectionV1Schema.parse({
+    v: 1, metadataLayoutVersion: 1, sourceMetadataVersion: current.metadataVersion,
+    shared: crypto.encodeSharedDisplay(display.shared), owner: crypto.encodeOwnerDisplay(display.owner),
+  }) };
+}
+
 function legacyOwnerSnapshot(params: Readonly<{
   metadata: Metadata;
   agentState?: AgentState | null;
@@ -98,6 +148,279 @@ function legacyOwnerSnapshot(params: Readonly<{
 }
 
 describe('updateSessionMetadataTupleWithRetry', () => {
+  it.each(['shared', 'owner'] as const)('withdraws display after a %s seal failure on an ordinary mutation, but refuses explicit repair', async leaf => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const crypto = displayCryptoAdapter();
+    const failure = new Error('display sealing unavailable');
+    if (leaf === 'shared') crypto.encodeSharedDisplay = () => { throw failure; };
+    else crypto.encodeOwnerDisplay = () => { throw failure; };
+    const initialSnapshot = ownerSnapshot();
+    const patches: SessionMetadataTuplePatchV1[] = [];
+    try {
+      const result = await updateSessionMetadataTupleWithRetry({ initialSnapshot,
+        mutation: { kind: 'metadata', update: metadata => ({ ...metadata, name: 'renamed', summary: { text: 'changed', updatedAt: 2 } }) },
+        crypto, commit: async patch => { patches.push(patch); return { result: 'success', metadataVersion: 3, agentStateVersion: 4 }; },
+      });
+      expect(result.value.metadata).toMatchObject({ name: 'renamed', summary: { text: 'changed' } });
+      expect(patches).toMatchObject([{ mode: 'owner', displayProjectionV1: null }]);
+      expect(warning).toHaveBeenCalled();
+      const commit = vi.fn();
+      await expect(updateSessionMetadataTupleWithRetry({ initialSnapshot,
+        mutation: { kind: 'ensureDisplayProjection' }, crypto,
+        ownerMigrationCurrentness: displayOwnerCurrentness, commit,
+      })).rejects.toBe(failure);
+      expect(commit).not.toHaveBeenCalled();
+    } finally { warning.mockRestore(); }
+  });
+
+  it('ensures a missing display without changing any full tuple value or encrypted source bytes', async () => {
+    const retainedState = { privateLifecycle: 'retained owner state' };
+    const source = linkedDisplaySnapshot({ agentState: retainedState, agentStateCiphertext: JSON.stringify(retainedState) });
+    const initialSnapshot = { ...source, displayProjectionV1: null,
+      displayProjectionV1Availability: { shared: false, owner: false } };
+    const patches: SessionMetadataTuplePatchV1[] = [];
+    const result = await updateSessionMetadataTupleWithRetry({ initialSnapshot,
+      mutation: { kind: 'ensureDisplayProjection' }, crypto: displayCryptoAdapter(),
+      ownerMigrationCurrentness: displayOwnerCurrentness,
+      commit: async patch => { patches.push(patch); return { result: 'success', metadataVersion: 3, agentStateVersion: 4 }; },
+    });
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toMatchObject({ mode: 'owner',
+      sharedMetadata: { ciphertext: source.sharedMetadataCiphertext, expectedVersion: 2 },
+      ownerMetadata: source.ownerMetadataEnvelope,
+      agentState: { ciphertext: source.agentStateCiphertext, expectedVersion: 4 },
+    });
+    const display = SessionDisplayProjectionV1Schema.parse(Reflect.get(patches[0] ?? {}, 'displayProjectionV1'));
+    expect(display.sourceMetadataVersion).toBe(3);
+    const semantic = projectSessionDisplayV1(source.value);
+    expect(openSessionSharedDisplayEnvelopeV1Sync({ sessionMode: 'plain', envelope: display.shared }))
+      .toEqual({ ok: true, display: semantic.shared });
+    expect(openSessionOwnerDisplayEnvelopeV1({ accountMode: 'e2ee', envelope: display.owner, material: displayAccountMaterial }))
+      .toEqual({ ok: true, display: semantic.owner });
+    expect(result.value).toEqual(source.value);
+    expect(result).toMatchObject({ metadataVersion: 3, agentStateVersion: 4,
+      displayProjectionV1Availability: { shared: true, owner: true } });
+  });
+
+  it('does not rewrite an already available display on repeated ensure reads', async () => {
+    const initialSnapshot = { ...linkedDisplaySnapshot(), displayProjectionV1Availability: { shared: true, owner: true } };
+    const commit = vi.fn(async () => ({ result: 'success' as const, metadataVersion: 3, agentStateVersion: 4 }));
+    const result = await updateSessionMetadataTupleWithRetry({ initialSnapshot,
+      mutation: { kind: 'ensureDisplayProjection' }, crypto: displayCryptoAdapter(),
+      ownerMigrationCurrentness: displayOwnerCurrentness, commit,
+    });
+    expect(result).toBe(initialSnapshot);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it.each(['shared', 'owner'] as const)('repairs only the unproven %s display leaf', async leaf => {
+    const source = linkedDisplaySnapshot();
+    const initialSnapshot = { ...source, displayProjectionV1Availability: { shared: leaf !== 'shared', owner: leaf !== 'owner' } };
+    let committed: SessionMetadataTuplePatchV1 | undefined;
+    await updateSessionMetadataTupleWithRetry({ initialSnapshot,
+      mutation: { kind: 'ensureDisplayProjection' }, crypto: displayCryptoAdapter(),
+      ownerMigrationCurrentness: displayOwnerCurrentness,
+      commit: async patch => { committed = patch; return { result: 'success', metadataVersion: 3, agentStateVersion: 4 }; },
+    });
+    const projection = SessionDisplayProjectionV1Schema.parse(Reflect.get(committed ?? {}, 'displayProjectionV1'));
+    if (leaf === 'shared') expect(projection.owner).toEqual(source.displayProjectionV1.owner);
+    else {
+      expect(projection.shared).toEqual(source.displayProjectionV1.shared);
+      expect(projection.owner).not.toEqual(source.displayProjectionV1.owner);
+    }
+    expect(openSessionOwnerDisplayEnvelopeV1({ accountMode: 'e2ee', envelope: projection.owner, material: displayAccountMaterial }))
+      .toEqual({ ok: true, display: projectSessionDisplayV1(source.value).owner });
+  });
+
+  it('recomputes ensure from the winning full tuple after a real CAS conflict', async () => {
+    const initialSnapshot = { ...linkedDisplaySnapshot(), displayProjectionV1: null,
+      displayProjectionV1Availability: { shared: false, owner: false } };
+    const winner = { ...linkedDisplaySnapshot({ metadataVersion: 8, metadata: {
+      path: '/concurrent/workspace', host: 'winner-host', name: 'Winning owner name', summary: { text: 'Winning summary', updatedAt: 8 },
+    } }), displayProjectionV1: null, displayProjectionV1Availability: { shared: false, owner: false } };
+    const patches: SessionMetadataTuplePatchV1[] = [];
+    const result = await updateSessionMetadataTupleWithRetry({ initialSnapshot,
+      mutation: { kind: 'ensureDisplayProjection' }, crypto: displayCryptoAdapter(),
+      ownerMigrationCurrentness: displayOwnerCurrentness,
+      commit: async patch => {
+        patches.push(patch);
+        return patches.length === 1 ? { result: 'conflict', currentSnapshot: winner }
+          : { result: 'success', metadataVersion: 9, agentStateVersion: 4 };
+      },
+    });
+    expect(patches).toHaveLength(2);
+    expect(patches[1]).toMatchObject({ mode: 'owner',
+      sharedMetadata: { ciphertext: winner.sharedMetadataCiphertext, expectedVersion: 8 },
+      ownerMetadata: winner.ownerMetadataEnvelope,
+    });
+    const projection = SessionDisplayProjectionV1Schema.parse(Reflect.get(patches[1] ?? {}, 'displayProjectionV1'));
+    expect(projection.sourceMetadataVersion).toBe(9);
+    expect(openSessionSharedDisplayEnvelopeV1Sync({ sessionMode: 'plain', envelope: projection.shared }))
+      .toEqual({ ok: true, display: projectSessionDisplayV1(winner.value).shared });
+    expect(openSessionOwnerDisplayEnvelopeV1({ accountMode: 'e2ee', envelope: projection.owner, material: displayAccountMaterial }))
+      .toEqual({ ok: true, display: projectSessionDisplayV1(winner.value).owner });
+    expect(result.value).toEqual(winner.value);
+  });
+
+  it('does not overwrite a conflict winner whose captured read already proves both leaves available', async () => {
+    const initialSnapshot = { ...linkedDisplaySnapshot(), displayProjectionV1: null,
+      displayProjectionV1Availability: { shared: false, owner: false } };
+    const winner = { ...linkedDisplaySnapshot({ metadataVersion: 3 }), displayProjectionV1Availability: { shared: true, owner: true } };
+    const commit = vi.fn(async () => ({ result: 'conflict' as const, currentSnapshot: winner }));
+    const result = await updateSessionMetadataTupleWithRetry({ initialSnapshot,
+      mutation: { kind: 'ensureDisplayProjection' }, crypto: displayCryptoAdapter(),
+      ownerMigrationCurrentness: displayOwnerCurrentness, commit,
+    });
+    expect(result).toBe(winner);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not turn matching encrypted bytes into availability proof after an ambiguous ensure commit', async () => {
+    const initialSnapshot = { ...linkedDisplaySnapshot(), displayProjectionV1: null,
+      displayProjectionV1Availability: { shared: false, owner: false } };
+    let submitted: SessionMetadataTuplePatchV1 | undefined;
+    const lostResponse = new Error('Transport lost the commit response');
+    await expect(updateSessionMetadataTupleWithRetry({ initialSnapshot,
+      mutation: { kind: 'ensureDisplayProjection' }, crypto: displayCryptoAdapter(),
+      ownerMigrationCurrentness: displayOwnerCurrentness,
+      commit: async patch => { submitted = patch; throw lostResponse; },
+      isAmbiguousCommitError: error => error === lostResponse,
+      refreshAfterConflict: async () => {
+        if (!submitted || submitted.mode !== 'owner') throw new Error('Expected submitted owner tuple');
+        return { ...initialSnapshot, metadataVersion: 3, displayProjectionV1: submitted.displayProjectionV1,
+          // A refetch without the same actual leaf-open/material proof cannot
+          // certify maintenance just by matching the submitted ciphertext.
+          displayProjectionV1Availability: { shared: false, owner: false } };
+      },
+    })).rejects.toMatchObject({ code: 'metadata_tuple_ambiguous', retryable: false });
+  });
+
+  it.each(['currentness', 'owner_encoder'] as const)('refuses ensure without proven %s rather than writing an incomplete projection', async unavailable => {
+    const initialSnapshot = { ...linkedDisplaySnapshot(), displayProjectionV1: null };
+    const commit = vi.fn(async () => ({ result: 'success' as const, metadataVersion: 3, agentStateVersion: 4 }));
+    const { encodeOwnerDisplay: _ownerEncoder, ...withoutOwnerEncoder } = displayCryptoAdapter();
+    await expect(updateSessionMetadataTupleWithRetry({ initialSnapshot,
+      mutation: { kind: 'ensureDisplayProjection' }, crypto: unavailable === 'owner_encoder' ? withoutOwnerEncoder : displayCryptoAdapter(),
+      ...(unavailable === 'currentness' ? {} : { ownerMigrationCurrentness: displayOwnerCurrentness }), commit,
+    })).rejects.toMatchObject({ code: 'metadata_privacy_upgrade_required', retryable: false });
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('invalidates a current display when a metadata producer cannot encode its changed shared leaf', async () => {
+    const initialSnapshot = linkedDisplaySnapshot();
+    let committed: SessionMetadataTuplePatchV1 | undefined;
+    await updateSessionMetadataTupleWithRetry({
+      initialSnapshot,
+      mutation: { kind: 'metadata', update: metadata => ({ ...metadata, summary: { text: 'after', updatedAt: 2 } }) },
+      crypto: { encryptPayload: displayCryptoAdapter().encryptPayload, encodeOwnerMetadata: displayCryptoAdapter().encodeOwnerMetadata },
+      commit: async patch => {
+        committed = patch;
+        return { result: 'success', metadataVersion: 3, agentStateVersion: 4 };
+      },
+    });
+    expect(committed).toHaveProperty('displayProjectionV1', null);
+  });
+
+  it.each(['summary', 'owner', 'unrelated', 'agent_state'] as const)('commits the canonical %s display and preserves unchanged encrypted leaves', async change => {
+    const initialSnapshot = linkedDisplaySnapshot();
+    let committed: SessionMetadataTuplePatchV1 | undefined;
+    const updated = await updateSessionMetadataTupleWithRetry({ initialSnapshot,
+      mutation: change === 'agent_state' ? { kind: 'agentState', update: state => ({ ...state, privateHeartbeat: 1 }) }
+        : { kind: 'metadata', update: metadata => ({ ...metadata,
+        ...(change === 'summary' ? { summary: { text: 'after', updatedAt: 2 } }
+          : change === 'owner' ? { name: 'Private renamed Session' } : { version: '0.3.1-display-test' }),
+      }) },
+      crypto: displayCryptoAdapter(), commit: async patch => {
+        committed = patch;
+        return { result: 'success', metadataVersion: 3, agentStateVersion: change === 'agent_state' ? 5 : 4 };
+      },
+    });
+    const projection = SessionDisplayProjectionV1Schema.parse(Reflect.get(committed ?? {}, 'displayProjectionV1'));
+    expect(projection).toMatchObject({ sourceMetadataVersion: 3, metadataLayoutVersion: 1 });
+    if (updated.mode !== 'owner') throw new Error('Expected committed owner');
+    const semantic = projectSessionDisplayV1(updated.value);
+    expect(openSessionSharedDisplayEnvelopeV1Sync({ sessionMode: 'plain', envelope: projection.shared }))
+      .toEqual({ ok: true, display: semantic.shared });
+    expect(openSessionOwnerDisplayEnvelopeV1({ accountMode: 'e2ee', envelope: projection.owner,
+      material: displayAccountMaterial })).toEqual({ ok: true, display: semantic.owner });
+    if (change !== 'summary') expect(projection.shared).toEqual(initialSnapshot.displayProjectionV1.shared);
+    if (change !== 'owner') expect(projection.owner).toEqual(initialSnapshot.displayProjectionV1.owner);
+    else expect(projection.owner).not.toEqual(initialSnapshot.displayProjectionV1.owner);
+    expect(Reflect.get(updated, 'displayProjectionV1')).toEqual(projection);
+  });
+
+  it('never includes an owner leaf in a shared-editor patch', async () => {
+    const owner = linkedDisplaySnapshot();
+    let committed: SessionMetadataTuplePatchV1 | undefined;
+    const updated = await updateSessionMetadataTupleWithRetry({ initialSnapshot: {
+      mode: 'shared_editor', metadataLayoutVersion: 1, metadataVersion: owner.metadataVersion,
+      sharedMetadataCiphertext: owner.sharedMetadataCiphertext,
+      displayProjectionV1: { ...owner.displayProjectionV1, owner: undefined },
+      value: { metadata: owner.value.sharedMetadata, sharedMetadata: owner.value.sharedMetadata, ownerMetadata: null, agentState: null },
+    }, mutation: { kind: 'metadata', update: metadata => ({ ...metadata, summary: { text: 'shared edit', updatedAt: 3 } }) },
+      crypto: { ...displayCryptoAdapter(), encodeOwnerDisplay: () => { throw new Error('Shared editor reached Account crypto'); } },
+      commit: async patch => { committed = patch; return { result: 'success', metadataVersion: 3 }; },
+    });
+    const projection = SessionDisplayProjectionV1Schema.parse(Reflect.get(committed ?? {}, 'displayProjectionV1'));
+    expect(projection).not.toHaveProperty('owner');
+    expect(openSessionSharedDisplayEnvelopeV1Sync({ sessionMode: 'plain', envelope: projection.shared }))
+      .toEqual({ ok: true, display: { v: 1, summaryText: 'shared edit' } });
+    expect(Reflect.get(updated, 'displayProjectionV1')).toEqual(projection);
+  });
+
+  it('invalidates only the changed owner leaf when its producer is unavailable', async () => {
+    const initialSnapshot = linkedDisplaySnapshot();
+    const { encodeOwnerDisplay: _unavailable, ...crypto } = displayCryptoAdapter();
+    let committed: SessionMetadataTuplePatchV1 | undefined;
+    await updateSessionMetadataTupleWithRetry({ initialSnapshot,
+      mutation: { kind: 'metadata', update: metadata => ({ ...metadata, name: 'new owner name' }) }, crypto,
+      commit: async patch => { committed = patch; return { result: 'success', metadataVersion: 3, agentStateVersion: 4 }; },
+    });
+    const projection = SessionDisplayProjectionV1Schema.parse(Reflect.get(committed ?? {}, 'displayProjectionV1'));
+    expect(projection.shared).toEqual(initialSnapshot.displayProjectionV1.shared);
+    expect(projection).not.toHaveProperty('owner');
+  });
+
+  it('recomputes from the conflict winner while preserving that winner’s unchanged owner bytes', async () => {
+    const initialSnapshot = linkedDisplaySnapshot();
+    const winner = linkedDisplaySnapshot({ metadataVersion: 3,
+      metadata: { ...initialSnapshot.value.metadata, name: 'Concurrent private name' } });
+    const patches: SessionMetadataTuplePatchV1[] = [];
+    const updated = await updateSessionMetadataTupleWithRetry({ initialSnapshot,
+      mutation: { kind: 'metadata', update: metadata => ({ ...metadata, summary: { text: 'requested summary', updatedAt: 2 } }) },
+      crypto: displayCryptoAdapter(), commit: async patch => {
+        patches.push(patch);
+        return patches.length === 1 ? { result: 'conflict', currentSnapshot: winner }
+          : { result: 'success', metadataVersion: 4, agentStateVersion: 4 };
+      },
+    });
+    const projection = SessionDisplayProjectionV1Schema.parse(Reflect.get(patches.at(-1) ?? {}, 'displayProjectionV1'));
+    expect(projection.sourceMetadataVersion).toBe(4);
+    expect(projection.owner).toEqual(winner.displayProjectionV1.owner);
+    expect(projection.owner).not.toEqual(initialSnapshot.displayProjectionV1.owner);
+    expect(openSessionSharedDisplayEnvelopeV1Sync({ sessionMode: 'plain', envelope: projection.shared }))
+      .toEqual({ ok: true, display: { v: 1, summaryText: 'requested summary' } });
+    expect(updated.value.metadata).toMatchObject({ name: 'Concurrent private name' });
+  });
+
+  it('does not confirm an ambiguous full-tuple commit whose display was not committed', async () => {
+    const initialSnapshot = linkedDisplaySnapshot();
+    let committed: SessionMetadataTuplePatchV1 | undefined;
+    await expect(updateSessionMetadataTupleWithRetry({ initialSnapshot,
+      mutation: { kind: 'metadata', update: metadata => ({ ...metadata, summary: { text: 'after', updatedAt: 2 } }) },
+      crypto: displayCryptoAdapter(), maxAttempts: 1, isAmbiguousCommitError: () => true,
+      commit: async patch => { committed = patch; throw new Error('lost response'); },
+      refreshAfterConflict: async () => {
+        if (!committed || committed.mode !== 'owner') throw new Error('Expected owner patch');
+        const refreshed = ownerSnapshot({ metadata: { ...initialSnapshot.value.metadata, summary: { text: 'after', updatedAt: 2 } },
+          metadataVersion: 3, sharedMetadataCiphertext: committed.sharedMetadata.ciphertext,
+          ownerMetadataEnvelope: committed.ownerMetadata, agentStateVersion: 4, agentStateCiphertext: null });
+        if (refreshed.mode !== 'owner') throw new Error('Expected refreshed owner');
+        return { ...refreshed, displayProjectionV1: null };
+      },
+    })).rejects.toMatchObject({ code: 'metadata_tuple_ambiguous' });
+  });
+
   it('commits an accepted Project column without rewriting unchanged private metadata', async () => {
     const current = ownerSnapshot();
     const commit = vi.fn(async (_patch: SessionMetadataTuplePatchV1) => ({ result: 'success' as const, metadataVersion: 3, agentStateVersion: 5 }));
@@ -305,14 +628,16 @@ describe('updateSessionMetadataTupleWithRetry', () => {
 
   it('preserves the exact owner envelope for a shared-only metadata mutation', async () => {
     const crypto = cryptoAdapter();
-    const commit = vi.fn(async () => ({
+    const initialSnapshot = ownerSnapshot({ agentState: { requests: { question: { createdAt: 1 } } },
+      agentStateCiphertext: 'existing-question-ciphertext' });
+    const commit = vi.fn(async (patch: SessionMetadataTuplePatchV1) => ({
       result: 'success' as const,
       metadataVersion: 3,
-      agentStateVersion: 5,
+      agentStateVersion: patch.mode === 'owner' && patch.agentState.ciphertext === 'existing-question-ciphertext' ? 4 : 5,
     }));
 
     const result = await updateSessionMetadataTupleWithRetry({
-      initialSnapshot: ownerSnapshot(),
+      initialSnapshot,
       mutation: {
         kind: 'metadata',
         update: (metadata) => ({
@@ -328,9 +653,12 @@ describe('updateSessionMetadataTupleWithRetry', () => {
     expect(commit).toHaveBeenCalledWith(expect.objectContaining({
       expectedOwnerMetadata: expect.objectContaining({ t: 'plain' }),
       ownerMetadata: expect.objectContaining({ t: 'plain' }),
+      agentState: { expectedVersion: 4, ciphertext: 'existing-question-ciphertext' },
     }));
     expect(result).toMatchObject({
       mode: 'owner',
+      agentStateVersion: 4,
+      agentStateCiphertext: 'existing-question-ciphertext',
       ownerMetadataEnvelope: { t: 'plain' },
       value: {
         metadata: {
@@ -340,6 +668,29 @@ describe('updateSessionMetadataTupleWithRetry', () => {
         },
       },
     });
+    // Metadata-only traffic must not reseal requests or invalidate a fresh
+    // Follow admission carrying their exact Agent-state version.
+    expect(crypto.encryptPayload.mock.calls.map(([payload]) => payload)).not.toContainEqual(initialSnapshot.value.agentState);
+  });
+
+  it('rejoins a lost metadata-only response without requiring unchanged request state to advance', async () => {
+    const initial = ownerSnapshot({ agentState: { requests: {} }, agentStateCiphertext: 'retained-requests' });
+    const lostResponse = new Error('response lost after commit');
+    let committed = initial;
+    let writes = 0;
+    const result = await updateSessionMetadataTupleWithRetry({ initialSnapshot: initial,
+      mutation: { kind: 'metadata', update: metadata => ({ ...metadata, summary: { text: 'after', updatedAt: 2 } }) },
+      crypto: cryptoAdapter(), commit: async patch => {
+        if (patch.mode !== 'owner') throw new Error('Expected owner patch');
+        writes++;
+        committed = ownerSnapshot({ metadata: { ...initial.value.metadata, summary: { text: 'after', updatedAt: 2 } },
+          metadataVersion: 3, sharedMetadataCiphertext: patch.sharedMetadata.ciphertext, ownerMetadataEnvelope: patch.ownerMetadata,
+          agentState: initial.value.agentState, agentStateVersion: 4, agentStateCiphertext: patch.agentState.ciphertext });
+        throw lostResponse;
+      }, isAmbiguousCommitError: error => error === lostResponse, refreshAfterConflict: async () => committed,
+    });
+    expect(result).toMatchObject({ mode: 'owner', metadataVersion: 3, agentStateVersion: 4, agentStateCiphertext: 'retained-requests' });
+    expect(writes).toBe(1);
   });
 
   it('does not promote synthesized compatibility defaults into unchanged owner metadata', async () => {
@@ -754,6 +1105,7 @@ describe('updateSessionMetadataTupleWithRetry', () => {
     expect(commit).toHaveBeenCalledWith({
       mode: 'shared_editor',
       metadataLayoutVersion: 1,
+      displayProjectionV1: null,
       sharedMetadata: {
         ciphertext: expect.stringContaining('"after"'),
         expectedVersion: 7,
@@ -863,6 +1215,7 @@ describe('updateSessionMetadataTupleWithRetry', () => {
       },
       target: {
         metadataLayoutVersion: 1,
+        displayProjectionV1: null,
         sharedMetadata: {
           ciphertext: expect.stringContaining('"After"'),
         },

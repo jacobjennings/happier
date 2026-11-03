@@ -1,3 +1,10 @@
+import { DeploymentTargetContributionV1Schema, validateDeploymentTargetContributionsV1 } from './deploymentTargets.js';
+import { PluginSecretSourceContributionV1Schema } from './secretSources.js';
+import { HealthCheckKindContributionV1Schema, validateHealthCheckKindContributionsV1 } from './healthCheckKinds.js';
+export * from './healthCheckKinds.js';
+import { MachineRecipeV1Schema } from './machineRecipes.js';
+import { MachineSetupPresetContributionV1Schema } from './machineSetupPresets.js';
+export * from './machineSetupPresets.js';
 import { z } from 'zod/mini';
 
 import { lazyZodSchema } from '../../lazyZodSchema.js';
@@ -22,6 +29,10 @@ import {
 } from '../../hooks/hookExecutionSemantics.js';
 import { PluginOptionalStringSchema } from '../_shared.js';
 import {
+  PluginAgentSessionCompactionCapabilityV2Schema,
+  type PluginAgentSessionCompactionCapabilityV2,
+  type AgentSessionCompactionCapability,
+  type AgentSessionCompactionIdleCapability,
   PluginAgentSessionCapabilitiesV2Schema,
   type PluginAgentSessionCapabilitiesV2,
 } from './agentSessionCapabilities.js';
@@ -405,6 +416,10 @@ export type PluginAgentRuntimeV2 = z.infer<typeof PluginAgentRuntimeV2Schema>;
 // module so small runtime contracts can consume it without importing this
 // aggregate manifest. It is re-exported here unchanged for manifest consumers.
 export {
+  PluginAgentSessionCompactionCapabilityV2Schema,
+  type PluginAgentSessionCompactionCapabilityV2,
+  type AgentSessionCompactionCapability,
+  type AgentSessionCompactionIdleCapability,
   PluginAgentSessionCapabilitiesV2Schema,
   type PluginAgentSessionCapabilitiesV2,
 };
@@ -883,6 +898,10 @@ export const PLUGIN_CORE_CONTRIBUTION_FAMILIES_V2 = [
   definePluginContributionFamilyV2({ family: 'agents', schema: PluginAgentContributionV2Schema }),
   definePluginContributionFamilyV2({ family: 'providers', schema: ProviderContributionV1Schema }),
   definePluginContributionFamilyV2({ family: 'machineProvisioners', schema: MachineProvisionerContributionV1Schema }),
+  definePluginContributionFamilyV2({ family: 'deploymentTargets', schema: DeploymentTargetContributionV1Schema }),
+  definePluginContributionFamilyV2({ family: 'healthCheckKinds', schema: HealthCheckKindContributionV1Schema }),
+  definePluginContributionFamilyV2({ family: 'machineRecipes', schema: MachineRecipeV1Schema }),
+  definePluginContributionFamilyV2({ family: 'machineSetupPresets', schema: MachineSetupPresetContributionV1Schema }),
   definePluginContributionFamilyV2({ family: 'actions', schema: PluginActionContributionV2Schema }),
   definePluginContributionFamilyV2({ family: 'commands', schema: PluginCommandContributionV2Schema }),
   definePluginContributionFamilyV2({ family: 'tools', schema: PluginToolContributionV2Schema }),
@@ -919,6 +938,7 @@ export const PLUGIN_CORE_CONTRIBUTION_FAMILIES_V2 = [
   definePluginContributionFamilyV2({ family: 'voiceProviders', schema: VoiceProviderContributionSchema }),
   definePluginContributionFamilyV2({ family: 'backgroundServices', schema: BackgroundServiceContributionSchema }),
   definePluginContributionFamilyV2({ family: 'captureSources', schema: PluginCaptureSourceContributionV1Schema }),
+  definePluginContributionFamilyV2({ family: 'secretSources', schema: PluginSecretSourceContributionV1Schema }),
   definePluginContributionFamilyV2({ family: 'projectNativeAdapters', schema: PluginProjectNativeAdapterContributionV1Schema }),
   definePluginContributionFamilyV2({ family: 'daemonDatabases', schema: PluginDaemonDatabaseContributionV1Schema }),
   definePluginContributionFamilyV2({ family: 'composerReferences', schema: PluginComposerReferenceProviderContributionV1Schema }),
@@ -985,7 +1005,9 @@ function createPluginContributesV2SchemaWithoutDefault(): z.ZodMiniObject<
     }
   });
   validatePluginSearchProviderContributionsV1(value, ctx);
+  validateHealthCheckKindContributionsV1(value, ctx);
   validateMachineProvisionerContributionsV1(value, ctx);
+  validateDeploymentTargetContributionsV1(value, ctx);
   validateTargetedContributionEnvelopeBoundsV1(value, ctx);
 })));
 }
@@ -1098,3 +1120,10 @@ export {
   type PluginBrowserActionContributionV1,
   type PluginBrowserTargetContributionV1,
 } from './browser/v1.js';
+
+export * from './deploymentTargets.js';
+
+export * from './deploymentTargetRolesV1.js';
+
+export { DeploymentStepV1Schema } from '../../deployments/deploymentStateV1.js';
+export { PluginSecretSourceContributionV1Schema, type PluginSecretSourceContributionV1 } from './secretSources.js';

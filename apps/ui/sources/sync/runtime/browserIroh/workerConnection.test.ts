@@ -342,36 +342,6 @@ describe('sync/runtime/browserIroh/workerConnection', () => {
         await stream.close();
         expect(harness.streamCalls).toEqual(['read:8', 'write:3', 'finish', 'cancel', 'close']);
     });
-    it('gives two tabs the same endpoint over the command boundary', async () => {
-        const harness = createHarness();
-        const tabA = harness.connectTab();
-        const tabB = harness.connectTab();
-
-        const leaseA = await tabA.acquireLease([RELAY_A]);
-        const leaseB = await tabB.acquireLease([RELAY_A]);
-
-        expect(harness.binds()).toBe(1);
-        expect(leaseB.endpointId).toBe(leaseA.endpointId);
-        expect(leaseB.leaseId).not.toBe(leaseA.leaseId);
-    });
-
-    it('leaves a sibling tab live when one tab releases everything it holds', async () => {
-        const harness = createHarness();
-        const tabA = harness.connectTab();
-        const tabB = harness.connectTab();
-        const leaseA = await tabA.acquireLease([RELAY_A]);
-        await tabB.acquireLease([RELAY_A]);
-
-        await tabA.releaseAll();
-
-        expect(harness.closes).toEqual([]);
-        await expect(tabB.status()).resolves.toMatchObject({
-            state: 'ready',
-            endpointId: leaseA.endpointId,
-            leaseCount: 1,
-        });
-    });
-
     it('scopes a lease release to the port that acquired it', async () => {
         // The worker names the client; a lease id travelling over the wire is
         // not enough to release it. A hostile or merely confused port that
@@ -421,23 +391,7 @@ describe('sync/runtime/browserIroh/workerConnection', () => {
         expect(harness.closes).toEqual([]);
     });
 
-    it('keeps this tab’s lease when pagehide enters the back-forward cache', async () => {
-        const harness = createHarness();
-        const pagehide = createPageLifecycleStub();
-        const tab = harness.connectTab(pagehide.lifecycle);
-        const lease = await tab.acquireLease([RELAY_A]);
-
-        pagehide.fire(true);
-
-        await expect(tab.status()).resolves.toMatchObject({
-            state: 'ready',
-            endpointId: lease.endpointId,
-            leaseCount: 1,
-        });
-        expect(harness.closes).toEqual([]);
-    });
-
-    it('applies a second Home relay contribution to the same endpoint through a lease', async () => {
+    it('reports the endpoint’s applied relay union on a lease acquired over the port', async () => {
         const harness = createHarness();
         const tab = harness.connectTab();
         const lease = await tab.acquireLease([RELAY_A]);
@@ -447,19 +401,6 @@ describe('sync/runtime/browserIroh/workerConnection', () => {
         expect(harness.binds()).toBe(1);
         expect(second.endpointId).toBe(lease.endpointId);
         expect(second.appliedRelayUrls).toEqual([RELAY_A, RELAY_B]);
-    });
-
-    it('refuses a removed `configureRelays` command instead of reaching the owner', async () => {
-        // Lane 06 amendment A10 removed this IPC. The command boundary is
-        // reachable by any script on the origin, so a name it no longer serves
-        // must be refused by the parser rather than routed anywhere.
-        const harness = createHarness();
-        const send = harness.connectRawTab();
-
-        const reply = await send({ kind: 'configureRelays', relayUrls: [RELAY_B] });
-
-        expect(reply).toMatchObject({ kind: 'error', code: 'protocol_violation' });
-        expect(harness.binds()).toBe(0);
     });
 
     it('surfaces the relay-only requirement as a typed error', async () => {
@@ -489,15 +430,18 @@ describe('sync/runtime/browserIroh/workerConnection', () => {
             }),
         )(workerPort);
 
-        // An unknown command kind, and a command from a future protocol version.
+        // An unknown command kind, a command from a future protocol version, and
+        // the removed `configureRelays` IPC (Lane 06 amendment A10).
         clientPort.postMessage({ v: 1, kind: 'openTunnel', requestId: 'r-1' });
         clientPort.postMessage({ v: 2, kind: 'acquireLease', requestId: 'r-2', relayUrls: [] });
+        clientPort.postMessage({ v: 1, kind: 'configureRelays', requestId: 'r-3', relayUrls: [RELAY_B] });
 
         expect(bindEndpoint).not.toHaveBeenCalled();
 
         expect(replies).toEqual([
             { v: 1, kind: 'error', requestId: 'r-1', code: 'protocol_violation', message: 'Unrecognized browser Iroh command' },
             { v: 1, kind: 'error', requestId: 'r-2', code: 'protocol_violation', message: 'Unrecognized browser Iroh command' },
+            { v: 1, kind: 'error', requestId: 'r-3', code: 'protocol_violation', message: 'Unrecognized browser Iroh command' },
         ]);
     });
 });

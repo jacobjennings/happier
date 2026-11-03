@@ -6,7 +6,7 @@ import { MACHINE_PLAIN_DATA_KEY_MARKER } from '@happier-dev/protocol/machines/ma
 
 import { createDeferred, createMachineFixture, flushHookEffects, renderHook, renderScreen, standardCleanup } from '@/dev/testkit';
 import { ActionOperationSnapshotV1Schema } from '@happier-dev/protocol/actions/operations/v1';
-import { TerminalStreamReadResponseSchema } from '@happier-dev/protocol/terminal/stream';
+import { TerminalStreamReadResponseSchema, TERMINAL_STREAM_MAX_READ_BYTES, TERMINAL_STREAM_MAX_FRAME_DECODED_BYTES } from '@happier-dev/protocol/terminal/stream';
 import { createRpcCallError } from '@happier-dev/protocol/rpcErrors';
 import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
 import { isRecoverableTerminalRpcError, resolveTerminalAutoRetryDelayMs, TERMINAL_AUTO_RETRY_MAX_ATTEMPTS } from '@/components/sessions/terminal/terminalRpcRecovery';
@@ -36,6 +36,7 @@ import {
     readTerminalSurfaceState,
     replaceTerminalSurfaceState,
 } from '@/components/sessions/terminal/terminalSurfaceStateCache';
+import { createMachineReadBatchResponseFixture, createPlainMachineRowFixture } from '@/dev/testkit/fixtures/machineFixtures';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -207,6 +208,10 @@ describe('useMachineTerminalSession', () => {
                     access: { custodian: { accountId: 'terminal-account', displayName: 'Terminal owner' },
                         role: 'manage', resourceMode: 'plain', accessState: 'ready' },
                 })))
+                // Account Machine Actions resolve their target through the batched Machine row read.
+                : request.path === '/v1/machines/read-batch' && request.method === 'POST'
+                ? createMachineReadBatchResponseFixture(request.body, id => ['machine', 'machine-cancel', 'machine-1'].includes(id)
+                    ? createPlainMachineRowFixture({ id, accountId: 'terminal-account' }) : null)
                 : request.path === '/v1/features' || request.path === '/v1/features/authenticated'
                 ? Response.json(createRootLayoutFeaturesResponse({ features: { terminal: {
                     embeddedPty: { enabled: true }, transport: { byteStream: { enabled: byteStreamEnabled } },
@@ -291,6 +296,7 @@ describe('useMachineTerminalSession', () => {
             { t: 'exit', terminalId, byteOffset: 9, exitCode, signal },
         ], nextByteOffset: 9, availableByteOffset: 9, droppedBeforeByteOffset: 0, done: true }));
         const { ProjectCommandOutputPane } = await import('@/components/inbox/actionOperations/ProjectCommandOutputPane');
+        const { WorkspaceEmbeddedTerminalPane } = await import('@/components/projects/panes/details/views/WorkspaceEmbeddedTerminalPane');
         const { ProjectScriptRow } = await import('@/components/projects/projectSetup/ProjectScriptRow');
         const { ProjectCommandOutputPage } = await import('@/components/inbox/actionOperations/ProjectCommandOutputPage');
         const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
@@ -307,7 +313,13 @@ describe('useMachineTerminalSession', () => {
                 serverId: homeIds.primary, machineId: 'machine', workspaceId: 'worker-checkout', rootPath: '/worker/repo',
             }, name: 'Script', badge: null, command: 'printf QA_FAIL', portable: false, operation: outputProps.operation,
             idleText: '', pending: false, failureCode: null, compact: false, onRun: () => {} })
-            : React.createElement(ProjectCommandOutputPane, outputProps)));
+            // A borrowed output states its own native outcome unless its owner (a Script row, the output page)
+            // already does; those owners are the stop and phone cases above and ProjectCommandOutputPane's own test.
+            : React.createElement(WorkspaceEmbeddedTerminalPane, { scopeId: `project-command:${homeIds.primary}:${snapshot.operationId}`,
+                workspaceRefId: 'worker-checkout', machineId: 'machine', serverId: homeIds.primary, rootPath: '/worker/repo',
+                attachedTerminalId: terminalId, workspace: { serverId: homeIds.primary, workspaceId: 'worker-checkout',
+                    machineId: 'machine', rootPath: '/worker/repo' },
+                terminalKey: `project-command:${terminalId}`, title: 'Script', closeOnUnmount: false })));
             if (phone) await act(async () => {
                 // Native layout is the external boundary that mounts the page's output body.
                 const layout = rendered.findAll(node => typeof node.type === 'string' && typeof node.props.onLayout === 'function')[0];
@@ -324,8 +336,9 @@ describe('useMachineTerminalSession', () => {
             await screen.pressByTestIdAsync(phone ? 'project-command-output-page.stop' : 'script.run');
             // Pending RPC and accepted Stop both retain Stopping, before the
             // independent settlement observation arrives.
-            await vi.waitFor(() => expect(phone ? screen.getTextContent()
-                : screen.findByTestId('workspace-embedded-terminal-state-line-text')?.props.children).toContain('Stopping'));
+            // The row (or the page) owns the status; the terminal under it leaves its own exit line out.
+            await vi.waitFor(() => expect(screen.getTextContent()).toContain('Stopping'));
+            expect(screen.findByTestId('workspace-embedded-terminal-state-line')).toBeNull();
             if (!phone) await act(async () => cancellation.resolve({ kind: 'requested' }));
         }
         await vi.waitFor(() => expect(screen.getTextContent()).toContain('QA_FAIL'));
@@ -366,7 +379,10 @@ describe('useMachineTerminalSession', () => {
             await act(async () => settlement.resolve({ kind: 'found', operation: ActionOperationSnapshotV1Schema.parse({
                 ...snapshot, revision: 3, state: 'cancelled', settledAt: 3,
             }) }));
-            await vi.waitFor(() => expect(screen.getTextContent()).toContain('Stopped'));
+            // The canonical read lands in the operation store (the row's own source of status); the terminal under
+            // the row adds no outcome line of its own.
+            await vi.waitFor(() => expect([...actionOperationStore.getSnapshot().operationsByKey.values()]
+                .find(value => value.snapshot.operationId === snapshot.operationId)?.snapshot.state).toBe('cancelled'));
             expect(screen.getTextContent()).not.toContain('Exit code:');
             await screen.unmount();
             return;
@@ -394,24 +410,106 @@ describe('useMachineTerminalSession', () => {
         expect(terminalOps.close).not.toHaveBeenCalled();
     });
 
+    it('drains a retained flood through its tail using the admitted read budget', async () => {
+        const terminalId = 'retained-flood';
+        const terminalKey = 'retained-flood-budget';
+        const output = Buffer.from(Array.from({ length: 24_000 }, (_, i) => `trace ${i + 1}: ${'output '.repeat(16)}\r\n`).join('') + 'flood done\r\n');
+        const retainedFrom = output.length - TERMINAL_STREAM_MAX_READ_BYTES;
+        terminalOps.streamReadBytes.mockImplementation((_machineId: string, request: { byteOffset: number; maxBytes?: number }) => {
+            const start = Math.max(retainedFrom, request.byteOffset);
+            const end = Math.min(output.length, start + (request.maxBytes ?? 16_384));
+            const frames = [];
+            if (request.byteOffset < retainedFrom) frames.push({ t: 'gap', terminalId,
+                droppedBeforeByteOffset: retainedFrom, nextAvailableByteOffset: retainedFrom, reason: 'ring_overflow' });
+            for (let offset = start; offset < end; offset += TERMINAL_STREAM_MAX_FRAME_DECODED_BYTES) {
+                const bytes = output.subarray(offset, Math.min(end, offset + TERMINAL_STREAM_MAX_FRAME_DECODED_BYTES));
+                frames.push({ t: 'bytes', terminalId, seq: offset, byteOffset: offset, byteLength: bytes.length,
+                    encoding: 'base64', data: bytes.toString('base64') });
+            }
+            if (end === output.length) frames.push({ t: 'exit', terminalId, byteOffset: end, exitCode: 0, signal: null });
+            return TerminalStreamReadResponseSchema.parse({ ok: true, terminalId, frames, nextByteOffset: end,
+                availableByteOffset: output.length, droppedBeforeByteOffset: retainedFrom, done: end === output.length });
+        });
+        let rendered = '';
+        const terminalRef = { current: { write: (text: string) => { rendered += text; },
+            writeBytes: (input: EmbeddedTerminalWriteBytesInput) => { rendered += new TextDecoder().decode(input.bytes); return true; },
+            clear: () => { rendered = ''; } } };
+        const { useMachineTerminalSession } = await import('./useMachineTerminalSession');
+        const hook = await renderHook(() => useMachineTerminalSession({ machineId: 'machine', serverId: homeIds.primary,
+            cwd: '/repo', terminalKey, terminalRef, attachedTerminalId: terminalId, readOnly: true }));
+        await flushHookEffects({ cycles: 4, turns: 2, runOnlyPendingTimers: true });
+        expect(rendered.endsWith('flood done\r\n')).toBe(true);
+        expect(readTerminalSurfaceState(terminalKey)).toMatchObject({ cursor: output.length,
+            output: expect.stringMatching(/flood done\r\n$/) });
+        expect(hook.getCurrent()).toMatchObject({ status: 'exited', outputRetention: {
+            retainedFromCursor: retainedFrom, availableCursor: output.length, truncated: true } });
+        // One admitted window, one physical output read; renderer-credit reads are separate.
+        expect(terminalOps.streamReadBytes).toHaveBeenCalledTimes(1);
+        await hook.unmount();
+        // Pausing byte credit must still admit a control-only read through the
+        // real Action and strict request schema (maxBytes itself cannot be zero).
+        const { createMachineRpcTerminalStreamCarrier } = await import('@/sync/domains/terminal/stream/carrier');
+        const carrier = createMachineRpcTerminalStreamCarrier({ machineId: 'machine', serverId: homeIds.primary,
+            accountId: 'terminal-account' });
+        await expect(carrier.read({ terminalId, cursor: { mode: 'byte-offset', value: output.length }, creditBytes: 0 }))
+            .resolves.toMatchObject({ ok: true, nextCursor: output.length, done: true });
+    });
+
+    it('finishes retained replay only after the current renderer acknowledges its final bytes', async () => {
+        const terminalId = 'retained-replay-pty';
+        const terminalKey = 'retained-replay-ack';
+        replaceTerminalSurfaceState(terminalKey, { terminalId, cursor: 3, output: 'retained preview', detectedUrl: null,
+            exit: { exitCode: 0, signal: null, scope: { serverId: homeIds.primary, accountId: 'terminal-account' } } });
+        const read = createDeferred<unknown>();
+        terminalOps.streamReadBytes.mockImplementation(() => read.promise);
+        const writeBytes = vi.fn((_input: EmbeddedTerminalWriteBytesInput) => queuedWriteResult);
+        const terminalRef = { current: { write: vi.fn(), writeBytes, clear: vi.fn() } };
+        const { useMachineTerminalSession } = await import('./useMachineTerminalSession');
+        const hook = await renderHook(() => useMachineTerminalSession({ machineId: 'machine', serverId: homeIds.primary,
+            cwd: '/repo', terminalKey, terminalRef, attachedTerminalId: terminalId, readOnly: true }));
+        await flushHookEffects({ cycles: 4, turns: 2, runOnlyPendingTimers: true });
+        expect(hook.getCurrent()).toMatchObject({ status: 'exited' });
+        await act(async () => read.resolve(TerminalStreamReadResponseSchema.parse({ ok: true, terminalId, frames: [
+            { t: 'gap', terminalId, droppedBeforeByteOffset: 100, nextAvailableByteOffset: 100, reason: 'ring_overflow' },
+            { t: 'bytes', terminalId, seq: 5, byteOffset: 100, byteLength: 3, encoding: 'base64', data: 'QUJD' },
+            { t: 'exit', terminalId, byteOffset: 103, exitCode: 0, signal: null },
+        ], nextByteOffset: 103, availableByteOffset: 103, droppedBeforeByteOffset: 100, done: true })));
+        await flushHookEffects({ cycles: 4, turns: 2, runOnlyPendingTimers: true });
+        expect(readTerminalSurfaceState(terminalKey)?.cursor).toBe(3);
+        expect(hook.getCurrent()).toMatchObject({
+            outputRetention: { mode: 'byte-offset', retainedFromCursor: 100, availableCursor: 103, truncated: true } });
+        const generation = readWriteGeneration(writeBytes.mock.calls[0]?.[0]);
+        if (generation === null) throw new Error('Renderer did not receive the retained bytes');
+        await act(async () => hook.getCurrent().onWriteComplete(rendererWriteComplete({ terminalId, seq: 5,
+            byteOffset: 100, byteLength: 3, ackedByteOffset: 103, writeGeneration: generation })));
+        await flushHookEffects({ cycles: 4, turns: 2, runOnlyPendingTimers: true });
+        expect(hook.getCurrent()).toMatchObject({ status: 'exited' });
+        expect(readTerminalSurfaceState(terminalKey)).toMatchObject({ cursor: 103, output: expect.stringMatching(/ABC$/) });
+        expect(terminalOps.streamReadBytes).toHaveBeenCalledTimes(1);
+        expect(terminalOps.ensure).not.toHaveBeenCalled();
+        expect(terminalOps.close).not.toHaveBeenCalled();
+        await hook.unmount();
+    });
+
     it('does not restore a finished borrowed surface before its Account scope is proven', async () => {
         const terminalKey = 'borrowed-other-account';
         replaceTerminalSurfaceState(terminalKey, {
             terminalId: 'borrowed-other-account-pty', cursor: 7, output: 'private', detectedUrl: null,
             exit: { exitCode: 17, signal: null, scope: { serverId: homeIds.primary, accountId: 'another-account' } },
+            outputRetention: { mode: 'byte-offset', retainedFromCursor: 10, availableCursor: 100, truncated: true },
         });
         const read = createDeferred<unknown>();
         terminalOps.streamReadBytes.mockImplementation(() => read.promise);
         const terminalRef = { current: { write: vi.fn(), clear: vi.fn() } };
         const { useMachineTerminalSession } = await import('./useMachineTerminalSession');
-        const firstStates: Array<Readonly<{ status: string; exitCode: number | null }>> = [];
+        const firstStates: Array<Readonly<{ status: string; exitCode: number | null; retention: unknown }>> = [];
         const hook = await renderHook(() => {
             const controller = useMachineTerminalSession({ machineId: 'machine', serverId: homeIds.primary, cwd: '/repo',
                 terminalKey, terminalRef, attachedTerminalId: 'borrowed-other-account-pty', readOnly: true });
-            firstStates.push({ status: controller.status, exitCode: controller.exitCode });
+            firstStates.push({ status: controller.status, exitCode: controller.exitCode, retention: controller.outputRetention });
             return controller;
         }, { flushOptions: { cycles: 1, turns: 1 } });
-        expect(firstStates[0]).toEqual({ status: 'connecting', exitCode: null });
+        expect(firstStates[0]).toEqual({ status: 'connecting', exitCode: null, retention: null });
         expect(terminalRef.current.write).not.toHaveBeenCalledWith('private', expect.anything());
         await hook.unmount();
     });
@@ -793,6 +891,9 @@ describe('useMachineTerminalSession', () => {
             expect.any(Object),
         );
         expect(terminalOps.streamRead).not.toHaveBeenCalled();
+        expect(hook.getCurrent()).toMatchObject({ status: 'exited', outputRetention: {
+            mode: 'byte-offset', retainedFromCursor: 0, availableCursor: 3, truncated: false,
+        } });
         expect(renderer.write).not.toHaveBeenCalledWith('ABC');
 
         expect(terminalOps.streamAcknowledge).not.toHaveBeenCalled();

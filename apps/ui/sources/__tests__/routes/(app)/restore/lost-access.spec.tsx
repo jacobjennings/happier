@@ -17,6 +17,7 @@ const native = vi.hoisted(() => ({
     secureValues: new Map<string, string>(),
     canOpenURL: vi.fn(async () => true),
     openURL: vi.fn(async () => true),
+    replace: vi.fn(),
 }));
 installTokenStorageWebPlatformMocks({
     // Genuine native credential persistence adapter; TokenStorage parsing and custody stay real.
@@ -31,6 +32,9 @@ installRestoreRouteCommonModuleMocks({
         Platform: { OS: 'ios', select: <T,>(spec: { ios?: T; default?: T }) => spec.ios ?? spec.default },
         Linking: { canOpenURL: native.canOpenURL, openURL: native.openURL },
     }),
+    router: async () => (await import('@/dev/testkit/mocks/router')).createExpoRouterMock({
+        router: { back: vi.fn(), push: vi.fn(), replace: native.replace, canGoBack: () => false },
+    }).module,
     modal: async () => (await import('@/dev/testkit/mocks/modal')).createModalModuleMock({ confirmResult: true }).module,
 });
 await initializeTerminalRouteRuntimeForTests();
@@ -42,6 +46,7 @@ beforeEach(() => {
     native.secureValues.clear();
     native.openURL.mockClear();
     native.canOpenURL.mockClear();
+    native.replace.mockClear();
     resetServerFeaturesClientForTests();
 });
 afterEach(async () => {
@@ -109,5 +114,12 @@ describe('/restore/lost-access', () => {
         expect(native.openURL).not.toHaveBeenCalled();
         expect(await TokenStorage.getPendingExternalAuth()).toBeNull();
         expect(getActiveServerSnapshot()).toEqual(capturedHome);
+    });
+
+    it('falls back to the root when there is no history to go back to', async () => {
+        const { screen } = await renderLostAccess('https://example.test/oauth');
+        screen.pressByTestId('restore-lost-access-wizard-back');
+
+        expect(native.replace).toHaveBeenCalledWith('/');
     });
 });

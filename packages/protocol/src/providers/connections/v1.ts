@@ -9,6 +9,11 @@ import { PROVIDER_WIRE_PROTOCOL_LIMITS_V1 } from '../capabilities/v1.js';
 import { ProviderConnectionIdSchema, ProviderContributionKeySchema, ProviderLocalIdSchema, ProviderMachineIdSchema, ProviderModelIdSchema } from '../ids.js';
 import { CustomProviderTemplateV1Schema } from './customTemplateV1.js';
 import { ProviderEndpointUrlSyntaxSchema } from '../endpointUrlSchema.js';
+import { ProviderPublicHeadersV1Schema } from '../publicHeadersSchema.js';
+export { resolveEffectiveProviderEndpointV1, patchProviderEndpointOverrideV1 } from './effectiveEndpointV1.js';
+export type { EffectiveProviderEndpointV1 } from './effectiveEndpointV1.js';
+export { prepareProviderEndpointPolicyReviewV1, prepareProviderEndpointPolicyReviewFromViewV1, summarizeProviderEndpointPolicyReviewV1 } from './endpointPolicyReviewV1.js';
+export type { ProviderEndpointPolicyReviewV1 } from './endpointPolicyReviewV1.js';
 
 export const ProviderConnectionSourceV1Schema = lazyZodSchema(() => z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('contribution'), contributionKey: ProviderContributionKeySchema }),
@@ -18,8 +23,9 @@ export type ProviderConnectionSourceV1 = z.infer<typeof ProviderConnectionSource
 
 export const ProviderEndpointOverrideV1Schema = lazyZodSchema(() => z.strictObject({
   endpointTemplateId: ProviderLocalIdSchema,
-  baseUrl: ProviderEndpointUrlSyntaxSchema,
-}));
+  baseUrl: z.optional(ProviderEndpointUrlSyntaxSchema),
+  publicHeaders: z.optional(ProviderPublicHeadersV1Schema),
+}).check(z.refine(value => value.baseUrl !== undefined || (value.publicHeaders !== undefined && Object.keys(value.publicHeaders).length > 0), 'An endpoint override must override an address or headers')));
 export type ProviderEndpointOverrideV1 = z.infer<typeof ProviderEndpointOverrideV1Schema>;
 
 export const ProviderConnectionDeploymentV1Schema = lazyZodSchema(() => z.discriminatedUnion('kind', [
@@ -64,6 +70,16 @@ function uniqueOverrides(overrides: readonly ProviderEndpointOverrideV1[], ctx: 
   });
 }
 
+export const ProviderModelGenerationSettingsV1Schema = lazyZodSchema(() => z.strictObject({
+  temperature: z.optional(z.nullable(z.number().check(z.minimum(0), z.maximum(2)))),
+  maxTokens: z.optional(z.nullable(z.number().check(z.int()))),
+}));
+
+/** A per-model patch; null removes that model's overrides. Omitted fields retain intent. */
+export const ProviderConnectionModelSettingsUpdateV1Schema = lazyZodSchema(() => z.record(
+  ProviderModelIdSchema, z.nullable(ProviderModelGenerationSettingsV1Schema),
+));
+
 export const ProviderConnectionV1Schema = lazyZodSchema(() => z.strictObject({
   v: z.literal(1),
   id: ProviderConnectionIdSchema,
@@ -83,10 +99,7 @@ export const ProviderConnectionV1Schema = lazyZodSchema(() => z.strictObject({
   purposeBindingDefaults: z.optional(ProviderConnectionPurposeBindingDefaultsV1Schema),
   gatewayPlacement: z.optional(ProviderGatewayPlacementV1Schema),
   claudeHelperModels: z.optional(ProviderClaudeHelperModelsV1Schema),
-  modelSettings: z.optional(z.record(ProviderModelIdSchema, z.strictObject({
-    temperature: z.optional(z.nullable(z.number().check(z.minimum(0), z.maximum(2)))),
-    maxTokens: z.optional(z.nullable(z.number().check(z.int()))),
-  }))),
+  modelSettings: z.optional(z.record(ProviderModelIdSchema, ProviderModelGenerationSettingsV1Schema)),
   revision: z.number().check(z.int(), z.nonnegative()),
   createdAt: z.number().check(z.nonnegative()),
   updatedAt: z.number().check(z.nonnegative()),

@@ -14,7 +14,8 @@ import { resolveSessionReminderPresentation } from '@/sync/domains/session/organ
 import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization/keys';
 import { useSettingMutable } from '@/sync/domains/state/storage';
 import { storage } from '@/sync/domains/state/storageStore';
-import type { Session } from '@/sync/domains/state/storageTypes';
+import { readSessionPresentationControl, type SessionPresentationRecord,
+    type SessionListPresentationSource } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { useApplySessionReminderPresetIntent } from '@/sync/store/settingsWriters';
 import { t } from '@/text';
 
@@ -26,7 +27,8 @@ const INBOX_SETTLE_MENU_ID = 'inbox.settle';
  * second reminder vocabulary or writer.
  */
 export const InboxSessionRowMenu = React.memo(function InboxSessionRowMenu(props: Readonly<{
-    session: Session;
+    session: SessionPresentationRecord;
+    presentationSource?: SessionListPresentationSource;
     settle: InboxModel['settle'];
     setReminder: InboxModel['setReminder'];
 }>) {
@@ -34,9 +36,13 @@ export const InboxSessionRowMenu = React.memo(function InboxSessionRowMenu(props
     const [open, setOpen] = React.useState(false);
     const [reminderPresets] = useSettingMutable('sessionReminderPresetsV1');
     const applyReminderPresetIntent = useApplySessionReminderPresetIntent();
-    const standingKey = buildSessionOrganizationSessionKey(props.session.serverId ?? '', props.session.id);
+    const standingKey = buildSessionOrganizationSessionKey(props.presentationSource?.serverId ?? props.session.serverId ?? '', props.session.id);
     const standing = storage((state) => state.sessionOrganizationAttentionStandingsBySessionKey?.[standingKey]);
     const { session, settle, setReminder } = props;
+    // Closed menus need only identity. Materialize the full control input only on an intent.
+    const readControlSession = () => readSessionPresentationControl({ record: session,
+        serverId: props.presentationSource?.serverId ?? session.serverId,
+        baseSession: props.presentationSource?.baseSession });
 
     const items = React.useMemo<DropdownMenuItem[]>(() => {
         if (!open) return [];
@@ -54,7 +60,7 @@ export const InboxSessionRowMenu = React.memo(function InboxSessionRowMenu(props
 
     const onSelect = React.useCallback((itemId: string) => {
         if (itemId === INBOX_SETTLE_MENU_ID) {
-            void settle(session);
+            void settle(readControlSession());
             return;
         }
         if (!isSessionReminderMenuItemId(itemId)) return;
@@ -65,15 +71,15 @@ export const InboxSessionRowMenu = React.memo(function InboxSessionRowMenu(props
             presets: reminderPresets ?? [],
             applyPresetIntent: applyReminderPresetIntent,
             schedule: async (remindAt) => {
-                await setReminder(session, remindAt);
+                await setReminder(readControlSession(), remindAt);
                 return { success: true };
             },
             clear: async () => {
-                await setReminder(session, null);
+                await setReminder(readControlSession(), null);
                 return { success: true };
             },
         });
-    }, [applyReminderPresetIntent, settle, setReminder, reminderPresets, session, standing?.remindAt]);
+    }, [applyReminderPresetIntent, settle, setReminder, reminderPresets, session, props.presentationSource, standing?.remindAt]);
 
     return (
         <DropdownMenu

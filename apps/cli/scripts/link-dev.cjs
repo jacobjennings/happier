@@ -28,12 +28,14 @@ function getGlobalBinDir(opts = {}) {
     const execFileSync = typeof opts.execFileSync === 'function' ? opts.execFileSync : childProcess.execFileSync;
     const existsSync = typeof opts.existsSync === 'function' ? opts.existsSync : fs.existsSync;
 
-    // Try npm global bin first using execFileSync (safer than execSync)
+    // npm 9 removed `npm bin`; global bins live in the global prefix on Windows
+    // and in `<prefix>/bin` elsewhere.
     try {
-        const npmBin = process.platform === 'win32'
-            ? execFileSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '"npm bin -g"'], withWindowsHide({ encoding: 'utf8' })).trim()
-            : execFileSync('npm', ['bin', '-g'], withWindowsHide({ encoding: 'utf8' })).trim();
-        if (existsSync(npmBin)) {
+        const npmPrefix = process.platform === 'win32'
+            ? execFileSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '"npm prefix -g"'], withWindowsHide({ encoding: 'utf8' })).trim()
+            : execFileSync('npm', ['prefix', '-g'], withWindowsHide({ encoding: 'utf8' })).trim();
+        const npmBin = process.platform === 'win32' ? npmPrefix : join(npmPrefix, 'bin');
+        if (npmPrefix && existsSync(npmBin)) {
             return npmBin;
         }
     } catch (e) {

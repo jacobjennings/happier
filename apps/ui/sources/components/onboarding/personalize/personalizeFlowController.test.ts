@@ -18,11 +18,15 @@ function createHarness(options: Readonly<{ declineTheme?: boolean }> = {}) {
     let local: LocalSettings = localSettingsDefaults;
     let progress: PersonalizeProgress = EMPTY_PERSONALIZE_PROGRESS;
     const completed: string[] = [];
+    const settingWrites: unknown[] = [];
     const actions = createPersonalizeFlowActions({
         readAccount: () => account,
         readLocal: () => local,
         // Preference mutations run through the real Action wiring in usePersonalizeFlow.test.tsx.
-        writeSetting: async () => { throw new Error('Unexpected preference write in a visit-memory test'); },
+        writeSetting: async (...args: unknown[]) => {
+            settingWrites.push(args);
+            throw new Error('Unexpected preference write in a visit-memory test');
+        },
         applyTheme: (mode) => {
             if (options.declineTheme) return false;
             local = applyLocalSettings(local, { themePreference: mode });
@@ -38,6 +42,7 @@ function createHarness(options: Readonly<{ declineTheme?: boolean }> = {}) {
         local: () => local,
         progress: () => progress,
         completed,
+        settingWrites,
     };
 }
 
@@ -62,9 +67,10 @@ describe('Personalize flow actions', () => {
 
     it('keeps current values when a step is skipped', () => {
         const flow = createHarness();
-        const before = flow.account();
+        const before = flow.local();
         flow.actions.skipPage('tools');
-        expect(flow.account()).toBe(before);
+        expect(flow.local()).toBe(before);
+        expect(flow.settingWrites).toEqual([]);
         expect(flow.progress()).toEqual({ savedSteps: [], resumeAt: 'work' });
     });
 
@@ -87,7 +93,8 @@ describe('Personalize flow actions', () => {
         const prefilled = flow.actions.prefillStyle(draft, 'detail');
         expect(prefilled).toMatchObject({ transcriptLayout: 'linear', toolChrome: 'cards', listDensity: 'detailed' });
         expect(flow.actions.prefillStyle(draft, 'keep')).toBe(draft);
-        expect(flow.account()).toBe(settingsDefaults);
+        expect(flow.local()).toBe(localSettingsDefaults);
+        expect(flow.settingWrites).toEqual([]);
     });
 
     it('"Use this setup" completes the Home card and clears the visit memory', async () => {

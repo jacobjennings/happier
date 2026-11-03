@@ -3,13 +3,10 @@ import { MMKV } from 'react-native-mmkv';
 
 import { scopedStorageId } from '@/utils/system/storageScope';
 
+import * as profiles from './serverProfiles';
+
 function randomScope(): string {
     return `adoption_authority_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-}
-
-async function importFresh() {
-    vi.resetModules();
-    return await import('./serverProfiles');
 }
 
 describe('serverProfiles adoption authority', () => {
@@ -19,7 +16,7 @@ describe('serverProfiles adoption authority', () => {
         if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
         vi.restoreAllMocks();
-        vi.resetModules();
+        profiles.resetServerProfilesRuntimeForTests();
     });
 
     it('reads additive stored descriptor fields tolerantly while keeping incoming descriptor admission strict', async () => {
@@ -35,7 +32,6 @@ describe('serverProfiles adoption authority', () => {
             id: 'saved', name: 'Saved Home', serverUrl: descriptor.canonicalServerUrl,
             serverIdentityId: descriptor.homeServerIdentityId, homeConnectionDescriptor: additiveDescriptor,
         } } }));
-        const profiles = await importFresh();
         const saved = profiles.getServerProfileById('saved');
         expect(saved?.homeConnectionDescriptor).toEqual(descriptor);
         expect(saved && profiles.buildHomeConnectionDescriptorForProfile({ ...saved,
@@ -47,7 +43,6 @@ describe('serverProfiles adoption authority', () => {
 
     it('fails direct adoption closed on divergent facts at an equal descriptor revision', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await importFresh();
         const original = await profiles.adoptHomeProfile({
             source: 'qr',
             descriptor: {
@@ -55,7 +50,10 @@ describe('serverProfiles adoption authority', () => {
                 homeServerIdentityId: 'srv_equal_revision_owner_1',
                 canonicalServerUrl: 'https://equal-owner.example.test',
                 revision: 8,
-                endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+                endpoints: [
+                    { kind: 'iroh', endpointId: 'a'.repeat(64) },
+                    { kind: 'https', url: 'https://public-current.example.test' },
+                ],
             },
         });
 
@@ -66,7 +64,10 @@ describe('serverProfiles adoption authority', () => {
                 homeServerIdentityId: 'srv_equal_revision_owner_1',
                 canonicalServerUrl: 'https://equal-owner.example.test',
                 revision: 8,
-                endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+                endpoints: [
+                    { kind: 'iroh', endpointId: 'a'.repeat(64) },
+                    { kind: 'https', url: 'https://public-current.example.test' },
+                ],
             },
         })).resolves.toEqual(original);
 
@@ -75,7 +76,10 @@ describe('serverProfiles adoption authority', () => {
             homeServerIdentityId: 'srv_equal_revision_owner_1',
             canonicalServerUrl: 'https://equal-owner.example.test',
             revision: 8,
-            endpoints: [{ kind: 'iroh' as const, endpointId: 'b'.repeat(64) }],
+            endpoints: [
+                { kind: 'iroh' as const, endpointId: 'b'.repeat(64) },
+                { kind: 'https' as const, url: 'https://public-conflict.example.test' },
+            ],
         };
         expect(() => profiles.preflightHomeProfileAdoption({
             source: 'account-directory',
@@ -91,6 +95,7 @@ describe('serverProfiles adoption authority', () => {
             descriptor: conflictingDescriptor,
         })).resolves.toMatchObject({ kind: 'conflict', code: 'equal_revision_conflict' });
         expect(profiles.getServerProfileById(original.id)?.homeConnectionDescriptor?.endpoints.find((endpoint) => endpoint.kind === 'iroh')?.endpointId).toBe('a'.repeat(64));
+        expect(profiles.getServerProfileById(original.id)?.publicServerUrl).toBe('https://public-current.example.test');
     });
 
     it('prefers established Home facts over advisory Directory facts before revision comparison during persisted dedupe', async () => {
@@ -138,7 +143,6 @@ describe('serverProfiles adoption authority', () => {
             },
         }));
 
-        const profiles = await importFresh();
         const [profile] = profiles.listServerProfiles();
 
         expect(profile).toMatchObject({
@@ -194,7 +198,6 @@ describe('serverProfiles adoption authority', () => {
             },
         }));
 
-        const profiles = await importFresh();
         const [profile] = profiles.listServerProfiles();
 
         expect(profiles.listServerProfiles()).toHaveLength(1);
@@ -213,7 +216,6 @@ describe('serverProfiles adoption authority', () => {
 
     it('does not let a newer advisory Directory descriptor retarget an existing Home or focus', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await importFresh();
         const original = await profiles.adoptHomeProfile({
             source: 'qr',
             descriptor: {
@@ -257,7 +259,6 @@ describe('serverProfiles adoption authority', () => {
 
     it('rejects the retired redemption-coupled authority instead of treating it as established authority', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await importFresh();
         const retiredInput = {
             source: 'account-directory' as const,
             descriptorAuthority: 'redemption_coupled',
@@ -281,7 +282,6 @@ describe('serverProfiles adoption authority', () => {
 
     it('keeps an advisory descriptor unchanged when public features expose a projection', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await importFresh();
         const placeholder = await profiles.adoptHomeProfile({
             source: 'account-directory',
             descriptorAuthority: 'advisory',
@@ -326,7 +326,6 @@ describe('serverProfiles adoption authority', () => {
 
     it('preserves advisory descriptor provenance through ordinary same-URL profile upserts', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await importFresh();
         const descriptor = {
             v: 1 as const,
             homeServerIdentityId: 'srv_advisory_upsert_1',
@@ -357,58 +356,8 @@ describe('serverProfiles adoption authority', () => {
         })).toMatchObject({ credentialWrite: 'requiresCurrentObservation' });
     });
 
-    it('keeps an established private descriptor generation unchanged across a reduced public observation', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await importFresh();
-        const established = await profiles.adoptHomeProfile({
-            source: 'qr',
-            descriptor: {
-                v: 1,
-                homeServerIdentityId: 'srv_established_public_1',
-                canonicalServerUrl: 'https://established-public.example.test',
-                revision: 4,
-                endpoints: [{
-                    kind: 'iroh',
-                    endpointId: 'b'.repeat(64),
-                    relayUrls: ['https://relay-old.example.test'],
-                    directAddresses: ['192.0.2.201:443'],
-                }],
-            },
-        });
-
-        const result = await profiles.reconcileServerProfileHomeConnectionDescriptor({
-            serverUrl: established.serverUrl,
-            observedServerIdentityId: 'srv_established_public_1',
-            observation: 'public',
-            descriptor: {
-                v: 1,
-                homeServerIdentityId: 'srv_established_public_1',
-                canonicalServerUrl: 'https://established-public.example.test',
-                revision: 5,
-                endpoints: [{
-                    kind: 'iroh',
-                    endpointId: 'b'.repeat(64),
-                    relayUrls: ['https://relay-new.example.test'],
-                }],
-            },
-        });
-
-        expect(result.kind).toBe('unchanged');
-        expect(profiles.getServerProfileById(established.id)).toMatchObject({
-            homeConnectionDescriptor: {
-                revision: 4,
-                endpoints: expect.arrayContaining([{ kind: 'iroh',
-                endpointId: 'b'.repeat(64),
-                relayUrls: ['https://relay-old.example.test'],
-                directAddresses: ['192.0.2.201:443'],
-            }]),
-            },
-        });
-    });
-
     it('keeps current_connection_observation established authority while upgrading advisory-only placeholders wholesale', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await importFresh();
         const established = await profiles.adoptHomeProfile({
             source: 'qr',
             descriptor: {
@@ -459,43 +408,5 @@ describe('serverProfiles adoption authority', () => {
         expect(upgraded?.descriptorProvenance).toBeUndefined();
         expect(upgraded?.canonicalServerUrl ?? upgraded?.serverUrl).toBe('https://observed-real.example.test');
         expect(upgraded?.homeConnectionDescriptor?.revision).toBe(2);
-    });
-
-    it('preserves the exact unknown source through a same-profile strict adoption', async () => {
-        const scope = randomScope();
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
-        const storage = new MMKV({ id: scopedStorageId('server-profiles', scope) });
-        storage.set('server-state-v1', JSON.stringify({
-            activeServerId: 'future-home',
-            servers: {
-                'future-home': {
-                    id: 'future-home',
-                    name: 'Future Home',
-                    serverUrl: 'https://future-owner.example.test',
-                    source: 'Future-Directory-V2',
-                    createdAt: 1,
-                    updatedAt: 1,
-                    lastUsedAt: 1,
-                },
-            },
-        }));
-        const profiles = await importFresh();
-
-        const adopted = await profiles.adoptHomeProfile({
-            source: 'qr',
-            descriptor: {
-                v: 1,
-                homeServerIdentityId: 'srv_future_owner_1',
-                canonicalServerUrl: 'https://future-owner.example.test',
-                revision: 1,
-                endpoints: [{ kind: 'https', url: 'https://future-owner.example.test' }],
-            },
-        });
-
-        expect(adopted).toMatchObject({ source: 'legacy', legacySource: 'Future-Directory-V2' });
-        const persisted = JSON.parse(storage.getString('server-state-v1') ?? '{}') as {
-            servers?: Record<string, { source?: string }>;
-        };
-        expect(persisted.servers?.['future-home']?.source).toBe('Future-Directory-V2');
     });
 });

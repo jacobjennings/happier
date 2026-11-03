@@ -60,7 +60,7 @@ describe('Guard left-behind canonical Action bridge', () => {
     const f = fixture();
     expect(await f.execute({ mode: 'ask', refs: ['exact-ref'], sessionId: 'ended-session' })).toEqual({ ok: true, result: { artifactId: 'approval' } });
     expect(f.requests).toMatchObject([{ actionId: 'machines.processes.leftBehind.cleanUp',
-      actionArgs: { serverId: 'home', machineId: 'machine', refs: ['exact-ref'] }, createdBy: { surface: 'system', sessionId: 'ended-session' },
+      actionArgs: { serverId: 'home-identity', machineId: 'machine', refs: ['exact-ref'] }, createdBy: { surface: 'system', sessionId: 'ended-session' },
       executionOriginV1: { accountId: 'owner', serverIdentityId: 'home-identity', machineId: 'machine', sessionId: 'ended-session',
         authority: 'account_automation', caller: { kind: 'host' } } }]);
     expect(f.effects).toEqual([]);
@@ -77,7 +77,7 @@ describe('Guard left-behind canonical Action bridge', () => {
     const result = await pending;
     expect(result, JSON.stringify(result))
       .toMatchObject({ ok: true, result: { ended: [{ ref: 'exact-ref' }], skipped: [] } });
-    expect(f.effects).toMatchObject([{ input: { serverId: 'home', machineId: 'machine', refs: ['exact-ref'] },
+    expect(f.effects).toMatchObject([{ input: { serverId: 'home-identity', machineId: 'machine', refs: ['exact-ref'] },
       context: { authority: 'account_automation', surface: 'rpc', defaultSessionId: 'ended-session' } }]);
   });
   it('uses the canonical default internal RPC policy for Automatic without fabricating approval', async () => {

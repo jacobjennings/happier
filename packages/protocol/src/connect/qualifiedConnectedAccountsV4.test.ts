@@ -29,13 +29,15 @@ import {
   QualifiedProviderAccountUsageWriteV4Schema,
   QualifiedConnectedAccountRefSchema,
   QualifiedConnectedServiceUsageSourceV4Schema,
-  isQualifiedConnectedAccountProfileActiveV4,
-  isQualifiedConnectedAccountProfileUsableV4,
   openQualifiedConnectedAccountQuotaResponseV4,
   projectProviderAccountUsageSnapshotToQualifiedConnectedAccountQuotaSnapshotV4,
-  resolveQualifiedConnectedAccountGroupActiveAccountV4,
   sameQualifiedConnectedAccountGroupRef,
 } from './qualifiedConnectedAccountsV4.js';
+import {
+  isQualifiedConnectedAccountProfileActiveV4,
+  isQualifiedConnectedAccountProfileUsableV4,
+  resolveQualifiedConnectedAccountGroupActiveAccountV4,
+} from './qualifiedConnectedAccountProjectionsV4.js';
 import {
   CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
   PluginConnectedAccountAuthenticationV2Schema,
@@ -55,6 +57,27 @@ const service = {
 const credentialRevision = 'csr_abcdefghijklmnopqrstuvwxyz';
 
 describe('qualified connected-account V4 wire contract', () => {
+  it('carries persisted health on credential reads while keeping credential metadata writes separate', () => {
+    const health = { v: 1, status: 'connected', reconnectRequired: false };
+    const metadata = { scopes: [] };
+    const snapshot = {
+      ref: { service, accountId: 'health-account' }, authenticationModeId: 'oauth',
+      revisionSemantics: 'revisioned', credentialRevision, configurationRevision: null,
+      content: { t: 'plain', v: { v: 1, values: { accessToken: 'token' } } }, metadata, health,
+    };
+    expect(QualifiedConnectedAccountCredentialSnapshotV4Schema.parse(snapshot)).toMatchObject({ metadata, health });
+    expect(QualifiedConnectedAccountCredentialMutationV4Schema.safeParse({
+      ref: snapshot.ref, expectedCredentialRevision: credentialRevision,
+      authenticationModeId: 'oauth', content: snapshot.content, metadata: { ...metadata, health },
+    }).success).toBe(false);
+    expect(QualifiedConnectedAccountCredentialSnapshotV4Schema.safeParse({
+      ...snapshot, health: { ...health, status: 'unknown' },
+    }).success).toBe(false);
+    expect(QualifiedConnectedAccountCredentialSnapshotV4Schema.safeParse({
+      ...snapshot, metadata: { ...metadata, health },
+    }).success).toBe(false);
+  });
+
   it('round-trips organization identity while accepting metadata from before organization attestation', () => {
     const snapshot = {
       ref: { service, accountId: 'connected-account' },

@@ -55,8 +55,9 @@ or bypass Hands-off.
 `settings.get` and `settings.set` read and change the declared Account
 preference using `anchor: "delegation.approvalReviewerEnabled"`; set takes a
 boolean `value`. Normal authority and approval rules
-still apply. `session.approval_reviewer.set` with `sessionId` and `enabled`
-sets the per-session choice. Use the
+still apply. `session.approval_reviewer.set` with `sessionId` and a boolean
+`enabled` sets the per-session choice. Set `enabled: null` to clear that choice
+and follow the Account default again. Use the
 [host Action reference](/plugins/api/host-actions) for the current catalog
 exposure. `roles.get` and `roles.override.set` read and customize the reviewer
 role. The actual automated answer stays with the host permission owner;

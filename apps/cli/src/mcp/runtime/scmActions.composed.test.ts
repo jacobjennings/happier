@@ -234,17 +234,19 @@ describe('Session SCM daemon placement', () => {
   });
 
   it('fails closed when the exact Machine route is misbound', async () => {
-    await withScmDaemon(async ({ parent }) => {
+    await withScmDaemon(async () => {
       const reject = async () => { throw Object.assign(new Error('Wrong Machine route'), { code: 'machine_not_found' }); };
-      vi.spyOn(machineRpc, 'callMachineRpc').mockImplementation(reject);
-      vi.spyOn(machineRpc, 'callExactMachineRpc').mockImplementation(reject);
+      const ordinary = vi.spyOn(machineRpc, 'callMachineRpc').mockImplementation(reject);
+      const exact = vi.spyOn(machineRpc, 'callExactMachineRpc').mockImplementation(reject);
       const executor = createActionExecutor(createCliActionDeps({ token: credentials.token, credentials,
         sessionId, mode: 'plain', ctx: null }));
       const response = await executor.execute('scm.diff.file', { path: 'arithmetic.js', area: 'pending',
         backendPreference: { kind: 'prefer', backendId } }, { surface: 'cli', defaultSessionId: sessionId });
-      expect(response).toMatchObject({ ok: false });
-      expect(JSON.stringify(response)).toContain('Wrong Machine route');
-      expect(JSON.stringify(response)).not.toContain(`preferred:${parent}`);
+      // The Machine refusal itself is the outcome (the fixture's sentinel, not
+      // product copy): a local fallback would surface the runner's own SCM
+      // failure instead, and a retry would call again.
+      expect(response).toEqual({ ok: false, errorCode: 'action_failed', error: 'Wrong Machine route' });
+      expect(exact).toHaveBeenCalledTimes(1); expect(ordinary).not.toHaveBeenCalled();
     });
   });
 
@@ -313,7 +315,7 @@ describe('Session SCM daemon placement', () => {
 
   it('retains the Session workspace restriction at the receiving SCM owner', async () => {
     await withScmDaemon(async ({ parent, cwd, receiver }) => {
-      vi.spyOn(machineRpc, 'callExactMachineRpc').mockImplementation(request => receiver.call(request.method, request.request, request.authorization));
+      const call = vi.spyOn(machineRpc, 'callExactMachineRpc').mockImplementation(request => receiver.call(request.method, request.request, request.authorization));
       const executor = createActionExecutor(createCliActionDeps({ token: credentials.token, credentials, sessionId,
         mode: 'plain', ctx: null }));
       const result = await executor.execute('scm.worktree.remove', { worktreePath: cwd, confirmed: true,
@@ -321,24 +323,12 @@ describe('Session SCM daemon placement', () => {
         surface: 'rpc', authority: 'account_automation', defaultSessionId: sessionId,
         actionsSettings: { v: 1, actions: {}, approvalWaivedSurfaces: { 'scm.worktree.remove': ['rpc'] } },
       });
+      // Both paths are Machine-allowed. The receiver refuses because the request
+      // carries the Session root, not because a caller-side check stopped it.
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(call.mock.calls[0]?.[0].request).toMatchObject({ target: { kind: 'machine', machineId,
+        project: { machineId, directory: parent } } });
       expect(result).toMatchObject({ ok: true, result: { success: false, errorCode: 'INVALID_PATH' } });
-      // Both paths are Machine-allowed. Only the selected Session root confines this request.
-      expect(parent).not.toBe(cwd);
-    });
-  });
-
-  it('rejects a misbound Machine envelope and a root outside Machine policy at the receiver', async () => {
-    await withScmDaemon(async ({ parent, cwd, receiver }) => {
-      const input = { cwd: parent, path: 'arithmetic.js', backendPreference: { kind: 'prefer', backendId } };
-      const wrongMachine = createTargetedActionRpcRequestV1(input, { kind: 'machine', machineId: 'different-machine',
-        project: { machineId: 'different-machine', directory: parent } });
-      expect(ScmDiffFileResponseSchema.parse(await receiver.call('scm.diff.file', wrongMachine)))
-        .toMatchObject({ success: false, errorCode: 'INVALID_REQUEST' });
-      for (const root of [cwd, join(parent, '..', 'outside')]) {
-        const request = createTargetedActionRpcRequestV1(input, { kind: 'machine', machineId, project: { machineId, directory: root } });
-        expect(ScmDiffFileResponseSchema.parse(await receiver.call('scm.diff.file', request)))
-          .toMatchObject({ success: false, errorCode: 'INVALID_PATH' });
-      }
     });
   });
 });

@@ -88,10 +88,7 @@ function scrollIngressCallbacks(
         applyEntryRestoreOwnerEffects: () => {},
         applyNativePrependOwnerEffects: () => {},
         applyScrollObservationPlan(plan, callbacks) {
-            callbacks.continueAfterEarlyEffects({
-                hasNativeMountSettlePassiveDriftRepinObservation: false,
-                recentUserIntent: plan.recentUserIntent,
-            });
+            callbacks.continueAfterEarlyEffects();
             return plan.disposition === 'consumed';
         },
         commitOpenNativeEntryRestoreVisibleState: () => {},

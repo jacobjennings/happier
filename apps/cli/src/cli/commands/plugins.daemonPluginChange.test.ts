@@ -769,39 +769,53 @@ describe('plugins command daemon mutations', () => {
     expect(daemon.decideChange).not.toHaveBeenCalled();
   });
 
-  it.each(['enable', 'disable', 'uninstall', 'rollback', 'update'] as const)(
-    'routes %s through the daemon with no ad-hoc review or reload',
-    async (kind) => {
+  it.each([
+    ['enable', [], 'enable'],
+    ['disable', [], 'disable'],
+    ['uninstall', [], 'uninstall'],
+    ['uninstall', ['--delete-data', '--yes'], 'uninstallAndDeleteData'],
+    ['rollback', [], 'rollback'],
+    ['update', [], 'update'],
+  ] as const)(
+    'routes %s %j through the daemon with no ad-hoc review or reload',
+    async (command, extraArgs, requestKind) => {
       // `daemon_unavailable` is the control client's real ambiguous transport
       // result. `daemon_response_lost` was never a produced error code.
       daemon.requestChange.mockResolvedValue({ kind: 'unavailable', code: 'daemon_unavailable' });
       const output = captureStdoutJsonOutput();
       try {
         await handlePluginsCommand([
-          kind,
+          command,
           'acme.sample',
-          ...(kind === 'uninstall' ? ['--delete-data', '--yes'] : []),
+          ...extraArgs,
           '--json',
         ], { actionExecutionDeps: authenticatedActionDeps() });
 
         expect(daemon.requestChange).toHaveBeenCalledWith({
-          kind: kind === 'uninstall' ? 'uninstallAndDeleteData' : kind,
+          kind: requestKind,
           pluginId: 'acme.sample',
         });
         expect(daemon.decideChange).not.toHaveBeenCalled();
-        expect(output.json()).toMatchObject({ ok: false, error: { code: 'outcome_unknown' } });
+        const envelope = output.json<{ data?: unknown }>();
+        expect(envelope).toMatchObject({
+          ok: false,
+          kind: `plugins_${command}`,
+          error: { code: 'outcome_unknown' },
+        });
+        expect(envelope.data).toBeUndefined();
       } finally {
         output.restore();
       }
     },
   );
 
-  it('renders the specific daemon failure message instead of collapsing it to a generic rejection', async () => {
-    const message =
-      'Storage-pressure quarantine eviction cleanup remains pending: reconciliation: generationCleanup unavailable';
+  it.each([
+    { code: 'plugin_install_failed', message: 'Storage-pressure quarantine eviction cleanup remains pending: reconciliation: generationCleanup unavailable' },
+    { code: 'PLUGIN_SETTINGS_DEFAULT_INVALID', message: "Plugin 'acme.sample' Settings 'preferences' field 'enabled': PLUGIN_SETTINGS_DEFAULT_INVALID" },
+  ])('renders the specific daemon failure in public JSON ($code)', async ({ code, message }) => {
     daemon.requestChange.mockResolvedValue({
       kind: 'failed',
-      code: 'plugin_install_failed',
+      code,
       message,
     });
     const output = captureStdoutJsonOutput();
@@ -815,7 +829,7 @@ describe('plugins command daemon mutations', () => {
         error: {
           code: 'failed',
           message,
-          causeCode: 'plugin_install_failed',
+          causeCode: code,
           causeMessage: message,
         },
       });

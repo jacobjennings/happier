@@ -45,6 +45,69 @@ describe('InvalidateSync.awaitQueue', () => {
 });
 
 describe('InvalidateSync.invalidateAndAwait', () => {
+    it.each(['cycle', 'first-attempt', 'queue'] as const)('cancels only the retired %s waiter while its cycle keeps converging', async mode => {
+        const command = createDeferred<void>();
+        const sync = new InvalidateSync(() => command.promise);
+        const controller = new AbortController();
+        let cancellation: unknown;
+        const pending = mode === 'queue'
+            ? sync.invalidateAndAwait({ timeoutMs: 1000, signal: controller.signal })
+            : sync.invalidateAndAwait({ settleOnFirstAttempt: mode === 'first-attempt', signal: controller.signal });
+        const wait = pending.catch((error: unknown) => { cancellation = error; });
+        try {
+            controller.abort();
+            await vi.waitFor(() => expect(cancellation).toMatchObject({ name: 'SupersededOperationError' }));
+            let completed = false;
+            const queue = sync.awaitQueue().then(() => { completed = true; });
+            await Promise.resolve();
+            expect(completed).toBe(false);
+            command.resolve();
+            await queue;
+            expect(completed).toBe(true);
+        } finally {
+            command.resolve();
+            await wait;
+        }
+    });
+
+    it('bounds a fresh cycle without treating an older in-flight read as completion', async () => {
+        await withFakeTimers(async () => {
+            const oldRead = createDeferred<void>();
+            const freshRead = createDeferred<void>();
+            let reads = 0;
+            const sync = new InvalidateSync(async () => { await (++reads === 1 ? oldRead.promise : freshRead.promise); });
+            sync.invalidate();
+            let settled = false;
+            const wait = sync.invalidateAndAwait({ timeoutMs: 100 }).then(outcome => { settled = true; return outcome; });
+            oldRead.resolve();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(reads).toBe(2);
+            expect(settled).toBe(false);
+            freshRead.resolve();
+            await expect(wait).resolves.toEqual({ status: 'completed' });
+        });
+    });
+
+    it('reports expiration and stop rather than successful materialization', async () => {
+        await withFakeTimers(async () => {
+            const sync = new InvalidateSync(async () => await new Promise<void>(() => {}));
+            const expired = sync.invalidateAndAwait({ timeoutMs: 100 });
+            await vi.advanceTimersByTimeAsync(100);
+            await expect(expired).resolves.toEqual({ status: 'wait_budget_expired' });
+            const stopped = sync.invalidateAndAwait({ timeoutMs: 100 });
+            sync.stop();
+            await expect(stopped).resolves.toEqual({ status: 'stopped' });
+            await expect(sync.invalidateAndAwait({ timeoutMs: 100 })).resolves.toEqual({ status: 'stopped' });
+            expect(vi.getTimerCount()).toBe(0);
+        });
+    });
+
+    it('rejects a bounded fresh cycle after terminal failure', async () => {
+        const error = Object.assign(new Error('materialization failed'), { retryable: false });
+        const sync = new InvalidateSync(async () => { throw error; });
+        await expect(sync.invalidateAndAwait({ timeoutMs: 100 })).rejects.toBe(error);
+    });
+
     it('can settle the first attempt while the same queue continues retrying', async () => {
         await withFakeTimers(async () => {
             const error = new RetryableServerResponseError(503, 'temporarily unavailable');

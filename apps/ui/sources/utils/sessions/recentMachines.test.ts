@@ -5,6 +5,8 @@ import { storage } from '@/sync/domains/state/storage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { getServerUrl, setServerUrl } from '@/sync/domains/server/serverConfig';
 
+import { getRecentMachinesFromSessions } from './recentMachines';
+
 function createMachine(id: string): Machine {
     return {
         id,
@@ -77,32 +79,7 @@ describe('getRecentMachinesFromSessions', () => {
     });
     afterEach(() => storage.setState(previousState, true));
 
-    it('does not include a same-host machine when session metadata has no explicit replacement', async () => {
-        const { getRecentMachinesFromSessions } = await import('./recentMachines');
-
-        const targetMachine = createMachine('machine-target');
-        const otherMachine = createMachine('machine-other');
-        const reboundSession = createSession({
-            id: 'session-1',
-            machineId: 'machine-other',
-            updatedAt: 25,
-        });
-
-        storage.setState({
-            sessions: {
-                'session-1': reboundSession,
-            },
-        });
-
-        expect(getRecentMachinesFromSessions({
-            machines: [otherMachine, targetMachine],
-            sessions: [reboundSession],
-        })).toEqual([otherMachine]);
-    });
-
-    it('includes the current machine for sessions from explicitly replaced machines', async () => {
-        const { getRecentMachinesFromSessions } = await import('./recentMachines');
-
+    it('includes the current machine for sessions from explicitly replaced machines', () => {
         const targetMachine = createMachine('machine-target');
         const oldMachine = {
             ...createMachine('machine-old'),

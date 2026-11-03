@@ -109,14 +109,14 @@ export function PluginPageWidgetArea(props: PluginUiWidgetAreaPresentation & Rea
     React.useEffect(() => {
         if (!base) return;
         const isCurrent = () => mounted.current && currentBinding.current.pagePort === pagePort && currentBinding.current.pageContext === pageContext;
-        return registerWidgetAreaLayoutSelectionOwner({ surface: base, isCurrent,
+        return registerWidgetAreaLayoutSelectionOwner({ surface: base, isCurrent, providedContext: widgetProvidedContext(context),
             read: (destination, signal) => pagePort.execute({ actionId: 'widgets.item.list' }, pageContext,
                 { signal, layoutId: 'layoutId' in destination.owner ? destination.owner.layoutId : undefined }),
             select: destination => {
                 if (destination.owner.kind === 'pluginArea') setSelected({ port: pagePort, layoutId: destination.owner.layoutId });
             },
         });
-    }, [base, pageContext, pagePort]);
+    }, [base, context, pageContext, pagePort]);
     const executeLayoutAction = React.useCallback<WidgetAreaLayoutsExecute>(async (actionId, raw) => {
         const failed = (errorCode: string) => ({ ok: false as const, errorCode, error: errorCode });
         const parsed = WidgetInstanceActionInputSchemasV1[actionId].safeParse(raw);

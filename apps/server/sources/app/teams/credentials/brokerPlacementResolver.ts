@@ -11,11 +11,13 @@ import {
 } from "@/app/machines/pools/machinePoolService";
 import { selectMachinePoolCandidate } from "@happier-dev/protocol/machines/pools";
 import { acquireMachinePoolMutationFenceInTx } from "@/app/machines/pools/machinePoolMutationFence";
+import { admitProviderBrokerTopology } from "@/app/providers/brokerConsumerAdmission";
 import {
     classifyTeamCredentialBrokerMachineEligibility,
     resolveTeamCredentialBrokerMachinePresentInTx,
     resolveTeamCredentialBrokerMachineForSaveInTx,
     type TeamCredentialBrokerMachineEligibilityError,
+    type TeamCredentialBrokerMachineRefusal,
 } from "./brokerMachineEligibility";
 
 /** The two persisted placement columns exactly as the resource row carries them. */
@@ -279,6 +281,17 @@ export async function admitTeamCredentialBrokerMachineForResourceInTx(
     return saved.ok ? { ok: true, machineId: saved.machineId } : saved;
 }
 
+type TeamCredentialBrokerPlacementFailure =
+    | TeamCredentialBrokerMachineRefusal
+    | Readonly<{
+        ok: false;
+        error: "broker_unavailable";
+        /** Server-private diagnostics; consumers translate only the public error. */
+        refusalReason: "placement_missing" | "pool_snapshot_unavailable"
+            | "no_pool_candidates" | "pool_selection_changed" | "broker_selection_missing";
+    }>
+    | Readonly<{ ok: false; error: "resource_unavailable" | "resource_changed" }>;
+
 export type TeamCredentialBrokerPlacementResolution =
     | Readonly<{
         ok: true;
@@ -294,8 +307,7 @@ export type TeamCredentialBrokerPlacementResolution =
         poolSnapshot: MachinePoolCandidateSnapshot | null;
         candidateMachineIds: readonly string[];
     }>
-    | TeamCredentialBrokerMachineEligibilityError
-    | Readonly<{ ok: false; error: "resource_unavailable" | "resource_changed" }>;
+    | TeamCredentialBrokerPlacementFailure;
 
 /**
  * Canonical exact-placement resolver for a new credential-broker open.
@@ -314,6 +326,8 @@ export async function resolveTeamCredentialBrokerPlacementInTx(
         presence: MachineDaemonPresenceInventory;
         requestKey: string;
         pinnedMachineId?: string | null;
+        /** Private peer opens filter before source RPC; relay consumers omit it. */
+        poolInitiator?: Readonly<{ machineId: string; endpointId: string }>;
         poolEligibleMachineIds?: ReadonlySet<string>;
         expectedPoolMachineId?: string;
     }>,
@@ -321,7 +335,7 @@ export async function resolveTeamCredentialBrokerPlacementInTx(
     const read = readTeamCredentialBrokerPlacement(input.resource);
     if (!read.ok) return { ok: false, error: "resource_unavailable" };
     const placement = read.placement;
-    if (placement === null) return { ok: false, error: "broker_unavailable" };
+    if (placement === null) return { ok: false, error: "broker_unavailable", refusalReason: "placement_missing" };
 
     const pinnedMachineId = input.pinnedMachineId ?? null;
     let selectedMachineId: string | null = pinnedMachineId;
@@ -339,8 +353,9 @@ export async function resolveTeamCredentialBrokerPlacementInTx(
             poolId: placement.poolId,
             presence: input.presence,
         });
-        if (!snapshot.ok || snapshot.value.presenceState === 'unavailable') {
-            return { ok: false, error: "broker_unavailable" };
+        if (!snapshot.ok) return { ok: false, error: "broker_unavailable", refusalReason: "pool_snapshot_unavailable" };
+        if (snapshot.value.presenceState === 'unavailable') {
+            return { ok: false, error: "broker_unavailable", refusalReason: "broker_presence_unknown" };
         }
         poolSnapshot = snapshot.value;
         candidateMachineIds = snapshot.value.members.flatMap((member) => (
@@ -348,6 +363,16 @@ export async function resolveTeamCredentialBrokerPlacementInTx(
                 ? [member.machineId]
                 : []
         ));
+        if (input.poolInitiator !== undefined) {
+            const initiator = input.poolInitiator;
+            const topologyCandidates = candidateMachineIds.filter(machineId => admitProviderBrokerTopology(initiator, {
+                machineId, endpointId: snapshot.value.machineEndpointIds.get(machineId) ?? null,
+            }).ok);
+            if (candidateMachineIds.length > 0 && topologyCandidates.length === 0) {
+                return { ok: false, error: 'resource_unavailable' };
+            }
+            candidateMachineIds = topologyCandidates;
+        }
         if (input.poolEligibleMachineIds === undefined) {
             return { ok: true, broker: null, poolSnapshot, candidateMachineIds };
         }
@@ -360,13 +385,13 @@ export async function resolveTeamCredentialBrokerPlacementInTx(
             availableMachineIds,
             requestKey: input.requestKey,
         })?.machineId ?? null;
-        if (selectedMachineId === null) return { ok: false, error: "broker_unavailable" };
+        if (selectedMachineId === null) return { ok: false, error: "broker_unavailable", refusalReason: "no_pool_candidates" };
         if (input.expectedPoolMachineId !== undefined && selectedMachineId !== input.expectedPoolMachineId) {
-            return { ok: false, error: "broker_unavailable" };
+            return { ok: false, error: "broker_unavailable", refusalReason: "pool_selection_changed" };
         }
     }
 
-    if (selectedMachineId === null) return { ok: false, error: "broker_unavailable" };
+    if (selectedMachineId === null) return { ok: false, error: "broker_unavailable", refusalReason: "broker_selection_missing" };
     const broker = await resolveTeamCredentialBrokerMachinePresentInTx(tx, {
         custodianAccountId: input.resource.custodianAccountId,
         brokerMachineId: selectedMachineId,

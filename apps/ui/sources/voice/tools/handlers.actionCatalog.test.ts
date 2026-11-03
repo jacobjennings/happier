@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { answerDiscussionThreadForTests, createAccountTokenForTests, createHomeGovernanceHarness, installHomeGovernanceBoundaries } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
+import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
 import { ApprovalRequestSchema } from '@happier-dev/protocol/approvals/approvalRequestV1';
 import { captureDocPassageV1 } from '@happier-dev/protocol/artifacts/artifactPassageV1';
 import { describeApprovalActionFields } from '@happier-dev/protocol/actions/actionApprovalPresentation';
+import { resolveInvocationAuthority } from '@happier-dev/protocol/actions/invocationAuthority';
 import { DocReadResultV1Schema } from '@happier-dev/protocol/artifacts/artifactCollaborationActionsV1';
 import { ArtifactActionOutputSchemasV1 } from '@happier-dev/protocol/artifacts/artifactActionsV1';
 import { AccountNoticeArtifactBodyV1Schema, AccountNoticeArtifactHeaderV1Schema } from '@happier-dev/protocol/activity/usageNoticeArtifactV1';
@@ -13,15 +15,25 @@ import { WorkflowActionOutputSchemasV1 } from '@happier-dev/protocol/workflows/a
 import { tryWriteServerEnabledBitInPlace } from '@happier-dev/protocol/features/serverEnabledBit';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
 import { createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
+import { buildReviewCommentFixture, storePlainReviewCommentFixture } from '@/dev/testkit/fixtures/reviewComments';
+import { listVoiceToolActionSpecs } from '@happier-dev/protocol/actions/actionSpecs';
 
 import {
+  AccountSettingsV2UpdateRequestSchema,
   formatQualifiedPluginActionId,
   getActionSpec,
   type ActionDefinitionV1,
+  type AccountSettingsStoredContentEnvelope,
+  parseVoiceToolResultsFollowUp,
 } from '@happier-dev/protocol';
+import { buildToolResultsFollowUpPrompt } from '@/voice/context/buildVoiceToolResultsFollowUp';
+import { SettingsDeclarationActionOutputSchemasV1 } from '@happier-dev/protocol/actions/settingsDeclarationActionFamily';
+import { isActionDirectToolExposedOn } from '@happier-dev/protocol/actions/actionToolExposure';
+import { settingsDefaults } from '@/sync/domains/settings/settings';
 
 const home = createHomeGovernanceHarness();
 installHomeGovernanceBoundaries(home);
+await loadSyncSingletonForTests();
 const { createVoiceToolHandlers, resolveVoiceToolEffectClass } = await import('./handlers');
 const { resolveVoiceActionExecution } = await import('./voiceActionExecution');
 const { createArtifactActionsClient } = await import('@/components/artifacts/artifactActionsClient');
@@ -30,6 +42,155 @@ const { createDefaultActionExecutor } = await import('@/sync/ops/actions/default
 describe('Voice Action reference catalog', () => {
   beforeEach(async () => { await home.reset(); });
   afterEach(async () => { await home.reset(); });
+  it('projects every public review-comment operation through the same Voice resolver and handler', () => {
+    const tools = listVoiceToolActionSpecs();
+    const handlers = createVoiceToolHandlers({ resolveSessionId: () => null });
+    for (const id of [
+      'reviews.comments.create', 'reviews.comments.list', 'reviews.comments.get', 'reviews.comments.transition',
+      'reviews.comments.edit', 'reviews.comments.reply', 'reviews.comments.redact', 'reviews.comments.setDisposition',
+      'reviews.comments.attachEvidence', 'reviews.comments.bulkTransition',
+    ] as const) {
+      const spec = getActionSpec(id);
+      const input = JSON.parse(spec.examples?.voice?.argsExample ?? '{}');
+      expect(spec.inputSchema.safeParse(input).success, id).toBe(true);
+      expect(tools.some(tool => tool.id === id), id).toBe(true);
+      const resolved = resolveVoiceActionExecution({ actionId: id, input });
+      expect(resolved?.spec.id, id).toBe(id);
+      expect(handlers[resolved!.toolName], id).toBeTypeOf('function');
+    }
+    expect(resolveVoiceActionExecution({ actionId: 'reviews.comments.claimPublicationDispatch', input: {} })).toBeNull();
+    // PLAN §3.5 intentionally excludes these operations from Voice.
+    for (const id of ['session.roles.apply_to_reports', 'roles.create', 'roles.update', 'roles.delete',
+      'roles.override.set', 'roles.override.reset', 'launch_profiles.publish', 'session.approval_reviewer.set'] as const) {
+      expect(tools.some(tool => tool.id === id), id).toBe(false);
+    }
+  });
+  it('reads a review comment through generic Voice and the real HTTP owner', async () => {
+    const serverId = await home.addHome({ name: 'Review Voice Home', serverUrl: 'https://review-voice.test', accountId: 'alice', currentAccount: true });
+    const row = buildReviewCommentFixture({ accountId: 'alice' });
+    home.answer(serverId, '/v1/reviews/comments/comment-1?stored=true&includeHistory=true', {
+      body: { comment: storePlainReviewCommentFixture(row) },
+    });
+    const handlers = createVoiceToolHandlers({ resolveSessionId: () => 'review-session', currentServerId: serverId });
+    const read = JSON.parse(await handlers.action_execute!({ actionId: 'reviews.comments.get', input: { commentId: row.id } }, { serverId }));
+    expect(read).toMatchObject({ ok: true, result: { comment: { id: row.id, body: row.body } } });
+  });
+  it('applies an empty accepted selection through generic Voice and the real HTTP owner', async () => {
+    const serverId = await home.addHome({ name: 'Review apply Voice Home', serverUrl: 'https://review-apply-voice.test', accountId: 'alice', currentAccount: true });
+    home.answer(serverId, '/v1/reviews/comments?sessionId=review-session&runId=review-1&includeHistory=true&limit=50&stored=true', {
+      body: { items: [], cursor: null },
+    });
+    const handlers = createVoiceToolHandlers({ resolveSessionId: () => 'review-session', currentServerId: serverId });
+    const applied = JSON.parse(await handlers.action_execute!({ actionId: 'review.apply', input: {
+      sessionId: 'review-session', reviews: [{ runId: 'review-1', findings: [] }],
+    } }, { serverId }));
+    expect(applied).toEqual({ ok: true, result: { status: 'unchanged', commentIds: [] } });
+  });
+  it.each(['work.view.select', 'work.recent.show_more', 'work.map.expand'] as const)('routes %s to the Session presentation owner and refuses an unbound client', async kind => {
+    const serverId = await home.addHome({ name: 'Presentation Voice Home', serverUrl: 'https://presentation-voice.test', accountId: 'alice', currentAccount: true });
+    const input = { intent: { kind, ...(kind === 'work.view.select' ? { view: 'map' } : {}) } };
+    expect(getActionSpec('session.presentation.apply').inputSchema.safeParse(input).success).toBe(true);
+    expect(resolveVoiceActionExecution({ actionId: 'session.presentation.apply', input })?.spec.id).toBe('session.presentation.apply');
+    const handlers = createVoiceToolHandlers({ resolveSessionId: () => null, currentServerId: serverId });
+    expect(JSON.parse(await handlers.action_execute!({ actionId: 'session.presentation.apply', input }, { serverId })))
+      .toMatchObject({ ok: false, errorCode: 'session_not_selected' });
+  });
+  it.each(['ui', 'voice', 'voice-disabled'] as const)('discovers a displayed Voice preference and settles its approval through %s', async decisionPath => {
+    expect(isActionDirectToolExposedOn(getActionSpec('settings.list'), 'agent')).toBe(true);
+    const serverId = await home.addHome({ name: 'Global Voice settings', serverUrl: 'https://global-voice-settings.test',
+      accountId: 'alice', currentAccount: true });
+    const features = createRootLayoutFeaturesResponse();
+    expect(tryWriteServerEnabledBitInPlace(features, 'voice', true)).toBe(true);
+    home.answer(serverId, '/v1/features', { body: features });
+    let content: Extract<AccountSettingsStoredContentEnvelope, { t: 'plain' }> = {
+      t: 'plain', v: { voice: { ...settingsDefaults.voice, canApproveRequests: decisionPath !== 'voice-disabled' }, favoriteMachines: ['keep-neighbor'] },
+    };
+    let version = 1;
+    home.answer(serverId, 'GET /v2/account/settings', { select: () => ({ body: { content, version } }) });
+    home.answer(serverId, 'POST /v2/account/settings', { select: raw => {
+      const request = AccountSettingsV2UpdateRequestSchema.parse(raw);
+      expect(request.expectedVersion).toBe(version);
+      if (!request.content || request.content.t !== 'plain') throw new Error('Expected a plain Account fixture');
+      content = request.content;
+      return { body: { success: true, version: ++version } };
+    } });
+    const handlers = createVoiceToolHandlers({ resolveSessionId: () => null, currentServerId: serverId });
+    const listed = JSON.parse(await handlers.settings_list!({ pageId: 'voiceConversations' }));
+    expect(listed.ok).toBe(true);
+    const declaration = SettingsDeclarationActionOutputSchemasV1['settings.list'].parse({ items: listed.items }).items
+      .find(item => item.title === 'Ignore sounds shorter than');
+    expect(declaration).toMatchObject({ anchor: 'voiceConversations.minSpeechMs', readable: true, writable: true });
+    if (!declaration) throw new Error('The displayed Voice preference was not discoverable');
+    const input = { anchor: declaration.anchor };
+    const before = JSON.parse(await handlers.settings_get!(input));
+    expect(before).toMatchObject({ ok: true, value: 1000 });
+    let created!: () => void;
+    const askCreated = new Promise<void>(resolve => { created = resolve; });
+    home.artifacts(serverId).afterNextCreate(async () => { created(); });
+    const pending = handlers.settings_set!({ ...input, value: 1100 }, { effectId: 'global-voice-settings-write' });
+    await askCreated;
+    const ask = home.artifacts(serverId).list().find(row => {
+      const parsed = ApprovalRequestSchema.safeParse(JSON.parse(home.artifacts(serverId).readPlainBody(row.id) ?? 'null'));
+      return parsed.success && parsed.data.actionId === 'settings.set';
+    });
+    if (!ask) throw new Error('The model-dispatched setting must create an Ask');
+    expect(version).toBe(1);
+    expect(JSON.parse(await handlers.settings_get!(input))).toMatchObject({ ok: true, value: 1000 });
+    expect(ApprovalRequestSchema.parse(JSON.parse(home.artifacts(serverId).readPlainBody(ask.id) ?? 'null')))
+      .toMatchObject({ status: 'open', actionId: 'settings.set', requestedSurface: 'voice',
+        executionOriginV1: { authority: resolveInvocationAuthority({ credential: 'account', surface: 'voice',
+          actionId: 'settings.set', voiceCanApproveRequests: decisionPath !== 'voice-disabled' }) } });
+    // Discover the actual Account Ask through the same tools available to the
+    // Voice agent; native Session updates are not its source of truth.
+    const queue = JSON.parse(await handlers.approval_request_list!({ status: 'open' }));
+    expect(queue.ok).toBe(true);
+    expect(JSON.stringify(queue)).toContain(ask.id);
+    const request = JSON.parse(await handlers.approval_request_get!({ artifactId: ask.id }));
+    expect(JSON.stringify(request)).toContain('voiceConversations.minSpeechMs');
+    const { ok: queueOk, ...queueBody } = queue;
+    const { ok: requestOk, ...requestBody } = request;
+    expect(queueOk && requestOk).toBe(true);
+    const queueSchema = getActionSpec('approval.request.list').outputSchema;
+    const requestSchema = getActionSpec('approval.request.get').outputSchema;
+    if (!queueSchema || !requestSchema) throw new Error('Expected canonical approval output schemas');
+    expect(queueSchema.parse(queueBody)).toMatchObject({
+      items: [expect.objectContaining({ artifactId: ask.id, status: 'open', actionId: 'settings.set' })],
+    });
+    expect(requestSchema.parse(requestBody)).toMatchObject({
+      artifactId: ask.id, request: { status: 'open', actionArgs: { anchor: declaration.anchor, value: 1100 } },
+    });
+    const results = [{ t: 'approval_request_list', args: { status: 'open' }, result: queue },
+      { t: 'approval_request_get', args: { artifactId: ask.id }, result: request }];
+    const privacy = { shareFilePaths: false, shareSessionSummary: false, sharePermissionRequests: true };
+    const context = parseVoiceToolResultsFollowUp(buildToolResultsFollowUpPrompt(results, privacy));
+    expect(JSON.stringify(context)).toContain(ask.id);
+    expect(JSON.stringify(context)).toContain(requestBody.request.summary);
+    // Permission sharing admits the request presentation, not its raw effect
+    // operands or stored preview. The Voice policy forces tool-argument redaction.
+    expect(JSON.stringify(context)).not.toContain('"actionArgs"');
+    expect(JSON.stringify(context)).not.toContain('"preview"');
+    const withheld = buildToolResultsFollowUpPrompt(results, { ...privacy, sharePermissionRequests: false });
+    expect(withheld).not.toContain(ask.id);
+    expect(withheld).not.toContain(declaration.anchor);
+    if (decisionPath === 'voice-disabled') {
+      const { storage } = await import('@/sync/domains/state/storage');
+      storage.getState().applySettingsLocal({ voice: { ...storage.getState().settings.voice, canApproveRequests: false } });
+      const refused = JSON.parse(await handlers.approval_request_decide!({ artifactId: ask.id, decision: 'approve' }));
+      expect(refused).toMatchObject({ ok: false, errorCode: 'present_user_required' });
+      expect(ApprovalRequestSchema.parse(JSON.parse(home.artifacts(serverId).readPlainBody(ask.id) ?? 'null')).status).toBe('open');
+      expect(version).toBe(1);
+    }
+    const decided = decisionPath === 'voice'
+      ? JSON.parse(await handlers.approval_request_decide!({ artifactId: ask.id, decision: 'approve' }))
+      : await createDefaultActionExecutor().execute('approval.request.decide', {
+        artifactId: ask.id, decision: 'approve',
+      }, { surface: 'ui', serverId, authority: 'present_user', actionCaller: { kind: 'host' } });
+    expect(decided).toMatchObject({ ok: true });
+    expect(JSON.parse(await pending)).toMatchObject({ ok: true, kind: 'approval_request_created', artifactId: ask.id, actionId: 'settings.set' });
+    expect(JSON.parse(await handlers.settings_get!(input))).toMatchObject({ ok: true, value: 1100 });
+    expect(content.v.favoriteMachines).toEqual(['keep-neighbor']);
+    expect(version).toBe(2);
+  });
   it('pauses an exact Workflow through generic Voice execution and the canonical Account storage owner', async () => {
     const serverId = await home.addHome({ name: 'Workflow Voice Home', serverUrl: 'https://workflow-voice.test', accountId: 'alice', currentAccount: true });
     const features = createRootLayoutFeaturesResponse();
@@ -54,7 +215,6 @@ describe('Voice Action reference catalog', () => {
       { actionId: 'workflow.run.invocations.complete_review', input: {
         runId: input.runId, invocation: { recordId: 'invocation-1' }, expectedContentRevision: '0', mode: 'use_result',
       } },
-      { actionId: 'approval.request.decide', input: { artifactId: 'approval-1', decision: 'approve' } },
     ] as const) {
       expect(getActionSpec(parameters.actionId)
         .inputSchema.safeParse(parameters.input).success).toBe(true);
@@ -161,7 +321,9 @@ describe('Voice Action reference catalog', () => {
       expect(network.messages).toHaveLength(before);
       const request = ApprovalRequestSchema.parse(JSON.parse(home.artifacts(serverId).readPlainBody(pending.result.artifactId) ?? 'null'));
       expect(request).toMatchObject({ actionId, actionArgs: input, status: 'open', requestedSurface: 'voice',
-        preview: { actionId, actionArgs: input }, executionOriginV1: { surface: 'voice', authority: 'account_automation' } });
+        preview: { actionId, actionArgs: input }, executionOriginV1: { surface: 'voice', authority: resolveInvocationAuthority({
+          credential: 'account', surface: 'voice', actionId, voiceCanApproveRequests: settingsDefaults.voice.canApproveRequests,
+        }) } });
       const presentation = describeApprovalActionFields(request);
       expect(presentation.unrepresentable).toBeNull();
       expect(presentation.rows).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'target', value: JSON.stringify(target) })]));

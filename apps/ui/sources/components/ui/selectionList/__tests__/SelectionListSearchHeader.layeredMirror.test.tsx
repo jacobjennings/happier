@@ -31,9 +31,9 @@ vi.mock('react-native', async () => {
  * after the caret — producing the inline "typed text + ghost" continuity the
  * user expects.
  *
- * This file asserts the layout structure (web only). On native we fall back
- * to the prior shrink-fit + sibling-ghost approach because `caretColor` is a
- * web-only CSS property.
+ * This file asserts the layout structure (web only). Native keeps a standard
+ * TextInput (SelectionListSearchHeader.nativeStandardInput.test.tsx) because
+ * `caretColor` is a web-only CSS property.
  */
 describe('SelectionListSearchHeader — layered-mirror ghost positioning (RUX-10, web)', () => {
     it('renders an input-cell relative container hosting both the mirror and the TextInput', async () => {
@@ -151,6 +151,35 @@ describe('SelectionListSearchHeader — layered-mirror ghost positioning (RUX-10
         }).join('');
         expect(mirrorText).toContain('/Users/leeroy/Documents/Development/hap');
         expect(mirrorText).toContain('pier-dev/');
+        // The ghost reads as a suggestion: visibly de-emphasised next to the typed text.
+        const opacityOf = (testID: string): number => {
+            const node = screen.findByTestId(testID);
+            expect(node).not.toBeNull();
+            const styles = Array.isArray(node!.props.style) ? node!.props.style.flat(Infinity) : [node!.props.style];
+            const opacity = Object.assign({}, ...styles.filter(Boolean)).opacity;
+            return typeof opacity === 'number' ? opacity : 1;
+        };
+        expect(opacityOf('hdr:input:mirror:ghost')).toBeLessThan(opacityOf('hdr:input:mirror:typed'));
+    });
+
+    it('keeps the mirror inert and silent: it never takes pointer input and is hidden from assistive tech', async () => {
+        const { SelectionListSearchHeader } = await import('../SelectionListSearchHeader');
+        const screen = await renderScreen(
+            <SelectionListSearchHeader
+                value="~/Doc"
+                onChangeText={() => {}}
+                placeholder="Path"
+                canPop={false}
+                ghostSuffix="uments/"
+                testID="hdr"
+            />,
+        );
+        const mirror = screen.findByTestId('hdr:input:mirror');
+        expect(mirror).not.toBeNull();
+        // Clicks belong to the overlay input; the mirror is a visual duplicate of its value.
+        expect(mirror!.props.pointerEvents).toBe('none');
+        expect(mirror!.props.accessibilityElementsHidden).toBe(true);
+        expect(mirror!.props.importantForAccessibility).toBe('no');
     });
 
     it('inputSuffix remains outside the input-cell so the browse button stays anchored to the far right', async () => {
@@ -175,6 +204,7 @@ describe('SelectionListSearchHeader — layered-mirror ghost positioning (RUX-10
         expect(ghostInsideCell).toEqual([]);
         const suffix = screen.findByTestId('hdr:input-suffix');
         expect(suffix).not.toBeNull();
+        expect(suffix!.findAll((n) => n.props?.testID === 'hdr:input:mirror')).toEqual([]);
     });
 
     it('omits the mirror entirely when ghostSuffix is empty (no overlap, no overdraw)', async () => {

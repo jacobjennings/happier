@@ -45,11 +45,7 @@ describe('reportScmStatusSyncError', () => {
     });
 
     it('throttles duplicate error reports for the same project+message bucket', () => {
-        vi.spyOn(Date, 'now')
-            .mockReturnValueOnce(1_000)
-            .mockReturnValueOnce(1_000)
-            .mockReturnValueOnce(31_000)
-            .mockReturnValueOnce(62_000);
+        const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
 
         reportScmStatusSyncError({
             projectKey: 'machine:/repo',
@@ -62,12 +58,14 @@ describe('reportScmStatusSyncError', () => {
 
         expect(capture).toHaveBeenCalledTimes(1);
 
+        now.mockReturnValue(31_000);
         reportScmStatusSyncError({
             projectKey: 'machine:/repo',
             error: new Error('snapshot failed'),
         });
         expect(capture).toHaveBeenCalledTimes(1);
 
+        now.mockReturnValue(62_000);
         reportScmStatusSyncError({
             projectKey: 'machine:/repo',
             error: new Error('snapshot failed'),
@@ -92,7 +90,8 @@ describe('reportScmStatusSyncError', () => {
             });
         }
 
-        now.mockReturnValue(62_000);
+        // Still inside the first report's dedupe window: only its eviction lets it emit again.
+        now.mockReturnValue(2_000);
         reportScmStatusSyncError({
             projectKey: 'machine:/repo',
             error: new Error('retriable failure'),

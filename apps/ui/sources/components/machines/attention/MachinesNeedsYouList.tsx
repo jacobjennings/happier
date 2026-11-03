@@ -74,6 +74,7 @@ const MachineNeedsYouItem = React.memo(function MachineNeedsYouItem(props: Reado
                 if (props.compact && action) { beginMachinePageTabIntent(entry, action.tab); props.onOpen(entry, action.tab); return; }
                 props.onOpen(entry, null);
             }}
+            rightElementOutsidePressable={Boolean(action) && !props.compact}
             rightElement={action && !props.compact ? (
                 <View>
                     <RoundButton

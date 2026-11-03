@@ -415,6 +415,8 @@ export type RunnerDaemonPluginServicesHost = Readonly<{
     }> | null>;
     dispatch(input: Readonly<{
         sessionId: string;
+        executionRunSnapshotId?: string;
+        runnerRetainedAgent?: AgentSessionRunnerBindingV1;
         runner: AgentRuntimeDaemonServiceAuthorityRunnerIdentity;
         retainedAgent: AgentSessionRunnerBindingV1;
         operation: RunnerDaemonPluginServiceOperationV1;
@@ -2333,14 +2335,7 @@ export function createRunnerDaemonPluginServicesHost(input: Readonly<{
                     operation,
                     await services.notifications.send({
                         ...operation.request,
-                        ...(operation.request.data
-                            ? {
-                                data:
-                                    decodeJsonValue(
-                                        operation.request.data,
-                                    ),
-                            }
-                            : {}),
+                        data: operation.request.data === undefined ? undefined : decodeJsonValue(operation.request.data),
                     }, operationOptions),
                 );
             case 'plugin_notifications.list_channels_v1':

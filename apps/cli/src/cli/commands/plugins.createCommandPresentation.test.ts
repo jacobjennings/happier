@@ -25,20 +25,20 @@ const nextCommandArgs = (targetDir: string, invokerName = 'happier'): readonly s
 ];
 
 describe('plugins create next-command presentation', () => {
-  it('retains the POSIX command that changes into the scaffold directory before starting dev mode', () => {
+  it.each(['happier', 'hdev'])('retains the POSIX command that changes into the scaffold directory before starting dev mode (invoker %s)', (invokerName) => {
     const targetDir = String.raw`/tmp/author space/$name/'quoted'`;
 
-    expect(formatPluginCreateNextCommands(targetDir, 'linux', 'happier')).toEqual([
-      `cd ${buildPosixShellCommand([targetDir])} && happier plugins dev`,
+    expect(formatPluginCreateNextCommands(targetDir, 'linux', invokerName)).toEqual([
+      `cd ${buildPosixShellCommand([targetDir])} && ${invokerName} plugins dev`,
     ]);
   });
 
-  it('uses the canonical shell serializers and labels each supported Windows shell', () => {
+  it.each(['happier', 'hdev'])('uses the canonical shell serializers and labels each supported Windows shell (invoker %s)', (invokerName) => {
     const targetDir = String.raw`C:\author space\$name\%name% & (plugin) 'quoted'`;
 
-    expect(formatPluginCreateNextCommands(targetDir, 'win32', 'happier')).toEqual([
-      `PowerShell: ${buildPowerShellCommand(nextCommandArgs(targetDir))}`,
-      `cmd.exe: ${buildWindowsCmdCommand(nextCommandArgs(targetDir))}`,
+    expect(formatPluginCreateNextCommands(targetDir, 'win32', invokerName)).toEqual([
+      `PowerShell: ${buildPowerShellCommand(nextCommandArgs(targetDir, invokerName))}`,
+      `cmd.exe: ${buildWindowsCmdCommand(nextCommandArgs(targetDir, invokerName))}`,
     ]);
   });
 
@@ -57,23 +57,6 @@ describe('plugins create next-command presentation', () => {
       process.argv.splice(0, process.argv.length, ...originalArgv);
       envScope.restore();
     }
-  });
-
-  it('uses an explicit invoker name in POSIX next-command presentation', () => {
-    const targetDir = String.raw`/tmp/author space/$name/'quoted'`;
-
-    expect(formatPluginCreateNextCommands(targetDir, 'linux', 'hdev')).toEqual([
-      `cd ${buildPosixShellCommand([targetDir])} && hdev plugins dev`,
-    ]);
-  });
-
-  it('uses an explicit invoker name in Windows next-command presentation', () => {
-    const targetDir = String.raw`C:\author space\$name\%name% & (plugin) 'quoted'`;
-
-    expect(formatPluginCreateNextCommands(targetDir, 'win32', 'hdev')).toEqual([
-      `PowerShell: ${buildPowerShellCommand(nextCommandArgs(targetDir, 'hdev'))}`,
-      `cmd.exe: ${buildWindowsCmdCommand(nextCommandArgs(targetDir, 'hdev'))}`,
-    ]);
   });
 
   it.runIf(process.platform === 'win32')(

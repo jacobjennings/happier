@@ -149,18 +149,13 @@ describe('opaque tail discontinuity', () => {
 describe('applyTailDiscontinuityOlderPage', () => {
     const record = { kind: 'seq', prefixMaxSeq: 410, walkCursor: 1951 } as const;
 
-    it('advances the walk cursor from a fetched older page', () => {
+    it.each([
+        ['matches the page minimum', 1801],
+        ['is lower than the page minimum', 1810],
+    ])('advances the walk cursor to the server cursor when it %s', (_label, pageMinSeq) => {
         expect(applyTailDiscontinuityOlderPage({
             prev: record,
-            pageMinSeq: 1801,
-            nextBeforeSeq: 1801,
-        })).toEqual({ kind: 'seq', prefixMaxSeq: 410, walkCursor: 1801 });
-    });
-
-    it('prefers the server cursor when it is provided and lower', () => {
-        expect(applyTailDiscontinuityOlderPage({
-            prev: record,
-            pageMinSeq: 1810,
+            pageMinSeq,
             nextBeforeSeq: 1801,
         })).toEqual({ kind: 'seq', prefixMaxSeq: 410, walkCursor: 1801 });
     });

@@ -28,6 +28,7 @@ import { resolveWorkflowProblemPresentation } from '@/components/workflows/prese
 import { Modal } from '@/modal';
 import { resolveSessionListRenderableMeaningfulActivityAt } from '@/sync/domains/session/listing/sessionListRenderableSorting';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import type { SessionPresentationRecord, SessionListPresentationSource } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { t } from '@/text';
 import { useIsTablet } from '@/utils/platform/responsive';
 import { getSessionStatus } from '@/utils/sessions/sessionUtils';
@@ -54,15 +55,15 @@ export function requiresInboxPromptCard(entry: InboxSessionAttentionEntry): bool
 }
 
 /** A Session's state word and tone, from the shared work-status owner (INT §5.3); never an Inbox rule. */
-export function presentInboxSessionStatus(session: Session, nowMs: number): WorkStatusPresentation {
-    return resolveWorkStatusTone({ kind: 'session', facts: readSessionWorkStatusFacts(session, nowMs) });
+export function presentInboxSessionStatus(session: SessionPresentationRecord, nowMs: number, source?: SessionListPresentationSource): WorkStatusPresentation {
+    return resolveWorkStatusTone({ kind: 'session', facts: readSessionWorkStatusFacts(session, nowMs, source) });
 }
 
 
 
 const NO_SESSION_ADDRESSES: readonly SessionAddress[] = [];
 
-function sessionServerId(session: Session): string | null {
+function sessionServerId(session: Pick<Session, 'serverId'>): string | null {
     return session.serverId ?? null;
 }
 
@@ -227,14 +228,15 @@ export const InboxWorkItemRow = React.memo(function InboxWorkItemRow(props: RowP
             const { entry } = item;
             const candidate = entry.candidate;
             const serverId = candidate.address?.serverId ?? candidate.serverId ?? null;
-            const connected = getSessionStatus(candidate.session, nowMs, { workingTextMode: 'static' }).isConnected;
-            const status = presentInboxSessionStatus(candidate.session, nowMs);
-            const time = <InboxRelativeTime timestamp={resolveSessionListRenderableMeaningfulActivityAt(candidate.session)} />;
-            const menu = page ? <InboxSessionRowMenu session={candidate.session} settle={props.settle} setReminder={props.setReminder} /> : undefined;
+            const source = candidate.presentationSource;
+            const connected = getSessionStatus(candidate.session, nowMs, { workingTextMode: 'static', presentationSource: source }).isConnected;
+            const status = presentInboxSessionStatus(candidate.session, nowMs, source);
+            const time = <InboxRelativeTime timestamp={candidate.meaningfulActivityAt ?? resolveSessionListRenderableMeaningfulActivityAt(candidate.session)} />;
+            const menu = page ? <InboxSessionRowMenu session={candidate.session} presentationSource={source} settle={props.settle} setReminder={props.setReminder} /> : undefined;
             if (requiresInboxPromptCard(entry)) {
                 return (
                     <InboxSessionAttentionGroupCard
-                        session={candidate.session}
+                        session={candidate.session} presentationSource={source}
                         serverId={serverId}
                         identityDisplay={props.identityDisplay}
                         connected={connected}
@@ -266,7 +268,7 @@ export const InboxWorkItemRow = React.memo(function InboxWorkItemRow(props: RowP
                         ? glyph('warning', theme.colors.status.error)
                         : props.identityDisplay !== 'none' ? (
                             <SessionListIdentity
-                                session={candidate.session}
+                                session={candidate.session} presentationSource={source}
                                 display={props.identityDisplay}
                                 serverId={serverId}
                                 color={theme.colors.text.primary}

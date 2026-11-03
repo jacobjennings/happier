@@ -53,23 +53,9 @@ function makeSnapshot(
 }
 
 describe('evaluateScmOperationPreflight', () => {
-    it('blocks write operations when experimental write flag is disabled', () => {
+    it.each(['commit', 'fetch'] as const)('blocks %s when experimental write flag is disabled', (intent) => {
         const result = evaluateScmOperationPreflight({
-            intent: 'commit',
-            scmWriteEnabled: false,
-            sessionPath: '/repo',
-            snapshot: makeSnapshot(),
-        });
-
-        expect(result.allowed).toBe(false);
-        if (!result.allowed) {
-            expect(result.reason).toBe('write_disabled');
-        }
-    });
-
-    it('blocks fetch when experimental write flag is disabled', () => {
-        const result = evaluateScmOperationPreflight({
-            intent: 'fetch',
+            intent,
             scmWriteEnabled: false,
             sessionPath: '/repo',
             snapshot: makeSnapshot(),
@@ -144,7 +130,7 @@ describe('evaluateScmOperationPreflight', () => {
                     writeDiscard: false,
                 },
             }),
-        } as any);
+        });
 
         expect(result.allowed).toBe(false);
         if (!result.allowed) {
@@ -327,7 +313,7 @@ describe('evaluateScmOperationPreflight', () => {
             sessionPath: '/repo',
             snapshot: makeSnapshot(undefined, { pendingFiles: 1 }),
             commitStrategy: 'atomic',
-        } as any);
+        });
 
         expect(result.allowed).toBe(true);
     });
@@ -340,7 +326,7 @@ describe('evaluateScmOperationPreflight', () => {
             snapshot: makeSnapshot(undefined, { pendingFiles: 1 }),
             commitStrategy: 'atomic',
             commitSelectionPaths: ['missing.ts'],
-        } as any);
+        });
 
         expect(result.allowed).toBe(false);
         if (!result.allowed) {
@@ -411,7 +397,7 @@ describe('evaluateScmOperationPreflight', () => {
             sessionPath: '/repo',
             snapshot: makeSnapshot(undefined, { pendingFiles: 1 }),
             commitStrategy: 'atomic',
-        } as any);
+        });
 
         expect(result.allowed).toBe(false);
         if (!result.allowed) {
@@ -419,10 +405,13 @@ describe('evaluateScmOperationPreflight', () => {
         }
     });
 
-    it('blocks sapling pull/push preflight when upstream target is missing even if head exists', () => {
+    it.each([
+        { title: 'even if head exists', head: 'main' },
+        { title: 'when no active head exists', head: null },
+    ])('blocks sapling pull/push preflight when upstream target is missing $title', ({ head }) => {
         const snapshot = makeSnapshot({
             repo: { isRepo: true, rootPath: '/repo', backendId: 'sapling', mode: '.sl' },
-            branch: { head: 'main', upstream: null, ahead: 0, behind: 0, detached: false },
+            branch: { head, upstream: null, ahead: 0, behind: 0, detached: false },
             capabilities: {
                 ...makeSnapshot().capabilities!,
                 writeInclude: false,
@@ -430,61 +419,68 @@ describe('evaluateScmOperationPreflight', () => {
             },
         });
 
-        const pushResult = evaluateScmOperationPreflight({
-            intent: 'push',
-            scmWriteEnabled: true,
-            sessionPath: '/repo',
-            snapshot,
-        });
-        const pullResult = evaluateScmOperationPreflight({
-            intent: 'pull',
-            scmWriteEnabled: true,
-            sessionPath: '/repo',
-            snapshot,
-        });
-
-        expect(pushResult.allowed).toBe(false);
-        expect(pullResult.allowed).toBe(false);
-        if (!pushResult.allowed) {
-            expect(pushResult.reason).toBe('upstream_required');
-        }
-        if (!pullResult.allowed) {
-            expect(pullResult.reason).toBe('upstream_required');
+        for (const intent of ['push', 'pull'] as const) {
+            const result = evaluateScmOperationPreflight({
+                intent,
+                scmWriteEnabled: true,
+                sessionPath: '/repo',
+                snapshot,
+            });
+            expect(result.allowed).toBe(false);
+            if (!result.allowed) {
+                expect(result.reason).toBe('upstream_required');
+            }
         }
     });
 
-    it('still blocks sapling pull/push preflight when no active head and no upstream target exist', () => {
-        const snapshot = makeSnapshot({
-            repo: { isRepo: true, rootPath: '/repo', backendId: 'sapling', mode: '.sl' },
-            branch: { head: null, upstream: null, ahead: 0, behind: 0, detached: false },
-            capabilities: {
-                ...makeSnapshot().capabilities!,
-                writeInclude: false,
-                writeExclude: false,
-            },
-        });
-
-        const pushResult = evaluateScmOperationPreflight({
-            intent: 'push',
+    it.each([
+        { intent: 'commit', totals: { includedFiles: 1 } },
+        { intent: 'pull', totals: {} },
+        { intent: 'push', totals: {} },
+        { intent: 'revert', totals: {} },
+        { intent: 'branch_merge', totals: {} },
+        { intent: 'branch_rebase', totals: {} },
+    ] as const)('blocks $intent while conflicts are present', ({ intent, totals }) => {
+        const result = evaluateScmOperationPreflight({
+            intent,
             scmWriteEnabled: true,
             sessionPath: '/repo',
-            snapshot,
-        });
-        const pullResult = evaluateScmOperationPreflight({
-            intent: 'pull',
-            scmWriteEnabled: true,
-            sessionPath: '/repo',
-            snapshot,
+            snapshot: makeSnapshot({ hasConflicts: true }, totals),
+            sourceRef: 'feature/work',
         });
 
-        expect(pushResult.allowed).toBe(false);
-        expect(pullResult.allowed).toBe(false);
-        if (!pushResult.allowed) {
-            expect(pushResult.reason).toBe('upstream_required');
+        expect(result.allowed).toBe(false);
+        if (!result.allowed) {
+            expect(result.reason).toBe('conflicts_present');
         }
-        if (!pullResult.allowed) {
-            expect(pullResult.reason).toBe('upstream_required');
+    });
+
+    it.each(['revert', 'pull'] as const)('blocks %s while untracked files exist', (intent) => {
+        const result = evaluateScmOperationPreflight({
+            intent,
+            scmWriteEnabled: true,
+            sessionPath: '/repo',
+            snapshot: makeSnapshot(undefined, { untrackedFiles: 1 }),
+        });
+
+        expect(result.allowed).toBe(false);
+        if (!result.allowed) {
+            expect(result.reason).toBe('clean_worktree_required');
         }
+    });
+
+    it.each([
+        { intent: 'push', totals: {} },
+        { intent: 'pull', totals: {} },
+        { intent: 'revert', totals: {} },
+        { intent: 'commit', totals: { includedFiles: 1 } },
+    ] as const)('allows $intent on a tracked, conflict-free snapshot', ({ intent, totals }) => {
+        expect(evaluateScmOperationPreflight({
+            intent,
+            scmWriteEnabled: true,
+            sessionPath: '/repo',
+            snapshot: makeSnapshot(undefined, totals),
+        }).allowed).toBe(true);
     });
 
     it('allows branch merge and rebase when a source ref is selected and the worktree is clean', () => {

@@ -15,6 +15,7 @@ function secretSpec<TId extends PersonalSavedSecretActionIdV1>(id: TId, title: s
   return { id, title, safety: read ? 'safe' : 'danger', approval: { result: read ? 'none' : 'required' },
     // Deleting loses the value; creating and editing your own secret are reversible.
     approvalPolicy: id === 'secrets.create' || id === 'secrets.update' ? { uiConfirmation: 'direct' } : {},
+    ...(id === 'secrets.delete' ? { irreversible: true as const } : {}),
     sideEffectClass: read ? 'read' : 'write', executionPlacement: 'account', placements: [], requiredAuthority: 'account_automation',
     surfaces: { ui: true, cli: true, agent: true, mcp: true, rpc: true, voice: false },
     bindings: { rpcMethod: id, mcpToolName: id.replaceAll('.', '_') }, inputSchema: inputs[id], outputSchema: outputs[id], inputHints: { fields: [
@@ -24,6 +25,9 @@ function secretSpec<TId extends PersonalSavedSecretActionIdV1>(id: TId, title: s
       ] },
     ] },
     ...(id === 'secrets.create' || id === 'secrets.update' ? { approvalInputCustody: 'live_only' as const } : {}),
+    ...(id === 'secrets.delete' ? { approvalPresentation: { summary: () => null,
+      inputSchema: inputs['secrets.delete'], projectInput: (input: unknown) => inputs['secrets.delete'].parse(input),
+    } } : {}),
     projectObservationInput: observe, projectObservationOutput: observe,
     cli: { acceptsServerId: true, commands: [{ path: id.split('.'), visibility: 'canonical' }] },
   };

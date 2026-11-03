@@ -1,4 +1,5 @@
 import { vi } from 'vitest';
+import { SESSION_CONSUMPTION_REPLACE_EVENT, SessionConsumptionReplaceV1Schema } from '@happier-dev/protocol/sessions';
 
 type SocketListener = (...args: unknown[]) => void;
 
@@ -29,7 +30,10 @@ export function createSocketIoManagerBoundaryStub(): SocketIoManagerBoundary {
 export function createSocketIoBoundaryStub(options: Readonly<{ autoConnect?: boolean }> = {}) {
     const listeners = new Map<string, Set<SocketListener>>();
     const anyListeners = new Set<SocketListener>();
-    const emitWithAck = vi.fn(async (_event: string, _payload?: unknown): Promise<unknown> => ({ v: 1, ok: true, admittedSessionIds: [] }));
+    const emitWithAck = vi.fn(async (event: string, payload?: unknown): Promise<unknown> => {
+        if (event === SESSION_CONSUMPTION_REPLACE_EVENT) return { ok: true, ...SessionConsumptionReplaceV1Schema.parse(payload) };
+        return { v: 1, ok: true, admittedSessionIds: [] };
+    });
     const socket = {
         io: createSocketIoManagerBoundaryStub(),
         id: 'socket-test', connected: false, active: false,

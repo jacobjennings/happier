@@ -24,12 +24,15 @@ import { readExternalSessionLink } from '../external/readExternalSessionLink';
 import { deriveExternalSessionAttentionHasUnread } from '../external/readExternalSessionAttention';
 import { isSessionPersonallyTrackedForViewer } from './sessionViewer';
 import type { SessionListRenderableSession } from '../listing/sessionListRenderable';
-import { readSessionListRenderableOwnerMetadataView } from '../listing/sessionListRenderableSessionProjection';
+import { readSessionListRenderableOwnerMetadataView, readSessionListPresentationRuntime, readSessionListPresentationOwnerMetadata, readSessionListPresentationOwnerMetadataField,
+    readSessionListPresentationPendingFlags, readSessionListPresentationPendingObservedAt,
+    listSessionListPresentationPendingRequests, type SessionListPresentationSource } from '../listing/sessionListRenderableSessionProjection';
+
 
 type ViewerAttentionSession = Session | SessionListRenderableSession;
 
-function ownerMetadataForAttention(session: ViewerAttentionSession) {
-    return 'agentState' in session ? readSessionOwnerMetadataView(session) : readSessionListRenderableOwnerMetadataView(session);
+function ownerMetadataForAttention(session: ViewerAttentionSession, source?: SessionListPresentationSource) {
+    return source ? readSessionListPresentationOwnerMetadata(source) : 'agentState' in session ? readSessionOwnerMetadataView(session) : readSessionListRenderableOwnerMetadataView(session);
 }
 
 /** Only consumed admission/attention facts invalidate Activity and Inbox projections. */
@@ -56,25 +59,28 @@ export function readSessionViewerAttentionSignature(session: Session | SessionLi
 export function readCurrentPersonalFollowOnceOccurrenceForViewer(
     session: ViewerAttentionSession,
     messages?: readonly Message[],
+    source?: SessionListPresentationSource,
 ): PersonalFollowOnceOccurrenceV1 | null {
     const delivery = session.viewer?.follow.onceDelivery;
     if (!delivery || session.archivedAt != null) return null;
     if (delivery.event === 'permission_required' || delivery.event === 'user_action_required') {
         // An admitted list summary carries counts, not proof of a current transient request id.
-        if (!('agentState' in session)) return null;
+        if (!source && !('agentState' in session)) return null;
         const responsible = session.viewer?.relevance.reasons.includes('responsible_for_me') === true;
         const capabilities = {
             canSubmitAgentInput: session.access?.capabilities.submitAgentInput === true || responsible,
             canApprovePermissions: session.access?.capabilities.approveRuntimePermissions === true || responsible,
         };
-        const ids = listPendingSessionRequests(session, messages)
+        const ids = (source ? listSessionListPresentationPendingRequests(source, messages)
+            : 'agentState' in session ? listPendingSessionRequests(session, messages) : [])
             .filter(request => isPendingRequestAnswerableV1(request, capabilities)
                 && resolvePendingRequestAttentionReasonV1(request) === delivery.event)
             .map(request => request.id);
         return resolvePersonalFollowOnceAttentionV1({ delivery, currentRequestIds: ids }) ? delivery : null;
     }
     const expectedStatus = delivery.event === 'ready' ? 'completed' : delivery.event;
-    return delivery.turnId === session.latestTurnId && session.latestTurnStatus === expectedStatus ? delivery : null;
+    const lifecycle = source?.lifecycle ?? session;
+    return delivery.turnId === lifecycle.latestTurnId && lifecycle.latestTurnStatus === expectedStatus ? delivery : null;
 }
 
 const NO_ATTENTION_EXPIRATIONS: readonly number[] = [];
@@ -88,7 +94,11 @@ function buildPreViewerRuntimeInput(
     session: ViewerAttentionSession,
     nowMs: number,
     messages?: readonly Message[],
+    source?: SessionListPresentationSource,
 ) {
+    if (source) return { ...readSessionListPresentationRuntime(source),
+        ...readSessionListPresentationPendingFlags(source, messages),
+        pendingRequestObservedAt: readSessionListPresentationPendingObservedAt(source, messages), nowMs };
     const pending = 'agentState' in session ? derivePendingRequestFlagsFromSession(session, messages) : session;
     return {
         ...session,
@@ -113,31 +123,33 @@ export function readSessionPersonalAttentionExpirationsForViewer(
     session: ViewerAttentionSession,
     nowMs: number,
     messages?: readonly Message[],
+    source?: SessionListPresentationSource,
 ): readonly number[] {
     if (session.archivedAt != null) return NO_ATTENTION_EXPIRATIONS;
     if (session.viewer !== undefined) return NO_ATTENTION_EXPIRATIONS;
     if (!isSessionPersonallyTrackedForViewer(session)) return NO_ATTENTION_EXPIRATIONS;
     return readSessionRuntimePresentationFreshnessExpirations(
-        buildPreViewerRuntimeInput(session, nowMs, messages),
+        buildPreViewerRuntimeInput(session, nowMs, messages, source),
         nowMs,
     );
 }
 
 function addRuleAttentionForViewer(session: ViewerAttentionSession, existing: SessionPersonalAttentionProjectionV1,
-    nowMs: number, messages: readonly Message[] | undefined, policies: readonly FollowPolicyV1[]): SessionPersonalAttentionProjectionV1 {
+    nowMs: number, messages: readonly Message[] | undefined, policies: readonly FollowPolicyV1[], source?: SessionListPresentationSource): SessionPersonalAttentionProjectionV1 {
     const viewer = session.viewer;
     if (!viewer || policies.length === 0) return existing;
-    const metadata = ownerMetadataForAttention(session);
-    const runtime = projectUiSessionRuntimeAwareness(buildPreViewerRuntimeInput(session, nowMs, messages));
-    const pending = 'agentState' in session ? derivePendingRequestFlagsFromSession(session, messages) : session;
+    const metadata = ownerMetadataForAttention(session, source);
+    const lifecycle = source?.lifecycle ?? session;
+    const runtime = projectUiSessionRuntimeAwareness(buildPreViewerRuntimeInput(session, nowMs, messages, source));
+    const pending = source ? readSessionListPresentationPendingFlags(source, messages) : 'agentState' in session ? derivePendingRequestFlagsFromSession(session, messages) : session;
     const projected = resolveSessionPersonalAttentionV1({
         tracked: true, accessible: session.access?.capabilities.readTranscript === true, accountSuspended: false,
-        contentAvailable: session.metadataLayoutVersion !== 1 || metadata != null,
-        visibleSessionSeq: resolveSessionListReadableSeq(session, undefined), readState: viewer.readState,
-        latestReadyEventSeq: session.latestReadyEventSeq ?? null,
+        contentAvailable: (source?.metadataLayoutVersion ?? session.metadataLayoutVersion) !== 1 || metadata != null,
+        visibleSessionSeq: resolveSessionListReadableSeq(lifecycle, undefined), readState: viewer.readState,
+        latestReadyEventSeq: lifecycle.latestReadyEventSeq ?? null,
         latestFailureSeq: viewer.latestFailureSeq ?? null,
         hasPrimarySessionFailure: runtime.operational.reasons.includes('failed'),
-        pendingBlockedCount: session.pendingBlockedCount ?? 0,
+        pendingBlockedCount: lifecycle.pendingBlockedCount ?? 0,
         pendingPermissionRequestCount: pending.hasPendingPermissionRequests ? 1 : 0,
         pendingUserActionRequestCount: pending.hasPendingUserActionRequests ? 1 : 0,
         capabilities: { canSubmitAgentInput: session.access?.capabilities.submitAgentInput === true,
@@ -151,7 +163,7 @@ function addRuleAttentionForViewer(session: ViewerAttentionSession, existing: Se
         else if (reason === 'pending_blocked') event = { kind: 'needs_you', type: 'blocked' };
         else if (reason === 'ready_after_read') event = resolveSessionPersonalFollowEventV1('ready');
         else if (reason === 'unread') {
-            const readyAfterRead = viewer.readState.state === 'tracking' && (session.latestReadyEventSeq ?? 0) > viewer.readState.lastViewedSessionSeq;
+            const readyAfterRead = viewer.readState.state === 'tracking' && (lifecycle.latestReadyEventSeq ?? 0) > viewer.readState.lastViewedSessionSeq;
             event = resolveSessionPersonalFollowEventV1(readyAfterRead ? 'ready' : 'message');
         }
         return event !== null && resolveFollowDeliveryV1({ policies, event }).person.inbox;
@@ -168,6 +180,7 @@ export function resolveSessionPersonalAttentionForViewer(
     nowMs: number,
     messages?: readonly Message[],
     rulePolicies: readonly FollowPolicyV1[] = [],
+    source?: SessionListPresentationSource,
 ): SessionPersonalAttentionProjectionV1 {
     if (session.archivedAt != null) {
         return QUIET_SESSION_PERSONAL_ATTENTION_V1;
@@ -178,10 +191,10 @@ export function resolveSessionPersonalAttentionForViewer(
     if (session.viewer !== undefined) {
         const delivery = session.viewer.follow.onceDelivery;
         const current = delivery?.event === 'permission_required' || delivery?.event === 'user_action_required'
-            ? readCurrentPersonalFollowOnceOccurrenceForViewer(session, messages) : null;
+            ? readCurrentPersonalFollowOnceOccurrenceForViewer(session, messages, source) : null;
         const existing = current ? addSessionPersonalAttentionReasonV1(session.viewer.attention, current.event === 'permission_required'
             ? 'permission_required' : 'user_action_required') : session.viewer.attention;
-        return addRuleAttentionForViewer(session, existing, nowMs, messages, rulePolicies);
+        return addRuleAttentionForViewer(session, existing, nowMs, messages, rulePolicies, source);
     }
     if (!isSessionPersonallyTrackedForViewer(session)) {
         return QUIET_SESSION_PERSONAL_ATTENTION_V1;
@@ -189,27 +202,31 @@ export function resolveSessionPersonalAttentionForViewer(
 
     // 0.2.11 owner compatibility: legacy scalar/metadata is read only, never
     // authoritative over a modern viewer row. Remove with pre-viewer Home support.
-    const metadata = ownerMetadataForAttention(session);
+    const metadata = ownerMetadataForAttention(session, source);
+    const lifecycle = source?.lifecycle ?? session;
     const runtime = projectUiSessionRuntimeAwareness(
-        buildPreViewerRuntimeInput(session, nowMs, messages),
+        buildPreViewerRuntimeInput(session, nowMs, messages, source),
     );
     const externalUnread = readExternalSessionLink(metadata)
-        ? deriveExternalSessionAttentionHasUnread(metadata) : null;
-    const legacyCursor = resolveLastViewedSessionSeq(session);
+        ? deriveExternalSessionAttentionHasUnread(source ? {
+            externalSessionAttentionV1: readSessionListPresentationOwnerMetadataField(source, 'externalSessionAttentionV1'),
+        } : metadata) : null;
+    const legacyCursor = source ? source.row.viewer !== undefined ? resolveLastViewedSessionSeq(source.row)
+        : source.row.hasUnreadMessages === true ? 0 : source.lifecycle.seq : resolveLastViewedSessionSeq(session);
     return resolveSessionPersonalAttentionV1({
         tracked: true,
         accessible: true,
         accountSuspended: false,
-        contentAvailable: session.metadataLayoutVersion !== 1 || metadata != null,
-        visibleSessionSeq: resolveSessionListReadableSeq(session, undefined),
+        contentAvailable: (source?.metadataLayoutVersion ?? session.metadataLayoutVersion) !== 1 || metadata != null,
+        visibleSessionSeq: resolveSessionListReadableSeq(lifecycle, undefined),
         ...(externalUnread === null ? {} : { externalSessionHasUnread: externalUnread }),
         readState: legacyCursor === undefined
             ? { state: 'not_started' }
             : { state: 'tracking', lastViewedSessionSeq: legacyCursor, unreadSince: null },
-        latestReadyEventSeq: session.latestReadyEventSeq ?? null,
+        latestReadyEventSeq: lifecycle.latestReadyEventSeq ?? null,
         latestFailureSeq: null,
         hasPrimarySessionFailure: runtime.operational.reasons.includes('failed'),
-        pendingBlockedCount: session.pendingBlockedCount ?? 0,
+        pendingBlockedCount: lifecycle.pendingBlockedCount ?? 0,
         pendingPermissionRequestCount: runtime.freshPermissionRequired ? 1 : 0,
         pendingUserActionRequestCount: runtime.freshActionRequired ? 1 : 0,
         capabilities: { canSubmitAgentInput: true, canApprovePermissions: true },

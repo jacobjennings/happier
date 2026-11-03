@@ -1,3 +1,4 @@
+import { readExternalActionManagedControlAdmission } from '@/app/auth/externalActionManagedAdmission';
 import { randomUUID } from "node:crypto";
 
 import { EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1, parseExternalActionDaemonDispatchResult, type ExternalActionActionIdV1, type ExternalActionDaemonDispatchRequest, type ParsedExternalActionDaemonDispatchResult, type ExternalActionDaemonPlacementV1, type ExternalActionExecutionAuthorizationBindingV1, type ExternalActionExecutionAuthorizationV1, type ExternalActionRequestEnvelope, type ExternalActionServerPrincipalV1, prepareExternalActionResponseEnvelopeV1, isExternalActionRequestVersionAllowedForAccountModeV1 } from '@happier-dev/protocol/actions/externalActionApi';
@@ -59,6 +60,7 @@ export type ExternalActionPlacementErrorCode =
     | "target_not_local"
     | "target_unavailable"
     | "database_transaction_conflict_exhausted"
+    | "database_transaction_timeout"
     | "database_connection_unavailable"
     | "encrypted_action_unsupported"
     | "session_input_target_update_required";
@@ -160,7 +162,7 @@ interface DispatchPhaseFailure {
     readonly errorClass: 'TypeError' | 'RangeError' | 'SyntaxError' | 'Error' | 'UnknownError';
     readonly message: 'Unexpected phase failure (details redacted)';
     readonly credentialScopeDenied: boolean;
-    readonly databaseErrorCode: 'database_transaction_conflict_exhausted' | 'database_connection_unavailable' | null;
+    readonly databaseErrorCode: ReturnType<typeof readDatabaseErrorCode>;
 }
 
 type DispatchPhaseResult<T> = Readonly<{ kind: 'ready'; value: T }> | DispatchPhaseFailure;
@@ -633,17 +635,19 @@ export function createExternalActionDaemonDispatcher(params: Readonly<{
                 ? await readCurrentExternalActionHandoffBindingInTx(db, { accountId: request.principal.accountId,
                     handoffAdmission: request.envelope.handoffAdmission, requireSourceOnline: true }) : null;
             if (request.envelope.handoffAdmission && !handoffAdmission) throw new Error('handoff_admission_unavailable');
+            const managedAdmission = readExternalActionManagedControlAdmission(request.actionId, request.envelope);
             const routing = {
                 serverIdentityId: await getServerIdentityId(), machineId,
                 actionId: request.actionId, requestId: request.envelope.requestId ?? randomUUID(),
                 requestEnvelopeDigest: computeExternalActionRequestEnvelopeDigestV1(request.envelope), target,
                 ...(request.envelope.idempotencyKey === undefined ? {} : { idempotencyKey: request.envelope.idempotencyKey }),
                 ...(pendingResetStartAdmission ? { pendingResetStartAdmission } : {}),
+                ...(managedAdmission ? { managedAdmission } : {}),
                 ...(handoffAdmission ? { handoffAdmission } : {}),
                 ...(request.managedContinuation ? { managedContinuation: request.managedContinuation } : {}),
                 ...(request.sessionActionSource ? { sessionActionSource: request.sessionActionSource } : {}),
             };
-            const context = { input: request.envelope.v === 1 ? request.envelope.input : request.envelope.sessionSpawnAdmission,
+            const context = { input: request.envelope.v === 1 ? request.envelope.input : request.envelope.sessionSpawnAdmission ?? managedAdmission?.input,
                 ...(request.sessionActionSource ? { resolveCurrentSessionMachine: resolveSessionMachine } : {}) };
             const principal = request.principal;
             if ('authentication' in principal) {

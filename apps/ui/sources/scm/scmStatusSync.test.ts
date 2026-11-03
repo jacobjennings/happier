@@ -4,18 +4,21 @@ import { storage } from '@/sync/domains/state/storage';
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { EMPTY_SCM_CAPABILITIES } from './core/snapshotMappers';
-import { buildSnapshotSignature } from './statusSync/projectState';
-import { RPC_ERROR_CODES, RPC_ERROR_MESSAGES } from '@happier-dev/protocol/rpc';
+import { RPC_ERROR_CODES, RPC_ERROR_MESSAGES, RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol/scm/operationError';
 import { log } from '@/log';
 
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
+import { ScmStatusSync } from './scmStatusSync';
+import { ATTRIBUTION_INVALIDATION_WINDOW_MS, shouldAttributeChangedPaths } from './sync/attribution';
+import { isSessionPathWithinRepoRoot } from './sync/paths';
+import { collectChangedPaths } from './sync/snapshotDiff';
+import { resolveWorkspaceTargetForSessionFromState } from '@/sync/domains/session/resolveWorkspaceTargetForSessionFromState';
+import { registerSuggestionFileSearchCacheClearer } from '@/sync/domains/input/suggestionFileCacheInvalidation';
 import {
-    ATTRIBUTION_INVALIDATION_WINDOW_MS,
-    collectChangedPaths,
-    isSessionPathWithinRepoRoot,
-    shouldAttributeChangedPaths,
-    ScmStatusSync,
-} from './scmStatusSync';
+    getCachedWorkspaceRepositoryDirectoryEntries,
+    setCachedWorkspaceRepositoryDirectoryEntries,
+} from '@/sync/domains/workspaces/files/workspaceRepositoryDirectory';
 
 const machineRpc = vi.hoisted(() => vi.fn());
 // The authenticated Machine RPC transport is external; repository resolution,
@@ -61,13 +64,6 @@ describe('isSessionPathWithinRepoRoot', () => {
 });
 
 describe('repository scope snapshot publication and reuse', () => {
-    it('publishes changed HEAD and upstream observations even when status shape is unchanged', () => {
-        const base = makeSnapshot([]);
-        const observed = { ...base, branch: { ...base.branch, headOid: 'a'.repeat(40), upstreamOid: 'b'.repeat(40) } };
-        expect(buildSnapshotSignature({ ...observed, branch: { ...observed.branch, headOid: 'c'.repeat(40) } })).not.toBe(buildSnapshotSignature(observed));
-        expect(buildSnapshotSignature({ ...observed, branch: { ...observed.branch, upstreamOid: 'd'.repeat(40) } })).not.toBe(buildSnapshotSignature(observed));
-    });
-
     const initialState = storage.getState();
     afterEach(() => {
         storage.setState(initialState, true);
@@ -114,6 +110,45 @@ describe('repository scope snapshot publication and reuse', () => {
             });
         } finally {
             syncer.stop(session.id, serverId);
+        }
+    });
+
+    it('clears the exact Home workspace directory cache of the refreshed repository only', async () => {
+        const serverId = 'cache-home';
+        const machine = createMachineFixture({ id: 'cache-machine' });
+        const base = createSessionFixture();
+        const refreshed = createSessionFixture({ id: 'cache-session', metadata: { ...base.metadata!, machineId: machine.id, path: '/cache-repo' } });
+        const other = createSessionFixture({ id: 'cache-other', metadata: { ...base.metadata!, machineId: machine.id, path: '/cache-other-repo' } });
+        storage.setState({
+            machines: { [machine.id]: machine },
+            sessions: { [refreshed.id]: refreshed, [other.id]: other },
+            machineListByServerId: { [serverId]: [machine] },
+            sessionListRowsByServerId: { [serverId]: { [refreshed.id]: refreshed, [other.id]: other } },
+        });
+        const workspaceCacheKey = (sessionId: string) => {
+            const target = resolveWorkspaceTargetForSessionFromState(storage.getState(), { sessionId, serverId });
+            expect(target).not.toBeNull();
+            return target!.workspaceCacheKey;
+        };
+        const entries = [{ name: 'README.md', type: 'file' as const }];
+        for (const sessionId of [refreshed.id, other.id]) {
+            setCachedWorkspaceRepositoryDirectoryEntries({ workspaceCacheKey: workspaceCacheKey(sessionId), directoryPath: '', entries });
+        }
+        machineRpc.mockResolvedValue({
+            success: true,
+            snapshot: { ...makeSnapshot([]), repo: { isRepo: true, rootPath: '/cache-repo' }, capabilities: EMPTY_SCM_CAPABILITIES },
+        });
+        const syncer = new ScmStatusSync();
+        try {
+            // The other repository's Session holds a sync too, so only the project filter can keep its cache.
+            syncer.getSync(other.id, serverId);
+            await syncer.getSync(refreshed.id, serverId).invalidateAndAwait();
+            expect(storage.getState().getSessionProjectScmSnapshot(refreshed.id, serverId)?.repo.rootPath).toBe('/cache-repo');
+            expect(getCachedWorkspaceRepositoryDirectoryEntries({ workspaceCacheKey: workspaceCacheKey(refreshed.id), directoryPath: '' })).toBeNull();
+            expect(getCachedWorkspaceRepositoryDirectoryEntries({ workspaceCacheKey: workspaceCacheKey(other.id), directoryPath: '' })).toEqual(entries);
+        } finally {
+            syncer.stop(refreshed.id, serverId);
+            syncer.stop(other.id, serverId);
         }
     });
 
@@ -200,6 +235,211 @@ describe('repository scope snapshot publication and reuse', () => {
             expect(rpc.mock.calls.length).toBe(rpcCount);
         } finally {
             for (const id of ['root', 'member', 'late', 'sibling', 'otherMachine']) syncer.stop(id);
+        }
+    });
+});
+
+describe('active-Home refresh lifecycle through real repository publication', () => {
+    const initialState = storage.getState();
+    afterEach(() => {
+        storage.setState(initialState, true);
+        machineRpc.mockReset();
+        vi.restoreAllMocks();
+    });
+
+    // The project registry and repository service are module singletons, so every scenario owns distinct ids.
+    function seedRepository(machineId: string, sessions: Readonly<Record<string, string>>) {
+        const machine = createMachineFixture({ id: machineId });
+        storage.setState({
+            machines: { [machine.id]: machine },
+            sessions: Object.fromEntries(Object.entries(sessions).map(([id, path]) => [id, repositorySession(id, machine.id, path)])),
+        });
+    }
+    function repositorySession(id: string, machineId: string, path: string) {
+        const base = createSessionFixture();
+        return createSessionFixture({ id, metadata: { ...base.metadata!, machineId, path } });
+    }
+    function snapshotReply(rootPath: string, head = 'main') {
+        const snapshot = makeSnapshot([]);
+        return {
+            success: true,
+            snapshot: { ...snapshot, repo: { isRepo: true, rootPath }, branch: { ...snapshot.branch, head }, capabilities: EMPTY_SCM_CAPABILITIES },
+        };
+    }
+    const snapshotRequests = () => machineRpc.mock.calls.filter(([request]) => request?.method === RPC_METHODS.SCM_STATUS_SNAPSHOT);
+    const published = (sessionId: string) => storage.getState().getSessionProjectScmSnapshot(sessionId);
+
+    it('publishes a refresh only when the repository signature changes', async () => {
+        seedRepository('dedupe-machine', { 'dedupe-session': '/dedupe-repo' });
+        machineRpc
+            .mockResolvedValueOnce(snapshotReply('/dedupe-repo'))
+            .mockResolvedValueOnce(snapshotReply('/dedupe-repo'))
+            .mockResolvedValueOnce(snapshotReply('/dedupe-repo', 'feature'));
+        const clearedSearchCaches: Array<string | undefined> = [];
+        const unregisterClearer = registerSuggestionFileSearchCacheClearer((sessionId) => clearedSearchCaches.push(sessionId));
+        const syncer = new ScmStatusSync();
+        const sync = syncer.getSync('dedupe-session');
+        try {
+            await sync.invalidateAndAwait();
+            const first = published('dedupe-session');
+            expect(first?.branch.head).toBe('main');
+            expect(clearedSearchCaches).toEqual(['dedupe-session']);
+
+            let notifications = 0;
+            const unsubscribe = storage.subscribe(() => { notifications += 1; });
+            try {
+                // Only fetchedAt can differ: subscribers are not woken and keep the same snapshot object.
+                await sync.invalidateAndAwait();
+                expect(notifications).toBe(0);
+                expect(published('dedupe-session')).toBe(first);
+                // An unchanged signature keeps the file-search caches.
+                expect(clearedSearchCaches).toEqual(['dedupe-session']);
+
+                await sync.invalidateAndAwait();
+                expect(notifications).toBeGreaterThan(0);
+            } finally {
+                unsubscribe();
+            }
+            expect(published('dedupe-session')?.branch.head).toBe('feature');
+            expect(clearedSearchCaches).toEqual(['dedupe-session', 'dedupe-session']);
+            expect(snapshotRequests()).toHaveLength(3);
+        } finally {
+            unregisterClearer();
+            syncer.stop('dedupe-session');
+        }
+    });
+
+    it('hydrates a session that joined the repository scope although the signature is unchanged', async () => {
+        seedRepository('join-machine', { 'join-root': '/join-repo' });
+        machineRpc.mockResolvedValue(snapshotReply('/join-repo'));
+        const syncer = new ScmStatusSync();
+        try {
+            await syncer.getSync('join-root').invalidateAndAwait();
+            const first = published('join-root');
+            expect(first).not.toBeNull();
+
+            // The member appears without registering a sync of its own; the next unchanged refresh reaches it.
+            storage.setState({ sessions: { ...storage.getState().sessions, 'join-member': repositorySession('join-member', 'join-machine', '/join-repo/packages/app') } });
+            expect(published('join-member')).toBeNull();
+            await syncer.getSync('join-root').invalidateAndAwait();
+
+            expect(published('join-member')).toEqual(first);
+            expect(published('join-root')).toBe(first);
+            expect(snapshotRequests()).toHaveLength(2);
+        } finally {
+            syncer.stop('join-root');
+        }
+    });
+
+    it('keeps a held session-path sync refreshing after it moves to the repository root key', async () => {
+        seedRepository('move-machine', { 'move-session': '/move-repo/packages/app' });
+        machineRpc
+            .mockResolvedValueOnce(snapshotReply('/move-repo'))
+            .mockResolvedValueOnce(snapshotReply('/move-repo', 'feature/refreshed'));
+        const syncer = new ScmStatusSync();
+        const sync = syncer.getSync('move-session');
+        try {
+            await sync.invalidateAndAwait();
+            expect(syncer.getSync('move-session')).toBe(sync);
+
+            await sync.invalidateAndAwait();
+            expect(snapshotRequests()).toHaveLength(2);
+            expect(published('move-session')?.branch.head).toBe('feature/refreshed');
+        } finally {
+            syncer.stop('move-session');
+        }
+    });
+
+    it('fetches when an automatic refresh arrives before any sync was requested', async () => {
+        seedRepository('auto-machine', { 'auto-session': '/auto-repo' });
+        machineRpc.mockResolvedValue(snapshotReply('/auto-repo'));
+        const syncer = new ScmStatusSync();
+        try {
+            syncer.invalidateFromAutoRefresh('auto-session');
+            await syncer.getSync('auto-session').awaitQueue();
+            expect(snapshotRequests()).toHaveLength(1);
+            expect(published('auto-session')?.repo.rootPath).toBe('/auto-repo');
+        } finally {
+            syncer.stop('auto-session');
+        }
+    });
+
+    it('refreshes the session project workspace when the session metadata no longer carries a path', async () => {
+        seedRepository('project-machine', { 'project-session': '/project-repo' });
+        // The project registry observed the workspace before the path left the session metadata.
+        expect(storage.getState().getProjectForSession('project-session')?.key.rootPath).toBe('/project-repo');
+        storage.setState({ sessions: { 'project-session': repositorySession('project-session', 'project-machine', '') } });
+        machineRpc.mockResolvedValue(snapshotReply('/project-repo'));
+        const syncer = new ScmStatusSync();
+        try {
+            syncer.invalidateFromAutoRefresh('project-session');
+            await syncer.getSync('project-session').awaitQueue();
+            expect(snapshotRequests()).toHaveLength(1);
+            expect(snapshotRequests()[0]?.[0]).toMatchObject({ machineId: 'project-machine', payload: expect.objectContaining({ cwd: '/project-repo' }) });
+        } finally {
+            syncer.stop('project-session');
+        }
+    });
+
+    it('rate limits automatic refreshes per project without holding user refreshes', async () => {
+        const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+        seedRepository('rate-machine', { 'rate-session': '/rate-repo' });
+        machineRpc.mockResolvedValue(snapshotReply('/rate-repo'));
+        const syncer = new ScmStatusSync();
+        const autoRefresh = async () => {
+            syncer.invalidateFromAutoRefresh('rate-session');
+            await syncer.getSync('rate-session').awaitQueue();
+        };
+        try {
+            await autoRefresh();
+            expect(snapshotRequests()).toHaveLength(1);
+
+            now.mockReturnValue(1_000_000 + 29_999);
+            await autoRefresh();
+            expect(snapshotRequests()).toHaveLength(1);
+
+            await syncer.invalidateFromUserAndAwait('rate-session');
+            expect(snapshotRequests()).toHaveLength(2);
+
+            // The automatic lease spans one interval; it is not a one-shot.
+            now.mockReturnValue(1_000_000 + 30_000);
+            await autoRefresh();
+            expect(snapshotRequests()).toHaveLength(3);
+        } finally {
+            syncer.stop('rate-session');
+        }
+    });
+
+    it.each([
+        ['an automatic refresh past its interval', (syncer: ScmStatusSync, sessionId: string) => syncer.invalidateFromAutoRefresh(sessionId)],
+        ['a workspace mutation', (syncer: ScmStatusSync, sessionId: string) => syncer.invalidateFromMutation(sessionId)],
+    ])('keeps an unsupported repository suspended against %s until the user refreshes', async (label, invalidate) => {
+        const now = vi.spyOn(Date, 'now').mockReturnValue(2_000_000);
+        const id = `unsupported-${label.split(' ').at(-1)}`;
+        seedRepository(`${id}-machine`, { [id]: `/${id}-repo` });
+        machineRpc
+            .mockResolvedValueOnce({ success: false, errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED, error: 'RPC method not available' })
+            .mockResolvedValue(snapshotReply(`/${id}-repo`));
+        const syncer = new ScmStatusSync();
+        try {
+            syncer.invalidateFromAutoRefresh(id);
+            await syncer.getSync(id).awaitQueue();
+            expect(storage.getState().getSessionProjectScmSnapshotError(id)).toMatchObject({
+                errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED, message: 'RPC method not available',
+            });
+
+            // Past the automatic-refresh interval, only the suspension can hold this invalidation.
+            now.mockReturnValue(2_000_000 + 300_000);
+            invalidate(syncer, id);
+            await syncer.getSync(id).awaitQueue();
+            expect(snapshotRequests()).toHaveLength(1);
+
+            await syncer.invalidateFromUserAndAwait(id);
+            expect(snapshotRequests()).toHaveLength(2);
+            expect(storage.getState().getSessionProjectScmSnapshotError(id)).toBeNull();
+            expect(published(id)?.repo.rootPath).toBe(`/${id}-repo`);
+        } finally {
+            syncer.stop(id);
         }
     });
 });

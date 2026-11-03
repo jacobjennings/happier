@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
-import type { UserTextMessage } from "@happier-dev/session-core/messages";
+import type { Message, UserTextMessage } from "@happier-dev/session-core/messages";
 import { installMessageViewCommonModuleMocks } from './messageViewTestHelpers';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionMessageProvenance } from '@happier-dev/protocol';
@@ -36,6 +36,23 @@ function renderScreen(element: React.ReactElement<{ sessionId: string; serverId?
     );
 }
 
+// The persisted shape of an answer another session returned to an Ask (QA15 seq15), with its text.
+function returnedAnswerMessage(serverId: string, origin: 'host' | 'happierSession', text: string): UserTextMessage {
+    return {
+        kind: 'user-text', id: 'returned-answer', localId: 'returned-local', createdAt: 1, text,
+        meta: {
+            happierProvenanceV1: origin === 'host'
+                ? { v: 1, kind: 'host', producer: 'sessionAction' }
+                : { v: 1, kind: 'happierSession', sourceSessionId: 'answerer', via: 'mcp' },
+            happierInputAuthorityV1: { v: 1, producer: 'sessionAction', permission: { admittedPermissionCeiling: 'read-only' },
+                caller: { kind: 'host' },
+                returnedAnswer: { requestSessionId: 'answerer', requestLocalId: 'question/1', outcome: 'answer', delivery: 'wake',
+                    senderSessionId: 'answerer', sourceMessageRef: { kind: 'session',
+                        session: { serverId, sessionId: 'answerer' }, messageId: 'answer-message' } } },
+        },
+    };
+}
+
 afterEach(() => {
     standardCleanup();
     storage.setState(storage.getInitialState(), true);
@@ -44,7 +61,7 @@ afterEach(() => {
 });
 
 describe('MessageView Account attribution', () => {
-    it.each(['next_turn', 'wake', 'generated'] as const)('renders committed host %s context as a notice, not a person’s bubble', async (delivery) => {
+    it.each(['next_turn', 'wake', 'generated'] as const)('keeps committed host %s context outside the person’s bubble and defers Follow notices to delivery facts', async (delivery) => {
         const { normalizeRawMessage } = await import('@happier-dev/session-core/raw');
         const { createReducer, reducer } = await import('@happier-dev/session-core/reducer');
         const { UserMessageBubble } = await import('./UserMessageBubble');
@@ -60,7 +77,7 @@ describe('MessageView Account attribution', () => {
                 ...(delivery === 'generated' ? {} : { followDeliveryV1: { v: 1, delivery,
                     original: { sourceSessionId: 'cmvgukay000kdmcyhj5avwapl',
                         sourceMessage: { localId: '73a3dbcc-6d07-4fac-b2bb-671af06ccf80', seq: 6 } },
-                    event: { kind: 'finished' } } }),
+                    event: { kind: 'message' } } }),
             },
         };
         const normalized = [
@@ -82,8 +99,45 @@ describe('MessageView Account attribution', () => {
                 toolChromeCommon={settingsDefaults} toolRouteCommon={{ messagesById: {}, reducerState: null }} />)}
         </AppSessionTranscriptSourceProvider>);
         expect(screen.findAllByType(UserMessageBubble)).toHaveLength(2);
-        expect(screen.findAllByType(TranscriptEventRow)).toHaveLength(1);
+        expect(screen.findAllByType(TranscriptEventRow)).toHaveLength(delivery === 'generated' ? 1 : 0);
         expect(screen.getTextContent()).toContain(text);
+    });
+
+    it.each([false, true])('shows an accepted Follow wake once as structured host facts without the model prompt (cards: %s)', async (cards) => {
+        const { resolveTranscriptHostWakeCountByMessageId } = await import('./events/transcriptEventEmphasis');
+        const text = 'Followed source changed. Read the original source context.';
+        const messages: Message[] = [1, 2, 3].map((seq): UserTextMessage => ({
+            kind: 'user-text', id: `follow-${seq}`, localId: `follow-input-${seq}`, createdAt: seq, text,
+            followDeliveryProjection: { status: 'woke', reason: null },
+            meta: {
+                happierProvenanceV1: { v: 1, kind: 'host', producer: 'sessionAction' },
+                happierInputAuthorityV1: { v: 1, producer: 'sessionAction', caller: { kind: 'host' },
+                    permission: { admittedPermissionCeiling: 'default' },
+                    followDeliveryV1: { v: 1, delivery: 'wake', original: { sourceSessionId: 'worker',
+                        sourceMessage: { localId: `original-${seq}`, seq } }, event: { kind: 'message' } } },
+            },
+        }));
+        if (cards) messages.push(...[1, 2, 3].map((seq): Extract<Message, { kind: 'agent-event' }> => ({
+            kind: 'agent-event', id: `card-${seq}`, localId: null, createdAt: seq + 3,
+            event: { type: 'worker-update', followInputLocalId: `follow-input-${seq}`, update: {
+                v: 1, workerKind: 'session', workerId: 'worker', ownerState: 'settled', wake: 'finished',
+                headline: 'Finished its turn', canInspect: false,
+            } },
+        })));
+        const counts = resolveTranscriptHostWakeCountByMessageId({ messageIdsOldestFirst: messages.map(m => m.id),
+            messagesById: Object.fromEntries(messages.map(m => [m.id, m])) });
+        const source = createReadOnlySessionTranscriptSource({ sessionId: 'bot', messages,
+            reducerState: null, metadata: null, agentState: null });
+        const screen = await renderBareScreen(<SessionTranscriptSourceProvider source={source}>
+            {messages.map(message => <MessageViewWithSessionCommon key={message.id} sessionId="bot" metadata={null}
+                message={message} hostWakeCount={counts[message.id]}
+                forkCommon={{ ...settingsDefaults, executionRunsEnabled: false, agentSwitchingEnabled: false, sessionForkSupportSource: null }}
+                messageDisplayCommon={{ ...settingsDefaults, workspacePath: null, debugInformationEnabled: false }}
+                toolChromeCommon={settingsDefaults} toolRouteCommon={{ messagesById: {}, reducerState: null }} />)}
+        </SessionTranscriptSourceProvider>);
+        expect(screen.getTextContent()).not.toContain(text);
+        expect(screen.findAllHostsByTestId('transcript-event-host-wake')).toHaveLength(1);
+        expect(screen.getTextContent()).toContain('sessionWork.workerUpdate.wokenBy(count=3)');
     });
 
     it.each(['follow', 'generated'] as const)('keeps host %s origin visible while queued or discarded without removing queue controls', async (kind) => {
@@ -91,8 +145,11 @@ describe('MessageView Account attribution', () => {
         const { TranscriptEventRow } = await import('./events/TranscriptEventRow');
         const text = kind === 'generated' ? 'SCM diff summary generator. Return only valid JSON.'
             : 'Followed source changed. Read the original source context.';
+        storage.getState().applySessions([createSessionFixture({ id: 'cmvgukay000kdmcyhj5avwapl',
+            metadata: { path: '/work', host: 'test', summary: { text: 'Rollback review', updatedAt: 1 } } })]);
         const follow = {
             id: 'queued-follow', localId: 'queued-follow', text, createdAt: 1, updatedAt: 1,
+            pendingDeliveryStatus: 'server_delivering' as const,
             rawRecord: { role: 'user', content: { type: 'text', text }, meta: {
                 happierProvenanceV1: { v: 1, kind: 'host', producer: 'sessionAction' },
                 happierInputAuthorityV1: { v: 1, producer: 'sessionAction', caller: { kind: 'host' },
@@ -100,7 +157,7 @@ describe('MessageView Account attribution', () => {
                     ...(kind === 'generated' ? {} : { followDeliveryV1: { v: 1, delivery: 'next_turn',
                         original: { sourceSessionId: 'cmvgukay000kdmcyhj5avwapl',
                             sourceMessage: { localId: '73a3dbcc-6d07-4fac-b2bb-671af06ccf80', seq: 6 } },
-                        event: { kind: 'finished' } } }) },
+                        event: { kind: 'message' } } }) },
             } },
         };
         const screen = await renderBareScreen(<AppSessionTranscriptSourceProvider sessionId="bot">
@@ -110,7 +167,11 @@ describe('MessageView Account attribution', () => {
         expect(screen.findAllByType(TranscriptEventRow)).toHaveLength(2);
         expect(screen.findHostByTestId('pendingMessages.message:queued-follow')).not.toBeNull();
         expect(screen.findHostByTestId('pendingMessages.discarded.message:discarded-follow')).not.toBeNull();
-        expect(screen.getTextContent()).toContain(text);
+        if (kind === 'follow') {
+            expect(screen.getTextContent()).not.toContain(text);
+            expect(screen.getTextContent()).toContain('message.provenanceFrom(source=Rollback review)');
+            expect(screen.getTextContent()).not.toContain('session.pendingMessages.deliveryStatus.nextTurn');
+        } else expect(screen.getTextContent()).toContain(text);
     });
 
     it('keeps the LIVE-11B app turn distinct from an adjacent workflow-injected turn', async () => {
@@ -342,7 +403,9 @@ describe('MessageView Account attribution', () => {
         expect(JSON.stringify(screen.tree.toJSON())).not.toContain('Other Home title');
     });
 
-    it('quotes an answer another Session returned as information, named from the transcript Home, not as the person’s bubble', async () => {
+    it.each(['host', 'happierSession'] as const)('quotes a %s returned answer as information instead of a host notice or person’s bubble', async (origin) => {
+        const { UserMessageBubble } = await import('./UserMessageBubble');
+        const { TranscriptEventRow } = await import('./events/TranscriptEventRow');
         const home = await upsertServerProfile({ serverUrl: 'https://returned-answer-home.example.test' });
         const answerer = createSessionFixture({ id: 'answerer', serverId: home.id, metadataLayoutVersion: 1,
             metadata: { ...createSessionFixture().metadata!, name: 'Checkout UI retry states' } });
@@ -353,16 +416,7 @@ describe('MessageView Account attribution', () => {
         const screen = await renderScreen(
             <MessageViewWithSessionCommon
                 sessionId="asker" serverId={home.id} metadata={null}
-                message={{
-                    kind: 'user-text', id: 'returned-answer', localId: 'returned-local', createdAt: 1,
-                    text: 'No. A replayed charge shows “Payment confirmed”.',
-                    meta: {
-                        happierProvenanceV1: { v: 1, kind: 'happierSession', sourceSessionId: 'answerer', via: 'mcp' },
-                        happierInputAuthorityV1: { v: 1, producer: 'sessionAction', permission: { admittedPermissionCeiling: 'read-only' },
-                            returnedAnswer: { requestSessionId: 'answerer', requestLocalId: 'question/1', outcome: 'answer', delivery: 'wake',
-                                senderSessionId: 'answerer' } },
-                    },
-                }}
+                message={returnedAnswerMessage(home.id, origin, 'No. A replayed charge shows “Payment confirmed”.')}
                 forkCommon={{ ...settingsDefaults, executionRunsEnabled: false, agentSwitchingEnabled: false, sessionForkSupportSource: null }}
                 messageDisplayCommon={{ ...settingsDefaults, workspacePath: null, debugInformationEnabled: false }}
                 toolChromeCommon={settingsDefaults} toolRouteCommon={{ messagesById: {}, reducerState: null }}
@@ -370,6 +424,8 @@ describe('MessageView Account attribution', () => {
         );
         const quote = screen.findHostByTestId('transcript-returned-answer:returned-answer');
         expect(quote).not.toBeNull();
+        expect(screen.findAllByType(UserMessageBubble)).toHaveLength(0);
+        expect(screen.findAllByType(TranscriptEventRow)).toHaveLength(0);
         const text = screen.getTextContent();
         expect(text).toContain('Checkout UI retry states');
         expect(text).toContain('session.returnedAnswer.answered');
@@ -378,6 +434,77 @@ describe('MessageView Account attribution', () => {
         expect(screen.findHostByTestId('transcript-provenance-attribution:returned-answer')).toBeNull();
         // The exact request read mounts only when the person opens it.
         expect(screen.findHostByTestId('transcript-returned-answer:returned-answer.questionState')).toBeNull();
+    });
+
+    it('bounds a long returned answer behind Show more and keeps the whole answer one press away', async () => {
+        const home = await upsertServerProfile({ serverUrl: 'https://returned-answer-long.example.test' });
+        const long = Array.from({ length: 40 }, (_, line) => `Line ${line} of a long answer.`).join('\n\n');
+        const common = {
+            forkCommon: { ...settingsDefaults, executionRunsEnabled: false, agentSwitchingEnabled: false, sessionForkSupportSource: null },
+            messageDisplayCommon: { ...settingsDefaults, workspacePath: null, debugInformationEnabled: false },
+            toolChromeCommon: settingsDefaults, toolRouteCommon: { messagesById: {}, reducerState: null },
+        };
+        const screen = await renderScreen(
+            <MessageViewWithSessionCommon sessionId="asker" serverId={home.id} metadata={null}
+                message={returnedAnswerMessage(home.id, 'host', long)} {...common} />,
+        );
+        const body = screen.findHostByTestId('transcript-returned-answer:returned-answer.body');
+        expect(body).not.toBeNull();
+        const clip = () => screen.findHostByTestId('transcript-returned-answer:returned-answer.body')!.props.style;
+        const measure = (height: number) => act(() => {
+            const measured = screen.findHostByTestId('transcript-returned-answer:returned-answer.body')!
+                .findAll((node) => typeof node.type === 'string' && typeof node.props.onLayout === 'function');
+            measured[0]!.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 600, height } } });
+        });
+        // Before it is measured the answer is already clipped, so it never paints full length first.
+        expect(JSON.stringify(clip())).toContain('maxHeight');
+        expect(screen.findHostByTestId('transcript-returned-answer:returned-answer.body.fold')).toBeNull();
+        // Measured longer than the bound: Show more appears, and pressing it releases the clip.
+        measure(4000);
+        // The clip ends in the shared edge fade, so it never slices a line of text in half.
+        expect(JSON.stringify(clip())).toContain('maskImage');
+        expect(screen.getTextContent()).toContain('session.returnedAnswer.showMore');
+        await screen.pressByTestIdAsync('transcript-returned-answer:returned-answer.body.fold');
+        expect(JSON.stringify(clip())).not.toContain('maxHeight');
+        expect(JSON.stringify(clip())).not.toContain('maskImage');
+        expect(screen.getTextContent()).toContain('session.returnedAnswer.showLess');
+        await screen.pressByTestIdAsync('transcript-returned-answer:returned-answer.body.fold');
+        expect(JSON.stringify(clip())).toContain('maxHeight');
+        // An answer that fits is drawn whole: no control.
+        measure(48);
+        expect(screen.findHostByTestId('transcript-returned-answer:returned-answer.body.fold')).toBeNull();
+        expect(JSON.stringify(clip())).not.toContain('maskImage');
+    });
+
+    it('draws a composer Ask entry as the Ask record row, not as a generic information line', async () => {
+        const { normalizeRawMessage } = await import('@happier-dev/session-core/raw');
+        const { createReducer, reducer } = await import('@happier-dev/session-core/reducer');
+        const { projectSessionMessageInvocationV1 } = await import('@happier-dev/protocol/sessions/messages/sessionMessageInvocationV1');
+        const { TranscriptEventRow } = await import('./events/TranscriptEventRow');
+        const { publishAppliedActiveServerSnapshot, getAppliedActiveServerSnapshot, isAppliedActiveServerRuntimeAvailable } = await import('@/sync/runtime/orchestration/appliedActiveServerRuntime');
+        const home = await upsertServerProfile({ serverUrl: 'https://ask-record-wiring.example.test' });
+        const previousRuntime = getAppliedActiveServerSnapshot();
+        const previousAvailable = isAppliedActiveServerRuntimeAvailable();
+        try {
+            storage.getState().activateProfileScope({ serverId: home.id, accountId: 'alice' });
+            publishAppliedActiveServerSnapshot({ serverId: home.id, serverUrl: 'https://ask-record-wiring.example.test', generation: previousRuntime.generation + 1 });
+            const invocation = projectSessionMessageInvocationV1({ serverId: home.id, localId: 'attempt', requestLocalId: 'attempt', target: 'receiver', reply: 'none',
+                result: { ok: true, result: { status: 'accepted', localId: 'attempt' } } });
+            const raw = normalizeRawMessage('ask-entry', 'attempt', 10, { role: 'agent', content: { type: 'event', id: 'attempt', data: {
+                type: 'message', message: 'Is the changelog wording final?', sessionMessageInvocationV1: invocation } } }, { messageRole: 'event', seq: 1 });
+            const message = reducer(createReducer(), [raw!]).messages[0]!;
+            const screen = await renderScreen(
+                <MessageViewWithSessionCommon sessionId="asker" serverId={home.id} metadata={null} message={message}
+                    forkCommon={{ ...settingsDefaults, executionRunsEnabled: false, agentSwitchingEnabled: false, sessionForkSupportSource: null }}
+                    messageDisplayCommon={{ ...settingsDefaults, workspacePath: null, debugInformationEnabled: false }}
+                    toolChromeCommon={{ ...settingsDefaults, serverId: home.id }} toolRouteCommon={{ messagesById: {}, reducerState: null }} />,
+            );
+            expect(screen.getTextContent()).toContain('Is the changelog wording final?');
+            expect(screen.findAllByType(TranscriptEventRow)).toHaveLength(0);
+            expect(screen.findHostByTestId(`session-ask-record:${message.id}`)).not.toBeNull();
+        } finally {
+            publishAppliedActiveServerSnapshot(previousRuntime, previousAvailable);
+        }
     });
 
     it('renders a single trusted human byline before the bubble while preserving recovered-history status', async () => {

@@ -11,6 +11,38 @@ import {
 } from './legacy/legacyUsageTransport';
 
 describe('usageObservation', () => {
+    it.each([
+        { lastUseAtMs: 0 },
+        { lastUseAtMs: 123.5, ttlMs: 300_000 },
+    ])('preserves the accepted prompt-cache request clock %j through normalization', (promptCache) => {
+        const observation = extractUsageObservationFromTokenCountMessage({
+            provider: 'runtime-agent',
+            body: { source: 'runtime', tokens: { total: 12 }, promptCache },
+        });
+
+        expect(observation).toHaveProperty('promptCache', promptCache);
+        expect(observation && normalizeUsageObservation(observation)).toHaveProperty('promptCache', promptCache);
+    });
+
+    it.each([
+        { lastUseAtMs: Number.NaN },
+        { lastUseAtMs: Number.POSITIVE_INFINITY },
+        { lastUseAtMs: 123, ttlMs: 0 },
+        { lastUseAtMs: 123, ttlMs: -1 },
+        { lastUseAtMs: 123, ttlMs: Number.POSITIVE_INFINITY },
+        { lastUseAtMs: 123, ttlMs: Number.NaN },
+        { ttlMs: 300_000 },
+        { lastUseAtMs: 123, receiptAtMs: 456 },
+    ])('drops malformed prompt-cache facts without losing accounting data: %j', (promptCache) => {
+        const observation = extractUsageObservationFromTokenCountMessage({
+            provider: 'runtime-agent',
+            body: { source: 'runtime', tokens: { total: 12 }, promptCache },
+        });
+
+        expect(observation?.tokens?.total).toBe(12);
+        expect(observation).not.toHaveProperty('promptCache');
+    });
+
     const contextSnapshot = {
         v: 1,
         modelId: 'gpt-5.4',
@@ -137,6 +169,33 @@ describe('usageObservation', () => {
             inputTokens: true,
             outputTokens: true,
         }));
+    });
+
+    it('retains nonzero ACP cache-write and reasoning aliases without adding them to an explicit total', () => {
+        // fx 0.0.14 wire keys: E-fx-live-probe.md §3, captured 2026-10-27.
+        // Nonzero details: pinned fx 1a070af, gateway/responses_protocol.zig:2681.
+        const observation = extractUsageObservationFromTokenCountMessage({
+            provider: 'acp-provider',
+            body: {
+                tokens: {
+                    totalTokens: 24,
+                    inputTokens: 17,
+                    outputTokens: 7,
+                    cacheReadTokens: 5,
+                    cacheWriteTokens: 2,
+                    reasoningTokens: 3,
+                },
+            },
+        });
+
+        expect(observation?.tokens).toEqual({
+            total: 24,
+            input: 17,
+            output: 7,
+            cacheRead: 5,
+            cacheWrite: 2,
+            reasoning: 3,
+        });
     });
 
     it('distinguishes an explicit provider-reported zero from an estimated direct cost', () => {

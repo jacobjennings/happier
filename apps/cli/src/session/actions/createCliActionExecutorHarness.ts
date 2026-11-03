@@ -10,6 +10,7 @@ import { DaemonLocalServiceLauncherStartRequestV1Schema } from '@happier-dev/pro
 import { ProjectWorkerStatusInputV1Schema } from '@happier-dev/protocol/actions/specs/projectWorkers';
 import { PROJECT_FINITE_ACTION_RPC_METHODS_V1 } from '@happier-dev/protocol/actions/projectActionFamily';
 import type { ActionExecuteResult, ActionExecutorContext, ActionExecutorDeps } from '@happier-dev/protocol';
+import type { RpcActionExecutorContext } from '@/rpc/handlers/_actionDispatchAdapter';
 import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 
 import { createActionSettingsProvider, type RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
@@ -270,11 +271,17 @@ export function createCliActionExecutorHarness(
   }
   const deps = rawDeps as ActionExecutorDeps;
   const executor = createActionExecutor(deps);
-  const resolveContext = (context: Parameters<typeof executor.execute>[2], actionId?: string) => {
+  const runtimeAccountId = params.credentials ? readAccountIdFromToken(params.credentials.token) ?? undefined : undefined;
+  // Received RPC dispatch passes its host-built requester context through this harness.
+  const resolveContext = (context: (ActionExecutorContext & Pick<RpcActionExecutorContext, 'machineAdmission'>) | undefined,
+    actionId?: string) => {
     const accountSettings = !context?.externalActionExecutionAuthorization && context?.surface !== 'rpc'
       ? originationSettingsProvider.getAccountSettings?.() : null;
     return {
       ...(context ?? {}),
+      // This is the executing Account, never a substitute for the requester.
+      // Received RPC/Machine admission keeps its host-built requester context.
+      ...(context?.surface !== 'rpc' && !context?.machineAdmission && runtimeAccountId ? { runtimeAccountId } : {}),
       // A received Action already represents another origin. Do not recheck the
       // controller's Account preference, including on same-Account reception.
       ...(accountSettings ? { managedMachineCreationEnabled: accountSettings.managedMachineCreationEnabled } : {}),

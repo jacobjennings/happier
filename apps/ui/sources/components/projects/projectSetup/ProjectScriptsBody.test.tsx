@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol/actions/operations/v1';
 import { readProjectManifestDocument } from '@happier-dev/protocol/workspaces/projectSetup/projectManifestDocument';
 
@@ -15,6 +15,13 @@ import {
   restoreServerAccountForTest,
 } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import { createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit/fixtures/accountEncryptionCurrentness';
+import { createPlainProjectAccountRowListFixture } from '@/dev/testkit/fixtures/projectAccountRows';
+import { buildProjectAccountRowPhysicalKeyV1 } from '@happier-dev/protocol/projects/projectAccountRowsV1';
+import { createPlainSessionByIdResponseFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createSessionMetadataHttpBoundary } from '@/dev/testkit/harness/sessionMetadataHttpBoundary';
+import { SessionCurrentProjectionRecordV1Schema } from '@happier-dev/protocol/sessions/listing/response';
+import { V2SessionByIdResponseSchema } from '@happier-dev/protocol/sessions/control/contract';
+import { countReadBorrowers } from '@/dev/testkit';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 installDisconnectedServerSocketBoundary();
@@ -92,7 +99,7 @@ vi.mock('@/sync/ops/actions/defaultActionExecutor', () => ({
 // The device class is a platform adapter boundary; phone cases set it, every other case keeps the real one.
 vi.mock('@/utils/platform/responsive', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/utils/platform/responsive')>();
-  return { ...actual, useDeviceType: () => shared.device ?? actual.useDeviceType() };
+  return { ...actual, useDeviceType: () => { const real = actual.useDeviceType(); return shared.device ?? real; } };
 });
 
 vi.mock('@/components/ui/code/editor/CodeEditor', async () => {
@@ -109,16 +116,18 @@ vi.mock('@/text', async () => {
   const parameterized = createTextModuleMock();
   return createTextModuleMock({ translate: (key, params) =>
     // Memory summaries disclose the stored amount through the translation parameter.
-    key === 'projects.scripts.editor.needsAbout' || key === 'projects.scripts.setup.lead'
+    key === 'projects.scripts.editor.needsAbout' || key === 'projects.scripts.setup.lead' || key === 'projects.authoring.lastSession'
       ? parameterized.t(key, params) : key,
   });
 });
 
 const { ProjectScriptsBody } = await import('./ProjectScriptsBody');
+const { ProjectPageBackProvider } = await import('@/components/projects/detail/projectPageBack');
 const { AppPaneScopeLayoutProvider } = await import('@/components/appShell/panes/hooks/useAppPaneScopeLayout');
 const { storage } = await import('@/sync/domains/state/storageStore');
 const { actionOperationStore } =
   await import('@/sync/domains/actionOperations/actionOperationStore');
+const sessionParts = await import('@/sync/runtime/orchestration/serverScopedRpc/readSessionBatchForAuthority');
 const previous = storage.getState();
 let connection: Awaited<ReturnType<typeof restoreServerAccountForTest>> | null =
   null;
@@ -232,22 +241,50 @@ function operation(
 }
 
 async function render(
-  presentation: 'page' | 'widget',
+  presentation: 'page' | 'rail' | 'widget',
   ready: string,
-  host: Readonly<{ outputScopeId?: string; bottomPresentation?: 'docked' | 'overlay' }> = {},
+  host: Readonly<{
+    outputScopeId?: string;
+    bottomPresentation?: 'docked' | 'overlay';
+    /** The Project's phone bar: receives the way back a pushed page registers. */
+    registerPageBack?: (back: (() => void) | null) => void;
+    authoredSession?: Readonly<{ id: string; response: Promise<Response>; reads: string[]; writes?: string[] }>;
+  }> = {},
 ) {
+  const authoredMetadata = createSessionMetadataHttpBoundary(() => storage.getState().sessions);
+  let authoredSeeded = false;
   connection ??= await restoreServerAccountForTest({
     serverUrl: workspaceServerUrl,
     serverIdentityId: workspace.serverId,
     accountId: 'account-1',
     request: async (url, init) => {
       const path = new URL(String(url)).pathname;
+      if (host.authoredSession && path === `/v2/sessions/${host.authoredSession.id}`) {
+        if ((init?.method ?? 'GET') === 'GET') host.authoredSession.reads.push(host.authoredSession.id);
+        const response = await host.authoredSession.response;
+        if (!response.ok) return response.clone();
+        if (!authoredSeeded) {
+          const body = V2SessionByIdResponseSchema.parse(await response.clone().json());
+          authoredMetadata.replaceSession(host.authoredSession.id, SessionCurrentProjectionRecordV1Schema.parse(body.session));
+          authoredSeeded = true;
+        }
+        // A full owner read can backfill its display through PATCH. Serve that
+        // real CAS boundary separately from the exact Session read cost.
+        const result = authoredMetadata.handle(url, init);
+        if (init?.method === 'PATCH' && result?.ok) host.authoredSession.writes?.push(host.authoredSession.id);
+        return result;
+      }
       if (path === '/v1/account/encryption')
         return Response.json({ mode: 'plain', updatedAt: 1 });
       if (path === '/v1/account/encryption/currentness')
         return Response.json(createPlainAccountEncryptionCurrentnessFixture());
       if (path === '/v2/account/settings')
         return Response.json({ content: null, version: 0 });
+      if (path === '/v1/account/project-rows/list')
+        return Response.json(createPlainProjectAccountRowListFixture({
+          workspaceRefs: [{ id: 'w1', serverId: workspace.serverId, machineId: 'm1',
+            rootPath: '/repo', createdAtMs: 1, projectKey: 'w1' }],
+        }));
       // The approving Account's Project Trust row (D18 "Until it changes") is an HTTP boundary.
       if (path === '/v1/account/project-trust/read')
         return Response.json({ status: 'absent' });
@@ -255,7 +292,7 @@ async function render(
         shared.trustMutations.push(JSON.parse(String(init?.body)));
         return Response.json({ status: 'updated', revision: 1, cursor: 1 });
       }
-      return Response.json({}, { status: 404 });
+      return null;
     },
   });
   storage.setState({
@@ -277,9 +314,13 @@ async function render(
       relationships: [],
       organizations: [],
       revisionsByPhysicalKey: {},
+      ...(host.authoredSession ? { authoringSessionsByPhysicalKey: {
+        [buildProjectAccountRowPhysicalKeyV1({ kind: 'workspace-ref', serverId: workspace.serverId, id: 'w1' })]:
+          { serverId: workspace.serverId, sessionId: host.authoredSession.id },
+      } } : {}),
     },
   });
-  const body = (
+  const scripts = (
     <ProjectScriptsBody
       workspace={workspace}
       presentation={presentation}
@@ -287,6 +328,9 @@ async function render(
       outputScopeId={host.outputScopeId}
     />
   );
+  const body = host.registerPageBack
+    ? <ProjectPageBackProvider value={host.registerPageBack}>{scripts}</ProjectPageBackProvider>
+    : scripts;
   const screen = await renderScreen(
     host.bottomPresentation ? (
       <AppPaneScopeLayoutProvider
@@ -340,6 +384,50 @@ function textOf(
 }
 
 describe('ProjectScriptsBody setup affordance', () => {
+  it.each(['available', 'missing'] as const)('reserves cold authoring provenance and reads only its exact Session once per mount, with no idle reads (%s)', async availability => {
+    shared.inspection = { definition: presentDefinition(declared), detection, importCandidates: [] };
+    const borrowers = countReadBorrowers(sessionParts.readSessionParts, params => params.sessionIds);
+    const observeBorrowers = vi.spyOn(sessionParts, 'readSessionParts').mockImplementation(borrowers.request);
+    onTestFinished(() => observeBorrowers.mockRestore());
+    const response = createDeferred<Response>();
+    const reads: string[] = [];
+    const writes: string[] = [];
+    const screen = await render('page', 'scripts.script:test', { authoredSession: { id: 'cold-author', response: response.promise, reads, writes } });
+    expect(screen.findByTestId('project-setup-authored')).not.toBeNull();
+    await vi.waitFor(() => expect(reads).toEqual(['cold-author']));
+    await act(async () => {
+      response.resolve(availability === 'missing' ? Response.json({ error: 'not_found' }, { status: 404 }) : Response.json(createPlainSessionByIdResponseFixture(createSessionFixture({
+        id: 'cold-author', createdAt: 1, updatedAt: 2,
+        metadata: { machineId: 'm1', path: '/repo', host: 'h', summary: { text: 'Checkout setup', updatedAt: 2 },
+          work: { authoringOriginV1: { kind: 'project', accountId: 'account-1', workspace, page: 'scripts' } } },
+      }))));
+    });
+    if (availability === 'available') {
+      await vi.waitFor(() => expect(screen.getTextContent()).toContain('Checkout setup'));
+      await vi.waitFor(() => expect(writes).toEqual(['cold-author']));
+      expect(screen.findByTestId('project-setup-authored.changes')).not.toBeNull();
+    } else {
+      expect(writes).toEqual([]);
+      expect(screen.getTextContent()).not.toContain('Checkout setup');
+      expect(screen.findByTestId('project-setup-authored.changes')).toBeNull();
+    }
+    await act(async () => {
+      storage.getState().applySessions([createSessionFixture({ id: 'unrelated', updatedAt: 100 })]);
+    });
+    expect(reads).toEqual(['cold-author']);
+    vi.useFakeTimers();
+    try { await act(async () => { await vi.advanceTimersByTimeAsync(60_000); }); }
+    finally { vi.useRealTimers(); }
+    expect(reads).toEqual(['cold-author']);
+    expect(borrowers.read()).toEqual([expect.objectContaining({ calls: 1, idCount: 1,
+      provenance: expect.arrayContaining([expect.objectContaining({
+        source: 'apps/ui/sources/sync/engine/sessions/sessionByIdHttp.ts', method: 'readSessionByIdHttp',
+      })]),
+    })]);
+    await screen.unmount();
+    expect(reads).toEqual(['cold-author']);
+  });
+
   it('offers Set up with an agent beside what was found when the checkout has no project file', async () => {
     shared.inspection = {
       definition: { basis: { kind: 'absent' }, document: null },
@@ -401,6 +489,36 @@ describe('ProjectScriptsBody setup affordance', () => {
     expect(screen.findByTestId('scripts.setup')).toBeTruthy();
   });
 
+  it('shows no authoring line on FirstRun for a checkout without an authoring relationship', async () => {
+    shared.inspection = { definition: { basis: { kind: 'absent' }, document: null }, detection, importCandidates: [] };
+    const screen = await render('page', 'scripts.noProjectFile');
+    expect(screen.findByTestId('project-setup-authored')).toBeNull();
+  });
+
+  it('keeps FirstRun and its setup control while naming the Session that authored a checkout with no project file', async () => {
+    shared.inspection = { definition: { basis: { kind: 'absent' }, document: null }, detection, importCandidates: [] };
+    const reads: string[] = [];
+    const writes: string[] = [];
+    const response = createDeferred<Response>();
+    const screen = await render('page', 'scripts.noProjectFile', { authoredSession: { id: 'first-run-author', response: response.promise, reads, writes } });
+    // Unavailable Session: the line reserves its place but never invents a title or time.
+    expect(screen.findByTestId('project-setup-authored')).not.toBeNull();
+    expect(screen.findByTestId('scripts.setup')).toBeTruthy();
+    expect(screen.findByTestId('scripts.create')).toBeTruthy();
+    await act(async () => {
+      response.resolve(Response.json(createPlainSessionByIdResponseFixture(createSessionFixture({
+        id: 'first-run-author', createdAt: 1, updatedAt: 2,
+        metadata: { machineId: 'm1', path: '/repo', host: 'h', summary: { text: 'Set up happier', updatedAt: 2 },
+          work: { authoringOriginV1: { kind: 'project', accountId: 'account-1', workspace, page: 'scripts' } } },
+      }))));
+    });
+    await vi.waitFor(() => expect(screen.getTextContent()).toContain('Set up happier'));
+    await vi.waitFor(() => expect(writes).toEqual(['first-run-author']));
+    expect(screen.getTextContent()).not.toMatch(/ready/i);
+    expect(screen.findByTestId('scripts.setup')).toBeTruthy();
+    expect(reads).toEqual(['first-run-author']);
+  });
+
   it('says an empty checkout once: the Scripts page hero, not a second empty card under it', async () => {
     shared.inspection = {
       definition: { basis: { kind: 'absent' }, document: null },
@@ -413,6 +531,42 @@ describe('ProjectScriptsBody setup affordance', () => {
     // A widget has no hero above it: the empty card is its one line.
     const widget = await render('widget', 'scripts.empty');
     expect(widget.getTextContent()).toContain('projects.widgets.scriptsEmpty');
+  });
+
+  it('names each script\'s source file on the page and rail, but not in the narrow Overview widget', async () => {
+    shared.inspection = {
+      definition: presentDefinition(declared),
+      detection,
+      importCandidates: [],
+    };
+    const page = await render('page', 'scripts.script:test');
+    expect(page.getTextContent()).toContain('package.json');
+    const rail = await render('rail', 'scripts.script:test');
+    expect(rail.getTextContent()).toContain('package.json');
+    const widget = await render('widget', 'scripts.script:test');
+    expect(widget.getTextContent()).not.toContain('package.json');
+    expect(widget.getTextContent()).toContain('test');
+  });
+
+  it('reads like its sibling widgets in the Overview: each script is a name and how it went, with no Run control', async () => {
+    shared.inspection = {
+      definition: presentDefinition(declared),
+      detection,
+      importCandidates: [],
+    };
+    // The rail keeps its runnable rows.
+    const rail = await render('rail', 'scripts.script:test');
+    expect(rail.findByTestId('scripts.script:test.run')).toBeTruthy();
+    await rail.unmount();
+    const widget = await render('widget', 'scripts.script:test');
+    expect(widget.findByTestId('scripts.script:test.run')).toBeNull();
+    expect(widget.getTextContent()).toContain('projects.scripts.run.notRun');
+    // How it went, said once on the row's one fact line.
+    await act(async () => {
+      actionOperationStore.mergeSnapshots({ serverId: workspace.serverId, snapshots: [operation('failed', 2) as never] });
+    });
+    await vi.waitFor(() => expect(widget.getTextContent()).not.toContain('projects.scripts.run.notRun'));
+    expect(widget.findByTestId('scripts.script:test.run')).toBeNull();
   });
 
   it('keeps setup quiet once a project file declares the scripts', async () => {
@@ -487,6 +641,17 @@ describe('ProjectScriptsBody runs', () => {
     } finally {
       await act(async () => { gate.resolve({ operation: operation('accepted', 1) }); });
     }
+  });
+  it('names a Run that waits on an approval and offers the one way to open it', async () => {
+    shared.inspection = { definition: presentDefinition(declared), detection, importCandidates: [] };
+    shared.responses['projects.script.run'] = {
+      kind: 'approval_request_created', artifactId: 'approval-a', actionId: 'projects.script.run',
+    };
+    const screen = await render('page', 'scripts.script:test.run');
+    await screen.pressByTestIdAsync('scripts.script:test.run');
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.approval')).toBeTruthy());
+    expect(screen.getTextContent()).toContain('approvals.waitingForYou');
+    expect(screen.findByTestId('scripts.approval.open')).toBeTruthy();
   });
   it('retains proven readiness during Script refresh and replaces it only with the inspection result', async () => {
     const manifest = { version: 1, workspace: { setup: [{ kind: 'command', command: 'echo setup' }] }, scripts: { test: { source: nativeRef('test') } } };
@@ -673,7 +838,7 @@ describe('ProjectScriptsBody runs', () => {
     expect(
       screen.findByTestId('scripts.setup.review.effect:step:0'),
     ).toBeTruthy();
-    expect(textOf(screen, 'scripts.setup.review')).toContain('worker-machine');
+    expect(screen.getTextContent()).toContain('worker-machine');
     shared.operationRead
       .mockResolvedValueOnce({ kind: 'found', operation: held })
       .mockResolvedValueOnce({
@@ -693,7 +858,7 @@ describe('ProjectScriptsBody runs', () => {
       shared.calls.filter((call) => call.actionId === 'projects.script.run'),
     ).toHaveLength(1);
     // "Until it changes" (chosen; This time is the default) is the person's own grant for this Project's exact effect.
-    expect(shared.trustMutations).toEqual([
+    await vi.waitFor(() => expect(shared.trustMutations).toEqual([
       expect.objectContaining({
         project: { serverId: workspace.serverId, projectId: 'w1' },
         expectedRevision: 'absent',
@@ -702,7 +867,7 @@ describe('ProjectScriptsBody runs', () => {
           v: expect.objectContaining({ reviewedEffectDigest: 'a'.repeat(64) }),
         },
       }),
-    ]);
+    ]));
   });
 
   it.each(['ask', 'fail'] as const)(
@@ -1168,6 +1333,19 @@ describe('ProjectScriptsBody project file editor', () => {
     expect(saved.scripts.missing).toBeUndefined();
   });
 
+  it('sets the JSON view in the page column, in a page of its own that the code fills below the header', async () => {
+    shared.inspection = { definition: presentDefinition(declared), detection, importCandidates: [] };
+    const screen = await render('page', 'scripts.edit');
+    await act(async () => { await screen.pressByTestIdAsync('scripts.edit'); });
+    await act(async () => { await screen.pressByTestIdAsync('project-manifest-editor.mode:raw'); });
+    await vi.waitFor(() => expect(screen.findByTestId('project-manifest-editor.raw')).toBeTruthy());
+    const ancestors: Array<Record<string, unknown>> = [];
+    for (let node = screen.findByTestId('project-manifest-editor.raw')?.parent; node; node = node.parent) ancestors.push(node.props);
+    // The editor's own page list fills the pane (the code scrolls itself), and the code sits in the page column.
+    expect(ancestors.some((props) => props.testID === 'project-manifest-editor.scroll' && props.fill === true)).toBe(true);
+    expect(ancestors.some((props) => props.testID === 'project-manifest-editor.rawColumn')).toBe(true);
+  });
+
   it.each(['{ "version": 1, ', '{"version":2}'])('opens an invalid project file in JSON, keeps its bytes and turns Form and Save off (%s)', async (bytes) => {
     shared.inspection = {
       definition: {
@@ -1255,6 +1433,17 @@ describe('ProjectScriptsBody setup row', () => {
     expect(shared.calls.find((call) => call.actionId === 'projects.prepare')?.input).toMatchObject({ workspace, phase: 'setup' });
   });
 
+  it('says the Setup row waits for the person once its review is open, in the needs-you tone', async () => {
+    shared.inspection = { definition: presentDefinition(withSetup), detection, importCandidates: [] };
+    const screen = await render('widget', 'scripts.setup');
+    expect(textOf(screen, 'scripts.setup')).not.toContain('projects.scripts.setup.pending');
+    await act(async () => { await screen.pressByTestIdAsync('scripts.setup'); });
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.setup.review')).toBeTruthy());
+    expect(textOf(screen, 'scripts.setup')).toContain('projects.scripts.setup.pending');
+    const row = screen.findAllByTestId('scripts.setup').find((node) => node.props.pressableStyle !== undefined);
+    expect(row?.props.pressableStyle).toMatchObject({ backgroundColor: expect.any(String) });
+  });
+
   it('names where the reviewed file came from without claiming it is committed', async () => {
     shared.inspection = { definition: presentDefinition(withSetup), detection, importCandidates: [] };
     const screen = await render('page', 'scripts.setup');
@@ -1271,6 +1460,48 @@ describe('ProjectScriptsBody setup row', () => {
     const text = textOf(screen, 'scripts.setup.review.provenance');
     expect(text).toContain('projects.scripts.setup.provenanceAtBranch');
     expect(text).toContain('projects.scripts.setup.provenanceModified');
+  });
+
+  it('states a committed reviewed file by its commit alone, without a commit-state suffix', async () => {
+    shared.inspection = { definition: presentDefinition(withSetup), detection, importCandidates: [] };
+    const screen = await render('page', 'scripts.setup');
+    const { error: _error, settledAt: _settledAt, ...held } = setupOperation('failed') as Record<string, unknown>;
+    await act(async () => {
+      actionOperationStore.mergeSnapshots({ serverId: workspace.serverId, snapshots: [{
+        ...held, state: 'accepted',
+        setupReview: { kind: 'pendingApproval', code: 'project_setup_consent_required', reviewedEffectDigest: 'a'.repeat(64),
+          reviewedEffect: { presentation: { bindings: [], provenance: {
+            file: '.happier/project.json', kind: 'repository', headCommit: 'a41c9e2f00', branch: 'v0.3', fileState: 'unknown',
+            committed: { commit: 'a41c9e2f00' } } } } },
+      } as never] });
+    });
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.setup.review.provenance')).toBeTruthy());
+    const text = textOf(screen, 'scripts.setup.review.provenance');
+    expect(text).toContain('projects.scripts.setup.provenanceAtBranch');
+    expect(text).not.toContain('projects.scripts.setup.provenanceUnknown');
+  });
+
+  it('folds the Setup card back to its row once the held review is decided elsewhere', async () => {
+    shared.inspection = { definition: presentDefinition(withSetup), detection, importCandidates: [] };
+    const outputScopeId = `project:${encodeURIComponent(workspace.serverId)}:w1`;
+    const screen = await render('page', 'scripts.setup', { outputScopeId });
+    const expanded = () => screen.findByTestId('scripts.setup')?.props.accessibilityState?.expanded;
+    const { error: _error, settledAt: _settledAt, ...held } = setupOperation('failed') as Record<string, unknown>;
+    await act(async () => {
+      actionOperationStore.mergeSnapshots({ serverId: workspace.serverId, snapshots: [{
+        ...held, state: 'accepted',
+        setupReview: { kind: 'pendingApproval', code: 'project_setup_consent_required', reviewedEffectDigest: 'a'.repeat(64), reviewedEffect: {} },
+      } as never] });
+    });
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.setup.review')).toBeTruthy());
+    expect(expanded()).toBe(true);
+    await act(async () => {
+      const running = setupOperation('running');
+      const { terminalId: _terminalId, ...domainRef } = running.domainRef;
+      actionOperationStore.mergeSnapshots({ serverId: workspace.serverId, snapshots: [{ ...running, domainRef, revision: 2 } as never] });
+    });
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.setup.review')).toBeNull());
+    await vi.waitFor(() => expect(expanded()).toBe(false));
   });
 
   it('keeps a failed setup’s output one press away, in the host’s bottom terminal', async () => {
@@ -1317,7 +1548,8 @@ describe('ProjectScriptsBody output', () => {
     // The row owns the running state (elapsed time, latest output line); the terminal opens only when the person asks.
     shared.inspection = { definition: presentDefinition(declared), detection, importCandidates: [] };
     shared.responses['projects.script.run'] = { operation: withTerminal() };
-    const screen = await render('widget', 'scripts.script:test.run', { outputScopeId: outputScopeId(), bottomPresentation });
+    const screen = await render('rail', 'scripts.script:test.run', { outputScopeId: outputScopeId(), bottomPresentation });
+
     await act(async () => { await screen.pressByTestIdAsync('scripts.script:test.run'); });
     await vi.waitFor(() => expect(shared.calls.some((call) => call.actionId === 'projects.script.run')).toBe(true));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
@@ -1367,6 +1599,71 @@ describe('ProjectScriptsBody on a phone', () => {
     expect(shared.calls.filter(call => call.actionId === 'projects.manifest.update')).toHaveLength(1);
   });
 
+  it('hands its Back to the Project bar: one Back closes a pushed section, the next closes the editor', async () => {
+    shared.device = 'phone';
+    shared.inspection = { definition: presentDefinition(declared), detection, importCandidates: [] };
+    let back: (() => void) | null = null;
+    const screen = await render('page', 'scripts.edit', { registerPageBack: (next) => { back = next; } });
+    expect(back).toBeNull();
+    await act(async () => { await screen.pressByTestIdAsync('scripts.edit'); });
+    await vi.waitFor(() => expect(screen.findByTestId('project-manifest-editor.section:scripts:test')).toBeTruthy());
+    expect(screen.findByTestId('project-manifest-editor.back')).toBeNull();
+    expect(typeof back).toBe('function');
+    await act(async () => { await screen.pressByTestIdAsync('project-manifest-editor.section:scripts:test'); });
+    await vi.waitFor(() => expect(screen.findByTestId('project-manifest-editor.script:test')).toBeTruthy());
+    expect(screen.findByTestId('project-manifest-editor.sectionBack')).toBeNull();
+    await act(async () => { back?.(); });
+    await vi.waitFor(() => expect(screen.findByTestId('project-manifest-editor.section:scripts:test')).toBeTruthy());
+    await act(async () => { back?.(); });
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.edit')).toBeTruthy());
+    expect(back).toBeNull();
+  });
+
+  it('leaves the phone editor in one Back after Setup switches to JSON', async () => {
+    shared.device = 'phone';
+    shared.inspection = { definition: presentDefinition({ ...declared, workspace: { setup: [{ kind: 'command', command: 'echo setup' }] } }), detection, importCandidates: [] };
+    let back: (() => void) | null = null;
+    const screen = await render('page', 'scripts.edit', { registerPageBack: (next) => { back = next; } });
+    await screen.pressByTestIdAsync('scripts.edit');
+    await vi.waitFor(() => expect(screen.findByTestId('project-manifest-editor.section:setup')).toBeTruthy());
+    await screen.pressByTestIdAsync('project-manifest-editor.section:setup');
+    await screen.pressByTestIdAsync('project-manifest-editor.mode:raw');
+    expect(screen.findAllByType('CodeEditor' as never)).toHaveLength(1);
+    await act(async () => { back?.(); });
+    expect(screen.findByTestId('project-manifest-editor')).toBeNull();
+    expect(screen.findByTestId('scripts.edit')).toBeTruthy();
+    expect(back).toBeNull();
+  });
+
+  it('summarizes the tools each environment found and their availability under the phone Environment row', async () => {
+    shared.device = 'phone';
+    const tool = (name: string, availability: 'available' | 'unavailable' | 'unresolved') =>
+      ({ tool: name, file: '.mise.toml', availability, ...(availability === 'available' ? { version: '1.0.0' } : {}) });
+    shared.inspection = {
+      definition: presentDefinition({ version: 1, environment: { kind: 'toolchain', tool: 'mise', configPath: '.mise.toml' } }),
+      detection, importCandidates: [], tools: [tool('node', 'available'), tool('protoc', 'unresolved')],
+    };
+    let screen = await render('page', 'scripts.edit');
+    await act(async () => { await screen.pressByTestIdAsync('scripts.edit'); });
+    await vi.waitFor(() => expect(screen.findByTestId('project-manifest-editor.section:environment.tools')).toBeTruthy());
+    const summary = textOf(screen, 'project-manifest-editor.section:environment.tools');
+    expect(summary).toContain('node');
+    expect(summary).toContain('protoc');
+    expect(summary).toContain('projects.scripts.editor.toolsCount');
+  });
+
+  it('names a single tool\'s availability on the Machine under the phone Environment row', async () => {
+    shared.device = 'phone';
+    shared.inspection = {
+      definition: presentDefinition({ version: 1, environment: { kind: 'toolchain', tool: 'devenv', configPath: 'devenv.nix' } }),
+      detection, importCandidates: [], tools: [{ tool: 'devenv', file: 'devenv.nix', availability: 'available' }],
+    };
+    const screen = await render('page', 'scripts.edit');
+    await act(async () => { await screen.pressByTestIdAsync('scripts.edit'); });
+    await vi.waitFor(() => expect(screen.findByTestId('project-manifest-editor.section:environment.tools')).toBeTruthy());
+    expect(textOf(screen, 'project-manifest-editor.section:environment.tools')).toContain('projects.scripts.editor.toolAvailable');
+  });
+
   it('opens a run’s output in the operation detail, never a desktop terminal tab', async () => {
     shared.device = 'phone';
     const { Modal } = await import('@/modal');
@@ -1381,6 +1678,95 @@ describe('ProjectScriptsBody on a phone', () => {
     await vi.waitFor(() => expect(show).toHaveBeenCalledTimes(1));
     expect(shared.calls.some((call) => call.actionId === 'session.terminals.open')).toBe(false);
     show.mockRestore();
+  });
+});
+
+describe('ProjectScriptsBody setup review on a phone', () => {
+  beforeEach(isolateManifestDrafts);
+  const devenv = { kind: 'toolchain', tool: 'devenv', configPath: 'devenv.nix' } as const;
+  const literal = { kind: 'command', command: 'devenv shell -- true' } as const;
+  const hold = (): ActionOperationSnapshotV1 => ({
+    ...operation('accepted', 2),
+    domainRef: { kind: 'projectCommand', purpose: 'script', serverId: workspace.serverId, machineId: 'm1',
+      workspaceRefId: 'w1', cwd: '/repo', sourceWorkspace: workspace, script: { name: 'verify', source: literal } },
+    setupReview: { kind: 'pendingApproval' as const, code: 'project_setup_consent_required',
+      reviewedEffectDigest: hash, reviewedEffect: { commands: [{ source: literal }] } },
+  });
+  const present = () => {
+    shared.device = 'phone';
+    shared.inspection = {
+      definition: presentDefinition({ version: 1, environment: devenv, scripts: { verify: { source: literal } } }),
+      detection,
+      importCandidates: [],
+    };
+    actionOperationStore.mergeSnapshots({ serverId: workspace.serverId, snapshots: [hold()] });
+  };
+
+  it('keeps the Setup card to the waiting state and pushes the review as its own page with a pinned footer', async () => {
+    present();
+    let back: (() => void) | null = null;
+    const screen = await render('page', 'scripts.setup.reviewEntry', { registerPageBack: (next) => { back = next; } });
+    expect(textOf(screen, 'scripts.setup')).toContain('projects.scripts.environment.pending');
+    // The decision is not made on the card: no review body, scope choice or Run beside the page's rows.
+    expect(screen.findByTestId('scripts.setup.review')).toBeNull();
+    expect(screen.findByTestId('scripts.setup.reviewPage')).toBeNull();
+    await act(async () => { await screen.pressByTestIdAsync('scripts.setup.reviewEntry'); });
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.setup.reviewPage')).toBeTruthy());
+    expect(textOf(screen, 'scripts.setup.reviewPage.title')).toContain('projects.scripts.setup.review');
+    expect(screen.findByTestId('scripts.setup.reviewPage.effect:step:0')).toBeTruthy();
+    const footer = screen.findByTestId('scripts.setup.reviewPage.actions');
+    expect(footer?.findAllByProps({ testID: 'scripts.setup.reviewPage.run' }).length).toBeGreaterThan(0);
+    expect(footer?.findAllByProps({ testID: 'scripts.setup.reviewPage.notNow' }).length).toBeGreaterThan(0);
+    // The Project bar's Back is the page's way out, and the choice made on the page survives it.
+    expect(back).not.toBeNull();
+    await act(async () => { await screen.pressByTestIdAsync('scripts.setup.reviewPage.scope:untilChanged'); });
+    await act(async () => { back?.(); });
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.setup.reviewPage')).toBeNull());
+    expect(back).toBeNull();
+    expect(screen.findByTestId('scripts.setup.reviewEntry')).toBeTruthy();
+    await act(async () => { await screen.pressByTestIdAsync('scripts.setup.reviewEntry'); });
+    await vi.waitFor(() => expect(screen.getTextContent()).toContain('projects.scripts.setup.consequenceUntilChanged'));
+  });
+
+  it('decides on the page like the card does, and leaves the page once the review is decided', async () => {
+    present();
+    const screen = await render('page', 'scripts.setup.reviewEntry', { registerPageBack: () => {} });
+    await act(async () => { await screen.pressByTestIdAsync('scripts.setup.reviewEntry'); });
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.setup.reviewPage')).toBeTruthy());
+    shared.operationRead
+      .mockResolvedValueOnce({ kind: 'found', operation: hold() })
+      .mockResolvedValueOnce({ kind: 'found', operation: { ...hold(), revision: 3, setupReview: undefined } });
+    await act(async () => { await screen.pressByTestIdAsync('scripts.setup.reviewPage.scope:untilChanged'); });
+    await act(async () => { await screen.pressByTestIdAsync('scripts.setup.reviewPage.run'); });
+    await vi.waitFor(() => expect(shared.trustMutations).toEqual([expect.objectContaining({ content: { t: 'plain', v: expect.objectContaining({ reviewedEffectDigest: hash }) } })]));
+    await act(async () => {
+      actionOperationStore.mergeSnapshots({ serverId: workspace.serverId, snapshots: [{ ...hold(), revision: 3, setupReview: undefined, state: 'succeeded' } as never] });
+    });
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.setup.reviewPage')).toBeNull());
+  });
+
+  it('keeps the scope picked on the phone page when the same review widens to the desktop card', async () => {
+    present();
+    let back: (() => void) | null = null;
+    const screen = await render('page', 'scripts.setup.reviewEntry', { registerPageBack: (next) => { back = next; } });
+    await act(async () => { await screen.pressByTestIdAsync('scripts.setup.reviewEntry'); });
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.setup.reviewPage')).toBeTruthy());
+    await act(async () => { await screen.pressByTestIdAsync('scripts.setup.reviewPage.scope:untilChanged'); });
+    await act(async () => { back?.(); });
+    shared.device = null;
+    // The held review is touched again (a later revision), so the row re-reads the device class.
+    await act(async () => {
+      actionOperationStore.mergeSnapshots({ serverId: workspace.serverId, snapshots: [{ ...hold(), revision: 3 }] });
+    });
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.setup.review')).toBeTruthy());
+    expect(screen.getTextContent()).toContain('projects.scripts.setup.consequenceUntilChanged');
+  });
+
+  it('keeps the inline review where no pushed page exists: a desktop page and a compact host', async () => {
+    present();
+    shared.device = null;
+    const screen = await render('page', 'scripts.setup.review');
+    expect(screen.findByTestId('scripts.setup.reviewEntry')).toBeNull();
   });
 });
 
@@ -1478,5 +1864,122 @@ describe('ProjectScriptsBody native previews and tools', () => {
     expect(
       screen.findByTestId('project-manifest-editor.tool:protoc.version'),
     ).toBeNull();
+  });
+});
+
+describe('ProjectScriptsBody native environment states (plan 24 copy)', () => {
+  beforeEach(isolateManifestDrafts);
+  const devenv = { kind: 'toolchain', tool: 'devenv', configPath: 'devenv.nix' } as const;
+  const literal = { kind: 'command', command: 'devenv shell -- true' } as const;
+
+  it.each([
+    ['a selected native environment', devenv, 'projects.scripts.environment.unavailable'],
+    ['the host environment', { kind: 'host' }, 'projects.scripts.run.refused'],
+  ] as const)('reads a missing native tool for %s without leaking its raw code or its earlier output', async (_name, environment, expected) => {
+    shared.inspection = {
+      definition: presentDefinition({ version: 1, environment, scripts: { verify: { source: literal } } }),
+      detection,
+      importCandidates: [],
+    };
+    shared.failures['projects.script.run'] = { ok: false, errorCode: 'native_tool_unavailable', error: 'native_tool_unavailable' };
+    const screen = await render('page', 'scripts.script:verify');
+    await act(async () => { await screen.pressByTestIdAsync('scripts.script:verify.run'); });
+    await vi.waitFor(() => expect(textOf(screen, 'scripts.script:verify.status')).toContain(expected));
+    const status = textOf(screen, 'scripts.script:verify.status');
+    expect(status.includes('projects.scripts.environment.noFallback')).toBe(expected.includes('environment'));
+    // A refusal is the newest fact: the row does not stack a previous run's output under it.
+    expect(screen.findByTestId('scripts.script:verify.noOutput')).toBeNull();
+  });
+
+  it('says a held review of a native environment waits for approval to evaluate it', async () => {
+    shared.inspection = {
+      definition: presentDefinition({ version: 1, environment: devenv, scripts: { verify: { source: literal } } }),
+      detection,
+      importCandidates: [],
+    };
+    const held: ActionOperationSnapshotV1 = {
+      ...operation('accepted', 2),
+      domainRef: { kind: 'projectCommand', purpose: 'script', serverId: workspace.serverId, machineId: 'm1',
+        workspaceRefId: 'w1', cwd: '/repo', sourceWorkspace: workspace, script: { name: 'verify', source: literal } },
+      setupReview: { kind: 'pendingApproval' as const, code: 'project_setup_consent_required', reviewedEffectDigest: hash, reviewedEffect: {} },
+    };
+    shared.responses['projects.script.run'] = { operation: operation('accepted', 1) };
+    const screen = await render('page', 'scripts.script:verify');
+    await act(async () => {
+      await screen.pressByTestIdAsync('scripts.script:verify.run');
+      actionOperationStore.mergeSnapshots({ serverId: workspace.serverId, snapshots: [held] });
+    });
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.setup.review')).toBeTruthy());
+    expect(screen.getTextContent()).toContain('projects.scripts.environment.pending');
+    expect(screen.getTextContent()).not.toContain('projects.scripts.setup.pending');
+  });
+
+  it('shows a review held by a Script run as the Setup card, and every row waits for it', async () => {
+    shared.inspection = {
+      definition: presentDefinition({ version: 1, environment: devenv, scripts: { verify: { source: literal }, lint: { source: literal } } }),
+      detection,
+      importCandidates: [],
+    };
+    // The Run came from before this page loaded (a reload, or another client): nothing here started it.
+    const held: ActionOperationSnapshotV1 = {
+      ...operation('accepted', 2),
+      domainRef: { kind: 'projectCommand', purpose: 'script', serverId: workspace.serverId, machineId: 'm1',
+        workspaceRefId: 'w1', cwd: '/repo', sourceWorkspace: workspace, script: { name: 'verify', source: literal } },
+      setupReview: { kind: 'pendingApproval' as const, code: 'project_setup_consent_required', reviewedEffectDigest: hash, reviewedEffect: {} },
+    };
+    actionOperationStore.mergeSnapshots({ serverId: workspace.serverId, snapshots: [held] });
+    const screen = await render('page', 'scripts.script:verify');
+    await vi.waitFor(() => expect(screen.findByTestId('scripts.setup.review')).toBeTruthy());
+    expect(textOf(screen, 'scripts.setup')).toContain('projects.scripts.environment.pending');
+    // The approval is decided once, on the Setup card; the rows only say what they wait for.
+    expect(textOf(screen, 'scripts.script:verify.status')).toContain('projects.scripts.run.waitsForSetup');
+    expect(textOf(screen, 'scripts.script:verify.status')).not.toContain('projects.scripts.environment.pending');
+    expect(textOf(screen, 'scripts.script:lint.status')).toContain('projects.scripts.run.waitsForSetup');
+  });
+
+  const partialInspection = (diagnostics: { file: string; code: string }[]) => ({
+    definition: presentDefinition({ version: 1, environment: devenv, scripts: { verify: { source: literal } } }),
+    detection: { ...detection, coverage: 'partial', diagnostics },
+    importCandidates: [],
+  });
+
+  it('reads unevaluated Nix as a fact about the environment, not as a failed read with a Retry', async () => {
+    shared.inspection = partialInspection([{ file: 'devenv.nix', code: 'unevaluated_nix' }]);
+    const screen = await render('page', 'scripts.script:verify');
+    expect(screen.getTextContent()).toContain('projects.scripts.environment.unevaluated');
+    expect(screen.getTextContent()).not.toContain('projects.scripts.definition.partial');
+    expect(screen.findByTestId('scripts.partial')).toBeNull();
+  });
+
+  it('still reports a definition that could not be read next to the unevaluated Nix fact', async () => {
+    shared.inspection = partialInspection([{ file: 'devenv.nix', code: 'unevaluated_nix' }, { file: 'Makefile', code: 'unreadable' }]);
+    const screen = await render('page', 'scripts.script:verify');
+    expect(screen.getTextContent()).toContain('projects.scripts.definition.partial');
+    expect(screen.findAllByTestId('scripts.partial').some((node) => JSON.stringify(node.props.details) === '["Makefile: unreadable"]')).toBe(true);
+    expect(screen.getTextContent()).toContain('projects.scripts.environment.unevaluated');
+  });
+
+  it('shows the Form checking while inspection has not reported tools', async () => {
+    shared.inspection = {
+      definition: presentDefinition({ version: 1, environment: devenv }),
+      detection: { ...detection, environments: [devenv] },
+      importCandidates: [],
+    };
+    const screen = await render('page', 'scripts.edit');
+    await act(async () => { await screen.pressByTestIdAsync('scripts.edit'); });
+    await vi.waitFor(() => expect(screen.findByTestId('project-manifest-editor.environment.checking')).toBeTruthy());
+  });
+
+  it('keeps the host as the explicit default when nothing native was detected', async () => {
+    shared.inspection = {
+      definition: presentDefinition({ version: 1, scripts: { test: { source: nativeRef('test') } } }),
+      detection,
+      importCandidates: [],
+      tools: [],
+    };
+    const screen = await render('page', 'scripts.edit');
+    await act(async () => { await screen.pressByTestIdAsync('scripts.edit'); });
+    await vi.waitFor(() => expect(screen.getTextContent()).toContain('projects.scripts.environment.empty'));
+    expect(screen.findByTestId('project-manifest-editor.environment.checking')).toBeNull();
   });
 });

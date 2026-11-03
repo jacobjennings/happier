@@ -22,6 +22,68 @@ function createBase64Decryptor(
 }
 
 describe('SessionEncryption metadata in-flight dedupe', () => {
+    it('distinguishes a failed Agent-state open from authenticated metadata and recovers without poisoning the cache', async () => {
+        const crypto = new SecretBoxEncryption(new Uint8Array(32).fill(7));
+        const wrongCrypto = new SecretBoxEncryption(new Uint8Array(32).fill(8));
+        const sessionEncryption = new SessionEncryption('state-open-evidence', crypto, new EncryptionCache());
+        const metadata = { path: '/repo', host: 'machine' };
+        const encryptedMetadata = await sessionEncryption.encryptMetadata(metadata);
+        const [wrongState] = await wrongCrypto.encrypt([{ controlledByUser: true }]);
+        const encryptedState = await sessionEncryption.encryptAgentState({ controlledByUser: true });
+        const decrypt = vi.spyOn(crypto, 'decrypt');
+
+        await expect(sessionEncryption.decryptSessionSnapshotStateResult(
+            1, encryptedMetadata, 2, Buffer.from(wrongState).toString('base64'),
+        )).resolves.toEqual({ metadata, agentState: { status: 'unavailable' } });
+        expect(decrypt).toHaveBeenCalledTimes(1);
+        expect(decrypt.mock.calls[0][0]).toHaveLength(2);
+
+        await expect(sessionEncryption.decryptSessionSnapshotStateResult(
+            1, encryptedMetadata, 2, encryptedState,
+        )).resolves.toEqual({ metadata, agentState: { status: 'available', value: { controlledByUser: true } } });
+        expect(decrypt).toHaveBeenCalledTimes(2);
+        expect(decrypt.mock.calls[1][0]).toHaveLength(1);
+        await expect(sessionEncryption.decryptAgentState(2, encryptedState)).resolves.toEqual({ controlledByUser: true });
+        expect(decrypt).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps authenticated empty state, explicit clears, omitted state and invalid payloads distinct', async () => {
+        const crypto = new SecretBoxEncryption(new Uint8Array(32).fill(7));
+        const sessionEncryption = new SessionEncryption('state-open-kinds', crypto, new EncryptionCache());
+        const empty = await sessionEncryption.encryptAgentState({});
+        const [invalid, encryptedNull] = await crypto.encrypt([[], null]);
+
+        await expect(sessionEncryption.decryptAgentStateResult(1, empty)).resolves.toEqual({ status: 'available', value: {} });
+        await expect(sessionEncryption.decryptAgentStateResult(2, null)).resolves.toEqual({ status: 'available', value: null });
+        await expect(sessionEncryption.decryptAgentStateResult(2, undefined)).resolves.toEqual({ status: 'unavailable' });
+        for (const payload of [invalid, encryptedNull]) {
+            await expect(sessionEncryption.decryptAgentStateResult(3, Buffer.from(payload).toString('base64')))
+                .resolves.toEqual({ status: 'unavailable' });
+        }
+        const metadata = { path: '/repo', host: 'machine' };
+        const encryptedMetadata = await sessionEncryption.encryptMetadata(metadata);
+        await expect(sessionEncryption.decryptSessionSnapshotStateResult(1, encryptedMetadata, 2, null))
+            .resolves.toEqual({ metadata, agentState: { status: 'available', value: null } });
+        await expect(sessionEncryption.decryptSessionSnapshotStateResult(1, encryptedMetadata, 2, undefined))
+            .resolves.toEqual({ metadata, agentState: { status: 'unavailable' } });
+        await expect(sessionEncryption.decryptSessionSnapshotStateResult(1, encryptedMetadata, 3, Buffer.from(invalid).toString('base64')))
+            .resolves.toEqual({ metadata, agentState: { status: 'unavailable' } });
+    });
+
+    it('does not publish Agent-state open evidence from a retired Session reader', async () => {
+        const crypto = new SecretBoxEncryption(new Uint8Array(32).fill(7));
+        let current = true;
+        const sessionEncryption = new SessionEncryption('state-open-retired', crypto, new EncryptionCache(), null, () => current);
+        const encrypted = await sessionEncryption.encryptAgentState({ controlledByUser: true });
+        const pending = sessionEncryption.decryptAgentStateResult(1, encrypted);
+        current = false;
+        await expect(pending).resolves.toEqual({ status: 'unavailable' });
+        await expect(sessionEncryption.decryptAgentStateResult(1, null)).resolves.toEqual({ status: 'unavailable' });
+        current = true;
+        await expect(sessionEncryption.decryptAgentStateResult(1, encrypted))
+            .resolves.toEqual({ status: 'available', value: { controlledByUser: true } });
+    });
+
     it('seals a released-UI-safe flat Herdr projection and opens only the canonical host selectors', async () => {
         const metadata = {
             path: '/repo', host: 'machine', name: 'renamed',

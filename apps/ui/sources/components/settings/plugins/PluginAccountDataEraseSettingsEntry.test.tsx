@@ -113,7 +113,6 @@ vi.mock('./NpmRegistryProfilesSection', () => ({ NpmRegistryProfilesSection: 'Np
 vi.mock('./NativeAppPluginPanelsSettingsEntry', () => ({ NativeAppPluginPanelsSettingsEntry: 'NativeAppPluginPanelsSettingsEntry' }));
 vi.mock('./PluginAppPagesSettingsEntry', () => ({ PluginAppPagesSettingsEntry: 'PluginAppPagesSettingsEntry' }));
 
-vi.mock('./detail/PluginDetailActionsSection', () => ({ PluginDetailActionsSection: 'PluginDetailActionsSection' }));
 vi.mock('./detail/PluginDetailContributionsSection', () => ({ PluginDetailContributionsSection: 'PluginDetailContributionsSection' }));
 vi.mock('./detail/PluginDetailDiagnosticsSection', () => ({ PluginDetailDiagnosticsSection: 'PluginDetailDiagnosticsSection' }));
 vi.mock('./detail/PluginDetailGenericSettingsSection', () => ({
@@ -122,7 +121,6 @@ vi.mock('./detail/PluginDetailGenericSettingsSection', () => ({
         return null;
     },
 }));
-vi.mock('./detail/PluginDetailSummaryGrid', () => ({ PluginDetailSummaryGrid: 'PluginDetailSummaryGrid' }));
 
 function createState() {
     return {

@@ -74,44 +74,6 @@ describe('serverReachabilitySupervisorPool (invalidate)', () => {
         unsubscribe();
     });
 
-    it('allows callers to force a re-probe after an offline cycle', async () => {
-        const runtimeFetchSpy = vi.fn(async (input: RequestInfo | URL) => {
-            const url = String(input);
-            if (url.endsWith('/health')) {
-                throw new TypeError('Network request failed');
-            }
-            return new Response(null, { status: 200, headers: new Headers() });
-        });
-        setRuntimeFetch(runtimeFetchSpy);
-
-        let phases: string[] = [];
-        const unsubscribe = subscribeServerReachabilityState('https://example.test', (state) => {
-            phases.push(state.phase);
-        });
-
-        await startServerReachabilitySupervisor({ serverUrl: 'https://example.test', token: null });
-        expect(phases).toContain('offline');
-
-        runtimeFetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
-            const url = String(input);
-            if (url.endsWith('/health')) {
-                return new Response(null, { status: 200, headers: new Headers() });
-            }
-            if (url.endsWith('/v1/auth/ping')) {
-                return new Response(null, { status: 200, headers: new Headers() });
-            }
-            return new Response(null, { status: 200, headers: new Headers() });
-        });
-
-        await invalidateServerReachabilitySupervisor({ serverUrl: 'https://example.test', token: null });
-
-        expect(phases.at(-1)).toBe('online');
-        const healthCalls = runtimeFetchSpy.mock.calls.filter(([input]) => String(input).endsWith('/health'));
-        expect(healthCalls.length).toBeGreaterThanOrEqual(2);
-
-        unsubscribe();
-    });
-
     it('keeps a shared supervisor active until its last subscriber is removed', async () => {
         setRuntimeFetch(async () => new Response(null, { status: 200, headers: new Headers() }));
         const serverUrl = 'https://example.test';

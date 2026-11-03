@@ -21,6 +21,30 @@ import { prepareExternalActionResponseEnvelopeV1 } from './externalActionApi.js'
 import { compileProtocolJsonSchema } from '../plugins/actions/jsonSchemaCompiler.js';
 
 describe('actionCatalog action-definition adapter', () => {
+  it.each([
+    ['session.open', { sessionId: `c${'a'.repeat(24)}` }],
+    ['ui.voice_global.history.search', {}],
+    ['settings.get', { anchor: 'voiceConversations.mode' }],
+    ['ui.find', { op: 'read' }],
+  ] as const)('admits and advertises exact client choice for %s while preserving domain validation', (id, input) => {
+    const spec = getActionSpec(id);
+    const selected = { ...input, clientId: 'app-b' };
+    const parsed = spec.inputSchema.safeParse(selected);
+    expect(parsed, parsed.success ? undefined : JSON.stringify(parsed.error.issues)).toMatchObject({ success: true, data: selected });
+    const domainUnknown = spec.clientActionDomainInputSchema!.safeParse({ ...input, extraUnknownField: true }).success;
+    expect(spec.inputSchema.safeParse({ ...selected, extraUnknownField: true }).success).toBe(domainUnknown);
+    expect(spec.inputSchema.safeParse({ ...input, clientId: '' }).success).toBe(false);
+    const definition = actionSpecToActionDefinitionV1(spec);
+    const validate = compileProtocolJsonSchema(definition.inputSchema, 'draft-07');
+    expect(validate(selected)).toBe(true);
+    expect(validate({ ...input, clientId: 123 })).toBe(false);
+  });
+  it('projects the client selector for every client-routable Action through the single catalog owner', () => {
+    for (const spec of listActionSpecs().filter(spec => spec.executionPlacement === 'client'
+      || spec.executionPlacements?.includes('client'))) {
+      expect(JSON.stringify(actionSpecToActionDefinitionV1(spec).inputSchema), spec.id).toContain('"clientId"');
+    }
+  });
   it('preserves declared confirmation facts through serialization and strict discovery', () => {
     const spec = { ...getActionSpec('session.delete'), confirmVerb: { key: 'common.delete', fallback: 'Delete' }, irreversible: true as const };
     const definition = actionSpecToActionDefinitionV1(spec);

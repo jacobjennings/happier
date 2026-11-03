@@ -39,6 +39,7 @@ import { voiceConversationRuntimeMachine } from '@/voice/runtime/machine/VoiceCo
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { VoiceBriefBlock, VoiceBriefButton, VoiceBriefList } from './VoiceBrief';
 import { buildVoiceBrief } from '@/voice/context/buildVoiceBrief';
+import { formatVoiceApprovalGuidance } from '@/voice/context/contextFormatters';
 import { buildActivityOverviewSnapshot } from '@/activity/attention/buildActivityOverviewSnapshot';
 import { buildInboxSessionPresentation } from '@/activity/presentation/buildInboxSessionPresentation';
 import { EMPTY_WORKFLOW_ATTENTION_SOURCE } from '@/hooks/inbox/useWorkflowAttentionSource';
@@ -117,7 +118,6 @@ async function transport() {
         ? peers.length : Math.max(0, peers.length - 1));
     return { adapter, starts,
         get spoken() { return messages('user'); },
-        get contexts() { return messages('system').filter(value => value.includes('"approval":"tap_only"')); },
         get interrupted() { return peers.flatMap((peer, index) => peer.channel.sent.flatMap(value => JSON.parse(value).type === 'response.cancel' ? [starts[index]!.controlSessionId] : [])); },
         async waitForSpoken() {
             const peer = await usablePeer();
@@ -290,10 +290,10 @@ function Presentation() {
     const voice = useVoiceAttemptControl(VOICE_ATTEMPT_IDLE_TARGET_GLOBAL);
     return <VoiceTopBarPresence voice={voice} />;
 }
-async function selectService() {
+async function selectService(canApproveRequests = true) {
     const recipient = createBundledVoiceRecipientContract({ pluginId: entry.pluginId, declaration: entry.declaration });
     if (!recipient) throw new Error('OpenAI recipient contract is missing');
-    const voice = voiceSettingsParse({ providerId: entry.providerId, welcome: { enabled: false }, providers: { [entry.providerId]: { schemaVersion: 1, config: OPENAI_REALTIME_DEFAULT_SETTINGS } } });
+    const voice = voiceSettingsParse({ providerId: entry.providerId, canApproveRequests, welcome: { enabled: false }, providers: { [entry.providerId]: { schemaVersion: 1, config: OPENAI_REALTIME_DEFAULT_SETTINGS } } });
     const saved = saveAndUseAccountVoiceCredential({ settings: settingsParse({ ...storage.getState().settings, voiceSettingsV1: voice }),
         contribution: { pluginId: entry.pluginId, localId: entry.declaration.id }, credentialSlotId: recipient.credentialSlot.id,
         expectedSettingsVersion: 1, currentDeclaration: entry.declaration, value: 'sk_brief', generateId: () => 'brief-secret', now: 1,
@@ -302,6 +302,13 @@ async function selectService() {
         mutation: { contribution: { pluginId: entry.pluginId, localId: entry.declaration.id }, credentialSlotId: recipient.credentialSlot.id, expectedSettingsVersion: 1, selection: { kind: 'savedSecret' } } });
     await act(async () => storage.setState({ settings: { ...selected.settings, voice: { ...voice, credentialBindings: selected.settings.voice.credentialBindings } } }));
     expect(storage.getState().settings.voice.providerId).toBe(entry.providerId);
+}
+
+function expectApprovalGuidance(message: string | undefined, canApproveRequests = true) {
+    // Assert the complete canonical field, including its Native Codex exception,
+    // without copying the formatter's policy prose into this composed test.
+    const expected = JSON.stringify({ approval: formatVoiceApprovalGuidance(canApproveRequests) });
+    expect(message).toContain(expected.slice(1, -1));
 }
 
 describe('mounted Voice Brief request', () => {
@@ -441,7 +448,7 @@ describe('mounted Voice Brief request', () => {
         expect(speech.starts).toHaveLength(1);
         await act(async () => speech.connect());
         expect(speech.spoken).toHaveLength(1);
-        expect(speech.spoken[0]).toContain('"approval":"tap_only"');
+        expectApprovalGuidance(speech.spoken[0]);
         await act(async () => { outcome = executeVoiceBriefOperation('close'); });
         expect(outcome).toEqual({ ok: true, result: { status: 'closed', attemptId: getVoiceSessionPresentedAttemptId() } });
         expect(screen.findByTestId('voice-brief')).toBeNull();
@@ -469,7 +476,7 @@ describe('mounted Voice Brief request', () => {
         await act(async () => { outcome = executeVoiceBriefOperation('request', { expectedAttemptId: attemptId! }); });
         expect(outcome).toEqual({ ok: true, result: { status: 'sent', attemptId } });
         expect(speech.spoken).toHaveLength(2);
-        expect(speech.spoken[1]).toContain('"approval":"tap_only"');
+        expectApprovalGuidance(speech.spoken[1]);
         await act(async () => speech.startOutput());
         await act(async () => { outcome = executeVoiceBriefOperation('stop', { expectedAttemptId: attemptId! }); });
         expect(outcome).toEqual({ ok: true, result: { status: 'waiting', attemptId } });
@@ -565,9 +572,9 @@ describe('mounted Voice Brief request', () => {
         await act(async () => speech.connect());
         expect(speech.spoken).toHaveLength(2);
     });
-    it('keeps Retry after a pending start ends without an error and delivers the retried Brief once', async () => {
+    it.each([true, false])('keeps Retry after a pending start ends without an error and delivers the retried Brief once (Voice approvals=%s)', async (canApproveRequests) => {
         const speech = await installTransport();
-        await selectService();
+        await selectService(canApproveRequests);
         screen = await renderScreen(render());
         await speech.waitForStarts(1);
         await act(async () => lifecycle?.stop(VOICE_AGENT_GLOBAL_SESSION_ID));
@@ -578,7 +585,7 @@ describe('mounted Voice Brief request', () => {
         await speech.waitForStarts(2);
         await act(async () => speech.connect());
         expect(speech.spoken).toHaveLength(1);
-        expect(speech.spoken[0]).toContain('"approval":"tap_only"');
+        expectApprovalGuidance(speech.spoken[0], canApproveRequests);
     });
 
     it('keeps the list with setup recovery, then explicitly retries one global start and delivers once on connect', async () => {
@@ -606,7 +613,7 @@ describe('mounted Voice Brief request', () => {
         await act(async () => screen?.update(render()));
         await act(async () => speech.connect());
         expect(speech.spoken).toHaveLength(1);
-        expect(speech.spoken[0]).toContain('"approval":"tap_only"');
+        expectApprovalGuidance(speech.spoken[0]);
     });
 
     it('offers terminal failure recovery on the same global target and delivers once on reconnect', async () => {

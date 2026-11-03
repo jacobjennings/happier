@@ -52,7 +52,7 @@ describe.skipIf(process.platform !== 'linux')('offline Stop through physical exi
       let online = wiring === 'mode-only' || unreported;
       let retired = false;
       let retirementResult: Awaited<ReturnType<typeof retireExactTerminalControlServiceability>> | undefined;
-      const raw = createSessionRecordFixture({ id: sessionId, encryptionMode: 'plain', metadataLayoutVersion: 0,
+      const raw = createSessionRecordFixture({ id: sessionId, share: null, encryptionMode: 'plain', metadataLayoutVersion: 0,
         metadataVersion: 1, metadata: JSON.stringify({ path: homeDir, machineId: 'fixture-machine',
           hostPid: nativeChild?.pid ?? pid, hostProcessStartTimeMs: nativeIdentity?.processStartTimeMs ?? identity.processStartTimeMs,
           ...(modeOnly ? { terminal: { mode: 'tmux' } } : {}),
@@ -70,14 +70,28 @@ describe.skipIf(process.platform !== 'linux')('offline Stop through physical exi
       const patch = vi.spyOn(axios, 'patch').mockImplementation(async (_url, body) => {
         if (!online) throw refusal();
         const parsed = SessionMetadataTuplePatchV1Schema.parse(body);
-        if (modeOnly) expect(parsed).toMatchObject({ mode: 'owner_migration', target: { ownerMetadata: { t: 'plain', v: { runtime: {
+        // Migration preserves the legacy tuple; the following owner write retires it.
+        if (parsed.mode === 'owner_migration') {
+          raw.metadataLayoutVersion = 1;
+          raw.metadata = parsed.target.sharedMetadata.ciphertext;
+          raw.ownerMetadata = parsed.target.ownerMetadata;
+          raw.agentState = parsed.target.agentState.ciphertext;
+          raw.metadataVersion += 1;
+          return { ...response, data: { success: true, metadataLayoutVersion: 1,
+            sharedMetadata: { version: raw.metadataVersion }, agentState: { version: raw.agentStateVersion } } };
+        }
+        if (parsed.mode !== 'owner') throw new Error('Expected an owner retirement write');
+        if (modeOnly) expect.soft(parsed).toMatchObject({ mode: 'owner', ownerMetadata: { t: 'plain', v: { runtime: {
           lifecycleState: 'stopped', lifecycleStateSince: expect.any(Number), terminal: { mode: 'tmux' },
-        } } } } });
-        else expect(parsed).toMatchObject({ mode: 'owner_migration', target: { ownerMetadata: { t: 'plain', v: { runtime: {
+        } } } });
+        else expect.soft(parsed).toMatchObject({ mode: 'owner', ownerMetadata: { t: 'plain', v: { runtime: {
           terminal: { mode: wiring === 'missing-owned-host' ? 'tmux' : 'plain', controlServiceabilityV1: {
-            retired: true, ...(wiring === 'missing-owned-host' ? { attachmentId: 'retired-owned-host' } : {}) } } } } } } });
+            retired: true, ...(wiring === 'missing-owned-host' ? { attachmentId: 'retired-owned-host' } : {}) } } } } } });
+        raw.ownerMetadata = parsed.ownerMetadata;
+        raw.agentState = parsed.agentState.ciphertext;
         retired = true;
-        return { ...response, data: { success: true, metadataLayoutVersion: 1, sharedMetadata: { version: 2 }, agentState: { version: 0 } } };
+        return { ...response, data: { success: true, metadataLayoutVersion: 1,
+          sharedMetadata: { version: raw.metadataVersion }, agentState: { version: raw.agentStateVersion } } };
       });
       const machine = {
         captureMachineSessionTerminal: async () => {
@@ -94,23 +108,26 @@ describe.skipIf(process.platform !== 'linux')('offline Stop through physical exi
         onFinalTrackedSessionExitStaged: async () => {
           await resolveTrackedSessionTerminalHostExitCandidate({ tracked, pid, happyHomeDir: homeDir, attachmentInfo: null });
         } });
-      const retire = async (stoppedAt?: number) => {
+      const retire = async (stoppedAt?: number, expectedRunner = { pid, startTimeMs: identity.processStartTimeMs }) => {
         const input = { credentials: { token: 'fixture', encryption: null }, sessionId, terminalMode: 'plain' as const,
-          expectedRunner: { pid, startTimeMs: identity.processStartTimeMs }, stoppedAt };
+          expectedRunner, stoppedAt };
         const retirement = await retireExactTerminalControlServiceability(input);
         retirementResult = retirement;
         expect(retirement).toBe(unreported ? 'superseded' : 'retired');
         return retirement;
       };
-      const observeExit = async ({ trackedPids }: { trackedPids: readonly number[] }) =>
+      const observeExit = async ({ trackedPids }: { trackedPids: readonly number[] }, onExitObserved?: typeof onExit) =>
         await waitForTrackedRunnerProcessesExit({ runners: trackedPids.map(pid => ({ pid })), timeoutMs: 0, pollIntervalMs: 0,
-          onExitObserved: onExit });
+          onExitObserved });
       try {
         if (wiring !== 'live-child') { child.kill('SIGTERM'); await exited; }
         if (wiring === 'unreported-dead-runner') { nativeChild!.kill('SIGTERM'); await nativeExited; }
         const stop = createStopSession({ pidToTrackedSession: sessions, areTrackedRunnersExited: observeExit,
-          waitForTrackedRunnersExit: observeExit, retireAbsentTerminalControlServiceability: ({ stoppedAt }) =>
-            retireStoppedPlainRunnerControlServiceability({ sessionId, trackedSession: tracked, publishRetirement: () => retire(stoppedAt) }),
+          waitForTrackedRunnersExit: async input => await observeExit(input, onExit)
+            && input.trackedPids.every(pid => !sessions.has(pid)),
+          retireAbsentTerminalControlServiceability: ({ stoppedAt }) =>
+            retireStoppedPlainRunnerControlServiceability({ sessionId, trackedSession: tracked,
+              publishRetirement: expectedRunner => retire(stoppedAt, expectedRunner) }),
           recoverStrandedTerminalControlServiceability: input => recoverStrandedTerminalControlServiceability({
             ...input, credentials: { token: 'fixture', encryption: null }, currentMachineId: 'fixture-machine',
             loadTerminalHostAdapters: async () => ({}),
@@ -144,18 +161,22 @@ describe.skipIf(process.platform !== 'linux')('offline Stop through physical exi
         } else if (wiring === 'bound' || wiring === 'missing-owned-host' || wiring === 'mode-only-offline'
             || wiring === 'terminal-started-offline') {
           expect(result).toEqual({ status: 'stopped' });
-          expect(sessions.size).toBe(0);
+          // This fixture's zero-budget probe may finish before exit staging.
+          // Join that existing lifecycle before driving connected-edge recovery.
+          await onExit(pid, { reason: 'process-missing', code: null, signal: null });
+          expect(sessions.has(pid)).toBe(false);
           expect(await readSessionMarkerForPid(pid)).toMatchObject({ happySessionId: sessionId, processStartTimeMs: identity.processStartTimeMs });
           online = true;
-          const recovery = await reattachTrackedSessionsFromMarkers({ pidToTrackedSession: sessions });
-          expect(recovery.orphanedDeadDaemonSessions).toHaveLength(1);
-          expect(await readOrphanedDeadPlainRunnerMarkers()).toEqual(recovery.orphanedDeadDaemonSessions);
-          const input = { apiMachine: machine, orphanedDeadDaemonSessions: recovery.orphanedDeadDaemonSessions,
+          // Reconnect scans disk independently of retained in-memory custody;
+          // startup reattachment's already-adopted flag is not physical liveness.
+          const orphanedDeadDaemonSessions = await readOrphanedDeadPlainRunnerMarkers();
+          expect(orphanedDeadDaemonSessions).toEqual([{ pid, sessionId, processStartTimeMs: identity.processStartTimeMs }]);
+          const input = { apiMachine: machine, orphanedDeadDaemonSessions,
             retireTerminalControlServiceability: async () => { await retire(); } };
           // Machine finality is reachable before the metadata HTTP path. Its
           // success alone must not erase the remaining retirement obligation.
           get.mockRejectedValueOnce(refusal());
-          expect(await publishOrphanedStartupSessionEnds(input)).toEqual(recovery.orphanedDeadDaemonSessions);
+          expect(await publishOrphanedStartupSessionEnds(input)).toEqual(orphanedDeadDaemonSessions);
           expect(await readSessionMarkerForPid(pid)).not.toBeNull();
           expect(await publishOrphanedStartupSessionEnds(input)).toEqual([]);
           expect(retired).toBe(!modeOnly);

@@ -1085,20 +1085,18 @@ export function registerSessionClientRuntimeHandlers(
             // Public Session RPC carries role identity, never private admission
             // facts. Materialize them here from this exact Session/Home owner.
             if (context.authority !== 'present_user') return null;
-            const credentials = await readOwnerAccountCredentials();
+            const roleParams = await resolveCredentialedRoleParams(context.signal);
+            if (!roleParams) {
+                context.recordActionStartDiagnostic?.({ phase: 'agent_start_context', refusalReason: 'role_overrides_unavailable' });
+                return null;
+            }
             const deps = createCliActionDeps({
-                token: params.token,
-                ...(credentials ? { credentials } : {}),
-                serverId: approvalServerId, serverHttpBaseUrl: approvalServerApiUrl,
-                sessionId: params.sessionId,
+                ...roleParams,
                 rawSession: { machineId: sessionMachineId, path: workingDirectory, workDepth: 0 },
-                getCurrentSessionMetadata: params.getSessionMetadata,
                 getCurrentSessionBackendTarget: () => parentSessionForTools?.getBackendTarget?.() ?? null,
-                readRoleSources: params.readRoleSources ?? parentSessionForTools?.readRoleSources,
-                actionsSettingsProvider, ...transcriptTransportContext,
             });
-            return await deps.resolveAgentStartContext?.({ ...context,
-                defaultSessionId: params.sessionId, callerPermissionMode: 'yolo' }) ?? null;
+            return await runWithServerHttpBaseUrl(approvalServerApiUrl, () => deps.resolveAgentStartContext?.({ ...context,
+                defaultSessionId: params.sessionId, callerPermissionMode: 'yolo' }) ?? null);
         },
         serverId: approvalServerId,
         resolveReviewCommentActor: () => {

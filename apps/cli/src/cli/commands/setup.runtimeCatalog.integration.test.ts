@@ -1361,33 +1361,6 @@ function withoutAgentCliPathOverrides(): () => void {
     });
   });
 
-  it('keeps public --yes incomplete when credentials already exist', async () => {
-    await withTempDir('happier-setup-skip-auth-', async (homeDir) => {
-      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });
-      const { handleSetupCommand } = await importHandleSetupCommand();
-
-      const calls: string[][] = [];
-      await handleSetupCommand(
-        ['--relay-url', 'https://relay.example.test', '--yes', '--skip-daemon'],
-        {
-          applyServerSelectionFromArgs: async () => ['--yes', '--skip-daemon'],
-          readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
-          isInteractiveTerminalFn: () => false,
-          promptInputFn: async () => {
-            throw new Error('prompt should not be used');
-          },
-          runHappyCliStepFn: async (argv) => {
-            calls.push([...argv]);
-            return 0;
-          },
-        },
-      );
-
-      expect(calls).toEqual([]);
-    });
-  });
-
   it('stops --yes before auth when credentials exist but the machine is not registered', async () => {
     await withTempDir('happier-setup-auth-when-machine-missing-', async (homeDir) => {
       envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });

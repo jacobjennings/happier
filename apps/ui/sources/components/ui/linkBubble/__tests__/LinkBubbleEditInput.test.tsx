@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { act } from 'react';
-import { TextInput } from 'react-native';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 
@@ -15,11 +14,6 @@ vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock({ translate: (key: string) => key });
 });
-
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: (props: { children?: React.ReactNode }) => React.createElement('Text', props, props.children),
-    TextInput: (props: React.ComponentProps<typeof TextInput>) => React.createElement(TextInput, props),
-}));
 
 describe('LinkBubbleEditInput', () => {
     it('renders a text input pre-filled with the initial href', async () => {

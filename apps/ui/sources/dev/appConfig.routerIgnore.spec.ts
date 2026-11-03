@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
@@ -33,10 +33,6 @@ describe('expo-router route hygiene', () => {
         // module contexts in an order that would otherwise cause shadowing.
         const layoutPrefixed = entries.filter((name) => name.startsWith('_layout.'));
         expect(layoutPrefixed).toEqual(['_layout.tsx']);
-
-        // Test helpers must live outside of `sources/app` so they can't accidentally become routes/layouts.
-        expect(existsSync(resolve(appGroupDir, '_layout.testHelpers.ts'))).toBe(false);
-        expect(existsSync(resolve(__dirname, 'testkit/rootLayoutTestkit.ts'))).toBe(true);
     });
 
     it('does not allow non-route modules at the router root (they become top-level routes)', () => {

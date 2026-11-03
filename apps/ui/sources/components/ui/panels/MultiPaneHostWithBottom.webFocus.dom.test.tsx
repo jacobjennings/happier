@@ -4,7 +4,7 @@
 import * as React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FocusReturnTarget } from '@/keyboard/focusReturn';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -28,35 +28,11 @@ vi.mock('react-native-unistyles', async () => {
     return createUnistylesMock();
 });
 
-vi.mock('./MultiPaneHost', () => ({
-    MultiPaneHost: (props: Readonly<{ main: React.ReactNode }>) => (
-        <div data-testid="bottom-main-host">{props.main}</div>
-    ),
-}));
-
-vi.mock('./resizable/ResizableDockedPaneVertical', () => ({
-    ResizableDockedPaneVertical: (props: React.PropsWithChildren<Readonly<{ testID?: string }>>) => (
-        <div data-testid={props.testID}>{props.children}</div>
-    ),
-}));
-
-vi.mock('./motion/usePaneAnimatedPresence', () => ({
-    usePaneAnimatedPresence: (input: Readonly<{ targetOpen: boolean; node: React.ReactNode }>) => ({
-        present: input.targetOpen,
-        node: input.targetOpen ? input.node : null,
-        progress: { interpolate: () => 0 },
-    }),
-}));
-
-vi.mock('./motion/PaneAnimatedScrimPressable', () => ({
-    PaneAnimatedScrimPressable: (props: Readonly<{ testID?: string; onPress?: () => void }>) => (
-        <button data-testid={props.testID} onClick={props.onPress}>Dismiss</button>
-    ),
-}));
-
-vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
-    useReducedMotionPreference: () => true,
-}));
+// Keep the host, resize, animation and focus ownership real; reduced motion is an OS boundary.
+const { MultiPaneHostWithBottom } = await import('./MultiPaneHostWithBottom');
+beforeEach(() => vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query === '(prefers-reduced-motion: reduce)', addEventListener() {}, removeEventListener() {},
+})));
 
 type MountedSurface = Readonly<{
     render: (input: Readonly<{
@@ -74,6 +50,7 @@ afterEach(async () => {
     while (mountedSurfaces.length > 0) {
         await mountedSurfaces.pop()?.unmount();
     }
+    vi.unstubAllGlobals();
 });
 
 describe('MultiPaneHostWithBottom web focus', () => {
@@ -86,16 +63,20 @@ describe('MultiPaneHostWithBottom web focus', () => {
         await surface.render({ bottomOpen: true, includeTrigger: true });
 
         const overlay = requireElement('multi-pane-bottom-overlay');
-        const firstAction = requireElement<HTMLButtonElement>('bottom-focus-first-action');
         const lastAction = requireElement<HTMLButtonElement>('bottom-focus-last-action');
+        const resizeHandle = overlay.querySelector<HTMLElement>('[role="slider"]');
         expect(document.activeElement).toBe(overlay);
         expect(overlay.getAttribute('role')).toBe('dialog');
         expect(overlay.getAttribute('aria-modal')).toBe('true');
         expect(requireElement('multi-pane-bottom-underlay').hasAttribute('inert')).toBe(true);
+        expect(overlay.contains(requireElement('bottom-focus-first-action'))).toBe(true);
+        expect(resizeHandle).not.toBeNull();
 
-        lastAction.focus();
-        dispatchTab();
-        expect(document.activeElement).toBe(firstAction);
+        // The real leading resize handle participates in the same modal cycle.
+        await act(async () => { lastAction.focus(); dispatchTab(); });
+        expect(document.activeElement).toBe(resizeHandle);
+        await act(async () => { dispatchTab(true); });
+        expect(document.activeElement).toBe(lastAction);
 
         await surface.render({ bottomOpen: false, includeTrigger: true });
         expect(document.activeElement).toBe(trigger);
@@ -145,7 +126,6 @@ async function mountSurface(initialInput: Readonly<{
     includeTrigger: boolean;
     bottomPresentation?: 'docked' | 'overlay';
 }>): Promise<MountedSurface> {
-    const { MultiPaneHostWithBottom } = await import('./MultiPaneHostWithBottom');
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -205,9 +185,10 @@ function requireElement<TElement extends HTMLElement = HTMLElement>(testId: stri
     return element;
 }
 
-function dispatchTab(): void {
+function dispatchTab(shiftKey = false): void {
     document.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'Tab',
+        shiftKey,
         bubbles: true,
         cancelable: true,
     }));

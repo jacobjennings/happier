@@ -1,13 +1,14 @@
 import { chmodSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configuration, reloadConfiguration } from '../../configuration';
 import type { DaemonServiceListEntry } from '../../daemon/service/cli';
 import { createEnvKeyScope } from '../../testkit/env/envScope';
 import { createTempDir, removeTempDir } from '../../testkit/fs/tempDir';
 import { captureConsoleLogAndMuteStdout } from '../../testkit/logger/captureOutput';
+import { commandRegistry } from '../commandRegistry';
 
 let mockedPreparedPayloadRoot = '';
 let mockedRelayUrl = 'http://127.0.0.1:3005';
@@ -111,7 +112,6 @@ async function runRelay(args: readonly string[]): Promise<string[]> {
     const prevExitCode = process.exitCode;
     process.exitCode = undefined;
     try {
-        const { commandRegistry } = await import('../commandRegistry');
         const argv = ['relay', ...args];
         await commandRegistry.relay({
             args: argv,
@@ -134,12 +134,7 @@ describe('happier relay background service reconciliation', () => {
     let preparedPayloadRoot = '';
     let envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
 
-    beforeAll(async () => {
-        await import('../commandRegistry');
-    }, 900_000);
-
     beforeEach(async () => {
-        vi.resetModules();
         mockedRelayUrl = 'http://127.0.0.1:3005';
         mockedInteractive = false;
         promptAnswers = [];

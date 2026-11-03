@@ -15,7 +15,6 @@ import {
     resolveSocketIoTransportsForCarrier,
 } from '@/sync/runtime/socketIoTransports';
 import {
-    reportServerUnreachable,
     startServerReachabilitySupervisor,
     acquireServerReachabilitySupervisor,
     subscribeServerReachabilityNetworkAllowed,
@@ -47,7 +46,6 @@ type ReachabilityDeps = Readonly<{
     acquireReachability?: (params: Readonly<{ serverUrl: string; runtimeOrigin: string; token: string; homeCarrier?: HomeCarrier | null; signal?: AbortSignal }>) => Promise<Readonly<{ release: () => Promise<void> }>>;
     startReachability: (params: Readonly<{ serverUrl: string; token: string }>) => Promise<void>;
     waitForReachable: (params: Readonly<{ serverUrl: string; token: string; timeoutMs?: number; signal?: AbortSignal; homeIdentityId?: string; homeCarrier?: HomeCarrier | null }>) => Promise<void>;
-    reportUnreachable: (serverUrl: string, error: unknown, token: string) => void;
     subscribeNetworkAllowed: (listener: (allowed: boolean) => void) => () => void;
 }>;
 
@@ -84,7 +82,6 @@ type PoolEntry = {
     transport: ReturnType<typeof createSocketTransportAdapter>;
     inUseCount: number;
     connectInFlight: { result: Promise<void>; controller: AbortController; waiters: number; progress: { phase: ScopedRpcSocketConnectionPhase } } | null;
-    intentionalDisconnect: boolean;
     idleDisconnectTimer: ReturnType<typeof setTimeout> | null;
     reachabilityRelease: (() => Promise<void>) | null;
     /**
@@ -97,8 +94,6 @@ type PoolEntry = {
     teardownRequested: boolean;
     teardownInFlight: Promise<void> | null;
 };
-
-const INTENTIONAL_DISCONNECT_FLAG_RESET_MS = 1_000;
 
 function normalizeServerUrl(raw: unknown): string {
     const input = String(raw ?? '').trim();
@@ -173,7 +168,6 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
                     homeCarrier: params.homeCarrier ?? null,
                 });
             },
-            reportUnreachable: (serverUrl, error, token) => reportServerUnreachable(serverUrl, error, token),
             subscribeNetworkAllowed: subscribeServerReachabilityNetworkAllowed,
         },
         now: overrides?.now ?? (() => Date.now()),
@@ -206,16 +200,11 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
     ) => `${buildKey(reachabilityServerUrl, token)}::${homeIdentityId ?? ''}::${serverUrl}::${carrier}::${homeCarrier?.endpointId ?? ''}`;
 
     const disconnectEntrySocket = async (entry: PoolEntry): Promise<void> => {
-        entry.intentionalDisconnect = true;
         try {
             await entry.transport.disconnect({ intentional: true });
         } catch {
             // Teardown still owns releasing reachability and carrier custody.
         }
-        // Socket.IO adapters may publish the intentional disconnect asynchronously.
-        setTimeout(() => {
-            entry.intentionalDisconnect = false;
-        }, INTENTIONAL_DISCONNECT_FLAG_RESET_MS);
     };
 
     const stopEntrySocket = (entry: PoolEntry, remove: boolean): Promise<void> => {
@@ -281,6 +270,24 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
         }, idleMs);
     };
 
+    const retainEntryUse = (entry: PoolEntry): void => {
+        entry.inUseCount += 1;
+        if (entry.idleDisconnectTimer) {
+            clearTimeout(entry.idleDisconnectTimer);
+            entry.idleDisconnectTimer = null;
+        }
+    };
+
+    const releaseEntryUse = (entry: PoolEntry): void => {
+        entry.inUseCount = Math.max(0, entry.inUseCount - 1);
+        if (entry.inUseCount > 0 || entry.teardownRequested) return;
+        if (entry.backgroundTask) {
+            fireAndForget(stopEntrySocket(entry, true), { tag: 'scoped-rpc-background-disconnect' });
+        } else {
+            scheduleIdleDisconnect(entry);
+        }
+    };
+
     const createEntry = (
         serverUrl: string,
         reachabilityServerUrl: string,
@@ -305,7 +312,6 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             transport,
             inUseCount: 0,
             connectInFlight: null,
-            intentionalDisconnect: false,
             idleDisconnectTimer: null,
             reachabilityRelease: null,
             carrierRelease,
@@ -313,20 +319,6 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             teardownRequested: false,
             teardownInFlight: null,
         };
-
-        socket.on('disconnect', (reason: unknown) => {
-            if (entry.intentionalDisconnect) {
-                entry.intentionalDisconnect = false;
-                return;
-            }
-            if (!entry.backgroundTask) deps.reachability.reportUnreachable(reachabilityServerUrl, new Error(typeof reason === 'string' ? reason : 'socket disconnect'), token);
-        });
-        socket.on('connect_error', (error: unknown) => {
-            if (!entry.backgroundTask) deps.reachability.reportUnreachable(reachabilityServerUrl, error, token);
-        });
-        socket.on('error', (error: unknown) => {
-            if (!entry.backgroundTask) deps.reachability.reportUnreachable(reachabilityServerUrl, error, token);
-        });
 
         if (!backgroundTask) entriesByKey.set(key, entry);
         return entry;
@@ -497,11 +489,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
         }
         // Reserve this entry before anything below can await: an idle teardown that
         // ran in between would otherwise remove the entry this client is acquiring.
-        entry.inUseCount += 1;
-        if (entry.idleDisconnectTimer) {
-            clearTimeout(entry.idleDisconnectTimer);
-            entry.idleDisconnectTimer = null;
-        }
+        retainEntryUse(entry);
         if (redundantCarrierRelease) {
             // Settled before this call returns, so no carrier release outlives the
             // acquire that started it. A failure is not this acquisition's failure;
@@ -515,13 +503,8 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
         const releaseOnce = () => {
             if (released) return;
             released = true;
-            entry.inUseCount = Math.max(0, entry.inUseCount - 1);
             params.signal?.removeEventListener('abort', releaseOnce);
-            if (backgroundTask) {
-                fireAndForget(stopEntrySocket(entry, true), { tag: 'scoped-rpc-background-disconnect' });
-            } else {
-                scheduleIdleDisconnect(entry);
-            }
+            releaseEntryUse(entry);
         };
 
         params.signal?.addEventListener('abort', releaseOnce, { once: true });
@@ -536,7 +519,11 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
 
         return {
             get connected() { return entry.socket.connected; },
-            emitWithAck: (event: string, payload: any) => entry.socket.emitWithAck(event, payload),
+            retain: () => {
+                retainEntryUse(entry);
+                return () => releaseEntryUse(entry);
+            },
+            emitWithAck: (...args: Parameters<SocketLike['emitWithAck']>) => entry.socket.emitWithAck(...args),
             timeout: (ms: number) => entry.socket.timeout(ms),
             emit: (event: string, payload: any) => entry.socket.emit(event, payload),
             on: (event: string, listener: (...args: any[]) => void) => entry.socket.on(event, listener),

@@ -5,7 +5,6 @@ vi.mock('@/sync/runtime/syncTuning', () => ({
     sessionSocketApplyCoalescingEnabled: false,
     sessionSocketApplyCoalescingWindowMs: 0,
     sessionSocketApplyCoalescingMaxBatchSize: 64,
-    sessionRealtimeProjectionMode: 'enabled',
   }),
 }));
 
@@ -95,6 +94,7 @@ function buildPlainEditToolNewMessageUpdate(sessionId: string, filePath: string)
     createdAt: 2_000,
     body: {
       t: 'new-message',
+      delivery: 'full' as const,
       sid: sessionId,
       message: {
         id: 'message-scm',
@@ -236,8 +236,8 @@ describe('socket realtime SCM transcript consumers', () => {
     const hiddenSessionId = 'hidden-scm-producer';
     const scmConsumerSessionId = 'visible-scm-consumer';
     storage.getState().applySessions([
-      buildSession({ id: hiddenSessionId, machineId: 'machine-a', path: '/repo/packages/app' }),
-      buildSession({ id: scmConsumerSessionId, machineId: 'machine-a', path: '/repo/packages/ui' }),
+      { ...buildSession({ id: hiddenSessionId, machineId: 'machine-a', path: '/repo/packages/app' }), serverId: 'home-a' },
+      { ...buildSession({ id: scmConsumerSessionId, machineId: 'machine-a', path: '/repo/packages/ui' }), serverId: 'home-a' },
     ]);
     unregisterScmConsumer = mountRepoScmConsumerScope(scmConsumerSessionId, '/repo');
 

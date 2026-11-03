@@ -10,18 +10,30 @@ import { motionTokens } from '@/components/ui/motion/motionTokens';
 import type { Theme } from '@/theme';
 import { resolveThemeSurfaceFinish } from '@/components/ui/surfaces/themeRaisedEdge';
 
+/** The disc's diameter. The pressable takes it directly: with an `overlay` it sits in an unsized anchor, where a percentage collapses to the icon. */
+const DISC_SIZE = 32;
+
 const stylesheet = StyleSheet.create((theme) => ({
   root: {
-    width: 32,
-    height: 32,
+    width: DISC_SIZE,
+    height: DISC_SIZE,
     borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
     flexShrink: 0,
   },
   inner: {
+    width: DISC_SIZE,
+    height: DISC_SIZE,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  paint: {
     width: '100%',
     height: '100%',
+    borderRadius: 16,
+    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -39,7 +51,8 @@ export const PrimaryCircleIconButton = React.memo(
       accessibilityLabel: string;
       accessibilityHint?: string;
       accessibilityState?: { disabled?: boolean } & Record<string, unknown>;
-      hitSlop?: HappierPressableProps['hitSlop'];
+      /** How far the hit area may reach past the circle on each side (half the gap to a neighbour). */
+      hitReach?: HappierPressableProps['hitReach'];
       onPress?: () => void;
       overlay?: HappierPressableProps['overlay'];
       onLongPress?: () => void;
@@ -72,41 +85,45 @@ export const PrimaryCircleIconButton = React.memo(
           selected={props.accessibilityState?.selected === true}
           expanded={typeof props.accessibilityState?.expanded === 'boolean' ? props.accessibilityState.expanded : undefined}
           checked={typeof props.accessibilityState?.checked === 'boolean' ? props.accessibilityState.checked : undefined}
-          hitSlop={props.hitSlop}
+          hitReach={props.hitReach}
           disabled={computedDisabled}
           onPress={() => { props.onPress?.(); }}
           overlay={props.overlay}
           onLongPress={props.onLongPress}
           accessibilityActions={props.accessibilityActions}
           onAccessibilityAction={props.onAccessibilityAction}
-          style={({ pressed, focused }) => [
-            styles.inner,
-            {
-              borderRadius: 16,
-              backgroundColor: paintColor(backgroundColor, undefined, 'solidControl'),
-              opacity: pressed ? motionTokens.press.opacity : 1,
-              overflow: 'hidden',
-              ...(Platform.OS === 'web' && !primary?.gradient ? happierSurfaceGradientWebStyle(resolveThemeSurfaceFinish(theme, 'primaryButton', { pressed, focused, disabled: computedDisabled || !props.active }), !theme.dark) : null),
-            },
-          ]}
+          // The pressable keeps the circle's box unclipped, so its invisible hit area (a frame that
+          // reaches past the circle) is not cut off; the paint, clip and finish live on the inner View.
+          style={styles.inner}
         >
-          {({ pressed, focused }) => <>
-          {props.active && primary?.gradient ? (
-            <GradientSurface
-              fallbackColor={paintColor(backgroundColor, undefined, 'solidControl')}
-              gradient={props.active ? happierMaterialGradient(primary?.gradient, color => paintColor(color, undefined, 'solidControl')) : undefined}
-              overlay={resolveThemeSurfaceFinish(theme, 'primaryButton', { pressed, focused, disabled: computedDisabled || !props.active })}
-              clipToPaddingBox={!theme.dark}
-              borderRadius={16}
-              style={StyleSheet.absoluteFillObject}
-            />
-          ) : <HappierSurfaceGradientLayer gradient={resolveThemeSurfaceFinish(theme, 'primaryButton', { pressed, focused, disabled: computedDisabled || !props.active })} borderRadius={16} />}
-          {props.loading ? (
-            <ActivitySpinner size="small" color={tintColor} />
-          ) : (
-            normalizeNodeForView(props.children)
+          {({ pressed, focused }) => (
+            <View
+              style={[
+                styles.paint,
+                {
+                  backgroundColor: paintColor(backgroundColor, undefined, 'solidControl'),
+                  opacity: pressed ? motionTokens.press.opacity : 1,
+                  ...(Platform.OS === 'web' && !primary?.gradient ? happierSurfaceGradientWebStyle(resolveThemeSurfaceFinish(theme, 'primaryButton', { pressed, focused, disabled: computedDisabled || !props.active }), !theme.dark) : null),
+                },
+              ]}
+            >
+              {props.active && primary?.gradient ? (
+                <GradientSurface
+                  fallbackColor={paintColor(backgroundColor, undefined, 'solidControl')}
+                  gradient={props.active ? happierMaterialGradient(primary?.gradient, color => paintColor(color, undefined, 'solidControl')) : undefined}
+                  overlay={resolveThemeSurfaceFinish(theme, 'primaryButton', { pressed, focused, disabled: computedDisabled || !props.active })}
+                  clipToPaddingBox={!theme.dark}
+                  borderRadius={16}
+                  style={StyleSheet.absoluteFillObject}
+                />
+              ) : <HappierSurfaceGradientLayer gradient={resolveThemeSurfaceFinish(theme, 'primaryButton', { pressed, focused, disabled: computedDisabled || !props.active })} borderRadius={16} />}
+              {props.loading ? (
+                <ActivitySpinner size="small" color={tintColor} />
+              ) : (
+                normalizeNodeForView(props.children)
+              )}
+            </View>
           )}
-          </>}
         </HappierPressable>
       </View>
     );

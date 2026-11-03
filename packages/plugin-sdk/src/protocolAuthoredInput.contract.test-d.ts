@@ -16,6 +16,7 @@ import { defineProtocolObject, defineProtocolString } from './protocol/protocolF
 
 import type { AdmittedTargetedOperationExecutionHandle } from './actions/admittedTargetedOperation.js';
 import type { ActionsService } from './actions/service.js';
+import type { PluginUiHostApi } from './ui/hostApi.js';
 import type { QualifiedConnectedAccountRef } from './connectedAccounts.js';
 import type { JsonValue } from './identity.js';
 import type { SchemaInput, SchemaOutput } from './targetedContributionAuthoring.js';
@@ -69,3 +70,9 @@ type OptionalAccountAuthoredInput = SchemaInput<typeof optionalAccountSchema>;
 // An `.optional()` Protocol-published member stays omissible, so recovering
 // the authored type must not make every member required.
 export const optionalAccountMayBeOmitted: OptionalAccountAuthoredInput = { purpose: 'issues' };
+
+// External daemon and mounted UI authors can return reviewer policy to the Account default.
+export async function clearSessionReviewerOverride(actions: ActionsService, ui: PluginUiHostApi): Promise<void> {
+    await actions.execute('session.approval_reviewer.set', { sessionId: 'session-1', enabled: null });
+    await ui.executeAction('session.approval_reviewer.set', { sessionId: 'session-1', enabled: null });
+}

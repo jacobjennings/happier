@@ -3,8 +3,17 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import type { AccountEncryptionCurrentnessResponse, V2SessionRecord } from '@happier-dev/protocol';
 
-import { fetchAndApplySessions, type SessionListEncryption } from './sessionSnapshot';
+import { fetchAndApplySessions as fetchAndApplySessionsSource, type SessionListEncryption } from './sessionSnapshot';
+import { createCompactSessionListFetchBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
 import { fetchAndApplySessionById, type SessionByIdEncryption } from './sessionById';
+
+function fetchAndApplySessions(params: Parameters<typeof fetchAndApplySessionsSource>[0]) {
+    const request = params.request;
+    return fetchAndApplySessionsSource({ ...params,
+        ...(request ? { request: createCompactSessionListFetchBoundary(async (path, init) => path === '/v2/sessions/read-batch'
+            ? undefined : request(path, init)) } : {}),
+    });
+}
 
 /**
  * Session-list hydration and single-Session hydration must agree about what an absent envelope

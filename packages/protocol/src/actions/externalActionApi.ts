@@ -1,3 +1,29 @@
+import { projectDeploymentNativeAdmissionV1 } from '../deployments/deploymentCandidatePublicationV1.js';
+import type { ArtifactBodyV1 } from '../artifacts/artifactBinaryV1.js';
+import type { ArtifactRevisionV1 } from '../artifacts/artifactRevisionV1.js';
+import { DeploymentChildExecutionProofV1Schema } from '../deployments/deploymentChildExecutionProofV1.js';
+import { DeploymentRestoreNativeAdmissionV1Schema } from '../deployments/deploymentCandidatePublicationV1.js';
+import { isDeploymentDomainChildActionIdV1 } from '../deployments/deploymentActionIdsV1.js';
+import { deploymentPreparationOperationForActionV1 } from '../deployments/deploymentPreparationAdmissionV1.js';
+import { isDeploymentPreparationActionIdV1 } from '../deployments/deploymentPreparationAdmissionV1.js';
+import { isDeploymentReadActionIdV1 } from '../deployments/deploymentReadAdmissionV1.js';
+import { API_TOKEN_ENVIRONMENT_ACTION_IDS_V1 } from '../auth/apiTokenGrant.js';
+import { isDeploymentChildRootActionIdV1 } from '../deployments/deploymentActionIdsV1.js';
+import { DiscussionIdSchema } from '../discussions/references.js';
+import { DeploymentIdentifierV1Schema } from '../deployments/deploymentIdentifiersV1.js';
+import { DeploymentReadAdmissionV1Schema } from '../deployments/deploymentReadAdmissionV1.js';
+import { DeploymentPreparationAdmissionV1Schema } from '../deployments/deploymentPreparationAdmissionV1.js';
+import { DeploymentCandidatePublicationV1Schema } from '../deployments/deploymentCandidatePublicationV1.js';
+import { DeploymentDomainNativeAdmissionV1Schema } from '../deployments/deploymentCandidatePublicationV1.js';
+import { DeploymentRestartNativeAdmissionV1Schema } from '../deployments/deploymentCandidatePublicationV1.js';
+import { RegistryAppUpdateAdmissionV1Schema } from '../registries/registryAppUpdateAdmissionV1.js';
+import { DeploymentChildRoutingV1Schema } from '../deployments/deploymentChildRoutingV1.js';
+import { ExternalActionWorkflowSessionLeafV1Schema } from './workflowSessionChildV1.js';
+export { ExternalActionWorkflowSessionLeafV1Schema, projectExternalActionWorkflowSessionLeafContextV1, type ExternalActionWorkflowSessionLeafV1,
+  type InstalledWorkflowSessionLeafAdmission } from './workflowSessionChildV1.js';
+import { WorkflowActionIdV1Schema } from './actionIds.js';
+import { ExternalActionRequestIdV1Schema, ExternalActionPreOpenFailureCodeSchema } from './externalActionHttpError.js';
+export * from './externalActionHttpError.js';
 import { maxCodeUnits } from '../strings/maxCodeUnits.js';
 import { lazyZodSchema } from '../lazyZodSchema.js';
 import { AccessibleMachineAccessV1Schema } from '../machines/machineAccessV1.js';
@@ -5,7 +31,7 @@ import { z } from 'zod/mini';
 import { ApiTokenGrantV1Schema, ApiTokenSessionSpawnAdmissionV1Schema } from '../auth/apiTokenGrant.js';
 import { AuthTokenAuthenticationEvidenceSnapshotV1Schema } from '../auth/authToken.js';
 import { ActionRequiredAuthoritySchema } from './metadata.js';
-import { ManagedAdmissionComputeInputV1Schema } from '../machines/managed/actionsV1.js';
+import { ManagedAdmissionComputeInputV1Schema, ManagedAcquireInputV1Schema, ManagedPowerInputV1Schema, ManagedDeleteInputV1Schema } from '../machines/managed/actionsV1.js';
 import { ManagedControllerV1Schema } from '../machines/managed/managedMachineV1.js';
 import { AccountEncryptionModeSchema, type AccountEncryptionMode } from '../features/payload/capabilities/encryptionCapabilities.js';
 import { WorkflowProjectTargetV1Schema } from '../workflows/workflowWorkspaceV1.js';
@@ -37,7 +63,6 @@ import { AutomationManualIdempotencyKeyV1Schema } from '../automations/automatio
 
 import {
   ActionExecuteFailureSchema,
-  UNEXPECTED_ACTION_FAILURE_CODES_V1,
   type ActionExecuteResult,
 } from './actionExecutionResult.js';
 import { StrictJsonValueSchema } from '../json/strictJsonValue.js';
@@ -90,119 +115,11 @@ export function isExternalActionSubmittedUnknownHttpResponse(status: number, bod
 export const ExternalActionActionIdV1Schema = lazyZodSchema(() => z.string().check(z.minLength(1), maxCodeUnits(EXTERNAL_ACTION_ACTION_ID_MAX_LENGTH), z.refine((value) => value.trim() === value, 'actionId must not have outer whitespace')));
 export type ExternalActionActionIdV1 = z.infer<typeof ExternalActionActionIdV1Schema>;
 
-export const ExternalActionRequestIdV1Schema = lazyZodSchema(() => z.string().check(z.minLength(1), maxCodeUnits(EXTERNAL_ACTION_REQUEST_ID_MAX_LENGTH_V1), z.refine((value) => value.trim() === value, 'requestId must not have outer whitespace')));
-
 /** Public retry identity, never private content or authorization. */
 export function projectExternalActionRunNowIdempotencyKeyV1(actionId: string, input: unknown): string | undefined {
   if (actionId !== 'workflow.trigger.run_now') return undefined;
   const record = readRecord(input);
   return record?.idempotencyKey === undefined ? undefined : AutomationManualIdempotencyKeyV1Schema.parse(record.idempotencyKey);
-}
-
-const EXTERNAL_ACTION_HTTP_ERROR_CODES_V1 = [
-  'invalid_action',
-  'invalid_envelope',
-  'request_too_large',
-  'internal_error',
-  ...UNEXPECTED_ACTION_FAILURE_CODES_V1,
-  'database_transaction_conflict_exhausted',
-  'database_connection_unavailable',
-  'storage_unavailable',
-  'invalid_encrypted_envelope',
-  'encrypted_action_unsupported',
-] as const;
-const ExternalActionHttpErrorCodeV1Schema = lazyZodSchema(() => z.enum(EXTERNAL_ACTION_HTTP_ERROR_CODES_V1));
-export type ExternalActionHttpErrorCodeV1 = z.infer<typeof ExternalActionHttpErrorCodeV1Schema>;
-
-const EXTERNAL_ACTION_HTTP_PLACEMENT_ERROR_CODES = [
-  'credential_scope_denied',
-  'target_required',
-  'target_not_local',
-  'target_unavailable',
-  'session_input_target_update_required',
-] as const;
-const EXTERNAL_ACTION_HTTP_AUTHENTICATION_ERROR_CODES = [
-  'invalid_token',
-  'auth_unavailable',
-  'server_unavailable',
-] as const;
-
-/**
- * Complete bounded pre-open failure vocabulary. These values carry no Action
- * input, execution detail, target metadata, or daemon diagnostics.
- */
-export const ExternalActionHttpErrorCodeSchema = lazyZodSchema(() => z.enum([
-  ...EXTERNAL_ACTION_HTTP_ERROR_CODES_V1,
-  ...EXTERNAL_ACTION_HTTP_PLACEMENT_ERROR_CODES,
-  ...EXTERNAL_ACTION_HTTP_AUTHENTICATION_ERROR_CODES,
-]));
-export type ExternalActionHttpErrorCode = z.infer<typeof ExternalActionHttpErrorCodeSchema>;
-
-/**
- * One bounded vocabulary for failures that occur before a protected Action
- * request has been opened. HTTP adapters and the reserved daemon relay project
- * the same codes; authentication-only failures remain at their HTTP boundary.
- */
-export const ExternalActionPreOpenFailureCodeSchema = lazyZodSchema(() => (<const Values extends readonly string[], const Excluded extends readonly Values[number][]>(values: Values, excluded: Excluded) => { for (const value of excluded) if (!values.includes(value)) throw new Error(`Key ${value} not found in enum`); return z.enum(values.filter((value): value is Exclude<Values[number], Excluded[number]> => !excluded.some(item => item === value))); })(ExternalActionHttpErrorCodeSchema.options, EXTERNAL_ACTION_HTTP_AUTHENTICATION_ERROR_CODES));
-export type ExternalActionPreOpenFailureCode = z.infer<
-  typeof ExternalActionPreOpenFailureCodeSchema
->;
-
-/** Stable transport failures emitted before an Action execution envelope exists. */
-export const ExternalActionHttpErrorV1Schema = lazyZodSchema(() => z.strictObject({
-  error: z.literal('invalid_request'),
-  code: ExternalActionHttpErrorCodeV1Schema,
-}));
-export type ExternalActionHttpErrorV1 = z.infer<typeof ExternalActionHttpErrorV1Schema>;
-
-const ExternalActionInvalidRequestHttpErrorSchema = lazyZodSchema(() => z.strictObject({
-  error: z.literal('invalid_request'),
-  code: ExternalActionPreOpenFailureCodeSchema,
-  requestId: z.optional(ExternalActionRequestIdV1Schema),
-}));
-export const ExternalActionManagedAdmissionReceiptV1Schema = lazyZodSchema(() => z.strictObject({
-  managedId: z.string().check(z.minLength(1), z.refine(value => value.trim() === value)),
-}));
-export type ExternalActionManagedAdmissionReceiptV1 = z.infer<typeof ExternalActionManagedAdmissionReceiptV1Schema>;
-const ExternalActionManagedWaitingHttpErrorSchema = lazyZodSchema(() => z.strictObject({
-  error: z.literal('invalid_request'), code: z.literal('target_unavailable'),
-  requestId: z.optional(ExternalActionRequestIdV1Schema),
-  managedAdmission: ExternalActionManagedAdmissionReceiptV1Schema,
-}));
-
-const ExternalActionAuthenticationHttpErrorSchema = lazyZodSchema(() => z.strictObject({
-  error: z.enum(EXTERNAL_ACTION_HTTP_AUTHENTICATION_ERROR_CODES),
-}));
-const ExternalActionCredentialScopeHttpErrorSchema = lazyZodSchema(() => z.strictObject({ error: z.literal('credential_scope_denied') }));
-
-export type ActionCredentialScopeDeniedFailureV1 = Readonly<{
-  ok: false;
-  errorCode: 'credential_scope_denied';
-  error: 'credential_scope_denied';
-}>;
-
-/** Authentication can refuse a domain route before its closed result exists. */
-export function readActionCredentialScopeDeniedHttpFailureV1(
-  status: number,
-  payload: unknown,
-): ActionCredentialScopeDeniedFailureV1 | null {
-  if (status !== 403 || !ExternalActionCredentialScopeHttpErrorSchema.safeParse(payload).success) return null;
-  return { ok: false, errorCode: 'credential_scope_denied', error: 'credential_scope_denied' };
-}
-
-/** One strict redacted outer error union shared by both Action HTTP origins. */
-export const ExternalActionHttpErrorSchema = lazyZodSchema(() => z.union([
-  ExternalActionInvalidRequestHttpErrorSchema,
-  ExternalActionManagedWaitingHttpErrorSchema,
-  ExternalActionAuthenticationHttpErrorSchema,
-  ExternalActionCredentialScopeHttpErrorSchema,
-]));
-export type ExternalActionHttpError = z.infer<typeof ExternalActionHttpErrorSchema>;
-
-function isExternalActionHttpAuthenticationErrorCode(
-  code: ExternalActionHttpErrorCode,
-): code is typeof EXTERNAL_ACTION_HTTP_AUTHENTICATION_ERROR_CODES[number] {
-  return EXTERNAL_ACTION_HTTP_AUTHENTICATION_ERROR_CODES.some((candidate) => candidate === code);
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -236,62 +153,6 @@ export function projectExternalActionExecutionResultV1(value: unknown): ActionEx
     ...(goalControlFailure.success ? { goalControlFailure: goalControlFailure.data } : {}),
   });
   return failure.success ? failure.data : null;
-}
-
-/** Maps a protocol transport failure to its complete HTTP representation. */
-function externalActionHttpErrorStatus(code: ExternalActionHttpErrorCode): 400 | 401 | 403 | 409 | 413 | 500 | 503 {
-  if (code === 'credential_scope_denied') return 403;
-  if (code === 'invalid_token') return 401;
-  if (code === 'auth_unavailable' || code === 'server_unavailable'
-    || code === 'database_transaction_conflict_exhausted' || code === 'database_connection_unavailable'
-    || code === 'storage_unavailable') return 503;
-  if (code === 'request_too_large') return 413;
-  if (code === 'internal_error' || UNEXPECTED_ACTION_FAILURE_CODES_V1.some(value => value === code)) return 500;
-  if (
-    code === 'encrypted_action_unsupported'
-    || code === 'target_not_local'
-    || code === 'target_unavailable'
-    || code === 'session_input_target_update_required'
-  ) return 409;
-  return 400;
-}
-
-export function projectExternalActionHttpErrorV1(code: ExternalActionHttpErrorCodeV1): Readonly<{
-  statusCode: 400 | 409 | 413 | 500 | 503;
-  payload: ExternalActionHttpErrorV1;
-}> {
-  return {
-    statusCode: externalActionHttpErrorStatus(code) as 400 | 409 | 413 | 500 | 503,
-    payload: { error: 'invalid_request', code },
-  };
-}
-
-/** Maps a bounded pre-open failure to its complete redacted HTTP representation. */
-export function projectExternalActionHttpError(
-  code: ExternalActionHttpErrorCode,
-  requestId?: string,
-  managedAdmission?: ExternalActionManagedAdmissionReceiptV1,
-): Readonly<{
-  statusCode: 400 | 401 | 403 | 409 | 413 | 500 | 503;
-  payload: ExternalActionHttpError;
-}> {
-  if (managedAdmission !== undefined) {
-    if (code !== 'target_unavailable') throw new TypeError('Managed admission receipt requires target unavailability');
-    return { statusCode: 409, payload: ExternalActionManagedWaitingHttpErrorSchema.parse({
-      error: 'invalid_request', code, ...(requestId === undefined ? {} : { requestId }), managedAdmission,
-    }) };
-  }
-  if (code === 'credential_scope_denied') return { statusCode: 403, payload: { error: code } };
-  return isExternalActionHttpAuthenticationErrorCode(code)
-    ? { statusCode: externalActionHttpErrorStatus(code), payload: { error: code } }
-    : {
-        statusCode: externalActionHttpErrorStatus(code),
-        payload: {
-          error: 'invalid_request',
-          code,
-          ...(requestId === undefined ? {} : { requestId }),
-        },
-      };
 }
 
 /** Closed server-to-exact-daemon method; never a public Action or SDK method. */
@@ -835,12 +696,34 @@ export function isExternalActionResolvedTargetAllowedV1(input: Readonly<{
  * absent: each ingress verifies credentials and stamps authority, provenance,
  * cancellation, and placement after this parser succeeds.
  */
-export const ExternalActionManagedAdmissionV1Schema = lazyZodSchema(() => z.strictObject({
+export const ExternalActionManagedControlAdmissionV1Schema = lazyZodSchema(() => z.discriminatedUnion('actionId', [
+  z.strictObject({ actionId: z.literal('machines.managed.power.set'), input: ManagedPowerInputV1Schema }),
+  z.strictObject({ actionId: z.literal('machines.managed.delete'), input: ManagedDeleteInputV1Schema }),
+]));
+export type ExternalActionManagedControlAdmissionV1 = z.infer<typeof ExternalActionManagedControlAdmissionV1Schema>;
+const ExternalActionManagedAcquireAdmissionV1Schema = lazyZodSchema(() => z.strictObject({
   actionId: z.literal('machines.managed.acquire'),
   input: ManagedAdmissionComputeInputV1Schema,
   continuationPresent: z.boolean(),
 }));
+
+export const ExternalActionManagedAdmissionV1Schema = lazyZodSchema(() => z.discriminatedUnion('actionId', [
+  ExternalActionManagedAcquireAdmissionV1Schema,
+  ...ExternalActionManagedControlAdmissionV1Schema.def.options,
+]));
 export type ExternalActionManagedAdmissionV1 = z.infer<typeof ExternalActionManagedAdmissionV1Schema>;
+
+/** Managed recovery exposes only the exact resource/revision needed for Home admission. */
+export function projectExternalActionManagedAdmissionV1(actionId: string, input: unknown): ExternalActionManagedAdmissionV1 | undefined {
+  if (actionId === 'machines.managed.power.set' || actionId === 'machines.managed.delete') {
+    return ExternalActionManagedControlAdmissionV1Schema.parse({ actionId, input });
+  }
+  if (actionId === 'machines.managed.acquire') {
+    const { agentStart, ...compute } = ManagedAcquireInputV1Schema.parse(input);
+    return { actionId, input: ManagedAdmissionComputeInputV1Schema.parse(compute), continuationPresent: agentStart !== undefined };
+  }
+  return undefined;
+}
 
 /** Closed routing hints; only the authenticated Home can turn them into custody authority. */
 export const ExternalActionHandoffAdmissionV1Schema = lazyZodSchema(() => z.strictObject({
@@ -1123,6 +1006,7 @@ export const ExternalActionSessionAccountServerPrincipalV1Schema = lazyZodSchema
 /** The installed FIN executor proves this retained Run at Home. */
 export const ExternalActionWorkflowOriginV1Schema = lazyZodSchema(() => z.strictObject({
   runId: ExternalActionTargetIdV1Schema, requestId: ExternalActionRequestIdV1Schema,
+  sessionLeaf: z.optional(ExternalActionWorkflowSessionLeafV1Schema),
   /** Accepted host facts only; Role content stays in the Session content envelope. */
   sessionAuthority: z.optional(z.strictObject({
     authorization: WorkflowAcceptedAuthorizationV1Schema,
@@ -1131,11 +1015,13 @@ export const ExternalActionWorkflowOriginV1Schema = lazyZodSchema(() => z.strict
     directory: z.string().check(z.minLength(1)),
     workspaceWrites: z.enum(['allow', 'deny']),
   })),
-}));
+}).check(z.refine(value => !value.sessionLeaf || !value.sessionAuthority,
+  'A Workflow origin carries one admitted caller.')));
 
 /** The incumbent Workflow signed-root admission, shared by issuance and rechecks. */
 export function isExternalActionWorkflowActionIdV1(actionId: string): boolean {
-  return ManagedMachineActionIdV1Schema.safeParse(actionId).success
+  return WorkflowActionIdV1Schema.safeParse(actionId).success
+    || ManagedMachineActionIdV1Schema.safeParse(actionId).success
     || actionId.startsWith('session.') && isRoleActionIdV1(actionId);
 }
 export const ExternalActionWorkflowAccountServerPrincipalV1Schema = lazyZodSchema(() => z.strictObject({
@@ -1172,14 +1058,23 @@ const externalActionExecutionAuthorizationRoutingShapeV1 = () => ({
     /** Requester identity remains accountId; custody is bound independently. */
     custodianAccountId: ExternalActionServerPrincipalIdV1Schema,
     installationId: ExternalActionTargetIdV1Schema,
+    /** Effective grant already decided by Home Machine admission, never an operation-selected role. */
+    admittedMachineRole: z.optional(z.enum(['use', 'manage'])),
     actionId: ExternalActionActionIdV1Schema,
     requestId: ExternalActionRequestIdV1Schema,
     requestEnvelopeDigest: z.string().check(z.regex(/^[A-Za-z0-9_-]{43}$/u)),
     /** Exact run-now operand, stamped from the admitted plaintext request. */
     automationId: z.optional(ExternalActionTargetIdV1Schema),
+    /** Exact non-content Discussion root admitted by the encrypted or plaintext request. */
+    discussionId: z.optional(DiscussionIdSchema),
+    /** Exact admitted Environment; no controller-wide Machine authority is implied. */
+    environmentId: z.optional(DeploymentIdentifierV1Schema),
     idempotencyKey: z.optional(AutomationManualIdempotencyKeyV1Schema),
     target: ExternalActionTargetV1Schema,
     managedContinuation: z.optional(ExternalActionManagedContinuationV1Schema),
+    managedAdmission: z.optional(ExternalActionManagedControlAdmissionV1Schema),
+    /** Issuer-qualified private Account executor, scoped by the signed control admission. */
+    managedAccountExecutor: z.optional(z.strictObject({ enrolledMachineId: ExternalActionTargetIdV1Schema })),
     handoffAdmission: z.optional(ExternalActionHandoffBindingV1Schema),
     handoffContinuation: z.optional(ExternalActionHandoffContinuationV1Schema),
     handoffPreflight: z.optional(z.strictObject({
@@ -1191,14 +1086,76 @@ const externalActionExecutionAuthorizationRoutingShapeV1 = () => ({
     sessionActionSource: z.optional(ExternalActionSessionSourceV1Schema),
     workflowActionOrigin: z.optional(ExternalActionWorkflowOriginV1Schema),
     pendingResetStartAdmission: z.optional(ExternalActionPendingResetStartAdmissionV1Schema),
+    approvalDecisionAdmission: z.optional(ExternalActionApprovalDecisionAdmissionV1Schema),
+    deploymentReadAdmission: z.optional(DeploymentReadAdmissionV1Schema),
+    deploymentPreparationAdmission: z.optional(DeploymentPreparationAdmissionV1Schema),
+    deploymentCandidatePublication: z.optional(DeploymentCandidatePublicationV1Schema),
+    deploymentNativeAdmission: z.optional(z.union([DeploymentDomainNativeAdmissionV1Schema, DeploymentRestartNativeAdmissionV1Schema, DeploymentRestoreNativeAdmissionV1Schema])),
+    registryAppUpdateAdmission: z.optional(RegistryAppUpdateAdmissionV1Schema),
   });
 export const ExternalActionExecutionAuthorizationBindingV1Schema = lazyZodSchema(() => z.union([
   (<T extends z.ZodMiniObject>(schema: T) => z.core.clone(schema, { ...schema._zod.def, catchall: z.never() }) as z.ZodMiniObject<T['shape'], z.core.$strict>)(z.extend(z.omit(ExternalActionApiTokenServerPrincipalV1Schema, { authority: true }), externalActionExecutionAuthorizationRoutingShapeV1())),
   (<T extends z.ZodMiniObject>(schema: T) => z.core.clone(schema, { ...schema._zod.def, catchall: z.never() }) as z.ZodMiniObject<T['shape'], z.core.$strict>)(z.extend(z.omit(ExternalActionAccountServerPrincipalV1Schema, { authority: true }), externalActionExecutionAuthorizationRoutingShapeV1())),
   (<T extends z.ZodMiniObject>(schema: T) => z.core.clone(schema, { ...schema._zod.def, catchall: z.never() }) as z.ZodMiniObject<T['shape'], z.core.$strict>)(z.extend(z.omit(ExternalActionTerminalServerPrincipalV1Schema, { authority: true }), externalActionExecutionAuthorizationRoutingShapeV1())),
 ]).check(z.superRefine((value, context) => {
+  const native = value.deploymentNativeAdmission;
+  if (isDeploymentDomainChildActionIdV1(value.actionId) || value.actionId === 'deployments.restart' || value.actionId === 'deployments.backups.restore'
+    ? !native || native.actionId !== value.actionId || native.environmentId !== value.environmentId
+      || (value.actionId === 'deployments.restart' || value.actionId === 'deployments.backups.restore') && (native.kind !== (value.actionId === 'deployments.restart' ? 'restart' : 'restore') || native.machineId !== value.machineId
+        || native.installationId !== value.installationId || value.target.kind !== 'machine' || value.target.machineId !== native.machineId)
+    : native !== undefined) {
+    context.addIssue({ code: 'custom', path: ['deploymentNativeAdmission'], message: 'Domain execution binds its exact original public input.' });
+  }
+  if (value.managedAdmission && (value.managedAdmission.actionId !== value.actionId
+    || value.managedAdmission.input.homeId !== value.serverIdentityId
+    || value.target.kind !== 'machine' || value.target.machineId !== value.machineId)) {
+    context.addIssue({ code: 'custom', path: ['managedAdmission'], message: 'Managed recovery binds its exact Home, Action and controller.' });
+  }
+  if (value.managedAccountExecutor && (!value.managedAdmission
+    || value.managedAdmission.actionId !== 'machines.managed.power.set' && value.managedAdmission.actionId !== 'machines.managed.delete')) {
+    context.addIssue({ code: 'custom', path: ['managedAccountExecutor'], message: 'Account executor binds an exact managed control admission.' });
+  }
+  if (value.registryAppUpdateAdmission && (value.actionId !== 'registries.updates.check'
+    || value.target.kind !== 'machine' || value.target.machineId !== value.machineId)) {
+    context.addIssue({ code: 'custom', path: ['registryAppUpdateAdmission'], message: 'Registry app demand binds only its exact read receiver.' });
+  }
+  if (value.deploymentPreparationAdmission
+    ? value.deploymentPreparationAdmission.operation !== deploymentPreparationOperationForActionV1(value.actionId)
+    : isDeploymentPreparationActionIdV1(value.actionId)) {
+    context.addIssue({ code: 'custom', path: ['deploymentPreparationAdmission'], message: 'Deployment preparation binds only its reviewed operation.' });
+  }
+  const preparation = value.deploymentPreparationAdmission;
+  if (value.deploymentCandidatePublication && (!['deployments.deploy', 'deployments.rollback', 'deployments.promote'].includes(value.actionId)
+    || value.target.kind !== 'machine' || value.target.machineId !== value.machineId
+    || (value.deploymentCandidatePublication.environmentContentArtifactId !== undefined) !== (value.actionId === 'deployments.promote'))) {
+    context.addIssue({ code: 'custom', path: ['deploymentCandidatePublication'], message: 'Candidate publication binds its exact native root.' });
+  }
+  if (preparation?.operation === 'catalog' && (value.target.kind !== 'machine' || value.target.machineId !== value.machineId
+    || preparation.machineId !== value.machineId || preparation.installationId !== value.installationId)) {
+    context.addIssue({ code: 'custom', path: ['deploymentPreparationAdmission'], message: 'Catalog preparation binds the exact executing installation.' });
+  }
+  if (preparation?.operation === 'template' && (value.target.kind !== 'machine' || value.target.machineId !== value.machineId
+    || preparation.machineId !== value.machineId || preparation.target.installationId !== value.installationId)) {
+    context.addIssue({ code: 'custom', path: ['deploymentPreparationAdmission'], message: 'Template admission binds the exact executing installation.' });
+  }
+  if (isDeploymentReadActionIdV1(value.actionId) ? !value.deploymentReadAdmission
+    || value.deploymentReadAdmission.actionId !== value.actionId || value.target.kind !== 'machine'
+    || value.target.machineId !== value.machineId || value.deploymentReadAdmission.machineId !== value.machineId
+    || (value.deploymentReadAdmission.actionId !== 'deployments.health.current'
+      && value.deploymentReadAdmission.installationId !== value.installationId) : value.deploymentReadAdmission !== undefined) {
+    context.addIssue({ code: 'custom', path: ['deploymentReadAdmission'], message: 'Deployment reads bind their exact authenticated receiver and operation.' });
+  }
+  if (value.approvalDecisionAdmission && value.actionId !== 'approval.request.decide') {
+    context.addIssue({ code: 'custom', path: ['approvalDecisionAdmission'], message: 'Approval admission binds only its decision Action' });
+  }
   if (value.automationId !== undefined && value.actionId !== 'workflow.trigger.run_now') {
     context.addIssue({ code: 'custom', path: ['automationId'], message: 'Automation admission binds only run-now' });
+  }
+  if (value.environmentId !== undefined && ((!API_TOKEN_ENVIRONMENT_ACTION_IDS_V1.some((id) => id === value.actionId)
+    && !('authentication' in value && (isDeploymentChildRootActionIdV1(value.actionId) || value.actionId === 'deployments.teardown'
+      || value.actionId === 'deployments.restart' || value.actionId === 'deployments.backups.restore')))
+    || value.target.kind !== 'machine')) {
+    context.addIssue({ code: 'custom', path: ['environmentId'], message: 'Environment admission binds only CI deploy and operation reads on their admitted host' });
   }
   if (value.idempotencyKey !== undefined && value.actionId !== 'workflow.trigger.run_now') {
     context.addIssue({ code: 'custom', path: ['idempotencyKey'], message: 'Manual retry identity binds only run-now' });
@@ -1241,6 +1198,11 @@ export const ExternalActionExecutionAuthorizationV1Schema = lazyZodSchema(() => 
   v: z.literal(1),
   token: z.string().check(z.minLength(1)),
   binding: ExternalActionExecutionAuthorizationBindingV1Schema,
+  /** Installed SCM owner resolves its protected saved result before any child input. */
+  scmRefineSession: z.optional(z.strictObject({
+    sessionId: ExternalActionTargetIdV1Schema,
+    signature: z.string().check(z.regex(/^[A-Za-z0-9_-]{86}$/u)),
+  })),
   /** Private installed-key custody on this same carrier; never principal authority. */
   requesterAccountContext: z.optional(SessionRequesterInstallationSealedBootstrapV1Schema),
   /** Home-proved finite placement hint and private custody; neither retargets the root. */
@@ -1295,8 +1257,11 @@ export type ExternalActionRequesterAccountProjectionV1 = Readonly<{
   }>): Promise<Readonly<{ rootPath: string; requestedPath?: string }> | null>;
   isCurrent(): Promise<boolean>;
   readArtifact(ref: PromptArtifactRefV1 & Readonly<{ serverId: string }>,
-    options?: Readonly<{ signal?: AbortSignal }>): Promise<Readonly<{
+    options?: Readonly<{ signal?: AbortSignal; authorization?: ExternalActionExecutionAuthorizationV1 }>): Promise<Readonly<{
       artifactId: string; header: unknown; promptLibraryArtifact?: PromptLibraryStoredArtifact;
+      /** Only documents within the root's admitted signed purpose; never an unrelated root's full-content port. */
+      document?: Readonly<{ artifactId: string; header: Readonly<Record<string, unknown>>;
+        body: ArtifactBodyV1 | null; revision: ArtifactRevisionV1 }>;
     }> | null>;
 }>;
 /** Host-local HTTP authority; no bearer or private Account material is exposed. */
@@ -1313,6 +1278,8 @@ export type ExternalActionRequesterHttpProjectionV1 = Readonly<{
     path: string;
     body?: unknown;
     signal?: AbortSignal;
+    reviewedChild?: ReviewedActionChildHttpProofV1;
+    nativeIncumbentSource?: z.infer<typeof DeploymentChildExecutionProofV1Schema>['nativeIncumbentSource'];
   }>): Promise<Readonly<Record<string, string>> | null>;
 }>;
 export type ExternalActionExecutionAuthorizationV1 = z.infer<typeof ExternalActionExecutionAuthorizationV1Schema>
@@ -1325,13 +1292,21 @@ export type ExternalActionExecutionAuthorizationV1 = z.infer<typeof ExternalActi
   }>;
 
 /** Optional authenticated auxiliary arm of the incumbent socket RPC request. */
-export const ExternalActionMachineRpcExecutionV1Schema = lazyZodSchema(() => z.strictObject({
+export const ExternalActionMachineRpcSourceExecutionV1Schema = lazyZodSchema(() => z.strictObject({
+  deploymentChildRouting: z.optional(DeploymentChildRoutingV1Schema),
+
+  reviewedChild: z.optional(ReviewedActionChildHttpProofV1Schema),
+
   v: z.literal(1),
   authorization: ExternalActionExecutionAuthorizationV1Schema,
   effectActionId: ExternalActionActionIdV1Schema,
   target: ExternalActionTargetV1Schema,
   installationId: z.string().check(z.trim(), z.minLength(1)),
   machineSignature: z.string().check(z.regex(/^[A-Za-z0-9_-]{86}$/u)),
+}));
+export const ExternalActionMachineRpcExecutionV1Schema = lazyZodSchema(() => z.strictObject({
+  ...ExternalActionMachineRpcSourceExecutionV1Schema.shape,
+  deploymentChildExecution: z.optional(DeploymentChildExecutionProofV1Schema),
 }));
 export type ExternalActionMachineRpcExecutionV1 = z.infer<typeof ExternalActionMachineRpcExecutionV1Schema>;
 
@@ -1524,3 +1499,25 @@ export function parseExternalActionDaemonDispatchResult(value: unknown): ParsedE
     return parseExternalActionDaemonDispatchResultV1(value);
   } catch { return null; }
 }
+
+export const ReviewedActionChildHttpProofV1Schema = lazyZodSchema(() => z.strictObject({
+  actionId: ExternalActionActionIdV1Schema,
+  role: z.string().check(z.minLength(1)),
+  inputDigest: z.string().check(z.regex(/^[A-Za-z0-9_-]{43}$/u)),
+}));
+export type ReviewedActionChildHttpProofV1 = Readonly<z.infer<typeof ReviewedActionChildHttpProofV1Schema>>;
+
+export function projectExternalActionApprovalDecisionAdmissionV1(input: unknown): ExternalActionApprovalDecisionAdmissionV1 {
+  const fields = z.looseObject(ExternalActionApprovalDecisionAdmissionV1Schema.shape).parse(input);
+  return { artifactId: fields.artifactId, decision: fields.decision };
+}
+export type ExternalActionApprovalDecisionAdmissionV1 = z.infer<typeof ExternalActionApprovalDecisionAdmissionV1Schema>;
+export const ExternalActionApprovalDecisionAdmissionV1Schema = lazyZodSchema(() => z.strictObject({
+  artifactId: z.string().check(z.minLength(1)),
+  decision: z.enum(['approve', 'reject', 'cancel']),
+}));
+
+export { projectDeploymentNativeAdmissionV1 } from '../deployments/deploymentCandidatePublicationV1.js';
+export { createDeploymentCandidatePublicationV1 } from '../deployments/deploymentCandidatePublicationV1.js';
+export { isDeploymentNativeReadActionIdV1 } from '../deployments/deploymentReadAdmissionV1.js';
+export { deploymentPreparationOperationForActionV1 } from '../deployments/deploymentPreparationAdmissionV1.js';

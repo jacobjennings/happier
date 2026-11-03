@@ -18,6 +18,7 @@ import {
     resolveVoiceDaemonDirectRouteAvailability,
     resolveVoiceDaemonHeavyAudioReadiness,
     resolveVoiceDaemonModelAvailabilityFromCatalogState,
+    resolveVoiceDaemonModelKindAvailabilityFromCatalogState,
     resolveVoiceProviderLocalAvailability,
 } from './voiceProviderLocalAvailability';
 
@@ -115,6 +116,28 @@ function modelStatus(
 }
 
 describe('resolveVoiceProviderLocalAvailability', () => {
+    it('keeps unobserved speech packs unknown and preserves observed role readiness', () => {
+        const stt = modelStatus('stt_sherpa');
+        const catalog = { loading: false, errorCode: null, statuses: [] } as const;
+        expect(resolveVoiceDaemonModelKindAvailabilityFromCatalogState({ ...catalog,
+            kind: 'stt_sherpa', selectedPackId: stt.packId,
+        })).toEqual({ modelState: 'unknown', runtimeState: 'unknown' });
+        expect(resolveVoiceDaemonModelAvailabilityFromCatalogState({ ...catalog,
+            selectedSttPackId: stt.packId, selectedTtsPackId: null,
+        })).toEqual({ modelState: 'unknown', runtimeState: 'unknown' });
+        const partial = { ...catalog, statuses: [stt] };
+        expect(resolveVoiceDaemonModelKindAvailabilityFromCatalogState({ ...partial,
+            kind: 'stt_sherpa', selectedPackId: stt.packId,
+        })).toEqual({ modelState: 'ready', runtimeState: 'available' });
+        expect(resolveVoiceDaemonModelAvailabilityFromCatalogState({ ...partial,
+            selectedSttPackId: stt.packId, selectedTtsPackId: null,
+        })).toEqual({ modelState: 'unknown', runtimeState: 'unknown' });
+        expect(resolveVoiceDaemonModelKindAvailabilityFromCatalogState({ ...catalog,
+            statuses: [modelStatus('stt_sherpa', { installState: 'not_installed' })],
+            kind: 'stt_sherpa', selectedPackId: stt.packId,
+        })).toEqual({ modelState: 'missing', runtimeState: 'available' });
+    });
+
     it.each([
         ['unavailable', 'daemon_unreachable'],
         ['relay_disabled', 'daemon_relay_disabled'],

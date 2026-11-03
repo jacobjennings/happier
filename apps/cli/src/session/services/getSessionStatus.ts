@@ -19,6 +19,7 @@ import type { SessionReadinessV1 } from '@happier-dev/protocol/sessions/control/
 import type { QualifiedConnectedAccountPurposeV1 } from '@happier-dev/protocol/connect/connectedAccountPurposeIdentity';
 import type { QualifiedConnectedAccountPurposeTeamResourceSelectionV1 } from '@happier-dev/protocol/connect/connectedAccountPurposeBindings';
 import type { ExternalActionExecutionAuthorizationV1 } from '@happier-dev/protocol/actions/externalActionApi';
+import { ensureSessionDisplayProjectionAfterOwnerRead } from '@/session/metadata/updateSessionMetadataWithRetry';
 
 export type GetSessionStatusResult =
   | Readonly<{ ok: true; session: SessionSummary; agentState: AgentStateSummary | null; awareness: SessionAwarenessProjectionV1; readiness?: SessionReadinessV1;
@@ -86,6 +87,17 @@ export async function getSessionStatus(params: Readonly<{
       code: sessionTarget.code,
       ...(sessionTarget.candidates ? { candidates: sessionTarget.candidates } : {}),
     };
+  }
+
+  // Signed/custom/runtime readers cannot borrow the host Account's write
+  // authority. Direct owner status reads reuse their captured full tuple.
+  if (!params.authorization && !params.resolveAuthorizationHeaders) {
+    await ensureSessionDisplayProjectionAfterOwnerRead({
+      credentials: params.credentials, sessionId: sessionTarget.sessionId,
+      accountEncryptionCurrentness: sessionTarget.accountEncryptionCurrentness,
+      rawSession: sessionTarget.rawSession,
+      ...(params.signal ? { signal: params.signal } : {}),
+    });
   }
 
   const snapshotAgentState = readSessionAgentState({ sessionTarget });

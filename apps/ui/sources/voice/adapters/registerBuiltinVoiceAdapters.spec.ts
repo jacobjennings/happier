@@ -114,7 +114,7 @@ function readBundledEntryProviderId(entry: BundledConversationRuntimeEntry): str
 }
 
 describe('createBuiltinVoiceAdapterAssembly', () => {
-  registerLocalVoiceEngineHarnessHooks({ resetModulesBetweenTests: false });
+  registerLocalVoiceEngineHarnessHooks();
   beforeEach(async () => {
     // Preserve the genuine neighboring RPC responders installed by the
     // canonical Account/native fixture; each case overrides only its wire leaf.
@@ -180,12 +180,12 @@ describe('createBuiltinVoiceAdapterAssembly', () => {
     const elevenLabsProviderId = 'happier.voice.elevenlabs/realtime-elevenlabs';
     const productionElevenLabs = assembly.adapters.find((adapter) => adapter.id === elevenLabsProviderId);
 
-    expect(new Set(generatedProviderIds)).toEqual(new Set([
+    expect(generatedProviderIds).toEqual([
       'happier.agent.codex/realtime-codex',
       elevenLabsProviderId,
       'happier.voice.openai/realtime-openai',
       'happier.voice.xai/realtime-grok',
-    ]));
+    ]);
     expect(ids).toEqual([
       ...generatedProviderIds,
       'local_direct',
@@ -240,31 +240,6 @@ describe('createBuiltinVoiceAdapterAssembly', () => {
     const ids = assembly.adapters.map((adapter) => adapter.id);
 
     expect(ids).toEqual(['local_direct', 'local_conversation']);
-    await assembly.dispose();
-  });
-
-  it('uses the same OpenAI and Codex public runtimes in native assembly while retaining Local Voice', async () => {
-    expect(BUNDLED_FIRST_PARTY_VOICE_CONVERSATION_RUNTIME_ENTRIES.map(
-      readBundledEntryProviderId,
-    )).toEqual([
-      'happier.agent.codex/realtime-codex',
-      'happier.voice.elevenlabs/realtime-elevenlabs',
-      'happier.voice.openai/realtime-openai',
-      'happier.voice.xai/realtime-grok',
-    ]);
-
-    const assembly = createBuiltinVoiceAdapterAssembly({
-      bundledEntries: BUNDLED_FIRST_PARTY_VOICE_CONVERSATION_RUNTIME_ENTRIES,
-    });
-
-    expect(assembly.adapters.map((adapter) => adapter.id)).toEqual([
-      'happier.agent.codex/realtime-codex',
-      'happier.voice.elevenlabs/realtime-elevenlabs',
-      'happier.voice.openai/realtime-openai',
-      'happier.voice.xai/realtime-grok',
-      'local_direct',
-      'local_conversation',
-    ]);
     await assembly.dispose();
   });
 
@@ -487,7 +462,7 @@ describe('createBuiltinVoiceAdapterAssembly', () => {
             path: '/workspace/voice-agent-binding',
             host: 'test.local',
             homeDir: '/Users/tester',
-            backendTarget: { kind: 'backend', backendId: 'codex' },
+            flavor: 'codex',
           } as ReturnType<typeof createSessionFixture>['metadata'],
         }),
       },
@@ -582,7 +557,7 @@ describe('createBuiltinVoiceAdapterAssembly', () => {
               host: 'test.local',
               homeDir: '/Users/tester',
               machineId: 'machine-voice-agent-race-a',
-              backendTarget: { kind: 'backend', backendId: 'codex' },
+              flavor: 'codex',
             } as ReturnType<typeof createSessionFixture>['metadata'],
           }),
           [conversationSessionIdB]: createSessionFixture({
@@ -595,7 +570,7 @@ describe('createBuiltinVoiceAdapterAssembly', () => {
               host: 'test.local',
               homeDir: '/Users/tester',
               machineId: 'machine-voice-agent-race-b',
-              backendTarget: { kind: 'backend', backendId: 'codex' },
+              flavor: 'codex',
             } as ReturnType<typeof createSessionFixture>['metadata'],
           }),
         },
@@ -652,7 +627,7 @@ describe('createBuiltinVoiceAdapterAssembly', () => {
                   ...metadata,
                   ...(invalidation === 'session machine change'
                     ? { machineId: 'machine-voice-agent-race-changed' }
-                    : { backendTarget: { kind: 'backend', backendId: 'claude' } }),
+                    : { flavor: 'claude' }),
                 },
               };
           return {
@@ -780,7 +755,7 @@ describe('createBuiltinVoiceAdapterAssembly', () => {
               host: 'test.local',
               homeDir: '/Users/tester',
               machineId: 'machine-voice-generation-cleanup',
-              backendTarget: { kind: 'backend', backendId: 'codex' },
+              flavor: 'codex',
             } as ReturnType<typeof createSessionFixture>['metadata'],
           }),
         },

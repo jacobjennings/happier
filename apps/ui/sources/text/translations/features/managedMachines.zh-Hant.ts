@@ -149,6 +149,8 @@ export const managedMachines: ManagedMachinesTranslations = {
             billedWhileRunning: "僅在執行時收費。",
             imageDescription: "啟動時的系統。Happier 會安裝在其上。",
             locationDescription: "越近，輸入回應越快。",
+            network: "網路",
+            networkDescription: "選擇它取得的公開位址。價格會隨你的選擇而變。",
             localLocationDescription: ({ computer }: { computer: string }) => `在 ${computer} 上的執行位置。`,
             localSizeDescription: ({ computer }: { computer: string }) => `執行時佔用的 ${computer} 資源。停止後釋放。`,
             headroom: ({ computer }: { computer: string }) => `留給 ${computer}`,
@@ -257,7 +259,8 @@ export const managedMachines: ManagedMachinesTranslations = {
         },
         credential: {
             refused: "佈建器連線已不再可用。",
-            required: "連接佈建器帳號以查看可用的機器。",
+            required: "連接帳號以查看可建立的內容。",
+            choose: "選擇帳號以查看可建立的內容。",
         },
         power: {
             pending: ({ provider, state }: { provider: string; state: string }) => `正在等待 ${provider} 確認${state}…`,
@@ -284,6 +287,8 @@ export const managedMachines: ManagedMachinesTranslations = {
             refused: ({ name }: { name: string }) => `你沒有管理 ${name} 的權限。`,
         },
         inspect: {
+            notCreated: "此機器未建立",
+            checkFailed: "無法確認此機器的狀態",
             checkNow: "立即檢查",
         },
         actions: {

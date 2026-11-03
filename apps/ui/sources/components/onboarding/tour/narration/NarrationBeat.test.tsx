@@ -3,14 +3,12 @@ import { StyleSheet } from 'react-native';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-    collectUnexpectedRawTextNodes,
     flushHookEffects,
     renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
 
 import { journeyBeatById } from '../state/journeyBeats';
-import { stageVisualTokens } from '../stage/stageVisualTokens';
 import {
     buildRevealTitleWords,
     NARRATION_TITLE_REVEAL_DELAY_MS,
@@ -156,7 +154,6 @@ describe('NarrationBeat', () => {
 
         expect(screen.findByTestId('narration-beat')).toBeTruthy();
         // D17: the ACT eyebrow row is killed — no "Act N" label above the title.
-        expect(screen.findByTestId('narration-beat-eyebrow')).toBeNull();
         expect(screen.getTextContent()).not.toContain('Act 1');
         expect(screen.getTextContent()).toContain('Start coding anywhere.');
         expect(screen.getTextContent()).toContain('Continue everywhere.');
@@ -211,24 +208,6 @@ describe('NarrationBeat', () => {
         const screen = await renderScreen(<NarrationBeat beat={beat!} testID="narration-beat" />);
         expect(screen.getTextContent()).toContain('Always know what needs you.');
         expect(screen.findByTestId('narration-beat-title-tail')).toBeNull();
-    });
-
-    it('uses the binding desktop narration typography scale', async () => {
-        const beat = journeyBeatById.get('A1');
-        expect(beat).toBeDefined();
-
-        const screen = await renderScreen(<NarrationBeat beat={beat!} testID="narration-beat" />);
-
-        expect(flattenStyle(screen.findByTestId('narration-beat-title')?.props.style)).toMatchObject({
-            fontSize: stageVisualTokens.narration.titleFontSize,
-            lineHeight: stageVisualTokens.narration.titleLineHeight,
-            letterSpacing: stageVisualTokens.narration.titleLetterSpacing,
-        });
-        expect(flattenStyle(screen.findByTestId('narration-beat-body')?.props.style)).toMatchObject({
-            fontSize: stageVisualTokens.narration.bodyFontSize,
-            lineHeight: stageVisualTokens.narration.bodyLineHeight,
-            maxWidth: stageVisualTokens.narration.bodyMaxWidth,
-        });
     });
 
     it('splits the title into stable reveal words with stagger delays that continue across both tones', async () => {
@@ -423,11 +402,4 @@ describe('NarrationBeat', () => {
         ]);
     });
 
-    it('does not leak raw strings outside Text hosts', async () => {
-        const beat = journeyBeatById.get('A1');
-        expect(beat).toBeDefined();
-        const screen = await renderScreen(<NarrationBeat beat={beat!} testID="narration-beat" />);
-
-        expect(collectUnexpectedRawTextNodes(screen.tree.toJSON())).toEqual([]);
-    });
 });

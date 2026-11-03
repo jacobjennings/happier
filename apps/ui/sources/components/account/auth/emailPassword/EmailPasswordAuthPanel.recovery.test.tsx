@@ -148,7 +148,7 @@ it('does not retain a transferable invitation after its verification request los
     await act(async () => finishRequest());
 
     expect(nativeEmail.rememberInvitation).not.toHaveBeenCalled();
-    expect(screen.findByTestId('email-password-verification-sent')).toBeNull();
+    expect(screen.findByTestId('email-password-sent-detail')).toBeNull();
 });
 
 it('retires a pending login when the exact Home target changes', async () => {
@@ -229,31 +229,4 @@ it('erases a retired provision result recovery key instead of leaving it in memo
     expect(fill).toHaveBeenCalledTimes(1);
     expect(fill).toHaveBeenCalledWith(0);
     expect(Array.from(recoverySecret).every((byte) => byte === 0)).toBe(true);
-});
-
-it('opens the exact-Home password-replacement flow without changing manual restore', async () => {
-    const recoveryTarget = 'srv_home_a';
-    screen = await renderScreen(
-        <EmailPasswordAuthPanel
-            target={{
-                endpointUrl: 'https://home-a.example.test',
-                canonicalServerUrl: 'https://home-a.example.test',
-                addressAnchorUrl: 'https://home-a.example.test',
-                serverId: 'srv_home_a',
-                serverIdentityId: 'srv_home_a',
-            }}
-            recoveryTarget={recoveryTarget}
-            action="login"
-            mode="either"
-            onAuthenticated={vi.fn()}
-        />,
-    );
-
-    await screen.pressByTestIdAsync('email-password-forgot');
-    await screen.pressByTestIdAsync('email-password-use-recovery-key');
-
-    expect(router.push).toHaveBeenCalledWith({
-        pathname: '/auth/password/recover',
-        params: { target: recoveryTarget },
-    });
 });

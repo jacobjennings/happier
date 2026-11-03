@@ -11,11 +11,8 @@ test('tests workflow includes self-host + daemon E2E gate and runs real integrat
   const raw = await readFile(join(repoRoot, '.github', 'workflows', 'tests.yml'), 'utf8');
 
   assert.match(raw, /run_self_host_daemon:/, 'tests.yml should define run_self_host_daemon input');
-  assert.match(
-    raw,
-    /if:\s*\$\{\{\s*inputs\.select_jobs_explicitly\s*&&\s*inputs\.run_self_host_daemon\s*\}\}/,
-    'self-host daemon e2e job should be gated behind run_self_host_daemon input',
-  );
+  // The explicit-selection gate of self-host-daemon-e2e is owned by
+  // tests_workflow.reusable_run_flags.contract.test.mjs (exact parsed `if`).
   assert.match(
     raw,
     /node\s+--test\s+apps\/stack\/scripts\/self_host_daemon\.real\.integration\.test\.mjs/,

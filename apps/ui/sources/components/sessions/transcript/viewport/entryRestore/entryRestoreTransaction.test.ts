@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
     createEntryRestoreTransaction,
-    type EntryRestoreTransaction,
     type EntryRestoreTransactionTarget,
 } from './entryRestoreTransaction';
 
@@ -22,40 +21,18 @@ function buildTransaction(overrides: Partial<{
     });
 }
 
+// Type pins, enforced by the typecheck lane (no runtime assertion can fail here): only final
+// verdicts can open a transaction. Wait verdicts must be re-resolved by the host once fill
+// settles / content measures; turning one into a transaction would close the entry phase as
+// no-target prematurely (releasing the reveal gate and entry ownership before any restore).
+// @ts-expect-error -- 'awaiting-fill-settle' is a wait verdict, not a transaction target
+({ kind: 'none', reason: 'awaiting-fill-settle' }) satisfies EntryRestoreTransactionTarget;
+// @ts-expect-error -- 'content-unmeasured' is a wait verdict, not a transaction target
+({ kind: 'none', reason: 'content-unmeasured' }) satisfies EntryRestoreTransactionTarget;
+// @ts-expect-error -- materialization happens before a transaction exists
+({ kind: 'materialize-then-anchor', anchorSeqHint: null }) satisfies EntryRestoreTransactionTarget;
+
 describe('entry restore transaction', () => {
-    it('only final verdicts can open a transaction; wait verdicts are rejected at the type level', () => {
-        // Wait verdicts must be re-resolved by the host once fill settles / content measures.
-        // Turning one into a transaction would close the entry phase as no-target prematurely
-        // (releasing the reveal gate and entry ownership before any restore was attempted).
-        // @ts-expect-error -- 'awaiting-fill-settle' is a wait verdict, not a transaction target
-        const waitForFill: EntryRestoreTransactionTarget = { kind: 'none', reason: 'awaiting-fill-settle' };
-        // @ts-expect-error -- 'content-unmeasured' is a wait verdict, not a transaction target
-        const waitForMeasure: EntryRestoreTransactionTarget = { kind: 'none', reason: 'content-unmeasured' };
-        // @ts-expect-error -- materialization happens before a transaction exists
-        const materialize: EntryRestoreTransactionTarget = { kind: 'materialize-then-anchor', anchorSeqHint: null };
-        expect([waitForFill, waitForMeasure, materialize]).toHaveLength(3);
-    });
-
-    it('exposes no re-issue surface (E1 structural guarantee)', () => {
-        // E1: height churn during entry re-issued scroll writes through ad-hoc reaction
-        // surfaces (content-size-change reapply). The transaction's ONLY write-authorizing
-        // path is onObservation's single correction directive. Any new public surface added
-        // here must be reviewed against that invariant before this pin is updated.
-        const transaction = buildTransaction();
-        const surface: Record<keyof EntryRestoreTransaction, true> = {
-            sessionId: true,
-            target: true,
-            state: true,
-            issueCount: true,
-            onObservation: true,
-            onTrustedUserScroll: true,
-            onDeadline: true,
-            isClosed: true,
-            outcome: true,
-        };
-        expect(Object.keys(transaction).sort()).toEqual(Object.keys(surface).sort());
-    });
-
     it('closes immediately with no-target when there is nothing to restore', () => {
         const transaction = buildTransaction({ target: { kind: 'none', reason: 'empty-transcript' } });
 

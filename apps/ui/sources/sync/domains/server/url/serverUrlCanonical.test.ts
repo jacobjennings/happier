@@ -47,9 +47,18 @@ describe('serverUrlCanonical', () => {
         expect(canonicalizeServerUrl('my-nas:3005/path')).toBe('http://my-nas:3005/path');
     });
 
-    it('rejects non-http protocols', () => {
+    it('lowercases the host and strips repeated trailing slashes', () => {
+        expect(canonicalizeServerUrl(' https://Example.COM:8443/ ')).toBe('https://example.com:8443');
+        expect(canonicalizeServerUrl('http://localhost:3012////')).toBe('http://localhost:3012');
+        expect(canonicalizeServerUrl('https://example.com/path/')).toBe('https://example.com/path');
+    });
+
+    it('rejects non-http protocols and unparseable input', () => {
         expect(canonicalizeServerUrl('ftp://example.com')).toBe('');
         expect(canonicalizeServerUrl('file:///tmp/server')).toBe('');
+        expect(canonicalizeServerUrl('javascript:alert(1)')).toBe('');
+        expect(canonicalizeServerUrl('not a url')).toBe('');
+        expect(canonicalizeServerUrl('')).toBe('');
     });
 
     it('normalizes an independent HTTPS fallback while rejecting embedded credentials', () => {

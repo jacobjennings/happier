@@ -81,7 +81,7 @@ export const QUALIFIED_CONNECTED_ACCOUNTS_V4_ROLLBACK_SUPPORT = Object.freeze([
         content: 'session_owner_metadata: 26,',
       }),
       Object.freeze({
-        path: 'packages/protocol/src/sessions/metadata/sessionMetadataEnvelopesV1.ts',
+        path: 'packages/protocol/src/sessions/metadata/sessionMetadataSchemasV1.ts',
         content: 'export const SESSION_METADATA_LAYOUT_VERSION_V1 = 1 as const;',
       }),
       Object.freeze({

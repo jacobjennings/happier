@@ -38,31 +38,8 @@ const CANONICAL_MARKERS: Record<InlineMockFamilyName, readonly string[]> = {
     storage: ['createStorageModuleMock', 'createPartialStorageModuleMock', 'createStorageModuleStub'],
 };
 
-const CANONICAL_HELPER_MARKERS: Record<InlineMockFamilyName, readonly Readonly<{
-    helper: string;
-    importSpecifier: string;
-}>[]> = {
-    reactNative: [
-        { helper: 'createFlashListChatListReactNativeMock', importSpecifier: '@/dev/testkit/harness/chatListHarness' },
-        { helper: 'createLegacyChatListReactNativeMock', importSpecifier: '@/dev/testkit/harness/chatListHarness' },
-    ],
-    unistyles: [],
-    text: [],
-    modal: [],
-    router: [],
-    storage: [
-        { helper: 'createFlashListChatListStorageMock', importSpecifier: '@/dev/testkit/harness/chatListHarness' },
-        { helper: 'createLegacyChatListStorageMock', importSpecifier: '@/dev/testkit/harness/chatListHarness' },
-    ],
-};
-
 function hasCanonicalMarker(text: string, family: InlineMockFamilyName): boolean {
-    return (
-        CANONICAL_MARKERS[family].some((marker) => text.includes(marker)) ||
-        CANONICAL_HELPER_MARKERS[family].some(({ helper, importSpecifier }) => (
-            text.includes(helper) && text.includes(importSpecifier)
-        ))
-    );
+    return CANONICAL_MARKERS[family].some((marker) => text.includes(marker));
 }
 
 function collectReferencedIdentifierNames(node: ts.Node | readonly ts.Node[]): Set<string> {
@@ -228,9 +205,6 @@ export function collectInlineMockFamilyStats(
                     const referencedAliases = collectReferencedIdentifierNames(node);
                     const canonical = (
                         CANONICAL_MARKERS[family].some((marker) => nodeText.includes(marker)) ||
-                        CANONICAL_HELPER_MARKERS[family].some(({ helper, importSpecifier }) => (
-                            nodeText.includes(helper) && nodeText.includes(importSpecifier)
-                        )) ||
                         [...referencedAliases].some((alias) => canonicalAliasFamilies.get(alias)?.has(family) === true)
                     );
                     const current = stats[family];

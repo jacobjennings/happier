@@ -164,11 +164,17 @@ export function applyTranslations(
         }
         edits.push({ start: literal.start, end: literal.end, text: escapeForSite(literal.raw, literal.delim, replacement) });
     }
-    // Right-to-left so earlier offsets stay valid as the string grows or shrinks.
-    edits.sort((left, right) => right.start - left.start);
-    let output = source;
-    for (const edit of edits) output = output.slice(0, edit.start) + edit.text + output.slice(edit.end);
-    return { output, applied: edits.length, untouched };
+    // Literal interiors never overlap, so the output is the untouched gaps and the edits in
+    // source order, joined once (re-slicing the whole file per edit is quadratic on 1 MB locales).
+    edits.sort((left, right) => left.start - right.start);
+    const parts: string[] = [];
+    let cursor = 0;
+    for (const edit of edits) {
+        parts.push(source.slice(cursor, edit.start), edit.text);
+        cursor = edit.end;
+    }
+    parts.push(source.slice(cursor));
+    return { output: parts.join(''), applied: edits.length, untouched };
 }
 
 export type RoundTripMismatch = { key: string; kind: LiteralKind; before: string; after: string };

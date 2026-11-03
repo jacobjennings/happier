@@ -252,6 +252,28 @@ describe('handleServiceRepairCliCommand', () => {
     }
   });
 
+  it.each(['--help', '-h'])('prints repair usage for %s without inspecting or repairing anything', async (flag) => {
+    isInteractiveTerminalMock.mockReturnValue(true);
+    const { handleServiceRepairCliCommand } = await import('./handleServiceRepairCliCommand');
+    const output = captureConsoleText();
+    try {
+      await handleServiceRepairCliCommand({
+        argv: ['repair', flag],
+        commandPath: 'happier doctor',
+      });
+
+      expect(output.text()).toContain('happier doctor repair');
+      expect(output.text()).toContain('--yes');
+      expect(output.text()).toContain('--report-only');
+      expect(buildDoctorSnapshotMock).not.toHaveBeenCalled();
+      expect(readDoctorRuntimeInventoryMock).not.toHaveBeenCalled();
+      expect(promptInputMock).not.toHaveBeenCalled();
+      expect(applyBackgroundServiceRepairPlanMock).not.toHaveBeenCalled();
+    } finally {
+      output.restore();
+    }
+  });
+
   it('fails closed when executing system-scoped repair on linux without root privileges', async () => {
     const { handleServiceRepairCliCommand } = await import('./handleServiceRepairCliCommand');
 

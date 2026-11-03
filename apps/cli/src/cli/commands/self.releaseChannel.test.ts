@@ -11,6 +11,8 @@ import {
     readDefaultManagedReleaseChannel,
     writeDefaultManagedReleaseChannel,
 } from '@happier-dev/cli-common/firstPartyRuntime';
+import { reloadConfiguration } from '@/configuration';
+import { handleSelfCliCommand } from './self';
 
 async function createStagedPayload(rootDir: string, versionId: string, contents: string): Promise<string> {
     const stagedPayloadPath = join(rootDir, `stage-${versionId}`);
@@ -56,7 +58,6 @@ describe('happier self release-channel', () => {
                 stagedPayloadPath: await createStagedPayload(homeDir, '2.0.0', 'preview-binary'),
             });
 
-            const { handleSelfCliCommand } = await import('./self');
             await handleSelfCliCommand({
                 args: ['self', 'release-channel', 'use', 'preview'],
                 rawArgv: ['happier', 'self', 'release-channel', 'use', 'preview'],
@@ -102,7 +103,7 @@ describe('happier self release-channel', () => {
             process.env.HAPPIER_HOME_DIR = homeDir;
             const managedBinDir = join(homeDir, 'bin');
             process.env.PATH = managedBinDir;
-            vi.resetModules();
+            reloadConfiguration();
 
             await promoteVersionedPayload({
                 componentId: 'happier-cli',
@@ -120,7 +121,6 @@ describe('happier self release-channel', () => {
             });
             process.argv[1] = join(homeDir, 'bin', process.platform === 'win32' ? 'happier.exe' : 'happier');
 
-            const { handleSelfCliCommand } = await import('./self');
             await handleSelfCliCommand({
                 args: ['self', 'release-channel', 'use', 'preview'],
                 rawArgv: ['happier', 'self', 'release-channel', 'use', 'preview'],
@@ -187,7 +187,7 @@ describe('happier self release-channel', () => {
             const managedBinDir = join(homeDir, 'bin');
             const unmanagedBinDir = join(homeDir, 'other-bin');
             process.env.PATH = [managedBinDir, unmanagedBinDir].join(delimiter);
-            vi.resetModules();
+            reloadConfiguration();
 
             await promoteVersionedPayload({
                 componentId: 'happier-cli',
@@ -208,7 +208,6 @@ describe('happier self release-channel', () => {
 
             process.argv[1] = join(homeDir, 'bin', process.platform === 'win32' ? 'happier.exe' : 'happier');
 
-            const { handleSelfCliCommand } = await import('./self');
             await handleSelfCliCommand({
                 args: ['self', 'release-channel', 'list'],
                 rawArgv: ['happier', 'self', 'release-channel', 'list'],
@@ -238,31 +237,6 @@ describe('happier self release-channel', () => {
             errorSpy.mockRestore();
             exitSpy.mockRestore();
             await rm(homeDir, { recursive: true, force: true });
-        }
-    });
-
-    it('treats a copied happier shim as aligned with the default managed release-channel on Windows', async () => {
-        const tempDir = await mkdtemp(join(tmpdir(), 'happier-self-release-channel-status-copy-'));
-        const originalPlatform = process.platform;
-
-        try {
-            Object.defineProperty(process, 'platform', { value: 'win32' });
-            vi.resetModules();
-            const shimPath = join(tempDir, 'happier.exe');
-            const binaryPath = join(tempDir, 'current', 'happier.exe');
-            await mkdir(join(tempDir, 'current'), { recursive: true });
-            await writeFile(shimPath, 'preview-binary', 'utf8');
-            await writeFile(binaryPath, 'preview-binary', 'utf8');
-
-            const { areManagedShimAndBinaryAligned } = await import('./self/areManagedShimAndBinaryAligned');
-            expect(areManagedShimAndBinaryAligned({
-                shimPath,
-                binaryPath,
-                platform: 'win32',
-            })).toBe(true);
-        } finally {
-            Object.defineProperty(process, 'platform', { value: originalPlatform });
-            await rm(tempDir, { recursive: true, force: true });
         }
     });
 });

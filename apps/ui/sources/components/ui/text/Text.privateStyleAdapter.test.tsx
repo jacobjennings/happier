@@ -19,36 +19,13 @@ vi.mock('react-native', async () => {
     });
 });
 
-vi.mock('@happier-dev/plugin-ui/presentation', async () => {
-    const actual = await vi.importActual<typeof import('@happier-dev/plugin-ui/presentation')>('@happier-dev/plugin-ui/presentation');
-    return {
-        ...actual,
-        // A portable plugin primitive is not allowed to become an RN-style
-        // escape hatch. The core adapter must apply its private native style.
-        HappierText: ({ children }: { children?: React.ReactNode }) => React.createElement('PortableText', undefined, children),
-    };
-});
-
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
-vi.mock('@/sync/store/settingsReadHooks', () => ({
-    useLocalSetting: () => 1,
-}));
-
-vi.mock('./uiFontScale', () => ({
-    scaleTextStyle: (style: unknown) => style,
-    scaleUnistylesTextStyleEntry: <T,>(entry: T) => entry,
-}));
-
 // Core Text keeps the complete native contract even though plugin-authored
 // presentation styles intentionally remain portable.
 expectTypeOf<StyleProp<TextStyle> | undefined>().toMatchTypeOf<AppTextProps['style']>();
 expectTypeOf<ComponentProps<typeof TextInput>['style']>().toMatchTypeOf<RNTextInputProps['style']>();
 
 describe('Text private native-style adapter', () => {
-    it('applies core-only text styles and native props without broadening the portable primitive', async () => {
+    it('passes core-only native props and style entries to the native text host', async () => {
         const screen = await renderScreen(
             <Text
                 accessibilityActions={[{ name: 'activate', label: 'Activate transcript row' }]}

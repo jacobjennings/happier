@@ -431,7 +431,7 @@ function buildEncryptedSessionMessageUpdate(params: {
         seq: params.seq,
         createdAt: params.createdAt ?? Date.now(),
         body: {
-            t: 'new-message',
+            t: 'new-message', delivery: 'full' as const,
             sid: params.sid ?? session.id,
             message: {
                 id: params.messageId,
@@ -1310,7 +1310,7 @@ describe('ApiSessionClient connection handling', () => {
             seq: 0,
             createdAt: 1234,
             body: {
-                t: 'new-message',
+                t: 'new-message', delivery: 'full' as const,
                 sid: mockSession.id,
                 message: {
                     id: 'm-1',

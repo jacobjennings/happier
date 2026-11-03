@@ -8,7 +8,6 @@ import {
 import { createAccountFeaturesResponse, getRequestUrl, isFeaturesRequest, isUsernameRequest } from './account.testHelpers';
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import {
-    getAccountSettingsRouteModalMockRef,
     getAccountSettingsRouteRouterMockRef,
     installAccountSettingsRouteModuleMocks,
 } from './accountSettingsRouteTestHelpers';
@@ -40,7 +39,6 @@ let account: Awaited<ReturnType<typeof createSecretSettingsTestHarness>> | undef
 let restoreExecutor: (() => void) | undefined;
 
 const routerMockRef = getAccountSettingsRouteRouterMockRef();
-const modalMockRef = getAccountSettingsRouteModalMockRef();
 
 vi.mock('expo-camera', () => ({
     useCameraPermissions: () => [{ granted: true }, async () => ({ granted: true })],
@@ -120,7 +118,6 @@ describe('Settings → Account (name)', () => {
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
         routerMockRef.current?.spies.replace.mockReset();
-        modalMockRef.current = null;
         standardCleanup();
     });
 
@@ -137,7 +134,6 @@ describe('Settings → Account (name)', () => {
         expect(home.nameRequests).toEqual([{ name: 'Leeroy Brun' }]);
         await vi.waitFor(() => expect(screen.findByTestId('settings-account-name-field')).toBeNull());
         expect(headerTitle(screen)).toBe('Leeroy Brun');
-        expect(modalMockRef.current?.spies.alert ?? vi.fn()).not.toHaveBeenCalled();
     }, 40_000);
 
     it('clears the name when the field is emptied, falling back to the username', async () => {

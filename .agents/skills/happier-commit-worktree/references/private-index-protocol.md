@@ -71,10 +71,11 @@ Confirm the diff contains exactly the intended paths and bytes. Compare the priv
 
 If any selected filesystem path changes after verification, rebuild or re-verify that path. Never silently commit the older private-index bytes while claiming the current filesystem version was captured.
 
-Then create the commit without touching the worktree or shared index:
+Then create the tree, prove it type-resolves (SKILL.md section 7), and create the commit without touching the worktree or shared index:
 
 ```bash
 tree=$(GIT_INDEX_FILE="$idx" git write-tree)
+./apps/stack/bin/hstack-exec --local -- node scripts/workspaces/checkCommitTypeCoherence.mjs --base="$head" --tree="$tree"
 commit=$(git commit-tree "$tree" -p "$head" < /tmp/happier-commit-message.txt)
 git show --no-patch --format=fuller "$commit"
 git update-ref HEAD "$commit" "$head"

@@ -2,7 +2,10 @@ import { type SessionMessageV1 } from '@happier-dev/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 
-import type { Session } from '@/sync/domains/state/storageTypes';
+import type { DecryptedMessage, Session } from '@/sync/domains/state/storageTypes';
+import { scmDiffCache } from '@/scm/diffCache/scmDiffCacheSingleton';
+import { resolveWorkspaceTargetForSession } from '@/sync/domains/session/resolveWorkspaceTargetForSession';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import type { NormalizedMessage } from "@happier-dev/session-core/raw";
 import { resetSessionSurfaceVisibilityForTests } from '@/sync/domains/session/sessionSurfaceVisibility';
 import { storage } from '@/sync/domains/state/storage';
@@ -225,5 +228,41 @@ describe('deliverHiddenSessionScmMutationSignal', () => {
                 },
             ],
         });
+    });
+
+    it('does not invalidate the workspace when its socket lifetime retires during decryption', async () => {
+        const serverId = 'home-a';
+        storage.getState().applySessions(Object.values(storage.getState().sessions).map(session => ({ ...session, serverId })));
+        const machine = createMachineFixture({ id: 'machine-a' });
+        storage.setState({ machines: { [machine.id]: machine }, machineListByServerId: { [serverId]: [machine] } });
+        const unregister = registerSessionRealtimeScmConsumerScope({ serverId, sessionId: 'scm-consumer',
+            canonicalProjectKey: 'machine-a:/repo', machineScopeId: 'machine-a', repoRoot: '/repo' });
+        const target = resolveWorkspaceTargetForSession({ serverId, sessionId: 'hidden-producer' });
+        if (!target) throw new Error('Expected the mounted workspace');
+        const key = { sessionId: target.workspaceCacheKey, snapshotSignature: 'retired-socket',
+            diffArea: 'pending' as const, path: '/repo/packages/app/src/retired.ts' };
+        scmDiffCache.set(key, 'current diff');
+        let completeDecryption!: (value: DecryptedMessage) => void;
+        const decrypted = new Promise<DecryptedMessage>(resolve => { completeDecryption = resolve; });
+        let current = true;
+        vi.useFakeTimers();
+        try {
+            const delivery = deliverHiddenSessionScmMutationSignal({
+                sessionId: 'hidden-producer', serverId, sessionEncryptionMode: 'e2ee',
+                rawMessage: { ...buildPlainEditToolMessage(key.path), content: { t: 'encrypted', c: 'pending-crypto' } },
+                // Crypto is the system boundary; normalization, scope resolution and SCM ingestion stay real.
+                getSessionEncryption: () => ({ decryptMessage: () => decrypted }),
+                shouldContinue: () => current,
+            });
+            current = false;
+            completeDecryption({ id: 'retired-message', seq: 7, localId: null, messageRole: 'agent',
+                createdAt: 2_000, content: buildEditToolRawRecord(key.path) });
+            await delivery;
+            await vi.advanceTimersByTimeAsync(201);
+            expect(scmDiffCache.get(key)).toMatchObject({ diff: 'current diff' });
+            expect(storage.getState().sessionMessages['hidden-producer']).toBeUndefined();
+        } finally {
+            vi.useRealTimers(); unregister(); scmDiffCache.invalidateSession(target.workspaceCacheKey);
+        }
     });
 });

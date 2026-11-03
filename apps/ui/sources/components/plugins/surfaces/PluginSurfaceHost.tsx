@@ -17,7 +17,8 @@ import { createPluginEntityDragDropBinding, executeMountedPluginEntityDropAction
 import { PluginEntityDragSourceView, PluginEntityDropTargetView } from './entityDragDrop/PluginEntityDragDropView';
 import { PluginLiveStreamViewer } from './PluginLiveStreamViewer';
 import { InputTypePickerHostProvider } from '@/components/sessions/actions/InputTypePickerHostProvider';
-import { useSurfaceStateSize } from '@/components/ui/surfaces/surfaceStateSize';
+import { useSurfaceStateCardSize, useSurfaceStateQuietActions } from '@/components/ui/surfaces/surfaceStateSize';
+import { useWidgetFrameHeaderBinding } from '@/components/widgets/frame/widgetFrameHeaderBinding';
 import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { buildApprovalHref } from '@/components/approvals/approvalNavigation';
@@ -80,6 +81,7 @@ import type { PluginUiDataClient } from '@happier-dev/plugin-ui/data';
 import { resolveAuthCredentialsScopeKey } from '@/auth/storage/resolveAuthCredentialsScopeKey';
 import { resolveNegotiatedPluginSurfaceHostApiMethods } from '@/components/plugins/hostApi/negotiatedMethods';
 import { useUiSurfaceRendererMount } from '@/components/plugins/hostApi/useUiSurfaceRendererMount';
+import { useUiSurfaceOwnerLifetime } from '@/components/plugins/hostApi/useUiSurfaceOwnerLifetime';
 import { PluginHostedWebPane } from '@/components/plugins/hostedWeb/PluginHostedWebPane';
 import {
     PluginHostedWebUnavailable,
@@ -782,9 +784,7 @@ function DeclarativePluginSurfaceWithDocumentSource(
             hostApiAdapter.publishResourceSubscriptionEvent(event);
         });
     }, [hostApiAdapter, props.controller]);
-    React.useLayoutEffect(() => () => {
-        hostApiAdapter?.dispose();
-    }, [hostApiAdapter]);
+    useUiSurfaceOwnerLifetime(hostApiAdapter);
     // The document adapter keeps its adopted document for the same Account and
     // occurrence. A replaced controller (new facts, reconnect) is therefore not
     // a new scope: currentness follows the latest controller through this
@@ -1697,10 +1697,14 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
     const presented = useLayoutPresentationActive();
     // The pane header of the tab this mount fills: a plugin's `PaneHeaderContent` lands there, beside the
     // tab's title, exactly where built-in tabs put their "+" and live line.
-    const paneHeaderBinding = usePaneHeaderSlotBinding();
+    const widgetHeaderBinding = useWidgetFrameHeaderBinding();
+    const tabHeaderBinding = usePaneHeaderSlotBinding();
+    const paneHeaderBinding = widgetHeaderBinding ?? tabHeaderBinding;
     // The container the mount sits in (a session sidebar tab is a `pane`, a phone surface `phone`), so
     // a plugin's unsized states size themselves like the host's own states around them.
-    const hostStateSize = useSurfaceStateSize();
+    const hostStateSize = useSurfaceStateCardSize();
+    // A widget card never owns its page's primary: its plugin states offer their way forward quiet, like the host's.
+    const hostQuietStateActions = useSurfaceStateQuietActions();
     const destinationRowRenderer = usePluginDestinationRowRenderer();
     const findRegistrationHost = useFindSurfaceRegistrationHost();
     const mediaStage = usePluginUiMediaStage();
@@ -1761,6 +1765,7 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
                 resolveMaterialColor,
                 pageChrome: hostPageChrome,
                 ...(hostStateSize === undefined ? {} : { stateSize: hostStateSize }),
+                ...(hostQuietStateActions ? { stateActions: 'quiet' as const } : {}),
                 ...(detailsPaneBinding === null ? {} : { detailsPane: detailsPaneBinding }),
                 ...(paneHeaderBinding === null ? {} : { paneHeader: paneHeaderBinding }),
             },
@@ -1772,6 +1777,7 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
             mediaStage,
             props.entityDragBinding,
             hostStateSize,
+            hostQuietStateActions,
             detailsPaneBinding,
             paneHeaderBinding,
             hostPalette,
@@ -1869,9 +1875,7 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
         props.subPath,
     ]);
 
-    React.useLayoutEffect(() => () => {
-        canonicalHostApiAdapter.dispose();
-    }, [canonicalHostApiAdapter]);
+    useUiSurfaceOwnerLifetime(canonicalHostApiAdapter);
 
     return (
         <PluginReactNativeSurface
@@ -2442,13 +2446,10 @@ function PluginSurfaceHostMount(props: Readonly<(
     const requesterAccountEntry = descriptor?.contributionKind === 'settingsPage'
         ? requesterAccountProjection?.settingsPagesById[descriptor.id]
         : descriptor ? requesterAccountProjection?.surfacePlacementsById[descriptor.id] : undefined;
-    // The canonical union may explicitly select trusted development UI instead
-    // of the bundled declaration. Observe that producer choice without electing
-    // a source here or borrowing the bundled declaration's Account custody.
-    const requesterDeclaration = descriptor?.hostUiSourceSelection === 'explicitDevelopment'
-        ? descriptor : requesterAccountEntry;
-    const expectedRequesterOrigin = React.useMemo(() => readPluginUiAccountExecutableOrigin(requesterDeclaration),
-        [requesterDeclaration]);
+    // Renderer byte selection cannot admit a retained Machine requester while
+    // Availability already owns this exact destination under Account custody.
+    const expectedRequesterOrigin = React.useMemo(() => readPluginUiAccountExecutableOrigin(requesterAccountEntry),
+        [requesterAccountEntry]);
     const requesterAccountObservationLoaded = requesterAccountAdmission !== undefined
         && (requesterAccountAdmission.kind === 'available'
             || (requesterAccountAdmission.code !== 'account_availability_not_loaded'

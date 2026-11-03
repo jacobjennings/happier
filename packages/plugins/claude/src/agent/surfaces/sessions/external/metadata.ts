@@ -50,6 +50,37 @@ type ClaudeTranscriptIdentity = Readonly<{
     ctimeNs: string;
 }>;
 
+// Only raw JSONL pages are shared: fallback-title interpretation belongs to each
+// invocation's prompt-reader context. The host index remains the only persisted cache.
+const titlePagesInFlight = new Map<string, ReturnType<typeof readJsonlFileForwardLines>>();
+
+async function readClaudeTitlePage(
+    filePath: string,
+    offsetBytes: number,
+    identity: ClaudeTranscriptIdentity,
+    fileSystem: JsonlScannerFileSystem | undefined,
+): ReturnType<typeof readJsonlFileForwardLines> {
+    const readPage = () => readJsonlFileForwardLines({
+        filePath,
+        offsetBytes,
+        maxBytes: TITLE_SCAN_CHUNK_MAX_BYTES,
+        maxItems: TITLE_SCAN_CHUNK_MAX_ITEMS,
+        fileSystem,
+    });
+    // An explicit filesystem can describe a different source at the same path.
+    if (fileSystem) return await readPage();
+    const key = JSON.stringify([filePath, identity, offsetBytes]);
+    const pending = titlePagesInFlight.get(key);
+    if (pending) return await pending;
+    const started = readPage();
+    titlePagesInFlight.set(key, started);
+    try {
+        return await started;
+    } finally {
+        titlePagesInFlight.delete(key);
+    }
+}
+
 function readTitleCandidate(value: string): string | null {
     const normalized = value.replace(/\s+/g, ' ').trim();
     return normalized.length > 0 ? normalized.slice(0, 10_000) : null;
@@ -226,13 +257,12 @@ export async function readClaudeJsonlSessionTitleWithIndex(params: Readonly<{
         let accumulator = readTitleAccumulatorFromState(canResume ? previousState : null);
         let stoppedAtIncompleteTail = false;
         while (offsetBytes < before.sizeBytes) {
-            const page = await readJsonlFileForwardLines({
-                filePath: params.filePath,
+            const page = await readClaudeTitlePage(
+                params.filePath,
                 offsetBytes,
-                maxBytes: TITLE_SCAN_CHUNK_MAX_BYTES,
-                maxItems: TITLE_SCAN_CHUNK_MAX_ITEMS,
-                fileSystem: params.fileSystem,
-            });
+                before,
+                params.fileSystem,
+            );
             for (const line of page.items) {
                 if (
                     line.value === null

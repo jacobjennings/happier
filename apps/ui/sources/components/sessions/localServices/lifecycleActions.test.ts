@@ -1,8 +1,10 @@
+import type { FrontDoorRuntimeActionExecute } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
+type RuntimeActionExecute = FrontDoorRuntimeActionExecute;
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { isLocalServiceActionConfirmationNonceV1, LocalServiceActionRequestV1Schema, type RuntimeActionExecute } from '@happier-dev/protocol';
+import { isLocalServiceActionConfirmationNonceV1, LocalServiceActionRequestV1Schema } from '@happier-dev/protocol';
 import { DaemonLocalServiceActionExecuteResponseV1Schema } from '@happier-dev/protocol/local/services/actions/v1';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc/methods';
 import { renderHook, renderScreen, standardCleanup } from '@/dev/testkit';
@@ -19,8 +21,11 @@ vi.mock('expo-router', async () => (await import('@/dev/testkit/mocks/router')).
 installDisconnectedServerSocketBoundary();
 const home = createHomeGovernanceHarness();
 installHomeGovernanceBoundaries(home);
+const { storage } = await import('@/sync/domains/state/storage');
+const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
+const { publishAppliedActiveServerSnapshot } = await import('@/sync/runtime/orchestration/appliedActiveServerRuntime');
 const { readPresentationNotice, retirePresentationNotice } = await import('@/components/sessions/presentation/presentationNotices');
-const { areServerProfileIdentifiersEquivalent, removeServerProfile, setServerProfileIdentityForUrl, upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
+const { areServerProfileIdentifiersEquivalent, removeServerProfile, resolveServerProfileScopeIdForIdentifier, setServerProfileIdentityForUrl, upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
 const { createFrontDoorRuntimeActionExecutor } = await import('@/sync/ops/actions/frontDoorRuntimeActionExecutor');
 const { useActionApprovalContinuation } = await import('@/components/approvals/useActionApprovalContinuation');
 const {
@@ -295,6 +300,11 @@ describe('local service lifecycle action helpers', () => {
 
     it.each(['reject', 'cancel', 'refused'] as const)('keeps declined Undo quiet and a real refusal visible through the notice owner (%s)', async decision => {
         const serverId = await home.addHome({ name: 'Services', serverUrl: 'https://services-undo.test', accountId: 'owner', currentAccount: true });
+        // The mounted continuation observes this signed-in Account's Artifact store,
+        // just as the Services page does; merely saving Home credentials does not activate it.
+        const scope = { serverId: resolveServerProfileScopeIdForIdentifier(serverId), accountId: 'owner' };
+        storage.setState({ profileScope: scope, settingsScope: scope });
+        publishAppliedActiveServerSnapshot(getActiveServerSnapshot());
         // Only daemon IO is replaced: Action policy, persisted approval, continuation and notice owner stay real.
         daemon.rpc.mockImplementation(async (rpc: Readonly<{ method: string; payload: unknown }>) => {
             expect(rpc.method).toBe(RPC_METHODS.DAEMON_LOCAL_SERVICES_ACTIONS_EXECUTE);
@@ -332,14 +342,16 @@ describe('local service lifecycle action helpers', () => {
         } else {
             await home.requireUiApproval(serverId, 'localServices.actions.forget');
             let undo: Promise<unknown> | undefined;
+            let settled = false;
             await act(async () => {
-                undo = Promise.resolve(notice?.undo?.run());
-                await vi.waitFor(() => expect(home.artifacts(serverId).list()).toHaveLength(1));
+                undo = Promise.resolve(notice?.undo?.run()).finally(() => { settled = true; });
             });
-            await act(async () => {
-                expect(await decideApprovalAsInbox(serverId, home.artifacts(serverId).list()[0]!.id, decision)).toMatchObject({ ok: true });
-            });
-            await act(async () => { await undo; });
+            await vi.waitFor(() => expect(home.artifacts(serverId).list()).toHaveLength(1));
+            expect(await decideApprovalAsInbox(serverId, home.artifacts(serverId).list()[0]!.id, decision)).toMatchObject({ ok: true });
+            // The mounted continuation delivers in a React effect: let that commit
+            // before awaiting the promise it settles, rather than holding act open.
+            await vi.waitFor(() => expect(settled).toBe(true));
+            await undo;
             expect(readPresentationNotice()).toBe(notice);
             expect(daemon.rpc).toHaveBeenCalledTimes(1);
         }

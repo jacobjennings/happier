@@ -177,33 +177,7 @@ describe('safeRouterBack', () => {
         expect(replaceSpy).toHaveBeenCalledWith('/inbox');
     });
 
-    it('prefers navigation.goBack over router.back when the local navigator can handle back', () => {
-        const backSpy = vi.fn();
-        const replaceSpy = vi.fn();
-        const navigationGoBackSpy = vi.fn();
-
-        safeRouterBack({
-            router: {
-                back: backSpy,
-                replace: replaceSpy,
-            },
-            navigation: {
-                canGoBack: () => true,
-                goBack: navigationGoBackSpy,
-                getState: () => ({
-                    index: 1,
-                    routes: [{ key: 'previous-route' }, { key: 'current-route' }],
-                }),
-            },
-            fallbackHref: '/inbox',
-        });
-
-        expect(navigationGoBackSpy).toHaveBeenCalledTimes(1);
-        expect(backSpy).not.toHaveBeenCalled();
-        expect(replaceSpy).not.toHaveBeenCalled();
-    });
-
-    it('does not schedule the web URL fallback after navigation.goBack succeeds locally', () => {
+    it('prefers navigation.goBack over router.back and schedules no web URL fallback when the local navigator can handle back', () => {
         vi.useFakeTimers();
 
         const backSpy = vi.fn();

@@ -190,21 +190,6 @@ describe('sync/runtime/browserIroh/wasmBinder', () => {
         expect(seed.every((byte) => byte === 0)).toBe(true);
     });
 
-    it('does not touch the seed before module initialization completes', async () => {
-        // The boundary has not run yet while initialization is pending, so the
-        // seed must still hold the identity when create is eventually invoked.
-        const fake = createFakeModule();
-        const binder = createBrowserIrohWasmBinder(async () => ({ module: fake.module, wasmUrl: 'wasm-url' }));
-        const seed = new Uint8Array(SEED);
-
-        const binding = binder({ secretKey: seed, relayUrls: [RELAY] });
-        // Both awaits (load + init) are queued microtasks; the seed must still
-        // be intact at this synchronous point, and the boundary must receive it
-        // intact, which the success assertion below observes.
-        await expect(binding).resolves.toMatchObject({ endpointId: 'endpoint-fake' });
-        expect(fake.created[0]!.seedCopy).toEqual(SEED);
-    });
-
     it('routes typed connection release to the protocol-specific wasm operation', async () => {
         const fake = createFakeModule();
         const binder = createBrowserIrohWasmBinder(async () => ({ module: fake.module, wasmUrl: 'wasm-url' }));

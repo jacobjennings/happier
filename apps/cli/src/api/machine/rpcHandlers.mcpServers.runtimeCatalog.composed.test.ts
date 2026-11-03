@@ -20,6 +20,7 @@ import { configuration } from '@/configuration';
 import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import { resolvePluginContributes } from '@/plugins/projection/registry/resolvePluginContributions';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
+import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import { detectProviderMcpServers } from '@/mcp/providerDetection/detectProviderMcpServers';
 import { PluginAvailabilityActionHttpPathsV1 } from '@happier-dev/protocol/plugins/availability/actions';
@@ -51,7 +52,7 @@ function register(input: Readonly<{ unavailable?: boolean; retire?: boolean; ret
   rules?: typeof catalog.bindings;
   retireDuringDetection?: boolean; reenterDuringHandoff?: boolean;
   detected?: readonly DetectedMcpServerV1[];
-  discoverySources?: Parameters<typeof detectProviderMcpServers>[0]['mcpDiscoverySources'];
+  discoveryRegistry?: ResolvedExecutablePluginRuntimeRegistry;
   detectionReady?: () => Promise<void>;
   probeResult?: () => Promise<McpServerProbeResult> }> = {}) {
   const diagnostics: unknown[] = [];
@@ -132,7 +133,7 @@ function register(input: Readonly<{ unavailable?: boolean; retire?: boolean; ret
       detectProviderMcpServers: async request => {
         await input.detectionReady?.();
         if (input.retireDuringDetection) retireAccount();
-        if (input.discoverySources) return detectProviderMcpServers({ ...request, mcpDiscoverySources: input.discoverySources });
+        if (input.discoveryRegistry) return detectProviderMcpServers({ ...request, runtimeRegistry: input.discoveryRegistry });
         return { servers: input.detected ?? [], warnings: [] };
       },
     },
@@ -172,15 +173,19 @@ describe('Machine MCP catalog admission', () => {
   it('previews only the selected Agent without waiting for or reporting another Agent discovery failure', async () => {
     // Plugin-native discovery callbacks are the external integration boundary;
     // keep the host filter, registration, resolver and strict consumer real.
-    const { rpcHandlerManager } = register({ discoverySources: [{
-      pluginId: 'codex', provider: 'codex', loadedInHappierSessions: true,
-      registration: { id: 'native-config', discover: async () => ({ endpoints: [{
-        id: 'native', name: 'native-tools', kind: 'http', url: 'https://native.example.test/mcp',
-      }] }) },
-    }, {
-      pluginId: 'claude', provider: 'claude', loadedInHappierSessions: true,
-      registration: { id: 'other-config', discover: async () => { throw new Error('Unrelated Agent discovery unavailable'); } },
-    }] });
+    // The fake carries only the declared sources and the host discovery entry
+    // point that detection reads from the production `runtimeRegistry` input.
+    const discoveryRegistry = {
+      contributes: { mcpDiscoverySources: [
+        { pluginId: 'codex', definition: { id: 'native-config', title: 'Codex MCP', loadedInHappierSessions: true, metadata: { agentId: 'codex' } } },
+        { pluginId: 'claude', definition: { id: 'other-config', title: 'Claude MCP', loadedInHappierSessions: true, metadata: { agentId: 'claude' } } },
+      ] },
+      discoverMcpServersForDetection: async ({ localId }: Readonly<{ localId: string }>) => {
+        if (localId !== 'native-config') throw new Error('Unrelated Agent discovery unavailable');
+        return { endpoints: [{ id: 'native', name: 'native-tools', kind: 'http' as const, url: 'https://native.example.test/mcp' }] };
+      },
+    } as unknown as ResolvedExecutablePluginRuntimeRegistry;
+    const { rpcHandlerManager } = register({ discoveryRegistry });
     const result = DaemonMcpServersPreviewResponseSchema.parse(await rpcHandlerManager.invokeLocal(
       RPC_METHODS.DAEMON_MCP_SERVERS_PREVIEW, { machineId: 'm1', agentId: 'codex' },
     ));

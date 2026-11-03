@@ -70,6 +70,31 @@ export const SessionUsageLimitRecoveryV1Schema = lazyZodSchema(() => z.strictObj
   }));
 export type SessionUsageLimitRecoveryV1 = z.infer<typeof SessionUsageLimitRecoveryV1Schema>;
 
+/** Presentation only: never carries selected credential/profile identities or resume configuration. */
+export const SessionUsageLimitRecoveryDisplayV1Schema = lazyZodSchema(() => z.strictObject({
+  ...z.pick(SessionUsageLimitRecoveryV1Schema, {
+    v: true, status: true, issueFingerprint: true, armedAtMs: true, resetAtMs: true,
+    nextCheckAtMs: true, attemptCount: true, maxAttempts: true, lastProbeError: true,
+  }).shape,
+  authSelectionKind: z.enum(['native', 'profile', 'group']),
+}));
+export type SessionUsageLimitRecoveryDisplayV1 = z.infer<typeof SessionUsageLimitRecoveryDisplayV1Schema>;
+export type SessionUsageLimitRecoveryPresentationV1 = Pick<SessionUsageLimitRecoveryV1, 'status' | 'issueFingerprint'>;
+
+/** Full readers and display-only readers share one projection, without fabricating full recovery state. */
+export function projectSessionUsageLimitRecoveryDisplayV1(
+  recovery: SessionUsageLimitRecoveryV1 | SessionUsageLimitRecoveryDisplayV1 | null | undefined,
+): SessionUsageLimitRecoveryDisplayV1 | null {
+  if (!recovery) return null;
+  if ('authSelectionKind' in recovery) return recovery;
+  return {
+    v: 1, status: recovery.status, issueFingerprint: recovery.issueFingerprint,
+    armedAtMs: recovery.armedAtMs, resetAtMs: recovery.resetAtMs, nextCheckAtMs: recovery.nextCheckAtMs,
+    attemptCount: recovery.attemptCount, maxAttempts: recovery.maxAttempts, lastProbeError: recovery.lastProbeError,
+    authSelectionKind: recovery.selectedAuth.kind,
+  };
+}
+
 /** Stable issue identity shared by recovery producers, controls, and presentation. */
 export function buildUsageLimitIssueFingerprint(issue: SessionRuntimeIssueV1, fallbackAgentId = 'unknown-agent'): string {
   return ['usage-limit', issue.agentId ?? fallbackAgentId, issue.agentTurnId ?? 'unknown-turn',
@@ -112,7 +137,7 @@ export function readSessionUsageLimitRecoveryFromMetadata(metadata: unknown): Se
 /** The blocking issue is independent of whether automatic recovery is enabled or acknowledged. */
 export function isSessionUsageLimitIssueCurrentV1(input: Readonly<{
   issue: SessionRuntimeIssueV1 | null | undefined;
-  recovery?: SessionUsageLimitRecoveryV1 | null;
+  recovery?: SessionUsageLimitRecoveryPresentationV1 | null;
   latestTurnStatus?: PrimaryTurnStatusV1 | null;
   hasActivityAfterRuntimeIssue?: boolean;
 }>): boolean {

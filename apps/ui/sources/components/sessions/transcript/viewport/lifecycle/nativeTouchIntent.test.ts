@@ -15,16 +15,9 @@ const recordIntentEffect = (
 });
 
 describe('native touch intent apply effects', () => {
-    it('returns the current-session intent timestamp', () => {
+    it('returns the current-session intent timestamp and filters other sessions and lifecycle effects', () => {
         const effect = recordIntentEffect({ timestampMs: 10 });
 
-        expect(resolveNativeTouchIntentApplyEffects({
-            effects: [effect],
-            sessionId: 'session-a',
-        })).toEqual([effect]);
-    });
-
-    it('filters other sessions and lifecycle effects', () => {
         expect(resolveNativeTouchIntentApplyEffects({
             effects: [
                 recordIntentEffect({ sessionId: 'session-b' }),
@@ -32,8 +25,9 @@ describe('native touch intent apply effects', () => {
                     sessionId: 'session-a',
                     type: 'native-touch-release-live-tail',
                 },
+                effect,
             ],
             sessionId: 'session-a',
-        })).toEqual([]);
+        })).toEqual([effect]);
     });
 });

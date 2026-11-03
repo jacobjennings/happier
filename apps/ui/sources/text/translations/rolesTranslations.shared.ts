@@ -117,9 +117,12 @@ export type RolesTranslations = Readonly<{
         sectionTitle: string;
         allRoles: string;
         inUse: (params: Readonly<{ count: number }>) => string;
-        changed: string;
-        thisSession: string;
+        changedHere: string;
+        addedHere: string;
         reset: string;
+        runsInBackground: string;
+        approvalReviewerFollowsDefault: (params: Readonly<{ value: string }>) => string;
+        approvalReviewerOverride: (params: Readonly<{ value: string }>) => string;
         newRoleForSession: string;
         changeForSession: string;
         editNotes: string;
@@ -286,9 +289,12 @@ export const rolesTranslationsEnglish = { en: {
             sectionTitle: 'Roles',
             allRoles: 'All roles',
             inUse: ({ count }) => `${count} in use`,
-            changed: 'changed',
-            thisSession: 'this session',
+            changedHere: 'Changed here',
+            addedHere: 'Added here',
             reset: 'Reset',
+            runsInBackground: 'runs in the background',
+            approvalReviewerFollowsDefault: ({ value }) => `Follows your default · ${value}`,
+            approvalReviewerOverride: ({ value }) => `Set here · your default is ${value}`,
             newRoleForSession: 'New role for this session',
             changeForSession: 'Change for this session',
             editNotes: 'Edit notes',

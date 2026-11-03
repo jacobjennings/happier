@@ -149,6 +149,8 @@ export const managedMachines: ManagedMachinesTranslations = {
             billedWhileRunning: "Només es factura mentre s’executa.",
             imageDescription: "Amb què arrenca. Happier s’hi instal·la a sobre.",
             locationDescription: "Com més a prop, més ràpid respon en escriure.",
+            network: "Xarxa",
+            networkDescription: "Quines adreces públiques rep. El preu segueix la teva elecció.",
             localLocationDescription: ({ computer }: { computer: string }) => `On s’executa a ${computer}.`,
             localSizeDescription: ({ computer }: { computer: string }) => `La seva part de ${computer} mentre s’executa. Aturar-la l’allibera.`,
             headroom: ({ computer }: { computer: string }) => `Queda per a ${computer}`,
@@ -257,7 +259,8 @@ export const managedMachines: ManagedMachinesTranslations = {
         },
         credential: {
             refused: "La connexió de l’aprovisionador ja no està disponible.",
-            required: "Connecta un compte d’aprovisionador per veure les màquines disponibles.",
+            required: "Connecta un compte per veure què pots crear.",
+            choose: "Tria un compte per veure què pots crear.",
         },
         power: {
             pending: ({ provider, state }: { provider: string; state: string }) => `Esperant que ${provider} confirmi ${state}…`,
@@ -284,6 +287,8 @@ export const managedMachines: ManagedMachinesTranslations = {
             refused: ({ name }: { name: string }) => `No tens permís per gestionar ${name}.`,
         },
         inspect: {
+            notCreated: "Aquesta màquina no s’ha creat",
+            checkFailed: "No s’ha pogut confirmar aquesta màquina",
             checkNow: "Comprova-ho ara",
         },
         actions: {

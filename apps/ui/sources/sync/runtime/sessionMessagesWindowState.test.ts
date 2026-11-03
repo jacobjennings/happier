@@ -86,33 +86,6 @@ describe('sessionMessagesWindowState', () => {
         });
     });
 
-    it('does not expose or mutate tail pagination cursor fields by shape', () => {
-        const tailPagination = { beforeSeq: 80, hasMoreOlder: true };
-        const active = activateSessionMessagesWindow(createInactiveSessionMessagesWindowState(), {
-            windowId: 'window-1',
-            targetSeq: 100,
-            windowMinSeq: 100,
-            windowMaxSeq: 100,
-            olderCursor: 100,
-            newerCursor: 100,
-            hasMoreOlder: true,
-            hasMoreNewer: true,
-            activatedAtMs: 10,
-        });
-
-        const next = applySessionMessagesWindowPage(active, {
-            windowId: 'window-1',
-            direction: 'older',
-            messages: [{ seq: 99 }],
-            nextCursor: 99,
-            hasMore: true,
-        });
-
-        expect(tailPagination).toEqual({ beforeSeq: 80, hasMoreOlder: true });
-        expect(next).not.toHaveProperty('beforeSeq');
-        expect(next).not.toHaveProperty('paginationSupported');
-    });
-
     it('uses newest-wins semantics for repeated jumps and ignores stale page updates', () => {
         const first = activateSessionMessagesWindow(createInactiveSessionMessagesWindowState(), {
             windowId: 'window-1',
@@ -155,7 +128,10 @@ describe('sessionMessagesWindowState', () => {
         expect(stale).toBe(second);
     });
 
-    it('resets target-window mode when returning to live tail', () => {
+    it.each([
+        ['returning to live tail', resetSessionMessagesWindowForLiveTail],
+        ['switching sessions', resetSessionMessagesWindowForSessionSwitch],
+    ])('resets target-window mode when %s', (_label, reset) => {
         const active = activateSessionMessagesWindow(createInactiveSessionMessagesWindowState(), {
             windowId: 'window-1',
             targetSeq: 100,
@@ -168,22 +144,6 @@ describe('sessionMessagesWindowState', () => {
             activatedAtMs: 10,
         });
 
-        expect(resetSessionMessagesWindowForLiveTail(active)).toEqual(createInactiveSessionMessagesWindowState(2));
-    });
-
-    it('resets target-window mode when switching sessions', () => {
-        const active = activateSessionMessagesWindow(createInactiveSessionMessagesWindowState(), {
-            windowId: 'window-1',
-            targetSeq: 100,
-            windowMinSeq: 100,
-            windowMaxSeq: 101,
-            olderCursor: 100,
-            newerCursor: 101,
-            hasMoreOlder: true,
-            hasMoreNewer: true,
-            activatedAtMs: 10,
-        });
-
-        expect(resetSessionMessagesWindowForSessionSwitch(active)).toEqual(createInactiveSessionMessagesWindowState(2));
+        expect(reset(active)).toEqual(createInactiveSessionMessagesWindowState(2));
     });
 });

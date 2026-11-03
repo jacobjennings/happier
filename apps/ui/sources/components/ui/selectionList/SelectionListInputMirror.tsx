@@ -26,8 +26,7 @@ import { Text } from '@/components/ui/text/Text';
  * the ghost land "right after the cursor" on screen.
  *
  * Returns `null` when `ghostSuffix` is empty so callers can render the mirror
- * unconditionally without an additional guard in their JSX (mirrors the
- * behaviour of `SelectionListInputGhost`).
+ * unconditionally without an additional guard in their JSX.
  */
 const stylesheet = StyleSheet.create((theme) => ({
     mirror: {

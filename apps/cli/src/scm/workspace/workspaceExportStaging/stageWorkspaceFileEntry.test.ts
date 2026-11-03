@@ -65,7 +65,7 @@ describe('stageWorkspaceFileEntry', () => {
             sourceFilePath: digestSourcePath,
             executable: false,
         })).rejects.toThrow(/workspace root/i);
-        await expect(access(join(stagingRoot.workspaceDirectory, 'outside.txt'))).rejects.toThrow();
+        await expect(access(join(stagingRoot.workspaceDirectory, '..', 'outside.txt'))).rejects.toThrow();
     });
 
     it('rejects blob bytes whose staged digest does not match the declared digest before materializing the workspace file', async () => {

@@ -2,6 +2,11 @@ import { EventEmitter } from 'node:events';
 import { configuration } from '@/configuration';
 import { registerPluginCatalogSignal } from '@/api/session/client/registerPluginCatalogSignal';
 import { projectSessionAccessCapabilitiesV1 } from '@happier-dev/protocol/sessions/access/sessionEffectiveAccessV1';
+import { readSessionAccessProjectionRoleV1 } from '@happier-dev/protocol/sessions/access/sessionEffectiveAccessV1';
+import { V2SessionListRowSchema } from '@happier-dev/protocol/sessions/control/contract';
+import { SessionListQueryResponseV1Schema, SessionRuntimeManagedSubtreeSnapshotRecordV1Schema } from '@happier-dev/protocol/sessions/listing/response';
+import { SessionReadBatchRequestV1Schema, SessionReadBatchResponseV1Schema,
+    type SessionReadBatchResponseV1 } from '@happier-dev/protocol/sessions/read/sessionReadBatchV1';
 
 import type { AcpRuntimeSessionClient } from '@/agent/acp/sessionClient';
 import { createRpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
@@ -11,7 +16,6 @@ import type { AgentState, Metadata, PermissionMode, Session } from '@/api/types'
 import type {
     AccountEncryptionCurrentnessResponse,
     SessionCurrentProjectionRecordV1,
-    V2SessionListResponse,
     V2SessionRecord,
 } from '@happier-dev/protocol';
 
@@ -21,7 +25,12 @@ import { readServerIdentityIdFromFeaturesSnapshot } from '@/features/serverFeatu
 
 type RecordLike = Record<string, unknown>;
 export type SessionRecordFixture = V2SessionRecord;
-export type SessionListResponseFixture = V2SessionListResponse;
+/** The CLI full-document facade, rather than the compact HTTP wire response. */
+export type SessionListResponseFixture = Readonly<{
+    sessions: SessionRecordFixture[];
+    nextCursor: string | null;
+    hasNext: boolean;
+}>;
 export type AccountEncryptionCurrentnessFixture = AccountEncryptionCurrentnessResponse;
 export type CurrentSessionProjectionRecordFixture = SessionCurrentProjectionRecordV1;
 export type PlainSessionFixture = Extract<Session, { encryptionMode: 'plain' }>;
@@ -368,6 +377,21 @@ export function createSessionNotificationContextFixture(sessionId: string): Curr
     });
 }
 
+/** Runtime subtree recipients use the listing owner's view grant, never Account-owner facts. */
+export function createSessionRuntimeManagedSubtreeRecordFixture(
+    overrides: Partial<SessionRecordFixture> & Pick<SessionRecordFixture, 'id'>,
+): CurrentSessionProjectionRecordFixture {
+    return SessionRuntimeManagedSubtreeSnapshotRecordV1Schema.parse(createCurrentSessionProjectionRecordFixture({
+        metadataLayoutVersion: 1,
+        metadata: JSON.stringify({ v: 1 }),
+        agentState: null,
+        effectiveAccess: { v: 1, level: 'view', sources: [], capabilities: projectSessionAccessCapabilitiesV1({
+            owner: false, grants: [{ accessLevel: 'view', canApprovePermissions: false }],
+        }) },
+        ...overrides,
+    }));
+}
+
 /**
  * The `/v1/account/encryption/currentness` boundary response.
  *
@@ -407,4 +431,47 @@ export function createSessionListResponseFixture(
         nextCursor: options.nextCursor ?? null,
         hasNext: options.hasNext ?? false,
     };
+}
+
+/** Compact HTTP wire row; full consumer-facade fixtures remain separate above. */
+export function createCompactSessionListRowFixture(session: SessionRecordFixture) {
+    const { metadata: _metadata, ownerMetadata: _ownerMetadata, agentState: _agentState, ...facts } = session;
+    const shared = readSessionAccessProjectionRoleV1(session) !== 'owner';
+    return V2SessionListRowSchema.parse({ ...facts, metadataLayoutVersion: shared ? 1 : session.metadataLayoutVersion ?? 0,
+        agentStateVersion: session.agentStateVersion ?? 0, documents: 'omitted',
+        metadataAudience: shared ? 'shared' : 'owner', agentStateDocument: shared ? 'redacted' : 'omitted' });
+}
+
+export function createCompactSessionListQueryResponseFixture(params: Readonly<{
+    sessions: readonly SessionRecordFixture[];
+    nextCursor: string | null;
+    hasNext: boolean;
+    attentionNextCursor: string | null;
+    attentionHasNext: boolean;
+    metadataUpgradeRequiredCount?: number;
+}>) {
+    return SessionListQueryResponseV1Schema.parse({ ...params,
+        sessions: params.sessions.map(createCompactSessionListRowFixture) });
+}
+
+export type SessionReadBatchDetailFailureFixture = Exclude<
+    NonNullable<SessionReadBatchResponseV1['results'][number]['detail']>, { status: 200 }>;
+
+/** A snapshot-only HTTP boundary; documents still pass the real full-detail schema. */
+export function createSessionReadBatchResponseFixture(params: Readonly<{
+    request: unknown;
+    sessions: readonly SessionRecordFixture[];
+    failures?: ReadonlyMap<string, SessionReadBatchDetailFailureFixture>;
+}>) {
+    const demand = SessionReadBatchRequestV1Schema.parse(params.request);
+    if (!demand.includeSnapshot || demand.includeTurns !== false || demand.includeMessages) {
+        throw new Error('Session list fixture requires snapshot-only document demand');
+    }
+    const byId = new Map(params.sessions.map(session => [session.id, session]));
+    return SessionReadBatchResponseV1Schema.parse({ results: demand.sessionIds.map(sessionId => {
+        const session = byId.get(sessionId);
+        return { sessionId, detail: params.failures?.get(sessionId)
+            ?? (session ? { status: 200, body: { session } }
+                : { status: 404, body: { error: 'Session not found' } }) };
+    }) });
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { admitProjectSourceSelectionV1, ProjectSourceV1Schema, ProjectSourceV1StoredSchema, ProjectSourcesCreateInputV1Schema, ProjectSourcesUpdateInputV1Schema, type ProjectSourceV1 } from './projectSourceV1.js';
+import { ScmRepositoryCloneInputSchema } from '../../scm/repositoryClone.js';
 
 const repository = {
   provider: { id: 'happier.scm.forge.github/github', kind: 'github', displayName: 'GitHub', baseUrl: 'https://github.com' },
@@ -7,6 +8,23 @@ const repository = {
   protocol: 'https',
 };
 describe('Source metadata admission', () => {
+  it('canonicalizes accepted provider aliases on create, update and stored read before clone admission', () => {
+    const legacyRepository = { ...repository, provider: { ...repository.provider, id: 'github' } };
+    const created = ProjectSourcesCreateInputV1Schema.parse({ serverId: 'home', requestKey: 'save-intent', name: 'Repo', repository: legacyRepository });
+    const updated = ProjectSourcesUpdateInputV1Schema.parse({ serverId: 'home', sourceId: 'source', expectedRevision: 1, patch: { repository: legacyRepository } });
+    const stored = ProjectSourceV1StoredSchema.parse({ id: 'source', revision: 1, name: 'Repo', repository: legacyRepository, audience: [], createdByAccountId: 'owner' });
+    for (const selector of [created.repository!, updated.patch.repository!, stored.repository!]) {
+      const clone = ScmRepositoryCloneInputSchema.parse({ ...selector, destinationParentPath: '/projects',
+        destinationDirectoryName: 'repo', confirmed: true, authorizationToken: 'clone-repository' });
+      expect(selector.provider.id).toBe('happier.scm.forge.github/github');
+      expect(clone.provider.id).toBe(selector.provider.id);
+    }
+  });
+  it.each(['happier.scm.forge.github/github', 'acme.forge/custom', 'toString'])('preserves an exact non-alias provider identity (%s)', id => {
+    const created = ProjectSourcesCreateInputV1Schema.parse({ serverId: 'home', requestKey: 'save-intent', name: 'Repo',
+      repository: { ...repository, provider: { ...repository.provider, id } } });
+    expect(created.repository!.provider.id).toBe(id);
+  });
   it('admits enabled intent as one qualified context attachment change with a reviewed Source revision', () => {
     const input = { serverId: 'home', sourceId: 'source', expectedRevision: 3,
       patch: { attachment: { kind: 'set_enabled', attachmentId: 'context-entry', enabled: false } } };

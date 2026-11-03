@@ -15,6 +15,7 @@ import { MachineFreshnessChip, type MachineFreshness } from '@/components/machin
 import { readMachinePublishedResources } from '@/components/machines/summary/machineResourceSentences';
 import { EMPTY_MACHINE_RESOURCE_STATE, isMachineResourceStateStale, machineResourceStore } from '@/sync/domains/machines/resources/machineResourceStore';
 import { useMachineDaemonReadTarget } from '@/sync/domains/machines/useMachineDaemonReadTarget';
+import { useMachineResourceRefreshing } from '@/sync/domains/machines/resources/useMachineResourceSummary';
 
 import { MACHINE_VITALS_RANGES, selectMachineVitalsOverviewView, type MachineVitalsOverviewView } from './machineVitalsPresentation';
 
@@ -94,10 +95,11 @@ const styles = StyleSheet.create({
 });
 
 /** The chip for an Overview state: nothing while the first sample loads, Live, As of · Retry, or As of offline. */
-export function resolveVitalsFreshnessChip(view: MachineVitalsOverviewView, onRetry: () => void): MachineFreshness {
+export function resolveVitalsFreshnessChip(view: MachineVitalsOverviewView, onRetry: () => void, refreshing = false): MachineFreshness {
     if (view.kind !== 'ready') return { kind: 'none' };
-    if (view.freshness === 'live') return { kind: 'live' };
     if (view.freshness === 'offline') return { kind: 'offline', at: view.sample.sampledAt };
+    if (refreshing) return { kind: 'checking', at: view.sample.sampledAt };
+    if (view.freshness === 'live') return { kind: 'live' };
     return { kind: 'stale', at: view.sample.sampledAt, onRetry };
 }
 
@@ -113,6 +115,8 @@ export const MachineVitalsBarAccessory = React.memo(function MachineVitalsBarAcc
     const [range] = useMachineVitalsRange();
     const readTarget = useMachineDaemonReadTarget(props);
     const key = React.useMemo(() => ({ ...readTarget.key, view: 'overview' as const }), [readTarget.key]);
+    const refreshingInputs = React.useMemo(() => [key], [key]);
+    const refreshing = useMachineResourceRefreshing(refreshingInputs, 'overview');
     const subscribe = React.useCallback((listener: () => void) => machineResourceStore.observe(key, listener), [key]);
     const getSnapshot = React.useCallback(() => readTarget.accountMatches ? machineResourceStore.getState(key) : EMPTY_MACHINE_RESOURCE_STATE, [key, readTarget.accountMatches]);
     const state = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
@@ -124,5 +128,5 @@ export const MachineVitalsBarAccessory = React.memo(function MachineVitalsBarAcc
         machineResourceStore.retryHistory({ ...readTarget.key, range });
     }, [key, readTarget.enabled, readTarget.key, range]);
     if (view.kind !== 'loading' && view.kind !== 'ready') return null;
-    return <MachineVitalsRangeBar freshness={props.online === null ? { kind: 'none' } : resolveVitalsFreshnessChip(view, retry)} showRange={view.kind === 'ready'} placement="bar" />;
+    return <MachineVitalsRangeBar freshness={props.online === null ? { kind: 'none' } : resolveVitalsFreshnessChip(view, retry, refreshing)} showRange={view.kind === 'ready'} placement="bar" />;
 });

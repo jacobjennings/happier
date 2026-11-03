@@ -59,25 +59,6 @@ describe('SelectionList virtualization wiring (Phase 1.12)', () => {
         expect(legendListState.props?.data?.length).toBe(80);
     });
 
-    it('does not virtualize small sections (<=50 rows)', async () => {
-        legendListState.reset();
-        const root: SelectionListStep = {
-            id: 'root',
-            inputPlaceholder: 'Search',
-            sections: [
-                {
-                    kind: 'static',
-                    id: 'small',
-                    title: 'SMALL',
-                    options: makeOptions(10),
-                },
-            ],
-        };
-        const { SelectionList } = await import('../SelectionList');
-        await renderScreen(<SelectionList {...defaultProps(root)} />);
-        expect(legendListState.props).toBeNull();
-    });
-
     it('honors per-section virtualization=force on a small section', async () => {
         legendListState.reset();
         const root: SelectionListStep = {

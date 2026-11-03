@@ -12,6 +12,7 @@ import { defineProtocolObject } from '@happier-dev/plugin-sdk/protocol';
 import type { PluginUiArtifactsManifestV2 } from '@happier-dev/protocol/plugins/ui';
 import { createBundledPluginPublicationFailure } from '../../../../../../../scripts/workspaces/bundledPluginPublicationFailure.mjs';
 import { projectBundledPluginCatalogEntries } from '@/plugins/projection/catalog/installed';
+import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 
 import { BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS } from '../sources/generatedBundledPluginManifests';
 import {
@@ -33,7 +34,7 @@ function locator(
             id: 'happier.provider.fixture',
             version: '1.0.0',
             displayName: 'Fixture',
-            engines: { happier: '^1.0.0' }, runtime: { apiVersion: 1 },
+            engines: createPluginManifestV2Fixture().engines, runtime: { apiVersion: 1 },
             hostAccess: { required: [], optional: [] },
             contributes: {},
         },
@@ -50,6 +51,15 @@ function locator(
 }
 
 describe('bundled plugin locators', () => {
+    it('reads an admitted bundled declaration with invalid Settings without dropping healthy families', () => {
+        const bundled = locator();
+        const result = loadBundledPluginLocatorResult([{ ...bundled, manifest: createPluginManifestV2Fixture({
+            id: bundled.pluginId, entrypoints: {}, contributes: { settings: [{ id: 'preferences', title: 'Preferences', scope: 'daemon',
+                target: { kind: 'plugin' }, fields: [{ id: 'enabled', title: 'Enabled', schema: { type: 'boolean' }, default: 'true' }] }] },
+        }) }]);
+        expect(result.pluginFailures).toEqual([]);
+        expect(result.loadedPlugins[0]?.manifest.contributes.settings[0]?.id).toBe('preferences');
+    });
     it('admits a requested file declaration and isolates an invalid optional manifest', () => {
         const root = mkdtempSync(join(tmpdir(), 'happier-lazy-bundled-declaration-'));
         const execPathDescriptor = Object.getOwnPropertyDescriptor(process, 'execPath')!;
@@ -62,8 +72,15 @@ describe('bundled plugin locators', () => {
             const fileLocator = { ...metadata, manifestRelativePath: 'manifest.json' };
             expect(loadBundledPluginLocators([fileLocator])[0]?.manifest.id).toBe(metadata.pluginId);
             writeFileSync(join(root, 'manifest.json'), '{invalid');
-            const failed = loadBundledPluginLocatorResult([fileLocator]);
-            expect(failed.loadedPlugins).toEqual([]);
+            const healthyPluginId = 'happier.provider.healthy';
+            writeFileSync(join(root, 'healthy.json'), JSON.stringify(createPluginManifestV2Fixture({
+                id: healthyPluginId, entrypoints: {}, contributes: {},
+            })));
+            const healthyLocator = { ...fileLocator, pluginId: healthyPluginId,
+                manifestRelativePath: 'healthy.json', manifestPath: `bundled:${healthyPluginId}`,
+                sourceSpec: { ...fileLocator.sourceSpec, locator: '@happier-dev/plugins-healthy' } };
+            const failed = loadBundledPluginLocatorResult([fileLocator, healthyLocator]);
+            expect(failed.loadedPlugins.map(plugin => plugin.pluginId)).toEqual([healthyPluginId]);
             expect(failed.pluginFailures).toEqual([expect.objectContaining({
                 pluginId: metadata.pluginId, diagnostic: expect.objectContaining({ code: 'plugin_manifest_invalid' }),
             })]);

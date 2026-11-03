@@ -446,7 +446,53 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "inFlightSteerSupported": true,
       "terminalPromptInjectionSupported": true
     },
+    "runtimeKinds": {
+      "byKind": {
+        "agentSdk": {
+          "kind": "agentSdk",
+          "overrides": {
+            "sessionCapabilities": {
+              "compaction": {
+                "events": true,
+                "idle": {
+                  "defaultEnabled": true,
+                  "defaultMinContextTokens": 200000,
+                  "mode": "host"
+                },
+                "manual": true
+              }
+            }
+          }
+        },
+        "unifiedTerminal": {
+          "kind": "unifiedTerminal",
+          "overrides": {
+            "sessionCapabilities": {
+              "compaction": {
+                "events": true,
+                "idle": {
+                  "defaultEnabled": true,
+                  "defaultMinContextTokens": 200000,
+                  "mode": "native",
+                  "nativeHonorsMinimum": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "defaultKind": "agentSdk"
+    },
     "sessionCapabilities": {
+      "compaction": {
+        "events": true,
+        "idle": {
+          "defaultEnabled": true,
+          "defaultMinContextTokens": 200000,
+          "mode": "native",
+          "nativeHonorsMinimum": true
+        }
+      },
       "sessionFork": {
         "conversation": "unsupported",
         "fromMessage": "unsupported"
@@ -930,6 +976,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
         "name": "Opus 4.7"
       },
       {
+        "contextWindowTokens": 200000,
         "description": "Highest-capability Claude model for the hardest coding and reasoning tasks.",
         "extendedContextModelId": "claude-opus-4-6[1m]",
         "id": "claude-opus-4-6",
@@ -962,6 +1009,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
         "name": "Opus 4.6"
       },
       {
+        "contextWindowTokens": 200000,
         "description": "Balanced Claude model for everyday coding, editing, and analysis.",
         "extendedContextModelId": "claude-sonnet-4-6[1m]",
         "id": "claude-sonnet-4-6",
@@ -1381,6 +1429,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
           "overrides": {
             "localControl": null,
             "sessionCapabilities": {
+              "compaction": null,
               "sessionFork": {
                 "conversation": "unsupported"
               },
@@ -1408,6 +1457,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
               "vendorResume": "unsupported"
             },
             "sessionCapabilities": {
+              "compaction": null,
               "sessionFork": {
                 "conversation": "unsupported"
               },
@@ -1425,6 +1475,15 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "defaultKind": "appServer"
     },
     "sessionCapabilities": {
+      "compaction": {
+        "events": true,
+        "idle": {
+          "defaultEnabled": false,
+          "defaultMinContextTokens": 180000,
+          "mode": "host"
+        },
+        "manual": true
+      },
       "sessionFork": {
         "conversation": "supported",
         "fromMessage": "unsupported"
@@ -3471,6 +3530,7 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
           "overrides": {
             "localControl": null,
             "sessionCapabilities": {
+              "compaction": null,
               "usageLimitRecovery": {
                 "checkNow": "unsupported"
               }
@@ -3487,6 +3547,15 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "defaultKind": "server"
     },
     "sessionCapabilities": {
+      "compaction": {
+        "events": true,
+        "idle": {
+          "defaultEnabled": false,
+          "defaultMinContextTokens": 100000,
+          "mode": "host"
+        },
+        "manual": true
+      },
       "sessionFork": {
         "conversation": "supported",
         "fromMessage": "unsupported"
@@ -3728,6 +3797,15 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       "terminalPromptInjectionSupported": false
     },
     "sessionCapabilities": {
+      "compaction": {
+        "events": true,
+        "idle": {
+          "defaultEnabled": false,
+          "defaultMinContextTokens": 100000,
+          "mode": "host"
+        },
+        "manual": true
+      },
       "sessionFork": {
         "conversation": "unsupported",
         "fromMessage": "unsupported"

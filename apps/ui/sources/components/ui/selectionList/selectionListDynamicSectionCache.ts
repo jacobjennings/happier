@@ -5,24 +5,22 @@
  *   `useSelectionListDynamicSections` historically depended on a module-level
  *   LRU `Map` to preserve last-successful options across remounts so reopening
  *   a path popover didn't flicker through an empty body before the resolver
- *   completed. That implicit global state forced production code to export
- *   test-only reset/inspect hooks (`__resetDynamicSectionCacheForTests`,
- *   `__getDynamicSectionCacheSizeForTests`) and made every future consumer
- *   depend on an undocumented global.
+ *   completed. That implicit global state made every future consumer depend
+ *   on an undocumented global.
  *
  * This module replaces the implicit global with an explicit
  * `SelectionListDynamicSectionCache` adapter:
  *   - Production callers receive a singleton instance from
  *     `getDefaultDynamicSectionCache()` for back-compat (zero behavior change).
- *   - Tests instantiate an isolated cache via `createTestDynamicSectionCache()`
- *     to eliminate ordering risk and avoid touching production globals.
+ *   - Tests instantiate an isolated cache via `createDefaultDynamicSectionCache()`
+ *     injected through the `cache` prop to eliminate ordering risk and avoid touching production globals.
  *   - Callers can inject a custom cache via the hook's optional `cache` prop.
  *
  * Invariants:
  *   - Successful resolves write to the cache. Aborted in-flight resolves MUST
  *     NOT poison the cache (the in-progress write is gated by a mount + sequence
  *     guard in the hook itself).
- *   - LRU eviction with a configurable cap (default 64); access promotes the
+ *   - LRU eviction with a fixed cap of 64; access promotes the
  *     entry to the head (Map insertion order is the LRU order).
  */
 
@@ -54,17 +52,9 @@ export function buildDynamicSectionCacheKey(
     return JSON.stringify([id, resolverKey ?? id, seed]);
 }
 
-/**
- * Construct an LRU-backed cache. Each call returns a fresh, isolated instance.
- *
- * @param options.maxEntries - Cap (default 64). Values <= 0 fall back to default.
- */
-export function createDefaultDynamicSectionCache(
-    options?: Readonly<{ maxEntries?: number }>,
-): SelectionListDynamicSectionCache {
-    const cap = options?.maxEntries !== undefined && options.maxEntries > 0
-        ? options.maxEntries
-        : DEFAULT_DYNAMIC_SECTION_CACHE_CAP;
+/** Construct an LRU-backed cache. Each call returns a fresh, isolated instance. */
+export function createDefaultDynamicSectionCache(): SelectionListDynamicSectionCache {
+    const cap = DEFAULT_DYNAMIC_SECTION_CACHE_CAP;
     const store = new Map<string, ReadonlyArray<SelectionListOption>>();
 
     return {
@@ -98,18 +88,6 @@ export function createDefaultDynamicSectionCache(
     };
 }
 
-/**
- * Construct a fully isolated cache for tests. Functionally identical to
- * `createDefaultDynamicSectionCache` but spelled separately so tests advertise
- * intent at the call site (and so a future change can diverge the impl, e.g.
- * tracking writes for assertions, without breaking production semantics).
- */
-export function createTestDynamicSectionCache(
-    options?: Readonly<{ maxEntries?: number }>,
-): SelectionListDynamicSectionCache {
-    return createDefaultDynamicSectionCache(options);
-}
-
 // ─── Module-level singleton ──────────────────────────────────────────────────
 // Back-compat: when callers don't pass an explicit `cache` prop, the hook
 // reaches for this singleton so existing production behavior is preserved.
@@ -121,13 +99,4 @@ export function getDefaultDynamicSectionCache(): SelectionListDynamicSectionCach
         defaultCacheInstance = createDefaultDynamicSectionCache();
     }
     return defaultCacheInstance;
-}
-
-/**
- * Test-only: reset the singleton between specs. Prefer
- * `createTestDynamicSectionCache()` + injection over relying on this.
- */
-export function __resetDefaultDynamicSectionCacheForTests(): void {
-    defaultCacheInstance?.clear();
-    defaultCacheInstance = null;
 }

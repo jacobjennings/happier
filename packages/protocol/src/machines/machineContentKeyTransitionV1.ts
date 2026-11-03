@@ -68,6 +68,8 @@ const MachinePublishedRowCanonicalV1Schema = lazyZodSchema(() => z.strictObject(
   keyBasis: z.optional(MachineKeyBasisV1Schema),
   storageMode: z.optional(z.enum(['plain', 'e2ee'])),
   access: z.optional(AccessibleMachineAccessV1Schema),
+  recipientWorkPending: z.optional(z.boolean()),
+  recipientWorkCursor: z.optional(z.number().check(z.int(), z.nonnegative())),
   kind: z.optional(MachineKindFromLegacyProjectionSchema),
   installationId: z.optional(z.nullable(z.string())),
   installationPublicKey: z.optional(z.nullable(z.string())),

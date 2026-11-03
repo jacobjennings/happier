@@ -64,11 +64,11 @@ function byteLen(value: string): number {
 
 /**
  * Verifies that every embedded HTML fragment in `probe` survives the round-trip,
- * appearing in `roundTripOutput` in the same relative order (upstream's
- * `preservesEmbeddedHtml`). Ordered-substring presence catches dropped/reordered
+ * appearing in `roundTripOutput` in the same relative order (ported from
+ * upstream). Ordered-substring presence catches dropped/reordered
  * HTML even if the serializer escapes surrounding markdown differently.
  */
-export function preservesEmbeddedHtml(probe: string, roundTripOutput: string | null): boolean {
+function preservesEmbeddedHtml(probe: string, roundTripOutput: string | null): boolean {
     if (roundTripOutput === null) {
         return false;
     }

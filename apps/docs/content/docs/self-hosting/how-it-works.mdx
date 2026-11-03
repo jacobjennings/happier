@@ -31,6 +31,19 @@ notification channel that tells clients to go fetch something over HTTP.
 - **Upstream**, clients write over the same socket: `message`,
   `update-metadata` and `update-state` are all client-to-server events.
 
+In **0.3 development**, downstream message events distinguish complete content from
+compact hints. A device consuming a Session's transcript, Voice or content pane
+receives complete messages and live stream segments. An idle device receives
+message identity, sequence, timestamps and attention facts; opening the Session
+uses the existing HTTP catch-up path. A mounted SCM view can receive committed
+content from its project without receiving hidden live streams. Each API replica
+checks current access before selecting either delivery form.
+
+This replaces the 0.3 wire behavior across all components together; mixed 0.2/0.3
+components are unsupported. It does not change the stored format or prevent
+0.2-created Sessions from opening after upgrade. These are development contracts,
+not a stable or preview availability claim.
+
 Writes use optimistic concurrency. Versioned fields — metadata, agent state,
 artifact parts, access keys, KV — carry an `expectedVersion`, and a stale write
 comes back as `version-mismatch` with the current version attached rather than

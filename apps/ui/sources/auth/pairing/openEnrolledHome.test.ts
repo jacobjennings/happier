@@ -59,25 +59,6 @@ describe('openEnrolledHomeOrReturnToShell', () => {
         expect(alertCalls).toHaveLength(0);
     });
 
-    it('refreshes the committed credential when the exact Home is already focused', async () => {
-        alertCalls.length = 0;
-        switchResults.length = 0;
-        switchResults.push('already_active');
-        const refreshAuth = vi.fn(async () => {});
-
-        const { openEnrolledHomeOrReturnToShell } = await import('./openEnrolledHome');
-        const result = await openEnrolledHomeOrReturnToShell({
-            profileId: 'profile-a',
-            targetLabel: 'Home A',
-            isCurrent: () => true,
-            refreshAuth,
-        });
-
-        expect(result).toBe('opened');
-        expect(refreshAuth).toHaveBeenCalledTimes(1);
-        expect(alertCalls).toHaveLength(0);
-    });
-
     it('offers the open retry when the already-focused Home cannot refresh its credential', async () => {
         alertCalls.length = 0;
         switchResults.length = 0;

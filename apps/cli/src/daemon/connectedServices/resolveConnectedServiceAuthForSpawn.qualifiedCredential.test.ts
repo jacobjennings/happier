@@ -4,10 +4,10 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import axios from 'axios';
 import { ConnectedServiceBindingsV2IngressSchema, SPAWN_SESSION_ERROR_CODES } from '@happier-dev/protocol';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildConnectedServiceCredentialRecord, FeaturesResponseSchema, QualifiedConnectedAccountCredentialMutationV4Schema, QualifiedConnectedAccountCredentialSnapshotV4Schema, QualifiedConnectedAccountListResponseV4Schema, QualifiedConnectedAccountRefreshLeaseV4Schema, sealAccountScopedBlobCiphertext, sealQualifiedConnectedAccountContentEnvelope } from '@happier-dev/protocol';
 import type { ApiClient } from '@/api/api';
-import { getResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { getResolvedContributionRegistry } from '@/plugins/projection/registry/builtIn/snapshot';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
 import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
@@ -82,6 +82,17 @@ const purposeOwner = createConnectedAccountPurposeBindingOwner({
   assertTargetAccountMaterializable: async () => { throw new Error('unexpected listed materialization'); },
 });
 
+beforeEach(() => {
+  // Plugin HTTP uses global fetch after removal of the pinned-network adapter.
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url !== 'https://auth.openai.com/oauth/token') throw new Error('Unexpected provider transport');
+    return new Response(JSON.stringify(providerRejectsRefresh
+      ? { error: 'invalid_grant' }
+      : { access_token: 'refreshed-access', refresh_token: 'refreshed-refresh', id_token: 'fixture-id', expires_in: 3600 }),
+    { status: providerRejectsRefresh ? 400 : 200 });
+  });
+});
 beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), 'happier-qualified-spawn-'));
   lease = await pluginReloadController.acquireRuntimeRegistry({
@@ -90,17 +101,6 @@ beforeAll(async () => {
       resolveDevelopmentSourceAuthority: ({ pluginId, rootPath }) => ({ kind: 'development', registeredRootId: `qualified-spawn:${pluginId}`, canonicalRoot: rootPath, observedRevision: 1 }),
       connectedAccounts: purposeOwner,
       qualifiedConnectedAccountEstablishedRuntimeOwner: established,
-      networkDependencies: {
-        resolveNetworkAddresses: async () => ['8.8.8.8'],
-        openPinnedStream: async (request) => {
-          if (request.url !== 'https://auth.openai.com/oauth/token') throw new Error('Unexpected provider transport');
-          const body = new TextEncoder().encode(JSON.stringify(providerRejectsRefresh
-            ? { error: 'invalid_grant' }
-            : { access_token: 'refreshed-access', refresh_token: 'refreshed-refresh', id_token: 'fixture-id', expires_in: 3600 }));
-          let delivered = false;
-          return { status: providerRejectsRefresh ? 400 : 200, headers: {}, contentLength: body.length, read: async () => { if (delivered) return null; delivered = true; return body; }, cancel() {} };
-        },
-      },
     }),
   });
 });
@@ -474,9 +474,10 @@ describe('qualified first-party spawn credential authority', () => {
     await persistConnectedServiceCredentialHealthForMaterializationFailure(input);
     expect(scalarWrite).not.toHaveBeenCalled();
   });
-  it('persists qualified materialization failure health at its revision without a scalar write', async () => {
+  it.each([false, true])('persists qualified materialization failure health with payload-free attribution (known health=%s)', async knownHealth => {
     const account = { service, accountId: 'device-health' };
     let patch: unknown;
+    const diagnostic = vi.spyOn(logger, 'debug');
     const http = vi.spyOn(axios, 'patch').mockImplementation(async (url, body) => {
       expect(new URL(String(url)).pathname).toBe('/v4/connect/qualified/credential/health');
       patch = body;
@@ -484,11 +485,22 @@ describe('qualified first-party spawn credential authority', () => {
     });
     await persistConnectedServiceCredentialHealthForMaterializationFailure({
       binding: { serviceId: 'openai-codex', profileId: account.accountId },
-      qualifiedCredential: { token: credentials.token, ref: account, expectedCredentialRevision: revision, expectedConfigurationRevision: null },
+      qualifiedCredential: { token: credentials.token, ref: account, expectedCredentialRevision: revision, expectedConfigurationRevision: null,
+        ...(knownHealth ? { previousHealth: { v: 1 as const, status: 'refresh_failed_retryable' as const,
+          reconnectRequired: false, lastRefreshAttemptAt: 1, lastRefreshFailureAt: 1,
+          lastRefreshFailureKind: 'unknown' as const, providerErrorCode: 'disk_failure' } }
+          : { previousStatus: 'connected' as const }) },
       diagnostic: { code: 'disk_failure', providerId: 'codex', serviceId: 'happier.agent.codex/openai-codex', severity: 'blocking', reason: 'disk_failure' },
       now: 10,
     });
     expect(patch).toMatchObject({ ref: account, expectedCredentialRevision: revision, health: { status: 'refresh_failed_retryable', reconnectRequired: false } });
+    expect(diagnostic.mock.calls.filter(([event]) => event === '[ConnectedServiceRefreshCoordinator] credential health write'))
+      .toEqual([['[ConnectedServiceRefreshCoordinator] credential health write', {
+        path: 'materialization-failure', serviceKind: service.localId,
+        beforeStatus: knownHealth ? 'refresh_failed_retryable' : 'connected',
+        afterStatus: 'refresh_failed_retryable', substantiveChanged: knownHealth ? false : null,
+      }]]);
+    diagnostic.mockRestore();
     http.mockRestore();
   });
   it.each([

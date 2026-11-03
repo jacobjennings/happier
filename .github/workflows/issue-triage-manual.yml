@@ -25,7 +25,7 @@ jobs:
             // We intentionally do not use GitHub Environments with required reviewers for this workflow:
             // authorization is enforced up front by repository permission level.
             const allowed = new Set(['admin', 'maintain', 'write', 'triage']);
-            if (!allowed.has(result.data.permission)) {
+            if (!allowed.has(result.data.role_name)) {
               core.setFailed(`Actor '${actor}' does not have triage permission.`);
             }
 
@@ -39,6 +39,14 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: |
             maintainers-tools
+          permission-contents: read
+
+      - name: Checkout the repository Node version pin
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          sparse-checkout: .node-version
+          sparse-checkout-cone-mode: false
 
       - name: Checkout maintainer tools
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -46,11 +54,12 @@ jobs:
           repository: happier-dev/maintainers-tools
           path: maintainer-tools
           token: ${{ steps.maintainer_tools_token.outputs.token }}
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version-file: .node-version
           cache: yarn
           cache-dependency-path: maintainer-tools/yarn.lock
 

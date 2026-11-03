@@ -56,11 +56,6 @@ const STAGE_WARM_MOUNT_LIMIT = 1;
 
 const UPCOMING_SURFACE_KEY_SEPARATOR = '\u0000';
 
-// The web camera drives a promoted CSS layer and never freezes; the native story
-// layout mounts one DemoStage per beat, so a frozen frame could never be shown
-// either. The stage therefore has no frozen layer for these hooks to drive.
-function noopStageCameraCallback(): void {}
-
 function MaterializedStageSurface(props: React.PropsWithChildren<Readonly<{
     reducedMotion: boolean;
     testID: string;
@@ -330,9 +325,6 @@ function DemoStageContent(props: DemoStageProps & Readonly<{
             : null,
         transformBounds: cameraTransformBounds,
         cameraNodeTranslationScale: cameraViewport.scale > 0 ? 1 / cameraViewport.scale : 1,
-        freezeDuringMotion: false,
-        onMotionChange: noopStageCameraCallback,
-        onSettled: noopStageCameraCallback,
     });
 
     const handleLayout = React.useCallback((event: LayoutChangeEvent) => {

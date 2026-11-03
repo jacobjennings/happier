@@ -6,10 +6,21 @@ import { API_TOKEN_FULL_GRANT_V1, ExternalActionExecutionAuthorizationV1Schema }
 afterEach(() => vi.restoreAllMocks());
 
 describe('headless settings conditional writes', () => {
+    it('omits the mounted Voice edit from discovery without hiding present-user scalar settings', async () => {
+        const action = createCliSettingsDeclarationAction({});
+        const discovery = await action({ actionId: 'settings.list', input: { pageId: 'voiceConversations' }, context: { surface: 'cli' } });
+        expect(discovery).toMatchObject({ items: expect.not.arrayContaining([
+            expect.objectContaining({ anchor: 'voiceConversations.edit' }),
+        ]) });
+        const transcript = await action({ actionId: 'settings.list', input: { pageId: 'transcript' }, context: { surface: 'cli' } });
+        expect(transcript).toMatchObject({ items: expect.arrayContaining([
+            expect.objectContaining({ anchor: 'transcript.showToolCalls', readable: true, writable: true }),
+        ]) });
+    });
     it('refuses a captured App draft target before reading or mutating Home settings', async () => {
         const read = vi.spyOn(axios, 'get');
         const write = vi.spyOn(axios, 'post');
-        const action = createCliSettingsDeclarationAction({ serverId: 'home-a' });
+        const action = createCliSettingsDeclarationAction({ serverId: 'home-a', serverHttpBaseUrl: 'https://home-a.example.test' });
         for (const actionId of ['settings.get', 'settings.set'] as const) {
             expect(await action({ actionId, input: { anchor: 'appearance.atmosphereSource',
                 ...(actionId === 'settings.set' ? { value: 'none' } : {}), target: { kind: 'public_profile_draft', serverId: 'home-a' } },
@@ -35,7 +46,7 @@ describe('headless settings conditional writes', () => {
     it('refuses a read-only reset before reading or writing Account material', async () => {
         const read = vi.spyOn(axios, 'get');
         const write = vi.spyOn(axios, 'post');
-        const action = createCliSettingsDeclarationAction({ serverId: 'home-a' });
+        const action = createCliSettingsDeclarationAction({ serverId: 'home-a', serverHttpBaseUrl: 'https://home-a.example.test' });
         expect(await action({ actionId: 'settings.reset', input: { anchor: 'homeAdministration.serverSettings.HAPPIER_CANONICAL_SERVER_URL',
             target: { kind: 'home', serverId: 'home-a' } },
             context: { surface: 'cli' } })).toMatchObject({ ok: false, errorCode: 'setting_read_only' });

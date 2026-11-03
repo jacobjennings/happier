@@ -11,6 +11,10 @@ import type { DaemonLocallyPersistedState } from '@/persistence';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleText, captureStdoutJsonOutput } from '@/testkit/logger/captureOutput';
+import { configuration, reloadConfiguration } from '@/configuration';
+import { writeDaemonState } from '@/persistence';
+import * as controlClient from '@/daemon/controlClient';
+import { handleDaemonCliCommand } from './daemon';
 
 const {
     spawnDetachedDaemonStartSyncMock,
@@ -67,7 +71,7 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
         restartDaemonAndWaitMock.mockReset();
         waitForDaemonRunningWithinBudgetMock.mockReset();
         vi.restoreAllMocks();
-        vi.resetModules();
+        reloadConfiguration();
     });
 
     it('fails closed for daemon start, stop, and restart when a background service owns the relay', async () => {
@@ -81,13 +85,7 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
                 HAPPIER_WEBAPP_URL: 'https://app.happier.dev',
                 HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
             });
-            vi.resetModules();
-
-            const [{ writeDaemonState }, { handleDaemonCliCommand }] = await Promise.all([
-                import('@/persistence'),
-                import('./daemon'),
-            ]);
-            const controlClient = await import('@/daemon/controlClient');
+            reloadConfiguration();
 
             const serviceOwnedState: DaemonLocallyPersistedState = {
                 pid: process.pid,
@@ -162,70 +160,10 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
 
             exitSpy.mockRestore();
         });
-        // Three full `handleDaemonCliCommand` invocations with module resets and real
+        // Three full `handleDaemonCliCommand` invocations with real
         // temp-directory state. Measured 11.6s-28.5s across runs on idle machines and
         // once exceeded the 30s default outright, so the default budget has no margin.
     }, 60_000);
-
-    it('allows daemon start takeover to spawn a replacement relay when the current owner is manual', async () => {
-        await withTempDir('happier-daemon-start-takeover-', async (homeDir) => {
-            envScope.patch({
-                HAPPIER_HOME_DIR: homeDir,
-                HAPPIER_ACTIVE_SERVER_ID: 'cloud',
-                HAPPIER_SERVER_URL: 'https://api.happier.dev',
-                HAPPIER_LOCAL_SERVER_URL: undefined,
-                HAPPIER_PUBLIC_SERVER_URL: 'https://api.happier.dev',
-                HAPPIER_WEBAPP_URL: 'https://app.happier.dev',
-                HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
-            });
-            vi.resetModules();
-
-            const [{ writeDaemonState }, { handleDaemonCliCommand }] = await Promise.all([
-                import('@/persistence'),
-                import('./daemon'),
-            ]);
-
-            writeDaemonState({
-                pid: process.pid,
-                httpPort: 43114,
-                startedAt: Date.now(),
-                startedWithCliVersion: '0.0.0-other',
-                startedWithPublicReleaseChannel: 'preview',
-                startupSource: 'manual',
-                runtimeId: 'runtime-manual',
-            });
-
-            const output = captureConsoleText();
-            const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
-                throw new Error(`exit:${code ?? ''}`);
-            }) as never);
-
-            try {
-                await expect(
-                    handleDaemonCliCommand({
-                        args: ['daemon', 'start', '--takeover'],
-                        rawArgv: ['node', 'happier', 'daemon', 'start', '--takeover'],
-                        terminalRuntime: null,
-                    }),
-                ).rejects.toThrow(/exit:0/);
-            } finally {
-                output.restore();
-            }
-
-            expect(spawnDetachedDaemonStartSyncMock).toHaveBeenCalledTimes(1);
-            const [spawnCall] = spawnDetachedDaemonStartSyncMock.mock.calls as unknown as Array<[Record<string, unknown>]>;
-            expect(spawnCall?.[0]).toEqual(
-                expect.objectContaining({
-                    env: expect.objectContaining({
-                        HAPPIER_DAEMON_TAKEOVER: '1',
-                    }),
-                }),
-            );
-            expect(waitForDaemonRunningWithinBudgetMock).toHaveBeenCalledTimes(1);
-            expect(exitSpy).toHaveBeenCalledWith(0);
-            exitSpy.mockRestore();
-        });
-    });
 
     it('prints JSON when daemon start is already running for the current invocation', async () => {
         await withTempDir('happier-daemon-start-json-already-running-', async (homeDir) => {
@@ -237,14 +175,7 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
                 HAPPIER_PUBLIC_SERVER_URL: 'https://cloud.example.test',
                 HAPPIER_WEBAPP_URL: 'https://app.example.test',
             });
-            vi.resetModules();
-
-            const [{ configuration }, { writeDaemonState }, { handleDaemonCliCommand }] = await Promise.all([
-                import('@/configuration'),
-                import('@/persistence'),
-                import('./daemon'),
-            ]);
-            const controlClient = await import('@/daemon/controlClient');
+            reloadConfiguration();
 
             const compatibleState = {
                 pid: process.pid,
@@ -307,12 +238,7 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
                 HAPPIER_DAEMON_SERVICE_CHANNEL: 'stable',
                 HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'default-following',
             });
-            vi.resetModules();
-
-            const [{ handleDaemonCliCommand }, { resolveDaemonServiceCliRuntimeFromEnv, resolveDaemonServicePaths }] = await Promise.all([
-                import('./daemon'),
-                import('@/daemon/service/cli'),
-            ]);
+            reloadConfiguration();
 
             const runtime = resolveDaemonServiceCliRuntimeFromEnv({ processEnv: process.env });
             const paths = resolveDaemonServicePaths(runtime);
@@ -373,9 +299,7 @@ describe('handleDaemonCliCommand ownership conflicts', () => {
                 HAPPIER_DAEMON_SERVICE_CHANNEL: 'stable',
                 HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'default-following',
             });
-            vi.resetModules();
-
-            const { handleDaemonCliCommand } = await import('./daemon');
+            reloadConfiguration();
 
             const runtime = resolveDaemonServiceCliRuntimeFromEnv({ processEnv: process.env });
             const paths = resolveDaemonServicePaths(runtime);

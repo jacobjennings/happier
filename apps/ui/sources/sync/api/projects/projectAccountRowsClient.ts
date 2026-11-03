@@ -41,7 +41,7 @@ export function createUiProjectAccountRowsClient(account: Account) {
       cipher: createProjectAccountRowCipherV1({ mode: accountMode,
         material: accountMode === 'plain' ? null : resolveAccountScopedCryptoMaterialFromCredentials(account.credentials), randomBytes: getRandomBytes }),
       isCurrent: () => { try { account.assertCurrent(); return true; } catch { return false; } },
-      apply: snapshot => storage.getState().applyProjectAccountRowsForScope(scope, snapshot),
+      apply: (...args) => storage.getState().applyProjectAccountRowsForScope(scope, ...args),
       // The focused sync owner already projected authoring-memory recency; a structural Action read must not erase it.
       readRecency: ref => {
         const current = readCurrentProjectAccountRows(storage.getState());
@@ -77,7 +77,7 @@ export function createUiProjectAccountRowsClient(account: Account) {
       } catch (error) { return mutationFailure(error, input.signal); }
     },
     mutateOrganization: async (input: Readonly<{
-      serverId: string; projectKey: string; expectedRevision: number | 'absent'; signal?: AbortSignal;
+      serverId: string; projectKey: string; expectedRevision?: number | 'absent'; signal?: AbortSignal;
       mutate(value: ProjectAccountOrganizationV1): ProjectAccountOrganizationV1;
     }>) => (await getOwner()).mutateOrganizationAtRevision(input),
   };

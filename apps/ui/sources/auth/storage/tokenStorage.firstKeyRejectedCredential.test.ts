@@ -7,15 +7,21 @@ import {
     vi,
 } from 'vitest';
 
+import { seedPersistedHomeProfilesForTests } from '@/dev/testkit/fixtures/persistedHomeProfiles';
 import {
     installLocalStorageMock,
     type LocalStorageMockHandle,
 } from './tokenStorage.web.testHelpers';
 import {
+    homeProfileForTests,
+    installTokenStorageTestIsolation,
     installTokenStorageWebPlatformMocks,
 } from './tokenStorage.testHelpers';
 
 installTokenStorageWebPlatformMocks();
+installTokenStorageTestIsolation('token_storage_first_key_rejected');
+
+const { TokenStorage } = await import('./tokenStorage');
 
 const server = {
     serverId: 'server-a',
@@ -47,46 +53,26 @@ function createMarkedPending(suffix: string) {
 describe('TokenStorage first-key rejected credential custody', () => {
     let storage: LocalStorageMockHandle;
 
-    beforeEach(() => {
-        vi.resetModules();
+    beforeEach(async () => {
         storage = installLocalStorageMock();
-        vi.doMock(
-            '@/sync/domains/server/serverProfiles',
-            async (importOriginal) => {
-                const actual =
-                    await importOriginal<
-                        typeof import(
-                            '@/sync/domains/server/serverProfiles'
-                        )
-                    >();
-                return {
-                    ...actual,
-                    getActiveServerId:
-                        () => server.serverId,
-                    getActiveServerUrl:
-                        () => server.serverUrl,
-                    listServerProfiles: () => [{
-                        id: server.serverId,
-                        serverUrl:
-                            server.serverUrl,
-                        name: 'Server A',
-                    }],
-                };
-            },
-        );
+        await seedPersistedHomeProfilesForTests({
+            profiles: [
+                homeProfileForTests(
+                    server.serverId,
+                    server.serverUrl,
+                    { name: 'Server A' },
+                ),
+            ],
+            activeServerId: server.serverId,
+        });
     });
 
     afterEach(() => {
         vi.restoreAllMocks();
-        vi.doUnmock(
-            '@/sync/domains/server/serverProfiles',
-        );
         storage.restore();
     });
 
     it('persists an exact rejected-token digest across module reload without storing the bearer', async () => {
-        const { TokenStorage } =
-            await import('./tokenStorage');
         const pending =
             createMarkedPending('current');
         await TokenStorage.setCredentials({
@@ -145,8 +131,6 @@ describe('TokenStorage first-key rejected credential custody', () => {
     });
 
     it('does not mark a stale bearer that is not the current target credential', async () => {
-        const { TokenStorage } =
-            await import('./tokenStorage');
         const pending =
             createMarkedPending('current');
         await TokenStorage.setCredentials({
@@ -175,8 +159,6 @@ describe('TokenStorage first-key rejected credential custody', () => {
     });
 
     it('returns marked custody only when the stored first-key attempt still exactly matches the recovery handle', async () => {
-        const { TokenStorage } =
-            await import('./tokenStorage');
         const pending =
             createMarkedPending('exact');
         await TokenStorage.setPendingExternalAuth(
@@ -207,36 +189,53 @@ describe('TokenStorage first-key rejected credential custody', () => {
         ).resolves.toBeNull();
     });
 
-    it('rejects a noncanonical persisted rejection digest', async () => {
-        const { TokenStorage } =
-            await import('./tokenStorage');
+    it.each([
+        {
+            name: 'reads a canonical',
+            digest: 'A'.repeat(43),
+            readable: true,
+        },
+        {
+            name: 'rejects a noncanonical',
+            digest: `${'A'.repeat(42)}B`,
+            readable: false,
+        },
+    ])('$name persisted rejection digest', async ({ digest, readable }) => {
         const pending =
-            createMarkedPending('malformed');
-        await TokenStorage.setPendingExternalAuth({
+            createMarkedPending('persisted');
+        await TokenStorage.setPendingExternalAuth(
+            pending,
+        );
+        const persisted = {
             ...pending,
             accountEncryptionFirstKey: {
                 ...pending
                     .accountEncryptionFirstKey,
                 rejectedCredentialTokenDigest:
-                    `${'A'.repeat(42)}B`,
+                    digest,
             },
-        });
+        };
+        // Write the stored bytes directly: the validating setter must not stand in for the read.
+        const pendingKeys =
+            [...storage.store.keys()].filter((key) =>
+                key.includes('pending_external_auth'));
+        expect(pendingKeys).toHaveLength(2);
+        for (const key of pendingKeys) {
+            storage.store.set(
+                key,
+                JSON.stringify(persisted),
+            );
+        }
 
-        vi.resetModules();
-        const reloaded =
-            await import('./tokenStorage');
         await expect(
-            reloaded.TokenStorage
-                .readPendingExternalAuthState(),
+            TokenStorage.readPendingExternalAuthState(),
         ).resolves.toEqual({
-            value: null,
+            value: readable ? persisted : null,
             serverMismatch: false,
         });
     });
 
     it('does not mark a concurrently replaced pending record', async () => {
-        const { TokenStorage } =
-            await import('./tokenStorage');
         const original =
             createMarkedPending('original');
         const replacement = {

@@ -2,6 +2,7 @@ import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { setReducedMotionPreferenceOverride } from '@/hooks/ui/useReducedMotionPreference';
 
 import type { SelectionListProps, SelectionListStep } from '../_types';
 
@@ -78,6 +79,15 @@ function fireRootLayout(root: { props: Record<string, unknown> }, height: number
         throw new Error('expected SelectionList root onLayout');
     }
     onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 320, height } } });
+}
+
+type TextNode = Readonly<{ children?: ReadonlyArray<unknown> }>;
+
+function textOf(node: TextNode | null): string {
+    if (node == null) return '';
+    return (node.children ?? [])
+        .map((child) => (typeof child === 'string' ? child : child && typeof child === 'object' ? textOf(child as TextNode) : ''))
+        .join('');
 }
 
 function fireNodeLayout(node: { props: Record<string, unknown> }, height: number): void {
@@ -409,7 +419,8 @@ describe('SelectionList (orchestrator)', () => {
                 vi.advanceTimersByTime(220);
             });
             const releasedRoot = screen.findByTestId('sl') as unknown as { props: { style?: unknown } };
-            expect(flattenStyle(releasedRoot.props.style).minHeight).toBeUndefined();
+            // The held floor is released back to the container's own shrinkable minimum.
+            expect(flattenStyle(releasedRoot.props.style).minHeight).toBe(0);
             expect(flattenStyle(releasedRoot.props.style).height).toBeUndefined();
         } finally {
             vi.useRealTimers();
@@ -425,14 +436,23 @@ describe('SelectionList (orchestrator)', () => {
         expect(screen.findByTestId('sl:footer:hint:navigate')).toBeNull();
     });
 
-    it('renders each static section title and option label', async () => {
+    it('renders each non-virtualized section header under a stable testID with its own title and count', async () => {
+        const base = makeRootStep();
+        const rootStep = makeRootStep({
+            sections: base.sections.map((section) => (
+                section.kind === 'static' && section.id === 'favorites' ? { ...section, count: 2 } : section
+            )),
+        });
         const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps()} />);
-        const text = screen.getTextContent();
-        expect(text).toContain('FAVORITES');
-        expect(text).toContain('RECENT');
-        expect(text).toContain('Favorite A');
-        expect(text).toContain('Recent A');
+        const screen = await renderScreen(
+            <SelectionList {...defaultProps({ rootStep, keyboardHintsEnabled: false })} />,
+        );
+        const favorites = textOf(screen.findByTestId('sl:section:favorites:header'));
+        const recent = textOf(screen.findByTestId('sl:section:recent:header'));
+        expect(favorites).toContain('FAVORITES');
+        expect(favorites).toContain('2');
+        expect(recent).toContain('RECENT');
+        expect(recent).not.toContain('2');
     });
 
     it('does not invoke onSelect when a disabled option is pressed', async () => {
@@ -461,7 +481,7 @@ describe('SelectionList (orchestrator)', () => {
         const { SelectionList } = await import('../SelectionList');
         const screen = await renderScreen(<SelectionList {...defaultProps()} />);
         await act(async () => {
-            screen.changeTextByTestId('sl:header:input', 'Recent');
+            screen.changeTextByTestId('sl:header:input', 'recent');
         });
         expect(screen.findByTestId('sl:root:option:rec-a')).not.toBeNull();
         expect(screen.findByTestId('sl:root:option:fav-a')).toBeNull();
@@ -475,44 +495,6 @@ describe('SelectionList (orchestrator)', () => {
             screen.changeTextByTestId('sl:header:input', 'no-such-value-here');
         });
         expect(screen.findByTestId('sl:empty')).not.toBeNull();
-    });
-
-    it('pushes a step when an option declares openStep, and renders the new step content', async () => {
-        const detailStep: SelectionListStep = {
-            id: 'detail',
-            title: 'Detail',
-            backLabel: 'Worktrees',
-            sections: [
-                {
-                    kind: 'static',
-                    id: 'detail-section',
-                    title: 'BRANCHES',
-                    options: [{ id: 'detail-opt', label: 'Detail Option' }],
-                },
-            ],
-        };
-        const rootWithStep = makeRootStep({
-            sections: [
-                {
-                    kind: 'static',
-                    id: 'root-section',
-                    title: 'ROOT',
-                    options: [{ id: 'go-detail', label: 'Open detail', openStep: detailStep }],
-                },
-            ],
-        });
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(
-            <SelectionList {...defaultProps({ rootStep: rootWithStep })} />,
-        );
-        // Initial step is root.
-        expect(screen.findByTestId('sl:root:option:go-detail')).not.toBeNull();
-        // Press the openStep option.
-        await screen.pressByTestIdAsync('sl:root:option:go-detail');
-        // Now the detail step content should render.
-        expect(screen.findByTestId('sl:detail:option:detail-opt')).not.toBeNull();
-        // Back chip should now be visible in the header.
-        expect(screen.findByTestId('sl:header:leading:back-chip')).not.toBeNull();
     });
 
     it('does not move focus during step transitions (input remains the focusable element)', async () => {
@@ -539,10 +521,12 @@ describe('SelectionList (orchestrator)', () => {
         const { SelectionList } = await import('../SelectionList');
         const screen = await renderScreen(<SelectionList {...defaultProps({ rootStep: root })} />);
         const inputBefore = screen.findByTestId('sl:header:input');
-        await screen.pressByTestIdAsync('sl:root:option:go');
-        const inputAfter = screen.findByTestId('sl:header:input');
         expect(inputBefore).not.toBeNull();
-        expect(inputAfter).not.toBeNull();
+        await screen.pressByTestIdAsync('sl:root:option:go');
+        expect(screen.findByTestId('sl:detail:option:x')).not.toBeNull();
+        // Same test instance = same fiber: the canPop swap did not remount the input,
+        // so DOM focus and the caret survive the step transition.
+        expect(screen.findByTestId('sl:header:input')).toBe(inputBefore);
     });
 
     it('focuses the input on web when the caller opts into popover auto-focus', async () => {
@@ -614,6 +598,7 @@ describe('SelectionList (orchestrator)', () => {
         const { SelectionList } = await import('../SelectionList');
         const screen = await renderScreen(<SelectionList {...defaultProps({ rootStep: root })} />);
         await screen.pressByTestIdAsync('sl:root:option:go');
+        expect(screen.findByTestId('sl:detail:option:x')).not.toBeNull();
         expect(screen.findByTestId('sl:header:leading:back-chip')).not.toBeNull();
         await screen.pressByTestIdAsync('sl:header:leading:back-chip');
         expect(screen.findByTestId('sl:header:leading:back-chip')).toBeNull();
@@ -621,33 +606,26 @@ describe('SelectionList (orchestrator)', () => {
         expect(screen.findByTestId('sl:root:option:go')).not.toBeNull();
     });
 
-    it('honors reducedMotion by skipping the cross-slide spring (renders single content layer)', async () => {
-        // We pass disableTransitions to test the reduced-motion fallback path of the orchestrator
-        // (no spring; single layer in `current` slot).
+    it('honors the reduced-motion preference by skipping the cross-slide and height animators', async () => {
         const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(
-            <SelectionList {...defaultProps({ disableTransitions: true })} />,
+        const animated = await renderScreen(
+            <SelectionList {...defaultProps({ disableTransitions: false })} />,
         );
-        // The content body marker should be a single subtree.
-        expect(screen.findByTestId('sl:body')).not.toBeNull();
-    });
+        expect(animated.findByTestId('sl:transition')).not.toBeNull();
+        expect(animated.findByTestId('sl:animatedHeight')).not.toBeNull();
 
-    it('disabled rows render with accessibilityState.disabled = true', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps()} />);
-        const row = screen.findByTestId('sl:root:option:fav-b');
-        expect(row).not.toBeNull();
-        // The Item exposes accessibilityState via its Pressable; look for it on a descendant
-        // pressable wrapper. The exact propagation depends on the platform mock; we assert
-        // the option testID exists and that pressing it does not invoke onSelect (already
-        // covered above). This test is a structural sanity check.
-    });
-
-    it('renders the selected option marker when selectedOptionId matches', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(
-            <SelectionList {...defaultProps({ selectedOptionId: 'fav-a' })} />,
-        );
-        expect(screen.findByTestId('sl:root:option:fav-a')).not.toBeNull();
+        const { act } = await import('react-test-renderer');
+        // The preference is a host-wide store: flip it inside act so mounted lists rerender in-band.
+        await act(async () => { setReducedMotionPreferenceOverride(true); });
+        try {
+            const reduced = await renderScreen(
+                <SelectionList {...defaultProps({ disableTransitions: false })} />,
+            );
+            expect(reduced.findByTestId('sl:body')).not.toBeNull();
+            expect(reduced.findByTestId('sl:transition')).toBeNull();
+            expect(reduced.findByTestId('sl:animatedHeight')).toBeNull();
+        } finally {
+            await act(async () => { setReducedMotionPreferenceOverride(null); });
+        }
     });
 });

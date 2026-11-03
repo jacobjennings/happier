@@ -64,29 +64,6 @@ export type SectionRenderPlan = Readonly<{
 }>;
 
 /**
- * Apply the same case-insensitive substring filter to dynamic-section options
- * that `filterSelectionListSections` applies to static-section options. Used
- * by the orchestrator to narrow dynamic success rows against the current
- * input filter query (R9 blocker 3).
- *
- * RUX-1 Issue 1: this is now an alias for `rankOptionsByQuery` so dynamic
- * sections share the same prefix-priority ranking as static sections.
- * Returns the original array reference unchanged when the query is empty so
- * the orchestrator can cheaply skip re-rendering.
- *
- * RUX-9.2: pass `disableSubtitleTier=true` to skip tier-3 (subtitle.includes)
- * for domains where the subtitle would create false-positive matches (e.g.
- * paths whose subtitle always contains the parent directory).
- */
-export function filterDynamicOptionsByQuery(
-    options: ReadonlyArray<SelectionListOption>,
-    query: string,
-    disableSubtitleTier?: boolean,
-): ReadonlyArray<SelectionListOption> {
-    return rankOptionsByQuery(options, query, disableSubtitleTier);
-}
-
-/**
  * Picker options ranked by the one shared query ranking (`rankHappierQueryMatches`, plugin-ui): label
  * prefix or exact identity, then label, then subtitle, then hidden `searchText`, each band in the
  * descriptor's order. An empty query returns `options` itself.
@@ -310,7 +287,7 @@ export function synthesizeSelectionListRenderPlan(
                 // query in its title) and reorder provider relevance.
                 const filteredOptions = descriptor.resultFiltering === 'provider'
                     ? options
-                    : filterDynamicOptionsByQuery(
+                    : rankOptionsByQuery(
                         options,
                         filterQuery,
                         descriptor.disableSubtitleRanking === true,

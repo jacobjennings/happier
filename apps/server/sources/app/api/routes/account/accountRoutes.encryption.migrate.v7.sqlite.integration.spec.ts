@@ -1635,8 +1635,10 @@ describe("account encryption migration .7 SQLite matrix", () => {
                     policyDigest: computeWorkspaceSyncPolicyDigest({ v: 1, selection: 'all_files', extraIgnorePatterns: [], extraIncludePatterns: [] }) } }] } },
             { key: { kind: 'project-organization', serverId: 'home', projectKey: 'project' }, value: { hidden: true, pinned: true } },
         ];
+        const authoringSession = { serverId: 'authoring-home', sessionId: 'authoring-session' };
         for (const payload of payloads) await db.userKVStore.create({ data: { accountId: account.id,
-            key: buildProjectAccountRowPhysicalKeyV1(payload.key), version: 3, value: new TextEncoder().encode(JSON.stringify({ t: 'plain', v: payload })) } });
+            key: buildProjectAccountRowPhysicalKeyV1(payload.key), version: 3, value: new TextEncoder().encode(JSON.stringify({ t: 'plain', v: payload,
+                ...(payload.key.kind === 'workspace-ref' ? { authoringSession } : {}) })) } });
         const tombstoneKey = buildProjectAccountRowPhysicalKeyV1({ kind: 'workspace-ref', serverId: 'home', id: 'deleted' });
         await db.userKVStore.create({ data: { accountId: account.id, key: tombstoneKey, version: 9, value: null } });
         const recencyKey = buildProjectLastOpenedMemoryKeyV1({ serverId: 'home', projectKey: 'project' });
@@ -1697,7 +1699,8 @@ describe("account encryption migration .7 SQLite matrix", () => {
             for (const payload of payloads) {
                 const row = await db.userKVStore.findUniqueOrThrow({ where: { accountId_key: { accountId: account.id, key: buildProjectAccountRowPhysicalKeyV1(payload.key) } } });
                 expect(row.version).toBe(5);
-                expect(JSON.parse(new TextDecoder().decode(row.value!))).toEqual({ t: 'plain', v: payload });
+                expect(JSON.parse(new TextDecoder().decode(row.value!))).toEqual({ t: 'plain', v: payload,
+                    ...(payload.key.kind === 'workspace-ref' ? { authoringSession } : {}) });
             }
             const recency = await db.userKVStore.findUniqueOrThrow({ where: { accountId_key: { accountId: account.id, key: recencyPhysicalKey } } });
             expect(recency.version).toBe(8);

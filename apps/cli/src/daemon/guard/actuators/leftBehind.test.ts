@@ -198,7 +198,7 @@ describe('Left-behind Guard policy consumes confirmed native verdicts', () => {
     expect(await f.actuator.execute(decision, new AbortController().signal)).toEqual({ status: 'already_requested' });
     expect(f.requests).toHaveLength(1);
     expect(f.requests[0]).toMatchObject({ actionId: 'machines.processes.leftBehind.cleanUp',
-      actionArgs: { serverId: 'home', machineId: 'machine', refs: [...decision.refs] }, createdBy: { sessionId: owner.sessionId } });
+      actionArgs: { serverId: 'home-identity', machineId: 'machine', refs: [...decision.refs] }, createdBy: { sessionId: owner.sessionId } });
     expect(f.signals).toEqual([]);
     f.rows.set(301, { ...f.rows.get(301)!, start: { startTimeMs: 999, native: 'darwin-proc:301:0:999' } });
     expect(await f.actions.execute('approval.request.decide', { artifactId: 'approval', decision: 'approve' },
@@ -214,7 +214,7 @@ describe('Left-behind Guard policy consumes confirmed native verdicts', () => {
     await vi.waitFor(() => expect(f.coordinator.getLiveWaiterCount('approval')).toBe(1));
     const ref = processRef(300, f.rows.get(300)!.start);
     expect(await f.actions.execute('approval.request.decide', { artifactId: 'approval', decision: 'approve',
-      narrowedInput: { serverId: 'home', machineId: 'machine', refs: [ref] } },
+      narrowedInput: { serverId: 'home-identity', machineId: 'machine', refs: [ref] } },
       { surface: 'ui', authority: 'present_user', actionCaller: { kind: 'host' }, serverId: 'home' })).toMatchObject({ ok: true });
     expect(await pending).toEqual({ status: 'cleaned', ended: 1, skipped: 0 });
     expect(f.signals).toEqual([300]);

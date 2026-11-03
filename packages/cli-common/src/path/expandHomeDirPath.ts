@@ -6,7 +6,7 @@ function pathApi(platform: NodeJS.Platform) {
 }
 
 export function resolveHomeDirFromEnvironment(
-  processEnv: NodeJS.ProcessEnv = process.env,
+  processEnv: Readonly<Record<string, string | undefined>> = process.env,
   platform: NodeJS.Platform = process.platform,
 ): string {
   const envHome =
@@ -19,7 +19,7 @@ export function resolveHomeDirFromEnvironment(
 
 export function expandHomeDirPath(
   value: string,
-  processEnv: NodeJS.ProcessEnv = process.env,
+  processEnv: Readonly<Record<string, string | undefined>> = process.env,
   platform: NodeJS.Platform = process.platform,
 ): string {
   const api = pathApi(platform);
@@ -29,7 +29,13 @@ export function expandHomeDirPath(
       .slice(2)
       .split(/[\\/]+/)
       .filter(Boolean);
-    return api.join(resolveHomeDirFromEnvironment(processEnv, platform), ...relativePathSegments);
+    const rawHome = resolveHomeDirFromEnvironment(processEnv, platform);
+    const nativeHome = platform === 'win32' ? rawHome.replaceAll('/', api.sep) : rawHome;
+    const root = api.parse(nativeHome).root;
+    const home = nativeHome.length > root.length ? nativeHome.replace(/[\\/]+$/u, '') : nativeHome;
+    // Expansion retains physical symlink/.. traversal; identity normalization is separate below.
+    if (relativePathSegments.length === 0) return home;
+    return `${home}${home.endsWith(api.sep) ? '' : api.sep}${relativePathSegments.join(api.sep)}`;
   }
   return value;
 }
@@ -47,7 +53,7 @@ export type CanonicalAbsolutePath = Readonly<{
 export function resolveCanonicalAbsolutePath(
   value: string,
   options: Readonly<{
-    env?: NodeJS.ProcessEnv;
+    env?: Readonly<Record<string, string | undefined>>;
     platform?: NodeJS.Platform;
   }> = {},
 ): CanonicalAbsolutePath | null {
@@ -104,7 +110,7 @@ function comparisonIdentity(
 export function resolveCanonicalAbsolutePathComparisonIdentity(
   value: string,
   options: Readonly<{
-    env?: NodeJS.ProcessEnv;
+    env?: Readonly<Record<string, string | undefined>>;
     platform?: NodeJS.Platform;
   }> = {},
 ): string | null {
@@ -119,7 +125,7 @@ export function resolveCanonicalAbsoluteChildPathComparisonIdentity(
   parentPath: string,
   relativeChildPath: string,
   options: Readonly<{
-    env?: NodeJS.ProcessEnv;
+    env?: Readonly<Record<string, string | undefined>>;
     platform?: NodeJS.Platform;
   }> = {},
 ): string | null {
@@ -160,7 +166,7 @@ export function canonicalAbsolutePathsEqual(left: string, right: string): boolea
 }
 
 type ResolvedComparisonPath = Readonly<{ platform: NodeJS.Platform; canonical: CanonicalAbsolutePath; identity: string }>;
-type PathComparisonOptions = Readonly<{ env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform }>;
+type PathComparisonOptions = Readonly<{ env?: Readonly<Record<string, string | undefined>>; platform?: NodeJS.Platform }>;
 
 function resolveComparisonPath(value: string, options: PathComparisonOptions): ResolvedComparisonPath | null {
   const platform = resolveAbsolutePathPlatform(value, options.platform);
@@ -206,7 +212,7 @@ export function isCanonicalAbsolutePathInsideRoot(
   rootPath: string,
   candidatePath: string,
   options: Readonly<{
-    env?: NodeJS.ProcessEnv;
+    env?: Readonly<Record<string, string | undefined>>;
     platform?: NodeJS.Platform;
   }> = {},
 ): boolean {

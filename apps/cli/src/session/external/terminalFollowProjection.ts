@@ -2,6 +2,7 @@ import type { AgentSessionRuntime } from '@happier-dev/plugin-sdk/agents/runtime
 import { resolveTranscriptBodySemanticEvent } from '@happier-dev/protocol/sessions/messages/sessionMessageRole';
 import { AgentSessionRuntimeEventSchema } from '@happier-dev/protocol/runtime/agentSessionV1';
 import type { AgentSessionRuntimeEvent } from '@happier-dev/protocol/runtime';
+import { readTranscriptPeerSenderV1 } from '@happier-dev/protocol';
 
 import type { CommittedTranscriptAdmission } from '@/api/session/transcriptPort';
 
@@ -155,6 +156,7 @@ function toRuntimeTranscriptEvent(params: Readonly<{
   if (text === null) {
     throw new Error('external_session_terminal_transcript_item_invalid');
   }
+  const peer = body.type === 'message' ? readTranscriptPeerSenderV1(body.peer) : null;
   return parseRuntimeTranscriptEvent({
     kind: 'transcript-message-committed',
     sequence: params.sequence,
@@ -163,6 +165,7 @@ function toRuntimeTranscriptEvent(params: Readonly<{
     messageId: params.item.localId ?? params.item.id,
     role: body.type === 'message' ? 'assistant' : 'reasoning',
     text,
+    ...(peer ? { peer } : {}),
     ...(effectiveSidechainId !== undefined
       ? { sidechainId: effectiveSidechainId }
       : {}),

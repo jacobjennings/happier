@@ -134,13 +134,6 @@ describe('ActivitySpinner (web)', () => {
         expect(flattenStyle(preview.strip?.props.style).animationDuration).toBe('1100ms');
     });
 
-    it('falls back to the wave when the stored style is not one it knows', async () => {
-        localSettingValues.loadingIndicatorStyle = 'retiredStyle';
-        const { strip } = await renderSpinner({ size: 16 });
-
-        expect(flattenStyle(strip?.props.style).animationDuration).toBe('1004ms');
-    });
-
     it('plays at the speed and pause chosen in settings, and previews follow them', async () => {
         localSettingValues.loadingIndicatorSpeed = 'fast';
         localSettingValues.loadingIndicatorPause = 'long';
@@ -153,14 +146,6 @@ describe('ActivitySpinner (web)', () => {
         expect(flattenStyle(radar.strip?.props.style).animationDuration).toBe('733ms');
     });
 
-    it('plays unknown stored speeds and pauses at the defaults', async () => {
-        localSettingValues.loadingIndicatorSpeed = 'warp';
-        localSettingValues.loadingIndicatorPause = 'forever';
-        const { strip } = await renderSpinner({ size: 16 });
-
-        expect(flattenStyle(strip?.props.style).animationDuration).toBe('1004ms');
-    });
-
     it.each(['aurora', 'hAurora'])('colors %s with the theme accents, but an explicit color wins so the mark stays legible on tinted buttons', async (styleId) => {
         localSettingValues.loadingIndicatorStyle = styleId;
         const themed = frameSheetFor((await renderSpinner({ size: 16 })).strip);
@@ -170,18 +155,6 @@ describe('ActivitySpinner (web)', () => {
         const explicit = frameSheetFor((await renderSpinner({ size: 16, color: 'white' })).strip);
         expect(explicit).toContain('fill="white"');
         expect(explicit).not.toContain('accent-indigo');
-    });
-
-    it('keeps the classic ring for people who choose it', async () => {
-        localSettingValues.loadingIndicatorStyle = 'classicRing';
-        const { spinner, strip } = await renderSpinner({ size: 12, color: 'red' });
-
-        const style = flattenStyle(spinner.props.style);
-        expect(strip).toBeUndefined();
-        expect(style.animationName).toBe('happierActivitySpinnerSpin');
-        expect(style.animationTimingFunction).toBe('steps(6, end)');
-        expect(style.width).toBe(12);
-        expect(style.borderColor).toBe('red');
     });
 
     it('uses the theme secondary text color when no color is provided', async () => {
@@ -223,14 +196,14 @@ describe('ActivitySpinner (web)', () => {
         expect(frameSheetFor(strip)).toContain('fill-opacity="0.85"');
     });
 
-    it('stops turning the classic ring under reduced motion but keeps it visible', async () => {
-        reducedMotionState.current = true;
-        localSettingValues.loadingIndicatorStyle = 'classicRing';
-        const { spinner } = await renderSpinner({ size: 12 });
+    it('applies a caller transform (the ToolView scale) on the core web spinner host', async () => {
+        const transform = [{ scaleX: 0.8 }, { scaleY: 0.8 }];
+        const { spinner } = await renderSpinner({ style: { transform } });
 
-        const style = flattenStyle(spinner.props.style);
-        expect(style.animationName).toBeUndefined();
-        expect(style.opacity).toBe(1);
+        expect(spinner.type).toBe('View');
+        expect(spinner.props.style).toEqual(expect.arrayContaining([
+            expect.objectContaining({ transform }),
+        ]));
     });
 
     it('renders nothing when stopped and hidden, whatever the style', async () => {

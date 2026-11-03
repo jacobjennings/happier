@@ -19,6 +19,25 @@ afterEach(async () => {
 });
 
 describe('scoped socket pool with real reachability admission', () => {
+    it.each(['connect_error', 'error', 'disconnect'] as const)('keeps %s isolated from HTTP readiness without scheduling a probe', async event => {
+        const scope = { serverUrl: 'https://socket-only.example.test', token: 'test-token', timeoutMs: 1000 };
+        const transport = createSocketIoBoundaryStub();
+        const probes: string[] = [];
+        setRuntimeFetch(async url => { probes.push(String(url)); return Response.json({ ok: true }); });
+        const pool = createServerScopedRpcSocketPool({ createSocket: () => transport.socket });
+        let client: Awaited<ReturnType<typeof pool.acquire>> | undefined;
+        try {
+            client = await pool.acquire(scope);
+            const probesBefore = probes.length;
+            transport.trigger(event, event === 'disconnect' ? 'transport close' : new Error('socket refused'));
+            await Promise.resolve();
+            expect(peekServerReachabilityState(scope.serverUrl, scope.token)?.phase).toBe('online');
+            expect(probes).toHaveLength(probesBefore);
+            const { createServerFetchAtEndpoint } = await import('@/sync/http/client');
+            await expect(createServerFetchAtEndpoint({ endpointUrl: scope.serverUrl, credentials: { token: scope.token } })('/ordinary-write', { method: 'POST' }))
+                .resolves.toHaveProperty('status', 200);
+        } finally { client?.disconnect(); await pool.stopAll(); }
+    });
     it('admits the socket only after its selected origin proves authenticated reachability', async () => {
         const transport = createSocketIoBoundaryStub();
         const requests: string[] = [];
@@ -100,6 +119,7 @@ describe('scoped socket pool with real reachability admission', () => {
             const stream = await pool.acquire(scope);
             status = 503;
             transport.trigger('disconnect', 'transport close');
+            await invalidateServerReachabilitySupervisor(scope);
             await vi.advanceTimersByTimeAsync(0);
             expect(peekServerReachabilityState(scope.serverUrl, scope.token)?.phase).toBe('offline');
             const expired = pool.acquire(scope).then(() => null, (error: unknown) => error);

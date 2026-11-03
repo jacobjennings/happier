@@ -3,7 +3,6 @@ import { vi } from 'vitest';
 type PublicShareViewerModuleFactory = () => unknown | Promise<unknown>;
 
 type InstallPublicShareViewerCommonModuleMocksOptions = Readonly<{
-    reactNative?: PublicShareViewerModuleFactory;
     router?: PublicShareViewerModuleFactory;
     text?: PublicShareViewerModuleFactory;
     unistyles?: PublicShareViewerModuleFactory;
@@ -11,7 +10,6 @@ type InstallPublicShareViewerCommonModuleMocksOptions = Readonly<{
 
 const publicShareViewerModuleState = vi.hoisted(() => ({
     options: {
-        reactNative: undefined as PublicShareViewerModuleFactory | undefined,
         router: undefined as PublicShareViewerModuleFactory | undefined,
         text: undefined as PublicShareViewerModuleFactory | undefined,
         unistyles: undefined as PublicShareViewerModuleFactory | undefined,
@@ -22,16 +20,15 @@ export function installPublicShareViewerCommonModuleMocks(
     options: InstallPublicShareViewerCommonModuleMocksOptions = {},
 ): void {
     publicShareViewerModuleState.options = {
-        reactNative: options.reactNative,
         router: options.router,
         text: options.text,
         unistyles: options.unistyles,
     };
 
     vi.mock('react-native', async () => {
-    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-    return createReactNativeWebMock();
-});
+        const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+        return createReactNativeWebMock();
+    });
 
     vi.mock('expo-router', async () => {
         const activeOptions = publicShareViewerModuleState.options;

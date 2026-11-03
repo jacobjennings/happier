@@ -31,14 +31,14 @@ test('release-verify forwards canonical continuity and update suites from the re
     'run_release_assets_docker',
   ]) {
     assert.equal(
-      profile.outputs[inputName],
-      `\${{ steps.profile.outputs.${inputName} }}`,
-      `resolved validation profile should own ${inputName}`,
+      profile.outputs[outputName],
+      `\${{ steps.profile.outputs.${outputName} }}`,
+      `resolved validation profile should own ${outputName}`,
     );
     assert.equal(
-      verify.with[inputName],
-      `\${{ needs.resolve_validation_profile.outputs.${inputName} }}`,
-      `release-verify should forward ${inputName} to tests.yml`,
+      verify.with[outputName],
+      `\${{ needs.resolve_validation_profile.outputs.${outputName} }}`,
+      `release-verify should forward ${outputName} to tests.yml`,
     );
   }
   assert.match(profile.steps.find((step) => step.id === 'profile').run, /resolve-validation-plan\.mjs/);

@@ -27,6 +27,8 @@ import type { StatusProps } from './Status.js';
 import type { TextProps } from './Text.js';
 import type { DiffViewerProps } from './Content.js';
 import type { DragSourceProps, DropTargetProps } from './EntityDragDrop.js';
+import type { InlineCodeProps } from './InlineCode.js';
+import type { ReactNode } from 'react';
 
 type Assert<Condition extends true> = Condition;
 
@@ -235,6 +237,12 @@ type _AuthorListSelectionRetainsOpaqueHiddenKeys = Assert<IsEqual<
   ListMultiSelectionCapabilityProps['retainedSelectionKeys'],
   readonly string[] | undefined
 >>;
+
+// A section description is localized text (string or key) or rich content around an InlineCode.
+type _AuthorItemGroupDescriptionAdmitsRichContent = Assert<IsEqual<ItemGroupProps['description'], ReactNode | undefined>>;
+type _AuthorItemGroupDescriptionKeyStaysText = Assert<IsEqual<ItemGroupProps['descriptionKey'], string | undefined>>;
+// The inline code chip takes only its code: face, inks and inset are the host's.
+type _AuthorInlineCodePropKeysAreCurated = Assert<IsEqual<keyof InlineCodeProps, 'children' | 'testID'>>;
 
 type _AuthorItemGroupPropKeysAreCurated = Assert<IsEqual<keyof ItemGroupProps,
   | 'children'

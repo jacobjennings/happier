@@ -9,9 +9,18 @@ import {
     type V2SessionRecord,
 } from '@happier-dev/protocol';
 
-import { fetchAndApplySessions } from './sessionSnapshot';
+import { fetchAndApplySessions as fetchAndApplySessionsSource } from './sessionSnapshot';
+import { createCompactSessionListFetchBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
 import { createSessionListQueryHomeController } from '@/sync/domains/session/listing/sessionListQueryController';
-import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createSessionListRenderableSessionFixture, createSessionViewerFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+
+function fetchAndApplySessions(params: Parameters<typeof fetchAndApplySessionsSource>[0]) {
+    const request = params.request;
+    return fetchAndApplySessionsSource({ ...params,
+        ...(request ? { request: createCompactSessionListFetchBoundary(async (path, init) => path === '/v2/sessions/read-batch'
+            ? undefined : request(path, init)) } : {}),
+    });
+}
 
 const PLAIN_ACCOUNT_CURRENTNESS = {
     mode: 'plain',
@@ -43,14 +52,7 @@ function buildSessionRow(id: string): V2SessionRecord {
             sources: [{ kind: 'owner' }],
             capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'owner' }),
         },
-        viewer: {
-            latestFailureSeq: null,
-            readState: { state: 'not_started' },
-            relevance: { relevant: false, reasons: [] },
-            attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
-            follow: { follows: false, notificationLevel: 'none' },
-            notification: { level: 'none', source: 'preference' },
-        },
+        viewer: createSessionViewerFixture(),
         responsibleAccountId: null,
         responsibleAccount: null,
     };
@@ -77,6 +79,10 @@ function buildQuery(): SessionListQueryV1 {
 }
 
 describe('fetchAndApplySessions query source', () => {
+
+
+
+
     it('applies newer Agent state to a list row even when the hydrated snapshot has older row timestamps', async () => {
         const row = {
             ...buildSessionRow('agent-mixed'),
@@ -182,8 +188,7 @@ describe('fetchAndApplySessions query source', () => {
             attentionHasNext: true,
             current: true,
         });
-        expect(applySessionListRenderables).toHaveBeenCalledTimes(1);
-        expect(applySessionListRenderables.mock.calls[0]?.[0]).toEqual(expect.arrayContaining([
+        expect(applySessionListRenderables.mock.calls.at(-1)?.[0]).toEqual(expect.arrayContaining([
             expect.objectContaining({ id: 'ordinary', viewer: buildSessionRow('ordinary').viewer, hasUnreadMessages: false }),
         ]));
         expect(applySessions).not.toHaveBeenCalled();
@@ -254,6 +259,8 @@ describe('fetchAndApplySessions query source', () => {
             attentionHasNext: false,
         });
     });
+
+
     it('revokes controller admission during HTTP and prevents real query ingestion or a later refresh', async () => {
         let finish!: (response: Response) => void;
         const request = vi.fn< (path: string, init: RequestInit) => Promise<Response> >(

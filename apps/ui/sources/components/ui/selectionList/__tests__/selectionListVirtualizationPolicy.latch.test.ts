@@ -49,6 +49,31 @@ function advance(
     });
 }
 
+describe('selectionListVirtualizationPolicy — which sections are eligible to virtualize', () => {
+    const cases: ReadonlyArray<readonly [string, ReadonlyArray<SectionRenderPlan>, string]> = [
+        ['an auto section at exactly the threshold', [section('models', SELECTION_LIST_VIRTUALIZATION_THRESHOLD)], 'scrollFrame'],
+        ['an auto section one row over the threshold', [section('models', SELECTION_LIST_VIRTUALIZATION_THRESHOLD + 1)], 'sectionVirtualized'],
+        ['a forced section with one row', [{ ...section('models', 1), virtualization: 'force' }], 'sectionVirtualized'],
+        ['a "never" section far over the threshold', [{ ...section('models', 120), virtualization: 'never' }], 'scrollFrame'],
+        ['rowless loading, error and empty sections', [
+            { id: 'loading', options: [], dynamicState: 'loading', skeletonRowCount: 5 },
+            { id: 'broken', options: [], dynamicState: 'error', hint: 'oops' },
+            { id: 'nothing', options: [], dynamicState: 'empty', hint: 'no matches' },
+        ], 'scrollFrame'],
+        ['two eligible sections', [
+            { ...section('a', 1), virtualization: 'force' },
+            { ...section('b', 1), virtualization: 'force' },
+        ], 'flatVirtualized'],
+        ['a lone error section that kept its rows', [
+            { id: 'paths', options: makeOptions(OVER_THRESHOLD), dynamicState: 'error', isStale: true },
+        ], 'flatVirtualized'],
+    ];
+
+    it.each(cases)('resolves %s', (_name, plan, expected) => {
+        expect(resolveSelectionListBodyRenderer({ plan, ...DECLARES_NOTHING })).toBe(expected);
+    });
+});
+
 describe('selectionListVirtualizationPolicy — the latched body renderer', () => {
     it('keeps the virtualized renderer when a filter drops the list under the threshold', () => {
         const opened = advance(null, [section('models', OVER_THRESHOLD)]);

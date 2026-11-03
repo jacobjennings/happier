@@ -84,6 +84,18 @@ const providerBindingSecurityChangeConfirmation = {
 };
 
 describe('computeDaemonSpawnRequestKey', () => {
+  it('separates unkeyed authoring provenance while the accepted nonce retains its original creation', () => {
+    const authoringOrigin = { kind: 'project' as const, accountId: 'original-account',
+      workspace: { serverId: 'original-home', workspaceId: 'original-workspace', machineId: 'original-machine', rootPath: '/private/original' }, page: 'scripts' as const };
+    const ordinary = { directory: '/execution' };
+    const authored = { ...ordinary, authoringOrigin };
+    expect(computeDaemonSpawnRequestKey(authored).key).not.toBe(computeDaemonSpawnRequestKey(ordinary).key);
+    expect(computeDaemonSpawnRequestKey({ ...authored, authoringOrigin: { ...authoringOrigin, page: 'code' } }).key)
+      .not.toBe(computeDaemonSpawnRequestKey(authored).key);
+    expect(computeDaemonSpawnRequestKey({ ...authored, spawnNonce: 'accepted-create' }).key)
+      .toBe(computeDaemonSpawnRequestKey({ ...ordinary, spawnNonce: 'accepted-create' }).key);
+    expect(computeDaemonSpawnRequestKey(authored).key).not.toContain('/private/original');
+  });
   it('keeps distinct skill selections separate and normalizes selection order', () => {
     const request = (skillIds: string[]) => ({
       directory: '/workspace',

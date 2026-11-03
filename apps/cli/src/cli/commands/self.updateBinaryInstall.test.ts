@@ -219,17 +219,6 @@ describe.skipIf(process.platform === 'win32')('happier self update for binary in
     expect(await currentVersion()).toBe('9.9.10');
   });
 
-  it('reports its admission on the pipe a daemon that started it waits on', async () => {
-    const { UPDATER_ADMISSION_FD_ENV } = await import('@/cli/runtime/update/updaterAdmission');
-    await installInitial('9.9.9');
-    const reportPath = join(homeDir, 'admission');
-    process.env[UPDATER_ADMISSION_FD_ENV] = String(openSync(reportPath, 'w'));
-    const result = await runSelf({ invokedPath: '/opt/happier/bin/happier', rawArgv: ['happier', 'self', 'update'] });
-    expect(result.exitCode).toBeNull();
-    expect(readFileSync(reportPath, 'utf8')).toBe('{"admitted":true}\n');
-    expect(process.env[UPDATER_ADMISSION_FD_ENV]).toBeUndefined();
-  });
-
   it('activates nothing and exits 1 when the downloaded CLI does not run (staged smoke)', async () => {
     await installInitial('9.9.9');
     releaseState.reports = '1.0.0';
@@ -304,6 +293,7 @@ describe.skipIf(process.platform === 'win32')('happier self update for binary in
     process.env[UPDATER_ADMISSION_FD_ENV] = String(openSync(reportPath, 'w'));
     expect((await runSelf({ invokedPath: '/opt/happier/bin/happier', rawArgv: ['happier', 'self', 'update'] })).exitCode).toBeNull();
     expect(readFileSync(reportPath, 'utf8')).toBe('{"admitted":true}\n');
+    expect(process.env[UPDATER_ADMISSION_FD_ENV]).toBeUndefined();
 
     process.env[UPDATER_ADMISSION_FD_ENV] = String(openSync(reportPath, 'w'));
     await runSelf({ invokedPath: '/opt/homebrew/Cellar/happier/0.3.1/bin/happier', rawArgv: ['happier', 'self', 'update'] });

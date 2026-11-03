@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveInstalledFirstPartyComponentPaths } from '@happier-dev/cli-common/firstPartyRuntime';
+import { handleSelfCliCommand } from './self';
 
 const {
   installVersionedPayloadMock,
@@ -36,7 +37,6 @@ vi.mock('@/cli/runtime/update/quiesceInstalledCliWindowsPayloadOwners', () => ({
 describe('happier self __install-payload', () => {
   afterEach(() => {
     vi.restoreAllMocks();
-    vi.resetModules();
     maybeRunVersionGatedRuntimeMigrationMock.mockReset();
     quiesceInstalledCliWindowsPayloadOwnersMock.mockReset();
   });
@@ -45,7 +45,6 @@ describe('happier self __install-payload', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const { handleSelfCliCommand } = await import('./self');
       await handleSelfCliCommand({
         args: ['self', '__install-payload', '--component', 'happier-cli', '--payload-root', '/tmp/payload', '--version', '1.2.3'],
         rawArgv: ['happier', 'self', '__install-payload', '--component', 'happier-cli', '--payload-root', '/tmp/payload', '--version', '1.2.3'],
@@ -77,7 +76,6 @@ describe('happier self __install-payload', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const { handleSelfCliCommand } = await import('./self');
       await handleSelfCliCommand({
         args: ['self', '__install-payload', '--component', 'happier-cli', '--payload-root', '/tmp/payload', '--version', '1.2.3-dev.4', '--channel', 'publicdev'],
         rawArgv: ['hdev', 'self', '__install-payload', '--component', 'happier-cli', '--payload-root', '/tmp/payload', '--version', '1.2.3-dev.4', '--channel', 'publicdev'],
@@ -107,7 +105,6 @@ describe('happier self __install-payload', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const { handleSelfCliCommand } = await import('./self');
       await handleSelfCliCommand({
         args: ['self', '__install-payload', '--component', 'happier-cli', '--payload-root', '/tmp/payload', '--version', '0.2.3'],
         rawArgv: ['happier', 'self', '__install-payload', '--component', 'happier-cli', '--payload-root', '/tmp/payload', '--version', '0.2.3'],
@@ -139,7 +136,6 @@ describe('happier self __install-payload', () => {
     process.env.HAPPIER_CLI_SKIP_INSTALL_PAYLOAD_MIGRATION = '1';
 
     try {
-      const { handleSelfCliCommand } = await import('./self');
       await handleSelfCliCommand({
         args: ['self', '__install-payload', '--component', 'happier-cli', '--payload-root', '/tmp/payload', '--version', '1.2.3-preview.4', '--channel', 'preview'],
         rawArgv: ['hprev', 'self', '__install-payload', '--component', 'happier-cli', '--payload-root', '/tmp/payload', '--version', '1.2.3-preview.4', '--channel', 'preview'],

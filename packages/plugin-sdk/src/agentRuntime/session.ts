@@ -6,11 +6,18 @@ import type {
 } from '@happier-dev/agents';
 import type { $brand } from 'zod/mini';
 import type { AgentTerminalLaunchPlan, AgentTerminalLaunchRequest } from './surfaces.js';
+import type { AgentSessionIdleCompactionPreferenceV1 } from '@happier-dev/protocol/runtime/agentSessionV1';
 
 import type { JsonValue } from '../identity.js';
 import type { Disposable } from '../lifecycle.js';
 import type { PluginDiagnosticData } from '../diagnostics.js';
-import type { AgentSessionConversationRollbackControl } from './controls.js';
+import type { AgentSessionConversationRollbackControl, AgentSessionGoalControl, AgentSessionUsageLimitRecoveryControl } from './controls.js';
+
+export type {
+  AgentSessionCompactionCapability,
+  AgentSessionCompactionIdleCapability,
+  PluginAgentSessionCompactionCapabilityV2,
+} from '@happier-dev/protocol/plugins/agents';
 
 /** Agent-owned runtime identity carried across host-owned session lifecycle. */
 export type RuntimeDescriptorV1 = Readonly<{
@@ -386,6 +393,11 @@ export type AgentSessionRuntimeEvent =
       turnId?: string;
       /** Sidechain output is Session scoped, even when an originating host turn is known. */
       sidechainId?: string;
+      /**
+       * Session-scoped assistant-channel text another agent delivered into this conversation
+       * (a teammate message or a subagent hand-back). It is never the Agent's own reply.
+       */
+      peer?: Readonly<{ name: string | null; handback: boolean }>;
     }>
   | Readonly<{
       sequence: number;
@@ -408,6 +420,8 @@ export type AgentSessionRuntimeEvent =
       sessionId: string;
       emittedAtMs: number;
       kind: 'usage-observed';
+      /** Conservative provider request clock; an observed lifetime is optional. */
+      promptCache?: Readonly<{ lastUseAtMs: number; ttlMs?: number }>;
       observationId: string;
       /** Native request evidence; the host validates it against the accepted source and matching turn. */
       attribution?: Readonly<{
@@ -501,7 +515,7 @@ export type AgentSessionRuntimeEvent =
       kind: 'context-compaction';
       compactionId: string;
       turnId?: string;
-      trigger: 'manual' | 'automatic' | 'threshold' | 'overflow' | 'unknown';
+      trigger: 'manual' | 'idle' | 'automatic' | 'threshold' | 'overflow' | 'unknown';
       retryAttempt?: number;
       phase: 'started';
       tokenCountBefore?: number;
@@ -514,7 +528,7 @@ export type AgentSessionRuntimeEvent =
       kind: 'context-compaction';
       compactionId: string;
       turnId?: string;
-      trigger: 'manual' | 'automatic' | 'threshold' | 'overflow' | 'unknown';
+      trigger: 'manual' | 'idle' | 'automatic' | 'threshold' | 'overflow' | 'unknown';
       retryAttempt?: number;
       phase: 'progress';
     }>
@@ -525,7 +539,7 @@ export type AgentSessionRuntimeEvent =
       kind: 'context-compaction';
       compactionId: string;
       turnId?: string;
-      trigger: 'manual' | 'automatic' | 'threshold' | 'overflow' | 'unknown';
+      trigger: 'manual' | 'idle' | 'automatic' | 'threshold' | 'overflow' | 'unknown';
       retryAttempt?: number;
       phase: 'completed';
       tokenCountBefore?: number;
@@ -541,7 +555,7 @@ export type AgentSessionRuntimeEvent =
       kind: 'context-compaction';
       compactionId: string;
       turnId?: string;
-      trigger: 'manual' | 'automatic' | 'threshold' | 'overflow' | 'unknown';
+      trigger: 'manual' | 'idle' | 'automatic' | 'threshold' | 'overflow' | 'unknown';
       retryAttempt?: number;
       phase: 'failed';
       diagnostic: PluginDiagnosticData;
@@ -553,7 +567,7 @@ export type AgentSessionRuntimeEvent =
       kind: 'context-compaction';
       compactionId: string;
       turnId?: string;
-      trigger: 'manual' | 'automatic' | 'threshold' | 'overflow' | 'unknown';
+      trigger: 'manual' | 'idle' | 'automatic' | 'threshold' | 'overflow' | 'unknown';
       retryAttempt?: number;
       phase: 'cancelled';
       diagnostic?: PluginDiagnosticData;
@@ -565,7 +579,7 @@ export type AgentSessionRuntimeEvent =
       kind: 'context-compaction';
       compactionId: string;
       turnId?: string;
-      trigger: 'manual' | 'automatic' | 'threshold' | 'overflow' | 'unknown';
+      trigger: 'manual' | 'idle' | 'automatic' | 'threshold' | 'overflow' | 'unknown';
       retryAttempt?: number;
       phase: 'outcomeUnknown';
       diagnostic: PluginDiagnosticData;
@@ -741,6 +755,8 @@ export type AgentSessionOpenRequest =
     /** Agent-owned runtime identity, interpreted only by the target Agent. */
     runtimeDescriptorV1?: RuntimeDescriptorV1;
     configuration?: AgentSessionConfigurationSnapshot;
+    /** Immutable host preference, supplied only to a runtime declaring native idle compaction. */
+    idleCompaction?: AgentSessionIdleCompactionPreferenceV1;
     connectedAccounts?: readonly AgentSessionConnectedAccountSelection[];
     mcpServers?: Readonly<Record<string, AgentSessionMcpLaunchConfig>>;
     /** Host-resolved startup failure policy; optional servers may be skipped. */
@@ -845,7 +861,7 @@ export type AgentSessionConfigurationResult =
 
 export type AgentSessionCompactRequest = {
   compactionId: string;
-  trigger: 'manual';
+  trigger: 'manual' | 'idle';
   instructions?: string;
 };
 
@@ -874,6 +890,10 @@ export interface AgentSessionRuntime extends Disposable {
   readonly runtimeCapabilities?: AgentSessionRuntimeCapabilities;
   /** Per-open active goal support; false suppresses manifest-declared live goal controls. */
   readonly nativeGoalControlsSupported?: boolean;
+  /** Declared live Goals use this opened runtime's native connection before factory controls. */
+  readonly goals?: AgentSessionGoalControl;
+  /** Declared live usage recovery uses this opened runtime's native connection before factory controls. */
+  readonly usageLimitRecovery?: AgentSessionUsageLimitRecoveryControl;
   /** False when this opened launch path cannot honor the requested skills. */
   readonly skillsDelivered?: boolean;
   /** Invoked by the host only for declared liveReload support. */

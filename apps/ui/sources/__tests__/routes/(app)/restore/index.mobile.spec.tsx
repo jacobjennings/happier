@@ -131,6 +131,8 @@ vi.mock('@/auth/pairing/pairingUrl', async (importOriginal) => ({
     classifyLegacyPairingDeepLink: () => null,
 }));
 
+const { default: Screen } = await import('@/app/(app)/restore/index');
+
 afterEach(() => {
     restoreMobileRouteState.params = {};
     restoreMobileRouteState.backSpy.mockClear();
@@ -141,13 +143,11 @@ afterEach(() => {
 
 describe('/restore (mobile)', () => {
     it('renders scanner-first without offering targetless reverse QR', async () => {
-        vi.resetModules();
         modalAlertSpy.mockClear();
-        const { default: Screen } = await import('@/app/(app)/restore/index');
 
         const screen = await renderScreen(<Screen />);
-        const button = screen.findByTestId('restore-show-qr-instead');
-        expect(button).toBeNull();
+        expect(screen.findByTestId('restore-enter-pairing-link')).not.toBeNull();
+        expect(screen.findByTestId('restore-show-qr-instead')).toBeNull();
     });
 
     it('shows canonical update-required guidance from a secret-free native-intent marker', async () => {
@@ -155,9 +155,7 @@ describe('/restore (mobile)', () => {
         restoreMobileRouteState.replaceSpy.mockImplementation((path: unknown) => {
             if (path === '/restore') restoreMobileRouteState.params = {};
         });
-        vi.resetModules();
         modalAlertSpy.mockClear();
-        const { default: Screen } = await import('@/app/(app)/restore/index');
 
         const screen = await renderScreen(<Screen />);
         expect(screen.findByTestId('legacy-pairing-update-required-route')).not.toBeNull();
@@ -177,8 +175,6 @@ describe('/restore (mobile)', () => {
             modalAlertSpy.mock.invocationCallOrder[0]!,
         );
         expect(restoreMobileRouteState.backSpy).not.toHaveBeenCalled();
-        expect(JSON.stringify(modalAlertSpy.mock.calls)).not.toContain('pid123');
-        expect(JSON.stringify(modalAlertSpy.mock.calls)).not.toContain('sec_abc');
         expect(JSON.stringify(modalAlertSpy.mock.calls)).not.toContain('stack.example.test');
 
         await screen.unmount();

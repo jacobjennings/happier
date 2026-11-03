@@ -54,7 +54,7 @@ function texts(screen: Awaited<ReturnType<typeof renderScreen>>): string[] {
 }
 
 describe('SegmentedChoiceItem', () => {
-    it.each([['ios', 44], ['android', 48]] as const)('gives each %s settings choice a non-overlapping platform touch target', async (os, minimum) => {
+    it.each([['ios', 44], ['android', 48]] as const)('reaches the %s touch target with its press frame, never by drawing the choice taller', async (os, minimum) => {
         const { Platform, StyleSheet } = await import('react-native');
         const previous = Platform.OS;
         Object.defineProperty(Platform, 'OS', { configurable: true, value: os });
@@ -67,8 +67,11 @@ describe('SegmentedChoiceItem', () => {
                 const frame = screen.findByTestId(`mode:${option.id}`)!;
                 const frameStyle = StyleSheet.flatten(frame.props.style);
                 const surfaceStyle = StyleSheet.flatten(frame.findAllByType('View' as never)[0]!.props.style);
-                expect(frameStyle.minWidth).toBeGreaterThanOrEqual(minimum);
-                expect(surfaceStyle.minHeight + frameStyle.paddingVertical * 2).toBeGreaterThanOrEqual(minimum);
+                // Flush choices never reach sideways; the transparent frame reaches above and below only.
+                expect(frameStyle.minWidth).toBeLessThan(minimum);
+                expect(surfaceStyle.minHeight).toBeUndefined();
+                expect(frameStyle.paddingVertical).toBeGreaterThan(0);
+                expect(frameStyle.marginVertical).toBe(-frameStyle.paddingVertical);
             }
         } finally {
             Object.defineProperty(Platform, 'OS', { configurable: true, value: previous });
@@ -200,5 +203,58 @@ describe('SegmentedChoiceItem', () => {
         expect(await placement('menu')).toBe('inline');
         expect(await placement('item')).toBe('stacked');
     });
+    it('turns into a field select of the same options when its stacked row is too narrow for every option', async () => {
+        const { SegmentedChoiceItem } = await import('./SegmentedChoiceItem');
+        const { act } = await import('react-test-renderer');
+        const onChange = vi.fn();
+        const strategies = [
+            { id: 'order', label: 'In order' },
+            { id: 'balance', label: 'Balance' },
+            { id: 'least', label: 'Least used' },
+            { id: 'most', label: 'Most left' },
+        ] as const;
+        const screen = await renderScreen(<SegmentedChoiceItem<(typeof strategies)[number]['id']>
+            title="Strategy" options={strategies} value="balance" onChange={onChange} testIDPrefix="strategy"
+        />);
+        const layout = (width: number) => ({ nativeEvent: { layout: { x: 0, y: 0, width, height: 32 } } });
+        // A 300 pt phone row: every box spans it, except a box holding one caption, which is 110 pt wide.
+        const layOutRow = () => act(async () => {
+            for (const node of screen.root.findAll(candidate => typeof candidate.type === 'string' && typeof candidate.props.onLayout === 'function')) {
+                const captions = node.findAll(child => String(child.type) === 'Text');
+                node.props.onLayout(layout(captions.length === 1 ? 110 : 300));
+            }
+        });
+        await layOutRow();
+        await layOutRow();
+        for (const option of strategies) expect(screen.findByTestId(`strategy:${option.id}`)).toBeNull();
+        expect(screen.findByTestId('strategy:select')?.props.accessibilityLabel).toBe('Strategy, Balance');
+    });
 });
 
+
+describe('localized stacked choices', () => {
+    it('refreshes the overflow label with the active locale', async () => {
+        const { act } = await import('react-test-renderer');
+        const { SegmentedChoiceItem } = await import('./SegmentedChoiceItem');
+        const { t, getPreferredLanguage, preloadTranslations, setPreferredLanguageFromSettings } = await import('@/text');
+        const original = getPreferredLanguage();
+        await preloadTranslations('fr');
+        setPreferredLanguageFromSettings('en');
+        try {
+            const screen = await renderScreen(
+                <SegmentedChoiceItem title="Choice" options={OPTIONS} value="hints" onChange={() => {}} />,
+            );
+            const layOutRow = () => act(async () => {
+                for (const node of screen.root.findAll(candidate => typeof candidate.type === 'string' && typeof candidate.props.onLayout === 'function')) {
+                    const captions = node.findAll(child => String(child.type) === 'Text');
+                    node.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: captions.length === 1 ? 110 : 300, height: 32 } } });
+                }
+            });
+            await layOutRow();
+            await layOutRow();
+            expect(screen.findAll(node => node.props.overflow?.label === t('common.more')).length).toBeGreaterThan(0);
+            await act(async () => { setPreferredLanguageFromSettings('fr'); });
+            expect(screen.findAll(node => node.props.overflow?.label === t('common.more')).length).toBeGreaterThan(0);
+        } finally { await act(async () => { setPreferredLanguageFromSettings(original); }); }
+    });
+});

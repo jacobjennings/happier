@@ -7,6 +7,9 @@ import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleText } from '@/testkit/logger/captureOutput';
 import type { DaemonRunningInspection } from '@/daemon/controlClient';
+import { reloadConfiguration } from '@/configuration';
+import { writeDaemonState } from '@/persistence';
+import { handleDaemonCliCommand } from './daemon';
 
 const { spawnDetachedDaemonStartSyncMock, startDaemonMock, checkIfDaemonRunningMock, inspectDaemonRunningStateMock } = vi.hoisted(() => ({
     spawnDetachedDaemonStartSyncMock: vi.fn(async () => ({ unref() {} })),
@@ -48,7 +51,7 @@ describe('handleDaemonCliCommand takeover handling', () => {
         inspectDaemonRunningStateMock.mockReset();
         inspectDaemonRunningStateMock.mockImplementation(async () => ({ status: 'not-running' }));
         vi.restoreAllMocks();
-        vi.resetModules();
+        reloadConfiguration();
     });
 
     it('takes over a manual relay runtime when daemon start uses --takeover', async () => {
@@ -58,12 +61,7 @@ describe('handleDaemonCliCommand takeover handling', () => {
                 HAPPIER_ACTIVE_SERVER_ID: 'cloud',
                 HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
             });
-            vi.resetModules();
-
-            const [{ writeDaemonState }, { handleDaemonCliCommand }] = await Promise.all([
-                import('@/persistence'),
-                import('./daemon'),
-            ]);
+            reloadConfiguration();
 
             const manualOwnedState = {
                 pid: process.pid,
@@ -112,12 +110,7 @@ describe('handleDaemonCliCommand takeover handling', () => {
                 HAPPIER_ACTIVE_SERVER_ID: 'cloud',
                 HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
             });
-            vi.resetModules();
-
-            const [{ writeDaemonState }, { handleDaemonCliCommand }] = await Promise.all([
-                import('@/persistence'),
-                import('./daemon'),
-            ]);
+            reloadConfiguration();
 
             const manualOwnedState = {
                 pid: process.pid,
@@ -162,12 +155,7 @@ describe('handleDaemonCliCommand takeover handling', () => {
                 HAPPIER_ACTIVE_SERVER_ID: 'cloud',
                 HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
             });
-            vi.resetModules();
-
-            const [{ writeDaemonState }, { handleDaemonCliCommand }] = await Promise.all([
-                import('@/persistence'),
-                import('./daemon'),
-            ]);
+            reloadConfiguration();
 
             const legacyManualState = {
                 pid: process.pid,
@@ -216,8 +204,7 @@ describe('handleDaemonCliCommand takeover handling', () => {
         HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
       });
       spawnDetachedDaemonStartSyncMock.mockResolvedValueOnce({ unref() {} });
-      vi.resetModules();
-      const { handleDaemonCliCommand } = await import('./daemon');
+      reloadConfiguration();
       const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
         throw new Error(`exit:${code ?? ''}`);
       }) as never);

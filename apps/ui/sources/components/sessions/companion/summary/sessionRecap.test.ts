@@ -2,6 +2,7 @@ import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Message } from '@happier-dev/session-core/messages';
 import { SessionCapabilitiesSchema } from '@happier-dev/protocol/features/payload/capabilities/sessionCapabilities';
+import { composeSessionWorkerUpdateHeadlineV1 } from '@happier-dev/protocol/sessions/relations/workerUpdateV1';
 
 import { createSessionFixture, createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { renderHook } from '@/dev/testkit/hooks/renderHook';
@@ -19,6 +20,7 @@ import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { readStoredSessionMessagesForAddress } from '@/sync/domains/messages/readStoredSessionMessagesForAddress';
 
 import { resolveSessionRecap } from './sessionRecap';
+import { getPreferredLanguage, preloadTranslations, setPreferredLanguageFromSettings, t } from '@/text';
 
 // Authenticated HTTP/device boundaries only: runtime admission, repository and codecs stay real.
 const homes = createHomeGovernanceHarness();
@@ -89,7 +91,7 @@ describe('useSessionRecap delivered transcript fallback', () => {
             expect(hook.getCurrent()?.text).toBe('Observer update');
             await act(async () => storage.setState({ sessions: { lead: createSessionFixture(storage.getState().sessions.lead!,
                 { memoryEnabled: false }) } }));
-            expect(hook.getCurrent()).toEqual({ source: 'worker_update', text: 'New worker report', atMs: 20 });
+            expect(hook.getCurrent()).toEqual({ source: 'worker_update', text: `${t('sessionWork.workerUpdate.state.settled')} · New worker report`, atMs: 20 });
             // Switching Accounts must not relabel the retained transcript as the new Account's content.
             homes.answer(home, synopsisPath, { body: { records: [], nextCursor: null, hasNext: false } });
             await act(async () => { await homes.switchAccount(home, 'account-b'); });
@@ -107,7 +109,7 @@ describe('useSessionRecap delivered transcript fallback', () => {
                 sessions: { lead: createSessionFixture({ id: 'lead', serverId: home }, { memoryEnabled: false }) },
                 sessionMessages: { lead: transcript([delivered('b', 1, 30, 'Account B report')]) },
             }));
-            expect(remounted.getCurrent()?.text).toBe('Account B report');
+            expect(remounted.getCurrent()?.text).toBe(`${t('sessionWork.workerUpdate.state.settled')} · Account B report`);
             await remounted.unmount();
         } finally {
             await disconnectActiveServerConnection();
@@ -125,17 +127,46 @@ describe('useSessionRecap delivered transcript fallback', () => {
                 child: createSessionFixture({ id: 'child', serverId: 'home-a' }) },
                 sessionMessages: { lead: transcript(rows), child: transcript([delivered('child', 8, 2000, 'Child secret')]) } });
             const hook = await renderHook(() => useSessionRecap(address));
-            expect(hook.getCurrent()).toEqual({ source: 'worker_update', text: 'Runbook published', atMs: 500 });
+            expect(hook.getCurrent()).toEqual({ source: 'worker_update', text: `${t('sessionWork.workerUpdate.state.settled')} · Runbook published`, atMs: 500 });
             await hook.unmount();
             const reloaded = await renderHook(() => useSessionRecap(address));
-            expect(reloaded.getCurrent()).toEqual({ source: 'worker_update', text: 'Runbook published', atMs: 500 });
+            expect(reloaded.getCurrent()).toEqual({ source: 'worker_update', text: `${t('sessionWork.workerUpdate.state.settled')} · Runbook published`, atMs: 500 });
 
             await act(async () => { storage.setState({ sessionMessages: {
                 ...storage.getState().sessionMessages, lead: transcript([...rows, delivered('new', 4, 1100, 'Next report')]),
             } }); });
-            expect(reloaded.getCurrent()).toEqual({ source: 'worker_update', text: 'Next report', atMs: 1100 });
+            expect(reloaded.getCurrent()).toEqual({ source: 'worker_update', text: `${t('sessionWork.workerUpdate.state.settled')} · Next report`, atMs: 1100 });
             await reloaded.unmount();
         } finally { storage.setState(previous); }
+    });
+
+    it.each([
+        { ownerState: 'settled', summary: null, stateKey: 'settled' },
+        { ownerState: 'failed', summary: null, stateKey: 'failed' },
+        { ownerState: 'failed', summary: '2 findings', stateKey: 'failed' },
+    ] as const)('presents native $ownerState reports and authored $summary through the localized Recap', async ({ ownerState, summary, stateKey }) => {
+        const previous = storage.getState();
+        const previousLanguage = getPreferredLanguage();
+        try {
+            await preloadTranslations('fr');
+            setPreferredLanguageFromSettings('fr');
+            const outcome = { ownerState, wake: 'finished' } as const;
+            const headline = summary ?? composeSessionWorkerUpdateHeadlineV1(outcome);
+            const message = delivered('native', 1, 10, headline);
+            if (message.kind !== 'agent-event' || message.event.type !== 'worker-update'
+                || message.event.update.workerKind !== 'session') throw new Error('Expected a native Session WorkerUpdate');
+            message.event.update = { ...message.event.update, ...outcome };
+            storage.setState({ sessions: { lead: createSessionFixture({ id: 'lead', serverId: 'home-a' }, { memoryEnabled: false }) },
+                sessionMessages: { lead: transcript([message]) } });
+            const hook = await renderHook(() => useSessionRecap(address));
+            const localized = t(`sessionWork.workerUpdate.state.${stateKey}`);
+            expect(localized).not.toBe(composeSessionWorkerUpdateHeadlineV1(outcome));
+            expect(hook.getCurrent()).toEqual({ source: 'worker_update', text: summary ? `${localized} · ${summary}` : localized, atMs: 10 });
+            await hook.unmount();
+        } finally {
+            setPreferredLanguageFromSettings(previousLanguage);
+            storage.setState(previous);
+        }
     });
 
     it('does not disclose another Home or locked/unreadable retained content', async () => {
@@ -147,7 +178,7 @@ describe('useSessionRecap delivered transcript fallback', () => {
                 { initialProps: { serverId: 'home-b', sessionId: 'lead' } });
             expect(hook.getCurrent()).toBeNull();
             await hook.rerender(address);
-            expect(hook.getCurrent()?.text).toBe('Private report');
+            expect(hook.getCurrent()?.text).toBe(`${t('sessionWork.workerUpdate.state.settled')} · Private report`);
             await act(async () => { storage.setState({ sessions: { lead: createSessionFixture({ id: 'lead', serverId: 'home-a',
                 encryptionMode: 'e2ee', encryptedContentAvailability: 'encrypted_content_unavailable' }) } }); });
             expect(hook.getCurrent()).toBeNull();

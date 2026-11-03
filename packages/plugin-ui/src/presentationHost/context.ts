@@ -12,6 +12,7 @@ import type { HappierPageChromeInternal } from '../presentation/layout/pageChrom
 import type { HappierCollectionMotionDriver } from '../presentation/collection/collectionMotion.js';
 import type { CollectionVirtualizer } from '../presentation/collection/collectionVirtualizer.js';
 import type { HappierDisclosureMotionDriver } from '../presentation/collection/Disclosure.js';
+import type { HappierDisclosureCaretDensity } from '../presentation/collection/DisclosureToggle.js';
 import type { HappierStateSize } from '../presentation/state/InfoState.js';
 import type { HappierSceneRenderRequest } from '../presentation/state/scenes.js';
 import type { HappierCapsuleHost } from '../presentation/status/capsuleHost.js';
@@ -23,9 +24,12 @@ import type { DragSourceProps, DropTargetProps } from '../components/EntityDragD
 import type { PluginUiWidgetAreaPortV1 } from '../hostApi/widgetArea.public.js';
 import type { SetupBlockGridProps, SetupBlockTileProps } from '../components/Setup.js';
 import type { DictationButtonProps, StatusCellProps, VoiceMarkArtProps } from '../components/Voice.js';
+import type { VoicePresenceProps, VoiceMarkProps, VoiceStatusLineProps, VoiceTransportProps } from '../components/Voice.js';
+import type { VoiceAttemptPresentation } from '@happier-dev/plugin-sdk/voice';
 import type { PluginUiScrollActivityTracker } from './scrollActivity.js';
 import type { FindSurfaceRegistrationHost } from '../presentation/find/useFindSurfaceRegistration.js';
 import type { ExecutableParticipantPickerProps } from '../components/ExecutableParticipantPicker.js';
+import type { DetailsPaneOpenAsPageButtonProps } from '../components/DetailsPaneOpenAsPageButton.js';
 
 export type PluginUiPopoverPresentation = 'popover' | 'menu' | 'dropdown' | 'context';
 
@@ -155,6 +159,10 @@ export type PluginUiPaneHeaderPresentation = Readonly<{
   line: readonly PluginUiPaneHeaderLineSegment[] | null;
   /** The trailing actions (a "+" and its menu), rendered in the header with this plugin's context. */
   actions: ReactNode | null;
+  /** A widget frame's quiet source beside its title, in place of the plugin's name; tab headers ignore it. */
+  caption?: string | null;
+  /** A widget frame's footer link, "Open <caption>": the page the glance comes from. Tab headers ignore it. */
+  open?: (() => void) | null;
 }>;
 
 /** Bounded presentation facts: attention styles the fact, never grants authority. */
@@ -177,6 +185,7 @@ export type PluginUiPaneHeaderHost = Readonly<{
  * navigation roots, or modal/portal infrastructure.
  */
 export type PluginUiPresentationHost = Readonly<{
+  renderCheckboxMark?(input: Readonly<{ state: 'checked' | 'unchecked' | 'mixed'; size: 'regular' | 'compact' }>): ReactNode;
   /** Device-local collection widths, already scoped to this plugin by the host. */
   panelSizing?: Readonly<{
     useWidth(resizeKey: string): Readonly<{
@@ -196,6 +205,11 @@ export type PluginUiPresentationHost = Readonly<{
    */
   paneHeaderScroll?: Readonly<{ useReporter(): ((distancePx: number) => void) | null }>;
   renderVoiceMarkArt?(input: Omit<VoiceMarkArtProps, 'fallback'>): ReactNode;
+  renderVoicePresence?(input: Omit<VoicePresenceProps, 'fallback' | 'presented'>): ReactNode;
+  useVoiceAttempt?(): VoiceAttemptPresentation | null;
+  renderVoiceMark?(input: Omit<VoiceMarkProps, 'fallback'>): ReactNode;
+  renderVoiceStatusLine?(input: Omit<VoiceStatusLineProps, 'fallback'>): ReactNode;
+  renderVoiceTransport?(input: Omit<VoiceTransportProps, 'fallback'>): ReactNode;
   /**
    * Draw one Daybreak empty-state scene through the host's scene renderer, which owns the ink, line
    * widths, the planet, motion and theme. Absent, a state keeps its glyph.
@@ -247,9 +261,15 @@ export type PluginUiPresentationHost = Readonly<{
    * The container the surface is mounted in, as Happier's own states size themselves (`pane` in a
    * session sidebar tab, `phone` on a phone surface, `details` in a details drawer). A plugin state
    * that passes no `size` takes this one, so a plugin tab's empty and loading states match the host's
-   * without every author passing it.
+   * without every author passing it. `line` is a column whose states are one quiet line among its rows
+   * (a section of an inspector such as Session Info, a narrow companion column).
    */
-  stateSize?: HappierStateSize;
+  stateSize?: HappierStateSize | 'line';
+  /**
+   * `quiet`: the container never owns its page's one primary action (a widget card among cards), so every state
+   * inside it offers its way forward quiet, as Happier's own states there do. Absent, a state's step keeps its tone.
+   */
+  stateActions?: 'quiet';
   /** The page's app details pane; absent where the surface is not placed in a pane host. */
   detailsPane?: PluginUiDetailsPaneHost;
   /** The pane header of the tab this surface fills; absent where it has none. */
@@ -397,6 +417,14 @@ export type PluginUiPresentationHost = Readonly<{
     accessibilityLabel?: string;
     testID?: string;
   }>): ReactNode;
+  /**
+   * The caret the host's own disclosure rows end on (it turns down while open), so a package row that folds a body
+   * reads like the host's. `density` is `row` (the default) at the end of a row and `compact` beside a meta label.
+   * Absent, the package draws its shared chevron.
+   */
+  renderDisclosureCaret?(input: Readonly<{ expanded: boolean; density?: HappierDisclosureCaretDensity }>): ReactNode;
+  /** The incumbent pane action; navigation stays with the caller. */
+  renderDetailsPaneOpenAsPageButton?(input: DetailsPaneOpenAsPageButtonProps): ReactNode;
   /**
    * Render one QR code through the incumbent app QR renderer. Optional on
    * hosts without that capability; authors must keep a non-visual twin of any

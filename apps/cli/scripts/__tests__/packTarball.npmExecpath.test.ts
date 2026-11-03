@@ -612,7 +612,6 @@ describe('packTarball (npmExecpath)', () => {
     await packTarball({
       packageRoot,
       destDir,
-      npmExecpath: hostileNpmCliPath,
       platform: 'linux',
       processExecPath: nodeExecPath,
       npmCliExistsSync: (targetPath: unknown) => String(targetPath) === ownedNpmCliPath,
@@ -692,65 +691,6 @@ describe('packTarball (npmExecpath)', () => {
     expect(isAbsolute(childEnv.npm_config_cache)).toBe(true);
   });
 
-  it('ignores non-npm npm_execpath values and uses the npm CLI beside the active Node runtime', async () => {
-    const destDir = createTempDirSync('happier-cli-pack-tarball-dest-');
-    const packageRoot = createTempDirSync('happier-cli-pack-tarball-root-');
-    const tarballName = 'artifact.tgz';
-    const nodeExecPath = '/owned/runtime/bin/node';
-    const npmCliPath = '/owned/runtime/lib/node_modules/npm/bin/npm-cli.js';
-    writeFileSync(join(destDir, tarballName), '', 'utf8');
-
-    const spawn = vi.fn(() => ({ status: 0, stdout: `${tarballName}\n`, stderr: '' }));
-
-    await packTarball({
-      packageRoot,
-      destDir,
-      npmExecpath: '/somewhere/yarn.js',
-      platform: 'linux',
-      processExecPath: nodeExecPath,
-      resolveCommandInvocation: preserveCommandInvocation,
-      spawnSync: spawn,
-      ...createPackageDistFsAdapter(() => true),
-      env: {},
-    });
-
-    expect(spawn).toHaveBeenCalledWith(
-      nodeExecPath,
-      [npmCliPath, 'pack', '--silent', '--ignore-scripts', '--pack-destination', expect.stringContaining(destDir)],
-      expect.any(Object),
-    );
-  });
-
-  it('ignores a basename-matching ambient npm_execpath outside the active Node runtime', async () => {
-    const destDir = createTempDirSync('happier-cli-pack-tarball-dest-');
-    const packageRoot = createTempDirSync('happier-cli-pack-tarball-root-');
-    const tarballName = 'artifact.tgz';
-    const nodeExecPath = '/owned/runtime/bin/node';
-    const ownedNpmCliPath = '/owned/runtime/lib/node_modules/npm/bin/npm-cli.js';
-    writeFileSync(join(destDir, tarballName), '', 'utf8');
-
-    const spawn = vi.fn(() => ({ status: 0, stdout: `${tarballName}\n`, stderr: '' }));
-
-    const npmCliPath = '/somewhere/node_modules/npm/bin/npm-cli.js';
-    await packTarball({
-      packageRoot,
-      destDir,
-      npmExecpath: npmCliPath,
-      platform: 'linux',
-      processExecPath: nodeExecPath,
-      resolveCommandInvocation: preserveCommandInvocation,
-      spawnSync: spawn,
-      ...createPackageDistFsAdapter(() => true),
-      env: {},
-    });
-
-    expect(spawn).toHaveBeenCalledWith(
-      nodeExecPath,
-      [ownedNpmCliPath, 'pack', '--silent', '--ignore-scripts', '--pack-destination', expect.stringContaining(destDir)],
-      expect.any(Object),
-    );
-  });
-
   it('uses the active Windows Node installation instead of an explicit ambient npm-cli.js', async () => {
     const destDir = createTempDirSync('happier-cli-pack-tarball-dest-');
     const packageRoot = createTempDirSync('happier-cli-pack-tarball-root-');
@@ -764,13 +704,12 @@ describe('packTarball (npmExecpath)', () => {
     await packTarball({
       packageRoot,
       destDir,
-      npmExecpath: npmCliPath,
       platform: 'win32',
       processExecPath: nodeExecPath,
       resolveCommandInvocation: preserveCommandInvocation,
       spawnSync: spawn,
       ...createRealArtifactFsAdapter(packageRoot),
-      env: {},
+      env: { npm_execpath: npmCliPath },
     });
 
     expect(spawn).toHaveBeenCalledWith(
@@ -780,7 +719,7 @@ describe('packTarball (npmExecpath)', () => {
     );
   });
 
-  it('uses node + npm-cli.js on Windows when npm_execpath points to a non-npm runner', async () => {
+  it('uses node + npm-cli.js beside the active Windows Node runtime through the default command resolver', async () => {
     const destDir = createTempDirSync('happier-cli-pack-tarball-dest-');
     const packageRoot = createTempDirSync('happier-cli-pack-tarball-root-');
     const tarballName = 'artifact.tgz';
@@ -793,7 +732,6 @@ describe('packTarball (npmExecpath)', () => {
     await packTarball({
       packageRoot,
       destDir,
-      npmExecpath: '/somewhere/yarn.js',
       platform: 'win32',
       processExecPath: nodeExecPath,
       spawnSync: spawn,
@@ -824,7 +762,6 @@ describe('packTarball (npmExecpath)', () => {
     await packTarball({
       packageRoot,
       destDir,
-      npmExecpath: '/somewhere/yarn.js',
       platform: 'win32',
       processExecPath: nodeExecPath,
       resolveCommandInvocation: preserveCommandInvocation,
@@ -855,7 +792,6 @@ describe('packTarball (npmExecpath)', () => {
     await expect(packTarball({
       packageRoot,
       destDir,
-      npmExecpath: '/somewhere/yarn.js',
       platform: 'win32',
       processExecPath: 'C:\\Program Files\\nodejs\\node.exe',
       npmCliExistsSync: () => false,
@@ -888,7 +824,6 @@ describe('packTarball (npmExecpath)', () => {
     await packTarball({
       packageRoot,
       destDir,
-      npmExecpath: '/somewhere/yarn.js',
       platform: 'win32',
       processExecPath: nodeExecPath,
       resolveCommandInvocation,
@@ -906,38 +841,6 @@ describe('packTarball (npmExecpath)', () => {
       'C:\\Windows\\System32\\cmd.exe',
       wrappedArgs,
       expect.objectContaining({ windowsVerbatimArguments: true }),
-    );
-  });
-
-  it('uses node + npm-cli.js on Windows when npm_execpath is missing', async () => {
-    const destDir = createTempDirSync('happier-cli-pack-tarball-dest-');
-    const packageRoot = createTempDirSync('happier-cli-pack-tarball-root-');
-    const tarballName = 'artifact.tgz';
-    writeFileSync(join(destDir, tarballName), '', 'utf8');
-
-    const spawn = vi.fn(() => ({ status: 0, stdout: `${tarballName}\n`, stderr: '' }));
-    const nodeExecPath = 'C:\\Program Files\\nodejs\\node.exe';
-    const npmCliPath = 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js';
-
-    await packTarball({
-      packageRoot,
-      destDir,
-      npmExecpath: '',
-      platform: 'win32',
-      processExecPath: nodeExecPath,
-      spawnSync: spawn,
-      ...createPackageDistFsAdapter((targetPath) => {
-        const normalized = String(targetPath).replaceAll('\\', '/').toLowerCase();
-        const normalizedNpmCli = npmCliPath.replaceAll('\\', '/').toLowerCase();
-        return normalized === normalizedNpmCli || normalized.endsWith(`/${tarballName}`) || normalized.endsWith('/dist');
-      }),
-      env: {},
-    });
-
-    expect(spawn).toHaveBeenCalledWith(
-      nodeExecPath,
-      [npmCliPath, 'pack', '--silent', '--ignore-scripts', '--pack-destination', expect.stringContaining(destDir)],
-      expect.any(Object),
     );
   });
 

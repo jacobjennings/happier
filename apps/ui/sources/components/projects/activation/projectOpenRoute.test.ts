@@ -25,11 +25,13 @@ describe('Project Open entrance', () => {
             selector: { provider: { id: 'github', kind: 'github' as const, displayName: 'GitHub', baseUrl: 'https://github.com' },
                 repository: { nameWithOwner: 'owner/repo', visibility: 'private' as const }, protocol: 'https' as const }, defaultRef: 'main', subdir: 'app' },
             ref: 'feature', materialization: { kind: 'attach' as const } };
-        expect(readProjectOpenRouteDraft(buildProjectOpenRoute(input).params)).toEqual(input);
+        const admittedSource = { ...input.source, selector: { ...input.source.selector,
+            provider: { ...input.source.selector.provider, id: 'happier.scm.forge.github/github' } } };
+        expect(readProjectOpenRouteDraft(buildProjectOpenRoute(input).params)).toEqual({ ...input, source: admittedSource });
         const route = buildProjectSourceOpenRoute('home', { id: 'source', revision: 2, name: 'Source',
             repository: input.source.selector, defaultRef: 'main', subdir: 'app', audience: [], createdByAccountId: 'account' });
         const seeded = readProjectOpenRouteDraft(route.params);
-        expect(seeded).toMatchObject({ serverId: 'home', machineId: '', source: input.source });
+        expect(seeded).toMatchObject({ serverId: 'home', machineId: '', source: admittedSource });
         // A saved Source never pre-chooses a fresh clone: an existing checkout on the Machine comes first.
         expect(seeded).not.toHaveProperty('materialization');
     });

@@ -30,10 +30,50 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe('runAppBootSequence', () => {
+    it('surfaces a rejected crypto runtime while authoritative drafts are still loading', async () => {
+        const drafts = createDeferred<void>();
+        const failure = new Error('Crypto runtime initialization failed');
+        let rejected: unknown;
+        const run = runAppBootSequence({
+            loadFonts: async () => {},
+            sodiumReady: Promise.reject(failure),
+            resolveCredentials: async () => null,
+            prepareWarmCache: async () => {},
+            prepareSessionDrafts: () => drafts.promise,
+            prepareTranslations: async () => {},
+            restoreSync: null,
+            onReady: () => { throw new Error('Unusable runtime painted'); },
+        });
+        void run.catch(error => { rejected = error; });
+        try {
+            await flushMicrotasks();
+            expect(rejected).toBe(failure);
+        } finally {
+            drafts.resolve();
+            await run.catch(() => {});
+        }
+    });
+    it('rejects crypto initialization failure without painting an unusable route', async () => {
+        const failure = new Error('Crypto runtime initialization failed');
+        const ready: AppBootReadyState[] = [];
+        await expect(runAppBootSequence({
+            loadFonts: async () => {},
+            sodiumReady: Promise.reject(failure),
+            resolveCredentials: async () => null,
+            prepareWarmCache: async () => {},
+            prepareSessionDrafts: async () => {},
+            prepareTranslations: async () => {},
+            restoreSync: null,
+            onReady: state => { ready.push(state); },
+        })).rejects.toBe(failure);
+        expect(ready).toEqual([]);
+    });
     it.each(['app', 'embed'] as const)('waits for the selected locale and English fallback before painting: %s', async (context) => {
         const translations = createDeferred<void>();
         const events: string[] = [];
+        const phases: string[] = [];
         const run = runAppBootSequence({
+            onPhase: (phase) => { phases.push(phase); },
             context,
             loadFonts: async () => {},
             sodiumReady: Promise.resolve(),
@@ -45,9 +85,11 @@ describe('runAppBootSequence', () => {
             onReady: () => { events.push('paint'); },
         });
         await flushMicrotasks();
+        expect(phases.at(-1)).toBe('translations');
         expect(events).toEqual(context === 'embed' ? ['selected-locale'] : ['restore-local-settings', 'selected-locale']);
         translations.resolve();
         await run;
+        expect(phases.at(-1)).toBe('ready');
         expect(events.at(-1)).toBe('paint');
     });
 
@@ -349,6 +391,7 @@ describe('runAppBootSequence', () => {
     it('does not re-key the auth tree when a deferred read confirms there is no session', async () => {
         const credentials = createDeferred<AuthCredentials | null>();
         const ready: AppBootReadyState[] = [];
+        const restoreSync = vi.fn(async () => {});
 
         const run = runAppBootSequence({
             prepareTranslations: async () => {},
@@ -357,16 +400,19 @@ describe('runAppBootSequence', () => {
             resolveCredentials: () => credentials.promise,
             prepareWarmCache: async () => {},
             prepareSessionDrafts: async () => {},
-            restoreSync: async () => {},
+            restoreSync,
             onReady: (state) => ready.push(state),
         });
 
         await vi.runAllTimersAsync();
+        expect(ready).toEqual([]);
+        expect(restoreSync).not.toHaveBeenCalled();
         credentials.resolve(null);
         await vi.runAllTimersAsync();
         await run;
 
         expect(ready).toEqual([{ credentials: null }]);
+        expect(restoreSync).not.toHaveBeenCalled();
     });
 
     it('skips sync restore when the host has no restore owner (desktop activity overlay)', async () => {

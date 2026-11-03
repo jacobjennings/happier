@@ -40,10 +40,10 @@ function createBufferedNativeTranscript() {
   };
 }
 
-it.each(['runner_http_fresh_terminal_interrupt_recovery', 'runner_http_fresh_terminal_pending_followup', 'runner_http_fresh_terminal_catalog_refresh', 'runner_transport', 'runner_transport_retired_acquisition', 'runner_http', 'runner_http_fresh', 'runner_http_fresh_publisher', 'runner_http_fresh_terminal_service', 'runner_http_fresh_terminal_e2ee', 'runner_http_fresh_terminal_concurrent_commit', 'runner_http_cancelled_acquisition', 'runner_http_retired_acquisition', 'thinking_text', 'cold_history', 'oversized_native_row', 'observer_retired', 'runner_retired', 'listener_failure'] as const)('admits a runner-carried Claude codec through real observation and scoped follow (%s)', async kind => {
+it.each(['runner_http_fresh_terminal_inventory_refresh', 'runner_http_fresh_terminal_interrupt_recovery', 'runner_http_fresh_terminal_pending_followup', 'runner_http_fresh_terminal_catalog_refresh', 'runner_transport', 'runner_transport_retired_acquisition', 'runner_http', 'runner_http_fresh', 'runner_http_fresh_publisher', 'runner_http_fresh_terminal_service', 'runner_http_fresh_terminal_e2ee', 'runner_http_fresh_terminal_concurrent_commit', 'runner_http_cancelled_acquisition', 'runner_http_retired_acquisition', 'thinking_text', 'cold_history', 'oversized_native_row', 'observer_retired', 'runner_retired', 'listener_failure'] as const)('admits a runner-carried Claude codec through real observation and scoped follow (%s)', async kind => {
   const interruptRecovery = kind === 'runner_http_fresh_terminal_interrupt_recovery';
   const pendingFollowup = kind === 'runner_http_fresh_terminal_pending_followup';
-  const liveAppend = interruptRecovery || pendingFollowup || kind === 'runner_http_fresh_terminal_catalog_refresh';
+  const liveAppend = interruptRecovery || pendingFollowup || kind === 'runner_http_fresh_terminal_catalog_refresh' || kind === 'runner_http_fresh_terminal_inventory_refresh';
   const replayStages = { rawLines: 0, target: 0, identityAck: 0, bind: 0, readAfter: 0, cursor: 0,
     sourceItems: 0, displayItems: 0, durableAck: 0, durableLongAck: 0, durableRecoveryAck: 0 };
   const replay = liveAppend ? createBufferedNativeTranscript() : null;
@@ -613,7 +613,11 @@ it.each(['runner_http_fresh_terminal_interrupt_recovery', 'runner_http_fresh_ter
           });
           identitySubscription = subscribeSessionRuntimePublicationToMetadata({ session: publisher, sessionState: bridge.engine,
             runtime: created.operations, providerSessionMetadataKey: 'claudeSessionId' });
-          disposeConfigured = async () => { identitySubscription?.(); await created.operations.resetOrDisposeRuntime(); await hookServer?.dispose(); };
+          // The host runtime feeds this observer from its canonical event watch (publishHostRuntimeEvent).
+          const unsubscribeIdentityEvents = created.operations.subscribeRuntimeEvents(event => {
+            if ('kind' in event) identitySubscription?.observeRuntimeEvent(event);
+          });
+          disposeConfigured = async () => { unsubscribeIdentityEvents(); identitySubscription?.(); await created.operations.resetOrDisposeRuntime(); await hookServer?.dispose(); };
           if (pendingFollowup) {
             const { createHostRuntimeActivityProjection } = await import('@/agent/runtime/session/activity/createHostRuntimeActivityProjection');
             const activity = createHostRuntimeActivityProjection({ sessionId, agentRuntimeApplicability: 'supported',
@@ -822,7 +826,8 @@ it.each(['runner_http_fresh_terminal_interrupt_recovery', 'runner_http_fresh_ter
         return;
       }
       if (kind === 'oversized_native_row') {
-        expect(result).toMatchObject({ status: 'unavailable', code: 'plugin_external_follow_resync_required' });
+        // A record beyond the read allowance fails explicitly (JSONL_RECORD_TOO_LARGE) instead of looping a no-progress resync.
+        expect(result).toMatchObject({ status: 'unavailable', code: 'plugin_external_follow_acquisition_failed' });
         expect(events.filter(event => event.kind === 'data')).toEqual([]);
         expect(manager.countActiveLeases(sessionId)).toBe(0);
         return;
@@ -864,11 +869,23 @@ it.each(['runner_http_fresh_terminal_interrupt_recovery', 'runner_http_fresh_ter
         }
         expect(replay.longText.split('\n')).toHaveLength(400);
         expect(replay.longText).toHaveLength(33281);
+        await vi.waitFor(() => expect(replayStages.durableAck).toBeGreaterThan(0), { timeout: 10000 });
+        const firstCursor = events.filter(event => event.kind === 'data').at(-1)?.nextCursor;
+        expect(firstCursor).toEqual(expect.any(String));
+        if (kind === 'runner_http_fresh_terminal_inventory_refresh') {
+          // Passive observation invokes this manager operation on Connected
+          // Account inventory pushes, including unrelated service changes.
+          await manager.releaseSessionsForCredentialInvalidation();
+        }
         await enqueueFollowup?.();
         await replayNativeHook!({ hook_event_name: 'UserPromptSubmit', prompt: followupNativePrompt });
         const userEcho = pendingFollowup ? JSON.stringify({ ...JSON.parse(replay.user),
           message: { role: 'user', content: followupNativePrompt } }) + '\n' : replay.user;
         await appendFile(nativePath, userEcho);
+        if (kind === 'runner_http_fresh_terminal_inventory_refresh') {
+          await vi.waitFor(() => expect(events.filter(event => event.kind === 'data').at(-1)?.nextCursor)
+            .not.toBe(firstCursor), { timeout: 10000 });
+        }
         await vi.waitFor(() => expect(replayStages.rawLines).toBeGreaterThanOrEqual(3), { timeout: 10000 });
         await replayNativeHook!({ hook_event_name: 'Stop', stop_hook_active: false });
         await appendFile(nativePath, replay.completion);
@@ -882,6 +899,7 @@ it.each(['runner_http_fresh_terminal_interrupt_recovery', 'runner_http_fresh_ter
         if (!pendingFollowup) expect(replayStages.identityAck).toBeGreaterThan(0);
         expect(replayStages.readAfter).toBeGreaterThan(0);
         expect(replayStages.cursor).toBeGreaterThan(1);
+        expect(events.filter(event => event.kind === 'data').at(-1)?.nextCursor).not.toBe(firstCursor);
         expect(replayStages.sourceItems).toBeGreaterThan(2);
         expect(manager.countActiveLeases(sessionId)).toBe(1);
         await interruptAndRecover?.();

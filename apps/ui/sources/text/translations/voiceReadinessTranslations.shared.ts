@@ -82,7 +82,7 @@ export function defineVoiceReadinessTranslation(readiness: VoiceReadinessCopy) {
 
 export const voiceReadinessTranslationsEnglish = { en: defineVoiceReadinessTranslation({
     ready: 'Ready for Voice.',
-    permissionAnnouncement: ({ summary }) => `The coding session needs permission for ${summary}. Review it in the session UI to approve or deny.`,
+    permissionAnnouncement: ({ summary }) => `The coding session needs permission for ${summary}.`,
     userActionAnnouncement: ({ question }) => `The coding session needs your input. ${question}`,
     userActionFallback: 'The coding session needs your input. Answer the question so I can continue.',
     requestedTool: 'the requested tool',

@@ -2,7 +2,7 @@ import type {
     SessionAwarenessProjectionV1,
     SessionPersonalAttentionProjectionV1,
 } from '@happier-dev/protocol';
-import type { Session } from '@/sync/domains/state/storageTypes';
+import type { SessionPresentationRecord, SessionListPresentationSource } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import type { SessionAttentionOptions } from '@/sync/domains/session/attention/sessionAttention';
 import type { SessionAwarenessPresentationStateV1 } from '@happier-dev/protocol/sessions/awareness/presentationV1';
 import type { WorkStatusPresentation } from '@/components/work/status/resolveWorkStatusTone';
@@ -11,7 +11,9 @@ import type { SessionContextPresentation } from '@/sync/domains/session/presenta
 import type { FollowPolicyV1 } from '@happier-dev/protocol/sessions/follow/sessionFollowPolicyV1';
 
 export type SessionActivityAttention = Readonly<{
-    session: Session;
+    session: SessionPresentationRecord;
+    presentationSource?: SessionListPresentationSource;
+    meaningfulActivityAt?: number;
     awareness: SessionAwarenessProjectionV1;
     sessionId: string;
     address?: SessionAddress | null;
@@ -80,7 +82,7 @@ export type ActivityOverviewSnapshot = Readonly<{
 }>;
 
 export type BuildActivityOverviewSnapshotParams = Readonly<{
-    sessions: readonly Session[];
+    sessions: readonly SessionPresentationRecord[];
     sessionOptions?: SessionAttentionOptions;
     nowMs?: number;
 }>;

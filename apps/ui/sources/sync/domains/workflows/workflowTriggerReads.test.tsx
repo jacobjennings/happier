@@ -5,6 +5,7 @@ import { createHomeGovernanceHarness, installHomeGovernanceBoundaries, waitForHo
 import { installDisconnectedServerSocketBoundary } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
 import { createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit/fixtures/accountEncryptionCurrentness';
+import { selectWorkflowAutomationListFixture } from '@/dev/testkit/harness/workflowAutomationHttpBoundary';
 import { createWorkflowDefinitionFixture, createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
 import { AutomationDefinitionDetailSchema, AutomationDefinitionListItemSchema, AutomationDefinitionPatchRequestSchema,
     AutomationDefinitionReconcileRequestSchema } from '@happier-dev/protocol/automations/automationApiV3';
@@ -66,6 +67,62 @@ function listed(row: ReturnType<typeof automation>) {
 }
 
 describe('Account trigger reads through real Action and Automation owners', () => {
+    it.each([false, true])('selects one managed target without opening a thousand known unrelated definitions (legacy relationship: %s)', async legacyRelationship => {
+        const managedTarget = { homeId: 'home-managed', managedId: 'managed-one' };
+        const definition = createWorkflowDefinitionFixture({ blocks: [{ kind: 'action', id: 'stop-managed',
+            actionId: 'machines.managed.power.set', input: { homeId: { kind: 'literal', value: managedTarget.homeId },
+                managedId: { kind: 'literal', value: managedTarget.managedId }, when: { kind: 'literal', value: 'after-idle' },
+                intent: { kind: 'literal', value: 'stop' } } }] });
+        const row = AutomationDefinitionDetailSchema.parse({ ...automation('managed-rule'), ...(legacyRelationship ? {} : { managedTarget }),
+            executionRecipe: { v: 2, templateVersion: 1, triggerEvidence: null, workflow: { t: 'plain', v: {
+                workspace: { directory: '/repo' }, executionTarget: { kind: 'detached_run' }, inlineDefinition: definition } } },
+            triggers: [{ id: '11111111-1111-4111-8111-111111111111', revision: 1, enabled: true, createdAt: 1, updatedAt: 1,
+                kind: 'runLifecycle', source: { kind: 'workflow_run', runId: 'birth-run' }, condition: 'terminal',
+                remainingOccurrences: 1, status: { state: 'waiting', runId: null }, triggerDefinitionEnvelope: null }] });
+        const unrelated = Array.from({ length: 1000 }, (_, index) => AutomationDefinitionDetailSchema.parse({
+            ...automation(`unrelated-${index}`), managedTarget: null,
+        }));
+        const legacyOther = automation('legacy-other');
+        const inventory = [...unrelated, row, legacyOther];
+        const select = (raw: unknown) => ({ body: selectWorkflowAutomationListFixture(inventory, raw) });
+        home.answer(serverId, 'GET /v3/automations', { select: (_raw, request) => select(Object.fromEntries(new URL(request.url).searchParams)) });
+        home.answer(serverId, 'POST /v3/automations/query', { select });
+        for (const value of inventory) home.answer(serverId, `GET /v3/automations/${value.id}`, { body: value });
+        const { captureActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
+        const lifetime = captureActiveServerAccountScopeLifetime();
+        if (!lifetime) throw new Error('Expected the real Account lifetime');
+        const hook = await renderHook(() => useWorkflowTriggerSets({ managedTarget }, lifetime));
+        await waitForHomeGovernance(() => expect(hook.getCurrent().status).not.toBe('loading'));
+        if (hook.getCurrent().status === 'failed') await listWorkflowTriggerSets({ managedTarget });
+        expect(hook.getCurrent().status).toBe('ready');
+        expect(hook.getCurrent().sets).toMatchObject([{ automationId: row.id }]);
+        expect(home.requests.filter(request => request.path.startsWith('/v3/automations/unrelated-'))).toHaveLength(0);
+        expect(home.requests.filter(request => request.path.startsWith('/v3/automations?') || request.path === '/v3/automations/query')).toHaveLength(1);
+        expect(home.requests.filter(request => request.path === `/v3/automations/${row.id}`)).toHaveLength(1);
+        expect(home.requests.filter(request => request.path === '/v3/automations/legacy-other')).toHaveLength(1);
+        const known = hook.getCurrent().sets;
+        home.answer(serverId, 'POST /v3/automations/query', { status: 503, body: { error: 'storage_unavailable' } });
+        await act(async () => hook.getCurrent().retry());
+        await waitForHomeGovernance(() => expect(hook.getCurrent().status).toBe('failed'));
+        expect(hook.getCurrent().sets).toBe(known);
+        home.answer(serverId, 'POST /v3/automations/query', { select });
+        await act(async () => hook.getCurrent().retry());
+        await waitForHomeGovernance(() => expect(hook.getCurrent().status).toBe('ready'));
+        // A locked unknown candidate cannot prove that this Machine has no rule.
+        home.answer(serverId, 'GET /v3/automations/legacy-other', { body: AutomationDefinitionDetailSchema.parse({ ...legacyOther,
+            executionRecipe: { v: 2, templateVersion: 1, triggerEvidence: null, workflow: { t: 'encrypted', c: 'sealed-fixture' } } }) });
+        await act(async () => hook.getCurrent().retry());
+        await waitForHomeGovernance(() => expect(hook.getCurrent().status).toBe('failed'));
+        expect(hook.getCurrent().sets).toBe(known);
+        home.answer(serverId, 'GET /v3/automations/legacy-other', { body: legacyOther });
+        await act(async () => hook.getCurrent().retry());
+        await waitForHomeGovernance(() => expect(hook.getCurrent().status).toBe('ready'));
+        expect(home.requests.filter(request => request.path.startsWith('/v3/automations')
+            && request.path !== '/v3/automations/query' && request.input !== null)).toHaveLength(0);
+        await act(async () => retireActiveServerAccountScopeLifetime());
+        await waitForHomeGovernance(() => expect(hook.getCurrent().status).toBe('failed'));
+        expect(hook.getCurrent().sets).toEqual([]);
+    });
     it('moves a raw Automation API retarget between workflow readers while preserving the trigger Action refusal', async () => {
         const firstId = '00000000-0000-4000-8000-000000000005';
         const secondId = '00000000-0000-4000-8000-000000000006';

@@ -11,6 +11,7 @@ import type {
 import type { SessionBulkActionTarget } from '@/components/sessions/actions/sessionBulkActionTypes';
 import { buildServerScopedSessionKey } from '@/sync/domains/session/navigation/sessionNavigationOrder';
 import { isTranscriptPendingRequestAnswerable } from '@/utils/sessions/deriveTranscriptInteraction';
+import { listSessionListPresentationPermissionRequests, listSessionListPresentationUserActionRequests } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import {
     listPendingPermissionRequests,
     listPendingUserActionRequests,
@@ -70,6 +71,7 @@ export function buildInboxSessionPresentation(params: Readonly<{
         if (classification.section === null) continue;
 
         const reasons = candidate.personalAttention.reasons;
+        const interaction = { active: candidate.presentationSource?.lifecycle.active ?? candidate.session.active, access: candidate.session.access };
         const serverId = candidate.address?.serverId ?? candidate.serverId ?? null;
 
         // The Inbox follows the Session list's attention lanes: streaming
@@ -84,19 +86,25 @@ export function buildInboxSessionPresentation(params: Readonly<{
             const entry: InboxSessionAttentionEntry = {
                 candidate,
                 pendingPermissions: mayShowDetails && reasons.includes('permission_required')
-                    ? listPendingPermissionRequests(candidate.session, messages)
-                        .filter(request => isTranscriptPendingRequestAnswerable(candidate.session, request)).sort(comparePendingRequestsByAge)
+                    ? (candidate.presentationSource ? listSessionListPresentationPermissionRequests(candidate.presentationSource, messages)
+                        : 'agentState' in candidate.session ? listPendingPermissionRequests(candidate.session, messages) : [])
+                        .filter(request => isTranscriptPendingRequestAnswerable(interaction, request)).sort(comparePendingRequestsByAge)
                     : [],
                 pendingUserActions: mayShowDetails && reasons.includes('user_action_required')
-                    ? listPendingUserActionRequests(candidate.session, messages)
-                        .filter(request => isTranscriptPendingRequestAnswerable(candidate.session, request)).sort(comparePendingRequestsByAge)
+                    ? (candidate.presentationSource ? listSessionListPresentationUserActionRequests(candidate.presentationSource, messages)
+                        : 'agentState' in candidate.session ? listPendingUserActionRequests(candidate.session, messages) : [])
+                        .filter(request => isTranscriptPendingRequestAnswerable(interaction, request)).sort(comparePendingRequestsByAge)
                     : [],
             };
             sessionsNeedingAttention.push(entry);
+            // A retained row cannot decide request entitlement before its full Session state is acquired.
+            const hasRequestState = candidate.presentationSource
+                ? candidate.presentationSource.pending.agentState != null
+                : 'agentState' in candidate.session && candidate.session.agentState != null;
             if (mayShowDetails && candidate.address && (
                 (reasons.includes('permission_required') && entry.pendingPermissions.length === 0)
                 || (reasons.includes('user_action_required') && entry.pendingUserActions.length === 0
-                    && isTranscriptPendingRequestAnswerable(candidate.session, { kind: 'user_action' }))
+                    && (!hasRequestState || isTranscriptPendingRequestAnswerable(interaction, { kind: 'user_action' })))
             )) pendingRequestHydrationTargets.push(candidate.address);
             continue;
         }

@@ -42,20 +42,21 @@ function sizeTitle(size: BoatSize): string {
   return `${size.id} · ${size.multiplier}x · ${size.cpuCores} vCPU · ${size.memoryGb} GB RAM · ${size.diskGb} GB · $${size.hourlyUsd}/hour`;
 }
 
-function choice(size: BoatSize, source: { kind: 'blank' } | { kind: 'named-snapshot'; name: string } | { kind: 'fork'; sandboxId: string }, sourceTitle: string, observedAt: number) {
+function sizeOption(size: BoatSize, observedAt: number) {
   return {
-    id: `${size.id}/${source.kind}/${source.kind === 'blank' ? 'new' : source.kind === 'named-snapshot' ? source.name : source.sandboxId}`,
-    title: `${sizeTitle(size)} · ${sourceTitle}`,
-    launch: { size: size.id, source },
+    id: size.id, title: sizeTitle(size), assignments: [{ path: 'size', value: size.id }],
     prices: [{ label: boatPresentationLabel('compute'), amount: size.hourlyUsd, currency: 'USD', unit: 'hour', source: PRICE_SOURCE, observedAt }],
-    retention,
     nativeFacts: {
       size: { id: size.id, title: `${size.id} (${size.multiplier}x)`, cpuCores: size.cpuCores,
-        memoryBytes: size.memoryGb * 1024 ** 3, diskBytes: size.diskGb * 1000 ** 3 },
-      location: { id: 'eu', title: 'EU only' },
-      monthlyCapStatus: 'none' as const,
-    },
-  };
+        memoryBytes: size.memoryGb * 1024 ** 3, diskBytes: size.diskGb * 1000 ** 3 }, }, };
+}
+
+function sourceOption(source: { kind: 'blank' } | { kind: 'named-snapshot'; name: string } | { kind: 'fork'; sandboxId: string }, title: string) {
+  const id = source.kind === 'blank' ? 'blank' : source.kind === 'named-snapshot' ? `snapshot/${source.name}` : `fork/${source.sandboxId}`;
+  // These are filesystem starting sources; the existing image/source control
+  // carries their exact native selector, including a fork's source sandbox id.
+  // Boat's Linux sandbox contract also covers saved disks and forks: https://docs.boat.dev/concepts.
+  return { id, title, assignments: [{ path: 'source', value: source }], nativeFacts: { image: { id, title } } };
 }
 
 export const MACHINE_PROVISIONER = {
@@ -86,7 +87,7 @@ export const PLUGIN = definePlugin({
   ], optional: [] },
   systemTools: { 'ssh-keyscan': { title: 'OpenSSH host key scanner', executableNames: ['ssh-keyscan'] } },
   connectedAccountDescriptors: { [ACCOUNT_ID]: {
-    declaration: { title: 'Boat account', authentication: { defaultModeId: 'token', modes: [{
+    declaration: { title: 'Boat account', ui: { category: 'cloud-machines' }, authentication: { defaultModeId: 'token', modes: [{
       id: 'token', kind: 'manual', title: 'API key', outcomeReconciliation: 'none',
       directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
       fields: [{ id: 'token', title: 'API key', schema: { type: 'string', minLength: 1 }, secret: true }],
@@ -137,11 +138,13 @@ export const PLUGIN = definePlugin({
       inputSchema: ROLE_SCHEMAS.checkInput, resultSchema: MachineProvisionerOptionsResultV1Schema,
       async run(_input, context): Promise<MachineProvisionerOptionsResultV1> {
         const facts = await runtime(context).options();
-        return { choices: facts.sizes.flatMap(size => [
-          choice(size, { kind: 'blank' }, 'Blank sandbox', context.invokedAtMs),
-          ...facts.snapshots.map(snapshot => choice(size, { kind: 'named-snapshot', name: snapshot.name }, `Snapshot ${snapshot.name}`, context.invokedAtMs)),
-          ...facts.sandboxes.map(sandbox => choice(size, { kind: 'fork', sandboxId: sandbox.id }, `Fork ${sandbox.name ?? sandbox.id} (${sandbox.id})`, context.invokedAtMs)),
-        ]) };
+        return { base: { launch: {}, retention, nativeFacts: { monthlyCapStatus: 'none' } }, dimensions: {
+          size: facts.sizes.map(size => sizeOption(size, context.invokedAtMs)),
+          image: [sourceOption({ kind: 'blank' }, 'Blank sandbox'),
+            ...facts.snapshots.map(snapshot => sourceOption({ kind: 'named-snapshot', name: snapshot.name }, `Snapshot ${snapshot.name}`)),
+            ...facts.sandboxes.map(sandbox => sourceOption({ kind: 'fork', sandboxId: sandbox.id }, `Fork ${sandbox.name ?? sandbox.id} (${sandbox.id})`))],
+          location: [{ id: 'eu', title: 'EU only', assignments: [], nativeFacts: { location: { id: 'eu', title: 'EU only' } } }],
+          network: [], duration: [], } };
       },
     },
     acquire: { ...defaults, title: 'Create Boat sandbox', dangerLevel: 'destructive',

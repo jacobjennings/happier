@@ -1,3 +1,6 @@
+import { MACHINE_PROCESS_INPUT_FIELDS } from './machineProcessesInputHints.js';
+import { MACHINE_PROCESSES_ACTION_IDS } from './machineProcessesActionIdsV1.js';
+export { MACHINE_PROCESSES_ACTION_IDS } from './machineProcessesActionIdsV1.js';
 import { z } from 'zod/mini';
 import { lazyZodSchema } from '../../lazyZodSchema.js';
 import { subsetNarrowing, type ApprovalNarrowing } from '../../approvals/approvalNarrowing.js';
@@ -10,11 +13,6 @@ import {
 } from '../../machines/processes/machineProcessesV1.js';
 import { RPC_METHODS } from '../../rpc/methods.js';
 import type { PreNormalizedActionSpec } from '../actionSpecs.js';
-
-export const MACHINE_PROCESSES_ACTION_IDS = [
-  'machines.processes.list', 'machines.processes.get', 'machines.processes.check', 'machines.processes.stop',
-  'machines.processes.startAgain', 'machines.processes.kill', 'machines.processes.leftBehind.cleanUp',
-] as const;
 export type MachineProcessesActionId = typeof MACHINE_PROCESSES_ACTION_IDS[number];
 export const MachineProcessesActionIdSchema = lazyZodSchema(() => z.enum(MACHINE_PROCESSES_ACTION_IDS));
 export const MACHINE_PROCESSES_ACTION_INPUT_SCHEMAS = {
@@ -60,15 +58,16 @@ function processSpec<const Id extends MachineProcessesActionId>([id, title, desc
   readonly [Id, string, string, string, string, 'read' | 'write' | 'danger', 'safe' | 'danger']): MachineProcessesActionSpec<Id> {
   return {
   id, approval: safety === 'danger' ? { result: 'required' } : { result: 'none' }, title,
-  description: `${description} In a session, machineId defaults to the session's Machine; explicit input wins.`,
+  description,
   contextualDefaults: { machineId: 'current_session_machine' }, safety, sideEffectClass, placements: [], executionPlacement: 'machine',
   ...(id === 'machines.processes.stop' ? { approvalPolicy: { uiConfirmation: 'direct' as const } } : {}),
+  ...(id === 'machines.processes.kill' ? { approvalPolicy: { uiConfirmation: 'policy' as const } } : {}),
   toolExposure: { agent: id === 'machines.processes.list' ? 'direct' : 'discoverable_only' },
-  prompting: { agentGuidance: sideEffectClass === 'read'
+  prompting: { agentGuidance: `In a session, machineId defaults to the session's Machine; explicit input wins. ${sideEffectClass === 'read'
     ? 'Read the requester-scoped census before explaining process use. Read machines.guard.get for canonical stop candidates and why other work is kept; do not invent a competing stop heuristic.'
     : id === 'machines.processes.startAgain'
       ? 'Read the process and its way back first, then start the requested work again. Sessions resume on their next message.'
-      : 'Read machines.processes.list and machines.guard.get first, then check the complete selected set. Propose once through the set Action with every requested target and its expectation, never repeat single-item effects in a loop. The person may choose a subset in the approval UI. Explain what stopping or killing ends, including working or waiting sessions; approval follows this Action’s own user setting.' },
+      : 'Read machines.processes.list and machines.guard.get first, then check the complete selected set. Propose once through the set Action with every requested target and its expectation, never repeat single-item effects in a loop. The person may choose a subset in the approval UI. Explain what stopping or killing ends, including working or waiting sessions; approval follows this Action’s own user setting.'}` },
     surfaces: { ui: true, cli: true, agent: true, mcp: true, voice: false, rpc: true },
     bindings: { rpcMethod, mcpToolName: id.replaceAll('.', '_') },
     inputSchema: MACHINE_PROCESSES_ACTION_INPUT_SCHEMAS[id], outputSchema: MACHINE_PROCESSES_ACTION_OUTPUT_SCHEMAS[id],
@@ -76,6 +75,7 @@ function processSpec<const Id extends MachineProcessesActionId>([id, title, desc
     inputHints: { fields: [
       { path: 'serverId', title: 'Home ID', widget: 'text', required: false },
       { path: 'machineId', title: 'Machine ID', widget: 'text', description: 'Defaults to the calling session Machine; required outside a session.' },
+      ...MACHINE_PROCESS_INPUT_FIELDS[id],
     ] },
     ...(id === 'machines.processes.stop' || id === 'machines.processes.kill' ? {
       approvalNarrowing: subsetNarrowing({ path: 'targets', key: item => typeof item.ref === 'string' ? item.ref : '',

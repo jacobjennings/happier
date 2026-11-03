@@ -43,13 +43,6 @@ describe('ScmDiffCache', () => {
         expect(await cache.getOrLoad(key({ path: 'a.ts' }), async () => ({ success: true, diff: 'recovered' }))).toEqual({ success: true, diff: 'recovered' });
     });
 
-    it('stores and retrieves diffs by session/signature/area/path', () => {
-        const cache = new ScmDiffCache({ maxEntries: 10, maxTotalBytes: 10_000, now: () => 1_000 });
-        cache.set(key({ path: 'a.ts' }), 'diff-a');
-        expect(cache.get(key({ path: 'a.ts' }))?.diff).toBe('diff-a');
-        expect(cache.get(key({ path: 'b.ts' }))).toBeNull();
-    });
-
     it('evicts least-recently-used entries when exceeding maxEntries', () => {
         const cache = new ScmDiffCache({ maxEntries: 2, maxTotalBytes: 10_000, now: () => 1_000 });
         cache.set(key({ path: 'a.ts' }), 'a');

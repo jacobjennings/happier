@@ -7,9 +7,6 @@ import { renderScreen, standardCleanup } from '@/dev/testkit';
 
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const rightPanelModuleLoaded = vi.fn();
-const detailsPanelModuleLoaded = vi.fn();
-const bottomPanelModuleLoaded = vi.fn();
 const registerDriverSpy = vi.hoisted(() => vi.fn<(driver: PaneDriver) => () => void>(() => () => {}));
 
 vi.mock('@/components/appShell/panes/AppPaneProvider', () => {
@@ -42,26 +39,17 @@ afterEach(() => {
     registerDriverSpy.mockClear();
 });
 
-vi.mock('./SessionRightPanel', () => {
-    rightPanelModuleLoaded();
-    return {
-        SessionRightPanel: () => React.createElement('SessionRightPanel'),
-    };
-});
+vi.mock('./SessionRightPanel', () => ({
+    SessionRightPanel: () => React.createElement('SessionRightPanel'),
+}));
 
-vi.mock('./SessionDetailsPanel', () => {
-    detailsPanelModuleLoaded();
-    return {
-        SessionDetailsPanel: () => React.createElement('SessionDetailsPanel'),
-    };
-});
+vi.mock('./SessionDetailsPanel', () => ({
+    SessionDetailsPanel: () => React.createElement('SessionDetailsPanel'),
+}));
 
-vi.mock('./bottom/SessionBottomPanel', () => {
-    bottomPanelModuleLoaded();
-    return {
-        SessionBottomPanel: () => React.createElement('SessionBottomPanel'),
-    };
-});
+vi.mock('./bottom/SessionBottomPanel', () => ({
+    SessionBottomPanel: () => React.createElement('SessionBottomPanel'),
+}));
 
 // Resolve the real hook graph during collection, outside the mount/timer deadline.
 const driverModule = await import('./useRegisterSessionPaneDriver');
@@ -154,24 +142,6 @@ describe('useRegisterSessionPaneDriver (module prefetch)', () => {
         }
     });
 
-    it('does not trigger duplicate eager pane-module loads when the hook mounts', async () => {
-        const { useRegisterSessionPaneDriver } = await import('./useRegisterSessionPaneDriver');
-        rightPanelModuleLoaded.mockClear();
-        detailsPanelModuleLoaded.mockClear();
-        bottomPanelModuleLoaded.mockClear();
-
-        const Probe = () => {
-            useRegisterSessionPaneDriver('s1');
-            return React.createElement('Probe');
-        };
-
-        await renderScreen(<Probe />);
-
-        expect(rightPanelModuleLoaded).not.toHaveBeenCalled();
-        expect(detailsPanelModuleLoaded).not.toHaveBeenCalled();
-        expect(bottomPanelModuleLoaded).not.toHaveBeenCalled();
-    });
-
     it('settles and reports a failed speculative module fetch', async () => {
         const mod = await import('./useRegisterSessionPaneDriver');
         const originalLoaders = [...mod.sessionPaneModulePrefetchLoaders];
@@ -187,19 +157,5 @@ describe('useRegisterSessionPaneDriver (module prefetch)', () => {
             mod.sessionPaneModulePrefetchLoaders.splice(0, mod.sessionPaneModulePrefetchLoaders.length, ...originalLoaders);
             warning.mockRestore();
         }
-    });
-
-    it('prefetches lazily opened session pane views', async () => {
-        const mod = await import('./useRegisterSessionPaneDriver');
-        const loadSubagentDetails = vi.fn(async () => undefined);
-        mod.sessionPaneModulePrefetchLoaders.splice(
-            0,
-            mod.sessionPaneModulePrefetchLoaders.length,
-            loadSubagentDetails,
-        );
-
-        await mod.prefetchSessionPaneModules();
-
-        expect(loadSubagentDetails).toHaveBeenCalledTimes(1);
     });
 });

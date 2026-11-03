@@ -1,5 +1,6 @@
 import { SessionCurrentProjectionRecordV1Schema, type SessionCurrentProjectionRecordV1 } from '@happier-dev/protocol/sessions/listing/response';
 import { SessionMetadataTuplePatchV1Schema, SessionMetadataTuplePatchSuccessV1Schema, SessionOwnerMetadataEnvelopeV1Schema } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
+import { SessionDisplayProjectionV1Schema } from '@happier-dev/protocol';
 import { z } from 'zod/mini';
 import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import type { Session } from '@/sync/domains/state/storageTypes';
@@ -31,6 +32,7 @@ export function createSessionMetadataHttpBoundary(readSessions: () => Readonly<R
         createSessionFromPost(sessionId: string, init: RequestInit): Response {
             const body = z.strictObject({ tag: z.string().check(z.minLength(1)), metadataLayoutVersion: z.literal(1),
                 sharedMetadata: z.strictObject({ ciphertext: z.string().check(z.minLength(1)) }), ownerMetadata: SessionOwnerMetadataEnvelopeV1Schema,
+                displayProjectionV1: z.optional(z.nullable(SessionDisplayProjectionV1Schema)),
                 agentState: z.null(), dataEncryptionKey: z.null(), encryptionMode: z.literal('plain') }).parse(JSON.parse(String(init.body)));
             const current = records.get(sessionId);
             if (current?.metadataLayoutVersion === 1) return Response.json({ created: false, session: current });
@@ -39,6 +41,7 @@ export function createSessionMetadataHttpBoundary(readSessions: () => Readonly<R
             const record = SessionCurrentProjectionRecordV1Schema.parse({ id: sessionId, seq: seed?.seq ?? 0, createdAt: seed?.createdAt ?? 1, updatedAt: seed?.updatedAt ?? 1,
                 active: false, activeAt: seed?.activeAt ?? 1, archivedAt: null, encryptionMode: body.encryptionMode, metadataLayoutVersion: 1,
                 metadata: body.sharedMetadata.ciphertext, metadataVersion: seed?.metadataVersion ?? 0, ownerMetadata: body.ownerMetadata,
+                displayProjectionV1: body.displayProjectionV1 ?? null,
                 effectiveAccess: { v: 1, level: 'owner', sources: [{ kind: 'owner' }], capabilities: createSessionAccessFixture().capabilities },
                 responsibleAccountId: null, responsibleAccount: null, share: null, dataEncryptionKey: null,
                 agentState: null, agentStateVersion: seed?.agentStateVersion ?? 0, pendingCount: 0, pendingVersion: 0 });
@@ -71,7 +74,7 @@ export function createSessionMetadataHttpBoundary(readSessions: () => Readonly<R
                 if (!session.access) throw new Error('Session HTTP fixture requires canonical access');
                 records.set(session.id, SessionCurrentProjectionRecordV1Schema.parse({
                     id: session.id, seq: session.seq, createdAt: session.createdAt, updatedAt: session.updatedAt,
-                    active: session.active, activeAt: session.activeAt, archivedAt: null, encryptionMode: 'plain', metadataLayoutVersion: 0,
+                    active: session.active, activeAt: session.activeAt, archivedAt: session.archivedAt ?? null, encryptionMode: 'plain', metadataLayoutVersion: 0,
                     metadata: JSON.stringify(session.metadata), metadataVersion: session.metadataVersion,
                     effectiveAccess: { v: 1, level: session.access.level, sources: [{ kind: 'owner' }], capabilities: session.access.capabilities },
                     responsibleAccountId: null, responsibleAccount: null, share: null, dataEncryptionKey: null,
@@ -90,6 +93,19 @@ export function createSessionMetadataHttpBoundary(readSessions: () => Readonly<R
                 return Response.json({ error: 'Failed to update session' }, { status: 500 });
             }
             const patch = SessionMetadataTuplePatchV1Schema.parse(JSON.parse(String(init.body)));
+            if (patch.mode === 'shared_editor') {
+                if (current.effectiveAccess?.level !== 'edit') return Response.json({ error: 'forbidden' }, { status: 403 });
+                if (current.metadataLayoutVersion !== 1 || patch.sharedMetadata.expectedVersion !== current.metadataVersion) {
+                    return Response.json({ code: 'session_metadata_version_conflict', metadataLayoutVersion: 1,
+                        sharedMetadata: { version: current.metadataVersion } }, { status: 409 });
+                }
+                const committed = SessionCurrentProjectionRecordV1Schema.parse({ ...current,
+                    metadata: patch.sharedMetadata.ciphertext, metadataVersion: current.metadataVersion + 1,
+                    displayProjectionV1: patch.displayProjectionV1 ?? null });
+                records.set(id, committed);
+                return Response.json(SessionMetadataTuplePatchSuccessV1Schema.parse({ success: true, metadataLayoutVersion: 1,
+                    sharedMetadata: { version: committed.metadataVersion } }));
+            }
             if (patch.mode !== 'owner_migration' && patch.mode !== 'owner') throw new Error('Expected owner metadata mutation');
             if (patch.mode === 'owner_migration') {
                 if (current.metadataLayoutVersion !== 0 || patch.source.metadata.version !== current.metadataVersion
@@ -104,6 +120,7 @@ export function createSessionMetadataHttpBoundary(readSessions: () => Readonly<R
             const target = patch.mode === 'owner_migration' ? patch.target : patch;
             const committed = SessionCurrentProjectionRecordV1Schema.parse({ ...current, metadataLayoutVersion: 1,
                 metadata: target.sharedMetadata.ciphertext, metadataVersion: current.metadataVersion + 1,
+                displayProjectionV1: target.displayProjectionV1 ?? null,
                 ownerMetadata: target.ownerMetadata, agentState: target.agentState.ciphertext, agentStateVersion: (current.agentStateVersion ?? 0) + 1 });
             records.set(id, committed);
             return Response.json(SessionMetadataTuplePatchSuccessV1Schema.parse({ success: true, metadataLayoutVersion: 1,

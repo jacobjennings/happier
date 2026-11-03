@@ -1,11 +1,53 @@
-import { lazyZodSchema } from '../lazyZodSchema.js';
+import { lazyDefinition, lazyZodSchema } from '../lazyZodSchema.js';
 import { z } from 'zod/mini';
 import { SessionGoalControlFailureV1Schema } from '../sessions/work/state/sessionWorkStateRpc.js';
 import { PluginContributionIdentityV1Schema } from '../plugins/contributionIdentity.js';
 import { QualifiedConnectedAccountPurposeV1Schema } from '../connect/connectedAccountPurposeIdentity.js';
-import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
+import { asProtocolZod, projectZodProtocolSchema } from '../plugins/actions/internalProtocolZodAdapter.js';
 import { MACHINE_RPC_TIMEOUT_ERROR_CODE, RPC_ERROR_CODES } from '../rpc/errors.js';
 import { ActionErrorClassV1Schema, type ActionErrorClassV1 } from './actionErrorClassV1.js';
+import { isPluginError } from '../plugins/errors.js';
+
+const goalControlDiagnosticStages = ['client_creation', 'initialize', 'thread/goal/get', 'thread/goal/set',
+  'thread/goal/clear', 'host_publication'] as const;
+export type SessionGoalControlDiagnosticStage = typeof goalControlDiagnosticStages[number];
+
+const goalControlNativeErrorCodes = new Set([
+  'plugin_exec_native_launch_unavailable', 'PLUGIN_EXEC_CLIENT_PROTOCOL_ERROR',
+  'CODEX_REALTIME_ENABLED_LAUNCH_UNAVAILABLE',
+]);
+function readGoalControlNativeErrorCode(value: unknown): string | null {
+  return typeof value === 'string' && goalControlNativeErrorCodes.has(value) ? value : null;
+}
+
+/** Only stage and the existing content-free exception vocabulary cross Goal controls. */
+export function projectSessionGoalControlDiagnosticDetails(
+  stage: SessionGoalControlDiagnosticStage,
+  error: unknown,
+): Readonly<{ stage: SessionGoalControlDiagnosticStage; errorClass: ActionErrorClassV1 | 'PluginError'; errorCode: string | null }> {
+  const { errorClass, errorCode } = readUnexpectedActionErrorDiagnosticV1(error);
+  return { stage, errorClass: isPluginError(error) ? 'PluginError' : errorClass,
+    errorCode: errorCode ?? readGoalControlNativeErrorCode(
+      error && typeof error === 'object' && 'code' in error ? error.code : undefined) };
+}
+
+/** Plugin diagnostics may contain private data; never forward their opaque details. */
+export function readSessionGoalControlDiagnosticDetails(
+  value: unknown,
+): ReturnType<typeof projectSessionGoalControlDiagnosticDetails> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Readonly<Record<string, unknown>>;
+  const stage = goalControlDiagnosticStages.find(stage => stage === record.stage);
+  if (!stage || typeof record.errorClass !== 'string') return null;
+  const details = projectSessionGoalControlDiagnosticDetails(stage, {
+    name: record.errorClass,
+    code: record.errorClass === 'JsonRpcApplicationError' && typeof record.errorCode === 'string'
+      ? Number(record.errorCode) : record.errorCode,
+  });
+  // Serialized diagnostics are data, not thrown PluginError authority.
+  if (record.errorClass === 'PluginError') return { ...details, errorClass: 'PluginError' as const };
+  return details.errorClass === record.errorClass ? details : null;
+}
 
 /** Historical, content-free admission facts. Not credential authority or a live readiness claim. */
 export const ActionOperationCredentialUseV1Schema = lazyZodSchema(() => z.strictObject({
@@ -46,6 +88,7 @@ export const ActionApprovalRequestCreatedResultSchema = lazyZodSchema(() => z.st
 export type ActionApprovalRequestCreatedResult = Readonly<
   z.infer<typeof ActionApprovalRequestCreatedResultSchema>
 >;
+export const ActionApprovalRequestCreatedResultProtocolSchema = lazyDefinition(() => projectZodProtocolSchema(ActionApprovalRequestCreatedResultSchema));
 
 /** Content-free diagnosis of a Home mutation whose acknowledgement was lost. */
 export const AccountActionHttpFailureDetailsV1Schema = lazyZodSchema(() => z.strictObject({
@@ -82,6 +125,8 @@ export const ActionExecuteFailureSchema = lazyZodSchema(() => z.strictObject({
   ok: z.literal(false),
   errorCode: z.string().check(z.trim(), z.minLength(1)),
   error: z.string().check(z.trim(), z.minLength(1)),
+  // Producer evidence for approval settlement; absence after dispatch is unknown.
+  effectAttempted: z.optional(z.boolean()),
   // Failure details remain an existing opaque Action contract. Their owning
   // producers decide their shape; this public envelope only excludes extra
   // top-level transit metadata.
@@ -98,8 +143,30 @@ export type ActionExecuteResult = Readonly<{
   | Readonly<{ ok: true; result: unknown }>
   | ActionExecuteFailure);
 
+/** The complete public Action settlement, including original operation custody. */
+export const ActionExecuteResultSchema = lazyZodSchema(() => z.union([
+  z.strictObject({
+    ok: z.literal(true),
+    result: z.unknown(),
+    operationCredentialUses: z.optional(z.array(ActionOperationCredentialUseV1Schema)),
+  }),
+  z.strictObject({
+    ...ActionExecuteFailureSchema.shape,
+    operationCredentialUses: z.optional(z.array(ActionOperationCredentialUseV1Schema)),
+  }),
+]));
+
 /** Failure of confirmation is not proof that an admitted effect did not happen. */
 export const UNEXPECTED_ACTION_FAILURE_CODES_V1 = ['action_not_admitted', 'action_outcome_unknown'] as const;
+
+/** A lost acknowledgement is not a definite failure, including approval replay. */
+export function isActionOutcomeUnknownErrorCodeV1(code: unknown): boolean {
+  return code === 'outcome_unknown' || code === UNEXPECTED_ACTION_FAILURE_CODES_V1[1]
+    || code === 'approval_execution_outcome_unknown'
+    || code === RPC_ERROR_CODES.OUTCOME_UNKNOWN
+    // The Project row transport/receipt owner has already classified settlement.
+    || code === 'project_account_row_outcome_unknown' || code === 'project_account_row_acknowledgement_invalid';
+}
 
 export function projectUnexpectedActionFailureV1(admissionCommitted: boolean | null, requestId?: string): ActionExecuteFailure & Readonly<{
   errorCode: typeof UNEXPECTED_ACTION_FAILURE_CODES_V1[number];
@@ -139,7 +206,7 @@ export function readUnexpectedActionErrorDiagnosticV1(error: unknown): Readonly<
         'SQLITE_BUSY', 'SQLITE_LOCKED', 'SQLITE_IOERR', 'SQLITE_FULL', 'SQLITE_CONSTRAINT', 'SQLITE_ERROR',
         'SQLITE_CANTOPEN', 'SQLITE_CORRUPT',
         'session_detail_invalid_response', 'session_detail_projection_unavailable', 'not_authenticated', 'client-upgrade-required',
-        'database_transaction_conflict_exhausted', 'database_connection_unavailable',
+        'database_transaction_conflict_exhausted', 'database_transaction_timeout', 'database_connection_unavailable',
       ].includes(code))) errorCode = code;
       // JSON-RPC reserves these protocol/server codes. Preserve only that
       // bounded vocabulary, never native application data or message text.
@@ -151,8 +218,14 @@ export function readUnexpectedActionErrorDiagnosticV1(error: unknown): Readonly<
       // body. An arbitrary server error/code can itself contain private data.
       const data = response && typeof response === 'object' && 'data' in response ? response.data : undefined;
       if (errorCode === null && data && typeof data === 'object') {
-        const serverCode = 'error' in data ? data.error : 'code' in data ? data.code : undefined;
-        if (serverCode === 'database_transaction_conflict_exhausted' || serverCode === 'database_connection_unavailable') errorCode = serverCode;
+        const serverCodes = ['error' in data ? data.error : undefined, 'code' in data ? data.code : undefined];
+        for (const serverCode of serverCodes) {
+          if (serverCode === 'database_transaction_conflict_exhausted' || serverCode === 'database_transaction_timeout'
+            || serverCode === 'database_connection_unavailable') {
+            errorCode = serverCode;
+            break;
+          }
+        }
       }
       const status = response && typeof response === 'object' && 'status' in response ? response.status
         : 'status' in error ? error.status : undefined;
@@ -181,18 +254,25 @@ export function readUnexpectedActionErrorDiagnosticV1(error: unknown): Readonly<
  * not a generic error parser: known Action fields and opaque details survive,
  * while bridge-private top-level metadata cannot cross the Action boundary.
  */
-export function projectActionExecuteFailure(result: ActionExecuteFailure): ActionExecuteFailure {
+export function parseActionExecuteFailure(value: unknown): ActionExecuteFailure | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const result = value as Readonly<Record<string, unknown>>;
+  if (result.ok !== false) return null;
   const goalControlFailure = SessionGoalControlFailureV1Schema.safeParse(result.goalControlFailure);
   const projected = ActionExecuteFailureSchema.safeParse({
     ok: false,
     errorCode: result.errorCode,
     error: result.error,
+    ...(typeof result.effectAttempted === 'boolean' ? { effectAttempted: result.effectAttempted } : {}),
     ...(result.details === undefined ? {} : { details: result.details }),
     ...(goalControlFailure.success ? { goalControlFailure: goalControlFailure.data } : {}),
   });
-  return projected.success
-    ? projected.data
-    : { ok: false, errorCode: 'action_failed', error: 'action_failed' };
+  return projected.success ? projected.data : null;
+}
+
+export function projectActionExecuteFailure(result: ActionExecuteFailure): ActionExecuteFailure {
+  return parseActionExecuteFailure(result)
+    ?? { ok: false, errorCode: 'action_failed', error: 'action_failed' };
 }
 
 /**

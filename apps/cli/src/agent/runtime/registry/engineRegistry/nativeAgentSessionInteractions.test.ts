@@ -5,6 +5,10 @@ import { NATIVE_TOOL_APPROVAL_REQUEST_SOURCE, NATIVE_TOOL_APPROVAL_ONCE_REQUEST_
 import { ServerBoundPermissionRpcHandlerManager } from '@/agent/permissions/testkit/serverBoundPermissionRpcHandlerManager';
 import { createMutableApiSessionClientFixture } from '@/testkit/backends/sessionFixtures';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
+import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
+import { createDeferred } from '@/testkit/async/deferred';
+import { createSessionClientExecutionRunService } from '@/api/session/client/executionRuns/createSessionClientExecutionRunService';
+import { createPluginSessionHandleCapabilitiesFactory } from '@/session/services/pluginSessionHandleCapabilities';
 import type {
     HostSessionApprovalRequest,
     HostSessionConfirmationRequest,
@@ -16,6 +20,11 @@ import {
     createNativeAgentSessionServices,
     type NativeAgentSessionInteractionParams,
 } from './nativeAgentSessionInteractions';
+
+const { callSessionRpc } = vi.hoisted(() => ({ callSessionRpc: vi.fn() }));
+
+// Keep the real execution-run service and permission owner beneath the RPC boundary.
+vi.mock('@/session/transport/rpc/sessionRpc', () => ({ callSessionRpc }));
 
 function createFixture(
     overrides: Partial<Omit<NativeAgentSessionInteractionParams, 'permissionHandler' | 'sessionId'>> = {},
@@ -104,6 +113,89 @@ const questionsRequest: HostSessionQuestionsRequest = {
 };
 
 describe('native Agent current-session interactions', () => {
+    it('escalates a public permission request containing a Date mutated during the reviewer wait', async () => {
+        const fixture = createFixture({ interactionDeadlineMs: undefined });
+        fixture.session.__setMetadata(createTestMetadata({ approvalReviewerEnabled: true }));
+        Object.assign(fixture.session, { executionRuns: createSessionClientExecutionRunService({
+            token: 'test-token', sessionId: fixture.session.sessionId, serverUrl: 'https://home.example.test',
+            getStoredContentCryptoContext: () => ({ mode: 'plain', ctx: null }),
+        }) });
+        const lifetime = new AbortController();
+        onTestFinished(() => lifetime.abort());
+        const live = { scopeId: Symbol('public-permissions'), permissionHandler: fixture.handler,
+            readPermissionMode: () => fixture.handler.getPermissionMode() };
+        const capabilities = createPluginSessionHandleCapabilitiesFactory({
+            credentials: { token: 'test-token', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+            caller: { pluginId: 'acme.plugin', contributionId: 'acme-agent',
+                sourceCustody: { kind: 'managed', immutableGenerationId: 'generation', installSource: 'npm' } },
+            signal: lifetime.signal, isCurrent: () => true, readAgentId: async () => 'codex',
+            resolveLiveCapabilities: () => live,
+        })(fixture.session.sessionId);
+        const date = new Date('2026-01-01T00:00:00.000Z');
+        callSessionRpc.mockReset();
+        callSessionRpc.mockResolvedValueOnce({ runId: 'review-run', callId: 'review-call', sidechainId: 'review-chain' });
+        callSessionRpc.mockImplementationOnce(async () => {
+            date.setUTCFullYear(2027);
+            return { ok: true, status: 'succeeded', result: {
+                run: { runId: 'review-run', callId: 'review-call', sidechainId: 'review-chain', intent: 'task',
+                    backendTarget: { kind: 'builtInAgent', agentId: 'codex' }, permissionMode: 'no_tools',
+                    retentionPolicy: 'ephemeral', runClass: 'bounded', ioMode: 'request_response',
+                    status: 'succeeded', startedAtMs: 1, finishedAtMs: 2 },
+                latestToolResult: { decision: 'allow_once' },
+            } };
+        });
+        const permissions = capabilities.permissions;
+        if (!permissions) throw new Error('Expected public Session permissions');
+        const pending = permissions.requestDecision({ toolCallId: 'opaque-date', toolName: 'Bash',
+            source: NATIVE_TOOL_APPROVAL_ONCE_REQUEST_SOURCE, input: { command: 'pwd', modifiedSince: date } });
+        void pending.catch(() => undefined);
+        await fixture.publishedRequest();
+        await expect(fixture.handler.respondAsApprovalReviewer('opaque-date')).resolves.toBe('escalate');
+        expect(fixture.session.__getAgentState().requests?.['opaque-date']).toBeDefined();
+        expect(fixture.session.__getAgentState().requests?.['opaque-date']).not.toHaveProperty('permissionResponseClaimV1');
+        expect(fixture.session.__getAgentState().completedRequests?.['opaque-date']).toBeUndefined();
+    });
+
+    it.each(['native', 'plugin'] as const)('applies a reviewer allow-once to a real %s approval without granting future permission', async surface => {
+        const fixture = createFixture({ interactionDeadlineMs: undefined });
+        fixture.session.__setMetadata(createTestMetadata({ approvalReviewerEnabled: true }));
+        Object.assign(fixture.session, { executionRuns: createSessionClientExecutionRunService({
+            token: 'test-token', sessionId: fixture.session.sessionId, serverUrl: 'https://home.example.test',
+            getStoredContentCryptoContext: () => ({ mode: 'plain', ctx: null }),
+        }) });
+        const reply = createDeferred<unknown>();
+        callSessionRpc.mockReset();
+        callSessionRpc.mockResolvedValueOnce({ runId: 'review-run', callId: 'review-call', sidechainId: 'review-chain' });
+        callSessionRpc.mockImplementationOnce(() => reply.promise);
+        const request: HostSessionApprovalRequest = { ...approvalRequest,
+            subject: { kind: 'tool', name: 'Bash', input: { command: 'pwd' } } };
+        const pending = surface === 'native'
+            ? fixture.current.request(request, { permissionContext: { turnId: 'reviewed-turn',
+                causalPermissionAuthority: { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'default' } } })
+            : fixture.public.requestApproval(request);
+        const { id } = await fixture.publishedRequest();
+        await vi.waitFor(() => expect(callSessionRpc).toHaveBeenCalledTimes(2));
+        reply.resolve({ ok: true, status: 'succeeded', result: {
+            run: { runId: 'review-run', callId: 'review-call', sidechainId: 'review-chain', intent: 'task',
+                backendTarget: { kind: 'builtInAgent', agentId: 'codex' }, permissionMode: 'no_tools',
+                retentionPolicy: 'ephemeral', runClass: 'bounded', ioMode: 'request_response',
+                status: 'succeeded', startedAtMs: 1, finishedAtMs: 2 },
+            latestToolResult: { decision: 'allow_once' },
+        } });
+        await expect(fixture.handler.respondAsApprovalReviewer(id)).resolves.toBe('allow_once');
+        await expect(pending).resolves.toMatchObject({ kind: 'approval', status: 'approved', persistence: 'once' });
+        const completed = fixture.session.__getAgentState().completedRequests?.[id];
+        expect(completed).toMatchObject({ decision: 'approved',
+            permissionDecisionClaimV1: { origin: 'approvalReviewer', decision: 'approved', scope: 'request',
+                ...(surface === 'native' ? { turnId: 'reviewed-turn' } : {}) },
+            permissionDecisionActorV1: { kind: 'approvalReviewer' },
+        });
+        expect(fixture.session.__getAgentState().requests?.[id]).toBeUndefined();
+        expect(completed).not.toHaveProperty('allowedTools');
+        expect(completed).not.toHaveProperty('updatedPermissions');
+        expect(callSessionRpc).toHaveBeenCalledTimes(2);
+    });
+
     it.each(['default', 'yolo'] as const)(
         'requires explicit confirmation answers through the real permission owner in %s mode',
         async (mode) => {

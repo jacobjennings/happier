@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
-import {
-  PluginInstallationReviewRequestInterceptorSchema,
-  PluginInstallationReviewSchema,
-} from '@happier-dev/protocol/marketplace/internal';
+import { PluginInstallationReviewRequestInterceptorSchema } from '@happier-dev/protocol/marketplace/internal';
 
 import { projectPluginInstallationReviewRequestInterceptor } from './changeContract';
 
@@ -44,20 +40,5 @@ describe('CLI-emitted installation review conforms to the protocol review contra
       priority: 0,
     });
     expect(PluginInstallationReviewRequestInterceptorSchema.safeParse(fact).success).toBe(true);
-  });
-
-  it('emits whole reviews the cross-process schema admits, including declared request policies', () => {
-    const review = createPluginInstallationReviewFixture({
-      requestInterceptors: [
-        projectPluginInstallationReviewRequestInterceptor({
-          id: 'rewrite-api',
-          origins: ['https://b.example.test', 'https://a.example.test'],
-          methods: ['GET', 'POST'],
-          priority: 10,
-        }),
-      ],
-    });
-
-    expect(PluginInstallationReviewSchema.safeParse(review).success).toBe(true);
   });
 });

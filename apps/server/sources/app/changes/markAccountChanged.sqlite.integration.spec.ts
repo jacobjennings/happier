@@ -1,10 +1,13 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { buildConnectedServicesAccountChangeV1 } from '@happier-dev/protocol/changes';
 
 import { db } from "@/storage/db";
 import { afterTx, inTx, transactionResult } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { eventRouter } from "@/app/events/connectionEventRouter";
 import { markAccountChanged, markAccountsChanged, markSessionAccountsChanged, type MarkAccountChangedParams } from "./markAccountChanged";
+import { recordConnectedServiceAccountProfileChange } from '@/app/api/routes/connect/connectedServicesAccountProfileChange';
+import { logger } from '@/utils/logging/log';
 
 describe("terminal AccountChange publication on SQLite", () => {
     let harness: LightSqliteHarness | undefined;
@@ -19,6 +22,57 @@ describe("terminal AccountChange publication on SQLite", () => {
     });
     afterEach(() => { eventRouter.clearIo(); });
     afterAll(async () => { await harness?.close(); });
+
+    it('attributes committed connected-service publications without credential or Account identifiers', async () => {
+        const account = await db.account.create({ data: { publicKey: 'connected-publication-attribution' } });
+        const diagnostic = vi.spyOn(logger, 'debug');
+        try {
+            const publish = (tx: Parameters<typeof recordConnectedServiceAccountProfileChange>[0]['tx']) =>
+                recordConnectedServiceAccountProfileChange({ tx, accountId: account.id, reason: 'credential-health',
+                    service: { pluginId: 'test.email', localId: 'email-imap-smtp' } });
+            await expect(inTx(async tx => { await publish(tx); throw new Error('fixture rollback'); }))
+                .rejects.toThrow('fixture rollback');
+            expect(diagnostic.mock.calls.filter(([, message]) => message === 'Connected service Account change committed')).toEqual([]);
+            await inTx(publish);
+            expect(diagnostic.mock.calls.filter(([, message]) => message === 'Connected service Account change committed'))
+                .toEqual([[{ reason: 'credential-health', serviceKind: 'email-imap-smtp' }, 'Connected service Account change committed']]);
+        } finally { diagnostic.mockRestore(); }
+    });
+
+    it('keeps connected service entities cursor-relative and independent of self changes', async () => {
+        const account = await db.account.create({ data: { publicKey: 'connected-service-entities' } });
+        const first = { pluginId: 'test.connected', localId: 'first' };
+        const second = { pluginId: 'test.connected', localId: 'second' };
+        const firstChange = buildConnectedServicesAccountChangeV1(first);
+        const secondChange = buildConnectedServicesAccountChangeV1(second);
+        const broadChange = buildConnectedServicesAccountChangeV1();
+        const readChanges = (after = 0) => db.accountChange.findMany({
+            where: { accountId: account.id, cursor: { gt: after } }, orderBy: { cursor: 'asc' },
+            select: { kind: true, entityId: true, hint: true },
+        });
+        await inTx(async tx => {
+            await markAccountChanged(tx, { accountId: account.id, kind: 'account', entityId: 'self',
+                hint: { connectedServices: true } });
+            await recordConnectedServiceAccountProfileChange({ tx, accountId: account.id, service: first });
+            await recordConnectedServiceAccountProfileChange({ tx, accountId: account.id, service: second });
+            await markAccountChanged(tx, { accountId: account.id, kind: 'account', entityId: 'self',
+                hint: { settingsVersion: 7 } });
+        });
+        expect(await readChanges()).toEqual([
+            firstChange, secondChange, { kind: 'account', entityId: 'self', hint: { settingsVersion: 7 } },
+        ]);
+        await inTx(tx => markAccountChanged(tx, { accountId: account.id, kind: 'account', entityId: 'self',
+            hint: { username: true } }));
+        expect((await readChanges()).at(-1)).toEqual({ kind: 'account', entityId: 'self', hint: { username: true } });
+        await inTx(tx => markAccountsChanged(tx, { accountIds: [account.id], kind: 'account', entityId: 'self' }));
+        expect((await readChanges()).at(-1)?.hint).toBeNull();
+        await inTx(tx => recordConnectedServiceAccountProfileChange({ tx, accountId: account.id }));
+        expect(await readChanges()).toHaveLength(4);
+        expect((await readChanges()).at(-1)).toEqual(broadChange);
+        const checkpoint = (await db.account.findUniqueOrThrow({ where: { id: account.id }, select: { seq: true } })).seq;
+        await inTx(tx => recordConnectedServiceAccountProfileChange({ tx, accountId: account.id, service: first }));
+        expect(await readChanges(checkpoint)).toEqual([firstChange]);
+    });
 
     it("retains queued Session and Machine removal changes after domain work deletes their rows", async () => {
         const account = await db.account.create({ data: { publicKey: "deleted-publication-resources" } });
@@ -58,7 +112,26 @@ describe("terminal AccountChange publication on SQLite", () => {
             .resolves.toEqual(changes.map(change => ({ ...change,
                 sessionId: null, machineId: null, artifactId: null, accountPetPackageId: null,
             })).sort((left, right) => left.cursor - right.cursor));
+        expect(emit).toHaveBeenCalledTimes(1);
         expect(emit).toHaveBeenCalledWith("update", expect.objectContaining({ seq: 4, body: { t: "account-change" } }));
+    });
+
+    it("coalesces mixed writers independently for each recipient Account", async () => {
+        const accounts = await Promise.all(["first", "second"].map(name => db.account.create({
+            data: { publicKey: `coalesced-${name}-recipient` },
+        })));
+        const emit = vi.fn();
+        const to = vi.fn((_room: string | string[]) => ({ emit, disconnectSockets: vi.fn() }));
+        eventRouter.setIo({ to });
+        await inTx(async tx => {
+            await markAccountChanged(tx, { accountId: accounts[0].id, kind: "account", entityId: "settings" });
+            await markAccountsChanged(tx, { accountIds: accounts.map(account => account.id), entityId: "profile" });
+            expect(emit).not.toHaveBeenCalled();
+        });
+        expect(to.mock.calls.map(([room]) => room).sort()).toEqual(accounts
+            .map(account => `account-stored-content-v3:${account.id}`).sort());
+        expect(emit.mock.calls.map(([, payload]) => payload.seq).sort()).toEqual([1, 2]);
+        expect(emit.mock.calls.every(([event, payload]) => event === "update" && payload.body.t === "account-change")).toBe(true);
     });
 
     it("captures the declared Session audience and entities before caller-owned maps and arrays change", async () => {
@@ -141,7 +214,10 @@ describe("terminal AccountChange publication on SQLite", () => {
 
         expect(result.cursor).toBeGreaterThanOrEqual(result.fullCursor);
         expect(afterCommitCursor).toBe(result.cursor);
-        expect(emit).toHaveBeenCalled();
+        expect(emit).toHaveBeenCalledTimes(1);
+        expect(emit).toHaveBeenCalledWith("update", expect.objectContaining({
+            seq: result.cursor, body: { t: "account-change" },
+        }));
         await expect(db.accountChange.findMany({ where: { accountId: account.id },
             select: { entityId: true, cursor: true, hint: true } })).resolves.toEqual([{
             entityId, cursor: result.cursor,
@@ -170,5 +246,16 @@ describe("terminal AccountChange publication on SQLite", () => {
             .resolves.toEqual({ seq: 0 });
         await expect(db.accountChange.findMany({ where: { accountId: account.id } })).resolves.toEqual([]);
         expect(emit).not.toHaveBeenCalled();
+
+        for (const cursor of [1, 2]) {
+            const publication = await inTx(async tx => markAccountChanged(tx, {
+                accountId: account.id, kind: "account", entityId: "settings",
+            }));
+            expect(publication.resolveCursor()).toBe(cursor);
+            expect(emit).toHaveBeenCalledTimes(cursor);
+            expect(emit).toHaveBeenLastCalledWith("update", expect.objectContaining({
+                seq: cursor, body: { t: "account-change" },
+            }));
+        }
     });
 });

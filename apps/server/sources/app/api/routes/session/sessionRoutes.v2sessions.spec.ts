@@ -5,6 +5,7 @@ import {
     encodeV2SessionListCursorV1,
     encodeV2SessionListCursorV2,
     V2SessionListResponseSchema,
+    V2SessionRecordSchema,
 } from "@happier-dev/protocol";
 import type { SessionRuntimeIssueV1 } from "@happier-dev/protocol";
 
@@ -25,6 +26,8 @@ import {
     txSessionFindFirst,
     txSessionFindMany,
     txSessionPinFindMany,
+    txSessionTurnFindMany,
+    sessionTurnFindMany,
 } from "./sessionRoutes.testkit";
 import {
     mapV2SessionListRow as mapV2SessionListRowWithAccountMode,
@@ -69,14 +72,6 @@ function mapV2SessionListRow(
 }
 
 describe("session listing response contracts", () => {
-    it("keeps the released V1 list behind present-user or proof-bound Action admission", async () => {
-        const route = await createSessionRouteTestBuilder("GET", "/v1/sessions");
-        const config = getRouteEntry(route.app, "GET", "/v1/sessions").opts.config;
-
-        expect(config?.allowApiToken).toBeUndefined();
-        expect(config?.restrictedCredentialBinding).toBeUndefined();
-    });
-
     it.each([
         "/v2/sessions",
         "/v2/sessions/active",
@@ -578,11 +573,8 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         expect(JSON.stringify(recipient)).not.toMatch(
             /oRoBAgMEBQYHCAkKCwwNDg8QERITFBUWFxh8aC0\+8\+YDECLScN6uQTItPyWVR7XbQA==|full-owner-agent-state/,
         );
-        expect(V2SessionListResponseSchema.safeParse({
-            sessions: [owner, recipient],
-            nextCursor: null,
-            hasNext: false,
-        }).success).toBe(true);
+        expect(V2SessionRecordSchema.safeParse(owner).success).toBe(true);
+        expect(V2SessionRecordSchema.safeParse(recipient).success).toBe(true);
     });
 
     it("rejects shared-recipient rows carrying owner projection authority", () => {
@@ -609,14 +601,10 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             accessLevel: "edit",
             canApprovePermissions: true,
         });
-        expect(V2SessionListResponseSchema.safeParse({
-            sessions: [{
+        expect(V2SessionRecordSchema.safeParse({
                 ...recipient,
                 ownerMetadata: OWNER_METADATA_ENVELOPE_V1,
                 agentState: "full-owner-agent-state",
-            }],
-            nextCursor: null,
-            hasNext: false,
         }).success).toBe(false);
     });
 
@@ -657,11 +645,7 @@ describe("sessionRoutes v2 sessions snapshot", () => {
                 requiredByTeamPolicy: false,
             }],
         });
-        expect(V2SessionListResponseSchema.safeParse({
-            sessions: [recipient],
-            nextCursor: null,
-            hasNext: false,
-        }).success).toBe(true);
+        expect(V2SessionRecordSchema.safeParse(recipient).success).toBe(true);
     });
 
     it("GET /v2/sessions omits one unmigrated layout-zero share and keeps the rest of the page", async () => {
@@ -1445,7 +1429,8 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         const activeReadFailure = {
             ...pagedSessionRow("s_failed_active_read", { active: true, meaningfulActivityAt: new Date(2_500) }),
             seq: 10,
-            lastViewedSessionSeq: 10,
+            lastViewedSessionSeq: 9,
+            latestTurnId: "turn-failed",
             latestTurnStatus: "failed",
             latestTurnStatusObservedAt: BigInt(1_000),
             lastRuntimeIssue: JSON.stringify(usageLimitRuntimeIssue),
@@ -1454,6 +1439,7 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             ...pagedSessionRow("s_failed_inactive_unread", { active: false, meaningfulActivityAt: new Date(2_600) }),
             seq: 11,
             lastViewedSessionSeq: 10,
+            latestTurnId: "turn-failed",
             latestTurnStatus: "failed",
             latestTurnStatusObservedAt: BigInt(1_000),
             lastRuntimeIssue: JSON.stringify(usageLimitRuntimeIssue),
@@ -1461,11 +1447,25 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         const inactiveReadFailure = {
             ...pagedSessionRow("s_failed_inactive_read", { active: false, meaningfulActivityAt: new Date(1_000) }),
             seq: 10,
-            lastViewedSessionSeq: 10,
+            lastViewedSessionSeq: 9,
+            latestTurnId: "turn-failed",
             latestTurnStatus: "failed",
             latestTurnStatusObservedAt: BigInt(1_000),
             lastRuntimeIssue: JSON.stringify(usageLimitRuntimeIssue),
         };
+        const failureAnchors = new Map([
+            ["s_failed_active_read", 10],
+            ["s_failed_inactive_unread", 11],
+            ["s_failed_inactive_read", 10],
+        ]);
+        // Persistence boundary: each current failed turn commits its transcript anchor; a failure
+        // stays attention only while that anchor is beyond the viewer cursor.
+        const readFailureAnchors = async (query: { where: { OR: Array<{ sessionId: string; turnId: string }> } }) =>
+            query.where.OR.flatMap(({ sessionId }) => failureAnchors.has(sessionId)
+                ? [{ sessionId, transcriptAnchorsJson: JSON.stringify({ endSeqInclusive: failureAnchors.get(sessionId) }) }]
+                : []);
+        txSessionTurnFindMany.mockImplementation(readFailureAnchors as never);
+        sessionTurnFindMany.mockImplementation(readFailureAnchors as never);
         const inactivePublishedReadFailureWithStagedTail = {
             ...pagedSessionRow("s_failed_inactive_staged_tail", { active: false, meaningfulActivityAt: new Date(1_100) }),
             seq: 9,

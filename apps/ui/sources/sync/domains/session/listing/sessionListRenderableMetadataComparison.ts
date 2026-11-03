@@ -1,5 +1,6 @@
 import { readProjectGroupV1, areProjectGroupsV1Equal, type ProjectGroupV1 } from '@happier-dev/protocol/sessions/metadata/projectGroupV1';
 import { readSessionDirectoryKind } from '@happier-dev/protocol/sessions/metadata/directory';
+import type { SessionSemanticDisplayV1, SessionOwnerDisplayV1 } from '@happier-dev/protocol';
 import { readSessionBotV1, type SessionBotV1 } from '@happier-dev/protocol/sessions/identity/sessionBotV1';
 import type { Metadata } from '@happier-dev/session-core/state';
 import {
@@ -15,6 +16,8 @@ import {
     serializeExternalSessionSourceForComparison,
 } from '@/sync/domains/session/external/serializeExternalSessionSourceForComparison';
 import type { SessionListRenderableMetadata } from './sessionListRenderable';
+import { readSessionUsageLimitRecoveryFromMetadata } from '@happier-dev/protocol/sessions/state/valueSchemas/usageLimitRecovery';
+import { readSessionWorkspaceLocationFromMetadata } from '@happier-dev/protocol/sessions/metadata/sessionWorkspaceLocationV1';
 
 export type SessionListRenderableExternalSessionIdentity = Readonly<{
     v: 1;
@@ -22,16 +25,19 @@ export type SessionListRenderableExternalSessionIdentity = Readonly<{
     machineId: string;
     remoteSessionId: string;
     linkedAtMs?: number;
-    source: ExternalSessionLink['source'];
+    source: ExternalSessionLink['source'] | NonNullable<SessionOwnerDisplayV1['externalSessionV1']>['source'];
     runtimeDescriptorV1?: ExternalSessionLink['runtimeDescriptorV1'];
     qualifiedIdentity?: ExternalSessionLink['qualifiedIdentity'];
     linkData?: ExternalSessionLink['linkData'];
 }>;
 
 export type SessionListRenderableMetadataComparison = Readonly<{
+    sessionUsageLimitRecoveryV1?: SessionListRenderableMetadata['sessionUsageLimitRecoveryV1'];
     lifecycleState?: string;
     projectId?: string | null;
     workspaceId?: string | null;
+    sessionWorkspaceLocationV1?: SessionListRenderableMetadata['sessionWorkspaceLocationV1'];
+    branch?: string | null;
     bot?: SessionBotV1;
     name: string | undefined;
     summaryText: string | null;
@@ -55,9 +61,12 @@ export type SessionListRenderableMetadataComparison = Readonly<{
 }>;
 
 type SessionListRenderableMetadataComparisonSnapshot = Readonly<{
+    sessionUsageLimitRecoveryV1?: SessionListRenderableMetadata['sessionUsageLimitRecoveryV1'];
     lifecycleState?: string;
     projectId?: string | null;
     workspaceId?: string | null;
+    sessionWorkspaceLocationV1?: SessionListRenderableMetadata['sessionWorkspaceLocationV1'];
+    branch?: string | null;
     bot?: unknown;
     name?: string;
     summaryText: string | null;
@@ -77,6 +86,15 @@ type SessionListRenderableMetadataComparisonSnapshot = Readonly<{
 
 /** One shared value, so equal rows keep their identity wherever the marker is restated. */
 export const MANAGED_SESSION_DIRECTORY_MARKER = Object.freeze({ v: 1 as const, kind: 'managed' as const });
+
+export function areSessionListWorkspaceLocationsEqual(
+    previous: SessionListRenderableMetadata['sessionWorkspaceLocationV1'],
+    next: SessionListRenderableMetadata['sessionWorkspaceLocationV1'],
+): boolean {
+    return previous === next || (!previous && !next) || Boolean(previous && next
+        && previous.v === next.v && previous.machineId === next.machineId
+        && previous.agentPath === next.agentPath && previous.machinePath === next.machinePath);
+}
 
 function readExternalSessionRenderableMetadata(
     candidate: SessionListRenderableExternalSessionIdentity | null,
@@ -209,9 +227,12 @@ function isSessionListRenderableMetadataComparisonSnapshotEqual(
     nextReadStateV1: SessionListRenderableMetadataComparison['readStateV1'],
 ): boolean {
     return previous.lifecycleState === snapshot.lifecycleState
+        && JSON.stringify(previous.sessionUsageLimitRecoveryV1 ?? null) === JSON.stringify(snapshot.sessionUsageLimitRecoveryV1 ?? null)
         && previous.name === snapshot.name
         && (previous.projectId ?? null) === (snapshot.projectId ?? null)
         && (previous.workspaceId ?? null) === (snapshot.workspaceId ?? null)
+        && areSessionListWorkspaceLocationsEqual(previous.sessionWorkspaceLocationV1, snapshot.sessionWorkspaceLocationV1)
+        && previous.branch === snapshot.branch
         && (readSessionBotV1(previous.bot)?.kind ?? null) === (readSessionBotV1(snapshot.bot)?.kind ?? null)
         && (previous.summaryText ?? null) === snapshot.summaryText
         && areProjectGroupsV1Equal(previous.projectGroupV1, snapshot.projectGroupV1)
@@ -244,6 +265,12 @@ export function normalizeSessionListRenderableMetadataComparison(
     const normalizedSnapshot = {
         ...snapshot,
     };
+    const location = snapshot.sessionWorkspaceLocationV1;
+    normalizedSnapshot.sessionWorkspaceLocationV1 = location
+        ? areSessionListWorkspaceLocationsEqual(previous?.sessionWorkspaceLocationV1, location)
+            ? previous?.sessionWorkspaceLocationV1
+            : { v: 1, machineId: location.machineId, agentPath: location.agentPath, machinePath: location.machinePath }
+        : location;
     const nextExternalSessionV1 = readExternalSessionRenderableMetadata(
         normalizedSnapshot.externalSessionV1,
         previous?.externalSessionV1 ?? null,
@@ -273,9 +300,12 @@ export function normalizeSessionListRenderableMetadataComparison(
     }
 
     const next: SessionListRenderableMetadataComparison = {
+        ...(normalizedSnapshot.sessionUsageLimitRecoveryV1 ? { sessionUsageLimitRecoveryV1: normalizedSnapshot.sessionUsageLimitRecoveryV1 } : {}),
         ...(normalizedSnapshot.lifecycleState === undefined ? {} : { lifecycleState: normalizedSnapshot.lifecycleState }),
         ...(normalizedSnapshot.projectId === undefined ? {} : { projectId: normalizedSnapshot.projectId }),
         ...(normalizedSnapshot.workspaceId === undefined ? {} : { workspaceId: normalizedSnapshot.workspaceId }),
+        ...(normalizedSnapshot.sessionWorkspaceLocationV1 === undefined ? {} : { sessionWorkspaceLocationV1: normalizedSnapshot.sessionWorkspaceLocationV1 }),
+        ...(normalizedSnapshot.branch === undefined ? {} : { branch: normalizedSnapshot.branch }),
         ...(nextBot ? { bot: previous?.bot ?? nextBot } : {}),
         name: normalizedSnapshot.name,
         summaryText: normalizedSnapshot.summaryText,
@@ -306,9 +336,12 @@ export function readSessionListRenderableMetadataComparison(
     if (metadata.bot !== undefined && readSessionBotV1(metadata.bot) === null) return null;
 
     return normalizeSessionListRenderableMetadataComparison({
+        sessionUsageLimitRecoveryV1: readSessionUsageLimitRecoveryFromMetadata(metadata),
         lifecycleState: typeof metadata.lifecycleState === 'string' ? metadata.lifecycleState : undefined,
         projectId: typeof metadata.projectId === 'string' || metadata.projectId === null ? metadata.projectId : undefined,
         workspaceId: typeof metadata.workspaceId === 'string' || metadata.workspaceId === null ? metadata.workspaceId : undefined,
+        sessionWorkspaceLocationV1: readSessionWorkspaceLocationFromMetadata({ metadata }),
+        branch: typeof metadata.branch === 'string' || metadata.branch === null ? metadata.branch : undefined,
         bot: metadata.bot,
         projectGroupV1: readProjectGroupV1(metadata.projectGroupV1) ?? undefined,
         name: typeof metadata.name === 'string' ? metadata.name : undefined,
@@ -328,15 +361,39 @@ export function readSessionListRenderableMetadataComparison(
     }, previous);
 }
 
+/** Adapt the canonical semantic display, without reconstructing a full external link. */
+export function readSessionListRenderableMetadataComparisonFromDisplay(
+    display: SessionSemanticDisplayV1,
+    previous?: SessionListRenderableMetadata | null,
+): SessionListRenderableMetadataComparison {
+    const owner = display.owner;
+    return normalizeSessionListRenderableMetadataComparison({
+        ...owner,
+        name: owner?.name ?? undefined,
+        bot: display.shared.bot,
+        summaryText: display.shared.summaryText ?? null,
+        path: owner?.path ?? '', homeDir: owner?.homeDir ?? null, host: owner?.host ?? null,
+        machineId: owner?.machineId ?? null,
+        sessionWorkspaceLocationV1: owner?.sessionWorkspaceLocationV1 ?? null,
+        flavor: display.shared.agentPresentation?.agentId ?? null,
+        externalSessionV1: owner?.externalSessionV1 ?? null,
+        readStateV1: owner?.readStateV1 ?? null,
+        hiddenSystemSession: owner?.hiddenSystemSession === true,
+    }, previous);
+}
+
 export function readSessionListRenderableMetadataComparisonFromRenderable(
     metadata: SessionListRenderableMetadata | null | undefined,
 ): SessionListRenderableMetadataComparison | null {
     if (!metadata) return null;
 
     return normalizeSessionListRenderableMetadataComparison({
+        sessionUsageLimitRecoveryV1: metadata.sessionUsageLimitRecoveryV1,
         lifecycleState: metadata.lifecycleState,
         projectId: metadata.projectId,
         workspaceId: metadata.workspaceId,
+        sessionWorkspaceLocationV1: metadata.sessionWorkspaceLocationV1,
+        branch: metadata.branch,
         bot: metadata.bot,
         projectGroupV1: readProjectGroupV1(metadata.projectGroupV1) ?? undefined,
         name: metadata.name,
@@ -374,9 +431,12 @@ export function areSessionListRenderableMetadataComparisonsEqual(
     if (!previous || !next) return previous === next;
 
     return previous.lifecycleState === next.lifecycleState
+        && JSON.stringify(previous.sessionUsageLimitRecoveryV1 ?? null) === JSON.stringify(next.sessionUsageLimitRecoveryV1 ?? null)
         && previous.name === next.name
         && (previous.projectId ?? null) === (next.projectId ?? null)
         && (previous.workspaceId ?? null) === (next.workspaceId ?? null)
+        && areSessionListWorkspaceLocationsEqual(previous.sessionWorkspaceLocationV1, next.sessionWorkspaceLocationV1)
+        && previous.branch === next.branch
         && (previous.bot?.kind ?? null) === (next.bot?.kind ?? null)
         && (previous.summaryText ?? null) === (next.summaryText ?? null)
         && areProjectGroupsV1Equal(previous.projectGroupV1, next.projectGroupV1)

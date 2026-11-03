@@ -303,7 +303,7 @@ function resolveLocalServerPayloadOverrideFromBinaryPath(serverBinaryPath: strin
 }> {
   const binaryPath = String(serverBinaryPath ?? '').trim();
   if (!binaryPath || !existsSync(binaryPath)) {
-    throw new Error(`relay binary not found: ${binaryPath || '(empty)'}`);
+    throw createInvalidArgumentsError(`relay binary not found: ${binaryPath || '(empty)'}`);
   }
   const binaryDir = dirname(binaryPath);
   const payloadRoot = basename(binaryDir) === 'bin'

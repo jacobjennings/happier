@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { resolveWebSyncClientIdentity } from '@/sync/runtime/webSyncClientIdentity';
 
 import {
     createBrowserIrohSharedEndpointOwner,
@@ -559,69 +558,6 @@ describe('sync/runtime/browserIroh/sharedEndpointOwner', () => {
             .resolves.toBeUndefined();
     });
 
-    it('is required because the existing per-tab sync identity diverges across tabs', () => {
-        // Characterisation of the owner this slice must NOT reuse. `webSyncClientIdentity`
-        // is deliberately session-scoped: two tabs of the same profile get two identities,
-        // and a reload of one does not reunite them. That is correct for socket instance
-        // accounting and disqualifying for a single browser Iroh endpoint.
-        const localStorage = new Map<string, string>();
-        const asStorage = (map: Map<string, string>) => ({
-            getItem: (key: string) => map.get(key) ?? null,
-            setItem: (key: string, value: string) => {
-                map.set(key, value);
-            },
-            removeItem: (key: string) => {
-                map.delete(key);
-            },
-        });
-        let counter = 0;
-        const randomUUID = () => `id-${(counter += 1)}`;
-        const shared = asStorage(localStorage);
-
-        const tabA = resolveWebSyncClientIdentity({
-            sessionStorage: asStorage(new Map()),
-            localStorage: shared,
-            nowMs: 1_000,
-            liveTtlMs: 60_000,
-            randomUUID,
-            navigationType: 'navigate',
-        });
-        const tabB = resolveWebSyncClientIdentity({
-            sessionStorage: asStorage(new Map()),
-            localStorage: shared,
-            nowMs: 1_000,
-            liveTtlMs: 60_000,
-            randomUUID,
-            navigationType: 'navigate',
-        });
-
-        expect(tabA.instanceId).not.toBe(tabB.instanceId);
-    });
-
-    it('serves two clients from one endpoint and one EndpointId', async () => {
-        const { owner, binder } = createOwnerHarness();
-
-        const first = await owner.acquireLease({ clientId: 'tab-a', relayUrls: [RELAY_A] });
-        const second = await owner.acquireLease({ clientId: 'tab-b', relayUrls: [RELAY_A] });
-
-        expect(binder.binds).toHaveLength(1);
-        expect(second.endpointId).toBe(first.endpointId);
-        expect(first.leaseId).not.toBe(second.leaseId);
-        expect(owner.status()).toMatchObject({ state: 'ready', leaseCount: 2 });
-    });
-
-    it('binds exactly one endpoint when two clients acquire concurrently', async () => {
-        const { owner, binder } = createOwnerHarness();
-
-        const [first, second] = await Promise.all([
-            owner.acquireLease({ clientId: 'tab-a', relayUrls: [RELAY_A] }),
-            owner.acquireLease({ clientId: 'tab-b', relayUrls: [RELAY_B] }),
-        ]);
-
-        expect(binder.binds).toHaveLength(1);
-        expect(first.endpointId).toBe(second.endpointId);
-    });
-
     it('keeps the sibling client live when one client releases', async () => {
         const { owner, binder } = createOwnerHarness();
 
@@ -697,6 +633,8 @@ describe('sync/runtime/browserIroh/sharedEndpointOwner', () => {
 
         expect(binder.binds).toHaveLength(1);
         expect(second.endpointId).toBe(first.endpointId);
+        expect(first.leaseId).not.toBe(second.leaseId);
+        expect(owner.status()).toMatchObject({ state: 'ready', leaseCount: 2 });
         // A union: adopting a second Home never evicts the first Home's relay.
         expect(second.appliedRelayUrls).toEqual([RELAY_A, RELAY_B]);
     });
@@ -776,13 +714,14 @@ describe('sync/runtime/browserIroh/sharedEndpointOwner', () => {
     });
 
     it('reaches the endpoint with a contribution made while the first bind was in flight', async () => {
-        const { owner } = createOwnerHarness();
+        const { owner, binder } = createOwnerHarness();
 
         const [first, second] = await Promise.all([
             owner.acquireLease({ clientId: 'tab-a', relayUrls: [RELAY_A] }),
             owner.acquireLease({ clientId: 'tab-b', relayUrls: [RELAY_B] }),
         ]);
 
+        expect(binder.binds).toHaveLength(1);
         expect(second.endpointId).toBe(first.endpointId);
         // Both contributions reached the one endpoint; which one is observed
         // first depends on apply order, but the union is deterministic.

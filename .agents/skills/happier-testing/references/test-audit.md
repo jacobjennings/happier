@@ -15,6 +15,8 @@ Classify candidates temporarily:
 
 For every `C` or `D`, name the detectable regression, non-test caller or test-only seam, stronger keeper, relevant history, and focused validation. Size, mock count, source inspection, timeout length, or slowness alone is never deletion evidence.
 
+Judge a test by its assertions, not its name. A table or `it.each` is one declaration unless its rows need different marks.
+
 ## Automate the mechanical work
 
 Prefer existing repository generators, migration scripts, fixture factories, and testkit codemods. Use an AST-aware codemod when syntax or imports vary; use bounded structured replacement only for uniform text/configuration.
@@ -48,11 +50,36 @@ Before a broad transformation:
 
 Keep smell analyzers report-only initially. Useful candidates include exact source/prose/import greps, copied inventories, test-only production seams, internal-domain mocks, assertion-free probes, incidental total call counts, and changed timeout/retry literals. Promote an analyzer to enforcement only after its false-positive set is understood and legitimate exceptions are owner-local.
 
+Reading the test also finds what analyzers miss:
+
+- self-comparisons, and expected values computed by the subject under test;
+- mocks that implement the asserted behavior, or pretend two distinct APIs behave alike;
+- fixtures that supply receipts, admission, or callback ordering the owner should produce, or assert persistence on a store path the owner never writes;
+- a capability flag asserted in place of the promised delivery or acknowledgement;
+- negative controls that pass on an unrelated guard or unreachable rejection, including a negative that still passes when only one of several items is missing;
+- one shared helper replayed once per Agent, Provider, or plugin;
+- names promising behavior the inputs and assertions never exercise.
+
 ## Preserve the right proof
 
 Retain public API/ABI, protocol, crypto, persistence, migration, package, generated-output, trust/permission, installer/update, platform, accessibility, compatibility, artifact, signing, and real lifecycle contracts when they provide independent proof. Consolidate scaffolding and duplicated fixtures before removing these scenarios.
 
 Use the strongest practical boundary as keeper: real owner behavior over source spelling, real SQLite/Fastify over a fake internal repository, packed artifact over working-tree existence, provenance-pinned predecessor vector over a schema reconstructed from current types, and real process/transport behavior over internal call transcripts.
+
+## Whole-subsystem campaign order
+
+Each step ends on its completion criterion; do not start the next one early.
+
+1. **Baseline.** At one pinned SHA, in a worktree outside the checkout run through `hstack-exec --repo=`, record every in-scope test file's pass/fail and the test/support and production line counts. Keep baseline failures in their own list: each is a candidate product defect until classified, never a deletion reason. Done when every in-scope file has a result.
+2. **Lanes.** Split along production owner boundaries, not file prefixes, including the subsystem's cases at shared-core boundaries and its composed or live harness tests. Done when each file belongs to exactly one lane.
+3. **Ledger.** One read-only reader per lane reads every assigned test in full (parameter tables included), the production owner, entry points, callers, history, and lane routing (`scripts/testing/lib/testLaneMap.ts`), and marks every declaration `R`/`F`/`C`/`D` with one evidence line. The ledger lives in the campaign report, not the repository. Done when every declaration has a mark.
+4. **Layer plan.** A second read-only pass starts from the ledger and looks for the redundant layer, such as suites replaying one shared owner through a mocked collaborator around a stronger real-boundary suite. It names one keeper per contract (a real transport with a fake network beats a mocked collaborator), the assertions to carry into keepers, the retired files, and the test-only production seams unlocked, and corrects ledger errors. Done when every lane names these; a delegated campaign stops here for review.
+5. **Cutover.** Edit lane by lane, with one owner for shared harnesses and testkits. Remove the test-only seams each lane unlocks (injection parameters, getters, reset exports, indirection layers) in the same change, keep `pnpm run test:wiring` green, and search for support files and exports the removal orphaned. Add test-ownership rules to the package `AGENTS.md` only from mistakes the campaign actually found. Done when every plan is applied and its keepers pass.
+6. **Preservation review.** Reviewers other than the author, one per boundary group, compare removed coverage with the keepers for contracts that lost their only proof and new assertions that cannot fail. For each restored contract, make one deliberate mutation of the production owner, confirm the keeper goes RED, then put the original bytes back by edit and confirm with `cmp` against a saved copy. Done when every gap is restored or rejected with source evidence and every restored contract has a caught mutation.
+7. **Product defects.** A baseline failure that survives into a keeper is a defect: fix it at its owner in its own commit, with a control (the fix removed by edit shows the old failure) and the candidate on the same harness. Record unrelated discrepancies as follow-ups.
+8. **Reconcile.** When a concurrent commit modified a file the campaign removed, keep the removal, port the new contract into its keeper, and confirm every newly added regression still has a home. A campaign carried on its own branch merges its base instead of rebasing; commits on the shared branch already sit on the moving tip. Rerun only the tests reconciliation touched, then the exact-SHA profile once.
+
+The campaign report adds the baseline and final line counts (production counted separately; context, not the success metric), lanes, retired layers and keepers, preservation gaps with their mutations, and product defects with control and candidate proof.
 
 ## Validation and measurement
 

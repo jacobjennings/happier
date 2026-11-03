@@ -13,6 +13,9 @@ export {
 } from './idsV1.js';
 
 export * from './access/index.js';
+export * from './sessionEventDelivery.js';
+export * from './sessionConsumptionV1.js';
+export * from './messages/sessionMessageObservationFactsV1.js';
 export * from './subagents/index.js';
 export * from './slashCommands.js';
 export * from './media/imageReferenceV1.js';
@@ -53,6 +56,7 @@ export * from './messages/canonicalTurnDiffTool.js';
 export * from './messages/spawnedFirstTurn.js';
 export * from './presentation/index.js';
 export * from './metadata/sessionMetadataEnvelopesV1.js';
+export * from './metadata/sessionDisplayEnvelopesV1.js';
 export * from './metadata/sessionActionConfirmationsV1.js';
 export * from './metadata/sessionWorkspaceLocationV1.js';
 export * from './metadata/sessionDirectoryV1.js';

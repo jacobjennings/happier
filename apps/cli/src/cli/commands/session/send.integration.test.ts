@@ -686,7 +686,7 @@ describe('happier session send (integration)', () => {
             seq: 8,
             createdAt: Date.now(),
             body: {
-              t: 'new-message',
+              t: 'new-message', delivery: 'full' as const,
               sid: sessionId,
               message: {
                 id: 'msg-active-wait-complete',
@@ -838,7 +838,7 @@ describe('happier session send (integration)', () => {
             seq: 8,
             createdAt: Date.now(),
             body: {
-              t: 'new-message',
+              t: 'new-message', delivery: 'full' as const,
               sid: sessionId,
               message: {
                 id: 'msg-active-wait-complete-stale-busy',
@@ -1019,7 +1019,7 @@ describe('happier session send (integration)', () => {
             seq: 8,
             createdAt: Date.now(),
             body: {
-              t: 'new-message',
+              t: 'new-message', delivery: 'full' as const,
               sid: sessionId,
               message: {
                 id: 'msg-active-wait-task-complete',
@@ -1169,7 +1169,7 @@ describe('happier session send (integration)', () => {
             seq: 4,
             createdAt: Date.now(),
             body: {
-              t: 'new-message',
+              t: 'new-message', delivery: 'full' as const,
               sid: sessionId,
               message: {
                 id: 'msg-current-turn-task-complete',

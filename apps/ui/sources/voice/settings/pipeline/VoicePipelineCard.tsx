@@ -76,7 +76,7 @@ export const VoicePipelineCard = React.memo(function VoicePipelineCard(props: Vo
             <View style={styles.headerText}>
                 <Text style={styles.title}>{props.title}</Text>
                 <View style={styles.statusLine}>
-                    <VoiceReadinessGlyph tone={props.status.tone} />
+                    {props.status.tone === 'unknown' ? null : <View style={styles.glyphSlot}><VoiceReadinessGlyph tone={props.status.tone} /></View>}
                     <Text style={styles.statusText}>{props.status.text}</Text>
                 </View>
             </View>
@@ -154,7 +154,7 @@ function StepReadiness(props: Readonly<{ readiness: VoicePipelineStepReadiness }
     return (
         <View style={styles.readiness}>
             <View style={styles.readinessLine}>
-                <VoiceReadinessGlyph tone={readiness.tone} />
+                <View style={styles.glyphSlot}><VoiceReadinessGlyph tone={readiness.tone} /></View>
                 <Text style={[styles.readinessText, toneStyle]}>{readiness.message}</Text>
             </View>
             {readiness.action ? (
@@ -271,8 +271,13 @@ const styles = StyleSheet.create((theme) => ({
     statusLine: {
         marginTop: theme.space.s2,
         flexDirection: 'row',
-        alignItems: 'center',
+        alignItems: 'flex-start',
         gap: theme.space.s6,
+    },
+    // A status glyph sits on the first line of its text, however far the text wraps.
+    glyphSlot: {
+        height: happierPageTextMetrics('rowDescription').lineHeight,
+        justifyContent: 'center',
     },
     statusText: {
         ...Typography.default(),

@@ -1,3 +1,5 @@
+import { MACHINE_VITALS_ACTION_IDS } from './machineVitalsActionIdsV1.js';
+export { MACHINE_VITALS_ACTION_IDS } from './machineVitalsActionIdsV1.js';
 import { z } from 'zod/mini';
 import { lazyZodSchema } from '../../lazyZodSchema.js';
 import { MachineVitalsGetInputV1Schema, MachineVitalsHistoryGetInputV1Schema, MachineVitalsSnapshotV1Schema } from '../../machines/vitals/machineVitalsRpcV1.js';
@@ -5,8 +7,6 @@ import { MachineVitalsHistoryV1Schema } from '../../machines/vitals/machineVital
 import { MachineResourceAttentionV1Schema, MachineResourceSummaryV1Schema } from '../../machines/resources/machineResourceSummaryV1.js';
 import { RPC_METHODS } from '../../rpc/methods.js';
 import type { PreNormalizedActionSpec } from '../actionSpecs.js';
-
-export const MACHINE_VITALS_ACTION_IDS = ['machines.vitals.get', 'machines.vitals.history.get', 'machines.vitals.summaries.list'] as const;
 export type MachineVitalsActionId = typeof MACHINE_VITALS_ACTION_IDS[number];
 export const MachineVitalsActionIdSchema = lazyZodSchema(() => z.enum(MACHINE_VITALS_ACTION_IDS));
 export const MachineVitalsSummariesListInputV1Schema = lazyZodSchema(() => z.strictObject({ serverId: z.optional(z.string().check(z.trim(), z.minLength(1))) }));

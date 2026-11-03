@@ -248,4 +248,37 @@ describe('createSessionFilePreviewSource', () => {
         await result.source.delete();
         expect(nativeFiles.current!.files.size).toBe(0);
     });
+
+    it.each(['video/mp4', 'image/png'])('rejects %s at the shared web buffering budget before encrypted chunk reads', async mimeType => {
+        vi.stubEnv('EXPO_PUBLIC_HAPPIER_FILES_DOWNLOAD_MAX_BYTES', '2');
+        harness = await createWorkspaceFileDownloadHarness({ name: 'clip.mp4', bytes: new Uint8Array([1, 2, 3]) });
+        const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:oversized-preview');
+        const result = await createSessionFilePreviewSource({ scope: harness.scope, filePath: 'clip.mp4', mimeType, maxBytes: mimeType === 'video/mp4' ? null : 100 });
+        expect(result).toEqual({ ok: false, error: 'File exceeds the preview size limit', errorCode: 'too_large' });
+        expect(harness.requests.some(request => request.url.endsWith('/chunks/0'))).toBe(false);
+        expect(createObjectURL).not.toHaveBeenCalled();
+    });
+
+    it('materializes a web video exactly at the shared buffering budget through encrypted chunks', async () => {
+        vi.stubEnv('EXPO_PUBLIC_HAPPIER_FILES_DOWNLOAD_MAX_BYTES', '3');
+        harness = await createWorkspaceFileDownloadHarness({ name: 'clip.mp4', bytes: new Uint8Array([1, 2, 3]) });
+        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:bounded-preview');
+        const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+        const result = await createSessionFilePreviewSource({ scope: harness.scope, filePath: 'clip.mp4', mimeType: 'video/mp4', maxBytes: null });
+        expect(result).toMatchObject({ ok: true, source: { kind: 'object-url', byteLength: 3 } });
+        expect(harness.requests.some(request => request.url.endsWith('/chunks/0'))).toBe(true);
+        if (result.ok && result.source.kind === 'object-url') result.source.revoke();
+        expect(revokeObjectURL).toHaveBeenCalledWith('blob:bounded-preview');
+    });
+
+    it('retains the existing web memory ceiling even when file-backed download admission is configured higher', async () => {
+        const { WEB_DOWNLOAD_MEMORY_FALLBACK_MAX_BYTES } = await import('@/hooks/workspaces/transfers/webDownloadFileSink');
+        vi.stubEnv('EXPO_PUBLIC_HAPPIER_FILES_DOWNLOAD_MAX_BYTES', String(WEB_DOWNLOAD_MEMORY_FALLBACK_MAX_BYTES * 2));
+        harness = await createWorkspaceFileDownloadHarness({ name: 'clip.mp4', bytes: new Uint8Array([1, 2, 3]) });
+        const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:oversized-preview');
+        const result = await createSessionFilePreviewSource({ scope: harness.scope, filePath: 'clip.mp4', mimeType: 'video/mp4', maxBytes: null, expectedSizeBytes: WEB_DOWNLOAD_MEMORY_FALLBACK_MAX_BYTES + 1 });
+        expect(result).toEqual({ ok: false, error: 'File exceeds the preview size limit', errorCode: 'too_large' });
+        expect(harness.rpcRequests).toHaveLength(0);
+        expect(createObjectURL).not.toHaveBeenCalled();
+    });
 });

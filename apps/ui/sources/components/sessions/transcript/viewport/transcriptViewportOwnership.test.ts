@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { createTranscriptViewportOwnership } from './transcriptViewportOwnership';
+import {
+    createTranscriptViewportOwnership,
+    type TranscriptViewportTransactionOutcome,
+    type TranscriptViewportTransactionOwner as TxOwner,
+} from './transcriptViewportOwnership';
+import type { TranscriptViewportOwner } from './transcriptViewportTypes';
 
 describe('transcript viewport ownership', () => {
     describe('initial state', () => {
-        it('starts with follow as the active owner and only follow may write', () => {
+        it('starts with follow as the active owner, only follow may write, and idle never writes', () => {
             const ownership = createTranscriptViewportOwnership();
 
             expect(ownership.activeOwner()).toBe('follow');
@@ -12,6 +17,12 @@ describe('transcript viewport ownership', () => {
             expect(ownership.canWrite('entry')).toBe(false);
             expect(ownership.canWrite('prepend')).toBe(false);
             expect(ownership.canWrite('explicit')).toBe(false);
+            expect(ownership.canWrite('idle')).toBe(false);
+
+            ownership.openTransaction('entry');
+            expect(ownership.canWrite('idle')).toBe(false);
+
+            ownership.closeTransaction('entry', 'preempted');
             expect(ownership.canWrite('idle')).toBe(false);
         });
     });
@@ -28,33 +39,22 @@ describe('transcript viewport ownership', () => {
             expect(ownership.canWrite('explicit')).toBe(false);
         });
 
-        it('rejects a double open by the same owner', () => {
-            const ownership = createTranscriptViewportOwnership();
-            ownership.openTransaction('entry');
+        it.each([
+            { active: 'entry', next: 'entry' },
+            { active: 'entry', next: 'prepend' },
+            { active: 'prepend', next: 'entry' },
+            { active: 'explicit', next: 'entry' },
+            { active: 'explicit', next: 'prepend' },
+        ] satisfies ReadonlyArray<{ active: TxOwner; next: TxOwner }>)(
+            'rejects opening $next while $active owns the viewport',
+            ({ active, next }) => {
+                const ownership = createTranscriptViewportOwnership();
+                ownership.openTransaction(active);
 
-            expect(ownership.openTransaction('entry')).toEqual({ opened: false, activeOwner: 'entry' });
-            expect(ownership.activeOwner()).toBe('entry');
-        });
-
-        it('keeps entry and prepend mutually exclusive', () => {
-            const entryFirst = createTranscriptViewportOwnership();
-            entryFirst.openTransaction('entry');
-            expect(entryFirst.openTransaction('prepend')).toEqual({ opened: false, activeOwner: 'entry' });
-            expect(entryFirst.activeOwner()).toBe('entry');
-
-            const prependFirst = createTranscriptViewportOwnership();
-            prependFirst.openTransaction('prepend');
-            expect(prependFirst.openTransaction('entry')).toEqual({ opened: false, activeOwner: 'prepend' });
-            expect(prependFirst.activeOwner()).toBe('prepend');
-        });
-
-        it('rejects opening while an explicit transaction is active', () => {
-            const ownership = createTranscriptViewportOwnership();
-            ownership.openTransaction('explicit');
-
-            expect(ownership.openTransaction('entry')).toEqual({ opened: false, activeOwner: 'explicit' });
-            expect(ownership.openTransaction('prepend')).toEqual({ opened: false, activeOwner: 'explicit' });
-        });
+                expect(ownership.openTransaction(next)).toEqual({ opened: false, activeOwner: active });
+                expect(ownership.activeOwner()).toBe(active);
+            },
+        );
     });
 
     describe('closeTransaction', () => {
@@ -72,27 +72,28 @@ describe('transcript viewport ownership', () => {
             expect(ownership.canWrite('entry')).toBe(false);
         });
 
-        it('rejects a close from a non-active owner without state change', () => {
-            const ownership = createTranscriptViewportOwnership();
-            ownership.openTransaction('entry');
+        it.each([
+            { open: 'entry', close: 'prepend', outcome: 'abandoned-user-scroll', active: 'entry' },
+            { open: null, close: 'entry', outcome: 'deadline', active: 'follow' },
+        ] satisfies ReadonlyArray<{
+            open: TxOwner | null;
+            close: TxOwner;
+            outcome: TranscriptViewportTransactionOutcome;
+            active: TranscriptViewportOwner;
+        }>)(
+            'rejects a close by $close that does not own the viewport (open: $open) without state change',
+            ({ open, close, outcome, active }) => {
+                const ownership = createTranscriptViewportOwnership();
+                if (open) ownership.openTransaction(open);
 
-            expect(ownership.closeTransaction('prepend', 'abandoned-user-scroll')).toEqual({
-                closed: false,
-                activeOwner: 'entry',
-            });
-            expect(ownership.activeOwner()).toBe('entry');
-            expect(ownership.canWrite('entry')).toBe(true);
-        });
-
-        it('rejects a close when no transaction is open', () => {
-            const ownership = createTranscriptViewportOwnership();
-
-            expect(ownership.closeTransaction('entry', 'deadline')).toEqual({
-                closed: false,
-                activeOwner: 'follow',
-            });
-            expect(ownership.activeOwner()).toBe('follow');
-        });
+                expect(ownership.closeTransaction(close, outcome)).toEqual({
+                    closed: false,
+                    activeOwner: active,
+                });
+                expect(ownership.activeOwner()).toBe(active);
+                expect(ownership.canWrite(active)).toBe(true);
+            },
+        );
 
         it('allows a new transaction after the previous one closed', () => {
             const ownership = createTranscriptViewportOwnership();
@@ -108,38 +109,25 @@ describe('transcript viewport ownership', () => {
     });
 
     describe('preempt', () => {
-        it('lets explicit preempt an open entry transaction', () => {
-            const ownership = createTranscriptViewportOwnership();
-            ownership.openTransaction('entry');
+        it.each([
+            { open: 'entry', preemptedOwner: 'entry' },
+            { open: 'prepend', preemptedOwner: 'prepend' },
+            { open: 'explicit', preemptedOwner: 'explicit' },
+            { open: null, preemptedOwner: null },
+        ] satisfies ReadonlyArray<{ open: TxOwner | null; preemptedOwner: TxOwner | null }>)(
+            'lets explicit preempt-open with exclusive write access (open: $open)',
+            ({ open, preemptedOwner }) => {
+                const ownership = createTranscriptViewportOwnership();
+                if (open) ownership.openTransaction(open);
 
-            expect(ownership.preempt('explicit')).toEqual({ opened: true, preemptedOwner: 'entry' });
-            expect(ownership.activeOwner()).toBe('explicit');
-            expect(ownership.canWrite('explicit')).toBe(true);
-            expect(ownership.canWrite('entry')).toBe(false);
-        });
-
-        it('lets explicit preempt an open prepend transaction', () => {
-            const ownership = createTranscriptViewportOwnership();
-            ownership.openTransaction('prepend');
-
-            expect(ownership.preempt('explicit')).toEqual({ opened: true, preemptedOwner: 'prepend' });
-            expect(ownership.activeOwner()).toBe('explicit');
-        });
-
-        it('lets a new explicit action preempt a still-open explicit transaction', () => {
-            const ownership = createTranscriptViewportOwnership();
-            ownership.openTransaction('explicit');
-
-            expect(ownership.preempt('explicit')).toEqual({ opened: true, preemptedOwner: 'explicit' });
-            expect(ownership.activeOwner()).toBe('explicit');
-        });
-
-        it('opens an explicit transaction when nothing is open', () => {
-            const ownership = createTranscriptViewportOwnership();
-
-            expect(ownership.preempt('explicit')).toEqual({ opened: true, preemptedOwner: null });
-            expect(ownership.activeOwner()).toBe('explicit');
-        });
+                expect(ownership.preempt('explicit')).toEqual({ opened: true, preemptedOwner });
+                expect(ownership.activeOwner()).toBe('explicit');
+                expect(ownership.canWrite('explicit')).toBe(true);
+                expect(ownership.canWrite('entry')).toBe(false);
+                expect(ownership.canWrite('prepend')).toBe(false);
+                expect(ownership.canWrite('follow')).toBe(false);
+            },
+        );
 
         it('gives entry and prepend no preemption power', () => {
             const ownership = createTranscriptViewportOwnership();
@@ -184,17 +172,6 @@ describe('transcript viewport ownership', () => {
                 outcome: 'abandoned-identity',
             });
             expect(ownership.activeOwner()).toBe('follow');
-        });
-
-        it('never grants write access to idle', () => {
-            const ownership = createTranscriptViewportOwnership();
-            expect(ownership.canWrite('idle')).toBe(false);
-
-            ownership.openTransaction('entry');
-            expect(ownership.canWrite('idle')).toBe(false);
-
-            ownership.closeTransaction('entry', 'preempted');
-            expect(ownership.canWrite('idle')).toBe(false);
         });
     });
 });

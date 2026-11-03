@@ -80,18 +80,6 @@ async function renderAndEnterValueStep(props: SelectionListProps, text: string):
 }
 
 describe('SelectionList per-step value mode (worktree custom naming)', () => {
-    it("commits the typed value via the active step's onCommitInputValue when it declares inputMode:'value'", async () => {
-        const { act } = await import('react-test-renderer');
-        const stepCommit = vi.fn();
-        const input = await renderAndEnterValueStep(makeProps(makeValueStep(stepCommit)), 'my-custom-name');
-
-        await act(async () => {
-            input.props.onKeyPress?.(ENTER);
-        });
-
-        expect(stepCommit).toHaveBeenCalledWith('my-custom-name');
-    });
-
     it('prefers the step-level onCommitInputValue over the prop-level handler', async () => {
         const { act } = await import('react-test-renderer');
         const stepCommit = vi.fn();

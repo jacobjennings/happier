@@ -1,6 +1,6 @@
 import { endianness } from 'node:os';
 import { parseLinuxProcStartTime, parseLinuxProcStartTimeMs } from '@happier-dev/cli-common/processInstance';
-import type { DaemonOwnershipEnvironment, ProcessCensusField, ProcessCensusRow, ProcessCensusSnapshot } from './processCensus';
+import type { ProcessCensusField, ProcessCensusRow, ProcessCensusSnapshot } from './processCensus';
 import { ancestorsOf, indexCensus } from '../tree/processTree';
 
 export const DAEMON_OWNERSHIP_ENVIRONMENT_VARIABLE_KEYS = [
@@ -38,6 +38,31 @@ type LinuxCensusInput = Readonly<{
     selfPid: number; pids?: readonly number[]; capturedAtMs: number; logicalCpus: number;
     fields?: readonly ProcessCensusField[]; commandRoots?: readonly number[]; includeAncestors?: boolean; includeDescendants?: boolean;
 }>;
+
+function readOwnershipFields(environ: string | undefined) {
+    let ownerTag: string | undefined;
+    let environment: Record<string, string> | undefined;
+    // Read the fresh environment without splitting or retaining unrelated values.
+    for (let cursor = 0; environ !== undefined && cursor < environ.length;) {
+        const terminator = environ.indexOf('\0', cursor);
+        const end = terminator < 0 ? environ.length : terminator;
+        const separator = environ.indexOf('=', cursor);
+        if (separator > cursor && separator < end) {
+            const key = environ.slice(cursor, separator);
+            if (key === 'HAPPIER_PROCESS_OWNER') ownerTag = environ.slice(separator + 1, end);
+            else for (let index = 0; index < DAEMON_OWNERSHIP_ENVIRONMENT_VARIABLE_KEYS.length; index++) {
+                const allowed = DAEMON_OWNERSHIP_ENVIRONMENT_VARIABLE_KEYS[index]!;
+                if (key !== allowed) continue;
+                const value = environ.slice(separator + 1, end).trim();
+                if (!value) continue;
+                environment ??= {};
+                environment[allowed] = value;
+            }
+        }
+        cursor = end + 1;
+    }
+    return { ownerTag, ownershipEnvironment: environment };
+}
 
 export function createLinuxCensusReader(boundary: LinuxCensusBoundary) {
     const root = (boundary.procRoot ?? '/proc').replace(/\/+$/u, '');
@@ -87,6 +112,7 @@ export function createLinuxCensusReader(boundary: LinuxCensusBoundary) {
             }
             const uid = status === undefined ? undefined : /^Uid:\s+(\d+)/mu.exec(status)?.[1];
             if (uid === undefined && !missing.includes('status')) missing.push('principal');
+            const principal = uid === undefined ? null : { kind: 'uid' as const, value: uid };
             const number = (index: number) => /^-?\d+$/u.test(fields[index] ?? '') ? Number(fields[index]) : NaN;
             const ppid = number(1), pgid = number(2), sessionId = number(3), tpgid = number(5);
             const cpuTicks = number(11) + number(12);
@@ -100,14 +126,19 @@ export function createLinuxCensusReader(boundary: LinuxCensusBoundary) {
             const state = fields[0] === 'R' ? 'running' : fields[0] === 'S' || fields[0] === 'D' || fields[0] === 'I' ? 'sleeping'
                 : fields[0] === 'T' || fields[0] === 't' ? 'stopped' : fields[0] === 'Z' ? 'zombie' : 'other';
             if (missing.length) partial.push({ pid, missing });
-            return {
-                pid, ppid: Number.isSafeInteger(ppid) && ppid >= 0 ? ppid : null,
-                ...(Number.isSafeInteger(pgid) && pgid > 0 ? { pgid } : {}),
-                ...(Number.isSafeInteger(sessionId) && sessionId > 0 ? { sessionId } : {}),
-                ...(Number.isSafeInteger(tpgid) && tpgid > 0 ? { tpgid } : {}),
-                start: { startTimeMs, native: `linux-proc:${ticks}` }, principal: uid === undefined ? null : { kind: 'uid', value: uid },
-                name: stat.slice(stat.indexOf('(') + 1, end), memory, cpuTimeUs, state,
+            const parent = Number.isSafeInteger(ppid) && ppid >= 0 ? ppid : null;
+            const group = Number.isSafeInteger(pgid) && pgid > 0 ? pgid : undefined;
+            const session = Number.isSafeInteger(sessionId) && sessionId > 0 ? sessionId : undefined;
+            const foregroundGroup = Number.isSafeInteger(tpgid) && tpgid > 0 ? tpgid : undefined;
+            const native = `linux-proc:${ticks}`;
+            const name = stat.slice(stat.indexOf('(') + 1, end);
+            const row: ProcessCensusRow = {
+                pid, ppid: parent, ...(group !== undefined ? { pgid: group } : {}),
+                ...(session !== undefined ? { sessionId: session } : {}),
+                ...(foregroundGroup !== undefined ? { tpgid: foregroundGroup } : {}),
+                start: { startTimeMs, native }, principal, name, memory, cpuTimeUs, state,
             };
+            return row;
         };
         const rows = (await Promise.all(pids.map(readRow))).filter((row): row is ProcessCensusRow => row !== null);
         if (input.pids && input.includeDescendants) {
@@ -183,25 +214,17 @@ export function createLinuxCensusReader(boundary: LinuxCensusBoundary) {
                 optional('cwd', 'cwd', command, true), optional('executablePath', 'exe', command, true),
                 optional('ownershipEnvironment', 'environ', own),
             ]);
-            let ownerTag: string | undefined;
-            const ownershipEnvironment: DaemonOwnershipEnvironment = {};
-            for (const entry of environ?.split('\0') ?? []) {
-                const separator = entry.indexOf('=');
-                if (separator < 1) continue;
-                const key = entry.slice(0, separator);
-                const value = entry.slice(separator + 1);
-                if (key === 'HAPPIER_PROCESS_OWNER') ownerTag = value;
-                else for (const allowed of DAEMON_OWNERSHIP_ENVIRONMENT_VARIABLE_KEYS) {
-                    if (key === allowed && value.trim()) ownershipEnvironment[allowed] = value.trim();
-                }
-            }
+            const { ownerTag, ownershipEnvironment } = readOwnershipFields(environ);
+            const cgroupPath = /^0::(.*)$/mu.exec(cgroup ?? '')?.[1] || undefined;
+            if (wants('cgroup') && cgroup !== undefined && cgroupPath === undefined) missing.push('cgroup');
+            const argv = cmdline?.split('\0').filter((value, index, values) => index < values.length - 1 || value !== '');
             if (missing.length && !missingByPid.has(row.pid)) partial.push({ pid: row.pid, missing });
             return { ...row,
-                ...(cgroup !== undefined && /^0::(.*)$/mu.exec(cgroup)?.[1] ? { cgroup: /^0::(.*)$/mu.exec(cgroup)![1] } : {}),
-                ...(cmdline !== undefined ? { argv: cmdline.split('\0').filter((value, index, values) => index < values.length - 1 || value !== '') } : {}),
+                ...(cgroupPath !== undefined ? { cgroup: cgroupPath } : {}),
+                ...(argv !== undefined ? { argv } : {}),
                 ...(cwd !== undefined ? { cwd } : {}), ...(executablePath !== undefined ? { executablePath } : {}),
                 ...(ownerTag !== undefined ? { ownerTag } : {}),
-                ...(Object.keys(ownershipEnvironment).length ? { ownershipEnvironment } : {}),
+                ...(ownershipEnvironment !== undefined ? { ownershipEnvironment } : {}),
             };
         }));
         return { status: 'ok', capturedAtMs: input.capturedAtMs, logicalCpus: input.logicalCpus, rows: enriched,

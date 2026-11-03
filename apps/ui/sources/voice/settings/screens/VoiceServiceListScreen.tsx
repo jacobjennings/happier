@@ -8,9 +8,9 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { t } from '@/text';
-import { useVoiceExecutionMachinePresentation } from '@/voice/credentials/useExecutionMachinePresentation';
+import { useVoiceExecutionMachineSelection } from '@/voice/credentials/useExecutionMachinePresentation';
 import { useVoiceConversationsReadinessModel } from '@/voice/settings/panels/VoiceProviderSection';
-import { useVoiceConversationsReadinessInputs } from '@/voice/settings/useVoiceConversationsReadinessInputs';
+import { useVoiceSettingsReadinessInputs } from '@/voice/settings/useVoiceSettingsReadinessInputs';
 import { useVoiceSettingsMutable } from '@/voice/settings/useVoiceSettingsMutable';
 
 /**
@@ -22,8 +22,8 @@ export function VoiceServiceListScreen() {
   const { theme } = useUnistyles();
   const router = useRouter();
   const [voice, setVoice] = useVoiceSettingsMutable();
-  const executionMachine = useVoiceExecutionMachinePresentation();
-  const inputs = useVoiceConversationsReadinessInputs(voice, { probeMachine: false });
+  const executionMachine = useVoiceExecutionMachineSelection();
+  const inputs = useVoiceSettingsReadinessInputs(voice, { purpose: 'conversation', probeMachine: false });
   const model = useVoiceConversationsReadinessModel({
     voice,
     setVoice,

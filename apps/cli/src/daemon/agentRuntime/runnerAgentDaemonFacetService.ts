@@ -17,6 +17,8 @@ import {
 import type {
   AgentSessionRunnerBindingV1,
 } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
+import { verifyRunnerAgentBindingAgainstGeneration } from '@/plugins/runtime/runner/loadRetainedAgentRuntimeLeaf';
+import type { PluginStorePaths } from '@/plugins/store/paths';
 import type {
   ExternalSessionHostOperationOwner,
 } from '@/session/external/hostOperationOwner';
@@ -146,6 +148,25 @@ export type RunnerAgentDaemonFacetService = Readonly<{
   }>): Promise<RunnerAgentDaemonFacetResultV1>;
   dispose(): Promise<void>;
 }>;
+
+/** Re-attest the exact runner-carried Agent before projecting Voice authority. */
+export async function attestRetainedAgentForVoice(input: Readonly<{
+  paths: PluginStorePaths;
+  retainedAgent: AgentSessionRunnerBindingV1;
+  runner: AgentRuntimeDaemonServiceAuthorityRunnerIdentity;
+}>) {
+  try {
+    return await verifyRunnerAgentBindingAgainstGeneration({
+      paths: input.paths,
+      binding: input.retainedAgent,
+      ...(input.retainedAgent.sourceCustody.kind === 'development'
+        ? { developmentRunnerSnapshotIdentity: input.runner.snapshotIdentity }
+        : {}),
+    });
+  } catch {
+    return null;
+  }
+}
 
 export function createRunnerAgentDaemonFacetService(input: Readonly<{
   externalSessionHostOperationOwner: ExternalSessionHostOperationOwner;

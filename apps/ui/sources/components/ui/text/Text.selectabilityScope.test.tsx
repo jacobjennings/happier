@@ -14,27 +14,6 @@ vi.mock('react-native', async () => {
     );
 });
 
-vi.mock('@/constants/Typography', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/constants/Typography')>();
-  return {
-    ...actual,
-    Typography: {
-      ...actual.Typography,
-      default: () => ({}),
-      mono: () => ({}),
-    },
-  };
-});
-
-vi.mock('@/sync/store/settingsReadHooks', () => ({
-  useLocalSetting: () => 1,
-}));
-
-vi.mock('./uiFontScale', () => ({
-  scaleTextStyle: (style: any) => style,
-  scaleUnistylesTextStyleEntry: (entry: any) => entry,
-}));
-
 describe('Text (selectability scope)', () => {
   it('defaults to non-selectable without a scope', async () => {
     const { Text } = await import('./Text');

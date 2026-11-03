@@ -75,6 +75,7 @@ function shortRelativeTimeDisplay(timestamp: number, nowMs: number): Readonly<{ 
     const months = Math.floor(days / 30);
     if (months < 12) return { label: `${months}mo`, nextAtMs: timestamp + (months + 1) * 30 * 86_400_000 };
 
-    const years = Math.floor(days / 365);
+    // Twelve 30-day months end at 360 days, before the first 365-day year.
+    const years = Math.max(1, Math.floor(days / 365));
     return { label: `${years}y`, nextAtMs: timestamp + (years + 1) * 365 * 86_400_000 };
 }

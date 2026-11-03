@@ -664,6 +664,8 @@ async function finishQualifiedGroupMutation(
         await recordConnectedServiceAccountProfileChange({
             tx,
             accountId: params.accountId,
+            service: params.service,
+            reason: 'group',
         });
     }
     return {
@@ -1111,6 +1113,8 @@ export async function deleteQualifiedConnectedAccountGroup(
         await recordConnectedServiceAccountProfileChange({
             tx,
             accountId: params.accountId,
+            service: params.service,
+            reason: 'group-delete',
         });
         return { status: "deleted" };
     });

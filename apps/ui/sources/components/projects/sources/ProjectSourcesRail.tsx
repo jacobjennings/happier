@@ -15,7 +15,6 @@ import {
   collectionListStyles,
 } from '@/components/ui/lists/collection/CollectionList';
 import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessLine';
-import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { useCollectionDraftTitle } from '@/components/ui/lists/collection/CollectionDraftTitle';
 
@@ -110,11 +109,8 @@ export const ProjectSourcesRail = React.memo(function ProjectSourcesRail(
                 key={source.id}
                 testID={`projects.sources.row.${source.id}`}
                 title={source.name}
-                titleAccessory={
-                  team ? (
-                    <Text style={collectionListStyles.dimmedTitle}>{team}</Text>
-                  ) : undefined
-                }
+                // The Team is the row's title qualifier: one line, never squeezing the source's name.
+                titleQualifier={team}
                 subtitle={describeProjectSourceRow(source)}
                 icon={mark()}
                 selected={props.selectedId === source.id}

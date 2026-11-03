@@ -43,8 +43,21 @@ describe('transcriptNavigationRuntimeAnchors', () => {
                 },
             ],
             renderedSources: [
+                // Decoy: same seq, block index and role as the user-turn entry but
+                // another route id. A seq/block-only matcher lands the turn here.
                 {
                     sourceIndex: 0,
+                    messageIds: ['u0'],
+                    messages: [{
+                        messageId: 'u0',
+                        routeMessageId: 'local:u0',
+                        seq: 7,
+                        transcriptBlockIndex: 0,
+                        role: 'user',
+                    }],
+                },
+                {
+                    sourceIndex: 1,
                     messageIds: ['u1'],
                     messages: [{
                         messageId: 'u1',
@@ -55,7 +68,7 @@ describe('transcriptNavigationRuntimeAnchors', () => {
                     }],
                 },
                 {
-                    sourceIndex: 1,
+                    sourceIndex: 2,
                     messageIds: ['a1'],
                     messages: [{
                         messageId: 'a1',
@@ -77,13 +90,13 @@ describe('transcriptNavigationRuntimeAnchors', () => {
             {
                 id: 'session-1:user-turn:7',
                 kind: 'user-turn',
-                sourceIndex: 0,
+                sourceIndex: 1,
                 messageIds: ['u1'],
             },
             {
                 id: 'session-1:pinned:local:a1',
                 kind: 'pinned-assistant',
-                sourceIndex: 1,
+                sourceIndex: 2,
                 messageIds: ['a1'],
             },
         ]);

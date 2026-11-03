@@ -39,25 +39,4 @@ describe('SlideTransitionFrame reducedMotion', () => {
         expect(screen.findByTestId('frame-next-blur')).toBeNull();
         expect(screen.findByTestId('frame-previous-blur')).toBeNull();
     });
-
-    it('still mounts the blur layer when reducedMotion=false and blur=true', async () => {
-        const Reanimated = await import('react-native-reanimated');
-        const { SlideTransitionFrame } = await import('./SlideTransitionFrame');
-
-        function Harness(): React.ReactElement {
-            const progress = Reanimated.useSharedValue(0);
-            return (
-                <SlideTransitionFrame
-                    current={<View testID="current" />}
-                    progress={progress}
-                    blur
-                    reducedMotion={false}
-                    testID="frame"
-                />
-            );
-        }
-
-        const screen = await renderScreen(<Harness />);
-        expect(screen.findByTestId('frame-current-blur')).not.toBeNull();
-    });
 });

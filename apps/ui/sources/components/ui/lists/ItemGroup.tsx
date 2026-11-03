@@ -65,9 +65,10 @@ export interface ItemGroupProps {
     title?: string | React.ReactNode;
     /**
      * What this section is about, read before its rows. Page presentation renders it under the
-     * section title; grouped presentation (menus, pickers, sheets) renders it as the footer.
+     * section title; grouped presentation (menus, pickers, sheets) renders it as the footer. Rich
+     * content (a localized sentence around an `InlineCode`) is set in the same description text.
      */
-    description?: string;
+    description?: React.ReactNode;
     /** A compact section-level action (e.g. "Check now", "Add"), aligned with the section title. */
     action?: React.ReactNode;
     /** The shared header's fit-aware inline default, or its narrow-page adaptive layout. */
@@ -260,6 +261,13 @@ const stylesheet = StyleSheet.create((theme) => {
         },
         // A page section's sheet sits on the same content margin as the grouped card; its look is the
         // shared page sheet's (`HappierPageSheet`).
+        pageSheetFlat: {
+            marginLeft: (Platform.select(ITEM_GROUP_CONTENT_MARGIN_HORIZONTAL_PX) ?? 12)
+                + PAGE_LIST_METRICS.headingOpticalInsetPx - PAGE_LIST_METRICS.rowPaddingHorizontalPx,
+            // The hairlines end on the content's trailing edge, where the section's controls end.
+            marginRight: (Platform.select(ITEM_GROUP_CONTENT_MARGIN_HORIZONTAL_PX) ?? 12)
+                + PAGE_LIST_METRICS.headingOpticalInsetPx,
+        },
         pageSheet: {
             marginHorizontal: Platform.select(ITEM_GROUP_CONTENT_MARGIN_HORIZONTAL_PX),
             // IMPORTANT: allow popovers to overflow the sheet (as the grouped card does).
@@ -351,6 +359,8 @@ const ItemGroupPageSheetBody = React.memo(function ItemGroupPageSheetBody(props:
     virtualizedSegment?: ItemGroupVirtualizedSegment;
     containerStyle?: StyleProp<ViewStyle>;
     clipContent?: boolean;
+    /** `flat`: the same rows and hairlines laid on the pane, without the card. */
+    flat?: boolean;
 }>) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
@@ -366,11 +376,15 @@ const ItemGroupPageSheetBody = React.memo(function ItemGroupPageSheetBody(props:
         >
             <HappierPageSheet
                 colors={colors}
+                surface={props.flat ? 'none' : undefined}
                 gradient={resolveThemeSurfaceFinish(theme, 'card')}
                 renderMaterialSurface={renderThemeMaterialSurface}
                 // App callers pass React Native layout styles; the shared sheet keeps its own look under them.
                 style={[
                     styles.pageSheet,
+                    // Without a card, the rows' glyphs and text start on the section heading's edge; the
+                    // press fill and hairlines take the row padding into the margin.
+                    props.flat ? styles.pageSheetFlat : undefined,
                     props.clipContent ? styles.contentContainerInnerClipped : undefined,
                     // A virtualized section's chunks read as one sheet: no grounding between them.
                     virtualizedSegment ? styles.virtualizedSurfaceSegment : undefined,
@@ -547,6 +561,17 @@ const ItemGroupColumnedBody = React.memo(function ItemGroupColumnedBody(props: R
     );
 });
 
+/**
+ * The surface a section takes when it does not choose one. A page hosted in a side pane (Session Info
+ * beside its conversation, lab csinfo I2) lays its sections flat on the pane — rows and hairlines, no
+ * card — so it reads as the pane's own content rather than a page of cards squeezed beside a page.
+ */
+const ItemGroupDefaultSurfaceContext = React.createContext<'sheet' | 'flat'>('sheet');
+
+export function ItemGroupDefaultSurfaceProvider(props: Readonly<{ value: 'sheet' | 'flat'; children?: React.ReactNode }>) {
+    return <ItemGroupDefaultSurfaceContext.Provider value={props.value}>{props.children}</ItemGroupDefaultSurfaceContext.Provider>;
+}
+
 export const ItemGroup = React.memo<ItemGroupProps>((props) => {
     const { theme } = useUnistyles();
     const styles = stylesheet;
@@ -575,10 +600,15 @@ export const ItemGroup = React.memo<ItemGroupProps>((props) => {
         virtualizedSegment,
         columns,
         clipContent = false,
-        surface = 'sheet',
+        surface: surfaceProp,
         density,
         testID,
     } = props;
+    const defaultSurface = React.useContext(ItemGroupDefaultSurfaceContext);
+    // Only page sections that choose no surface take it: menus and pickers opened from the pane reset to
+    // grouped rows, and a section laid out as its own surface (`none`) stays as it is.
+    const surface = surfaceProp ?? 'sheet';
+    const flatSheet = surfaceProp === undefined && isPage && defaultSurface === 'flat';
     const resolvedAccessibilityLabel = accessibilityLabel ?? (typeof title === 'string' ? title : undefined);
     // Bare rows in a contained scope (a widget body or flow, grouped or page) bleed by their own padding: their
     // marks and titles keep the column's edge (the frame header's mark, a flow's Name and section titles), while
@@ -676,6 +706,7 @@ export const ItemGroup = React.memo<ItemGroupProps>((props) => {
                                 virtualizedSegment={virtualizedSegment}
                                 containerStyle={resolvedContainerStyle}
                                 clipContent={clipContent}
+                                flat={flatSheet}
                             >
                                 {projectedChildren}
                             </ItemGroupPageSheetBody>

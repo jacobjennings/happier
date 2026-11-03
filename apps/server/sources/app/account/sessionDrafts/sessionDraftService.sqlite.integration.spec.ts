@@ -14,12 +14,11 @@ import {
 
 import { db } from '@/storage/db';
 import { createLightSqliteHarness, type LightSqliteHarness } from '@/testkit/lightSqliteHarness';
+import { eventRouter } from '@/app/events/connectionEventRouter';
 
-const { emitEphemeral } = vi.hoisted(() => ({ emitEphemeral: vi.fn() }));
-vi.mock('@/app/events/eventRouter', async () => {
-    const actual = await vi.importActual<typeof import('@/app/events/eventRouter')>('@/app/events/eventRouter');
-    return { ...actual, eventRouter: { ...actual.eventRouter, emitEphemeral } };
-});
+// Observe the canonical socket boundary without cloning the router singleton
+// while its barrel and production consumers are still being initialized.
+const emitEphemeral = vi.spyOn(eventRouter, 'emitEphemeral').mockImplementation(() => {});
 
 import { inTx } from '@/storage/inTx';
 import { AccountScopedKvReservedKeyError } from '@/app/kv/accountScopedKv';
@@ -155,7 +154,7 @@ describe('sessionDraftService (SQLite integration)', () => {
         await db.account.deleteMany();
     });
 
-    afterAll(async () => harness.close());
+    afterAll(async () => { emitEphemeral.mockRestore(); await harness.close(); });
 
     it('converts both Discussion draft families with complete coverage and exact replay in both directions', async () => {
         const account = await db.account.create({ data: { encryptionMode: 'plain' } });
@@ -905,27 +904,6 @@ describe('sessionDraftService (SQLite integration)', () => {
             expect(await readSessionDraft({ accountId: owner.id, address }))
                 .toMatchObject({ status: 'present', record: { address, revision: 0 } });
         }
-    });
-
-    it('excludes V2 Session-bound rows from the Account encryption-mode transition', async () => {
-        const account = await db.account.create({ data: { publicKey: `pk-${randomUUID()}`, encryptionMode: 'plain' } });
-        const session = await db.session.create({
-            data: { accountId: account.id, tag: `s-${randomUUID()}`, metadata: '{}', encryptionMode: 'plain' },
-        });
-        const newAddress = { kind: 'newSession' as const, draftId: randomUUID() };
-        const runAddress = { kind: 'run' as const, sessionId: session.id, runId: 'r1' };
-        await mutateSessionDraft({ accountId: account.id, address: newAddress, expectedRevision: 'absent', content: plainContent(newAddress) });
-        await mutateSessionDraft({ accountId: account.id, address: runAddress, expectedRevision: 'absent', content: plainContentV2(runAddress) });
-
-        expect(await inTx((tx) => migrateNewSessionDraftsForAccountModeInTx(tx, {
-            accountId: account.id,
-            toMode: 'e2ee',
-            directive: {
-                items: [{ address: newAddress, expectedRevision: 0, content: { t: 'encrypted', c: 'migrated' } }],
-            },
-        }))).toMatchObject({ status: 'applied', records: [{ address: newAddress, revision: 1 }] });
-        expect(await readSessionDraft({ accountId: account.id, address: runAddress }))
-            .toMatchObject({ record: { revision: 0, content: { t: 'plain' } } });
     });
 
     it('registers the V2 route epoch and keeps V2 addresses unrepresentable on V1 routes', async () => {

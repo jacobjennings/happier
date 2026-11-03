@@ -62,6 +62,18 @@ async function enableMachinePoolsFeatures(serverIds: readonly string[]): Promise
     for (const serverId of serverIds) await getServerFeaturesSnapshot({ serverId, force: true });
 }
 
+const bobToken = `e30.${btoa(JSON.stringify({ sub: 'bob' }))}.signature`;
+
+/**
+ * A captured Action Account retires on a credential replacement for its Home, not on a
+ * focused display-scope change (af4706f44d). Switch the same Home to Bob the way sign-in does.
+ */
+async function switchActiveHomeToBob(): Promise<void> {
+    getStorage().getState().activateProfileScope({ serverId: boundary.activeServerId, accountId: 'bob' });
+    vi.mocked(TokenStorage.getCredentialsForServerUrl).mockResolvedValue({ token: bobToken });
+    expect(await TokenStorage.setCredentialsForServerUrl('https://home-a.test', { serverId: boundary.activeServerId }, { token: bobToken })).toBe(true);
+}
+
 describe('machine pool Account lifetime', () => {
     beforeEach(async () => {
         await loadSyncSingletonForTests();
@@ -105,7 +117,7 @@ describe('machine pool Account lifetime', () => {
         const pending = refreshMachinePools(boundary.activeServerId);
         await vi.waitFor(() => expect(boundary.pendingResponses).toHaveLength(1));
 
-        getStorage().getState().activateProfileScope({ serverId: boundary.activeServerId, accountId: 'bob' });
+        await switchActiveHomeToBob();
         boundary.pendingResponses[0]?.resolve(Response.json({ pools: [alicePool] }));
 
         await expect(pending).rejects.toMatchObject({ code: 'action_account_scope_changed' });
@@ -113,8 +125,17 @@ describe('machine pool Account lifetime', () => {
     });
 
     it('does not admit an Alice intent after an Account switch before the Action executor loads', async () => {
-        const pending = refreshMachinePools(boundary.activeServerId);
-        getStorage().getState().activateProfileScope({ serverId: boundary.activeServerId, accountId: 'bob' });
+        // Alice's focused admission settings are already in storage, so the capture's credential
+        // read is the pre-executor boundary: hold it so Bob signs in while Alice's Account is captured.
+        let releaseCredentials!: () => void;
+        const credentialsHeld = new Promise<void>((resolve) => { releaseCredentials = resolve; });
+        let credentialsRequested!: () => void;
+        const credentialsReached = new Promise<void>((resolve) => { credentialsRequested = resolve; });
+        vi.mocked(TokenStorage.getCredentialsForServerUrl).mockImplementation(async () => {
+            credentialsRequested();
+            await credentialsHeld;
+            return { token: `e30.${btoa(JSON.stringify({ sub: 'alice' }))}.signature` };
+        });
         setRuntimeFetch(async (url) => {
             const pathname = new URL(String(url)).pathname;
             if (pathname === '/v1/account/encryption') return Response.json({ mode: 'plain', updatedAt: 0 });
@@ -123,6 +144,10 @@ describe('machine pool Account lifetime', () => {
             boundary.pendingResponses.push({ url: String(url), resolve: () => {} });
             return Response.json({ pools: [alicePool] });
         });
+        const pending = refreshMachinePools(boundary.activeServerId);
+        await credentialsReached;
+        await switchActiveHomeToBob();
+        releaseCredentials();
 
         await expect(pending).rejects.toMatchObject({ code: 'action_account_scope_changed' });
         expect(boundary.pendingResponses).toHaveLength(0);
@@ -136,7 +161,7 @@ describe('machine pool Account lifetime', () => {
         boundary.pendingResponses[0]?.resolve(Response.json({ pools: [alicePool] }));
         await vi.waitFor(() => expect(transportBoundary.pendingReleases.length).toBeGreaterThan(0));
 
-        getStorage().getState().activateProfileScope({ serverId: boundary.activeServerId, accountId: 'bob' });
+        await switchActiveHomeToBob();
         for (const release of transportBoundary.pendingReleases) release();
 
         await expect(pending).rejects.toMatchObject({ code: 'action_account_scope_changed' });
@@ -151,7 +176,7 @@ describe('machine pool Account lifetime', () => {
         boundary.pendingResponses[0]?.resolve(Response.json({ code: 'internal' }, { status: 500 }));
         await vi.waitFor(() => expect(transportBoundary.pendingReleases.length).toBeGreaterThan(0));
 
-        getStorage().getState().activateProfileScope({ serverId: boundary.activeServerId, accountId: 'bob' });
+        await switchActiveHomeToBob();
         for (const release of transportBoundary.pendingReleases) release();
 
         await expect(pending).rejects.toMatchObject({ code: 'action_account_scope_changed' });

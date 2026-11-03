@@ -15,6 +15,7 @@ import {
     describeWidgetDefinitionSummaryV1,
     isBuiltinWidgetSwitchedOff,
     readWidgetSourcePluginName,
+    resolveWidgetInstanceTitle,
     selectBuiltinWidgetCandidates,
     selectCurrentSessionWidgetCandidates,
     selectWidgetCandidates as selectUniversalWidgetCandidates,
@@ -304,5 +305,30 @@ describe('A built-in called by what its inputs make it show', () => {
         expect(titles[1]).not.toBe(titles[0]);
         expect(new Set(titles.slice(0, 3)).size).toBe(3);
         expect(titles.slice(3)).toEqual([breakdowns.title, breakdowns.title]);
+    });
+});
+
+describe('The title a widget instance wears', () => {
+    const instance = (definition: WidgetInstanceV1['definition'], displayName?: string): WidgetInstanceV1 =>
+        ({ v: 1, id: 'w', definition, bindings: {}, ...(displayName ? { displayName } : {}) });
+
+    it('waits only for a pending name and keeps known names through pending or failed reads', () => {
+        const saved = instance({ kind: 'artifact', artifactId: 'private' });
+        expect(resolveWidgetInstanceTitle(saved, null, { definitionState: 'loading' })).toBeNull();
+        expect(resolveWidgetInstanceTitle(saved, null, { definitionState: 'unavailable' })).toBe(resolveWidgetInstanceTitle(saved, null));
+        expect(resolveWidgetInstanceTitle({ ...saved, displayName: 'Mine' }, null, { definitionState: 'loading' })).toBe('Mine');
+        expect(resolveWidgetInstanceTitle(saved, { title: 'Resolved' }, { definitionState: 'unavailable' })).toBe('Resolved');
+        expect(resolveWidgetInstanceTitle(saved, null, { fallbackTitle: 'Retained Session name' })).toBe('Retained Session name');
+        expect(resolveWidgetInstanceTitle(instance({ kind: 'builtin', id: 'usage_daily' }), null, { projectionPending: true })).toBeNull();
+    });
+
+    it('keeps its own name, then its definition title, and never names a private definition by a status phrase', () => {
+        const candidate = selectBuiltinWidgetCandidates({}).find(entry => entry.key === 'builtin:usage_breakdowns')!;
+        expect(resolveWidgetInstanceTitle(instance({ kind: 'builtin', id: 'usage_breakdowns' }, 'Mine'), candidate)).toBe('Mine');
+        expect(resolveWidgetInstanceTitle(instance({ kind: 'builtin', id: 'usage_breakdowns' }), candidate)).toBe(candidate.title);
+        const privateDefinition = resolveWidgetInstanceTitle(instance({ kind: 'artifact', artifactId: 'owner-private' }), null);
+        const missingPlugin = resolveWidgetInstanceTitle(instance({ kind: 'installed', surface: { pluginId: 'acme.gone', localId: 'w' } }), null);
+        expect(privateDefinition).not.toBe(missingPlugin);
+        expect(privateDefinition).not.toMatch(/unavailable/i);
     });
 });

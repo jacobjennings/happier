@@ -15,9 +15,9 @@ import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { makePathBrowseInputBehavior } from '@/utils/path/browseInputBehavior';
 
 import type { SelectionListProps, SelectionListStep } from '../_types';
-import { makeStoryPathInputBehavior } from '../storySurface/_shared';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -63,12 +63,6 @@ describe('SelectionList — Shift+Tab back hint (RUX-13)', () => {
         vi.stubGlobal('navigator', { maxTouchPoints: 0 });
     });
     afterEach(() => vi.unstubAllGlobals());
-    it('does NOT render the back hint at the root step when no path-mode is active', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps()} />);
-        expect(screen.findByTestId('sl:footer:hint:back')).toBeNull();
-    });
-
     it('renders the back hint when a sub-step is active (canPop is true)', async () => {
         const { act } = await import('react-test-renderer');
         const detailStep: SelectionListStep = {
@@ -113,7 +107,9 @@ describe('SelectionList — Shift+Tab back hint (RUX-13)', () => {
     it('renders the back hint at the root step when path-mode is active AND the input has segments to back up', async () => {
         const { act } = await import('react-test-renderer');
         const { SelectionList } = await import('../SelectionList');
-        const inputBehavior = makeStoryPathInputBehavior();
+        // The production path adapter; its root rules ('/', '~/', drive/UNC roots → null)
+        // are proven in utils/path/browseInputBehavior.test.ts.
+        const inputBehavior = makePathBrowseInputBehavior();
         const screen = await renderScreen(
             <SelectionList
                 {...defaultProps({
@@ -134,43 +130,5 @@ describe('SelectionList — Shift+Tab back hint (RUX-13)', () => {
             await new Promise((resolve) => setTimeout(resolve, 250));
         });
         expect(screen.findByTestId('sl:footer:hint:back')).not.toBeNull();
-    });
-
-    it('does NOT render the back hint at root path "/" (no parent to walk up to)', async () => {
-        const { act } = await import('react-test-renderer');
-        const { SelectionList } = await import('../SelectionList');
-        const inputBehavior = makeStoryPathInputBehavior();
-        const screen = await renderScreen(
-            <SelectionList
-                {...defaultProps({
-                    inputBehavior,
-                    inputMode: 'value',
-                    rootStep: makeRootStep({ inputPlaceholder: 'Type a path' }),
-                })}
-            />,
-        );
-        await act(async () => {
-            screen.changeTextByTestId('sl:header:input', '/');
-        });
-        expect(screen.findByTestId('sl:footer:hint:back')).toBeNull();
-    });
-
-    it('does NOT render the back hint at home shorthand "~/"', async () => {
-        const { act } = await import('react-test-renderer');
-        const { SelectionList } = await import('../SelectionList');
-        const inputBehavior = makeStoryPathInputBehavior();
-        const screen = await renderScreen(
-            <SelectionList
-                {...defaultProps({
-                    inputBehavior,
-                    inputMode: 'value',
-                    rootStep: makeRootStep({ inputPlaceholder: 'Type a path' }),
-                })}
-            />,
-        );
-        await act(async () => {
-            screen.changeTextByTestId('sl:header:input', '~/');
-        });
-        expect(screen.findByTestId('sl:footer:hint:back')).toBeNull();
     });
 });

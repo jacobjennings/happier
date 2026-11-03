@@ -94,12 +94,14 @@ describe('SelectionList inline row controls require the grid ARIA pattern', () =
         const body = screen.findByTestId('sl:body');
         expect(body?.props.role).toBe('listbox');
         expect(body?.props['aria-rowcount']).toBeUndefined();
+        expect(body?.props['aria-colcount']).toBeUndefined();
 
         const optA = screen.findByTestId('sl:root:option:opt-a');
         expect(optA?.props.role).toBe('option');
         expect(optA?.props['aria-posinset']).toBe(1);
         expect(optA?.props['aria-setsize']).toBe(2);
         expect(screen.findByTestId('sl:root:option-wrapper:opt-a')?.props.role).toBeUndefined();
+        expect(screen.findByTestId('sl:root:option-wrapper:opt-a')?.props['aria-colindex']).toBeUndefined();
 
         // Identity assertion: the default list must contain no grid markup at all.
         const gridish = screen.tree.root.findAll(

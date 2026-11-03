@@ -517,6 +517,7 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
         resolveWebViewportTelemetryDiagnostics,
     } = useTranscriptWebViewportTelemetryDiagnostics({
         chatListNativeId,
+        listRef,
         listContentHeightRef,
         listLayoutHeightRef,
         olderPaginationSnapshotRef,
@@ -963,6 +964,8 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
         if (typeof configuredLimit !== 'number' || !Number.isFinite(configuredLimit)) return undefined;
         return { limit: Math.max(1, Math.trunc(configuredLimit)) };
     }, []);
+    // The Session-surface key remounts this owner. A passive reset would erase
+    // readiness already published by the warm renderer's child layout effects.
     const [firstListPaintObserved, setFirstListPaintObserved] = React.useState(false);
     const [nativeViewportPaintObserved, setNativeViewportPaintObservedState] = React.useState(false);
     const nativeViewportPaintObservedRef = React.useRef(false);
@@ -1075,7 +1078,6 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
             : renderWindowIndexMapRef.current?.resolveRendererTargetForDisplayIndex(displayIndex) ?? null;
     }, [resolveRestoreAnchorRendererTargetFromLoadedItems]);
     React.useEffect(() => {
-        setFirstListPaintObserved(false);
         updateNativeViewportPaintObserved(false);
         updateNativeEntryRestorePaintReleased(false);
         nativeVisibleWindowSnapshotRef.current = null;
@@ -1695,6 +1697,18 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
     // inline arrow here would churn the entry host's session-open effect deps on every render.
     const isScrollableRef = React.useRef<() => boolean>(() => false);
     const isScrollableForEntryHost = React.useCallback((): boolean => isScrollableRef.current(), []);
+    // The open-time fill asks the pager's own threshold predicate rather than keeping a second
+    // "enough history" rule. Web-only: native never reports DOM scroll metrics, so its fill and
+    // latch keep the scrollability rule.
+    const isOlderPaginationNearEdge = olderPagination.isNearOlderEdge;
+    const isViewportNearOlderEdge = React.useCallback((): boolean => {
+        const metrics = resolveWebScrollMetrics();
+        if (!metrics) return false;
+        return isOlderPaginationNearEdge({
+            offsetY: metrics.scrollTop,
+            scrollable: isWebTranscriptScrollable(metrics, 1),
+        });
+    }, [isOlderPaginationNearEdge, resolveWebScrollMetrics]);
     const entryHost = useTranscriptEntryHost({
         activeTargetWindowTargetRef,
         anchorLookupExhaustedRef,
@@ -1721,6 +1735,7 @@ export const ChatListInternal = React.memo((props: ChatListInternalProps) => {
         isLoaded: props.isLoaded,
         isScrollable: isScrollableForEntryHost,
         isViewportAnchorSeqLoaded,
+        isViewportNearOlderEdge,
         jumpToSeq: props.jumpToSeq,
         lastScrollOffsetForIntentRef,
         lastUserScrollIntentAtMsRef,

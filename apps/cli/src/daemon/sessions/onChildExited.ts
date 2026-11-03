@@ -532,6 +532,9 @@ export function createOnChildExited(params: Readonly<{
         },
       }).catch((error) => logger.debug('[DAEMON RUN] Failed to write session exit report', error));
       if (!isCurrentPidOwner()) return;
+      // Durable staging and the retained marker own pending Home publication.
+      // A disconnected Machine must not retain a fully cleaned, dead runner in
+      // the local inventory or prevent Stop from completing.
       if (isCurrentPidOwner()) {
         pidToTrackedSession.delete(pid);
       }

@@ -1,4 +1,6 @@
-import { getVoiceAdapterRegistry } from './voiceAdapterRegistry';
+import { getVoiceAdapterRegistry, resolveVoiceAdapterSurfaceCapabilities } from './voiceAdapterRegistry';
+import { storage } from '@/sync/domains/state/storage';
+import { captureVoiceAttemptRecoveryTarget } from './voiceAttemptRecoveryTarget';
 import { canDismissVoiceSessionFailedAttempt, getVoiceSessionSnapshot, recordVoiceSessionEndReason, type VoiceSessionEndReason } from './voiceSessionStore';
 import type { VoiceAdapterController, VoiceAdapterId, VoiceSessionSnapshot } from './types';
 import type { VoiceHeldInput } from '@/voice/runtime/controller/VoiceConversationController';
@@ -38,6 +40,9 @@ export type VoiceSessionLifecycleController = Readonly<{
     rearmAfterCredentialAuthorityChange: (options?: Readonly<{
         exactSessionAccountScopeChanged?: boolean;
         globalBindingAuthorityChanged?: boolean;
+        agentDefaultAuthorityChanged?: boolean;
+        /** False for a default-only change: speech/provider credentials are independent. */
+        providerCredentialAuthorityChanged?: boolean;
     }>) => void;
     sendContextUpdate: (sessionId: string, update: string) => void;
     setConfiguredProviderId: (providerId: VoiceAdapterId | 'off' | null) => void;
@@ -80,6 +85,7 @@ type VoiceRecoveryBinding = Readonly<{
     providerId: VoiceAdapterId;
     sessionId: string;
     requestedTargetSessionAddress: SessionAddress | null;
+    recoveryTarget?: VoiceSessionSnapshot['recoveryTarget'];
 }>;
 
 type MuteAttemptOwner = {
@@ -303,8 +309,12 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
     ): Promise<void> => {
         heldInput = null;
         const ownedSessionId = startAttempt.expectedSnapshotSessionId;
+        const recoveryTarget = captureVoiceAttemptRecoveryTarget(
+            resolveVoiceAdapterSurfaceCapabilities(adapter.id, storage.getState().settings.voice),
+            requestedTargetSessionAddress,
+        );
         if (adapter.engineKind !== 'realtime') {
-            recoveryBinding = { providerId: adapter.id, sessionId: ownedSessionId, requestedTargetSessionAddress };
+            recoveryBinding = { providerId: adapter.id, sessionId: ownedSessionId, requestedTargetSessionAddress, recoveryTarget };
             ensureAttemptConnectivityLease(adapter, ownedSessionId, requestedTargetSessionAddress);
             startingAdapter = startAttempt;
             try {
@@ -346,7 +356,7 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
             throw busy;
         }
         ensureAttemptConnectivityLease(adapter, ownedSessionId, requestedTargetSessionAddress);
-        recoveryBinding = { providerId: adapter.id, sessionId: ownedSessionId, requestedTargetSessionAddress };
+        recoveryBinding = { providerId: adapter.id, sessionId: ownedSessionId, requestedTargetSessionAddress, recoveryTarget };
         realtimeCaptureAdmission = {
             adapter,
             adapterId: adapter.id,
@@ -436,6 +446,27 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
                 if (!stop.failed || !stop.retireAttempt) adapterStopPromises.delete(stopKey);
                 if (stop.retireAttempt) publishSnapshot();
             }
+        }
+    };
+
+    const endAdapterAttempt = async (
+        adapter: VoiceAdapterController,
+        sessionId: string,
+        reason?: 'continued_elsewhere',
+    ): Promise<void> => {
+        const endedBinding = recoveryBinding;
+        recoveryBinding = null;
+        await stopAdapter(adapter, sessionId, true, reason);
+        const snapshot = adapter.getSnapshot();
+        if (!disposed && endedBinding?.providerId === adapter.id && configuredProviderId === adapter.id
+            && recoveryBinding === null && snapshot.sessionId === sessionId
+            && snapshot.errorCode === 'provider_error'
+            && snapshot.errorMessage === 'voice_previous_session_stop_failed'
+            && isTerminalRetryableRecovery(snapshot)) {
+            // End released local media but could not confirm remote Stop. Keep
+            // Retry bound to that exact Home/target; normal Start remains free.
+            recoveryBinding = endedBinding;
+            publishSnapshot();
         }
     };
 
@@ -778,7 +809,19 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
         if (disposed) {
             return publishedSnapshot;
         }
+        const previousSnapshot = publishedSnapshot;
         publishedSnapshot = computeSnapshot();
+        if (recoveryBinding?.providerId === publishedSnapshot.adapterId
+            && recoveryBinding.sessionId === publishedSnapshot.sessionId
+            && (publishedSnapshot.canStop || canDismissVoiceSessionFailedAttempt(publishedSnapshot))) {
+            publishedSnapshot = { ...publishedSnapshot, recoveryTarget: recoveryBinding.recoveryTarget ?? null };
+        } else if (publishedSnapshot.canStop && previousSnapshot.adapterId === publishedSnapshot.adapterId
+            && previousSnapshot.sessionId === publishedSnapshot.sessionId
+            && previousSnapshot.recoveryTarget !== undefined) {
+            // Next-provider selection retires retry intent before physical Stop
+            // settles. The still-owned attempt keeps its admitted context.
+            publishedSnapshot = { ...publishedSnapshot, recoveryTarget: previousSnapshot.recoveryTarget };
+        }
         if (publishedSnapshot.status === 'disconnected' || publishedSnapshot.canStop !== true) {
             // Input preference and native suspension leases belong to one
             // admitted attempt. A later attempt, even through the same adapter
@@ -1029,20 +1072,17 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
         const cancelledSwitchStart = cancelPendingAdapterSwitch();
         const owned = resolveOwnedAdapter();
         if (owned) {
-            recoveryBinding = null;
             recordVoiceSessionEndReason(owned.adapter.id, owned.snapshot.sessionId ?? sessionId, { kind: 'stopped' });
-            await stopAdapter(owned.adapter, owned.snapshot.sessionId ?? sessionId, true);
+            await endAdapterAttempt(owned.adapter, owned.snapshot.sessionId ?? sessionId);
             return;
         }
         if (cancelledSwitchStart) {
-            recoveryBinding = null;
-            await stopAdapter(cancelledSwitchStart.adapter, cancelledSwitchStart.sessionId, true);
+            await endAdapterAttempt(cancelledSwitchStart.adapter, cancelledSwitchStart.sessionId);
             return;
         }
         const pendingStartAttempt = startingAdapter;
         if (pendingStartAttempt) {
-            recoveryBinding = null;
-            await stopAdapter(pendingStartAttempt.adapter, pendingStartAttempt.sessionId, true);
+            await endAdapterAttempt(pendingStartAttempt.adapter, pendingStartAttempt.sessionId);
             return;
         }
         await startConfiguredAdapter(requestedTargetSessionAddress);
@@ -1269,7 +1309,13 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
                 });
                 return;
             }
-            if (!isTerminalProviderAuthFailure(publishedSnapshot)) return;
+            const fixedAgentAuthRepaired = options?.agentDefaultAuthorityChanged === true
+                && canDismissVoiceSessionFailedAttempt(publishedSnapshot)
+                && publishedSnapshot.errorCode === 'authentication_required'
+                && publishedSnapshot.errorMessage === 'agent_signed_out';
+            const providerAuthRepaired = options?.providerCredentialAuthorityChanged !== false
+                && isTerminalProviderAuthFailure(publishedSnapshot);
+            if (!providerAuthRepaired && !fixedAgentAuthRepaired) return;
             suppressedTerminalFailureAdapterId = publishedSnapshot.adapterId;
             publishSnapshot();
         },
@@ -1498,25 +1544,37 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
         },
         stop: async (sessionId, reason = { kind: 'stopped' }) => {
             if (disposed) return;
-            recoveryBinding = null;
             if (cancelPendingStart()) return;
             const cancelledSwitchStart = cancelPendingAdapterSwitch();
-            const owned = resolveOwnedAdapter();
+            let owned = resolveOwnedAdapter();
             if (!owned) {
                 if (cancelledSwitchStart) {
-                    await stopAdapter(cancelledSwitchStart.adapter, cancelledSwitchStart.sessionId, true);
+                    await endAdapterAttempt(cancelledSwitchStart.adapter, cancelledSwitchStart.sessionId);
                     return;
                 }
                 const startAttempt = startingAdapter;
                 if (startAttempt) {
-                    await stopAdapter(startAttempt.adapter, startAttempt.sessionId, true);
+                    await endAdapterAttempt(startAttempt.adapter, startAttempt.sessionId);
+                    return;
                 }
-                return;
+                // A failed turn has already released capture and projects
+                // disconnected, but its adapter may still retain execution
+                // custody. Explicit End retires that same attempt so the next
+                // Start reaches initialization instead of its terminal handle.
+                const failed = publishedSnapshot;
+                const failedAdapter = canDismissVoiceSessionFailedAttempt(failed) && failed.adapterId
+                    ? resolveAttemptAdapter(failed.adapterId)
+                    : null;
+                if (!failedAdapter) {
+                    recoveryBinding = null;
+                    return;
+                }
+                owned = { adapter: failedAdapter, snapshot: failed };
             }
             const ownedSessionId = owned.snapshot.sessionId ?? sessionId;
             recordVoiceSessionEndReason(owned.adapter.id, ownedSessionId, reason);
             try {
-                await stopAdapter(owned.adapter, ownedSessionId, true, reason.kind === 'continued_elsewhere' ? reason.kind : undefined);
+                await endAdapterAttempt(owned.adapter, ownedSessionId, reason.kind === 'continued_elsewhere' ? reason.kind : undefined);
             } catch (error) {
                 recordVoiceSessionEndReason(owned.adapter.id, ownedSessionId, null);
                 throw error;

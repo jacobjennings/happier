@@ -19,11 +19,12 @@ import { portableQueryChunks } from '@/storage/portableQueryChunks';
 import { isEffectiveTeamMembership } from '@/app/teams/memberships/effectiveMembership';
 import { isEffectiveTeamGroupMembership } from '@/app/teams/groups/effectiveGroupMembership';
 import { deriveAccountRecipientEnvelopeReadinessFromRow } from '@/app/encryption/accountRecipientEnvelopeReadiness';
-import { projectRecipientContentKey, RECIPIENT_READINESS_SELECT } from '@/app/session/encryption/sessionDataKeyRecipientProjection';
+import { RECIPIENT_READINESS_SELECT } from '@/app/session/encryption/sessionDataKeyRecipientProjection';
 import { resolveAccountDisplayLabelV1, ACCOUNT_DISPLAY_PROFILE_SELECT } from '@/app/account/profile/accountDisplayProfile';
 import { acquireAccountChangePublicationLocksInTx, assertAccountChangePublicationAudienceInTx, beforeAccountChangePublication, markAccountsChanged } from '@/app/changes/markAccountChanged';
 import { resolveEffectiveAccountEncryptionModeFromAccountRow } from '@/app/encryption/accountEncryptionMode';
 import { captureMachineAccessImpactsInTx, applyMachineAccessImpactsInTx } from './machineAccessEffects';
+import { isMachineRecipientWorkPending, projectMachineRecipientWork, readMachineRecipientWorkInTx } from './machineRecipientWork';
 
 type MachineActor = Readonly<{ actorAccountId: string; machineId: string }>;
 export interface MachineAccessFacts {
@@ -276,11 +277,14 @@ interface AccessibleMachineOpening {
     access: AccessibleMachineAccessV1;
     owned: boolean;
     callerDataEncryptionKey: Uint8Array<ArrayBuffer> | null;
+    recipientWorkPending?: boolean;
+    recipientWorkCursor?: number;
 }
 
 /** Acquire row material and its opening together; callers never reacquire admitted content. */
 export async function readAccessibleMachineOpeningsInTx(tx: Tx, input: Readonly<{
     actorAccountId: string; machineIds: readonly string[];
+    includeRecipientWork?: true;
 }>): Promise<ReadonlyMap<string, AccessibleMachineOpening>> {
     const result = new Map<string, AccessibleMachineOpening>();
     if (input.machineIds.length === 0) return result;
@@ -311,6 +315,17 @@ export async function readAccessibleMachineOpeningsInTx(tx: Tx, input: Readonly<
             owned: facts.owned,
             callerDataEncryptionKey: key ? new Uint8Array(key) : null,
         });
+    }
+    const managed = input.includeRecipientWork ? [...result.values()].filter(opening => opening.access.role === 'manage'
+        && opening.access.resourceMode === 'e2ee' && opening.access.accessState === 'ready'
+        && opening.machine.revokedAt === null && opening.machine.replacedByMachineId === null) : [];
+    const recipientWork = await readMachineRecipientWorkInTx(tx, { actorAccountId: input.actorAccountId,
+        ownerFingerprints: new Map(managed.map(({ machine }) => [machine.id, machine.dataEncryptionKey
+            ? computeMachineOwnerEnvelopeFingerprintV1(machine.dataEncryptionKey) : null])) });
+    for (const opening of managed) {
+        const work = recipientWork.get(opening.machine.id);
+        opening.recipientWorkPending = work?.recipients.some(isMachineRecipientWorkPending) ?? false;
+        opening.recipientWorkCursor = work?.cursor ?? 0;
     }
     return result;
 }
@@ -554,16 +569,11 @@ export async function readMachineRecipientCensusInTx(tx: Tx, input: MachineActor
             for (const accountId of batchIds) {
                 const account = accountsById.get(accountId);
                 if (!account) continue;
-                const readiness = deriveAccountRecipientEnvelopeReadinessFromRow(account);
-                const envelope = envelopesByAccountId.get(accountId);
-                const publicFingerprint = readiness.status === 'available' ? readiness.binding.contentPublicKeyFingerprint : null;
-                const current = readiness.status === 'available' && envelope?.machineOwnerEnvelopeFingerprint === fingerprint
-                    && envelope.recipientContentPublicKeyFingerprint === publicFingerprint && parseEncryptedDataKeyEnvelopeV1(envelope.encryptedDataKey) !== null;
-                if (query.state === 'action_required' && current) continue;
+                const projected = projectMachineRecipientWork(account, envelopesByAccountId.get(accountId) ?? null, fingerprint);
+                if (query.state === 'action_required' && !isMachineRecipientWorkPending(projected)) continue;
                 if (recipients.length === query.limit) { nextCursor = encodeSessionDataKeyEnvelopeCursorV1(recipients[recipients.length - 1].recipientAccountId); break; }
-                recipients.push({ recipientAccountId: accountId, contentKey: projectRecipientContentKey(account, readiness),
-                    contentPublicKeyFingerprint: publicFingerprint, encryptedDataKey: current ? encodeBase64(new Uint8Array(envelope.encryptedDataKey)) : null,
-                    recipientContentPublicKeyFingerprint: current ? envelope.recipientContentPublicKeyFingerprint : null });
+                const { current: _current, ...recipient } = projected;
+                recipients.push(recipient);
             }
         }
     }

@@ -164,27 +164,43 @@ describe('SelectionList pagination contract', () => {
         const onEndReached = vi.fn();
         const onRetry = vi.fn();
         const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...createProps({
-            pagination: {
-                hasMore: true,
-                loadingMore: true,
-                requestKey: 'cursor-1',
-                onEndReached,
-                loadingLabel: 'Loading more sessions',
-                moreLabel: 'Load more sessions',
-                retryLabel: 'Retry loading sessions',
-                endReachedLabel: 'All sessions loaded',
-            },
-        })} />);
+        const pageAt = (requestKey: string, loadingMore: boolean) => (
+            <SelectionList {...createProps({
+                pagination: {
+                    hasMore: true,
+                    loadingMore,
+                    requestKey,
+                    onEndReached,
+                    loadingLabel: 'Loading more sessions',
+                    moreLabel: 'Load more sessions',
+                    retryLabel: 'Retry loading sessions',
+                    endReachedLabel: 'All sessions loaded',
+                },
+            })} />
+        );
+        const screen = await renderScreen(pageAt('cursor-1', false));
+        legendListState.props?.onEndReached?.();
+        expect(onEndReached).toHaveBeenCalledTimes(1);
 
+        await screen.update(pageAt('cursor-1', true));
         expect(screen.findByTestId('browse:pagination:loading')).not.toBeNull();
         expect(legendListState.props?.onEndReached).toBeUndefined();
+
+        // The page finished loading but the cursor did not advance: no second delivery.
+        await screen.update(pageAt('cursor-1', false));
+        legendListState.props?.onEndReached?.();
+        expect(onEndReached).toHaveBeenCalledTimes(1);
+
+        // The cursor advanced: the next end event is delivered.
+        await screen.update(pageAt('cursor-2', false));
+        legendListState.props?.onEndReached?.();
+        expect(onEndReached).toHaveBeenCalledTimes(2);
 
         await screen.update(<SelectionList {...createProps({
             pagination: {
                 hasMore: true,
                 loadingMore: false,
-                requestKey: 'cursor-1',
+                requestKey: 'cursor-2',
                 error: 'The next page could not be loaded',
                 onEndReached,
                 onRetry,

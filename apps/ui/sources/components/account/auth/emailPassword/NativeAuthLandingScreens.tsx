@@ -55,8 +55,7 @@ type LandingState<TPreview> =
     | Readonly<{ kind: 'loading' }>
     | Readonly<{ kind: 'unavailable' }>
     | Readonly<{ kind: 'invalid' }>
-    | Readonly<{ kind: 'ready'; preview: TPreview }>
-    | Readonly<{ kind: 'done' }>;
+    | Readonly<{ kind: 'ready'; preview: TPreview }>;
 
 type NativeAuthLandingTargetState =
     | Readonly<{ kind: 'loading' }>
@@ -526,18 +525,6 @@ export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVe
         </LandingShell>;
     }
 
-    if (state.kind === 'done') {
-        return <LandingShell testID="native-auth-verify" title={t('settingsAccount.nativePassword.verifyTitle')}>
-            <Text testID="native-auth-verify-done" style={styles.body}>{t('settingsAccount.nativePassword.addressVerified')}</Text>
-            <WelcomeActionCard
-                testID="native-auth-verify-continue"
-                title={t('settingsAccount.nativePassword.continue')}
-                iconName="arrow-right"
-                onPress={() => router.replace('/')}
-            />
-        </LandingShell>;
-    }
-
     const preview = state.preview;
     return <LandingShell testID="native-auth-verify" title={t('settingsAccount.nativePassword.verifyTitle')}>
         <Text testID="native-auth-verify-destination" style={styles.body}>
@@ -654,7 +641,7 @@ export const NativeAuthPasswordResetScreen = React.memo(function NativeAuthPassw
     const router = useRouter();
     const landingTarget = useNativeAuthLandingTarget(props.homeTarget);
     const { theme } = useUnistyles();
-    const [state, setState] = React.useState<LandingState<null>>({ kind: 'loading' });
+    const [state, setState] = React.useState<LandingState<null> | Readonly<{ kind: 'done' }>>({ kind: 'loading' });
     const [draft, setDraft] = React.useState<EmailPasswordDraft>(() => createEmailPasswordDraft());
     const [problem, setProblem] = React.useState<EmailPasswordProblem | null>(null);
     const [busy, setBusy] = React.useState(false);

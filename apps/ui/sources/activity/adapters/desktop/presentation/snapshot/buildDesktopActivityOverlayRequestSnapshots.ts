@@ -10,6 +10,7 @@ import {
 } from '@/sync/domains/session/pending/listPendingSessionRequests';
 
 import type { DesktopActivityOverlayRequestSnapshot } from './desktopActivityOverlaySnapshotTypes';
+import { listSessionListPresentationPermissionRequests, listSessionListPresentationUserActionRequests } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 
 function buildRequestActivityInstanceId(params: Readonly<{
     serverId: string | null;
@@ -90,7 +91,8 @@ export function buildDesktopActivityOverlayRequestSnapshots(params: Readonly<{
             ?? candidate.serverId
             ?? (typeof candidate.session.serverId === 'string' ? candidate.session.serverId.trim() || null : null);
 
-        for (const request of listPendingPermissionRequestsFromSession(candidate.session)) {
+        for (const request of candidate.presentationSource ? listSessionListPresentationPermissionRequests(candidate.presentationSource)
+            : 'agentState' in candidate.session ? listPendingPermissionRequestsFromSession(candidate.session) : []) {
             const semantic = buildAgentRequestSemanticSummary({
                 kind: 'permission',
                 toolName: request.tool,
@@ -131,7 +133,8 @@ export function buildDesktopActivityOverlayRequestSnapshots(params: Readonly<{
             });
         }
 
-        for (const request of listPendingUserActionRequestsFromSession(candidate.session)) {
+        for (const request of candidate.presentationSource ? listSessionListPresentationUserActionRequests(candidate.presentationSource)
+            : 'agentState' in candidate.session ? listPendingUserActionRequestsFromSession(candidate.session) : []) {
             const semantic = buildAgentRequestSemanticSummary({
                 kind: 'user_action',
                 toolName: request.tool,

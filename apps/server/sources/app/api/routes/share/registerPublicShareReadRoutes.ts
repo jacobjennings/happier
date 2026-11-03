@@ -184,6 +184,7 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
                     metadataVersion: true,
                     metadataLayoutVersion: true,
                     ownerMetadata: true,
+                    displayProjectionV1: true,
                     agentState: true,
                     agentStateVersion: true,
                     active: true,

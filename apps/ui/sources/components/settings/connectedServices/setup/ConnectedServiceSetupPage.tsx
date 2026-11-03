@@ -56,7 +56,8 @@ export function ConnectedServiceSetupPage(props: Readonly<{
     const { present } = useConnectedAccountIdentityPrivacy();
     const { catalog: purposeCatalog, mutateDefaults, execution } = useConnectedAccountPurposeDefaults();
     const lifetime = React.useMemo(() => captureActiveServerAccountScopeLifetime(), [viewer]);
-    const purposeRuntime = useScopedPluginUiProjection({ machineId: request?.machineId, serverId: request?.scope.serverId, enabled: Boolean(request) });
+    const purposeRuntime = useScopedPluginUiProjection({ machineId: request?.machineId, serverId: request?.scope.serverId,
+        enabled: Boolean(request), includeConnectedAccountPurposes: Boolean(request) });
     const latestRuntime = React.useRef(purposeRuntime);
     latestRuntime.current = purposeRuntime;
     const declaration = readConnectedAccountPurposeSetupDeclaration(request, viewer, purposeRuntime);

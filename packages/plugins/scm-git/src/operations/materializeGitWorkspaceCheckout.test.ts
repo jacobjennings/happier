@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -10,7 +10,11 @@ import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/plugin-sdk/scm';
 import { buildWorktreeRelativePath, normalizeWorktreeDisplayName } from '@happier-dev/plugin-sdk/scm';
 
 import { inspectGitCheckoutIdentity } from '../checkoutIdentity.js';
-import { runWithRealGitScmRuntime } from '../testkit/scmRuntime.test-support.js';
+import {
+    createRealGitScmBackendRuntimeServices,
+    runWithGitScmCommandRunner,
+    runWithRealGitScmRuntime,
+} from '../testkit/scmRuntime.test-support.js';
 import {
     createGitWorkspaceCheckoutAtDefaultPath,
     materializeGitWorkspaceCheckoutAtPath,
@@ -39,6 +43,133 @@ async function writeTrackedFile(cwd: string, relativePath: string, contents: str
 }
 
 describe('materializeGitWorkspaceCheckout', { timeout: 20_000 }, () => {
+    it.each(['refs/remotes/origin', 'refs/company'])('materializes an existing branch fetched only into %s', async (destination) => {
+        const root = await makeTempDir('git-materialize-remote-tracking-');
+        const repoRoot = join(root, 'source');
+        const targetPath = join(root, 'worktrees', 'feature');
+        try {
+            await mkdir(repoRoot);
+            await runGit(repoRoot, ['init', '-b', 'main']);
+            await configureGitRepo(repoRoot);
+            await runGit(repoRoot, ['commit', '--allow-empty', '-m', 'initial']);
+            await runGit(repoRoot, ['remote', 'add', 'origin', repoRoot]);
+            await runGit(repoRoot, ['config', 'remote.origin.fetch', `+refs/heads/*:${destination}/*`]);
+            await runGit(repoRoot, ['update-ref', 'refs/heads/feature', 'HEAD']);
+            await runGit(repoRoot, ['fetch', 'origin']);
+            await runGit(repoRoot, ['update-ref', '-d', 'refs/heads/feature']);
+            await expect(runGit(repoRoot, ['show-ref', '--verify', 'refs/heads/feature'])).rejects.toThrow();
+
+            const runtime = createRealGitScmBackendRuntimeServices();
+            let fetchConfigReads = 0;
+            const result = await runWithGitScmCommandRunner(async (input) => {
+                if (input.args[0] === 'config') fetchConfigReads += 1;
+                return await runtime.runCommand(input);
+            }, () => materializeGitWorkspaceCheckoutAtPath({
+                repoRoot, targetPath, displayName: 'feature', baseRef: null, branchMode: 'existing',
+            }));
+
+            expect(result).toMatchObject({ branchName: 'feature', reused: false });
+            expect(await realpath(result.targetPath)).toBe(await realpath(targetPath));
+            await expect(runGit(targetPath, ['branch', '--show-current'])).resolves.toBe('feature');
+            await expect(runGit(targetPath, ['rev-parse', '--symbolic-full-name', '@{upstream}'])).resolves.toBe(`${destination}/feature`);
+            await expect(runGit(targetPath, ['rev-parse', 'HEAD'])).resolves.toBe(await runGit(repoRoot, ['rev-parse', `${destination}/feature`]));
+            await expect(runGit(repoRoot, ['branch', '--show-current'])).resolves.toBe('main');
+            // Extra config discovery belongs only to the nonstandard-namespace miss.
+            expect(fetchConfigReads).toBe(destination === 'refs/company' ? 1 : 0);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    it('refuses a tag shadowing a remote-only branch before effects but admits the exact local branch', async () => {
+        const root = await makeTempDir('git-materialize-tag-shadow-');
+        const repoRoot = join(root, 'source');
+        const targetPath = join(root, 'worktrees', 'feature');
+        const populatedTarget = join(root, 'populated');
+        try {
+            await mkdir(repoRoot);
+            await runGit(repoRoot, ['init', '-b', 'main']);
+            await configureGitRepo(repoRoot);
+            await runGit(repoRoot, ['commit', '--allow-empty', '-m', 'tag tip']);
+            await runGit(repoRoot, ['tag', 'feature']);
+            await runGit(repoRoot, ['commit', '--allow-empty', '-m', 'remote tip']);
+            const remoteHead = await runGit(repoRoot, ['rev-parse', 'HEAD']);
+            await runGit(repoRoot, ['remote', 'add', 'origin', repoRoot]);
+            await runGit(repoRoot, ['update-ref', 'refs/remotes/origin/feature', remoteHead]);
+            const worktreesBefore = await runGit(repoRoot, ['worktree', 'list', '--porcelain']);
+            await mkdir(populatedTarget);
+            await writeFile(join(populatedTarget, 'keep.txt'), 'preserved\n');
+
+            for (const path of [targetPath, populatedTarget]) {
+                await expect(runWithRealGitScmRuntime(() => materializeGitWorkspaceCheckoutAtPath({
+                    repoRoot, targetPath: path, displayName: 'feature', baseRef: null, branchMode: 'existing',
+                }))).rejects.toMatchObject({ code: 'ref_unavailable' });
+            }
+            await expect(access(join(root, 'worktrees'))).rejects.toMatchObject({ code: 'ENOENT' });
+            await expect(access(`${populatedTarget}.happier-materialize-tmp`)).rejects.toMatchObject({ code: 'ENOENT' });
+            await expect(readFile(join(populatedTarget, 'keep.txt'), 'utf8')).resolves.toBe('preserved\n');
+            await expect(runGit(repoRoot, ['worktree', 'list', '--porcelain'])).resolves.toBe(worktreesBefore);
+            await expect(runGit(repoRoot, ['show-ref', '--verify', 'refs/heads/feature'])).rejects.toThrow();
+
+            // An exact local branch takes precedence over its same-named tag in Git.
+            await runGit(repoRoot, ['update-ref', 'refs/heads/feature', remoteHead]);
+            const result = await runWithRealGitScmRuntime(() => materializeGitWorkspaceCheckoutAtPath({
+                repoRoot, targetPath, displayName: 'feature', baseRef: null, branchMode: 'existing',
+            }));
+            expect(result).toMatchObject({ branchName: 'feature', reused: false });
+            await expect(runGit(targetPath, ['branch', '--show-current'])).resolves.toBe('feature');
+            await expect(runGit(targetPath, ['rev-parse', 'HEAD'])).resolves.toBe(remoteHead);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    it('refuses missing branches even with a configured remote before creating the target parent', async () => {
+        const root = await makeTempDir('git-materialize-unavailable-remote-');
+        const repoRoot = join(root, 'source');
+        try {
+            await mkdir(repoRoot);
+            await runGit(repoRoot, ['init', '-b', 'main']);
+            await configureGitRepo(repoRoot);
+            await runGit(repoRoot, ['commit', '--allow-empty', '-m', 'initial']);
+            await runGit(repoRoot, ['remote', 'add', 'origin', repoRoot]);
+            for (const displayName of ['feature', 'unconfigured/absent']) {
+                const targetPath = join(root, displayName, 'checkout');
+                await expect(runWithRealGitScmRuntime(() => materializeGitWorkspaceCheckoutAtPath({
+                    repoRoot, targetPath, displayName, baseRef: null, branchMode: 'existing',
+                }))).rejects.toMatchObject({ code: 'ref_unavailable' });
+                await expect(access(join(root, displayName))).rejects.toMatchObject({ code: 'ENOENT' });
+            }
+            expect((await runGit(repoRoot, ['worktree', 'list', '--porcelain'])).match(/^worktree /gm)).toHaveLength(1);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    it('leaves ambiguous remote branches to native worktree add', async () => {
+        const root = await makeTempDir('git-materialize-ambiguous-remote-');
+        const repoRoot = join(root, 'source');
+        const targetPath = join(root, 'worktrees', 'feature');
+        try {
+            await mkdir(repoRoot);
+            await runGit(repoRoot, ['init', '-b', 'main']);
+            await configureGitRepo(repoRoot);
+            await runGit(repoRoot, ['commit', '--allow-empty', '-m', 'initial']);
+            for (const remote of ['origin', 'upstream']) {
+                await runGit(repoRoot, ['remote', 'add', remote, repoRoot]);
+                await runGit(repoRoot, ['update-ref', `refs/remotes/${remote}/feature`, 'HEAD']);
+            }
+
+            await expect(runWithRealGitScmRuntime(() => materializeGitWorkspaceCheckoutAtPath({
+                repoRoot, targetPath, displayName: 'feature', baseRef: null, branchMode: 'existing',
+            }))).rejects.not.toMatchObject({ code: 'ref_unavailable' });
+            await expect(access(join(root, 'worktrees'))).resolves.toBeUndefined();
+            await expect(access(targetPath)).rejects.toMatchObject({ code: 'ENOENT' });
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
     it('classifies a selected root without the provider-authorized source remote as a remote mismatch', async () => {
         const selectedRoot = await makeTempDir('git-review-workspace-remote-mismatch-');
 

@@ -19,12 +19,10 @@ import { VoiceStatusLine } from '@/components/voice/presence/VoiceStatusLine';
 import { VoiceTransport } from '@/components/voice/presence/VoiceTransport';
 import { registerVoiceSetupPresentation } from '@/components/voice/presence/voiceCompanionSectionReveal';
 import { useMountedActionExecution } from '@/components/approvals/useMountedActionExecution';
-import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useKeyboardShortcutLabel } from '@/keyboard/shortcutLabels';
 import { useIsTablet } from '@/utils/platform/responsive';
-import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
-import { storage, useActiveServerAccountScope } from '@/sync/domains/state/storage';
+import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { t } from '@/text';
 import {
@@ -32,10 +30,10 @@ import {
     readMicrophonePermissionState,
     type MicrophonePermissionState,
 } from '@/utils/platform/microphonePermissions';
-import { findVoiceConversationSessionId } from '@/voice/persistence/voiceConversationSystemSessionLookup';
+import { useVoiceHomeConversationAddress } from '@/voice/persistence/useVoiceHomeConversationAddress';
 import { useVoiceConversationsReadinessModel } from '@/voice/settings/panels/VoiceProviderSection';
 import { resolveVoiceProviderReadinessPresentation, translateVoiceReadiness } from '@/voice/settings/panels/voiceProviderReadinessPresentation';
-import { useVoiceConversationsReadinessInputs } from '@/voice/settings/useVoiceConversationsReadinessInputs';
+import { useVoiceSettingsReadinessInputs } from '@/voice/settings/useVoiceSettingsReadinessInputs';
 import { useVoiceSettingsMutable } from '@/voice/settings/useVoiceSettingsMutable';
 import { resolveVoiceSettingsRecoveryFocus } from '@/voice/settings/voiceSettingsRouteFocus';
 import { recoverVoiceSettingsReadiness } from '@/voice/settings/voiceSettingsRecovery';
@@ -60,7 +58,7 @@ export function useVoiceSetupBlock(input: Readonly<{ layout: 'card' | 'row'; spa
     const { executeValue } = useMountedActionExecution(accountScope, { openOnRequest: true });
     const [panelOpen, setPanelOpen] = React.useState(false);
     const [voiceSettings, setVoiceSettings] = useVoiceSettingsMutable();
-    const inputs = useVoiceConversationsReadinessInputs(voiceSettings, { probeMachine: panelOpen });
+    const inputs = useVoiceSettingsReadinessInputs(voiceSettings, { purpose: 'conversation', probeMachine: panelOpen });
     const readinessModel = useVoiceConversationsReadinessModel({
         voice: voiceSettings,
         setVoice: setVoiceSettings,
@@ -259,16 +257,6 @@ function useObservedMicrophonePermission(executeValue: ReturnType<typeof useMoun
         })(), { tag: 'VoiceSetup.microphone' });
     }, [executeValue]);
     return { permission, allow };
-}
-
-/** The Account's existing global Voice conversation, read passively (never created by a hub). */
-function useVoiceHomeConversationAddress() {
-    const serverId = useActiveServerSnapshot().serverId;
-    const sessionId = storage((state) => findVoiceConversationSessionId(state));
-    return React.useMemo(
-        () => (sessionId ? normalizeSessionAddress(serverId, sessionId) : null),
-        [serverId, sessionId],
-    );
 }
 
 const styles = StyleSheet.create(() => ({

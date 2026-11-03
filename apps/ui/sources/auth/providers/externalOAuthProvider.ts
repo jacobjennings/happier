@@ -5,6 +5,10 @@ import {
 import { HappyError } from '@/utils/errors/errors';
 import { backoff } from '@/utils/timing/time';
 import { serverFetch } from '@/sync/http/client';
+import {
+    NonRetryableServerResponseError,
+    RetryableServerResponseError,
+} from '@/sync/runtime/connectivity/transientConnectivityErrors';
 import { t } from '@/text';
 
 import type {
@@ -20,6 +24,17 @@ import { ExternalOAuthFinalizeConnectSuccessResponseSchema, ExternalOAuthParamsR
 import type { AuthProviderId } from '@happier-dev/protocol/auth/providers';
 
 const OAUTH_NOT_CONFIGURED_ERROR = 'oauth_not_configured';
+
+/**
+ * Connect finalization consumes a one-shot pending grant and disconnect removes the link, so once the
+ * server has answered, re-sending can only repeat or misreport the effect. Only "not processed"
+ * answers stay retryable for `backoff`; transport failures keep their own classification.
+ */
+function answeredMutationFailure(message: string, status: number): Error {
+    return status === 408 || status === 429
+        ? new RetryableServerResponseError(status, message)
+        : new NonRetryableServerResponseError(status, message);
+}
 
 export function createExternalOAuthProvider(params: {
     id: AuthProviderId;
@@ -318,12 +333,12 @@ export function createExternalOAuthProvider(params: {
                         }
                         throw new HappyError(`Failed to finalize ${providerName} connection`, false, { status: 400, kind: 'auth' });
                     }
-                    throw new Error(`Failed to finalize ${providerName} connect: ${response.status}`);
+                    throw answeredMutationFailure(`Failed to finalize ${providerName} connect: ${response.status}`, response.status);
                 }
 
-                const result = ExternalOAuthFinalizeConnectSuccessResponseSchema.safeParse(await response.json());
+                const result = ExternalOAuthFinalizeConnectSuccessResponseSchema.safeParse(await response.json().catch(() => null));
                 if (!result.success) {
-                    throw new Error(`Failed to finalize ${providerName} connection`);
+                    throw answeredMutationFailure(`Failed to finalize ${providerName} connection`, response.status);
                 }
                 return result.data.token ? { token: result.data.token } : {};
             });
@@ -387,12 +402,12 @@ export function createExternalOAuthProvider(params: {
                             kind: response.status === 401 || response.status === 403 ? 'auth' : 'config',
                         });
                     }
-                    throw new Error(`Failed to disconnect ${providerName}: ${response.status}`);
+                    throw answeredMutationFailure(`Failed to disconnect ${providerName}: ${response.status}`, response.status);
                 }
 
-                const data = (await response.json()) as unknown;
-                if (!data || typeof data !== 'object' || (data as any).success !== true) {
-                    throw new Error(`Failed to disconnect ${providerName} account`);
+                const data: unknown = await response.json().catch(() => null);
+                if (!data || typeof data !== 'object' || !('success' in data) || data.success !== true) {
+                    throw answeredMutationFailure(`Failed to disconnect ${providerName} account`, response.status);
                 }
             });
         },

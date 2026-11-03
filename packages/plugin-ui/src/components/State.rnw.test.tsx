@@ -423,6 +423,27 @@ describe('plugin-ui resource state renders real React Native semantics', () => {
     mount.unmount();
   });
 
+  it('draws the Details disclosure with the host caret at its compact density, turning with the open state', async () => {
+    const mount = mountInHost(
+      <ErrorState title="The list could not be read" details="host_api_method_unavailable" />,
+      {
+        renderDisclosureCaret: ({ expanded, density }) => (
+          <i data-testid="host-caret" data-expanded={String(expanded)} data-density={density} />
+        ),
+      },
+    );
+    try {
+      const toggle = mount.container.querySelector<HTMLElement>('[aria-expanded="false"]')!;
+      const caret = () => toggle.querySelector('[data-testid="host-caret"]');
+      expect(caret()?.getAttribute('data-density')).toBe('compact');
+      expect(caret()?.getAttribute('data-expanded')).toBe('false');
+      await act(async () => { toggle.click(); });
+      expect(caret()?.getAttribute('data-expanded')).toBe('true');
+    } finally {
+      mount.unmount();
+    }
+  });
+
   it('offers a status notice its next action beside the sentence, outside the live region', () => {
     const mount = mountSurface(
       <Status
@@ -536,6 +557,25 @@ describe('plugin states take the container they are mounted in (lab 5 host primi
     mount.unmount();
   });
 
+  it('offers every state\'s way forward quiet in a container that never owns its page\'s primary (a widget card)', () => {
+    const fillOf = (element: ReactNode, host: Partial<PluginUiPresentationHost>) => {
+      const mount = mountInHost(element, host);
+      const fill = getComputedStyle(mount.container.querySelector<HTMLElement>('[data-testid="next"]')!).backgroundColor;
+      mount.unmount();
+      return fill;
+    };
+    const authored = (variant?: 'secondary') => <EmptyState title="No tasks here"
+      action={<Button testID="next" title="New task" {...(variant ? { variant } : {})} onPress={() => {}} />} />;
+    const structured = <SurfaceState kind="empty" title="No tasks here" action={{ testID: 'next', label: 'New task', onPress: () => {} }} />;
+    const quietFill = fillOf(authored('secondary'), { stateSize: 'pane' });
+    // Outside such a container an empty state's one step stays its invitation.
+    expect(fillOf(authored(), { stateSize: 'pane' })).not.toBe(quietFill);
+    expect(fillOf(structured, { stateSize: 'pane' })).not.toBe(quietFill);
+    // Inside it, the author's own primary and the structured step both draw quiet, with no per-widget variant.
+    expect(fillOf(authored(), { stateSize: 'pane', stateActions: 'quiet' })).toBe(quietFill);
+    expect(fillOf(structured, { stateSize: 'pane', stateActions: 'quiet' })).toBe(quietFill);
+  });
+
   it('sizes an unsized state by the host container, and an explicit size still wins', () => {
     const inPane = mountInHost(<EmptyState title="No conversations" />, { stateSize: 'pane' });
     expect(measureOf(inPane, 'No conversations')).toBe('272px');
@@ -548,6 +588,23 @@ describe('plugin states take the container they are mounted in (lab 5 host primi
     const unsized = mountSurface(<LoadingState title="Loading" />);
     expect(measureOf(unsized, 'Loading')).toBe('520px');
     unsized.unmount();
+  });
+
+  it('draws one quiet line, not a centred column, in a line container (an inspector section, a narrow column)', () => {
+    for (const element of [
+      <LoadingState key="loading" testID="state" title="Loading conversations" />,
+      <EmptyState key="empty" testID="state" title="No conversations" />,
+      <ErrorState key="error" testID="state" title="Could not load" />,
+    ]) {
+      const mount = mountInHost(element, { stateSize: 'line' });
+      const title = mount.container.querySelector('[data-testid="state"]')?.textContent ?? '';
+      expect(title).toMatch(/Loading conversations|No conversations|Could not load/u);
+      expect(measureOf(mount, title.trim()), 'a line has no centred measure').toBeNull();
+      mount.unmount();
+    }
+    const explicit = mountInHost(<EmptyState title="No conversations" size="pane" />, { stateSize: 'line' });
+    expect(measureOf(explicit, 'No conversations'), 'an explicit size still wins').toBe('272px');
+    explicit.unmount();
   });
 
   it('draws a Daybreak scene through the host renderer in the glyph\'s place, and keeps text in a line', () => {

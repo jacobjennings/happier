@@ -55,6 +55,14 @@ export type TerminalStreamReadRequest = Readonly<{
     surfaceEpoch?: number;
 }>;
 
+/** Daemon byte-window facts, independent of the page currently being replayed. */
+export type TerminalOutputRetention = Readonly<{
+    mode: 'byte-offset';
+    retainedFromCursor: number;
+    availableCursor: number;
+    truncated: boolean;
+}>;
+
 export type TerminalStreamReadResponse =
     | Readonly<{
         ok: true;
@@ -63,6 +71,7 @@ export type TerminalStreamReadResponse =
         frames: readonly TerminalStreamFrame[];
         nextCursor: number;
         done: boolean;
+        outputRetention?: TerminalOutputRetention;
         legacyResponse?: DaemonTerminalStreamReadResponse;
     }>
     | Readonly<{

@@ -1,5 +1,7 @@
 import { isMicrophoneUnavailableError, isPermissionDeniedMicrophoneError } from '@/utils/platform/microphonePermissions';
 import type { MicSessionFailure } from '@/voice/runtime/mic/MicSession';
+import { readVoiceProviderCredentialRemediationCode } from '@happier-dev/protocol/voice/providerOperations';
+import { CONNECTED_SERVICE_UX_DIAGNOSTIC_ACTIONS, readConnectedServiceUxDiagnosticFromError, type ConnectedServiceUxDiagnosticV1 } from '@happier-dev/protocol/connect/connectedServiceUxDiagnostics';
 
 import type {
     VoiceMachineError,
@@ -66,16 +68,20 @@ export function isVoiceMachineErrorKind(value: unknown): value is VoiceMachineEr
 /** Shared typed-refusal and retained reason classification for Local Voice and unknown-error ingress. */
 export function resolveVoiceMachineErrorKind(reason: string, preferredKind?: VoiceMachineErrorKind): VoiceMachineErrorKind {
     if (reason === 'agent_signed_out') return 'authentication_required';
-    if (reason === 'provider_setup_required') return 'provider_setup_required';
+    if (reason === 'held_by_person') return 'session_unavailable';
+    if (reason === 'provider_setup_required' || reason === 'realtime_byo_not_configured' || reason === 'realtime_agent_update_required'
+        || reason === 'VOICE_AGENT_TEAM_MODEL_UNSUPPORTED'
+        || reason === 'VOICE_AGENT_SELECTION_UNAVAILABLE'
+        || reason === 'voice_agent_selection_unavailable') return 'provider_setup_required';
+    if (readVoiceProviderCredentialRemediationCode({ code: reason })) return 'provider_auth_invalid';
     if (reason === 'VOICE_AGENT_TARGET_MACHINE_UNOBSERVED') return 'service_temporarily_unavailable';
     if (reason === 'VOICE_AGENT_TARGET_MACHINE_OFFLINE'
+        || reason === 'VOICE_CONVERSATION_TARGET_MISSING'
         || reason === 'VOICE_AGENT_TARGET_MACHINE_KEY_UNAVAILABLE'
         || reason === 'daemon_streaming_stt_machine_unreachable') return 'execution_machine_unavailable';
     if (preferredKind) return preferredKind;
-    if (reason === 'turn_aborted') return 'turn_aborted';
-    if (reason === 'tts_failed') return 'tts_failed';
+    if (isVoiceMachineErrorKind(reason)) return reason;
     if (reason.includes('permission_denied')) return 'mic_permission_denied';
-    if (reason === 'mic_unavailable') return 'mic_unavailable';
     return 'provider_error';
 }
 
@@ -88,15 +94,25 @@ export function resolveVoiceMachineErrorKind(reason: string, preferredKind?: Voi
 export function createVoiceMachineError(params: Readonly<{
     kind: VoiceMachineErrorKind;
     reason: string;
+    uxDiagnostic?: ConnectedServiceUxDiagnosticV1;
 }>): VoiceMachineError {
     const policy = POLICY_BY_KIND[params.kind];
+    const uxDiagnostic = params.uxDiagnostic;
     return {
         kind: params.kind,
-        reason: params.reason,
+        reason: uxDiagnostic?.code ?? params.reason,
         ...policy,
+        // Connected Services owns retryability; its refusal stays visible until dismissed.
+        ...(uxDiagnostic ? {
+            uxDiagnostic,
+            retryPolicy: uxDiagnostic.retryable ? 'user_action' as const : 'never' as const,
+            recoveryAction: uxDiagnostic.retryable && uxDiagnostic.suggestedActions.includes(CONNECTED_SERVICE_UX_DIAGNOSTIC_ACTIONS.retry)
+                ? 'retry' as const : 'none' as const,
+            presentation: 'error' as const,
+        } : {}),
         // Only a notice ends gracefully. A blocked microphone stays on screen ("Microphone blocked"
         // with Allow, lab ST): projected as a graceful disconnect it was drawn as plain rest.
-        recoverable: policy.presentation === 'notice',
+        recoverable: !uxDiagnostic && policy.presentation === 'notice',
     };
 }
 
@@ -137,19 +153,8 @@ export function classifyMicSessionFailure(failure: MicSessionFailure): VoiceMach
 
 /** Classify a realtime transport/provider error (permission denial vs generic provider fault). */
 export function classifyRealtimeProviderFailure(error: unknown): VoiceMachineError {
-    if (isMicrophoneUnavailableError(error)) {
-        return createVoiceMachineError({ kind: 'mic_unavailable', reason: 'mic_unavailable' });
-    }
-    if (isPermissionDeniedMicrophoneError(error)) {
-        return createVoiceMachineError({
-            kind: 'mic_permission_denied',
-            reason: readErrorReason(error, 'realtime_mic_permission_denied'),
-        });
-    }
-    return createVoiceMachineError({
-        kind: 'provider_error',
-        reason: readErrorReason(error, 'realtime_provider_error'),
-    });
+    return classifyVoiceMachineError(error, { reason: isPermissionDeniedMicrophoneError(error)
+        ? 'realtime_mic_permission_denied' : 'realtime_provider_error' });
 }
 
 /**
@@ -161,6 +166,8 @@ export function classifyVoiceMachineError(
     error: unknown,
     fallback: Readonly<{ kind?: VoiceMachineErrorKind; reason?: string }> = {},
 ): VoiceMachineError {
+    const uxDiagnostic = readConnectedServiceUxDiagnosticFromError(error);
+    if (uxDiagnostic) return createVoiceMachineError({ kind: 'provider_error', reason: uxDiagnostic.code, uxDiagnostic });
     if (isAbortError(error)) {
         return createVoiceMachineError({
             kind: 'turn_aborted',

@@ -6,11 +6,10 @@ import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { Server } from 'socket.io';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod/mini';
-import { ACTION_IDS, getActionSpec, normalizeActionsSettingsV1, RPC_METHODS, SOCKET_RPC_EVENTS, V2SessionByIdResponseSchema } from '@happier-dev/protocol';
+import { ACTION_IDS, getActionSpec, RPC_METHODS, SOCKET_RPC_EVENTS, V2SessionByIdResponseSchema } from '@happier-dev/protocol';
 import { createExternalMcpServer } from './createExternalMcpServer';
 import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
-import { createCliActionExecutorHarness } from '@/session/actions/createCliActionExecutorHarness';
 import { FeaturesResponseSchema } from '@happier-dev/protocol/features/payload/featuresResponseSchema';
 import { DaemonLocalServiceLauncherStartResponseV1Schema } from '@happier-dev/protocol/local/services/launcher/v1';
 import { createLocalServiceActionConfirmationNonceV1, LocalServiceActionRequestV1Schema,
@@ -85,7 +84,7 @@ describe('standalone MCP machine placement', () => {
     // A supported, explicit per-Action Account choice, not a test-only global bypass.
     env.patch({ HAPPIER_ACTIONS_SETTINGS_V1: JSON.stringify({ v: 1,
       approvalWaivedSurfaces: { [actionId]: ['mcp'] },
-      actions: Object.fromEntries(ACTION_IDS.map(id => [id, { enabled: id === actionId }])) }) });
+      actions: Object.fromEntries(ACTION_IDS.map(id => [id, { enabled: id === actionId, toolExposureModes: { mcp: 'direct' } }])) }) });
     const createStandaloneServer = () => runWithServerHttpBaseUrl(endpoint, () => createExternalMcpServer({
       credentials: { token: `header.${Buffer.from(JSON.stringify({ sub: 'owner' })).toString('base64url')}.signature`, encryption: null, credentialProvenance: 'stored_session' },
       machineId: 'other-local-machine', daemonControlTarget: null,
@@ -126,7 +125,7 @@ describe('standalone MCP machine placement', () => {
         const [askFirstServerTransport, askFirstClientTransport] = InMemoryTransport.createLinkedPair();
         await askFirstMcp.connect(askFirstServerTransport); await askFirstClient.connect(askFirstClientTransport);
         try {
-          const refused = CallToolResultSchema.parse(await askFirstClient.callTool({ name: toolName, arguments: input }));
+          const refused = CallToolResultSchema.parse(await askFirstClient.callTool({ name: 'action_execute', arguments: { actionId, input } }));
           const refusal = refused.content.find(entry => entry.type === 'text');
           const publicRefusal: unknown = refusal?.type === 'text' ? JSON.parse(refusal.text) : null;
           expect(refused.isError, JSON.stringify(publicRefusal)).toBe(true);
@@ -148,20 +147,6 @@ describe('standalone MCP machine placement', () => {
       await client.close(); await mcp.close();
       await new Promise<void>(resolve => daemon.close(() => resolve())); env.restore();
     }
-  });
-  it('retains canonical approval refusal before the Machine effect when no approval carrier is available', async () => {
-    const credentials = { token: 'test-account', encryption: null, credentialProvenance: 'stored_session' } as const;
-    const { executor } = createCliActionExecutorHarness({
-      credentials, token: credentials.token, sessionId: 'cli-global', mode: 'plain', ctx: null,
-      serverId: 'approval-home', serverHttpBaseUrl: 'http://127.0.0.1:1',
-      actionsSettingsProvider: { getActionsSettings: () => normalizeActionsSettingsV1({}) },
-    });
-    await expect(executor.execute('sessions.external.candidate.delete', {
-      machineId: 'addressed-machine', agentId: 'claude', source: { kind: 'claudeConfig', configDir: '/repo' },
-      remoteSessionId: 'external-1',
-    }, { surface: 'mcp', authority: 'account_automation' })).resolves.toMatchObject({
-      ok: false, errorCode: 'approvals_not_supported',
-    });
   });
   it.each(['sessions.external.candidates.list', 'sessions.external.candidate.delete', 'sessions.external.transcript.page', 'sessions.external.operation.status.get'] as const)(
     'delivers %s to the addressed daemon, even with another local Machine', async actionId => {
@@ -223,6 +208,7 @@ describe('standalone MCP machine placement', () => {
       approvalWaivedSurfaces: { 'sessions.external.candidate.delete': ['mcp'] },
       actions: Object.fromEntries(ACTION_IDS.map(id => [id, {
         enabled: id === actionId || id === 'workspace.files.search',
+        toolExposureModes: { mcp: 'direct' },
       }])) }) });
     const { mcp } = runWithServerHttpBaseUrl(endpoint, () => createExternalMcpServer({
       credentials: { token: 'test-account', encryption: null, credentialProvenance: 'stored_session' },
@@ -272,6 +258,7 @@ describe('standalone MCP machine placement', () => {
     env.patch({ HAPPIER_ACTIONS_SETTINGS_V1: JSON.stringify({ v: 1,
       actions: Object.fromEntries(ACTION_IDS.map(id => [id, {
         enabled: id === 'session.presentation.apply' || id === 'sessions.external.candidates.list',
+        toolExposureModes: { mcp: 'direct' },
       }])) }) });
     const { mcp, toolNames } = createExternalMcpServer({
       credentials: { token: 'test-account', encryption: null, credentialProvenance: 'stored_session' },

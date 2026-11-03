@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { isProfileCompatibleWithBackendTarget } from './profileCompatibility.js';
 import { AIBackendProfileSchema } from './backendProfileSchema.js';
 import { LaunchProfileV2Schema } from './v2/schema.js';
 import { normalizeBackendTargetKeyV2Input } from '../backends/targets/backendTargetRefV2.js';
+import { listArtifactHeadersV1 } from '../artifacts/artifactListSelectionV1.js';
 
 import {
   isLaunchProfileV2,
@@ -20,6 +22,45 @@ import {
 } from './read.js';
 
 describe('readAiLaunchProfileCollection', () => {
+  it('retains the predecessor backend preference through collection, transfer and opened rows', () => {
+    const raw = { profiles: [{ id: 'work', name: 'Work', defaultBackendTargetKey: 'acpBackend:review', compatibilityByTargetKey: { 'agent:custom-acp': true }, createdAt: 1, updatedAt: 2 }] };
+    const collection = readAiLaunchProfileCollection(raw.profiles);
+    expect(collection.entries[0]).toMatchObject({ kind: 'legacy', profile: {
+      defaultBackendTargetKey: 'agent:happier.agent.custom-acp/custom-acp:definition:review',
+    } });
+    const transfer = prepareLegacyProfileRecordsV1(raw);
+    expect(transfer.status).toBe('complete');
+    const opened = readAiLaunchProfileRecords(transfer.records);
+    expect(opened.entries[0]).toMatchObject({ kind: 'legacy', profile: {
+      defaultBackendTargetKey: 'agent:happier.agent.custom-acp/custom-acp:definition:review',
+    } });
+  });
+
+  it.each([{ compatibilityByTargetKey: { 'agent:customAcp': false } }, { compatibility: { customAcp: false } },
+    { compatibilityByTargetKey: { 'agent:customAcp': false }, compatibility: { customAcp: true } },
+    { compatibilityByTargetKey: { 'agent:customAcp': false }, compatibility: { 'custom-acp': true } }])(
+    'reads the exact released customAcp container denial through collection and transfer (%s)', compatibility => {
+    const raw = { profiles: [{ id: 'work', name: 'Work', defaultBackendTargetKey: 'acpBackend:review', ...compatibility }] };
+    const transfer = prepareLegacyProfileRecordsV1(raw);
+    expect(transfer.status).toBe('complete');
+    for (const collection of [readAiLaunchProfileCollection(raw.profiles), readAiLaunchProfileRecords(transfer.records)]) {
+      const entry = collection.entries[0];
+      expect(entry?.kind).toBe('legacy');
+      if (!entry || entry.kind !== 'legacy') throw new Error('Expected released legacy profile');
+      expect(entry.profile.defaultBackendTargetKey).toBe('agent:happier.agent.custom-acp/custom-acp:definition:review');
+      expect(isProfileCompatibleWithBackendTarget(entry.profile, entry.profile.defaultBackendTargetKey)).toBe(false);
+    }
+  });
+
+  it('keeps unreadable shared definitions visible as incomplete in both catalog projections', () => {
+    const artifact = { artifactId: 'unreadable-shared', access: 'view' as const,
+      header: { kind: 'launch-profile.v1', profileId: 'shared', name: 'Shared' }, body: null };
+    const options = { artifactsById: new Map([[artifact.artifactId, artifact]]), includeShared: true };
+    for (const result of [readAiLaunchProfileCollection([], options), readAiLaunchProfileRecords([], options)]) {
+      expect(result.diagnostics).toEqual([{ index: 0, reason: 'artifact_unavailable' }]);
+    }
+  });
+
   it('admits the canonical enriched opened projection and refuses unknown public fields or invalid source revisions', () => {
     const result = readAiLaunchProfileRecords([{ v: 1, id: 'legacy', enabled: false,
       definition: { kind: 'legacy', profile: { id: 'legacy', name: 'Legacy', createdAt: 1, updatedAt: 1,
@@ -419,6 +460,70 @@ describe('readAiLaunchProfileCollection', () => {
       { id: 'shared', artifactId: 'shared', shared: true, viewOnly: true, revision: { headerVersion: 1, bodyVersion: 2 } },
     ]);
     expect(readAiLaunchProfileCollection([], { artifactsById: new Map(), includeShared: true }).entries).toEqual([]);
+  });
+
+  it('discovers shared launch profiles with one indexed header query and no unrelated bodies among 35000 artifacts', async () => {
+    const shared = ['shared-first', 'shared-last'].map((artifactId, index) => ({
+      artifactId, access: 'view' as const, header: { kind: 'launch-profile.v1' },
+      createdAt: 1, updatedAt: 35002 - index * 35001,
+    }));
+    const unrelated = Array.from({ length: 35000 }, (_, index) => ({
+      artifactId: `document-${index}`, access: 'view' as const, header: { kind: 'document.v1' },
+      createdAt: 1, updatedAt: 35001 - index,
+    }));
+    const all = [shared[0]!, ...unrelated, shared[1]!];
+    const bodies: string[] = [];
+    let headerQueries = 0;
+    let unrelatedHeaders = 0;
+    const result = await loadAiLaunchProfileArtifacts([{ artifactId: 'referenced' }, { artifactId: 'referenced' }], {
+      read: async () => { throw new Error('Exact body set must use one readMany'); },
+      readMany: async ids => {
+        bodies.push(...ids);
+        return ids.map(artifactId => ({ artifactId, access: artifactId === 'referenced' ? 'owner' as const : 'view' as const,
+          header: { kind: 'launch-profile.v1' }, body: '{}' }));
+      },
+      list: options => listArtifactHeadersV1({ options, encodeCursor: item => item.artifactId,
+        // Substitute only the physical header transport; selection and Profile discovery stay real.
+        readPage: async selection => {
+          headerQueries++;
+          const candidates = selection?.kinds?.includes('launch-profile.v1') ? shared : all;
+          const start = selection?.cursor ? candidates.findIndex(row => row.artifactId === selection.cursor) + 1 : 0;
+          const items = candidates.slice(start, start + (selection?.limit ?? 500));
+          unrelatedHeaders += items.filter(item => item.header.kind !== 'launch-profile.v1').length;
+          return { items, hasUnclassified: false, kindCoverage: { status: 'complete', unclassifiedCount: 0 },
+            ...(start + items.length < candidates.length ? { nextCursor: items.at(-1)!.artifactId } : {}) };
+        },
+      }),
+    });
+    expect([...result.keys()]).toEqual(['referenced', 'shared-first', 'shared-last']);
+    expect(bodies).toEqual(['referenced', 'shared-first', 'shared-last']);
+    expect({ headerQueries, unrelatedHeaders }).toEqual({ headerQueries: 1, unrelatedHeaders: 0 });
+  });
+
+  it('retains a shared legacy launch profile beyond the first unclassified header page through the canonical selector', async () => {
+    const legacy = Array.from({ length: 1001 }, (_, index) => ({
+      artifactId: `legacy-${index}`, access: 'view' as const,
+      header: { kind: index === 1000 ? 'launch-profile.v1' : 'document.v1' }, createdAt: 1, updatedAt: 1001 - index,
+    }));
+    let legacyQueries = 0;
+    const bodies: string[] = [];
+    const result = await loadAiLaunchProfileArtifacts([], {
+      read: async artifactId => { bodies.push(artifactId); return legacy.find(row => row.artifactId === artifactId) ?? null; },
+      list: options => listArtifactHeadersV1({ options, encodeCursor: item => item.artifactId,
+        readPage: async selection => {
+          const source = selection?.kinds ? [] : legacy;
+          if (selection?.unclassified) legacyQueries++;
+          const start = selection?.cursor ? source.findIndex(row => row.artifactId === selection.cursor) + 1 : 0;
+          const items = source.slice(start, start + (selection?.limit ?? 500));
+          return { items, hasUnclassified: true, kindCoverage: {
+            status: 'partial', unclassifiedCount: legacy.length, reason: 'unclassified_legacy_rows',
+          }, ...(start + items.length < source.length ? { nextCursor: items.at(-1)!.artifactId } : {}) };
+        },
+      }),
+    });
+    expect([...result.keys()]).toEqual(['legacy-1000']);
+    expect(bodies).toEqual(['legacy-1000']);
+    expect(legacyQueries).toBe(3);
   });
 
   it('preserves valid legacy, slim, malformed, and future entries without rewriting them', () => {

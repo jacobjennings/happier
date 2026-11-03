@@ -89,11 +89,18 @@ export function createLayoutArtifactHttpBoundary<T>(accountId: string, definitio
             : createPlainProjectAccountRowListFixture({ workspaceRefs }));
         if (path === AUTHORING_MEMORY_ROUTE_V1 && (!init?.method || init.method === 'GET')) return Response.json(AuthoringMemoryListResponseV1Schema.parse({ rows: [] }));
         if (path === '/v1/artifacts' && init?.method !== 'POST') {
-            const kind = new URL(String(input)).searchParams.get('kind');
+            const query = new URL(String(input)).searchParams;
+            const kind = query.get('kind');
+            const encodedKinds = query.get('kinds');
             const items = artifact ? [served(artifact)] : [];
-            return Response.json(kind === null ? items : { items: items.filter(row => row.kind === kind), hasUnclassified: false });
+            if (kind === null && encodedKinds === null) return Response.json(items);
+            // Filtered reads answer the filtered wire: a coarse kind, or exact kinds by stored kind hint.
+            const kinds: unknown = encodedKinds === null ? null : JSON.parse(encodedKinds);
+            return Response.json({ items: items.filter(row => kind !== null ? row.kind === kind
+                : Array.isArray(kinds) && typeof row.kindHint === 'string' && kinds.includes(row.kindHint)), hasUnclassified: false });
         }
-        if (path === `/v1/artifacts/${artifactId}/access/grants`) return artifact && (callerAccess === 'owner' || callerAccess === 'admin')
+        // The server's grants reader admits every current grantee; management is separate.
+        if (path === `/v1/artifacts/${artifactId}/access/grants`) return artifact && callerAccess !== null
             ? Response.json({ artifactId, ownerAccountId: artifact.ownerAccountId, access: callerAccess, grants })
             : Response.json({ error: 'artifact_access_forbidden' }, { status: 403 });
         if (path !== '/v1/artifacts' && path !== `/v1/artifacts/${artifactId}`) return Response.json({ error: 'not_found' }, { status: 404 });

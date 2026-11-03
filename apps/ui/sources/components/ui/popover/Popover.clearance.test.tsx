@@ -146,6 +146,7 @@ async function renderEdgePicker(containerStyle?: Readonly<{ paddingHorizontal: n
     measure: (cb: any) => cb(0, 0, 1000, 800, 0, 0),
   } as any;
   const portalTarget = { rootRef: { current: portalRootNode }, layout: { width: 1000, height: 800 } } as const;
+  let childMaxWidth = 0;
   const screen = await renderScreen(
     <PopoverPortalTargetContextProvider value={portalTarget}>
       <OverlayPortalProvider>
@@ -161,7 +162,10 @@ async function renderEdgePicker(containerStyle?: Readonly<{ paddingHorizontal: n
           edgePadding={{ horizontal: 12, vertical: 12 }}
           containerStyle={containerStyle}
         >
-          {() => React.createElement('Picker')}
+          {({ maxWidth }) => {
+            childMaxWidth = maxWidth;
+            return React.createElement('Picker');
+          }}
         </Popover>
         <OverlayPortalHost />
       </OverlayPortalProvider>
@@ -172,15 +176,21 @@ async function renderEdgePicker(containerStyle?: Readonly<{ paddingHorizontal: n
   });
   const style = flattenStyle(findPopoverContentView(screen, 'Picker')?.props?.style);
   const padding = Number(style.paddingRight ?? style.paddingHorizontal ?? 0);
-  return { visibleRight: Number(style.left) + Number(style.width) - padding };
+  return {
+    visibleRight: Number(style.left) + Number(style.width) - padding,
+    visibleWidth: Number(style.width) - padding * 2,
+    childMaxWidth,
+  };
 }
 
 describe('Popover: the screen-edge margin', () => {
-  it('keeps the edge margin whatever horizontal padding the caller gives the box', async () => {
+  it('keeps the edge margin whatever horizontal padding the caller gives the box and tells its child the width it may fill', async () => {
     // The default box carries the margin as a gutter; a caller that zeroes the box's padding (the
     // composer's pickers) must still stand the margin from the window edge.
-    const gutterCarried = (await renderEdgePicker()).visibleRight;
+    const gutterCarried = await renderEdgePicker();
     const gutterZeroed = (await renderEdgePicker({ paddingHorizontal: 0 })).visibleRight;
-    expect([gutterCarried, gutterZeroed]).toEqual([1000 - 12, 1000 - 12]);
+    expect([gutterCarried.visibleRight, gutterZeroed]).toEqual([1000 - 12, 1000 - 12]);
+    // A child sized by `maxWidth` fits the visible surface (box less gutter) instead of overflowing it.
+    expect(gutterCarried.childMaxWidth).toBe(gutterCarried.visibleWidth);
   });
 });

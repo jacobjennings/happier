@@ -9,6 +9,7 @@ import { inspectProjectSetup, type ProjectSetupInspection } from './projectSetup
 import { resolveProjectRequesterSecretEnvironment } from './projectSetupRequesterInputs';
 import { isServerProfileHomeIdentity } from '@/server/serverProfiles';
 import { logger } from '@/ui/logger';
+import { projectSetupInspectionFailure } from './projectSetupInspectionFailure';
 
 /** Passive review uses the same captured requester, current target, and native owner as execution. */
 export async function inspectProjectSetupFromRuntime(input: Readonly<{
@@ -66,7 +67,7 @@ export async function inspectProjectSetupFromRuntime(input: Readonly<{
             input.reviewSetupConsent ? { reviewConsent: true } : undefined));
         return await current() ? inspection : unknown('project_requester_credentials_unavailable');
     } catch (error) {
-        return unknown(error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : 'project_setup_requester_review_unavailable');
+        return projectSetupInspectionFailure(error, signal);
     } finally {
         await releaseRequester?.();
     }

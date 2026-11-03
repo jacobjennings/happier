@@ -1,7 +1,6 @@
 import * as React from 'react';
 import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import type { HomeAccountRowV1 } from '@happier-dev/protocol/home/governance';
-import { Platform } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Avatar } from '@/components/ui/avatar/Avatar';
@@ -11,7 +10,7 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { ItemLoadStateRows } from '@/components/ui/lists/ItemLoadStateRows';
-import { VirtualizedList } from '@/components/ui/lists/virtualized';
+import { VirtualizedItemList } from '@/components/ui/lists/VirtualizedItemList';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { useHomeAccountRoster } from '@/hooks/home/useHomeAccountRoster';
 import {
@@ -318,18 +317,12 @@ const PeopleRoster = React.memo(function PeopleRoster(
     const renderRow = React.useCallback(({ item }: Readonly<{ item: PeopleVirtualizedRow }>) => item.render(), []);
 
     return (
-        <VirtualizedList
+        <VirtualizedItemList
             testID="home-people-virtualized-list"
             data={rows}
             keyExtractor={(item) => item.key}
             renderItem={renderRow}
             ListHeaderComponent={<>{props.header}{searchHeader}</>}
-            style={{
-                flex: 1,
-                backgroundColor: theme.colors.surface.base,
-                ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
-            }}
-            contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
             initialNumToRender={6}
             maxToRenderPerBatch={4}
             windowSize={7}

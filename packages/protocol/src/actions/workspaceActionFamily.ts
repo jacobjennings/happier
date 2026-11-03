@@ -1,18 +1,11 @@
+import { WORKSPACE_ACTION_IDS } from './workspaceActionIdsV1.js';
+export { WORKSPACE_ACTION_IDS } from './workspaceActionIdsV1.js';
 import { lazyZodSchema } from '../lazyZodSchema.js';
 import { z } from 'zod/mini';
 import type { ActionInputFieldHint, PreNormalizedActionSpec } from './actionSpecs.js';
 import { FindOptionsSchema } from './findActionSpecs.js';
 import { WorkspaceAnchorV1Schema } from '../workspace/anchors/v1.js';
 import { FileChangesScopeSchema } from '../scm/fileChangesScope.js';
-
-export const WORKSPACE_ACTION_IDS = [
-  'workspace.files.link.get',
-  'workspace.tabs.list', 'workspace.tabs.open', 'workspace.tabs.activate', 'workspace.tabs.close',
-  'workspace.tabs.close_others', 'workspace.tabs.close_left', 'workspace.tabs.close_right', 'workspace.tabs.close_all',
-  'workspace.tabs.closed.list', 'workspace.tabs.reopen',
-  'workspace.tabs.pin', 'workspace.tabs.move', 'workspace.tabs.reorder', 'workspace.groups.focus', 'workspace.groups.maximize',
-  'workspace.groups.restore', 'workspace.split', 'workspace.resize',
-] as const;
 export type WorkspaceActionId = typeof WORKSPACE_ACTION_IDS[number];
 
 const id = z.string().check(z.trim(), z.minLength(1));
@@ -20,7 +13,7 @@ const id = z.string().check(z.trim(), z.minLength(1));
 /** Root-relative file addressing is shared by Action ingress and pane URL readers. */
 export function isSafeWorkspaceFilePath(path: string): boolean {
   return path.length > 0 && !path.includes('\0') && !path.includes('\\')
-    && !path.startsWith('/') && path !== '~' && !path.startsWith('~/') && !/^[A-Za-z]:/.test(path)
+    && !path.startsWith('/') && path !== '~' && !path.startsWith('~/') && !/^[A-Za-z]:(?:\/|$)/.test(path)
     && !path.includes('//') && !path.split('/').some(segment => segment === '.' || segment === '..');
 }
 
@@ -33,6 +26,8 @@ export const WorkspaceFileTargetSchema = lazyZodSchema(() => z.union([
 export const WorkspaceFileOpenInputSchema = lazyZodSchema(() => z.strictObject({
   target: WorkspaceFileTargetSchema,
   path: z.string().check(z.refine(isSafeWorkspaceFilePath, { message: 'A workspace-relative file path is required' })),
+  /** Exact file base when the producer's paths are not relative to the Session cwd. */
+  rootPath: z.optional(z.string().check(z.minLength(1))),
   anchor: z.optional(WorkspaceAnchorV1Schema),
   anchorSource: z.optional(z.enum(['file', 'diff'])),
   view: z.optional(z.enum(['view', 'changes', 'edit'])),
@@ -254,3 +249,13 @@ export const WORKSPACE_ACTION_SPECS = [
 export function isWorkspaceActionId(value: string): value is WorkspaceActionId {
   return (WORKSPACE_ACTION_IDS as readonly string[]).includes(value);
 }
+
+export const PaneTabAddressSchema = lazyZodSchema(() => z.strictObject({
+  kind: z.literal('paneTab'), ...tabOwner, scopeId: id, tabKey: id,
+}));
+
+const tabOwner = { serverId: id, accountId: id, layoutId: id };
+
+export const WorkspaceOwnedTabAddressSchema = lazyZodSchema(() => z.strictObject({
+  kind: z.literal('workspaceTab'), ...tabOwner, tabId: id,
+}));

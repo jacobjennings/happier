@@ -11,6 +11,7 @@ import type {
 
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { Item } from '@/components/ui/lists/Item';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useHappierCopyFeedback } from '@happier-dev/plugin-ui/presentation';
@@ -283,6 +284,8 @@ function resolvePublicLinkChoices(state: LocalServicePublicPreviewState): Readon
     const allowedModes = state.policy?.allowedModes ?? [];
     return {
         modeChoices: (allowedModes.length > 0 ? allowedModes : (['secret_link'] as const))
+            // Browser sharing has no signed-in admission yet; API callers retain that mode.
+            .filter((mode) => mode !== 'authenticated')
             .map((mode) => ({ mode, label: modeLabel(mode) })),
         ttlChoices: resolveTtlChoices(state.policy?.maxTtlMs)
             .map((ttlMs) => ({ ttlMs, label: ttlChoiceLabel(ttlMs) })),
@@ -516,24 +519,16 @@ function ExposureRow(props: Readonly<{
 
     const onRevoke = React.useCallback(() => {
         void (async () => {
-            let confirmationRequired: boolean;
-            try {
-                confirmationRequired = await isActionApprovalRequiredForHome('localServices.publicPreview.revoke', { surface: 'ui' }, props.actions.serverId);
-            } catch (error) {
-                await props.runAction({ id: `exposure:${exposure.exposureId}`, failureTitle: t('localServices.actions.failureTitle.revokeExposure'),
-                    action: async () => { throw error; } });
-                return;
-            }
-            const confirmed = !confirmationRequired || await Modal.confirm(
-                t('localServices.publicPreview.revokeConfirmTitle'),
-                t('localServices.publicPreview.revokeConfirmMessage', { url: maskPublicUrl(exposure.publicUrl) }),
-                { confirmText: t('localServices.publicPreview.revokeConfirmCta'), destructive: true },
-            );
-            if (!confirmed) return;
             await props.runAction({
                 id: `exposure:${exposure.exposureId}`,
                 failureTitle: t('localServices.actions.failureTitle.revokeExposure'),
-                action: () => props.actions.revoke(exposure),
+                action: () => props.actions.revoke(exposure, {
+                    confirmation: () => Modal.confirm(
+                        t('localServices.publicPreview.revokeConfirmTitle'),
+                        t('localServices.publicPreview.revokeConfirmMessage', { url: maskPublicUrl(exposure.publicUrl) }),
+                        { confirmText: t('localServices.publicPreview.revokeConfirmCta'), destructive: true },
+                    ),
+                }),
             });
         })();
     }, [exposure, props]);
@@ -653,6 +648,25 @@ export function LocalServiceShareLinkButton(props: Readonly<{
             testID={props.testID}
             size="small"
             display="secondary"
+            title={t('localServices.publicPreview.shareCta')}
+            accessibilityLabel={t('localServices.publicPreview.createActionA11y')}
+            loading={runner.pendingId !== null}
+            onPress={() => { void offer.request(actions, runner.run); }}
+        />
+    );
+}
+
+/** The same create control as a list row, for the phone detail's grouped list (lab RUNSONp). */
+export function LocalServiceShareLinkRow(props: Readonly<{
+    offer: Extract<LocalServicePublicLinkOffer, { kind: 'create' }>;
+    actions: LocalServicePublicPreviewActions;
+    testID: string;
+}>): React.ReactElement {
+    const runner = useLocalServiceActionRunner();
+    const { offer, actions } = props;
+    return (
+        <Item
+            testID={props.testID}
             title={t('localServices.publicPreview.shareCta')}
             accessibilityLabel={t('localServices.publicPreview.createActionA11y')}
             loading={runner.pendingId !== null}

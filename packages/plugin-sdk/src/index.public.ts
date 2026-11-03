@@ -1,3 +1,23 @@
+export type {
+    DeploymentTargetAuthorDefinitionV1, DeploymentTargetCommonV1, DeploymentTargetContributionV1,
+    DeploymentTargetFailureTransitionV1, DeploymentTargetCredentialPrincipalV1,
+    DeploymentTargetProviderIdentityV1, DeploymentTargetProviderEnvironmentV1,
+    DeploymentTargetRepositoryAccessV1, DeploymentTargetRoleCommonInputV1,
+    DeploymentTargetPreparationBaseV1, DeploymentTargetInspectInputV1,
+    DeploymentTargetLinkRoleInputV1, DeploymentTargetLifecycleInputV1,
+    DeploymentTargetDeployInputV1, DeploymentTargetUploadDeployInputV1,
+    DeploymentTargetObserveInputV1, DeploymentTargetCancelInputV1,
+    DeploymentTargetPriorDeploymentRefV1, DeploymentTargetRollbackInputV1,
+    DeploymentTargetPromoteInputV1, DeploymentTargetTeardownInputV1,
+    DeploymentTargetRuntimeRoleV1, DeploymentTargetRoleInputV1,
+    DeploymentTargetRoleResultV1, DeploymentTargetRoleFailureV1,
+} from './deploymentTargets.js';
+export { DeploymentTargetFailureTransitionV1ProtocolSchema, DeploymentTargetRoleInputProtocolSchemasV1,
+    DeploymentTargetRoleResultV1ProtocolSchema, DeploymentTargetPreparationBaseV1ProtocolSchema,
+    hasDeploymentTargetPreparationCoordinatesV1 } from './deploymentTargets.js';
+export type { HealthChecksService, HealthCheckKindContributionV1, HealthCheckKindV1, HealthCheckStatusV1, HealthCheckSubjectV1, HealthCheckResultV1, HealthCheckSourceConfigV1, SavedHealthCheckSelectorV1 } from './healthCheckKinds.js';
+export { HEALTH_CHECK_KINDS_V1, HealthCheckSubjectV1ProtocolSchema, HealthCheckResultV1ProtocolSchema, HealthCheckSourceConfigV1ProtocolSchema, SavedHealthCheckSelectorV1ProtocolSchema } from './healthCheckKinds.js';
+export { HealthCheckTcpConfigV1ProtocolSchema, HealthCheckDnsConfigV1ProtocolSchema, HealthCheckHeartbeatConfigV1ProtocolSchema } from './healthCheckKinds.js';
 export type { ActionConfirmationWhen } from './definePlugin.js';
 export { summarizeUsageRunLengthObservations, resolveUsageCalendarInstant } from './usage.js';
 export type { UsageRunLengthObservation, UsageRunLengthObservationSummary, UsageRunLengthSummary, PublicProfileSnapshotV1, PublicUsageFactsV1,
@@ -198,3 +218,40 @@ export { readTrimmedString } from './sessions/fileStores/records.js';
 export { redactBugReportSensitiveText } from './diagnostics.js';
 export { trimBugReportTextToMaxBytes } from './diagnostics.js';
 export type { PluginCaptureFrameV1, PluginCaptureReceiptV1, PluginCaptureCodecIdV1, PluginCaptureSourceDeclaration } from './captureSources.js';
+export type { MachineRecipeV1, MachineRecipeStepV1, MachineRecipeSelectionV1, MachineSetupV1, MachineSetupScriptV1, MachinePresetItemV1, MachineSetupPresetContributionV1, StoredAppPresetInputV1 } from './machineSetup.js';
+
+export type { DeploymentSourceMaterializationPortV1, DeploymentSourceMaterializationRequestV1, DeploymentSourceMaterializationV1 } from './services/deployments.js';
+
+export { BackupDestinationOpenV1ProtocolSchema } from './backupDestinations.js';
+
+export type { BackupDestinationOpenV1 } from './backupDestinations.js';
+
+
+
+export type { PluginSecretSourceAcquisitionV1, PluginSecretSourceRuntimeV1 } from './secretSources.js';
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+export type { ProjectToolchainSelectionV1 } from './projectNativeAdapters.js';
+
+export type { PluginProjectNativeToolchainRequestV1 } from './projectNativeAdapters.js';
+
+export type { PluginProjectNativeToolchainResultV1 } from './projectNativeAdapters.js';

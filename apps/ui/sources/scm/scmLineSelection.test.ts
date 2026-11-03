@@ -139,10 +139,10 @@ describe('canStartLineSelection', () => {
 });
 
 describe('buildFileLineSelectionFingerprint', () => {
-    it('returns stable fingerprint for same entry fields', () => {
+    it('is stable for an equal copy and changes when any entry field changes', () => {
         const entry = {
             path: 'src/a.ts',
-            previousPath: null,
+            previousPath: null as string | null,
             includeStatus: 'M',
             pendingStatus: ' ',
             hasIncludedDelta: true,
@@ -155,36 +155,24 @@ describe('buildFileLineSelectionFingerprint', () => {
                 isBinary: false,
             },
         };
-
-        expect(buildFileLineSelectionFingerprint(entry)).toBe(buildFileLineSelectionFingerprint({ ...entry }));
-    });
-
-    it('changes fingerprint when git entry state changes', () => {
-        const entry = {
-            path: 'src/a.ts',
-            previousPath: null,
-            includeStatus: 'M',
-            pendingStatus: ' ',
-            hasIncludedDelta: true,
-            hasPendingDelta: false,
-            stats: {
-                includedAdded: 2,
-                includedRemoved: 1,
-                pendingAdded: 0,
-                pendingRemoved: 0,
-                isBinary: false,
-            },
-        };
-
         const base = buildFileLineSelectionFingerprint(entry);
-        const changed = buildFileLineSelectionFingerprint({
-            ...entry,
-            stats: {
-                ...entry.stats,
-                pendingAdded: 3,
-            },
-        });
+        expect(buildFileLineSelectionFingerprint({ ...entry, stats: { ...entry.stats } })).toBe(base);
 
-        expect(changed).not.toBe(base);
+        const variants = [
+            { ...entry, path: 'src/b.ts' },
+            { ...entry, previousPath: 'src/old.ts' },
+            { ...entry, includeStatus: 'A' },
+            { ...entry, pendingStatus: 'M' },
+            { ...entry, hasIncludedDelta: false },
+            { ...entry, hasPendingDelta: true },
+            { ...entry, stats: { ...entry.stats, includedAdded: 3 } },
+            { ...entry, stats: { ...entry.stats, includedRemoved: 2 } },
+            { ...entry, stats: { ...entry.stats, pendingAdded: 3 } },
+            { ...entry, stats: { ...entry.stats, pendingRemoved: 3 } },
+            { ...entry, stats: { ...entry.stats, isBinary: true } },
+        ];
+        const fingerprints = new Set(variants.map((variant) => buildFileLineSelectionFingerprint(variant)));
+        expect(fingerprints.has(base)).toBe(false);
+        expect(fingerprints.size).toBe(variants.length);
     });
 });

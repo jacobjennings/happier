@@ -4,6 +4,9 @@ import {
   CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
   deriveSessionCreationTagV1,
   SessionCreationCorrespondenceV1Schema,
+  SessionDisplayProjectionV1Schema,
+  openSessionOwnerDisplayEnvelopeV1,
+  openSessionSharedDisplayEnvelopeV1Sync,
 } from '@happier-dev/protocol';
 
 import { ApiClient } from './api';
@@ -704,6 +707,17 @@ describe('ApiClient.getOrCreateSession (plaintext sessions)', () => {
       expect(sharedMetadata).not.toHaveProperty('path');
       expect(sharedMetadata).not.toHaveProperty('codexSessionId');
       expect(body.ownerMetadata).toMatchObject({ t: 'encrypted' });
+      const display = SessionDisplayProjectionV1Schema.parse(body.displayProjectionV1);
+      expect(display).toMatchObject({ v: 1, sourceMetadataVersion: 0, metadataLayoutVersion: 1 });
+      const sharedDisplay = openSessionSharedDisplayEnvelopeV1Sync({ sessionMode: 'e2ee', envelope: display.shared,
+        decryptPayload: value => decrypt(credential.encryption.secret, 'legacy', decodeBase64(value)) });
+      const ownerDisplay = openSessionOwnerDisplayEnvelopeV1({ accountMode: 'e2ee', envelope: display.owner,
+        material: { type: 'legacy', secret: credential.encryption.secret } });
+      expect(sharedDisplay.ok).toBe(true);
+      expect(ownerDisplay.ok).toBe(true);
+      expect(JSON.stringify(sharedDisplay)).not.toContain('/private/e2ee');
+      expect(JSON.stringify(sharedDisplay)).not.toContain('codex-private');
+      expect(JSON.stringify(ownerDisplay)).toContain('/private/e2ee');
       expect(decrypt(
         credential.encryption.secret,
         'legacy',

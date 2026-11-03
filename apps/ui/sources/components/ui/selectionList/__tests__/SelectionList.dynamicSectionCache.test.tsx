@@ -2,8 +2,11 @@ import * as React from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
-import { createTestDynamicSectionCache, type SelectionListDynamicSectionCache } from '../selectionListDynamicSectionCache';
-import { __resetDynamicSectionCacheForTests } from '../useSelectionListDynamicSections';
+import {
+    createDefaultDynamicSectionCache,
+    getDefaultDynamicSectionCache,
+    type SelectionListDynamicSectionCache,
+} from '../selectionListDynamicSectionCache';
 import type {
     SelectionListDynamicSection,
     SelectionListProps,
@@ -66,12 +69,10 @@ function makeSection(resolve: SelectionListDynamicSection['resolve']): Selection
 
 beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
-    __resetDynamicSectionCacheForTests();
 });
 
 afterEach(() => {
     vi.useRealTimers();
-    __resetDynamicSectionCacheForTests();
 });
 
 async function flushResolve(): Promise<void> {
@@ -87,7 +88,7 @@ describe('SelectionList — injectable dynamic-section cache', () => {
     it('replays cross-mount rows from the injected cache, not the default singleton', async () => {
         const { act } = await import('react-test-renderer');
         const { SelectionList } = await import('../SelectionList');
-        const cache: SelectionListDynamicSectionCache = createTestDynamicSectionCache();
+        const cache: SelectionListDynamicSectionCache = createDefaultDynamicSectionCache();
         const firstRows = [{ id: 'r1', label: 'First mount row' }];
         const resolver = vi.fn(async () => ({ options: firstRows }));
         const props = defaultProps(makeStep(makeSection(resolver)));
@@ -104,7 +105,7 @@ describe('SelectionList — injectable dynamic-section cache', () => {
         });
         // Erase every other replay source: only the injected cache may feed
         // the next mount.
-        __resetDynamicSectionCacheForTests();
+        getDefaultDynamicSectionCache().clear();
 
         // The remount resolver would publish different rows; before its fetch
         // dispatches, the injected cache's rows must already be visible.
@@ -130,7 +131,7 @@ describe('SelectionList — injectable dynamic-section cache', () => {
     it('shows no stale rows after the injected cache is cleared on Account replacement', async () => {
         const { act } = await import('react-test-renderer');
         const { SelectionList } = await import('../SelectionList');
-        const cache: SelectionListDynamicSectionCache = createTestDynamicSectionCache();
+        const cache: SelectionListDynamicSectionCache = createDefaultDynamicSectionCache();
         const resolver = vi.fn(async () => ({ options: [{ id: 'r1', label: 'Private row' }] }));
         const props = defaultProps(makeStep(makeSection(resolver)));
 

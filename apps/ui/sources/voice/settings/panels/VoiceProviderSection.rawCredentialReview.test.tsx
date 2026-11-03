@@ -2,6 +2,7 @@ import React from 'react';
 import { act } from 'react-test-renderer';
 import 'fake-indexeddb/auto';
 import { PluginContributesV2Schema, createVoiceProviderRecipientContractFromCredentialsV1 } from '@happier-dev/protocol';
+import { SavedSecretResourceMaterialV1Schema } from '@happier-dev/protocol/account/settings/savedSecretCatalogV1';
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { renderScreen as renderTestScreen, waitForTestEvent } from '@/dev/testkit';
@@ -17,7 +18,7 @@ import { storage } from '@/sync/domains/state/storageStore';
 import { ModalProvider } from '@/modal/ModalProvider';
 import { t } from '@/text';
 import { installDisconnectedServerSocketBoundary } from '@/dev/testkit/harness/serverAccountConnectionHarness';
-import { createVoiceSettingsAccountTestHarness } from './voiceSettingsAccountTestHarness';
+import { createVoiceSettingsAccountTestHarness, withVoiceSettingsCredentialResource } from './voiceSettingsAccountTestHarness';
 
 import { VoiceCredentialSourceField } from './realtime/VoiceCredentialSourceField';
 import { VoiceServiceGallery } from './VoiceServiceGallery';
@@ -242,6 +243,36 @@ async function activateRawCredentialOnlyProvider(
 }
 
 describe('VoiceProviderSection raw credential review reachability', () => {
+  it.each(['owner', 'recipient'] as const)('keeps only the %s linked-secret review appropriate when inspect is unavailable', async (relationship) => {
+    const pluginId = 'acme.linked-review-voice';
+    const fixture = await activateRawCredentialOnlyProvider(pluginId, [{ kind: 'savedSecret' }]);
+    onTestFinished(fixture.cleanup);
+    const { settingsParse } = await import('@/sync/domains/settings/settings');
+    account.replaceSettings(await withVoiceSettingsCredentialResource(account, {
+      settings: settingsParse({}), declaration: fixture.declaration, pluginId, resourceId: 'linked-review-secret',
+    }));
+    if (relationship === 'recipient') {
+      const resource = account.resources[0]!;
+      account.resources[0] = SavedSecretResourceMaterialV1Schema.parse({ ...resource, entry: { ...resource.entry, relationship: 'recipient',
+        ownerAccountId: 'other-person', capabilities: { use: true, rename: false, rotate: false, manageAccess: false, delete: false } } });
+    }
+    const rawGrant = fixture.declaration.credentials!.sources.flatMap(source => source.rawGrants ?? [])[0]!;
+    const { rawCredentialAuthorizationClient } = await import('@/voice/credentials/rawCredentialAuthorizationClient');
+    await expect(rawCredentialAuthorizationClient.inspect(fixture.contribution, rawGrant)).rejects.toMatchObject({ code: 'machine_unavailable' });
+    const screen = await renderScreen(<VoiceCredentialItem contribution={fixture.contribution}
+      credentialSlotId={fixture.declaration.credentials!.slot.id}
+      credentialSourcePurpose={fixture.declaration.credentials!.slot.purpose}
+      credentialSourceDeclaration={fixture.declaration} rawCredentialReviewGrants={[rawGrant]}
+      title="API key" promptTitle="API key" promptDescription="API key" disclosePlainStorage
+      testID="linked-secret" />);
+    if (relationship === 'owner') {
+      expect(screen.findHostByTestId('linked-secret-raw-credential-access') === null).toBe(true);
+    } else {
+      await waitForTestEvent(screen.subscribe, () => screen.getTextContent(), text => text.includes(t('settingsVoice.externalCredentials.unavailable')));
+      expect(screen.findHostByTestId('linked-secret-raw-credential-access') === null).toBe(false);
+    }
+  });
+
   it('retains the Account resource but requires review before an external package change can use its credential', async () => {
     const pluginId = 'acme.review-voice';
     const sources = [{ kind: 'savedSecret', access: 'mediated' }] as const;
@@ -264,11 +295,8 @@ describe('VoiceProviderSection raw credential review reachability', () => {
     await waitForNativeAlert(t('settingsVoice.local.voiceCredential.plainStorageTitle'));
     await act(async () => nativeAlert.mock.calls.at(-1)?.[2]?.find(button => button.style !== 'cancel')?.onPress?.());
     await waitForNativeAlert(t('settingsVoice.externalCredentials.recipientApprovalTitle'));
-    await act(async () => nativeAlert.mock.calls.at(-1)?.[2]?.find(button => button.style !== 'cancel')?.onPress?.());
-    // Plain-storage and recipient consent precede the shared resource Action's
-    // own present-user confirmation. It must still have no effect before that tap.
-    const { getActionSpec } = await import('@happier-dev/protocol/actions/actionSpecs');
-    await waitForNativeAlert(getActionSpec('secrets.shared.promote').title);
+    // The present user's reversible Action is direct by default. No resource
+    // may be created before the actual recipient-consent tap.
     expect(account.resources).toHaveLength(0);
     expect(account.promotions).toHaveLength(0);
     await act(async () => nativeAlert.mock.calls.at(-1)?.[2]?.find(button => button.style !== 'cancel')?.onPress?.());
@@ -303,8 +331,8 @@ describe('VoiceProviderSection raw credential review reachability', () => {
       resolveSavedSecret: ref => resolveSavedSecretReference(account.scope, account.settings.secrets, ref),
     })).toMatchObject({ status: 'review_required', reference: { secretId: retainedRef } });
     const gallery = screen.tree.findAllByType(VoiceServiceGallery)[0]!;
-    expect(gallery.props.tiles.find((tile: Readonly<{ id: string }>) => tile.id === changed.providerId)?.status.detail)
-      .toBe(t('settingsVoice.externalCredentials.reviewRequired'));
+    expect(gallery.props.tiles.find((tile: Readonly<{ id: string }>) => tile.id === changed.providerId)?.status)
+      .toMatchObject({ tone: 'needs_you', detail: expect.stringContaining(t('settingsVoice.externalCredentials.reviewRequired')) });
     expect(screen.getTextContent()).toContain(t('settingsVoice.externalCredentials.reviewRequired'));
     expect(account.resources).toHaveLength(1);
     expect(account.resources[0]!.entry).toMatchObject({ ref: retainedRef });
@@ -390,22 +418,14 @@ describe('VoiceProviderSection raw credential review reachability', () => {
     const { settingsParse } = await import('@/sync/domains/settings/settings');
     const {
       applyAccountVoiceCredentialSourceSelection,
-      saveAndUseAccountVoiceCredential,
     } = await import('@/voice/credentials/accountVoiceCredential');
     const selected = selectedSource === 'savedSecret'
-      ? saveAndUseAccountVoiceCredential({
+      ? { settings: await withVoiceSettingsCredentialResource(account, {
           settings: settingsParse({}),
-          contribution: fixture.contribution,
-          credentialSlotId: fixture.declaration.credentials!.slot.id,
-          expectedSettingsVersion: 0,
-          currentDeclaration: fixture.declaration,
-          machineId: null,
-          value: 'fixture credential',
-          generateId: () => `${pluginId}-secret`,
-          now: 1,
-          expectedSecretId: null,
-          expectedSecretUpdatedAt: null,
-        })
+          declaration: fixture.declaration,
+          pluginId,
+          resourceId: `${pluginId}-secret`,
+        }) }
       : applyAccountVoiceCredentialSourceSelection({
           settings: settingsParse({}),
           connectedPurposes: account.purposes.value,

@@ -26,9 +26,10 @@ describe('cached Intl date/time formatters', () => {
 
     it('names a calendar day without the year only while it is the current year', async () => {
         const { formatCalendarDate } = await import('./cachedIntlFormatters');
-        const now = Date.parse('2026-10-12T12:00:00Z');
-        expect(formatCalendarDate(Date.parse('2026-10-18T12:00:00Z'), 'en', now)).toBe('Oct 18');
-        expect(formatCalendarDate(Date.parse('2027-01-03T12:00:00Z'), 'en', now)).toBe('Jan 3, 2027');
-        expect(formatCalendarDate(Date.parse('2025-12-30T12:00:00Z'), 'en', now)).toBe('Dec 30, 2025');
+        // Local noon: the owner reads the local calendar year, so UTC-built dates shift days on far-east runners.
+        const now = new Date(2026, 9, 12, 12).getTime();
+        expect(formatCalendarDate(new Date(2026, 9, 18, 12).getTime(), 'en', now)).toBe('Oct 18');
+        expect(formatCalendarDate(new Date(2027, 0, 3, 12).getTime(), 'en', now)).toBe('Jan 3, 2027');
+        expect(formatCalendarDate(new Date(2025, 11, 30, 12).getTime(), 'en', now)).toBe('Dec 30, 2025');
     });
 });

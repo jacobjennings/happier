@@ -116,7 +116,15 @@ export function readUsageRequestAttribution(metadata: unknown): UsageRequestAttr
   return parsed.success ? parsed.data : null;
 }
 
+/** Provider request clock, with a detected cache lifetime only when known. */
+export const UsagePromptCacheSchema = lazyZodSchema(() => z.strictObject({
+  lastUseAtMs: z.number().check(z.refine(Number.isFinite, 'Expected a finite request clock')),
+  ttlMs: z.optional(z.number().check(z.refine((value) => Number.isFinite(value) && value > 0, 'Expected a finite positive cache lifetime'))),
+}));
+export type UsagePromptCache = z.infer<typeof UsagePromptCacheSchema>;
+
 export const UsageEventIngestRequestSchema = lazyZodSchema(() => z.strictObject({
+  promptCache: z.optional(UsagePromptCacheSchema),
   sessionId: z.optional(z.string().check(z.trim(), z.minLength(1))),
   subject: z.optional(UsageNativeAccountingSubjectSchema),
   accounting: z.optional(UsageNativeAccountingEvidenceSchema),
@@ -177,6 +185,8 @@ export const UsageAnalyticsBreakdownDimensionSchema = lazyZodSchema(() => z.enum
 ]));
 export type UsageAnalyticsBreakdownDimension = z.infer<typeof UsageAnalyticsBreakdownDimensionSchema>;
 
+export const UsageAnalyticsExecutionSchema = lazyZodSchema(() => z.enum(['happier', 'outside', 'unknown']));
+
 export const UsageAnalyticsQueryFiltersSchema = lazyZodSchema(() => z.strictObject({
   sessionIds: z.optional(z.array(z.string().check(z.trim(), z.minLength(1)))),
   agentIds: z.optional(z.array(z.string().check(z.trim(), z.minLength(1)))),
@@ -185,6 +195,7 @@ export const UsageAnalyticsQueryFiltersSchema = lazyZodSchema(() => z.strictObje
   workspaceIds: z.optional(z.array(z.string().check(z.trim(), z.minLength(1)))),
   backendModes: z.optional(z.array(z.string().check(z.trim(), z.minLength(1)))),
   sources: z.optional(z.array(z.string().check(z.trim(), z.minLength(1)))),
+  execution: z.optional(UsageAnalyticsExecutionSchema),
   machineIds: z.optional(z.array(z.string().check(z.trim(), z.minLength(1)))),
 }));
 export type UsageAnalyticsQueryFilters = z.infer<typeof UsageAnalyticsQueryFiltersSchema>;
@@ -296,7 +307,7 @@ const UsageAnalyticsInsightsSchema = lazyZodSchema(() => z.strictObject({
 /** Capture path and execution attribution are independent; native replay can be linked to Happier. */
 export const UsageAnalyticsSourceContextSchema = lazyZodSchema(() => z.strictObject({
   path: z.enum(['runtime', 'native', 'legacy', 'unknown']),
-  execution: z.enum(['happier', 'outside', 'unknown']),
+  execution: UsageAnalyticsExecutionSchema,
 }));
 export type UsageAnalyticsSourceContext = z.infer<typeof UsageAnalyticsSourceContextSchema>;
 

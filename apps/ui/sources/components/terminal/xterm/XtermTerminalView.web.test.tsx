@@ -666,24 +666,6 @@ describe('XtermTerminalView.web', () => {
         expect(clipboardHandler?.('clipboard')).toBe(true);
     });
 
-    it('routes xterm committed input through the canonical IME boundary', async () => {
-        const { XtermTerminalView } = await import('./XtermTerminalView.web');
-        const onInput = vi.fn();
-        await act(async () => {
-            root.render(
-                <XtermTerminalView
-                    testID="terminal"
-                    fontSize={14}
-                    onInput={onInput}
-                    onResize={() => {}}
-                    onReady={() => {}}
-                />,
-            );
-        });
-        onDataSpy('文');
-        expect(onInput).toHaveBeenCalledWith('文');
-    });
-
     it('suppresses real parser replies during replay until completion and forwards live replies afterwards', async () => {
         // No browser renderer is opened; xterm can use its non-canvas color fallback.
         const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
@@ -1072,6 +1054,29 @@ describe('XtermTerminalView.web', () => {
         expect(result).toBe(false);
         expect(onPaste).toHaveBeenCalledWith('clipboard text');
         expect(onInput).not.toHaveBeenCalledWith('clipboard text');
+    });
+
+    it('never forwards a chord the keyboard provider already handled, but keeps an unhandled Ctrl+G for the PTY', async () => {
+        const { XtermTerminalView } = await import('./XtermTerminalView.web');
+        await act(async () => {
+            root.render(
+                <XtermTerminalView
+                    testID="terminal"
+                    fontSize={14}
+                    onInput={() => {}}
+                    onResize={() => {}}
+                    onReady={() => {}}
+                />,
+            );
+        });
+
+        const keyHandler = attachCustomKeyEventHandlerSpy.mock.calls.at(-1)?.[0] as ((event: KeyboardEvent) => boolean) | undefined;
+        expect(typeof keyHandler).toBe('function');
+        const handledFind = new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, cancelable: true });
+        handledFind.preventDefault();
+
+        expect(keyHandler!(handledFind)).toBe(false);
+        expect(keyHandler!(new KeyboardEvent('keydown', { key: 'g', ctrlKey: true, cancelable: true }))).toBe(true);
     });
 
     it('captures real DOM ClipboardEvent paste before xterm turns it into ordinary input', async () => {

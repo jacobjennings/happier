@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeEach, vi } from 'vitest';
 import { waitForTestEvent } from '@/dev/testkit';
+import { settingsParse } from '@/sync/domains/settings/settings';
 import { captureMachinePresenceObservation as observeLocalVoiceFixturePresence } from '@/sync/domains/machines/reachability/machineReachability';
 import type { Socket } from 'socket.io-client';
 import { UpdateContainerSchema } from '@happier-dev/protocol/updates';
@@ -36,6 +37,10 @@ import { createSessionMetadataHttpBoundary } from '@/dev/testkit/harness/session
 import { createSessionReadBatchHttpBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
 import { createArtifactStoreBoundary } from '@/dev/testkit/harness/artifactStoreBoundary';
 import { createAuthoringMemoryHttpBoundary } from '@/dev/testkit/mocks/authoringMemoryHttp';
+import { createEmptyAccountBootstrapHttpResponse } from '@/dev/testkit/fixtures/accountBootstrapHttpBoundary';
+import { ManagedMachineActionOutputSchemasV1, managedMachineActionEndpointPathV1 } from '@happier-dev/protocol/machines/managed/actionsV1';
+import { createConnectedPurposeCatalogHttpBoundary } from '@/dev/testkit/harness/connectedAccountCatalogBoundary';
+import { createAccountKvHttpFixture } from '@/dev/testkit/fixtures/accountKvHttpFixture';
 import { SessionSpawnNewInputV2Schema } from '@happier-dev/protocol/sessions/creation/sessionSpawnNewInputV2';
 import { readBackendTargetRefV2 } from '@happier-dev/protocol/backends/targets/backendTargetRefV2';
 import { SessionSpawnNewResultV1Schema } from '@happier-dev/protocol/sessions/creation/sessionSpawnNewResultV1';
@@ -212,6 +217,7 @@ export function emitAudioStreamEvent<Name extends keyof HappierAudioStreamNative
 const baseVoice = voiceSettingsParse({ providerId: 'local_conversation', welcome: { enabled: false } });
 export const BASE_SETTINGS = {
     experiments: true,
+    featureToggles: { voice: true, 'voice.agent': true, 'voice.daemonInference': true, 'execution.runs': true },
     lastUsedAgent: 'codex',
     recentMachinePaths: [{ machineId: 'machine-1', path: '/Users/test/.happier' }],
     voice: {
@@ -281,12 +287,18 @@ export async function getStorage() {
                     : { voice: settings.voice };
                 const normalizedSettings = { ...settings, ...normalizeVoiceSettingsLocalDelta(voiceDelta, current) };
                 normalized.settings = normalizedSettings;
+                const version = typeof patch.settingsVersion === 'number' ? patch.settingsVersion : (storage.getState().settingsVersion ?? 0) + 1;
+                normalized.settingsVersion = version;
+                // Binding activates this Account's persisted projection. Seed
+                // the same served document through its real projection writer.
+                storage.getState().applySettings(settingsParse(normalizedSettings), version);
                 // The HTTP owner stores a serialized envelope, not this client
                 // object. Publish authored fixture settings through its public
-                // replacement port at the actual projection's known version.
+                // replacement port with the new document's version, so retained
+                // Account readers cannot reuse the preceding fixture document.
                 activeAccountHomes?.replaceAccountSettings('voice', {
                     settings: normalizedSettings,
-                    version: typeof patch.settingsVersion === 'number' ? patch.settingsVersion : storage.getState().settingsVersion ?? 1,
+                    version,
                 });
             }
             if (patch.sessions && typeof patch.sessions === 'object') {
@@ -398,6 +410,8 @@ async function createVoiceConversationSessionFixture(raw: unknown) {
                     metadata: {
                         ...buildSystemSessionMetadataV1({ key: VOICE_CONVERSATION_SYSTEM_SESSION_KEY, hidden: true }),
                         flavor: spawnedAgentId,
+                        permissionMode: args.permissionMode,
+                        ...(args.connectedServices ? { connectedServices: args.connectedServices } : {}),
                         agentRuntimeCapabilitiesV1: {
                             localControl: { supported: true },
                         },
@@ -519,12 +533,14 @@ export async function publishLocalVoiceTranscriptMessage(input: Readonly<{
     const createdAt = Date.now();
     const update = UpdateContainerSchema.parse({
         id: `update-${input.id}`, seq, createdAt,
-        body: { t: 'new-message', sid: input.sessionId, message: {
+        body: { t: 'new-message', delivery: 'full', sid: input.sessionId, message: {
             id: input.id, seq, localId: input.localId, messageRole: input.messageRole, createdAt, updatedAt: createdAt,
             content: input.content,
         } },
     });
-    if (update.body.t !== 'new-message') throw new Error('Expected incoming Voice transcript message');
+    if (update.body.t !== 'new-message' || update.body.delivery !== 'full') {
+        throw new Error('Expected incoming full Voice transcript message');
+    }
     localVoiceRemoteMessages.set(remoteKey, [...messages, update.body.message]);
     await publishLocalVoiceSocketUpdate(update);
     if (input.messageRole === 'agent') {
@@ -588,9 +604,9 @@ export function readLocalVoiceHttpRequests(): readonly ServedHomeRequest[] {
 }
 let activeSessionMetadataHttp: ReturnType<typeof createSessionMetadataHttpBoundary> | null = null;
 /** A case replacing persisted HTTP seed data must explicitly retire the boundary's prior record. */
-export function replaceLocalVoiceSessionHttpSeed(sessionId: string) {
+export function replaceLocalVoiceSessionHttpSeed(sessionId: string, record?: Parameters<NonNullable<typeof activeSessionMetadataHttp>['replaceSession']>[1]) {
     if (!activeSessionMetadataHttp) throw new Error('Expected active Voice metadata HTTP boundary');
-    activeSessionMetadataHttp.replaceSession(sessionId);
+    activeSessionMetadataHttp.replaceSession(sessionId, record);
 }
 export async function switchLocalVoiceAccount(accountId: string) {
     if (!activeAccountHomes || !speechAccount) throw new Error('Expected active Voice Home');
@@ -614,10 +630,12 @@ async function createLocalVoiceAccountHarness() {
     const { storage } = await import('@/sync/domains/state/storage');
     let metadataHttp = createSessionMetadataHttpBoundary(() => storage.getState().sessions);
     return {
-        async setup() {
+        async setup(serverIdentityId = 'srv_local_voice_actions') {
             await connection?.dispose();
             metadataHttp = createSessionMetadataHttpBoundary(() => storage.getState().sessions);
             const authoringMemoryHttp = createAuthoringMemoryHttpBoundary();
+            const purposes = createConnectedPurposeCatalogHttpBoundary();
+            const accountKv = createAccountKvHttpFixture();
             let artifactRequestAccountId: string | null = null;
             const artifacts = createArtifactStoreBoundary({ ownerAccountId: () => artifactRequestAccountId, encryptionMode: 'plain' });
             activeSessionMetadataHttp = metadataHttp;
@@ -626,7 +644,7 @@ async function createLocalVoiceAccountHarness() {
             const { profileDefaults } = await import('@/sync/domains/profiles/profile');
             const { createPlainAccountEncryptionCurrentnessFixture } = await import('@/dev/testkit/fixtures/accountEncryptionCurrentness');
             const homes = await serveAccountHomes({
-                homes: [{ key: 'voice', serverUrl: 'https://local-voice-actions.example.test', accountId: 'account-a',
+                homes: [{ key: 'voice', serverUrl: 'https://local-voice-actions.example.test', serverIdentityId, accountId: 'account-a',
                     currentAccount: true, settings: accountSettings }],
                 route: createSessionReadBatchHttpBoundary(async request => {
                     if (localVoiceHttpResponder) {
@@ -634,6 +652,9 @@ async function createLocalVoiceAccountHarness() {
                         if (overridden !== undefined) return overridden;
                     }
                     const { path } = request;
+                    if (path === managedMachineActionEndpointPathV1('machines.managed.list')) {
+                        return Response.json(ManagedMachineActionOutputSchemasV1['machines.managed.list'].parse({ machines: [] }));
+                    }
                     const input = request.url;
                     const init = { method: request.method, headers: request.headers, signal: request.signal,
                         ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }) };
@@ -648,6 +669,10 @@ async function createLocalVoiceAccountHarness() {
                     }
                     const authoringMemoryResponse = await authoringMemoryHttp.handle(input, init);
                     if (authoringMemoryResponse) return authoringMemoryResponse;
+                    const purposeResponse = await purposes.handle(input, init);
+                    if (purposeResponse) return purposeResponse;
+                    const accountKvResponse = await accountKv.handleFetch(input, init);
+                    if (accountKvResponse) return accountKvResponse;
                     if (path === `${PROJECT_ACCOUNT_ROWS_ROUTE_V1}/list`) return Response.json(ProjectAccountRowListResponseV1Schema.parse({
                         status: 'listed', rows: [], coverage: 'complete',
                     }));
@@ -729,7 +754,9 @@ async function createLocalVoiceAccountHarness() {
                             decodeURIComponent(messagesPage[1]),
                         ])) ?? [], hasMore: false,
                     }));
-                    return undefined;
+                    // The rest of the bootstrap census reads this Home as an empty Account; an unanswered read would
+                    // retry with backoff and hold resume until its sync wait budget expires.
+                    return createEmptyAccountBootstrapHttpResponse(`${path}${request.url.search}`, init) ?? undefined;
                 }).handle,
             });
             const disconnect = await homes.restoreActiveConnection();
@@ -826,13 +853,14 @@ vi.mock('expo-audio', () => ({
 }));
 
 export function registerLocalVoiceEngineHarnessHooks(options?: Readonly<{
-    resetModulesBetweenTests?: boolean;
+    serverIdentityId?: string;
 }>) {
     const originalFetch = globalThis.fetch;
     const originalCreateObjectURL = (globalThis as any)?.URL?.createObjectURL;
     const originalRevokeObjectURL = (globalThis as any)?.URL?.revokeObjectURL;
     const originalAudioCtor = (globalThis as any)?.Audio;
     const originalNavigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    const originalDocumentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
     const originalNavigator = globalThis.navigator;
     const originalMediaDevicesDescriptor = originalNavigator
         ? Object.getOwnPropertyDescriptor(originalNavigator, 'mediaDevices') : undefined;
@@ -924,6 +952,15 @@ export function registerLocalVoiceEngineHarnessHooks(options?: Readonly<{
         Object.defineProperty(globalThis.navigator, 'mediaDevices', {
             configurable: true, value: { getUserMedia: webMicGetUserMedia },
         });
+        // The web mic owner subscribes to browser visibility even when the
+        // provider manages capture. Keep that OS boundary present in Node.
+        if (typeof globalThis.document === 'undefined') {
+            Object.defineProperty(globalThis, 'document', {
+                configurable: true,
+                writable: true,
+                value: Object.assign(new EventTarget(), { visibilityState: 'visible' }),
+            });
+        }
         audioStreamStart.mockReset();
         audioStreamStop.mockReset();
         audioSessionRelease.mockReset();
@@ -1067,12 +1104,14 @@ export function registerLocalVoiceEngineHarnessHooks(options?: Readonly<{
                 }
             }
         };
-        await (await installLocalVoiceAccountHarness()).setup();
+        await (await installLocalVoiceAccountHarness()).setup(options?.serverIdentityId);
         const storage = await getStorage();
         const fixtureMachine = createMachineFixture();
         if (!fixtureMachine.metadata) throw new Error('Expected canonical Machine fixture metadata');
         const machine = createMachineFixture({
             id: 'machine-1',
+            storageMode: 'plain',
+            dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER,
             active: true,
             createdAt: Date.now(),
             activeAt: Date.now(),
@@ -1132,6 +1171,8 @@ export function registerLocalVoiceEngineHarnessHooks(options?: Readonly<{
         }
         if (originalNavigatorDescriptor) Object.defineProperty(globalThis, 'navigator', originalNavigatorDescriptor);
         else Reflect.deleteProperty(globalThis, 'navigator');
+        if (originalDocumentDescriptor) Object.defineProperty(globalThis, 'document', originalDocumentDescriptor);
+        else Reflect.deleteProperty(globalThis, 'document');
         await (await installLocalVoiceAccountHarness()).dispose();
         const urlAny = (globalThis as any).URL as any;
         if (typeof originalCreateObjectURL === 'function') {

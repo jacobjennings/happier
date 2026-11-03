@@ -13,7 +13,8 @@ import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { PageHeader } from '@/components/ui/layout/PageHeader';
 import { PageHeaderMarkSlot } from '@/components/ui/layout/PageHeaderMarkSlot';
-import { VirtualizedList, type VirtualizedListRef } from '@/components/ui/lists/virtualized';
+import { VirtualizedItemList } from '@/components/ui/lists/VirtualizedItemList';
+import type { VirtualizedListRef } from '@/components/ui/lists/virtualized';
 import { restoreFocusToBestTarget } from '@/keyboard/focusReturn';
 import { useTeamGroups } from '@/hooks/teams/useTeamGroups';
 import { useTeamPagedList } from '@/hooks/teams/useTeamPagedList';
@@ -278,14 +279,13 @@ const DirectoryGroupMappings = React.memo(function DirectoryGroupMappings(props:
 
     const renderRow = React.useCallback(({ item }: Readonly<{ item: DirectoryDetailVirtualRow }>) => item.element, []);
 
-    return <VirtualizedList
+    return <VirtualizedItemList
         ref={listRef}
         testID="directory-source-detail-virtualized-list"
         data={rows}
         keyExtractor={(item) => item.key}
         renderItem={renderRow}
         ListHeaderComponent={props.header}
-        style={{ flex: 1 }}
         initialNumToRender={8}
         maxToRenderPerBatch={6}
         windowSize={7}

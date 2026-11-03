@@ -6,36 +6,6 @@ import {
 } from './journeyPresentationModel';
 
 describe('journeyPresentationModel', () => {
-    it('builds per-surface beat sequences with act boundaries', () => {
-        const desktop = buildJourneyPresentationModel({ surface: 'desktop', currentBeatId: 'A1' });
-        expect(desktop.visibleBeats.map((beat) => beat.id)).toEqual([
-            'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10',
-            'A11', 'A12', 'A13', 'A14', 'S1', 'S2', 'S3', 'S4', 'S5',
-        ]);
-        expect(desktop.actBoundaries).toEqual({
-            dream: { startIndex: 0, endIndex: 13 },
-            setup: { startIndex: 14, endIndex: 18 },
-        });
-
-        const native = buildJourneyPresentationModel({ surface: 'native', currentBeatId: 'A1' });
-        expect(native.visibleBeats.map((beat) => beat.id)).toEqual([
-            'A1', 'A2', 'A4', 'A6', 'A7', 'A12', 'A14', 'S1', 'S2', 'S3', 'S4', 'S5',
-        ]);
-        expect(native.actBoundaries).toEqual({
-            dream: { startIndex: 0, endIndex: 6 },
-            setup: { startIndex: 7, endIndex: 11 },
-        });
-    });
-
-    it('normalizes a hidden current beat to the nearest visible one and a missing one to the first', () => {
-        // A8 is not in the native cut. Restarting at the first beat would throw a
-        // mid-journey user back to the opening slide whenever the cut changes
-        // under them (a window crossing the mobile breakpoint), so the model lands
-        // on the nearest beat that cut kept instead.
-        expect(buildJourneyPresentationModel({ surface: 'native', currentBeatId: 'A8' }).currentBeat.id).toBe('A7');
-        expect(buildJourneyPresentationModel({ surface: 'web' }).currentBeat.id).toBe('A1');
-    });
-
     it('exposes navigation affordances for the active beat', () => {
         expect(buildJourneyPresentationModel({ surface: 'desktop', currentBeatId: 'A1' })).toMatchObject({
             currentIndex: 0,

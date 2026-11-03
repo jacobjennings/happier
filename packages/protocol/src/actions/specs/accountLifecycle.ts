@@ -28,6 +28,7 @@ export const ACCOUNT_LIFECYCLE_ACTION_SPECS: readonly AccountLifecycleActionSpec
     safety: 'safe', sideEffectClass: 'write', bindings: { mcpToolName: 'account_sign_out' },
     inputSchema: inputs['account.signOut'], outputSchema: outputs['account.signOut'] },
   { ...common, id: 'account.credentials.forgetAll', approval: {result: 'required'}, title: 'Forget all credentials on this device',
+    irreversible: true,
     accountAuthorityRetirementStatuses: ['forgotten'],
     description: 'Forget every Home and sign-in-service credential stored on this device.',
     safety: 'danger', sideEffectClass: 'danger', bindings: { mcpToolName: 'account_credentials_forget_all' },

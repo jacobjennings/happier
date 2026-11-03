@@ -1,7 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
@@ -9,6 +9,11 @@ import { fileURLToPath } from 'node:url';
 import * as tar from 'tar';
 
 import { resolveTarCreateArgs } from '../pipeline/release/lib/archive-tar-options.mjs';
+import {
+  createBaseCliRuntimeSmokeFixtureFiles,
+  createMinisignTestSigner,
+  createWindowsBaseCliRuntimeSmokeFixtureFiles,
+} from '../testing/releaseArtifactFixtures.mjs';
 import { terminateProcessTreeByPid } from '../testing/process/processTree.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -60,15 +65,12 @@ async function createComponentFixture({
     await writeFile(path, content, { mode: 0o755 });
   }
   await tar.c({ gzip: true, portable: true, cwd: stageRoot, file: join(artifactsDir, archiveName) }, [archiveStem]);
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const keyId = Buffer.alloc(8, 1);
+  const signer = createMinisignTestSigner();
   const publicKeyPath = join(workspace, 'public.key');
-  await writeFile(publicKeyPath, `untrusted comment: test key\n${Buffer.concat([Buffer.from('Ed'), keyId, publicKey.export({ format: 'der', type: 'spki' }).subarray(-32)]).toString('base64')}\n`);
+  await writeFile(publicKeyPath, signer.publicKeyFile);
   const seal = async (path, text) => {
     await writeFile(path, text);
-    const signature = sign(null, Buffer.from(text), privateKey);
-    const suffix = Buffer.from('test');
-    await writeFile(`${path}.minisig`, `untrusted comment: test\n${Buffer.concat([Buffer.from('Ed'), keyId, signature]).toString('base64')}\ntrusted comment: test\n${sign(null, Buffer.concat([signature, suffix]), privateKey).toString('base64')}\n`);
+    await writeFile(`${path}.minisig`, signer.sign(text));
   };
   const componentChecksumsPath = join(artifactsDir, `checksums-${product}-v1.2.3.txt`);
   const componentChecksumsText = `${await sha256(join(artifactsDir, archiveName))}  ${archiveName}\n`;
@@ -83,133 +85,6 @@ async function createComponentFixture({
   await resealPrimary();
   const run = (args = [], env = process.env) => JSON.parse(execFileSync(process.execPath, [verifyArtifactsPath, '--artifacts-dir', artifactsDir, '--checksums', checksumsPath, '--public-key', publicKeyPath, ...args], { cwd: repoRoot, encoding: 'utf8', stdio: 'pipe', env }));
   return { workspace, artifactsDir, archiveName, stageRoot, archiveStem, componentChecksumsPath, checksumsPath, resealPrimary, seal, run };
-}
-
-function createBaseCliRuntimeSmokeFixtureFiles(version) {
-  const markerWrite = "appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, ";
-  return {
-    happier: `#!/usr/bin/env bash\nprintf '%s\\n' '${version}'\n`,
-    'tools/unpacked/rg': `#!/usr/bin/env bash
-set -euo pipefail
-if [[ "\${1:-}" == '--version' ]]; then
-  printf 'rg-version\\n' >> "$HAPPIER_TEST_RUNTIME_SMOKE_MARKER"
-  printf 'ripgrep 14.1.0\\n'
-  exit 0
-fi
-printf 'rg-search\\n' >> "$HAPPIER_TEST_RUNTIME_SMOKE_MARKER"
-pattern="\${@: -2:1}"
-file="\${@: -1}"
-grep -F -- "$pattern" "$file"
-`,
-    'tools/unpacked/zellij': `#!/usr/bin/env bash
-set -euo pipefail
-[[ "\${1:-}" == '--version' ]]
-printf 'zellij-version\\n' >> "$HAPPIER_TEST_RUNTIME_SMOKE_MARKER"
-printf 'zellij 0.44.3\\n'
-`,
-    'package-dist/index.mjs': `
-      import { appendFileSync } from 'node:fs';
-      if (!process.argv.includes('--version')) throw new Error('package-dist version flag missing');
-      if (process.env.NODE_PATH) throw new Error('package-dist inherited NODE_PATH');
-      ${markerWrite}'package-dist-version\\n');
-      console.log(${JSON.stringify(version)});
-    `,
-    'node_modules/@modelcontextprotocol/sdk/package.json': JSON.stringify({
-      name: '@modelcontextprotocol/sdk', type: 'module',
-      exports: {
-        './client/index.js': { require: './dist/cjs/client/index.cjs' },
-        './inMemory.js': { require: './dist/cjs/inMemory.cjs' },
-        './server/mcp.js': { require: './dist/cjs/server/mcp.cjs' },
-      },
-    }),
-    'node_modules/@modelcontextprotocol/sdk/dist/cjs/client/index.cjs': `
-      const { appendFileSync } = require('node:fs');
-      appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, 'mcp-cjs\\n');
-      const mark = (value) => appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, value + '\\n');
-      exports.Client = class Client {
-        async connect(transport) { this.transport = transport; }
-        async ping() { if (!this.transport.other.server) throw new Error('MCP server missing'); mark('mcp-ping'); return {}; }
-        async listTools() { mark('mcp-list'); return { tools: this.transport.other.server.tools }; }
-        async callTool({ name, arguments: args }) {
-          mark('mcp-call');
-          return await this.transport.other.server.tools.find((entry) => entry.name === name).handler(args);
-        }
-        async close() {}
-      };
-    `,
-    'node_modules/@modelcontextprotocol/sdk/dist/cjs/server/mcp.cjs': `
-      const { appendFileSync } = require('node:fs');
-      exports.McpServer = class McpServer {
-        constructor() {
-          this.tools = [];
-          appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, 'mcp-server\\n');
-        }
-        registerTool(name, _metadata, handler) { this.tools.push({ name, handler }); }
-        async connect(transport) { transport.server = { tools: this.tools }; }
-        async close() {}
-      };
-    `,
-    'node_modules/@modelcontextprotocol/sdk/dist/cjs/inMemory.cjs': `
-      exports.InMemoryTransport = class InMemoryTransport {
-        static createLinkedPair() {
-          const client = {};
-          const server = {};
-          client.other = server;
-          server.other = client;
-          return [client, server];
-        }
-      };
-    `,
-    'node_modules/zod/package.json': JSON.stringify({
-      name: 'zod', type: 'module', exports: { '.': { import: './index.js', require: './index.cjs' } },
-    }),
-    'node_modules/zod/index.js': "export const z = { string: () => ({ type: 'string' }) };\n",
-    'node_modules/zod/index.cjs': "exports.z = { string: () => ({ type: 'string' }) };\n",
-    'node_modules/sharp/package.json': JSON.stringify({ name: 'sharp', main: './index.cjs' }),
-    'node_modules/sharp/index.cjs': `
-      const { appendFileSync } = require('node:fs');
-      module.exports = function sharp({ create }) {
-        if (create.width !== 1 || create.height !== 1) throw new Error('sharp smoke must encode 1x1');
-        return { png: () => ({ toBuffer: async () => {
-          appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, 'sharp\\n');
-          return Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-        } }) };
-      };
-    `,
-    'node_modules/@homebridge/node-pty-prebuilt-multiarch/package.json': JSON.stringify({
-      name: '@homebridge/node-pty-prebuilt-multiarch', main: './index.cjs',
-    }),
-    'node_modules/@homebridge/node-pty-prebuilt-multiarch/index.cjs': `
-      require('node:fs').appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, 'homebridge\\n');
-      exports.spawn = () => {};
-    `,
-    'node_modules/node-pty/package.json': JSON.stringify({ name: 'node-pty', main: './index.cjs' }),
-    'node_modules/node-pty/index.cjs': `
-      const childProcess = require('node:child_process');
-      const { appendFileSync } = require('node:fs');
-      exports.spawn = (command, args, options) => {
-        if (process.platform !== 'win32' && (command !== '/bin/sh' || args.join(' ') !== '-c printf pty-ok')) {
-          throw new Error('node-pty smoke did not use the real POSIX shell recipe');
-        }
-        appendFileSync(process.env.HAPPIER_TEST_RUNTIME_SMOKE_MARKER, 'node-pty\\n');
-        const child = childProcess.spawn(command, args, { cwd: options.cwd, env: options.env });
-        return {
-          onData(handler) { child.stdout.on('data', (chunk) => handler(chunk.toString())); },
-          onExit(handler) { child.on('exit', (exitCode, signal) => handler({ exitCode, signal })); },
-        };
-      };
-    `,
-  };
-}
-
-function createWindowsBaseCliRuntimeSmokeFixtureFiles(version) {
-  const files = createBaseCliRuntimeSmokeFixtureFiles(version);
-  files['happier.exe'] = files.happier;
-  files['tools/unpacked/rg.exe'] = files['tools/unpacked/rg'];
-  delete files.happier;
-  delete files['tools/unpacked/rg'];
-  delete files['tools/unpacked/zellij'];
-  return files;
 }
 
 test('verify-artifacts accepts signed component envelopes and foreign layouts without executing foreign binaries', async () => {

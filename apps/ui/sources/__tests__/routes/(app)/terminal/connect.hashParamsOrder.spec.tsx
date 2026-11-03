@@ -41,17 +41,6 @@ describe('TerminalConnectScreen hash parsing', () => {
         }
     });
 
-    it('parses key even when it is not the first hash parameter', async () => {
-        const Screen = (await import('@/app/(app)/terminal/connect')).default;
-
-        const screen = await renderTerminalRoute(Screen);
-        await act(async () => {});
-
-        expect(screen.findByTestId('terminal-connect-approve')).toBeTruthy();
-        // Anonymous legacy links cannot prove resumable Home identity for scrubbing.
-        expect(globalWindow.window?.history.replaceState).not.toHaveBeenCalled();
-    });
-
     it('shows invalid-link state when hash contains no key parameter', async () => {
         globalWindow.window = {
             location: {
@@ -146,5 +135,7 @@ describe('TerminalConnectScreen hash parsing', () => {
 
         expect(screen.findByTestId('terminal-connect-approve')).toBeTruthy();
         expect(storage.has(TERMINAL_CONNECT_WEB_BOOTSTRAP_STORAGE_KEY)).toBe(false);
+        // Anonymous legacy links cannot prove resumable Home identity for scrubbing.
+        expect(globalWindow.window?.history.replaceState).not.toHaveBeenCalled();
     });
 });

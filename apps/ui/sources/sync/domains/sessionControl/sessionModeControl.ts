@@ -13,7 +13,7 @@ import { tLoose } from '@/text';
 import { parseSessionModeOverrideState } from './schema';
 import { readSessionModesState } from './readSessionControlMetadata';
 
-export function supportsSessionModeOverrides(agentId: string): boolean {
+function supportsSessionModeOverrides(agentId: string): boolean {
     // An Agent with no bundled core contributes its session modes through its
     // own plugin; the static bundled table has nothing to say about it.
     const kind = getAgentCore(agentId)?.sessionModes.kind;
@@ -201,5 +201,3 @@ export function computeSessionModePickerControl(params: {
                 : null;
         })();
 }
-
-export const computeAcpSessionModePickerControl = computeSessionModePickerControl;

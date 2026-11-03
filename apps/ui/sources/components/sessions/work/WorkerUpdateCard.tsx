@@ -2,6 +2,7 @@ import * as React from 'react';
 import { View, type StyleProp, type ViewStyle } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { WorkerDeliverableReferenceV1, WorkerUpdateV1 } from '@happier-dev/protocol';
+import { composeSessionWorkerUpdateHeadlineV1 } from '@happier-dev/protocol/sessions/relations/workerUpdateV1';
 import type { FollowDeliveryProjectionV1 } from '@happier-dev/protocol/sessions/follow/sessionFollowDeliveryProjectionV1';
 import type { WorkerUpdateFollowMatchV1 } from '@happier-dev/protocol/sessions/messages/transcriptRawRecordV1';
 import type { FollowDeliveryMuteScopeV1 } from '@happier-dev/protocol/sessions/follow/sessionDeliveryMuteV1';
@@ -21,7 +22,7 @@ import { SurfaceCard } from '@/components/ui/cards/SurfaceCard';
 import { Icon } from '@/components/ui/icons/Icon';
 import { describeWorkKind, WORKER_KIND_GLYPHS } from './workerKindGlyphs';
 import { Text } from '@/components/ui/text/Text';
-import { resolveWorkStatusTone } from '@/components/work/status/resolveWorkStatusTone';
+import { describeWorkerUpdateHeadline, resolveWorkStatusTone } from '@/components/work/status/resolveWorkStatusTone';
 import { presentSessionRuntimeIssue } from '@/components/sessions/presentation/sessionRuntimeIssuePresentation';
 import { workStatusWordStyle } from '@/components/work/status/workStatusTreatment';
 import { Typography } from '@/constants/Typography';
@@ -29,7 +30,7 @@ import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerS
 import { useActiveServerAccountScope, useSessionDisplayNameSource, useWorkflowRun } from '@/sync/domains/state/storage';
 import { MarkdownView } from '@/components/markdown/MarkdownView';
 import { t } from '@/text';
-import { getSessionName } from '@/utils/sessions/sessionUtils';
+import { sessionDisplayTitle } from '@/utils/sessions/sessionDisplayTitle';
 import { formatShortRelativeTime } from '@/utils/time/formatShortRelativeTime';
 import { FindHighlightedText } from '@/components/ui/text/FindHighlightedText';
 import { StructuredFindText, useStructuredFindState, type StructuredFindTextBlock } from '@/components/sessions/transcript/structured/structuredFindText';
@@ -49,15 +50,21 @@ import { createSessionPeekDetailsTab } from './createSessionPeekDetailsTab';
 
 const MARK_SIZE = HAPPIER_WORK_UPDATE_CARD_MARK_SIZE_PX;
 
-function buildWorkerUpdateDisplayText(update: WorkerUpdateV1, options: Readonly<{ title?: string; at?: number; canInspect?: boolean }> = {}) {
+function workerUpdateFallbackTitle(update: WorkerUpdateV1): string {
+    return update.workerKind === 'session' && update.headline === composeSessionWorkerUpdateHeadlineV1(update)
+        ? describeWorkKind(update.workerKind) : update.headline;
+}
+
+function buildWorkerUpdateDisplayText(update: WorkerUpdateV1, options: Readonly<{ title?: string; at?: number; canInspect?: boolean; stateWord?: string }> = {}) {
     const age = options.at === undefined ? '' : formatShortRelativeTime(options.at);
     const kind = describeWorkKind(update.workerKind);
     const engine = update.engine;
     const engineLabel = engine ? resolveExecutionRunBackendLabel({ kind: 'backend', backendId: engine.agentId }) ?? engine.agentId : null;
     const issue = presentSessionRuntimeIssue(update.runtimeIssueV1);
+    const title = options.title ?? workerUpdateFallbackTitle(update);
     return {
-        title: options.title ?? update.headline,
-        state: resolveWorkStatusTone({ kind: 'worker_update', facts: { update } }).word,
+        title,
+        state: describeWorkerUpdateHeadline(update, { title, stateWord: options.stateWord }),
         kind: joinHappierFacts(kind, age),
         result: update.result,
         issue: issue.message === update.result ? null : issue.message,
@@ -77,7 +84,7 @@ export function projectWorkerUpdateFindText(update: WorkerUpdateV1, options: Rea
 /** A session worker is named by its own title when this device knows it; a run by its producer's headline. */
 function useWorkerTitle(update: WorkerUpdateV1, serverId: string | null | undefined): string {
     const source = useSessionDisplayNameSource(update.workerKind === 'session' ? update.workerId : '', serverId);
-    return update.workerKind === 'session' && source ? getSessionName(source, serverId) : update.headline;
+    return update.workerKind === 'session' && source ? sessionDisplayTitle(source, serverId) : workerUpdateFallbackTitle(update);
 }
 
 const WorkerMark = React.memo(function WorkerMark(props: Readonly<{ update: WorkerUpdateV1 }>) {
@@ -313,7 +320,6 @@ export function WorkerUpdateCard(props: Readonly<{
     const engine = update.engine;
     const pointer = update.transcriptPointer;
     const canInspect = update.canInspect && props.navigationEnabled !== false && transcriptSource.navigate !== null && pointer !== undefined;
-    const content = buildWorkerUpdateDisplayText(update, { title, at: props.at, canInspect });
     const serverId = props.serverId ?? transcriptSource.serverId;
     // Transcript order owns currentness: a worker's latest notice asks and answers in place; an
     // earlier one keeps its result and says it needed you, in the past tense and neutral.
@@ -321,6 +327,7 @@ export function WorkerUpdateCard(props: Readonly<{
         && (update.wake === 'needs_you' || update.ownerState === 'needs_input');
     const current = useCurrentWorkerUpdate(update, asksInTranscript ? props.messageId ?? null : null, serverId);
     const status = resolveWorkStatusTone({ kind: 'worker_update', facts: { update, earlier: asksInTranscript && !current } });
+    const content = buildWorkerUpdateDisplayText(update, { title, at: props.at, canInspect, stateWord: status.word });
     const needsYou = status.bucket === 'needs_you';
 
     // The run's own progress, when this device already knows the run in its exact Home (the active
@@ -413,7 +420,7 @@ export function WorkerUpdateCard(props: Readonly<{
             renderSurface={renderWorkerUpdateSurface}
             mark={<WorkerMark update={update} />}
             title={<StructuredFindText blockId="structured-worker-title" testID="worker-update-title" numberOfLines={1} style={styles.title} text={content.title} />}
-            state={<StructuredFindText blockId="structured-worker-state" testID="worker-update-state" numberOfLines={1} style={[styles.word, workStatusWordStyle(status.tone)]} text={status.word} />}
+            state={<StructuredFindText blockId="structured-worker-state" testID="worker-update-state" numberOfLines={1} style={[styles.word, workStatusWordStyle(status.tone)]} text={content.state} />}
             meta={<StructuredFindText blockId="structured-worker-kind" testID="worker-update-kind" numberOfLines={1} style={styles.kind} text={content.kind} />}
             facts={facts}
             leadingAction={peekSessionId || muteScope ? <>

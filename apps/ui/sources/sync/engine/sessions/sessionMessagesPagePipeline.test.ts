@@ -577,6 +577,7 @@ describe('runSessionMessagesPagePipeline', () => {
                 createdAt: 2_011,
                 body: {
                     t: 'message-updated' as const,
+                    delivery: 'full' as const,
                     sid: 's1',
                     message: {
                         id: 'stale-row',

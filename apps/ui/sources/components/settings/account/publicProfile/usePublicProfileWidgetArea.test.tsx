@@ -61,7 +61,7 @@ it('compiles the acknowledged named area and copied placements, preserving a sav
   const hook = await openArea();
   try {
     await vi.waitFor(() => expect(hook.getCurrent().status).toBe('ready'));
-    expect(hook.getCurrent().candidate?.layout.items.map(item => item.id)).toEqual(['days', 'crew', 'planet']);
+    expect(hook.getCurrent().candidate?.layout.items.map(item => item.id)).toEqual(['totals', 'days', 'crew', 'planet']);
     expect(artifacts.list()).toHaveLength(0);
     const original = hook.getCurrent().candidate!;
     await act(async () => { expect(await hook.getCurrent().binding.createLayout('empty', 'Empty')).toMatchObject({ ok: true }); });
@@ -69,7 +69,7 @@ it('compiles the acknowledged named area and copied placements, preserving a sav
     await vi.waitFor(() => expect(hook.getCurrent().binding.surface?.owner).toMatchObject({ layoutId: 'empty' }));
     await vi.waitFor(() => expect(hook.getCurrent().status).toBe('ready'));
     // Create copies the current layout. Removing its last widget is an acknowledged empty document.
-    for (const id of ['days', 'crew', 'planet']) {
+    for (const id of ['totals', 'days', 'crew', 'planet']) {
       await act(async () => { expect(await hook.getCurrent().binding.port!.execute({ actionId: 'widgets.item.remove', instanceId: id })).toMatchObject({ ok: true }); });
     }
     await act(async () => { await hook.getCurrent().area.reload(); });

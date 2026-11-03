@@ -8,37 +8,12 @@ import {
     createScmWorkspaceIntegrationWorkspaceCheckoutRealizationResult,
     type ScmWorkspaceIntegrationWorkspaceCheckoutRealizationResult,
 } from './workspaceCheckoutRealization';
-import {
-    resolveScmWorkspaceIntegrationWorkspaceCheckoutMaterializationResultBranchName,
-    resolveScmWorkspaceIntegrationWorkspaceCheckoutMaterializationResultCreated,
-    resolveScmWorkspaceIntegrationWorkspaceCheckoutMaterializationResultTargetPath,
-} from './workspaceCheckoutMaterialization';
-import type { ScmWorkspaceIntegrationWorkspaceCheckoutCreationResult } from './workspaceCheckoutCreation';
 import type {
     ScmBackendContext,
     ScmWorkspaceIntegrationWorkspaceCheckoutMaterializationInput,
 } from '../types';
 
-export async function materializeWorkspaceCheckoutWithScmWorkspace(input: Readonly<{
-    sourcePath: string;
-    targetPath: string;
-    checkoutCreation: Pick<
-        ScmWorkspaceIntegrationWorkspaceCheckoutMaterializationInput['workspaceCheckoutMaterialization'],
-        'kind' | 'displayName' | 'baseRef' | 'branchMode'
-    >;
-    registry?: ScmBackendRegistry;
-}>): Promise<boolean> {
-    const result = await realizeWorkspaceCheckoutWithScmWorkspace({
-        sourcePath: input.sourcePath,
-        targetPath: input.targetPath,
-        checkoutCreation: input.checkoutCreation,
-        registry: input.registry,
-    });
-
-    return result !== null;
-}
-
-export async function realizeWorkspaceCheckoutWithResolvedScmSelection(input: Readonly<{
+async function realizeWorkspaceCheckoutWithResolvedScmSelection(input: Readonly<{
     sourcePath: string;
     targetPath?: string;
     checkoutCreation: Pick<
@@ -79,15 +54,9 @@ export async function realizeWorkspaceCheckoutWithResolvedScmSelection(input: Re
 
         return createScmWorkspaceIntegrationWorkspaceCheckoutRealizationResult({
             kind: workspaceCheckoutRealization.kind,
-            targetPath: materialized
-                ? resolveScmWorkspaceIntegrationWorkspaceCheckoutMaterializationResultTargetPath(materialized)
-                : input.targetPath,
-            branchName: materialized
-                ? resolveScmWorkspaceIntegrationWorkspaceCheckoutMaterializationResultBranchName(materialized)
-                : workspaceCheckoutRealization.displayName,
-            created: materialized
-                ? resolveScmWorkspaceIntegrationWorkspaceCheckoutMaterializationResultCreated(materialized)
-                : true,
+            targetPath: materialized ? materialized.targetPath : input.targetPath,
+            branchName: materialized ? materialized.branchName : workspaceCheckoutRealization.displayName,
+            created: materialized ? materialized.created : true,
         });
     }
 
@@ -157,21 +126,4 @@ export async function realizeWorkspaceCheckoutWithScmWorkspaceSource(input: Read
             }
             : null;
     });
-}
-
-export async function createWorkspaceCheckoutWithScmWorkspace(input: Readonly<{
-    sourcePath: string;
-    checkoutCreation: Pick<
-        ScmWorkspaceIntegrationWorkspaceCheckoutMaterializationInput['workspaceCheckoutMaterialization'],
-        'kind' | 'displayName' | 'baseRef' | 'branchMode'
-    >;
-    registry?: ScmBackendRegistry;
-}>): Promise<ScmWorkspaceIntegrationWorkspaceCheckoutCreationResult | null> {
-    const result = await realizeWorkspaceCheckoutWithScmWorkspace({
-        sourcePath: input.sourcePath,
-        checkoutCreation: input.checkoutCreation,
-        registry: input.registry,
-    });
-
-    return result;
 }

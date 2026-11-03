@@ -24,10 +24,7 @@ import {
     type RunNativeRemoteSshBootstrapTaskParams,
 } from './remoteSshBootstrap/nativeTask';
 import { readNativeSshBootstrapDedupeKey } from './remoteSshBootstrap/nativeTaskIdentity';
-import {
-    createDefaultNativeSshBridgeInterruptionStore,
-    createNativeSshBridgeInterruptionStore,
-} from './nativeSshBridgeInterruptionStore';
+import { createDefaultNativeSshBridgeInterruptionStore } from './nativeSshBridgeInterruptionStore';
 import { resolveTrustedHostKeyDecision } from '@/sync/domains/remoteHosts/hostKeys/resolveTrustedHostKeyDecision';
 import type { RemoteHostTrustedHostKeyStore } from '@/sync/domains/remoteHosts/hostKeys/model';
 import type {
@@ -35,8 +32,6 @@ import type {
     SystemTaskBridgeListenerSet,
     SystemTasksBridge,
 } from './types';
-
-export { createNativeSshBridgeInterruptionStore };
 
 export type NativeSshBridgeInterruptionMarker = Readonly<{
     taskId: string;

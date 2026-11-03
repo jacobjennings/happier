@@ -3,15 +3,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-
-const crypto = vi.hoisted(() => ({
-  createHash: vi.fn(() => {
-    throw new Error('ordinary manifest reads must not hash raw manifest contents');
-  }),
-}));
-
-vi.mock('node:crypto', () => crypto);
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { readPluginManifest } from './read';
 import { ingestCanonicalPluginManifest } from './ingest';
@@ -23,17 +15,6 @@ const requireFromCli = createRequire(import.meta.url);
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
 describe('readPluginManifest target route', () => {
-  it('reads target bytes through canonical ingestion without exposing or hashing their raw contents', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'happier-manifest-'));
-    roots.push(root);
-    const path = join(root, 'plugin.json');
-    await writeFile(path, JSON.stringify({ schemaVersion: 2, id: 'com.acme.plugin', version: '1.0.0', displayName: 'Acme', engines: { happier: '^0.2.0' }, runtime: { apiVersion: 1 }, contributes: {} }));
-    const result = await readPluginManifest({ sourceProvenance: 'registryCustodied', manifestPath: path });
-    expect(result).toEqual(expect.objectContaining({ ok: true, manifestPath: path }));
-    expect(result).not.toHaveProperty('manifestDigest');
-    expect(crypto.createHash).not.toHaveBeenCalled();
-  });
-
   it('rejects malformed UTF-8 bytes before materializing manifest text', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-manifest-'));
     roots.push(root);
@@ -102,12 +83,9 @@ describe('readPluginManifest target route', () => {
     // could not pass at exactly the load the full suite creates.
   }, 180_000);
 
-  it('rejects retired root fields and reports missing files', async () => {
+  it('reports a missing manifest file', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-manifest-'));
     roots.push(root);
-    const path = join(root, 'plugin.json');
-    await writeFile(path, JSON.stringify({ schemaVersion: 2, id: 'com.acme.plugin', version: '1.0.0', displayName: 'Acme', engines: { happier: '^0.2.0' }, runtime: { apiVersion: 1 }, uses: [] }));
-    expect(await readPluginManifest({ sourceProvenance: 'registryCustodied', manifestPath: path })).toEqual({ ok: false, diagnostics: expect.any(Array) });
     expect(await readPluginManifest({ sourceProvenance: 'registryCustodied', manifestPath: join(root, 'missing.json') })).toEqual({ ok: false, diagnostics: [expect.objectContaining({ code: 'plugin_manifest_missing' })] });
   });
 

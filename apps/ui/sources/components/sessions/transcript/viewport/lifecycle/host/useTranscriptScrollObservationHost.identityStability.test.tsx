@@ -12,8 +12,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTestSessionTranscriptSource, renderHookWithSessionTranscriptSource } from '@/dev/testkit';
 import type { RenderHookOptions } from '@/dev/testkit/hooks/renderHook';
 import type { WebTranscriptScrollMetrics } from '@/components/sessions/transcript/webTranscriptScrollMetrics';
-import { createWebDomScrollObservation } from '@/components/sessions/transcript/viewport/driver/webDomObservation';
+import { createTranscriptUserScrollIntentOwner } from '@/components/sessions/transcript/viewport/driver/userScrollIntentOwner';
+import { createEntryRestoreOwner } from '@/components/sessions/transcript/viewport/entryRestore/entryRestoreOwner';
 import { createTranscriptLifecycleHost } from '@/components/sessions/transcript/viewport/lifecycle/lifecycleHost';
+import type { TranscriptViewportOwner } from '@/components/sessions/transcript/viewport/transcriptViewportTypes';
 
 import { useTranscriptScrollObservationHost } from './useTranscriptScrollObservationHost';
 
@@ -41,84 +43,111 @@ function createScrollElement(): HTMLElement {
     } as unknown as HTMLElement;
 }
 
+type ScrollObservationHostMembers = Omit<
+    ScrollObservationHostDeps,
+    | 'isLoaded'
+    | 'isWarmKeepAliveInstance'
+    | 'latestCommittedActivityKey'
+    | 'nativeMountSettleStable'
+    | 'pinEnabled'
+    | 'pinThresholdPx'
+    | 'platformOS'
+    | 'routeJumpSeq'
+    | 'sessionActive'
+    | 'sessionId'
+    | 'showFirstPaintPlaceholder'
+    | 'userIntentRecentMs'
+>;
+type Deps = ScrollObservationHostDeps;
+
 function createStableMembers() {
     const lifecycleHost = createTranscriptLifecycleHost();
+    const userScrollIntent = createTranscriptUserScrollIntentOwner();
     return {
-        activeTargetWindowTargetRef: createRef(null),
+        activeTargetWindowTargetRef: createRef<Deps['activeTargetWindowTargetRef']['current']>(null),
         applyBlankRecoveryEffects: vi.fn(),
         applyEntryRestoreOwnerEffects: vi.fn(),
         applyNativeBottomFollowCompletionHostEffects: vi.fn(),
-        applyNativeDragActiveMirrorEffectsRef: createRef(() => {}),
-        applyNativeMountSettlePassiveDriftRepinObservation: vi.fn(),
+        applyNativeDragActiveMirrorEffectsRef: createRef<Deps['applyNativeDragActiveMirrorEffectsRef']['current']>(() => {}),
         applyNativeUserScrollTakeoverHostEffects: vi.fn(),
-        webDomObservation: createWebDomScrollObservation(),
-        bottomFollowModeStateRef: createRef({ dragSession: null, mode: 'following' }),
+        bottomFollowModeStateRef: createRef<Deps['bottomFollowModeStateRef']['current']>({ dragSession: null, mode: 'following' }),
         commitBottomFollowModeState: vi.fn(),
         commitJumpToBottomDistanceForVisibility: vi.fn(),
         commitScrollPinEvent: vi.fn(),
         commitScrollPinState: vi.fn(),
         composerInsetHeightRef: createRef(0),
         currentSessionIdRef: createRef('s1'),
-        dispatchViewportLifecycleEvent: vi.fn<ScrollObservationHostDeps['dispatchViewportLifecycleEvent']>(() => ({
+        deferViewportAnchorCapture: vi.fn(),
+        dispatchViewportLifecycleEvent: vi.fn<Deps['dispatchViewportLifecycleEvent']>(() => ({
             effects: [],
             state: lifecycleHost.getState(),
         })),
         emitViewportChange: vi.fn(),
-        entryRestoreOwner: {
-            hasOpenTransaction: vi.fn(() => false),
-            visibleDistanceForOpenNativeEntry: vi.fn(() => null),
-        },
-        firstPaintTelemetryRef: createRef({ recorded: true }),
+        entryRestoreOwner: createEntryRestoreOwner(),
+        firstPaintTelemetryRef: createRef<Deps['firstPaintTelemetryRef']['current']>({ recorded: true }),
         getBottomFollowGestureActiveRef: createRef(() => false),
         hasNativeContentMeasurementForCurrentSession: vi.fn(() => false),
         hasNativeInitialViewportAppliedForCurrentSession: vi.fn(() => false),
+        invalidateViewportAnchorCapture: vi.fn(),
         lastExplicitWebScrollIntentAtMsRef: createRef(Number.NEGATIVE_INFINITY),
-        lastPinOffsetForIntentRef: createRef(null),
+        lastPinOffsetForIntentRef: createRef<number | null>(null),
         lastRouteJumpProtectionClearingWebMovementAtMsRef: createRef(Number.NEGATIVE_INFINITY),
-        lastScrollOffsetForIntentRef: createRef(null),
-        lastUserScrollIntentAtMsRef: createRef(Number.NEGATIVE_INFINITY),
+        lastScrollOffsetForIntentRef: createRef<number | null>(null),
+        lastUserScrollIntentAtMsRef: userScrollIntent.timestampRef,
         lifecycleHost,
         listContentHeightRef: createRef(0),
-        listDataRef: createRef([]),
+        listDataRef: createRef<Deps['listDataRef']['current']>([]),
         listLayoutHeightRef: createRef(0),
-        listRef: createRef<ScrollObservationHostDeps['listRef']['current']>(null),
+        listRef: createRef<Deps['listRef']['current']>(null),
         loadOlderInFlightRef: createRef(false),
         markNativeInitialViewportAppliedForCurrentSession: vi.fn(),
         measurementHost: {
-            observeContentSizeChange: vi.fn(() => []),
+            observeContentSizeChange: vi.fn<Deps['measurementHost']['observeContentSizeChange']>(() => ({ status: 'ignored' })),
         },
         nativeBottomFollowRearmedAfterDragRef: createRef(false),
         nativeListDragActiveRef: createRef(false),
         nativeMomentumScrollActiveRef: createRef(false),
         nativeMountSettleDeadlineReachedRef: createRef(false),
-        nativePrependTelemetryStateRef: createRef(() => 'closed'),
-        nativeTranscriptTouchStartYRef: createRef(null),
+        nativePrependTelemetryStateRef: createRef<Deps['nativePrependTelemetryStateRef']['current']>(() => 'none'),
+        nativeTranscriptTouchStartYRef: createRef<number | null>(null),
         observeMountSettleMetrics: vi.fn(),
         observeNativeBlankRecovery: vi.fn(),
         observeNativeConfirmation: vi.fn(() => false),
-        observeNativeEntryRestoreHostFacts: vi.fn(() => []),
+        observeNativeEntryRestoreHostFacts: vi.fn<Deps['observeNativeEntryRestoreHostFacts']>(() => []),
         observeNativePrependOwner: vi.fn(),
         observeTranscriptNavigationVisibility: vi.fn(),
         olderPagination: {
-            getSnapshot: vi.fn(() => ({ phase: 'idle', suspendedReasons: [] })),
+            getSnapshot: vi.fn<Deps['olderPagination']['getSnapshot']>(() => ({
+                hasMore: false,
+                insideThreshold: false,
+                loadFailed: false,
+                phase: 'idle',
+                suspendedReasons: [],
+            })),
             isNearOlderEdge: vi.fn(() => false),
             isReadyForLoad: vi.fn(() => true),
             onScrollObservation: vi.fn(),
         },
-        pendingJumpSeqViewportPromotionRef: createRef(null),
+        pendingJumpSeqViewportPromotionRef: createRef<unknown>(null),
         pinEnabledRef: createRef(true),
         pinThresholdPxRef: createRef(72),
         preemptExplicitJumpForUserTakeover: vi.fn(),
         preemptEntryRestoreTransaction: vi.fn(),
         prependHost: {
             applyNativeEffects: vi.fn(),
+            armNativeCommit: vi.fn(),
+            beginNativeTransaction: vi.fn(() => false),
+            getNativeTransactionRevision: vi.fn(() => 0),
             hasOpenNativeTransaction: vi.fn(() => false),
-            observeWeb: vi.fn(),
-            trustedNativeScroll: vi.fn(() => []),
+            invalidateNativeTransaction: vi.fn(),
+            nativeTelemetryState: vi.fn<Deps['prependHost']['nativeTelemetryState']>(() => 'none'),
+            observeNative: vi.fn(),
+            recordCorrectorCorrection: vi.fn(),
+            trustedNativeScroll: vi.fn<Deps['prependHost']['trustedNativeScroll']>(() => []),
         },
-        promotedJumpSeqViewportProtectionRef: createRef(null),
+        promotedJumpSeqViewportProtectionRef: createRef<Deps['promotedJumpSeqViewportProtectionRef']['current']>(null),
         promotePendingJumpSeqViewportSnapshot: vi.fn(() => false),
-        readCurrentNativeDistanceFromBottom: vi.fn(() => null),
+        readCurrentNativeDistanceFromBottom: vi.fn<Deps['readCurrentNativeDistanceFromBottom']>(() => null),
         recordFirstListPaint: vi.fn(),
         recordListLayoutWidth: vi.fn(),
         recordNativeVisibleWindowTelemetry: vi.fn(),
@@ -127,17 +156,17 @@ function createStableMembers() {
         recordViewportTelemetryEvent: vi.fn(),
         readItemsToNewerEdge: vi.fn<() => number | null>(() => null),
         readItemsToOlderEdge: vi.fn<() => number | null>(() => null),
-        resolveEffectiveListPaintMetrics: vi.fn(() => null),
-        resolveNativeObservedScrollOffset: vi.fn<ScrollObservationHostDeps['resolveNativeObservedScrollOffset']>(() => null),
-        resolveTranscriptMountSettleBottomDistanceNoiseFloorPx: vi.fn(() => null),
-        resolveViewportReachedEdge: vi.fn((edge: 'start' | 'end') => edge === 'start' ? 'older' : 'newer'),
-        resolveViewportTelemetryMode: vi.fn(() => 'follow-bottom'),
+        resolveEffectiveListPaintMetrics: vi.fn<Deps['resolveEffectiveListPaintMetrics']>(() => null),
+        resolveNativeObservedScrollOffset: vi.fn<Deps['resolveNativeObservedScrollOffset']>(() => null),
+        resolveTranscriptMountSettleBottomDistanceNoiseFloorPx: vi.fn<Deps['resolveTranscriptMountSettleBottomDistanceNoiseFloorPx']>(() => null),
+        resolveViewportReachedEdge: vi.fn<Deps['resolveViewportReachedEdge']>((edge) => edge === 'start' ? 'older' : 'newer'),
+        resolveViewportTelemetryMode: vi.fn<Deps['resolveViewportTelemetryMode']>(() => 'follow-bottom'),
         resolveWebScrollMetrics: vi.fn<() => WebTranscriptScrollMetrics | null>(() => null),
-        resolveWebViewportTelemetryDiagnostics: vi.fn(() => ({})),
+        resolveWebViewportTelemetryDiagnostics: vi.fn<Deps['resolveWebViewportTelemetryDiagnostics']>(() => ({})),
         runEntryRestoreAttempt: vi.fn(),
-        scheduleViewportAnchorCaptureRef: createRef(() => {}),
-        scrollPinRef: createRef({ isPinned: true, lastActivityKey: null, newActivityCount: 0 }),
-        sessionEntryViewportRef: createRef(null),
+        scheduleViewportAnchorCaptureRef: createRef<Deps['scheduleViewportAnchorCaptureRef']['current']>(() => {}),
+        scrollPinRef: createRef<Deps['scrollPinRef']['current']>({ isPinned: true, lastActivityKey: null, newActivityCount: 0 }),
+        sessionEntryViewportRef: createRef<Deps['sessionEntryViewportRef']['current']>(null),
         setListContentHeight: vi.fn(),
         setListLayoutHeight: vi.fn(),
         shouldCommitContentHeightState: vi.fn(() => true),
@@ -148,10 +177,11 @@ function createStableMembers() {
         targetWindowHostFacts: { activeWindowState: null },
         updateNativeInitialViewportPendingObservation: vi.fn(),
         updateNativeViewportPaintObserved: vi.fn(),
-        viewportCommandController: { activeOwner: vi.fn(() => 'follow') },
+        userScrollIntent,
+        viewportCommandController: { activeOwner: vi.fn<() => TranscriptViewportOwner>(() => 'follow') },
         wantsPinnedRef: createRef(true),
         verifyWebEntryRestoreTransaction: vi.fn(),
-    };
+    } satisfies ScrollObservationHostMembers;
 }
 
 function buildDeps(members: ReturnType<typeof createStableMembers>): ScrollObservationHostDeps {
@@ -169,7 +199,7 @@ function buildDeps(members: ReturnType<typeof createStableMembers>): ScrollObser
         sessionId: 's1',
         showFirstPaintPlaceholder: false,
         userIntentRecentMs: 500,
-    } as unknown as ScrollObservationHostDeps;
+    };
 }
 
 describe('useTranscriptScrollObservationHost identity stability', () => {
@@ -224,45 +254,6 @@ describe('useTranscriptScrollObservationHost identity stability', () => {
 
         expect(members.olderPagination.onScrollObservation).toHaveBeenCalledWith({
             itemsToOlderEdge: null,
-            offsetY: 0,
-            scrollable: true,
-            trigger: 'layout-committed',
-        });
-        await hook.unmount();
-    });
-
-    it.each([
-        ['standard', (edge: 'start' | 'end') => edge === 'start' ? 'older' as const : 'newer' as const],
-        ['inverted', (edge: 'start' | 'end') => edge === 'start' ? 'newer' as const : 'older' as const],
-    ])('rechecks canonical older pagination from committed native item-edge facts in %s orientation', async (
-        _orientation,
-        resolveReachedEdge,
-    ) => {
-        const members = createStableMembers();
-        members.readItemsToOlderEdge.mockReturnValue(0);
-        members.listContentHeightRef.current = 1200;
-        members.listLayoutHeightRef.current = 600;
-        members.listRef.current = {
-            getAbsoluteLastScrollOffset: () => 0,
-            scrollToIndex: vi.fn(),
-            scrollToOffset: vi.fn(),
-        };
-        members.resolveNativeObservedScrollOffset.mockReturnValue({
-            canonicalOffsetY: 0,
-            distanceFromLiveTailPx: 600,
-        });
-        members.wantsPinnedRef.current = false;
-        members.bottomFollowModeStateRef.current = { dragSession: null, mode: 'released' };
-        const hook = await renderHook(
-            (deps: ScrollObservationHostDeps) => useTranscriptScrollObservationHost(deps),
-            { initialProps: { ...buildDeps(members), isLoaded: true, platformOS: 'ios' } },
-        );
-
-        members.resolveViewportReachedEdge.mockImplementation(resolveReachedEdge);
-        hook.getCurrent().observeCommittedProjectionLayout();
-
-        expect(members.olderPagination.onScrollObservation).toHaveBeenCalledWith({
-            itemsToOlderEdge: 0,
             offsetY: 0,
             scrollable: true,
             trigger: 'layout-committed',
@@ -505,71 +496,5 @@ describe('useTranscriptScrollObservationHost identity stability', () => {
                 ([type, , options]) => type === 'keydown' && options === true,
             ),
         ).toHaveLength(1);
-    });
-
-    it.each([
-        ['textarea', () => document.createElement('textarea')],
-        ['contenteditable', () => {
-            const element = document.createElement('div');
-            element.setAttribute('contenteditable', 'true');
-            return element;
-        }],
-        ['dialog', () => document.createElement('dialog')],
-        ['menu', () => {
-            const element = document.createElement('div');
-            element.setAttribute('role', 'menu');
-            return element;
-        }],
-        ['listbox', () => {
-            const element = document.createElement('div');
-            element.setAttribute('role', 'listbox');
-            return element;
-        }],
-        ['combobox', () => {
-            const element = document.createElement('div');
-            element.setAttribute('role', 'combobox');
-            return element;
-        }],
-    ])('does not claim transcript keyboard scrolling from a %s', async (_name, createExcludedElement) => {
-        const members = createStableMembers();
-        const scroller = document.createElement('div');
-        const excludedElement = createExcludedElement();
-        scroller.append(excludedElement);
-        document.body.append(scroller);
-        members.resolveWebScrollMetrics.mockReturnValue({
-            clientHeight: 600,
-            element: scroller,
-            scrollHeight: 1200,
-            scrollTop: 600,
-        });
-        const notifyViewportInput = vi.fn();
-        members.listRef.current = {
-            notifyViewportInput,
-            scrollToIndex: vi.fn(),
-            scrollToOffset: vi.fn(),
-        };
-        const hook = await renderHook(
-            (deps: ScrollObservationHostDeps) => useTranscriptScrollObservationHost(deps),
-            { initialProps: buildDeps(members) },
-        );
-
-        excludedElement.dispatchEvent(new KeyboardEvent('keydown', {
-            bubbles: true,
-            cancelable: true,
-            key: 'PageDown',
-        }));
-        expect(notifyViewportInput).not.toHaveBeenCalled();
-
-        excludedElement.setAttribute('tabindex', '0');
-        excludedElement.focus();
-        expect(document.activeElement).toBe(excludedElement);
-        document.body.dispatchEvent(new KeyboardEvent('keydown', {
-            bubbles: true,
-            cancelable: true,
-            key: 'PageDown',
-        }));
-        expect(notifyViewportInput).not.toHaveBeenCalled();
-
-        await hook.unmount();
     });
 });

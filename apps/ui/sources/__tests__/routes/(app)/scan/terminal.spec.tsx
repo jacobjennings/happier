@@ -13,7 +13,6 @@ const routerBackSpy = vi.fn();
 const routerReplaceSpy = vi.fn();
 const promptSpy = vi.fn(async (..._args: unknown[]) => null as string | null);
 const alertAsyncSpy = vi.fn(async (..._args: unknown[]) => undefined);
-let lastTerminalConnectOptions: any = null;
 installScanRouteCommonModuleMocks({
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -50,9 +49,10 @@ installScanRouteCommonModuleMocks({
 });
 
 const processTerminalAuthUrlSpy = vi.fn(async (_url: string) => true);
+let lastTerminalConnectOptions: { onSuccess?: () => void | Promise<void> } | undefined;
 vi.mock('@/hooks/session/useConnectTerminal', () => ({
-    useConnectTerminal: (opts?: any) => {
-        lastTerminalConnectOptions = opts ?? null;
+    useConnectTerminal: (options?: { onSuccess?: () => void | Promise<void> }) => {
+        lastTerminalConnectOptions = options;
         return { processAuthUrl: processTerminalAuthUrlSpy, isLoading: false };
     },
 }));
@@ -68,9 +68,11 @@ vi.mock('@/components/qr/QrCodeScannerView', () => ({
     },
 }));
 
-vi.mock('@/components/onboarding/ui/WizardModalShell', () => ({
-    WizardModalShell: (props: any) => React.createElement('WizardModalShell', props, props.children),
-}));
+// The scanner's connection warning reads the app's auth owner; load it after the module mocks above.
+const { InjectedAuthProvider } = await import('@/auth/context/AuthContext');
+function renderScanRoute(element: React.ReactElement) {
+    return renderScreen(<InjectedAuthProvider credentials={null}>{element}</InjectedAuthProvider>);
+}
 
 describe('/scan/terminal', () => {
     beforeEach(() => {
@@ -80,32 +82,27 @@ describe('/scan/terminal', () => {
         alertAsyncSpy.mockClear();
         processTerminalAuthUrlSpy.mockClear();
         lastScannerProps = null;
-        lastTerminalConnectOptions = null;
     });
 
-    it('renders the terminal scan wizard shell and terminal-specific scanner copy', async () => {
+    it('renders the terminal scan wizard shell, whose Back leaves through the safe fallback', async () => {
         const { default: Screen } = await import('@/app/(app)/scan/terminal');
 
-        const screen = await renderScreen(<Screen />);
+        const screen = await renderScanRoute(<Screen />);
 
-        const wizard = screen.findByType('WizardModalShell' as never);
-        expect(wizard.props.testID).toBe('scan-terminal-wizard');
-        expect(wizard.props.stepIndex).toBe(0);
-        expect(wizard.props.stepCount).toBe(1);
-        expect(wizard.props.showSkip).toBe(false);
-        expect(wizard.props.title).toBe('modals.authenticateTerminal');
-        expect(wizard.props.subtitle).toBe('connect.scanQrCodeOnDevice');
-
+        expect(screen.findByTestId('scan-terminal-wizard')).not.toBeNull();
         expect(lastScannerProps?.embedded).toBe(true);
-        expect(lastScannerProps?.title).toBe('modals.authenticateTerminal');
-        expect(lastScannerProps?.subtitle).toBe('connect.scanQrCodeOnDevice');
         expect(lastScannerProps?.permissionRequiredMessage).toBe('modals.cameraPermissionsRequiredToConnectTerminal');
+
+        await screen.pressByTestIdAsync('scan-terminal-wizard-back');
+
+        expect(routerReplaceSpy).toHaveBeenCalledWith('/');
+        expect(routerBackSpy).not.toHaveBeenCalled();
     });
 
     it('processes scanned terminal URLs', async () => {
         const { default: Screen } = await import('@/app/(app)/scan/terminal');
 
-        await renderScreen(<Screen />);
+        await renderScanRoute(<Screen />);
 
         expect(typeof lastScannerProps?.onScan).toBe('function');
 
@@ -120,7 +117,7 @@ describe('/scan/terminal', () => {
     it('rejects scanned account URLs from the terminal scanner', async () => {
         const { default: Screen } = await import('@/app/(app)/scan/terminal');
 
-        await renderScreen(<Screen />);
+        await renderScanRoute(<Screen />);
 
         expect(typeof lastScannerProps?.onScan).toBe('function');
 
@@ -133,34 +130,10 @@ describe('/scan/terminal', () => {
         expect(processTerminalAuthUrlSpy).not.toHaveBeenCalled();
     });
 
-    it('keeps the terminal manual-entry copy on the canonical full-screen form', async () => {
-        const { default: Screen } = await import('@/app/(app)/scan/terminal');
-
-        const screen = await renderScreen(<Screen />);
-
-        expect(screen.findAllByTestId('pairing-link-entry-form')).toHaveLength(0);
-
-        await screen.pressByTestIdAsync('scan-terminal-enter-url');
-
-        expect(promptSpy).not.toHaveBeenCalled();
-        expect(screen.findAllByTestId('pairing-link-entry-form').length).toBeGreaterThan(0);
-        expect(screen.findAllByType('QrCodeScannerView' as never)).toHaveLength(0);
-
-        const text = screen.getTextContent();
-        expect(text).toContain('modals.authenticateTerminal');
-        expect(text).toContain('modals.pasteUrlFromTerminal');
-        const input = screen.findHostByTestId('restore-pairing-link-input');
-        expect(input?.props.placeholder).toBe('connect.terminalUrlPlaceholder');
-        expect(input?.props.autoFocus).toBe(true);
-        const submit = screen.findByTestId('restore-pairing-link-submit');
-        if (!submit) throw new Error('Expected the terminal link form submit button');
-        expect(submit.props.title).toBe('common.authenticate');
-    });
-
     it('submits a pasted terminal link through the shared scan processor', async () => {
         const { default: Screen } = await import('@/app/(app)/scan/terminal');
 
-        const screen = await renderScreen(<Screen />);
+        const screen = await renderScanRoute(<Screen />);
         await screen.pressByTestIdAsync('scan-terminal-enter-url');
 
         await act(async () => {
@@ -179,49 +152,26 @@ describe('/scan/terminal', () => {
         expect(processTerminalAuthUrlSpy).toHaveBeenCalledWith('happier://terminal?key=manual&server=https%3A%2F%2Fapi.happier.dev');
     });
 
-    it('rejects a pasted account URL from the terminal form with an inline alert and a retained draft', async () => {
+    it('uses safe fallback navigation when cancelling without history', async () => {
         const { default: Screen } = await import('@/app/(app)/scan/terminal');
 
-        const screen = await renderScreen(<Screen />);
-        await screen.pressByTestIdAsync('scan-terminal-enter-url');
+        await renderScanRoute(<Screen />);
 
         await act(async () => {
-            screen.changeTextByTestId('restore-pairing-link-input', 'happier:///account?abc123');
-        });
-        await act(async () => {
-            const submit = screen.findByTestId('restore-pairing-link-submit');
-            if (!submit) throw new Error('Expected the terminal link form submit button');
-            await submit.props.action();
+            await lastScannerProps.onCancel();
         });
 
-        expect(alertAsyncSpy).toHaveBeenCalledWith('common.error', 'modals.invalidAuthUrl', [{ text: 'common.ok' }]);
-        expect(processTerminalAuthUrlSpy).not.toHaveBeenCalled();
-        expect(screen.findHostByTestId('restore-pairing-link-error')?.props.accessibilityRole).toBe('alert');
-        expect(screen.findHostByTestId('restore-pairing-link-input')?.props.value).toBe('happier:///account?abc123');
-    });
-
-    it('returns to the camera from the pairing link form without leaving the route', async () => {
-        const { default: Screen } = await import('@/app/(app)/scan/terminal');
-
-        const screen = await renderScreen(<Screen />);
-        await screen.pressByTestIdAsync('scan-terminal-enter-url');
-        await screen.pressByTestIdAsync('restore-pairing-link-back');
-
-        expect(screen.findAllByTestId('pairing-link-entry-form')).toHaveLength(0);
-        expect(screen.findAllByType('QrCodeScannerView' as never).length).toBeGreaterThan(0);
+        expect(routerReplaceSpy).toHaveBeenCalledWith('/');
         expect(routerBackSpy).not.toHaveBeenCalled();
-        expect(routerReplaceSpy).not.toHaveBeenCalled();
     });
 
     it('uses safe fallback navigation after a successful terminal approval when there is no back stack', async () => {
         const { default: Screen } = await import('@/app/(app)/scan/terminal');
 
-        await renderScreen(<Screen />);
-
-        expect(typeof lastTerminalConnectOptions?.onSuccess).toBe('function');
+        await renderScanRoute(<Screen />);
 
         await act(async () => {
-            await lastTerminalConnectOptions.onSuccess();
+            await lastTerminalConnectOptions?.onSuccess?.();
         });
 
         expect(routerReplaceSpy).toHaveBeenCalledWith('/');

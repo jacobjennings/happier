@@ -2,6 +2,7 @@ import type { ActionExecutorContext, ActionExecutorDeps } from '@happier-dev/pro
 import { createProviderActionExecuteV1 } from '@happier-dev/protocol/providers/executeProviderActionV1';
 import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import type { StoredCredentials } from '@/persistence';
+import { isServerProfileHomeIdentity } from '@/server/serverProfiles';
 import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { resolveAccountSettingsScopeKey } from '@/settings/accountSettings/accountSettingsScopeKey';
 import type { SavedSecretOperationContextV1 } from '@/settings/secrets/hydrateSavedSecretCatalog';
@@ -31,7 +32,6 @@ export function createCliProviderActionExecuteV1(params: Readonly<{
   const execute = createProviderActionExecuteV1({
     assertCurrent: context => {
       context.signal?.throwIfAborted();
-      if (context.serverId && context.serverId !== params.serverId) throw Object.assign(new Error('server_scope_mismatch'), { code: 'server_scope_mismatch' });
       const active = params.operationContext ? params.operationContext.readSnapshot() : getActiveAccountSettingsSnapshot();
       if (params.operationContext && !active || active && active.scopeKey !== scopeKey) throw Object.assign(new Error('scope-retired'), { code: 'scope-retired' });
     },
@@ -42,7 +42,8 @@ export function createCliProviderActionExecuteV1(params: Readonly<{
         const catalog = await prepareProviderConnectionsCatalogForCli({ expectedScopeKey: scopeKey,
           operationContext: params.operationContext, signal: context.signal });
         if (catalog.status !== 'ready') return { status: 'error', error: createProviderErrorV1('provider_catalog_unavailable', { machineId }) };
-        return params.projectModelsForAccount(request.input, context);
+        // The dispatch owner routes here only with the operand's exact Machine.
+        return params.projectModelsForAccount({ ...request.input, machineId }, context);
       }
       return params.callMachineAction({
       machineId, serverId: params.serverId, method, request: request.input, signal: context.signal,
@@ -61,5 +62,11 @@ export function createCliProviderActionExecuteV1(params: Readonly<{
     },
     account: createCliAccountProviderActionExecuteV1(params),
   });
-  return (request, context) => runWithServerHttpBaseUrl(params.serverHttpBaseUrl, () => execute(request, context));
+  return (request, context) => runWithServerHttpBaseUrl(params.serverHttpBaseUrl, async () => {
+    context.signal?.throwIfAborted();
+    if (context.serverId && !await isServerProfileHomeIdentity(params.serverId, context.serverId)) {
+      throw Object.assign(new Error('server_scope_mismatch'), { code: 'server_scope_mismatch' });
+    }
+    return execute(request, context);
+  });
 }

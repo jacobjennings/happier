@@ -8,6 +8,7 @@ import {
 import { PluginDomainChangeEntrySchema } from '@happier-dev/protocol/changes';
 
 import { apiSocket } from '@/sync/api/session/apiSocket';
+import type { ServerFetch } from '@/sync/http/client';
 import {
     captureActiveServerAccountScopeLifetime,
     type ActiveServerAccountScopeLifetime,
@@ -23,7 +24,7 @@ type ProjectionServerSnapshot = Readonly<{
 }>;
 
 type ProjectionRequestAuthority = Readonly<{
-    request: (path: string, init?: RequestInit) => Promise<Response>;
+    request: ServerFetch;
     release?: () => Promise<void>;
 }>;
 
@@ -93,7 +94,7 @@ function defaultDependencies(): ActivePluginAccountAvailabilityProjectionHydrato
         captureRequestAuthority: async (scope) => {
             const authority = await captureServerRequestAuthorityForServerAccountScope({
                 scope,
-                activeRequest: (path, init) => apiSocket.request(path, init),
+                activeRequest: (path, init, options) => apiSocket.request(path, init, options),
             });
             return { request: authority.request, release: authority.release };
         },
@@ -111,7 +112,7 @@ async function postJson(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         signal,
-    });
+    }, { recoveryRead: 'unbounded' });
     if (!response.ok) {
         throw new Error(`Plugin Availability projection request failed with status ${response.status}.`);
     }

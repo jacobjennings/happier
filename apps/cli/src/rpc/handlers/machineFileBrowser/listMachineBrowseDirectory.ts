@@ -57,6 +57,8 @@ export async function listMachineBrowseDirectory(input: Readonly<{
     return {
       ok: false,
       error: error instanceof Error ? error.message : 'Failed to list directory',
+      ...(error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+        ? { errorCode: error.code } : {}),
     }
   }
 }

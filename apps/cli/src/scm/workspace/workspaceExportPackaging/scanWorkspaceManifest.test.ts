@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, mkdir, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,12 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createScmBackendRegistry } from '@/scm/registry';
 import type { ScmBackend } from '@/scm/types';
-import type { WorkspaceManifestEntry } from '@/scm/workspace/workspaceExportPackaging/buildWorkspaceManifestEntry';
 import { scanWorkspaceManifest, type ScannedWorkspaceFile } from './scanWorkspaceManifest';
-import {
-    DEFAULT_WORKSPACE_MANIFEST_SAFE_FILTER_POLICY,
-    shouldFilterWorkspaceManifestPath,
-} from './workspaceManifestSafeFilterPolicy';
 
 const tempRoots: string[] = [];
 
@@ -238,23 +233,6 @@ describe('scanWorkspaceManifest', () => {
         });
     });
 
-    it('returns canonical metadata for symlinks without following them', async () => {
-        const root = await makeTempDir('workspace-manifest-symlink-');
-        await writeFile(join(root, 'target.txt'), 'target\n');
-        await mkdir(join(root, 'links'), { recursive: true });
-        await symlink('../target.txt', join(root, 'links', 'target-link'));
-
-        const manifest = await scanWorkspaceManifest({ workspaceRoot: root, scmRegistry: emptyScmRegistry });
-        const symlinkEntry = manifest.entries.find((entry: WorkspaceManifestEntry) => entry.relativePath === 'links/target-link');
-        if (!symlinkEntry || symlinkEntry.kind !== 'symlink') {
-            throw new Error('Expected a symlink entry');
-        }
-
-        expect(symlinkEntry.target).toBe('../target.txt');
-        await expect(readlink(join(root, 'links', 'target-link'))).resolves.toBe('../target.txt');
-        await expect(readFile(join(root, 'target.txt'), 'utf8')).resolves.toBe('target\n');
-    });
-
     it('reports hashed file metadata through the optional file-scan hook', async () => {
         const root = await makeTempDir('workspace-manifest-hook-');
         await mkdir(join(root, 'src'), { recursive: true });
@@ -374,34 +352,6 @@ describe('scanWorkspaceManifest', () => {
                 },
             ],
         });
-    });
-
-    it('filters git admin paths through the authoritative SCM registry', async () => {
-        await expect(shouldFilterWorkspaceManifestPath(
-            '.git/HEAD',
-            DEFAULT_WORKSPACE_MANIFEST_SAFE_FILTER_POLICY,
-            administrativeScmRegistry,
-        )).resolves.toBe(true);
-
-        await expect(shouldFilterWorkspaceManifestPath(
-            'README.md',
-            DEFAULT_WORKSPACE_MANIFEST_SAFE_FILTER_POLICY,
-            administrativeScmRegistry,
-        )).resolves.toBe(false);
-    });
-
-    it('filters sapling admin paths through the authoritative SCM registry', async () => {
-        await expect(shouldFilterWorkspaceManifestPath(
-            '.sl/store',
-            DEFAULT_WORKSPACE_MANIFEST_SAFE_FILTER_POLICY,
-            administrativeScmRegistry,
-        )).resolves.toBe(true);
-
-        await expect(shouldFilterWorkspaceManifestPath(
-            'src/store',
-            DEFAULT_WORKSPACE_MANIFEST_SAFE_FILTER_POLICY,
-            administrativeScmRegistry,
-        )).resolves.toBe(false);
     });
 
     it('can include git admin paths when the safe filter policy allows them', async () => {

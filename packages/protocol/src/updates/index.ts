@@ -8,15 +8,11 @@ import { AutomationRunStateChangedHostEventV1Schema } from '../plugins/events/ho
 import { ExternalSessionTranscriptInvalidationV1Schema } from '../sessions/external/secureRefreshV1.js';
 import { ExternalSessionStorageStateV1Schema } from '../sessions/external/operationV1.js';
 import { ExecutionRunPublicStateSchema } from '../execution/runs/responseSchemas.js';
-import { SessionMessageAttentionImpactSchema } from '../sessions/messages/transcriptRawRecordV1.js';
+import { ExecutionRunMachineActivityEphemeralV1Schema } from '../execution/runs/activityV1.js';
 import { SessionMessageRoleSchema } from '../sessions/messages/sessionMessageRole.js';
-import { SessionMessageAccountActorV1Schema } from '../sessions/messages/sessionMessageAccountActorV1.js';
-import { SessionInputAdmissionReceiptV1Schema, PendingActivationRequestedEphemeralV1Schema } from '../sessions/messages/sessionInputAdmission.js';
+import { PendingActivationRequestedEphemeralV1Schema } from '../sessions/messages/sessionInputAdmission.js';
 import { SessionMessageReplyPendingHintV1Schema } from '../sessions/messages/sessionMessageReplyV1.js';
 import { UsageSourcesInvalidationV1Schema } from '../usage/usageSources.js';
-import { SessionMessageDeliveryResolutionV1Schema } from '../sessions/messages/sessionMessageDeliveryResolutionV1.js';
-import { FollowDeliveryProjectionV1Schema } from '../sessions/follow/sessionFollowDeliveryProjectionV1.js';
-import { SessionTranscriptObservationProvenanceV1Schema } from '../sessions/messages/transcriptObservationV1.js';
 import { SessionStoredMessageContentSchema } from '../sessions/messages/sessionStoredMessageContent.js';
 import { PrimaryTurnStatusV1Schema, SessionRuntimeIssueV1Schema } from '../sessions/control/runtimeIssueV1.js';
 import { TurnIdSchema } from '../sessions/idsV1.js';
@@ -38,6 +34,8 @@ import { AccessibleMachineAccessV1Schema } from '../machines/machineAccessV1.js'
 import { ManagedWakeTargetV1Schema } from '../machines/managed/managedIntentV1.js';
 import { DevcontainerChildProjectionV1Schema } from '../machines/managed/devcontainerV1.js';
 import { AccountEncryptionCurrentnessResponseSchema } from '../account/encryptionMode.js';
+import { SessionMessageV1Schema } from '../sessions/messages/sessionMessagesPageV1.js';
+import { SessionMessageObservationFactsV1Schema } from '../sessions/messages/sessionMessageObservationFactsV1.js';
 
 const TimestampMsSchema = lazyZodSchema(() => z.number().check(z.int(), z.minimum(0)));
 const Base64Schema = lazyZodSchema(() => z.string());
@@ -54,64 +52,20 @@ const VersionedStringSchema = lazyZodSchema(() => z.looseObject({
   version: z.number().check(z.int()),
 }));
 
+const durableMessageUpdate = <T extends 'new-message' | 'message-updated'>(event: T) => z.discriminatedUnion('delivery', [
+  z.strictObject({ t: z.literal(event), sid: z.string(), id: z.optional(z.string()), delivery: z.literal('full'), message: z.extend(SessionMessageV1Schema, {
+    localId: z.nullable(z.string()), createdAt: TimestampMsSchema, updatedAt: TimestampMsSchema,
+  }) }),
+  z.strictObject({ t: z.literal(event), sid: z.string(), id: z.optional(z.string()), delivery: z.literal('hint'), message: SessionMessageObservationFactsV1Schema }),
+]);
+
 export const UpdateBodySchema = lazyZodSchema(() => z.discriminatedUnion('t', [
-  z.looseObject({
-    t: z.literal('new-message'),
-    sid: z.string(),
-    message: z.looseObject({
-        id: z.string(),
-        seq: z.number().check(z.int(), z.minimum(0)),
-        content: SessionStoredMessageContentSchema,
-        localId: z.nullable(z.string()),
-        sidechainId: z.optional(z.nullable(z.string())),
-        messageRole: SessionMessageRoleMetadataSchema,
-        deliveryResolution: z.optional(SessionMessageDeliveryResolutionV1Schema),
-        followDeliveryProjection: z.optional(FollowDeliveryProjectionV1Schema),
-        attentionImpact: z.optional(SessionMessageAttentionImpactSchema),
-        createdAt: TimestampMsSchema,
-        updatedAt: TimestampMsSchema,
-        sourceCreatedAt: z.optional(TimestampMsSchema),
-        sourceUpdatedAt: z.optional(TimestampMsSchema),
-        transcriptObservationProvenance: z.optional(SessionTranscriptObservationProvenanceV1Schema),
-        /**
-         * Additive authenticated-reader actor projection. Omitted means an
-         * older producer (preserve any known actor); explicit `null` means the
-         * current producer evaluated this row and denies Account attribution.
-         */
-        accountActor: z.optional(z.nullable(SessionMessageAccountActorV1Schema)),
-        inputAdmissionReceipt: z.optional(SessionInputAdmissionReceiptV1Schema),
-      }),
-  }),
-  z.looseObject({
-    t: z.literal('message-updated'),
-    sid: z.string(),
-    message: z.looseObject({
-        id: z.string(),
-        seq: z.number().check(z.int(), z.minimum(0)),
-        content: SessionStoredMessageContentSchema,
-        localId: z.nullable(z.string()),
-        sidechainId: z.optional(z.nullable(z.string())),
-        messageRole: SessionMessageRoleMetadataSchema,
-        deliveryResolution: z.optional(SessionMessageDeliveryResolutionV1Schema),
-        followDeliveryProjection: z.optional(FollowDeliveryProjectionV1Schema),
-        attentionImpact: z.optional(SessionMessageAttentionImpactSchema),
-        createdAt: TimestampMsSchema,
-        updatedAt: TimestampMsSchema,
-        sourceCreatedAt: z.optional(TimestampMsSchema),
-        sourceUpdatedAt: z.optional(TimestampMsSchema),
-        transcriptObservationProvenance: z.optional(SessionTranscriptObservationProvenanceV1Schema),
-        /**
-         * Additive authenticated-reader actor projection. Omitted means an
-         * older producer (preserve any known actor); explicit `null` means the
-         * current producer evaluated this row and denies Account attribution.
-         */
-        accountActor: z.optional(z.nullable(SessionMessageAccountActorV1Schema)),
-        inputAdmissionReceipt: z.optional(SessionInputAdmissionReceiptV1Schema),
-      }),
-  }),
+  durableMessageUpdate('new-message'),
+  durableMessageUpdate('message-updated'),
   z.looseObject({
     t: z.literal('new-session'),
     id: z.string(),
+    projectKey: z.optional(z.nullable(z.string())),
     viewer: z.optional(SessionViewerProjectionV1Schema),
     seq: z.number().check(z.int(), z.minimum(0)),
     metadata: Base64Schema,
@@ -134,6 +88,7 @@ export const UpdateBodySchema = lazyZodSchema(() => z.discriminatedUnion('t', [
   z.looseObject({
     t: z.literal('update-session'),
     id: z.string(),
+    projectKey: z.optional(z.nullable(z.string())),
     metadata: z.optional(VersionedNullableStringSchema),
     metadataLayoutVersion: z.optional(z.number().check(z.int(), z.nonnegative())),
     ownerMetadata: z.optional(z.strictObject({
@@ -231,6 +186,9 @@ export const UpdateBodySchema = lazyZodSchema(() => z.discriminatedUnion('t', [
   }),
   z.strictObject({
     t: z.literal('account-change'),
+    // Advisory commit routing only; unknown kinds remain coarse at the reader.
+    changeKinds: z.optional(z.array(z.string())),
+    entityIds: z.optional(z.array(z.string())),
   }),
   z.looseObject({
     t: z.literal('delete-session'),
@@ -469,7 +427,7 @@ export const SessionPersonalEventEphemeralV1Schema = lazyZodSchema(() => z.discr
 
 export type SessionPersonalEventEphemeralV1 = z.infer<typeof SessionPersonalEventEphemeralV1Schema>;
 
-export const EphemeralUpdateSchema = lazyZodSchema(() => z.discriminatedUnion('type', [
+export const EphemeralUpdateSchema = lazyZodSchema(() => z.union([z.discriminatedUnion('type', [
   SessionMessageReplyPendingHintV1Schema,
   PendingActivationRequestedEphemeralV1Schema,
   // Hottest live event first: delta ticks stream at the live cadence (~25Hz per active segment).
@@ -489,7 +447,7 @@ export const EphemeralUpdateSchema = lazyZodSchema(() => z.discriminatedUnion('t
     type: z.literal('execution-run-updated'),
     sessionId: z.string(),
     run: ExecutionRunPublicStateSchema,
-  }),
+  }).check(z.refine(value => value.machineId === undefined && value.runId === undefined)),
   z.looseObject({
     type: z.literal('transcript-stream-segment'),
     sessionId: z.string(),
@@ -531,7 +489,7 @@ export const EphemeralUpdateSchema = lazyZodSchema(() => z.discriminatedUnion('t
   ActionOperationSnapshotEphemeralV1Schema,
   ActionOperationRevisionEphemeralV1Schema,
   SessionPersonalEventEphemeralV1Schema,
-]));
+]), ExecutionRunMachineActivityEphemeralV1Schema]));
 
 export type EphemeralUpdate = z.infer<typeof EphemeralUpdateSchema>;
 

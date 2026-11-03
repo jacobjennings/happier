@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
     evaluateMarkdownRichEligibility,
-    preservesEmbeddedHtml,
     type EvaluateMarkdownRichEligibilityOptions,
 } from '../../eligibility/markdownRichEligibility';
 
@@ -34,24 +33,6 @@ describe('getRichMarkdownRoundTripOutput (success path)', () => {
         const out = getRichMarkdownRoundTripOutput('# Title\n\nbody');
         expect(typeof out).toBe('string');
         expect(out).toContain('Title');
-    });
-
-    it('preserves embedded block HTML via the Phase-1.5 raw-HTML pre-pass -> gate admits', async () => {
-        const { getRichMarkdownRoundTripOutput } = await import('../markdownRoundTrip.web');
-        const body = 'Intro\n\n<div class="note">hello</div>';
-        const out = getRichMarkdownRoundTripOutput(body);
-        // The risky-markdown pre-pass (`encodeRiskyMarkdown`) rewrites the block
-        // HTML to a sentinel, the raw-HTML atom node round-trips it verbatim, so the
-        // fragment survives -> preservesEmbeddedHtml is true -> the gate stays
-        // eligible (no whole-document raw fallback). This is the Phase-1.5 flip.
-        expect(preservesEmbeddedHtml(body, out)).toBe(true);
-    });
-
-    it('preserves embedded inline HTML via the pre-pass', async () => {
-        const { getRichMarkdownRoundTripOutput } = await import('../markdownRoundTrip.web');
-        const body = 'before <span>x</span> after';
-        const out = getRichMarkdownRoundTripOutput(body);
-        expect(preservesEmbeddedHtml(body, out)).toBe(true);
     });
 
     it('returns the same cached value for the same body (cache hit)', async () => {

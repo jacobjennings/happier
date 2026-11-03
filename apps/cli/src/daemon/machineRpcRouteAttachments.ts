@@ -1,4 +1,7 @@
+
+import type { DaemonMachineAdminAccessRoutes } from '@/rpc/handlers/daemonMachineAdminAccess';
 import type { ApiMachineClient } from '@/api/apiMachine';
+import type { DaemonMachineReachabilityRoutes } from '@/machines/reachability/createDaemonMachineReachabilityRoutes';
 
 import type { BrowserDaemonControlRoutes } from './browser/control/routes';
 import type { BrowserContextRoutes } from './browser/context/routes';
@@ -20,9 +23,12 @@ export type DaemonMachineRpcRouteRegistrar = Pick<
   ApiMachineClient,
   | 'registerLocalServicesPreviewRoutes'
   | 'registerLocalServicesRoutes'
+  | 'registerMachineAccessLossReceiver'
   | 'registerMachineVitalsRoutes'
   | 'registerMachineProcessesRoutes'
   | 'registerMachineResourcesPolicyRoutes'
+  | 'registerMachineAdminAccessRoutes'
+  | 'registerMachineReachabilityRoutes'
   | 'registerMachineGuardRoutes'
   | 'registerStorageRoutes'
   | 'registerComputerRoutes'
@@ -40,12 +46,17 @@ type DaemonMachineConnectedAccountPurposeBindingRuntime = Parameters<
   DaemonMachineRpcRouteRegistrar['registerConnectedAccountPurposeBindingRuntime']
 >[0];
 
+type MachineAccessLossReceiverOptions = Parameters<ApiMachineClient['registerMachineAccessLossReceiver']>[0];
+
 export type DaemonMachineRpcRouteAttachmentCache = Readonly<{
+  attachMachineAccessLossReceiver(options: MachineAccessLossReceiverOptions): void;
   attachLocalServicesPreviewRoutes(routes: LocalServicePreviewRoutes): void;
   attachLocalServicesRoutes(routes: DaemonLocalServicesMachineRpcRoutes): void;
   attachMachineVitalsRoutes(routes: DaemonMachineVitalsRoutes): void;
   attachMachineProcessesRoutes(routes: DaemonProcessesRoutes): void;
   attachMachineResourcesPolicyRoutes(routes: DaemonMachineResourcesPolicyRoutes): void;
+  attachMachineAdminAccessRoutes(routes: DaemonMachineAdminAccessRoutes): void;
+  attachMachineReachabilityRoutes(routes: DaemonMachineReachabilityRoutes): void;
   attachMachineGuardRoutes(routes: DaemonMachineGuardRoutes): void;
   attachStorageRoutes(routes: DaemonStorageRoutes): void;
   attachComputerRoutes(resolveComputer: () => ComputerRoutes | null): void;
@@ -61,16 +72,22 @@ export type DaemonMachineRpcRouteAttachmentCache = Readonly<{
   ): void;
   prepareApiMachineForSessions(apiMachineForSessions: DaemonMachineRpcRouteRegistrar): void;
   attachApiMachineForSessions(apiMachineForSessions: DaemonMachineRpcRouteRegistrar | null): void;
+
+
 }>;
 
 export function createDaemonMachineRpcRouteAttachmentCache(input: Readonly<{
   getApiMachineForSessions: () => DaemonMachineRpcRouteRegistrar | null;
 }>): DaemonMachineRpcRouteAttachmentCache {
+  let machineAccessLossReceiver: MachineAccessLossReceiverOptions | null = null;
   let localServicesPreviewRoutes: LocalServicePreviewRoutes | null = null;
   let localServicesRoutes: DaemonLocalServicesMachineRpcRoutes | null = null;
   let machineVitalsRoutes: DaemonMachineVitalsRoutes | null = null;
   let machineProcessesRoutes: DaemonProcessesRoutes | null = null;
   let machineResourcesPolicyRoutes: DaemonMachineResourcesPolicyRoutes | null = null;
+  let machineAdminAccessRoutes: DaemonMachineAdminAccessRoutes | null = null;
+  let machineReachabilityRoutes: DaemonMachineReachabilityRoutes | null = null;
+
   let machineGuardRoutes: DaemonMachineGuardRoutes | null = null;
   let storageRoutes: DaemonStorageRoutes | null = null;
   let resolveComputer: (() => ComputerRoutes | null) | null = null;
@@ -142,6 +159,10 @@ export function createDaemonMachineRpcRouteAttachmentCache(input: Readonly<{
   }
 
   return {
+    attachMachineAccessLossReceiver(options) {
+      machineAccessLossReceiver = options;
+      input.getApiMachineForSessions()?.registerMachineAccessLossReceiver(options);
+    },
     attachComputerRoutes(resolve) {
       resolveComputer = resolve;
       input.getApiMachineForSessions()?.registerComputerRoutes(resolve);
@@ -154,6 +175,15 @@ export function createDaemonMachineRpcRouteAttachmentCache(input: Readonly<{
       machineResourcesPolicyRoutes = routes;
       input.getApiMachineForSessions()?.registerMachineResourcesPolicyRoutes(routes);
     },
+    attachMachineReachabilityRoutes(routes) {
+      machineReachabilityRoutes = routes;
+      input.getApiMachineForSessions()?.registerMachineReachabilityRoutes(routes);
+    },
+    attachMachineAdminAccessRoutes(routes) {
+      machineAdminAccessRoutes = routes;
+      input.getApiMachineForSessions()?.registerMachineAdminAccessRoutes(routes);
+    },
+
     attachMachineGuardRoutes(routes) {
       machineGuardRoutes = routes;
       input.getApiMachineForSessions()?.registerMachineGuardRoutes(routes);
@@ -232,6 +262,9 @@ export function createDaemonMachineRpcRouteAttachmentCache(input: Readonly<{
 
     attachApiMachineForSessions(apiMachineForSessions) {
       if (!apiMachineForSessions) return;
+      if (machineAccessLossReceiver) {
+        apiMachineForSessions.registerMachineAccessLossReceiver(machineAccessLossReceiver);
+      }
       if (connectedServicePoolSelectionRead) {
         apiMachineForSessions.registerConnectedServicePoolSelectionRead(connectedServicePoolSelectionRead);
       }
@@ -256,6 +289,13 @@ export function createDaemonMachineRpcRouteAttachmentCache(input: Readonly<{
       if (machineResourcesPolicyRoutes) {
         apiMachineForSessions.registerMachineResourcesPolicyRoutes(machineResourcesPolicyRoutes);
       }
+      if (machineReachabilityRoutes) {
+        apiMachineForSessions.registerMachineReachabilityRoutes(machineReachabilityRoutes);
+      }
+      if (machineAdminAccessRoutes) {
+        apiMachineForSessions.registerMachineAdminAccessRoutes(machineAdminAccessRoutes);
+      }
+
       if (machineGuardRoutes) {
         apiMachineForSessions.registerMachineGuardRoutes(machineGuardRoutes);
       }

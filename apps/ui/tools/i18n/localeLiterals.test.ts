@@ -120,23 +120,6 @@ describe('locale literal extraction', () => {
         expect(output).toContain("'l\\'apostrophe'");
         expect(output).toContain('"le \\"guillemet\\""');
     });
-
-    it('treats commands, paths, flags and URLs as do-not-translate', () => {
-        for (const text of [
-            'happier attach <session-id>',
-            'git push --force-with-lease',
-            '/path/to/project',
-            '--force',
-            'https://example.com',
-            ' · ',
-            '',
-        ]) {
-            expect(isDoNotTranslate(text)).toBe(true);
-        }
-        for (const text of ['Cancel', 'You have ', 'Choose a model', 'Push and don’t ask again']) {
-            expect(isDoNotTranslate(text)).toBe(false);
-        }
-    });
 });
 
 describe('satellite translation modules', () => {

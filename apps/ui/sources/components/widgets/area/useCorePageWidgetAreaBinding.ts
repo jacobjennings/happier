@@ -68,7 +68,7 @@ export function useCorePageWidgetAreaBinding(input: Readonly<{
             const parsed = PluginUiWidgetAreaResultV1Schema.safeParse(result);
             return parsed.success ? parsed.data : { ok: false, errorCode: 'invalid_widget_area_result', error: 'invalid_widget_area_result' };
         } } : null;
-        const selectionOwner: WidgetAreaLayoutSelectionOwner | null = surface ? { surface, isCurrent,
+        const selectionOwner: WidgetAreaLayoutSelectionOwner | null = surface ? { surface, isCurrent, providedContext: widgetProvidedContext(input.context),
             read: (target, signal) => {
                 const defaultId = input.preset?.id ?? input.presets?.[0]?.id;
                 const destination = target.owner.kind === 'corePage' && !target.owner.layoutId && defaultId

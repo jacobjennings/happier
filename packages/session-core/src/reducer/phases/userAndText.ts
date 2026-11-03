@@ -210,7 +210,7 @@ export function runUserAndTextPhase(params: Readonly<{
                           && lastMainStreamKey === streamKey
                           && (() => {
                             const prev = state.messages.get(lastMainStreamMessageId!);
-                            return prev?.role === 'agent' && !prev.isThinking && typeof prev.text === 'string';
+                            return prev?.role === 'agent' && !prev.isThinking && !prev.peer && !c.peer && typeof prev.text === 'string';
                         })();
 
                     if (canMerge) {
@@ -242,6 +242,7 @@ export function runUserAndTextPhase(params: Readonly<{
                         createdAt: msg.createdAt,
                         text: c.text,
                         isThinking: false,
+                        ...(c.peer ? { peer: c.peer } : {}),
                         tool: null,
                         event: null,
                         meta: msg.meta,

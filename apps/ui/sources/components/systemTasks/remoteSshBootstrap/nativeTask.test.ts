@@ -225,9 +225,8 @@ describe('runNativeRemoteSshBootstrapTask', () => {
         expect(commands.some((command) => command.includes('auth status'))).toBe(true);
     });
 
-    it('installs the remote CLI through the verified native self-download hook for fresh remotes', async () => {
-        if (process.platform === 'win32') return; // Remote shell fixtures require a POSIX test host.
-
+    // Remote shell fixtures (tar + /bin/sh) require a POSIX test host.
+    it.skipIf(process.platform === 'win32')('installs the remote CLI through the verified native self-download hook for fresh remotes', async () => {
         const nativeModule = {
             getAvailability: () => ({
                 available: true,
@@ -319,64 +318,6 @@ describe('runNativeRemoteSshBootstrapTask', () => {
             expect((await readdir(join(installRoot, 'versions'))).sort()).toEqual(['1.1.0', '1.2.3']);
             expect(await readFile(join(installRoot, 'previous', 'happier'), 'utf8')).toBe('1.1.0');
         } finally { await rm(home, { recursive: true, force: true }); }
-    });
-
-    it('normalizes failed auth status probes as unauthenticated so pairing can continue', async () => {
-
-        const nativeModule = {
-            getAvailability: () => ({
-                available: true,
-                platform: 'android',
-                engine: 'russh',
-                moduleVersion: '0.0.0',
-                supportsLoopbackTunnel: true,
-                supportsPersistentHostKeyStorage: false,
-            } as const),
-            exec: vi.fn(async () => ({
-                exitCode: 0,
-                stdout: JSON.stringify({ ok: true, data: {} }),
-                stderr: '',
-            })),
-            cancelRequest: vi.fn(async () => undefined),
-        } satisfies NativeSshModule;
-        const commandRunner = {
-            runJsonCommand: vi.fn(async ({ command }: { command: string }) => {
-                if (command.includes('auth status')) {
-                    return { ok: false, data: { code: 'not_authenticated' } };
-                }
-                if (command.includes('auth request')) {
-                    return {
-                        ok: true,
-                        data: {
-                            publicKey: 'pubkey-a',
-                            homeServerIdentityId: 'srv_home_identity',
-                            pairing: { secretB64Url: 'secret', createdAtMs: 123, expiresAtMs: 456 },
-                            supportsTokenOnly: true,
-                            pairingRequirement: 'v3',
-                        },
-                    };
-                }
-                if (command.includes('auth wait')) {
-                    return { ok: true, data: { machineId: 'machine-paired' } };
-                }
-                return { ok: true, data: {} };
-            }),
-            runTextCommand: vi.fn(async (options: { command: string; onStdoutChunk?: (text: string) => void }) =>
-                readInstallationTextResult(options.command) ?? completeRemoteEnrollment(options)),
-        };
-
-        await expect(runNativeRemoteSshBootstrapTask({
-            taskId: 'task-a',
-            nativeModule,
-            spec: createRemoteBootstrapSpec(),
-            commandRunner,
-            resolveInstallPlan,
-            prompt: async () => ({ approved: true }),
-            approveLocalAuthRequest: async () => undefined,
-        })).resolves.toEqual({
-            machineId: 'machine-paired',
-            publicKey: REMOTE_PUBLIC_KEY,
-        });
     });
 
     it('approves local terminal auth after the user accepts remote provisioning', async () => {

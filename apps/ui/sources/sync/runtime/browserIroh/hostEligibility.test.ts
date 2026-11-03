@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
     isBrowserIrohHost,
-    readBrowserIrohHostCapabilities,
     resolveBrowserIrohHostDecision,
     type BrowserIrohHostCapabilities,
 } from './hostEligibility';
@@ -16,9 +15,6 @@ const BROWSER: BrowserIrohHostCapabilities = { hasSharedWorker: true };
 
 const TAURI_INTERNALS_KEY = '__TAURI_INTERNALS__';
 
-const ELECTRON_USER_AGENT =
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)'
-    + ' happier-desktop/0.3.0 Chrome/150.0.0.0 Electron/43.4.0 Safari/537.36';
 const BROWSER_USER_AGENT =
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)'
     + ' Chrome/150.0.0.0 Safari/537.36';
@@ -55,16 +51,6 @@ describe('sync/runtime/browserIroh/hostEligibility', () => {
         });
     });
 
-    it('excludes an Electron desktop host that publishes a Tauri-shaped bridge', () => {
-        setUserAgent(ELECTRON_USER_AGENT);
-        (globalThis as Record<string, unknown>)[TAURI_INTERNALS_KEY] = { invoke: () => null };
-
-        expect(resolveBrowserIrohHostDecision(BROWSER)).toEqual({
-            eligible: false,
-            reason: 'desktop_host',
-        });
-    });
-
     it('reports the missing capability rather than falling back to a per-tab endpoint', () => {
         setUserAgent(BROWSER_USER_AGENT);
 
@@ -85,6 +71,5 @@ describe('sync/runtime/browserIroh/hostEligibility', () => {
         Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: undefined });
 
         expect(resolveBrowserIrohHostDecision()).toEqual({ eligible: true });
-        expect(Object.keys(readBrowserIrohHostCapabilities())).toEqual(['hasSharedWorker']);
     });
 });

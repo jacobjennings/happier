@@ -27,9 +27,7 @@ import {
 } from './explicitJumpTakeover';
 import {
     resolveExplicitReturnToLiveTailApplyEffects,
-    resolveExplicitReturnToLiveTailViewportEffects,
     type ExplicitReturnToLiveTailApplyEffect,
-    type ExplicitReturnToLiveTailViewportEffect,
 } from './explicitReturnToLiveTail';
 import {
     resolveFollowBottomIntentTakeoverApplyEffects,
@@ -240,79 +238,6 @@ export type TranscriptLifecycleHostScrollObservationDisposition =
     | 'continue'
     | 'ignored';
 
-export type TranscriptLifecycleHostScrollObservationStep =
-    | Readonly<{
-        lifecycleEffects: readonly TranscriptViewportLifecycleEffect[];
-        type: 'web-user-scroll';
-    }>
-    | Readonly<{
-        lifecycleEffects: readonly TranscriptViewportLifecycleEffect[];
-        type: 'web-scroll-facts';
-    }>
-    | Readonly<{
-        genericEffects: readonly TranscriptViewportLifecycleEffect[];
-        type: 'web-generic-observation';
-    }>
-    | Readonly<{
-        genericEffects: readonly TranscriptViewportLifecycleEffect[];
-        type: 'web-fallback';
-    }>
-    | Readonly<{
-        followIntent: TranscriptBottomFollowIntentResult;
-        type: 'native-follow-intent';
-    }>
-    | Readonly<{
-        lifecycleEffects: readonly TranscriptViewportLifecycleEffect[];
-        type: 'native-scroll-facts';
-    }>
-    | Readonly<{
-        bailEffects: readonly NativeScrollAwayGestureLiveTailBailEffect[];
-        type: 'native-away-gesture-live-tail-bail';
-    }>
-    | Readonly<{
-        reason: 'native-away-gesture-live-tail-bail';
-        type: 'consume-observation';
-    }>
-    | Readonly<{
-        acceptedViewportPaintEffects: readonly NativeScrollAcceptedViewportPaintEffect[];
-        type: 'native-accepted-viewport-paint';
-    }>
-    | Readonly<{
-        acceptedViewportPaintEffects: readonly NativeScrollAcceptedViewportPaintEffect[];
-        nativeSettledReturnEffects: NativeSettledReturnToLiveTailApplyEffects;
-        type: 'native-settled-return';
-    }>
-    | Readonly<{
-        acceptedViewportPaintEffects: readonly NativeScrollAcceptedViewportPaintEffect[];
-        genericEffects: readonly TranscriptViewportLifecycleEffect[];
-        lifecycleEffects: readonly TranscriptViewportLifecycleEffect[];
-        type: 'native-return-or-release';
-    }>
-    | Readonly<{
-        acceptedViewportPaintEffects: readonly NativeScrollAcceptedViewportPaintEffect[];
-        genericEffects: readonly TranscriptViewportLifecycleEffect[];
-        lifecycleEffects: readonly TranscriptViewportLifecycleEffect[];
-        type: 'native-observed-viewport-state';
-    }>
-    | Readonly<{
-        genericEffects: readonly TranscriptViewportLifecycleEffect[];
-        type: 'native-read-only-visible-bottom';
-    }>
-    | Readonly<{
-        genericEffects: readonly TranscriptViewportLifecycleEffect[];
-        type: 'native-passive-drift-bail';
-    }>
-    | Readonly<{
-        acceptedViewportPaintEffects: readonly NativeScrollAcceptedViewportPaintEffect[];
-        genericEffects: readonly TranscriptViewportLifecycleEffect[];
-        type: 'generic-fallback';
-    }>
-    | Readonly<{
-        effect: TranscriptLifecycleHostNativePassiveScrollObservationEffect;
-        nativeUserScrollTakeoverEffects: readonly NativeUserScrollTakeoverApplyEffect[];
-        type: 'native-passive-observation';
-    }>;
-
 type LifecycleHostPlanBase = Readonly<{
     lifecycleEffects: readonly TranscriptViewportLifecycleEffect[];
     state: TranscriptViewportLifecycleState;
@@ -329,7 +254,6 @@ export type TranscriptLifecycleHostExplicitJumpPlan = LifecycleHostPlanBase & Re
 
 export type TranscriptLifecycleHostExplicitReturnPlan = LifecycleHostPlanBase & Readonly<{
     explicitReturnEffects: readonly ExplicitReturnToLiveTailApplyEffect[];
-    viewportEffects: readonly ExplicitReturnToLiveTailViewportEffect[];
 }>;
 
 export type TranscriptLifecycleHostFollowBottomIntentPlan = LifecycleHostPlanBase & Readonly<{
@@ -338,14 +262,6 @@ export type TranscriptLifecycleHostFollowBottomIntentPlan = LifecycleHostPlanBas
 
 export type TranscriptLifecycleHostLocalInteractionPlan = LifecycleHostPlanBase & Readonly<{
     localInteractionIntentEffects: readonly LocalTranscriptInteractionIntentApplyEffect[];
-}>;
-
-export type TranscriptLifecycleHostNativeGestureStartPlan = LifecycleHostPlanBase & Readonly<{
-    nativeBottomFollowRearmResetEffects: readonly NativeBottomFollowRearmResetEffect[];
-    nativeDragActiveMirrorEffects: readonly NativeDragActiveMirrorApplyEffect[];
-    nativeMomentumActiveMirrorEffects: readonly NativeMomentumActiveMirrorApplyEffect[];
-    nativeTouchIntentEffects: readonly NativeTouchIntentApplyEffect[];
-    nativeUserScrollTakeoverEffects: readonly NativeUserScrollTakeoverApplyEffect[];
 }>;
 
 export type TranscriptLifecycleHostNativeGestureTakeoverPlan = LifecycleHostPlanBase & Readonly<{
@@ -377,8 +293,6 @@ export type TranscriptLifecycleHostScrollObservationPlan = LifecycleHostPlanBase
     nativePassiveScrollObservationEffect: TranscriptLifecycleHostNativePassiveScrollObservationEffect | null;
     nativeSettledReturnEffects: NativeSettledReturnToLiveTailApplyEffects | null;
     nativeUserScrollTakeoverEffects: readonly NativeUserScrollTakeoverApplyEffect[];
-    recentUserIntent: boolean;
-    steps: readonly TranscriptLifecycleHostScrollObservationStep[];
 }>;
 
 export type TranscriptLifecycleHostNativePassiveScrollObservationEffect = Readonly<{
@@ -419,11 +333,6 @@ export type TranscriptLifecycleHost = Readonly<{
         sessionId: string;
         timestampMs: number;
     }>): TranscriptLifecycleHostLocalInteractionPlan;
-    planNativeGestureStart(input: Readonly<{
-        hasActiveNativeViewportRestore: boolean;
-        sessionId: string;
-        timestampMs: number;
-    }>): TranscriptLifecycleHostNativeGestureStartPlan;
     planNativeGestureTakeover(input: Readonly<{
         sessionId: string;
         timestampMs: number;
@@ -648,10 +557,6 @@ export function createTranscriptLifecycleHost(options: Readonly<{
                     effects: transition.effects,
                     sessionId: input.sessionId,
                 }),
-                viewportEffects: resolveExplicitReturnToLiveTailViewportEffects({
-                    effects: transition.effects,
-                    sessionId: input.sessionId,
-                }),
             };
         },
         planFollowBottomIntentTakeover(input) {
@@ -679,42 +584,6 @@ export function createTranscriptLifecycleHost(options: Readonly<{
                     effects: transition.effects,
                     sessionId: input.sessionId,
                 }),
-            };
-        },
-        planNativeGestureStart(input) {
-            const takeoverPlan = planNativeGestureTakeover(input);
-            const touchIntentPlan = planNativeTouchIntent({
-                hasActiveNativeViewportRestore: input.hasActiveNativeViewportRestore,
-                sessionId: input.sessionId,
-                timestampMs: input.timestampMs,
-            });
-            const lifecycleEffects = [
-                ...takeoverPlan.lifecycleEffects,
-                ...touchIntentPlan.lifecycleEffects,
-            ];
-            return {
-                lifecycleEffects,
-                nativeBottomFollowRearmResetEffects: resolveNativeBottomFollowRearmResetEffects({
-                    effects: lifecycleEffects,
-                    sessionId: input.sessionId,
-                }),
-                nativeDragActiveMirrorEffects: resolveNativeDragActiveMirrorApplyEffects({
-                    effects: lifecycleEffects,
-                    sessionId: input.sessionId,
-                }),
-                nativeMomentumActiveMirrorEffects: resolveNativeMomentumActiveMirrorApplyEffects({
-                    effects: lifecycleEffects,
-                    sessionId: input.sessionId,
-                }),
-                nativeTouchIntentEffects: resolveNativeTouchIntentApplyEffects({
-                    effects: lifecycleEffects,
-                    sessionId: input.sessionId,
-                }),
-                nativeUserScrollTakeoverEffects: resolveNativeUserScrollTakeoverApplyEffects({
-                    effects: lifecycleEffects,
-                    sessionId: input.sessionId,
-                }),
-                state: touchIntentPlan.state,
             };
         },
         planNativeGestureTakeover,
@@ -797,9 +666,7 @@ function createScrollObservationPlan(params: Readonly<{
     nativePassiveScrollObservationEffect?: TranscriptLifecycleHostNativePassiveScrollObservationEffect | null;
     nativeSettledReturnEffects?: NativeSettledReturnToLiveTailApplyEffects | null;
     nativeUserScrollTakeoverEffects?: readonly NativeUserScrollTakeoverApplyEffect[];
-    recentUserIntent?: boolean;
     state: TranscriptViewportLifecycleState;
-    steps?: readonly TranscriptLifecycleHostScrollObservationStep[];
 }>): TranscriptLifecycleHostScrollObservationPlan {
     return {
         acceptedViewportPaintEffects: params.acceptedViewportPaintEffects ?? [],
@@ -811,9 +678,7 @@ function createScrollObservationPlan(params: Readonly<{
         nativePassiveScrollObservationEffect: params.nativePassiveScrollObservationEffect ?? null,
         nativeSettledReturnEffects: params.nativeSettledReturnEffects ?? null,
         nativeUserScrollTakeoverEffects: params.nativeUserScrollTakeoverEffects ?? [],
-        recentUserIntent: params.recentUserIntent ?? false,
         state: params.state,
-        steps: params.steps ?? [],
     };
 }
 
@@ -825,8 +690,6 @@ function planWebScrollObservation(
         if (input.hasLiveWebMetrics === false) {
             const fallbackEffects = resolveActiveWebScrollFallbackObservationEffects({
                 distanceFromLiveTailPx: input.distanceFromLiveTailPx,
-                hasLiveWebMetrics: false,
-                isWeb: true,
                 pinEnabled: input.pinEnabled,
                 pinThresholdPx: input.pinThresholdPx,
                 previousScrollOffset: input.previousScrollOffsetPx,
@@ -840,10 +703,6 @@ function planWebScrollObservation(
                     disposition: 'continue',
                     genericEffects: fallbackEffects,
                     state: lifecycle.getState(),
-                    steps: [{
-                        genericEffects: fallbackEffects,
-                        type: 'web-fallback',
-                    }],
                 });
             }
         }
@@ -881,7 +740,6 @@ function planWebScrollObservation(
         movedTowardLiveTail: input.movedTowardLiveTail,
         pinThresholdPx: input.pinThresholdPx,
         sessionId: input.sessionId,
-        webObservedUserScrollMovement: true,
     });
     const genericEffects = resolveWebScrollObservationGenericLifecycleEffects({
         effects: factsEffects,
@@ -894,21 +752,7 @@ function planWebScrollObservation(
         ...webUserScrollEffects,
         ...factsEffects,
     ];
-    const steps: TranscriptLifecycleHostScrollObservationStep[] = [
-        {
-            lifecycleEffects: webUserScrollEffects,
-            type: 'web-user-scroll',
-        },
-        {
-            lifecycleEffects: factsEffects,
-            type: 'web-scroll-facts',
-        },
-    ];
     if (genericEffects.length > 0) {
-        steps.push({
-            genericEffects,
-            type: 'web-generic-observation',
-        });
     }
 
     return createScrollObservationPlan({
@@ -916,7 +760,6 @@ function planWebScrollObservation(
         genericEffects,
         lifecycleEffects,
         state: lifecycle.getState(),
-        steps,
     });
 }
 
@@ -1013,7 +856,6 @@ function planNativeScrollObservation(
 ): TranscriptLifecycleHostScrollObservationPlan {
     const lifecycleEffects: TranscriptViewportLifecycleEffect[] = [];
     const genericEffects: TranscriptViewportLifecycleEffect[] = [];
-    const steps: TranscriptLifecycleHostScrollObservationStep[] = [];
     const passiveObservation = resolveNativePassiveScrollObservationPlan(input, planNativeUserScrollTakeover);
     const nativeBottomFollowCompletionEffects = resolveNativeBottomFollowCompletionEffects({
         contentHeight: input.contentHeightPx,
@@ -1030,27 +872,19 @@ function planNativeScrollObservation(
         nativeBottomFollowCompletionEffects,
         nativePassiveScrollObservationEffect: passiveObservation.effect,
         nativeUserScrollTakeoverEffects: passiveObservation.nativeUserScrollTakeoverEffects,
-        recentUserIntent: passiveObservation.recentUserIntent,
     });
     lifecycleEffects.push(...passiveObservation.nativeUserScrollTakeoverEffects);
-    steps.push({
-        effect: passiveObservation.effect,
-        nativeUserScrollTakeoverEffects: passiveObservation.nativeUserScrollTakeoverEffects,
-        type: 'native-passive-observation',
-    });
     if (passiveObservation.effect.consumeAfterBottomCompletion) {
         return createNativeScrollObservationPlan({
             disposition: 'continue',
             lifecycleEffects,
             state: getState(),
-            steps,
         });
     }
 
     const awayGestureBailDecision = resolveNativeScrollAwayGestureLiveTailBailDecision({
         distanceFromLiveTailPx: input.distanceFromLiveTailPx,
         hasOpenTrustedAwayGesture: input.hasOpenTrustedAwayGesture,
-        isNative: true,
         isTrusted: input.isTrusted,
         pinThresholdPx: input.pinThresholdPx,
     });
@@ -1080,30 +914,16 @@ function planNativeScrollObservation(
             sessionId: requestedNativeFacts.sessionId,
         });
         lifecycleEffects.push(...factsEffects);
-        steps.push({
-            lifecycleEffects: factsEffects,
-            type: 'native-scroll-facts',
-        });
     }
     if (awayGestureBailEffects.length > 0) {
-        steps.push({
-            bailEffects: awayGestureBailEffects,
-            type: 'native-away-gesture-live-tail-bail',
-        });
     }
     if (awayGestureBailEffects.some((effect) => effect.type === 'consume-observation')) {
-        steps.push({
-            reason: 'native-away-gesture-live-tail-bail',
-            type: 'consume-observation',
-        });
         return createNativeScrollObservationPlan({
             disposition: 'consumed',
             lifecycleEffects,
             nativePassiveScrollObservationEffect: passiveObservation.effect,
             nativeUserScrollTakeoverEffects: passiveObservation.nativeUserScrollTakeoverEffects,
-            recentUserIntent: passiveObservation.recentUserIntent,
             state: getState(),
-            steps,
         });
     }
 
@@ -1120,10 +940,6 @@ function planNativeScrollObservation(
         scrollOffset: input.scrollOffsetPx,
         wantsPinned: input.wantsPinned,
     });
-    steps.push({
-        followIntent,
-        type: 'native-follow-intent',
-    });
 
     const nativeFactsEffects = observeNativeScrollFacts({
         distanceFromLiveTailPx: followIntent.nextDistanceFromBottom,
@@ -1136,10 +952,6 @@ function planNativeScrollObservation(
     });
     if (nativeFactsEffects.length > 0) {
         lifecycleEffects.push(...nativeFactsEffects);
-        steps.push({
-            lifecycleEffects: nativeFactsEffects,
-            type: 'native-scroll-facts',
-        });
     }
 
     const acceptedViewportPaintEffects = resolveNativeScrollAcceptedViewportPaintObservationEffects({
@@ -1152,7 +964,6 @@ function planNativeScrollObservation(
         },
         hasRenderedItems: input.hasRenderedItems,
         isLoaded: input.isLoaded,
-        isNative: true,
         isTrusted: input.isTrusted,
         isWarmKeepAliveInstance: input.isWarmKeepAliveInstance,
         nativeMountSettleDeadlineReached: input.nativeMountSettleDeadlineReached,
@@ -1167,15 +978,6 @@ function planNativeScrollObservation(
         sessionId: input.sessionId,
     });
     if (nativeSettledReturnEffects.returnEffects.length > 0) {
-        steps.push({
-            acceptedViewportPaintEffects,
-            type: 'native-accepted-viewport-paint',
-        });
-        steps.push({
-            acceptedViewportPaintEffects,
-            nativeSettledReturnEffects,
-            type: 'native-settled-return',
-        });
         return createNativeScrollObservationPlan({
             acceptedViewportPaintEffects,
             disposition: 'continue',
@@ -1183,7 +985,6 @@ function planNativeScrollObservation(
             lifecycleEffects,
             nativeSettledReturnEffects,
             state: getState(),
-            steps,
         });
     }
     const releaseGenericEffects = resolveNativeScrollReleaseLiveTailGenericLifecycleEffects({
@@ -1195,16 +996,6 @@ function planNativeScrollObservation(
     if (releaseGenericEffects.length > 0) {
         genericEffects.push(...releaseGenericEffects);
         genericEffects.push(...passiveObservation.anchorCaptureCancellationEffects);
-        steps.push({
-            acceptedViewportPaintEffects,
-            type: 'native-accepted-viewport-paint',
-        });
-        steps.push({
-            acceptedViewportPaintEffects,
-            genericEffects: releaseGenericEffects,
-            lifecycleEffects: nativeFactsEffects,
-            type: 'native-return-or-release',
-        });
         return createNativeScrollObservationPlan({
             acceptedViewportPaintEffects,
             disposition: 'continue',
@@ -1212,7 +1003,6 @@ function planNativeScrollObservation(
             genericEffects,
             lifecycleEffects,
             state: getState(),
-            steps,
         });
     }
 
@@ -1226,16 +1016,6 @@ function planNativeScrollObservation(
     if (observedGenericEffects.length > 0) {
         genericEffects.push(...observedGenericEffects);
         genericEffects.push(...passiveObservation.anchorCaptureCancellationEffects);
-        steps.push({
-            acceptedViewportPaintEffects,
-            type: 'native-accepted-viewport-paint',
-        });
-        steps.push({
-            acceptedViewportPaintEffects,
-            genericEffects: observedGenericEffects,
-            lifecycleEffects: nativeFactsEffects,
-            type: 'native-observed-viewport-state',
-        });
         return createNativeScrollObservationPlan({
             acceptedViewportPaintEffects,
             disposition: 'continue',
@@ -1243,7 +1023,6 @@ function planNativeScrollObservation(
             genericEffects,
             lifecycleEffects,
             state: getState(),
-            steps,
         });
     }
 
@@ -1252,7 +1031,6 @@ function planNativeScrollObservation(
         distanceFromLiveTailPx: followIntent.nextDistanceFromBottom,
         followIntentIsPinned: followIntent.isPinned,
         followIntentWantsPinned: followIntent.wantsPinned,
-        isNative: true,
         isTrusted: input.isTrusted,
         pinnedOffsetThresholdPx: followIntent.effectivePinnedOffsetThresholdPx,
     });
@@ -1265,17 +1043,12 @@ function planNativeScrollObservation(
     );
     if (readOnlyVisibleBottomEffects.length > 0) {
         genericEffects.push(...readOnlyVisibleBottomEffects);
-        steps.push({
-            genericEffects: readOnlyVisibleBottomEffects,
-            type: 'native-read-only-visible-bottom',
-        });
         return createNativeScrollObservationPlan({
             disposition: 'consumed',
             followIntent,
             genericEffects,
             lifecycleEffects,
             state: getState(),
-            steps,
         });
     }
 
@@ -1283,7 +1056,6 @@ function planNativeScrollObservation(
         bottomFollowMode: input.bottomFollowMode,
         followIntentIsPinned: followIntent.isPinned,
         followIntentWantsPinned: followIntent.wantsPinned,
-        isNative: true,
         isTrusted: input.isTrusted,
     });
     const passiveDriftEffects = resolveNativeScrollPassiveDriftBailGenericEffects({
@@ -1292,17 +1064,12 @@ function planNativeScrollObservation(
     });
     if (passiveDriftEffects.length > 0) {
         genericEffects.push(...passiveDriftEffects);
-        steps.push({
-            genericEffects: passiveDriftEffects,
-            type: 'native-passive-drift-bail',
-        });
         return createNativeScrollObservationPlan({
             disposition: 'consumed',
             followIntent,
             genericEffects,
             lifecycleEffects,
             state: getState(),
-            steps,
         });
     }
 
@@ -1319,15 +1086,6 @@ function planNativeScrollObservation(
     });
     genericEffects.push(...fallbackEffects);
     genericEffects.push(...passiveObservation.anchorCaptureCancellationEffects);
-    steps.push({
-        acceptedViewportPaintEffects,
-        type: 'native-accepted-viewport-paint',
-    });
-    steps.push({
-        acceptedViewportPaintEffects,
-        genericEffects: fallbackEffects,
-        type: 'generic-fallback',
-    });
 
     return createNativeScrollObservationPlan({
         acceptedViewportPaintEffects,
@@ -1336,6 +1094,5 @@ function planNativeScrollObservation(
         genericEffects,
         lifecycleEffects,
         state: getState(),
-        steps,
     });
 }

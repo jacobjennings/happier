@@ -274,13 +274,12 @@ describe('Claude candidate conversation search', () => {
             expect(page.candidates).toMatchObject([{ match: { messageIndex: 1, snippet: expect.stringContaining(query) } }]);
         }
     });
-    it('keeps peer labels, compact summaries and shell text searchable after narrowing admission', async () => {
+    it('keeps peer bodies, compact summaries and shell text searchable after narrowing admission', async () => {
         const params = await corpus();
         const path = join(params.source.configDir, 'projects', 'project', 'session.jsonl');
         for (const [query, row] of [
-            ['From', { origin: { kind: 'peer' }, message: { role: 'user', content: 'ordinary body' } }],
-            ['Peer', { origin: { kind: 'peer' }, message: { role: 'user', content: 'ordinary body' } }],
-            ['From sender', { origin: { kind: 'peer', name: 'sender' }, message: { role: 'user', content: 'ordinary body' } }],
+            // The sender is presentation provenance beside the delivered body, not body text.
+            ['ordinary body', { origin: { kind: 'peer', name: 'sender' }, message: { role: 'user', content: 'ordinary body' } }],
             ['needle', { isCompactSummary: true, message: { role: 'user', content: 'nee\u001b[31mdle' } }],
             ['multiple words', { isCompactSummary: true, message: { role: 'user', content: 'multiple\n\twords' } }],
             ['!echo', { message: { role: 'user', content: '<bash-input>echo</bash-input>' } }],

@@ -6,6 +6,13 @@ import { resolveBundledAgentIdFromContributionIdentity } from '@/agents/catalog/
 
 export type ResumeHappySessionRpcParams = SessionResumeRequestV1;
 
+export class ResumeSessionInputValidationError extends Error {
+    constructor(cause: unknown) {
+        super(cause instanceof Error ? cause.message : 'Invalid Resume input', { cause });
+        this.name = 'ResumeSessionInputValidationError';
+    }
+}
+
 type BuildResumeHappySessionRpcInput = Omit<ResumeHappySessionRpcParams, 'type' | 'agentTarget' | 'backendTarget'> & {
     /** Builder-only target identity; daemon wire payloads never carry it. */
     machineId: string;
@@ -14,6 +21,14 @@ type BuildResumeHappySessionRpcInput = Omit<ResumeHappySessionRpcParams, 'type' 
 };
 
 export function buildResumeHappySessionRpcParams(input: BuildResumeHappySessionRpcInput): ResumeHappySessionRpcParams {
+    try {
+        return buildValidatedResumeHappySessionRpcParams(input);
+    } catch (cause) {
+        throw new ResumeSessionInputValidationError(cause);
+    }
+}
+
+function buildValidatedResumeHappySessionRpcParams(input: BuildResumeHappySessionRpcInput): ResumeHappySessionRpcParams {
     const {
         machineId,
         modelSelection,
@@ -39,12 +54,8 @@ export function buildResumeHappySessionRpcParams(input: BuildResumeHappySessionR
     // resumes also carry the released backend target. External Agents have no
     // predecessor representation and remain canonical-only. Remove with that
     // daemon compatibility floor.
-    const predecessorBackendTarget = predecessorBundledAgentId
-        ? readBackendTargetRefV2({
-            kind: 'backend',
-            backendId: predecessorBundledAgentId,
-            sourceKind: 'built_in',
-        })
+    const predecessorBackendTarget = predecessorBundledAgentId && agentTarget
+        ? readBackendTargetRefV2(agentTarget)
         : undefined;
     const canonicalBackendTarget = explicitBackendTarget ?? predecessorBackendTarget;
     const canonicalModelSelection = modelSelection

@@ -1,5 +1,7 @@
 import * as zMini from 'zod/mini';
 import { lazyZodSchema } from '../lazyZodSchema.js';
+import { WorkflowTargetUnavailableReasonV1Schema } from './workflowTargetUnavailableReasonV1.js';
+export { WorkflowTargetUnavailableReasonV1Schema, type WorkflowTargetUnavailableReasonV1 } from './workflowTargetUnavailableReasonV1.js';
 import { WorkflowDiscussionOriginV1Schema } from './workflowDestinationsV1.js';
 import { SessionMessageReplyOutcomeV1Schema } from '../sessions/messages/sessionMessageReplyV1.js';
 import { z } from 'zod/mini';
@@ -869,19 +871,6 @@ const WORKFLOW_OPERATION_ERROR_CODES_WITHOUT_DETAILS_V1 = [
   'native_goal_owner', 'session_already_started',
 ] as const;
 
-export const WorkflowTargetUnavailableReasonV1Schema = lazyZodSchema(() => z.enum([
-  'machine_check_failed', 'session_unavailable', 'action_unavailable', 'selection_unavailable',
-  'agent_probe_failed', 'agent_not_installed', 'platform_unsupported', 'dependency_not_installed',
-  'session_creation_unavailable', 'detached_execution_unavailable', 'workspace_unavailable',
-  'requester_projection_unavailable', 'agent_start_context_unavailable', 'caller_session_unavailable',
-  'caller_run_unavailable', 'caller_witness_invalid', 'caller_depth_unavailable', 'caller_machine_unavailable',
-  'caller_workspace_unavailable', 'caller_agent_unavailable', 'caller_permission_unavailable',
-  'role_source_incomplete', 'role_overrides_unavailable', 'spawn_policy_invalid',
-  'materialization_owner_unavailable', 'run_admission_unavailable', 'target_binding_mismatch',
-  'publisher_machine_unavailable', 'requester_runtime_unavailable', 'credentialed_factory_failed',
-  'profile_unavailable', 'engine_unavailable',
-]));
-export type WorkflowTargetUnavailableReasonV1 = z.infer<typeof WorkflowTargetUnavailableReasonV1Schema>;
 export const WorkflowTargetUnavailableDetailsV1Schema = lazyZodSchema(() => z.strictObject({
   code: z.literal('target_unavailable'), reason: WorkflowTargetUnavailableReasonV1Schema,
   blockId: zMini.optional(WorkflowBlockIdSchema), agentId: z.optional(z.string().check(z.minLength(1))),

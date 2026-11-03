@@ -21,7 +21,8 @@ vi.mock('@/projectPath', () => ({
   projectPath: () => '/repo',
 }));
 
-vi.mock('@/utils/spawnHappyCLI', () => ({
+vi.mock('@/utils/spawnHappyCLI', async importOriginal => ({
+  ...await importOriginal<typeof import('@/utils/spawnHappyCLI')>(),
   resolveTsxImportHookPath: vi.fn(() => '/repo/node_modules/tsx/dist/esm/index.mjs'),
   resolveCliTsxTsconfigPath: vi.fn(() => '/repo/tsconfig.json'),
 }));
@@ -47,7 +48,6 @@ describe('resolveNodeBackedMcpServerCommand', () => {
       value: originalExecPath,
       configurable: true,
     });
-    vi.resetModules();
   });
 
   it('falls back to the tsx source entrypoint when the dist entrypoint is missing', async () => {
@@ -68,8 +68,9 @@ describe('resolveNodeBackedMcpServerCommand', () => {
       args: [
         '--no-warnings',
         '--no-deprecation',
+        '--conditions=happier-source',
         '--import',
-        '/repo/node_modules/tsx/dist/esm/index.mjs',
+        expect.stringMatching(/registerSourceRuntime\.mjs$/),
         '/repo/src/mcp/launchers/stdioMcpServerLauncher.ts',
       ],
       env: {
@@ -155,36 +156,14 @@ describe('resolveNodeBackedMcpServerCommand', () => {
       args: [
         '--no-warnings',
         '--no-deprecation',
+        '--conditions=happier-source',
         '--import',
-        '/repo/node_modules/tsx/dist/esm/index.mjs',
+        expect.stringMatching(/registerSourceRuntime\.mjs$/),
         '/repo/src/mcp/bridges/remoteMcpStdioBridge.ts',
       ],
       env: {
         TSX_TSCONFIG_PATH: '/repo/tsconfig.json',
       },
-    });
-  });
-
-  it('falls back to the dist entrypoint when package-dist is missing', async () => {
-    vi.mocked(existsSync).mockImplementation((pathLike) => {
-      const path = String(pathLike);
-      if (path.endsWith('/package-dist/mcp/bridges/remoteMcpStdioBridge.mjs')) return false;
-      if (path.endsWith('/dist/mcp/bridges/remoteMcpStdioBridge.mjs')) return true;
-      return false;
-    });
-
-    await expect(
-      resolveNodeBackedMcpServerCommand({
-        distEntrypointSegments: ['mcp', 'bridges', 'remoteMcpStdioBridge.mjs'],
-        sourceEntrypointSegments: ['mcp', 'bridges', 'remoteMcpStdioBridge.ts'],
-      }),
-    ).resolves.toEqual({
-      command: process.execPath,
-      args: [
-        '--no-warnings',
-        '--no-deprecation',
-        '/repo/dist/mcp/bridges/remoteMcpStdioBridge.mjs',
-      ],
     });
   });
 

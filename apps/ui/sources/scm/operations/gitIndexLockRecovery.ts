@@ -21,11 +21,9 @@ export async function runScmOperationWithGitIndexLockRecovery<
     failedResponse: TFailureResponse;
     removeIndexLock: (request: ScmRepositoryRemoveIndexLockRequest) => Promise<ScmRepositoryRemoveIndexLockResponse>;
     retryOriginalOperation: () => Promise<TRetryResponse>;
-    recoveryAlreadyAttempted?: boolean;
 }>): Promise<TFailureResponse | TRetryResponse> {
     if (
-        input.recoveryAlreadyAttempted === true
-        || normalizeScmOperationOutcome({ ...input.failedResponse, errorCode: ScmOperationErrorCodeSchema.safeParse(input.failedResponse.errorCode).data }).kind !== 'failed'
+        normalizeScmOperationOutcome({ ...input.failedResponse, errorCode: ScmOperationErrorCodeSchema.safeParse(input.failedResponse.errorCode).data }).kind !== 'failed'
         || !isRecoverableGitIndexLockError(input.failedResponse)
     ) {
         return input.failedResponse;

@@ -266,7 +266,8 @@ function resolveSelectedCatalogPackId(kind: ModelPackKind, selectedPackId: strin
 }
 
 function resolveModelStateForStatus(status: DaemonVoiceInferenceModelStatus | null): VoiceDaemonModelAvailability {
-    if (!status || status.installState === 'not_installed') {
+    if (!status) return 'unknown';
+    if (status.installState === 'not_installed') {
         return 'missing';
     }
     if (status.installState === 'installing') {
@@ -309,6 +310,7 @@ export function resolveVoiceDaemonModelKindAvailabilityFromCatalogState(input: R
     }
 
     const status = input.statuses.find((candidate) => candidate.packId === selectedPackId) ?? null;
+    if (!status) return { modelState: 'unknown', runtimeState: 'unknown' };
     const modelState = resolveModelStateForStatus(status);
     return {
         modelState,
@@ -348,39 +350,21 @@ export function resolveVoiceDaemonModelAvailabilityFromCatalogState(input: Reado
     if (!requireStt && !requireTts) {
         return { modelState: 'ready', runtimeState: 'available' };
     }
-    if (
-        input.errorCode === 'runtime_unavailable'
-        || input.errorCode === 'unsupported_runtime_family'
-    ) {
-        return { modelState: 'unknown', runtimeState: 'unavailable' };
-    }
-    if (input.loading || input.errorCode !== null) {
-        return { modelState: 'unknown', runtimeState: 'unknown' };
-    }
-
-    const selectedSttPackId = requireStt
-        ? resolveSelectedCatalogPackId('stt_sherpa', input.selectedSttPackId)
-        : null;
-    const selectedTtsPackId = requireTts
-        ? resolveSelectedCatalogPackId('tts_sherpa', input.selectedTtsPackId)
-        : null;
-    if ((requireStt && !selectedSttPackId) || (requireTts && !selectedTtsPackId)) {
-        return { modelState: 'unknown', runtimeState: 'unknown' };
-    }
-
-    const statusByPackId = new Map(input.statuses.map((status) => [status.packId, status]));
-    const selectedStatuses = [
-        ...(selectedSttPackId ? [statusByPackId.get(selectedSttPackId) ?? null] : []),
-        ...(selectedTtsPackId ? [statusByPackId.get(selectedTtsPackId) ?? null] : []),
+    const roles = [
+        ...(requireStt ? [resolveVoiceDaemonModelKindAvailabilityFromCatalogState({
+            ...input, kind: 'stt_sherpa', selectedPackId: input.selectedSttPackId,
+        })] : []),
+        ...(requireTts ? [resolveVoiceDaemonModelKindAvailabilityFromCatalogState({
+            ...input, kind: 'tts_sherpa', selectedPackId: input.selectedTtsPackId,
+        })] : []),
     ];
-    const modelState = combineModelStates(selectedStatuses.map(resolveModelStateForStatus));
-    const runtimeSupported = selectedStatuses.every(isSelectedDaemonRuntimeSupported);
+    const modelState = combineModelStates(roles.map(role => role.modelState));
+    const runtimeState = roles.some(role => role.runtimeState === 'unavailable')
+        ? 'unavailable' : roles.some(role => role.runtimeState === 'unknown') ? 'unknown' : 'available';
 
     return {
         modelState,
-        runtimeState: !runtimeSupported
-            ? 'unavailable'
-            : 'available',
+        runtimeState,
     };
 }
 

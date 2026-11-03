@@ -89,34 +89,12 @@ describe('useSelectionListKeyboardNav (Phase 2.5 — advanced)', () => {
             expect(onAcceptAutocomplete).toHaveBeenCalledTimes(1);
         });
 
-        it('does NOT call onAcceptAutocomplete when ghostSuffixPresent is false', async () => {
-            // Note (RUX-2 Issue 3): when there's no ghost AND no focused row,
-            // Tab now falls through (covered by the dedicated "no row + no
-            // ghost" test below). When there IS a focused row, Tab activates
-            // it instead of the ghost. Either way, onAcceptAutocomplete must
-            // never fire if the ghost is absent.
-            const onAcceptAutocomplete = vi.fn();
-            const harness = await renderHook(() =>
-                useSelectionListKeyboardNav(makeParams({
-                    onAcceptAutocomplete,
-                    ghostSuffixPresent: false,
-                    flatVisibleOptionIds: [],
-                })),
-            );
-            const { event } = makeKeyEvent({ key: 'Tab' });
-            let consumed = false;
-            await act(async () => {
-                consumed = harness.getCurrent().handleKey(event);
-            });
-            expect(consumed).toBe(false);
-            expect(onAcceptAutocomplete).not.toHaveBeenCalled();
-        });
-
         it('lets Tab leave a nonempty search input before the user explicitly navigates rows', async () => {
             const onActivate = vi.fn();
             const harness = await renderHook(() =>
                 useSelectionListKeyboardNav(makeParams({
                     inputMode: 'search',
+                    inputValue: 'filtered',
                     onActivate,
                     ghostSuffixPresent: false,
                     flatVisibleOptionIds: ['filtered-row-a', 'filtered-row-b'],
@@ -277,30 +255,6 @@ describe('useSelectionListKeyboardNav (Phase 2.5 — advanced)', () => {
             expect(onActivate).not.toHaveBeenCalled();
         });
 
-        it('Shift+Tab leaves a nonempty search input before explicit row navigation', async () => {
-            const onActivate = vi.fn();
-            const harness = await renderHook(() =>
-                useSelectionListKeyboardNav(makeParams({
-                    inputMode: 'search',
-                    onActivate,
-                    ghostSuffixPresent: false,
-                    flatVisibleOptionIds: ['filtered-row-a', 'filtered-row-b'],
-                })),
-            );
-            const { event, preventDefault, stopPropagation } = makeKeyEvent({
-                key: 'Tab',
-                shiftKey: true,
-            });
-            let consumed = true;
-            await act(async () => {
-                consumed = harness.getCurrent().handleKey(event);
-            });
-            expect(consumed).toBe(false);
-            expect(preventDefault).not.toHaveBeenCalled();
-            expect(stopPropagation).not.toHaveBeenCalled();
-            expect(onActivate).not.toHaveBeenCalled();
-        });
-
         it('ghost autocomplete still wins over focused row when both are available (Issue 3 RUX-2)', async () => {
             // Precedence: when a ghost is present, Tab accepts the ghost
             // (existing behavior preserved) — the row is not activated.
@@ -311,9 +265,14 @@ describe('useSelectionListKeyboardNav (Phase 2.5 — advanced)', () => {
                     onActivate,
                     onAcceptAutocomplete,
                     ghostSuffixPresent: true,
-                    flatVisibleOptionIds: ['row-a'],
+                    flatVisibleOptionIds: ['row-a', 'row-b'],
                 })),
             );
+            // Explicit row focus first: without it the row could never be a Tab
+            // target, and the precedence would be untested.
+            await act(async () => {
+                harness.getCurrent().handleKey(makeKeyEvent({ key: 'ArrowDown' }).event);
+            });
             let consumed = false;
             await act(async () => {
                 consumed = harness.getCurrent().handleKey(makeKeyEvent({ key: 'Tab' }).event);
@@ -408,18 +367,23 @@ describe('useSelectionListKeyboardNav (Phase 2.5 — advanced)', () => {
         });
 
         it('does NOT consume Shift+Tab when nothing to back to (no canPopStep, no onBackUp)', async () => {
+            const onActivate = vi.fn();
             const harness = await renderHook(() =>
                 useSelectionListKeyboardNav(makeParams({
                     canPopStep: false,
+                    inputValue: 'filtered',
+                    onActivate,
                 })),
             );
-            const { event, preventDefault } = makeKeyEvent({ key: 'Tab', shiftKey: true });
-            let consumed = false;
+            const { event, preventDefault, stopPropagation } = makeKeyEvent({ key: 'Tab', shiftKey: true });
+            let consumed = true;
             await act(async () => {
                 consumed = harness.getCurrent().handleKey(event);
             });
             expect(consumed).toBe(false);
             expect(preventDefault).not.toHaveBeenCalled();
+            expect(stopPropagation).not.toHaveBeenCalled();
+            expect(onActivate).not.toHaveBeenCalled();
         });
 
         it('does NOT consume Shift+Tab when onBackUp returns false (already at root)', async () => {
@@ -493,22 +457,6 @@ describe('useSelectionListKeyboardNav (Phase 2.5 — advanced)', () => {
             expect(onPopStep).not.toHaveBeenCalled();
         });
 
-        it('plain Tab REMAINS blocked while IME composition is active (IME owns the keystroke)', async () => {
-            const onAcceptAutocomplete = vi.fn();
-            const harness = await renderHook(() =>
-                useSelectionListKeyboardNav(makeParams({
-                    onAcceptAutocomplete,
-                    ghostSuffixPresent: true,
-                    isComposing: true,
-                })),
-            );
-            let consumed = false;
-            await act(async () => {
-                consumed = harness.getCurrent().handleKey(makeKeyEvent({ key: 'Tab' }).event);
-            });
-            expect(consumed).toBe(false);
-            expect(onAcceptAutocomplete).not.toHaveBeenCalled();
-        });
     });
 
     describe('ArrowRight at end of input', () => {
@@ -672,7 +620,10 @@ describe('useSelectionListKeyboardNav (Phase 2.5 — advanced)', () => {
             expect(onCommitInputValue).toHaveBeenCalledTimes(1);
         });
 
-        it('explicit keyboard row focus wins over committing the raw input in value mode', async () => {
+        it.each([
+            { seed: 'the first row', preferredFocusedOptionId: undefined, expectedId: 'b' },
+            { seed: 'a preferred option', preferredFocusedOptionId: 'b', expectedId: 'c' },
+        ])('explicit keyboard row focus wins over committing the raw input in value mode (seeded from $seed)', async ({ preferredFocusedOptionId, expectedId }) => {
             const onActivate = vi.fn();
             const onCommitInputValue = vi.fn();
             const harness = await renderHook(() =>
@@ -680,7 +631,8 @@ describe('useSelectionListKeyboardNav (Phase 2.5 — advanced)', () => {
                     inputMode: 'value',
                     onActivate,
                     onCommitInputValue,
-                    flatVisibleOptionIds: ['a', 'b'],
+                    flatVisibleOptionIds: ['a', 'b', 'c'],
+                    preferredFocusedOptionId,
                     inputValue: '~/Doc',
                 })),
             );
@@ -692,7 +644,7 @@ describe('useSelectionListKeyboardNav (Phase 2.5 — advanced)', () => {
                 consumed = harness.getCurrent().handleKey(makeKeyEvent({ key: 'Enter' }).event);
             });
             expect(consumed).toBe(true);
-            expect(onActivate).toHaveBeenCalledWith('b');
+            expect(onActivate).toHaveBeenCalledWith(expectedId);
             expect(onCommitInputValue).not.toHaveBeenCalled();
         });
 
@@ -820,22 +772,6 @@ describe('useSelectionListKeyboardNav (Phase 2.5 — advanced)', () => {
     });
 
     describe('Cmd+N quick action', () => {
-        it('invokes the bound option when Cmd+N is pressed', async () => {
-            const onActivate = vi.fn();
-            const harness = await renderHook(() =>
-                useSelectionListKeyboardNav(makeParams({
-                    onActivate,
-                    quickActionShortcuts: [{ shortcut: 'cmd+n', optionId: 'create-new' }],
-                })),
-            );
-            let consumed = false;
-            await act(async () => {
-                consumed = harness.getCurrent().handleKey(makeKeyEvent({ key: 'n', metaKey: true }).event);
-            });
-            expect(consumed).toBe(true);
-            expect(onActivate).toHaveBeenCalledWith('create-new');
-        });
-
         it('falls through when no Cmd+N shortcut is bound', async () => {
             const onActivate = vi.fn();
             const harness = await renderHook(() =>

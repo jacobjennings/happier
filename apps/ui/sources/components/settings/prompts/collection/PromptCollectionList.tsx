@@ -19,6 +19,7 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { useArtifacts, useArtifactsLoaded } from '@/sync/domains/state/storage';
+import { PROMPT_LIBRARY_ARTIFACT_KINDS } from '@/sync/domains/artifacts/artifactInventory';
 import { usePromptLibraryCatalogValue } from '@/sync/store/usePromptLibraryCatalog';
 import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 import { refreshPromptLibraryCatalog } from '@/sync/engine/settings/promptLibraryCatalogEngine';
@@ -103,7 +104,7 @@ export function usePromptCollection(kind: PromptCollectionKind, query: string): 
     retry?: () => Promise<void>;
 }> {
     const artifacts = useArtifacts();
-    const artifactsLoaded = useArtifactsLoaded();
+    const artifactsLoaded = useArtifactsLoaded(PROMPT_LIBRARY_ARTIFACT_KINDS);
     const scope = useAccountSettingsScope();
     const { value: folders } = usePromptLibraryCatalogValue('folders');
     const invocations = usePromptLibraryCatalogValue('invocations');
@@ -219,6 +220,10 @@ export const PromptCollectionRail = React.memo(function PromptCollectionRail(pro
         >
             <PromptCollectionReadState kind={props.kind} collection={collection} />
             {route?.kind === 'draft' ? <PromptCollectionDraftRow kind={props.kind} /> : null}
+            {/* Known to be empty (never while it is still being read): one line, like the MCP and Skills rails. */}
+            {collection.status === 'ready' && !collection.stale && collection.total === 0 && route?.kind !== 'draft' ? (
+                <EmptyState testID={`${copy.testID}.railEmpty`} layout="line" title={copy.emptyTitle} />
+            ) : null}
             {collection.total > 0 && rows.length === 0 ? (
                 <Item title={t('common.noMatches')} mode="info" />
             ) : null}

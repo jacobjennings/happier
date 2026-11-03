@@ -1,4 +1,6 @@
 import { createServer } from 'node:http';
+import { adoptServerProfileHomeConnectionDescriptor } from '@/server/serverProfiles';
+import { deriveApprovedDiscussionMutationLocalId } from '@/discussions/discussionPublicationIdentity';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,6 +29,7 @@ import { normalizeActionsSettingsV1 } from '@happier-dev/protocol/actions/action
 import { accountSettingsParse } from '@happier-dev/protocol/account/settings/accountSettings';
 import { createActionSettingsProvider } from '@/settings/actionsSettingsProvider';
 import { logger } from '@/ui/logger';
+import { artifactListResponse, artifactReadResponse } from '@/testkit/http/artifactHome';
 import { createDaemonApprovalExecutionOriginCurrentnessFromCredentials } from '@/daemon/externalActions/daemonExternalActionTargetResolver';
 import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { createResourceDataKey, openResourceDataKey } from '@/api/encryption/resourceDataKey';
@@ -80,6 +83,7 @@ it.each([
   { mode: 'plain', scope: 'draft creation' }, { mode: 'e2ee', scope: 'draft creation' },
   { mode: 'plain', scope: 'completed then late Stop' },
   { mode: 'plain', scope: 'publication replay' }, { mode: 'e2ee', scope: 'publication replay' },
+  { mode: 'plain', scope: 'publication identity' }, { mode: 'e2ee', scope: 'publication identity' },
   { mode: 'plain', scope: 'satisfied return' }, { mode: 'e2ee', scope: 'satisfied return' },
   { mode: 'plain', scope: 'pending explicit' }, { mode: 'e2ee', scope: 'pending explicit' },
   { mode: 'plain', scope: 'inactive private Post' }, { mode: 'e2ee', scope: 'inactive private Post' },
@@ -193,7 +197,11 @@ it.each([
     if (path.startsWith('/v1/artifacts')) {
       if (inactivePost && request.headers.authorization !== `Bearer ${token}`)
         return reply({ error: 'artifact_access_denied' }, 403);
-      if (path === '/v1/artifacts' && request.method === 'GET') return reply([...artifacts.values()]);
+      if (path === '/v1/artifacts' && request.method === 'GET') return reply(artifactListResponse(`http://localhost${request.url}`, [...artifacts.values()]));
+      if (path === '/v1/artifacts/read' && request.method === 'POST') {
+        let raw = ''; for await (const chunk of request) raw += chunk.toString();
+        return reply(artifactReadResponse(JSON.parse(raw), artifactId => (artifacts.get(artifactId) as { id: string } | undefined) ?? null).data);
+      }
       if (path.endsWith('/access/recipients')) {
         const artifactId = decodeURIComponent(path.split('/')[3] ?? '');
         const row = artifacts.get(artifactId);
@@ -427,7 +435,7 @@ it.each([
           if (!startupPost)
             return executor.replayApprovedApprovalRequest({ artifactId, callerAuthority: 'present_user' });
           const ingress = startupFixture?.runtime.externalActionIngressOwner;
-          if (!ingress) throw new Error('Missing startup-composed approval executor');
+          if (!ingress?.executor.replayApprovedApprovalRequest) throw new Error('Missing startup-composed approval executor');
           return ingress.executor.replayApprovedApprovalRequest({ artifactId, callerAuthority: 'present_user' });
         };
         const result = await replay();
@@ -473,10 +481,11 @@ it.each([
     let lastPublicationReplay: string | undefined;
     const deps = createDiscussionActionDeps({ credentials, serverId, serverHttpBaseUrl: serverUrl,
       postAgentMessage: async (request, options) => {
-        lastPublicationReplay = options?.approvedActionReplay?.artifactId;
-        if (!('operation' in request) && participantPolicy === 'when_addressed' && options?.approvedActionReplay) {
+        const replayArtifactId = options?.approvedActionReplay?.artifactId;
+        lastPublicationReplay = replayArtifactId;
+        if (!('operation' in request) && participantPolicy === 'when_addressed' && replayArtifactId) {
           const reviewed = await readApprovedDiscussionPublication({
-            artifactId: options.approvedActionReplay.artifactId, request, credentials, sessionId, serverId, serverUrl,
+            artifactId: replayArtifactId, request, credentials, sessionId, serverId, serverUrl,
             callerAuthority: 'present_user', isApprovalExecutionOriginCurrent: currentness,
           });
           reviewedActorStamps.push(reviewed?.draftReview);
@@ -514,6 +523,7 @@ it.each([
           secondKeyResults.push(await client.rpcHandlerManager.invokeLocal('discussion.agentPost.v1', {
             request: markerSubstitution, approvedActionReplay: options?.approvedActionReplay,
           }, options));
+          if (opened.kind === 'workflow_result') throw new Error('Doc discussion fixture opened a workflow result');
           const changed = opened.kind === 'doc_passage_comment'
             ? { ...opened, content: { v: 1, parts: [{ t: 'text', text: 'Unreviewed comment' }] } }
             : { ...opened, proposal: { ...opened.proposal, after: 'Unreviewed replacement' } };
@@ -541,7 +551,7 @@ it.each([
     const request = ApprovalRequestV2Schema.parse({ v: 2, status: 'open', createdAtMs: 1, updatedAtMs: 1,
       createdBy: { surface: 'agent', sessionId }, actionId: 'discussion.post', actionArgs,
       executionOriginV1: { v: 1, authority: 'account_automation', surface: 'agent', caller: { kind: 'session', sessionId, starterDepth: 0, turnDepth: 0 },
-        serverId, accountId: 'owner', machineId, sessionId, actionId: 'discussion.post', requestId: 'approved-tool',
+        serverId, ...(scope === 'publication identity' ? { serverIdentityId: 'srv_fixture_home' } : {}), accountId: 'owner', machineId, sessionId, actionId: 'discussion.post', requestId: 'approved-tool',
         sessionInputSource: { sourceSessionId: sessionId, sourceInputId: 'original', sourceTurnId: 'retired-turn', via: 'action' } },
       summary: 'Publish approved answer', approval: { flow: 'deferred', result: 'required' } });
     const docTarget = { ref: { kind: 'doc' as const, artifactId: 'doc-1', serverId },
@@ -564,6 +574,29 @@ it.each([
       return created.artifactId;
     };
     await runWithServerHttpBaseUrl(serverUrl, async () => {
+      if (scope === 'publication identity') {
+        const artifactId = await approve();
+        const approved = ApprovalRequestV2Schema.parse(await store.approvalsGet({ artifactId, serverId }));
+        expect(await store.approvalsUpdate({ artifactId, serverId, request: { ...approved,
+          status: 'executing', updatedAtMs: 3 } })).toMatchObject({ ok: true });
+        const publication = DiscussionAgentPostRequestV1Schema.parse({ v: 1, sessionId, discussionId: summary.id,
+          request: { localId: deriveApprovedDiscussionMutationLocalId({ requestId: request.executionOriginV1.requestId, purpose: 'post' }),
+            content: sealSessionStoredContent({ ...crypto, payload: content }), mentionedAccountIds: [],
+            ...(key.mode === 'e2ee' ? { requestEqualityEvidenceV1: { kind: 'e2eeTag' as const,
+              tag: deriveDiscussionMutationEqualityTagV1({ dataKey: key.dataKey,
+                canonicalIntent: serializeDiscussionMutationEqualityIntentV1({ kind: 'post', content,
+                  mentionedAccountIds: [], mentionedSessionIds: [] }) }) } } : {}) } });
+        const verify = (requestedServerId: string) => readApprovedDiscussionPublication({ artifactId,
+          request: publication, credentials, sessionId, serverId: requestedServerId, serverUrl,
+          callerAuthority: 'present_user', isApprovalExecutionOriginCurrent: currentness });
+        expect(await verify(serverId)).toMatchObject({ sourceSession: request.executionOriginV1.sessionInputSource });
+        await adoptServerProfileHomeConnectionDescriptor({ expectedProfileId: serverId, createIfMissing: true,
+          observation: 'exact', descriptor: { v: 1, homeServerIdentityId: 'srv_fixture_home', canonicalServerUrl: serverUrl,
+            revision: Date.now(), endpoints: [{ kind: 'https', url: serverUrl }] } });
+        expect(await verify('srv_fixture_home')).toMatchObject({ sourceSession: request.executionOriginV1.sessionInputSource });
+        expect(await verify('srv_foreign')).toBeNull();
+        return;
+      }
       if (scope === 'pending explicit') {
         phase = 'pending explicit approval and final fallback share original custody';
         const { createCliActionExecutor } = await import('@/session/actions/createCliActionExecutor');
@@ -632,7 +665,7 @@ it.each([
         const queue = new MessageQueue2<PermissionModeQueuedPromptMode, PermissionModeQueuedPrompt>(
           mode => JSON.stringify(mode), { batcher: combinePermissionModeQueuedPrompts });
         let nativeListener: ((event: AgentSessionRuntimeEvent) => void) | undefined;
-        let abortRequested: (() => void | Promise<void>) | undefined;
+        let abortRequested: (() => void | Promise<void>) | null | undefined;
         let termination: ReturnType<typeof registerRunnerTerminationHandlers> | undefined;
         const cancel = vi.fn<NonNullable<AgentSessionRuntime['cancel']>>(async request => ({
           status: 'requested', turnId: request.turnId,
@@ -667,7 +700,7 @@ it.each([
         const runtime = createNativeAgentSessionOperations(provider, sessionId, undefined, undefined, undefined, undefined, undefined, {
           context: contextFixture.context, cwd: '/workspace', connectedAccounts: [],
           capabilities: { open: ['create'], delivery: ['newTurn'], cancel: true },
-          cancellation: { declared: true, cancel }, configuration: { declared: false }, manualCompaction: { declared: false },
+          cancellation: { declared: true, cancel }, configuration: { declared: false }, compaction: { capability: null },
         });
         const running = runSessionLoopLifecycle({
           ...base, session: lifecycleSession, runtime, hookRuntime: runtime,

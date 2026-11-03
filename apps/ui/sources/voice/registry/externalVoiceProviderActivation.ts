@@ -12,7 +12,7 @@ import type { RecipientContractV1 } from '@happier-dev/protocol/plugins/recipien
 import { listVoiceToolActionSpecs } from '@happier-dev/protocol/actions/actionSpecs';
 import { buildVoiceRealtimeAttemptPolicy } from '@happier-dev/agents/voice';
 import { resolveSelectedVoiceWelcomeText } from '@/voice/agent/voiceWelcomeText';
-import { resolveUiVoicePromptStackBlocks } from '@/voice/agent/resolveUiVoicePromptStackBlocks';
+import { resolveUiVoicePromptStackPreparation } from '@/voice/agent/resolveUiVoicePromptStackBlocks';
 import { captureLazyActionAccountContext } from '@/sync/ops/actions/actionAccountContext';
 import { readSessionMemoryEnabledV1 } from '@happier-dev/protocol/sessions/context/sessionContextV1';
 import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugins/ui/reactNativeRuntime';
@@ -136,20 +136,10 @@ function assertSettingsOperationCurrent(
   if (signal.aborted || !isCurrent()) throw settingsOperationCancelled();
 }
 
-const MAX_VOICE_PROVIDER_CATALOG_ITEMS = 1_000;
-const MAX_VOICE_PROVIDER_CATALOG_BYTES = 1_048_576;
-const MAX_VOICE_PROVIDER_PREVIEW_URL_LENGTH = 16_384;
-
-function settingsOperationResponseInvalid(): Error {
-  return Object.assign(new Error('voice_provider_settings_response_invalid'), {
-    code: 'voice_provider_settings_response_invalid',
-  });
-}
-
 function parseVoiceProviderPreviewUrl(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const raw = value.trim();
-  if (!raw || raw.length > MAX_VOICE_PROVIDER_PREVIEW_URL_LENGTH) return null;
+  if (!raw) return null;
   try {
     const parsed = new URL(raw);
     return parsed.protocol === 'https:'
@@ -186,21 +176,12 @@ function sanitizeVoiceProviderCatalogItem(value: VoiceRealtimeJsonValue): VoiceR
   return Object.freeze(result);
 }
 
-function parseBoundedVoiceProviderCatalog(
+function parseVoiceProviderCatalog(
   value: readonly VoiceRealtimeJsonValue[],
 ): readonly VoiceRealtimeJsonValue[] {
-  if (value.length > MAX_VOICE_PROVIDER_CATALOG_ITEMS) {
-    throw settingsOperationResponseInvalid();
-  }
-  const encoder = new TextEncoder();
   const items: VoiceRealtimeJsonValue[] = [];
-  let totalBytes = 0;
   for (const item of value) {
     const parsed = sanitizeVoiceProviderCatalogItem(VoiceRealtimeJsonValueSchema.parse(item));
-    totalBytes += encoder.encode(JSON.stringify(parsed)).byteLength;
-    if (totalBytes > MAX_VOICE_PROVIDER_CATALOG_BYTES) {
-      throw settingsOperationResponseInvalid();
-    }
     items.push(parsed);
   }
   return Object.freeze(items);
@@ -263,7 +244,7 @@ export function bindVoiceProviderSettingsOperations(input: Readonly<{
               throw error;
             }
             assertSettingsOperationCurrent(signal, input.isCurrent);
-            return parseBoundedVoiceProviderCatalog(result);
+            return parseVoiceProviderCatalog(result);
           },
         });
       },
@@ -330,11 +311,9 @@ export function bindVoiceProviderSettingsActions(input: Readonly<{
   });
 }
 
-export type ExternalVoiceProviderActivationApi = Readonly<{
-  voiceProviders: Readonly<{
-    register(localId: string, runtime: ExternalVoiceProviderRuntimeRegistration): void;
-  }>;
-}>;
+export type ExternalVoiceProviderActivationApi = Pick<
+  PluginUiClientExecutableRegistrationScope['api'], 'voiceProviders'
+>;
 
 /**
  * The generic executable composition supplies this transaction for projected
@@ -545,6 +524,7 @@ export function createDeclaredVoiceClientRawCredentialAccess(input: Readonly<{
 type StandaloneAttemptPreparation = Readonly<{
   policy: VoiceRealtimeAttemptPolicy;
   tools: readonly VoiceClientToolDefinition[];
+  preparedInstructionsFor?: SessionAddress;
 }>;
 
 export function createExternalProtocol(
@@ -690,7 +670,7 @@ export function createExternalProtocol(
             if (!serverId || !snapshot.voiceHomeServerId) return { kind: 'declined' as const, code: 'voice_account_operation_unavailable' };
             const accountContext = await captureLazyActionAccountContext(serverId, signal);
             try {
-              const extraSystemAppendBlocks = await resolveUiVoicePromptStackBlocks({
+              const promptPreparation = await resolveUiVoicePromptStackPreparation({
                 serverId, targetSessionAddress: snapshot.targetSessionAddress, accountContext, signal,
               });
               const welcomeText = await resolveSelectedVoiceWelcomeText({ assistantLanguage: voice.assistantLanguage,
@@ -706,9 +686,10 @@ export function createExternalProtocol(
                 welcome: voice.welcome,
                 welcomeText,
                 memoryRecallGuidanceEnabled: snapshot.sessionMetadata ? readSessionMemoryEnabledV1(snapshot.sessionMetadata) : false,
-                extraSystemAppendBlocks,
+                extraSystemAppendBlocks: promptPreparation.blocks,
               });
-              attemptPreparationByAttemptId.set(prepareInput.attemptId, Object.freeze({ policy: attemptPolicy, tools }));
+              attemptPreparationByAttemptId.set(prepareInput.attemptId, Object.freeze({ policy: attemptPolicy, tools,
+                ...(promptPreparation.preparedInstructionsFor ? { preparedInstructionsFor: promptPreparation.preparedInstructionsFor } : {}) }));
             } finally { accountContext.dispose(); }
           }
           const conversationSessionId = host.resolveConversationSessionId(
@@ -750,8 +731,11 @@ export function createExternalProtocol(
           }));
           signal.throwIfAborted();
           if (!snapshot.isCurrent()) return { kind: 'declined' as const, code: 'voice_account_operation_cancelled' };
+          const preparedInstructionsFor = declaration.execution?.kind !== 'experimental_agent_session_realtime'
+            ? attemptPreparationByAttemptId.get(prepareInput.attemptId)?.preparedInstructionsFor : undefined;
           return prepared.kind === 'prepared'
             ? { kind: 'prepared' as const, session: prepared.session,
+              ...(preparedInstructionsFor ? { preparedInstructionsFor } : {}),
               ...(snapshot.inUseVoice ? { inUseVoice: snapshot.inUseVoice } : {}) }
             : prepared;
         },

@@ -1,3 +1,4 @@
+import { AGENT_DEFINITION } from '../definition.js';
 import type {
   AgentExecutionRunConversationEventV1,
   AgentExecutionRunConversationRuntimeV1,
@@ -60,6 +61,7 @@ import { openClaudeNativeUnifiedTerminalSession } from './terminal/unified/nativ
 import type {
   ClaudeUnifiedPromptDeliveryIdentity,
   ClaudeUnifiedPromptDeliveryOutcome,
+  ClaudeUnifiedTerminalNativeRuntime,
 } from './terminal/unified/turnOperations.js';
 import {
   resolveClaudeLaunchSettingsOverlayArgs,
@@ -123,9 +125,7 @@ type ClaudeNativePromptCustodyOperations =
   | Readonly<{
     promptCustody: 'unified_terminal';
     retirePendingInputs(localIds: readonly string[], turnId: string): void;
-    setOnPromptAcceptedByProvider: (
-      handler: (info: ClaudeUnifiedPromptDeliveryIdentity) => void,
-    ) => void;
+    setOnPromptAcceptedByProvider: ClaudeUnifiedTerminalNativeRuntime['setOnPromptAcceptedByProvider'];
     setOnPromptTerminallyRejectedBeforeProvider: (
       handler: (info: ClaudeUnifiedPromptDeliveryIdentity) => void,
     ) => void;
@@ -138,6 +138,7 @@ type ClaudeNativePromptCustodyOperations =
   }>;
 
 export type ClaudeNativeSessionOperations = ClaudeRuntimeTurnOperations & Readonly<{
+  compact?: AgentSessionRuntime['compact'];
   refreshSkills?: AgentSessionRuntime['refreshSkills'];
   prepareTerminalPresentation?: AgentSessionRuntime['prepareTerminalPresentation'];
   observeTerminalExecution?: AgentSessionRuntime['observeTerminalExecution'];
@@ -272,9 +273,16 @@ function textDelta(value: unknown): Readonly<{ text: string; channel: 'assistant
     : null;
 }
 
+function committedPeer(value: unknown): Readonly<{ name: string | null; handback: boolean }> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const peer = value as Readonly<Record<string, unknown>>;
+  return typeof peer.handback === 'boolean' && (peer.name === null || typeof peer.name === 'string')
+    ? { name: peer.name, handback: peer.handback } : null;
+}
+
 function committedMessage(
   event: Extract<ClaudeProviderEvent, { kind: 'transcript-agent-message-committed' }>,
-): Readonly<{ text: string; role: 'assistant' | 'reasoning' }> | null {
+): Readonly<{ text: string; role: 'assistant' | 'reasoning'; peer?: Readonly<{ name: string | null; handback: boolean }> }> | null {
   if (!event.body || typeof event.body !== 'object' || Array.isArray(event.body)) return null;
   const body = event.body as Readonly<Record<string, unknown>>;
   const text = typeof body.message === 'string'
@@ -282,7 +290,9 @@ function committedMessage(
     : typeof body.text === 'string'
       ? body.text
       : null;
-  return text === null ? null : { text, role: body.thinking === true ? 'reasoning' : 'assistant' };
+  if (text === null) return null;
+  const peer = committedPeer(body.peer);
+  return peer ? { text, role: 'assistant', peer } : { text, role: body.thinking === true ? 'reasoning' : 'assistant' };
 }
 
 const claudeRuntimeAuthAdapter = createClaudeConnectedServiceRuntimeAuthAdapter();
@@ -293,6 +303,9 @@ function mapEvent(event: ClaudeProviderEvent, runtimeAuthServiceId: string | nul
       return { kind: event.kind, commands: event.commands };
     case 'context-compaction':
       return { kind: event.kind, compactionId: event.compactionId, phase: event.phase, trigger: event.trigger,
+        ...(event.tokenCountBefore === undefined ? {} : { tokenCountBefore: event.tokenCountBefore }),
+        ...(event.tokenCountAfter === undefined ? {} : { tokenCountAfter: event.tokenCountAfter }),
+        ...(event.tokenCountSource === undefined ? {} : { tokenCountSource: event.tokenCountSource }),
         ...(event.turnId ? { turnId: event.turnId } : {}) };
     case 'turn-start':
       return {
@@ -457,6 +470,10 @@ async function submitClaudeProviderInput(
   return await operations.sendProviderTurnPrompt(prompt, meta);
 }
 
+function readClaudeSessionCompactionCapability(mode: 'agentSdk' | 'unifiedTerminal') {
+  return AGENT_DEFINITION.core.runtimeKinds.byKind[mode].overrides.sessionCapabilities.compaction;
+}
+
 /**
  * Native AgentRuntime projection over Claude's provider operations. This consumes the operation
  * owner directly: the reachable native path never constructs or adapts a predecessor session
@@ -553,7 +570,7 @@ export function createClaudeNativeSessionRuntimeFromOperations(
       }
     }
   };
-  const acceptTerminalPromptDelivery = (identity: ClaudeUnifiedPromptDeliveryIdentity): void => {
+  const acceptTerminalPromptDelivery = (identity: ClaudeUnifiedPromptDeliveryIdentity): string | undefined => {
     const delivery = readTerminalPromptDelivery(identity);
     if (!delivery || delivery.decision !== null) return;
     delivery.decision = { kind: 'accepted' };
@@ -563,6 +580,7 @@ export function createClaudeNativeSessionRuntimeFromOperations(
       inputIds: delivery.inputIds,
       delivery: delivery.delivery,
     });
+    return delivery.delivery.turnId;
   };
   const rejectTerminalPromptDelivery = (
     identity: ClaudeUnifiedPromptDeliveryIdentity,
@@ -625,13 +643,9 @@ export function createClaudeNativeSessionRuntimeFromOperations(
     if (mapped) enqueueOrEmit(mapped, event.emittedAtMs);
   });
   const unsubscribeActivity = operations.subscribeCanonicalAgentSessionEvents?.((event) => {
-    if (event.kind !== 'runtime-activity-snapshot') return;
-    currentActivity = event;
-    enqueueOrEmit({
-      kind: event.kind,
-      state: event.state,
-      activeCount: event.activeCount,
-    }, event.emittedAtMs);
+    if (event.kind === 'runtime-activity-snapshot') currentActivity = event;
+    const { sequence: _sequence, sessionId: _sessionId, emittedAtMs, ...input } = event;
+    enqueueOrEmit(input, emittedAtMs);
   }) ?? (() => undefined);
   const unsubscribeEffectiveModel = operations.subscribeEffectiveModel?.((evidence: ClaudeEffectiveModelEvidence) => {
     const modelId = evidence.modelId.trim();
@@ -679,6 +693,7 @@ export function createClaudeNativeSessionRuntimeFromOperations(
         tokens: observation.tokens,
         ...(observation.cost ? { cost: observation.cost } : {}),
         ...(observation.contextSnapshot ? { context: observation.contextSnapshot } : {}),
+        ...(observation.promptCache ? { promptCache: observation.promptCache } : {}),
       }, observation.observedAtMs);
     },
   ) ?? (() => undefined);
@@ -767,6 +782,7 @@ export function createClaudeNativeSessionRuntimeFromOperations(
 
   return {
     nativeGoalControlsSupported: typeof operations.setGoal === 'function' && typeof operations.clearGoal === 'function',
+    ...(operations.compact ? { compact: operations.compact } : {}),
     ...(request.skills ? { skillsDelivered: true } : {}),
     ...(operations.refreshSkills ? {
       refreshSkills: async (...args: Parameters<NonNullable<AgentSessionRuntime['refreshSkills']>>) => {
@@ -774,7 +790,13 @@ export function createClaudeNativeSessionRuntimeFromOperations(
         return await operations.refreshSkills!(...args);
       },
     } : {}),
-    ...(unifiedPromptAcceptanceOperations ? { runtimeCapabilities: { localControl: { supported: false } } } : {}),
+    runtimeCapabilities: {
+      sessionCapabilities: {
+        ...AGENT_DEFINITION.core.sessionCapabilities,
+        compaction: readClaudeSessionCompactionCapability(unifiedPromptAcceptanceOperations ? 'unifiedTerminal' : 'agentSdk'),
+      },
+      ...(unifiedPromptAcceptanceOperations ? { localControl: { supported: false } } : {}),
+    },
     ...(operations.prepareTerminalPresentation ? {
       async prepareTerminalPresentation(presentationRequest: Parameters<NonNullable<AgentSessionRuntime['prepareTerminalPresentation']>>[0]) {
         if (disposed) throw new Error('Claude runtime is disposed.');
@@ -1335,6 +1357,7 @@ export function createClaudeNativeRuntime(
         return {
           kind: unified && (host === 'tmux' || host === 'zellij') ? 'managed_terminal' : 'runner',
           startingMode: unified ? 'terminal' : 'remote',
+          compaction: readClaudeSessionCompactionCapability(unified ? 'unifiedTerminal' : 'agentSdk'),
           ...(unified ? { retainedTerminalRecovery: 'adopt' as const } : {}),
           runtimeDescriptorV1: {
             ...(source?.agentId === 'claude' ? source : {}),

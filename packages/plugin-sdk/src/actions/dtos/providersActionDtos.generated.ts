@@ -99,6 +99,7 @@ export type ProvidersActionInputById = {
         manualModels?: {
             id: string;
             name?: string | undefined;
+            reasoningEffortLevels?: ('low' | 'medium' | 'high' | 'xhigh' | 'max')[] | undefined;
         }[] | undefined;
     }, true>;
     readonly "providers.connections.enable_detected": {
@@ -301,6 +302,18 @@ export type ProvidersActionInputById = {
                 aliases?: string[] | undefined;
                 description?: string | undefined;
                 contextWindowTokens?: number | undefined;
+                inlineCompletion?: {
+                    operationId: string;
+                    tokenAccounting: 'utf8-bytes';
+                    promptOverheadTokens: number;
+                    outputTokens?: number | undefined;
+                    maxOutputTokens?: number | undefined;
+                    rawFimTemplate?: {
+                        prefix: string;
+                        suffix: string;
+                        middle: string;
+                    } | undefined;
+                } | undefined;
                 extendedContextModelId?: string | undefined;
                 modelOptions?: {
                     id: string;
@@ -508,6 +521,18 @@ export type ProvidersActionInputById = {
                 aliases?: string[] | undefined;
                 description?: string | undefined;
                 contextWindowTokens?: number | undefined;
+                inlineCompletion?: {
+                    operationId: string;
+                    tokenAccounting: 'utf8-bytes';
+                    promptOverheadTokens: number;
+                    outputTokens?: number | undefined;
+                    maxOutputTokens?: number | undefined;
+                    rawFimTemplate?: {
+                        prefix: string;
+                        suffix: string;
+                        middle: string;
+                    } | undefined;
+                } | undefined;
                 extendedContextModelId?: string | undefined;
                 modelOptions?: {
                     id: string;
@@ -665,6 +690,7 @@ export type ProvidersActionInputById = {
         models: {
             id: string;
             name?: string | undefined;
+            reasoningEffortLevels?: ('low' | 'medium' | 'high' | 'xhigh' | 'max')[] | undefined;
         }[];
     }, true>;
     readonly "providers.models.manual.remove": AccountOperand<{
@@ -867,6 +893,18 @@ export type ProvidersActionInputById = {
                 aliases?: string[] | undefined;
                 description?: string | undefined;
                 contextWindowTokens?: number | undefined;
+                inlineCompletion?: {
+                    operationId: string;
+                    tokenAccounting: 'utf8-bytes';
+                    promptOverheadTokens: number;
+                    outputTokens?: number | undefined;
+                    maxOutputTokens?: number | undefined;
+                    rawFimTemplate?: {
+                        prefix: string;
+                        suffix: string;
+                        middle: string;
+                    } | undefined;
+                } | undefined;
                 extendedContextModelId?: string | undefined;
                 modelOptions?: {
                     id: string;
@@ -953,6 +991,7 @@ export type ProvidersActionInputById = {
                     materialization: 'spawnEnv' | 'engineConfig' | 'configFile';
                     applyPolicy: 'unsupported' | 'live' | 'next_prompt' | 'restart_session';
                     supportsFreeformModelIds: boolean;
+                    supportsReasoningEffort?: true | undefined;
                 };
                 deployment: {
                     kind: 'external';
@@ -1030,6 +1069,7 @@ export type ProvidersActionInputById = {
                     materialization: 'spawnEnv' | 'engineConfig' | 'configFile';
                     applyPolicy: 'unsupported' | 'live' | 'next_prompt' | 'restart_session';
                     supportsFreeformModelIds: boolean;
+                    supportsReasoningEffort?: true | undefined;
                 };
                 deployment: {
                     kind: 'managedLocal';
@@ -1041,6 +1081,7 @@ export type ProvidersActionInputById = {
                         kind: 'managed';
                         endpointTemplateIds: string[];
                         sharing?: 'connectionMachine' | undefined;
+                        sourceEnvelopeTransport?: 'cpx-v1' | undefined;
                         dependencies?: string[] | undefined;
                         connectedAccounts?: {
                             purpose: string;
@@ -1063,6 +1104,18 @@ export type ProvidersActionInputById = {
                                 aliases?: string[] | undefined;
                                 description?: string | undefined;
                                 contextWindowTokens?: number | undefined;
+                                inlineCompletion?: {
+                                    operationId: string;
+                                    tokenAccounting: 'utf8-bytes';
+                                    promptOverheadTokens: number;
+                                    outputTokens?: number | undefined;
+                                    maxOutputTokens?: number | undefined;
+                                    rawFimTemplate?: {
+                                        prefix: string;
+                                        suffix: string;
+                                        middle: string;
+                                    } | undefined;
+                                } | undefined;
                                 extendedContextModelId?: string | undefined;
                                 modelOptions?: {
                                     id: string;
@@ -3492,6 +3545,18 @@ export type ProvidersActionResultById = {
                     aliases?: string[] | undefined;
                     description?: string | undefined;
                     contextWindowTokens?: number | undefined;
+                    inlineCompletion?: {
+                        operationId: string;
+                        tokenAccounting: 'utf8-bytes';
+                        promptOverheadTokens: number;
+                        outputTokens?: number | undefined;
+                        maxOutputTokens?: number | undefined;
+                        rawFimTemplate?: {
+                            prefix: string;
+                            suffix: string;
+                            middle: string;
+                        } | undefined;
+                    } | undefined;
                     extendedContextModelId?: string | undefined;
                     modelOptions?: {
                         id: string;
@@ -3663,6 +3728,18 @@ export type ProvidersActionResultById = {
                         aliases?: string[] | undefined;
                         description?: string | undefined;
                         contextWindowTokens?: number | undefined;
+                        inlineCompletion?: {
+                            operationId: string;
+                            tokenAccounting: 'utf8-bytes';
+                            promptOverheadTokens: number;
+                            outputTokens?: number | undefined;
+                            maxOutputTokens?: number | undefined;
+                            rawFimTemplate?: {
+                                prefix: string;
+                                suffix: string;
+                                middle: string;
+                            } | undefined;
+                        } | undefined;
                         extendedContextModelId?: string | undefined;
                         modelOptions?: {
                             id: string;
@@ -3876,6 +3953,18 @@ export type ProvidersActionResultById = {
                     aliases?: string[] | undefined;
                     description?: string | undefined;
                     contextWindowTokens?: number | undefined;
+                    inlineCompletion?: {
+                        operationId: string;
+                        tokenAccounting: 'utf8-bytes';
+                        promptOverheadTokens: number;
+                        outputTokens?: number | undefined;
+                        maxOutputTokens?: number | undefined;
+                        rawFimTemplate?: {
+                            prefix: string;
+                            suffix: string;
+                            middle: string;
+                        } | undefined;
+                    } | undefined;
                     extendedContextModelId?: string | undefined;
                     modelOptions?: {
                         id: string;
@@ -4047,6 +4136,18 @@ export type ProvidersActionResultById = {
                         aliases?: string[] | undefined;
                         description?: string | undefined;
                         contextWindowTokens?: number | undefined;
+                        inlineCompletion?: {
+                            operationId: string;
+                            tokenAccounting: 'utf8-bytes';
+                            promptOverheadTokens: number;
+                            outputTokens?: number | undefined;
+                            maxOutputTokens?: number | undefined;
+                            rawFimTemplate?: {
+                                prefix: string;
+                                suffix: string;
+                                middle: string;
+                            } | undefined;
+                        } | undefined;
                         extendedContextModelId?: string | undefined;
                         modelOptions?: {
                             id: string;

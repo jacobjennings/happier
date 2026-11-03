@@ -1,14 +1,13 @@
 import { ActionDefinitionV1Schema } from '@happier-dev/protocol/actions/actionDefinitionV1';
 import { buildQualifiedPluginContributionKey } from '@happier-dev/protocol/plugins/contribution-identity';
 import type { ActionDefinitionV1, WorkflowAcceptedAuthorizationV1 } from '@happier-dev/protocol';
-import { PluginError } from '@happier-dev/plugin-sdk';
+import { PluginError } from '@happier-dev/plugin-sdk/errors';
 import { formatQualifiedPluginActionId } from '@happier-dev/protocol/plugins/actions/qualifiedActionId';
 import type { ActionExecutorDeps } from '@happier-dev/protocol/actions';
 import { inputTypeResourceReference } from '@happier-dev/protocol/inputs/runtime';
 import { PluginActionExecutionV2Schema } from '@happier-dev/protocol/plugins/actions/v2';
 
 import type { ResolvedActionContribution, ResolvedActionDefinition } from '@/plugins/projection/registry/types';
-import { executeContributedAction } from './executeContributedAction';
 import type { TargetActionCurrentIntentRequest, TargetActionCurrentIntentResult } from '../actionExecutor';
 import {
   acquireAuthoritativePluginRuntimeRegistryLease,
@@ -72,7 +71,7 @@ function projectExternalActionContext(
   // into that context and therefore requires the complete bound tuple below.
   if (!authorization) return null;
   if (
-    context.authority !== 'account_automation'
+    (context.authority !== 'account_automation' && context.authority !== 'present_user')
     || !authorization
     || ('grant' in authorization.binding && !credential)
     || !target
@@ -84,7 +83,7 @@ function projectExternalActionContext(
     return null;
   }
   return Object.freeze({
-    authority: 'account_automation',
+    authority: context.authority,
     serverId,
     serverIdentityId,
     actionRequestId,
@@ -107,7 +106,7 @@ export function createCommittedContributedActionInvoker(input: Readonly<{
   }>) => boolean | Promise<boolean>;
 }> = {}): NonNullable<ActionExecutorDeps['invokeContributedAction']> {
   const acquire = input.acquireRuntimeRegistryLease ?? acquireAuthoritativePluginRuntimeRegistryLease;
-  return async ({ action, input: actionInput, messageActionReference, context, approvalExecutionOrigin, requiredDangerLevel, signal }) => {
+  return async ({ action, input: actionInput, clientId, messageActionReference, context, approvalExecutionOrigin, requiredDangerLevel, signal }) => {
     const invocationSignal = signal ?? context.signal ?? new AbortController().signal;
     invocationSignal.throwIfAborted();
     const surface = readSurface(context.surface) ?? input.defaultInvocationSurface;
@@ -135,11 +134,13 @@ export function createCommittedContributedActionInvoker(input: Readonly<{
     }
     const lease = await acquire();
     try {
+      const { executeContributedAction } = await import('./executeContributedAction');
       invocationSignal.throwIfAborted();
       const attempt = await executeContributedAction({
         runtimeRegistry: lease.registry,
         actionId: buildQualifiedPluginContributionKey(action),
         input: actionInput,
+        ...(clientId === undefined ? {} : { clientId }),
         ...(messageActionReference ? { messageActionReference } : {}),
         ...(requiredDangerLevel ? { requiredDangerLevel } : {}),
         approvalContext: context,
@@ -163,6 +164,10 @@ export function createCommittedContributedActionInvoker(input: Readonly<{
       if (attempt.result.ok) {
         const { executionOrigin: _executionOrigin, deferredApprovalArtifactId: _deferredApprovalArtifactId, ...result } = attempt.result;
         return result;
+      }
+      if (attempt.result.errorCode === 'client_ambiguous' && attempt.result.actionHandlerInvocation === 'notStarted') {
+        return { ok: false, errorCode: attempt.result.errorCode, error: attempt.result.error,
+          details: attempt.result.data };
       }
       return attempt.result;
     } finally {

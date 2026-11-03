@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 import * as flight from './rectFlight';
+import { interpolateRectFlip } from './rectFlipGeometry';
 
 vi.mock('react-native', async () => (await import('@/dev/testkit/mocks/reactNative')).createReactNativeWebMock());
 
@@ -14,7 +15,7 @@ describe('rectangle FLIP', () => {
     });
 
     it('interpolates both image axes and its visible crop', () => {
-        const frame = flight.interpolateRectFlip(
+        const frame = interpolateRectFlip(
             { imageRect: { x: 10, y: 20, width: 100, height: 200 }, clipRect: { x: 10, y: 70, width: 100, height: 100 } },
             { imageRect: { x: 100, y: 100, width: 400, height: 400 }, clipRect: { x: 100, y: 100, width: 400, height: 400 } },
             0.5,

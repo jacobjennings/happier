@@ -4,8 +4,9 @@ import { reloadConfiguration } from '../../configuration';
 import { createEnvKeyScope } from '../../testkit/env/envScope';
 import { createTempDir, removeTempDir } from '../../testkit/fs/tempDir';
 import { captureConsoleLogAndMuteStdout } from '../../testkit/logger/captureOutput';
+import { commandRegistry } from '../commandRegistry';
 
-const transferOpenSshFile = vi.fn(async (_params: Readonly<{ signal?: AbortSignal }>) => undefined);
+const transferOpenSshFile = vi.hoisted(() => vi.fn(async (_params: Readonly<{ signal?: AbortSignal }>) => undefined));
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -54,7 +55,6 @@ describe('happier relay host SSH transfer cancellation', () => {
   let envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
 
   beforeEach(async () => {
-    vi.resetModules();
     transferOpenSshFile.mockClear();
     envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
     home = await createTempDir('happier-relay-ssh-transfer-');
@@ -74,7 +74,6 @@ describe('happier relay host SSH transfer cancellation', () => {
     process.exitCode = undefined;
     const controller = new AbortController();
     try {
-      const { commandRegistry } = await import('../commandRegistry');
       await commandRegistry.relay({
         args: ['relay', 'host', 'install', '--ssh', 'dev@example.test', '--preserve-active-server', '--json'],
         rawArgv: ['node', 'happier', 'relay', 'host', 'install', '--ssh', 'dev@example.test', '--preserve-active-server', '--json'],

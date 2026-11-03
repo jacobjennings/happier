@@ -14,6 +14,7 @@ export type MachineRpcGovernanceMetadataV1 = Readonly<{
 }>;
 
 const ACTION_SPEC_RPC_METHOD_IDS = Object.freeze({
+  [RPC_METHODS.MACHINES_REACHABILITY_INSPECT]: 'machines.reachability.inspect',
   [RPC_METHODS.DAEMON_TERMINAL_ENSURE]: 'machines.terminal.open',
   [RPC_METHODS.DAEMON_TERMINAL_LIST]: 'machines.terminal.list',
   [RPC_METHODS.DAEMON_TERMINAL_STREAM_READ_BYTES]: 'machines.terminal.read',
@@ -163,6 +164,9 @@ const ACTION_SPEC_RPC_METHOD_IDS = Object.freeze({
   [RPC_METHODS.SKILLS_MACHINE_UNINSTALL]: 'skills.machine.uninstall',
   [RPC_METHODS.READ_FILE]: 'daemon.filesystem.readFile',
   [RPC_METHODS.WRITE_FILE]: 'daemon.filesystem.writeFile',
+  [RPC_METHODS.DAEMON_FILESYSTEM_READ_FILE]: 'daemon.filesystem.readFile',
+  [RPC_METHODS.DAEMON_FILESYSTEM_WRITE_FILE]: 'daemon.filesystem.writeFile',
+  [RPC_METHODS.DAEMON_FILESYSTEM_GET_DIRECTORY_TREE]: 'daemon.filesystem.getDirectoryTree',
   [RPC_METHODS.DAEMON_FILESYSTEM_CREATE_DIRECTORY]: 'daemon.filesystem.createDirectory',
   [RPC_METHODS.DAEMON_FILESYSTEM_RENAME]: 'daemon.filesystem.rename',
   [RPC_METHODS.DAEMON_FILESYSTEM_DELETE]: 'daemon.filesystem.delete',
@@ -241,6 +245,7 @@ const READ_ONLY_RPC_GOVERNANCE = Object.freeze({
   [RPC_METHODS.DAEMON_PROVIDERS_MODEL_PROJECTION]: 'advisory_unclassified',
   [RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE]: 'internal_only',
   [RPC_METHODS.DAEMON_GUARD_WATCH]: 'internal_only',
+  [RPC_METHODS.DAEMON_GUARD_ACTIVITY_WATCH]: 'internal_only',
   [RPC_METHODS.DAEMON_VITALS_WATCH]: 'internal_only',
   [RPC_METHODS.DAEMON_PROCESSES_WATCH]: 'internal_only',
   [RPC_METHODS.DAEMON_STORAGE_WATCH]: 'internal_only',

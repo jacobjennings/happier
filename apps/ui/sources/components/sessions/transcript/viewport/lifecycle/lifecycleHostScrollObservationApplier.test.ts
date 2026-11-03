@@ -87,9 +87,7 @@ function scrollObservationPlan(
         nativePassiveScrollObservationEffect: null,
         nativeSettledReturnEffects: null,
         nativeUserScrollTakeoverEffects: [],
-        recentUserIntent: false,
         state: lifecycleState,
-        steps: [],
         ...overrides,
     };
 }
@@ -141,10 +139,8 @@ function effectsRecorder(log: string[]): TranscriptLifecycleScrollObservationPla
         commitBottomFollowModeState(state) {
             log.push(`commit:${state.mode}`);
         },
-        continueAfterEarlyEffects(input) {
-            log.push(
-                `continue:${input.recentUserIntent}:${input.hasNativeMountSettlePassiveDriftRepinObservation}`,
-            );
+        continueAfterEarlyEffects() {
+            log.push('continue');
         },
         markNativeInitialViewportApplied() {
             log.push('mark-initial');
@@ -185,8 +181,14 @@ describe('lifecycle host scroll-observation plan applier', () => {
 
     it('runs the host continuation between early native effects and late lifecycle effects', () => {
         const log: string[] = [];
+        const webLifecycleEffect: TranscriptLifecycleHostScrollObservationPlan['lifecycleEffects'][number] = {
+            sessionId: 'session-a',
+            timestampMs: 1400,
+            type: 'web-user-scroll-record-intent-timestamp',
+        };
         const consumed = applyTranscriptLifecycleScrollObservationPlan(
             scrollObservationPlan({
+                lifecycleEffects: [webLifecycleEffect],
                 nativeBottomFollowCompletionEffects: [bottomFollowCompletionEffect],
                 nativePassiveScrollObservationEffect: {
                     consumeAfterBottomCompletion: false,
@@ -196,12 +198,6 @@ describe('lifecycle host scroll-observation plan applier', () => {
                     type: 'record-native-passive-scroll-observation',
                 },
                 nativeUserScrollTakeoverEffects: [nativeUserScrollEffect],
-                recentUserIntent: true,
-                steps: [{
-                    acceptedViewportPaintEffects: [],
-                    genericEffects: [],
-                    type: 'generic-fallback',
-                }],
             }),
             effectsRecorder(log),
         );
@@ -211,37 +207,7 @@ describe('lifecycle host scroll-observation plan applier', () => {
             'record-native:observed',
             'bottom-follow:1',
             'native-user:1',
-            'continue:true:true',
-            'commit:following',
-            'web-takeover:0',
-            'web-timestamp:0',
-            'generic-start:0',
-            'generic-end:0',
-            'read-only:0',
-            'suppress:0',
-            'anchor-cancel:0',
-        ]);
-    });
-
-    it('routes web plans through the late web lifecycle appliers without native callbacks', () => {
-        const log: string[] = [];
-        const webLifecycleEffect: TranscriptLifecycleHostScrollObservationPlan['lifecycleEffects'][number] = {
-            sessionId: 'session-a',
-            timestampMs: 1400,
-            type: 'web-user-scroll-record-intent-timestamp',
-        };
-
-        const consumed = applyTranscriptLifecycleScrollObservationPlan(
-            scrollObservationPlan({
-                lifecycleEffects: [webLifecycleEffect],
-                recentUserIntent: true,
-            }),
-            effectsRecorder(log),
-        );
-
-        expect(consumed).toBe(false);
-        expect(log).toEqual([
-            'continue:true:false',
+            'continue',
             'commit:following',
             'web-takeover:1',
             'web-timestamp:1',
@@ -279,7 +245,7 @@ describe('lifecycle host scroll-observation plan applier', () => {
 
         expect(consumed).toBe(true);
         expect(log).toEqual([
-            'continue:false:false',
+            'continue',
             'commit:following',
             'web-takeover:0',
             'web-timestamp:0',

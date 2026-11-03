@@ -41,7 +41,7 @@ import type { RunnerCredentialSelectionBindingV1 } from '@happier-dev/protocol/e
 import type { ManagedServiceRequest, ManagedServiceResponse } from '@happier-dev/plugin-sdk/managed-services';
 import type { ManagedProviderEndpointHttpAccess } from '@/plugins/runtime/invocation/services/managedServicesAdapter';
 import {
-  teamCredentialBrokerPlacementAcceptsMachine,
+  teamCredentialBrokerResourceAcceptsMachine,
   type TeamCredentialBrokerOperation,
   type TeamCredentialBrokerSourceOwner,
   type TeamCredentialBrokerSourceAcquireResult,
@@ -62,6 +62,8 @@ type SelectedProviderBrokerRequestAdmission = ProviderBrokerRequestAdmission & R
  * source rotation, an unreachable Home). */
 const PROVIDER_BROKER_OPERATION_AUTHORITY_LOST: ReadonlySet<ProviderBrokerAdmissionFailureCodeV1> = new Set([
   'resource_forbidden',
+  'session_not_active',
+  'operation_not_current',
   'execution_run_not_found',
   'execution_run_terminal',
 ]);
@@ -105,28 +107,6 @@ export type ProviderBrokerAccountConnectionAccess = Readonly<{
   retire(): Promise<void>;
 }>;
 
-/** Receiver-side resource check for the exact daemon addressed by the signed
- * relay request. Pool selection and membership currentness remain Home-owned;
- * this boundary only permits that selected Machine to reach fresh admission. */
-export function daemonExternalProviderRequestPolicyAcceptsResource(input: Readonly<{
-  resource: Pick<
-    TeamCredentialResourceSummaryV1,
-    'enabled' | 'teamId' | 'brokerPlacement' | 'source'
-  > | null;
-  bindingTeamId: string;
-  registeredMachineId: string;
-}>): boolean {
-  const { resource } = input;
-  return resource !== null
-    && resource.enabled
-    && resource.teamId === input.bindingTeamId
-    && teamCredentialBrokerPlacementAcceptsMachine(
-      resource.brokerPlacement,
-      input.registeredMachineId,
-    )
-    && resource.source !== null;
-}
-
 type RunnerCredentialSelectionCurrentnessInput = Readonly<{
   registeredMachineId: string;
   selection: RunnerCredentialSelectionBindingV1;
@@ -156,14 +136,8 @@ export async function resolveRunnerCredentialSelectionCurrentness(
   const resource = await input.readResource(input.selection.resourceId, input.signal);
   input.signal.throwIfAborted();
   if (
-    !resource
-    || !resource.enabled
+    !teamCredentialBrokerResourceAcceptsMachine(resource, input.selection.brokerMachineId)
     || resource.revision !== input.selection.revision
-    || !resource.source
-    || !teamCredentialBrokerPlacementAcceptsMachine(
-      resource.brokerPlacement,
-      input.selection.brokerMachineId,
-    )
   ) return 'source_unavailable';
 
   let rawEligibility: DaemonProviderTeamCredentialBrokerEligibilityResponseV1;
@@ -266,6 +240,11 @@ export function createPrivateProviderBrokerStreamLifetime(input: Readonly<{
   application: ProviderBrokerApplicationBindingV1;
   /** The Session or Execution Run the verified authority names. */
   operation: TeamCredentialBrokerOperation;
+  revalidateOperationAuthorization?(expectedResourceRevision: number, signal?: AbortSignal): Promise<boolean>;
+  revalidateOperationCurrentness?(input: Readonly<{
+    operation: TeamCredentialBrokerOperation;
+    application: ProviderBrokerApplicationBindingV1;
+  }>, signal?: AbortSignal): Promise<void>;
 }>): ProviderBrokerApplicationStreamLifetime {
   const lifetimeController = new AbortController();
   let bindingKey: string | null = null;
@@ -276,17 +255,7 @@ export function createPrivateProviderBrokerStreamLifetime(input: Readonly<{
   let retired = false;
   let released = false;
   let closeInFlight: Promise<void> | null = null;
-
-  const retireAcquired = async (
-    acquired: Extract<Awaited<ReturnType<TeamCredentialBrokerSourceOwner['acquire']>>, { ok: true }> | null,
-  ): Promise<void> => {
-    if (!acquired) return;
-    try {
-      await acquired.retire();
-    } finally {
-      await acquired.projection.cleanup();
-    }
-  };
+  let currentnessChecked = false;
 
   const releaseProjection = async (
     acquired: Extract<Awaited<ReturnType<TeamCredentialBrokerSourceOwner['acquire']>>, { ok: true }> | null,
@@ -294,20 +263,37 @@ export function createPrivateProviderBrokerStreamLifetime(input: Readonly<{
     if (acquired) await acquired.projection.cleanup();
   };
 
+  const revalidateClosedOperation = async (): Promise<void> => {
+    if (currentnessChecked) return;
+    currentnessChecked = true;
+    // The stream's signal is already aborted. Operation custody has its own
+    // lifetime and survives a live consumer closing one of its streams.
+    await input.revalidateOperationCurrentness?.({
+      operation: input.operation,
+      application: input.application,
+    }).catch(() => undefined);
+  };
+
   const close = (): Promise<void> => {
     if (released) return Promise.resolve();
     retired = true;
     lifetimeController.abort();
     closeInFlight ??= (async () => {
-      await poolRefreshChain.catch(() => undefined);
-      if (currentPoolSource) {
-        const acquired = currentPoolSource;
-        currentPoolSource = null;
-        await releaseProjection(acquired);
-        return;
+      try {
+        await poolRefreshChain.catch(() => undefined);
+        if (currentPoolSource) {
+          const acquired = currentPoolSource;
+          currentPoolSource = null;
+          await releaseProjection(acquired);
+          return;
+        }
+        const acquired = await projectionPromise?.catch(() => null);
+        if (acquired?.ok) await releaseProjection(acquired);
+      } finally {
+        // A prior stream may hold this exact operation even when this stream
+        // disconnected before making its first application request.
+        await revalidateClosedOperation();
       }
-      const acquired = await projectionPromise?.catch(() => null);
-      if (acquired?.ok) await releaseProjection(acquired);
     })().then(
       () => {
         released = true;
@@ -357,6 +343,10 @@ export function createPrivateProviderBrokerStreamLifetime(input: Readonly<{
             application: input.application,
             modelId,
             sourceRevision,
+            ...(input.revalidateOperationAuthorization ? {
+              revalidateOperationAuthorization: (signal?: AbortSignal) =>
+                input.revalidateOperationAuthorization!(expectedResourceRevision, signal),
+            } : {}),
             signal: lifetimeController.signal,
           }).catch(() => null);
 
@@ -365,10 +355,12 @@ export function createPrivateProviderBrokerStreamLifetime(input: Readonly<{
           // the old joined view, then re-enter the same source owner once so it
           // can establish the selector's still-current B. No request is
           // admitted with A after this refresh has failed.
-          if (!acquired?.ok && currentPoolSource) {
+          if (acquired && !acquired.ok
+            && acquired.sourceOpenFailureReason === 'managed_custody_unavailable'
+            && currentPoolSource && !currentPoolSource.projection.isCurrent()) {
             const previous = currentPoolSource;
             currentPoolSource = null;
-            await retireAcquired(previous).catch(() => undefined);
+            await releaseProjection(previous).catch(() => undefined);
             if (retired) return;
             acquired = await input.sourceOwner.acquire({
               source,
@@ -379,16 +371,18 @@ export function createPrivateProviderBrokerStreamLifetime(input: Readonly<{
               application: input.application,
               modelId,
               sourceRevision,
+              ...(input.revalidateOperationAuthorization ? {
+                revalidateOperationAuthorization: (signal?: AbortSignal) =>
+                  input.revalidateOperationAuthorization!(expectedResourceRevision, signal),
+              } : {}),
               signal: lifetimeController.signal,
             }).catch(() => null);
           }
           if (retired || !acquired?.ok || !acquired.projection.isCurrent()) {
-            // A stale Pool member A is deliberately retired so B can establish.
-            // A stream that closed while this refresh ran retires nothing: its
-            // operation may still be serving other streams.
+            // The source owner decides semantic retirement. A stale or closed
+            // joined view releases only this stream's projection.
             if (acquired?.ok) {
-              await (retired ? releaseProjection(acquired) : retireAcquired(acquired))
-                .catch(() => undefined);
+              await releaseProjection(acquired).catch(() => undefined);
             }
             if (!retired && acquired && !acquired.ok) {
               result = { ...brokerSourceAcquisitionFailure(acquired), reasonCode: 'resource_unavailable' };
@@ -419,6 +413,10 @@ export function createPrivateProviderBrokerStreamLifetime(input: Readonly<{
           application: input.application,
           modelId,
           sourceRevision,
+          ...(input.revalidateOperationAuthorization ? {
+            revalidateOperationAuthorization: (signal?: AbortSignal) =>
+              input.revalidateOperationAuthorization!(expectedResourceRevision, signal),
+          } : {}),
           signal: lifetimeController.signal,
         }).catch(() => null);
       }
@@ -442,6 +440,7 @@ export function createPrivateProviderBrokerStreamLifetime(input: Readonly<{
       // which has acquired nothing, so the operation named by the verified
       // authority — not a projection this stream happens to hold — is what is
       // retired. Releasing this stream's own join stays part of closing it.
+      currentnessChecked = true;
       await close();
       await input.sourceOwner.retireOperation({
         operation: input.operation,
@@ -466,6 +465,7 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
     accountId: string;
     open(request: Readonly<{ authority: SignedProviderBrokerRouteGrantV2; signal: AbortSignal }>): Promise<ProviderBrokerAccountConnectionAccess | null>;
     retire(request: Readonly<{ authority: SignedProviderBrokerRouteGrantV2 }>): Promise<void>;
+    revalidateCurrentness?(request: Readonly<{ authority: SignedProviderBrokerRouteGrantV2 }>, signal?: AbortSignal): Promise<void>;
   }>;
   resolveTrustRoots: () => readonly DirectRouteGrantTrustRoot[];
   nowMs: () => number;
@@ -488,6 +488,15 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
     source: import('@happier-dev/protocol/teams').TeamCredentialSourceBindingV1;
   }> | null>;
   admitRequest(input: SelectedProviderBrokerRequestAdmission): Promise<ProviderBrokerRequestAdmissionResponseV1>;
+  revalidateOperationAuthorization?(input: Readonly<{
+    authority: SignedProviderBrokerRouteGrantV1;
+    expectedResourceRevision: number;
+    signal?: AbortSignal;
+  }>): Promise<boolean>;
+  revalidateOperationCurrentness?(input: Readonly<{
+    operation: TeamCredentialBrokerOperation;
+    application: ProviderBrokerApplicationBindingV1;
+  }>, signal?: AbortSignal): Promise<void>;
   authorizeModelCatalog(input: Readonly<{
     authorization: ProviderBrokerModelCatalogAuthorization;
     expectedResourceRevision: number;
@@ -845,12 +854,22 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
           enforceExpiry: false,
         });
         if (!verification.valid) return null;
+        let currentnessCheck: Promise<void> | undefined;
+        const revalidateClosedOperation = (): Promise<void> => currentnessCheck ??= (async () => {
+          await owner.revalidateCurrentness?.({ authority });
+        })().catch(() => undefined);
         if (request.handshake.intent === 'release' || authority.payload.expiresAt <= input.nowMs()) {
           return await application.createStreamTarget({
             kind: 'account_connection', authority, releaseOnly: true,
             authenticatedRemoteEndpointId: request.authenticatedRemoteEndpointId,
             acquireSource: async () => null,
-            streamLifetime: { close: async () => {}, retire: async () => await owner.retire({ authority }) },
+            streamLifetime: {
+              close: revalidateClosedOperation,
+              retire: async () => {
+                currentnessCheck ??= Promise.resolve();
+                await owner.retire({ authority });
+              },
+            },
           }, request.signal);
         }
         // Native's control deadline covers signed carrier admission. Private
@@ -865,8 +884,12 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
           closed = true;
           lifetime.abort();
           closing ??= (async () => {
-            const opened = await opening?.catch(() => null);
-            await opened?.cleanup();
+            try {
+              const opened = await opening?.catch(() => null);
+              await opened?.cleanup();
+            } finally {
+              await revalidateClosedOperation();
+            }
           })().catch(error => { closing = undefined; throw error; });
           return closing;
         };
@@ -886,7 +909,11 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
             },
             streamLifetime: {
               close,
-              retire: async () => { await close(); await owner.retire({ authority }); },
+              retire: async () => {
+                currentnessCheck ??= Promise.resolve();
+                await close();
+                await owner.retire({ authority });
+              },
             },
           }, request.signal);
         } catch (error) {
@@ -943,6 +970,17 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
           sourceOwner: input.sourceOwner,
           application: authoritative.authority.payload.application,
           operation: authoritative.authority.payload.consumer,
+          ...(input.revalidateOperationAuthorization ? {
+            revalidateOperationAuthorization: (expectedResourceRevision, signal) =>
+              input.revalidateOperationAuthorization!({
+                authority: authoritative.authority,
+                expectedResourceRevision,
+                ...(signal ? { signal } : {}),
+              }),
+          } : {}),
+          ...(input.revalidateOperationCurrentness ? {
+            revalidateOperationCurrentness: input.revalidateOperationCurrentness,
+          } : {}),
         }),
       }, request.signal);
     },

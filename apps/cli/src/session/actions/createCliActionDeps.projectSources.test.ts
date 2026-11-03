@@ -27,7 +27,7 @@ afterEach(() => vi.restoreAllMocks());
 
 const token = `header.${Buffer.from(JSON.stringify({ sub: 'source-account' })).toString('base64url')}.signature`;
 const source = { id: 'source/a', revision: 2, name: 'App', repository: {
-  provider: { id: 'github', kind: 'github' as const, displayName: 'GitHub', baseUrl: 'https://github.com' },
+  provider: { id: 'happier.scm.forge.github/github', kind: 'github' as const, displayName: 'GitHub', baseUrl: 'https://github.com' },
   repository: { nameWithOwner: 'happier-dev/happier', cloneUrl: 'https://github.com/happier-dev/happier.git', visibility: 'public' as const }, protocol: 'https' as const,
 }, audience: [], createdByAccountId: 'source-account' };
 function deps() {
@@ -120,8 +120,17 @@ describe('Source Actions through the CLI Account front door', () => {
             : { [profileId]: profile, duplicate: { ...profile, id: 'duplicate' } } }));
           expect(await carrier.requesterAccountProjection!.readArtifact({ kind: 'doc', serverId: homeId, artifactId })).toBeNull();
           expect(await actions.projectSourcesUpdate!(input, context)).toMatchObject({ ok: false, errorCode: 'server_scope_mismatch' });
+          expect(await actions.projectSourcesUpdate!({ ...input, serverId: profileId }, context))
+            .toMatchObject({ ok: false, errorCode: 'server_scope_mismatch' });
+          expect(await actions.projectSourcesUpdate!(input, { ...context, serverId: profileId }))
+            .toMatchObject({ ok: false, errorCode: 'server_scope_mismatch' });
         }
+        expect(artifactRequests).toEqual([]);
+        expect(write).not.toHaveBeenCalled();
         await updateSettings(settings => ({ ...settings, servers: { [profileId]: profile } }));
+        expect(await actions.projectSourcesUpdate!(input, context)).toMatchObject({ ok: true, canManage: true });
+        expect(artifactRequests).toEqual([`${serverUrl}/v1/artifacts/${artifactId}`]);
+        write.mockClear(); artifactRequests.length = 0;
         current = false;
         expect(await actions.projectSourcesUpdate!(input, context)).toMatchObject({ ok: false, errorCode: 'project_requester_authority_unavailable' });
         expect(artifactRequests).toEqual([]);

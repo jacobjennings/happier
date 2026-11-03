@@ -1,3 +1,5 @@
+import { MACHINE_TERMINAL_ACTION_IDS } from './machineTerminalActionIdsV1.js';
+export { MACHINE_TERMINAL_ACTION_IDS } from './machineTerminalActionIdsV1.js';
 import { z } from 'zod/mini';
 import { lazyZodSchema } from '../../lazyZodSchema.js';
 import {
@@ -9,13 +11,9 @@ import {
 import { TerminalStreamReadRequestSchema, TerminalStreamReadResponseSchema } from '../../terminal/stream.js';
 import { TerminalStreamInputRequestSchema, TerminalStreamInputResponseSchema } from '../../terminal/input.js';
 import type { ApprovalPresentationContext, PreNormalizedActionSpec } from '../actionSpecs.js';
+import { actionInputServerId } from './definition.js';
 import { RPC_METHODS } from '../../rpc/methods.js';
 import { readRecord } from '../../inputs/inputRecords.js';
-
-export const MACHINE_TERMINAL_ACTION_IDS = [
-  'machines.terminal.open', 'machines.terminal.list', 'machines.terminal.read',
-  'machines.terminal.write', 'machines.terminal.close', 'machines.terminal.restart',
-] as const;
 export type MachineTerminalActionId = typeof MACHINE_TERMINAL_ACTION_IDS[number];
 const id = z.string().check(z.trim(), z.minLength(1));
 const routing = { serverId: id, machineId: id };
@@ -71,10 +69,11 @@ function describeMachineTerminalApprovalSummary(actionId: MachineTerminalActionI
 function row<TId extends MachineTerminalActionId>(actionId: TId, title: string, rpcMethod: string, read = false): MachineTerminalSpec<TId> {
   return {
     id: actionId, approval: actionId === 'machines.terminal.open' || actionId === 'machines.terminal.restart' ? { result: 'required', flow: 'deferred' } : { result: 'required' },
+    requiredAuthority: actionId === 'machines.terminal.open' || actionId === 'machines.terminal.restart' ? 'account_automation' : 'present_user',
     ...(actionId === 'machines.terminal.close' ? { confirmVerb: { key: 'common.close', fallback: 'Close' } }
       : actionId === 'machines.terminal.restart' ? { confirmVerb: { key: 'localServices.effectReview.restart', fallback: 'Restart' } } : {}),
-    // Opening is reversible, and interactive input uses admitted PTY custody.
-    // Automation's danger floor and explicit per-surface Ask settings still apply.
+    // Open/restart also route typed package scripts through the finite Project
+    // Action. Interactive observation/control remains a present-person effect.
     approvalPolicy: { uiConfirmation: actionId === 'machines.terminal.open' || actionId === 'machines.terminal.write' ? 'direct' : 'policy' }, title,
     // The terminal key is how the daemon finds its terminal and its size is the client's pane; people know the terminal by its folder and Machine.
     approvalPresentation: { summary: (input: unknown, context?: ApprovalPresentationContext) => describeMachineTerminalApprovalSummary(actionId, input, context),
@@ -87,6 +86,7 @@ function row<TId extends MachineTerminalActionId>(actionId: TId, title: string, 
     bindings: { rpcMethod, mcpToolName: actionId.replaceAll('.', '_'), voiceClientToolName: actionId.replaceAll('.', '_') },
     cli: { commands: [{ path: actionId.split('.'), visibility: 'canonical' }] },
     inputSchema: MACHINE_TERMINAL_ACTION_INPUT_SCHEMAS[actionId], outputSchema: MACHINE_TERMINAL_ACTION_OUTPUT_SCHEMAS[actionId],
+    invocationServerIdForInput: actionInputServerId<(typeof MACHINE_TERMINAL_ACTION_INPUT_SCHEMAS)[MachineTerminalActionId]>(MACHINE_TERMINAL_ACTION_INPUT_SCHEMAS[actionId], input => input.serverId),
     inputHints: { fields: [
       { path: 'serverId', title: 'Home ID', widget: 'text', required: true },
       { path: 'machineId', title: 'Machine ID', widget: 'text', required: true },
@@ -96,7 +96,6 @@ function row<TId extends MachineTerminalActionId>(actionId: TId, title: string, 
         { path: 'cwd', title: 'Working directory', widget: 'text' as const },
         { path: 'cols', title: 'Columns', widget: 'text' as const },
         { path: 'rows', title: 'Rows', widget: 'text' as const },
-        { path: 'initialCommand', title: 'Initial command', widget: 'text' as const },
         { path: 'launch', title: 'Launch intent', widget: 'json' as const },
         { path: 'sessionId', title: 'Owning Session ID', widget: 'text' as const },
       ] : actionId === 'machines.terminal.list' ? [] : [{ path: 'terminalId', title: 'Terminal ID', widget: 'text' as const, required: true }]),

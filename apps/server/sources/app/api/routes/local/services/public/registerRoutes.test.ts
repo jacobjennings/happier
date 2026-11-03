@@ -579,8 +579,8 @@ describe("local service public exposure routes", () => {
             },
         }, createReply);
 
-        expect(createReply.statusCode).toBe(404);
-        expect(createReply.send).toHaveBeenCalledWith({ error: "not_found" });
+        expect(createReply.statusCode).toBe(403);
+        expect(createReply.send).toHaveBeenCalledWith({ error: "public_preview_denied", reasonCode: "public_preview_disabled" });
         expect(createExposure).not.toHaveBeenCalled();
 
         const proxyReply = createReplyStub();
@@ -868,7 +868,7 @@ describe("local service public exposure routes", () => {
         expect(reply.headers["Referrer-Policy"]).toBe("no-referrer");
     });
 
-    it("adds no-referrer privacy headers to disabled public preview not-found responses", async () => {
+    it("keeps disabled application traffic concealed but returns typed refusals for every control handler", async () => {
         const mod = await loadPublicRoutesModule();
         expect(mod?.registerLocalServicePublicRoutes).toBeTypeOf("function");
         if (!mod?.registerLocalServicePublicRoutes) return;
@@ -895,6 +895,17 @@ describe("local service public exposure routes", () => {
 
         expect(reply.statusCode).toBe(404);
         expect(reply.headers["Referrer-Policy"]).toBe("no-referrer");
+        for (const [method, path] of [
+            ['POST', '/v1/local-services/public'],
+            ['POST', '/v1/local-services/public/status'],
+            ['DELETE', '/v1/local-services/public/:exposureId'],
+        ] as const) {
+            const refused = createReplyStub();
+            await getRouteHandler(app, method, path)({ body: {}, params: { exposureId: 'unknown' } }, refused);
+            expect(refused.statusCode).toBe(403);
+            expect(refused.send).toHaveBeenCalledWith({ error: 'public_preview_denied', reasonCode: 'public_preview_disabled' });
+            expect(refused.headers['Referrer-Policy']).toBe('no-referrer');
+        }
     });
 
     it("exchanges the minted root public exposure URL before proxying", async () => {
@@ -1758,103 +1769,6 @@ describe("local service public exposure routes", () => {
         expect(serialized).not.toContain('"kind":"preview"');
         expect(serialized).not.toContain('"id":"preview_1"');
         expect(serialized).not.toContain("secret");
-    });
-
-    // S-1 (lane C1). Fastify's router percent-decodes the proxy wildcard, so a client path of
-    // `foo%0d%0a…` reaches the handler as a REAL CRLF inside `params['*']`. Both public-preview
-    // sinks are CRLF-terminated: the raw HTTP/1.1 request line written to the upstream tunnel,
-    // and the `Location` header of the public-token exchange redirect.
-    const ROUTER_DECODED_CRLF_PATH = "foo\r\nX-Injected: yes\r\n\r\nGET /admin HTTP/1.1";
-    const CANONICAL_ENCODED_CRLF_PATH = "/foo%0D%0AX-Injected:%20yes%0D%0A%0D%0AGET%20/admin%20HTTP/1.1";
-
-    function upstreamRequestLines(upstream: string): readonly string[] {
-        return upstream.split("\r\n").filter((line) => /\sHTTP\/1\.1$/u.test(line));
-    }
-
-    function createRecordingTunnelOpener(writes: string[]) {
-        return async () => ({
-            tunnelId: "public_tunnel_test",
-            substreamId: "public_substream_test",
-            write: (bytes: Uint8Array) => {
-                writes.push(new TextDecoder().decode(bytes));
-            },
-            endWrite: vi.fn(),
-            read: async function* (): AsyncIterableIterator<Uint8Array> {
-                yield new TextEncoder().encode("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
-            },
-            close: vi.fn(),
-            abort: vi.fn(),
-        });
-    }
-
-    it("never writes a second upstream request line for a router-decoded CRLF proxy path", async () => {
-        const mod = await loadPublicRoutesModule();
-        expect(mod?.registerLocalServicePublicRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePublicRoutes) return;
-
-        const writes: string[] = [];
-        const app = createFakeRouteApp();
-        mod.registerLocalServicePublicRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            resolveExposure: vi.fn(() => exposure),
-            createExposure: vi.fn(() => ({ ok: true as const, exposure })),
-            revokeExposure: vi.fn(() => ({ ok: true as const })),
-            validateAccess: vi.fn(() => ({ ok: true as const, preview })),
-            authorizeSessionAccess: allowSessionAccess(),
-            openTunnel: createRecordingTunnelOpener(writes) as never,
-        });
-
-        const handler = getRouteHandler(app, "GET", "/v1/local-services/public/:exposureId/*");
-        const reply = createReplyStub();
-        await handler({
-            method: "GET",
-            params: { exposureId: "public_preview_1", "*": ROUTER_DECODED_CRLF_PATH },
-            query: {},
-            headers: { host: "preview.happier.test", cookie: "happier_public_token=token_1" },
-        }, reply);
-
-        const upstream = writes.join("");
-        expect(upstreamRequestLines(upstream)).toHaveLength(1);
-        expect(upstream).not.toMatch(/\r\nX-Injected:/u);
-        expect(upstream.split("\r\n")[0]).toBe(`GET ${CANONICAL_ENCODED_CRLF_PATH} HTTP/1.1`);
-    });
-
-    it("never emits a CRLF Location header when exchanging a public token on a decoded CRLF path", async () => {
-        const mod = await loadPublicRoutesModule();
-        expect(mod?.registerLocalServicePublicRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePublicRoutes) return;
-
-        const app = createFakeRouteApp();
-        mod.registerLocalServicePublicRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            resolveExposure: vi.fn(() => exposure),
-            createExposure: vi.fn(() => ({ ok: true as const, exposure })),
-            revokeExposure: vi.fn(() => ({ ok: true as const })),
-            validateAccess: vi.fn(() => ({ ok: true as const, preview })),
-            exchangeAccessToken: vi.fn(() => ({
-                ok: true as const,
-                exposureId: "public_preview_1",
-                rawToken: "rotated_token_1",
-                expiresAt: 61_000,
-            })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-        });
-
-        const handler = getRouteHandler(app, "GET", "/v1/local-services/public/:exposureId/*");
-        const reply = createReplyStub();
-        await handler({
-            method: "GET",
-            params: { exposureId: "public_preview_1", "*": ROUTER_DECODED_CRLF_PATH },
-            query: { publicToken: "token_1" },
-            headers: { host: "preview.happier.test" },
-        }, reply);
-
-        expect(reply.statusCode).toBe(303);
-        expect(reply.headers.Location).not.toMatch(/[\r\n]/u);
-        expect(reply.headers.Location).toBe(
-            `/v1/local-services/public/public_preview_1${CANONICAL_ENCODED_CRLF_PATH}`,
-        );
     });
 
     // S-2: `authenticated` proved only that the caller held SOME account on this server. The

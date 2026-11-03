@@ -32,33 +32,3 @@ export function createScmWorkspaceIntegrationWorkspaceCheckoutCreationRequest(in
         branchMode: input.checkoutCreation.branchMode,
     };
 }
-
-export function resolveScmWorkspaceIntegrationWorkspaceCheckoutCreationKind(
-    input: ScmWorkspaceIntegrationWorkspaceCheckoutCreationRequest,
-): ScmWorkspaceIntegrationWorkspaceCheckoutKind {
-    return input.kind;
-}
-
-export function resolveScmWorkspaceIntegrationWorkspaceCheckoutCreationSourcePath(
-    input: ScmWorkspaceIntegrationWorkspaceCheckoutCreationRequest,
-): string {
-    return input.sourcePath;
-}
-
-export function resolveScmWorkspaceIntegrationWorkspaceCheckoutCreationDisplayName(
-    input: ScmWorkspaceIntegrationWorkspaceCheckoutCreationRequest,
-): string {
-    return input.displayName;
-}
-
-export function resolveScmWorkspaceIntegrationWorkspaceCheckoutCreationBaseRef(
-    input: ScmWorkspaceIntegrationWorkspaceCheckoutCreationRequest,
-): string | null {
-    return input.baseRef;
-}
-
-export function resolveScmWorkspaceIntegrationWorkspaceCheckoutCreationBranchMode(
-    input: ScmWorkspaceIntegrationWorkspaceCheckoutCreationRequest,
-): 'new' | 'existing' {
-    return input.branchMode;
-}

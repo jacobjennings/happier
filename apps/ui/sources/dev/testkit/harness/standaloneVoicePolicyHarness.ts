@@ -5,9 +5,11 @@ import { FeaturesResponseSchema } from '@happier-dev/protocol/features/payload/f
 import { loadSyncSingletonForTests } from './syncSingletonLoader';
 import { installVitestRnShim } from '@/dev/vitestRnShim';
 import { installDisconnectedServerSocketBoundary, restoreServerAccountForTest } from './serverAccountConnectionHarness';
+import { createAccountKvHttpFixture } from '../fixtures/accountKvHttpFixture';
 import { createPlainAccountEncryptionCurrentnessFixture } from '../fixtures/accountEncryptionCurrentness';
 import { createSessionFixture } from '../fixtures/sessionFixtures';
 import { createSessionReadBatchFetchBoundary } from './sessionReadBatchHttpBoundary';
+import { createConnectedPurposeCatalogHttpBoundary } from './connectedAccountCatalogBoundary';
 import type { SettingsWriteDelta } from '@/sync/domains/settings/settings';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { installLocalStorageMock, installWebLockManagerMock } from '@/auth/storage/tokenStorage.web.testHelpers';
@@ -126,11 +128,16 @@ export async function createStandaloneVoicePolicyHarness(params: Readonly<{
         const sessionHttp = createSessionMetadataHttpBoundary(() => Object.fromEntries([session, ...extraSessions].map(value => [value.id, value])));
         const { settingsParse } = await import('@/sync/domains/settings/settings');
         const baselineSettings = settingsParse({});
+        const purposes = createConnectedPurposeCatalogHttpBoundary();
         const { profileDefaults } = await import('@/sync/domains/profiles/profile');
+        const transcriptMemory = createAccountKvHttpFixture();
+        const messageRequests: string[] = [];
         const connection = await restoreServerAccountForTest({
             serverUrl: `https://voice-policy-${params.mode}.example.test`,
             activation: 'switch', credentialScope: 'restored-home',
             request: createSessionReadBatchFetchBoundary(async (url, init) => {
+                const memoryResponse = await transcriptMemory.handleFetch(url, init);
+                if (memoryResponse) return memoryResponse;
                 const path = new URL(String(url)).pathname;
                 if (path === '/health') return Response.json({ status: 'ok' });
                 if (path === '/v2/cursor') return Response.json(CurrentCursorResponseSchema.parse({ cursor: 0, changesFloor: 0 }));
@@ -141,11 +148,16 @@ export async function createStandaloneVoicePolicyHarness(params: Readonly<{
                 if (path === '/v1/account/encryption') return Response.json({ mode: 'plain', updatedAt: 0 });
                 if (path === '/v1/account/profile') return Response.json({ ...profileDefaults, id: 'account-a' });
                 if (path === '/v2/account/settings') return Response.json({ version: 1, content: { t: 'plain', v: baselineSettings } });
-                if (path.endsWith('/messages')) return Response.json({ messages: [], hasMore: false });
+                if (path.endsWith('/messages')) {
+                    messageRequests.push(path);
+                    return Response.json({ messages: [], hasMore: false });
+                }
                 const sessionResponse = sessionHttp.handle(url, init);
                 if (sessionResponse) return sessionResponse;
                 const additionalResponse = await params.handleRequest?.(`${path}${new URL(String(url)).search}`, init);
                 if (additionalResponse) return additionalResponse;
+                const purposeResponse = await purposes.handle(url, init);
+                if (purposeResponse) return purposeResponse;
                 return new Response('{}', { status: 404 });
             }),
         });
@@ -200,6 +212,9 @@ export async function createStandaloneVoicePolicyHarness(params: Readonly<{
             sessionId: session.id,
             handle,
             sessionHttp,
+            transcriptMemory,
+            /** Physical Home message reads, excluding metadata/catalog requests. */
+            messageRequests,
             /** Observe genuine outbound SDK namespaces, including lazily created sockets. */
             get rpcSockets() { return [...(sockets.get(connection.home.serverUrl) ?? [])]; },
             /**

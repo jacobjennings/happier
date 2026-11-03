@@ -11,22 +11,16 @@ const ANCHORS: readonly TranscriptNavigationAnchorCandidate[] = [
 const LANDED = { anchorId: 'turn-2', sessionId: 'session-1' } as const;
 
 describe('resolveRetainedTranscriptNavigationLandedAnchor', () => {
-    it('retains the landing while the reader has not moved', () => {
+    it.each([
+        { anchors: ANCHORS, expected: LANDED, name: 'retains the landing while its anchor is still in the anchor set' },
+        { anchors: [ANCHORS[0]!], expected: null, name: 'releases a landing whose anchor left the anchor set' },
+    ])('$name', ({ anchors, expected }) => {
         expect(resolveRetainedTranscriptNavigationLandedAnchor({
-            anchors: ANCHORS,
+            anchors,
             genuineUserMovement: false,
             landed: LANDED,
             sessionId: 'session-1',
-        })).toEqual(LANDED);
-    });
-
-    it('releases the landing on genuine user movement', () => {
-        expect(resolveRetainedTranscriptNavigationLandedAnchor({
-            anchors: ANCHORS,
-            genuineUserMovement: true,
-            landed: LANDED,
-            sessionId: 'session-1',
-        })).toBeNull();
+        })).toEqual(expected);
     });
 
     it('releases a landing inherited from another session', () => {
@@ -35,15 +29,6 @@ describe('resolveRetainedTranscriptNavigationLandedAnchor', () => {
             genuineUserMovement: false,
             landed: LANDED,
             sessionId: 'session-2',
-        })).toBeNull();
-    });
-
-    it('releases a landing whose anchor left the anchor set', () => {
-        expect(resolveRetainedTranscriptNavigationLandedAnchor({
-            anchors: [ANCHORS[0]!],
-            genuineUserMovement: false,
-            landed: LANDED,
-            sessionId: 'session-1',
         })).toBeNull();
     });
 

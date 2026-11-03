@@ -1,3 +1,4 @@
+import type { PreNormalizedActionSpec } from './definition.js';
 import { lazyZodSchema } from '../../lazyZodSchema.js';
 import { z } from 'zod/mini';
 import { StrictJsonValueSchema } from '../../json/strictJsonValue.js';
@@ -49,3 +50,27 @@ export const WAIT_CLI_PROJECTION = {
   acceptsServerId: true,
   requiresServerId: true,
 } satisfies ActionCliProjection;
+
+
+export const WAIT_ACTION_SPECS = Object.freeze([
+  {
+    id: 'wait', approval: {result: 'required'},
+    title: 'Wait for work',
+    description: 'Observe an existing Home-qualified handle without polling or stopping its work. Prefer notifyParentOnCompletion or Follow for parent delivery. Reuse the same handle after an observation timeout.',
+    sideEffectClass: 'read',
+    safety: 'safe',
+    executionPlacement: 'account',
+    placements: [],
+    bindings: { mcpToolName: 'wait' },
+    surfaces: { ui: false, voice: false, agent: true, mcp: true, cli: true, rpc: false },
+    cli: WAIT_CLI_PROJECTION,
+    inputSchema: WaitActionInputV1Schema,
+    outputSchema: WaitActionResultV1Schema,
+    inputHints: { fields: [
+      { path: 'target', title: 'Home-qualified work handle', widget: 'json', required: true },
+      { path: 'condition', title: 'Observation condition', widget: 'json', required: true },
+      { path: 'timeout.durationMs', title: 'Observation timeout in milliseconds', widget: 'text' },
+    ] },
+  } satisfies PreNormalizedActionSpec,
+] as const);
+

@@ -1,4 +1,5 @@
 import type { ManagedExecutableRef } from '@happier-dev/protocol';
+import type { ProviderBrokerRetainedCurrentnessInvalidation } from '@/providers/broker/brokerRetainedCurrentnessInvalidation';
 import { materializeActionRequestAttributionV1 } from '@happier-dev/protocol/actions/actionRequestAttributionV1';
 import { listRuntimeContributedActionDefinitions } from './invocation/actions/createCommittedContributedActionDeps';
 import { derivePluginDaemonContributionRegistrationRights } from '@happier-dev/protocol/plugins/contributions/catalog';
@@ -41,6 +42,7 @@ import {
     type PluginRuntimeActivationRegistryLease,
 } from './composition/activationAssembly';
 import { assemblePluginRuntimeConsumers } from './composition/consumerAssembly';
+import { createCredentialedConnectedAccountAuthenticationHost, type CredentialedConnectedAccountAuthenticationHost } from './connectedAccounts/authenticationHost';
 import {
     assembleConnectedAccountRuntime,
     projectConnectedAccountPurposeBindingOwner,
@@ -56,7 +58,7 @@ import {
 } from '../projection/registry/sources/generatedBundledPluginManifests';
 import type { PluginCompatibilityDiagnostic } from '../validation/diagnostics/types';
 import { createResolvedContributionRegistry } from '../projection/registry/createResolvedContributionRegistry';
-import { resolveMergedContributionRegistry } from '../projection/registry/createResolvedContributionRegistry';
+import { resolveMergedContributionRegistry } from '../projection/registry/merged';
 import { projectManifestAgentAcpCatalogPreflight, projectManifestAgentContribution } from '../projection/registry/projectManifestAgentContribution';
 import { projectNativeAgentCliRuntimeDescriptor } from '../projection/registry/agentCliMetadata';
 import { resolveAgentContributionQualifiedId } from '../projection/registry/agentRoutingIdentity';
@@ -194,6 +196,7 @@ import {
     type ManagedProviderRuntimeInvocationServices,
 } from './invocation/services/production';
 import { readPluginSettingsValuesWithDefaults } from './invocation/services/settings';
+import { createAccountPluginSettingsRecordStorage } from './context/accountPluginSettingsRecordStorage';
 import type {
     PluginAccountSettingsRecordAdapter,
 } from './invocation/services/settings';
@@ -304,6 +307,7 @@ import type { HostRuntimeLimitMeasurementRecorder } from '@/agent/runtime/state/
 import type {
     createConnectedAccountContributionRegistry,
     ConnectedAccountRuntimeLease,
+    ConnectedAccountPortableRuntimeLease,
 } from './connectedAccounts/contributionRegistry';
 import type {
     createConnectedAccountHostRuntimeInvoker,
@@ -345,6 +349,7 @@ import type {
     ManagedProviderOperationAuthority,
 } from '@/daemon/connectedServices/purposeBindings/managedProviderOperationAuthority';
 import type { RpcHandlerInvoker } from '@/api/rpc/types';
+import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { configuration } from '@/configuration';
 import { createDaemonSpawnToolResolutionContext } from '@/daemon/spawnHooks';
 import {
@@ -429,16 +434,13 @@ import {
 } from './invocation/actionExecutor';
 import {
     createStablePluginHttpHost,
-    type StablePluginHttpFinalPolicyEffect,
 } from './fetch/service';
 import {
     createVoiceAccountPluginHttpCredentialBindingHost,
 } from './fetch/voiceAccountCredentialBinding';
 import {
     createGlobalFetchRuntime,
-    type GlobalFetchRuntimeDependencies,
 } from './fetch/globalFetchRuntime';
-import type { PluginNetworkAddressResolver } from './fetch/originLocality';
 import { createVoiceCredentialResolver } from '@/daemon/voice/credentials/resolver';
 import {
     createPluginMcpSessionResolver,
@@ -463,6 +465,15 @@ import {
     resolveActiveAccountConfiguredExternalSessionSourceRevision,
     subscribeActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { createCurrentDomainEdgeObservation } from '@/deployments/healthChecks/currentDomainEdgeObservation';
+import { createPluginWebhookHeartbeatClient } from './webhooks/heartbeatClient';
+import { acquireRequesterAccountEncryptionCurrentness } from '@/api/client/accountEncryptionCurrentnessObservation';
+import { createSavedHealthChecksHost } from '@/deployments/healthChecks/savedHealthChecks';
+import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { readInstallationIdentityIfExistsSync } from '@/daemon/identity/store';
+import { readAdoptedHealthCheckBatch } from '@/deployments/healthChecks/readAdoptedHealthCheckBatch';
+import type { CurrentDomainEdgeObservation } from '@/deployments/healthChecks/currentDomainEdgeObservation';
+
 
 export type PluginRuntimeGenerationAuthority = NonNullable<Awaited<ReturnType<typeof readCurrentCommittedPluginGenerations>>>;
 
@@ -559,6 +570,7 @@ export type ManagedProviderExplicitStartJoinResult =
     ManagedProviderExplicitStartOperationResult;
 
 export type ManagedProviderExplicitStartJoinInput = Readonly<{
+    existingOnly?: true;
     retirementGroup?: ManagedProviderExplicitStartOperationInput['retirementGroup'];
     identity: PluginContributionRef;
     purposeBindings: QualifiedConnectedAccountPurposeBindingsV1;
@@ -570,7 +582,7 @@ export type ManagedProviderExplicitStartJoinInput = Readonly<{
     >;
     signal?: AbortSignal;
     isCurrent(): boolean;
-    revalidateRetainedCurrentness?(signal?: AbortSignal): Promise<boolean>;
+    revalidateRetainedCurrentness?(signal?: AbortSignal, invalidation?: ProviderBrokerRetainedCurrentnessInvalidation): Promise<boolean>;
     establish: ManagedProviderExplicitStartOperationInput['establish'];
 }>;
 
@@ -606,7 +618,9 @@ export type ResolvedExecutablePluginRuntimeRegistry = Readonly<{
     ): Promise<ResolvedPluginExecutable>;
     /** Host-private Project supervision/control; the SDK remains plugin-scoped. */
     projectManagedServices: Pick<ReturnType<typeof createManagedServicesOwner>,
-        'superviseProject' | 'stopForAccessLoss' | 'resolveProjectService' | 'listProjectServices' | 'activity' | 'readProcessRoots' | 'readResourceTargets'>;
+        'superviseProject' | 'resolveProjectService' | 'listProjectServices' | 'resolveEnvironmentService' | 'machineServiceRows'
+        | 'superviseMachine' | 'listMachineServices' | 'retireMachineServices' | 'resolveNativeService'
+        | 'readEnvironmentServiceLogRedactionLease' | 'activity' | 'readProcessRoots' | 'readResourceTargets' | 'readNativeContainerSources' | 'readMachineRebootServices' | 'restoreEnvironmentServices' | 'resolveSetupScriptServiceEffects' | 'stopForAccessLoss'>;
     /** Reads the retained daemon custody owner without activating a contribution. */
     readSharedProviderGatewayRuntime?: ReturnType<typeof createManagedServicesOwner>['readSharedProviderGatewayRuntime'];
     /** Transfers the same generic Project/shared Provider custody at publication. */
@@ -623,9 +637,9 @@ export type ResolvedExecutablePluginRuntimeRegistry = Readonly<{
      * current snapshots; partial fixtures without this fact fail closed there.
      */
     durableRevision?: number;
-    generation?: Awaited<ReturnType<typeof activatePluginRuntimeRegistry>>['generation'];
-    readPluginOccurrenceId?(pluginId: string): PluginRuntimeOccurrenceId | null;
-    isPluginOccurrenceCurrent?(
+    generation: Awaited<ReturnType<typeof activatePluginRuntimeRegistry>>['generation'];
+    readPluginOccurrenceId(pluginId: string): PluginRuntimeOccurrenceId | null;
+    isPluginOccurrenceCurrent(
         pluginId: string,
         occurrenceId: PluginRuntimeOccurrenceId,
     ): boolean;
@@ -633,7 +647,7 @@ export type ResolvedExecutablePluginRuntimeRegistry = Readonly<{
     /** Exact daemon-admitted sources for a background child; this does not activate them. */
     readAdmittedBackgroundServicePlugins?(pluginIds: readonly string[]): readonly AdmittedBackgroundServicePlugin[];
     targetActivationFacts?: Awaited<ReturnType<typeof activatePluginRuntimeRegistry>>['targetActivationFacts'];
-    targetActionInvocations?: ReturnType<typeof createTargetActionInvocationRegistry>;
+    targetActionInvocations: ReturnType<typeof createTargetActionInvocationRegistry>;
     /** Existing authenticated machine reverse RPC; the answering UI owns client execution. */
     executeClientAction?: ClientContributedActionExecutor;
     /**
@@ -798,6 +812,7 @@ export type ResolvedExecutablePluginRuntimeRegistry = Readonly<{
         ref: PluginContributionRef,
     ): Promise<ResolvedProviderCatalogParsers | null>;
     createManagedProviderRuntimeInvocationServices?(input: Readonly<{
+        accountAuthority?: ManagedProviderInvocationAccountAuthority;
         identity: PluginContributionRef;
         purposeBindings: QualifiedConnectedAccountPurposeBindingsV1;
         operationClaim?: ManagedProviderRuntimeOperationClaim;
@@ -831,7 +846,11 @@ export type ResolvedExecutablePluginRuntimeRegistry = Readonly<{
         externalApiKeyId: string;
         operationId: string;
     }>): Promise<boolean>;
-    revalidateManagedProviderExplicitStarts?(signal?: AbortSignal): Promise<number>;
+    revalidateManagedProviderExplicitStarts?(
+        signal?: AbortSignal,
+        selector?: Parameters<NonNullable<ResolvedExecutablePluginRuntimeRegistry['retireManagedProviderExplicitStart']>>[0],
+        invalidation?: ProviderBrokerRetainedCurrentnessInvalidation,
+    ): Promise<number>;
     retireManagedProviderExplicitStarts?(
         lifecycleKind: 'publicExplicitStart' | 'providerBroker',
     ): Promise<number>;
@@ -871,7 +890,9 @@ export type ResolvedExecutablePluginRuntimeRegistry = Readonly<{
     /** Capability/diagnostic view of the injected measured database policy. */
     readDaemonDatabaseCapability?(pluginId: string): PluginDaemonDatabaseCapability;
     connectedAccountContributions?: ReturnType<typeof createConnectedAccountContributionRegistry>;
-    resolveConnectedAccountRuntime?(ref: PluginContributionRef): Promise<ConnectedAccountRuntimeLease | null>;
+    resolveConnectedAccountRuntime?(ref: PluginContributionRef): Promise<ConnectedAccountRuntimeLease | ConnectedAccountPortableRuntimeLease | null>;
+    resolveAccountConnectedAccountRuntime?(ref: PluginContributionRef): Promise<ConnectedAccountPortableRuntimeLease | null>;
+    connectedAccountAuthenticationHost?: CredentialedConnectedAccountAuthenticationHost;
     connectedAccountRuntimeInvoker?: ConnectedAccountHostRuntimeInvoker;
     resolveQualifiedConnectedAccountEstablishedRuntimeOwner?():
         Pick<QualifiedConnectedAccountEstablishedRuntimeOwner, 'invoke'> | null;
@@ -1177,6 +1198,8 @@ export type ResolvedExecutablePluginRuntimeRegistry = Readonly<{
             error: unknown;
         }>) => void;
     }>) => Promise<void>;
+
+currentDomainEdgeObservation?: CurrentDomainEdgeObservation;
 }>;
 
 function isJsonRecord(value: JsonValue): value is Readonly<Record<string, JsonValue>> {
@@ -1791,17 +1814,23 @@ async function assertCommittedResourceActivationIdentity(params: Readonly<{
  * for the addresses the admission decision validated, and a composed host that
  * substitutes one without the other would still leave the machine.
  */
-export type PluginRuntimeNetworkDependencies = Readonly<{
-    resolveNetworkAddresses?: PluginNetworkAddressResolver;
-}> & GlobalFetchRuntimeDependencies;
+
 
 export type PluginRuntimeMachineAdmissionTransport = CliActionMachineAdmissionTransport;
+
+/** Host-issued Account custody for one bounded managed Provider invocation. */
+export type ManagedProviderInvocationAccountAuthority = Readonly<{
+    readCredentials: typeof readStoredCredentials;
+    operationAuthority: ManagedProviderOperationAuthority;
+    connectedAccountsOwner: StablePluginConnectedAccountsOwner;
+}>;
 
 export async function resolveExecutablePluginRuntimeRegistry(
     params?: Readonly<{
         /** Source and lifetime of the authenticated invoking Account process. */
         accountExecution?: Pick<AccountPluginActivationSourcesInput, 'credentials' | 'serverUrl' | 'isCurrent' | 'isCredentialCurrent'>
-            & Readonly<{ machineId?: string; serverId?: string; serverIdentityId?: string }>;
+            & Readonly<{ machineId?: string; serverId?: string; serverIdentityId?: string;
+                savedSecretOperationContext?: import('@/settings/secrets/savedSecretOperationContext').SavedSecretOperationContextV1 }>;
         signal?: AbortSignal;
         readSpawnFailureLimits?: import('@/processes/spawnFailure/classifySpawnFailure').SpawnFailureLimitsReader;
         happyHomeDir?: string;
@@ -1891,10 +1920,11 @@ export async function resolveExecutablePluginRuntimeRegistry(
         /** Invalidates projections after a same-generation lazy activation fails terminally. */
         onTerminalActivationFailure?: (pluginId: string) => void;
         /** Process-owned network boundaries for this registry's one plugin HTTP host. */
-        networkDependencies?: PluginRuntimeNetworkDependencies;
         /** Testable port for the canonical Account plugin-settings persistence owner. */
         accountSettingsRecordAdapter?: PluginAccountSettingsRecordAdapter;
-    }>,
+
+agentIsolation?: import('@/daemon/agentIsolation/agentIsolationLaunchPolicy').HostAgentIsolationLaunchContext;
+}>,
 ): Promise<ResolvedExecutablePluginRuntimeRegistry> {
     const generation = params?.generation ?? 0;
     const scopedActionRuntime = params?.scopedActionRuntime;
@@ -1904,6 +1934,9 @@ export async function resolveExecutablePluginRuntimeRegistry(
         : scopedActionRuntime
         ? async () => scopedActionRuntime.credentials
         : readStoredCredentials;
+    const savedSecretOperationContext = params?.accountExecution?.savedSecretOperationContext
+        ? Object.freeze({ ...params.accountExecution.savedSecretOperationContext })
+        : undefined;
     const accountCredentialAuthority = scopedActionRuntime || params?.accountExecution
         ? Object.freeze({
             readCredentials: readSessionCredentials,
@@ -1933,6 +1966,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
     let contributes = params?.contributes
         ?? (params?.accountExecution ? createResolvedContributionRegistry(resolveBuiltInContributions()) : await resolveMergedContributionRegistry({
             happyHomeDir: params?.happyHomeDir,
+            accountStorageDependencies: params?.accountStorageDependencies,
         }));
     const committed = params?.accountExecution ? null : params?.generationAuthority ?? await readCurrentCommittedPluginGenerations(
         pluginStorePaths,
@@ -2014,6 +2048,8 @@ export async function resolveExecutablePluginRuntimeRegistry(
     const accountActivationSources = params?.accountExecution
         ? await resolveAccountPluginActivationSources({
             ...params.accountExecution, contributes, paths: pluginStorePaths,
+            machineEnabledById: (await (await import('@/plugins/store/registry/currentState'))
+                .createPluginRegistryStateStore({ happyHomeDir: params?.happyHomeDir }).readSnapshot()).bundledPluginEnabledById,
             resolveBundledActivationSource,
             ...(params.signal ? { signal: params.signal } : {}),
         }) : null;
@@ -3921,29 +3957,12 @@ export async function resolveExecutablePluginRuntimeRegistry(
         }))),
     });
     const stableHttpHost = createStablePluginHttpHost({
-        adapter: createGlobalFetchRuntime(
-            params?.networkDependencies?.openPinnedStream
-                ? { openPinnedStream: params.networkDependencies.openPinnedStream }
-                : {},
-        ),
-        ...(params?.networkDependencies?.resolveNetworkAddresses
-            ? { resolveNetworkAddresses: params.networkDependencies.resolveNetworkAddresses }
-            : {}),
-        redactInterceptorText({ seed, value }) {
-            return invocationServiceOwners.redactDiagnosticText({
-                pluginId: seed.plugin.id,
-                occurrenceId: seed.occurrenceId,
-                correlationId: seed.correlationId,
+        containsRegisteredSecret({ seed, value }) {
+            return invocationServiceOwners.containsRegisteredDiagnosticValue({
+                pluginId: seed.plugin.id, occurrenceId: seed.occurrenceId, correlationId: seed.correlationId,
             }, value);
         },
-        recordDisclosureMismatch({ seed, mismatch }) {
-            invocationServiceOwners.recordHostDiagnostic(seed, {
-                code: 'plugin_host_access_disclosure_mismatch',
-                severity: 'warning',
-                message: 'Network operation is outside the plugin manifest disclosure',
-                details: mismatch,
-            });
-        },
+        adapter: createGlobalFetchRuntime(),
         credentialBindingHost: createVoiceAccountPluginHttpCredentialBindingHost({
             voiceProviders: authoritativeContributes.voiceProviders ?? Object.freeze([]),
             // App-client requests are account-scoped and must not inherit a
@@ -3959,7 +3978,6 @@ export async function resolveExecutablePluginRuntimeRegistry(
             },
         }),
         interceptorRegistry: currentGlobalRequestInterceptorRegistry,
-        revalidateFinalPolicy: async (effect) => await revalidateStableHttpFinalPolicy(effect),
     });
     const managedDependencySourceModel = createV2ManagedDependencySourceModel({
         platform: resolveManagedDependencyHostPlatform(),
@@ -4142,7 +4160,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 return null;
             }
             return Object.freeze({
-                inspect: captured.lifecycle.inspect,
+                ...captured.lifecycle,
                 async stop(...args: Parameters<typeof captured.lifecycle.stop>) {
                     const result = await captured.lifecycle.stop(...args);
                     if (result.status === 'stopped') await captured.release();
@@ -4275,8 +4293,6 @@ export async function resolveExecutablePluginRuntimeRegistry(
         revalidateCallerMaterialization: revalidatePluginActionCallerMaterialization,
         revalidateCallerOccurrence: revalidatePluginActionCallerOccurrence,
     });
-    const automationEventAdoptedDefinitionOwners =
-        automationAssembly.adoptedDefinitionOwners;
     const resolveAutomationEventAdoptedDefinitionSet =
         automationAssembly.resolveAdoptedDefinitionSet;
     const resolveAutomationEventHistoryGapSource =
@@ -4431,7 +4447,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
             credentials: sessionCredentials,
             readCredentials: readSessionCredentials,
             serverId: configuration.activeServerId,
-            serverApiUrl: configuration.apiServerUrl,
+            serverApiUrl: resolveServerHttpBaseUrl(),
             ...(params?.accountExecution ? {
                 // This runtime already owns Account admission and any explicit
                 // nested Machine dispatch; do not re-enter daemon placement.
@@ -4459,9 +4475,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 revalidatePluginActionCallerOccurrence,
                 ...(params?.resolveCurrentMachineExecutionOriginContext ? { resolveCurrentPluginExecutionOrigin } : {}),
             }),
-            ...(resolveAutomationEventAdoptedDefinitionSet
-                ? { resolveAutomationEventAdoptedDefinitionSet }
-                : {}),
+            resolveAutomationEventAdoptedDefinitionSet,
             ...(params?.runtimeActionExecute
                 ? { runtimeActionExecute: params.runtimeActionExecute }
                 : {}),
@@ -4517,15 +4531,74 @@ export async function resolveExecutablePluginRuntimeRegistry(
             // release/Account retirement is enforced by the captured binding.
             subscribeToCatalogChanges: () => () => {},
         }).bind(binding); } } : undefined;
+    const accountExecution = params?.accountExecution;
+    const accountSettingsRecordAdapter = params?.accountSettingsRecordAdapter
+        ?? (accountExecution ? createAccountPluginSettingsRecordStorage({
+            readCredentials: readSessionCredentials,
+            isCurrentAccount: async () => await accountExecution.isCredentialCurrent?.() !== false
+                && accountExecution.isCurrent(),
+            resolveBaseUrl: () => accountExecution.serverUrl,
+        }) : undefined);
+    const notificationServerHttpBaseUrl = params?.accountExecution?.serverUrl ?? resolveServerHttpBaseUrl();
+    const currentDomainEdgeObservation = createCurrentDomainEdgeObservation();
+    consumerAssembly.allRetirementSignal.addEventListener('abort', () => currentDomainEdgeObservation.dispose(), { once: true });
+    const notificationAccountId = sessionCredentials ? readAccountIdFromToken(sessionCredentials.token) : null;
+    if (!accountExecution && sessionCredentials && notificationAccountId) {
+        // The observer's admitted Account/Home already owns this push feed. Domain and Environment
+        // writes by any entitled client invalidate its current fact without another probe or timer.
+        const accountChanges = acquireRequesterAccountEncryptionCurrentness({ accountId: notificationAccountId,
+            token: sessionCredentials.token, serverBaseUrl: notificationServerHttpBaseUrl });
+        const unsubscribe = accountChanges.subscribeEnvironmentAccess(change => {
+            if (change.kind === 'changes') {
+                for (const environmentId of change.environmentIds) currentDomainEdgeObservation.withdraw(environmentId);
+            } else currentDomainEdgeObservation.reconcile(() => false);
+        });
+        consumerAssembly.allRetirementSignal.addEventListener('abort', () => {
+            unsubscribe();
+            void accountChanges.dispose();
+        }, { once: true });
+    }
+    const readHealthCheckCredentials = async () => {
+        const current = await readSessionCredentials();
+        return current && sessionCredentials && readAccountIdFromToken(current.token)
+            && readAccountIdFromToken(current.token) === readAccountIdFromToken(sessionCredentials.token)
+            ? current : null;
+    };
+    const heartbeatClient = createPluginWebhookHeartbeatClient({
+        readCredentials: readHealthCheckCredentials,
+        serverHttpBaseUrl: notificationServerHttpBaseUrl,
+    });
     invocationServiceOwners = createProductionPluginInvocationServiceOwners({
+        ...(!params?.accountExecution ? { healthChecks: createSavedHealthChecksHost({
+            serverId: sessionCredentialsServerId,
+            resolveAdoptedDefinitionSet: resolveAutomationEventAdoptedDefinitionSet,
+            enrollHeartbeat: heartbeatClient.enroll,
+            readHeartbeatReceipt: heartbeatClient.read,
+            onDomainResult: value => currentDomainEdgeObservation.publish(value),
+            openDomainArtifact: async (artifactId, signal) => {
+                const current = await readHealthCheckCredentials();
+                if (!current) return null;
+                const artifact = await runWithServerHttpBaseUrl(notificationServerHttpBaseUrl,
+                    () => createCredentialedAccountArtifactStore(current).read(artifactId,
+                        { signal, prepareRecipients: false, includeSharedAudience: false }));
+                return artifact && typeof artifact.body === 'string'
+                    ? { artifactId: artifact.artifactId, header: artifact.header, body: artifact.body, revision: artifact.revision }
+                    : null;
+            },
+            readObserver: () => {
+                const machineId = params?.resolveCurrentMachineId?.();
+                const identity = readInstallationIdentityIfExistsSync();
+                return machineId && identity ? { machineId, installationId: identity.installationId } : null;
+            },
+        }) } : {}),
         ...(!params?.accountExecution ? {
             demandBackgroundService: (target) => activatedRegistry.demandBackgroundService(target),
         } : {}),
         ...(params?.stableEventsBroker
             ? { eventsBroker: params.stableEventsBroker }
             : {}),
-        ...(params?.accountSettingsRecordAdapter
-            ? { accountSettingsRecordAdapter: params.accountSettingsRecordAdapter }
+        ...(accountSettingsRecordAdapter
+            ? { accountSettingsRecordAdapter }
             : {}),
         ...(accountCredentialAuthority ? { accountCredentialAuthority } : {}),
         ...(pluginActionExecutor ? { actionExecutor: pluginActionExecutor } : {}),
@@ -4858,6 +4931,8 @@ export async function resolveExecutablePluginRuntimeRegistry(
         http: stableHttpHost,
         ...(resourcesOwner ? { resources: resourcesOwner } : {}),
         exec: {
+...(params?.agentIsolation ? { agentIsolation: params.agentIsolation } : {}),
+
             readSpawnFailureLimits: params?.readSpawnFailureLimits,
             agentCli: agentCliService,
             systemToolsForPlugin(pluginId) {
@@ -4873,7 +4948,20 @@ export async function resolveExecutablePluginRuntimeRegistry(
         },
         managedServices: invocationManagedServicesOwner,
     });
+    const domainSourceInvalidation = !params?.accountExecution ? invocationServiceOwners.stableEventsBroker.subscribeHost({
+        target: { eventId: '@happier/automation/event-sources-invalidated', scope: { kind: 'account' } },
+        isCurrent: () => consumerAssembly.isOccurrenceCurrent(),
+        listener: () => currentDomainEdgeObservation.reconcile(entry => {
+            const batch = readAdoptedHealthCheckBatch({ resolveAdoptedDefinitionSet: resolveAutomationEventAdoptedDefinitionSet,
+                caller: entry.caller, occurrenceId: entry.occurrenceId,
+                sourceInstanceId: entry.sourceInstanceId, signal: consumerAssembly.allRetirementSignal });
+            return batch.kind === 'available' && batch.source.subject.kind === 'environment'
+                && batch.source.subject.environmentId === entry.observation.environmentId
+                && isDeepStrictEqual(batch.source.checks.find(check => check.checkId === entry.checkId), entry.check);
+        }),
+    }) : null;
     disposeInvocationServiceOwners = async () => {
+        await domainSourceInvalidation?.dispose();
         currentGlobalExternalSessions?.dispose();
         currentGlobalExternalSessions = null;
         currentGlobalExternalSessionsPublicationBasis = null;
@@ -5202,81 +5290,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
             throw new PluginError({ code: decision.code, message: 'MCP operation is not currently authorized' });
         }
     };
-    const revalidateStableHttpFinalPolicy = async (
-        effect: StablePluginHttpFinalPolicyEffect,
-    ): Promise<void> => {
-        const pluginId = effect.seed.plugin.id;
-        const current = resolveCurrentFinalPolicyRuntime(pluginId);
-        if (
-            !current?.applied
-            || effect.seed.occurrenceId !== current.occurrenceId
-            || !effect.seed.sourceCustody
-            || !pluginSourceCustodyEqual(
-                effect.seed.sourceCustody,
-                current.sourceCustody,
-            )
-        ) {
-            throw new PluginError({
-                code: 'plugin_final_generation_retired',
-                message: 'Plugin runtime is no longer current',
-            });
-        }
-        const target = resolveExactActivationTarget(pluginId);
-        if (!target) {
-            throw new PluginError({
-                code: 'plugin_final_package_untrusted',
-                message: 'Plugin package identity is unavailable',
-            });
-        }
-        let url: URL;
-        try {
-            url = new URL(effect.request.url);
-        } catch {
-            throw new PluginError({
-                code: 'plugin_final_resource_not_selected',
-                message: 'Fetch URL is not currently authorized',
-            });
-        }
-        if (
-            (url.protocol !== 'http:' && url.protocol !== 'https:')
-            || url.username.length > 0
-            || url.password.length > 0
-        ) {
-            throw new PluginError({
-                code: 'plugin_final_resource_not_selected',
-                message: 'Fetch URL is not currently authorized',
-            });
-        }
-        const method = (effect.request.method ?? 'GET').toUpperCase();
-        const supportedMethods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
-        if (!supportedMethods.has(method)) {
-            throw new PluginError({
-                code: 'plugin_final_resource_not_selected',
-                message: 'Fetch method is not currently authorized',
-            });
-        }
-        const authorizationFacts = resolvePluginFinalPolicyAuthorizationFacts({
-            pluginId,
-            current,
-            targetGenerationMode: 'retained',
-            // Network declarations are cooperative disclosure. Exact selected
-            // Connected Account origins/currentness are rechecked by the
-            // stable HTTP owner before this trust/generation decision.
-            resourceSelections: Object.freeze([]),
-        });
-        const decision = evaluatePluginFinalPolicy({
-            ...authorizationFacts,
-            serviceAvailability: [Object.freeze({
-                id: 'http',
-                required: true,
-                status: 'available' as const,
-            })],
-            currentIntent: 'notRequired',
-        });
-        if (decision.outcome !== 'visible') {
-            throw new PluginError({ code: decision.code, message: 'Fetch operation is not currently authorized' });
-        }
-    };
+
     const resolveTargetActionAuthorizationFacts = (
         action: ResolvedTargetAction,
         purpose?: 'declaration',
@@ -5366,9 +5380,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
         ...(params?.actionFormConnectedAccounts
             ? { actionFormConnectedAccounts: params.actionFormConnectedAccounts }
             : {}),
-        ...(resolveAutomationEventHistoryGapSource
-            ? { resolveAutomationEventHistoryGapSource }
-            : {}),
+        resolveAutomationEventHistoryGapSource,
         resolveOptionalAccess(pluginId) {
             return committed?.generations.get(pluginId)?.installation?.optionalAccess
                 ?? Object.freeze([]);
@@ -5412,15 +5424,20 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 [],
                 seed.contribution.qualifiedId,
             );
-            return stableHttpHost.bind(seed, binding, {
-                revalidateFinalPolicy: async (effect) => {
-                    await revalidateStableHttpFinalPolicy(effect);
-                    if (input.endpointPolicy) {
-                        await revalidateVoiceSpeechHttpEndpoint({
-                            policy: input.endpointPolicy,
-                            requestUrl: effect.request.url,
-                        });
-                    }
+            const transport = createGlobalFetchRuntime();
+            const validateRecipient = async (requestUrl: string) => {
+                if (input.endpointPolicy) await revalidateVoiceSpeechHttpEndpoint({ policy: input.endpointPolicy, requestUrl });
+            };
+            // This compares the actual recipient with the selected credential scope;
+            // it does not re-admit the Action or plugin generation.
+            return stableHttpHost.prepareAdapterBinding!(seed, binding)({ ...transport,
+                async request(request, options) {
+                    await validateRecipient(request.url);
+                    return await transport.request(request, options);
+                },
+                async requestStream(request, options) {
+                    await validateRecipient(request.url);
+                    return await transport.requestStream!(request, options);
                 },
             });
         },
@@ -6183,6 +6200,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
             return Object.freeze({ status: 'not_current' as const });
         }
         return await operationOwner.runManagedProviderExplicitStart({
+            ...(input.existingOnly ? { existingOnly: true as const } : {}),
             ...(sharedProvider ? { sharedProvider: true as const } : {}),
             ...(input.retirementGroup ? { retirementGroup: input.retirementGroup } : {}),
             operationId,
@@ -6254,10 +6272,23 @@ export async function resolveExecutablePluginRuntimeRegistry(
 
     async function revalidateManagedProviderExplicitStarts(
         signal?: AbortSignal,
+        selector?: Parameters<typeof retireManagedProviderExplicitStart>[0],
+        invalidation?: ProviderBrokerRetainedCurrentnessInvalidation,
     ): Promise<number> {
-        const ordinary = await daemonManagedServicesOwner.revalidateManagedProviderExplicitStarts(signal);
+        signal?.throwIfAborted();
+        const operationId = selector
+            ? resolveExplicitManagedProviderOperationClaimId(selector)
+            : null;
+        if (selector && !operationId) return 0;
+        const claim = selector && operationId ? {
+            operationId,
+            pluginId: selector.identity.pluginId,
+            contributionQualifiedId:
+                `${selector.identity.pluginId}/providers/${selector.identity.localId}`,
+        } : undefined;
+        const ordinary = await daemonManagedServicesOwner.revalidateManagedProviderExplicitStarts(signal, claim, invalidation);
         return ordinary + (projectManagedServicesOwner === daemonManagedServicesOwner ? 0
-            : await projectManagedServicesOwner.revalidateManagedProviderExplicitStarts(signal));
+            : await projectManagedServicesOwner.revalidateManagedProviderExplicitStarts(signal, claim, invalidation));
     }
 
     async function retireManagedProviderExplicitStarts(
@@ -6284,6 +6315,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
     }
 
     type ManagedProviderInvocationPreparation = Readonly<{
+            accountAuthority?: ManagedProviderInvocationAccountAuthority;
             identity: PluginContributionRef;
             purposeBindings: QualifiedConnectedAccountPurposeBindingsV1;
             operationClaim?: Exclude<ManagedProviderRuntimeOperationClaim, { kind: 'sessionDemand' }>
@@ -6336,7 +6368,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 params?.resolveCurrentMachineExecutionOriginContext?.(
                     input.signal,
                 ).catch(() => null),
-                readSessionCredentials().catch(() => null),
+                (input.accountAuthority?.readCredentials ?? readSessionCredentials)().catch(() => null),
             ]);
             const sessionClaim = input.operationClaim?.kind === 'sessionDemand'
                 ? input.operationClaim
@@ -6527,13 +6559,14 @@ export async function resolveExecutablePluginRuntimeRegistry(
             ManagedProviderOperationAuthority['activate']
         >> | null = null;
         if (purposes.length > 0) {
-            if (!params?.managedProviderOperationAuthority) {
+            const authority = input.accountAuthority?.operationAuthority ?? params?.managedProviderOperationAuthority;
+            if (!authority) {
                 lifetime.complete();
                 return null;
             }
             try {
                 operationAuthority =
-                    await params.managedProviderOperationAuthority.activate({
+                    await authority.activate({
                         identity: input.identity,
                         operationId: operationClaimId,
                         purposes,
@@ -6598,6 +6631,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
         });
         const services = invocationServiceOwners
             .createManagedProviderRuntimeInvocationServices(seed, {
+                ...(input.accountAuthority ? { connectedAccountsOwner: input.accountAuthority.connectedAccountsOwner } : {}),
                 filesystemRoots: Object.freeze({
                     pluginData: join(
                         storePaths.storageDir,
@@ -6696,6 +6730,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
 
     async function createManagedProviderRuntimeInvocationServices(
         input: Readonly<{
+            accountAuthority?: ManagedProviderInvocationAccountAuthority;
             identity: PluginContributionRef;
             purposeBindings: QualifiedConnectedAccountPurposeBindingsV1;
             operationClaim?: ManagedProviderRuntimeOperationClaim;
@@ -6965,6 +7000,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
 
     const connectedAccountAssembly = assembleConnectedAccountRuntime({
         hostRuntimes: [createMcpSignInConnectedAccountRegistration()],
+        resolveRetirementSignal: pluginId => resolveRuntimeConsumerLifecycle(pluginId).retirementSignal,
         readPluginOccurrenceId: readCurrentPluginOccurrenceId,
         readPluginSourceCustody: readCurrentPluginSourceCustody,
         isPluginOccurrenceCurrent: isCurrentPluginOccurrence,
@@ -7017,10 +7053,15 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 }),
             });
         },
-        networkDependencies: params?.networkDependencies,
     });
     const connectedAccountContributions = connectedAccountAssembly.contributions;
     const connectedAccountRuntimeInvoker = connectedAccountAssembly.invoker;
+    const connectedAccountAuthenticationHost = params?.accountExecution
+        ? createCredentialedConnectedAccountAuthenticationHost({
+            credentials: params.accountExecution.credentials, serverHttpBaseUrl: params.accountExecution.serverUrl,
+            ...(savedSecretOperationContext ? { operationContext: savedSecretOperationContext } : {}),
+            contributions: connectedAccountContributions, invoker: connectedAccountRuntimeInvoker,
+        }) : undefined;
     let consumersRetired = false;
     const connectedAccountPurposeBindingOwner =
         projectConnectedAccountPurposeBindingOwner(params?.connectedAccounts);
@@ -7207,8 +7248,14 @@ export async function resolveExecutablePluginRuntimeRegistry(
         pluginId: string;
         signal?: AbortSignal;
     }>): PluginInvocationServicesSeed | null => {
-        const target = resolveExactActivationTarget(input.pluginId);
-        if (!target) return null;
+        // Descriptor-only plugins have admitted declarations and occurrences but
+        // no executable activation target. Settings consume that same authority.
+        const declarations = authoritativeContributes.pluginDeclarations?.filter(declaration => declaration.pluginId === input.pluginId);
+        const target = declarations?.length
+            ? declarations.length === 1 ? declarations[0] : null
+            : resolveExactActivationTarget(input.pluginId);
+        const occurrenceId = readCurrentPluginOccurrenceId(input.pluginId);
+        if (!target || !occurrenceId) return null;
         const signal = composePluginConsumerSignal(input.pluginId, input.signal);
         return Object.freeze({
             plugin: Object.freeze({
@@ -7219,7 +7266,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 id: 'settings',
                 qualifiedId: `${input.pluginId}/settings`,
             }),
-            occurrenceId: readCurrentPluginOccurrenceId(input.pluginId)!,
+            occurrenceId,
             correlationId: randomUUID(),
             surface: 'ui' as const,
             signal,
@@ -7412,6 +7459,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
             readAccountExecutionSelection: accountActivationSources.readSelection } : {}),
         resolveReadyManagedExecutable: (executable, pluginId) =>
             executableResolver(executable, pluginId, undefined, { requireReady: true }),
+        currentDomainEdgeObservation,
         get projectManagedServices() {
             return projectManagedServicesOwner;
         },
@@ -7570,7 +7618,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
                         });
                         if (!hostAccessRequests) throw new Error('Native adapter HostAccess is unavailable');
                         const services = invocationServiceOwners.createOperationServices(seed, {
-                            filesystemRoots: { pluginData: join(pluginStorePaths.storageDir, reference.pluginId, 'fs'), workspace: input.root, projects: new Map() },
+                            filesystemRoots: { pluginData: join(pluginStorePaths.storageDir, reference.pluginId, 'fs'), ...(input.machine ? {} : { workspace: input.root }), projects: new Map() },
                             hostAccessRequests, environment: input.environment,
                         });
                         return { context: { plugin: seed.plugin, contribution: seed.contribution, surface: seed.surface,
@@ -7616,6 +7664,8 @@ export async function resolveExecutablePluginRuntimeRegistry(
         },
         connectedAccountContributions,
         resolveConnectedAccountRuntime: connectedAccountContributions.resolve,
+        resolveAccountConnectedAccountRuntime: connectedAccountContributions.resolveAccount,
+        connectedAccountAuthenticationHost,
         connectedAccountRuntimeInvoker,
         resolveQualifiedConnectedAccountEstablishedRuntimeOwner() {
             return consumerAssembly.isOccurrenceCurrent()

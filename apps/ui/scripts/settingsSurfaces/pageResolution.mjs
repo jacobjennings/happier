@@ -110,7 +110,7 @@ export function resolvePage(componentRef, depth = 0) {
     const jsxReturns = returns.filter((expr) => isJsx(expr));
     if (depth < 3 && jsxReturns.length >= 1) {
         const candidates = new Set(jsxReturns.map((expr) => tagNameOf(expr)).filter((tag) => /^[A-Z][A-Za-z0-9]*$/.test(tag)));
-        const followable = [...candidates].filter((tag) => !['View', 'Fragment', 'React.Fragment', 'SettingsViewWrapper'].includes(tag));
+        const followable = [...candidates].filter((tag) => !['View', 'Fragment', 'React.Fragment'].includes(tag));
         if (followable.length === 1) {
             const next = resolveIdentifier(componentRef.rel, componentRef.sf, componentRef.text, followable[0]);
             if (next && !next.outside) return resolvePage(next, depth + 1);

@@ -26,6 +26,10 @@ const { fetchMachineVitalsViaMachineRpc, watchMachineVitalsViaMachineRpc } = awa
 const { serverScopedRpcSocketPool } = await import('@/sync/runtime/orchestration/serverScopedRpc/serverScopedRpcSocketPool');
 const { resetScopedMachineTransportCacheForTests } = await import('@/sync/runtime/orchestration/serverScopedRpc/serverScopedRpcPool');
 const { fetchMachineGuardViewViaAction } = await import('../guard/machineGuardRpc');
+const { watchMachineGuardViaMachineRpc, watchMachineGuardActivityViaMachineRpc } = await import('../guard/machineGuardRpc');
+const { watchMachineProcessesViaMachineRpc } = await import('../processes/machineProcessesRpc');
+const { watchMachineStorageViaMachineRpc } = await import('../storage/machineRpc');
+const { watchLocalServiceInventorySnapshotViaMachineRpc } = await import('@/sync/domains/local/services/inventory/machineRpc');
 const { machineResourceStore } = await import('./machineResourceStore');
 const { useMachineVitalsOverview } = await import('./useMachineVitalsOverview');
 const { useMachineResourceSummary } = await import('./useMachineResourceSummary');
@@ -109,6 +113,65 @@ function vitals(sampledAt = Date.now()) {
         disk: { reported: true, volumes: [] }, network: { reported: true, rxBps: 12, txBps: 3 },
     }, series5m: { cpu: [], memory: [], networkRx: [], networkTx: [] } });
 }
+
+it('lets all parked machine watches follow the remote reply and caller cancellation beyond the former client deadline', async () => {
+    await withMachineHome(async home => {
+        home.setAnswer(async call => { await call.reply(vitals()); });
+        const key = { serverId: home.serverId, machineId: 'shared-machine', expectedAccountId: 'owner' };
+        // Warm the real connection before advancing the clock across the old operation cutoff.
+        expect(await fetchMachineVitalsViaMachineRpc({ ...key, view: 'summary' })).toMatchObject({ ok: true });
+        home.calls.length = 0;
+        home.setAnswer(async () => {});
+        let controller = new AbortController();
+        const watches = [
+            () => watchMachineVitalsViaMachineRpc({ ...key, view: 'summary', signal: controller.signal }),
+            () => watchMachineProcessesViaMachineRpc({ ...key, accountId: 'owner', scope: 'happier', view: 'tree', signal: controller.signal }),
+            () => watchMachineGuardViaMachineRpc({ ...key, signal: controller.signal }),
+            () => watchMachineGuardActivityViaMachineRpc({ ...key, range: '7d', filter: 'all', signal: controller.signal }),
+            () => watchMachineStorageViaMachineRpc({ ...key, signal: controller.signal }),
+            () => watchLocalServiceInventorySnapshotViaMachineRpc({ ...key, accountId: 'owner', signal: controller.signal }),
+        ];
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+        try {
+            const settled: unknown[] = [];
+            const pending = watches.map(watch => watch().then(result => { settled.push(result); return result; }));
+            await vi.waitFor(() => expect(home.calls).toHaveLength(watches.length));
+            // A delayed reply is still valid after the daemon's 25 s park and the former 10 s margin.
+            await vi.advanceTimersByTimeAsync(36_000);
+            expect(settled).toEqual([]);
+            expect(home.calls).toHaveLength(watches.length);
+            expect(home.cancellations).toEqual([]);
+            for (const call of home.calls) await call.reply(call.method === RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_WATCH
+                ? { protocolVersion: 1, changed: false } : { changed: false });
+            expect(await Promise.all(pending)).toEqual([
+                { ok: true, value: { changed: false } },
+                { ok: true, value: { changed: false } },
+                { ok: true, value: { changed: false } },
+                { ok: true, value: { changed: false } },
+                { ok: true, value: { changed: false } },
+                { ok: true, changed: false },
+            ]);
+            const cancelled = watches.map(watch => watch());
+            await vi.waitFor(() => expect(home.calls).toHaveLength(watches.length * 2));
+            controller.abort();
+            const cancellationResults = await Promise.all(cancelled);
+            expect(cancellationResults).toMatchObject(watches.map(() => ({ ok: false, reason: 'request_failed' })));
+            expect(cancellationResults[0]).toMatchObject({ errorCode: 'MACHINE_RPC_ABORTED' });
+            await vi.waitFor(() => expect(home.cancellations).toHaveLength(watches.length));
+            await vi.advanceTimersByTimeAsync(36_000);
+            expect(home.calls).toHaveLength(watches.length * 2);
+            controller = new AbortController();
+            const disconnected = watches.map(watch => watch());
+            await vi.waitFor(() => expect(home.calls).toHaveLength(watches.length * 3));
+            for (const socket of home.socketServer.sockets.sockets.values()) socket.disconnect(true);
+            const disconnectResults = await Promise.all(disconnected);
+            expect(disconnectResults).toMatchObject(watches.map(() => ({ ok: false, reason: 'request_failed' })));
+            expect(disconnectResults[0]).toMatchObject({ errorCode: RPC_ERROR_CODES.TRANSPORT_UNAVAILABLE });
+            await vi.advanceTimersByTimeAsync(36_000);
+            expect(home.calls).toHaveLength(watches.length * 3);
+        } finally { controller.abort(); vi.useRealTimers(); }
+    });
+});
 
 it('retires an engine-closed namespace dial and dispatches Vitals through the same scoped pool after network recovery', async () => {
     await withMachineHome(async home => {
@@ -368,6 +431,13 @@ it('retires shared install-job discovery only after its last reader leaves and r
 
 it.each(['preview', 'publicPreview', 'diagnostics', 'simulator'] as const)('releases a parked %s snapshot when its effect signal retires', async family => {
     await withMachineHome(async home => {
+        if (family === 'publicPreview') {
+            const { primeServerFeaturesSnapshot } = await import('@/sync/api/capabilities/serverFeaturesClient');
+            const { createRootLayoutFeaturesResponse } = await import('@/dev/testkit/fixtures/featureFixtures');
+            primeServerFeaturesSnapshot({ serverId: home.serverId, snapshot: { status: 'ready',
+                features: createRootLayoutFeaturesResponse({ features: { localServices: { publicPreview: { enabled: true } } } }),
+            } });
+        }
         const controller = new AbortController();
         const request = { machineId: 'shared-machine', serverId: home.serverId, signal: controller.signal };
         const call = family === 'preview'
@@ -436,12 +506,14 @@ it('suspends Storage, Processes, Guard and Activity through their retained desti
             children: React.createElement(OtherResourcesProbe, { serverId: home.serverId }),
         });
         const screen = await renderScreen(content(true));
+        const watchMethods = [RPC_METHODS.DAEMON_STORAGE_WATCH, RPC_METHODS.DAEMON_PROCESSES_WATCH,
+            RPC_METHODS.DAEMON_GUARD_WATCH, RPC_METHODS.DAEMON_GUARD_ACTIVITY_WATCH].sort();
         try {
             await act(async () => { await vi.waitFor(() => {
                 const state = screen.findByType('OtherResourcesProbe').props;
                 expect([state.storage.status, state.processes.status, state.guard.status, state.activity.status, state.fleetActivity[0].status])
                     .toEqual(['ready', 'ready', 'ready', 'ready', 'ready']);
-                expect(home.calls.filter(call => call.method.endsWith('.watch'))).toHaveLength(3);
+                expect(home.calls.filter(call => call.method.endsWith('.watch')).map(call => call.method).sort()).toEqual(watchMethods);
             }); });
             const watches = home.calls.filter(call => call.method.endsWith('.watch'));
             await screen.update(content(false));
@@ -450,7 +522,8 @@ it('suspends Storage, Processes, Guard and Activity through their retained desti
             await screen.update(content(false));
             expect(home.calls).toHaveLength(count);
             await screen.update(content(true));
-            await act(async () => { await vi.waitFor(() => expect(home.calls.filter(call => call.method.endsWith('.watch'))).toHaveLength(6)); });
+            await act(async () => { await vi.waitFor(() => expect(home.calls.filter(call => call.method.endsWith('.watch'))
+                .map(call => call.method).sort()).toEqual([...watchMethods, ...watchMethods].sort())); });
         } finally { await screen.unmount(); }
     });
 });

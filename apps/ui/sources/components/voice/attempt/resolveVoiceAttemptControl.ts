@@ -113,7 +113,9 @@ export function resolveVoiceAttemptControl(input: Readonly<{
      */
     setupOffered?: boolean;
     /** Already projected by the shared Session awareness owner; never provider-authored copy. */
-    sessionStatus?: Pick<SessionAwarenessPresentationV1, 'state' | 'statusText'> | null;
+    sessionStatus?: Pick<SessionAwarenessPresentationV1, 'state' | 'statusText' | 'actionRequiredReason'> | null;
+    /** Hidden operational carrier, as identified by the canonical Voice custody metadata owner. */
+    hiddenSession?: boolean;
 }>): VoiceAttemptControl {
     // Disconnected media can still belong to a failed attempt. Keep its existing recovery
     // presentation until the lifecycle owner clears it; presence never implies an open microphone.
@@ -170,7 +172,8 @@ export function resolveVoiceAttemptControl(input: Readonly<{
                 ? 'shadow'
                 : input.status === 'disconnected' ? 'mic' : 'light',
         statusCell: input.status !== 'connected' ? null
-            : input.sessionStatus?.state === 'permission_required' || input.sessionStatus?.state === 'action_required'
+            : input.sessionStatus?.state === 'permission_required' || (input.sessionStatus?.state === 'action_required'
+                && !(input.hiddenSession === true && input.sessionStatus.actionRequiredReason === 'blocked_input'))
                 ? 'needs_you'
                 : input.sessionStatus?.state === 'thinking' ? 'working'
                     : input.surfaceState === 'thinking' ? 'thinking' : null,

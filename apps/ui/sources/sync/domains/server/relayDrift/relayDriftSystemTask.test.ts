@@ -1,18 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { seedPersistedHomeProfilesForTests } from '@/dev/testkit/fixtures/persistedHomeProfiles';
+import { homeProfileForTests } from '@/auth/storage/tokenStorage.testHelpers';
 
 import { buildRelayDriftRepairSystemTaskSpec } from './relayDriftSystemTask';
 
-const activeServer = vi.hoisted(() => ({ serverUrl: 'https://relay.example.test', serverIdentityId: 'srv_relay' as string | null }));
-
-vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-    return {
-        ...actual,
-        getActiveServerSnapshot: () => ({ serverId: 'active', serverUrl: activeServer.serverUrl, generation: 1 }),
-        getServerProfileById: (id: string) => (id === 'active'
-            ? { id, name: 'Active', serverUrl: activeServer.serverUrl, serverIdentityId: activeServer.serverIdentityId, createdAt: 0, updatedAt: 0, lastUsedAt: 0 }
-            : null),
-    };
+beforeEach(async () => {
+    // The real Home profile owner reads the active Home from the device persistence boundary.
+    const active = homeProfileForTests('active', 'https://relay.example.test', { serverIdentityId: 'srv_relay' });
+    await seedPersistedHomeProfilesForTests({ profiles: [active], activeServerId: active.id });
 });
 
 describe('buildRelayDriftRepairSystemTaskSpec', () => {

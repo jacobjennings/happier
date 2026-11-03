@@ -4,6 +4,7 @@ import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { createSocketIoBoundaryStub } from '@/dev/testkit/mocks/socketIo';
 import { createSessionReadBatchHttpBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
 import { createMachineReadBatchResponseFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { createDeferred } from '@/dev/testkit';
 import {
     adoptHomeProfile,
     getActiveServerSnapshot,
@@ -221,19 +222,32 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
 
     it('serves scoped HTTP for a non-focused Iroh-only Home through the verified loopback origin', async () => {
         await prepareHome();
-        const sourceResponse = jsonResponse({ ok: true });
-        const readBodySpy = vi.spyOn(sourceResponse, 'arrayBuffer');
+        const entered = createDeferred<void>();
+        const releaseBody = createDeferred<void>();
+        const sourceResponse = new Response(new ReadableStream<Uint8Array>({ async start(body) {
+            body.enqueue(new TextEncoder().encode('{"ok":'));
+            await releaseBody.promise;
+            body.enqueue(new TextEncoder().encode('true}'));
+            body.close();
+        } }), { headers: { 'Content-Type': 'application/json' } });
         operationFetch.mockImplementation(async (url) => {
-            if (url === `${LEASE_RUNTIME_ORIGIN}/v1/example`) return sourceResponse;
+            if (url === `${LEASE_RUNTIME_ORIGIN}/v1/example`) { entered.resolve(); return sourceResponse; }
             throw new Error(`Unexpected scoped HTTP request: ${url}`);
         });
         const request = createServerRequestWithServerScope({
             serverId: HOME_B_ID, activeRequest: async () => { throw new Error('non-focused HTTP must not use active request'); },
         });
-        const response = await request('/v1/example', { method: 'GET' });
-        expect(response.status).toBe(200);
-        expect(readBodySpy).toHaveBeenCalledTimes(1);
-        await expect(response.json()).resolves.toEqual({ ok: true });
+        let settled = false;
+        const pending = request('/v1/example', { method: 'GET' }).finally(() => { settled = true; });
+        try {
+            await entered.promise;
+            expect(settled).toBe(false);
+            expect(releaseHomeTunnel).not.toHaveBeenCalled();
+            releaseBody.resolve();
+            const response = await pending;
+            expect(response.status).toBe(200);
+            await expect(response.json()).resolves.toEqual({ ok: true });
+        } finally { releaseBody.resolve(); await pending; }
         expectHomeAudience();
         expect(httpRequests).toContainEqual({ url: `${LEASE_RUNTIME_ORIGIN}/v1/example`, authorization: `Bearer ${TOKEN_B}` });
         expect(releaseHomeTunnel).toHaveBeenCalledTimes(1);

@@ -1,3 +1,7 @@
+import { isManagedControllerCodecActionV1, openManagedControllerActionCodecV1 } from '@happier-dev/protocol/sessions/creation/sessionRequesterBootstrapV1';
+import { decodeBase64 } from '@happier-dev/protocol/crypto/base64';
+import { projectExternalActionWorkflowSessionLeafContextV1 } from '@happier-dev/protocol/actions/externalActionApi';
+import { projectExternalActionManagedAdmissionV1 } from '@happier-dev/protocol/actions/externalActionApi';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { isProjectWorkspaceSyncPreparationActionV1 } from '@happier-dev/protocol/actions/projectActionFamily';
 import { isPluginError } from '@happier-dev/plugin-sdk';
@@ -208,6 +212,8 @@ export async function executeExternalAction(input: Readonly<{
   const accountPrincipal = 'authentication' in input.principal ? input.principal : null;
   const sessionActionOrigin = accountPrincipal && 'sessionActionOrigin' in accountPrincipal
     ? accountPrincipal.sessionActionOrigin : null;
+  const workflowActionOrigin = accountPrincipal && 'workflowActionOrigin' in accountPrincipal
+    ? accountPrincipal.workflowActionOrigin : null;
   const actionId = apiTokenPrincipal
     ? PublicActionIdSchema.safeParse(externalActionId.data)
     : SignedRootActionIdSchema.safeParse(externalActionId.data);
@@ -228,6 +234,7 @@ export async function executeExternalAction(input: Readonly<{
         && executionAuthorization.data.binding.accountId === accountPrincipal.accountId
         && sameStrictJsonValue(executionAuthorization.data.binding.authentication, accountPrincipal.authentication)
         && sameStrictJsonValue(executionAuthorization.data.binding.sessionActionOrigin, sessionActionOrigin ?? undefined)
+        && sameStrictJsonValue(executionAuthorization.data.binding.workflowActionOrigin, workflowActionOrigin ?? undefined)
       : apiTokenPrincipal && 'credentialId' in executionAuthorization.data.binding
         && executionAuthorization.data.binding.accountId === apiTokenPrincipal.accountId
         && executionAuthorization.data.binding.principalId === apiTokenPrincipal.principalId
@@ -271,6 +278,33 @@ export async function executeExternalAction(input: Readonly<{
   }
 
   let requesterContext: Awaited<ReturnType<PrepareExternalActionRequesterAccountContext>> = null;
+  const managedControllerCodec = executionAuthorization?.success
+    && executionAuthorization.data.binding.accountId !== executionAuthorization.data.binding.custodianAccountId
+    && isManagedControllerCodecActionV1(executionAuthorization.data.binding);
+  let envelopeCodecMaterial: Readonly<{ type: 'dataKey'; machineKey: Uint8Array }> | null = null;
+  let controllerInvocation: import('@happier-dev/protocol/sessions/creation/sessionRequesterBootstrapV1').ExternalActionRequesterInvocationV1 | undefined;
+  // The opening target Home already proved for this root; an unchanged resolved
+  // target spends that one admission rather than repeating the same POST.
+  let rootAdmittedTarget: ExternalActionTargetV1 | undefined;
+  if (managedControllerCodec && executionAuthorization?.success) {
+    const authorization = executionAuthorization.data;
+    const current = await runExternalActionPhase('managed_controller_codec_currentness', input.currentMachineId, () =>
+      input.verifyExecutionAuthorization!({ authorization, effectActionId: actionId.data,
+        target: authorization.binding.target, ...(input.signal ? { signal: input.signal } : {}) }));
+    const opened = current.ok && current.value && !input.signal?.aborted ? openManagedControllerActionCodecV1({
+      authorization, machineId: input.currentMachineId, installationId: input.currentInstallationId!,
+      includeInvocation: true,
+      serverIdentityId: authorization.binding.serverIdentityId,
+      installationPrivateKey: typeof input.externalActionMachineRequestPrivateKey === 'string'
+        ? decodeBase64(input.externalActionMachineRequestPrivateKey, 'base64url') : input.externalActionMachineRequestPrivateKey!,
+    }) : null;
+    envelopeCodecMaterial = opened?.material ?? null;
+    controllerInvocation = opened?.invocation;
+    if (!envelopeCodecMaterial) return { kind: 'invalid_request',
+      errorCode: envelope.data.v === 2 ? 'invalid_encrypted_envelope' : 'invalid_envelope',
+      ...(envelope.data.requestId ? { requestId: envelope.data.requestId } : {}) };
+    rootAdmittedTarget = authorization.binding.target;
+  }
   let pluginRuntimeLease: PluginRuntimeRegistryLease | null = null;
   // Diagnose the ordinary input corridor without serializing its carrier or
   // amplifying unrelated background Action traffic. Logs never affect admission.
@@ -285,7 +319,7 @@ export async function executeExternalAction(input: Readonly<{
   const prepareOwnAccount = executionAuthorization?.success && input.prepareRequesterAccountContext !== undefined
     && (isOriginalOwnAccountActionCustody(executionAuthorization.data.binding)
       || isOriginalSessionInputAccountActionCustody(executionAuthorization.data.binding));
-  if (executionAuthorization?.success && (executionAuthorization.data.requesterAccountContext || prepareOwnAccount)) {
+  if (!managedControllerCodec && executionAuthorization?.success && (executionAuthorization.data.requesterAccountContext || prepareOwnAccount)) {
     const authorization = executionAuthorization.data;
     diagnoseSessionInput('requester_prepare', 'started');
     if (input.signal?.aborted || !input.prepareRequesterAccountContext) return { kind: 'invalid_request',
@@ -326,7 +360,9 @@ export async function executeExternalAction(input: Readonly<{
     if (!request.target) {
       return { kind: 'invalid_request', errorCode: 'target_required', requestId: request.requestId };
     }
-    const resolveEncryption = requesterContext?.resolveEncryption ?? input.resolveEncryption;
+    const resolveEncryption: ResolveExternalActionEncryption | undefined = envelopeCodecMaterial && executionAuthorization?.success
+      ? async () => ({ serverIdentityId: executionAuthorization.data.binding.serverIdentityId, material: envelopeCodecMaterial! })
+      : requesterContext?.resolveEncryption ?? input.resolveEncryption;
     if (!resolveEncryption) return {
       kind: 'invalid_request', errorCode: 'encrypted_action_unsupported', requestId: request.requestId,
     };
@@ -395,15 +431,15 @@ export async function executeExternalAction(input: Readonly<{
       || executionAuthorization?.success && executionAuthorization.data.binding.idempotencyKey !== envelope.data.idempotencyKey) {
       throw new TypeError('Manual retry identity mismatch');
     }
-    if (envelope.data.managedAdmission) {
-      if (actionId.data !== 'machines.managed.acquire') throw new TypeError('Wrong managed admission Action');
-      const { agentStart, ...compute } = ManagedAcquireInputV1Schema.parse(decodedInput);
-      if (Boolean(agentStart) !== envelope.data.managedAdmission.continuationPresent
-        || !sameStrictJsonValue(ManagedAdmissionComputeInputV1Schema.parse(compute), envelope.data.managedAdmission.input)) {
-        throw new TypeError('Managed admission input mismatch');
-      }
-    } else if (actionId.data === 'machines.managed.acquire' && envelope.data.v === 2) {
+    const managedAdmission = projectExternalActionManagedAdmissionV1(actionId.data, decodedInput);
+    if (envelope.data.managedAdmission && !sameStrictJsonValue(managedAdmission, envelope.data.managedAdmission)) {
+      throw new TypeError('Managed admission input mismatch');
+    } else if (managedAdmission && envelope.data.v === 2 && !envelope.data.managedAdmission) {
       throw new TypeError('Missing managed admission projection');
+    }
+    const recoveryAdmission = executionAuthorization?.success ? executionAuthorization.data.binding.managedAdmission : undefined;
+    if (recoveryAdmission && !sameStrictJsonValue(managedAdmission, recoveryAdmission)) {
+      throw new TypeError('Managed recovery input mismatch');
     }
     if (envelope.data.sessionSpawnAdmission && (actionId.data !== 'session.spawn_new'
       || !sameStrictJsonValue(projectApiTokenSessionSpawnAdmissionV1(decodedInput), envelope.data.sessionSpawnAdmission))) {
@@ -466,7 +502,7 @@ export async function executeExternalAction(input: Readonly<{
     });
   }
 
-  if (executionAuthorization?.success) {
+  if (executionAuthorization?.success && !sameStrictJsonValue(rootAdmittedTarget, target)) {
     trace('effect_root_currentness.begin');
     const current = await runExternalActionPhase('effect_root_currentness', input.currentMachineId, async () =>
       !input.signal?.aborted && await input.verifyExecutionAuthorization!({
@@ -607,7 +643,7 @@ export async function executeExternalAction(input: Readonly<{
   if (envelope.data.pluginInvocation && !pluginCaller) return prepare({ v: 1, actionId: actionId.data,
     ...(envelope.data.requestId ? { requestId: envelope.data.requestId } : {}),
     execution: { ok: false, errorCode: 'plugin_mounted_caller_unavailable', error: 'plugin_mounted_caller_unavailable' } });
-  const invocation = requesterContext?.invocation;
+  const invocation = requesterContext?.invocation ?? controllerInvocation;
   // This new same-Session mutation must retain its initiating cause. An Account
   // credential on the destination is custody, never evidence of a human click.
   if (actionId.data === 'session.agent.transition' && !sessionActionOrigin && !apiTokenPrincipal && !invocation) {
@@ -636,6 +672,7 @@ export async function executeExternalAction(input: Readonly<{
       ...(invocation.workspaceWrites ? { workspaceWrites: invocation.workspaceWrites } : {}),
       ...(invocation.defaultSessionId ? { defaultSessionId: invocation.defaultSessionId } : {}),
     } : {}),
+    ...(admittedAuthorization ? projectExternalActionWorkflowSessionLeafContextV1(admittedAuthorization) : {}),
     ...(sessionActionOrigin ? {
       defaultSessionId: sessionActionOrigin.caller.sessionId,
       callerPermissionMode: sessionActionOrigin.callerPermissionMode,

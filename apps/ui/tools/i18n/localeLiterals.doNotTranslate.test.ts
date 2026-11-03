@@ -22,9 +22,12 @@ describe('isDoNotTranslate', () => {
             'happier daemon status',
             'claude setup-token',
             'git rebase --continue',
+            'git push --force-with-lease',
+            'happier attach <session-id>',
             'ssh user@host',
             '--force',
             'https://example.com/docs',
+            '/path/to/project',
             '~/.happier/uploads',
             'src/new-file.ts',
         ]) {
@@ -49,6 +52,10 @@ describe('isDoNotTranslate', () => {
             'on Monday at 9 AM',
             ' messages selected',
             'tmux is not detected on this machine. Install tmux and refresh detection.',
+            'Cancel',
+            'You have ',
+            'Choose a model',
+            'Push and don’t ask again',
         ]) {
             expect(isDoNotTranslate(prose), prose).toBe(false);
         }

@@ -48,7 +48,7 @@ export const ProjectDashboardIdentityLine = React.memo(
             <Text style={[styles.text, { color: theme.colors.text.tertiary }]}>·</Text>
             {/* Whose dashboard it is, in words: the avatar alone keys on an opaque Account id. */}
             <Text numberOfLines={1} testID={`${testID}.owner`}
-              style={[styles.text, styles.detail, { color: theme.colors.text.secondary }]}>
+              style={[styles.text, styles.owner, { color: theme.colors.text.secondary }]}>
               {props.owner.displayName}
             </Text>
           </>
@@ -60,7 +60,7 @@ export const ProjectDashboardIdentityLine = React.memo(
           numberOfLines={1}
           style={[
             styles.text,
-            styles.detail,
+            styles.access,
             { color: theme.colors.text.secondary },
           ]}
         >
@@ -93,6 +93,8 @@ const styles = StyleSheet.create(() => ({
   line: { flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 },
   text: { ...Typography.default(), ...happierPageTextMetrics('pageDescription') },
   title: { ...Typography.default('semiBold'), flexShrink: 1 },
-  detail: { flexShrink: 1 },
+  /** The names give way first; the access level the viewer acts under stays whole. */
+  owner: { flexShrink: 1 },
+  access: { flexShrink: 0 },
   action: { ...Typography.default('semiBold') },
 }));

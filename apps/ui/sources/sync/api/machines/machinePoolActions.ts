@@ -20,7 +20,10 @@ export function createMachinePoolActionClient(params: Readonly<{
     return Object.freeze({
         execute: async <TActionId extends MachinePoolActionIdV1>(actionId: TActionId, input: MachinePoolActionInputV1<TActionId>, options: Readonly<{ serverId: string; signal?: AbortSignal }>): Promise<MachinePoolActionOutputV1<TActionId>> => {
             const parsedInput = MachinePoolActionInputSchemasV1[actionId].parse(input);
-            const response = await params.request(machinePoolActionEndpointPathV1(actionId), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsedInput), ...(options.signal ? { signal: options.signal } : {}) }, { includeAuth: true });
+            const response = await params.request(machinePoolActionEndpointPathV1(actionId), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsedInput), ...(options.signal ? { signal: options.signal } : {}) }, {
+                includeAuth: true,
+                recoveryRead: actionId === 'machines.pools.list' || actionId === 'machines.pools.get' ? 'unbounded' : false,
+            });
             const payload: unknown = await response.json();
             if (!response.ok) {
                 const parsedError = MachinePoolErrorV1Schema.safeParse(payload);

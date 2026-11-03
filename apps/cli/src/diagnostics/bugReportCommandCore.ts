@@ -14,7 +14,6 @@ import {
   type CollectBugReportDiagnosticsArtifactsInput as CollectDiagnosticsInput,
   type CollectBugReportDiagnosticsArtifactsResult as CollectDiagnosticsResult,
 } from '@/diagnostics/bugReportArtifacts';
-import { collectBugReportMachineDiagnosticsSnapshot } from '@/diagnostics/bugReportMachineDiagnostics';
 import type { ServerProfile } from '@/server/serverProfiles';
 import { getActiveServerProfile } from '@/server/serverProfiles';
 import { isInteractiveTerminal, promptInput } from '@/cli/commands/server/commandUtilities';
@@ -271,7 +270,7 @@ export async function runBugReportCommand(
   }
 
   let existingIssueNumber: number | undefined = parsed.existingIssueNumber ?? undefined;
-  if (!existingIssueNumber && interactive && !parsed.skipSimilarIssues && providerUrl) {
+  if (!parsed.exportPath && !existingIssueNumber && interactive && !parsed.skipSimilarIssues && providerUrl) {
     const query = [title, summary, currentBehavior ?? '', expectedBehavior ?? '']
       .map((part) => String(part).trim())
       .filter(Boolean)
@@ -373,13 +372,5 @@ export async function runBugReportCommand(
     artifactCount: diagnostics.artifacts.length,
   };
 }
-
-export const __internal = {
-  parseBugReportArgs,
-  formatFallbackIssueBody,
-  buildFallbackIssueUrl,
-  normalizeReproductionSteps,
-  collectBugReportMachineDiagnosticsSnapshot,
-};
 
 export { bugReportUsage };

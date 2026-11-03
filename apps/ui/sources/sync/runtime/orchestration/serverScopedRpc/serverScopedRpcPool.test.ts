@@ -433,7 +433,7 @@ describe('resolveScopedMachineTransport', () => {
         });
         vi.stubGlobal('fetch', vi.fn(async (url: string) => {
             if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {
-                return { ok: true, status: 200, json: async () => ({}) };
+                return Response.json({});
             }
             return {
                 ok: true,
@@ -755,11 +755,7 @@ describe('resolveScopedMachineTransport', () => {
             if (String(_url).includes('/v1/machines')) {
                 expect(init && 'signal' in init).toBe(true);
             }
-            return {
-                ok: false,
-                status: 503,
-                json: async () => [],
-            };
+            return Response.json([], { status: 503 });
         });
         vi.stubGlobal('fetch', fetchSpy);
 

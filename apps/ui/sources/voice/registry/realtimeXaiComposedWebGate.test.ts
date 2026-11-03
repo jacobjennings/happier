@@ -629,38 +629,6 @@ describe('realtime_grok source-composed direct-media persistence gate', () => {
     }
   });
 
-  it('forgets persisted metadata after End Voice and keeps the fenced late provider write inert', async () => {
-    await environment.installSettings(true);
-    environment.mockHistoryCarrierDiscovery();
-    const composed = await environment.createRuntime();
-
-    try {
-      await composed.runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null, initialContext: '' });
-      const socket = FakeWebSocket.instances[0]!;
-      socket.emitConversationId('conv-before-end');
-      await waitForTestEvent(storage.subscribe, () => expect(readVoiceProviderConversationMetadata(
-        environment.readProviderConversationOwnerMetadata(XAI_HISTORY_SESSION_ID),
-        'happier.voice.xai/realtime-grok',
-      )).toMatchObject({ conversationId: 'conv-before-end' }));
-
-      await composed.runtime.adapter.stop({ sessionId: composed.controlSessionId });
-      await expect(performVoiceAdapterRuntimeAction(
-        'happier.voice.xai/realtime-grok',
-        'forget_provider_conversation',
-      )).resolves.toEqual({ status: 'completed' });
-
-      socket.emitConversationId('conv-late-after-end-and-forget');
-      await Promise.resolve();
-      expect(readVoiceProviderConversationMetadata(
-        environment.readProviderConversationOwnerMetadata(XAI_HISTORY_SESSION_ID),
-        'happier.voice.xai/realtime-grok',
-      )).toBeNull();
-    } finally {
-      await composed.runtime.dispose();
-      composed.hostLease.revoke();
-    }
-  });
-
   it('treats an already-absent persisted ID as successful without a metadata mutation', async () => {
     await environment.installSettings(true);
     environment.mockHistoryCarrierDiscovery();

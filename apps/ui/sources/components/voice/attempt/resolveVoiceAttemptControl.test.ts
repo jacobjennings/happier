@@ -64,6 +64,18 @@ describe('resolveVoiceAttemptControl', () => {
         expect(resolveVoiceAttemptControl({ ...base, sessionStatus: { state: 'thinking', statusText: 'Working' } }))
             .toMatchObject({ statusCell: null });
     });
+    it.each(['listening', 'speaking'] as const)('keeps %s for hidden-carrier queue recovery and genuine requests actionable', (surfaceState) => {
+        const live = { ...base, status: 'connected' as const, surfaceState, canStop: true,
+            sessionId: 'carrier', hiddenSession: true };
+        const blocked = { state: 'action_required' as const, statusText: 'Needs you', actionRequiredReason: 'blocked_input' as const };
+        expect(resolveVoiceAttemptControl({ ...live, sessionStatus: blocked }))
+            .toMatchObject({ statusCell: null, surfaceState, primaryAction: 'end' });
+        expect(resolveVoiceAttemptControl({ ...live, hiddenSession: false, sessionStatus: blocked }).statusCell).toBe('needs_you');
+        expect(resolveVoiceAttemptControl({ ...live, sessionStatus: { ...blocked, actionRequiredReason: 'request' } }).statusCell).toBe('needs_you');
+        expect(resolveVoiceAttemptControl({ ...live, sessionStatus: { state: 'permission_required', statusText: 'Needs you' } }).statusCell).toBe('needs_you');
+        expect(resolveVoiceAttemptControl({ ...live, status: 'error', surfaceState: 'error', hasRecovery: true }))
+            .toMatchObject({ recoveryAvailable: true, markPose: 'blocked' });
+    });
     it('projects a still mic at rest and distinct eclipse/recovery/live poses without changing End authority', () => {
         expect(resolveVoiceAttemptControl(base)).toMatchObject({ markPose: 'mic', statusCell: null });
         expect(resolveVoiceAttemptControl({ ...base, status: 'connecting', surfaceState: 'connecting', canStop: true }))

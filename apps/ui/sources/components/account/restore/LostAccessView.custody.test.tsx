@@ -7,7 +7,7 @@ import { installLocalStorageMock, installWebLockManagerMock } from '@/auth/stora
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
 import { Modal } from '@/modal';
-import { initializeTerminalRouteRuntimeForTests } from '@/__tests__/routes/(app)/terminal/terminalRouteTestHelpers';
+import { initializeAuthRouteRuntimeForTests } from '@/dev/testkit/harness/authRouteRuntimeHarness';
 import { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
 import { getActiveServerSnapshot, upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
 import { guardAccountEncryptionFirstKeyCredentialMutation } from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
@@ -26,7 +26,7 @@ vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal')).creat
     spies: { show: config => { config.onRequestClose?.(); return 'modal-id'; } },
 }).module);
 
-await initializeTerminalRouteRuntimeForTests();
+await initializeAuthRouteRuntimeForTests();
 let localStorage: ReturnType<typeof installLocalStorageMock>;
 let locks: ReturnType<typeof installWebLockManagerMock>;
 beforeEach(() => {

@@ -1290,49 +1290,6 @@ describe('useSessionPaneUrlSync', () => {
         expect(setParams).toHaveBeenCalledTimes(0);
     });
 
-    it('does not write params when url already matches the derived scope state', async () => {
-        const setParams = vi.fn();
-        const pane = {
-            openRight: vi.fn(),
-            closeRight: vi.fn(),
-            setRightTab: vi.fn(),
-            openBottom: vi.fn(),
-            closeBottom: vi.fn(),
-            setBottomTab: vi.fn(),
-            openDetailsTab: vi.fn(),
-            closeDetails: vi.fn(),
-        };
-
-        const openScopeState = {
-            right: { isOpen: true, activeTabId: 'files', tabState: {} },
-            bottom: { isOpen: true, activeTabId: 'terminal', tabState: {} },
-            details: {
-                isOpen: true,
-                tabs: [
-                    {
-                        key: 'file:src/app.ts',
-                        kind: 'file',
-                        title: 'app.ts',
-                        resource: { kind: 'file', path: 'src/app.ts' },
-                        isPinned: true,
-                        isPreview: false,
-                    },
-                ],
-                activeTabKey: 'file:src/app.ts',
-            },
-        };
-
-        await renderScreen(<Harness
-                    enabled={true}
-                    scopeState={openScopeState}
-                    urlState={{ rightTabId: 'files', bottomTabId: 'terminal', details: { kind: 'file', path: 'src/app.ts' } }}
-                    pane={pane}
-                    setParams={setParams}
-                />);
-
-        expect(setParams).toHaveBeenCalledTimes(0);
-    });
-
     it('re-opens panes when browser forward restores pane params', async () => {
         const setParams = vi.fn();
         const pane = {

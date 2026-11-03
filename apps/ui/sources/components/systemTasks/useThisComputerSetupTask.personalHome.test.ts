@@ -52,7 +52,6 @@ vi.mock('@/sync/http/client', async (importOriginal) => ({
     createServerFetchAtEndpoint: (...args: unknown[]) => approvalMocks.createServerFetchAtEndpoint(...args),
 }));
 
-import { respondToTokenOnlyAuthRequestPrompt } from './approveSystemTaskAuthRequestPrompt';
 import { buildLocalMachineSetupSystemTaskSpec } from './buildLocalMachineSetupSystemTaskSpec';
 import { createManualSystemTaskRunner as createManualRunner } from '@/dev/testkit/harness/manualSystemTaskRunner';
 import { useThisComputerSetupTask } from './useThisComputerSetupTask';
@@ -267,6 +266,8 @@ describe('useThisComputerSetupTask Personal Home composition', () => {
 
             // The answer itself carries no credential or secret material.
             expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: true });
+            // A managed CLI is approved silently: first-run onboarding asks the user nothing.
+            expect(modalSpies.confirm).not.toHaveBeenCalled();
         });
 
         it('declines a token-only approval prompt whose explicit target identity does not match', async () => {
@@ -286,9 +287,12 @@ describe('useThisComputerSetupTask Personal Home composition', () => {
                 activeWebappUrl: 'http://127.0.0.1:43123',
             }));
             });
-            emitApprovalPrompt(manual, taskId!, 'http://127.0.0.9:9999');
+            // An override-resolved CLI would normally be asked about; the binding check refuses first,
+            // under its own name, so the mismatch never reads as a human decline.
+            emitApprovalPrompt(manual, taskId!, 'http://127.0.0.9:9999', 'override');
             await flushHookEffects({ cycles: 3, turns: 2 });
 
+            expect(modalSpies.confirm).not.toHaveBeenCalled();
             expect(approvalMocks.readCredentials).not.toHaveBeenCalled();
             expect(approvalMocks.createServerFetchAtEndpoint).not.toHaveBeenCalled();
             expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: false, reason: 'relay_mismatch' });
@@ -349,36 +353,6 @@ describe('useThisComputerSetupTask Personal Home composition', () => {
                 expect(approvalMocks.createServerFetchAtEndpoint).not.toHaveBeenCalled();
                 expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: false, reason: 'credentials_unavailable' });
             }
-        });
-
-        it('approves a managed CLI silently, with nothing asked of the user', async () => {
-            approvalMocks.readCredentials.mockResolvedValue({ token: 'home-b-bearer' });
-            approvalMocks.endpointFetch
-                .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'pending', supportsV2: true }), { status: 200 }))
-                .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
-
-            const manual = createManualRunner();
-            const hook = await renderHook(() => useThisComputerSetupTask({
-                runner: manual.runner,
-                authRequestApproval: {
-                    expectedRelayUrl: 'http://127.0.0.1:3005',
-                    serverId: 'srv_home_b',
-                },
-            }));
-
-            let taskId: string | undefined;
-            await act(async () => {
-                taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec({
-                    activeRelayUrl: 'http://127.0.0.1:43123',
-                    activeWebappUrl: 'http://127.0.0.1:43123',
-                }));
-            });
-            emitApprovalPrompt(manual, taskId!, 'http://127.0.0.1:3005');
-            await flushHookEffects({ cycles: 3, turns: 2 });
-
-            // First-run onboarding stays zero-interaction for the case the install path owns.
-            expect(modalSpies.confirm).not.toHaveBeenCalled();
-            expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: true });
         });
 
         // R8/R13: install ownership selects the approval mode. A CLI the managed install path did
@@ -454,44 +428,6 @@ describe('useThisComputerSetupTask Personal Home composition', () => {
             // Always answered, and by name, so the executor reports a human decline as exactly
             // that instead of waiting for a timeout.
             expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: false, reason: 'cli_not_approved' });
-        });
-
-        // Every refusal travels back to the executor by name, so a run that stops says what
-        // actually happened. Only `cli_not_approved` is a human decline; a relay mismatch or an
-        // unreadable credential must not be reported as one.
-        it('answers every refusal with its own name so none reads as a human decline', async () => {
-            const prompt = {
-                publicKey: 'pub-key-b64',
-                response: 'opaque-token-only-response-b64',
-                relayUrl: 'http://127.0.0.1:3005',
-                cliProvenance: 'override',
-                cliCommand: RESOLVED_CLI_COMMAND,
-            } as const;
-            const approval = { expectedRelayUrl: 'http://127.0.0.1:3005', serverId: 'srv_home_b' } as const;
-
-            // Asked and declined: the one refusal a person actually made.
-            const declinedRespond = vi.fn(async () => undefined);
-            expect(await respondToTokenOnlyAuthRequestPrompt({
-                prompt,
-                approval,
-                confirmUnmanagedCli: async () => false,
-                respond: declinedRespond,
-            })).toEqual({ approved: false, reason: 'cli_not_approved' });
-            expect(declinedRespond).toHaveBeenCalledWith({ approved: false, reason: 'cli_not_approved' });
-
-            // A binding check: refused before anything is asked or read, under its own name.
-            const mismatchRespond = vi.fn(async () => undefined);
-            const confirmUnmanagedCli = vi.fn(async () => true);
-            expect(await respondToTokenOnlyAuthRequestPrompt({
-                prompt,
-                approval: { expectedRelayUrl: 'http://127.0.0.9:9999' },
-                confirmUnmanagedCli,
-                respond: mismatchRespond,
-            })).toEqual({ approved: false, reason: 'relay_mismatch' });
-            expect(mismatchRespond).toHaveBeenCalledWith({ approved: false, reason: 'relay_mismatch' });
-            expect(confirmUnmanagedCli).not.toHaveBeenCalled();
-
-            expect(approvalMocks.readCredentials).not.toHaveBeenCalled();
         });
     });
 });

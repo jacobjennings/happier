@@ -20,6 +20,10 @@ describe('CLI acquisition presentation', () => {
         expect(createPlanChecklistLogEntryFromSystemTaskEvent(sample, () => 'Install tools', 0)).toMatchObject({
             message: presentation?.status, details: presentation?.downloadProgress,
         });
+        expect(presentCliAcquisitionEvent(event({ phase: 'downloading', receivedBytes: 1024, totalBytes: 2048 }))).toEqual({
+            status: t('cliAcquisitionProgress.acquisitionDownloadingStatus'),
+            downloadProgress: t('cliAcquisitionProgress.acquisitionDownloadBytesTotal', { received: '1.02 KB', total: '2.05 KB' }),
+        });
         expect(presentCliAcquisitionEvent(event({ phase: 'verifying', receivedBytes: 1024 })))
             .toEqual({ status: t('cliAcquisitionProgress.acquisitionVerifyingStatus'), downloadProgress: undefined });
     });

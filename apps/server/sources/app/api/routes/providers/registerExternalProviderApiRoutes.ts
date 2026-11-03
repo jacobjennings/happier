@@ -194,6 +194,8 @@ export function registerExternalProviderApiRoutes(
         app.route({
             method: descriptor.method,
             url: `${TEAM_CREDENTIAL_EXTERNAL_PROVIDER_API_BASE_PATH_V1}${descriptor.publicPath}`,
+            // Broker JSON and event streams must deliver chunks before EOF.
+            compress: false,
             config: { cors: false, rateLimit },
             preHandler: operationGate,
             handler: async (request: FastifyRequest<{ Body: unknown }>, reply: FastifyReply) => {

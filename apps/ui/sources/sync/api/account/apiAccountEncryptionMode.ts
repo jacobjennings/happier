@@ -160,10 +160,10 @@ export function createSocketAccountEncryptionObservation(options: Readonly<{
         update: (raw: unknown) => {
             if (options.isCurrent() && observation.update(raw)) notify();
         },
-        dispose: () => {
+        dispose: (reason?: AccountEncryptionInvalidation['reason']) => {
             accountEncryptionModeCacheInvalidationListeners.delete(invalidate);
             observation.dispose();
-            notify();
+            notify(reason);
         },
     };
 }
@@ -499,7 +499,14 @@ async function readSharedAccountEncryptionMode(
     return await accountEncryptionModeReads.run(cacheKey, async () => {
         const value = await backoffForever(async () => {
             assertCurrent();
-            return await run();
+            try {
+                return await run();
+            } catch (error) {
+                // HTTP may settle retirement before another retry enters this
+                // owner. Keep the Account-mode retirement contract in either case.
+                assertCurrent();
+                throw error;
+            }
         });
         assertCurrent();
         return value;

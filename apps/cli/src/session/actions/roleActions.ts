@@ -42,6 +42,9 @@ export function createRoleActionExecutor(params: Readonly<{
   prepareWorkspaceWritesPolicy?: RoleWorkspaceWritesPolicyPreparer;
 }>): NonNullable<ActionExecutorDeps['roleActionExecute']> {
   const listEntries = params.readRoleSources ?? createRoleSourceReader(params);
+  const editSourceIds = (snapshot: ReturnType<typeof readSessionRolesV1> | undefined, roleIds: readonly (string | null | undefined)[]) =>
+    [...new Set(roleIds.filter((roleId): roleId is string => roleId != null
+      && !Object.hasOwn(BUILT_IN_ROLES_V1, roleId) && snapshot?.sessionRoles[roleId]?.roleId !== roleId))];
   const readSettingsOverrides = async (signal?: AbortSignal) => {
     const read = await params.readSettingsOverrides?.(signal) ?? { status: 'unavailable' as const, reason: 'source-unavailable' };
     if (read.status !== 'ready') {
@@ -146,12 +149,10 @@ export function createRoleActionExecutor(params: Readonly<{
       writeSessionRoleIdV1ToMetadata(metadata as Record<string, unknown>, roleId);
       const snapshot = readSessionRolesV1(metadata) ?? undefined;
       const settingsOverrides = await readSettingsOverrides(context.signal);
-      // Built-ins and their Account/Session overrides are already authoritative
-      // here. An external requested or current role still needs source inventory;
-      // unrelated Artifact/legacy reads must not postpone a native-policy refusal.
-      const needsExternalSources = !Object.hasOwn(BUILT_IN_ROLES_V1, roleId)
-        || (snapshot?.roleId != null && !Object.hasOwn(BUILT_IN_ROLES_V1, snapshot.roleId));
-      const inventory = needsExternalSources ? await listEntries(context.signal) : undefined;
+      // Built-ins and complete inherited bodies are already authoritative.
+      // Fresh external policy needs only the requested and current identities.
+      const roleIds = editSourceIds(snapshot, [roleId, snapshot?.roleId]);
+      const inventory = roleIds.length ? await listEntries(context.signal, { roleIds }) : undefined;
       const readCandidate = () => {
         const metadata = readSessionMetadata();
         if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) refuse('session_target_unavailable');
@@ -200,12 +201,11 @@ export function createRoleActionExecutor(params: Readonly<{
       const request = RoleActionInputSchemasV1[actionId].parse(input);
       if (request.sessionId !== params.sessionId) refuse('session_target_unavailable');
       const edit = SessionRoleEditSchema.parse({ actionId, input: request });
-      const selectedRoleId = readSessionRolesV1(readSessionMetadata())?.roleId;
+      const snapshot = readSessionRolesV1(readSessionMetadata());
       // These edits need the selected/edited roles' policy, not every unrelated
       // document. Built-in policy and overrides are already held by the Session.
-      const needsExternalSources = (selectedRoleId != null && !Object.hasOwn(BUILT_IN_ROLES_V1, selectedRoleId))
-        || ('roleId' in request && !Object.hasOwn(BUILT_IN_ROLES_V1, request.roleId));
-      const inventory = needsExternalSources ? await listEntries(context.signal) : undefined;
+      const roleIds = editSourceIds(snapshot, [snapshot?.roleId, 'roleId' in request ? request.roleId : undefined]);
+      const inventory = roleIds.length ? await listEntries(context.signal, { roleIds }) : undefined;
       const settingsOverrides = await readSettingsOverrides(context.signal);
       const layers = { roleSourceInventory: inventory, settingsOverrides };
       const readCandidate = () => {

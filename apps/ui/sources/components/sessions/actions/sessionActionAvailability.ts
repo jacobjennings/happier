@@ -149,7 +149,8 @@ export function listVisibleSessionActionIds(params: Readonly<{
         ids.push(SESSION_ACTION_UNARCHIVE_ID);
     }
 
-    if (surface === 'sessionInfo' && target.canDelete) {
+    if (target.canDelete && (surface === 'sessionInfo'
+        || (target.isArchived && (surface === 'rowMenu' || surface === 'nativeContextMenu')))) {
         ids.push(SESSION_ACTION_DELETE_ID);
     }
 

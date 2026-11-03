@@ -1,0 +1,151 @@
+import type { CliActionDepsParams } from './types';
+import type { postWebhookJsonAsync, WebhookDestinationAdmissionError } from '@/notifications/activity/sendWebhookActivityNotification';
+import { randomUUID } from 'node:crypto';
+import type { ActionExecutorDeps } from '@happier-dev/protocol';
+import { configuration } from '@/configuration';
+import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import type { fetchSessionById } from '@/session/transport/http/sessionsHttp';
+import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import type { PushNotificationClient } from '@/api/pushNotifications';
+import type { dispatchActivityNotificationAsync, listActivityNotificationChannels, NotificationChannelCatalogUnavailableError } from '@/notifications/activity/dispatchActivityNotification';
+import type { hydrateNotificationChannelCatalogForActiveAccount, hydrateNotificationChannelCatalogForOperation } from '@/settings/notifications/hydrateNotificationChannelCatalog';
+import type { createSavedSecretMaterializerFromSnapshotV1, SavedSecretResolutionError } from '@/settings/secrets/savedSecretCatalog';
+import { getActiveAccountSettingsSnapshot, getActiveAccountSettingsSnapshotLifetimeToken, isActiveAccountSettingsSnapshotLifetimeCurrent } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
+export function createCliNotificationActionDeps(
+  params: Pick<CliActionDepsParams, 'credentials' | 'savedSecretOperationContext' | 'serverHttpBaseUrl' | 'serverId' | 'isCredentialCurrent' | 'resolvePluginNotifications'>,
+  workflowAction: ActionExecutorDeps['workflowAction'] | null,
+): Pick<ActionExecutorDeps, 'notificationChannelsList' | 'webhookCall' | 'notificationsNotifyMe'> {
+  const readNotificationContext = async (signal?: AbortSignal) => {
+    const credentials = params.credentials;
+    if (!credentials) {
+      const { NotificationChannelCatalogUnavailableError } = await import("@/notifications/activity/dispatchActivityNotification");
+      throw new NotificationChannelCatalogUnavailableError('unauthorized');
+    }
+    const operation = params.savedSecretOperationContext;
+    const home = operation?.serverHttpBaseUrl ?? params.serverHttpBaseUrl ?? resolveServerHttpBaseUrl();
+    const scopeKey = runWithServerHttpBaseUrl(home, () => resolveAccountSettingsScopeKeyForToken(credentials.token));
+    const readSnapshot = () => operation ? operation.readSnapshot() : getActiveAccountSettingsSnapshot();
+    const lifetimeToken = getActiveAccountSettingsSnapshotLifetimeToken();
+    const isCurrent = async () => !signal?.aborted && readSnapshot()?.scopeKey === scopeKey
+      && (operation ? operation.credentials.token === credentials.token && await operation.isCurrent()
+        : isActiveAccountSettingsSnapshotLifetimeCurrent({ scopeKey, lifetimeToken }))
+      && (!params.isCredentialCurrent || await params.isCredentialCurrent());
+    const assertCurrent = async () => {
+      signal?.throwIfAborted();
+      if (!await isCurrent()) {
+        const { NotificationChannelCatalogUnavailableError } = await import("@/notifications/activity/dispatchActivityNotification");
+        throw new NotificationChannelCatalogUnavailableError('scope-retired');
+      }
+    };
+    await assertCurrent();
+    let snapshot = readSnapshot();
+    if (!snapshot) {
+      const { NotificationChannelCatalogUnavailableError } = await import("@/notifications/activity/dispatchActivityNotification");
+      throw new NotificationChannelCatalogUnavailableError('scope-retired');
+    }
+    if (!snapshot.notificationChannelCatalog || snapshot.notificationChannelCatalog.status === 'loading') {
+      if (operation) {
+        const { hydrateNotificationChannelCatalogForOperation } = await import("@/settings/notifications/hydrateNotificationChannelCatalog");
+        const catalog = await hydrateNotificationChannelCatalogForOperation({ operationContext: operation, signal, assertCurrent });
+        if (catalog.status === 'unavailable' && catalog.reason === 'scope-retired') {
+          const { NotificationChannelCatalogUnavailableError } = await import("@/notifications/activity/dispatchActivityNotification");
+          throw new NotificationChannelCatalogUnavailableError('scope-retired');
+        }
+      } else {
+        const { hydrateNotificationChannelCatalogForActiveAccount } = await import("@/settings/notifications/hydrateNotificationChannelCatalog");
+        await runWithServerHttpBaseUrl(home, () => hydrateNotificationChannelCatalogForActiveAccount({ credentials, scopeKey, lifetimeToken, signal }));
+      }
+      await assertCurrent();
+      snapshot = readSnapshot();
+    }
+    if (!snapshot) {
+      const { NotificationChannelCatalogUnavailableError } = await import("@/notifications/activity/dispatchActivityNotification");
+      throw new NotificationChannelCatalogUnavailableError('scope-retired');
+    }
+    const captured = snapshot;
+    const { createSavedSecretMaterializerFromSnapshotV1 } = await import("@/settings/secrets/savedSecretCatalog");
+    return { settings: captured.settings, notificationChannelCatalog: captured.notificationChannelCatalog ?? { status: 'loading' as const },
+      savedSecretMaterializer: createSavedSecretMaterializerFromSnapshotV1(captured,
+        operation ? { isCurrent: () => operation.readSnapshot() === captured } : undefined), isCurrent };
+  };
+  const notificationFailure = async (error: unknown) => {
+    const [{ NotificationChannelCatalogUnavailableError }, { SavedSecretResolutionError }] = await Promise.all([import("@/notifications/activity/dispatchActivityNotification"), import("@/settings/secrets/savedSecretCatalog")]);
+    if (error instanceof NotificationChannelCatalogUnavailableError) return { ok: false as const,
+      errorCode: error.code, error: 'Notification channel catalog is unavailable', details: { reason: error.reason } };
+    if (error instanceof SavedSecretResolutionError) return { ok: false as const,
+      errorCode: error.code, error: 'Notification signing material is unavailable', details: { reason: error.status } };
+    throw error;
+  };
+  return {
+    notificationChannelsList: async (context) => {
+      if (!params.credentials) return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+      context.signal?.throwIfAborted();
+      try {
+        const { PushNotificationClient } = await import("@/api/pushNotifications");
+        const { listActivityNotificationChannels } = await import("@/notifications/activity/dispatchActivityNotification");
+        const items = await listActivityNotificationChannels({ ...await readNotificationContext(context.signal),
+          pushTokenReader: new PushNotificationClient(params.credentials.token,
+            params.savedSecretOperationContext?.serverHttpBaseUrl ?? params.serverHttpBaseUrl,
+            params.serverId ?? configuration.activeServerId),
+          ...(params.resolvePluginNotifications ? { pluginNotifications: params.resolvePluginNotifications() } : {}) });
+        context.signal?.throwIfAborted();
+        return { items };
+      } catch (error) { return notificationFailure(error); }
+    },
+    webhookCall: async (input, context) => {
+      context.signal?.throwIfAborted();
+      let result: Awaited<ReturnType<typeof postWebhookJsonAsync>>;
+      try {
+        const { postWebhookJsonAsync } = await import("@/notifications/activity/sendWebhookActivityNotification");
+        result = await postWebhookJsonAsync({ ...input,
+          idempotencyKey: context.actionRequestId ?? randomUUID(),
+          ...(context.signal ? { signal: context.signal } : {}) });
+      } catch (error) {
+        const { WebhookDestinationAdmissionError } = await import("@/notifications/activity/sendWebhookActivityNotification");
+        if (error instanceof WebhookDestinationAdmissionError) {
+          return { ok: false, errorCode: 'webhook_destination_rejected', error: 'Webhook destination rejected' };
+        }
+        throw error;
+      }
+      return result.status >= 300
+        ? { ok: false, errorCode: 'webhook_failed', error: 'Webhook failed', details: result } : result;
+    },
+    notificationsNotifyMe: async (input, context) => {
+      if (!params.credentials) return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+      context.signal?.throwIfAborted();
+      if (input.open?.kind === 'session') {
+        const { fetchSessionById } = await import("@/session/transport/http/sessionsHttp");
+        const session = await fetchSessionById({ reason: 'session-action', token: params.credentials.token, sessionId: input.open.sessionId,
+          ...(params.savedSecretOperationContext?.serverHttpBaseUrl || params.serverHttpBaseUrl
+            ? { serverUrl: params.savedSecretOperationContext?.serverHttpBaseUrl ?? params.serverHttpBaseUrl } : {}),
+          ...(context.signal ? { signal: context.signal } : {}), accessProjectionVersion: 1 });
+        if (session?.id !== input.open.sessionId || !session.effectiveAccess?.capabilities.readTranscript) {
+          return { ok: false, errorCode: 'session_not_found', error: 'session_not_found' };
+        }
+      } else if (input.open?.kind === 'workflow_run') {
+        if (!workflowAction) return { ok: false, errorCode: 'target_unavailable', error: 'target_unavailable' };
+        const visible = await workflowAction({ actionId: 'workflow.run.get', input: { runId: input.open.runId }, context });
+        if ('errorCode' in visible && visible.ok === false) return visible;
+      }
+      context.signal?.throwIfAborted();
+      try {
+      const { PushNotificationClient } = await import("@/api/pushNotifications");
+      const { dispatchActivityNotificationAsync } = await import("@/notifications/activity/dispatchActivityNotification");
+      return await dispatchActivityNotificationAsync({
+        ...await readNotificationContext(context.signal),
+        expoPushSender: new PushNotificationClient(params.credentials.token,
+          params.savedSecretOperationContext?.serverHttpBaseUrl ?? params.serverHttpBaseUrl,
+          params.serverId ?? configuration.activeServerId),
+        ...(params.resolvePluginNotifications ? { pluginNotifications: params.resolvePluginNotifications() } : {}),
+        ...(input.channels ? { channels: input.channels } : {}),
+        event: { topic: 'notify_me', message: input.message,
+          ...(input.title !== undefined ? { title: input.title } : {}),
+          ...(input.open ? { open: input.open } : {}),
+          ...(context.actionRequestId ? { actionRequestId: context.actionRequestId } : {}) },
+      });
+      } catch (error) { return notificationFailure(error); }
+    },
+  };
+}
+

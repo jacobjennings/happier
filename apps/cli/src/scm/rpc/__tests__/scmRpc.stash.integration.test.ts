@@ -1,18 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { buildHappierBranchStashMarker } from '@happier-dev/plugins-scm-git/operations/stashOperations';
 
-import { createTestRpcManager, runGit as git } from './testRpcHarness';
+import { createGitWorkspace, createTestRpcManager, runGit as git } from './testRpcHarness';
 
 function initGitWorkspace(): { workspace: string; head: string } {
-    const workspace = mkdtempSync(join(tmpdir(), 'happier-git-stash-rpc-'));
-    git(workspace, ['init']);
-    git(workspace, ['config', 'user.email', 'test@example.com']);
-    git(workspace, ['config', 'user.name', 'Test User']);
+    const workspace = createGitWorkspace('happier-git-stash-rpc-');
     writeFileSync(join(workspace, 'a.txt'), 'base\n');
     git(workspace, ['add', 'a.txt']);
     git(workspace, ['commit', '-m', 'base']);

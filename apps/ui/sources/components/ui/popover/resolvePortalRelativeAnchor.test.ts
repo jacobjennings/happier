@@ -72,9 +72,10 @@ describe('resolvePortalRelativeAnchorRect', () => {
         expect(rect).toEqual(iosNormal.deltaRect);
     });
 
-    it('falls back to layoutRect when the window-delta is implausible, else returns whichever exists', () => {
+    it('falls back to layoutRect when the window-delta is implausible', () => {
         const rect = resolvePortalRelativeAnchorRect({
-            deltaRect: null,
+            // A delta that lands outside the portal layout is implausible.
+            deltaRect: { x: 10, y: 900, width: 30, height: 40 },
             layoutRect: { x: 10, y: 20, width: 30, height: 40 },
             anchorWindowRect: null,
             hasPortalLayout: true,

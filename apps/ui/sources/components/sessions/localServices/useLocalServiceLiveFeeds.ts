@@ -10,6 +10,7 @@ import { getLocalServiceLauncherState, readLocalServiceLauncherStore, subscribeL
     type LocalServiceLauncherStoreKeyInput } from '@/sync/domains/local/services/launch/sharedStore';
 import { captureLazyActionAccountContext } from '@/sync/ops/actions/actionAccountContext';
 import { readUiWorkspaceSyncChildMachineFacts } from '@/sync/ops/workspaceSyncChildMachineFacts';
+import { subscribeMachineRpcRecovery } from '@/sync/runtime/orchestration/serverScopedRpc/subscribeMachineRpcRecovery';
 import { createFrontDoorRuntimeActionExecutor } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
 import { t } from '@/text';
 import { presentLocalServiceActionFailure, readLocalServiceActionFailureReason, readLocalServiceActionOutcome } from './localServiceActionOutcome';
@@ -131,6 +132,20 @@ function useProjectServiceBindings(input: LocalServiceLiveFeedsInput, sourceStat
     const subscriptions = React.useMemo(() => new Map<string, Readonly<{ key: LocalServiceLauncherStoreKeyInput; dispose: () => void }>>(),
         [binding, enabled, input.serverId, input.workspaceRefId, input.launcherSnapshotClient, input.inventorySnapshotClient, rows]);
     React.useEffect(() => {
+        if (!canObserve || !binding || !input.machineId) return;
+        // Project admission can fail independently of healthy native snapshots. Reconnect
+        // must renew that observation even when the launcher has no changed facts to publish.
+        return subscribeMachineRpcRecovery({ machineId: input.machineId, serverId: input.serverId,
+            expectedAccountId: binding.accountId }, () => {
+                // Failed native reads publish their recovery and renew this observation.
+                // Wait for those facts instead of starting a census of the failed feed.
+                for (const { key } of subscriptions.values()) {
+                    if (key.machineId === input.machineId && getLocalServiceLauncherState(key).refreshStatus === 'error') return;
+                }
+                observeAgain();
+            });
+    }, [binding, canObserve, input.machineId, input.serverId, subscriptions]);
+    React.useEffect(() => {
         const release = () => { for (const subscription of subscriptions.values()) subscription.dispose(); subscriptions.clear(); };
         const retirement = binding?.onRetire(release);
         return () => { retirement?.dispose(); release(); };
@@ -164,14 +179,11 @@ function useProjectServiceBindings(input: LocalServiceLiveFeedsInput, sourceStat
                         const disposeLauncher = subscribeLocalServiceLauncherStore(key, () => {
                             const next = getLocalServiceLauncherState(key);
                             const observed = previous.updatedAt !== null || previous.refreshStatus === 'error';
-                            const changed = next.targetsById !== previous.targetsById
-                                || next.refreshError !== previous.refreshError;
                             previous = next;
                             // This observation awaits initial hydration below. Restarting it on
                             // that same read would discard its admitted Machine census and result.
-                            // A scan timestamp alone changes no binding and must not restart
-                            // that census either; otherwise idle scans can keep it loading.
-                            if (observed && changed) observeAgain();
+                            // The store publishes only changed native facts or availability.
+                            if (observed) observeAgain();
                         }, {
                             ...(input.launcherSnapshotClient ? { snapshotClient: input.launcherSnapshotClient } : {}),
                             ...(input.inventorySnapshotClient ? { inventorySnapshotClient: input.inventorySnapshotClient } : {}),
@@ -181,7 +193,9 @@ function useProjectServiceBindings(input: LocalServiceLiveFeedsInput, sourceStat
                     await readLocalServiceLauncherStore(key);
                     const state = getLocalServiceLauncherState(key);
                     const snapshot = snapshotFromLocalServiceLauncherState(state);
-                    if (!snapshot || state.refreshStatus === 'error') throw new Error('Service binding is unavailable');
+                    // A failed refresh carries no new binding fact. Re-project the
+                    // admitted snapshot so last-known rows keep their state and group.
+                    if (!snapshot) throw new Error('Service binding is unavailable');
                     return { protocolVersion: 1, snapshot };
                 },
             });
@@ -241,6 +255,9 @@ function useProjectServiceBindings(input: LocalServiceLiveFeedsInput, sourceStat
             if (!refreshed.has(key.machineId)) refreshed.set(key.machineId,
                 await refreshLocalServiceMachine({ ...key, serverId: key.serverId, accountId: binding.accountId, isCurrent: binding.isCurrent }));
         }
+        // A successful explicit scan can be unchanged. Retry also renews the Project
+        // census, whose earlier failure may have prevented any native subscription.
+        if (binding?.isCurrent() && [...refreshed.values()].some(Boolean)) observeAgain();
     }, [binding, subscriptions]);
     return { state, refresh, binding };
 }

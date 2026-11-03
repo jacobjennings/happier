@@ -177,8 +177,13 @@ describe('useSelectionListKeyboardNav — resolveArrowTarget present', () => {
         const resolveArrowTarget = vi.fn(() => 3);
         const harness = await renderHook(() =>
             useSelectionListKeyboardNav(makeParams({ resolveArrowTarget, isComposing: true })));
+        // Explicit row focus first, so only the IME guard can keep ←/→ off the grid.
+        await press(harness, 'ArrowDown');
+        const focused = harness.getCurrent().focusedIndex;
         expect(await press(harness, 'ArrowLeft')).toBe(false);
         expect(await press(harness, 'ArrowRight')).toBe(false);
-        expect(resolveArrowTarget).not.toHaveBeenCalled();
+        expect(harness.getCurrent().focusedIndex).toBe(focused);
+        expect(resolveArrowTarget).not.toHaveBeenCalledWith(expect.anything(), 'ArrowLeft');
+        expect(resolveArrowTarget).not.toHaveBeenCalledWith(expect.anything(), 'ArrowRight');
     });
 });

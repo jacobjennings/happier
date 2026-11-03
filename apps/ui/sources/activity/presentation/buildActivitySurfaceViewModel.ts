@@ -12,6 +12,7 @@ import {
 import type { ActivitySurfaceSessionViewModel } from '@/activity/presentation/activitySurfaceViewModels';
 import { resolveSessionContextLine } from '@/sync/domains/session/presentation/sessionContextPresentation';
 import { readSessionDisplayTitleField } from '@/sync/state/selectors';
+import { readSessionListPresentationDisplay } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 
 function resolveViewModelTitle(params: Readonly<{
     candidate: SessionActivityAttention;
@@ -67,7 +68,8 @@ function resolveViewModelPreviewText(params: Readonly<{
         return null;
     }
 
-    const previewText = readSessionDisplayTitleField(params.candidate.session).value;
+    const previewText = readSessionDisplayTitleField(params.candidate.presentationSource
+        ? readSessionListPresentationDisplay(params.candidate.presentationSource) : params.candidate.session).value;
     if (!previewText) return null;
 
     const normalizedPreviewText = normalizeActivityPreviewText(previewText);
@@ -156,7 +158,7 @@ export function buildActivitySurfaceViewModel(params: Readonly<{
         activityName: params.candidate.activityName ?? null,
         activityInstanceKey: params.candidate.activityInstanceKey ?? null,
         canExecuteDirectActions: params.candidate.directActionCapability?.canExecute ?? false,
-        updatedAt: params.candidate.session.updatedAt,
+        updatedAt: params.candidate.presentationSource?.lifecycle.updatedAt ?? params.candidate.session.updatedAt,
         isPrimary: params.isPrimary,
     };
 }

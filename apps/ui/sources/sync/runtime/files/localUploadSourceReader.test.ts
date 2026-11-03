@@ -1,6 +1,3 @@
-/**
- * @vitest-environment jsdom
- */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const nativeOpenSpy = vi.fn();

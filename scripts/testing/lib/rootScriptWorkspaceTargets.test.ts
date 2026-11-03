@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { selectSharedPackageTestCommands } from './sharedPackageTestCommands.ts';
 
@@ -112,4 +113,28 @@ test('follows `pnpm run <script>` delegation like any other script reference', (
   );
 
   assert.deepEqual(files, ['scripts/prepack-script.test.mjs']);
+});
+
+test('reads node --test files after a value-taking --import preload', () => {
+  assert.deepEqual(
+    resolveScriptNodeTestFiles(
+      { test: 'node --import ../../scripts/testing/nodeHomeSetup.mjs --test processInstance.test.mjs tests/links.test.mjs' },
+      'test',
+    ),
+    ['processInstance.test.mjs', 'tests/links.test.mjs'],
+  );
+});
+
+test('resolves every root manifest script, including argument-selected root test lanes', () => {
+  const { scripts } = JSON.parse(readFileSync('package.json', 'utf8')) as { scripts: Record<string, string> };
+
+  for (const scriptName of Object.keys(scripts)) {
+    assert.doesNotThrow(() => resolveRootScriptWorkspaceTargets(scripts, scriptName), scriptName);
+  }
+  // The Gate lane selects its workspaces from run-time package labels, so its script names no fixed set.
+  assert.deepEqual(resolveRootScriptWorkspaceTargets(scripts, 'test:gate-unit'), []);
+  assert.throws(
+    () => scanPnpmInvocations('node --experimental-strip-types scripts/testing/runRootTests.ts nightly'),
+    /Unsupported root test lane: nightly/,
+  );
 });

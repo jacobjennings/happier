@@ -176,6 +176,21 @@ describe('AttentionBanner', () => {
     }
   });
 
+  it('stays inside the column of a contained scope instead of bleeding into its padding like a bare row', async () => {
+    const { ListPresentationProvider } = await import('./listPresentation');
+    const { flattenTestStyle } = await import('@/dev/testkit');
+    const screen = await renderScreen(
+      <ListPresentationProvider value="page" pageInsets="contained">
+        <AttentionBanner testID="open.refused" tone="danger" title="That machine is unavailable right now." />
+      </ListPresentationProvider>,
+    );
+    const bleeding = screen.root
+      .findAll((node) => typeof node.type === 'string')
+      .map((node) => flattenTestStyle(node.props.style))
+      .filter((style) => [style.marginHorizontal, style.marginLeft, style.marginRight].some((margin) => typeof margin === 'number' && margin < 0));
+    expect(bleeding).toEqual([]);
+  });
+
   it('announces a failure the reader must hear now as an alert', async () => {
     const screen = await renderScreen(
       <AttentionBanner

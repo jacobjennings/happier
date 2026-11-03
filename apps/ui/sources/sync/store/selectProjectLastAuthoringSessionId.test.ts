@@ -6,6 +6,8 @@ import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLo
 import { activatePendingQueueScope } from '@/sync/engine/pending/pendingQueueV2.testHelpers';
 import { storage } from '@/sync/domains/state/storage';
 import { selectProjectLastAuthoringSessionId } from './selectProjectLastAuthoringSessionId';
+import { applyProjectAccountRowsFixture } from '@/dev/testkit/fixtures/projectAccountRows';
+import { buildProjectAccountRowPhysicalKeyV1 } from '@happier-dev/protocol/projects/projectAccountRowsV1';
 
 const workspace: WorkspaceAddressV1 = { serverId: 'server_1', workspaceId: 'checkout-a', machineId: 'machine-a', rootPath: '/repo' };
 const accountId = 'account_a';
@@ -29,6 +31,20 @@ afterEach(() => {
 });
 
 describe('latest Project authoring Session selector', () => {
+    it('selects the server relationship before any Session hydrates, and retains it over legacy derived updates', () => {
+        const key = buildProjectAccountRowPhysicalKeyV1({ kind: 'workspace-ref', serverId: workspace.serverId, id: workspace.workspaceId! });
+        applyProjectAccountRowsFixture(storage, {
+            workspaceRefs: [{ id: workspace.workspaceId!, serverId: workspace.serverId, machineId: workspace.machineId,
+                rootPath: workspace.rootPath, createdAtMs: 1 }],
+            ...{ authoringSessionsByPhysicalKey: { [key]: { serverId: workspace.serverId, sessionId: 'cold-author' } } },
+        });
+        expect(selectProjectLastAuthoringSessionId(storage.getState(), workspace, accountId)).toBe('cold-author');
+        storage.getState().applySessions([authoringSession('older-fallback', 999)]);
+        expect(selectProjectLastAuthoringSessionId(storage.getState(), workspace, accountId)).toBe('cold-author');
+        expect(selectProjectLastAuthoringSessionId(storage.getState(), workspace, 'other-account')).toBeNull();
+        expect(selectProjectLastAuthoringSessionId(storage.getState(), { ...workspace, rootPath: '/other' }, accountId)).toBeNull();
+    });
+
     it('shares checkout derivation and preserves primitive subscriptions without rescanning Sessions on unrelated updates', () => {
         storage.getState().applySessions([authoringSession('older', 10), authoringSession('latest', 20),
             createSessionFixture({ id: 'ordinary', updatedAt: 1 })]);

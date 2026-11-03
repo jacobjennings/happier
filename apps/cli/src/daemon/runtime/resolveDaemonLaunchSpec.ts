@@ -8,9 +8,10 @@ import { resolvePackagedRuntimeEntrypoint } from '@/packagedRuntime/resolvePacka
 import { ensureJavaScriptRuntimeExecutable } from '@/packagedRuntime/js/ensureJavaScriptRuntimeExecutable';
 import { isEmbeddedBunBundlePath } from '@/packagedRuntime/js/isEmbeddedBunBundlePath';
 import {
+  buildCurrentProcessSourceInvocation,
   buildHappyCliSubprocessLaunchSpec,
+  resolveCliSourceRuntimeFlags,
   resolveCliTsxTsconfigPath,
-  resolveTsxImportHookSpecifier,
 } from '@/utils/spawnHappyCLI';
 
 export type DaemonLaunchSpec = Readonly<{
@@ -126,13 +127,9 @@ function resolveDaemonTsxSourceLaunchSpec(
   const sourceEntrypoint = resolveSourceEntrypoint();
   if (!existsSync(sourceEntrypoint)) return null;
 
-  const tsxHookSpecifier = resolveTsxImportHookSpecifier();
-  if (!tsxHookSpecifier) {
-    throw new Error('Daemon launch requires tsx for source fallback, but tsx could not be resolved');
-  }
   return {
     filePath: runtimeExecutable,
-    args: ['--no-warnings', '--no-deprecation', '--import', tsxHookSpecifier, sourceEntrypoint, ...cliArgs],
+    args: ['--no-warnings', '--no-deprecation', ...resolveCliSourceRuntimeFlags(), sourceEntrypoint, ...cliArgs],
     env: {
       TSX_TSCONFIG_PATH: resolveCliTsxTsconfigPath(),
     },
@@ -210,12 +207,19 @@ async function resolveSelectedStackSourceRestart(
     isBunRuntime: false, processEnv: env, currentExecPath: process.execPath,
   });
   if (!runtimeExecutable) throw new Error('Daemon launch requires a JavaScript runtime, but none could be resolved');
+  const commandEnv: Record<string, string> = {};
+  if ('env' in launch && launch.env !== null && typeof launch.env === 'object') {
+    for (const [name, value] of Object.entries(launch.env)) {
+      if (/^(PATH|PATHEXT)$/i.test(name) && typeof value === 'string') commandEnv[name] = value;
+    }
+  }
   return {
     filePath: runtimeExecutable,
     args: ['--no-warnings', '--no-deprecation', launch.entrypoint, ...cliArgs],
-    // The source builder's daemon env contains these four launch fields only.
-    // Derive them from the validated selection so no incumbent support root survives.
+    // Stack publishes shell-command exposure. Root/entry fields still derive
+    // from the validated selection so no incumbent support root survives.
     env: {
+      ...commandEnv,
       HAPPIER_STACK_CLI_ROOT_DIR: launch.cliDir,
       HAPPIER_CLI_ROOT_DIR: launch.cliDir,
       HAPPIER_CLI_SUBPROCESS_ENTRYPOINT: launch.entrypoint,
@@ -290,6 +294,15 @@ export async function resolveDaemonLaunchSpec(
   });
   if (!runtimeExecutable) {
     throw new Error('Daemon launch requires a JavaScript runtime, but none could be resolved');
+  }
+
+  const currentProcessSourceInvocation = buildCurrentProcessSourceInvocation([...cliArgs], env);
+  if (currentProcessSourceInvocation) {
+    return {
+      filePath: runtimeExecutable,
+      args: currentProcessSourceInvocation.argv,
+      env: currentProcessSourceInvocation.env,
+    };
   }
 
   if (shouldPreferDaemonTsxSourceEntrypoint(env)) {

@@ -32,6 +32,7 @@ import { HAPPIER_PAGE_METRICS } from '../presentation/layout/pageMetrics.js';
 import { useHappierColumnEdgeRemainder } from '../presentation/layout/columnEdge.js';
 import {
   HappierPageSectionHeader,
+  HappierPageSectionText,
   HappierPageSheet,
   useHappierPageSection,
   withHappierPageSectionDividers,
@@ -373,6 +374,12 @@ type VirtualizedListSharedProps<Item> = Readonly<{
     anchorKey: string;
     revision: string | number;
   }>;
+  /**
+   * Scrolls one keyed row into view without moving focus or selection: Find stepping to a match in a long
+   * log keeps the reader's caret in the Find field while the row comes to them. A new request object is a
+   * new request even for the same key. Focus-taking reveals stay with `selection.focusRequest`.
+   */
+  revealRequest?: Readonly<{ key: string }>;
   children?: never;
 }>;
 
@@ -1382,6 +1389,15 @@ function VirtualizedList<Item>(
       ? props.selection?.focusRequest
       : (collectionControl.focus.request ?? undefined);
   const handledFocusRequest = useRef<typeof authorFocusRequest>(undefined);
+  const handledRevealRequest = useRef<typeof props.revealRequest>(undefined);
+  useEffect(() => {
+    const request = props.revealRequest;
+    if (request === undefined || handledRevealRequest.current === request) return;
+    const rowIndex = rowIndexByKey.get(request.key);
+    if (rowIndex === undefined) return;
+    handledRevealRequest.current = request;
+    revealRow(rowIndex);
+  }, [props.revealRequest, rowIndexByKey, revealRow]);
   useEffect(() => {
     if (authorFocusRequest === undefined) return;
     if (handledFocusRequest.current === authorFocusRequest) return;
@@ -2434,8 +2450,13 @@ export type ItemGroupProps = Readonly<{
   title?: string;
   /** A key from this plugin's declared translation bundle; `title` is its fallback. */
   titleKey?: string;
-  /** What this section is about, read before its rows (never a footer under them). */
-  description?: string;
+  /**
+   * What this section is about, read before its rows (never a footer under them). A string (or
+   * `descriptionKey`) is localized text; rich content, such as a localized sentence around an
+   * `InlineCode`, is set in the same description text.
+   */
+  description?: ReactNode;
+  /** A key from this plugin's declared translation bundle; a string `description` is its fallback. */
   descriptionKey?: string;
   /** One compact section-level action ("Add", "Check now"), aligned with the title. */
   action?: ReactNode;
@@ -2482,11 +2503,18 @@ export function ItemGroup(props: ItemGroupProps): ReactElement {
     ...rest
   } = props;
   const title = resolveAuthorText(translate, titleText, titleKey);
-  const description = resolveAuthorText(
-    translate,
-    descriptionText,
-    descriptionKey,
-  );
+  // Text (and a key) keep the localization path; rich content is set in the description text.
+  const richDescription =
+    descriptionKey === undefined
+    && descriptionText !== null && descriptionText !== undefined && descriptionText !== false
+    && typeof descriptionText !== 'string';
+  const description = richDescription
+    ? <HappierPageSectionText role="sectionDescription">{descriptionText}</HappierPageSectionText>
+    : resolveAuthorText(
+      translate,
+      typeof descriptionText === 'string' ? descriptionText : undefined,
+      descriptionKey,
+    );
   const resolvedAccessibilityLabel =
     resolveAuthorText(translate, accessibilityLabel, accessibilityLabelKey) ??
     title;

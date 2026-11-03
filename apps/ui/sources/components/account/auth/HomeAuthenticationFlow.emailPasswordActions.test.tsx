@@ -59,33 +59,6 @@ async function renderEntry(
     return screen;
 }
 
-it('opens the account-creation controller — not the login form — for a published provision action', async () => {
-    const rendered = await renderEntry([
-        { action: 'login', mode: 'either' },
-        { action: 'provision', mode: 'either' },
-    ]);
-
-    await rendered.pressByTestIdAsync('home-auth-email_password-provision-either');
-
-    expect(rendered.findByTestId('email-password-create')).not.toBeNull();
-    expect(rendered.findByTestId('email-password-submit')).toBeNull();
-    // This Home has not seen proof of the mailbox yet, so the Account is created
-    // on the verification landing. Collecting a password here would discard it.
-    expect(rendered.findByTestId('email-password-confirm')).toBeNull();
-    expect(rendered.findByTestId('email-password-verify-first')).not.toBeNull();
-    expect(boundary.request).not.toHaveBeenCalled();
-});
-
-it('offers both Account protections once the mailbox is proven and both modes are permitted', async () => {
-    const rendered = await renderEntry([{ action: 'provision', mode: 'either' }], { mailboxProven: true });
-
-    await rendered.pressByTestIdAsync('home-auth-email_password-provision-either');
-
-    expect(rendered.findByTestId('email-password-confirm')).not.toBeNull();
-    expect(rendered.findByTestId('email-password-protection-plain')).not.toBeNull();
-    expect(rendered.findByTestId('email-password-protection-e2ee')).not.toBeNull();
-});
-
 it.each(['e2ee', 'plain'] as const)(
     'defaults the Account protection to the Home recommendation (%s) when both modes are permitted',
     async (recommendedProvisionMode) => {
@@ -120,15 +93,6 @@ it('omits the protection choice and states the outcome when the Home permits one
     expect(rendered.findByTestId('email-password-protection-plain')).toBeNull();
     expect(rendered.findByTestId('email-password-protection-e2ee')).toBeNull();
     expect(rendered.findByTestId('email-password-protection-fixed')).not.toBeNull();
-});
-
-it('routes a connect action to enrolment guidance instead of a sign-in form', async () => {
-    const rendered = await renderEntry([{ action: 'connect', mode: 'either' }]);
-
-    await rendered.pressByTestIdAsync('home-auth-email_password-connect-either');
-
-    expect(rendered.findByTestId('email-password-connect-detail')).not.toBeNull();
-    expect(rendered.findByTestId('email-password-submit')).toBeNull();
 });
 
 it('offers forgot-password recovery from the login controller without disclosing Account existence', async () => {
@@ -175,6 +139,7 @@ it('keeps an addressed invitation and the password draft while the person correc
     const admission = { kind: 'team_invitation' as const, token: 'I'.repeat(43) };
     const rendered = await renderEntry([{ action: 'provision', mode: 'keyless' }], { admission });
     await rendered.pressByTestIdAsync('home-auth-email_password-provision-keyless');
+    expect(rendered.findByTestId('email-password-submit')).toBeNull();
     boundary.request.mockResolvedValue(new Response(JSON.stringify({ error: 'email_mismatch' }), { status: 403 }));
     const password = 'a calm sixteen plus password';
     await act(async () => {

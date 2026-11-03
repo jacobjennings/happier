@@ -14,7 +14,7 @@ import { PAGE_ROW_TOUCH_MIN_HEIGHT_PX } from '@/components/ui/lists/pageRowMetri
 import { useWidgetFrameStyle } from '@/components/widgets/frame/useWidgetFrameStyle';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { createNearViewportTracker, type NearViewportTracker } from '@/components/widgets/nearViewport';
-import type { WidgetCandidate } from '@/components/widgets/widgetCatalog';
+import { resolveWidgetInstanceTitle, type WidgetCandidate } from '@/components/widgets/widgetCatalog';
 import { useWidgetFrameRename } from '@/components/widgets/frame/useWidgetFrameRename';
 import { useWidgetInputsEditor } from '@/components/widgets/surface/useWidgetInputsEditor';
 import { useWidgetDefinitionFlows } from '@/components/widgets/definitions/useWidgetDefinitionFlows';
@@ -28,7 +28,8 @@ import { buildWidgetGroupMembershipActions, describeWidgetGroup, describeWidgetG
 import { useWidgetCarriedIdentity } from '@/components/widgets/surface/widgetCarriedIdentity';
 import { describeWidgetGroupContext, readWidgetGroupFollowedValue, widgetGroupPinnedSource, widgetGroupSurfaceContext } from '@/components/widgets/group/widgetGroupInputs';
 import type { WidgetBindingValueLabels } from '@/components/widgets/surface/useWidgetBindingValueLabels';
-import { resolveWidgetGroupCells, resolveWidgetGroupColumns } from '@happier-dev/plugin-ui/presentation';
+import { resolveWidgetGroupCells } from '@happier-dev/plugin-ui/components';
+import { resolveWidgetGroupColumns } from '@happier-dev/plugin-ui/presentation';
 import { resolveWidgetCardPointerDestination, resolveWidgetGroupPointerDestination, widgetGroupDropTarget, widgetLayoutCardDropTarget, widgetLayoutEndDropTarget, widgetLayoutSiblingIds } from '@/components/widgets/group/widgetGroupDropTarget';
 import { PopoverScope } from '@/components/ui/popover';
 import { HomeWidgetAddPopover } from '@/components/widgets/add/HomeWidgetAddPopover';
@@ -295,7 +296,7 @@ function HubWidgetSlot(props: SlotProps & Readonly<{
     const definition = useWidgetDefinitionFlows({ instance, scope, providedContext: widgetProvidedContext(context), anchorRef: edit.anchorRef, editInputs: edit.editInputs, testID });
     // Rename stays optional (lab dbind N1): an empty name, or the widget's own, goes back to it.
     const renaming = useWidgetFrameRename({
-        title: instance.displayName ?? widget?.title ?? instance.id,
+        title: resolveWidgetInstanceTitle(instance, widget),
         testID,
         serverId: scope?.serverId,
         onRename: (next) => {
@@ -343,9 +344,9 @@ function HubWidgetSlot(props: SlotProps & Readonly<{
                     // The line between cards reorders here; inside a group, within that group (lab wgdnd B).
                     ...homeCardTarget({ surface: props.homeSurface, items: props.layout.items, itemId: props.section.id,
                         topLevelIds: props.topLevelIds,
-                        title: props.section.instance.displayName ?? props.section.widget?.title ?? props.section.id,
+                        title: resolveWidgetInstanceTitle(props.section.instance, props.section.widget),
                         groupId: props.parent?.group.id, sourceItem: props.movementSourceItem, childTitle }),
-                    title: props.section.instance.displayName ?? props.section.widget?.title ?? props.section.id,
+                    title: resolveWidgetInstanceTitle(props.section.instance, props.section.widget),
                     getItem: () => props.layout.items.some(item => item.kind === 'widget' ? item.instance.id === props.section.id
                         : item.children.some(child => child.instance.id === props.section.id))
                         ? { kind: 'home-section', scope: props.widgetDrag!.scope, sectionId: props.section.id } : null,
@@ -359,8 +360,8 @@ function HubWidgetSlot(props: SlotProps & Readonly<{
 
 /** The id the new-row target answers the indicator owner with: it is no card, so the whole slot outlines. */
 const NEW_ROW_TARGET_ID = 'home-hub.new-row';
-/** Tall enough to aim at while carrying a card: two touch rows. */
-const NEW_ROW_MIN_HEIGHT_PX = 2 * PAGE_ROW_TOUCH_MIN_HEIGHT_PX;
+/** The aim at the slot while carrying a card: two touch rows, grown below the drawn slot, never drawn. */
+const NEW_ROW_AIM_MIN_HEIGHT_PX = 2 * PAGE_ROW_TOUCH_MIN_HEIGHT_PX;
 
 /**
  * The one "new row" target that ends Home while it is customized (lab wgmenu E): a widget or a whole
@@ -375,7 +376,7 @@ function HomeNewRowTarget(props: Readonly<{
 }>) {
     const { surface, layout } = props;
     const drop = useSessionSurfaceEntityDrag({
-        ...props.widgetDrag, title: t('homeIndex.newRow'), getItem: () => null,
+        ...props.widgetDrag, title: t('homeIndex.newRow'), getItem: () => null, aimMinHeightPx: NEW_ROW_AIM_MIN_HEIGHT_PX,
         getWidgetAreaTarget: () => ({ surface, groupId: null, itemId: NEW_ROW_TARGET_ID, itemIds: [] }),
         target: widgetLayoutEndDropTarget({ surface, items: layout.items, topLevelIds: props.topLevelIds, sourceItem: props.sourceItem,
             verb: t('homeIndex.newRowVerb'), label: t('homeIndex.newRowVerb'), groupLabel: t('common.home') }),
@@ -383,7 +384,7 @@ function HomeNewRowTarget(props: Readonly<{
     return (
         <ItemGroup surface="none">
             <View ref={drop.ref} collapsable={false} onLayout={drop.onLayout}>
-                <EmptySlot testID="home-hub.new-row" icon="plus" label={t('homeIndex.newRow')} minHeight={NEW_ROW_MIN_HEIGHT_PX} />
+                <EmptySlot testID="home-hub.new-row" icon="plus" label={t('homeIndex.newRow')} />
                 <SessionSurfaceEntityTargetFeedback drag={drop} testID="home-hub.new-row.drop" />
             </View>
         </ItemGroup>

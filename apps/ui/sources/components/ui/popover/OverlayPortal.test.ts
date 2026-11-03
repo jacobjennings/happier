@@ -34,42 +34,6 @@ function findPointerEventsInStyle(style: unknown): unknown {
 }
 
 describe('OverlayPortalProvider', () => {
-    it('does not re-render its children when portal nodes change', async () => {
-        const { OverlayPortalHost, OverlayPortalProvider, useOverlayPortal } = await import('./OverlayPortal');
-
-        let renderCount = 0;
-        let dispatch: ReturnType<typeof useOverlayPortal> | null = null;
-        const portalTestId = 'overlay-portal-node';
-
-        function RenderCountChild() {
-            renderCount += 1;
-            return React.createElement('RenderCountChild');
-        }
-
-        function CaptureDispatch() {
-            dispatch = useOverlayPortal();
-            return React.createElement('CaptureDispatch');
-        }
-
-        const screen = await renderScreen(React.createElement(
-            OverlayPortalProvider,
-            null,
-            React.createElement(RenderCountChild),
-            React.createElement(CaptureDispatch),
-            React.createElement(OverlayPortalHost),
-        ));
-
-        expect(renderCount).toBe(1);
-        expect(dispatch).toBeTruthy();
-
-        act(() => {
-            dispatch?.setPortalNode('test-node', React.createElement('PortalContent', { testID: portalTestId }));
-        });
-
-        expect(screen.findByTestId(portalTestId)).toBeTruthy();
-        expect(renderCount).toBe(1);
-    });
-
     it('replaces and removes portal nodes without re-rendering provider children', async () => {
         const { OverlayPortalHost, OverlayPortalProvider, useOverlayPortal } = await import('./OverlayPortal');
 

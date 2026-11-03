@@ -32,7 +32,7 @@ function textsInOrder(screen: Awaited<ReturnType<typeof renderScreen>>): string[
     return screen.findAllByType('Text' as never).map((node) => String(node.props.children));
 }
 
-async function renderGroup(presentation: 'page' | 'grouped', props: Readonly<{ description?: string }>) {
+async function renderGroup(presentation: 'page' | 'grouped', props: Readonly<{ description?: React.ReactNode }>) {
     const { ItemGroup } = await import('./ItemGroup');
     const { ListPresentationProvider } = await import('./listPresentation');
     return renderScreen(
@@ -66,6 +66,15 @@ describe('ItemGroup page presentation', () => {
     it('reads the section explanation before its rows on a configuration page', async () => {
         const screen = await renderGroup('page', { description: 'How sessions appear in the sidebar.' });
         expect(textsInOrder(screen)).toEqual(['Session list', 'How sessions appear in the sidebar.', 'ROW']);
+    });
+
+    it('reads a description with inline code as one description text, in the section description step', async () => {
+        const screen = await renderGroup('page', {
+            description: React.createElement(React.Fragment, null, 'Run it with ', React.createElement('Text', { testID: 'inline-code' }, 'happier project script run'), ' in a terminal.'),
+        });
+        const wrapping = screen.findAllByType('Text' as never).filter((node) => node.props.testID !== 'inline-code'
+            && node.findAll((child) => child.props?.testID === 'inline-code').length > 0);
+        expect(wrapping).toHaveLength(1);
     });
 
     it('keeps the footer after the rows outside page presentation (menus, pickers, sheets)', async () => {

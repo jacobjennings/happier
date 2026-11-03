@@ -230,14 +230,8 @@ async function main() {
   const serverPort = endpoint.port;
   const prefixServerSelection = readPrefixServerSelection(argv);
   const activeRuntimeState = await readActiveStackRuntimeStateFile(runtimeStatePath, { stackName });
-  // Bare --runtime follows the running daemon's code basis. An explicit
-  // --runtime=built remains an intentional request for a native snapshot.
-  const hasLoadedSourceRuntime = Boolean(activeRuntimeState?.sourceRuntimeIdentities?.daemon?.loaded);
-  const runtimeArgv = hasLoadedSourceRuntime
-    ? wrapperArgv.map(arg => arg === '--runtime' ? '--runtime=source' : arg)
-    : wrapperArgv;
   const runtimeLaunchContext = await resolveStackRuntimeLaunchContext({
-    argv: runtimeArgv,
+    argv: wrapperArgv,
     env: process.env,
     activeRuntimeState,
   });
@@ -295,8 +289,9 @@ async function main() {
     Boolean(stackCliHomeOverride) ||
     Boolean(stackEnvFilePath && existsSync(stackEnvFilePath));
   if (isStackScopedInvocation) {
-    publicServerUrl = endpoint.publicServerUrl
-      ?? await resolveStackCanonicalServerUrl({ env: process.env, serverPort, stackName });
+    publicServerUrl = await resolveStackCanonicalServerUrl({
+      env: process.env, serverPort, stackName, envPublicUrl: endpoint.publicServerUrl,
+    });
   }
   const explicitHomeDir = String(env.HAPPIER_HOME_DIR ?? '').trim();
   const explicitStackIdentityHomeDir =

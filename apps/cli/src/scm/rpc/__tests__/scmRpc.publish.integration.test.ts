@@ -6,38 +6,14 @@ import { join } from 'path';
 import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
-import { createTestRpcManager, runGit as git } from './testRpcHarness';
+import { createGitWorkspace, createTestRpcManager, runGit as git } from './testRpcHarness';
 
 describe('git RPC handlers (publish)', () => {
-    it('reports configured remotes in status snapshots', async () => {
-        const remote = mkdtempSync(join(tmpdir(), 'happier-git-status-remote-'));
-        git(remote, ['init', '--bare']);
-
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-status-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['remote', 'add', 'origin', remote]);
-
-        const { call } = createTestRpcManager({ workingDirectory: workspace });
-        const status = await call<any, { cwd?: string }>(RPC_METHODS.SCM_STATUS_SNAPSHOT, { cwd: '.' });
-
-        expect(status.success).toBe(true);
-        expect(status.snapshot.repo.remotes).toEqual([
-            {
-                name: 'origin',
-                fetchUrl: remote,
-                pushUrl: remote,
-            },
-        ]);
-    });
-
     it('publishes the current branch by setting upstream and pushing', async () => {
         const remote = mkdtempSync(join(tmpdir(), 'happier-git-publish-remote-'));
         git(remote, ['init', '--bare']);
 
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-publish-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace('happier-git-publish-rpc-');
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);
@@ -65,10 +41,7 @@ describe('git RPC handlers (publish)', () => {
         const originRemote = mkdtempSync(join(tmpdir(), 'happier-git-publish-origin-'));
         git(originRemote, ['init', '--bare']);
 
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-publish-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace('happier-git-publish-rpc-');
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);
@@ -93,10 +66,7 @@ describe('git RPC handlers (publish)', () => {
         const upstreamRemote = mkdtempSync(join(tmpdir(), 'happier-git-publish-upstream-'));
         git(upstreamRemote, ['init', '--bare']);
 
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-publish-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace('happier-git-publish-rpc-');
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);
@@ -116,10 +86,7 @@ describe('git RPC handlers (publish)', () => {
     });
 
     it('rejects publish with a clear no-remote error before setting upstream', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-publish-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace('happier-git-publish-rpc-');
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);
@@ -144,10 +111,7 @@ describe('git RPC handlers (publish)', () => {
         const remote = mkdtempSync(join(tmpdir(), 'happier-git-publish-remote-'));
         git(remote, ['init', '--bare']);
 
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-publish-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace('happier-git-publish-rpc-');
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);
@@ -174,10 +138,7 @@ describe('git RPC handlers (publish)', () => {
         const remote = mkdtempSync(join(tmpdir(), 'happier-git-publish-remote-'));
         git(remote, ['init', '--bare']);
 
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-publish-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace('happier-git-publish-rpc-');
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);

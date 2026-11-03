@@ -58,6 +58,9 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 });
 
 const {
+    claudeAsyncAgentLaunchAck, claudeHandbackPointerNotification, claudeHandbackUserRow,
+} = await import('../../../transcripts/peerMessage.testkit.js');
+const {
     pageClaudeExternalSessionTranscript,
     readAfterClaudeExternalSessionTranscript,
 } = await import('./transcript.js');
@@ -228,8 +231,28 @@ describe('Claude external transcript continuity evidence', () => {
             providerSessionId: fixture.remoteSessionId, cursor, projection: 'terminal', maxBytes: 64 * 1024, maxItems: 10 });
         expect(page.items).toHaveLength(1);
         expect(page.items[0]).toMatchObject({ raw: { role: 'agent', content: { type: 'acp', agentId: 'claude',
-            data: { type: 'message', message: 'From Sender:\n\nDelivered' } } } });
+            data: { type: 'message', message: 'Delivered', peer: { name: 'Sender', handback: false } } } } });
         expect(JSON.stringify(page.items)).not.toContain('uds:/tmp');
+    });
+
+    it('leaves restored hand-backs and task notifications to the runtime task projector', async () => {
+        const fixture = await createTranscript(1, 0);
+        const launch = { type: 'assistant', uuid: 'launch', parentUuid: 'continuity-0000', timestamp: '2026-10-25T00:00:00.000Z',
+            message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_handback', name: 'Agent',
+                input: { subagent_type: 'general-purpose', prompt: 'review', run_in_background: true } }] } };
+        const rows = [launch,
+            { ...claudeAsyncAgentLaunchAck({ toolUseId: 'toolu_handback' }), parentUuid: 'launch', timestamp: '2026-10-25T00:00:01.000Z' },
+            { ...claudeHandbackUserRow({ withReportText: true }), parentUuid: 'ack', timestamp: '2026-10-25T00:00:02.000Z' },
+            { ...claudeHandbackPointerNotification({ toolUseId: 'toolu_handback' }), parentUuid: 'handback', timestamp: '2026-10-25T00:00:03.000Z' }];
+        await appendFile(fixture.transcriptPath, rows.map(row => `${JSON.stringify(row)}\n`).join(''));
+        const restored = await pageClaudeExternalSessionTranscript({ source: fixture.source, env: fixture.env,
+            providerSessionId: fixture.remoteSessionId, projection: 'terminal', direction: 'older', maxBytes: 64 * 1024, maxItems: 20 });
+        // The runtime's ordered task projector settles these rows from their observations, as it does live.
+        const displayed = restored.items.filter(item => item.raw.role === 'agent').map(item => JSON.stringify(item.raw));
+        expect(displayed.filter(raw => raw.includes('"peer"'))).toEqual([]);
+        expect(displayed.join('\n')).not.toContain('report was delivered to you');
+        expect(restored.items.filter(item => item.raw.role === 'source_observation').map(item => item.raw.content))
+            .toEqual(expect.arrayContaining([expect.objectContaining({ uuid: 'handback' }), expect.objectContaining({ uuid: 'pointer-notification' })]));
     });
 
     it.each(['page', 'pageNewer', 'tail', 'readAfter', 'sourceReset'] as const)('preserves an incomplete tail through %s cursor capture', async (capture) => {

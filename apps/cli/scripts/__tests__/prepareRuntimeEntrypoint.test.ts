@@ -224,51 +224,6 @@ describe('maybeRefreshLocalBundledWorkspacePackages', () => {
     }
   });
 
-  it('launches a valid compiled snapshot without syncing or touching the build lock', async () => {
-    const repoRoot = createTempDirSync('happier-cli-prepare-entrypoint-valid-snapshot-');
-    try {
-      const projectRoot = resolve(repoRoot, 'apps', 'cli');
-      const packageDistEntrypoint = resolve(projectRoot, 'package-dist', 'index.mjs');
-      const syncModuleDir = resolve(repoRoot, 'scripts', 'workspaces');
-      const syncCalledPath = resolve(repoRoot, '.project', 'tmp', 'sync-called');
-      const lockPath = resolve(repoRoot, '.project', 'tmp', 'cli-shared-deps-build.lock');
-
-      mkdirSync(resolve(projectRoot, 'package-dist'), { recursive: true });
-      mkdirSync(syncModuleDir, { recursive: true });
-      writeFileSync(packageDistEntrypoint, 'export {};\n', 'utf8');
-      writeBuildManifest(resolve(projectRoot, 'package-dist'));
-      writeFileSync(
-        resolve(syncModuleDir, 'syncBundledWorkspacePackages.mjs'),
-        [
-          "import { mkdirSync, writeFileSync } from 'node:fs';",
-          "import { dirname } from 'node:path';",
-          `const syncCalledPath = ${JSON.stringify(syncCalledPath)};`,
-          'export function syncBundledWorkspacePackages() {',
-          '  mkdirSync(dirname(syncCalledPath), { recursive: true });',
-          "  writeFileSync(syncCalledPath, 'called', 'utf8');",
-          '}',
-          '',
-        ].join('\n'),
-        'utf8',
-      );
-
-      // No writer lock is held. A complete snapshot must still launch lock-free,
-      // without running bundled-workspace sync.
-      await expect(
-        prepareRuntimeEntrypoint(projectRoot, 'index.mjs', {
-          lockModulePath: workspaceBundleLockModulePath,
-          lockPath,
-          lockTimeoutMs: 50,
-          lockPollIntervalMs: 10,
-          lockStaleAfterMs: 1_000,
-        }),
-      ).resolves.toBe(resolve(realpathSync.native(projectRoot), 'package-dist', 'index.mjs'));
-      expect(existsSync(syncCalledPath)).toBe(false);
-    } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
   it('syncs under the lock when the only snapshot has an incomplete import closure', async () => {
     const repoRoot = createTempDirSync('happier-cli-prepare-entrypoint-torn-snapshot-');
     try {

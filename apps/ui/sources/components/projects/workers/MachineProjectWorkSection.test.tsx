@@ -17,6 +17,7 @@ import { createMachineFixture, createMachineReadBatchResponseFixture, createPlai
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import { storage } from '@/sync/domains/state/storage';
 import { apiSocket } from '@/sync/api/session/apiSocket';
+import { buildMachineActivityPlaceholder } from '@/sync/domains/machines/machineActivity';
 
 vi.mock('react-native', async () => {
   const { createReactNativeWebMock } =
@@ -92,6 +93,7 @@ async function setup(
   options: Readonly<{
     holdPolicyRead?: boolean;
     deferMachineDiscovery?: boolean;
+    presenceBeforeDiscovery?: boolean;
     waive?: readonly string[];
   }> = {},
 ) {
@@ -114,6 +116,7 @@ async function setup(
   });
   let metadata: Record<string, unknown> = { ...machine.metadata };
   let version = 4;
+  let policyReads = 0;
   // The Machine policy port reads the sync owner's encryption context (absent for Plain).
   const { loadSyncSingletonForTests } =
     await import('@/dev/testkit/harness/syncSingletonLoader');
@@ -122,6 +125,7 @@ async function setup(
     handleRequest: async (path, init) => {
       const batch = path === '/v1/machines/read-batch' && init?.method === 'POST';
       if (!machineHttp.read || (path !== '/v1/machines/m1' && !batch)) return null;
+      policyReads += 1;
       await machineHttp.gate;
       const response = machineHttp.read();
       if (!batch || !response.ok) return response;
@@ -157,7 +161,8 @@ async function setup(
     version = request.expectedVersion + 1;
     return { result: 'success', version, metadata: request.metadata };
   }) as typeof apiSocket.emitWithAck);
-  if (options.deferMachineDiscovery) storage.setState({ machines: {} });
+  if (options.presenceBeforeDiscovery) storage.getState().applyMachines([buildMachineActivityPlaceholder(machine)]);
+  else if (options.deferMachineDiscovery) storage.setState({ machines: {} });
   else storage.getState().applyMachines([machine]);
   // Ask first is the Action default; these cases waive it in the Account's canonical settings.
   const { settingsParse } = await import('@/sync/domains/settings/settings');
@@ -191,13 +196,14 @@ async function setup(
       machineName="hz-build-1"
     />,
   );
-  if (!options.holdPolicyRead && !options.deferMachineDiscovery)
+  if (!options.holdPolicyRead && !options.deferMachineDiscovery && !options.presenceBeforeDiscovery)
     await vi.waitFor(() =>
       expect(screen.findAllByTestId('work.accepting')[0]?.props.disabled).toBe(
         false,
       ),
     );
-  return { screen, sent, releasePolicyRead, discoverMachine: () => storage.getState().applyMachines([machine]) };
+  return { screen, sent, releasePolicyRead, policyReadCount: () => policyReads,
+    discoverMachine: () => storage.getState().applyMachines([machine]) };
 }
 
 async function seedWorkerCopy() {
@@ -279,13 +285,31 @@ describe('Machine › Work from your projects through the Machine policy Actions
     await vi.waitFor(() => expect(screen.findAllByTestId('work.accepting')[0]?.props.disabled).toBe(false));
     expect(screen.findAllByTestId('work.unavailable')).toHaveLength(0);
   });
-  it('waits for Machine discovery before policy admission, then reads the answering Machine without an unavailable retry', async () => {
-    const { screen, discoverMachine } = await setup({ deferMachineDiscovery: true });
+  it.each([false, true])('waits for Machine content before policy admission (presence arrived first: %s)', async (presenceBeforeDiscovery) => {
+    const { screen, discoverMachine, policyReadCount } = await setup({ deferMachineDiscovery: true, presenceBeforeDiscovery });
     await act(async () => { await Promise.resolve(); });
     expect(screen.findAllByTestId('work.unavailable')).toHaveLength(0);
     expect(screen.findAllByTestId('work.accepting')[0]?.props.subtitle).toBe('common.loading');
+    expect(policyReadCount()).toBe(0);
     await act(async () => { discoverMachine(); });
     await vi.waitFor(() => expect(screen.findAllByTestId('work.accepting')[0]?.props.disabled).toBe(false));
+    expect(policyReadCount()).toBe(1);
+  });
+  it.each(['locked', 'key_pending', 'refused'] as const)('keeps an online Machine with %s content unavailable without reading or writing policy', async (state) => {
+    const { screen, sent, policyReadCount } = await setup({ deferMachineDiscovery: true });
+    await act(async () => {
+      storage.getState().applyMachines([createMachineFixture({ id: 'm1', activeAt: Date.now(),
+        storageMode: 'plain', dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER,
+        ...(state === 'locked' ? { availability: { kind: 'locked', reason: 'decryption_failed' } } : {
+          access: { custodian: { accountId: 'artifact-account', displayName: 'Test Account' },
+            role: 'manage', resourceMode: 'plain', accessState: state },
+        }),
+      })]);
+    });
+    await vi.waitFor(() => expect(screen.findAllByTestId('work.unavailable').length).toBeGreaterThan(0));
+    expect(screen.findAllByTestId('work.accepting')).toHaveLength(0);
+    expect(policyReadCount()).toBe(0);
+    expect(sent).toHaveLength(0);
   });
   it('shows an own queued run from its canonical phase facts, never as running on an acceptance clock', async () => {
     const { screen } = await setup();

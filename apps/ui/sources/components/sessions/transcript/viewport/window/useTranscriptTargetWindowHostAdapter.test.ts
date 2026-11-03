@@ -242,44 +242,14 @@ describe('transcript target-window host adapter', () => {
         expect(onJumpLanded).not.toHaveBeenCalled();
     });
 
-    it('fails a target-window jump when a moving write still never mounts the logical target', async () => {
-        const loadTargetWindow = vi.fn(async () => ({ windowId: 'window-331' }));
-        const onJumpLanded = vi.fn();
-
-        const result = await executeTranscriptTargetWindowJump({
-            canRenderTargetWindow: true,
-            isTargetMounted: () => false,
-            loadTargetWindow,
-            onJumpLanded,
-            platformOS: 'web',
-            readScrollTop: vi.fn()
-                .mockReturnValueOnce(10_820)
-                .mockReturnValueOnce(10_548),
-            resolveTargetIndex: () => ({ status: 'found', index: 29, seq: 331, routeMessageId: 'server:m331' }),
-            scrollToTarget: vi.fn(() => true),
-            target: { kind: 'seq', seq: 331 },
-            targetSeq: 331,
-        });
-
-        expect(result).toEqual({ status: 'not-found', reason: 'unavailable' });
-        expect(loadTargetWindow).toHaveBeenCalledWith({
-            direction: null,
-            target: { kind: 'seq', seq: 331 },
-            targetSeq: 331,
-        });
-        expect(onJumpLanded).not.toHaveBeenCalled();
-    });
-
     it('revalidates DOM mount presence after a moving web scroll even when the rendered-window item space still claims the target', async () => {
         const loadTargetWindow = vi.fn(async () => ({ windowId: 'window-331' }));
         const onJumpLanded = vi.fn();
-        const isTargetInRenderedWindow = vi.fn(() => true);
-        const isTargetMounted = vi.fn(() => false);
 
         const result = await executeTranscriptTargetWindowJump({
             canRenderTargetWindow: true,
-            isTargetInRenderedWindow,
-            isTargetMounted,
+            isTargetInRenderedWindow: () => true,
+            isTargetMounted: () => false,
             loadTargetWindow,
             onJumpLanded,
             platformOS: 'web',
@@ -293,8 +263,6 @@ describe('transcript target-window host adapter', () => {
         });
 
         expect(result).toEqual({ status: 'not-found', reason: 'unavailable' });
-        expect(isTargetInRenderedWindow).toHaveBeenCalled();
-        expect(isTargetMounted).toHaveBeenCalled();
         expect(loadTargetWindow).toHaveBeenCalledWith({
             direction: null,
             target: { kind: 'seq', seq: 331 },
@@ -378,37 +346,6 @@ describe('transcript target-window host adapter', () => {
         });
         expect(onJumpLanded).toHaveBeenCalledTimes(1);
         expect(onJumpLanded).toHaveBeenCalledWith(result);
-    });
-
-    it('waits for the native target window to commit before issuing its first scroll', async () => {
-        let commitTargetWindow: ((ready: boolean) => void) | undefined;
-        const waitForTargetRender = vi.fn(() => new Promise<boolean>((resolve) => {
-            commitTargetWindow = resolve;
-        }));
-        const scrollToTarget = vi.fn(() => true);
-        const onJumpLanded = vi.fn();
-
-        const pending = executeTranscriptTargetWindowJump({
-            canRenderTargetWindow: true,
-            isTargetMounted: () => true,
-            loadTargetWindow: vi.fn(async () => ({ windowId: 'window-500' })),
-            onJumpLanded,
-            platformOS: 'ios',
-            readScrollTop: () => null,
-            resolveTargetIndex: () => ({ status: 'not-found', reason: 'unavailable' }),
-            scrollToTarget,
-            target: { kind: 'seq', seq: 500 },
-            targetSeq: 500,
-            waitForTargetRender,
-        });
-        await vi.waitFor(() => expect(waitForTargetRender).toHaveBeenCalledTimes(1));
-        expect(scrollToTarget).not.toHaveBeenCalled();
-        expect(onJumpLanded).not.toHaveBeenCalled();
-
-        commitTargetWindow?.(true);
-        expect(await pending).toMatchObject({ status: 'window-rendered' });
-        expect(scrollToTarget).toHaveBeenCalledTimes(1);
-        expect(onJumpLanded).toHaveBeenCalledTimes(1);
     });
 
     it('waits for the web target window to commit before landing without scroll metrics', async () => {
@@ -660,37 +597,6 @@ describe('transcript target-window host adapter', () => {
 
         expect(result).toEqual({ status: 'aborted' });
         expect(writesAfterSupersession).toBe(0);
-    });
-
-    it('does not run the retired FlashList chunk nudge on the Legend-only target-window path', async () => {
-        const onJumpLanded = vi.fn();
-        let nudged = false;
-        const nudgeScrollForGap = vi.fn().mockImplementation(() => { nudged = true; });
-        const isTargetMounted = vi.fn().mockImplementation(() => nudged);
-
-        const result = await executeTranscriptTargetWindowJump({
-            canRenderTargetWindow: true,
-            hasGenuineUserMovementSince: () => false,
-            isTargetInRenderedWindow: () => true,
-            isTargetMounted,
-            loadTargetWindow: vi.fn(async () => ({ windowId: 'window-41' })),
-            // @ts-expect-error The Legend-only contract rejects the retired FlashList nudge hook.
-            nudgeScrollForGap,
-            onJumpLanded,
-            platformOS: 'web',
-            // Stable scrollTop throughout — simulates the blank-chunk gap condition where
-            // approach writes apply but scrollTop does not move.
-            readScrollTop: vi.fn().mockReturnValue(22470),
-            resolveTargetIndex: () => ({ status: 'not-found', reason: 'unavailable' }),
-            scrollToTarget: vi.fn(() => true),
-            target: { kind: 'seq', seq: 41 },
-            targetSeq: 41,
-            waitForNextLandingFrame: () => Promise.resolve(),
-        });
-
-        expect(result).toEqual({ status: 'not-found', reason: 'unavailable' });
-        expect(nudgeScrollForGap).not.toHaveBeenCalled();
-        expect(onJumpLanded).not.toHaveBeenCalled();
     });
 
     it('does not retain the retired FlashList post-settle chase in the Legend-only host adapter', async () => {

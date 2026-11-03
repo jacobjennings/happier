@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Socket } from "socket.io";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { RPC_ERROR_CODES } from "@happier-dev/protocol/rpc";
+import { RPC_ERROR_CODES, RPC_METHODS, SESSION_RPC_METHODS, parseSocketRpcAuthorizationContext } from "@happier-dev/protocol/rpc";
 import { SOCKET_RPC_EVENTS } from "@happier-dev/protocol/socketRpc";
 
 import { db } from "@/storage/db";
@@ -205,9 +205,12 @@ describe("rpcHandler", () => {
             method: startMethod,
             params: startPayload,
             callerAuthority: "present_user",
-            authorization: { kind: "session.write", sessionId },
+            authorization: { kind: "session.write", sessionId, authority: "sessionOwner" },
             timeoutMs: 30000,
         });
+        const startRequest = startTarget.emitWithAck.mock.calls[0]?.[1];
+        expect(parseSocketRpcAuthorizationContext(startRequest.authorization))
+            .toEqual({ kind: "session.write", sessionId, authority: "sessionOwner" });
         expect(startPayload).not.toHaveProperty("audio");
         expect(startPayload).not.toHaveProperty("pcm");
         expect(JSON.stringify(startPayload)).not.toContain("voice_media");
@@ -230,6 +233,48 @@ describe("rpcHandler", () => {
                 },
             },
         });
+    });
+
+    it("refuses shared-editor native Realtime Start before forwarding, including a forged owner marker", async () => {
+        await db.session.update({ where: { id: sessionId }, data: { accountId: ownerId } });
+        await db.sessionShare.create({ data: { sessionId, sharedByUserId: ownerId,
+            sharedWithUserId: accountId, accessLevel: "edit", canApprovePermissions: false } });
+        const method = `${sessionId}:session.agentRealtime.start`;
+        const target = createTarget("owner-realtime-socket", { ok: true, status: "started" });
+        const { io } = createIo({ [`rpc:${ownerId}:${method}`]: [[target.socket]] });
+        const callerSocket = createAuthenticatedFakeSocket({ id: "shared-editor", emit: vi.fn() });
+        rpcHandler(accountId, callerSocket as unknown as Socket, { io });
+        const handler = getSocketHandler(callerSocket, SOCKET_RPC_EVENTS.CALL);
+        for (const authorization of [undefined, { kind: "session.write", sessionId, authority: "sessionOwner" }]) {
+            const callback = vi.fn();
+            await handler({ method, params: { v: 1, provider: { pluginId: "happier.agent.codex", localId: "realtime-codex" },
+                applicationAttemptId: "shared-start", transport: { kind: "webrtc", offerSdp: "v=0\r\n" } },
+                ...(authorization ? { authorization } : {}) }, callback);
+            expect(callback).toHaveBeenCalledWith({ ok: false, error: "Forbidden", errorCode: RPC_ERROR_CODES.FORBIDDEN });
+        }
+        expect(target.emitWithAck).not.toHaveBeenCalled();
+    });
+
+    it.each([SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND, RPC_METHODS.SESSION_USER_ACTION_ANSWER])(
+        "keeps shared-editor ordinary input and question RPC available without owner proof: %s", async rpcMethod => {
+        await db.session.update({ where: { id: sessionId }, data: { accountId: ownerId } });
+        await db.sessionShare.create({ data: { sessionId, sharedByUserId: ownerId,
+            sharedWithUserId: accountId, accessLevel: "edit", canApprovePermissions: false } });
+        const method = `${sessionId}:${rpcMethod}`;
+        const target = createTarget("owner-input-socket", { ok: true });
+        const { io } = createIo({ [`rpc:${ownerId}:${method}`]: [[target.socket]] });
+        const callerSocket = createAuthenticatedFakeSocket({ id: "shared-editor", emit: vi.fn() });
+        rpcHandler(accountId, callerSocket as unknown as Socket, { io });
+        const handler = getSocketHandler(callerSocket, SOCKET_RPC_EVENTS.CALL);
+        const callback = vi.fn();
+        await handler({ method, params: "opaque-session-input",
+            authorization: { kind: "session.write", sessionId, authority: "sessionOwner" } }, callback);
+        expect(callback).toHaveBeenCalledWith({ ok: true, result: { ok: true } });
+        expect(target.emitWithAck).toHaveBeenCalledOnce();
+        const forwarded = target.emitWithAck.mock.calls[0]?.[1];
+        expect(forwarded.callerAuthority).toBe("present_user");
+        expect(forwarded.authorization).not.toHaveProperty("authority");
+        expect(parseSocketRpcAuthorizationContext(forwarded.authorization)).toEqual(forwarded.authorization);
     });
 
     it("routes delegated permission RPCs through the owner room", async () => {

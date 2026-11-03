@@ -14,6 +14,8 @@ import type { Session } from '@/sync/domains/state/storageTypes';
 import { SESSION_COMPANION_WIDGET_BODY_MIN_HEIGHT_PX, type SessionCompanionInstanceView } from '../SessionCompanionItemFrame';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
 import { readSessionWidgetProvidedContext } from '@/components/widgets/surface/sessionWidgetContext';
+import { useWidgetFrameTitle } from '@/components/widgets/frame/widgetFrameTitle';
+import { WidgetFrameBodyCaptionContext, WidgetFrameBodyMetaContext } from '@/components/widgets/frame/widgetFrameBodyCaption';
 
 /** The Companion retains its one frame; the universal body binds the exact configured target. */
 export function PluginGlance(props: Readonly<{
@@ -37,13 +39,18 @@ export function PluginGlance(props: Readonly<{
     const descriptor = useWidgetInstanceDescriptor(viewerScope?.serverId === props.serverId ? viewerScope : null, props.instance, installed);
     // A copy is named by what it is bound to ("Fix settings modal remount"), in the source slot (lab dbind X).
     const bindingLabel = useWidgetInstanceBindingLabel(props.instance, descriptor);
+    const { title, onDefinitionRead } = useWidgetFrameTitle(props.instance, descriptor);
+    const [bodyCaption, setBodyCaption] = React.useState<string | null>(null);
+    const [bodyMeta, setBodyMeta] = React.useState<React.ReactNode>(null);
     return <WidgetFrame
         testID={props.testID} frameStyle={props.frameStyle} placement="companion"
         mark={descriptor?.icon ?? 'puzzle-piece'}
-        title={props.instanceView?.titleEditor ?? props.instance.displayName ?? descriptor?.title ?? (definition.kind === 'installed' ? definition.surface.localId : props.instance.id)}
-        source={bindingLabel ?? descriptor?.pluginName ?? (definition.kind === 'installed' ? definition.surface.pluginId : undefined)}
+        title={props.instanceView?.titleEditor ?? title}
+        source={bodyCaption ?? bindingLabel ?? descriptor?.pluginName ?? (definition.kind === 'installed' ? definition.surface.pluginId : undefined)}
+        meta={bodyMeta}
         menu={props.menu}
-        body={{ kind: 'content', children: props.measurementOnly ? null : !props.bodyPresented
+        body={{ kind: 'content', children: <WidgetFrameBodyCaptionContext.Provider value={setBodyCaption}>
+            <WidgetFrameBodyMetaContext.Provider value={setBodyMeta}>{props.measurementOnly ? null : !props.bodyPresented
             ? <View testID={props.testID + '.deferred'} style={{ minHeight: SESSION_COMPANION_WIDGET_BODY_MIN_HEIGHT_PX }}
                 accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />
             : viewerScope && viewerScope.serverId === props.serverId
@@ -51,8 +58,11 @@ export function PluginGlance(props: Readonly<{
                 scope={{ ...viewerScope, owner: { kind: 'companion', sessionId: props.sessionId } }}
                 providedContext={readSessionWidgetProvidedContext({ serverId: viewerScope.serverId, sessionId: props.sessionId, session: props.session })}
                 instance={props.instance} descriptor={descriptor} appRuntime={runtime} presentation="content"
+                onDefinitionRead={onDefinitionRead}
                 recordRevision={stableJsonStringify(props.instance)}
                 {...(props.instanceView?.onRepairInputs ? { onRepairInputs: props.instanceView.onRepairInputs } : {})} />
-            : <UnavailableInstalledWidget unresolved={{ state: 'unavailable', reasonCode: 'widget_viewer_scope_mismatch' }} testID={props.testID + '.surface'} /> }}
+            : <UnavailableInstalledWidget unresolved={{ state: 'unavailable', reasonCode: 'widget_viewer_scope_mismatch' }} testID={props.testID + '.surface'} />}
+            </WidgetFrameBodyMetaContext.Provider>
+            </WidgetFrameBodyCaptionContext.Provider> }}
     />;
 }

@@ -569,13 +569,18 @@ export async function waitForIdleViaSocket(params: Readonly<{
 
       const messageBody = update.body;
       if (messageBody.t !== 'new-message') return;
+      if (String(messageBody.sid ?? '') !== params.sessionId) return;
+      if (messageBody.delivery !== 'full') {
+        clearTimeout(timer);
+        cleanup();
+        reject(new Error('Session idle observation requires full message delivery'));
+        return;
+      }
       if (
         preferProjectionUpdates
         && !requiresTranscriptIdleEvidence
         && pendingInputTurnsAwaitingMaterialization === 0
       ) return;
-      if (String(messageBody.sid ?? '') !== params.sessionId) return;
-
       const decrypted = tryDecryptMessageEnvelope({
         content: messageBody.message?.content,
         sessionEncryptionMode: params.sessionEncryptionMode,

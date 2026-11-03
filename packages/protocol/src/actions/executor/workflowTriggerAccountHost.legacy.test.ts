@@ -57,6 +57,14 @@ function fixture(templateCiphertext: string, encryption = plain, targetType: Aut
   return { params, row: () => row, writes: () => writes, written: () => written };
 }
 
+it('marks an unrelated retained definition as indexed in the same recipe conversion write', async () => {
+  const f = fixture(AUTOMATION_TEMPLATE_V02_PLAIN);
+  const host = createAccountWorkflowTriggerActions(f.params);
+  await host.list({ scope: 'account_all' });
+  expect(f.writes()).toBe(1);
+  expect(f.written()?.executionRecipe).toHaveProperty('managedTarget', null);
+});
+
 it('withdraws a census if Account encryption changes before final private disclosure', async () => {
   const f = fixture(AUTOMATION_TEMPLATE_V02_PLAIN);
   let reads = 0;

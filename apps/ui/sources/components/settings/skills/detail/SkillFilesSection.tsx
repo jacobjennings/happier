@@ -2,6 +2,7 @@ import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { SkillReadResultV1 } from '@happier-dev/protocol/prompts/library/skills/skillReadV1';
+import { formatHappierDataBytes } from '@happier-dev/plugin-ui/presentation';
 
 import { Icon } from '@/components/ui/icons/Icon';
 import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
@@ -28,12 +29,6 @@ import type { SkillChange, SkillChangeResult } from './useSkillDetail';
 /** Past this many files the list shows the first ones and one "N more" row (layout density, not a limit). */
 const FOLDED_FILE_COUNT = 40;
 const FOLDED_VISIBLE = 8;
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  return kb < 1024 ? `${kb.toFixed(1)} KB` : `${(kb / 1024).toFixed(1)} MB`;
-}
 
 type SkillFile = SkillReadResultV1['files'][number];
 
@@ -216,7 +211,7 @@ export function SkillFilesSection(
               />
             ) : null}
             <Text variant="meta" style={styles.size}>
-              {formatBytes(file.bytes)}
+              {formatHappierDataBytes(file.bytes, { kind: 'storage' })}
             </Text>
             {expandable && !props.readOnly ? (
               <ItemRowActions

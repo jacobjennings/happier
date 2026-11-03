@@ -6,6 +6,7 @@ import { join, relative } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import * as tar from 'tar';
+import { parse as parseYaml } from 'yaml';
 
 import { resolveTarCreateArgs } from '../pipeline/release/lib/archive-tar-options.mjs';
 
@@ -17,9 +18,12 @@ test('root release archive helper owns its exact tar dependency', async () => {
     'utf8',
   );
 
+  const workspaceConfig = parseYaml(await readFile(join(repoRoot, 'pnpm-workspace.yaml'), 'utf8'));
+
   assert.match(helperSource, /from ['"]tar['"]/u);
   assert.equal(rootManifest.devDependencies?.tar, '7.5.22');
-  assert.equal(rootManifest.resolutions?.tar, '7.5.22');
+  // pnpm owns the workspace-wide pin (the Yarn `resolutions` field moved here in 674b903c96).
+  assert.equal(workspaceConfig.overrides?.tar, '7.5.22');
 });
 
 test('packed-candidate harness owns its exact tar dependency', async () => {

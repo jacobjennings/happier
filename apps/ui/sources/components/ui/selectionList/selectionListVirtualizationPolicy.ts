@@ -88,11 +88,11 @@ function countVirtualizationEligibleSections(plan: ReadonlyArray<SectionRenderPl
  * so the predicate now signals "virtualized list owns scroll" for any
  * virtualization-eligible plan (single OR multi).
  */
-export function planHasVirtualizedSection(plan: ReadonlyArray<SectionRenderPlan>): boolean {
+function planHasVirtualizedSection(plan: ReadonlyArray<SectionRenderPlan>): boolean {
     return countVirtualizationEligibleSections(plan) >= 1;
 }
 
-export function planHasEligibleStaleDynamicSection(
+function planHasEligibleStaleDynamicSection(
     plan: ReadonlyArray<SectionRenderPlan>,
 ): boolean {
     const eligibleIds = new Set(collectVirtualizationEligibleSectionIds(plan));
@@ -129,7 +129,7 @@ export function planHasEligibleStaleDynamicSection(
  * loading-with-stale and error-with-stale rows through the virtualized list
  * recycler.
  */
-export function planRequiresFlatVirtualizedList(
+function planRequiresFlatVirtualizedList(
     plan: ReadonlyArray<SectionRenderPlan>,
 ): boolean {
     if (countVirtualizationEligibleSections(plan) === 0) return false;

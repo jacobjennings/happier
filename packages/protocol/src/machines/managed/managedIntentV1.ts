@@ -24,7 +24,9 @@ export const ManagedIntentInputSchema = lazyDefinition(() => z.discriminatedUnio
 
 export const ManagedIntentResultSchema = lazyDefinition(() => z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('accepted'), managedId: id(), intentRevision: revision(),
-    operation: ActionOperationGetV1RequestSchema }),
+    // Immediate foreground work completes natively; deferred intent is retained
+    // by its existing row owner. Neither invents an asynchronous Action operation.
+    operation: z.optional(ActionOperationGetV1RequestSchema) }),
   z.strictObject({ kind: z.literal('conflict'), currentRevision: revision() }),
   z.strictObject({ kind: z.literal('refused'), code: ManagedRefusalCodeV1Schema }),
 ]));
@@ -49,10 +51,10 @@ export const MANAGED_ADMISSION_DRAIN_CONFIRM_RPC_METHOD = 'managed.admission.dra
 
 /** Exact retained-row correlation; requester authority comes from signed Machine ingress. */
 export const ManagedActivityReadRequestV1Schema = lazyDefinition(() => z.strictObject({
-  homeId: id(), managedId: id(), expectedRevision: revision(), controller: ManagedControllerV1Schema,
+  homeId: id(), managedId: id(), expectedRevision: revision(), controller: z.optional(ManagedControllerV1Schema),
 }));
 export const ManagedAdmissionDrainConfirmRequestV1Schema = lazyDefinition(() => z.strictObject({
-  homeId: id(), managedId: id(), expectedRevision: revision(), controller: ManagedControllerV1Schema,
+  homeId: id(), managedId: id(), expectedRevision: revision(), controller: z.optional(ManagedControllerV1Schema),
   action: z.enum(['begin', 'resume']),
 }));
 export const ManagedActivityBridgeResultV1Schema = lazyDefinition(() => z.union([

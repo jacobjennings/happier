@@ -510,7 +510,6 @@ function renderSelectionListSectionElement(
                 onPushStep={ctx.onPushStep}
                 optionPositionById={ctx.optionPositionById}
                 optionSetSize={ctx.optionSetSize}
-                virtualization={sectionPlan.virtualization}
                 showsVerticalScrollIndicator={ctx.showsVerticalScrollIndicator}
                 viewportHeight={ctx.virtualizedViewportHeight}
                 a11yPattern={ctx.a11yPattern}

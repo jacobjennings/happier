@@ -20,8 +20,6 @@ describe('buildRelayHostLocalChecklistItems', () => {
 
         const items = buildRelayHostLocalChecklistItems({
             runtimeStatus: status,
-            currentRelayUrl: null,
-            currentShareableUrl: null,
         });
 
         expect(items).toHaveLength(2);
@@ -32,7 +30,7 @@ describe('buildRelayHostLocalChecklistItems', () => {
         expect(items[1]?.defaultSelected).toBe(true);
     });
 
-    it('keeps the checklist focused on relay runtime install and start even when a relay url already exists', () => {
+    it('marks install and start satisfied once the relay runtime is installed, running and healthy', () => {
         const status: RelayHostLocalChecklistRuntimeStatus = {
             installed: true,
             version: '1.2.3',
@@ -43,8 +41,6 @@ describe('buildRelayHostLocalChecklistItems', () => {
 
         const items = buildRelayHostLocalChecklistItems({
             runtimeStatus: status,
-            currentRelayUrl: 'https://cloud.example.test',
-            currentShareableUrl: 'https://relay.example.test',
         });
 
         expect(items).toHaveLength(2);
@@ -62,6 +58,5 @@ describe('buildRelayHostLocalChecklistItems', () => {
                 defaultSelected: false,
             }),
         ]));
-        expect(items.some((item) => String(item.id) === 'enableSecureAccess')).toBe(false);
     });
 });

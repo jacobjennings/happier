@@ -5,7 +5,7 @@ import { buildSessionListRowFilterFacts } from '@/sync/domains/session/listing/s
 import { isSessionContentReadable, readSessionContentAvailability } from '@/sync/domains/session/encryptedContentAvailability';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
-import type { Session } from '@/sync/domains/state/storageTypes';
+import { readSessionListPresentationOwnerMetadata, readSessionListRenderableOwnerMetadataView, type SessionPresentationRecord, type SessionListPresentationSource } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import type { ActivityAttentionSource } from './activityAttentionSourceTypes';
 import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization';
@@ -17,9 +17,11 @@ export function readActivityPersonalRuleSnapshot(source: Pick<ActivityAttentionS
 }
 
 /** Presentation only: no enrollment, viewer mutation, event dispatch or second filter semantics. */
-export function readActivitySessionRulePolicies(source: ActivityAttentionSource, address: SessionAddress, session: Session, nowMs: number): readonly FollowPolicyV1[] {
+export function readActivitySessionRulePolicies(source: ActivityAttentionSource, address: SessionAddress, session: SessionPresentationRecord, nowMs: number, presentationSource?: SessionListPresentationSource): readonly FollowPolicyV1[] {
+    const ownerMetadata = presentationSource ? readSessionListPresentationOwnerMetadata(presentationSource)
+        : 'agentState' in session ? readSessionOwnerMetadataView(session) : readSessionListRenderableOwnerMetadataView(session);
     if (session.archivedAt != null || !isSessionContentReadable(readSessionContentAvailability(session))
-        || session.metadataLayoutVersion === 1 && readSessionOwnerMetadataView(session) == null) return NO_RULE_POLICIES;
+        || (presentationSource?.metadataLayoutVersion ?? session.metadataLayoutVersion) === 1 && ownerMetadata == null) return NO_RULE_POLICIES;
     const follow = session.viewer?.follow;
     // The existing Follow facts distinguish an absent row (null) from explicit Unfollow.
     if (follow?.follows === false && follow.notificationLevel === 'none') return NO_RULE_POLICIES;
@@ -30,9 +32,13 @@ export function readActivitySessionRulePolicies(source: ActivityAttentionSource,
         hasPersistentFollow: follow == null ? undefined : follow.notificationLevel !== null }).rules : [];
     const rules = [...snapshot.rules.filter(rule => rule.receiver.kind === 'account' && rule.definition.enabled), ...defaults];
     if (rules.length === 0) return NO_RULE_POLICIES;
+    const organizationKey = buildSessionOrganizationSessionKey(address.serverId, session.id);
+    const folderAssignment = source.followRuleFolderAssignmentsBySessionKey?.[organizationKey];
     const facts = buildSessionListRowFilterFacts(session, address.serverId, {
-        nowMs, viewerAccountId: snapshot.accountId, workspaceRefs: source.followRuleWorkspaceRefsV1,
-        tagIds: source.followRuleTagAssignmentsBySessionKey?.[buildSessionOrganizationSessionKey(address.serverId, session.id)]?.tagIds,
+        nowMs, presentationSource, viewerAccountId: snapshot.accountId, workspaceRefs: source.followRuleWorkspaceRefsV1,
+        tagIds: source.followRuleTagAssignmentsBySessionKey?.[organizationKey]?.tagIds,
+        section: folderAssignment === undefined ? undefined : folderAssignment.folderId === null
+            ? null : { serverId: address.serverId, sectionId: folderAssignment.folderId },
         includeStatus: rules.some(rule => Boolean(rule.definition.filter.statuses?.length)),
         includeSource: rules.some(rule => rule.definition.filter.source !== 'all'),
     });

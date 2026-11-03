@@ -12,7 +12,7 @@ import type {
   AgentSessionModelsService,
   AgentSessionOpenRequest,
 } from '@happier-dev/plugin-sdk/agents/runtime';
-import { AgentSessionRuntimeEventSchema } from '@happier-dev/plugin-sdk/agents/runtime';
+import { AgentSessionRuntimeEventSchema, resolvePromptCacheLastUseAtMs } from '@happier-dev/plugin-sdk/agents/runtime';
 import type { PluginDiagnosticData } from '@happier-dev/plugin-sdk';
 import type {
   ManagedExecutableRef } from '@happier-dev/plugin-sdk/managed-services';
@@ -65,6 +65,7 @@ import type { PiPermissionMode, PiRpcStateData } from './types.js';
 import { resolvePiEffectiveLaunchPermissionPolicy } from './permissions.js';
 import { createPiSessionModelsSource } from '../modelsSource.js';
 import { projectPiSessionStatsUsage } from './usage.js';
+import { AGENT_DEFINITION } from '../../definition.js';
 import {
   buildPiExtensionUiQuestionRequest,
   buildPiExtensionUiResponse,
@@ -214,8 +215,12 @@ type PendingCompletion = Readonly<{
 
 type PendingPromptAdmission = {
   turnId: string;
+  turnStartedAtMs: number;
   onAccepted: () => void;
-  bufferedRecords: AgentSessionPreAdmissionBuffer<Readonly<Record<string, unknown>>>;
+  bufferedRecords: AgentSessionPreAdmissionBuffer<Readonly<{
+    record: Readonly<Record<string, unknown>>;
+    observedAtMs: number;
+  }>>;
   bufferFailure: Exclude<AgentSessionPreAdmissionBufferResult, { status: 'accepted' }> | null;
   /**
    * Cancellation reason once an abort for this exact admission has been
@@ -490,7 +495,7 @@ function createRuntimeOperations(params: Readonly<{
   resolveProviderNativeCommand: (prompt: string) => Promise<boolean>;
   refreshCommands?: () => void;
   refreshModels?: () => void;
-  observeUsage?: (turnId: string | null) => void;
+  observeUsage?: (turnId: string | null, promptCacheLastUseAtMs?: number) => void;
   cancelBlockingExtensionUiRequests: () => Promise<void>;
 }>): RuntimeOperationsWithRecordHandler {
   const runtimeEventProjector = createPiRuntimeEventProjector();
@@ -498,6 +503,8 @@ function createRuntimeOperations(params: Readonly<{
   let activeTurn: ActiveTurnState | null = null;
   let activeTurnStartObserved = false;
   let activeTurnAssistantMessageObserved = false;
+  let turnStartedAtMs: number | undefined;
+  let lastNonModelItemCompletedAtMs: number | undefined;
   type ProviderFailureObservation = Readonly<{
     diagnostic: PiProviderFailureDiagnostic;
     evidence: PiProviderFailureLogEvidence;
@@ -518,6 +525,7 @@ function createRuntimeOperations(params: Readonly<{
     agentTurnId: string | null = null,
     turnId: string = randomUUID(),
     startedBy: 'host' | 'provider' = 'provider',
+    startedAtMs: number = Date.now(),
   ): ActiveTurnState {
     runtimeEventProjector.resetTurn();
     const turn = Object.freeze({
@@ -527,6 +535,8 @@ function createRuntimeOperations(params: Readonly<{
     activeTurn = turn;
     activeTurnStartObserved = false;
     activeTurnAssistantMessageObserved = false;
+    turnStartedAtMs = startedAtMs;
+    lastNonModelItemCompletedAtMs = undefined;
     activeTurnProviderFailure = null;
     retryingTurnProviderFailure = null;
     settledTurnFailure = null;
@@ -545,6 +555,8 @@ function createRuntimeOperations(params: Readonly<{
     activeTurn = null;
     activeTurnStartObserved = false;
     activeTurnAssistantMessageObserved = false;
+    turnStartedAtMs = undefined;
+    lastNonModelItemCompletedAtMs = undefined;
     activeTurnProviderFailure = null;
     retryingTurnProviderFailure = null;
     pendingCompletion = null;
@@ -560,8 +572,9 @@ function createRuntimeOperations(params: Readonly<{
     agentTurnId: string | null = null,
     turnId?: string,
     startedBy: 'host' | 'provider' = 'provider',
+    startedAtMs?: number,
   ): ActiveTurnState {
-    if (!activeTurn) return beginTurn(agentTurnId, turnId, startedBy);
+    if (!activeTurn) return beginTurn(agentTurnId, turnId, startedBy, startedAtMs);
     if (agentTurnId && activeTurn.agentTurnId !== agentTurnId) {
       activeTurn = Object.freeze({
         turnId: activeTurn.turnId,
@@ -673,16 +686,23 @@ function createRuntimeOperations(params: Readonly<{
     completion?.resolve();
   }
 
-  function handleRuntimeRecordNow(record: Readonly<Record<string, unknown>>): void {
+  function handleRuntimeRecordNow(record: Readonly<Record<string, unknown>>, observedAtMs: number): void {
     const type = readPiRuntimeRecordType(record);
     const agentTurnId = readPiProviderTurnId(record);
     if (type === 'turn_start' || type === 'agent_start') {
-      readOrBeginTurn(agentTurnId);
+      readOrBeginTurn(agentTurnId, undefined, 'provider', observedAtMs);
       activeTurnStartObserved = true;
       return;
     }
     const turn = activeTurn;
     const providerFailureDiagnostic = readPiProviderFailureDiagnostic(record);
+    if (turn && type === 'message_start' && record.message && typeof record.message === 'object'
+      && 'role' in record.message && record.message.role === 'assistant') {
+      turnStartedAtMs ??= observedAtMs;
+    }
+    if (turn && type === 'tool_execution_end') {
+      lastNonModelItemCompletedAtMs = observedAtMs;
+    }
     const providerFailure = providerFailureDiagnostic
       ? {
         diagnostic: providerFailureDiagnostic,
@@ -745,7 +765,10 @@ function createRuntimeOperations(params: Readonly<{
       return;
     }
     if (agentEndBoundary === 'final') {
-      params.observeUsage?.(turn?.turnId ?? null);
+      params.observeUsage?.(turn?.turnId ?? null, resolvePromptCacheLastUseAtMs({
+        turnStartedAtMs,
+        lastNonModelItemCompletedAtMs,
+      }));
       if (turn && pendingCancellation?.turnId === turn.turnId) {
         pendingCancellation.finalBoundaryObserved = true;
         pendingCancellation.finalBoundaryAgentTurnId = agentTurnId ?? turn.agentTurnId;
@@ -858,6 +881,7 @@ function createRuntimeOperations(params: Readonly<{
       }
       const admission: PendingPromptAdmission = {
         turnId,
+        turnStartedAtMs: Date.now(),
         onAccepted,
         bufferedRecords: createAgentSessionPreAdmissionBuffer(),
         bufferFailure: null,
@@ -867,7 +891,7 @@ function createRuntimeOperations(params: Readonly<{
       const providerNativeCommand = params.resolveProviderNativeCommand(prompt);
       const accept = () => {
         admission.onAccepted();
-        readOrBeginTurn(null, admission.turnId, 'host');
+        readOrBeginTurn(null, admission.turnId, 'host', admission.turnStartedAtMs);
         // The provider did accept the prompt, so the input stays admitted; the
         // turn it begins terminalizes cancelled instead of resurrecting an
         // already aborted admission.
@@ -877,7 +901,7 @@ function createRuntimeOperations(params: Readonly<{
       };
       const replayBufferedRecords = () => {
         const records = admission.bufferedRecords.drain();
-        for (const record of records) handleRuntimeRecordNow(record);
+        for (const { record, observedAtMs } of records) handleRuntimeRecordNow(record, observedAtMs);
       };
       try {
         // Pi queues this response behind an in-progress context compaction. In that state
@@ -939,7 +963,7 @@ function createRuntimeOperations(params: Readonly<{
           // Pi stream events do not echo the prompt request ID, so replay them for output/lifecycle
           // visibility without treating unrelated activity as acceptance evidence for this prompt.
           const records = admission.bufferedRecords.drain();
-          for (const record of records) handleRuntimeRecordNow(record);
+          for (const { record, observedAtMs } of records) handleRuntimeRecordNow(record, observedAtMs);
         } finally {
           replayingPromptAckFailureRecords = false;
           admission.bufferedRecords.dispose();
@@ -1064,15 +1088,18 @@ function createRuntimeOperations(params: Readonly<{
       await params.rpc.dispose();
     },
     handleRuntimeRecord(record) {
+      // Capture arrival before prompt admission can defer lifecycle/tool
+      // processing behind its acknowledgement; replay is not a request clock.
+      const observedAtMs = Date.now();
       const recordType = readPiRuntimeRecordType(record);
       if (recordType === 'compaction_start') piCompactionInProgress = true;
       if (recordType === 'compaction_end') piCompactionInProgress = false;
       const admission = pendingPromptAdmission;
       if (!admission) {
-        handleRuntimeRecordNow(record);
+        handleRuntimeRecordNow(record, observedAtMs);
         return;
       }
-      const result = admission.bufferedRecords.admit(record);
+      const result = admission.bufferedRecords.admit({ record, observedAtMs });
       if (result.status !== 'accepted' && admission.bufferFailure === null) {
         admission.bufferFailure = result;
         admission.bufferedRecords.dispose();
@@ -1103,14 +1130,24 @@ function createPiConversationRuntime(params: Readonly<{
 }>): PiConversationRuntime {
   const launchPermissionPolicy = resolvePiEffectiveLaunchPermissionPolicy(params.permissionMode);
   let disposed = false;
-  let activeCompactionId: string | null = null;
+  let activeCompaction: Pick<AgentSessionCompactRequest, 'compactionId' | 'trigger'> | null = null;
+  function settleActiveCompaction(phase: 'cancelled' | 'failed'): void {
+    if (!activeCompaction) return;
+    const { compactionId, trigger } = activeCompaction;
+    activeCompaction = null;
+    const common = { kind: 'context-compaction' as const, emittedAtMs: Date.now(), compactionId, trigger };
+    params.operations.publishRuntimeEvent(phase === 'failed'
+      ? { ...common, phase, diagnostic: diagnostic('pi_compaction_failed', 'Pi compaction was interrupted') }
+      : { ...common, phase });
+  }
   const compactionSubscription = params.operations.subscribeRuntimeEvents((event) => {
+    if (event.kind === 'runtime-ended') settleActiveCompaction('failed');
     if (
       event.kind === 'context-compaction'
-      && event.compactionId === activeCompactionId
+      && event.compactionId === activeCompaction?.compactionId
       && ['completed', 'failed', 'cancelled', 'outcomeUnknown'].includes(event.phase)
     ) {
-      activeCompactionId = null;
+      activeCompaction = null;
     }
   }, false);
 
@@ -1270,15 +1307,15 @@ function createPiConversationRuntime(params: Readonly<{
       if (options?.signal?.aborted) {
         return { status: 'rejected', diagnostic: diagnostic('pi_compaction_aborted', 'Pi compaction was aborted'), retryable: false };
       }
-      if (activeCompactionId) {
+      if (activeCompaction) {
         return { status: 'rejected', diagnostic: diagnostic('pi_compaction_in_progress', 'Pi compaction is already running'), retryable: true };
       }
-      activeCompactionId = request.compactionId;
+      activeCompaction = request;
       try {
         await params.operations.compactContext(request);
         return { status: 'admitted' };
       } catch (error) {
-        activeCompactionId = null;
+        settleActiveCompaction('failed');
         return {
           status: 'rejected',
           diagnostic: diagnostic('pi_compaction_failed', error instanceof Error ? error.message : String(error)),
@@ -1293,6 +1330,7 @@ function createPiConversationRuntime(params: Readonly<{
     dispose: async () => {
       if (disposed) return;
       disposed = true;
+      settleActiveCompaction('cancelled');
       compactionSubscription();
       params.clearSubscribers();
       await params.operations.resetOrDisposeRuntime();
@@ -1641,7 +1679,7 @@ async function createPiConversationRuntimeOperations(
       return availableCommandsKnown && availableExtensionCommandNames.has(name);
     },
     refreshCommands: () => { void refreshAvailableCommands(); },
-    ...(happierSessionId ? { observeUsage(turnId: string | null) {
+    ...(happierSessionId ? { observeUsage(turnId: string | null, promptCacheLastUseAtMs?: number) {
       usageObservationChain = usageObservationChain.then(async () => {
         const response = await rpc.send({ type: 'get_session_stats' }, 30_000);
         const observedAtMs = Date.now();
@@ -1651,6 +1689,7 @@ async function createPiConversationRuntimeOperations(
           turnId,
           observationId: `pi-usage-${randomUUID()}`,
           observedAtMs,
+          ...(promptCacheLastUseAtMs !== undefined ? { promptCache: { lastUseAtMs: promptCacheLastUseAtMs } } : {}),
         });
         if (event) {
           const { sessionId: _sessionId, ...conversationEvent } = event;
@@ -1743,6 +1782,7 @@ export async function createPiRuntimeOperations(params: PiRuntimeOperationsParam
   let sequence = 0;
   return {
     ...conversation,
+    runtimeCapabilities: { sessionCapabilities: AGENT_DEFINITION.core.sessionCapabilities },
     watch(listener) {
       return conversation.watch((event) => {
         listener(AgentSessionRuntimeEventSchema.parse({

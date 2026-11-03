@@ -124,7 +124,10 @@ describe('Settings → Account identity header', () => {
         boundary.encryptionMode = 'plain';
         const plain = await renderAccount();
         await vi.waitFor(() => expect(plain.getTextContent()).toContain('lee@example.test'));
+        // A plaintext Account states its mode too, so the fact never appears or vanishes.
+        await vi.waitFor(() => expect(identityHeader(plain).facts).toContain('settingsAccount.notEndToEndEncrypted'));
         expect(identityHeader(plain).facts).not.toContain('settingsAccount.endToEndEncrypted');
+        expect(plain.findByTestId('settings-account-recovery-key-loading')).toBeNull();
         expect(plain.findByTestId('settings-account-signin-recovery-key')).toBeNull();
         standardCleanup();
 
@@ -157,15 +160,6 @@ describe('Settings → Account identity header', () => {
         expect(screen.findHostByTestId('settings-account-recovery-key-loading')?.props.accessibilityState).toEqual({ busy: true });
         expect(screen.getTextContent()).not.toContain('common.loading');
         expect(identityHeader(screen).facts).not.toContain('ndToEndEncrypted');
-    });
-
-    it('states the encryption mode for a plaintext Account too, so the fact never appears or vanishes', async () => {
-        boundary.profile = { ...profileDefaults, id: 'prof_1', name: 'Lee', username: null };
-        boundary.encryptionMode = 'plain';
-        const screen = await renderAccount();
-
-        await vi.waitFor(() => expect(identityHeader(screen).facts).toContain('settingsAccount.notEndToEndEncrypted'));
-        expect(screen.findByTestId('settings-account-recovery-key-loading')).toBeNull();
     });
 
     it('puts the encryption fact, with its lock, directly under the Account ID', async () => {

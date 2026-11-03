@@ -11,14 +11,66 @@ import {
     type ServerAccountRequestAuthority,
 } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
-import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import {
+    applySessionListRenderablePatch,
+    buildSessionListRenderableFromSession,
+    type SessionListRenderableSession,
+} from '@/sync/domains/session/listing/sessionListRenderable';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { resolveUiClientEncryptionRequirementForScope } from '@/sync/domains/settings/clientEncryptionRequirement';
+import { captureSessionFullPublicationBaseline } from './sessionRuntimeObservation';
+import { readSessionSnapshotsForAuthority, SessionSnapshotReadError, ensureSessionDisplayProjectionsForRead } from '@/sync/runtime/orchestration/serverScopedRpc/readSessionSnapshotForAuthority';
+import { readSessionListRowForServerId } from './listing/sessionListRowStateLookup';
+import { SESSION_LIST_DOCUMENT_ADMISSION, areSessionListDocumentAdmissionsEqual, hasCurrentSessionListDisplayMetadata } from './sessionDocumentAdmission';
 
 export type SessionMetadataInventoryAccountLifetime = Readonly<{
     isCurrent(): boolean;
     onRetire(cancel: () => void): Readonly<{ dispose(): void }>;
 }>;
+
+/** Private Agent recipes are opened only for an actual local facet/picker demand. */
+export async function hydrateSessionListAgentTargetsForServerAccountScope(params: Readonly<{
+    scope: ServerAccountScope;
+    sessionIds: readonly string[];
+    accountLifetime: SessionMetadataInventoryAccountLifetime;
+    signal?: AbortSignal;
+}>): Promise<void> {
+    const isCurrent = () => !params.signal?.aborted && params.accountLifetime.isCurrent();
+    if (!isCurrent()) return;
+    const authority = await captureServerRequestAuthorityForServerAccountScope({ scope: params.scope,
+        activeRequest: (path, init) => serverFetch(path, init) });
+    try {
+        if (!isCurrent()) return;
+        const candidates = params.sessionIds.filter(id => {
+            const row = readSessionListRowForServerId(storage.getState().sessionListRowsByServerId, params.scope.serverId, id);
+            return row?.agentTargetKey === undefined && row != null && hasCurrentSessionListDisplayMetadata(row);
+        });
+        if (candidates.length === 0) return;
+        const results = await readSessionSnapshotsForAuthority({ authority, sessionIds: candidates,
+            includeTurns: false, signal: params.signal, isCurrent });
+        if (!isCurrent()) return;
+        let unavailable = false;
+        storage.getState().applyServerScopedSessionListRowPatches(params.scope.serverId, candidates.map(sessionId => ({
+            sessionId,
+            patch: (row) => {
+                if (!isCurrent() || row.agentTargetKey !== undefined) return null;
+                const result = results.get(sessionId);
+                if (!result?.ok) { unavailable = true; return null; }
+                const session = result.snapshot.session;
+                const admission = row[SESSION_LIST_DOCUMENT_ADMISSION];
+                if (session.metadataProjection === 'displayOnly' || !hasCurrentSessionListDisplayMetadata(session)
+                    || !areSessionListDocumentAdmissionsEqual(admission, session[SESSION_LIST_DOCUMENT_ADMISSION])
+                    || session.metadataVersion !== row.metadataVersion
+                    || session.metadataVersion < (admission?.observedMetadataVersion ?? 0)) return null;
+                // Use the same full-document resolver as every semantic row; never infer recipes from display flavor.
+                return { agentTargetKey: buildSessionListRenderableFromSession(session).agentTargetKey };
+            },
+        })));
+        if (unavailable) throw new SessionSnapshotReadError('agent_target_unavailable');
+    } finally {
+        await authority.release();
+    }
+}
 
 type SessionMetadataInventoryAuthority = ServerAccountRequestAuthority;
 
@@ -27,6 +79,7 @@ async function fetchSessionMetadataInventoryWithAuthority(params: Readonly<{
     authority: SessionMetadataInventoryAuthority;
     signal: AbortSignal;
     baseline: Readonly<Record<string, SessionListRenderableSession>>;
+    fullPublicationBaseline: Readonly<Record<string, number | undefined>>;
 }>): Promise<void> {
     const credentials = params.authority.context.credentials;
     if (!credentials) throw new Error('Scoped Session inventory credentials are unavailable');
@@ -40,41 +93,104 @@ async function fetchSessionMetadataInventoryWithAuthority(params: Readonly<{
     const sessionDataKeyEnvelopes = new Map<string, string>();
     const tuning = loadSyncTuning();
     const shouldContinue = () => !params.signal.aborted;
-    const renderablesBySessionId = new Map<string, SessionListRenderableSession>();
+    const renderablesBySessionId = new Map(Object.entries(params.baseline));
+    // Prior rows are the reconciliation basis, not proof of current membership.
+    // Keep fetched order and remove absent rows only after the census completes.
+    const inventorySessionIds = new Set<string>();
+    const publishedBaseline = { ...params.baseline };
+    const publishedFullPublicationBaseline = { ...params.fullPublicationBaseline };
 
     const fetchListing = async (sessionListPath: string | undefined): Promise<void> => {
         let cursor: string | null = null;
         let hasNext = false;
-        const fetchPage = async (pageCursor: string | null) => await fetchAndApplySessions({
-            clientEncryptionRequirement: resolveUiClientEncryptionRequirementForScope({
-                scope: params.scope,
-                focusedSettings: storage.getState().settings,
-            }),
-            ...(sessionListPath
-                ? { sessionListPath }
-                : pageCursor === null
-                    ? { includeActiveSessionRows: true }
-                    : {}),
-            sessionListCursor: pageCursor,
-            sessionListMaxPages: 1,
-            serverId: params.scope.serverId,
-            credentials,
-            encryption,
-            sessionDataKeys,
-            sessionDataKeyEnvelopes,
-            request: (path, init) => params.authority.request(path, { ...init, signal: params.signal }),
-            // Collected rows win across pages; the captured baseline supplies
-            // prior owner provenance without retaining absent inventory members.
-            getCurrentSessionListRenderable: (sessionId) => renderablesBySessionId.get(sessionId) ?? params.baseline[sessionId] ?? null,
-            shouldContinue,
-            applySessions: () => {},
-            applySessionListRenderables: (sessions) => {
-                if (!shouldContinue()) return;
-                for (const session of sessions) renderablesBySessionId.set(session.id, session);
-            },
-            sessionListHydrationConcurrencyLimit: tuning.sessionListHydrationConcurrencyLimit,
-            log: { log: () => {} },
-        });
+        const fetchPage = async (pageCursor: string | null) => {
+            const pageSessionIds = new Set<string>();
+            const result = await fetchAndApplySessions({
+                clientEncryptionRequirement: resolveUiClientEncryptionRequirementForScope({
+                    scope: params.scope,
+                    focusedSettings: storage.getState().settings,
+                }),
+                ...(sessionListPath
+                    ? { sessionListPath }
+                    : pageCursor === null
+                        ? { includeActiveSessionRows: true }
+                        : {}),
+                sessionListCursor: pageCursor,
+                sessionListMaxPages: 1,
+                // This explicitly demanded metadata inventory must settle continuation
+                // facts while it still holds the fetched ciphertext, not reread detail
+                // bodies after an unopened list projection has discarded that input.
+                requiredHydrationSessionIds: 'all',
+                awaitSessionListHydration: true,
+                contentDemand: 'list-projection',
+                serverId: params.scope.serverId,
+                signal: params.signal,
+                credentials,
+                encryption,
+                sessionDataKeys,
+                sessionDataKeyEnvelopes,
+                request: (path, init) => params.authority.request(path, { ...init, signal: params.signal }),
+                readTransport: params.authority.readTransport,
+                // Collected rows win across pages; the captured baseline supplies
+                // prior owner provenance without retaining absent inventory members.
+                getCurrentSessionListRenderable: (sessionId) => renderablesBySessionId.get(sessionId) ?? null,
+                shouldContinue,
+                // Stage the page until all of its metadata is admitted. The caller
+                // publishes these rows without opening Session entities or owning membership.
+                applySessions: (sessions) => {
+                    if (!shouldContinue()) return;
+                    for (const session of sessions) {
+                        renderablesBySessionId.set(session.id, buildSessionListRenderableFromSession(
+                            session,
+                            renderablesBySessionId.get(session.id),
+                        ));
+                        pageSessionIds.add(session.id);
+                    }
+                },
+                applySessionListRenderables: (sessions) => {
+                    if (!shouldContinue()) return;
+                    for (const session of sessions) {
+                        renderablesBySessionId.set(session.id, session);
+                        pageSessionIds.add(session.id);
+                    }
+                },
+                applySessionListRenderablePatches: (patches) => {
+                    if (!shouldContinue()) return;
+                    for (const { sessionId, patch } of patches) {
+                        const current = renderablesBySessionId.get(sessionId);
+                        if (current) {
+                            renderablesBySessionId.set(sessionId, applySessionListRenderablePatch(current, patch));
+                            pageSessionIds.add(sessionId);
+                        }
+                    }
+                },
+                sessionListHydrationConcurrencyLimit: tuning.sessionListHydrationConcurrencyLimit,
+                log: { log: () => {} },
+            });
+            if (shouldContinue()) {
+                for (const sessionId of pageSessionIds) inventorySessionIds.add(sessionId);
+                const publishedRows = storage.getState().applyServerScopedSessionListRows(
+                    params.scope.serverId,
+                    [...pageSessionIds].flatMap((sessionId) => {
+                        const row = renderablesBySessionId.get(sessionId);
+                        return row ? [row] : [];
+                    }),
+                    { source: 'rowOnly', mode: 'append', baseline: {
+                        rows: publishedBaseline,
+                        fullPublicationBaseline: publishedFullPublicationBaseline,
+                    } },
+                );
+                if (publishedRows) {
+                    Object.assign(publishedBaseline, publishedRows.rows);
+                    Object.assign(publishedFullPublicationBaseline, publishedRows.fullPublicationBaseline);
+                }
+            }
+            await ensureSessionDisplayProjectionsForRead({ serverId: params.scope.serverId, credentials,
+                request: (path, init) => params.authority.request(path, init),
+                prefetched: result.prefetchedFullSessionReads, signal: params.signal, isCurrent: shouldContinue });
+            const { prefetchedFullSessionReads: _consumedFullReads, ...publishedResult } = result;
+            return publishedResult;
+        };
         await exhaustSessionListPages({
             fetchFirstPage: async () => {
                 const result = await fetchPage(null);
@@ -96,8 +212,12 @@ async function fetchSessionMetadataInventoryWithAuthority(params: Readonly<{
     if (shouldContinue()) {
         storage.getState().reconcileSessionListRowsForServerScope(
             params.scope.serverId,
-            [...renderablesBySessionId.values()],
-            params.baseline,
+            [...inventorySessionIds].flatMap(sessionId => {
+                const row = renderablesBySessionId.get(sessionId);
+                return row ? [row] : [];
+            }),
+            publishedBaseline,
+            publishedFullPublicationBaseline,
         );
     }
 }
@@ -125,6 +245,7 @@ async function runSessionMetadataInventory(params: Readonly<{
 }>): Promise<void> {
     let authority: SessionMetadataInventoryAuthority | null = null;
     const baseline = storage.getState().sessionListRowsByServerId[params.scope.serverId] ?? {};
+    const fullPublicationBaseline = captureSessionFullPublicationBaseline(params.scope.serverId, Object.keys(baseline));
     try {
         if (params.signal.aborted) throw createAbortError();
         authority = await captureServerRequestAuthorityForServerAccountScope({
@@ -137,6 +258,7 @@ async function runSessionMetadataInventory(params: Readonly<{
             authority,
             signal: params.signal,
             baseline,
+            fullPublicationBaseline,
         });
     } finally {
         await authority?.release();
@@ -180,7 +302,8 @@ function waitForInventoryEnsure(params: Readonly<{
  * one explicitly selected Home. The exact credential authority—not the active
  * Sync singleton—owns transport and Account identity. A consumer may detach
  * without cancelling shared work; the canonical Home credential mutation
- * aborts that work and fences every store publication.
+ * aborts that work and fences every store publication. Admitted pages are readable
+ * while later pages load; membership and removals reconcile only on completion.
  */
 export async function ensureSessionMetadataInventoryForServerAccountScope(params: Readonly<{
     scope: ServerAccountScope;

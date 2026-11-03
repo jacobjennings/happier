@@ -389,8 +389,9 @@ producing it, rather than depending on what a build image happens to contain.
   cannot be published without it.
 - **Relay image evidence.** The existing Docker publisher requests BuildKit
   SBOM and provenance attestations, captures the immutable pushed digest, then
-  inspects that exact index for Linux AMD64, Linux ARM64, and per-platform
-  attestation manifests. This is image-content evidence; it is distinct from
+  inspects that exact index for Linux AMD64 and Linux ARM64 with immutable
+  platform digests. Predicate annotations are not a release acceptance gate.
+  This is image-content evidence; it is distinct from
   the Cargo-graph CycloneDX files packaged with native and browser carriers.
 - **Performance evidence.** The reusable test workflow exposes
   `run_workspace_sync_performance` for an explicit manual or release evidence
@@ -423,6 +424,10 @@ host capable of producing that artifact. npm, Docker, hosted deploy, Expo, and
 Tauri surfaces likewise retain direct `run.mjs` commands, so their semantic
 operations are callable without GitHub even though GitHub remains the normal
 official-release privilege boundary.
+
+OTA publication makes one EAS update attempt. A failed command reports an
+unknown publication outcome; inspect EAS before resuming the release so an
+accepted update with a lost response is not blindly published again.
 
 Immutable version publication creates or resumes a draft, uploads missing
 assets, and verifies every remote asset's bytes before publishing the draft.

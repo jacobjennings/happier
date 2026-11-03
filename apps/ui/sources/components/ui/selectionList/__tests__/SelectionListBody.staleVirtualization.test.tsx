@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { createCapturingLegendListMock } from '@/dev/testkit/mocks/legendList';
 
 import type { SectionRenderPlan } from '../SelectionListRenderPlan';
-import { SELECTION_LIST_STALE_OPTIONS_OPACITY } from '../SelectionListDynamicSectionRows';
 import type {
     SelectionListOption,
     SelectionListStep,
@@ -15,27 +15,17 @@ vi.mock('react-native', async () => {
     return createReactNativeWebMock();
 });
 
-const legendListState = vi.hoisted(() => ({ props: null as null | Readonly<Record<string, unknown>> }));
-
-vi.mock('@legendapp/list/react-native', async () => {
-    const ReactModule = await import('react');
-    return {
-        LegendList: ReactModule.forwardRef((props: Readonly<Record<string, unknown>>, _ref) => {
-            legendListState.props = props;
-            const data = (props.data ?? []) as readonly unknown[];
-            const renderItem = props.renderItem as (input: Readonly<{ item: unknown; index: number }>) => React.ReactNode;
-            return ReactModule.createElement(
-                'LegendListMock',
-                props,
-                data.map((item, index) => ReactModule.createElement(
-                    'LegendListItemMock',
-                    { key: index },
-                    renderItem({ item, index }),
-                )),
-            );
-        }),
-    };
+const { module: capturedLegendList, state: legendListState } = createCapturingLegendListMock({
+    renderItems: true,
 });
+
+vi.mock('@legendapp/list/react-native', () => ({
+    LegendList: capturedLegendList.LegendList,
+}));
+
+// Loaded after the mocks: a static import would evaluate the row graph before
+// the hoisted LegendList factory can read `capturedLegendList`.
+const { SELECTION_LIST_STALE_OPTIONS_OPACITY } = await import('../SelectionListDynamicSectionRows');
 
 function makeOptions(count: number, prefix: string): ReadonlyArray<SelectionListOption> {
     return Array.from({ length: count }, (_, i) => ({
@@ -51,12 +41,23 @@ const STEP: SelectionListStep = {
 };
 
 beforeEach(() => {
-    legendListState.props = null;
+    legendListState.reset();
 });
 
-afterEach(() => {
-    legendListState.props = null;
-});
+type TreeNode = Readonly<{ props?: Readonly<Record<string, unknown>>; parent?: TreeNode | null }>;
+
+function flattenStyle(style: unknown): Readonly<Record<string, unknown>> {
+    if (Array.isArray(style)) return Object.assign({}, ...style.map(flattenStyle));
+    return style !== null && typeof style === 'object' ? style as Record<string, unknown> : {};
+}
+
+/** Whether any ancestor of the row paints the stale-section dimming. */
+function isDimmedAsStale(node: unknown): boolean {
+    for (let current = node as TreeNode | null | undefined; current; current = current.parent) {
+        if (flattenStyle(current.props?.style).opacity === SELECTION_LIST_STALE_OPTIONS_OPACITY) return true;
+    }
+    return false;
+}
 
 /**
  * FR4-3 — Stale dynamic sections must keep virtualizing.
@@ -75,31 +76,6 @@ afterEach(() => {
  * decision from the live dynamic-section hook.
  */
 describe('SelectionListBody stale dynamic virtualization (FR4-3)', () => {
-    it('routes a 60-row dynamic section in success state through the virtualized list (baseline)', async () => {
-        const { SelectionListBody } = await import('../SelectionListBody');
-        const plan: ReadonlyArray<SectionRenderPlan> = [
-            {
-                id: 'big',
-                title: 'BIG',
-                options: makeOptions(60, 'opt'),
-                virtualization: 'force',
-            },
-        ];
-        await renderScreen(
-            <SelectionListBody
-                step={STEP}
-                rootTestID="sl"
-                selectedOptionIds={new Set<string>()}
-                plan={plan}
-                focusedOptionId={null}
-                listboxId="sl:listbox"
-                onSelect={() => {}}
-                onPushStep={() => {}}
-            />,
-        );
-        expect(legendListState.props).not.toBeNull();
-    });
-
     it('keeps the virtualized path active when the same section is in dynamicState=loading with stale options', async () => {
         const { SelectionListBody } = await import('../SelectionListBody');
         const plan: ReadonlyArray<SectionRenderPlan> = [
@@ -133,10 +109,9 @@ describe('SelectionListBody stale dynamic virtualization (FR4-3)', () => {
         expect(legendListState.props).not.toBeNull();
         // While the same rows are refreshed they keep their ink: last-known results never read as disabled
         // (the section's loading line says it is still looking).
-        const staleOptionWrapper = screen.findByTestId('sl:root:option-wrapper:opt-0');
-        expect(staleOptionWrapper?.parent?.parent?.props.style).not.toEqual(expect.objectContaining({
-            opacity: SELECTION_LIST_STALE_OPTIONS_OPACITY,
-        }));
+        const refreshingRow = screen.findByTestId('sl:root:option-wrapper:opt-0');
+        expect(refreshingRow).not.toBeNull();
+        expect(isDimmedAsStale(refreshingRow)).toBe(false);
     });
 
     it('keeps the virtualized path active when the section is in dynamicState=error with stale options', async () => {
@@ -152,7 +127,7 @@ describe('SelectionListBody stale dynamic virtualization (FR4-3)', () => {
                 hint: 'Network glitch',
             },
         ];
-        await renderScreen(
+        const screen = await renderScreen(
             <SelectionListBody
                 step={STEP}
                 rootTestID="sl"
@@ -166,6 +141,9 @@ describe('SelectionListBody stale dynamic virtualization (FR4-3)', () => {
         );
         // FR4-3 contract: errors with stale rows MUST stay virtualized too.
         expect(legendListState.props).not.toBeNull();
+        // Rows retained through a failure read as stale (the control for the
+        // refreshing case above, which must not dim).
+        expect(isDimmedAsStale(screen.findByTestId('sl:root:option-wrapper:opt-0'))).toBe(true);
     });
 
     it('still excludes pure skeleton loading (no stale options) from virtualization eligibility', async () => {

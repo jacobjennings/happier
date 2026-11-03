@@ -3,7 +3,7 @@ import {
   type AgentSessionOpenRequest,
   type AgentSessionRuntimeContext,
 } from '@happier-dev/plugin-sdk/agents/runtime';
-import { resolveClaudeUnifiedTerminalResponseLocations } from '@happier-dev/plugin-sdk/first-party/claude';
+import { resolveClaudeUnifiedTerminalResponseLocations } from '@happier-dev/protocol/agents/claude/settings-policy';
 import type { TerminalHostPreference } from '@happier-dev/plugin-sdk/agents/runtime';
 import { join } from 'node:path';
 import {
@@ -165,6 +165,7 @@ export async function openClaudeNativeUnifiedTerminalSession(
       processEnv: process.env,
     })),
     includeAdvancedOptions: false,
+    idleCompaction: input.request.idleCompaction,
     providerBinding: input.request.providerBinding,
   });
   const launchEnv = resolveClaudeUnifiedTerminalLaunchEnvironment(launchSettings.launchEnv);
@@ -196,6 +197,7 @@ export async function openClaudeNativeUnifiedTerminalSession(
     hostPreference: readClaudeTerminalRuntimeSelection(input.request.runtimeDescriptorV1)?.host
       ?? readHostPreference(hostSetting),
     launchEnv,
+    idleCompaction: input.request.idleCompaction,
     skills: input.request.skills,
     mcpToolPolicy: input.request.mcpToolPolicy,
     mcpServers: input.request.mcpServers,

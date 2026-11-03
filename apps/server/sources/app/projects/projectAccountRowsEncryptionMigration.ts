@@ -36,7 +36,7 @@ export async function migrateProjectAccountRowsForAccountModeInTx(tx: Tx, params
     | Readonly<{ status: 'applied'; rows: readonly ProjectAccountRowV1[] }>
     | Readonly<{ status: 'migration_incomplete' | 'invalid_content' }>
 > {
-    const source = await listProjectAccountRowsInTx(tx, { accountId: params.accountId });
+    const source = await listProjectAccountRowsInTx(tx, { accountId: params.accountId, includeAuthoringSession: true });
     if (source.status !== 'listed') return { status: 'invalid_content' };
     const rows = source.rows.filter(row => row.content !== null);
     const items = indexDirective(params);
@@ -49,7 +49,7 @@ export async function migrateProjectAccountRowsForAccountModeInTx(tx: Tx, params
     const application = await applyUserKvMutationsInTx(tx, { uid: params.accountId }, rows.map(row => {
         const key = buildProjectAccountRowPhysicalKeyV1(row.key);
         const item = items.get(key)!;
-        const value = encodeAccountScopedKvJson(item.content);
+        const value = encodeAccountScopedKvJson({ ...item.content, ...(row.authoringSession ? { authoringSession: row.authoringSession } : {}) });
         if (value === null) throw new Error('Validated Project row cannot be encoded');
         return { key, version: row.revision, value };
     }));

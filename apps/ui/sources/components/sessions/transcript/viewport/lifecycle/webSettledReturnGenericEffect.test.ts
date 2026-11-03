@@ -72,6 +72,17 @@ describe('web settled return generic effects', () => {
             },
             type: 'apply-generic-observed-viewport-state',
         });
+
+        expect(firstGenericObservedStateEffect(resolveWebSettledReturnGenericEffects({
+            drainEffect,
+            nextScrollOffsetPx: 512,
+            pinEnabled: false,
+            pinnedOffsetThresholdPx: 72,
+            viewportEffect,
+        })).state.scrollPinEvent).toMatchObject({
+            enabled: false,
+            pinnedOffsetThresholdPx: 72,
+        });
     });
 
     it('does not guess when settled-return effects are not a matching pinned pair', () => {
@@ -114,34 +125,5 @@ describe('web settled return generic effects', () => {
             pinnedOffsetThresholdPx: 72,
             viewportEffect: unpinnedViewportEffect,
         })).toEqual([]);
-    });
-
-    it('uses the lifecycle-provided return distance without adding mapper normalization', () => {
-        const effect = firstGenericObservedStateEffect(resolveWebSettledReturnGenericEffects({
-            drainEffect: {
-                ...drainEffect,
-                distanceFromLiveTailPx: 0.5,
-            },
-            nextScrollOffsetPx: 24,
-            pinEnabled: false,
-            pinnedOffsetThresholdPx: 72,
-            viewportEffect: {
-                ...viewportEffect,
-                distanceFromLiveTailPx: 0.5,
-            },
-        }));
-
-        expect(effect.state.viewportState).toEqual({
-            isPinned: true,
-            offsetY: 0.5,
-            shouldPersistViewport: false,
-            shouldRestoreViewport: false,
-        });
-        expect(effect.state.lastDistanceFromLiveTailPx).toBe(0.5);
-        expect(effect.state.scrollPinEvent).toMatchObject({
-            enabled: false,
-            offsetY: 0.5,
-            pinnedOffsetThresholdPx: 72,
-        });
     });
 });

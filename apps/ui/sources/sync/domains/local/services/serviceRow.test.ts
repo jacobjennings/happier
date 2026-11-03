@@ -116,6 +116,19 @@ describe('buildLocalServiceRows', () => {
         expect(selectLocalServiceRunningCount([row!])).toBe(0);
     });
 
+    it.each(['project_service_binding_pending', 'project_service_binding_unavailable'] as const)(
+        'keeps an observed failure visible during %s without granting Start authority', unavailableReason => {
+            const target = LocalServiceLaunchTargetV1Schema.parse(packageTarget({ source: 'managed_service', serviceState: 'failed',
+                workspace: { serverId: 'home', machineId: 'machine-a', workspaceId: 'checkout', rootPath: '/repo' },
+                declaration: { workspaceRefId: 'checkout', selection: { kind: 'manifest', name: 'web' } },
+                diagnostics: [{ code: 'native_service_output', severity: 'info', message: 'service exited' }], unavailableReason }));
+            const [row] = buildLocalServiceRows({ inventoryRows: [], launchTargets: [target], sessionId: null, scope: 'workspace' });
+            expect(row).toMatchObject({ status: 'failed', primaryAction: null, target: { diagnostics: target.diagnostics } });
+            const [offline] = buildLocalServiceRows({ inventoryRows: [], launchTargets: [{ ...target, state: 'stale' }], sessionId: null, scope: 'workspace' });
+            expect(offline?.status).toBe('stale');
+        },
+    );
+
     it('finds only the openable instance on the failed target\'s actual Machine and qualified checkout', () => {
         const workspace = { serverId: 'home-a', machineId: 'machine-a', workspaceId: 'accepted', rootPath: '/repo' };
         const declared = LocalServiceLaunchTargetV1Schema.parse(packageTarget({ id: 'declared:web', source: 'managed_service',
@@ -506,6 +519,7 @@ describe('buildLocalServiceRows', () => {
             sessionId: 'session-a', scope: 'workspace',
         });
         expect(rows.find((row) => row.id === 'preview:app')?.primaryAction?.kind).toBe('open');
+        expect(rows.filter(row => row.status === 'running').map(row => row.id)).toEqual(['inventory:live']);
         expect(selectLocalServiceRunningCount(rows)).toBe(1);
     });
 
@@ -559,5 +573,24 @@ describe('buildLocalServiceRows', () => {
         expect(groupLocalServiceRowsBySection(rows).map((section) => [section.section, section.rows.map((row) => row.id)])).toEqual([
             ['ready', ['package:docs']],
         ]);
+    });
+
+    it('names what a declared service runs from the Project definition: its command and the file the command comes from', () => {
+        const workspace = { serverId: 'home-a', machineId: 'machine-a', workspaceId: 'accepted', rootPath: '/repo' };
+        const manifestService = packageTarget({ id: 'managed:web', source: 'managed_service', title: 'web', workspace,
+            declaration: { workspaceRefId: 'accepted', selection: { kind: 'manifest', name: 'web' } } });
+        const literalService = packageTarget({ id: 'managed:jobs', source: 'managed_service', title: 'jobs', workspace,
+            declaration: { workspaceRefId: 'accepted', selection: { kind: 'manifest', name: 'jobs' } } });
+        const describeDeclaration = (declaration: NonNullable<LocalServiceLaunchTarget['declaration']>) =>
+            declaration.selection.kind === 'manifest' && declaration.selection.name === 'web'
+                ? { command: 'yarn dev', badge: 'package.json' }
+                : null;
+        const rows = buildLocalServiceRows({
+            inventoryRows: [], launchTargets: [manifestService, literalService], sessionId: null, scope: 'workspace', describeDeclaration,
+        });
+        const byId = new Map(rows.map((row) => [row.id, row]));
+        expect(byId.get('managed:web')).toMatchObject({ processLabel: 'yarn dev', sourceBadge: 'package.json' });
+        // A declaration the definition cannot describe keeps the manifest as its source and invents no command.
+        expect(byId.get('managed:jobs')).toMatchObject({ processLabel: null, sourceBadge: 'project.json' });
     });
 });

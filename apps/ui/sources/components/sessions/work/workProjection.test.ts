@@ -19,6 +19,12 @@ import { createActionOperationStore } from '@/sync/domains/actionOperations/acti
 import { resolveActionOperationStatus } from '@/components/inbox/actionOperations/actionOperationPresentation';
 import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol';
 import { projectSessionWorkMap } from './workMapProducer';
+import {
+    captureMachinePresenceObservation,
+    clearMachineRequestReachabilityForTest,
+    resolveMachineReachability,
+    withdrawMachinePresenceForScope,
+} from '@/sync/domains/machines/reachability/machineReachability';
 
 import {
     groupWorkByState,
@@ -263,34 +269,57 @@ describe('projectWork', () => {
         expect(read('loaded', true).nothingYet).toBe(false);
     });
 
+    it('does not turn withdrawn unknown presence into a definite offline warning', () => {
+        const scope = { serverId: 'work-notice-home', accountId: 'work-notice-account' };
+        const machine = { id: 'work-notice-machine', active: true, activeAt: Date.now() };
+        const notices = () => {
+            const machineReachability = resolveMachineReachability(scope, machine);
+            return resolveWorkMachineNotices({
+                machineReachability,
+                nothingYet: false,
+                unavailableReason: 'machineOffline',
+                managedUnavailable: false,
+            });
+        };
+        try {
+            expect(notices().offline).toBe(false);
+            withdrawMachinePresenceForScope(scope);
+            expect(resolveMachineReachability(scope, machine)).toBe('unknown');
+            expect(notices()).toEqual({ offline: false, unavailable: false, runsUnavailable: false, runsStale: false });
+            captureMachinePresenceObservation(scope)([machine.id]);
+            expect(resolveMachineReachability(scope, machine)).toBe('reachable');
+            expect(notices().offline).toBe(false);
+        } finally { clearMachineRequestReachabilityForTest(); }
+    });
+
     it('says an offline machine once: the pane notice carries it, so no second "needs this machine online" line', () => {
         // Work is listed and the machine is down: the pane's offline notice alone (lab `convo-ST`).
-        expect(resolveWorkMachineNotices({ machineReachable: false, nothingYet: false, unavailableReason: 'machineOffline', managedUnavailable: false }))
+        expect(resolveWorkMachineNotices({ machineReachability: 'unreachable', nothingYet: false, unavailableReason: 'machineOffline', managedUnavailable: false }))
             .toEqual({ offline: true, unavailable: false, runsUnavailable: false, runsStale: false });
         // Another reason agents cannot start is its own message beside the offline notice.
-        expect(resolveWorkMachineNotices({ machineReachable: false, nothingYet: false, unavailableReason: 'sessionInactive', managedUnavailable: false }))
+        expect(resolveWorkMachineNotices({ machineReachability: 'unreachable', nothingYet: false, unavailableReason: 'sessionInactive', managedUnavailable: false }))
             .toEqual({ offline: true, unavailable: true, runsUnavailable: false, runsStale: false });
-        expect(resolveWorkMachineNotices({ machineReachable: true, nothingYet: false, unavailableReason: 'machineOffline', managedUnavailable: false }))
+        expect(resolveWorkMachineNotices({ machineReachability: 'reachable', nothingYet: false, unavailableReason: 'machineOffline', managedUnavailable: false }))
             .toEqual({ offline: false, unavailable: true, runsUnavailable: false, runsStale: false });
         // With nothing started, the empty state explains it instead of either line.
-        expect(resolveWorkMachineNotices({ machineReachable: false, nothingYet: true, unavailableReason: 'machineOffline', managedUnavailable: false }))
+        expect(resolveWorkMachineNotices({ machineReachability: 'unreachable', nothingYet: true, unavailableReason: 'machineOffline', managedUnavailable: false }))
             .toEqual({ offline: false, unavailable: false, runsUnavailable: false, runsStale: false });
     });
 
     it('does not stack an "Unavailable" runs line with its own Retry under the offline notice that already says why', () => {
         // Runs cannot be read while the machine is not answering: the pane's one offline line says so (and retries).
-        expect(resolveWorkMachineNotices({ machineReachable: false, nothingYet: false, unavailableReason: null, managedUnavailable: true }))
+        expect(resolveWorkMachineNotices({ machineReachability: 'unreachable', nothingYet: false, unavailableReason: null, managedUnavailable: true }))
             .toEqual({ offline: true, unavailable: false, runsUnavailable: false, runsStale: false });
         // A runs read that failed on its own, with the machine answering, still says what failed and offers Retry.
-        expect(resolveWorkMachineNotices({ machineReachable: true, nothingYet: false, unavailableReason: null, managedUnavailable: true }))
+        expect(resolveWorkMachineNotices({ machineReachability: 'reachable', nothingYet: false, unavailableReason: null, managedUnavailable: true }))
             .toEqual({ offline: false, unavailable: false, runsUnavailable: true, runsStale: false });
     });
 
     it('uses the combined offline recovery for retained runs, keeping a runs-only failure when reachable', () => {
-        for (const machineReachable of [false, true]) {
-            expect(resolveWorkMachineNotices({ machineReachable, nothingYet: false, unavailableReason: null,
+        for (const machineReachability of ['unreachable', 'reachable'] as const) {
+            expect(resolveWorkMachineNotices({ machineReachability, nothingYet: false, unavailableReason: null,
                 managedUnavailable: false, managedStale: true })).toEqual({
-                offline: !machineReachable, unavailable: false, runsUnavailable: false, runsStale: machineReachable,
+                offline: machineReachability === 'unreachable', unavailable: false, runsUnavailable: false, runsStale: machineReachability === 'reachable',
             });
         }
     });

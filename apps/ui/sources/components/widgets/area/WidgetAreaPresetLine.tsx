@@ -19,7 +19,7 @@ import { publishPresentationNotice } from '@/components/sessions/presentation/pr
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { useWidgetInstanceDescriptors } from '@/components/widgets/surface/useWidgetInstanceDescriptor';
-import { readWidgetDescriptor } from '@/components/widgets/widgetCatalog';
+import { readWidgetDescriptor, resolveWidgetInstanceTitle } from '@/components/widgets/widgetCatalog';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
@@ -63,7 +63,7 @@ function usePresetChangeSummary(changes: readonly WidgetAreaPresetChangeV1[], su
   }), [instances, runtime.pluginUiProjection]);
   const descriptors = useWidgetInstanceDescriptors(surface, instances, installed);
   return React.useMemo(() => {
-    const title = (instance: WidgetInstanceV1) => instance.displayName ?? descriptors[instances.indexOf(instance)]?.title ?? t('boards.widgets.kind');
+    const title = (instance: WidgetInstanceV1) => resolveWidgetInstanceTitle(instance, descriptors[instances.indexOf(instance)]);
     const phrases = named.map(change => {
       if (change.kind === 'renamed') return t('widgetFrame.presetRenamed');
       const item = change.item.kind === 'widget' ? title(change.item.instance)

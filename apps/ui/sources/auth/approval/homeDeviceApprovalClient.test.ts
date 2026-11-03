@@ -62,16 +62,6 @@ afterEach(() => {
 });
 
 describe('homeDeviceApprovalClient', () => {
-    it('uses the caller-loaded canonical Home credential while runtimeOrigin only selects transport', async () => {
-        endpointFetchMock.mockResolvedValue(json(200, []));
-
-        await expect(listHomeDeviceApprovals(TARGET)).resolves.toEqual({ ok: true, items: [] });
-
-        expect(createRequestMock).toHaveBeenCalledWith({
-            credentials: { token: 'home-b-full-credential' },
-        });
-    });
-
     it('lists and decides pending approvals using the explicit Home credential', async () => {
         const approval = pendingApproval(6);
         endpointFetchMock
@@ -82,6 +72,7 @@ describe('homeDeviceApprovalClient', () => {
         await expect(decideHomeDeviceApproval(TARGET, approval.approvalId, 'approve'))
             .resolves.toEqual({ ok: true, status: 'approved' });
 
+        expect(createRequestMock).toHaveBeenCalledWith({ credentials: { token: 'home-b-full-credential' } });
         expect(endpointFetchMock.mock.calls[0]?.[0]).toBe('/v1/auth/home-login/approvals');
         expect(endpointFetchMock.mock.calls[1]?.[0]).toBe('/v1/auth/home-login/approvals/approval-6/decision');
         expect(JSON.parse(String((endpointFetchMock.mock.calls[1]?.[1] as RequestInit).body)))
@@ -102,5 +93,31 @@ describe('homeDeviceApprovalClient', () => {
             .resolves.toEqual({ ok: false, reason: 'unauthorized', status: 403 });
         await expect(decideHomeDeviceApproval(TARGET, 'approval-7', 'reject'))
             .resolves.toEqual({ ok: false, reason: 'unauthorized', status: 403 });
+    });
+
+    it('maps a missing, already decided, or malformed decision to its typed failure', async () => {
+        endpointFetchMock
+            .mockResolvedValueOnce(json(404, { error: 'not_found' }))
+            .mockResolvedValueOnce(json(200, { status: 'already_decided' }))
+            .mockResolvedValueOnce(json(200, { status: 'pending' }));
+
+        await expect(decideHomeDeviceApproval(TARGET, 'approval-7', 'approve'))
+            .resolves.toEqual({ ok: false, reason: 'not_found', status: 404 });
+        await expect(decideHomeDeviceApproval(TARGET, 'approval-7', 'approve'))
+            .resolves.toEqual({ ok: false, reason: 'already_decided', status: 409 });
+        await expect(decideHomeDeviceApproval(TARGET, 'approval-7', 'approve'))
+            .resolves.toEqual({ ok: false, reason: 'malformed', status: 502 });
+        // A blank or oversized id names no approval and is never sent.
+        await expect(decideHomeDeviceApproval(TARGET, '  ', 'approve'))
+            .resolves.toEqual({ ok: false, reason: 'not_found', status: 404 });
+        await expect(decideHomeDeviceApproval(TARGET, 'a'.repeat(257), 'approve'))
+            .resolves.toEqual({ ok: false, reason: 'not_found', status: 404 });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('reports a protocol-invalid approval list as malformed', async () => {
+        endpointFetchMock.mockResolvedValueOnce(json(200, [{ approvalId: 'approval-1' }]));
+
+        await expect(listHomeDeviceApprovals(TARGET)).resolves.toEqual({ ok: false, reason: 'malformed', status: 502 });
     });
 });

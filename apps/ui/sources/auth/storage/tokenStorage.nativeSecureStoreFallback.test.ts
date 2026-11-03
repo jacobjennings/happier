@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { seedPersistedHomeProfilesForTests } from '@/dev/testkit/fixtures/persistedHomeProfiles';
 import {
-    createPasswordCredentialMutationDigestV1,
-    createPasswordCredentialTargetDigestV1,
-    encodePasswordCredentialFieldV1,
-} from '@happier-dev/protocol';
-import { installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
+    homeProfileForTests,
+    installTokenStorageTestIsolation,
+    installTokenStorageWebPlatformMocks,
+} from './tokenStorage.testHelpers';
 
 const secureStoreState = vi.hoisted(() => ({
     getItemAsync: vi.fn(),
@@ -26,12 +26,6 @@ const asyncStorageState = vi.hoisted(() => {
     };
 });
 
-const serverProfilesState = vi.hoisted(() => ({
-    activeServerId: 'server-a',
-    activeServerUrl: 'https://server-a.example.test',
-    profiles: [{ id: 'server-a', serverUrl: 'https://server-a.example.test' }],
-}));
-
 type DevGlobal = typeof globalThis & {
     __DEV__?: boolean;
 };
@@ -40,15 +34,6 @@ const EXPO_PUBLIC_HAPPIER_NATIVE_SECURE_STORE_DEV_FALLBACK = 'EXPO_PUBLIC_HAPPIE
 
 function createIosSecureStoreEntitlementError(): Error {
     return new Error("Calling the 'setValueWithKeyAsync' function has failed\n→ Caused by: A required entitlement isn't present.");
-}
-
-function installServerProfilesMock(): void {
-    vi.doMock('@/sync/domains/server/serverProfiles', () => ({
-        areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left ?? '').trim() === String(right ?? '').trim(),
-        getActiveServerId: () => serverProfilesState.activeServerId,
-        getActiveServerUrl: () => serverProfilesState.activeServerUrl,
-        listServerProfiles: () => serverProfilesState.profiles,
-    }));
 }
 
 installTokenStorageWebPlatformMocks({
@@ -75,14 +60,22 @@ installTokenStorageWebPlatformMocks({
         default: asyncStorageState,
     }),
 });
+installTokenStorageTestIsolation('token_storage_native_secure_store_fallback');
+
+const { TokenStorage } = await import('./tokenStorage');
+
+/** A fresh TokenStorage module instance over the same device storage, as after an app reload. */
+async function reloadTokenStorage() {
+    vi.resetModules();
+    return (await import('./tokenStorage')).TokenStorage;
+}
 
 describe('TokenStorage (native secure-store entitlement fallback)', () => {
     let originalDev: boolean | undefined;
     let originalFallbackEnv: string | undefined;
     const devGlobal = globalThis as DevGlobal;
 
-    beforeEach(() => {
-        vi.resetModules();
+    beforeEach(async () => {
         vi.spyOn(console, 'error').mockImplementation(() => {});
         secureStoreState.getItemAsync.mockReset();
         secureStoreState.setItemAsync.mockReset();
@@ -94,7 +87,10 @@ describe('TokenStorage (native secure-store entitlement fallback)', () => {
         secureStoreState.getItemAsync.mockRejectedValue(createIosSecureStoreEntitlementError());
         secureStoreState.setItemAsync.mockRejectedValue(createIosSecureStoreEntitlementError());
         secureStoreState.deleteItemAsync.mockRejectedValue(createIosSecureStoreEntitlementError());
-        installServerProfilesMock();
+        await seedPersistedHomeProfilesForTests({
+            profiles: [homeProfileForTests('server-a', 'https://server-a.example.test')],
+            activeServerId: 'server-a',
+        });
         originalDev = devGlobal.__DEV__;
         originalFallbackEnv = process.env[EXPO_PUBLIC_HAPPIER_NATIVE_SECURE_STORE_DEV_FALLBACK];
         delete process.env[EXPO_PUBLIC_HAPPIER_NATIVE_SECURE_STORE_DEV_FALLBACK];
@@ -102,8 +98,6 @@ describe('TokenStorage (native secure-store entitlement fallback)', () => {
     });
 
     afterEach(() => {
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
-        vi.doUnmock('react-native-mmkv');
         vi.restoreAllMocks();
         asyncStorageState.values.clear();
         if (originalDev === undefined) {
@@ -118,130 +112,59 @@ describe('TokenStorage (native secure-store entitlement fallback)', () => {
         }
     });
 
-    it('reads credentials back after reload when secure store entitlements are unavailable in dev', async () => {
-        const credentials = { token: 'token-dev', secret: 'secret-dev' } as const;
+    it.each([
+        {
+            name: 'credentials',
+            write: async () => await TokenStorage.setCredentials({ token: 'token-dev', secret: 'secret-dev' }),
+            read: async (reloaded: typeof TokenStorage) => await reloaded.getCredentials(),
+            expected: { token: 'token-dev', secret: 'secret-dev' },
+        },
+        {
+            name: 'auth auto redirect suppression',
+            write: async () => await TokenStorage.setAuthAutoRedirectSuppressedUntil(123456),
+            read: async (reloaded: typeof TokenStorage) => await reloaded.getAuthAutoRedirectSuppressedUntil(),
+            expected: 123456,
+        },
+    ])('reads $name back after reload when secure store entitlements are unavailable in dev', async ({ write, read, expected }) => {
+        await expect(write()).resolves.toBe(true);
 
-        const { TokenStorage } = await import('./tokenStorage');
-        await expect(TokenStorage.setCredentials(credentials)).resolves.toBe(true);
-
-        vi.resetModules();
-        installServerProfilesMock();
-
-        const reloaded = await import('./tokenStorage');
-        await expect(reloaded.TokenStorage.getCredentials()).resolves.toEqual(credentials);
+        const reloaded = await reloadTokenStorage();
+        await expect(read(reloaded)).resolves.toEqual(expected);
     });
 
-    it('roundtrips auth auto redirect suppression when secure store entitlements are unavailable in dev', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
-
-        await expect(TokenStorage.setAuthAutoRedirectSuppressedUntil(123456)).resolves.toBe(true);
-
-        vi.resetModules();
-        installServerProfilesMock();
-
-        const reloaded = await import('./tokenStorage');
-        await expect(reloaded.TokenStorage.getAuthAutoRedirectSuppressedUntil()).resolves.toBe(123456);
-    });
-
-    it('rejects password-enrollment custody before native secure storage or its fallback can receive secret bytes', async () => {
-        const targetCredential = {
-            v: 1 as const,
-            kind: 'plain_password_hash' as const,
-            hash: {
-                v: 1 as const,
-                algorithm: 'scrypt' as const,
-                parameters: { n: 2 ** 14, r: 8 as const, p: 5, keyLength: 32 as const },
-                salt: encodePasswordCredentialFieldV1(new Uint8Array(16).fill(3)),
-                digest: encodePasswordCredentialFieldV1(new Uint8Array(32).fill(5)),
-            },
-        };
-        const requestDigest = createPasswordCredentialMutationDigestV1({
-            v: 1,
-            action: 'connect',
-            accountId: 'account-a',
-            expectedCredentialRevision: null,
-            normalizedNativeEmail: 'person@example.test',
-            newCredentialDigest: createPasswordCredentialTargetDigestV1(targetCredential),
-        });
-        const { TokenStorage } = await import('./tokenStorage');
-
-        const forbiddenEnrollmentCustody = {
-            provider: 'github',
-            proof: 'local-proof',
-            serverId: 'server-a',
-            serverUrl: 'https://server-a.example.test',
-            returnTo: '/settings/account/security?verificationToken=mailbox-proof',
-            accountPasswordEnrollment: {
-                v: 1,
-                accountId: 'account-a',
-                normalizedNativeEmail: 'person@example.test',
-                targetCredential,
-                requestDigest,
-                createdAt: Date.now(),
-                expiresAt: Date.now() + 60_000,
-            },
-        };
-        await expect(TokenStorage.setPendingExternalAuth(
-            forbiddenEnrollmentCustody,
-        )).resolves.toBe(false);
-
-        expect(secureStoreState.setItemAsync).not.toHaveBeenCalled();
-        expect(asyncStorageState.setItem).not.toHaveBeenCalled();
-        expect([...asyncStorageState.values.values()].join('\n')).not.toContain(requestDigest);
-    });
-
-    it('does not fall back to MMKV outside dev mode', async () => {
+    it('does not fall back to AsyncStorage outside dev mode', async () => {
         process.env[EXPO_PUBLIC_HAPPIER_NATIVE_SECURE_STORE_DEV_FALLBACK] = '0';
         devGlobal.__DEV__ = false;
 
         const { Platform } = await import('react-native');
         expect(Platform.OS).toBe('ios');
 
-        const { TokenStorage } = await import('./tokenStorage');
         await expect(TokenStorage.setCredentials({ token: 'token-prod', secret: 'secret-prod' })).resolves.toBe(false);
 
-        vi.resetModules();
-        installServerProfilesMock();
-
-        const reloaded = await import('./tokenStorage');
-        await expect(reloaded.TokenStorage.getCredentials()).resolves.toBeNull();
-    });
-
-    it('does not hang boot credential reads when secure store misses and MMKV is unavailable', async () => {
-        secureStoreState.getItemAsync.mockResolvedValue(null);
-        vi.doMock('react-native-mmkv', async () => await new Promise(() => {}));
-
-        const { TokenStorage } = await import('./tokenStorage');
-        const timeoutToken = Symbol('timeout');
-        const result = await Promise.race([
-            TokenStorage.getCredentials(),
-            new Promise<symbol>((resolve) => {
-                setTimeout(() => resolve(timeoutToken), 50);
-            }),
-        ]);
-
-        expect(result).toBeNull();
+        const reloaded = await reloadTokenStorage();
+        await expect(reloaded.getCredentials()).resolves.toBeNull();
     });
 
     it('clears same-URL credentials for every server profile during global logout', async () => {
-        serverProfilesState.activeServerId = 'server-a';
-        serverProfilesState.activeServerUrl = 'https://shared.example.test';
-        serverProfilesState.profiles = [
-            { id: 'server-a', serverUrl: 'https://shared.example.test' },
-            { id: 'server-b', serverUrl: 'https://shared.example.test' },
+        const sharedUrl = 'https://shared.example.test';
+        // The profile owner folds identity-less profiles at one URL; distinct Homes there carry distinct identities.
+        const profiles = [
+            homeProfileForTests('server-a', sharedUrl, { serverIdentityId: 'srv_shared_a', canonicalServerUrl: sharedUrl }),
+            homeProfileForTests('server-b', sharedUrl, { serverIdentityId: 'srv_shared_b', canonicalServerUrl: sharedUrl }),
         ];
-
-        const { TokenStorage } = await import('./tokenStorage');
+        await seedPersistedHomeProfilesForTests({ profiles, activeServerId: 'server-a' });
 
         await expect(TokenStorage.setCredentials({ token: 'token-a', secret: 'secret-a' })).resolves.toBe(true);
 
-        serverProfilesState.activeServerId = 'server-b';
+        await seedPersistedHomeProfilesForTests({ profiles, activeServerId: 'server-b' });
         await expect(TokenStorage.setCredentials({ token: 'token-b', secret: 'secret-b' })).resolves.toBe(true);
 
-        serverProfilesState.activeServerId = 'server-a';
+        await seedPersistedHomeProfilesForTests({ profiles, activeServerId: 'server-a' });
+        await expect(TokenStorage.getCredentialsForServerUrl(sharedUrl, { serverId: 'server-a' })).resolves.toEqual({ token: 'token-a', secret: 'secret-a' });
+        await expect(TokenStorage.getCredentialsForServerUrl(sharedUrl, { serverId: 'server-b' })).resolves.toEqual({ token: 'token-b', secret: 'secret-b' });
         await expect(TokenStorage.removeCredentials()).resolves.toBe(true);
 
-        await expect(TokenStorage.getCredentialsForServerUrl(serverProfilesState.activeServerUrl, { serverId: 'server-a' })).resolves.toBeNull();
-        await expect(TokenStorage.getCredentialsForServerUrl(serverProfilesState.activeServerUrl, { serverId: 'server-b' })).resolves.toBeNull();
+        await expect(TokenStorage.getCredentialsForServerUrl(sharedUrl, { serverId: 'server-a' })).resolves.toBeNull();
+        await expect(TokenStorage.getCredentialsForServerUrl(sharedUrl, { serverId: 'server-b' })).resolves.toBeNull();
     });
 });

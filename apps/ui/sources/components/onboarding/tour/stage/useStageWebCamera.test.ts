@@ -6,7 +6,6 @@ import {
     resolveStageWebCameraFrame,
     resolveStageWebCameraStep,
     useStageWebCamera,
-    writeStageWebMotionVisibility,
 } from './useStageWebCamera';
 
 afterEach(() => {
@@ -83,20 +82,7 @@ describe('resolveStageWebCameraStep', () => {
         });
     });
 
-    it('swaps pre-mounted live and decoded frozen layers with opacity-only writes', () => {
-        const live = { style: { opacity: '1', willChange: '' } };
-        const frozen = { style: { opacity: '0', willChange: '' } };
-
-        writeStageWebMotionVisibility(live, frozen, true);
-        expect(live.style).toEqual({ opacity: '0', willChange: 'opacity' });
-        expect(frozen.style).toEqual({ opacity: '1', willChange: 'transform, opacity' });
-
-        writeStageWebMotionVisibility(live, frozen, false);
-        expect(live.style.opacity).toBe('1');
-        expect(frozen.style.opacity).toBe('0');
-    });
-
-    it('watchdog-thaws and snap-settles when requestAnimationFrame never resumes', async () => {
+    it('snap-settles the camera from the watchdog when requestAnimationFrame never resumes', async () => {
         vi.useFakeTimers();
         vi.stubGlobal('requestAnimationFrame', vi.fn(() => 17));
         vi.stubGlobal('cancelAnimationFrame', vi.fn());
@@ -104,10 +90,6 @@ describe('resolveStageWebCameraStep', () => {
 
         const outer = { style: { opacity: '1', transform: '', willChange: '' } };
         const inner = { style: { opacity: '1', transform: '', willChange: '' } };
-        const live = { style: { opacity: '1', willChange: '' } };
-        const frozen = { style: { opacity: '0', transform: '', willChange: '' } };
-        const onMotionChange = vi.fn();
-        const onSettled = vi.fn();
         const baseProps = {
             enabled: true,
             frameId: 'session-view.hero',
@@ -115,12 +97,7 @@ describe('resolveStageWebCameraStep', () => {
             outerRef: { current: outer },
             innerRef: { current: inner },
             transformBounds: { x: 0, y: 0, width: 1000, height: 500 },
-            freezeDuringMotion: true,
-            liveLayerRef: { current: live },
-            frozenLayerRef: { current: frozen },
             cameraNodeTranslationScale: 1,
-            onMotionChange,
-            onSettled,
         };
         const hook = await renderHook((props: typeof baseProps) => useStageWebCamera(props), {
             initialProps: baseProps,
@@ -131,20 +108,15 @@ describe('resolveStageWebCameraStep', () => {
             frameId: 'session-view.spotlight',
             target: { mode: 'camera', translateX: -320, translateY: 140, scale: 1.35 },
         });
-        expect(live.style.opacity).toBe('0');
-        expect(frozen.style.opacity).toBe('1');
+        expect(outer.style.transform).toBe('translate3d(0.00px, 0.00px, 0)');
 
         await vi.advanceTimersByTimeAsync(2_000);
 
         expect(outer.style.transform).toBe('translate3d(-320.00px, 140.00px, 0)');
         expect(inner.style.transform).toBe('scale(1.3500)');
-        expect(live.style.opacity).toBe('1');
-        expect(frozen.style.opacity).toBe('0');
-        expect(onMotionChange).toHaveBeenLastCalledWith(false);
-        expect(onSettled).toHaveBeenCalledWith('session-view.spotlight');
     });
 
-    it('thaws and clears motion state when an in-flight camera effect is disabled', async () => {
+    it('stops an in-flight camera move without a late watchdog write when the camera is disabled', async () => {
         vi.useFakeTimers();
         vi.stubGlobal('requestAnimationFrame', vi.fn(() => 17));
         vi.stubGlobal('cancelAnimationFrame', vi.fn());
@@ -152,9 +124,6 @@ describe('resolveStageWebCameraStep', () => {
 
         const outer = { style: { opacity: '1', transform: '', willChange: '' } };
         const inner = { style: { opacity: '1', transform: '', willChange: '' } };
-        const live = { style: { opacity: '1', willChange: '' } };
-        const frozen = { style: { opacity: '0', transform: '', willChange: '' } };
-        const onMotionChange = vi.fn();
         const baseProps = {
             enabled: true,
             frameId: 'session-view.hero',
@@ -162,35 +131,18 @@ describe('resolveStageWebCameraStep', () => {
             outerRef: { current: outer },
             innerRef: { current: inner },
             transformBounds: { x: 0, y: 0, width: 1000, height: 500 },
-            freezeDuringMotion: true,
-            liveLayerRef: { current: live },
-            frozenLayerRef: { current: frozen },
             cameraNodeTranslationScale: 1,
-            onMotionChange,
-            onSettled: vi.fn(),
         };
         const hook = await renderHook((props: typeof baseProps) => useStageWebCamera(props), {
             initialProps: baseProps,
         });
+        const spotlight = { mode: 'camera' as const, translateX: -320, translateY: 140, scale: 1.35 };
 
-        await hook.rerender({
-            ...baseProps,
-            frameId: 'session-view.spotlight',
-            target: { mode: 'camera', translateX: -320, translateY: 140, scale: 1.35 },
-        });
-        expect(live.style.opacity).toBe('0');
-        expect(frozen.style.opacity).toBe('1');
-        expect(onMotionChange).toHaveBeenLastCalledWith(true);
+        await hook.rerender({ ...baseProps, frameId: 'session-view.spotlight', target: spotlight });
+        await hook.rerender({ ...baseProps, enabled: false, frameId: 'session-view.spotlight', target: spotlight });
+        await vi.advanceTimersByTimeAsync(2_000);
 
-        await hook.rerender({
-            ...baseProps,
-            enabled: false,
-            frameId: 'session-view.spotlight',
-            target: { mode: 'camera', translateX: -320, translateY: 140, scale: 1.35 },
-        });
-
-        expect(live.style.opacity).toBe('1');
-        expect(frozen.style.opacity).toBe('0');
-        expect(onMotionChange).toHaveBeenLastCalledWith(false);
+        expect(outer.style.transform).toBe('translate3d(0.00px, 0.00px, 0)');
+        expect(inner.style.transform).toBe('scale(1.0000)');
     });
 });

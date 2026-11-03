@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -6,6 +6,8 @@ import { reloadConfiguration } from '../../configuration';
 import { createEnvKeyScope } from '../../testkit/env/envScope';
 import { createTempDir, removeTempDir } from '../../testkit/fs/tempDir';
 import { captureConsoleLogAndMuteStdout, captureStdout } from '../../testkit/logger/captureOutput';
+import { getActiveServerProfile } from '../../server/serverProfiles';
+import { commandRegistry } from '../commandRegistry';
 
 type ReachableCandidate = Readonly<{
     url: string;
@@ -100,7 +102,6 @@ async function runInstall(extraArgs: readonly string[] = []): Promise<string[]> 
     const prevExitCode = process.exitCode;
     process.exitCode = undefined;
     try {
-        const { commandRegistry } = await import('../commandRegistry');
         const args = ['relay', 'host', 'install', ...extraArgs];
         await commandRegistry.relay({
             args,
@@ -119,14 +120,7 @@ describe('happier relay host install reachable relay URL selection', () => {
     let preparedPayloadRoot = '';
     let envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
 
-    // Loading the command registry transforms a large module graph. Pay that
-    // once here rather than inside the first test's timeout budget.
-    beforeAll(async () => {
-        await import('../commandRegistry');
-    }, 900_000);
-
     beforeEach(async () => {
-        vi.resetModules();
         mockedRelayUrl = 'http://127.0.0.1:3005';
         mockedCandidates = [];
         mockedInteractive = false;
@@ -155,7 +149,6 @@ describe('happier relay host install reachable relay URL selection', () => {
 
         const logs = await runInstall();
 
-        const { getActiveServerProfile } = await import('../../server/serverProfiles');
         const active = await getActiveServerProfile();
         expect(active.serverUrl).toBe('http://192.168.1.20:3005');
         expect(active.localServerUrl).toBe('http://127.0.0.1:3005');
@@ -171,7 +164,6 @@ describe('happier relay host install reachable relay URL selection', () => {
 
         const logs = await runInstall();
 
-        const { getActiveServerProfile } = await import('../../server/serverProfiles');
         const active = await getActiveServerProfile();
         expect(active.serverUrl).toBe('http://127.0.0.1:3005');
         expect(logs.join('\n')).toContain('This will work only on this same machine.');
@@ -184,7 +176,6 @@ describe('happier relay host install reachable relay URL selection', () => {
 
         await runInstall();
 
-        const { getActiveServerProfile } = await import('../../server/serverProfiles');
         const active = await getActiveServerProfile();
         expect(promptedQuestions.length).toBeGreaterThan(0);
         expect(active.serverUrl).toBe('http://192.168.1.20:3005');
@@ -197,7 +188,6 @@ describe('happier relay host install reachable relay URL selection', () => {
 
         await runInstall(['--host', '192.168.1.20']);
 
-        const { getActiveServerProfile } = await import('../../server/serverProfiles');
         const active = await getActiveServerProfile();
         expect(active.serverUrl).toBe('http://192.168.1.20:3005');
         expect(active.localServerUrl).toBeFalsy();
@@ -212,7 +202,6 @@ describe('happier relay host install reachable relay URL selection', () => {
         process.exitCode = undefined;
         let text = '';
         try {
-            const { commandRegistry } = await import('../commandRegistry');
             const args = ['relay', 'host', 'install', '--json'];
             await commandRegistry.relay({
                 args,
@@ -220,6 +209,7 @@ describe('happier relay host install reachable relay URL selection', () => {
                 terminalRuntime: null,
             });
             text = stdout.text();
+            expect(process.exitCode).toBe(0);
         } finally {
             stdout.restore();
             process.exitCode = prevExitCode;
@@ -233,8 +223,28 @@ describe('happier relay host install reachable relay URL selection', () => {
         });
         expect(collectCandidatesCalls).toBe(0);
 
-        const { getActiveServerProfile } = await import('../../server/serverProfiles');
         const active = await getActiveServerProfile();
         expect(active.serverUrl).toBe('http://127.0.0.1:3005');
+
+        // `server current` reports the installed local relay profile, not the cloud default.
+        const currentOutput = captureConsoleLogAndMuteStdout();
+        const currentPrevExitCode = process.exitCode;
+        process.exitCode = undefined;
+        try {
+            await commandRegistry.server({
+                args: ['server', 'current', '--json'],
+                rawArgv: ['node', 'hprev', 'server', 'current', '--json'],
+                terminalRuntime: null,
+            });
+            const current = JSON.parse(currentOutput.logs.join('\n').trim());
+            expect(current.ok).toBe(true);
+            expect(current.kind).toBe('server_current');
+            expect(current.data?.active?.serverUrl).toBe('http://127.0.0.1:3005');
+            expect(current.data?.active?.id).not.toBe('cloud');
+            expect(process.exitCode).toBe(0);
+        } finally {
+            currentOutput.restore();
+            process.exitCode = currentPrevExitCode;
+        }
     });
 });

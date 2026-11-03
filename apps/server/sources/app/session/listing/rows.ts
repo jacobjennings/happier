@@ -3,7 +3,7 @@ import { PrimaryTurnStatusV1Schema } from '@happier-dev/protocol/sessions/contro
 import { SessionAwarenessOriginV1Schema } from '@happier-dev/protocol/sessions/awareness/projectionV1';
 import { parseSessionRuntimeActivityProjectionFields } from '@happier-dev/protocol/sessions/runtime/activity/sessionRuntimeActivity';
 import { projectLegacyViewerLastViewedSessionSeqV1, projectLegacyViewerUnreadSinceV1 } from '@happier-dev/protocol/sessions';
-import { type V2SessionRecord } from '@happier-dev/protocol/sessions/control/contract';
+import { type V2SessionRecord, type V2SessionListRow as V2SessionListDescriptor } from '@happier-dev/protocol/sessions/control/contract';
 
 import {
     createSessionRollbackEligibleTurnsSelect,
@@ -18,8 +18,10 @@ import {
 } from "@/app/session/sessionTranscriptPublicationPolicy";
 import {
     projectSessionMetadataForRecipient,
+    projectSessionMetadataDocumentDescriptorForRecipient,
     requiresSessionMetadataOwnerAccountMode,
     type SessionMetadataOwnerAccountMode,
+    type SessionMetadataRecipientAuthority,
 } from "@/app/session/metadata/sessionMetadataRecipientProjection";
 import { mapPendingActivationAuthorization, mapPendingActivationFailureDetails } from "@/app/session/pending/pendingActivationAuthorization";
 import {
@@ -88,7 +90,9 @@ const V2_SESSION_LIST_ROW_BASE_SELECT = {
     metadata: true,
     metadataVersion: true,
     metadataLayoutVersion: true,
+    projectKey: true,
     ownerMetadata: true,
+    displayProjectionV1: true,
     agentState: true,
     agentStateVersion: true,
     pendingPermissionRequestCount: true,
@@ -125,6 +129,13 @@ const V2_SESSION_LIST_ROW_BASE_SELECT = {
 const {
     turns: _ownerSelectTurns,
     ...V2_SESSION_OWNER_ROW_SELECT
+} = V2_SESSION_LIST_ROW_BASE_SELECT;
+
+const {
+    metadata: _compactMetadata,
+    ownerMetadata: _compactOwnerMetadata,
+    agentState: _compactAgentState,
+    ...V2_SESSION_LIST_SCALAR_SELECT
 } = V2_SESSION_LIST_ROW_BASE_SELECT;
 
 const {
@@ -165,7 +176,10 @@ type V2SessionListLegacyRow = Prisma.SessionGetPayload<{
 }>;
 
 export type V2SessionListRowCompat = V2SessionListRow | V2SessionListLegacyRow;
-type V2SessionRowCompat = V2SessionListRowCompat | V2SessionOwnerRow;
+export type V2SessionCompactListRow = Prisma.SessionGetPayload<{
+    select: ReturnType<typeof createV2SessionCompactListRowSelect>;
+}>;
+type V2SessionRowCompat = V2SessionListRowCompat | V2SessionOwnerRow | V2SessionCompactListRow;
 
 /**
  * The personal projection plus this viewer's own data-key envelope.
@@ -184,6 +198,14 @@ function createSessionPersonalListProjectionSelect(accountId: string, context: S
 export function createV2SessionListRowSelect(params: Readonly<{ userId: string }> & SessionAccessProjectionContext) {
     return {
         ...V2_SESSION_LIST_ROW_BASE_SELECT,
+        ...createSessionPersonalListProjectionSelect(params.userId, params),
+    } as const satisfies Prisma.SessionSelect;
+}
+
+/** List inventory never selects full metadata or Agent-state documents. */
+export function createV2SessionCompactListRowSelect(params: Readonly<{ userId: string }> & SessionAccessProjectionContext) {
+    return {
+        ...V2_SESSION_LIST_SCALAR_SELECT,
         ...createSessionPersonalListProjectionSelect(params.userId, params),
     } as const satisfies Prisma.SessionSelect;
 }
@@ -295,7 +317,8 @@ function readRuntimeActivityInteger(value: unknown): number | null {
     return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
-function readRuntimeActivityProjection(row: V2SessionRowCompat): Partial<V2SessionRecord> {
+function readRuntimeActivityProjection(row: V2SessionRowCompat): Partial<Pick<V2SessionRecord,
+    'runtimeActivityState' | 'runtimeActivityActiveCount' | 'runtimeActivityObservedAt' | 'runtimeActivityRevision'>> {
     const parsed = parseSessionRuntimeActivityProjectionFields({
         runtimeActivityState: row.runtimeActivityState,
         runtimeActivityActiveCount: readRuntimeActivityInteger(row.runtimeActivityActiveCount),
@@ -326,7 +349,7 @@ export function projectSessionLegacyShare(params: Readonly<{
         : {};
 }
 
-export function mapV2SessionListRow(params: Readonly<{
+type SessionRowMappingParams = Readonly<{
     row: V2SessionRowCompat;
     userId: string;
     ownerAccountMode?: SessionMetadataOwnerAccountMode;
@@ -342,8 +365,8 @@ export function mapV2SessionListRow(params: Readonly<{
     effectiveAccess?: EffectiveSessionAccess;
     recipientReadiness?: AccountRecipientEnvelopeReadinessReadScope;
     /**
-     * The caller has already verified the exact Session-scoped runtime
-     * principal through `resolveSessionAccessForOperation`. Runtime credentials
+     * The caller has already verified the current Session-scoped runtime
+     * principal through exact access or the canonical managed-subtree proof. Runtime credentials
      * receive shared Session state, never their hosting Account's personal
      * Follow/read/attention/authorship projection.
      */
@@ -351,8 +374,12 @@ export function mapV2SessionListRow(params: Readonly<{
     qualifiedTeamIds?: ReadonlySet<string>;
     accessMode?: "effective_access_v1" | "legacy_owner_or_direct";
     now?: number;
-}>): V2SessionRecord {
+}>;
+
+function mapV2SessionRow<TProjection>(params: SessionRowMappingParams,
+    projectMetadata: (recipient: SessionMetadataRecipientAuthority) => TProjection) {
     const { row, userId } = params;
+    const encryptionMode: 'plain' | 'e2ee' = row.encryptionMode === 'plain' ? 'plain' : 'e2ee';
     const ownerAccountMode = params.ownerAccountModes?.get(row.accountId)
         ?? params.ownerAccountMode;
     const viewerShare = "shares" in row ? row.shares[0] ?? null : null;
@@ -395,9 +422,7 @@ export function mapV2SessionListRow(params: Readonly<{
     const pendingActivationAuthorization = hasLiveFacts
         ? mapPendingActivationAuthorization(row)
         : undefined;
-    const metadataProjection = projectSessionMetadataForRecipient({
-        session: row,
-        recipient: receivesOwnerMetadata
+    const metadataProjection = projectMetadata(receivesOwnerMetadata
             ? requiresSessionMetadataOwnerAccountMode({
                 session: row,
               }) && ownerAccountMode
@@ -418,8 +443,7 @@ export function mapV2SessionListRow(params: Readonly<{
                 // metadata projector on its shared projection for that case.
                 accountId: isOwner ? null : userId,
                 ownerAccountMode,
-              },
-    });
+              });
 
     // Query admission carries the exact Team qualification result from the
     // canonical compiler. A point reader may instead pass its already-resolved
@@ -448,6 +472,7 @@ export function mapV2SessionListRow(params: Readonly<{
     return {
         id: row.id,
         ownerAccountId: row.accountId,
+        projectKey: row.projectKey,
         ...(origin ? { origin } : {}),
         workDepth: row.workDepth,
         seq: publicationProjection.seq,
@@ -457,7 +482,7 @@ export function mapV2SessionListRow(params: Readonly<{
         active: hasLiveFacts && row.active,
         activeAt: publicationProjection.activeAt,
         archivedAt: row.archivedAt?.getTime() ?? null,
-        encryptionMode: row.encryptionMode === "plain" ? "plain" : "e2ee",
+        encryptionMode,
         ...metadataProjection,
         effectiveAccess: projectSessionEffectiveAccessV1(effectiveAccess),
         ...(params.hasOtherNamedCollaborator !== undefined
@@ -514,6 +539,19 @@ export function mapV2SessionListRow(params: Readonly<{
         ...readSessionResponsibilityProjection(row),
         ...projectSessionLegacyShare({ receivesOwnerMetadata, share: viewerShare }),
     };
+}
+
+/** Full detail keeps the exact envelope projection and validation boundary. */
+export function mapV2SessionListRow(params: Omit<SessionRowMappingParams, 'row'> & Readonly<{
+    row: V2SessionListRowCompat | V2SessionOwnerRow;
+}>): V2SessionRecord {
+    return mapV2SessionRow(params, recipient => projectSessionMetadataForRecipient({ session: params.row, recipient }));
+}
+
+export function mapV2SessionCompactListRow(params: Omit<SessionRowMappingParams, 'row'> & Readonly<{
+    row: V2SessionCompactListRow;
+}>): V2SessionListDescriptor {
+    return mapV2SessionRow(params, recipient => projectSessionMetadataDocumentDescriptorForRecipient({ session: params.row, recipient }));
 }
 
 export function mapV2SessionOwnerRow(

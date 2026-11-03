@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
     evaluateMarkdownRichEligibility,
-    preservesEmbeddedHtml,
     type EvaluateMarkdownRichEligibilityOptions,
 } from '../markdownRichEligibility';
 
@@ -100,6 +99,17 @@ describe('evaluateMarkdownRichEligibility', () => {
         });
     });
 
+    it('blocks HTML outside code when the web round-trip reorders the fragments', () => {
+        const raw = `# Doc ${docCounter++}\n\n<a></a> middle <b></b>`;
+        // Every fragment is still present, only in a different order.
+        const htmlRoundTrip = vi.fn((body: string) => body.replace('<a></a> middle <b></b>', '<b></b> middle <a></a>'));
+        expect(evaluateMarkdownRichEligibility(raw, { ...BASE_OPTS, htmlRoundTrip })).toEqual({
+            eligible: false,
+            reason: 'html-or-jsx',
+        });
+        expect(htmlRoundTrip).toHaveBeenCalledTimes(1);
+    });
+
     it('blocks HTML outside code when the web round-trip fails (returns null)', () => {
         const raw = `# Doc ${docCounter++}\n\n<section>hi</section>`;
         const htmlRoundTrip = vi.fn(() => null);
@@ -145,26 +155,5 @@ describe('evaluateMarkdownRichEligibility', () => {
         expect(first).toEqual({ eligible: true });
         expect(second).toBe(first); // same cached object reference
         expect(htmlRoundTrip).toHaveBeenCalledTimes(1);
-    });
-});
-
-describe('preservesEmbeddedHtml', () => {
-    it('returns false for a null round-trip', () => {
-        expect(preservesEmbeddedHtml('<div>x</div>', null)).toBe(false);
-    });
-
-    it('returns true when there are no HTML fragments to preserve', () => {
-        expect(preservesEmbeddedHtml('plain text', 'plain text')).toBe(true);
-    });
-
-    it('requires each fragment to appear in order', () => {
-        const probe = '<a></a> middle <b></b>';
-        expect(preservesEmbeddedHtml(probe, 'x <a></a> y <b></b> z')).toBe(true);
-        // Reordered output fails the ordered-substring check.
-        expect(preservesEmbeddedHtml(probe, 'x <b></b> y <a></a> z')).toBe(false);
-    });
-
-    it('returns false when a fragment is dropped', () => {
-        expect(preservesEmbeddedHtml('<img src="a"/>', 'no html here')).toBe(false);
     });
 });

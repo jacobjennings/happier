@@ -89,7 +89,7 @@ describe('voiceQaSessionResolution', () => {
     });
   });
 
-  it('rejects an ambiguous bare target without changing the QA store', () => {
+  it('rejects an ambiguous bare target', () => {
     storage.setState({ sessionListIndexByServerId: {
       a: [{ type: 'session', sessionId: 'same', serverId: 'a', serverName: 'A' }],
       b: [{ type: 'session', sessionId: 'same', serverId: 'b', serverName: 'B' }],
@@ -102,7 +102,7 @@ describe('voiceQaSessionResolution', () => {
       .toThrow('voice_qa_target_session_unresolved');
   });
 
-  it('reads local conversation agent mode from the canonical provider envelope only', () => {
+  it('reads local conversation agent mode from the canonical provider envelope, not a stray top-level field', () => {
     expect(() => assertLocalVoiceAgentSupportedForQa({
       voice: {
         providerId: 'local_conversation',
@@ -114,6 +114,19 @@ describe('voiceQaSessionResolution', () => {
         },
       },
     })).not.toThrow();
+    // A top-level mode was never a stored shape; only the provider config decides.
+    expect(() => assertLocalVoiceAgentSupportedForQa({
+      voice: {
+        providerId: 'local_conversation',
+        conversationMode: 'agent',
+        providers: {
+          local_conversation: {
+            schemaVersion: 1,
+            config: { conversationMode: 'direct_session' },
+          },
+        },
+      },
+    })).toThrow('voice_qa_local_agent_requires_local_conversation_agent_mode');
   });
 
   it('classifies a registered conversation provider by capability instead of a vendor id', () => {

@@ -1,5 +1,6 @@
 import { parseSessionOwnerMetadataEnvelopeV1, SESSION_METADATA_LAYOUT_VERSION_V1, SessionSharedMetadataV1Schema, StoredSessionOwnerMetadataEnvelopeV1Schema, validateSessionOwnerMetadataEnvelopeForAccountModeV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import type { SessionMetadataRecipientProjectionV1, SessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
+import { validateSessionDisplayProjectionV1, type SessionDisplayProjectionV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import type { Prisma } from "@prisma/client";
 
 import {
@@ -28,6 +29,7 @@ export class SessionMetadataPrivacyUpgradeRequiredError extends Error {
 }
 
 export type SessionMetadataRecipientProjectionInput = Readonly<{
+    id?: string;
     accountId: string;
     encryptionMode?: string | null;
     metadata: string;
@@ -36,6 +38,9 @@ export type SessionMetadataRecipientProjectionInput = Readonly<{
     ownerMetadata?: string | null;
     agentState: string | null;
     agentStateVersion: number;
+    projectKey?: string | null;
+    /** Stored JSON or an already-captured current wire projection. */
+    displayProjectionV1?: string | SessionDisplayProjectionV1 | null;
 }>;
 
 type LegacySessionMetadataRecipientProjection = Readonly<{
@@ -65,7 +70,7 @@ export function assertSessionOwnerMetadataCurrentness(params: Readonly<{
         ? null : StoredSessionOwnerMetadataEnvelopeV1Schema.safeParse(params.ownerMetadata);
     const envelope = typeof params.ownerMetadata === "string"
         ? params.isOwner
-            ? parsePersistedSessionOwnerMetadataEnvelopeV1({ ...params, ownerMetadata: params.ownerMetadata, allowRetainedDevelopmentCiphertext: true })
+            ? parsePersistedSessionOwnerMetadataEnvelopeV1({ ...params, ownerMetadata: params.ownerMetadata })
             : parseSessionOwnerMetadataEnvelopeV1(params.ownerMetadata)
         : parsed?.success ? parsed.data : null;
     if (envelope === null || !validateSessionOwnerMetadataEnvelopeForAccountModeV1({
@@ -74,10 +79,14 @@ export function assertSessionOwnerMetadataCurrentness(params: Readonly<{
     return envelope;
 }
 
+export const SESSION_METADATA_PRIVACY_UPGRADE_SOURCE_WHERE = {
+    metadataLayoutVersion: 0, ownerMetadata: null,
+} as const;
+
 /** Pending owner upgrades include archived/offscreen Sessions, but never private-only rows. */
 export async function listSessionMetadataPrivacyUpgradeIdsInTx(tx: Tx, accountId: string): Promise<string[]> {
     const rows = await tx.session.findMany({
-        where: { accountId, metadataLayoutVersion: 0, ownerMetadata: null },
+        where: { accountId, ...SESSION_METADATA_PRIVACY_UPGRADE_SOURCE_WHERE },
         select: { id: true, publicShare: { select: { expiresAt: true } } },
         orderBy: { id: "asc" },
     });
@@ -104,6 +113,59 @@ export type SessionMetadataRecipientAuthority =
         accountId: string | null;
         ownerAccountMode?: SessionMetadataOwnerAccountMode;
       }>;
+
+/** A missing or invalid display leaf withdraws only display, never full content. */
+export function projectSessionDisplayForRecipient(params: Readonly<{
+    session: Pick<SessionMetadataRecipientProjectionInput, 'accountId' | 'encryptionMode' | 'metadataVersion' | 'metadataLayoutVersion' | 'displayProjectionV1'>;
+    recipient: SessionMetadataRecipientAuthority;
+}>): SessionDisplayProjectionV1 | undefined {
+    const { session, recipient } = params;
+    if (!session.displayProjectionV1 || session.metadataLayoutVersion !== 1) return undefined;
+    let stored: unknown = session.displayProjectionV1;
+    if (typeof stored === 'string') {
+        try { stored = JSON.parse(stored); } catch { return undefined; }
+    }
+    if (typeof stored !== 'object' || stored === null || Array.isArray(stored)) return undefined;
+    const context = {
+        sessionMode: session.encryptionMode === 'plain' ? 'plain' as const : 'e2ee' as const,
+        metadataVersion: session.metadataVersion,
+        metadataLayoutVersion: session.metadataLayoutVersion,
+    };
+    const sharedProjection: Record<string, unknown> = { ...stored };
+    delete sharedProjection.owner;
+    const shared = validateSessionDisplayProjectionV1({ ...context, projection: sharedProjection });
+    if (!shared.ok) return undefined;
+    const isOwner = recipient.type !== 'shared' && recipient.accountId === session.accountId;
+    if (!isOwner || recipient.type !== 'owner') return shared.projection;
+    const owner = validateSessionDisplayProjectionV1({ ...context, accountMode: recipient.accountMode, projection: stored });
+    return owner.ok ? owner.projection : shared.projection;
+}
+
+/** Full-document-free list admission shares the exact recipient authority of full detail. */
+export function projectSessionMetadataDocumentDescriptorForRecipient(params: Readonly<{
+    session: Pick<SessionMetadataRecipientProjectionInput, 'accountId' | 'metadataLayoutVersion' | 'metadataVersion' | 'agentStateVersion'
+        | 'id' | 'encryptionMode' | 'displayProjectionV1'>;
+    recipient: SessionMetadataRecipientAuthority;
+}>) {
+    const { session, recipient } = params;
+    const isOwner = recipient.type !== 'shared' && recipient.accountId === session.accountId;
+    const metadataLayoutVersion = session.metadataLayoutVersion ?? 0;
+    if (metadataLayoutVersion === 0 ? !isOwner : metadataLayoutVersion !== SESSION_METADATA_LAYOUT_VERSION_V1
+        || recipient.type === 'legacy_owner'
+        || (recipient.type === 'owner' ? recipient.accountMode : recipient.ownerAccountMode) === undefined) {
+        throw new SessionMetadataPrivacyUpgradeRequiredError();
+    }
+    const displayProjectionV1 = projectSessionDisplayForRecipient(params);
+    return {
+        ...(displayProjectionV1 ? { displayProjectionV1 } : {}),
+        documents: 'omitted' as const,
+        metadataAudience: isOwner ? 'owner' as const : 'shared' as const,
+        agentStateDocument: isOwner ? 'omitted' as const : 'redacted' as const,
+        metadataLayoutVersion,
+        metadataVersion: session.metadataVersion,
+        agentStateVersion: session.agentStateVersion,
+    };
+}
 
 export function requiresSessionMetadataOwnerAccountMode(params: Readonly<{
     session: Readonly<{
@@ -210,6 +272,7 @@ export function projectSessionMetadataForRecipient(params: Readonly<{
     recipient: SessionMetadataRecipientAuthority;
 }>): SessionMetadataRecipientProjection {
     const { session, recipient } = params;
+    const descriptor = projectSessionMetadataDocumentDescriptorForRecipient(params);
     const isOwner =
         recipient.type !== "shared"
         && recipient.accountId === session.accountId;
@@ -273,6 +336,8 @@ export function projectSessionMetadataForRecipient(params: Readonly<{
             metadataVersion: session.metadataVersion,
             metadataLayoutVersion: SESSION_METADATA_LAYOUT_VERSION_V1,
             ownerMetadata: validatedOwnerMetadata,
+            ...(descriptor.displayProjectionV1 ? { displayProjectionV1: descriptor.displayProjectionV1 } : {}),
+            ...(session.projectKey !== undefined ? { projectKey: session.projectKey } : {}),
             agentState: session.agentState,
             agentStateVersion: session.agentStateVersion,
         };
@@ -282,7 +347,9 @@ export function projectSessionMetadataForRecipient(params: Readonly<{
         metadata: session.metadata,
         metadataVersion: session.metadataVersion,
         metadataLayoutVersion: SESSION_METADATA_LAYOUT_VERSION_V1,
+        ...(session.projectKey !== undefined ? { projectKey: session.projectKey } : {}),
         agentState: null,
+        ...(descriptor.displayProjectionV1 ? { displayProjectionV1: descriptor.displayProjectionV1 } : {}),
         agentStateVersion: session.agentStateVersion,
     };
 }

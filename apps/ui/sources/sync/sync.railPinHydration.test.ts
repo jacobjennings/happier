@@ -6,6 +6,7 @@ import { SessionCurrentProjectionRecordV1Schema } from '@happier-dev/protocol/se
 import { createPlainSessionOwnerMetadataEnvelopeV1, createSessionOwnerMetadataV1, projectSessionSharedMetadataV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataEnvelopesV1';
 import { SessionOrganizationSnapshotResponseSchema } from '@happier-dev/protocol/sessions/organization/snapshot';
 import { V2SessionByIdNotFoundSchema } from '@happier-dev/protocol/sessions/control/contract';
+import { SessionMetadataTuplePatchV1Schema, SessionMetadataTuplePatchSuccessV1Schema } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 
 import { createPlainAccountEncryptionCurrentnessFixture, standardCleanup } from '@/dev/testkit';
 import { configureConnectedServerSocketBoundary, installDisconnectedServerSocketBoundary, restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
@@ -13,7 +14,7 @@ import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLo
 import { storage, readSessionOrganizationProjectionCached } from '@/sync/domains/state/storage';
 import { resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 import { fetchAndApplySessionOrganizationSnapshot } from '@/sync/ops/sessionOrganization/fetchSessionOrganizationSnapshot';
-import { createSessionReadBatchHttpBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
+import { createCompactSessionListRowFixture, createSessionReadBatchHttpBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
 
 // Real Account restoration, Sync, HTTP schemas, store and rail projection; only
 // the network transport and native platform adapters are substituted.
@@ -34,11 +35,15 @@ describe('ordinary Session refresh hydrates every personal pin surface', () => {
         connection = undefined;
     });
 
-    it.each(['retained', 'new', 'overtaken', 'list-only-newer', 'reloaded', 'reloaded-unavailable', 'reloaded-removed'] as const)('hydrates %s pinned Bots alongside list and dual-surface pins', async membership => {
+    it.each(['retained', 'new', 'new-listed', 'batched', 'batched-reloaded', 'overtaken', 'list-only-newer', 'reloaded', 'reloaded-unavailable', 'reloaded-unrecognized', 'reloaded-removed'] as const)('hydrates %s pinned Bots alongside list and dual-surface pins', async membership => {
         const pins = [
             { sessionId: 'list-only', sortKey: 'a', pinnedAt: 1, listPinned: true, railPinned: false },
             { sessionId: 'rail-only', sortKey: 'b', pinnedAt: 2, listPinned: false, railPinned: true },
             { sessionId: 'both', sortKey: 'c', pinnedAt: 3, listPinned: true, railPinned: true },
+            ...(membership.startsWith('batched') ? Array.from({ length: 24 }, (_, index) => ({
+                sessionId: `bulk-${index}`, sortKey: `d${String(index).padStart(2, '0')}`,
+                pinnedAt: index + 4, listPinned: true, railPinned: false,
+            })) : []),
         ];
         const snapshot = SessionOrganizationSnapshotResponseSchema.parse({ snapshot: {
             schemaVersion: 1, version: 1, pins, folders: [], folderAssignments: [], tags: [],
@@ -47,7 +52,7 @@ describe('ordinary Session refresh hydrates every personal pin surface', () => {
         const emptySnapshot = SessionOrganizationSnapshotResponseSchema.parse({ snapshot: {
             ...snapshot.snapshot, version: 0, pins: [],
         } });
-        let pinsAvailable = membership !== 'new';
+        let pinsAvailable = membership !== 'new' && membership !== 'new-listed';
         let serveNewerRow = false;
         let staleSnapshotAvailable = false;
         const sourceMetadata = { path: '/bot', host: 'fixture', bot: { kind: 'bot' } };
@@ -64,33 +69,68 @@ describe('ordinary Session refresh hydrates every personal pin surface', () => {
                 capabilities: projectSessionAccessCapabilitiesV1({ owner: true, grants: [] }) },
         })]));
         const exactReads: string[] = [];
-        const readSession = (path: string): Response | undefined => {
+        const physicalBatches: string[][] = [];
+        let ordinaryListReads = 0;
+        let fullReadsAvailable = membership !== 'new-listed';
+        const readSession = (path: string, method: string, body?: unknown): Response | undefined => {
             const sessionId = path.startsWith('/v2/sessions/') ? decodeURIComponent(path.slice('/v2/sessions/'.length)) : '';
             const record = records.get(sessionId);
             if (!record) return undefined;
+            const returnNewerRow = serveNewerRow || (membership === 'batched-reloaded'
+                && staleSnapshotAvailable && physicalBatches.length > 1);
+            const current = returnNewerRow
+                ? { ...record, seq: 14, updatedAt: 3, metadataVersion: Math.max(2, record.metadataVersion) }
+                : record;
+            if (method === 'PATCH') {
+                const patch = SessionMetadataTuplePatchV1Schema.parse(body);
+                if (patch.mode !== 'owner' || !patch.displayProjectionV1) throw new Error('Expected owner display maintenance');
+                if (patch.sharedMetadata.expectedVersion !== current.metadataVersion
+                    || patch.agentState.expectedVersion !== current.agentStateVersion
+                    || JSON.stringify(patch.expectedOwnerMetadata) !== JSON.stringify(current.ownerMetadata)) {
+                    return Response.json({ code: 'session_metadata_version_conflict', metadataLayoutVersion: 1,
+                        sharedMetadata: { version: current.metadataVersion }, agentState: { version: current.agentStateVersion } }, { status: 409 });
+                }
+                expect(patch).toMatchObject({ sharedMetadata: { ciphertext: current.metadata },
+                    ownerMetadata: current.ownerMetadata, agentState: { ciphertext: current.agentState } });
+                expect(patch.displayProjectionV1).toMatchObject({ metadataLayoutVersion: 1,
+                    sourceMetadataVersion: current.metadataVersion + 1 });
+                const committed = SessionCurrentProjectionRecordV1Schema.parse({ ...current,
+                    metadata: patch.sharedMetadata.ciphertext, metadataVersion: current.metadataVersion + 1,
+                    ownerMetadata: patch.ownerMetadata, agentState: patch.agentState.ciphertext,
+                    displayProjectionV1: patch.displayProjectionV1 });
+                records.set(sessionId, committed);
+                return Response.json(SessionMetadataTuplePatchSuccessV1Schema.parse({ success: true, metadataLayoutVersion: 1,
+                    sharedMetadata: { version: committed.metadataVersion }, agentState: { version: committed.agentStateVersion } }));
+            }
+            if (method !== 'GET') return undefined;
             exactReads.push(sessionId);
+            if (!fullReadsAvailable) return Response.json({ error: 'unavailable' }, { status: 503 });
             if (membership === 'reloaded-unavailable' && staleSnapshotAvailable && sessionId === 'rail-only') {
                 return Response.json({ error: 'unavailable' }, { status: 503 });
             }
             if (membership === 'reloaded-removed' && staleSnapshotAvailable && sessionId === 'rail-only') {
                 return Response.json(V2SessionByIdNotFoundSchema.parse({ error: 'Session not found' }), { status: 404 });
             }
-            return Response.json({ session: serveNewerRow
-                ? { ...record, seq: 14, updatedAt: 3, metadataVersion: 2 }
-                : record });
+            if (membership === 'reloaded-unrecognized' && staleSnapshotAvailable && sessionId === 'rail-only') {
+                return Response.json({ error: 'proxy_route_missing' }, { status: 404 });
+            }
+            return Response.json({ session: current });
         };
-        const sessionBoundary = createSessionReadBatchHttpBoundary(request => readSession(request.path));
+        const sessionBoundary = createSessionReadBatchHttpBoundary(request => readSession(request.path, request.method, request.body));
         connection = await restoreServerAccountForTest({
             serverUrl: `https://${membership}-rail-hydration.example.test`,
             serverIdentityId: `srv_rail-hydration-${membership}`, accountId: 'rail-account',
             request: async (url, init) => {
                 const target = new URL(String(url));
                 const path = target.pathname;
-                if (path === '/v2/sessions/read-batch') return await sessionBoundary.handle({
+                if (path === '/v2/sessions/read-batch') {
+                    physicalBatches.push(JSON.parse(String(init?.body)).sessionIds);
+                    return await sessionBoundary.handle({
                     home: membership, accountId: 'rail-account', url: target, path, method: init?.method ?? 'GET',
                     headers: new Headers(init?.headers), signal: init?.signal,
                     body: init?.body ? JSON.parse(String(init.body)) : undefined,
-                }) ?? null;
+                    }) ?? null;
+                }
                 if (path === '/health') return Response.json({ status: 'ok' });
                 if (path === '/v1/features') return Response.json(FeaturesResponseSchema.parse({ features: {}, capabilities: {} }));
                 if (path === '/v2/cursor') return Response.json(CurrentCursorResponseSchema.parse({ cursor: 0, changesFloor: 0 }));
@@ -99,11 +139,16 @@ describe('ordinary Session refresh hydrates every personal pin surface', () => {
                 if (path === '/v2/account/settings') return Response.json(AccountSettingsV2GetResponseSchema.parse({ content: { t: 'plain', v: {} }, version: 1 }));
                 if (path === '/v2/session-organization') return Response.json(pinsAvailable ? snapshot : emptySnapshot);
                 if (path === '/v2/sessions/metadata-upgrades') return Response.json({ sessionIds: [] });
+                if (path === '/v2/sessions') ordinaryListReads += 1;
                 if (path === '/v2/sessions' || path === '/v2/sessions/active') return Response.json({
-                    sessions: staleSnapshotAvailable ? [records.get('rail-only')] : [],
+                    sessions: membership === 'new-listed'
+                        ? [...records.values()].map(createCompactSessionListRowFixture)
+                        : membership === 'batched-reloaded' && staleSnapshotAvailable
+                            ? [...records.values()].map(createCompactSessionListRowFixture)
+                        : staleSnapshotAvailable ? [records.get('rail-only')] : [],
                     nextCursor: null, hasNext: false,
                 });
-                return readSession(path) ?? null;
+                return readSession(path, init?.method ?? 'GET', init?.body ? JSON.parse(String(init.body)) : undefined) ?? null;
             },
         });
         const serverId = resolveServerProfileScopeIdForIdentifier(connection.home.id);
@@ -112,6 +157,48 @@ describe('ordinary Session refresh hydrates every personal pin surface', () => {
         // already has a last-known organization snapshot.
         pinsAvailable = true;
         const { sync } = await import('./sync');
+        if (membership === 'new-listed') {
+            await expect(sync.refreshSessions({ awaitSessionListHydration: true })).rejects.toBeInstanceOf(Error);
+            expect(storage.getState().sessions['rail-only']).toBeUndefined();
+            fullReadsAvailable = true;
+            await sync.refreshSessions({ awaitSessionListHydration: true });
+            for (const pin of pins) expect(storage.getState().sessions[pin.sessionId]).toMatchObject({ id: pin.sessionId });
+            return;
+        }
+        if (membership === 'batched') {
+            await sync.refreshSessions();
+            storage.setState({ sessions: {} });
+            physicalBatches.length = 0;
+            const ordinaryReadsBeforeHydration = ordinaryListReads;
+            await sync.refreshSessions({ awaitSessionListHydration: true });
+            // Bootstrap's public queue can run another snapshot concurrently;
+            // each gathered missing-row demand still owns one physical batch.
+            expect(physicalBatches.length).toBeGreaterThan(0);
+            expect(physicalBatches.length).toBeLessThanOrEqual(ordinaryListReads - ordinaryReadsBeforeHydration);
+            for (const batch of physicalBatches) expect(new Set(batch)).toEqual(new Set(pins.map(pin => pin.sessionId)));
+            for (const pin of pins) expect(storage.getState().sessions[pin.sessionId]).toMatchObject({ id: pin.sessionId });
+            return;
+        }
+        if (membership === 'batched-reloaded') {
+            await sync.refreshSessions();
+            storage.getState().applyServerScopedSessionListRowPatches(serverId, pins.map(pin => ({
+                sessionId: pin.sessionId, patch: { seq: 14, updatedAt: 3, metadataVersion: 2 },
+            })));
+            storage.setState({ sessions: {} });
+            staleSnapshotAvailable = true;
+            physicalBatches.length = 0;
+            const ordinaryReadsBeforeHydration = ordinaryListReads;
+            await sync.refreshSessions({ awaitSessionListHydration: true });
+            // A stale full read is followed by one gathered repair, even when
+            // required demand exceeds the existing per-row work concurrency.
+            expect(physicalBatches.length).toBeGreaterThan(1);
+            expect(physicalBatches.length).toBeLessThanOrEqual(2 * (ordinaryListReads - ordinaryReadsBeforeHydration));
+            for (const batch of physicalBatches) expect(new Set(batch)).toEqual(new Set(pins.map(pin => pin.sessionId)));
+            for (const pin of pins) expect(storage.getState().sessions[pin.sessionId]).toMatchObject({
+                id: pin.sessionId, seq: 14, metadataVersion: 2,
+            });
+            return;
+        }
         // Join bootstrap's public queue before arranging the later live read.
         await sync.refreshSessions();
         if (membership === 'overtaken') {
@@ -122,7 +209,7 @@ describe('ordinary Session refresh hydrates every personal pin surface', () => {
             expect(storage.getState().sessions['rail-only']).toMatchObject({ seq: 14, metadataVersion: 2 });
             serveNewerRow = false;
         }
-        if (membership === 'reloaded' || membership === 'reloaded-unavailable' || membership === 'reloaded-removed') {
+        if (membership === 'reloaded' || membership === 'reloaded-unavailable' || membership === 'reloaded-unrecognized' || membership === 'reloaded-removed') {
             await sync.refreshSessions({ awaitSessionListHydration: true });
             // Navigation opens newer tuple data. A reload keeps the warm list
             // projection but retires the opened Session entity.
@@ -135,7 +222,7 @@ describe('ordinary Session refresh hydrates every personal pin surface', () => {
             expect(storage.getState().sessionListRowsByServerId[serverId]['rail-only']).toMatchObject({ seq: 14, metadataVersion: 2 });
         }
         staleSnapshotAvailable = staleSnapshotAvailable || membership === 'overtaken' || membership === 'list-only-newer';
-        if (membership === 'reloaded-unavailable') {
+        if (membership === 'reloaded-unavailable' || membership === 'reloaded-unrecognized') {
             await expect(sync.refreshSessions({ awaitSessionListHydration: true })).rejects.toBeInstanceOf(Error);
             expect(storage.getState().sessions['rail-only']).toBeUndefined();
             expect(storage.getState().sessionListRowsByServerId[serverId]['rail-only']).toMatchObject({ seq: 14, metadataVersion: 2 });
@@ -185,9 +272,10 @@ describe('ordinary Session refresh hydrates every personal pin surface', () => {
                 await sync.ensureSessionVisibleForMessageRoute(address.sessionId, {
                     serverId, forceRefresh: true, hydrateMessages: false,
                 });
-                const readsAfterHydration = exactReads.length;
+                const countRailReads = () => exactReads.filter(id => id === address.sessionId).length;
+                const readsAfterHydration = countRailReads();
                 await sync.hydrateSessionListRows([address]);
-                expect(exactReads).toHaveLength(readsAfterHydration);
+                expect(countRailReads()).toBe(readsAfterHydration);
                 // A newer canonical tuple still demands a read; a retained
                 // opened row is not a cache that can overrule list invalidation.
                 serveNewerRow = true;
@@ -195,15 +283,15 @@ describe('ordinary Session refresh hydrates every personal pin surface', () => {
                     sessionId: address.sessionId, patch: { seq: 14, updatedAt: 3, metadataVersion: 2 },
                 }]);
                 await sync.hydrateSessionListRows([address]);
-                expect(exactReads).toHaveLength(readsAfterHydration + 1);
+                expect(countRailReads()).toBe(readsAfterHydration + 1);
                 expect(storage.getState().sessions[address.sessionId]).toMatchObject({ seq: 14, metadataVersion: 2 });
                 await sync.hydrateSessionListRows([address]);
-                expect(exactReads).toHaveLength(readsAfterHydration + 1);
+                expect(countRailReads()).toBe(readsAfterHydration + 1);
                 // Mutation/disclosure callers' explicit exact witness is kept.
                 await sync.ensureSessionVisibleForMessageRoute(address.sessionId, {
                     serverId, forceRefresh: true, hydrateMessages: false,
                 });
-                expect(exactReads).toHaveLength(readsAfterHydration + 2);
+                expect(countRailReads()).toBe(readsAfterHydration + 2);
             } finally { release(); }
         }
     });

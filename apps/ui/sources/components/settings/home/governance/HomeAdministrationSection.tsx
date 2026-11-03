@@ -7,7 +7,6 @@ import { View } from 'react-native';
 import { PageHeader, renderPageHeaderText, type PageHeaderProps } from '@/components/ui/layout/PageHeader';
 import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { HomeCredentialUnreadableCard } from '@/components/sessions/access/UnboundSessionHomeScopeCard';
 import { useHomeAdministration } from '@/hooks/home/useHomeAdministration';
@@ -70,6 +69,7 @@ export const HomeAdministrationSection = React.memo(function HomeAdministrationS
      * second argument of `children`.
      */
     childRendersHeader?: boolean;
+    /** `virtualized-list`: the child draws the page with a `VirtualizedItemList` and places the header in its list header. */
     presentation?: 'item-list' | 'virtualized-list';
     /** The page's own actions in its header once the Home has answered (Invite people on People and Teams). */
     pageActions?: (context: HomeAdministrationContext) => Pick<PageHeaderProps, 'actions' | 'primaryAction'>;
@@ -302,11 +302,9 @@ export const HomeAdministrationSection = React.memo(function HomeAdministrationS
     // it, and what stops a draft from being applied as a different Account.
     if (props.presentation === 'virtualized-list') {
         return (
-            <ListPresentationProvider value="page">
-                <React.Fragment key={scopeKey}>
-                    {props.children(context, <>{consoleMenu}{header}</>)}
-                </React.Fragment>
-            </ListPresentationProvider>
+            <React.Fragment key={scopeKey}>
+                {props.children(context, <>{consoleMenu}{header}</>)}
+            </React.Fragment>
         );
     }
 

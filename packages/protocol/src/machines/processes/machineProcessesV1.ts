@@ -12,6 +12,9 @@ export const ProcessOwnerRefV1Schema = lazyZodSchema(() => z.discriminatedUnion(
   z.strictObject({ kind: z.literal('session'), sessionId: id() }),
   z.strictObject({ kind: z.literal('terminal'), terminalId: id(), sessionId: z.optional(id()) }),
   z.strictObject({ kind: z.literal('service'), serviceId: id(), pluginId: z.optional(id()), sessionId: z.optional(id()), workspaceId: z.optional(id()) }),
+  // Native lifecycle custody, not a spawned-process marker or requester identity.
+  z.strictObject({ kind: z.literal('container'), serverId: id(), machineId: id(), serviceId: id(),
+    containerId: z.string().check(z.regex(/^[a-f0-9]{64}$/u)), composeProject: id(), composeService: id(), environmentId: z.optional(id()) }),
   z.strictObject({ kind: z.literal('run'), runId: id(), sessionId: z.optional(id()) }),
   z.strictObject({ kind: z.literal('browser_sidecar') }),
   z.strictObject({ kind: z.literal('workspace_sync') }),
@@ -38,6 +41,8 @@ export const ProcessSampleV1Schema = lazyZodSchema(() => z.strictObject({
   capturedAtMs: bytes(), memoryBytes: z.nullable(bytes()), cpuPercent: z.optional(z.nullable(bytes().check(z.maximum(100)))),
 }));
 export type ProcessSampleV1 = z.infer<typeof ProcessSampleV1Schema>;
+/** The approved detail chart window, not a sample-count limit; the daemon retains and the client keeps this much history. */
+export const MACHINE_PROCESS_HISTORY_WINDOW_MS = 60 * 60_000;
 export const ProcessRowV1Schema = lazyZodSchema(() => z.strictObject({
   rowId: id(), ref: id(), parentRowId: z.optional(id()), name: id(), displayName: z.optional(id()),
   role: z.optional(z.enum(['agent', 'tool_shell', 'test_runner', 'type_checker', 'dev_server', 'language_server', 'mcp_server', 'browser', 'database'])),
@@ -98,6 +103,8 @@ export const MachineProcessesListInputV1Schema = lazyZodSchema(() => z.strictObj
 export type MachineProcessesListInputV1 = z.infer<typeof MachineProcessesListInputV1Schema>;
 export const MachineProcessesWatchInputV1Schema = lazyZodSchema(() => z.strictObject({
   ...target(), scope: z.enum(['happier', 'all']), view: z.enum(['tree', 'owners']), since: z.optional(bytes()), detailToken: z.optional(id()),
+  /** Newest history sample the client already holds: the answer's `history` then carries only newer samples per series. */
+  historySince: z.optional(bytes()),
 }));
 export type MachineProcessesWatchInputV1 = z.infer<typeof MachineProcessesWatchInputV1Schema>;
 export const MachineProcessesWatchResultV1Schema = lazyZodSchema(() => z.discriminatedUnion('changed', [

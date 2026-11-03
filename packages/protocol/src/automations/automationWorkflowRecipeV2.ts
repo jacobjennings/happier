@@ -19,6 +19,13 @@ import {
 
 const UTF8_ENCODER = new TextEncoder();
 
+/** Server-visible structural relationship; never private Workflow content. */
+export const AutomationManagedTargetV1Schema = lazyZodSchema(() => z.strictObject({
+  homeId: preservedBoundedNfcString(191, 'Home ids'),
+  managedId: preservedBoundedNfcString(191, 'Managed resource ids'),
+}));
+export type AutomationManagedTargetV1 = z.infer<typeof AutomationManagedTargetV1Schema>;
+
 export const AutomationStoredWorkflowDefinitionV2Schema = lazyZodSchema(() => z.strictObject({
   workspace: z.strictObject({
     directory: z.string().check(z.minLength(1)),
@@ -48,6 +55,7 @@ function createAutomationStoredWorkflowDefinitionRecipeV2Schema(definitionSchema
     v: z.literal(2),
     templateVersion: z.number().check(z.int(), z.nonnegative(), z.int()),
     workflow: AutomationStoredContentEnvelopeV1Schema,
+    managedTarget: z.optional(z.nullable(AutomationManagedTargetV1Schema)),
     triggerEvidence: z.null(),
   }).check(z.superRefine((value, context) => {
     addAutomationStoredEnvelopeUtf8LimitIssue(

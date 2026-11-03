@@ -47,6 +47,8 @@ afterAll(restoreActionExecutorModuleLoader);
 
 let account: Awaited<ReturnType<typeof restoreServerAccountForTest>> | undefined;
 let rowDefinitions: readonly unknown[];
+let acpAvailable = true;
+let acpRequests = 0;
 
 // The wire is untyped until the real RPC client's protocol reader admits it.
 type MachineRpcFn = (params: { machineId: string; method: string; payload: unknown }) => Promise<unknown>;
@@ -119,6 +121,8 @@ function expectProjectionDescribeCallsForMachine(machineId: string): void {
 beforeEach(async () => {
   account = undefined;
   rowDefinitions = [];
+  acpAvailable = true;
+  acpRequests = 0;
   clearDaemonMergedProjectionCacheForTests();
   machineRpc.mockReset();
   machineRpc.mockResolvedValue({ error: 'Method not found', errorCode: 'RPC_METHOD_NOT_FOUND' });
@@ -148,8 +152,11 @@ beforeEach(async () => {
           canManage: true, grants: [], ownDirectGrant: false, ownAccessSources: [],
         }));
       }
-      if (path === ACP_CATALOG_ROWS_ROUTE_V1) return Response.json({ status: 'present', revision: 3,
-        content: { t: 'plain', v: { v: 1, definitions: rowDefinitions } } });
+      if (path === ACP_CATALOG_ROWS_ROUTE_V1) {
+        acpRequests += 1;
+        return acpAvailable ? Response.json({ status: 'present', revision: 3,
+          content: { t: 'plain', v: { v: 1, definitions: rowDefinitions } } }) : new Response(null, { status: 503 });
+      }
       return new Response(null, { status: 404 });
     },
   });
@@ -168,6 +175,23 @@ afterEach(async () => {
 });
 
 describe('resolveVoiceConfiguredAgentTarget', () => {
+  it.each(['bundled', 'installed'] as const)('resolves an exact %s Agent independently of unavailable configured-ACP rows', async kind => {
+    acpAvailable = false;
+    const scope = { serverId: account!.home.id, accountId: 'voice-resolver-account' };
+    await refreshAcpCatalog(scope);
+    const { getAcpCatalogSnapshot } = await import('@/sync/store/settings/acpCatalogSnapshot');
+    expect(getAcpCatalogSnapshot(scope)?.catalog.status).toBe('unavailable');
+    acpRequests = 0;
+    if (kind === 'installed') enableExternalAgentProjection(7);
+    await expect(resolveVoiceConfiguredAgentTarget({ machineId: 'machine-1', accountScope: scope, selection: kind === 'bundled'
+      ? { agentId: 'codex', agentTargetKey: 'agent:happier.agent.codex/codex', agentIdentity: null }
+      : { agentId: EXTERNAL_AGENT_ID, agentTargetKey: EXTERNAL_TARGET_KEY, agentIdentity: EXTERNAL_IDENTITY },
+    })).resolves.toMatchObject({ ok: true, backendTarget: { kind: 'backend',
+      backendId: kind === 'bundled' ? 'codex' : EXTERNAL_AGENT_ID } });
+    // Independent Agent selection must not refetch the unrelated ACP row.
+    expect(acpRequests).toBe(0);
+  });
+
   it('restores the original R40 bundled OpenCode selection through the real Account catalog binding', async () => {
     const { captureLazyActionAccountContext } = await import('@/sync/ops/actions/actionAccountContext');
     const { createVoiceAgentSettingsCatalogReader } = await import('@/sync/ops/actions/voiceAgentSettingsCatalog');
@@ -177,7 +201,7 @@ describe('resolveVoiceConfiguredAgentTarget', () => {
       const settings = settingsParse({ voice: writeLocalConversationVoiceSettings(voiceSettingsDefaults, {
         ...readLocalConversationVoiceSettings(voiceSettingsDefaults), conversationMode: 'agent',
         agent: { ...readLocalConversationVoiceSettings(voiceSettingsDefaults).agent, agentSource: 'session', agentId: 'codex',
-          agentTargetKey: 'agent:happier.agent.codex/codex', agentIdentity: null, agentProjectionGeneration: null,
+          agentTargetKey: 'agent:happier.agent.codex/codex', agentIdentity: null,
           chatModelSource: 'custom', chatModelId: 'gpt-6-luna' },
       }) });
       if (voiceAgentSelectionBinding.kind !== 'owner') throw new Error('Expected the canonical Voice selection owner');
@@ -188,7 +212,7 @@ describe('resolveVoiceConfiguredAgentTarget', () => {
       const restored = prepared!(settings);
       expect(restored).not.toBeNull();
       expect(readLocalConversationVoiceSettings(restored!.voice).agent).toMatchObject({ agentSource: 'session', agentId: 'opencode',
-        agentTargetKey: 'agent:happier.agent.opencode/opencode', agentIdentity: null, agentProjectionGeneration: null,
+        agentTargetKey: 'agent:happier.agent.opencode/opencode', agentIdentity: null,
         chatModelId: 'gpt-6-luna' });
     } finally { captured.dispose(); }
   });

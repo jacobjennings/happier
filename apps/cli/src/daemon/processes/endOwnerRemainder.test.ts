@@ -1,11 +1,13 @@
 import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import { readFile, readdir, readlink } from 'node:fs/promises';
 import { expect, it } from 'vitest';
 import { createProcessOwnershipRuntime } from './ownership/processOwnershipRuntime';
 import { createEndOwnerRemainder } from './endOwnerRemainder';
-import { readProcessCensus } from '@/processes/census/processCensus';
+import { readProcessCensus, type ProcessStartIdentity } from '@/processes/census/processCensus';
 import type { ProcessCensusDependencies } from '@/processes/census/processCensus';
-import type { HappierProcessRoot } from './ownership/types';
-import { spawnInlineNodeParentWithChild, waitForProcessExit } from '@/testkit/process/spawn';
+import { equalProcessStart, type HappierProcessRoot } from './ownership/types';
+import { readTestProcessPid, spawnInlineNodeParentWithChild, waitForProcessExit } from '@/testkit/process/spawn';
 import { createStopSession } from '../sessions/stopSession';
 import { waitForTrackedRunnerProcessesExit } from '../sessions/waitForTrackedRunnerProcessesExit';
 import { listHappierProcessRoots } from './roots/listHappierProcessRoots';
@@ -13,6 +15,94 @@ import { createLeftBehindPass } from './leftBehind/leftBehindPass';
 import type { TrackedSession } from '../types';
 import { formatProcessOwnerTag, resolveProcessOwnerScopeKey } from '@/processes/ownerTag';
 import { spawn } from 'node:child_process';
+import { createHappierLinuxScopeName } from '../platform/linux/systemdUserResourceGovernor';
+
+it.skipIf(process.platform !== 'linux').each([
+    { evidence: 'fence', signalDenied: false }, { evidence: 'fence', signalDenied: true },
+    { evidence: 'marker', signalDenied: false },
+])('stops a detached native member with $evidence evidence (signal denied=$signalDenied)', async ({ evidence, signalDenied }) => {
+    const scope = '123456789abc';
+    const owner = { kind: 'session', sessionId: `detached-fence-stop-${randomUUID()}` } as const;
+    const unit = createHappierLinuxScopeName(`v1.${scope}.session.${owner.sessionId}`)!;
+    const prefix = `/user.slice/happier-jobs.slice/${unit}`;
+    const ownerTag = `v1.${scope}.session.${owner.sessionId}`;
+    const fixtureLifetimeMs = 20_000;
+    const fixtureStartedAt = Date.now();
+    // The intermediate exits before Stop. Fence-only children have an empty
+    // environment; marker-only children have no constructed cgroup evidence.
+    const parent = spawn(process.execPath, ['-e', `
+        const result = require('node:child_process').spawnSync(process.execPath, ['-e', \`
+            const child = require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, ${fixtureLifetimeMs})'], {
+                detached: true, stdio: 'ignore', env: ${JSON.stringify(evidence === 'marker' ? { HAPPIER_PROCESS_OWNER: ownerTag } : {})}
+            });
+            process.stdout.write(String(child.pid)); child.unref();
+        \`], { encoding: 'utf8' });
+        process.stdout.write(result.stdout + '\\n'); setTimeout(() => {}, ${fixtureLifetimeMs});
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const nativeKill = process.kill.bind(process);
+    let childIdentity: { pid: number; start: ProcessStartIdentity } | undefined;
+    let leftBehind: ReturnType<typeof createLeftBehindPass> | undefined;
+    try {
+        const childPid = await readTestProcessPid(parent);
+        const retained: HappierProcessRoot[] = [];
+        const censusDependencies: ProcessCensusDependencies = { platform: 'linux', linuxBoundary: {
+            readdir, readlink,
+            async readFile(path, encoding) {
+                const pid = Number(path.split('/')[2]);
+                if (evidence === 'fence' && path.endsWith('/cgroup') && [parent.pid, childPid].includes(pid)) return `0::${prefix}\n`;
+                return readFile(path, encoding);
+            },
+        } };
+        const initial = await readProcessCensus({ freshness: 'fresh', scope: 'all' });
+        if (initial.status !== 'ok') throw new Error('Native census unavailable');
+        const root = initial.rows.find(row => row.pid === parent.pid)!;
+        const child = initial.rows.find(row => row.pid === childPid)!;
+        childIdentity = { pid: child.pid, start: child.start };
+        expect(child.ppid).not.toBe(parent.pid);
+        expect(child.ownerTag).toBe(evidence === 'marker' ? ownerTag : undefined);
+        const tracked: TrackedSession = { pid: root.pid, processStartTimeMs: root.start.startTimeMs,
+            happySessionId: owner.sessionId, startedBy: 'daemon', childProcess: parent, linuxLaunchUnit: unit };
+        const sessions = new Map([[root.pid, tracked]]);
+        const runtime = createProcessOwnershipRuntime({ daemonScopeKey: scope, censusDependencies,
+            listRoots: snapshot => listHappierProcessRoots({ snapshot, daemonScopeKey: scope,
+                trackedSessions: sessions.values(), endedRoots: retained }) });
+        leftBehind = createLeftBehindPass({ processOwnershipRuntime: runtime });
+        const remainder = createEndOwnerRemainder({ processOwnershipRuntime: runtime, daemonScopeKey: scope,
+            retainEndedRoots: roots => { retained.push(...roots); }, firstPass: leftBehind.firstPass,
+            systemBoundary: { censusDependencies,
+                kill: (pid, signal) => signalDenied && pid === childPid ? true : nativeKill(pid, signal) } });
+        const stop = createStopSession({ pidToTrackedSession: sessions, ownerRemainder: remainder,
+            readHostAttachmentState: async () => ({ status: 'absent' }),
+            areTrackedRunnersExited: async () => parent.exitCode !== null || parent.signalCode !== null,
+            waitForTrackedRunnersExit: async () => waitForProcessExit(root.pid, { timeoutMs: 2000 }) });
+        expect(await stop(owner.sessionId)).toEqual(signalDenied
+            ? { status: 'incomplete', reason: 'runner_signal_incomplete' } : { status: 'stopped' });
+        if (signalDenied) {
+            sessions.clear();
+            const view = await runtime.readOwners({ freshness: 'fresh', requesterAttribution: 'retained' });
+            expect(view.status).toBe('ok');
+            if (view.status !== 'ok') throw new Error('Native census unavailable');
+            expect(view.rows.find(row => row.pid === childPid)).toMatchObject({ owner, ownerEnded: true, level: 'left_behind' });
+        } else {
+            // This assertion must be won by Stop, not the fixture's expiry.
+            expect(Date.now() + 2000).toBeLessThan(fixtureStartedAt + fixtureLifetimeMs);
+            expect(await waitForProcessExit(childPid, { timeoutMs: 2000 })).toBe(true);
+        }
+        expect(() => nativeKill(process.pid, 0)).not.toThrow();
+    } finally {
+        leftBehind?.dispose();
+        parent.kill('SIGKILL');
+        const identity = childIdentity;
+        if (identity) {
+            const snapshot = await readProcessCensus({ freshness: 'fresh', pids: [identity.pid] });
+            const current = snapshot.status === 'ok' ? snapshot.rows.find(row => row.pid === identity.pid) : undefined;
+            if (current && equalProcessStart(current.start, identity.start)) {
+                try { nativeKill(identity.pid, 'SIGKILL'); } catch { /* Exact native fixture generation only. */ }
+            }
+            await waitForProcessExit(identity.pid);
+        }
+    }
+}, 20_000);
 
 it.each(['absent', 'zombie', 'unreadable', 'outside_survivor'] as const)('settles a departed captured tree using its native evidence (%s)', async state => {
     const owner = { kind: 'session', sessionId: 'departed-tree' } as const;
@@ -426,22 +516,15 @@ it('does not retire a resumed live owner generation while completing an older ru
     }
 }, 15_000);
 
-it('refuses a fence whose root changes live owner after the initial exclusive proof', async () => {
-    const oldOwner = { kind: 'session', sessionId: 'old-owner' } as const;
-    const newOwner = { kind: 'session', sessionId: 'new-owner' } as const;
-    const scope = '123456789abc';
+it.each(['alias_fences', 'retry_captured'] as const)('completes the native fence lifecycle with %s', async scenario => {
+    const owner = { kind: 'session', sessionId: 'fence-lifecycle' } as const;
     const rows = new Map([[process.pid, { parent: 1, ticks: 10, cgroup: '' }],
-        [4100, { parent: 1, ticks: 100, cgroup: '/old-fence' }], [4101, { parent: 4100, ticks: 110, cgroup: '/old-fence' }]]);
-    const oldRoot: HappierProcessRoot = { owner: oldOwner, pid: 4100, start: { startTimeMs: 1000 }, live: false,
-        ownerCreatedAtMs: 0, containment: { kind: 'linux_unit', prefix: '/old-fence' } };
-    let roots: readonly HappierProcessRoot[] = [oldRoot];
-    let reads = 0;
-    const censusDependencies: ProcessCensusDependencies = { platform: 'linux', selfPid: process.pid, linuxBoundary: {
-        async readdir() {
-            if (++reads >= 2) roots = [oldRoot, { ...oldRoot, owner: newOwner, live: true, containment: undefined }];
-            return [...rows.keys()].map(String);
-        },
-        async readlink() { return '/fixture'; },
+        [4101, { parent: 1, ticks: 110, cgroup: '/session-fence' }]]);
+    const root: HappierProcessRoot = { owner, pid: 4100, start: { startTimeMs: 1000 }, live: false,
+        ownerCreatedAtMs: 0, containment: { kind: 'linux_unit', prefix: '/session-fence' } };
+    const roots = scenario === 'alias_fences' ? [root, { ...root, pid: 4099, start: { startTimeMs: 900 } }] : [root];
+    const censusDependencies: ProcessCensusDependencies = { platform: 'linux', linuxBoundary: {
+        async readdir() { return [...rows.keys()].map(String); }, async readlink() { return '/fixture'; },
         async readFile(path) {
             const row = rows.get(Number(path.split('/')[2]));
             if (!row) throw Object.assign(new Error('absent'), { code: 'ENOENT' });
@@ -451,7 +534,59 @@ it('refuses a fence whose root changes live owner after the initial exclusive pr
             return '';
         },
     } };
-    const runtime = createProcessOwnershipRuntime({ platform: 'linux', daemonScopeKey: scope, censusDependencies, listRoots: () => roots });
+    const runtime = createProcessOwnershipRuntime({ platform: 'linux', daemonScopeKey: '123456789abc', censusDependencies, listRoots: () => roots });
+    const signals: number[] = [];
+    const remainder = createEndOwnerRemainder({ platform: 'linux', processOwnershipRuntime: runtime, daemonScopeKey: '123456789abc',
+        firstPass: () => {}, systemBoundary: { platform: 'linux', censusDependencies,
+            kill(pid) {
+                signals.push(pid);
+                if (scenario === 'retry_captured' && signals.length < 3) return true;
+                rows.delete(pid);
+                if (scenario === 'alias_fences' && pid === 4101) rows.set(4102, { parent: 1, ticks: 120, cgroup: '/session-fence' });
+                return true;
+            } } });
+    const captured = scenario === 'retry_captured' ? { scope: 'subtree' as const, ownership: [], roots: [root,
+        { ...root, pid: 4101, start: { startTimeMs: 1100 }, containment: undefined }] } : undefined;
+    const result = await remainder.end(owner, captured);
+    expect(result.status).toBe('complete');
+    expect(result.outcomes).toContainEqual(expect.objectContaining({ pid: scenario === 'alias_fences' ? 4102 : 4101, outcome: 'ended' }));
+    expect([...rows.keys()]).toEqual([process.pid]);
+});
+
+it.each(['root', 'member', 'member_at_signal'] as const)('refuses a fence whose %s changes live owner after the initial exclusive proof', async reowned => {
+    const oldOwner = { kind: 'session', sessionId: 'old-owner' } as const;
+    const newOwner = { kind: 'session', sessionId: 'new-owner' } as const;
+    const scope = '123456789abc';
+    const rows = new Map([[process.pid, { parent: 1, ticks: 10, cgroup: '' }],
+        [4100, { parent: 1, ticks: 100, cgroup: '/old-fence' }], [4101, { parent: 4100, ticks: 110, cgroup: '/old-fence' }]]);
+    const oldRoot: HappierProcessRoot = { owner: oldOwner, pid: 4100, start: { startTimeMs: 1000 }, live: false,
+        ownerCreatedAtMs: 0, containment: { kind: 'linux_unit', prefix: '/old-fence' } };
+    let roots: readonly HappierProcessRoot[] = [oldRoot];
+    let reads = 0;
+    let rootReads = 0;
+    const reown = () => { roots = [oldRoot, { ...oldRoot, owner: newOwner,
+        ...(reowned !== 'root' ? { pid: 4101, start: { startTimeMs: 1100 } } : {}),
+        live: true, containment: undefined }]; };
+    const censusDependencies: ProcessCensusDependencies = { platform: 'linux', selfPid: process.pid, linuxBoundary: {
+        async readdir() {
+            if (++reads >= 2 && reowned !== 'member_at_signal') reown();
+            return [...rows.keys()].map(String);
+        },
+        async readlink() { return '/fixture'; },
+        async readFile(path) {
+            const row = rows.get(Number(path.split('/')[2]));
+            if (!row) throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+            if (path.endsWith('/status')) return 'Uid:\t1000\n';
+            if (path.endsWith('/stat')) {
+                if (Number(path.split('/')[2]) === 4101 && rootReads === 3 && reowned === 'member_at_signal') reown();
+                return `${path.split('/')[2]} (fixture) ${['S', String(row.parent), '5000', '1', '0', '0', ...Array(13).fill('0'), String(row.ticks), '0', '0'].join(' ')}`;
+            }
+            if (path.endsWith('/cgroup')) return row.cgroup ? `0::${row.cgroup}\n` : '';
+            return '';
+        },
+    } };
+    const runtime = createProcessOwnershipRuntime({ platform: 'linux', daemonScopeKey: scope, censusDependencies,
+        listRoots: () => { rootReads++; return roots; } });
     const signals: number[] = [];
     const remainder = createEndOwnerRemainder({ platform: 'linux', processOwnershipRuntime: runtime, daemonScopeKey: scope,
         firstPass: () => {}, systemBoundary: { platform: 'linux', censusDependencies,

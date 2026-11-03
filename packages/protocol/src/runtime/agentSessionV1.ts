@@ -20,8 +20,9 @@ import { AGENT_SESSION_RUNTIME_EVENT_KINDS_V1 } from './eventKindsV1.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
 import { AgentRuntimeDiagnosticDataV1Schema } from './agentRuntimeDiagnosticV1.js';
 import { NonBlankOpaqueIdentifierSchema } from '../strings/opaqueIdentifier.js';
-import { UsageRequestAttributionSchema } from '../usage/usageAnalyticsContracts.js';
+import { UsagePromptCacheSchema, UsageRequestAttributionSchema } from '../usage/usageAnalyticsContracts.js';
 import { McpToolLaunchPoliciesV1Schema, type McpToolLaunchPolicyV1 } from '../mcp/servers/tools/resolveMcpToolDecisionV1.js';
+import { TranscriptPeerSenderV1Schema } from '../sessions/messages/transcriptPeerSenderV1.js';
 
 export { AGENT_SESSION_RUNTIME_EVENT_KINDS_V1 } from './eventKindsV1.js';
 export { AgentRuntimeDiagnosticDataV1Schema } from './agentRuntimeDiagnosticV1.js';
@@ -56,6 +57,13 @@ const HostIdSchema = lazyZodSchema(() => exactString(HOST_ID_MAX));
  */
 const ProviderIdSchema = lazyZodSchema(() => opaqueNonBlankString(PROVIDER_ID_MAX));
 const InputIdSchema = lazyZodSchema(() => opaqueNonBlankString(HOST_ID_MAX));
+/** Host-resolved controls supported by a native idle-compaction runtime. */
+export const AgentSessionIdleCompactionPreferenceV1Schema = lazyZodSchema(() => z.strictObject({
+  enabled: z.boolean(),
+  minContextTokens: z.optional(SafeIntegerSchema),
+}));
+export type AgentSessionIdleCompactionPreferenceV1 = z.infer<typeof AgentSessionIdleCompactionPreferenceV1Schema>;
+
 const SafeIntegerSchema = lazyZodSchema(() => z.number().check(z.int(), z.nonnegative(), z.maximum(LIMITS.safeIntegerMax)));
 /**
  * The strict runtime JSON value used at admission boundaries. Aggregate byte
@@ -251,6 +259,7 @@ const ContextUsageSchema = lazyZodSchema(() => z.strictObject({
 }));
 
 const UsageMeasurementShape = {
+  promptCache: z.optional(UsagePromptCacheSchema),
   tokens: z.optional(UsageTokensSchema),
   cost: z.optional(UsageCostSchema),
   context: z.optional(ContextUsageSchema),
@@ -402,7 +411,10 @@ const OutputSchemas = [
     text: z.string().check(maxCodeUnits(TRANSCRIPT_TEXT_CANDIDATE_MAX)),
     turnId: z.optional(HostIdSchema),
     sidechainId: z.optional(HostIdSchema),
-  }))),
+    /** Assistant-channel text delivered by another agent (teammate or subagent hand-back), not the Agent's reply. */
+    peer: z.optional(TranscriptPeerSenderV1Schema),
+  }).check(z.refine((value) => value.peer === undefined || (value.role === 'assistant' && value.turnId === undefined),
+    'Peer-delivered text is Session-scoped assistant-channel text')))),
   lazyZodSchema(() => z.strictObject({
     ...TurnEventBaseShape,
     turnId: z.optional(HostIdSchema),
@@ -435,7 +447,7 @@ const OutputSchemas = [
       historyComplete: z.optional(z.boolean()),
     })),
     ...UsageMeasurementShape,
-  })).check(z.refine((value) => value.tokens !== undefined || value.cost !== undefined || value.context !== undefined, 'At least one usage measurement is required'))),
+  })).check(z.refine((value) => value.tokens !== undefined || value.cost !== undefined || value.context !== undefined || value.promptCache !== undefined, 'At least one usage measurement is required'))),
   lazyZodSchema(() => z.strictObject({
     ...TurnEventBaseShape,
     kind: z.literal('turn-rollback-boundary'),
@@ -451,7 +463,7 @@ const CompactionCommonShape = {
   kind: lazyZodSchema(() => z.literal('context-compaction')),
   compactionId: HostIdSchema,
   turnId: z.optional(HostIdSchema),
-  trigger: lazyZodSchema(() => z.enum(['manual', 'automatic', 'threshold', 'overflow', 'unknown'])),
+  trigger: lazyZodSchema(() => z.enum(['manual', 'idle', 'automatic', 'threshold', 'overflow', 'unknown'])),
   retryAttempt: z.optional(SafeIntegerSchema),
 };
 
@@ -538,7 +550,7 @@ export const AgentSessionSendRequestV1Schema = lazyZodSchema(() => z.strictObjec
 
 export const AgentSessionCompactRequestV1Schema = lazyZodSchema(() => z.strictObject({
   compactionId: HostIdSchema,
-  trigger: z.literal('manual'),
+  trigger: z.enum(['manual', 'idle']),
   instructions: z.optional(z.string().check(maxCodeUnits(COMPACT_INSTRUCTIONS_MAX))),
 }));
 

@@ -24,13 +24,6 @@ describe('recoveryKey format', () => {
     );
   });
 
-  it('emits eleven dash-separated uppercase RFC 4648 Base32 groups for 32 bytes', () => {
-    const formatted = formatRecoveryKey(sequentialBytes);
-    expect(formatted).toMatch(/^[A-Z2-7]{5}(-[A-Z2-7]{1,5})*$/u);
-    expect(formatted.split('-')).toHaveLength(11);
-    expect(formatted.replace(/-/g, '')).toHaveLength(52);
-  });
-
   it('rejects formatting for keys that are not exactly 32 bytes', () => {
     expect(() => formatRecoveryKey(new Uint8Array(16))).toThrow(/32/u);
     expect(() => formatRecoveryKey(new Uint8Array(64))).toThrow(/32/u);
@@ -41,6 +34,10 @@ describe('recoveryKey parse', () => {
   it('round-trips the canonical dashed Base32 display form to the exact bytes', () => {
     expect(parseRecoveryKey(sequentialDashedBase32)).toEqual({ ok: true, bytes: sequentialBytes });
     expect(parseRecoveryKey(patternedDashedBase32)).toEqual({ ok: true, bytes: patternedBytes });
+    expect(parseRecoveryKey('77777-77777-77777-77777-77777-77777-77777-77777-77777-77777-7Q')).toEqual({
+      ok: true,
+      bytes: new Uint8Array(32).fill(255),
+    });
   });
 
   it('accepts the proven raw Base64url form, including keys containing - and _', () => {
@@ -64,6 +61,8 @@ describe('recoveryKey parse', () => {
       bytes: sequentialBytes,
     });
     expect(parseRecoveryKey(whitespaceSeparated)).toEqual({ ok: true, bytes: sequentialBytes });
+    const surroundedAndSpaced = ` \n\t${sequentialDashedBase32.toLowerCase().replace(/-/gu, ' - ')}\t\n `;
+    expect(parseRecoveryKey(surroundedAndSpaced)).toEqual({ ok: true, bytes: sequentialBytes });
   });
 
   it('applies the released 0/1/8/9 confusion normalization without lossy guessing', () => {

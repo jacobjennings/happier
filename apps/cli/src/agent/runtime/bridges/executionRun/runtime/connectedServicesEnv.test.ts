@@ -19,7 +19,7 @@ import {
     resolveExecutionRunConnectedServicesSelection,
     resolveExecutionRunConnectedServicesEnv,
 } from './connectedServicesEnv';
-import { ConnectedServiceRunRuntimeAuthRefreshRequestSchema,
+import { ConnectedServiceRunMaterializeRequestSchema, ConnectedServiceRunRuntimeAuthRefreshRequestSchema,
     type ConnectedServiceRunRejectedStartRequest, type ConnectedServiceRunRejectedStartResult } from '@/daemon/connectedServices/runs/materializeContract';
 import { createActionExecutor } from '@happier-dev/protocol/actions/actionExecutor';
 import { createUnavailableActionTransportDeps } from '@/testkit/actionTransportDeps';
@@ -128,13 +128,15 @@ describe('resolveExecutionRunConnectedServicesEnv', () => {
         }), expect.anything());
         expect(deps.release).not.toHaveBeenCalled();
     });
-    it('materializes an attached parent pool rather than Account defaults or the selected parent member', async () => {
+    it.each([false, true])('materializes an attached parent pool without Account-default reads (explicit model=%s)', async explicitModel => {
         const parentPool = { v: 2 as const, bindingsByServiceId: {
             [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: { source: 'connected' as const, selection: 'group' as const,
                 groupId: 'pool-X', profileId: 'parent-member' },
         } };
         const selected = resolveExecutionRunChildSelection({
             backendTarget: { kind: 'builtInAgent', agentId: 'codex' }, lifecycle: 'attached',
+            ...(explicitModel ? { modelSelection: { agentTargetKey: 'agent:happier.agent.codex/codex',
+                providerConnectionId: null, modelId: 'child-model' } } : {}),
             parent: { status: 'applied', backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
                 modelId: 'parent-model', connectedServices: parentPool },
         });
@@ -148,13 +150,57 @@ describe('resolveExecutionRunConnectedServicesEnv', () => {
             connectedServices: selected.connectedServices, modelId: selected.modelId, deps,
         });
         expect(deps.requestMaterialization).toHaveBeenCalledWith(expect.objectContaining({
-            modelId: 'parent-model', connectedServices: { v: 2, bindingsByServiceId: {
+            modelId: explicitModel ? 'child-model' : 'parent-model', connectedServices: { v: 2, bindingsByServiceId: {
                 [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: { source: 'connected', selection: 'group', groupId: 'pool-X' },
             } },
         }), expect.anything());
+        expect(deps.requestMaterialization).toHaveBeenCalledTimes(1);
         expect(deps.resolveSessionSpawnDefaults).not.toHaveBeenCalled();
         expect(deps.readCredentials).not.toHaveBeenCalled();
     });
+    it.each(['attached', 'retained'] as const)('preserves an existing Team-brokered binding through %s open and native resume', async (lifecycle) => {
+        const teamBindings = { v: 2 as const, bindingsByServiceId: {
+            [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: { source: 'team_resource' as const,
+                resourceId: 'retained-team-resource', deliveryMode: 'brokered' as const },
+        } };
+        const selected = resolveExecutionRunChildSelection({
+            backendTarget: { kind: 'builtInAgent', agentId: 'codex' }, lifecycle,
+            modelSelection: { agentTargetKey: 'agent:happier.agent.codex/codex',
+                providerConnectionId: null, modelId: 'team-model' },
+            connectedServices: teamBindings,
+            parent: { status: 'applied', backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+                modelId: 'new-parent-model', connectedServices: CONNECTED_BINDINGS },
+        });
+        expect(selected.connectedServices).toEqual(teamBindings);
+        const deps = createDeps();
+        // Substitute only daemon-control transport. Parse what the runner sends with the
+        // daemon's actual ingress schema; activationId is added by that transport.
+        deps.requestMaterialization.mockImplementation(async request => {
+            const admitted = ConnectedServiceRunMaterializeRequestSchema.parse({ ...request, activationId: ACTIVATION_ID });
+            expect(admitted.connectedServices).toEqual(teamBindings);
+            return { ok: true as const, result: { activationId: ACTIVATION_ID,
+                env: { CODEX_HOME: MATERIALIZED_ENV_VALUE }, connectedServicesBindings: admitted.connectedServices,
+                registration: { ...REGISTRATION, connectedServicesBindings: admitted.connectedServices },
+            } };
+        });
+        const opened = await resolveExecutionRunConnectedServicesEnv({
+            runId: 'run_1', backendId: 'codex', backendSourceKind: 'built_in', cwd: '/tmp/project',
+            connectedServices: selected.connectedServices, modelId: selected.modelId, deps,
+        });
+        expect(opened).toMatchObject({ connectedServicesBindings: teamBindings,
+            env: { CODEX_HOME: MATERIALIZED_ENV_VALUE } });
+        if (!opened) throw new Error('Expected Team-brokered open');
+        const resumed = await opened.rematerializeForRecovery('retained-native-session');
+        expect(resumed.connectedServicesBindings).toEqual(teamBindings);
+        expect(deps.requestMaterialization).toHaveBeenLastCalledWith(expect.objectContaining({
+            modelId: 'team-model', connectedServices: teamBindings,
+            recovery: { activationId: ACTIVATION_ID, nativeResumeId: 'retained-native-session' },
+        }), expect.anything());
+        expect(deps.resolveSessionSpawnDefaults).not.toHaveBeenCalled();
+        expect(deps.readCredentials).not.toHaveBeenCalled();
+        await resumed.cleanup();
+    });
+
     it.each([false, true])('preserves the admitted Workflow review choice through materialization (native=%s)', async (native) => {
         const selection = native ? null : {
             v: 2 as const, bindingsByServiceId: { [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {

@@ -858,6 +858,8 @@
 | `./agents/runtime` | `AgentSessionCatalogResult` | type | daemon |
 | `./agents/runtime` | `AgentSessionCompactRequest` | type | daemon |
 | `./agents/runtime` | `AgentSessionCompactResult` | type | daemon |
+| `./agents/runtime` | `AgentSessionCompactionCapability` | type | daemon |
+| `./agents/runtime` | `AgentSessionCompactionIdleCapability` | type | daemon |
 | `./agents/runtime` | `AgentSessionConfigurationResult` | type | daemon |
 | `./agents/runtime` | `AgentSessionConfigurationSnapshot` | type | daemon |
 | `./agents/runtime` | `AgentSessionConfigurationUpdate` | type | daemon |
@@ -1032,9 +1034,12 @@
 | `./agents/runtime` | `HandoffSurfaceV1` | type | daemon |
 | `./agents/runtime` | `ListCheckpointsRequestV1` | type | daemon |
 | `./agents/runtime` | `McpToolIdentityV1` | type | daemon |
+| `./agents/runtime` | `OPENAI_GPT56_PROMPT_CACHE_QUALIFICATION` | value | daemon |
+| `./agents/runtime` | `PROMPT_CACHE_DURATIONS` | value | daemon |
 | `./agents/runtime` | `PluginAgentAcpMcpInputPolicyV2` | type | daemon |
 | `./agents/runtime` | `PluginAgentAcpNativeSessionMcpConfigV2` | type | daemon |
 | `./agents/runtime` | `PluginAgentAcpSkillsSessionDeliveryV2` | type | daemon |
+| `./agents/runtime` | `PluginAgentSessionCompactionCapabilityV2` | type | daemon |
 | `./agents/runtime` | `ProviderBindingCanonicalJsonValue` | type | any |
 | `./agents/runtime` | `ProviderBoundModelRef` | type | daemon |
 | `./agents/runtime` | `ProviderTranscriptDispatchRequestV1` | type | daemon |
@@ -1122,6 +1127,7 @@
 | `./agents/runtime` | `parseSessionPermissionToolIdentifier` | value | daemon |
 | `./agents/runtime` | `readAgentStartupFailureCode` | value | daemon |
 | `./agents/runtime` | `resolveAcpToolPermissionPolicy` | value | daemon |
+| `./agents/runtime` | `resolvePromptCacheLastUseAtMs` | value | any |
 | `./agents/runtime` | `resolveRecoverableTurnFailureRetryDecision` | value | daemon |
 | `./agents/runtime` | `resolveRecoverableTurnFailureSecondFailure` | value | daemon |
 | `./agents/runtime` | `resolveTerminalPromptWriteTimeoutMs` | value | daemon |
@@ -1406,8 +1412,11 @@
 | `./exec` | `SystemToolDiagnostic` | type | daemon |
 | `./exec` | `SystemToolResolveRequest` | type | daemon |
 | `./exec` | `SystemToolsService` | type | daemon |
+| `./exec` | `resolveGhNativeToken` | value | daemon |
 | `./exec/protocol-clients` | `PluginFramedBytesClient` | type | daemon |
 | `./exec/protocol-clients` | `PluginJsonRpcClient` | type | daemon |
+| `./exec/protocol-clients` | `PluginJsonRpcConnection` | type | daemon |
+| `./exec/protocol-clients` | `PluginJsonRpcConnectionSpec` | type | daemon |
 | `./exec/protocol-clients` | `PluginJsonStreamClient` | type | daemon |
 | `./exec/protocol-clients` | `PluginLoopbackWebSocketClientSpec` | type | daemon |
 | `./exec/protocol-clients` | `PluginLoopbackWebSocketEndpoint` | type | daemon |
@@ -2475,6 +2484,8 @@
 | `./sessions/external` | `AgentExternalSessionsCandidatePreparation` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionsContribution` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionsFailureCode` | type | daemon |
+| `./sessions/external` | `AgentExternalSessionsHydrateCandidatesRequest` | type | daemon |
+| `./sessions/external` | `AgentExternalSessionsHydrateCandidatesResult` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionsInvocation` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionsInvocationBounds` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionsListCandidatesRequest` | type | daemon |
@@ -2861,6 +2872,7 @@
 | `./ui` | `CurrentUiContextSnapshotV1` | type | any |
 | `./ui` | `EphemeralInputSettlement` | type | any |
 | `./ui` | `HostedWebBridgeEnvelopeV1` | type | any |
+| `./ui` | `InboxItemAttentionTypeV1` | type | any |
 | `./ui` | `MAX_COMPOSER_ATTACHMENT_DESCRIPTION_CODE_POINTS_V1` | value | any |
 | `./ui` | `MAX_COMPOSER_ATTACHMENT_LABEL_CODE_POINTS_V1` | value | any |
 | `./ui` | `MAX_COMPOSER_CONTENT_INSPECT_BYTES_V1` | value | any |

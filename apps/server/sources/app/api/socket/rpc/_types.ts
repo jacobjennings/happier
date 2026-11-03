@@ -1,3 +1,5 @@
+import type { SocketRpcAnsweringClientCandidateV1 } from '@happier-dev/protocol/socketRpc';
+
 export type RpcAckResponseEmitter = Readonly<{
     id: string;
     data?: Record<string, unknown>;
@@ -9,7 +11,7 @@ export type RpcAckResponseEmitter = Readonly<{
 export type RpcTargetSelectionResult =
     | Readonly<{ type: "target"; target: RpcAckResponseEmitter; hadMultipleTargets: boolean; clientIds?: readonly string[] }>
     | Readonly<{ type: "self-call" }>
-    | Readonly<{ type: "ambiguous"; clientIds: readonly string[] }>
+    | Readonly<{ type: "ambiguous"; clientIds: readonly string[]; clients: readonly SocketRpcAnsweringClientCandidateV1[] }>
     | Readonly<{ type: "not-available" }>;
 
 export type RpcForwardTargetGuard = Readonly<{

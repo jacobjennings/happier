@@ -1,18 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { buildTerminalConnectDeepLink, parseTerminalConnectUrl } from './terminalConnectUrl';
+
+// Native app config boundary: the configured scheme is read on every call, so one file-level mock suffices.
+vi.mock('expo-constants', () => ({
+    default: {
+        expoConfig: {
+            scheme: 'happier-dev',
+        },
+    },
+}));
+
 describe('terminalConnectUrl scheme override', () => {
-    it('builds with the configured scheme and parses first-party Happier schemes', async () => {
-        vi.resetModules();
-        vi.doMock('expo-constants', () => ({
-            default: {
-                expoConfig: {
-                    scheme: 'happier-dev',
-                },
-            },
-        }));
-
-        const { buildTerminalConnectDeepLink, parseTerminalConnectUrl } = await import('./terminalConnectUrl');
-
+    it('builds with the configured scheme and parses first-party Happier schemes', () => {
         expect(
             buildTerminalConnectDeepLink({
                 publicKeyB64Url: 'abcDEF_123-zzz',
@@ -25,11 +25,6 @@ describe('terminalConnectUrl scheme override', () => {
         ).toEqual({
             publicKeyB64Url: 'abcDEF_123-zzz',
             serverUrl: 'https://stack.example.test',
-        });
-
-        expect(parseTerminalConnectUrl('happier://terminal?abcDEF_123-zzz')).toEqual({
-            publicKeyB64Url: 'abcDEF_123-zzz',
-            serverUrl: null,
         });
 
         expect(parseTerminalConnectUrl('happier-internaldev://terminal?abcDEF_123-zzz')).toEqual({

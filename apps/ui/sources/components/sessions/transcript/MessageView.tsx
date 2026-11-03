@@ -42,12 +42,13 @@ import { useMessageInlineReferences } from '@/components/sessions/transcript/ref
 import { ComposerAttachmentFallbackRow } from '@/components/sessions/transcript/composerAttachments/ComposerAttachmentFallbackRow';
 import { useMessageComposerAttachments } from '@/components/sessions/transcript/composerAttachments/messageComposerAttachments';
 import { useTranscriptMotion } from '@/components/sessions/transcript/motion/TranscriptMotionContext';
+import { PeerMessageRow } from '@/components/sessions/transcript/peer/PeerMessageRow';
 import { ThinkingTimelineRow } from '@/components/sessions/transcript/thinking/ThinkingTimelineRow';
-import { TranscriptEventRow } from '@/components/sessions/transcript/events/TranscriptEventRow';
+import { TranscriptEventRow, TranscriptHostWakeNotice } from '@/components/sessions/transcript/events/TranscriptEventRow';
 import { projectWorkerCardDelivery } from '@/components/sessions/transcript/events/followWorkerCardDelivery';
 import type { FollowDeliveryProjectionV1 } from '@happier-dev/protocol/sessions/follow/sessionFollowDeliveryProjectionV1';
 import { isRuntimeIssueMessageMeta } from '@/components/sessions/transcript/events/runtimeIssueMessage';
-import { isHostAuthoredInputMeta } from '@/components/sessions/transcript/events/hostAuthoredInput';
+import { isHostAuthoredInputMeta, readHostFollowInputMeta } from '@/sync/domains/session/input/hostAuthoredInput';
 import type { AgentEvent } from "@happier-dev/session-core/raw";
 import { transcriptMarkdownTextStyle } from '@/components/sessions/transcript/transcriptMarkdownTypography';
 import { parseHappierMetaEnvelope } from '@/components/sessions/transcript/structured/happierMetaEnvelope';
@@ -77,7 +78,7 @@ import {
   type TranscriptForkCommon,
   type TranscriptMessageDisplayCommon,
   type TranscriptToolChromeCommon,
-  type TranscriptToolRouteCommon,
+  type TranscriptMessageRouteCommon,
   useTranscriptSessionCommon,
 } from '@/components/sessions/transcript/transcriptSessionCommon';
 import type { TranscriptInteraction } from '@/utils/sessions/deriveTranscriptInteraction';
@@ -95,6 +96,8 @@ import { isRecoveredHistoryTranscriptObservation } from "@happier-dev/session-co
 import type { TranscriptEventEmphasis } from '@/components/sessions/transcript/events/transcriptEventEmphasis';
 import { Icon } from '@/components/ui/icons/Icon';
 import { ReturnedAnswerQuote, readReturnedAnswer } from '@/components/sessions/transcript/returnedAnswer/ReturnedAnswerQuote';
+import { SessionAskRecord } from '@/components/sessions/transcript/askRecord/SessionAskRecord';
+import { isSessionMessageInvocationAnchor } from '@/components/sessions/transcript/references/readSessionMessageInvocation';
 import { Typography } from '@/constants/Typography';
 import { SessionMessageAccountByline } from './SessionMessageAccountByline';
 import type { ToolViewDisplaySettings } from '@/components/tools/shell/views/toolViewDisplaySettings';
@@ -306,8 +309,6 @@ function MessageProvenanceAttribution(props: Readonly<{ message: Message; server
   // only a producer that is not the person (a Workflow, an Automation, a Session, a plugin) is named.
   if (!provenance || provenance.kind === 'host' || provenance.kind === 'happierApp'
     || provenance.kind === 'cli' || provenance.kind === 'voice') return null;
-  // The returned-answer quote names its sender in its own header.
-  if (readReturnedAnswer(props.message)) return null;
   if (provenance.kind === 'workflow_invocation') {
     return <WorkflowMessageProvenanceAttribution
       messageId={props.message.id}
@@ -428,7 +429,7 @@ export const MessageViewWithSessionCommon = React.memo(function MessageViewWithS
   forkCommon: TranscriptForkCommon;
   messageDisplayCommon: TranscriptMessageDisplayCommon;
   toolChromeCommon: TranscriptToolChromeCommon;
-  toolRouteCommon: TranscriptToolRouteCommon;
+  toolRouteCommon: TranscriptMessageRouteCommon;
 }) {
   const transcriptSource = useSessionTranscriptSource();
   const sourceInteraction = transcriptSource.useInteraction();
@@ -451,6 +452,9 @@ export const MessageViewWithSessionCommon = React.memo(function MessageViewWithS
     () => [styles.messageContent, messageContentMaxWidthStyle],
     [messageContentMaxWidthStyle],
   );
+  // Recognized returns use the quote even when the host delivered the input.
+  // Carry this one classification into rendering and attribution.
+  const returnedAnswer = React.useMemo(() => readReturnedAnswer(props.message), [props.message]);
   if (shouldHideVoiceAgentTurnMessage(props.message)) return null;
   // Placeholders for content we could not render are dropped here rather than inside the message
   // blocks, so toggling developer diagnostics never changes the hook order of a mounted row.
@@ -459,6 +463,10 @@ export const MessageViewWithSessionCommon = React.memo(function MessageViewWithS
     props.messageDisplayCommon.debugInformationEnabled,
   ) === 'hidden') return null;
   const isHostFollowInput = props.message.kind === 'user-text' && isHostAuthoredInputMeta(props.message.meta);
+  // Follow's admitted model prompt remains in storage for the agent. Its exact
+  // delivery facts and cards own the person-visible notice, never prompt prose.
+  if (props.message.kind === 'user-text' && !returnedAnswer
+    && readHostFollowInputMeta(props.message.meta) && !props.hostWakeCount) return null;
   return (
     <View style={styles.messageContainer} renderToHardwareTextureAndroid={true}>
       <View style={messageContentStyle}>
@@ -471,13 +479,14 @@ export const MessageViewWithSessionCommon = React.memo(function MessageViewWithS
             hasOtherNamedCollaborator={props.messageDisplayCommon.hasOtherNamedCollaborator === true}
           />
         )}
-        {!props.hideProvenanceAttribution && <MessageProvenanceAttribution
+        {!props.hideProvenanceAttribution && !returnedAnswer && <MessageProvenanceAttribution
           message={props.message}
           serverId={resolveTranscriptMessageServerId(props.sessionId, props.serverId, props.forkCommon.sessionForkSupportSource?.serverId)}
         />}
         <RenderBlock
           message={props.message}
           isHostFollowInput={isHostFollowInput}
+          returnedAnswer={returnedAnswer}
           metadata={props.metadata}
           sessionId={props.sessionId}
           layoutContext={props.layoutContext ?? 'transcript'}
@@ -511,6 +520,7 @@ export const MessageViewWithSessionCommon = React.memo(function MessageViewWithS
 // RenderBlock function that dispatches to the correct component based on message kind
 function RenderBlock(props: {
   isHostFollowInput: boolean;
+  returnedAnswer: ReturnType<typeof readReturnedAnswer>;
   message: Message;
   metadata: Metadata | null;
   sessionId: string;
@@ -536,17 +546,21 @@ function RenderBlock(props: {
   isForkAllowed: () => boolean;
   messageDisplayCommon: TranscriptMessageDisplayCommon;
   toolChromeCommon: TranscriptToolChromeCommon;
-  toolRouteCommon: TranscriptToolRouteCommon;
+  toolRouteCommon: TranscriptMessageRouteCommon;
 }): React.ReactElement | null {
   const transcriptSource = useSessionTranscriptSource();
   switch (props.message.kind) {
     case 'user-text':
-      if (props.isHostFollowInput) {
+      if (props.isHostFollowInput && !props.returnedAnswer) {
+        if (readHostFollowInputMeta(props.message.meta)) {
+          return props.hostWakeCount ? <TranscriptHostWakeNotice count={props.hostWakeCount} /> : null;
+        }
         return <TranscriptTextNoticeRow message={props.message} sessionId={props.sessionId} serverId={props.serverId} />;
       }
       return (
         <UserTextBlock
           message={props.message}
+          returnedAnswer={props.returnedAnswer}
           metadata={props.metadata}
           sessionId={props.sessionId}
           serverId={props.toolChromeCommon.serverId}
@@ -617,6 +631,11 @@ function RenderBlock(props: {
       />;
 
     case 'agent-event':
+      // A composer Ask or Send is one record in the asker's own transcript (its text, targets and results).
+      if (isSessionMessageInvocationAnchor(props.message)) {
+        return <SessionAskRecord message={props.message} sessionId={props.sessionId}
+          serverId={props.toolChromeCommon.serverId ?? props.serverId ?? null} />;
+      }
       return (
         <TranscriptJumpAttention
           sessionAddress={transcriptSource.sessionId === props.sessionId ? normalizeSessionAddress(transcriptSource.serverId, props.sessionId) : null}
@@ -686,6 +705,7 @@ function TranscriptTextNoticeRow(props: Readonly<{
 
 function UserTextBlock(props: {
   message: UserTextMessage;
+  returnedAnswer: ReturnType<typeof readReturnedAnswer>;
   metadata: Metadata | null;
   sessionId: string;
   serverId?: string | null;
@@ -727,16 +747,18 @@ function UserTextBlock(props: {
   }), [props.message, props.messageDisplayCommon.debugInformationEnabled]);
   const isVoiceAgentTurn = messageDisplay.isVoiceAgentTurn;
   // An answer another session returned here is quoted as information, not drawn as the person's bubble.
-  const returnedAnswer = React.useMemo(() => readReturnedAnswer(props.message), [props.message]);
+  const returnedAnswer = props.returnedAnswer;
 
-  const structuredNode = renderStructuredMessage({
+  // Row-local hover/focus state must not re-admit the message's structured content.
+  const structuredNode = React.useMemo(() => renderStructuredMessage({
 	    message: props.message,
 	    sessionId: props.sessionId,
         serverId: props.serverId,
         interaction: props.interaction,
 	    onJumpToAnchor: handleJumpToAnchor,
 	    debugInformationEnabled: props.messageDisplayCommon.debugInformationEnabled,
-	  });
+	  }), [props.message, props.sessionId, props.serverId, props.interaction, handleJumpToAnchor,
+    props.messageDisplayCommon.debugInformationEnabled]);
   const sessionMediaMeta = React.useMemo(() => {
     const primaryEnvelope = parseHappierMetaEnvelope(props.message.meta);
     const envelope = primaryEnvelope?.kind === 'session_media.v1'
@@ -1127,14 +1149,15 @@ function AgentTextBlock(props: {
     motion?.config.preset !== 'off' &&
     motion?.config.animateThinkingEnabled === true;
 
-  const structuredNode = renderStructuredMessage({
+  const structuredNode = React.useMemo(() => renderStructuredMessage({
 	    message: props.message,
 	    sessionId: props.sessionId,
         serverId: props.serverId,
         interaction: props.interaction,
 	    onJumpToAnchor: handleJumpToAnchor,
 	    debugInformationEnabled: props.messageDisplayCommon.debugInformationEnabled,
-	  });
+	  }), [props.message, props.sessionId, props.serverId, props.interaction, handleJumpToAnchor,
+    props.messageDisplayCommon.debugInformationEnabled]);
   const isStructuredOnly = structuredNode != null;
   const agentUnsupportedContentMeta = readUnsupportedContentMeta(props.message.meta);
   const agentUnsupportedContentText = messageDisplay.unsupportedContentText;
@@ -1274,6 +1297,7 @@ function AgentTextBlock(props: {
       transcriptStreamingSmoothingEnabled === true &&
       props.historical !== true &&
       isStructuredOnly !== true &&
+      props.message.peer === undefined &&
       (streamSegmentMeta ? streamSegmentAssistantStreaming === true : true);
   const streaming = useStreamingTextSmoothing({
       enabled: streamingSmoothingEligible,
@@ -1439,7 +1463,29 @@ function AgentTextBlock(props: {
                   />
                 </ThinkingTimelineRow>
             ) : (
-              shouldRenderStreamingMarkdown ? (
+              props.message.peer ? (
+                <PeerMessageRow
+                  id={props.message.id}
+                  createdAt={props.message.createdAt}
+                  peer={props.message.peer}
+                  summary={deriveThinkingSummary(markdown)}
+                  revealRequestId={findRevealId}
+                >
+                  <MarkdownView
+                    markdown={markdown}
+                    codeBlockStateKey={JSON.stringify([props.sessionId, props.message.id])}
+                    findActive={findActive} findSourceRanges={findSourceRanges}
+                    agentTexMath
+                    renderCacheKey={buildMessageMarkdownRenderCacheKey(props.message.id, props.messageRevision)}
+                    onOptionPress={handleOptionPress}
+                    onOptionLongPress={handleOptionLongPress}
+                    onLinkPress={handleMarkdownLinkPress}
+                    selectable={true}
+                    profile="transcript"
+                    textStyle={styles.transcriptMarkdownText}
+                  />
+                </PeerMessageRow>
+              ) : shouldRenderStreamingMarkdown ? (
                   <MarkdownView
                       markdown={streamingMarkdownText}
                       codeBlockStateKey={JSON.stringify([props.sessionId, props.message.id])}
@@ -1524,7 +1570,7 @@ function ToolCallBlock(props: {
   historical?: boolean;
   messageDisplayCommon: TranscriptMessageDisplayCommon;
   toolChromeCommon: TranscriptToolChromeCommon;
-  toolRouteCommon: TranscriptToolRouteCommon;
+  toolRouteCommon: TranscriptMessageRouteCommon;
 }) {
   const message = React.useMemo(() => projectReviewToolMessage(props.message), [props.message]);
 	  const transcriptSource = useSessionTranscriptSource();
@@ -1540,9 +1586,9 @@ function ToolCallBlock(props: {
     sidechainIds: reviewSidechainIds,
   });
   const structuredPinHost = useRowActionHoverHost();
-  const messagesById = props.toolRouteCommon.messagesById;
-  const reducerState = props.toolRouteCommon.reducerState;
-  const toolRouteMessageId = resolveMessageRouteIdForDisplay({ message: props.message, messagesById, reducerState });
+  const toolRouteMessageId = 'messageRouteId' in props.toolRouteCommon
+    ? props.toolRouteCommon.messageRouteId
+    : resolveMessageRouteIdForDisplay({ message: props.message, ...props.toolRouteCommon });
   // Narrow after the live message and its displayed route are known. Doing this at the list
   // renderer would miss streaming inputs and repeat the route owner's reverse-index lookup.
   const approvalRequests = selectToolApprovalRequestsForMessages({ requests: props.approvalRequests,
@@ -1558,14 +1604,15 @@ function ToolCallBlock(props: {
   if (!message.tool) {
     return null;
   }
-  const structuredNode = renderStructuredMessage({
+  const structuredNode = React.useMemo(() => renderStructuredMessage({
 	    message,
 	    sessionId: props.sessionId,
         serverId: props.toolChromeCommon.serverId,
         interaction: props.interaction,
 	    onJumpToAnchor: handleJumpToAnchor,
 	    debugInformationEnabled: props.messageDisplayCommon.debugInformationEnabled,
-	  });
+	  }), [message, props.sessionId, props.toolChromeCommon.serverId, props.interaction, handleJumpToAnchor,
+    props.messageDisplayCommon.debugInformationEnabled]);
   const hasStructuredNode = structuredNode != null;
   const { turnChanges, shouldRenderToolChrome } = React.useMemo(() => deriveToolMessageDisplay({
     tool: message.tool,
@@ -1658,6 +1705,9 @@ function ToolCallBlock(props: {
           displaySettings={props.toolChromeCommon.toolDisplaySettings}
         />
       )) : null}
+      {isSessionMessageInvocationAnchor(props.message) ? (
+        <SessionAskRecord message={props.message} sessionId={props.sessionId} serverId={props.toolChromeCommon.serverId ?? null} embedded />
+      ) : null}
       {toolSessionMediaMeta ? (
         <SessionMediaInlineImages
           sessionId={props.sessionId}

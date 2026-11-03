@@ -823,7 +823,7 @@ describe('ApiSessionClient pending queue materialization', () => {
             seq: 1,
             createdAt: Date.now(),
             body: {
-                t: 'new-message',
+                t: 'new-message', delivery: 'full' as const,
                 sid: mockSession.id,
                 message: {
                     id: 'msg-2',
@@ -878,7 +878,8 @@ describe('ApiSessionClient pending queue materialization', () => {
             }
             if (event === 'session-follow-observe-pending-v1') return { ok: true, v: 1, sessionId: session.id,
                 publisherGeneration: '1', currentSourceSessionIds: [sourceSessionId], observations: [{ kind: 'admitted_input',
-                    localInputId: localId, delivery, sourceSessionId, destinationSessionId: session.id, delivered, observed }] };
+                    localInputId: localId, delivery, effectiveDelivery: delivery.delivery,
+                    sourceSessionId, destinationSessionId: session.id, delivered, observed }] };
             if (event === 'session-follow-acknowledge-v1') return { ok: true, v: 1, sourceSessionId,
                 destinationSessionId: session.id, delivered: observed };
             return resolveApiSessionSocketDefaultAck(event, payload);
@@ -1266,7 +1267,7 @@ describe('ApiSessionClient pending queue materialization', () => {
                 capabilities: { open: ['create'], delivery: ['newTurn'], cancel: false },
                 cancellation: { declared: false },
                 configuration: { declared: false },
-                manualCompaction: { declared: false },
+                compaction: { capability: null },
             },
             undefined,
             [],
@@ -1493,7 +1494,7 @@ describe('ApiSessionClient pending queue materialization', () => {
                 seq: 2,
                 createdAt: Date.now(),
                 body: {
-                    t: 'new-message',
+                    t: 'new-message', delivery: 'full' as const,
                     sid: session.id,
                     message: {
                         id: 'msg-2',
@@ -1508,7 +1509,7 @@ describe('ApiSessionClient pending queue materialization', () => {
                 seq: 3,
                 createdAt: Date.now(),
                 body: {
-                    t: 'new-message',
+                    t: 'new-message', delivery: 'full' as const,
                     sid: session.id,
                     message: {
                         id: 'msg-3',
@@ -1753,7 +1754,7 @@ describe('ApiSessionClient pending queue materialization', () => {
             session: { waitForMetadataUpdate: signal => client.waitForMetadataUpdate(signal),
                 materializeNextPendingMessageSafely: options => client.materializeNextPendingMessageSafely(options),
                 getMetadataSnapshot: () => client.getMetadataSnapshot(),
-                hasPendingProviderInput: localId => client.hasPendingProviderInput(localId),
+                hasPendingProviderInput: () => { const state = client.getPendingQueueState(); return state.known && state.pendingCount > 0; },
                 reconcilePendingProviderInputCustodyBeforeMaterialization: () => client.reconcilePendingProviderInputCustodyBeforeMaterialization() },
             beforeCollectQueuedBatch: () => sync.flushPendingAfterStart(), refreshBeforeQueuedBatch: false, reconcileWhenEmpty: 'skip' });
         const controller = new AbortController();
@@ -1842,7 +1843,7 @@ describe('ApiSessionClient pending queue materialization', () => {
                 waitForMetadataUpdate: signal => client.waitForMetadataUpdate(signal),
                 materializeNextPendingMessageSafely: options => client.materializeNextPendingMessageSafely(options),
                 getMetadataSnapshot: () => client.getMetadataSnapshot(),
-                hasPendingProviderInput: localId => client.hasPendingProviderInput(localId),
+                hasPendingProviderInput: () => { const state = client.getPendingQueueState(); return state.known && state.pendingCount > 0; },
                 reconcilePendingProviderInputCustodyBeforeMaterialization: () => client.reconcilePendingProviderInputCustodyBeforeMaterialization(),
             },
             reconcileWhenEmpty: 'skip',

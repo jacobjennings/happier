@@ -1,12 +1,16 @@
 import { isSessionAwarenessContentReadableV1 } from '@happier-dev/protocol/sessions/awareness/availability';
 import { projectUiSessionAwareness } from '@/sync/domains/session/awareness/sessionAwareness';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import { readSessionPresentationRecord, readSessionPresentationServerId, readSessionPresentationInputSource,
+    readSessionListPresentationDisplay, readSessionListPresentationPendingFlags,
+    readSessionListPresentationPendingObservedAt, type SessionPresentationRecord, type SessionRelationRecord,
+    type SessionListPresentationSource } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { readSessionRuntimeObservation } from '@/sync/domains/session/sessionRuntimeObservation';
 import {
     projectUiSessionRuntimeAwareness,
     SESSION_RUNTIME_STATUS_STALE_SIGNAL_MS,
 } from '@/sync/domains/session/attention/runtimePresentation';
-import { deriveLatestPendingRequestObservedAtFromSession } from '@/sync/domains/session/pending/listPendingSessionRequests';
+import { deriveLatestPendingRequestObservedAtFromSession, derivePendingRequestFlagsFromSession } from '@/sync/domains/session/pending/listPendingSessionRequests';
 import { getSessionName, readLockedSessionName } from '@/utils/sessions/sessionUtils';
 import { isSessionAdmittedToPersonalActivity } from '@/activity/attention/isSessionAdmittedToPersonalActivity';
 import { resolveSessionPersonalAttentionForViewer } from '@/sync/domains/session/readState/sessionViewerAttention';
@@ -29,9 +33,13 @@ import type {
     PetCompanionTrayItem,
 } from './petCompanionActivityTypes';
 
+type SessionTimingFacts = Pick<Session, 'createdAt' | 'thinkingAt' | 'optimisticThinkingAt' | 'lastRuntimeIssue'
+    | 'latestTurnStatus' | 'latestTurnStatusObservedAt'>;
+
 type SessionActivityCandidate = Readonly<{
     address: SessionAddress;
-    session: Session;
+    session: SessionPresentationRecord;
+    presentationSource?: SessionListPresentationSource;
     status: Exclude<PetCompanionActivityStatus, 'idle'>;
     activityAtMs: number | null;
     expiresAtMs: number | null;
@@ -61,7 +69,7 @@ function latestTimestamp(values: readonly unknown[]): number | null {
 }
 
 function latestConversationActivityTimestamp(
-    session: Session,
+    session: SessionTimingFacts,
     signals: PetCompanionSessionSignals | undefined,
 ): number | null {
     return latestTimestamp([
@@ -73,7 +81,7 @@ function latestConversationActivityTimestamp(
     ]);
 }
 
-function latestProjectedFailureTimestamp(session: Session): number | null {
+function latestProjectedFailureTimestamp(session: SessionTimingFacts): number | null {
     return latestTimestamp([
         session.lastRuntimeIssue?.occurredAt,
         session.latestTurnStatus === 'failed' ? session.latestTurnStatusObservedAt : null,
@@ -81,7 +89,7 @@ function latestProjectedFailureTimestamp(session: Session): number | null {
 }
 
 function latestRunningRuntimeSignalTimestamp(
-    session: Session,
+    session: SessionTimingFacts,
     signals: PetCompanionSessionSignals | undefined,
 ): number | null {
     return latestTimestamp([
@@ -101,14 +109,25 @@ function resolveRunningExpiresAtMs(runtimeSignalAtMs: number | null): number | n
 
 function resolveCandidate(
     address: SessionAddress,
-    session: Session,
+    input: SessionRelationRecord,
     signals: PetCompanionSessionSignals | undefined,
     nowMs: number | undefined,
 ): SessionActivityCandidate | null {
-    session = readSessionRuntimeObservation({ ...session, id: address.sessionId, serverId: address.serverId });
-    if (!isSessionAdmittedToPersonalActivity(session)) return null;
+    const record = readSessionPresentationRecord(input);
+    const source = readSessionPresentationInputSource(input);
+    const lifecycle = source?.lifecycle ?? record;
+    const session = readSessionRuntimeObservation({ id: address.sessionId, serverId: address.serverId,
+        createdAt: record.createdAt, active: lifecycle.active, activeAt: lifecycle.activeAt,
+        archivedAt: record.archivedAt, thinking: lifecycle.thinking, thinkingAt: lifecycle.thinkingAt,
+        presence: record.presence, optimisticThinkingAt: record.optimisticThinkingAt,
+        pendingCount: lifecycle.pendingCount, latestTurnStatus: lifecycle.latestTurnStatus,
+        latestTurnStatusObservedAt: lifecycle.latestTurnStatusObservedAt,
+        meaningfulActivityAt: lifecycle.meaningfulActivityAt, lastRuntimeIssue: record.lastRuntimeIssue });
+    if (!isSessionAdmittedToPersonalActivity(record)) return null;
+    const pending = source ? readSessionListPresentationPendingFlags(source)
+        : 'agentState' in record ? derivePendingRequestFlagsFromSession(record, []) : record;
     const runtimeNowMs = isFiniteTimestamp(nowMs) ? nowMs : Date.now();
-    const personal = resolveSessionPersonalAttentionForViewer(session, runtimeNowMs);
+    const personal = resolveSessionPersonalAttentionForViewer(record, runtimeNowMs, undefined, undefined, source);
     const runtimePresentation = projectUiSessionRuntimeAwareness({
         id: address.sessionId,
         serverId: address.serverId,
@@ -125,43 +144,47 @@ function resolveCandidate(
         meaningfulActivityAt: session.meaningfulActivityAt ?? null,
         lastRuntimeIssue: session.lastRuntimeIssue ?? null,
         hasPendingPermissionRequests:
-            (session.pendingPermissionRequestCount ?? 0) > 0
+            pending.hasPendingPermissionRequests === true
             || signals?.hasPendingPermissionRequests === true,
         hasPendingUserActionRequests:
-            (session.pendingUserActionRequestCount ?? 0) > 0
+            pending.hasPendingUserActionRequests === true
             || signals?.hasPendingUserActionRequests === true,
-        pendingRequestObservedAt: deriveLatestPendingRequestObservedAtFromSession(session),
+        pendingRequestObservedAt: source ? readSessionListPresentationPendingObservedAt(source)
+            : 'agentState' in record ? deriveLatestPendingRequestObservedAtFromSession(record) : record.pendingRequestObservedAt,
         nowMs: runtimeNowMs,
     });
-    if (session.viewer ? personal.reasons.includes('failed') : runtimePresentation.operational.primary === 'failed') {
+    if (record.viewer ? personal.reasons.includes('failed') : runtimePresentation.operational.primary === 'failed') {
         const activityAtMs =
             latestProjectedFailureTimestamp(session)
             ?? latestConversationActivityTimestamp(session, signals);
         return {
             address,
-            session,
+            session: record,
+            presentationSource: source,
             status: 'failed',
             activityAtMs,
             expiresAtMs: activityAtMs === null ? null : activityAtMs + PET_COMPANION_ACTIVITY_EXPIRY_MS.failed,
         };
     }
 
-    if (session.viewer ? personal.reasons.some((reason) => reason === 'permission_required' || reason === 'user_action_required' || reason === 'pending_blocked') : runtimePresentation.operational.primary === 'permission_required' || runtimePresentation.operational.primary === 'action_required') {
+    if (record.viewer ? personal.reasons.some((reason) => reason === 'permission_required' || reason === 'user_action_required' || reason === 'pending_blocked') : runtimePresentation.operational.primary === 'permission_required' || runtimePresentation.operational.primary === 'action_required') {
         const activityAtMs = latestConversationActivityTimestamp(session, signals);
         return {
             address,
-            session,
+            session: record,
+            presentationSource: source,
             status: 'waiting',
             activityAtMs,
             expiresAtMs: activityAtMs === null ? null : activityAtMs + PET_COMPANION_ACTIVITY_EXPIRY_MS.waiting,
         };
     }
 
-    if (session.viewer ? personal.reasons.some((reason) => reason === 'unread' || reason === 'unread_discussion' || reason === 'mentioned') : signals?.hasUnreadMessages) {
+    if (record.viewer ? personal.reasons.some((reason) => reason === 'unread' || reason === 'unread_discussion' || reason === 'mentioned') : signals?.hasUnreadMessages) {
         const activityAtMs = latestConversationActivityTimestamp(session, signals);
         return {
             address,
-            session,
+            session: record,
+            presentationSource: source,
             status: 'waiting',
             activityAtMs,
             expiresAtMs: null,
@@ -178,7 +201,8 @@ function resolveCandidate(
         ]);
         return {
             address,
-            session,
+            session: record,
+            presentationSource: source,
             status: 'running',
             activityAtMs,
             expiresAtMs: runtimePresentation.projectedTurnInProgress
@@ -230,7 +254,7 @@ function createTrayItem(
     const { contextLine } = context;
     const isStatusOnly = candidate.session.viewer?.attention.presentation === 'status_only';
     const mayShowPrivateContent = !isStatusOnly
-        && isSessionAwarenessContentReadableV1(projectUiSessionAwareness(candidate.session, nowMs).encryption);
+        && isSessionAwarenessContentReadableV1(projectUiSessionAwareness(candidate.session, nowMs, { presentationSource: candidate.presentationSource }).encryption);
     const dismissKey = createDismissKey(candidate);
     const isLiveActivity = candidate.status === 'running' || candidate.expiresAtMs === null;
     return {
@@ -242,7 +266,8 @@ function createTrayItem(
         accessibilityContext: context.accessibilityContext,
         status: candidate.status,
         priority: PET_COMPANION_ACTIVITY_PRIORITY[candidate.status],
-        title: mayShowPrivateContent ? getSessionName(candidate.session) : readLockedSessionName(),
+        title: mayShowPrivateContent ? getSessionName(candidate.presentationSource
+            ? readSessionListPresentationDisplay(candidate.presentationSource) : candidate.session) : readLockedSessionName(),
         // The shared context line is authorized structural context and survives a locked
         // envelope and Lane 09's status-only presentation: Home, audience, responsibility and
         // freshness are never private content (L07-R42, child 04 :255). Only the
@@ -278,8 +303,8 @@ function compareTrayItems(
     return sessionAddressKey(a.address).localeCompare(sessionAddressKey(b.address));
 }
 
-function resolveSessionAddress(session: Session): SessionAddress | null {
-    return normalizeSessionAddress(session.serverId, session.id);
+function resolveSessionAddress(input: SessionRelationRecord): SessionAddress | null {
+    return normalizeSessionAddress(readSessionPresentationServerId(input), readSessionPresentationRecord(input).id);
 }
 
 function resolveSelectedAddress(input: BuildPetCompanionActivityModelInput): SessionAddress | null {
@@ -287,7 +312,7 @@ function resolveSelectedAddress(input: BuildPetCompanionActivityModelInput): Ses
     const selectedId = typeof input.selectedSessionId === 'string' ? input.selectedSessionId.trim() : '';
     if (!selectedId) return null;
     const matches = input.sessions
-        .filter((session) => session.id === selectedId)
+        .filter((session) => readSessionPresentationRecord(session).id === selectedId)
         .map(resolveSessionAddress)
         .filter((address): address is SessionAddress => address !== null);
     return matches.length === 1 ? matches[0] : null;
@@ -302,7 +327,7 @@ function selectFallbackAddress(input: BuildPetCompanionActivityModelInput): Sess
         ));
         if (selected) return selectedAddress;
     }
-    const fallback = input.sessions.find((session) => session.active) ?? input.sessions[0] ?? null;
+    const fallback = input.sessions.find((session) => readSessionPresentationInputSource(session)?.lifecycle.active ?? readSessionPresentationRecord(session).active) ?? input.sessions[0] ?? null;
     return fallback ? resolveSessionAddress(fallback) : null;
 }
 
@@ -318,7 +343,7 @@ export function buildPetCompanionActivityModel(
             if (!address) return null;
             const addressKey = sessionAddressKey(address);
             const signals = input.signalsByAddressKey?.[addressKey]
-                ?? input.signalsBySessionId?.[session.id];
+                ?? input.signalsBySessionId?.[readSessionPresentationRecord(session).id];
             const candidate = resolveCandidate(address, session, signals, nowMs);
             const context = input.contextsByAddressKey?.[addressKey] ?? null;
             return candidate ? {

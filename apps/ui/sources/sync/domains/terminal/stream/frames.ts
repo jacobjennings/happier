@@ -163,5 +163,7 @@ export function mapTerminalByteStreamReadResponse(response: ProtocolTerminalStre
         frames,
         nextCursor: response.nextByteOffset,
         done: response.done,
+        outputRetention: { mode: 'byte-offset', retainedFromCursor: response.droppedBeforeByteOffset,
+            availableCursor: response.availableByteOffset, truncated: response.droppedBeforeByteOffset > 0 },
     };
 }

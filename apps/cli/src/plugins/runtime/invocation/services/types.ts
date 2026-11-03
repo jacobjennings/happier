@@ -58,7 +58,7 @@ export type AgentInvocationTurnAdmissionWitness = Readonly<{
  * Action calls.
  */
 export type PluginExternalActionContext = Readonly<{
-    authority: 'account_automation';
+    authority: 'account_automation' | 'present_user';
     serverId: string;
     serverIdentityId: string;
     actionRequestId: string;
@@ -69,6 +69,8 @@ export type PluginExternalActionContext = Readonly<{
 }>;
 
 export type PluginInvocationServicesSeed = Readonly<{
+    /** Bound by the actual Domain admission, never by plugin-authored operands. */
+    machineConnectorSecrets?: PluginServices['machineConnectorSecrets'];
     /** Bound only by the canonical daemon background-service lifecycle. */
     demandBackgroundService?: PluginServices['backgroundServices']['demand'];
     /** Host invocation identity; never projected into the public plugin context. */
@@ -254,7 +256,7 @@ export type PluginInvocationServiceBinding = Readonly<{
 
 export type PluginFileSystemRoots = Readonly<{
     pluginData: string;
-    workspace: string;
+    workspace?: string;
     projects: ReadonlyMap<string, string>;
 }>;
 

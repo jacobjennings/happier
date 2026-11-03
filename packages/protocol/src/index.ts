@@ -1,10 +1,18 @@
+export * from './machines/reachability/actionIdsV1.js';
+export * from './deployments/deploymentChildRoutingV1.js';
+export * from './deployments/deploymentArchiveRpcV1.js';
+export * from './deployments/deploymentBindingSelectionNarrowing.js';
+export { DeploymentDataParentBranchRefV1Schema, type DeploymentDataParentBranchRefV1, type DeploymentTargetContributionV1 } from './plugins/contributions/deploymentTargets.js';
+export * from './local/services/nativeLogsV1.js';
 export const HAPPY_PROTOCOL_PACKAGE = '@happier-dev/protocol';
+export * from './actions/specs/machine/services.js';
 export * from './account/publicProfile.js';
 export * from './account/publicProfilePublication.js';
 export * from './account/publicProfileEmbeds.js';
 export * from './account/projectPublicProfile.js';
 export * from './widgets/widgetPublicSnapshotV1.js';
 export * from './machines/machineMetadataFieldV1.js';
+export * from './machines/setup/machineSetupObservationV1.js';
 export * from './machines/resources/machineResourcesPolicyV1.js';
 export * from './machines/vitals/machineVitalsAlertsV1.js';
 export * from './machines/vitals/machineVitalsSampleV1.js';
@@ -85,6 +93,9 @@ export {
   shouldSuppressEmptyCanonicalTurnDiffToolCall,
 } from './sessions/messages/canonicalTurnDiffTool.js';
 export * from './sessions/messages/sessionMessagesPageV1.js';
+export * from './sessions/messages/sessionMessageObservationFactsV1.js';
+export * from './sessions/sessionEventDelivery.js';
+export * from './sessions/sessionConsumptionV1.js';
 export * from './sessions/read/sessionReadBatchV1.js';
 export * from './sessions/permissions/respondRpcParamsV1.js';
 export { readSessionUpdatedMessageChangeHintV1 } from './changes/index.js';
@@ -1214,6 +1225,7 @@ export {
   PluginAgentAcpSkillsSessionDeliveryV2Schema,
   PluginAgentStructuredOutputCapabilityV2Schema,
   PluginAgentSessionCapabilitiesV2Schema,
+  PluginAgentSessionCompactionCapabilityV2Schema,
   PluginAgentExecutionRunCapabilitiesV2Schema,
   PluginAgentAcpDefinitionV2Schema,
   PluginAgentRuntimeAcpV2Schema,
@@ -1277,6 +1289,9 @@ export {
   type PluginAgentAcpMcpInputPolicyV2,
   type PluginAgentStructuredOutputCapabilityV2,
   type PluginAgentSessionCapabilitiesV2,
+  type PluginAgentSessionCompactionCapabilityV2,
+  type AgentSessionCompactionCapability,
+  type AgentSessionCompactionIdleCapability,
   type PluginAgentExecutionRunCapabilitiesV2,
   type PluginAgentAcpDefinitionV2,
   type PluginAgentAcpNativeSessionMcpConfigV2,
@@ -2364,6 +2379,9 @@ export {
   SessionInactiveResumePolicySchema,
   type NewSessionDraftEntryMode,
   UsageLimitRecoverySettingsV1Schema,
+  MAX_IDLE_COMPACTION_CACHE_WINDOW_MS,
+  resolveIdleCompactionPreference,
+  type IdleCompactionPreference,
 } from './account/settings/accountSettings.js';
 export {
   LEGACY_AUTHORING_MEMORY_SETTINGS_KEYS,
@@ -2752,6 +2770,8 @@ export {
   UsageAnalyticsSeriesBucketSchema,
   UsageAnalyticsTotalsSchema,
   UsageEventIngestRequestSchema,
+  UsagePromptCacheSchema,
+  type UsagePromptCache,
   UsageNativeAccountingSubjectSchema,
   UsageNativeAccountingEvidenceSchema,
   UsageNativeHistoryDeleteRequestSchema,
@@ -3214,6 +3234,11 @@ export {
   type RuntimeConfigOutcomeTimingV1,
   type RuntimeConfigOutcomeChangeKeyV1,
 } from './sessions/messages/transcriptRawRecordV1.js';
+export {
+  TranscriptPeerSenderV1Schema,
+  readTranscriptPeerSenderV1,
+  type TranscriptPeerSenderV1,
+} from './sessions/messages/transcriptPeerSenderV1.js';
 export { coerceSessionUserPromptV1 } from './sessions/messages/coerceSessionUserPromptV1.js';
 export {
   SESSION_ATTACH_METADATA_IDENTITY_POLICIES,
@@ -4400,6 +4425,7 @@ export {
   V2SessionMessageResponseSchema,
   V2SessionResourceAccessResponseSchema,
   V2SessionRecordSchema,
+  V2SessionListRowSchema,
   V2_SESSION_LIST_CURSOR_V1_PREFIX,
   V2_SESSION_LIST_CURSOR_V2_PREFIX,
   decodeV2SessionListCursorV1,
@@ -4473,6 +4499,7 @@ export {
   type V2SessionListResponse,
   type V2SessionMessageResponse,
   type V2SessionRecord,
+  type V2SessionListRow,
   type SessionSummary,
   SessionMetadataSchema,
   type SessionMetadata,
@@ -5107,7 +5134,12 @@ export {
   type SessionWorkStateWriteSnapshotV1,
 } from './sessions/work/state/index.js';
 export {
+  projectSessionWorkDisplayV1,
   readSessionWorkStatePrimaryItemV1,
+  SessionWorkDisplayItemV1Schema,
+  SessionWorkDisplayV1Schema,
+  type SessionWorkDisplayItemV1,
+  type SessionWorkDisplayV1,
 } from './sessions/work/state/sessionWorkStatePrimary.js';
 export {
   SESSION_AWARENESS_OPERATIONAL_PRIMARY_PRECEDENCE_V1,
@@ -9866,3 +9898,42 @@ export {
   type ActionResolvedSessionTargetsV1,
   type ActionSessionFanoutResultV1,
 } from './actions/sessionTargetV1.js';
+export { MachineSetupPresetContributionV1Schema, type MachineSetupPresetContributionV1 } from './plugins/contributions/machineSetupPresets.js';
+export * from './machines/setup/machineRecipeV1.js';
+export { MachineSetupV1Schema, MachineSetupV1ReadSchema, MachineSetupScriptV1Schema, MachinePresetItemV1Schema, mergeMachineSetupsV1, type MachineSetupV1, type MachineSetupScriptV1, type MachinePresetItemV1 } from './machines/managed/machineSetupV1.js';
+export * from './deployments/storedAppInputV1.js';
+export * from './machines/agentIsolationV1.js';
+export * from './actions/specs/machine/agentIsolation.js';
+export * from './machines/adminAccessV1.js';
+export * from './deployments/deploymentChildRpcV1.js';
+
+export * from './deployments/deploymentActionsV1.js';
+
+export { createDeploymentApprovalScopeResolverV1, resolveInitialDeploymentApprovalV1 } from './deployments/deploymentApprovalScopeV1.js';
+
+export { ScmCommitOidSchema } from './scm/commitPublication.js';
+
+export * from './machines/machineServiceWatchesV1.js';
+
+export * from './local/services/serviceIdentityV1.js';
+
+export * from './projects/projectDeploymentDefaultsV1.js';
+
+export * from './projects/deploymentCreationDefaultsV1.js';
+
+export * from './artifacts/deploymentArtifactKindsV1.js';
+
+export * from './deployments/deploymentBindingPatchV1.js';
+
+export * from './plugins/contributions/backupDestinations.js';
+
+export * from './plugins/contributions/deploymentTemplates.js';
+export * from './machines/setup/machineSetupSourcesV1.js';
+export * from './machines/machineAuthorityV1.js';
+export * from './actions/specs/machine/adminAccess.js';
+export * from './machines/reachability/actionsV1.js';
+export * from './machines/reachability/machineReachabilityPostureV1.js';
+export * from './artifacts/artifactMutationHttpV1.js';
+export { type PluginCollectionListExtensionV1 } from './plugins/contributions/ui/v2.js';
+export { type DeploymentRestartInputV1 } from './deployments/deploymentRestartV1.js';
+export { type HealthCheckKindContributionV1 } from './plugins/contributions/healthCheckKinds.js';

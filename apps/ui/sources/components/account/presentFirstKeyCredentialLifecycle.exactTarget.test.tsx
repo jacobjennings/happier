@@ -15,16 +15,12 @@ import { adoptHomeProfile, getActiveServerId, setActiveServerId } from '@/sync/d
 import { subscribeActiveServer } from '@/sync/domains/server/serverRuntime';
 import { guardAccountEncryptionFirstKeyCredentialMutation } from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
 import { createDirectoryHttpFixture } from '@/sync/ops/accountDirectory/accountDirectoryTestFixtures';
+import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { presentFirstKeyCredentialLifecycle } from './presentFirstKeyCredentialLifecycle';
 import { router } from 'expo-router';
 
 installTokenStorageWebPlatformMocks();
 const boundary = vi.hoisted(() => ({ request: vi.fn(), show: vi.fn() }));
-vi.mock('@/sync/http/client', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/http/client')>(),
-    createServerFetchAtEndpoint: (target: { endpointUrl: string; runtimeOrigin?: string }) => (path: string, init?: RequestInit) => boundary.request(target.runtimeOrigin ?? target.endpointUrl, path, init),
-    serverFetch: (path: string, init?: RequestInit) => boundary.request('ambient', path, init),
-}));
 vi.mock('expo-router', async () => (await import('@/dev/testkit/mocks/router')).createExpoRouterMock().module);
 vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock());
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
@@ -32,7 +28,7 @@ vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal')).creat
 
 let screen: Awaited<ReturnType<typeof renderScreen>> | undefined;
 let restore: (() => void) | undefined;
-afterEach(async () => { await screen?.unmount(); restore?.(); });
+afterEach(async () => { await screen?.unmount(); restore?.(); resetRuntimeFetch(); });
 
 it.each(['rejected', 'committed'])('finishes %s Home B first-key custody through its actual transport without focusing B or visiting Settings', async (custody) => {
     boundary.request.mockReset();
@@ -68,6 +64,11 @@ it.each(['rejected', 'committed'])('finishes %s Home B first-key custody through
     }, target)).toBe(true);
     if (custody === 'committed') await TokenStorage.setCredentialsForServerUrl(homeB.serverUrl, { serverId: homeB.id }, { token: fixture.token, secret });
     const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
+    // The network port: the real HTTP client dials the origin it resolved for Home B.
+    setRuntimeFetch(async (input, init) => {
+        const url = new URL(String(input));
+        return await boundary.request(url.origin, url.pathname, init);
+    });
     boundary.request.mockImplementation(async (endpoint: string, path: string, init?: RequestInit) => {
         if (endpoint !== runtimeOrigin) throw new Error(`Wrong first-key transport: ${endpoint}`);
         if (path === '/v1/features') return json(createRootLayoutFeaturesResponse({ capabilities: {

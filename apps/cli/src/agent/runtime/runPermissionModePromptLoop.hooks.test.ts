@@ -96,6 +96,7 @@ async function runSingleSpecialCommand(params: Readonly<{
   registerProviderAcceptedEffect?: (localId: string, onAccepted: ((pendingSettlement?: Promise<void>) => void) | null) => void;
   hostContextOnly?: PreparedHostContextOnly;
   onHostEventCommitted?: (localId: string) => void;
+  onPromptFailure?: (error: unknown) => void | Promise<void>;
   checkpointLifecycle?: Parameters<typeof runPermissionModePromptLoop>[0]['checkpointLifecycle'];
   exitWhen?: () => boolean;
   resolveFreshSessionSystemPrompt?: Parameters<typeof runPermissionModePromptLoop>[0]['resolveFreshSessionSystemPrompt'];
@@ -109,7 +110,7 @@ async function runSingleSpecialCommand(params: Readonly<{
       observeProviderInputSettlement,
       confirmUserMessageLocallyConsumed,
       enqueueAgentMessageCommitted,
-    } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+    },
   });
   session.__setMetadata(createTestMetadata({ permissionMode: 'default', permissionModeUpdatedAt: 0 }));
   const queue = createModeQueue();
@@ -168,6 +169,7 @@ async function runSingleSpecialCommand(params: Readonly<{
     setCurrentPermissionModeUpdatedAt: () => undefined,
     formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
     registerProviderAcceptedEffect: params.registerProviderAcceptedEffect ?? (() => undefined),
+    ...(params.onPromptFailure ? { onPromptFailure: params.onPromptFailure } : {}),
     ...(params.resolveFreshSessionSystemPrompt ? { resolveFreshSessionSystemPrompt: params.resolveFreshSessionSystemPrompt } : {}),
     ...(params.checkpointLifecycle ? { checkpointLifecycle: params.checkpointLifecycle } : {}),
   } as Parameters<typeof runPermissionModePromptLoop>[0]);
@@ -748,9 +750,10 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       throw new Error('provider_input_size_refused');
     });
     const acknowledgeAccepted = vi.fn();
+    const onPromptFailure = vi.fn();
     const withdrawal = createWorkflowStepWithdrawal({ reportWithdrawn: async () => undefined });
     const result = await runSingleSpecialCommand({
-      text, localId: localInputId, runtime,
+      text, localId: localInputId, runtime, onPromptFailure,
       onHostEventCommitted: () => { dispatchOrder.push('host-event'); },
       hostContextOnly: {
         kind: 'workflow_step', localInputId, text,
@@ -764,12 +767,10 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
     expect(runtime.sendTurnPrompt).toHaveBeenCalledWith(text, expect.objectContaining({ localId: localInputId }));
     expect(dispatchOrder).toEqual(['host-event', 'provider-send']);
     expect(result.hostEvents).toEqual([localInputId]);
-    expect(result.enqueueAgentMessageCommitted).toHaveBeenCalledWith(
-      'qwen', expect.objectContaining({ type: 'message', message: expect.stringContaining('provider_input_size_refused') }), expect.anything(),
-    );
-    expect(result.enqueueAgentMessageCommitted).toHaveBeenCalledWith(
-      'qwen', expect.objectContaining({ type: 'turn_failed', id: localInputId }), expect.anything(),
-    );
+    // The Session lifecycle owns the single failed-turn publication through onPromptFailure.
+    expect(onPromptFailure).toHaveBeenCalledOnce();
+    expect(onPromptFailure).toHaveBeenCalledWith(expect.objectContaining({ message: 'provider_input_size_refused' }));
+    expect(result.enqueueAgentMessageCommitted).not.toHaveBeenCalled();
     expect(withdrawal.withdrawWorkflowStepInput({ localInputId })).toBe('dispatched');
     expect(result.readSendReadyCount()).toBe(1);
     expect(acknowledgeAccepted).not.toHaveBeenCalled();
@@ -777,7 +778,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
 
   it('dispatches an advertised provider command verbatim without consuming fresh-session composition', async () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
-      overrides: { sessionId: 'session-provider-command' } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+      overrides: { sessionId: 'session-provider-command' },
     });
     session.__setMetadata(createTestMetadata({
       permissionMode: 'default',
@@ -848,7 +849,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
 
   it('keeps a provider-native command before its provenance without agent context transformation', async () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
-      overrides: { sessionId: 'session-attributed-provider-command' } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+      overrides: { sessionId: 'session-attributed-provider-command' },
     });
     session.__setMetadata(createTestMetadata({
       permissionMode: 'default',
@@ -955,7 +956,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
 
   it('keeps the shared Pending pump armed through a non-steerable settling window until the turn ends', async () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
-      overrides: { sessionId: 'session-active-turn-pump' } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+      overrides: { sessionId: 'session-active-turn-pump' },
     });
     session.__setMetadata(createTestMetadata({ permissionMode: 'default', permissionModeUpdatedAt: 0 }));
     const queue = createModeQueue();
@@ -1032,7 +1033,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
 
   it('does not retain an arbitrary active-turn Pending pump rejection', async () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
-      overrides: { sessionId: 'session-active-turn-pump-log-privacy' } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+      overrides: { sessionId: 'session-active-turn-pump-log-privacy' },
     });
     session.__setMetadata(createTestMetadata({ permissionMode: 'default', permissionModeUpdatedAt: 0 }));
     const queue = createModeQueue();
@@ -1092,7 +1093,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
 
   it('arms the active-turn Pending pump for send-now interrupt when in-flight steer is unsupported', async () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
-      overrides: { sessionId: 'session-active-turn-pump-send-now-without-steer' } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+      overrides: { sessionId: 'session-active-turn-pump-send-now-without-steer' },
     });
     session.__setMetadata(createTestMetadata({ permissionMode: 'default', permissionModeUpdatedAt: 0 }));
     const queue = createModeQueue();
@@ -1146,7 +1147,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
       overrides: {
         sessionId: 'session-compact-enforcement-first',
-      } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+      },
     });
     session.__setMetadata(createTestMetadata({
       permissionMode: 'default',
@@ -1242,7 +1243,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
       overrides: {
         sessionId: 'session-dispatch-custody',
-      } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+      },
     });
     session.__setMetadata(createTestMetadata({
       permissionMode: 'default',
@@ -1334,7 +1335,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
       overrides: {
         sessionId: 'session-1',
-      } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+      },
     });
     session.__setMetadata(createTestMetadata({
       permissionMode: 'default',
@@ -1404,7 +1405,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
 
   it('resolves Agent composition at the next-turn boundary before fresh static prompt contributions', async () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
-      overrides: { sessionId: 'session-composition-boundary' } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+      overrides: { sessionId: 'session-composition-boundary' },
     });
     session.__setMetadata(createTestMetadata({
       permissionMode: 'default',
@@ -1495,7 +1496,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
 
   it('clears the active composition tool selection when turn completion aborts', async () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
-      overrides: { sessionId: 'session-composition-abort' } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+      overrides: { sessionId: 'session-composition-abort' },
     });
     session.__setMetadata(createTestMetadata({
       permissionMode: 'default',
@@ -1561,7 +1562,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
       overrides: {
         sessionId: 'session-1',
-      } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+      },
     });
     session.__setMetadata(createTestMetadata({
       permissionMode: 'default',
@@ -1626,7 +1627,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
       overrides: {
         sessionId: 'session-context-fallback-log-privacy',
-      } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+      },
     });
     session.__setMetadata(createTestMetadata({
       permissionMode: 'default',
@@ -1687,7 +1688,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
       overrides: {
         sessionId: 'session-1',
-      } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+      },
     });
     session.__setMetadata(createTestMetadata({
       permissionMode: 'default',

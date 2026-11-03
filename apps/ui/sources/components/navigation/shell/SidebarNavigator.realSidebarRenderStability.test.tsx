@@ -206,10 +206,6 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
     ItemRowActions: () => React.createElement('ItemRowActions'),
 }));
 
-vi.mock('@/components/voice/surface/VoiceSurface', () => ({
-    VoiceSurface: () => React.createElement('VoiceSurface'),
-}));
-
 vi.mock('@/components/appShell/search/UniversalSearchRuntimeContext', async (importOriginal) => ({
     ...(await importOriginal<typeof import('@/components/appShell/search/UniversalSearchRuntimeContext')>()),
     useUniversalSearchRuntime: () => ({ open: vi.fn(), buildCommands: vi.fn() }),

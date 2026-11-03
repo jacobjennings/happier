@@ -239,6 +239,10 @@ const EXTERNAL_ACTION_DAEMON_DISPATCH_ROUTE_POLICY: MachineRpcRoutePolicyV1 = Ob
 });
 
 const DIRECT_EPHEMERAL_POLICIES = Object.freeze([
+  // Inspect runs the elevated native firewall CHECK and returns host network
+  // facts; reachability is Machine-wide, so Manage (owner ruling 2026-10-31 Use scope).
+  { ...directEphemeral(RPC_METHODS.MACHINES_REACHABILITY_INSPECT, 'Exact-Machine demanded reachability observation and inert proposed-change preparation.'),
+    sharedMachineAccess: 'manage' },
   directEphemeral(RPC_METHODS.DAEMON_EXECUTION_RUNS_LIST, 'Daemon-local execution run registry read; no server persistence, transcript write, or cross-device fanout.'),
   directEphemeral(RPC_METHODS.DAEMON_EXECUTION_RUN_BROKER_AUTHORITY_RESOLVE, 'Nonce- and Home-bound exact-Machine Run currentness read for broker admission; no credential or durable proof.'),
   directEphemeral(RPC_METHODS.DAEMON_MEMORY_STATUS, 'Daemon-local memory worker status read with no mutation or server persistence.'),
@@ -272,6 +276,7 @@ const DIRECT_EPHEMERAL_POLICIES = Object.freeze([
   directEphemeral(RPC_METHODS.MACHINES_GUARD_GET, 'Machine-local requester-filtered guard view.'),
   directEphemeral(RPC_METHODS.MACHINES_GUARD_ACTIVITY_LIST, 'Machine-local requester-filtered Activity receipts.'),
   directEphemeral(RPC_METHODS.DAEMON_GUARD_WATCH, 'Machine-local parked guard view with current Use admission.'),
+  directEphemeral(RPC_METHODS.DAEMON_GUARD_ACTIVITY_WATCH, 'Machine-local requester-filtered Activity watch; parks on durable appends without Guard demand.'),
   { ...actionSpecServerRequired(RPC_METHODS.MACHINES_GUARD_ACTIVITY_UNDO, 'destructive_or_recovery_mutation', 'Restoration re-enters the original Action and its approval.', 'machines.guard.activity.undo'), sharedMachineAccess: 'custodian_only' },
   { ...directEphemeral(RPC_METHODS.MACHINES_GUARD_IDLE_STOP_KEEP_RUNNING, 'Custodian cancels a current memory warning without editing policy.'), sharedMachineAccess: 'custodian_only' },
   { ...actionSpecServerRequired(RPC_METHODS.MACHINES_GUARD_SESSION_CEILING_SET, 'destructive_or_recovery_mutation', 'Custodian writes the Session owner’s ceiling override and applies its live native scope.', 'machines.guard.sessionCeiling.set'), sharedMachineAccess: 'custodian_only' },
@@ -546,6 +551,7 @@ const LOCAL_MUTATION_AGENT_INPUT_METHODS = [
   RPC_METHODS.DAEMON_TERMINAL_RESTART,
   RPC_METHODS.DAEMON_TERMINAL_STREAM_INPUT,
   RPC_METHODS.WRITE_FILE,
+  RPC_METHODS.DAEMON_FILESYSTEM_WRITE_FILE,
   RPC_METHODS.CREATE_DIRECTORY,
   RPC_METHODS.RENAME_PATH,
   RPC_METHODS.DELETE_PATH,
@@ -651,8 +657,10 @@ const AMBIGUOUS_READ_RUNNER_READABLE_METHODS = [
   RPC_METHODS.DAEMON_TERMINAL_STREAM_READ_BYTES,
   RPC_METHODS.DAEMON_TERMINAL_STREAM_ACK,
   RPC_METHODS.READ_FILE,
+  RPC_METHODS.DAEMON_FILESYSTEM_READ_FILE,
   RPC_METHODS.LIST_DIRECTORY,
   RPC_METHODS.GET_DIRECTORY_TREE,
+  RPC_METHODS.DAEMON_FILESYSTEM_GET_DIRECTORY_TREE,
   RPC_METHODS.DAEMON_FILESYSTEM_LIST_ROOTS,
   RPC_METHODS.DAEMON_FILESYSTEM_LIST_DIRECTORY,
   RPC_METHODS.STAT_FILE,
@@ -1311,3 +1319,7 @@ export function validateMachineRpcGrantAllowedMethods(
   }
   return { ok: true };
 }
+
+export const MACHINE_NATIVE_SECRET_SOURCE_ACCESS_POLICY_V1 = Object.freeze({
+  sharedMachineAccess: 'manage',
+} as const satisfies Pick<MachineRpcRoutePolicyV1, 'sharedMachineAccess'>);

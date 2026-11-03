@@ -11,9 +11,3 @@ export function createScmWorkspaceIntegrationPortableWorkspacePathRequest(
         relativePath: input.relativePath,
     };
 }
-
-export function resolveScmWorkspaceIntegrationPortableWorkspacePathRelativePath(
-    input: ScmWorkspaceIntegrationPortableWorkspacePathRequest,
-): string {
-    return input.relativePath;
-}

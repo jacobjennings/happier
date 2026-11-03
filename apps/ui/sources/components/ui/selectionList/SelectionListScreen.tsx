@@ -15,19 +15,8 @@ const styles = StyleSheet.create((theme) => ({
     },
 }));
 
-export function resolveSelectionListScreenHeight(input: Readonly<{
-    viewportHeight: number;
-    topInset: number;
-    bottomInset: number;
-}>): number {
-    return Math.max(0, input.viewportHeight - input.topInset - input.bottomInset);
-}
-
 export type SelectionListScreenProps = Omit<SelectionListProps,
-    'maxHeight' | 'heightBehavior' | 'showsVerticalScrollIndicator'> & Readonly<{
-    /** Test-only deterministic viewport override; production uses the live window. */
-    viewportHeight?: number;
-}>;
+    'maxHeight' | 'heightBehavior' | 'showsVerticalScrollIndicator'>;
 
 /**
  * Full-route host for SelectionList. SelectionList remains the sole scroll,
@@ -39,12 +28,8 @@ export function SelectionListScreen(props: SelectionListScreenProps): React.Reac
     const paintColor = useHappierMaterialColorResolver();
     const window = useWindowDimensions();
     const insets = useSafeAreaInsets();
-    const { viewportHeight, testID = 'selection-list-screen', ...listProps } = props;
-    const maxHeight = resolveSelectionListScreenHeight({
-        viewportHeight: viewportHeight ?? window.height,
-        topInset: insets.top,
-        bottomInset: insets.bottom,
-    });
+    const { testID = 'selection-list-screen', ...listProps } = props;
+    const maxHeight = Math.max(0, window.height - insets.top - insets.bottom);
 
     return (
         <View testID={testID} style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom, backgroundColor: paintColor(theme.colors.surface.base, 'transparent') }]}>

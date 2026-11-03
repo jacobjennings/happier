@@ -18,6 +18,7 @@ import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { teamReadFailureLabel } from '@/components/settings/teams/teamMutationPresentation';
+import { useTeamReadFailureAction } from '@/components/settings/teams/useTeamReadFailureAction';
 import { useTeamMemberGroups, type TeamMemberGroups } from '@/hooks/teams/useTeamMemberGroups';
 import { resolveAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import {
@@ -84,6 +85,7 @@ const MemberGroupsSection = React.memo(function MemberGroupsSection(props: Reado
     groups: TeamMemberGroups;
 }>) {
     const router = useRouter();
+    const readFailureAction = useTeamReadFailureAction();
     const { context, groups } = props;
 
     if (!context.team.capabilities.viewRoster) return null;
@@ -96,11 +98,7 @@ const MemberGroupsSection = React.memo(function MemberGroupsSection(props: Reado
             kind="error"
             size="line"
             title={teamReadFailureLabel(groups.error)}
-            action={groups.error.retryable ? {
-                label: t('teams.unavailable.retry'),
-                onPress: () => void groups.reload(),
-                testID: 'team-member-groups-retry',
-            } : undefined}
+            action={readFailureAction(groups.error, { onPress: () => void groups.reload(), testIDPrefix: 'team-member-groups' })}
             accessibilitySemantics="alert"
         />
     ) : null;
@@ -257,6 +255,7 @@ const MemberDetail = React.memo(function MemberDetail(props: Readonly<{
     /** The Home's own refusal, kept until the next attempt clears it. */
     const [notice, setNotice] = React.useState<string | null>(null);
     const generation = React.useRef(0);
+    const readRequest = React.useRef<AbortController | null>(null);
 
     const serverId = context.scope.serverId;
     const accountId = context.scope.accountId;
@@ -271,13 +270,20 @@ const MemberDetail = React.memo(function MemberDetail(props: Readonly<{
 
     const reload = React.useCallback(() => {
         const currentGeneration = (generation.current += 1);
+        readRequest.current?.abort();
+        const controller = new AbortController();
+        readRequest.current = controller;
         void (async () => {
             const outcome = await getTeamMember({
                 scope: { serverId, accountId },
                 address: { serverId, teamId },
                 membershipId,
+                signal: controller.signal,
+            }).catch(error => {
+                if (controller.signal.aborted) return null;
+                throw error;
             });
-            if (currentGeneration !== generation.current) return;
+            if (!outcome || currentGeneration !== generation.current) return;
             if (outcome.kind === 'succeeded') {
                 setReadFailure(null);
                 setLoad(Object.freeze({ kind: 'ready' as const, membership: outcome.value }));
@@ -298,6 +304,7 @@ const MemberDetail = React.memo(function MemberDetail(props: Readonly<{
         reload();
         return () => {
             generation.current += 1;
+            readRequest.current?.abort();
         };
     }, [reload]);
 

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 import { HappyError } from '@/utils/errors/errors';
 import { RetryableServerResponseError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
+import { ServerFetchReadSupersededError } from '@/sync/http/client';
 import { AsyncTimeoutError, backoff, createBackoff, linearBackoffDelay, withTimeout } from './time';
 
 describe('linearBackoffDelay', () => {
@@ -76,18 +78,41 @@ describe('withTimeout', () => {
     });
 
     it('skips the deadline entirely for a non-positive timeout', async () => {
-        await expect(withTimeout(Promise.resolve('ready'), 0, 'op')).resolves.toBe('ready');
+        vi.useFakeTimers();
+        try {
+            const operation = createDeferred<string>();
+            const pending = withTimeout(operation.promise, 0, 'op');
+            expect(vi.getTimerCount()).toBe(0);
+            operation.resolve('ready');
+            await expect(pending).resolves.toBe('ready');
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 
 describe('createBackoff', () => {
-    it('retries a transient Home response through the shared policy', async () => {
-        const retry = createBackoff({ minDelay: 0, maxDelay: 0, maxFailureCount: 2 });
+    it('replaces a superseded read before failure accounting, notifications or retry policy', async () => {
+        const onError = vi.fn();
+        const onRetry = vi.fn();
+        const shouldRetry = vi.fn(() => false);
+        const retry = createBackoff({ maxFailureCount: 1, onError, onRetry, shouldRetry });
+        const callback = vi.fn().mockRejectedValueOnce(new ServerFetchReadSupersededError()).mockResolvedValueOnce('current');
+        await expect(retry(callback)).resolves.toBe('current');
+        expect(shouldRetry).not.toHaveBeenCalled();
+        expect(onError).not.toHaveBeenCalled();
+        expect(onRetry).not.toHaveBeenCalled();
+    });
+    it('preserves the real failure budget after a superseded read', async () => {
+        const onError = vi.fn();
+        const retry = createBackoff({ minDelay: 0, maxDelay: 0, maxFailureCount: 2, onError });
+        const failure = new RetryableServerResponseError(503, 'temporarily unavailable');
         const callback = vi.fn()
-            .mockRejectedValueOnce(new RetryableServerResponseError(503, 'temporarily unavailable'))
+            .mockRejectedValueOnce(new ServerFetchReadSupersededError())
+            .mockRejectedValueOnce(failure)
             .mockResolvedValueOnce('recovered');
         await expect(retry(callback)).resolves.toBe('recovered');
-        expect(callback).toHaveBeenCalledTimes(2);
+        expect(onError).toHaveBeenCalledExactlyOnceWith(failure, 1);
     });
     it('does not console.warn by default when using the exported backoff', async () => {
         vi.useFakeTimers();

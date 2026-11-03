@@ -47,7 +47,9 @@ describe('session public-link cached bearer', () => {
 
     it('clears the device-held bearer after public consumption changes the settings snapshot', () => {
         const previous = publication({ id: 'publication-current' });
-        const refreshed = settings({ id: 'publication-current', useCount: 1, updatedAt: 2 });
+        // Only the consumption counter moves, so the bearer is cleared by that
+        // comparison alone (updatedAt is proven by the rotation case below).
+        const refreshed = settings({ id: 'publication-current', useCount: 1 });
         expect(mergeSessionPublicLinkWithCachedBearer({
             previousPublication: previous,
             cachedToken: 'cached',

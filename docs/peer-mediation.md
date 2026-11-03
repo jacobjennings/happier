@@ -87,6 +87,19 @@ from the descriptor. Relay URLs and direct-address hints only help reach that en
 stand in for its authenticated identity. Diagnostics may describe a proven native path as `Direct`
 or `Secure relay`, while an unproven path stays `unknown`.
 
+In current 0.3 development source, native Machine loopback tunnels retain their
+listener when the authenticated connection closes. A subsequent authorized local
+connection obtains its fresh witness, where required, then re-dials the same
+EndpointId if needed. Concurrent local requests share that replacement; no
+background dial or application keep-alive extends the target's ten-second
+pre-application custody window. Tunnel creation still authenticates the remote
+identity before publishing the port. Failed replacement dials close that local
+connection and report `transport-unavailable` through native tunnel status;
+in-flight application streams are never replayed. The same owner serves broker
+HTTP and private control, raw finite transfers, workspace sync and TCP tunnels;
+workspace sync retains its one-local-stream rule. Existing processes must load
+the rebuilt native library to consume this correction.
+
 Browser Iroh carries **Home HTTP, Socket.IO, and finite Machine transfers in the current development
 source**. Finite transfers prefer `happier/machine/1` with the canonical signed route grant;
 the production direct-import/direct-export path passed in loaded Chromium
@@ -307,6 +320,11 @@ current clients select their operation's route without probing an older daemon.
 The UI machine-RPC preflight rejects a loopback advertisement whose `expiresAt`
 has passed before requesting a grant. Fresh Machine presence and a new grant do
 not by themselves renew that advertisement; the existing per-method server fallback applies.
+In current 0.3 development source, `productionRoute.ts#resolveProductionMachineRpcDirectRoute`
+also requires an already observed desktop daemon status matching the target Machine,
+Account and Home before considering loopback RPC. A browser or native client without
+that same-host proof uses the Home baseline with `loopback_locality_unproven`, without
+probing the advertised port or minting a direct grant. A loopback URL alone proves no locality.
 The daemon's existing 20-second Machine heartbeat also republishes the live
 listener's advertisement. `startPeerMediationLoopback` renews its expiry at half
 the existing lifetime (the maximum enabled flow's grant-policy TTL), preserving
@@ -347,14 +365,18 @@ reach it. The daemon remains the projection authority.
 
 In 0.3 development, Machine RPC fallback preserves the outcome of the whole invocation.
 Route preparation failures and bound direct refusals before handler execution may use the
-authenticated relay. Once direct HTTP is issued, a lost, unreadable or mismatched response
-is `outcomeUnknown` and does not replay the payload through the relay. The daemon's
+authenticated relay. Once direct HTTP is issued for a mutation, a lost, unreadable or
+mismatched response is `outcomeUnknown` and does not replay the payload through the relay.
+For read-only RPCs classified by `actionSpecs.ts#isReadOnlyMachineRpcMethod`, a wrong
+content type, invalid envelope or mismatched request/method instead uses the existing
+Home baseline with a typed local fallback reason. Cancellation and captured Account
+retirement still prevent that fallback. The daemon's
 `handler_unavailable` response is also ambiguous because it can follow a handler exception.
 Direct command receipts do not cover relay replay. A later unsent attempt cannot erase an
 earlier unresolved dispatch; a proven pre-effect refusal, including relay method unavailability,
 retains its no-effect meaning.
 
-Before selecting a direct Machine RPC route, the 0.3 development client checks the
+After proving same-host eligibility, the 0.3 development client checks the
 advertised endpoint through its existing harmless `OPTIONS` ingress, using the
 caller's remaining setup deadline and cancellation signal. A failed connection at
 this stage falls back through the normal per-method relay policy without sending
@@ -541,6 +563,16 @@ Two consequences, both observable:
   Until 2026-08-24 the call was unwrapped and reached the global handler
   (`apps/server/sources/app/api/utils/enableErrorHandlers.ts`) as an untyped **500**
   `An unexpected error occurred` (`F-PREVIEW-1`).
+- In current 0.3 development source, the shared preview HTTP adapter also returns that typed
+  503 when an admitted byte stream fails before upstream response headers arrive. Stream admission
+  does not prove the daemon connected the destination: a stopped local listener can fail later.
+  The existing authorized collector-state probe can therefore report transport unavailability to
+  the pane rather than leaving it with a browser-generated empty-response document. Once response
+  headers have started, an interrupted stream is aborted, never replaced or appended with JSON.
+  An admitted request's typed 503 also emits the existing HTTP-finished observation with its actual
+  status and response-byte count. A pre-header upload quota refusal finishes with 413; quotas crossed
+  after response headers abort instead. These terminal observations retain the request's existing
+  private/public scope. Failures before tunnel admission have no started HTTP request to finish.
 - `capabilities.localServices.preview.pmsRelayReady` **includes this switch**. Before the same fix it
   did not, so a server with the two tunnel variables set and no signing key advertised a ready relay
   whose data path returned 500 on every request. An unmet signing prerequisite now reports
@@ -749,6 +781,23 @@ Public status accepts that same qualifier with its registered `previewId`,
 checks the current service registration and returns only that occurrence's
 exposures. Existing Session-scoped preview requests retain their contextual
 defaults and Session-by-id status behavior.
+
+Machine-wide public status in 0.3 development also accepts just `machineId`,
+including when no private previews are registered. The Home admits that read
+through the canonical Machine-access resolver and filters exposures through
+their existing Session or current service authorization before returning URLs
+or exposure diagnostics. Machine custody alone grants no Session access.
+The strict version-1 response remains unchanged; the HTTP status selector and
+its daemon/client readers use the same contract.
+When the Home disables `localServices.publicPreview`, all public-preview control
+requests refuse with HTTP 403 and the existing `public_preview_disabled` reason.
+The daemon preserves known policy refusals as RPC error codes; authorization
+refusals remain coded failures, never malformed-success responses. Status,
+create, revoke and copy UI clients share one admission boundary and return
+`feature_disabled` without issuing a Machine RPC unless the exact Home's
+canonical enabled bit is explicitly true. Missing or malformed bits fail closed.
+Public application traffic retains its concealed 404 response; arbitrary legacy
+404s are never inferred to mean feature disabled. No policy or authorization is bypassed.
 
 Final effective access loss retires serving authority immediately, even when a
 native Stop is unsupported or unconfirmed and custody remains. Another valid

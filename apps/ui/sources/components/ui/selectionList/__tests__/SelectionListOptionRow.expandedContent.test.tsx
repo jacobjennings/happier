@@ -98,20 +98,6 @@ describe('SelectionListOptionRow expandedContent', () => {
         }
     });
 
-    it('does not render the expanded content for an unselected option', async () => {
-        const screen = await renderScreen(<PlanOptionRow
-            option={makeOption(staticExpanded)}
-            rootTestID="models"
-            stepId="root"
-            isSelected={false}
-            isFocused
-            onSelect={() => {}}
-            onPushStep={() => {}}
-        />);
-
-        expect(screen.findByTestId(EXPANDED_TEST_ID)).toBeNull();
-    });
-
     it('renders the expanded content in measure mode so the measured natural height includes it', async () => {
         const screen = await renderScreen(<PlanOptionRow
             option={makeOption(staticExpanded)}
@@ -136,16 +122,19 @@ describe('SelectionListOptionRow expandedContent', () => {
             return <View testID={EXPANDED_TEST_ID} />;
         };
 
-        await renderScreen(<PlanOptionRow
+        // Controls follow selection by default, not the keyboard focus: a focused row that is not
+        // selected neither builds nor shows its panel.
+        const unselected = await renderScreen(<PlanOptionRow
             option={makeOption(lazy)}
             rootTestID="models"
             stepId="root"
             isSelected={false}
-            isFocused={false}
+            isFocused
             onSelect={() => {}}
             onPushStep={() => {}}
         />);
         expect(calls).toBe(0);
+        expect(unselected.findByTestId(EXPANDED_TEST_ID)).toBeNull();
 
         const screen = await renderScreen(<PlanOptionRow
             option={makeOption(lazy)}

@@ -1,13 +1,24 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { isTerminalAuthError } from '@/sync/runtime/connectivity/authErrors';
 import { fetchSessionByIdWithServerScope, createOperationAccountCurrentnessSource } from './fetchSessionByIdWithServerScope';
-import type { ServerAccountRequestAuthority } from './createServerRequestWithServerScope';
+import { runWithServerRequestAuthorityForServerAccountScope, type ServerAccountRequestAuthority } from './createServerRequestWithServerScope';
+import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import { resolveAuthCredentialsScopeKey } from '@/auth/storage/resolveAuthCredentialsScopeKey';
+import { readCredentialAuthorityKind } from '@/auth/context/credentialAuthority';
+import { createTaskLimiter } from '@/sync/runtime/orchestration/runTasksWithLimit';
+import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 import type { SessionByIdPrefetchedRead } from '@/sync/engine/sessions/sessionById';
 import { readSessionBatchForAuthority } from './readSessionBatchForAuthority';
 import { readSessionDetailAccessProjectionVersion } from '@/sync/api/session/sessionDetailAccessProjection';
-import type { SessionReadBatchResultV1 } from '@happier-dev/protocol/sessions/read/sessionReadBatchV1';
+import { isSessionAccessRecipient } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 
 type SessionSnapshot = Omit<Session, 'presence'> & { presence?: 'online' | number };
+type SnapshotHydrationContext = Pick<Parameters<typeof fetchSessionByIdWithServerScope>[0], 'getExistingSession'> & Readonly<{
+    /** The containing hydration stages these until its currentness checks settle. */
+    sessionDataKeys?: Map<string, Uint8Array>;
+    sessionDataKeyEnvelopes?: Map<string, string>;
+    awaitDisplayProjectionMaintenance?: true;
+}>;
 
 /**
  * Typed, content-free failure from the canonical exact-Home Session reader.
@@ -31,14 +42,17 @@ export async function readSessionSnapshotForAuthority(params: Readonly<{
     prefetched?: SessionByIdPrefetchedRead;
     /** Interval consumers need an admitted projection, including a successful empty one. */
     requireTurns?: boolean;
+    /** Mode/key consumers need the Session, not its turn inventory. */
+    includeTurns?: boolean;
     signal?: AbortSignal;
     isCurrent?: () => boolean;
     accountCurrentnessSource?: ReturnType<typeof createOperationAccountCurrentnessSource>;
-}>): Promise<Readonly<{ session: SessionSnapshot; callerDataKeyEnvelope: string | null }>> {
+}> & SnapshotHydrationContext): Promise<Readonly<{ session: SessionSnapshot; callerDataKeyEnvelope: string | null;
+    displayProjectionMaintenance?: 'satisfied' | 'deferred' }>> {
     const credentials = params.authority.context.credentials;
     if (!credentials) throw new Error('Session request requires credentials');
     const projection: { session: SessionSnapshot | null } = { session: null };
-    const envelopes = new Map<string, string>();
+    const envelopes = params.sessionDataKeyEnvelopes ?? new Map<string, string>();
     let result: Awaited<ReturnType<typeof fetchSessionByIdWithServerScope>>;
     try {
         result = await fetchSessionByIdWithServerScope({
@@ -46,16 +60,18 @@ export async function readSessionSnapshotForAuthority(params: Readonly<{
             serverId: params.authority.scope.serverId,
             sessionId: params.sessionId,
             prefetched: params.prefetched,
-            includeTurnsProjection: params.requireTurns ? 'required' : undefined,
+            awaitDisplayProjectionMaintenance: params.awaitDisplayProjectionMaintenance,
+            includeTurnsProjection: params.requireTurns ? 'required' : params.includeTurns,
             activeCredentials: credentials,
             activeRequest: params.authority.request,
-            sessionDataKeys: new Map(),
+            sessionDataKeys: params.sessionDataKeys ?? new Map(),
             sessionDataKeyEnvelopes: envelopes,
             applySessions: (sessions) => { projection.session = sessions.find((session) => session.id === params.sessionId) ?? null; },
             log: { log: () => {} },
             isCurrent: params.isCurrent,
             signal: params.signal,
             accountCurrentnessSource: params.accountCurrentnessSource,
+            getExistingSession: params.getExistingSession,
         });
     } catch (error) {
         if (isTerminalAuthError(error)) {
@@ -74,7 +90,8 @@ export async function readSessionSnapshotForAuthority(params: Readonly<{
     if (params.requireTurns && !projection.session.sessionTurns) {
         throw new SessionSnapshotReadError('turns_unavailable');
     }
-    return { session: projection.session, callerDataKeyEnvelope: envelopes.get(params.sessionId) ?? null };
+    return { session: projection.session, callerDataKeyEnvelope: envelopes.get(params.sessionId) ?? null,
+        ...(result.displayProjectionMaintenance ? { displayProjectionMaintenance: result.displayProjectionMaintenance } : {}) };
 }
 
 type SessionSnapshotResult =
@@ -85,6 +102,10 @@ type SessionSnapshotResult =
 export async function readSessionSnapshotsForAuthority(params: Readonly<{
     authority: ServerAccountRequestAuthority;
     sessionIds: readonly string[];
+    /** Full transport parts already captured by the same operation/authority. */
+    prefetched?: ReadonlyMap<string, SessionByIdPrefetchedRead>;
+    /** The containing maintenance operation's existing work budget, when declared. */
+    processingConcurrencyLimit?: number;
     requireTurns?: boolean;
     /** Metadata-only consumers can omit optional turns; required interval evidence still wins. */
     includeTurns?: boolean;
@@ -93,7 +114,7 @@ export async function readSessionSnapshotsForAuthority(params: Readonly<{
     accountCurrentnessSource?: ReturnType<typeof createOperationAccountCurrentnessSource>;
     /** Each admitted snapshot can be consumed before the remaining batches settle. */
     onResult?: (sessionId: string, result: SessionSnapshotResult) => void;
-}>): Promise<ReadonlyMap<string, SessionSnapshotResult>> {
+}> & SnapshotHydrationContext): Promise<ReadonlyMap<string, SessionSnapshotResult>> {
     const credentials = params.authority.context.credentials;
     if (!credentials) throw new Error('Session request requires credentials');
     const currentness = params.accountCurrentnessSource ?? createOperationAccountCurrentnessSource({ credentials,
@@ -104,14 +125,18 @@ export async function readSessionSnapshotsForAuthority(params: Readonly<{
         if (params.isCurrent?.() === false) throw new SessionSnapshotReadError('stale_response');
     };
     const opening = new Map<string, Promise<readonly [string, SessionSnapshotResult]>>();
+    const schedule = params.processingConcurrencyLimit === undefined
+        ? <T>(task: () => Promise<T>) => task()
+        : createTaskLimiter(params.processingConcurrencyLimit);
     const accessProjectionVersion = readSessionDetailAccessProjectionVersion(params.authority.scope.serverId);
-    const open = async (sessionId: string, row: SessionReadBatchResultV1): Promise<readonly [string, SessionSnapshotResult]> => {
+    const open = async (sessionId: string, detail: SessionByIdPrefetchedRead['detail'] | undefined,
+        turns: SessionByIdPrefetchedRead['turns'], projectionVersion: 1 | undefined): Promise<readonly [string, SessionSnapshotResult]> => {
         let result: SessionSnapshotResult;
         try {
             assertCurrent();
-            if (!row.detail) throw new SessionSnapshotReadError('invalid_response');
+            if (!detail) throw new SessionSnapshotReadError('invalid_response');
             const snapshot = await readSessionSnapshotForAuthority({ ...params, sessionId,
-                accountCurrentnessSource: currentness, prefetched: { accessProjectionVersion, detail: row.detail, turns: row.turns } });
+                accountCurrentnessSource: currentness, prefetched: { accessProjectionVersion: projectionVersion, detail, turns } });
             await currentness.ensureCurrent();
             assertCurrent();
             result = { ok: true, snapshot };
@@ -123,15 +148,25 @@ export async function readSessionSnapshotsForAuthority(params: Readonly<{
         return [sessionId, result];
     };
     try {
-        const rows = await readSessionBatchForAuthority({ ...params, accessProjectionVersion, includeSnapshot: true,
+        const sessionIds = [...new Set(params.sessionIds)];
+        for (const sessionId of sessionIds) {
+            const seed = params.prefetched?.get(sessionId);
+            if (seed) {
+                const pending = schedule(() => open(sessionId, seed.detail, seed.turns, seed.accessProjectionVersion));
+                opening.set(sessionId, pending);
+                void pending.catch(() => {});
+            }
+        }
+        await readSessionBatchForAuthority({ ...params, sessionIds: sessionIds.filter(id => !opening.has(id)),
+            accessProjectionVersion, includeSnapshot: true,
             includeTurns: params.requireTurns ? true : params.includeTurns, includeMessages: false, assertCurrent,
             onResult: (sessionId, row) => {
-                const pending = open(sessionId, row);
+                const pending = schedule(() => open(sessionId, row.detail, row.turns, accessProjectionVersion));
                 opening.set(sessionId, pending);
                 // Keep rejection custody until the physical reader settles.
                 void pending.catch(() => {});
             } });
-        const results = await Promise.all([...rows.keys()].map(id => opening.get(id)!));
+        const results = await Promise.all(sessionIds.map(id => opening.get(id)!));
         await currentness.ensureCurrent();
         assertCurrent();
         return new Map(results);
@@ -140,6 +175,50 @@ export async function readSessionSnapshotsForAuthority(params: Readonly<{
         // Keep currentness alive through those admissions and progress callbacks.
         await Promise.allSettled(opening.values());
         if (!params.accountCurrentnessSource) currentness.dispose();
+    }
+}
+
+/**
+ * Finish the already-authorized list read through the full snapshot/tuple owner.
+ * Retained inventory adds known IDs to that same batch; fetched parts are reused,
+ * and no full Session is published merely because its display needed backfill.
+ */
+export async function ensureSessionDisplayProjectionsForRead(params: Readonly<{
+    serverId?: string | null;
+    credentials: AuthCredentials;
+    request: (path: string, init: RequestInit) => Promise<Response>;
+    prefetched?: ReadonlyMap<string, SessionByIdPrefetchedRead>;
+    sessionIds?: readonly string[];
+    processingConcurrencyLimit?: number;
+    isCurrent: () => boolean;
+    signal?: AbortSignal;
+}>): Promise<boolean> {
+    const sessionIds = [...new Set([...(params.prefetched?.keys() ?? []), ...(params.sessionIds ?? [])])];
+    if (!sessionIds.length) return true;
+    if (!params.serverId || !params.isCurrent() || params.signal?.aborted
+        || readCredentialAuthorityKind(params.credentials.token) !== 'account') return false;
+    const scopeKey = resolveAuthCredentialsScopeKey(params.credentials);
+    try {
+        return await runWithServerRequestAuthorityForServerAccountScope({ serverId: params.serverId,
+            activeRequest: (path, init) => params.request(path, init ?? {}) }, async authority => {
+            if (!params.isCurrent() || !authority.context.credentials
+                || resolveAuthCredentialsScopeKey(authority.context.credentials) !== scopeKey) return false;
+            const results = await readSessionSnapshotsForAuthority({ authority, sessionIds,
+                awaitDisplayProjectionMaintenance: true,
+                prefetched: params.prefetched, includeTurns: false, signal: params.signal,
+                processingConcurrencyLimit: params.processingConcurrencyLimit ?? loadSyncTuning().resumeConcurrencyLimit,
+                isCurrent: params.isCurrent });
+            const satisfied = params.isCurrent() && [...results.values()].every(result => result.ok
+                && (result.snapshot.displayProjectionMaintenance === 'satisfied'
+                    || isSessionAccessRecipient(result.snapshot.session.access, result.snapshot.session.accessLevel)));
+            if (!satisfied && params.isCurrent()) {
+                console.warn('[SessionDisplay] Full tuple maintenance unavailable; readable list display retained');
+            }
+            return satisfied;
+        });
+    } catch {
+        console.warn('[SessionDisplay] Full tuple maintenance deferred; readable list display retained');
+        return false;
     }
 }
 

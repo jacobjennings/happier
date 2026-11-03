@@ -1,8 +1,12 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { storage } from '@/sync/domains/state/storageStore';
+import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { useProjectsTreeCheckoutFactsSource } from './useProjectsTreeCheckoutFacts';
+import type { WorkspaceRefV1 } from '@happier-dev/protocol/workspaces/workspaceRefV1';
 
 import { ProjectsTree } from './ProjectsTree';
 import { buildProjectsTreeRows } from './projectsTreeRows';
@@ -29,6 +33,90 @@ const rows = buildProjectsTreeRows({
     ],
     openRefId: null,
     expandedKeys: new Set(['plugins']),
+});
+
+afterEach(() => standardCleanup());
+
+describe('ProjectsTree section render locality', () => {
+    async function mountCensus() {
+        storage.setState({ sessions: {}, sessionListRowsByServerId: {}, machines: {}, machineListByServerId: {},
+            profileScope: { serverId: 'qp2-home', accountId: 'qp2-account' },
+            sessionListRenderableDelta: { revision: 0, changedSessionIds: [], removedSessionIds: [], rebuiltSessionListIndex: false },
+        });
+        const refs: readonly WorkspaceRefV1[] = Array.from({ length: 151 }, (_, index) => ({
+            id: `checkout-${index}`, serverId: 'qp2-home', machineId: 'machine', rootPath: `/repo-${index}`, createdAtMs: 1,
+        }));
+        const projects = Array.from({ length: 150 }, (_, index) => ({
+            key: `project-${index}`, name: `Project ${index}`,
+            checkouts: (index === 0 ? [refs[0]!, refs[150]!] : [refs[index]!]).map(ref => ({
+                refId: ref.id, workspaceAddress: { serverId: ref.serverId!, workspaceId: ref.id, machineId: ref.machineId, rootPath: ref.rootPath },
+                machineId: ref.machineId, machineName: 'Machine', label: 'main', path: ref.rootPath, attention: null,
+            })),
+        }));
+        const renders = new Map<string, number>();
+        const renderRowMenu = (row: { key: string; level: number }) => {
+            if (row.level === 0) renders.set(row.key, (renders.get(row.key) ?? 0) + 1);
+            return null;
+        };
+        const onToggle = () => {};
+        const onOpenRef = () => {};
+        function Census({ expandedKeys, openRefId = null, onOpen = onOpenRef }: {
+            expandedKeys: ReadonlySet<string>; openRefId?: string | null; onOpen?: typeof onOpenRef;
+        }) {
+            const source = useProjectsTreeCheckoutFactsSource(refs);
+            const treeRows = React.useMemo(() => buildProjectsTreeRows({ projects, openRefId, expandedKeys }), [expandedKeys, openRefId]);
+            // A fresh input carrier forces a tree render while the Project inputs are unchanged.
+            return <ProjectsTree rows={treeRows} live={{ source, projects, openRefId, expandedKeys }}
+                onToggle={onToggle} onOpenRef={onOpen} renderRowMenu={renderRowMenu} />;
+        }
+        const expandedKeys = new Set<string>();
+        const screen = await renderScreen(<Census expandedKeys={expandedKeys} />);
+        expect(renders.size).toBe(150);
+        renders.clear();
+        return { screen, renders, Census, expandedKeys };
+    }
+
+    it('keeps unaffected sections quiet through tree renders, another Project expansion and keyboard focus', async () => {
+        const { screen, renders, Census, expandedKeys } = await mountCensus();
+        await screen.update(<Census expandedKeys={expandedKeys} />);
+        expect([...renders]).toEqual([]);
+        await screen.update(<Census expandedKeys={new Set(['project-0'])} />);
+        expect([...renders]).toEqual([['project-0', 1]]);
+        renders.clear();
+        const item = (key: string) => screen.findAll(node => node.props?.testID === `projects-tree-row-${key}`
+            && typeof node.props?.onKeyDown === 'function')[0]!;
+        await act(async () => item('project-0').props.onKeyDown({ key: 'End', preventDefault() {} }));
+        expect([...renders.keys()].sort()).toEqual(['project-0', 'project-149']);
+        expect(item('project-149').props.webTabIndex).toBe(0);
+        expect(item('project-0').props.webTabIndex).toBe(-1);
+    });
+
+    it('updates only old/new selected Projects and dispatches the latest open handler without repainting sections', async () => {
+        const { screen, renders, Census, expandedKeys } = await mountCensus();
+        await screen.update(<Census expandedKeys={expandedKeys} openRefId="checkout-27" />);
+        expect([...renders]).toEqual([['project-27', 1]]);
+        renders.clear();
+        await screen.update(<Census expandedKeys={expandedKeys} openRefId="checkout-28" />);
+        expect([...renders.keys()].sort()).toEqual(['project-27', 'project-28']);
+        renders.clear();
+        const onOpen = vi.fn();
+        await screen.update(<Census expandedKeys={expandedKeys} openRefId="checkout-28" onOpen={onOpen} />);
+        expect([...renders]).toEqual([]);
+        await screen.pressByTestIdAsync('projects-tree-row-project-28');
+        expect(onOpen.mock.calls[0]?.[0]).toBe('checkout-28');
+    });
+
+    it('renders exactly one section when one checkout fact changes', async () => {
+        const { screen, renders } = await mountCensus();
+        await act(async () => {
+            const row = createSessionListRenderableSessionFixture({ id: 'qp2-session', active: true, activeAt: Date.now(),
+                thinking: true, thinkingAt: Date.now(), metadata: { machineId: 'machine', path: '/repo-27' } });
+            storage.setState({ sessionListRowsByServerId: { 'qp2-home': { [row.id]: row } },
+                sessionListRenderableDelta: { revision: 1, changedSessionIds: [row.id], removedSessionIds: [], rebuiltSessionListIndex: false } });
+        });
+        expect([...renders]).toEqual([['project-27', 1]]);
+        expect(screen.findByTestId('projects-tree-row-project-27')).not.toBeNull();
+    });
 });
 
 describe('ProjectsTree (lab p-projects TREE/HIDDEN)', () => {
@@ -84,7 +172,7 @@ describe('ProjectsTree (lab p-projects TREE/HIDDEN)', () => {
             { refId: 'p1', machineId: 'devbox', machineName: 'devbox', label: 'main', path: '~/src/plugins', attention: null },
             { refId: 'p2', machineId: 'devbox', machineName: 'devbox', label: 'pi-agent', path: '~/x', attention: null },
         ] }], openRefId: null, expandedKeys: new Set(), collapsedKeys: new Set(['plugins']) });
-        await act(async () => { screen.tree.update(<ProjectsTree rows={collapsed} onToggle={() => {}} onOpenRef={() => {}} />); });
+        await screen.update(<ProjectsTree rows={collapsed} onToggle={() => {}} onOpenRef={() => {}} />);
         // The roving stop repairs to the nearest visible ancestor, never off the tree.
         expect(item('plugins')!.props.webTabIndex).toBe(0);
     });
@@ -146,7 +234,7 @@ describe('ProjectsTree (lab p-projects TREE/HIDDEN)', () => {
         expect(screen.findByTestId('projects-tree-hidden-scratch')).toBeNull();
         await screen.pressByTestIdAsync('projects-tree-hidden');
         expect(onToggle).toHaveBeenCalledTimes(1);
-        await act(async () => { screen.tree.update(render(true)); });
+        await screen.update(render(true));
         expect(expanded()).toBe(true);
         await screen.pressByTestIdAsync('projects-tree-hidden-scratch');
         expect(onOpenRef).toHaveBeenCalledWith('scratch-ref', address);

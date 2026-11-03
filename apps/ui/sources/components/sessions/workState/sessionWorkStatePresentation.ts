@@ -3,6 +3,7 @@ import type {
     SessionWorkStateKind,
     SessionWorkStateSnapshot,
 } from '@/sync/domains/session/workState/sessionWorkStateTypes';
+import type { SessionWorkDisplayItemV1 } from '@happier-dev/protocol/sessions/work/state/sessionWorkStatePrimary';
 
 type WorkStateBadgeTranslationKey =
     | 'session.workState.badge.goal'
@@ -24,7 +25,7 @@ export type SessionWorkStateStatusBadgePresentation = Readonly<{
     emphasis: 'quiet' | 'prominent';
 }>;
 
-export function formatSessionWorkStateBadgeLabel(item: SessionWorkStateItem | null, translate: Translate): string | null {
+export function formatSessionWorkStateBadgeLabel(item: SessionWorkDisplayItemV1 | null, translate: Translate): string | null {
     if (!item) return null;
     if (item.kind === 'goal') {
         // A cleared (cancelled) goal must not surface as the active "Goal: <title>" badge — it has
@@ -40,7 +41,7 @@ export function formatSessionWorkStateBadgeLabel(item: SessionWorkStateItem | nu
     return translate('session.workState.badge.item', { title: item.title });
 }
 
-export function resolveSessionWorkStateBadgeTone(item: SessionWorkStateItem | null): 'neutral' | 'active' | 'paused' | 'warning' | 'complete' {
+export function resolveSessionWorkStateBadgeTone(item: SessionWorkDisplayItemV1 | null): 'neutral' | 'active' | 'paused' | 'warning' | 'complete' {
     if (!item) return 'neutral';
     if (item.status === 'active') return 'active';
     if (item.status === 'paused') return 'paused';
@@ -49,7 +50,7 @@ export function resolveSessionWorkStateBadgeTone(item: SessionWorkStateItem | nu
     return 'neutral';
 }
 
-export function resolveSessionWorkStateBadgeEmphasis(item: SessionWorkStateItem | null): 'quiet' | 'prominent' {
+export function resolveSessionWorkStateBadgeEmphasis(item: SessionWorkDisplayItemV1 | null): 'quiet' | 'prominent' {
     if (!item) return 'quiet';
     if (item.status === 'blocked' || item.status === 'paused') return 'prominent';
     if (item.kind === 'goal' && item.status === 'complete') return 'prominent';
@@ -57,7 +58,7 @@ export function resolveSessionWorkStateBadgeEmphasis(item: SessionWorkStateItem 
 }
 
 export function resolveSessionWorkStateStatusBadgePresentation(args: Readonly<{
-    primaryItem: SessionWorkStateItem | null;
+    primaryItem: SessionWorkDisplayItemV1 | null;
     activeStatusBadgeKey?: string | null;
     editableGoal?: boolean;
     translate: Translate;

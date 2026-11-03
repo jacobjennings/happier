@@ -141,4 +141,32 @@ describe('resolveServerCredentialAccountScope', () => {
         });
         expect(captureExceptionIfEnabled).not.toHaveBeenCalled();
     });
+
+    it('treats a malformed credential as signed out and fingerprints each bound credential without its token', async () => {
+        const home = await upsertServerProfile({
+            name: 'Malformed credential Home',
+            serverUrl: 'https://malformed-credential-home.example.test',
+        });
+        const store = (token: string) => TokenStorage.setCredentialsForServerUrl(home.serverUrl, { serverId: home.id }, { token });
+        const token = (signature: string) => `e30.${Buffer.from(JSON.stringify({ sub: 'account-a' })).toString('base64url')}.${signature}`;
+
+        // A stored credential that names no Account cannot establish a binding.
+        expect(await store('malformed')).toBe(true);
+        await expect(resolveServerCredentialAccountScope(home.id)).resolves.toEqual({ kind: 'signed_out' });
+
+        expect(await store(token('first'))).toBe(true);
+        const first = await resolveServerCredentialAccountScope(home.id);
+        expect(first).toMatchObject({ kind: 'bound', scope: { serverId: home.id, accountId: 'account-a' } });
+        const firstKey = first.kind === 'bound' ? first.credentialKey : undefined;
+        expect(firstKey).toEqual(expect.any(String));
+        expect(firstKey).not.toContain(token('first'));
+        // The same stored credential keeps its fingerprint across reads ...
+        await expect(resolveServerCredentialAccountScope(home.id)).resolves.toMatchObject({ credentialKey: firstKey });
+
+        // ... and a replacement credential for the same Account does not.
+        expect(await store(token('second'))).toBe(true);
+        const second = await resolveServerCredentialAccountScope(home.id);
+        expect(second).toMatchObject({ kind: 'bound', scope: { accountId: 'account-a' } });
+        expect(second.kind === 'bound' ? second.credentialKey : undefined).not.toBe(firstKey);
+    });
 });

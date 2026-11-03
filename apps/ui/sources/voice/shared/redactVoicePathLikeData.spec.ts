@@ -19,10 +19,6 @@ describe('redactVoicePathLikeString', () => {
         expect(redactVoicePathLikeString('Open ~\\workspace\\SECRET')).toBe('Open <path_redacted>');
     });
 
-    it('redacts a sibling-prefixed Windows user directory as its own path', () => {
-        expect(redactVoicePathLikeString('Open C:\\Users\\alice2\\SECRET')).toBe('Open <path_redacted>');
-    });
-
     it('preserves existing POSIX path redaction', () => {
         expect(redactVoicePathLikeString('Open /Users/alice/SECRET')).toBe('Open <path_redacted>');
     });

@@ -26,6 +26,8 @@ import type { SessionBroadcastContainer } from '@happier-dev/protocol/updates';
 import type { VerifiedApiTokenPrincipal } from "@/app/auth/auth";
 import type { forwardRpcCall, RpcForwardResult } from '@/app/api/socket/rpc/forwardRpcCall';
 import { cancelRpcTarget } from '@/app/api/socket/rpc/cancelRpcTarget';
+import { buildSessionMessageObservationFactsV1, classifySessionEventDelivery, type SessionMessageV1 } from '@happier-dev/protocol';
+import { readSessionSocketConsumption } from '@/app/api/socket/sessionConsumption';
 
 import {
     getAccountRevocationSocketRoom,
@@ -82,6 +84,30 @@ function projectPayloadForSocket(data: Socket['data'], payload: unknown): unknow
     if (update.t !== "update-session" || !("access" in update)) return payload;
     const { access: _access, ...viewerBody } = update;
     return { ...container, body: viewerBody };
+}
+
+function projectSessionDeliveryForSocket(data: Socket['data'], sessionId: string, eventName: SocketRoomEventName, payload: unknown): unknown | null {
+    if (!payload || typeof payload !== 'object') return projectPayloadForSocket(data, payload);
+    const record = payload as Readonly<Record<string, unknown>>;
+    if (eventName === 'ephemeral' && (record.type === 'transcript-stream-segment' || record.type === 'transcript-stream-segment-delta')) {
+        const event = record.type === 'transcript-stream-segment' ? 'checkpoint' : 'delta';
+        return classifySessionEventDelivery({ event, consumption: readSessionSocketConsumption(data, sessionId) }).delivery === 'skip' ? null : payload;
+    }
+    if (eventName === 'update' && record.body && typeof record.body === 'object') {
+        const body = record.body as Readonly<Record<string, unknown>>;
+        if (body.t === 'new-message' || body.t === 'message-updated') {
+            if (body.delivery !== 'full' && body.delivery !== 'hint') {
+                log({ module: 'websocket', level: 'warn', sessionId }, 'Session message delivery discriminant unavailable');
+                return null;
+            }
+            const decision = classifySessionEventDelivery({ event: body.t, consumption: readSessionSocketConsumption(data, sessionId) });
+            if (decision.delivery === 'hint' && body.delivery === 'full') {
+                // Protected forwarding carries the canonical producer's already-serialized full row.
+                return { ...record, body: { ...body, delivery: 'hint', message: buildSessionMessageObservationFactsV1(body.message as SessionMessageV1) } };
+            }
+        }
+    }
+    return projectPayloadForSocket(data, payload);
 }
 
 class EventRouter {
@@ -510,7 +536,9 @@ class EventRouter {
                     }))
                     .map(connection => connection.socket),
                 emit: socket => {
-                    socket.emit(params.eventName, projectPayloadForSocket(socket.data, params.payload));
+                    const payload = projectSessionDeliveryForSocket(socket.data, params.sessionId, params.eventName, params.payload);
+                    if (payload === null) return false;
+                    socket.emit(params.eventName, payload);
                     return true;
                 },
             });
@@ -573,7 +601,9 @@ class EventRouter {
                     || socket.data.sessionScopedBinding?.sessionId === delivery.sessionId)),
             emit: socket => {
                 try {
-                    localIo.to(socket.id).emit(delivery.eventName, projectPayloadForSocket(socket.data, delivery.payload));
+                    const payload = projectSessionDeliveryForSocket(socket.data, delivery.sessionId, delivery.eventName, delivery.payload);
+                    if (payload === null) return false;
+                    localIo.to(socket.id).emit(delivery.eventName, payload);
                     return true;
                 } catch {
                     return false;

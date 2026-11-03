@@ -6,13 +6,6 @@ import { once } from 'node:events';
 
 type ProxyStop = () => Promise<void>;
 
-function setCors(res: ServerResponse) {
-  res.setHeader('access-control-allow-origin', '*');
-  res.setHeader('access-control-allow-methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  res.setHeader('access-control-allow-headers', 'authorization,content-type');
-  res.setHeader('access-control-max-age', '600');
-}
-
 function coerceHeaders(headers: IncomingMessage['headers']): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(headers)) {
@@ -34,13 +27,6 @@ export async function startForwardedHeaderProxy(params: {
   const requestFn = isHttps ? httpsRequest : httpRequest;
 
   const srv = createServer((req: IncomingMessage, res: ServerResponse) => {
-    if (req.method === 'OPTIONS') {
-      setCors(res);
-      res.statusCode = 204;
-      res.end();
-      return;
-    }
-
     const upstreamUrl = new URL(req.url ?? '/', targetUrl);
     const headers = coerceHeaders(req.headers);
     for (const [k, v] of Object.entries(params.identityHeaders)) {
@@ -60,11 +46,9 @@ export async function startForwardedHeaderProxy(params: {
         },
       },
       (upstreamRes) => {
-        setCors(res);
         res.statusCode = upstreamRes.statusCode ?? 502;
         for (const [k, v] of Object.entries(upstreamRes.headers)) {
           if (!k) continue;
-          if (k.toLowerCase() === 'access-control-allow-origin') continue;
           if (typeof v === 'string') res.setHeader(k, v);
           else if (Array.isArray(v)) res.setHeader(k, v);
         }
@@ -73,7 +57,6 @@ export async function startForwardedHeaderProxy(params: {
     );
 
     upstreamReq.on('error', () => {
-      setCors(res);
       res.statusCode = 502;
       res.end('bad_gateway');
     });

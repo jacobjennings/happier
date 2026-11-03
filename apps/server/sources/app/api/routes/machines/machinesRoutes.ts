@@ -69,7 +69,11 @@ async function readAccessibleMachineProjectionsInTx(
     tx: Tx,
     input: Readonly<{ actorAccountId: string; machineIds: readonly string[]; request: FastifyRequest }>,
 ) {
-    const openings = await readAccessibleMachineOpeningsInTx(tx, { actorAccountId: input.actorAccountId, machineIds: input.machineIds });
+    // Recipient-work facts only schedule the present user's UI key repair; automation, API-token
+    // and terminal reads never consume them, so they do not pay for the recipient query.
+    const schedulesRecipientRepair = input.request.authAuthority === 'present_user' && input.request.authTokenKind === 'account';
+    const openings = await readAccessibleMachineOpeningsInTx(tx, { actorAccountId: input.actorAccountId, machineIds: input.machineIds,
+        ...(schedulesRecipientRepair ? { includeRecipientWork: true as const } : {}) });
     const children = await readMachineDevcontainerChildrenInTx(tx, [...openings.keys()]);
     return input.machineIds.flatMap(machineId => {
         const opening = openings.get(machineId);

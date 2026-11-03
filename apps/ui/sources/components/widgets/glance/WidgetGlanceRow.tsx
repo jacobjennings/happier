@@ -39,6 +39,8 @@ function projectGlanceRowColors(theme: Theme): HappierWidgetGlanceRowColors {
     secondaryText: theme.colors.text.secondary,
     mutedText: theme.colors.text.tertiary,
     attention: theme.colors.state.warning.foreground,
+    danger: theme.colors.status.error,
+
     pressed: theme.colors.surface.pressed,
     focus: theme.colors.border.focus,
   });
@@ -60,7 +62,7 @@ export const WidgetGlanceRow = React.memo(function WidgetGlanceRow(
     variant?: 'row' | 'fact';
     tag?: string | null;
     fact?: string | null;
-    factTone?: 'quiet' | 'attention';
+    factTone?: 'quiet' | 'attention' | 'danger';
     mono?: boolean;
     trailing?: React.ReactNode;
     dimmed?: boolean;

@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { DaemonContributionRegistryProjectionDescribeResponseSchema, resolveRoleSelectionV1, materializeWorkflowAcceptedSnapshotV1, admitAgentStartV1, DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1, WorkflowActionFailureV1Schema } from '@happier-dev/protocol';
-import { createCredentialedWorkflowMaterializationHostV1, createWorkflowMaterializationHostV1, type WorkflowMaterializationHostDeps } from './workflowMaterializationHost';
+import { createCredentialedWorkflowMaterializationHostV1, createWorkflowMaterializationHostV1, projectWorkflowConversationRoleSelection, type WorkflowMaterializationHostDeps } from './workflowMaterializationHost';
+import { resolveWorkflowStepSelectionV1 } from '@happier-dev/protocol/workflows/workflowStepSelectionV1';
 import { resetInMemoryAccountSettingsContextForTests } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { CUSTOM_ACP_AGENT_CONTRIBUTION_IDENTITY_V1 } from '@happier-dev/protocol/agents/executionTargetV1';
@@ -59,6 +60,20 @@ function sessionAdmissionHost(machineId: string, readHostActionContract?: Workfl
 }
 
 describe('exact-machine workflow materialization effects', () => {
+  it('carries Session baseline selections into same-Machine Workflow leaves through the shared selection owner', () => {
+    const agentTarget = { kind: 'agent' as const, identity: { pluginId: 'test.agent', localId: 'agent' } };
+    const connectedServices = { v: 2 as const, bindingsByServiceId: {
+      'test.agent/auth': { source: 'connected' as const, selection: 'profile' as const, profileId: 'parent-account' },
+    } };
+    const origin = { sessionId, machineId: 'origin-machine', directory: '/repo', agentTarget,
+      runtimeSelection: { agentTarget, profileId: 'parent-launch', connectedServices } };
+    const selection = (machineId: string) => resolveWorkflowStepSelectionV1({ defaults: { engine: { agentTarget } },
+      roleSelection: projectWorkflowConversationRoleSelection(origin, machineId) }).selection;
+    expect(selection('origin-machine')).toMatchObject({ profileId: 'parent-launch', connectedServices });
+    expect(selection('other-machine').profileId).toBeUndefined();
+    expect(selection('other-machine').connectedServices).toBeUndefined();
+  });
+
   afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); resetInMemoryAccountSettingsContextForTests(); });
 
   it('reads only an explicitly consumed unfrozen Role without preparing the unrelated Artifact inventory', async () => {

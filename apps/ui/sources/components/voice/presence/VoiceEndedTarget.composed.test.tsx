@@ -12,7 +12,7 @@ import { createSessionFixture, renderScreen, standardCleanup } from '@/dev/testk
 // The canonical local-engine harness owns OS/audio and Home HTTP/Socket boundaries.
 // Runtime, lifecycle, settings, retained target, model and rendered consumers are real.
 const restoreLoader = await warmLocalVoiceEngineHarnessGraph();
-registerLocalVoiceEngineHarnessHooks({ resetModulesBetweenTests: false });
+registerLocalVoiceEngineHarnessHooks();
 const { VoiceSessionRuntime } = await import('@/voice/session/VoiceSessionRuntime');
 const { useVoiceSurfaceModel } = await import('@/components/voice/surface/useVoiceSurfaceModel');
 const { VoiceGlance } = await import('./VoiceGlance');

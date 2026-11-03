@@ -149,6 +149,8 @@ export const managedMachines: ManagedMachinesTranslations = {
             billedWhileRunning: "実行中のみ課金されます。",
             imageDescription: "最初に入っているもの。Happier はその上にインストールされます。",
             locationDescription: "近いほど入力の反応が速くなります。",
+            network: "ネットワーク",
+            networkDescription: "割り当てられる公開アドレスを選びます。料金は選択に応じて変わります。",
             localLocationDescription: ({ computer }: { computer: string }) => `${computer} での実行場所。`,
             localSizeDescription: ({ computer }: { computer: string }) => `実行中に使う ${computer} の割り当て。停止すると解放されます。`,
             headroom: ({ computer }: { computer: string }) => `${computer} に残る分`,
@@ -257,7 +259,8 @@ export const managedMachines: ManagedMachinesTranslations = {
         },
         credential: {
             refused: "プロビジョナーとの接続は利用できなくなりました。",
-            required: "利用可能なマシンを表示するには、プロビジョナーのアカウントを接続してください。",
+            required: "アカウントを接続すると、作成できるものが表示されます。",
+            choose: "アカウントを選ぶと、作成できるものが表示されます。",
         },
         power: {
             pending: ({ provider, state }: { provider: string; state: string }) => `${provider} が ${state} を確認するのを待っています…`,
@@ -284,6 +287,8 @@ export const managedMachines: ManagedMachinesTranslations = {
             refused: ({ name }: { name: string }) => `${name} を管理する権限がありません。`,
         },
         inspect: {
+            notCreated: "このマシンは作成されませんでした",
+            checkFailed: "このマシンを確認できませんでした",
             checkNow: "今すぐ確認",
         },
         actions: {

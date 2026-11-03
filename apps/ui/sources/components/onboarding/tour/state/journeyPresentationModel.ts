@@ -1,17 +1,10 @@
-import type { JourneyAct, JourneyBeat, JourneyBeatId, JourneySurface } from './journeyBeats';
+import type { JourneyBeat, JourneyBeatId, JourneySurface } from './journeyBeats';
 import {
     JOURNEY_SKIP_TO_SETUP_TARGET,
     getJourneyBeatsForSurface,
     journeyBeatById,
     resolveNearestVisibleBeatId,
 } from './journeyBeats';
-
-export type JourneyActBoundary = Readonly<{
-    startIndex: number;
-    endIndex: number;
-}>;
-
-export type JourneyActBoundaries = Readonly<Record<JourneyAct, JourneyActBoundary | null>>;
 
 export type JourneyPresentationModelInput = Readonly<{
     surface: JourneySurface;
@@ -29,7 +22,6 @@ export type JourneyPresentationModel = Readonly<{
     nextBeatId: JourneyBeatId | null;
     showSkipToSetup: boolean;
     skipTargetBeatId: JourneyBeatId | null;
-    actBoundaries: JourneyActBoundaries;
 }>;
 
 export type JourneyProgressAction = 'advance' | 'back' | 'skipToSetup';
@@ -60,27 +52,6 @@ function resolveCurrentBeat(
     return { currentBeat, currentIndex };
 }
 
-function buildActBoundaries(visibleBeats: readonly JourneyBeat[]): JourneyActBoundaries {
-    return {
-        dream: resolveActBoundary(visibleBeats, 'dream'),
-        setup: resolveActBoundary(visibleBeats, 'setup'),
-    };
-}
-
-function resolveActBoundary(
-    visibleBeats: readonly JourneyBeat[],
-    act: JourneyAct,
-): JourneyActBoundary | null {
-    const startIndex = visibleBeats.findIndex((beat) => beat.act === act);
-    if (startIndex < 0) return null;
-    let endIndex = startIndex;
-    for (let index = startIndex + 1; index < visibleBeats.length; index += 1) {
-        if (visibleBeats[index]?.act !== act) break;
-        endIndex = index;
-    }
-    return { startIndex, endIndex };
-}
-
 export function buildJourneyPresentationModel(
     input: JourneyPresentationModelInput,
 ): JourneyPresentationModel {
@@ -102,7 +73,6 @@ export function buildJourneyPresentationModel(
         nextBeatId: nextBeat?.id ?? null,
         showSkipToSetup: canSkipToSetup,
         skipTargetBeatId: canSkipToSetup ? JOURNEY_SKIP_TO_SETUP_TARGET : null,
-        actBoundaries: buildActBoundaries(visibleBeats),
     };
 }
 

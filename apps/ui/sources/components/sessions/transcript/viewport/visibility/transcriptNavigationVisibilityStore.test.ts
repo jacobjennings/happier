@@ -85,17 +85,14 @@ describe('transcript navigation visibility store', () => {
     it('exposes subscriber presence so hosts can skip DOM visibility measurement when unused', () => {
         const store = createTranscriptNavigationVisibilityStore();
         expect(store.hasSubscribers()).toBe(false);
-        expect(store.subscriberCount()).toBe(0);
 
         const unsubscribe = store.subscribe(vi.fn());
 
         expect(store.hasSubscribers()).toBe(true);
-        expect(store.subscriberCount()).toBe(1);
 
         unsubscribe();
 
         expect(store.hasSubscribers()).toBe(false);
-        expect(store.subscriberCount()).toBe(0);
     });
 
     it('scopes default stores by session id and clears a host session on unmount', () => {
@@ -140,7 +137,7 @@ describe('transcript navigation visibility store', () => {
             currentAnchorId: null,
             visibleAnchorIds: [],
         });
-        expect(store.subscriberCount()).toBe(0);
+        expect(store.hasSubscribers()).toBe(false);
 
         await hook.unmount();
     });

@@ -65,27 +65,14 @@ async function waitForProcessParent(
   throw new Error(`Timed out waiting for pid ${pid} to be visible as a child of ${expectedParentPid}`)
 }
 
-export async function spawnInlineNodeParentWithChild(
-  childSource = 'setInterval(() => {}, 1000)',
-  opts: { timeoutMs?: number } = {},
-): Promise<{ parent: ChildProcess; childPid: number }> {
-  const timeoutMs = opts.timeoutMs ?? 2_000
-  const parent = spawnInlineNodeTestProcess(
-    [
-      'const { spawn } = require("node:child_process");',
-      `const child = spawn(process.execPath, ["-e", ${JSON.stringify(childSource)}], { stdio: "ignore" });`,
-      'console.log(String(child.pid));',
-      'setInterval(() => {}, 1000);',
-    ].join('\n'),
-    { stdio: ['ignore', 'pipe', 'ignore'] },
-  )
-
-  const childPid = await new Promise<number>((resolve, reject) => {
+/** Read a complete PID line, never a partial chunk or a process-group target. */
+export function readTestProcessPid(parent: ChildProcess, opts: { timeoutMs?: number } = {}): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
     let buffer = ''
     const timer = setTimeout(() => {
       cleanup()
       reject(new Error('Timed out waiting for child pid'))
-    }, timeoutMs)
+    }, opts.timeoutMs ?? 2_000)
 
     const cleanup = () => {
       clearTimeout(timer)
@@ -96,12 +83,13 @@ export async function spawnInlineNodeParentWithChild(
 
     const onData = (chunk: Buffer) => {
       buffer += chunk.toString()
-      const line = buffer.trim().split('\n')[0]?.trim()
-      const parsed = line ? Number.parseInt(line, 10) : Number.NaN
-      if (Number.isFinite(parsed) && parsed > 0) {
-        cleanup()
-        resolve(parsed)
-      }
+      const newline = buffer.indexOf('\n')
+      if (newline < 0) return
+      const line = buffer.slice(0, newline).trim()
+      const parsed = /^\d+$/.test(line) ? Number(line) : Number.NaN
+      cleanup()
+      if (Number.isSafeInteger(parsed) && parsed > 1) resolve(parsed)
+      else reject(new Error('Parent emitted an invalid child pid'))
     }
 
     const onError = (error: unknown) => {
@@ -117,7 +105,25 @@ export async function spawnInlineNodeParentWithChild(
     parent.stdout?.on('data', onData)
     parent.once('error', onError)
     parent.once('exit', onExit)
-  }).catch((error) => {
+  })
+}
+
+export async function spawnInlineNodeParentWithChild(
+  childSource = 'setInterval(() => {}, 1000)',
+  opts: { timeoutMs?: number } = {},
+): Promise<{ parent: ChildProcess; childPid: number }> {
+  const timeoutMs = opts.timeoutMs ?? 2_000
+  const parent = spawnInlineNodeTestProcess(
+    [
+      'const { spawn } = require("node:child_process");',
+      `const child = spawn(process.execPath, ["-e", ${JSON.stringify(childSource)}], { stdio: "ignore" });`,
+      'console.log(String(child.pid));',
+      'setInterval(() => {}, 1000);',
+    ].join('\n'),
+    { stdio: ['ignore', 'pipe', 'ignore'] },
+  )
+
+  const childPid = await readTestProcessPid(parent, { timeoutMs }).catch((error) => {
     try {
       parent.kill()
     } catch {

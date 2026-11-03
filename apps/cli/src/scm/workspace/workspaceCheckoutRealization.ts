@@ -40,42 +40,6 @@ export function createScmWorkspaceIntegrationWorkspaceCheckoutRealizationRequest
     };
 }
 
-export function resolveScmWorkspaceIntegrationWorkspaceCheckoutRealizationKind(
-    input: ScmWorkspaceIntegrationWorkspaceCheckoutRealizationRequest,
-): ScmWorkspaceIntegrationWorkspaceCheckoutKind {
-    return input.kind;
-}
-
-export function resolveScmWorkspaceIntegrationWorkspaceCheckoutRealizationSourcePath(
-    input: ScmWorkspaceIntegrationWorkspaceCheckoutRealizationRequest,
-): string {
-    return input.sourcePath;
-}
-
-export function resolveScmWorkspaceIntegrationWorkspaceCheckoutRealizationDisplayName(
-    input: ScmWorkspaceIntegrationWorkspaceCheckoutRealizationRequest,
-): string {
-    return input.displayName;
-}
-
-export function resolveScmWorkspaceIntegrationWorkspaceCheckoutRealizationBaseRef(
-    input: ScmWorkspaceIntegrationWorkspaceCheckoutRealizationRequest,
-): string | null {
-    return input.baseRef;
-}
-
-export function resolveScmWorkspaceIntegrationWorkspaceCheckoutRealizationBranchMode(
-    input: ScmWorkspaceIntegrationWorkspaceCheckoutRealizationRequest,
-): 'new' | 'existing' {
-    return input.branchMode;
-}
-
-export function resolveScmWorkspaceIntegrationWorkspaceCheckoutRealizationTargetPath(
-    input: ScmWorkspaceIntegrationWorkspaceCheckoutRealizationRequest,
-): string | null {
-    return input.targetPath;
-}
-
 export function createScmWorkspaceIntegrationWorkspaceCheckoutCreationRequestFromRealization(
     input: ScmWorkspaceIntegrationWorkspaceCheckoutRealizationRequest,
 ) {
@@ -118,16 +82,4 @@ export function createScmWorkspaceIntegrationWorkspaceCheckoutRealizationResult(
         branchName: input.branchName,
         created: input.created,
     };
-}
-
-export function resolveScmWorkspaceIntegrationWorkspaceCheckoutRealizationResultKind(
-    input: ScmWorkspaceIntegrationWorkspaceCheckoutRealizationResult,
-): ScmWorkspaceIntegrationWorkspaceCheckoutKind {
-    return input.kind;
-}
-
-export function resolveScmWorkspaceIntegrationWorkspaceCheckoutRealizationResultTargetPath(
-    input: ScmWorkspaceIntegrationWorkspaceCheckoutRealizationResult,
-): string {
-    return input.targetPath;
 }

@@ -12,6 +12,7 @@ import { resolveCheckpointRollbackEvidence } from '@/sync/domains/sessionRollbac
 import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
 import { executeTranscriptRollbackAction } from '@/components/sessions/transcript/transcriptRollbackActionRunner';
 import { t } from '@/text';
+import { fileBaseOfReviewSource } from '@/components/workspaces/scm/review/reviewSource';
 
 /** Reuse the transcript's exact checkpoint admission and dialog; no nearest-turn fallback. */
 export function useFileChangesRollback(address: SessionAddress | null, rootPath: string) {
@@ -54,7 +55,9 @@ export function useFileChangesActions(input: Omit<DiscardChangeParams, 'entry'> 
         const dirty = selected.hasUnsavedEdits();
         if (dirty && !await Modal.confirm(selected.confirmUnsaved.title, selected.confirmUnsaved.message,
             { confirmText: selected.confirmUnsaved.confirmText, cancelText: selected.confirmUnsaved.cancelText, destructive: true })) return;
-        const outcome = await discardChange({ target: selected.target, entry, messages: selected.messages,
+        // Captured entries are repository-relative, even when the Session started below that root.
+        const target = { ...selected.target, rootPath: fileBaseOfReviewSource(selected.comparison, selected.target.rootPath) };
+        const outcome = await discardChange({ target, entry, messages: selected.messages,
             readCurrentText: selected.readCurrentText, refresh: selected.refresh, options: selected.options, sessionTarget: selected.sessionTarget });
         setResult(outcome);
         if (outcome.ok) {

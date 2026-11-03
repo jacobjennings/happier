@@ -75,6 +75,7 @@ function buildCommittedTwinUpdate(params: Readonly<{ id: string; seq: number; lo
         createdAt: 2_000,
         body: {
             t: 'new-message',
+            delivery: 'full' as const,
             sid: SESSION_ID,
             message: {
                 id: params.id,

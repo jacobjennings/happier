@@ -79,6 +79,25 @@ it('preserves the predecessor Session-write shape and rejects additional authori
   expect(socketProtocol.parseSocketRpcAuthorizationContext(Object.create(authorization))).toBeNull();
 });
 
+it('retains only the literal server-proven Session-owner authority in the closed Session-write carrier', () => {
+  const authorization = { kind: 'session.write', sessionId: ' session-a ', authority: 'sessionOwner' };
+  expect(socketProtocol.parseSocketRpcAuthorizationContext(authorization))
+    .toEqual({ kind: 'session.write', sessionId: 'session-a', authority: 'sessionOwner' });
+  for (const invalid of [{ ...authorization, authority: 'present_user' }, { ...authorization, authority: true },
+    { ...authorization, accountId: 'other-account' }]) {
+    expect(socketProtocol.parseSocketRpcAuthorizationContext(invalid)).toBeNull();
+  }
+});
+
+it('requires Session ownership for native Realtime Start while preserving shared input and question capability', () => {
+  expect(socketProtocol.resolveSocketRpcSessionAuthorization(`session-a:${SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_START}`))
+    .toMatchObject({ authority: 'sessionOwner', routeToSessionOwnerDaemon: true });
+  for (const method of [SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND, RPC_METHODS.SESSION_USER_ACTION_ANSWER]) {
+    expect(socketProtocol.resolveSocketRpcSessionAuthorization(`session-a:${method}`))
+      .toMatchObject({ authority: 'submitAgentInput', routeToSessionOwnerDaemon: true });
+  }
+});
+
 import {
   SOCKET_RPC_EVENTS,
   SocketRpcCancellationPayloadSchema,

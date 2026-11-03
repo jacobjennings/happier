@@ -41,7 +41,7 @@ vi.mock('@/ui/doctorSnapshot', () => ({
 import { handleDoctorCliCommand } from './doctor';
 
 describe('happier doctor --json', () => {
-  it('prints a single redacted JSON snapshot and does not run the human doctor output', async () => {
+  it('prints the doctor snapshot as one JSON document instead of the human doctor output', async () => {
     const output = captureConsoleJsonOutput<{ server?: { serverUrl?: string }; accountId?: string }>();
 
     try {

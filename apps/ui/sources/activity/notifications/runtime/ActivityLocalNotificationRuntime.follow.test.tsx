@@ -85,7 +85,6 @@ async function deliverMessage(seq: number, human: boolean, recovered = false, so
         isMutableToolCall: () => false, invalidateScmStatus: () => undefined,
         isSessionMessagesLoaded: () => false, getSessionMaterializedMaxSeq: () => 0,
         markSessionMaterializedMaxSeq: () => undefined, onMessageGapDetected: () => undefined,
-        realtimeProjectionMode: 'enabled',
     });
 }
 

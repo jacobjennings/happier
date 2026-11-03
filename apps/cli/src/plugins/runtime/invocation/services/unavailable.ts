@@ -237,7 +237,9 @@ export type PluginInvocationServicesFactoryParams = Readonly<{
         systemToolsForPlugin?: (
             pluginId: string,
         ) => NonNullable<Parameters<typeof createStablePluginExecService>[0]['systemTools']>;
-    }>;
+
+agentIsolation?: import('@/daemon/agentIsolation/agentIsolationLaunchPolicy').HostAgentIsolationLaunchContext;
+}>;
     managedServices?: ManagedServicesInvocationOwner;
     managedServiceCredentialFiles?: ManagedServiceCredentialFileOwner;
     managedServiceDeclaredSecretReadPort?: Readonly<{
@@ -258,6 +260,9 @@ export type PluginInvocationServicesFactoryParams = Readonly<{
     resources?: StablePluginResourcesOwner;
     settings?: StablePluginSettingsHost;
     http?: StablePluginHttpHost;
+    healthChecks?: Readonly<{ bind(seed: PluginInvocationServicesSeed, services: Readonly<{
+        actions: ActionsService; http: HttpService;
+    }>): PluginServices['healthChecks'] | null }>;
     connectedAccounts?: StablePluginConnectedAccountsHost;
     approvals?: StablePluginApprovalQueueOwner;
     actionExecutor?: PluginActionsHostExecutor;
@@ -373,6 +378,15 @@ function createHostAccessDisclosureMismatchRecorder(
  * between independently maintained matrices.
  */
 export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
+    machineConnectorSecrets: {
+        id: 'machineConnectorSecrets', publicProperty: 'machineConnectorSecrets', availabilityOwner: 'host', unavailableCode: PLUGIN_SERVICE_UNAVAILABLE_CODE, deniedCode: PLUGIN_SERVICE_RESOURCE_NOT_SELECTED_CODE,
+        createUnavailable(): PluginServices['machineConnectorSecrets'] {
+            return undefined;
+        },
+        createAvailable({ seed }): PluginServices['machineConnectorSecrets'] | null {
+            return seed.machineConnectorSecrets ?? null;
+        },
+    },
     backgroundServices: {
         id: 'backgroundServices', publicProperty: 'backgroundServices', availabilityOwner: 'host', unavailableCode: PLUGIN_SERVICE_UNAVAILABLE_CODE, deniedCode: PLUGIN_SERVICE_RESOURCE_NOT_SELECTED_CODE,
         createUnavailable(code?: string, diagnostic?: PluginServiceUnavailableDiagnostic): PluginServices['backgroundServices'] {
@@ -507,11 +521,23 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
                 : null;
         },
     },
+    healthChecks: {
+        availabilityOwner: 'host', id: 'healthChecks', publicProperty: 'healthChecks', requiredInvocationPlacement: 'daemon', unavailableCode: PLUGIN_SERVICE_UNAVAILABLE_CODE, deniedCode: PLUGIN_SERVICE_RESOURCE_NOT_SELECTED_CODE,
+        createUnavailable(code?: string, diagnostic?: PluginServiceUnavailableDiagnostic): PluginServices['healthChecks'] {
+            return Object.freeze({ read: unavailableMethod('healthChecks', code, diagnostic), setup: unavailableMethod('healthChecks', code, diagnostic) });
+        },
+        createAvailable(context: PluginInvocationServiceDescriptorContext): PluginServices['healthChecks'] | null {
+            if (!context.params.healthChecks) return null;
+            const actions = PLUGIN_SERVICE_DESCRIPTORS.actions.createAvailable(context);
+            const http = PLUGIN_SERVICE_DESCRIPTORS.http.createAvailable(context);
+            return actions && http ? context.params.healthChecks.bind(context.seed, { actions, http }) : null;
+        },
+    },
     fs: {
         id: 'fs', publicProperty: 'fs', availabilityOwner: 'binding', requiredHostAccessCapability: 'filesystem', requiredInvocationPlacement: 'daemon', unavailableCode: PLUGIN_SERVICE_UNAVAILABLE_CODE, deniedCode: PLUGIN_SERVICE_RESOURCE_NOT_SELECTED_CODE,
         createUnavailable(code?: string, diagnostic?: PluginServiceUnavailableDiagnostic): FileSystemService {
             const fail = unavailableMethod('fs', code, diagnostic);
-            return Object.freeze({ readFile: fail, writeFile: fail, stat: fail, list: fail, remove: fail });
+            return Object.freeze({ observeMachinePath: fail, readFile: fail, writeFile: fail, stat: fail, list: fail, remove: fail });
         },
         createAvailable({ fileSystem }): FileSystemService | null {
             return fileSystem;
@@ -526,7 +552,7 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
                 systemTools: Object.freeze({ resolve: fail }),
                 run: fail,
                 spawn: fail,
-                clients: Object.freeze({ spawn: fail }),
+                clients: Object.freeze({ spawn: fail, connectJsonRpc: fail }),
             });
         },
         createAvailable({ binding, exec, execAvailable }): ExecService | null {
@@ -1005,13 +1031,12 @@ export function createPluginInvocationServicesFromDescriptors(
         : undefined;
     const exec = execAvailable
         ? createStablePluginExecService({
+...(params.exec?.agentIsolation ? { agentIsolation: params.exec.agentIsolation } : {}),
+
             readSpawnFailureLimits: params.exec?.readSpawnFailureLimits,
             ...(params.exec?.posixProcessGroup ? { posixProcessGroup: params.exec.posixProcessGroup } : {}),
             ...(seed.processOwner ? { processOwner: seed.processOwner }
                 : seed.session ? { processOwner: { kind: 'session', sessionId: seed.session.id } } : {}),
-            allowedExecutables: binding.processExecutables!,
-            allowedEnvKeys: binding.processEnvKeys,
-            allowedCwdScopes: binding.filesystemScopes,
             signal: seed.signal,
             isOccurrenceCurrent: seed.isOccurrenceCurrent,
             ...(binding.execOutputObserver ? { observeProcessOutput: binding.execOutputObserver } : {}),
@@ -1047,7 +1072,6 @@ export function createPluginInvocationServicesFromDescriptors(
                 ),
             } : {}),
             resolvePath: params.exec!.resolvePath,
-            recordDisclosureMismatch: createHostAccessDisclosureMismatchRecorder(seed, params),
             ...(params.exec!.agentCli ? { agentCli: params.exec!.agentCli } : {}),
             ...(systemTools ? { systemTools } : {}),
             ...(params.exec!.environment ? { environment: params.exec!.environment } : {}),

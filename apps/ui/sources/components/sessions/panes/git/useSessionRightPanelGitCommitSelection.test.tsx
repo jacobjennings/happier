@@ -69,7 +69,8 @@ describe('useSessionRightPanelGitCommitSelection', () => {
         }));
         expect(files.filter(hook.getCurrent().isSelectedForCommit).map((file) => file.fullPath)).toEqual(['src/proposed.ts', 'src/other-staged.ts']);
         expect(hook.getCurrent().repositorySelectedCount).toBe(2);
-        expect(ordinaryPaths).toEqual(['src/ordinary.ts']);
+        // A proposal is a view state: rendering it writes nothing into the stored commit selection.
+        expect(storage.getState().getSessionProjectScmCommitSelectionPaths('s1')).toEqual([]);
     });
     it('counts only visible changed files for atomic repository selection totals', async () => {
         const visibleFile = scmFile('src/visible.ts');

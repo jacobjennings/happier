@@ -16,19 +16,23 @@ import { manifest as authoredAccountManifest, sourceProviderManifest } from '../
 
 /** Real public-author compiler and release producers, with only Home HTTP storage replaced. */
 export async function registerAuthoredAccountActionRelease(app: FastifyInstance, accountId: string,
-    options: Readonly<{ includeAccountProvider?: boolean }> = {}) {
+    options: Readonly<{ includeAccountProvider?: boolean; includeBundledPluginIds?: readonly string[];
+        /** A package-owned author fixture using this same compiler/release/storage boundary. */
+        primary?: Readonly<{ manifest: unknown; projectRoot: string; entryPath: string;
+            artifactId?: string; activateExport?: string; manifestExport?: string | null }> }> = {}) {
     const projectRoot = resolve(import.meta.dirname, '../../../../../packages/plugin-sdk/fixtures/account-actions');
     const packages = await readWorkspacePackages(resolve(import.meta.dirname, '../../../../..'));
     const packageJson = JSON.parse(await readFile(join(projectRoot, 'package.json'), 'utf8')) as {
         exports: Record<string, string>;
     };
     const buildRelease = async (input: Readonly<{ manifest: unknown; artifactId: string; accountArtifactId: string;
-        manifestExport: string; activateExport: string; archiveDigestCharacter: string }>) => {
+        manifestExport: string | null; activateExport: string; archiveDigestCharacter: string }>) => {
+        const authored = input.artifactId === (options.primary?.artifactId ?? 'account-runtime') ? options.primary : undefined;
         const manifest = normalizePluginManifestV2(input.manifest);
         const pluginId = manifest.id;
-        const compiled = await compileUniversalPluginUiCommonJs({ projectRoot,
-            entryPath: resolve(projectRoot, packageJson.exports[`./happier-plugin-ui/${input.artifactId}`]!),
-            artifactId: input.artifactId, requestedExports: [input.manifestExport, input.activateExport], exportConditions: ['happier-source'],
+        const compiled = await compileUniversalPluginUiCommonJs({ projectRoot: authored?.projectRoot ?? projectRoot,
+            entryPath: authored?.entryPath ?? resolve(projectRoot, packageJson.exports[`./happier-plugin-ui/${input.artifactId}`]!),
+            artifactId: input.artifactId, requestedExports: [...(input.manifestExport ? [input.manifestExport] : []), input.activateExport], exportConditions: ['happier-source'],
             resolveSourceImport: specifier => packages.has(packageNameOfSpecifier(specifier))
                 ? resolveWorkspaceSource(packages, specifier, { conditions: ['react-native', 'browser'] }) : undefined });
         const bytes = compiled.bytes;
@@ -47,8 +51,9 @@ export async function registerAuthoredAccountActionRelease(app: FastifyInstance,
             packageAssetArchive: { archiveDigestSha256: `sha256:${'d'.repeat(64)}`, resources: [] } });
         return { pluginId, artifactId: input.accountArtifactId, manifest, generated, files, archive, release };
     };
-    const primary = await buildRelease({ manifest: authoredAccountManifest, artifactId: 'account-runtime',
-        accountArtifactId: 'a7e5d73f-88a7-44bc-98ed-23edbffb6214', manifestExport: 'manifest', activateExport: 'activate', archiveDigestCharacter: 'a' });
+    const primary = await buildRelease({ manifest: options.primary?.manifest ?? authoredAccountManifest, artifactId: options.primary?.artifactId ?? 'account-runtime',
+        accountArtifactId: 'a7e5d73f-88a7-44bc-98ed-23edbffb6214', manifestExport: options.primary?.manifestExport === undefined ? 'manifest' : options.primary.manifestExport,
+        activateExport: options.primary?.activateExport ?? 'activate', archiveDigestCharacter: 'a' });
     const provider = options.includeAccountProvider ? await buildRelease({ manifest: sourceProviderManifest,
         artifactId: 'account-source-provider-runtime', accountArtifactId: 'b7e5d73f-88a7-44bc-98ed-23edbffb6214',
         manifestExport: 'sourceProviderManifest', activateExport: 'activateSourceProvider', archiveDigestCharacter: 'b' }) : null;
@@ -65,8 +70,9 @@ export async function registerAuthoredAccountActionRelease(app: FastifyInstance,
             artifactId: slot.artifactId, tier: slot.tier, platform: slot.platform,
             artifactDigest: slot.artifactDigest, hostUiApiRange: slot.hostUiApiRange, accountArtifactId: fixture.artifactId })), packageAssets: [] });
     app.post(PluginAvailabilityActionHttpPathsV1['account.plugins.availability.intents.list'], async () => ({
-        availabilityCursor: 1, pluginIds: fixtures.map(fixture => fixture.pluginId),
-        intentReads: fixtures.map(fixture => ({ pluginId: fixture.pluginId, response: response(fixture) })), failedPluginIds: [] }));
+        availabilityCursor: 1, pluginIds: [...fixtures.map(fixture => fixture.pluginId), ...(options.includeBundledPluginIds ?? [])],
+        intentReads: [...fixtures.map(fixture => ({ pluginId: fixture.pluginId, response: response(fixture) })),
+            ...(options.includeBundledPluginIds ?? []).map(pluginId => ({ pluginId, response: response(undefined) }))], failedPluginIds: [] }));
     app.post(PluginAvailabilityActionHttpPathsV1['account.plugins.availability.intent.read'], async request => {
         const { pluginId } = PluginAvailabilityIntentReadActionInputV1Schema.parse(request.body);
         return response(fixtures.find(fixture => fixture.pluginId === pluginId));

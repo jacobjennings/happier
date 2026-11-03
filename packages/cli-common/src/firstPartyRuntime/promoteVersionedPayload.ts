@@ -12,6 +12,7 @@ import { syncInstalledPayloadPointer } from './syncInstalledPayloadPointer.js';
 import { readInstalledVersionMarkers, writeInstalledVersionMarker } from './versionMarkers.js';
 import { withFirstPartyPayloadMutationLock } from './withFirstPartyPayloadMutationLock.js';
 import { joinPathForPathShape } from '../path/pathShape.js';
+import { publishRuntimePayloadPermissions } from './runtimePayloadPermissions.js';
 
 export interface FirstPartyPayloadPromotionResult {
   currentVersionId: string;
@@ -88,6 +89,7 @@ export async function promoteVersionedPayloadWithoutLock(params: Readonly<{
         payloadRoot: tempPath,
         releaseRing: layout.channel,
       });
+      if (process.platform !== 'win32') await publishRuntimePayloadPermissions(tempPath);
     },
   });
 

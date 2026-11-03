@@ -9,6 +9,7 @@ import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessLine';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { useActiveServerAccountScope, useAllMachines } from '@/sync/domains/state/storage';
 import { fireAndForget } from '@/utils/system/fireAndForget';
@@ -205,18 +206,44 @@ export function ProjectOpenResolutionPage(
 }
 
 /**
+ * A refresh that failed over Project rows the surface still shows (`model.staleRows`): the rows stay at full
+ * strength under this one line, labeled as of the last read, with Retry. Retry shows itself pending and leaves
+ * only when a read of this scope succeeds.
+ */
+export function ProjectRowsStaleLine(props: Readonly<{ testID: string; asOf: number | null }>) {
+  const retry = useProjectRowsRetry();
+  const [retrying, setRetrying] = React.useState(false);
+  const onRetry = React.useCallback(() => {
+    setRetrying(true);
+    void retry().finally(() => setRetrying(false));
+  }, [retry]);
+  return (
+    <SurfaceFreshnessLine
+      testID={props.testID}
+      asOf={props.asOf}
+      reason={t('projects.identity.rowsStaleReason')}
+      busy={retrying}
+      action={{ label: t('common.retry'), onPress: onRetry, disabled: retrying, testID: `${props.testID}-retry` }}
+    />
+  );
+}
+
+/**
  * Read this Home's Project rows again through the canonical list Action (the same read every
  * surface uses), for a page whose checkout the rows have not confirmed.
  */
-export function useProjectRowsRetry(): () => void {
+export function useProjectRowsRetry(): () => Promise<void> {
   const scope = useActiveServerAccountScope();
   const serverId = scope?.serverId ?? null;
-  return React.useCallback(() => {
+  return React.useCallback(async () => {
     if (!serverId) return;
-    fireAndForget((async () => {
+    const read = (async () => {
       const { createDefaultActionExecutor } = await import('@/sync/ops/actions/defaultActionExecutor');
       await createDefaultActionExecutor().execute('projects.list', { serverId }, { surface: 'ui', serverId });
-    })(), { tag: 'ProjectOpenResolution.retryRows' });
+    })();
+    fireAndForget(read, { tag: 'ProjectOpenResolution.retryRows' });
+    // Settles either way, so a caller can show the read pending; the census owner decides what the outcome means.
+    await read.catch(() => {});
   }, [serverId]);
 }
 

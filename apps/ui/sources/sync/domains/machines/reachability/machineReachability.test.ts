@@ -4,6 +4,7 @@ import { RpcError } from '@happier-dev/protocol/rpcErrors';
 import * as reachabilityProtocol from '@happier-dev/protocol/machines/machineReachabilityV1';
 import * as scopeKeys from '@/sync/domains/scope/serverAccountScope';
 import { captureServerProfileScopeResolver } from '@/sync/domains/server/serverProfiles';
+import { publishMachineActivity } from '@/sync/domains/machines/machineActivity';
 
 import {
     clearMachineRequestReachabilityForTest,
@@ -26,6 +27,17 @@ afterEach(() => {
 });
 
 describe('machine reachability', () => {
+    it('invalidates a retained verdict when pushed activity changes without changing its timestamp', () => {
+        const scope = { serverId: 'home', accountId: 'account-a' };
+        // Without a heartbeat timestamp the protocol uses the explicit active bit.
+        const machine = { id: 'controller', active: true, activeAt: 0 };
+        expect(resolveMachineReachability(scope, machine, 100)).toBe('reachable');
+        publishMachineActivity(machine, { active: false, activeAt: 0 }, []);
+        expect(resolveMachineReachability(scope, machine, 101)).toBe('unreachable');
+        publishMachineActivity(machine, { active: true, activeAt: 0 }, []);
+        expect(resolveMachineReachability(scope, machine, 102)).toBe('reachable');
+    });
+
     it('derives only changed Machine verdicts while checking live expiry and scope withdrawal', () => {
         vi.stubEnv('EXPO_PUBLIC_HAPPIER_MACHINE_ONLINE_GRACE_MS', '60000');
         const scope = { serverId: 'home', accountId: 'account-a' };

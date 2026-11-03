@@ -146,7 +146,7 @@ function setup(decision: { kind: 'idle'; since: number } | { kind: 'busy' | 'unk
     const confirmIdle = vi.fn(async (): Promise<ManagedActivityBridgeResultV1> => decision.kind === 'idle'
         ? { ...decision, evidence: signedIdle(machine, decision.since, Date.now()) } : decision);
     const reopen = vi.fn(async () => undefined);
-    const waitForChange = vi.fn(async (signal?: AbortSignal) => await new Promise<void>((_resolve, reject) => {
+    const waitForChange = vi.fn(async (signal?: AbortSignal): Promise<'activity' | 'currentness' | void> => await new Promise<void>((_resolve, reject) => {
         signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
     }));
     const driverInput = { token: 'token', serverUrl: 'https://home.example', homeId, controller,
@@ -257,8 +257,10 @@ describe('unused Stop through guest drain and controller operation custody', () 
         expect(test.effects).toEqual([role]);
 
         test.post.mockRestore();
-        const refused = setup(undefined, { kind: 'refused', code: 'native_denied' }, intent, undefined, undefined,
-            intent === 'rebuild' ? { kind: 'refused', code: 'native_denied' } : undefined);
+        const nativeCause = { httpStatusClass: '4xx' as const, code: 'forbidden' as const };
+        const refusedResult = { kind: 'refused' as const, code: 'native_denied', nativeCause };
+        const refused = setup(undefined, refusedResult, intent, undefined, undefined,
+            intent === 'rebuild' ? refusedResult : undefined);
         const refusalOperations = createHostActionOperationRuntime({ machineId: machine.controller.machineId,
             resolveAccountId: async () => 'owner', generateOperationId: () => `refused-${role}` });
         let refusalWork: ReturnType<typeof refused.driver.execute> | undefined;
@@ -269,7 +271,8 @@ describe('unused Stop through guest drain and controller operation custody', () 
             } });
         await expect(refusalWork).rejects.toMatchObject({ code: 'native_denied' });
         expect(ActionOperationGetV1ResponseSchema.parse(await refusalOperations.handlers.getV2({ operationId: `refused-${role}` })))
-            .toMatchObject({ kind: 'found', operation: { state: 'failed', error: { errorCode: 'native_denied' }, settledAt: expect.any(Number) } });
+            .toMatchObject({ kind: 'found', operation: { state: 'failed', error: { errorCode: 'native_denied',
+                details: { kind: 'managedNative', nativeCause } }, settledAt: expect.any(Number) } });
         expect(refused.readMachine().submittedNativeEffect).toBeUndefined();
         expect(refused.effects).toEqual([role]);
     });
@@ -343,6 +346,8 @@ describe('unused Stop through guest drain and controller operation custody', () 
         let reads = 0;
         const runtime = createDaemonManagedMachinePolicyRuntime({
             // Census and the fixture's guest/native transports are the only replaced boundaries.
+            loadMachine: async id => ({ id, encryptionMode: 'plain', active: true, metadata: null, metadataVersion: 0,
+                daemonState: { status: 'running' }, daemonStateVersion: 1 }),
             readCensus: async () => { reads++; return { machines: [test.readMachine()], targets: [] }; },
             executePolicy: async request => operations.observeExecution({ actionId: 'machines.managed.power.set', input: {},
                 actionRequestId: 'policy-stop', execute: async operation => ({ ok: true,
@@ -668,19 +673,21 @@ it('Remove recovers an identity-free submitted allocation through ordinary read-
 
 async function finScopeAuthorization(test: ReturnType<typeof setup>, isSourceCurrent: () => boolean) {
     const machine = test.readMachine();
+    if (!machine.controller) throw new Error('FIN scope fixture requires a controller');
+    const controller = machine.controller;
     const transport = test.post.getMockImplementation()!;
     test.post.mockImplementation(async (url, body, config) => String(url).endsWith('/verify')
         ? { status: isSourceCurrent() ? 200 : 401, data: isSourceCurrent() ? { ok: true } : { error: 'invalid_token' } }
         : await transport(url, body, config));
-    const target = { kind: 'machine' as const, machineId: machine.controller.machineId };
+    const target = { kind: 'machine' as const, machineId: controller.machineId };
     const authorization = await projectExternalActionRequesterHttpAuthorization({
         authorization: ExternalActionExecutionAuthorizationV1Schema.parse({ v: 1, token: 'home-issued-fin-origin', binding: {
             accountId: 'owner', custodianAccountId: 'owner', authentication: { kind: 'account', tokenEpoch: 1 },
-            accountEncryptionMode: 'plain', serverIdentityId: machine.homeId, machineId: machine.controller.machineId,
-            installationId: machine.controller.installationId, actionId: 'machines.managed.delete', requestId: 'control',
+            accountEncryptionMode: 'plain', serverIdentityId: machine.homeId, machineId: controller.machineId,
+            installationId: controller.installationId, actionId: 'machines.managed.delete', requestId: 'control',
             requestEnvelopeDigest: 'a'.repeat(43), target, workflowActionOrigin: { runId: 'scope-run', requestId: 'control' },
         } }), serverId: 'home', serverIdentityId: machine.homeId, serverHttpBaseUrl: 'https://home.example',
-        target, installationId: machine.controller.installationId, privateKey: test.installationKeys.secretKey,
+        target, installationId: controller.installationId, privateKey: test.installationKeys.secretKey,
     });
     if (!authorization) throw new Error('FIN scope fixture did not admit');
     return { externalActionExecutionAuthorization: authorization, externalActionTarget: target };
@@ -1049,7 +1056,7 @@ describe('managed native intent through the accepted Action', () => {
     });
     it.each(['deadline', 'unused'] as const)('associates the verified policy row while waiting for %s, before native admission', async kind => {
         const test = setup({ kind: 'busy', reasons: ['finite'] });
-        test.setMachine({ retention: kind === 'deadline'
+        test.setMachine({ desired: 'start', retention: kind === 'deadline'
             ? { kind: 'deadline', at: Date.now() + 3_600_000, effect: 'delete', interrupts: true }
             : { kind: 'unused', afterMs: 3_600_000, effect: 'delete' } });
         const machine = test.readMachine();
@@ -1135,6 +1142,28 @@ describe('managed native intent through the accepted Action', () => {
             await work?.catch(() => undefined);
         }
     });
+    it('does not reread guest activity for unrelated Account currentness wakes during a settled minute', async () => {
+        const test = setup({ kind: 'busy', reasons: ['finite'] });
+        test.setMachine({ desiredWhen: 'after-idle' });
+        const lifetime = new AbortController();
+        let wakes = 0;
+        let parked!: () => void;
+        const parking = new Promise<void>(resolve => { parked = resolve; });
+        test.waitForChange.mockImplementation(async () => {
+            if (wakes++ < 60) return 'currentness';
+            await parking;
+            return 'activity';
+        });
+        const work = test.run(lifetime.signal).catch(error => error);
+        try {
+            await vi.waitFor(() => expect(test.waitForChange).toHaveBeenCalledTimes(61));
+            expect(test.readActivity).toHaveBeenCalledTimes(1);
+        } finally {
+            lifetime.abort();
+            parked();
+            await work;
+        }
+    });
     it.each(['control', 'policy'] as const)('associates the real %s operation with its admitted row before native effects', async (source) => {
         let domainRef: ActionOperationDomainRefV1 | undefined;
         const observed: Array<ActionOperationDomainRefV1 | undefined> = [];
@@ -1146,7 +1175,7 @@ describe('managed native intent through the accepted Action', () => {
         });
         const request = { homeId: machine.homeId, managedId: machine.id, when: 'now' as const,
             intent: 'delete' as const, expectedRevision: machine.intentRevision, reviewedDependencies: true };
-        if (source === 'policy') test.setMachine({ retention: { kind: 'unused', afterMs: 1, effect: 'delete' } });
+        if (source === 'policy') test.setMachine({ desired: 'start', retention: { kind: 'unused', afterMs: 1, effect: 'delete' } });
         let work: ReturnType<typeof test.driver.execute> | undefined;
         await expect(operations.observeExecution({ actionId: 'machines.managed.delete', input: request, actionRequestId: 'control',
             execute: async context => {
@@ -1461,7 +1490,7 @@ describe('managed native intent through the accepted Action', () => {
     });
     it('rechecks installed Account policy after guest work interrupts an approved unused Delete', async () => {
         const test = setup();
-        test.setMachine({ retention: { kind: 'unused', afterMs: 1, effect: 'delete' } });
+        test.setMachine({ desired: 'start', retention: { kind: 'unused', afterMs: 1, effect: 'delete' } });
         const lifetime = new AbortController();
         let enabled = true;
         let interrupted = false;

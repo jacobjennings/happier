@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { Platform, View } from 'react-native';
+import type { VoiceTransportProps } from '@happier-dev/plugin-ui';
+import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import type { VoiceAttemptControlProjection } from '@/components/voice/attempt/useVoiceAttemptControl';
 import { t } from '@/text';
 
@@ -13,9 +13,9 @@ import { t } from '@/text';
  *
  * `pill` — the desktop top-bar capsule: bare glyphs, End in the danger ink.
  * `island` — the floating capsule: round wells, End tinted.
- * `touch` — the phone island: the same wells at touch size inside platform targets.
+ * `touch` — the retained external-plugin tier; its hit area, not its drawing, reaches the touch floor.
  */
-export type VoiceTransportSize = 'pill' | 'island' | 'touch';
+export type VoiceTransportSize = VoiceTransportProps['size'];
 
 /** `recovery` is the recovery capsule: level with the wells (lab `.tb`), primary fill, round ends. */
 const GEOMETRY: Readonly<Record<VoiceTransportSize, Readonly<{ size: number; icon: number; gap: number; recovery: number; recoveryFont: number }>>> = {
@@ -41,7 +41,6 @@ export const VoiceTransport = React.memo(function VoiceTransport(props: Readonly
     const { voice, size } = props;
     const geometry = GEOMETRY[size];
     const testID = props.testID ?? 'voice-transport';
-    const touchTarget = size === 'touch' ? resolveMinimumInteractiveTargetSize(Platform.OS) : undefined;
     const filled = size !== 'pill';
 
     const recovery = voice.recoveryAvailable && voice.recoveryLabel
@@ -76,7 +75,6 @@ export const VoiceTransport = React.memo(function VoiceTransport(props: Readonly
                         size={geometry.size}
                         iconSize={geometry.icon}
                         {...(filled ? { fill: 'neutral' as const } : { variant: 'plain' as const })}
-                        minimumInteractiveTargetSize={touchTarget}
                         interactiveTargetGapPx={geometry.gap}
                         onPress={onDismiss}
                     />
@@ -103,7 +101,6 @@ export const VoiceTransport = React.memo(function VoiceTransport(props: Readonly
                     selected={voice.muted}
                     // Stays in place while the call is still opening, so nothing shifts when it lands.
                     disabled={!voice.canMute}
-                    minimumInteractiveTargetSize={touchTarget}
                     interactiveTargetGapPx={geometry.gap}
                     onPress={voice.onToggleMute}
                 />
@@ -119,7 +116,6 @@ export const VoiceTransport = React.memo(function VoiceTransport(props: Readonly
                 size={geometry.size}
                 iconSize={geometry.icon}
                 {...(filled ? { fill: recovery ? 'neutral' as const : 'danger' as const } : { variant: 'plain' as const })}
-                minimumInteractiveTargetSize={touchTarget}
                 interactiveTargetGapPx={geometry.gap}
                 onPress={voice.onToggle}
             />

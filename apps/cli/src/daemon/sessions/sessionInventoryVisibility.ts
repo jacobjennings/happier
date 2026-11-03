@@ -1,4 +1,4 @@
-import type { SessionListPageV1 } from '@/session/transport/http/sessionsHttp';
+import type { CompactSessionListPageV1 } from '@/session/transport/http/sessionsHttp';
 
 export type SessionInventoryScope = 'active' | 'archived';
 
@@ -20,10 +20,10 @@ export async function fetchSessionInventoryPage(args: Readonly<{
   cursor?: string;
   limit?: number;
   signal?: AbortSignal;
-}>): Promise<SessionListPageV1> {
-  const { fetchSessionsPage } = await import('@/session/transport/http/sessionsHttp');
+}>): Promise<CompactSessionListPageV1> {
+  const { fetchSessionListPage } = await import('@/session/transport/http/sessionsHttp');
   const { scope, ...request } = args;
-  return await fetchSessionsPage({
+  return await fetchSessionListPage({
     ...request,
     ...(scope === 'archived' ? { archivedOnly: true } : { activeOnly: false }),
   });

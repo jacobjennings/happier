@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios from '@/api/client/credentialAxios';
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 
 import { openAccountScopedBlobCiphertext, sealAccountScopedBlobCiphertext } from '@happier-dev/protocol/crypto/accountScopedCipher';
@@ -133,7 +133,7 @@ function encodePluginId(pluginId: string): string {
  */
 export function createAccountPluginSettingsRecordStorage(params: Readonly<{
     readCredentials?: () => Promise<StoredCredentials | null>;
-    isCurrentAccount?: (credentials: StoredCredentials) => boolean;
+    isCurrentAccount?: (credentials: StoredCredentials) => boolean | Promise<boolean>;
     http?: AccountPluginSettingsHttpClient;
     resolveBaseUrl?: () => string;
     randomBytes?: (length: number) => Uint8Array;
@@ -157,25 +157,27 @@ export function createAccountPluginSettingsRecordStorage(params: Readonly<{
         const credentials = await readCredentials();
         options?.signal?.throwIfAborted();
 
-        function isStillCurrent(signal?: AbortSignal): boolean {
+        async function isStillCurrent(signal?: AbortSignal): Promise<boolean> {
             signal?.throwIfAborted();
-            return credentials !== null
-                && lifetime === getActiveAccountSettingsSnapshotLifetimeToken()
-                && baseUrl === resolveBaseUrl()
-                && isCurrentAccount(credentials);
+            if (!credentials || lifetime !== getActiveAccountSettingsSnapshotLifetimeToken()
+                || baseUrl !== resolveBaseUrl()) return false;
+            const current = await isCurrentAccount(credentials);
+            signal?.throwIfAborted();
+            return current && lifetime === getActiveAccountSettingsSnapshotLifetimeToken()
+                && baseUrl === resolveBaseUrl();
         }
 
         async function readRecord(
             model: StablePluginSettingsModel,
             options?: Readonly<{ signal?: AbortSignal }>,
         ): Promise<PluginAccountSettingsRecordRead> {
-            if (!credentials || !isStillCurrent(options?.signal)) return unavailableRead();
+            if (!credentials || !await isStillCurrent(options?.signal)) return unavailableRead();
             try {
                 const response = await http.get(
                     `${baseUrl}/v1/account/plugin-settings/${encodePluginId(model.identity.pluginId)}`,
                     requestConfig(credentials, options?.signal),
                 );
-                if (!isStillCurrent(options?.signal)) return unavailableRead();
+                if (!await isStillCurrent(options?.signal)) return unavailableRead();
                 if (response.status < 200 || response.status >= 300) return unavailableRead();
                 const mode = await readAccountEncryptionModeOnce({
                     request: async () => await http.get(
@@ -183,7 +185,7 @@ export function createAccountPluginSettingsRecordStorage(params: Readonly<{
                         requestConfig(credentials, options?.signal),
                     ),
                 });
-                if (!isStillCurrent(options?.signal)) return unavailableRead();
+                if (!await isStillCurrent(options?.signal)) return unavailableRead();
                 if (mode.kind !== 'resolved') return unavailableRead();
                 return parseAccountRecordResponse(response.data, credentials, mode.mode);
             } catch (error) {
@@ -201,7 +203,7 @@ export function createAccountPluginSettingsRecordStorage(params: Readonly<{
             }>,
             options?: Readonly<{ signal?: AbortSignal }>,
         ): Promise<PluginAccountSettingsRecordWriteResult> {
-            if (!credentials || !isStillCurrent(options?.signal)) return unavailableWrite();
+            if (!credentials || !await isStillCurrent(options?.signal)) return unavailableWrite();
             let values: ReturnType<typeof PluginAccountSettingsValuesV1Schema.parse>;
             try {
                 values = PluginAccountSettingsValuesV1Schema.parse({ v: 1, values: request.values });
@@ -216,7 +218,7 @@ export function createAccountPluginSettingsRecordStorage(params: Readonly<{
                         requestConfig(credentials, options?.signal),
                     ),
                 });
-                if (!isStillCurrent(options?.signal)) return unavailableWrite();
+                if (!await isStillCurrent(options?.signal)) return unavailableWrite();
                 if (mode.kind !== 'resolved') return unavailableWrite();
                 const content = mode.mode === 'plain'
                     ? { t: 'plain' as const, v: values }

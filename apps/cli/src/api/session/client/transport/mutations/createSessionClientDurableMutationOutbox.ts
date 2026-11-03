@@ -115,7 +115,10 @@ type GenericSessionClientDurableMutationOutbox = Readonly<{
         mutation: RegisteredSessionStateFieldMutationV1,
         opts?: Readonly<{ signal?: AbortSignal }>,
     ): Promise<RegisteredSessionStateFieldWaitResult>;
-    setSessionSyncPendingInputServerContract(result: SessionClientConnectionContractResult): Promise<void>;
+    setSessionSyncPendingInputServerContract(
+        result: SessionClientConnectionContractResult,
+        opts?: Readonly<{ flush?: boolean }>,
+    ): Promise<void>;
     readRuntimeActivitySnapshotTail(): RuntimeActivitySnapshotTail;
     waitForRuntimeActivitySnapshotTailChange(sequence: number, signal?: AbortSignal): Promise<boolean>;
     awaitReady(): Promise<void>;
@@ -459,6 +462,7 @@ type DurableMutationDeliveryOutcome = Readonly<{
     committedSequence?: number;
     ignoredLossy?: boolean;
     unsupportedCapability?: boolean;
+    terminalFailureDiagnostic?: Record<string, unknown>;
     terminalFailureReason?:
         | 'session_turn_mutation_rejected'
         | 'metadata_tuple_conflict'
@@ -817,8 +821,8 @@ function createGenericSessionClientDurableMutationOutbox(
                 await (await resolveReopened())?.enqueueRegisteredSessionStateFieldMutationAndWaitForDelivery(mutation, opts)
                 ?? { status: 'failed' }
             ),
-            setSessionSyncPendingInputServerContract: async (result) => {
-                await (await resolveReopened())?.setSessionSyncPendingInputServerContract(result);
+            setSessionSyncPendingInputServerContract: async (result, opts) => {
+                await (await resolveReopened())?.setSessionSyncPendingInputServerContract(result, opts);
             },
             readRuntimeActivitySnapshotTail: () => reopenedHandle?.readRuntimeActivitySnapshotTail() ?? ({
                 sequence: 0,
@@ -994,9 +998,9 @@ function createGenericSessionClientDurableMutationOutbox(
             if (handleClosed) return { status: 'failed' };
             return await sharedEntry.outbox.enqueueRegisteredSessionStateFieldMutationAndWaitForDelivery(mutation, opts);
         },
-        setSessionSyncPendingInputServerContract: async (result) => {
+        setSessionSyncPendingInputServerContract: async (result, opts) => {
             if (handleClosed) return;
-            await sharedEntry.outbox.setSessionSyncPendingInputServerContract(result);
+            await sharedEntry.outbox.setSessionSyncPendingInputServerContract(result, opts);
         },
         readRuntimeActivitySnapshotTail: () => sharedEntry.outbox.readRuntimeActivitySnapshotTail(),
         waitForRuntimeActivitySnapshotTailChange: async (sequence, signal) => {
@@ -1138,6 +1142,7 @@ export function createRuntimeSessionClientDurableMutationOutbox(params: Readonly
             if (retainedSessionSyncPendingInputServerContract) {
                 await journal.setSessionSyncPendingInputServerContract(
                     retainedSessionSyncPendingInputServerContract,
+                    { flush: false },
                 );
             }
             const contractCompletedAt = performance.now();
@@ -1432,7 +1437,7 @@ function createGenericSessionClientDurableMutationOutboxInstance(
                     }),
                 ...(turn ? {
                     action: turn.action,
-                    ...(turn.turnId ? { turnId: turn.turnId } : {}),
+                    ...('turnId' in turn && turn.turnId ? { turnId: turn.turnId } : {}),
                     observedAt: turn.observedAt,
                 } : {}),
                 blockedMutationCount: blockedMutations.length,
@@ -1901,6 +1906,18 @@ function createGenericSessionClientDurableMutationOutboxInstance(
             }
             if (!result.delivered && result.reason === 'session_turn_mutation_rejected') {
                 return { delivered: false, terminalFailureReason: 'session_turn_mutation_rejected' };
+            }
+            if (!result.delivered && result.reason === 'exact_session_turn_mutation_not_delivered'
+                && 'diagnostic' in result && 'classification' in result.diagnostic
+                && result.diagnostic.classification === 'semantic_non_positive') {
+                // Home has committed this exact mutation's final decision and
+                // replays it by mutation id. Retrying cannot change that refusal;
+                // retain its evidence as a rejection, never a positive delivery.
+                return {
+                    delivered: false,
+                    terminalFailureReason: 'session_turn_mutation_rejected',
+                    terminalFailureDiagnostic: result.diagnostic,
+                };
             }
             return { delivered: result.delivered };
         }
@@ -2381,6 +2398,7 @@ function createGenericSessionClientDurableMutationOutboxInstance(
                         sessionId: params.sessionId,
                         mutation: failedMutation,
                         reason: outcome.terminalFailureReason,
+                        ...(outcome.terminalFailureDiagnostic ? { diagnostic: outcome.terminalFailureDiagnostic } : {}),
                     }));
                     failedMutationReasons.set(mutation.mutationId, outcome.terminalFailureReason);
                     durableFailedMutationReasons.set(mutation.mutationId, outcome.terminalFailureReason);
@@ -2802,13 +2820,14 @@ function createGenericSessionClientDurableMutationOutboxInstance(
             const settlement = await waiter.promise;
             return typeof settlement === 'string' ? { status: settlement } : settlement;
         },
-        async setSessionSyncPendingInputServerContract(result) {
+        async setSessionSyncPendingInputServerContract(result, opts) {
             await ready;
             if (closed) return;
             const previousMode = sessionSyncPendingInputServerContractResult?.mode;
             sessionSyncPendingInputServerContractResult = result;
             if (
-                previousMode !== result.mode
+                opts?.flush !== false
+                && previousMode !== result.mode
                 && (
                     supportsRuntimeActivityV2(result)
                     || result.runtimeActivity === 'legacy'

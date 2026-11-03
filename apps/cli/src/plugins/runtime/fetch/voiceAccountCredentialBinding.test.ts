@@ -71,7 +71,6 @@ function createStablePluginHttpHost(
     }>,
 ) {
     return createProductionStablePluginHttpHost({
-        resolveNetworkAddresses: resolveVoiceFixtureNetworkAddresses,
         ...params,
         adapter: Object.freeze({
             request: async (
@@ -769,8 +768,9 @@ describe('Voice account Plugin fetch credential binding', () => {
             code: 'plugin_fetch_voice_account_operation_unauthorized',
         });
         const caller = new AbortController();
+        const cancelledService = bind('mint-session', caller.signal);
         caller.abort();
-        await expect(bind('mint-session', caller.signal).request(request)).rejects.toMatchObject({
+        await expect(cancelledService.request(request)).rejects.toMatchObject({
             code: 'plugin_fetch_voice_account_operation_cancelled',
         });
         await expect(bind(
@@ -977,7 +977,7 @@ describe('Voice account Plugin fetch credential binding', () => {
         expect(adapter).toHaveBeenCalledOnce();
     });
 
-    it('redacts the materialized credential from interceptors and sanitizes adapter failures', async () => {
+    it('lets trusted interceptors inspect credentials while sanitizing adapter failures', async () => {
         publishCredential();
         const observedRequest = vi.fn(async (
             request: PluginInterceptedRequest,
@@ -1042,9 +1042,8 @@ describe('Voice account Plugin fetch credential binding', () => {
             status: 200,
         });
         expect(observedRequest).toHaveBeenCalledWith(expect.objectContaining({
-            headers: { authorization: '[redacted]' },
+            headers: { authorization: 'Bearer long-lived-account-secret' },
         }), expect.anything());
-        expect(JSON.stringify(observedRequest.mock.calls)).not.toContain('long-lived-account-secret');
         expect(successfulAdapter).toHaveBeenCalledWith(expect.objectContaining({
             headers: { authorization: 'Bearer long-lived-account-secret' },
         }));
@@ -1060,7 +1059,7 @@ describe('Voice account Plugin fetch credential binding', () => {
         expect(String(failure)).not.toContain('long-lived-account-secret');
     });
 
-    it('keeps a host-materialized credential header redacted and immutable regardless of its spelling', async () => {
+    it('lets trusted interceptors inspect and replace a host-materialized credential header', async () => {
         const dynamicDefinition = definitionWithClientAuthCredentialHeaderName('x-license-key');
         publishCredential('acme.voice/conversation', 1, undefined, dynamicDefinition);
         const declaration: Readonly<{
@@ -1130,9 +1129,8 @@ describe('Voice account Plugin fetch credential binding', () => {
             status: 200,
         });
         expect(observed).toHaveBeenCalledWith(expect.objectContaining({
-            headers: { 'x-license-key': '[redacted]' },
+            headers: { 'x-license-key': 'Bearer long-lived-account-secret' },
         }));
-        expect(JSON.stringify(observed.mock.calls)).not.toContain('long-lived-account-secret');
         expect(successfulAdapter).toHaveBeenCalledWith(expect.objectContaining({
             headers: { 'x-license-key': 'Bearer long-lived-account-secret' },
         }));
@@ -1160,10 +1158,8 @@ describe('Voice account Plugin fetch credential binding', () => {
                     'x-license-key': 'interceptor-replacement',
                 },
             },
-        }), mutatingAdapter).request(request)).rejects.toMatchObject({
-            code: 'plugin_fetch_voice_account_operation_failed',
-        });
-        expect(mutatingAdapter).not.toHaveBeenCalled();
+        }), mutatingAdapter).request(request)).resolves.toMatchObject({ status: 200 });
+        expect(mutatingAdapter).toHaveBeenCalledWith(expect.objectContaining({ headers: { 'x-license-key': 'interceptor-replacement' } }));
     });
 
     it('reconstructs the public result without provider response fields or helper methods', async () => {

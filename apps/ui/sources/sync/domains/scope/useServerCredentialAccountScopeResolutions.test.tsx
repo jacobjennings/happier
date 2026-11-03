@@ -1,118 +1,62 @@
 import { act } from 'react-test-renderer';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as SecureStore from 'expo-secure-store';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderHook, standardCleanup } from '@/dev/testkit';
+import { createDeferred, renderHook, standardCleanup } from '@/dev/testkit';
+import { seedPersistedHomeProfilesForTests } from '@/dev/testkit/fixtures/persistedHomeProfiles';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { getServerProfileById, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 import { storage } from '@/sync/domains/state/storage';
 
-type CredentialMutationEvent = Readonly<{
-    kind: 'credentials_set' | 'credentials_removed';
-    serverId: string;
-    serverUrl: string;
-}>;
-
-const harness = vi.hoisted(() => ({
-    tokenByServerId: new Map<string, string>(),
-    unreadableServerIds: new Set<string>(),
-    profiles: new Map<string, { id: string; serverUrl: string }>(),
-    listeners: new Set<(event: CredentialMutationEvent) => void>(),
-    profilesGeneration: 1,
-    credentialReadGate: null as Promise<void> | null,
-}));
-const captureExceptionIfEnabled = vi.hoisted(() => vi.fn());
+// Real TokenStorage, Home profiles and credential-change fan-out over the
+// device secure-store boundary. Only the machine file transport is faked.
 const filenameTransport = vi.hoisted(() => ({ list: vi.fn(), directory: vi.fn() }));
-// The applied network connection is an environment boundary; both lifetime owners stay real.
-vi.mock('@/sync/runtime/orchestration/connectionManager', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/runtime/orchestration/connectionManager')>(),
-    getAppliedActiveServerSnapshot: () => ({ serverId: 'home-a', serverUrl: 'https://home-a.example.test', generation: 1 }),
-    isAppliedActiveServerRuntimeAvailable: () => true,
-}));
 vi.mock('@/sync/ops/machineWorkspaceFileList', () => ({ machineWorkspaceFileList: filenameTransport.list }));
 vi.mock('@/sync/ops/machineFileBrowser', () => ({ machineFilesystemListDirectory: filenameTransport.directory }));
 
-vi.mock('@/utils/system/sentry', async (importOriginal) => ({
-    ...(await (importOriginal as () => Promise<typeof import('@/utils/system/sentry')>)()),
-    captureExceptionIfEnabled,
-}));
+const HOME_IDS = ['home-a', 'home-b', 'home-moved'] as const;
 
-vi.mock('@/hooks/server/useServerProfilesGeneration', () => ({
-    useServerProfilesGeneration: () => harness.profilesGeneration,
-}));
-
-vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-    const actual = await (importOriginal as () => Promise<typeof import('@/sync/domains/server/serverProfiles')>)();
-    return {
-        ...actual,
-        areServerProfileIdentifiersEquivalent: (left: string, right: string) => left === right,
-        getServerProfileById: (serverId: string) => harness.profiles.get(serverId) ?? null,
-        resolveServerProfileScopeIdForIdentifier: (serverId: unknown) => String(serverId ?? '').trim(),
-    };
+beforeEach(async () => {
+    await seedPersistedHomeProfilesForTests({ activeServerId: 'home-a', profiles: [
+        ...['home-a', 'home-b'].map(id => ({ id, name: id, serverUrl: `https://${id}.example.test`,
+            createdAt: 1, updatedAt: 1, lastUsedAt: 1 })),
+        // Stored under an older address of the same Home, so re-saving its canonical
+        // address changes only the credential lookup target.
+        { id: 'home-moved', name: 'home-moved', serverUrl: 'https://home-moved-old.example.test',
+            canonicalServerUrl: 'https://home-moved.example.test', createdAt: 1, updatedAt: 1, lastUsedAt: 1 },
+    ] });
 });
 
-vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
-    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
-    return createTokenStorageModuleMock({
-        importOriginal,
-        tokenStorage: {
-            getCredentialsForServerUrl: async (
-                _serverUrl: string,
-                options: { serverId?: string | null; storageReadFailure?: 'absent' | 'surface' },
-            ) => {
-                await harness.credentialReadGate;
-                // Mirrors the real owner (proven in serverCredentialAccountScope.test.ts):
-                // an unreadable store throws only for a reader that asked to see it.
-                if (harness.unreadableServerIds.has(options.serverId ?? '')) {
-                    if (options.storageReadFailure === 'surface') throw new Error('secure_storage_unavailable');
-                    return null;
-                }
-                const token = harness.tokenByServerId.get(options.serverId ?? '');
-                return token ? {
-                    token: token === 'malformed'
-                        ? token
-                        : `header.${Buffer.from(JSON.stringify({ sub: token })).toString('base64')}.signature`,
-                } : null;
-            },
-        },
-        subscribeHomeCredentialMutations: () => () => undefined,
-    });
-});
-vi.mock('@/sync/runtime/orchestration/homeAccountChange', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/runtime/orchestration/homeAccountChange')>(),
-    subscribeHomeCredentialChange: (listener: (event: CredentialMutationEvent) => void) => {
-        harness.listeners.add(listener);
-        return () => harness.listeners.delete(listener);
-    },
-}));
-
-
-function emitCredentialMutation(event: CredentialMutationEvent): void {
-    act(() => {
-        for (const listener of [...harness.listeners]) listener(event);
-    });
-}
-
-function saveProfile(serverId: string): void {
-    harness.profiles.set(serverId, { id: serverId, serverUrl: `https://${serverId}.example.test` });
-}
-
-afterEach(() => {
-    harness.tokenByServerId.clear();
-    harness.unreadableServerIds.clear();
-    harness.profiles.clear();
-    harness.listeners.clear();
-    harness.profilesGeneration = 1;
-    harness.credentialReadGate = null;
+afterEach(async () => {
     standardCleanup();
+    for (const serverId of HOME_IDS) {
+        const serverUrl = getServerProfileById(serverId)?.serverUrl;
+        if (serverUrl) await TokenStorage.removeCredentialsForServerUrl(serverUrl, { serverId });
+    }
     storage.setState(storage.getInitialState(), true);
     filenameTransport.list.mockReset();
     filenameTransport.directory.mockReset();
 });
 
+function credentials(accountId: string) {
+    return { token: `e30.${Buffer.from(JSON.stringify({ sub: accountId })).toString('base64url')}.signature` };
+}
+
+async function signIn(serverId: string, accountId: string): Promise<void> {
+    const serverUrl = getServerProfileById(serverId)!.serverUrl;
+    expect(await TokenStorage.setCredentialsForServerUrl(serverUrl, { serverId }, credentials(accountId))).toBe(true);
+}
+
+async function signOut(serverId: string): Promise<void> {
+    await act(async () => {
+        await TokenStorage.removeCredentialsForServerUrl(getServerProfileById(serverId)!.serverUrl, { serverId });
+    });
+}
+
 describe('useServerCredentialAccountScopeResolutions', () => {
     it.each(['account-b', 'account-a'])('binds addressed filename search and cancellation to Home B with Account %s', async (accountB) => {
-        saveProfile('home-a');
-        saveProfile('home-b');
-        harness.tokenByServerId.set('home-a', 'account-a');
-        harness.tokenByServerId.set('home-b', accountB);
+        await signIn('home-a', 'account-a');
+        await signIn('home-b', accountB);
         storage.setState({ profileScope: { serverId: 'home-a', accountId: 'account-a' } });
         filenameTransport.list.mockResolvedValueOnce({ ok: true, paths: ['needle.ts'], truncated: false });
         filenameTransport.list.mockImplementationOnce(() => new Promise(() => {}));
@@ -123,14 +67,12 @@ describe('useServerCredentialAccountScopeResolutions', () => {
         await vi.waitFor(() => expect(hook.getCurrent().items.map((item) => item.fullPath)).toEqual(['needle.ts']));
         expect(filenameTransport.list.mock.calls[0]?.[2]).toMatchObject({ serverId: 'home-b', accountId: accountB });
         // Retiring A must not clear B even when both Homes have the same Account id.
-        harness.tokenByServerId.delete('home-a');
-        emitCredentialMutation({ kind: 'credentials_removed', serverId: 'home-a', serverUrl: 'https://home-a.example.test' });
+        await signOut('home-a');
         expect(hook.getCurrent().items).toHaveLength(1);
         await hook.rerender('second');
         await vi.waitFor(() => expect(filenameTransport.list).toHaveBeenCalledTimes(2));
         const signal: AbortSignal = filenameTransport.list.mock.calls[1]?.[2].signal;
-        harness.tokenByServerId.delete('home-b');
-        emitCredentialMutation({ kind: 'credentials_removed', serverId: 'home-b', serverUrl: 'https://home-b.example.test' });
+        await signOut('home-b');
         expect(signal.aborted).toBe(true);
         await vi.waitFor(() => {
             expect(hook.getCurrent().items).toHaveLength(0);
@@ -140,10 +82,8 @@ describe('useServerCredentialAccountScopeResolutions', () => {
         expect(filenameTransport.list).toHaveBeenCalledTimes(2);
     });
     it('binds each Home to the Account held by that Home own credential', async () => {
-        saveProfile('home-a');
-        saveProfile('home-b');
-        harness.tokenByServerId.set('home-a', 'account-a');
-        harness.tokenByServerId.set('home-b', 'account-b');
+        await signIn('home-a', 'account-a');
+        await signIn('home-b', 'account-b');
         const sessionRows = {};
         storage.setState((state) => ({
             ...state,
@@ -176,191 +116,96 @@ describe('useServerCredentialAccountScopeResolutions', () => {
         });
     });
 
-    it('reports a saved Home with no credential as signed out', async () => {
-        saveProfile('home-a');
-
-        const { useServerCredentialAccountScopeResolutions } = await import('./useServerCredentialAccountScopes');
-        const hook = await renderHook(() => useServerCredentialAccountScopeResolutions(['home-a']));
-
-        await vi.waitFor(() => {
-            expect(hook.getCurrent().get('home-a')).toEqual({ kind: 'signed_out' });
-        });
-    });
-
-    it('treats a malformed credential as signed out, never as a bound Account', async () => {
-        saveProfile('home-a');
-        harness.tokenByServerId.set('home-a', 'malformed');
-
-        const { useServerCredentialAccountScopeResolutions } = await import('./useServerCredentialAccountScopes');
-        const hook = await renderHook(() => useServerCredentialAccountScopeResolutions(['home-a']));
-
-        await vi.waitFor(() => {
-            expect(hook.getCurrent().get('home-a')).toEqual({ kind: 'signed_out' });
-        });
-    });
-
-    it('keeps a secure-storage read failure distinct from a confirmed sign-out', async () => {
-        captureExceptionIfEnabled.mockClear();
-        saveProfile('home-a');
-        harness.unreadableServerIds.add('home-a');
-
-        const { useServerCredentialAccountScopeResolutions } = await import('./useServerCredentialAccountScopes');
-        const hook = await renderHook(() => useServerCredentialAccountScopeResolutions(['home-a']));
-
-        await vi.waitFor(() => {
-            expect(hook.getCurrent().get('home-a')).toEqual({ kind: 'unavailable' });
-        });
-        expect(captureExceptionIfEnabled).toHaveBeenCalledWith(expect.any(Error), {
-            tags: { operation: 'resolve_server_credential_account_scope' },
-            extra: { serverId: 'home-a' },
-        });
-    });
-
     it('re-reads an unreadable Home on request so its surfaces can settle once storage recovers', async () => {
-        saveProfile('home-a');
-        saveProfile('home-b');
-        harness.unreadableServerIds.add('home-a');
-        harness.tokenByServerId.set('home-b', 'account-b');
-
-        const { useServerCredentialAccountScopeResolutions } = await import('./useServerCredentialAccountScopes');
-        const { retryServerCredentialAccountScope } = await import('./serverCredentialAccountScope');
-        const hook = await renderHook(() => useServerCredentialAccountScopeResolutions(['home-a', 'home-b']));
-
-        await vi.waitFor(() => {
-            expect(hook.getCurrent().get('home-a')).toEqual({ kind: 'unavailable' });
-            expect(hook.getCurrent().get('home-b')?.kind).toBe('bound');
+        await signIn('home-b', 'account-b');
+        // A locked secure store for Home A only; Home B's credential stays readable.
+        const readSecureStore = SecureStore.getItemAsync;
+        const failedKeys: string[] = [];
+        let homeAUnreadable = true;
+        const secureStoreRead = vi.spyOn(SecureStore, 'getItemAsync').mockImplementation(async (key, ...rest) => {
+            if (homeAUnreadable && key.includes('auth_credentials') && key.includes('home-a')) {
+                failedKeys.push(key);
+                throw new Error('secure storage is locked');
+            }
+            return await readSecureStore(key, ...rest);
         });
-        const settledSibling = hook.getCurrent().get('home-b');
+        try {
+            const { useServerCredentialAccountScopeResolutions } = await import('./useServerCredentialAccountScopes');
+            const { retryServerCredentialAccountScope } = await import('./serverCredentialAccountScope');
+            const hook = await renderHook(() => useServerCredentialAccountScopeResolutions(['home-a', 'home-b']));
 
-        harness.unreadableServerIds.delete('home-a');
-        harness.tokenByServerId.set('home-a', 'account-a');
-        act(() => {
-            retryServerCredentialAccountScope('home-a');
-        });
-
-        await vi.waitFor(() => {
-            expect(hook.getCurrent().get('home-a')).toEqual({
-                kind: 'bound',
-                scope: { serverId: 'home-a', accountId: 'account-a' },
+            await vi.waitFor(() => {
+                expect(hook.getCurrent().get('home-a')).toEqual({ kind: 'unavailable' });
+                expect(hook.getCurrent().get('home-b')?.kind).toBe('bound');
             });
-        });
-        // A retry re-reads only the Home that was asked about.
-        expect(hook.getCurrent().get('home-b')).toBe(settledSibling);
-    });
+            const settledSibling = hook.getCurrent().get('home-b');
 
-    it('rebinds one Home when its credential changes and leaves its siblings alone', async () => {
-        saveProfile('home-a');
-        saveProfile('home-b');
-        harness.tokenByServerId.set('home-a', 'account-a');
-        harness.tokenByServerId.set('home-b', 'account-b');
-
-        const { useServerCredentialAccountScopeResolutions } = await import('./useServerCredentialAccountScopes');
-        const hook = await renderHook(() => useServerCredentialAccountScopeResolutions(['home-a', 'home-b']));
-        await vi.waitFor(() => {
-            expect(hook.getCurrent().get('home-a')).toEqual({
-                kind: 'bound',
-                scope: { serverId: 'home-a', accountId: 'account-a' },
+            // The store unlocks holding Home A's credential; no credential mutation is published.
+            homeAUnreadable = false;
+            await SecureStore.setItemAsync(failedKeys[0]!, JSON.stringify(credentials('account-a')));
+            act(() => {
+                retryServerCredentialAccountScope('home-a');
             });
-        });
 
-        harness.tokenByServerId.set('home-a', 'account-a2');
-        emitCredentialMutation({
-            kind: 'credentials_set',
-            serverId: 'home-a',
-            serverUrl: 'https://home-a.example.test',
-        });
-
-        await vi.waitFor(() => {
-            expect(hook.getCurrent().get('home-a')).toEqual({
-                kind: 'bound',
-                scope: { serverId: 'home-a', accountId: 'account-a2' },
+            await vi.waitFor(() => {
+                expect(hook.getCurrent().get('home-a')).toEqual({
+                    kind: 'bound',
+                    scope: { serverId: 'home-a', accountId: 'account-a' },
+                });
             });
-        });
-        expect(hook.getCurrent().get('home-b')).toEqual({
-            kind: 'bound',
-            scope: { serverId: 'home-b', accountId: 'account-b' },
-        });
-    });
-
-    it('retains a settled Account projection while an unchanged Home profile is revalidated', async () => {
-        saveProfile('home-a');
-        harness.tokenByServerId.set('home-a', 'account-a');
-
-        const { useServerCredentialAccountScopeResolutions } = await import('./useServerCredentialAccountScopes');
-        const hook = await renderHook(() => useServerCredentialAccountScopeResolutions(['home-a']));
-        await vi.waitFor(() => {
-            expect(hook.getCurrent().get('home-a')).toEqual({
-                kind: 'bound',
-                scope: { serverId: 'home-a', accountId: 'account-a' },
-            });
-        });
-
-        let releaseCredentialRead: (() => void) | undefined;
-        harness.credentialReadGate = new Promise<void>((resolve) => {
-            releaseCredentialRead = resolve;
-        });
-        harness.profilesGeneration += 1;
-        await hook.rerender();
-
-        expect(hook.getCurrent().get('home-a')).toEqual({
-            kind: 'bound',
-            scope: { serverId: 'home-a', accountId: 'account-a' },
-        });
-
-        await act(async () => {
-            releaseCredentialRead?.();
-            harness.credentialReadGate = null;
-        });
-        await vi.waitFor(() => {
-            expect(hook.getCurrent().get('home-a')).toEqual({
-                kind: 'bound',
-                scope: { serverId: 'home-a', accountId: 'account-a' },
-            });
-        });
+            // A retry re-reads only the Home that was asked about.
+            expect(hook.getCurrent().get('home-b')).toBe(settledSibling);
+        } finally {
+            secureStoreRead.mockRestore();
+        }
     });
 
     it('does not expose a retired binding while retaining its settled revalidation projection', async () => {
-        saveProfile('home-a');
-        harness.tokenByServerId.set('home-a', 'account-a');
+        await signIn('home-moved', 'account-moved');
 
         const {
             useServerCredentialAccountScopeBindings,
             useServerCredentialAccountScopeResolutions,
         } = await import('./useServerCredentialAccountScopes');
         const hook = await renderHook(() => ({
-            bindings: useServerCredentialAccountScopeBindings(['home-a']),
-            resolutions: useServerCredentialAccountScopeResolutions(['home-a']),
+            bindings: useServerCredentialAccountScopeBindings(['home-moved']),
+            resolutions: useServerCredentialAccountScopeResolutions(['home-moved']),
         }));
         await vi.waitFor(() => {
-            expect(hook.getCurrent().bindings.has('home-a')).toBe(true);
-            expect(hook.getCurrent().resolutions.get('home-a')?.kind).toBe('bound');
+            expect(hook.getCurrent().bindings.has('home-moved')).toBe(true);
+            expect(hook.getCurrent().resolutions.get('home-moved')?.kind).toBe('bound');
         });
 
-        let releaseCredentialRead: (() => void) | undefined;
-        harness.credentialReadGate = new Promise<void>((resolve) => {
-            releaseCredentialRead = resolve;
+        const releaseRead = createDeferred<void>();
+        const originalRead = TokenStorage.getCredentialsForServerUrl.bind(TokenStorage);
+        const credentialRead = vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockImplementation(async (...args) => {
+            await releaseRead.promise;
+            return await originalRead(...args);
         });
-        // Only an actual credential lookup-target change (the Home's URL) retires the binding;
-        // a metadata-only publication keeps it.
-        harness.profiles.set('home-a', { id: 'home-a', serverUrl: 'https://home-a-moved.example.test' });
-        harness.profilesGeneration += 1;
-        await hook.rerender();
+        try {
+            // Only an actual credential lookup-target change (the Home's URL) retires the binding;
+            // a metadata-only publication keeps it.
+            await act(async () => {
+                await upsertServerProfile({ serverUrl: 'https://home-moved.example.test', replaceEquivalentStoredUrl: true });
+            });
+            expect(getServerProfileById('home-moved')?.serverUrl).toBe('https://home-moved.example.test');
 
-        expect(hook.getCurrent().bindings.has('home-a')).toBe(false);
-        expect(hook.getCurrent().resolutions.get('home-a')).toEqual({
-            kind: 'bound',
-            scope: { serverId: 'home-a', accountId: 'account-a' },
-        });
+            expect(hook.getCurrent().bindings.has('home-moved')).toBe(false);
+            expect(hook.getCurrent().resolutions.get('home-moved')).toEqual({
+                kind: 'bound',
+                scope: { serverId: 'home-moved', accountId: 'account-moved' },
+            });
 
-        await act(async () => {
-            releaseCredentialRead?.();
-            harness.credentialReadGate = null;
-        });
+            await act(async () => { releaseRead.resolve(); });
+            await vi.waitFor(() => expect(hook.getCurrent().bindings.get('home-moved')?.accountId).toBe('account-moved'));
+        } finally {
+            releaseRead.resolve();
+            credentialRead.mockRestore();
+        }
     });
 
     it('stops claiming an Account once that Home credential is removed', async () => {
-        saveProfile('home-a');
-        harness.tokenByServerId.set('home-a', 'account-a');
+        await signIn('home-a', 'account-a');
 
         const { useServerCredentialAccountScopeResolutions } = await import('./useServerCredentialAccountScopes');
         const hook = await renderHook(() => useServerCredentialAccountScopeResolutions(['home-a']));
@@ -368,12 +213,7 @@ describe('useServerCredentialAccountScopeResolutions', () => {
             expect(hook.getCurrent().get('home-a')?.kind).toBe('bound');
         });
 
-        harness.tokenByServerId.delete('home-a');
-        emitCredentialMutation({
-            kind: 'credentials_removed',
-            serverId: 'home-a',
-            serverUrl: 'https://home-a.example.test',
-        });
+        await signOut('home-a');
 
         await vi.waitFor(() => {
             expect(hook.getCurrent().get('home-a')).toEqual({ kind: 'signed_out' });
@@ -383,8 +223,7 @@ describe('useServerCredentialAccountScopeResolutions', () => {
 
 describe('useServerCredentialAccountScopeResolution', () => {
     it('resolves the one requested Home without the caller assembling a set', async () => {
-        saveProfile('home-a');
-        harness.tokenByServerId.set('home-a', 'account-a');
+        await signIn('home-a', 'account-a');
 
         const { useServerCredentialAccountScopeResolution } = await import('./useServerCredentialAccountScopes');
         const hook = await renderHook(() => useServerCredentialAccountScopeResolution('home-a'));

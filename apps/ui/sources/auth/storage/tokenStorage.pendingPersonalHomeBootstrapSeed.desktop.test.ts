@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
+import { installTokenStorageTestIsolation, installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
 import { installLocalStorageMock } from './tokenStorage.web.testHelpers';
 
 installTokenStorageWebPlatformMocks();
+installTokenStorageTestIsolation('token_storage_seed_desktop');
 
 const desktop = vi.hoisted(() => ({
     kind: 'tauri' as 'tauri' | 'electron',
@@ -29,6 +30,9 @@ vi.mock('@/utils/platform/desktopHost', () => ({
     },
 }));
 
+// desktopHostKind() is read per storage call, so one module instance serves both host rows.
+const { TokenStorage } = await import('./tokenStorage');
+
 const HOME_URL = 'http://127.0.0.1:43123';
 const HOME_IDENTITY = 'srv_personal_home';
 
@@ -36,7 +40,6 @@ describe.each(['tauri', 'electron'] as const)('%s pending Personal Home seed cus
     let restoreLocalStorage: (() => void) | null = null;
 
     beforeEach(() => {
-        vi.resetModules();
         desktop.kind = kind;
         desktop.values.clear();
         desktop.calls.length = 0;
@@ -50,7 +53,6 @@ describe.each(['tauri', 'electron'] as const)('%s pending Personal Home seed cus
     it('writes, reads, and removes only through Desktop secure storage', async () => {
         const localStorage = installLocalStorageMock();
         restoreLocalStorage = localStorage.restore;
-        const { TokenStorage } = await import('./tokenStorage');
         const seed = new Uint8Array(32).fill(7);
         const target = { serverId: HOME_IDENTITY };
 

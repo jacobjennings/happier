@@ -134,6 +134,17 @@ describe('resolveReasonCopy', () => {
     });
     expect(pending.recoveryAction).toBeNull();
   });
+  it('says a private widget definition is unavailable as one durable sentence, never as a start-up state', () => {
+    for (const reasonCode of ['widget_definition_unavailable', 'widget_definition_account_mismatch']) {
+      const presentation = resolvePluginSurfaceStatePresentation({ state: 'unavailable', reasonKind: 'widget', reasonCode });
+      expect(presentation.card).toMatchObject({ kind: 'unavailable', title: t('projects.widgets.definitionUnavailable') });
+      expect(presentation.card?.reason).toBeUndefined();
+      expect(presentation.diagnosticCode).toBe(reasonCode);
+    }
+    const missingPlugin = resolvePluginSurfaceStatePresentation({ state: 'unavailable', reasonKind: 'widget', reasonCode: 'widget_type_unavailable' });
+    expect(missingPlugin.card?.title).not.toBe(t('projects.widgets.definitionUnavailable'));
+  });
+
   it('explains a policy-disabled plugin details destination with the shared reason copy', () => {
     const copy = resolveReasonCopy({
       reasonCode: 'details_destination_policy_unavailable',

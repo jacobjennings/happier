@@ -8,9 +8,9 @@ import {
     groupedToolCallRowPaintDependsOnGroupExpansion,
 } from '@/components/sessions/transcript/toolCalls/units/groupedToolCallRowRenderDecision';
 import {
-    getPendingMessageVisualState,
-    isPendingMessageProviderDeliveryInFlight,
-    resolvePendingMessageHeightBearingChrome,
+    resolvePendingMessagesPresentation,
+    resolvePendingMessageContentPresentation,
+    type PendingMessagePresentation,
 } from '@/components/sessions/pending/pendingMessageVisualState';
 import {
     resolvePluginTranscriptActivityHeightBearingPaint,
@@ -331,8 +331,8 @@ export function buildTranscriptRowShellSignature(params: Readonly<{
         // F-P2 (2026-08-10): HEIGHT-bearing presentation only, not visible-state. The J/D2 fix above
         // stopped serializing the record and keyed on `getPendingMessageVisualState(...).kind`
         // instead — but that kind is a STATUS, and the chrome it selects splits in two: the status
-        // chip is `position: 'absolute'` (`pendingAffordanceChip`) and cannot move the row at all,
-        // while `blockedDeliveryNotice` is in flow. In THIS repository the chip is the only thing the
+        // chip paints one constant line on the action band (`pendingStatusRow`) whatever the state, so it
+        // cannot move the row, while `blockedDeliveryNotice` is in flow and varies. In THIS repository the chip is the only thing the
         // other states select — the whole `queuedReason` vocabulary is painted INSIDE that chip — so
         // a plain send (`saving → send_unconfirmed → queued → delivering`) moved this key several
         // times with the painted box byte-identical, and every move deleted the row's measured size
@@ -343,21 +343,18 @@ export function buildTranscriptRowShellSignature(params: Readonly<{
         // drift. `deliveryBlockedPresentation.labelKey` stays because it decides the notice's own
         // copy, hence its line count.
         //
-        // The block's own local `materializingLocalIds` is still not available here, and neither are
-        // the session-runtime inputs — none of them can change this row's height in this repository,
-        // because every state they select paints into the absolute chip. What matters otherwise is
-        // that the key still moves on every change of the queue's COMPOSITION (ids, order, count) and
-        // of each message's text extent, which is what `isStructuralSignatureDelta` needs to re-seed
-        // the floor when the queue drains.
+        // Follow folding, attention and source actions come from the same presentation as the block.
+        // Its local materialization can unfold a notice without a new item: that path reports a
+        // content-change through TranscriptRowLayoutMutationContext to release the mounted floor.
         // BLOCK-LEVEL RESIDUAL, pre-existing and unchanged: `showNonSteerableNotice` is an in-flow
         // notice this row paints ONCE for the whole queue, derived from session capabilities rather
         // than from any pending record, so no per-message key can see it. The row's own `onLayout`
         // stays the measurement authority for it. Do not buy it back with a ticking field.
-        const hasProviderDeliveryInFlight = item.pendingMessages.some(isPendingMessageProviderDeliveryInFlight);
+        const presentation = resolvePendingMessagesPresentation(item.pendingMessages);
         return {
             ...base,
             structuralKey: [
-                ...item.pendingMessages.map((message) => buildPendingMessagePresentationKey(message, hasProviderDeliveryInFlight)),
+                ...presentation.shownRows.map(buildPendingMessagePresentationKey),
                 ...item.discardedMessages.map((message) => buildDiscardedPendingMessagePresentationKey(message)),
             ].join('|'),
             expansionKey: 'tools:none|thinking:none',
@@ -547,26 +544,29 @@ function buildPendingTextPresentationKey(message: Pick<PendingMessage, 'text' | 
 }
 
 function buildPendingMessagePresentationKey(
-    message: PendingMessage,
-    hasProviderDeliveryInFlight: boolean,
+    presentation: PendingMessagePresentation,
 ): string {
-    const visualState = getPendingMessageVisualState(message, { hasProviderDeliveryInFlight });
+    const { message, visualState } = presentation;
     return [
         message.id,
         message.localId ?? '',
-        resolvePendingMessageHeightBearingChrome(visualState),
+        presentation.heightBearingChrome,
         visualState.deliveryBlockedPresentation?.labelKey ?? '',
-        buildPendingTextPresentationKey(message),
+        presentation.followInput ? JSON.stringify(['follow', presentation.followSourceKey, presentation.count,
+            presentation.needsYou, presentation.opensSourceSession])
+            : `${presentation.isHostInput ? 'host:' : ''}${buildPendingTextPresentationKey(message)}`,
     ].join(':');
 }
 
 function buildDiscardedPendingMessagePresentationKey(message: DiscardedPendingMessage): string {
+    const presentation = resolvePendingMessageContentPresentation(message);
     return [
         'discarded',
         message.id,
         message.localId ?? '',
         message.discardedReason ? 'reason' : '',
-        buildPendingTextPresentationKey(message),
+        presentation.followInput ? JSON.stringify(['follow', presentation.followSourceKey, presentation.needsYou])
+            : `${presentation.isHostInput ? 'host:' : ''}${buildPendingTextPresentationKey(message)}`,
     ].join(':');
 }
 

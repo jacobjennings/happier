@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -54,7 +54,7 @@ async function createWrapperTree(): Promise<{
     binPath,
     [
       "import { writeFileSync } from 'node:fs';",
-      `writeFileSync(${JSON.stringify(reportPath)}, JSON.stringify(process.argv.slice(2)), 'utf8');`,
+      `writeFileSync(${JSON.stringify(reportPath)}, JSON.stringify({ argv: process.argv.slice(2), execPath: process.execPath }), 'utf8');`,
       '',
     ].join('\n'),
     'utf8',
@@ -62,65 +62,39 @@ async function createWrapperTree(): Promise<{
   return { root, wrapperPath, binPath, homeDir, reportPath };
 }
 
-async function writeWin32Preload(root: string, extra = ''): Promise<string> {
+async function writeWin32Preload(root: string): Promise<string> {
   const preloadPath = join(root, 'force-win32.cjs');
   await writeFile(
     preloadPath,
-    [`Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });`, extra, ''].join('\n'),
+    `Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });\n`,
     'utf8',
   );
   return preloadPath;
 }
 
 describe('apps/cli/scripts/env-wrapper.cjs', () => {
-  it('starts the CLI from argv rather than a concatenated shell command line', async () => {
-    const tree = await createWrapperTree();
-    const recordPath = join(tree.root, 'spawn-decision.json');
-    const preloadPath = await writeWin32Preload(
-      tree.root,
-      [
-        `const childProcess = require('node:child_process');`,
-        `const { writeFileSync } = require('node:fs');`,
-        `childProcess.spawn = (command, args, options) => {`,
-        `  writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ command, args, shell: options?.shell ?? null }), 'utf8');`,
-        `  return { on() { return this; } };`,
-        `};`,
-      ].join('\n'),
-    );
-
-    spawnSync(process.execPath, ['--require', preloadPath, tree.wrapperPath, 'dev', 'auth', 'arg with spaces'], {
-      env: { ...process.env, HOME: tree.homeDir },
-      encoding: 'utf8',
-    });
-
-    const decision = JSON.parse(await readFile(recordPath, 'utf8')) as {
-      command: string;
-      args: string[];
-      shell: unknown;
-    };
-
-    // A shell makes Node concatenate argv into one unescaped command line, which both
-    // corrupts spaced paths and hands user arguments to a shell parser.
-    expect(decision.shell).toBeFalsy();
-    // The wrapper must re-enter the Node runtime already running it, not a bare PATH
-    // lookup that Windows can only resolve through that same shell.
-    expect(isAbsolute(decision.command)).toBe(true);
-    expect(decision.command).toBe(process.execPath);
-    expect(decision.args).toEqual([tree.binPath, 'auth', 'arg with spaces']);
-  }, 30_000);
-
   it('delivers user arguments to the CLI byte-for-byte from an install path containing spaces', async () => {
     const tree = await createWrapperTree();
     const preloadPath = await writeWin32Preload(tree.root);
     const userArgs = ['arg with spaces', 'quote"inside', '$(exit 3)', 'semi;colon&amp'];
 
+    // PATH holds no Node (an unset PATH would fall back to the system default search
+    // path), so only re-entering the absolute running Node delivers the arguments.
+    const envWithoutNodeOnPath = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => key.toUpperCase() !== 'PATH'),
+    );
     spawnSync(
       process.execPath,
       ['--require', preloadPath, tree.wrapperPath, 'dev', 'auth', ...userArgs],
-      { env: { ...process.env, HOME: tree.homeDir }, encoding: 'utf8' },
+      { env: { ...envWithoutNodeOnPath, PATH: tree.homeDir, HOME: tree.homeDir }, encoding: 'utf8' },
     );
 
-    expect(JSON.parse(await readFile(tree.reportPath, 'utf8'))).toEqual(['auth', ...userArgs]);
+    const delivered = JSON.parse(await readFile(tree.reportPath, 'utf8')) as { argv: string[]; execPath: string };
+    // A shell (Node DEP0190) would concatenate argv into one unescaped command line,
+    // splitting the spaced install path and handing user arguments to a shell parser.
+    expect(delivered.argv).toEqual(['auth', ...userArgs]);
+    // The wrapper re-enters the Node runtime already running it, not a bare PATH lookup.
+    expect(delivered.execPath).toBe(process.execPath);
   }, 30_000);
 
   it.skipIf(process.platform === 'win32')('exits unsuccessfully when the CLI is terminated by a signal', async () => {

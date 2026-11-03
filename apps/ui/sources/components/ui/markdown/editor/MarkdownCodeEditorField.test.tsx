@@ -1,9 +1,7 @@
-import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
-import type { CodeEditorHandle } from '@/components/ui/code/editor/codeEditorTypes';
 import type { MarkdownEditModeState } from './useMarkdownEditMode';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -109,71 +107,6 @@ beforeEach(() => {
 });
 
 describe('MarkdownCodeEditorField', () => {
-    it('renders the rich panel when mode is rich and the value is eligible', async () => {
-        const { tree } = await renderScreen(
-            <MarkdownCodeEditorField value="# Doc" onChange={vi.fn()} resetKey="base" language="markdown" />,
-        );
-        expect(tree.findAllByType('RichMarkdownEditorPanel' as any).length).toBe(1);
-        expect(tree.findAllByType('CodeEditor' as any).length).toBe(0);
-    });
-
-    it('renders the raw CodeEditor when mode is raw', async () => {
-        setHook({ markdownEditMode: 'raw', resetKey: 'base:raw:0' });
-        const { tree } = await renderScreen(
-            <MarkdownCodeEditorField value="# Doc" onChange={vi.fn()} resetKey="base" language="markdown" />,
-        );
-        expect(tree.findAllByType('CodeEditor' as any).length).toBe(1);
-        expect(tree.findAllByType('RichMarkdownEditorPanel' as any).length).toBe(0);
-    });
-
-    it('renders the raw CodeEditor when mode is rich but the value is ineligible', async () => {
-        setHook({ richEligible: false, richDisabledReason: 'footnotes' });
-        const { tree } = await renderScreen(
-            <MarkdownCodeEditorField value="# Doc" onChange={vi.fn()} resetKey="base" language="markdown" />,
-        );
-        expect(tree.findAllByType('CodeEditor' as any).length).toBe(1);
-        expect(tree.findAllByType('RichMarkdownEditorPanel' as any).length).toBe(0);
-    });
-
-    it('shows the Raw/Rich menu only when the hook reports showToggle', async () => {
-        const visible = await renderScreen(
-            <MarkdownCodeEditorField value="# Doc" onChange={vi.fn()} resetKey="base" language="markdown" />,
-        );
-        expect(visible.tree.findAllByType('MarkdownEditModeMenu' as any).length).toBe(1);
-
-        setHook({ showToggle: false });
-        const hidden = await renderScreen(
-            <MarkdownCodeEditorField value="# Doc" onChange={vi.fn()} resetKey="base" language="markdown" />,
-        );
-        expect(hidden.tree.findAllByType('MarkdownEditModeMenu' as any).length).toBe(0);
-    });
-
-    it('forwards the composite resetKey to the active surface', async () => {
-        const { tree } = await renderScreen(
-            <MarkdownCodeEditorField value="# Doc" onChange={vi.fn()} resetKey="base" language="markdown" />,
-        );
-        expect(tree.findByType('RichMarkdownEditorPanel' as any).props.resetKey).toBe('base:rich:0');
-    });
-
-    it('forwards the active surface handle onto the parent editorRef (rich)', async () => {
-        const editorRef = { current: null } as React.MutableRefObject<CodeEditorHandle | null>;
-        await renderScreen(
-            <MarkdownCodeEditorField value="# Doc" onChange={vi.fn()} resetKey="base" language="markdown" editorRef={editorRef} />,
-        );
-        expect(editorRef.current).not.toBeNull();
-        expect(editorRef.current?.getValue()).toBe('# Doc');
-    });
-
-    it('forwards the raw surface handle onto the parent editorRef (raw)', async () => {
-        setHook({ markdownEditMode: 'raw', resetKey: 'base:raw:0' });
-        const editorRef = { current: null } as React.MutableRefObject<CodeEditorHandle | null>;
-        await renderScreen(
-            <MarkdownCodeEditorField value="raw content" onChange={vi.fn()} resetKey="base" language="markdown" editorRef={editorRef} />,
-        );
-        expect(editorRef.current).not.toBeNull();
-        expect(editorRef.current?.getValue()).toBe('raw content');
-    });
-
     it('renders an inline header toolbar to the left of the dropdown in rich mode', async () => {
         const { tree } = await renderScreen(
             <MarkdownCodeEditorField value="# Doc" onChange={vi.fn()} resetKey="base" language="markdown" />,

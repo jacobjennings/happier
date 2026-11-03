@@ -2,7 +2,8 @@ import { resolveHappierDropChooserSections, type HappierDropChooserSection } fro
 import { readSessionManagerSessionIdV1 } from '@happier-dev/protocol/sessions/follow/sessionManagerV1';
 
 import { describeSessionListDropReason } from '@/components/sessions/shell/dropPreview/sessionListDropPresentation';
-import type { Session } from '@/sync/domains/state/storageTypes';
+import { readSessionPresentationRecord, readSessionPresentationInputDisplay, readSessionPresentationInputRelations, type SessionRelationRecord } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
+import { sessionDisplayTitle } from '@/utils/sessions/sessionDisplayTitle';
 import type { SessionManagerEligibilitySnapshot } from '@/sync/ops/relations/sessionManagerEligibility';
 import { t } from '@/text';
 
@@ -16,22 +17,21 @@ export const PUT_UNDER_TOP_LEVEL_OPTION_ID = '__top_level__';
  * relation facts and the same words a drag shows. Missing facts refuse; nothing pretends to be ready.
  */
 export function buildPutUnderChooserSections(input: Readonly<{
-    sessions: Readonly<Record<string, Session>>;
+    sessions: Readonly<Record<string, SessionRelationRecord>>;
     sessionId: string;
     facts: SessionManagerEligibilitySnapshot | null;
-    describeName: (session: Session) => string;
 }>): readonly HappierDropChooserSection[] {
     const self = input.sessions[input.sessionId];
     if (!self) return [];
-    const currentLeadId = readSessionManagerSessionIdV1(self);
-    const candidates = listPutUnderCandidateOptions(input.sessions, self, input.facts);
+    const currentLeadId = readSessionManagerSessionIdV1(readSessionPresentationInputRelations(self));
+    const candidates = listPutUnderCandidateOptions(input.sessions, { id: readSessionPresentationRecord(self).id, serverId: self.serverId }, input.facts);
     return resolveHappierDropChooserSections({
         unavailableTitle: t('entityDragDrop.chooser.cantTakeReports'),
         options: [
             { id: PUT_UNDER_TOP_LEVEL_OPTION_ID, label: t('sessionWork.putUnder.topLevel'), current: currentLeadId === null },
-            ...candidates.map(({ candidate, eligibility }) => ({
+            ...candidates.map(({ candidate, input: source, eligibility }) => ({
                 id: candidate.id,
-                label: input.describeName(candidate),
+                label: sessionDisplayTitle(readSessionPresentationInputDisplay(source), source.serverId),
                 current: candidate.id === currentLeadId,
                 refusedReason: eligibility.allowed ? null : describeSessionListDropReason(eligibility.reason).message,
             })),

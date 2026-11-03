@@ -19,6 +19,7 @@ import { t } from '@/text';
 import { teamPageHeaderMeta, type TeamSectionContext } from './teamSectionContext';
 import { teamSettingsPath } from './teamsRoutes';
 import { teamReadFailureLabel } from './teamMutationPresentation';
+import { useTeamReadFailureAction } from './useTeamReadFailureAction';
 
 /**
  * The page head of a Team destination: a sub-page names itself (`title`, `description`); an entity
@@ -102,6 +103,7 @@ export const TeamSection = React.memo(function TeamSection(props: Readonly<{
 }>) {
     const navigation = useNavigation();
     const router = useRouter();
+    const readFailureAction = useTeamReadFailureAction();
     const binding = useTeamBinding(props.serverId, props.teamId);
     const scopeKey = binding.kind === 'bound'
         ? serverAccountScopedTeamKey(binding.scope, binding.address)
@@ -232,7 +234,7 @@ export const TeamSection = React.memo(function TeamSection(props: Readonly<{
                 kind={denied ? 'unavailable' : 'error'}
                 title={denied ? t('teams.denied.title') : t('teams.unavailable.title')}
                 body={teamReadFailureLabel(state.error)}
-                action={state.retryable ? { label: t('teams.unavailable.retry'), onPress: refresh } : undefined}
+                action={readFailureAction(state.error, { onPress: refresh })}
                 testID="team-unavailable"
             />,
         );

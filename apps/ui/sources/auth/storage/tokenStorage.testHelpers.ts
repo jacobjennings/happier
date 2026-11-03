@@ -1,4 +1,5 @@
-import { vi } from 'vitest';
+import { afterEach, beforeEach, vi } from 'vitest';
+import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
 
 type TokenStorageModuleFactory = () => unknown | Promise<unknown>;
 
@@ -62,4 +63,36 @@ export function installTokenStorageWebPlatformMocks(
             },
         };
     });
+}
+
+/**
+ * Lets one TokenStorage module instance serve a whole file. Each test gets its own storage scope
+ * (TokenStorage caches are keyed by the scoped storage key) and fresh read caches in the real Home
+ * profile owner, which tests seed through `seedPersistedHomeProfilesForTests` instead of mocking it.
+ * A second module instance is still the right tool for cross-tab and reload contracts.
+ */
+export function installTokenStorageTestIsolation(scopePrefix: string): void {
+    const previousStorageScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+    let sequence = 0;
+    // Bind the file's own profile owner before any test opens a second module instance with
+    // `vi.resetModules()`; later imports would otherwise reset that newer instance instead.
+    let serverProfiles: typeof import('@/sync/domains/server/serverProfiles') | null = null;
+    beforeEach(async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `${scopePrefix}_${sequence++}`;
+        serverProfiles ??= await import('@/sync/domains/server/serverProfiles');
+        serverProfiles.resetServerProfilesRuntimeForTests();
+    });
+    afterEach(() => {
+        if (previousStorageScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+        else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousStorageScope;
+    });
+}
+
+/** A persisted Home profile record for `seedPersistedHomeProfilesForTests`. */
+export function homeProfileForTests(
+    id: string,
+    serverUrl: string,
+    extra: Partial<Omit<ServerProfile, 'id' | 'serverUrl'>> = {},
+): ServerProfile {
+    return { id, name: id, serverUrl, createdAt: 1, updatedAt: 1, lastUsedAt: 1, ...extra };
 }

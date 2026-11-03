@@ -4,12 +4,13 @@ import tweetnacl from 'tweetnacl';
 
 import sodium from '@/encryption/libsodium.lib';
 import { encodeBase64 } from '@/encryption/base64';
-import { AES256Encryption } from '@/sync/encryption/encryptor';
 
 import { createEncryptionFromAuthCredentials } from './createEncryptionFromAuthCredentials';
 
 describe('createEncryptionFromAuthCredentials', () => {
     it.each([
+        // Token-only (Plain) credentials must not have Account encryption material invented for them.
+        { token: 'plain-account-token' },
         { token: 'legacy-material-token', secret: encodeBase64(new Uint8Array(31), 'base64url') },
         { token: 'data-key-material-token', encryption: {
             publicKey: encodeBase64(new Uint8Array(31)), machineKey: encodeBase64(new Uint8Array(32)),
@@ -18,12 +19,6 @@ describe('createEncryptionFromAuthCredentials', () => {
         await expect(createEncryptionFromAuthCredentials(credentials)).rejects.toMatchObject({
             code: 'encryption-material-unavailable',
         });
-    });
-
-    it('rejects token-only credentials instead of inventing Account encryption material', async () => {
-        await expect(createEncryptionFromAuthCredentials({
-            token: 'plain-account-token',
-        })).rejects.toThrow('Account encryption material is unavailable for token-only credentials');
     });
 
     it('creates Encryption from dataKey credentials (publicKey + machineKey) that can decrypt encryption keys', async () => {
@@ -70,30 +65,5 @@ describe('createEncryptionFromAuthCredentials', () => {
 
         expect(decrypted).not.toBeNull();
         expect(Array.from(decrypted!)).toEqual(Array.from(dataKey));
-    });
-
-    it('uses machineKey data-key encryption as machine fallback when machine data key cannot be decrypted', async () => {
-        const machineKey = new Uint8Array(32).fill(13);
-        const keyPair = sodium.crypto_box_keypair();
-
-        const credentials = {
-            token: 'token-test',
-            encryption: {
-                publicKey: encodeBase64(keyPair.publicKey),
-                machineKey: encodeBase64(machineKey),
-            },
-        } as const;
-
-        const encryption = await createEncryptionFromAuthCredentials(credentials);
-        await encryption.initializeMachines(new Map([['machine-1', null]]));
-        const machineEncryption = encryption.getMachineEncryption('machine-1');
-        expect(machineEncryption).not.toBeNull();
-
-        const expectedPayload = { type: 'success', sessionId: 'session-123' };
-        const aes = new AES256Encryption(machineKey);
-        const encryptedPayload = await aes.encrypt([expectedPayload]);
-        const decryptedPayload = await machineEncryption!.decryptRaw(encodeBase64(encryptedPayload[0], 'base64'));
-
-        expect(decryptedPayload).toEqual(expectedPayload);
     });
 });

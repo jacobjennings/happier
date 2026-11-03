@@ -23,7 +23,7 @@ import {
     V2_SESSION_LIST_ORDER_BY,
 } from "./page";
 import {
-    type V2SessionListRowCompat,
+    type V2SessionCompactListRow as V2SessionListRowCompat,
 } from "./rows";
 import type { SessionPersonalDiscussionFacts } from "@/app/session/personal/discussionFacts";
 import {
@@ -107,7 +107,6 @@ export async function createV2SessionAttentionPage(params: Readonly<{
                     reader: tx,
                     baseWhere: access.where,
                     accessMode: "effective_access_v1",
-                    allowProjectionFallback: false,
                     qualifiedTeamIds: access.qualifiedTeamIds,
                     collectiveAccessSnapshot: access.collectiveAccessSnapshot,
                     discussionReader: tx,

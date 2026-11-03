@@ -26,7 +26,6 @@ import { SessionPartsInvalidResponseError } from '@/sync/runtime/orchestration/s
 
 import {
   parseDecryptedSessionMetadata,
-  parsePlainSessionAgentState,
   parsePlainSessionMetadata,
   readSessionMetadataLayoutVersion,
   tryParsePlainSessionAgentState,
@@ -64,14 +63,22 @@ import {
   fetchAccountEncryptionCurrentness,
 } from '@/sync/api/account/apiAccountEncryptionMode';
 import { SESSION_OWNER_METADATA_PROJECTION } from '@/sync/domains/session/readSessionOwnerMetadataView';
-import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
-import { buildRenderableFromRowAndCache } from './sessionSnapshot';
+import { SESSION_LIST_DOCUMENT_ADMISSION, type SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { buildRenderableFromRowAndCache, createSessionListDocumentAdmission } from './sessionSnapshot';
+import { admitOpenedSessionListDisplayMetadata, admitOpenedSessionListAgentState, mergeSessionListDocumentObservations,
+  areSessionListDocumentAdmissionsEqual, type SessionListDocumentAdmission } from '@/sync/domains/session/sessionDocumentAdmission';
+import type { AgentStateOpenResult } from '@/sync/encryption/sessionEncryption';
+import { parsePlainSessionAgentStateResult } from './parsePlainSessionPayload';
+import { hasAuthoritativeSessionRouteData } from '@/sync/domains/session/hasAuthoritativeSessionRouteData';
+import { SessionDisplayProjectionV1Schema } from '@happier-dev/protocol';
 import { readSessionByIdHttp } from './sessionByIdHttp';
 import type { CapturedServerReadTransport } from '@/sync/runtime/orchestration/serverScopedRpc/capturedServerReadTransport';
 import type { ScopedBatchResolutionContext } from '@/sync/runtime/orchestration/serverScopedRpc/scopedResolutionSingleFlight';
 
 type SessionEncryption = {
+  decryptAgentStateResult?: (version: number, value: string | null | undefined) => Promise<AgentStateOpenResult>;
   encryptRaw?: (payload: unknown) => Promise<string>;
+  decryptRaw?: (ciphertext: string) => Promise<unknown>;
   decryptAgentState: (version: number, value: string | null) => Promise<any>;
   decryptMetadata: (version: number, value: string, options?: import('@/sync/encryption/encryptor').DecryptOptions) => Promise<any>;
   decryptMetadataPayload?: (version: number, value: string, options?: import('@/sync/encryption/encryptor').DecryptOptions) => Promise<unknown | null>;
@@ -164,6 +171,7 @@ function createSessionPublication(destination: object, signal?: AbortSignal) {
     },
     close() { finish?.(null); signal?.removeEventListener('abort', cancel); },
   };
+
 }
 type SessionPublicationSlot = ReturnType<typeof createSessionPublication>;
 
@@ -221,7 +229,8 @@ function parseCurrentSessionProjectionForHydration(value: unknown) {
 type HydratedSessionById = Omit<
   V2SessionByIdResponse['session'],
   'metadata' | 'ownerMetadata'
-> & {
+> & Pick<Session, 'id' | 'seq' | 'updatedAt' | 'metadataLayoutVersion' | 'metadataVersion'
+  | 'agentStateVersion' | 'archivedAt' | typeof SESSION_LIST_DOCUMENT_ADMISSION> & {
   metadata: Session['metadata'];
   metadataProjection?: Session['metadataProjection'];
   ownerMetadataView?: Session['ownerMetadataView'];
@@ -286,7 +295,8 @@ async function fetchSessionTurnsProjection(params: Readonly<{
   }
 
   if (status < 200 || status >= 300) {
-    if (isAuthenticationResponseStatus(status)) throw createNotAuthenticatedError(status);
+    // A denied Session part is not a rejected Account credential.
+    if (status === 401) throw createNotAuthenticatedError(status);
     if (params.required && status >= 500) throw new RetryableServerResponseError(status, 'Session turns unavailable');
     return null;
   }
@@ -325,9 +335,11 @@ async function applyLockedSessionShell(params: Readonly<{
   // The owner's metadata could not be opened: install the same locked shell the
   // list path installs (one executor for this outcome, see cp-c2).
   ownerMetadataUnavailable?: boolean;
+  documentAdmission?: SessionListDocumentAdmission;
 }>): Promise<{
   ok: boolean;
   session: HydratedSessionById | Session | null;
+  sessionPublicationUpdatedAt?: number;
   sessionDataKeyHydration?: SessionDataKeyHydrationResult;
   metadataTupleMutationSnapshot?: HydratedSessionMetadataTupleMutationSnapshot | null;
   errorCode?: string;
@@ -342,6 +354,9 @@ async function applyLockedSessionShell(params: Readonly<{
   const access = normalizeSessionAccessProjection(params.row, { allowLegacy: true });
   const lockedSession = {
     ...rowWithoutOwnerMetadata,
+    [SESSION_LIST_DOCUMENT_ADMISSION]: params.documentAdmission
+      ? mergeSessionListDocumentObservations(params.documentAdmission, params.getExistingSession?.(params.sessionId)?.[SESSION_LIST_DOCUMENT_ADMISSION])
+      : undefined,
     serverId,
     encryptionMode: params.encryptionMode,
     thinking: false,
@@ -376,6 +391,7 @@ async function applyLockedSessionShell(params: Readonly<{
   return {
     ok: true,
     session: (params.getExistingSession?.(params.sessionId) ?? sessionToApply) as HydratedSessionById,
+    sessionPublicationUpdatedAt: params.row.updatedAt,
     sessionDataKeyHydration: params.sessionDataKeyHydration,
     ...(params.includeMetadataTupleMutationSnapshot ? { metadataTupleMutationSnapshot: null } : {}),
   };
@@ -410,12 +426,16 @@ export async function fetchAndApplySessionById(params: Readonly<{
   timeoutMs?: number;
   includeTurnsProjection?: boolean | 'required';
   includeMetadataTupleMutationSnapshot?: boolean;
+  /** Capturing a maintenance tuple must not bypass shared ordinary reads. */
+  fresh?: boolean;
   isCurrent?: () => boolean;
   accessProjectionVersion?: 1;
   clientEncryptionRequirement?: ClientEncryptionRequirement;
 }>): Promise<{
   ok: boolean;
   session: HydratedSessionById | Session | null;
+  /** This response's admitted full-publication witness, independent of retained content time. */
+  sessionPublicationUpdatedAt?: number;
   sessionListRenderable?: SessionListRenderableSession;
   encryptionMode?: 'e2ee' | 'plain';
   sessionDataKeyHydration?: SessionDataKeyHydrationResult;
@@ -466,7 +486,7 @@ export async function fetchAndApplySessionById(params: Readonly<{
       projection: params.readTransport && (params.contentDemand === undefined || params.contentDemand === 'session')
         && params.includeTurnsProjection !== false ? 'snapshot' : 'detail',
       signal: params.signal,
-      fresh: params.includeMetadataTupleMutationSnapshot === true,
+      fresh: params.fresh ?? params.includeMetadataTupleMutationSnapshot === true,
       timeoutMs: params.timeoutMs,
       accessProjectionVersion: params.accessProjectionVersion,
       onBatch: params.contentDemand === 'encryption-context'
@@ -490,9 +510,9 @@ export async function fetchAndApplySessionById(params: Readonly<{
   if (!isCurrent()) return staleResult();
 
   if (!responseOk) {
-    // An explicit frame envelope denotes a restricted Session credential, not
-    // an Account login. A denied Session must not trigger Account auth recovery.
-    if (params.sessionKey !== undefined && responseStatus === 403) {
+    // Detail refusals concern this Session, including parts of a successful
+    // Account read-batch. They do not invalidate the Account connection.
+    if (responseStatus === 403) {
       return { ok: false, session: null, errorCode: 'forbidden', httpStatus: 403 };
     }
     if (isAuthenticationResponseStatus(responseStatus)) {
@@ -761,6 +781,9 @@ export async function fetchAndApplySessionById(params: Readonly<{
 
   const sessionEncryption = encryptionMode === 'plain' ? null : params.encryption.getSessionEncryption(sessionId);
   await ensureAccountCurrentness();
+  const responseDocumentAdmission = params.sessionKey === undefined ? mergeSessionListDocumentObservations(createSessionListDocumentAdmission({
+    row, serverId: params.serverId, credentials: params.credentials, accountCurrentness,
+  }), params.getExistingSession?.(sessionId)?.[SESSION_LIST_DOCUMENT_ADMISSION]) : undefined;
   if (!isSessionContentReadable(contentAvailability)) {
     // A frame's explicitly supplied key cannot be repaired with Account material.
     // Keep the shared hydration decision, but return its typed admission failure
@@ -787,6 +810,7 @@ export async function fetchAndApplySessionById(params: Readonly<{
       publication,
       includeMetadataTupleMutationSnapshot: params.includeMetadataTupleMutationSnapshot === true,
       ownerMetadataView: lockedOwnerVisibility,
+      documentAdmission: responseDocumentAdmission,
     });
   }
   if (encryptionMode === 'e2ee' && !sessionEncryption) {
@@ -805,6 +829,7 @@ export async function fetchAndApplySessionById(params: Readonly<{
     publication,
     includeMetadataTupleMutationSnapshot: params.includeMetadataTupleMutationSnapshot === true,
     ownerMetadataUnavailable: true,
+    documentAdmission: responseDocumentAdmission,
   });
   if (
     metadataLayoutVersion === 1
@@ -835,18 +860,18 @@ export async function fetchAndApplySessionById(params: Readonly<{
           ?? Promise.resolve(null)
         )
       : sessionEncryption!.decryptMetadata(row.metadataVersion, row.metadata, metadataDecryptOptions);
-  const agentStatePromise = !isSessionAgentStateVisible({
+  const agentStatePromise: Promise<AgentStateOpenResult> = !isSessionAgentStateVisible({
     metadataLayoutVersion, access,
     ownerMetadataAvailable: ownerMetadataRead?.kind === 'owner', contentAvailability,
   })
-      ? Promise.resolve(null)
+      ? Promise.resolve({ status: 'available', value: null })
       : encryptionMode === 'plain'
-        ? Promise.resolve(parsePlainSessionAgentState(row.agentState ?? null))
-        : sessionEncryption!.decryptAgentState(
+        ? Promise.resolve(parsePlainSessionAgentStateResult(row.agentState))
+        : sessionEncryption!.decryptAgentStateResult?.(
             agentStateVersion,
-            row.agentState ?? null,
-          );
-  const [decryptedMetadata, agentState] = await Promise.all([
+            row.agentState,
+          ) ?? Promise.resolve({ status: 'unavailable' });
+  const [decryptedMetadata, agentStateOpenResult] = await Promise.all([
     decryptedMetadataPromise,
     agentStatePromise,
   ]);
@@ -873,8 +898,22 @@ export async function fetchAndApplySessionById(params: Readonly<{
       publication,
       includeMetadataTupleMutationSnapshot: params.includeMetadataTupleMutationSnapshot === true,
       ownerMetadataView: lockedOwnerVisibility,
+      documentAdmission: responseDocumentAdmission,
     });
   }
+  if (agentStateOpenResult.status !== 'available') {
+    const previous = params.getExistingSession?.(sessionId);
+    const admission = previous?.[SESSION_LIST_DOCUMENT_ADMISSION];
+    if (previous && admission && responseDocumentAdmission
+      && areSessionListDocumentAdmissionsEqual(admission, responseDocumentAdmission)) {
+      await publishHydratedSession({ session: { ...previous,
+        [SESSION_LIST_DOCUMENT_ADMISSION]: mergeSessionListDocumentObservations(admission, responseDocumentAdmission) },
+        applySessions: params.applySessions, getExistingSession: params.getExistingSession,
+        isCurrent: isHydrationCurrent, ensureCurrent: ensureAccountCurrentness, publication });
+    }
+    return { ok: false, session: null, errorCode: 'agent_state_unavailable', sessionDataKeyHydration: hydration };
+  }
+  const agentState = agentStateOpenResult.value;
   const strictSharedMetadata = metadataLayoutVersion === 1
     ? StoredSessionSharedMetadataV1Schema.safeParse(decryptedMetadata)
     : null;
@@ -936,6 +975,12 @@ export async function fetchAndApplySessionById(params: Readonly<{
   const rollbackEligibleTurnStarts = sessionTurns
     ? listRollbackEligibleTurnStarts(sessionTurns)
     : undefined;
+  // Display is optional retained data. A malformed sidecar cannot invalidate an
+  // otherwise readable exact snapshot or become a purported current writer input.
+  const parsedDisplayProjection = SessionDisplayProjectionV1Schema.safeParse(row.displayProjectionV1);
+  const retainedDisplayProjection = parsedDisplayProjection.success
+    ? { displayProjectionV1: parsedDisplayProjection.data }
+    : row.displayProjectionV1 === null ? { displayProjectionV1: null } : {};
   const metadataTupleMutationSnapshot:
     | HydratedSessionMetadataTupleMutationSnapshot
     | null = params.includeMetadataTupleMutationSnapshot !== true
@@ -1010,6 +1055,7 @@ export async function fetchAndApplySessionById(params: Readonly<{
         && Object.prototype.hasOwnProperty.call(row, 'agentState')
           ? {
             mode: 'owner',
+            ...retainedDisplayProjection,
             metadataLayoutVersion: 1,
             metadataVersion: row.metadataVersion,
             sharedMetadataCiphertext: row.metadata,
@@ -1026,6 +1072,7 @@ export async function fetchAndApplySessionById(params: Readonly<{
           : normalizedAccessLevel
             ? {
               mode: 'shared_editor',
+              ...retainedDisplayProjection,
               metadataLayoutVersion: 1,
               metadataVersion: row.metadataVersion,
               sharedMetadataCiphertext: row.metadata,
@@ -1047,6 +1094,7 @@ export async function fetchAndApplySessionById(params: Readonly<{
   const previousSession = params.getExistingSession?.(sessionId);
   const nextSession = {
     ...rowWithoutOwnerMetadata,
+    ...(responseDocumentAdmission ? { [SESSION_LIST_DOCUMENT_ADMISSION]: responseDocumentAdmission } : {}),
     serverId: typeof params.serverId === 'string' && params.serverId.trim().length > 0 ? params.serverId.trim() : undefined,
     encryptionMode,
     thinking: false,
@@ -1069,11 +1117,22 @@ export async function fetchAndApplySessionById(params: Readonly<{
       }
       : params.includeTurnsProjection === false && previousSession?.encryptionMode === encryptionMode
         ? {
-          sessionTurns: previousSession.sessionTurns,
-          rollbackEligibleTurnStarts: previousSession.rollbackEligibleTurnStarts,
+          ...(Object.hasOwn(previousSession, 'sessionTurns')
+            ? { sessionTurns: previousSession.sessionTurns } : {}),
+          ...(Object.hasOwn(previousSession, 'rollbackEligibleTurnStarts')
+            ? { rollbackEligibleTurnStarts: previousSession.rollbackEligibleTurnStarts } : {}),
         }
         : {}),
   };
+
+  const documentAdmission = nextSession[SESSION_LIST_DOCUMENT_ADMISSION];
+  if (documentAdmission) {
+    nextSession[SESSION_LIST_DOCUMENT_ADMISSION] = mergeSessionListDocumentObservations(admitOpenedSessionListAgentState(
+      admitOpenedSessionListDisplayMetadata(documentAdmission, nextSession), agentStateVersion),
+      params.getExistingSession?.(sessionId)?.[SESSION_LIST_DOCUMENT_ADMISSION]);
+  }
+
+  if (!hasAuthoritativeSessionRouteData(nextSession)) return staleResult();
 
   await ensureAccountCurrentness();
   if (!isStoredSessionInResponseScope(previousSession, nextSession)) return staleResult();
@@ -1094,6 +1153,9 @@ export async function fetchAndApplySessionById(params: Readonly<{
     ok: true,
     sessionDataKeyHydration: hydration,
     session: appliedSession,
+    // Never borrow a later global witness: this borrower may have been in flight
+    // while a newer full publication retained the same content object.
+    sessionPublicationUpdatedAt: nextSession.updatedAt,
     ...(params.includeMetadataTupleMutationSnapshot === true
       ? { metadataTupleMutationSnapshot: classifySessionTupleApplyCurrentness(previousSession, nextSession).fullyCurrent
           ? metadataTupleMutationSnapshot : null }

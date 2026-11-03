@@ -13,12 +13,22 @@ import { encodeBase64 } from '@/encryption/base64';
 import { Encryption } from '@/sync/encryption/encryption';
 import { createSessionListQueryHomeController } from '@/sync/domains/session/listing/sessionListQueryController';
 import { subscribeSessionListQueryHomeInvalidation } from '@/sync/domains/session/listing/sessionListQueryInvalidation';
-import { fetchAndApplySessions } from './sessionSnapshot';
+import { fetchAndApplySessions as fetchAndApplySessionsSource } from './sessionSnapshot';
+import { createCompactSessionListFetchBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
 import { handleDeleteSessionSocketUpdate } from './syncSessions';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { readSessionWorkStatusFacts } from '@/components/work/status/sessionWorkStatusFacts';
 import { resolveWorkStatusTone } from '@/components/work/status/resolveWorkStatusTone';
 import { selectSessionReportSubtree } from '@/components/sessions/work/reportSubtree';
+import { readSessionPresentationRecord, readSessionPresentationInputSource, type SessionRelationRecord } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
+
+function fetchAndApplySessions(params: Parameters<typeof fetchAndApplySessionsSource>[0]) {
+    const request = params.request;
+    return fetchAndApplySessionsSource({ ...params,
+        ...(request ? { request: createCompactSessionListFetchBoundary(async (path, init) => path === '/v2/sessions/read-batch'
+            ? undefined : request(path, init)) } : {}),
+    });
+}
 
 const PLAIN_ACCOUNT_CURRENTNESS = {
     mode: 'plain',
@@ -151,6 +161,9 @@ describe('fetchAndApplySessions exact-Home retirement fence', () => {
         const nowMs = Date.now();
         const child = { ...await encryptedRow(encryption, 'child'), manager: { sessionId: 'lead' },
             active: true, activeAt: nowMs, updatedAt: nowMs,
+            viewer: { ...buildSessionRow('child').viewer!, attention: {
+                needsAttention: true, reasons: ['permission_required' as const], primary: 'permission_required' as const, presentation: 'full' as const,
+            } },
             pendingPermissionRequestCount: 1, pendingUserActionRequestCount: 0, pendingRequestObservedAt: nowMs };
         const grandchild = { ...await encryptedRow(encryption, 'grandchild'), manager: { sessionId: 'child' } };
         const unrelated = await encryptedRow(encryption, 'unrelated');
@@ -159,7 +172,7 @@ describe('fetchAndApplySessions exact-Home retirement fence', () => {
         await vi.waitFor(() => {
             const rows = storage.getState().sessionListRowsByServerId['home-a']!;
             expect([getSessionName(rows.child!), getSessionName(rows.grandchild!)]).toEqual(['child', 'grandchild']);
-            expect(rows.unrelated?.metadata).toBeNull();
+            expect(rows.unrelated?.metadata?.path).toBe('/unrelated');
             expect(rows.child?.encryptedContentAvailability).toBe('ready');
         });
         // HTTP metadata acquisition and live presence are distinct boundaries. An online
@@ -167,7 +180,8 @@ describe('fetchAndApplySessions exact-Home retirement fence', () => {
         storage.getState().applyServerScopedSessionListRowPatches('home-a', [{ sessionId: 'child', patch: { presence: 'online' } }]);
         const rows = storage.getState().sessionListRowsByServerId['home-a']!;
         const report = selectSessionReportSubtree(storage.getState().sessions, 'lead', 'home-a', storage.getState().sessionListRowsByServerId)[0]!;
-        const statusOf = (source: Parameters<typeof readSessionWorkStatusFacts>[0]) => resolveWorkStatusTone({ kind: 'session', facts: readSessionWorkStatusFacts(source, nowMs) });
+        const statusOf = (input: SessionRelationRecord) => resolveWorkStatusTone({ kind: 'session', facts:
+            readSessionWorkStatusFacts(readSessionPresentationRecord(input), nowMs, readSessionPresentationInputSource(input)) });
         expect(statusOf(rows.child!).bucket).toBe('needs_you');
         expect(statusOf(report)).toEqual(statusOf(rows.child!));
         expect(storage.getState().sessions.child).toBeUndefined();

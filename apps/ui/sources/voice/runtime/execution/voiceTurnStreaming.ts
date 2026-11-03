@@ -14,7 +14,6 @@ import { isVoiceAgentNotFoundError, isVoiceAgentRpcMethodUnavailable } from '@/v
 import { clearStaleDaemonRunState } from '@/voice/agent/voiceAgentRunState';
 import { streamVoiceAgentTurn } from '@/voice/agent/streamVoiceAgentTurn';
 import { buildVoiceAgentTurnPayload } from '@/voice/agent/buildVoiceAgentTurnPayload';
-import { readPersistedVoiceConversationRuntimePublication } from '@/voice/binding/voiceConversationBindingPersistence';
 import { readLocalConversationSettingsFromAccountSettings } from '@/voice/local/localVoiceSettings';
 import { readVoicePrivacySettings } from '@/sync/domains/settings/readVoicePrivacySettings';
 import { createVoiceTextTurnRejectedBeforeEffectError } from '@/voice/session/types';
@@ -44,9 +43,6 @@ export function createVoiceTurnStreaming(args: Readonly<{
         options?: VoiceAgentSendTurnOptions,
     ) => Promise<Readonly<{ assistantText: string; actions: VoiceAssistantAction[] }>>;
 }> {
-    const readDaemonRuntimePublication = (managedSessionId: string) =>
-        readPersistedVoiceConversationRuntimePublication({ managedSessionId });
-
     /**
      * The eager stream carries a per-effect call identity, and the local tool runner refuses to
      * execute a non-read-only effect without one. The non-eager client turn has no stream, so this
@@ -137,23 +133,12 @@ export function createVoiceTurnStreaming(args: Readonly<{
             const settings: any = storage.getState().settings;
             const localConversation = readLocalConversationSettingsFromAccountSettings(settings);
             const streamingEnabled = localConversation.streaming.enabled === true;
-            const daemonRuntimePublication =
-                handle.backend === 'daemon'
-                    ? readDaemonRuntimePublication(sessionId)
-                    : null;
-            const shouldResumeStreamStart =
-                handle.backend === 'daemon'
-                && daemonRuntimePublication?.facets?.transcriptSource?.supported === true
-                && localConversation.agent.transcript.persistenceMode === 'persistent'
-                && localConversation.agent.resumabilityMode === 'provider_resume';
-
             const response = streamingEnabled
                 ? await streamVoiceAgentTurn({
                     sessionId,
                     handle,
                     userText: nextUserText,
                     displayUserText,
-                    resume: shouldResumeStreamStart,
                     options,
                 })
                 : await handle.client.sendTurn({
@@ -165,6 +150,9 @@ export function createVoiceTurnStreaming(args: Readonly<{
                     ...(options?.userTranscript ? { userTranscript: options.userTranscript } : {}),
                     ...(options?.onUserTranscriptAccepted
                         ? { onUserTranscriptAccepted: options.onUserTranscriptAccepted }
+                        : {}),
+                    ...(options?.onPreparedInstructionsFor
+                        ? { onPreparedInstructionsFor: options.onPreparedInstructionsFor }
                         : {}),
                 });
             const normalizedResponse = {

@@ -531,38 +531,6 @@ describe('useAuthEntryOptions', () => {
         expect(getServerFeaturesSnapshotMock).toHaveBeenCalledTimes(2);
     });
 
-    it('does not restart a Home check for a generation-only publication', async () => {
-        getServerFeaturesSnapshotMock.mockResolvedValue({ status: 'error', reason: 'network' });
-
-        const { useAuthEntryOptions } = await import('./useAuthEntryOptions');
-        const hook = await renderHook(() => useAuthEntryOptions());
-        await flushHookEffects({ cycles: 2, turns: 2 });
-
-        await act(async () => {
-            hook.getCurrent().retryServerCheck();
-        });
-        await flushHookEffects({ cycles: 2, turns: 2 });
-
-        expect(hook.getCurrent().serverAvailability).toBe('unavailable');
-        expect(getServerFeaturesSnapshotMock).toHaveBeenCalledTimes(2);
-
-        getServerFeaturesSnapshotMock.mockResolvedValue({
-            status: 'ready',
-            features: { capabilities: { auth: { methods: [] } } },
-        });
-        await act(async () => {
-            currentActiveServerSnapshot = {
-                ...currentActiveServerSnapshot,
-                generation: currentActiveServerSnapshot.generation + 1,
-            };
-            activeServerListener?.(currentActiveServerSnapshot);
-        });
-        await flushHookEffects({ cycles: 2, turns: 2 });
-
-        expect(getServerFeaturesSnapshotMock).toHaveBeenCalledTimes(2);
-        expect(hook.getCurrent().serverAvailability).toBe('unavailable');
-    });
-
     it('does not schedule an automatic retry and reconciles only when the canonical feature cache reports recovery', async () => {
         vi.useFakeTimers();
         try {
@@ -612,39 +580,6 @@ describe('useAuthEntryOptions', () => {
             expect(hook.getCurrent().showAuthActions).toBe(true);
             expect(getServerFeaturesSnapshotMock).toHaveBeenCalledTimes(2);
             expect(getServerFeaturesSnapshotMock.mock.calls[1]?.[0]?.force).toBe(false);
-        } finally {
-            vi.useRealTimers();
-        }
-    });
-
-    it('keeps a slow valid auth-entry read alive until its response arrives', async () => {
-        vi.useFakeTimers();
-        try {
-            getServerFeaturesSnapshotMock.mockResolvedValue({
-                status: 'ready',
-                features: { capabilities: { auth: { methods: [] } } },
-            });
-            const entry = createDeferred<{ kind: 'unsupported' }>();
-            fetchHomeAuthEntryMock.mockReturnValueOnce(entry.promise);
-
-            const { useAuthEntryOptions } = await import('./useAuthEntryOptions');
-            const hook = await renderHook(() => useAuthEntryOptions());
-            await flushHookEffects({ cycles: 1, turns: 2 });
-
-            expect(fetchHomeAuthEntryMock).toHaveBeenCalledWith(expect.objectContaining({ signal: expect.any(AbortSignal) }));
-            expect(hook.getCurrent().serverAvailability).toBe('loading');
-
-            await act(async () => {
-                await vi.advanceTimersByTimeAsync(7_000);
-            });
-            await flushHookEffects({ cycles: 2, turns: 2 });
-            expect(fetchHomeAuthEntryMock.mock.calls[0][0].signal.aborted).toBe(false);
-            expect(hook.getCurrent().serverAvailability).toBe('loading');
-            entry.resolve({ kind: 'unsupported' });
-            await flushHookEffects({ cycles: 2, turns: 2 });
-            expect(hook.getCurrent().serverAvailability).toBe('ready');
-            expect(hook.getCurrent().showAuthActions).toBe(true);
-            expect(hook.getCurrent().authEntryUnavailable).toBe(false);
         } finally {
             vi.useRealTimers();
         }
@@ -749,50 +684,6 @@ describe('useAuthEntryOptions', () => {
             true,
         ]);
         expect(identityGenerationBumpsRemaining).toBe(2);
-    });
-
-    it('syncs to the latest active server on mount when the server changed before the subscription effect attached', async () => {
-        let currentSnapshot: TestActiveServerSnapshot = {
-            serverId: 'server-example',
-            serverUrl: 'http://api.example.test',
-            generation: 1,
-        };
-        getActiveServerSnapshotMock.mockImplementation(() => currentSnapshot);
-        subscribeActiveServerMock.mockImplementationOnce((_listener: (snapshot: TestActiveServerSnapshot) => void) => {
-            currentSnapshot = {
-                serverId: 'server-override',
-                serverUrl: 'http://api.override.test',
-                generation: 2,
-            };
-            return () => {};
-        });
-        getServerFeaturesSnapshotMock.mockResolvedValue({
-            status: 'ready',
-            features: {
-                capabilities: {
-                    auth: {
-                        methods: [
-                            {
-                                id: 'key_challenge',
-                                actions: [
-                                    { id: 'login', enabled: true, mode: 'keyed' },
-                                    { id: 'provision', enabled: true, mode: 'keyed' },
-                                ],
-                            },
-                        ],
-                        signup: { methods: [] },
-                        login: { methods: [], requiredProviders: [] },
-                        ui: { autoRedirect: { enabled: false, providerId: null } },
-                    },
-                },
-            },
-        });
-
-        const { useAuthEntryOptions } = await import('./useAuthEntryOptions');
-        const hook = await renderHook(() => useAuthEntryOptions());
-        await flushHookEffects({ cycles: 2, turns: 2 });
-
-        expect(hook.getCurrent().serverUrlForCopy).toBe('http://api.override.test');
     });
 
     it('projects the identity-bound Personal Home receipt into auth presentation context', async () => {

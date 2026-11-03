@@ -1,6 +1,4 @@
 import { createPlainSessionOwnerMetadataEnvelopeV1, type SessionOwnerMetadataEnvelopeV1, type SessionOwnerMetadataV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
-import { createAccountScopedCryptoMaterialSnapshotV1 } from '@happier-dev/protocol/crypto/accountScopedCipher';
-import { convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1 } from '@happier-dev/protocol/account/encryptionKeyFingerprintV1';
 import { sealSessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataEnvelopesV1';
 import type { AccountEncryptionCurrentnessResponse } from '@happier-dev/protocol/account/encryptionMode';
 import type { ComposerOptionsInputV1 } from '@happier-dev/protocol/embed';
@@ -9,12 +7,17 @@ import type {
 } from '@happier-dev/cli-common/sessionMetadata';
 import type { DecryptOptions } from '@/sync/encryption/encryptor';
 import type { EncryptionScopeInput } from '@/sync/encryption/encryption';
+import { createSessionDisplayCrypto } from '@/sync/encryption/sessionDisplayCrypto';
+import { validateSessionDisplayProjectionV1 } from '@happier-dev/protocol';
+import { updateSessionMetadataWithRetry } from '@/sync/domains/session/metadata/updateSessionMetadataWithRetry';
+import { emitSessionMetadataTuplePatch } from './emitSessionMetadataUpdateWithServerScope';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
-import { isDataKeyAuthCredentials } from '@/auth/storage/tokenStorage';
-import { decodeBase64 } from '@/encryption/base64';
+import { resolveAuthCredentialsScopeKey } from '@/auth/storage/resolveAuthCredentialsScopeKey';
+import { fireAndForget } from '@/utils/system/fireAndForget';
+import { readCredentialAuthorityKind } from '@/auth/context/credentialAuthority';
 import { getRandomBytes } from '@/platform/cryptoRandom';
-import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
+import { resolveCurrentAccountScopedCryptoMaterialSnapshot } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { fetchAndApplySessionById, type SessionByIdContentDemand, type SessionByIdEncryption, type SessionByIdPrefetchedRead } from '@/sync/engine/sessions/sessionById';
@@ -23,6 +26,7 @@ import { readSessionDetailAccessProjectionVersion } from '@/sync/api/session/ses
 
 import {
     createServerRequestForResolvedServerScope,
+    runWithServerRequestAuthorityForServerAccountScope,
     type ServerAccountRequestAuthority,
     type ServerAccountRequestOptions,
 } from './createServerRequestWithServerScope';
@@ -39,6 +43,8 @@ import { sameAccountEncryptionIdentity } from '@happier-dev/sync-client';
 type AppliedSession = Omit<Session, 'presence'> & { presence?: 'online' | number };
 
 export type SessionMetadataTupleWriterContext = Readonly<{
+    encodeSharedDisplay: ReturnType<typeof createSessionDisplayCrypto>['encodeSharedDisplay'];
+    encodeOwnerDisplay: ReturnType<typeof createSessionDisplayCrypto>['encodeOwnerDisplay'];
     encryptPayload: (payload: unknown) => Promise<string>;
     encodeOwnerMetadata: (
         ownerMetadata: SessionOwnerMetadataV1,
@@ -138,28 +144,8 @@ function resolveCurrentAccountOwnerMetadataMaterialSnapshot(params: Readonly<{
             'Plain Account metadata does not use Account encryption material',
         );
     }
-    const material = resolveAccountScopedCryptoMaterialFromCredentials(
-        params.credentials,
-    );
-    const snapshot = createAccountScopedCryptoMaterialSnapshotV1({
-        accountEncryptionMode: 'e2ee',
-        material,
-        ...(isDataKeyAuthCredentials(params.credentials)
-            ? {
-                dataKeyPublicKey: decodeBase64(
-                    params.credentials.encryption.publicKey,
-                    'base64',
-                ),
-            }
-            : {}),
-    });
-    if (
-        !params.accountCurrentness.contentKeyFingerprint
-        || convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(
-            snapshot.contentPublicKeyFingerprint,
-        )
-            !== params.accountCurrentness.contentKeyFingerprint
-    ) {
+    const snapshot = resolveCurrentAccountScopedCryptoMaterialSnapshot(params);
+    if (!snapshot) {
         throw new Error(
             'Account encryption material does not match current Account state',
         );
@@ -202,7 +188,9 @@ export function getScopedSessionByIdEncryption(context: Readonly<{
 
             const maybeEncryption = candidate as Partial<{
                 encryptRaw: (payload: unknown) => Promise<string>;
+                decryptRaw: (ciphertext: string) => Promise<unknown>;
                 decryptAgentState: (version: number, value: string | null) => Promise<unknown>;
+                decryptAgentStateResult: (version: number, value: string | null | undefined) => Promise<import('@/sync/encryption/sessionEncryption').AgentStateOpenResult>;
                 decryptMetadata: (version: number, value: string, options?: DecryptOptions) => Promise<unknown>;
                 decryptMetadataPayload: (version: number, value: string, options?: DecryptOptions) => Promise<unknown | null>;
             }>;
@@ -211,6 +199,9 @@ export function getScopedSessionByIdEncryption(context: Readonly<{
             }
 
             return {
+                ...(typeof maybeEncryption.decryptRaw === 'function'
+                    ? { decryptRaw: (ciphertext: string) => maybeEncryption.decryptRaw!(ciphertext) }
+                    : {}),
                 ...(typeof maybeEncryption.encryptRaw === 'function'
                     ? {
                         encryptRaw: (payload: unknown) =>
@@ -219,6 +210,9 @@ export function getScopedSessionByIdEncryption(context: Readonly<{
                     : {}),
                 decryptAgentState: (version, value) =>
                     maybeEncryption.decryptAgentState!(version, value),
+                ...(typeof maybeEncryption.decryptAgentStateResult === 'function' ? {
+                    decryptAgentStateResult: (version: number, value: string | null | undefined) => maybeEncryption.decryptAgentStateResult!(version, value),
+                } : {}),
                 decryptMetadata: (version, value, options) =>
                     maybeEncryption.decryptMetadata!(version, value, options),
                 ...(typeof maybeEncryption.decryptMetadataPayload === 'function'
@@ -232,7 +226,7 @@ export function getScopedSessionByIdEncryption(context: Readonly<{
     };
 }
 
-function withMetadataTupleWriterContext<T extends Awaited<
+async function withMetadataTupleWriterContext<T extends Awaited<
     ReturnType<typeof fetchAndApplySessionById>
 >>(params: Readonly<{
     result: T;
@@ -241,9 +235,9 @@ function withMetadataTupleWriterContext<T extends Awaited<
     accountCurrentnessSource: ReturnType<typeof createOperationAccountCurrentnessSource>;
     encryption: SessionByIdEncryption;
     sessionId: string;
-}>): T & Readonly<{
+}>): Promise<T & Readonly<{
     metadataTupleWriterContext?: SessionMetadataTupleWriterContext;
-}> {
+}>> {
     if (
         params.includeMetadataTupleMutationSnapshot !== true
         || !params.result.ok
@@ -251,7 +245,7 @@ function withMetadataTupleWriterContext<T extends Awaited<
     ) {
         return params.result;
     }
-    const mutationSnapshot =
+    let mutationSnapshot =
         params.result.metadataTupleMutationSnapshot;
     const sessionEncryption =
         params.result.session?.encryptionMode === 'plain'
@@ -273,11 +267,43 @@ function withMetadataTupleWriterContext<T extends Awaited<
         await params.accountCurrentnessSource.ensureCurrent();
         return encrypted;
     };
+    const displayCrypto = createSessionDisplayCrypto({
+        sessionMode: params.result.session?.encryptionMode === 'plain' ? 'plain' : 'e2ee',
+        accountMode: params.accountCurrentnessSource.peek()?.mode, credentials: params.credentials,
+        sessionEncryption });
+    let result = params.result;
+    if (mutationSnapshot.mode === 'owner') {
+        const accountCurrentness = params.accountCurrentnessSource.peek();
+        const linked = validateSessionDisplayProjectionV1({
+            projection: mutationSnapshot.displayProjectionV1,
+            sessionMode: params.result.session?.encryptionMode === 'plain' ? 'plain' : 'e2ee',
+            accountMode: accountCurrentness?.mode,
+            metadataVersion: mutationSnapshot.metadataVersion,
+            metadataLayoutVersion: mutationSnapshot.metadataLayoutVersion,
+        });
+        const shared = linked.ok && (await displayCrypto.openSharedDisplay(linked.projection.shared)).ok;
+        const owner = linked.ok && accountCurrentness !== undefined
+            && displayCrypto.openOwnerDisplay(linked.projection.owner, accountCurrentness).ok;
+        await params.accountCurrentnessSource.ensureCurrent();
+        mutationSnapshot = { ...mutationSnapshot, displayProjectionV1Availability: { shared, owner } };
+        result = { ...params.result, metadataTupleMutationSnapshot: mutationSnapshot };
+    }
+    const encodeSharedDisplay: SessionMetadataTupleWriterContext['encodeSharedDisplay'] = async display => {
+        await params.accountCurrentnessSource.ensureCurrent();
+        const envelope = await displayCrypto.encodeSharedDisplay(display);
+        await params.accountCurrentnessSource.ensureCurrent();
+        return envelope;
+    };
     if (mutationSnapshot.mode === 'shared_editor') {
         return {
-            ...params.result,
+            ...result,
             metadataTupleWriterContext: {
                 encryptPayload,
+                encodeSharedDisplay,
+                encodeOwnerDisplay: () => {
+                    params.accountCurrentnessSource.assertCurrent();
+                    throw new Error(`Shared Session metadata cannot encode owner display for ${params.sessionId}`);
+                },
                 encodeOwnerMetadata: () => {
                     params.accountCurrentnessSource.assertCurrent();
                     throw new Error(
@@ -294,20 +320,23 @@ function withMetadataTupleWriterContext<T extends Awaited<
             `Account currentness is required to mutate metadata for ${params.sessionId}`,
         );
     }
+    const ownerMigrationCurrentness = resolveOwnerMigrationCurrentness({
+        credentials: params.credentials, accountCurrentness,
+    });
     return {
-        ...params.result,
+        ...result,
         metadataTupleWriterContext: {
-            ...(mutationSnapshot.mode === 'legacy_owner'
-                ? {
-                    get ownerMigrationCurrentness() {
-                        params.accountCurrentnessSource.assertCurrent();
-                        return resolveOwnerMigrationCurrentness({
-                            credentials: params.credentials,
-                            accountCurrentness,
-                        });
-                    },
-                }
-                : {}),
+            encodeSharedDisplay,
+            encodeOwnerDisplay: display => {
+                params.accountCurrentnessSource.assertCurrent();
+                const envelope = displayCrypto.encodeOwnerDisplay(display);
+                params.accountCurrentnessSource.assertCurrent();
+                return envelope;
+            },
+            get ownerMigrationCurrentness() {
+                params.accountCurrentnessSource.assertCurrent();
+                return ownerMigrationCurrentness;
+            },
             encryptPayload,
             encodeOwnerMetadata: (ownerMetadata) => {
                 params.accountCurrentnessSource.assertCurrent();
@@ -325,6 +354,124 @@ function withMetadataTupleWriterContext<T extends Awaited<
             },
         },
     };
+}
+
+type FullSessionReadResult = Awaited<ReturnType<typeof fetchAndApplySessionById>>;
+type CapturedTupleRead = FullSessionReadResult & Readonly<{
+    metadataTupleWriterContext?: SessionMetadataTupleWriterContext;
+    displayProjectionMaintenance?: 'satisfied' | 'deferred';
+}>;
+
+/** Maintenance consumes this very full read; neither a display row nor a mount is a writer. */
+async function maintainAuthorizedFullRead(params: Readonly<{
+    result: FullSessionReadResult;
+    requestedTuple: boolean;
+    credentials: AuthCredentials;
+    accountCurrentnessSource: ReturnType<typeof createOperationAccountCurrentnessSource>;
+    encryption: SessionByIdEncryption;
+    sessionId: string;
+    request: (path: string, init?: RequestInit) => Promise<Response>;
+    isCurrent?: () => boolean;
+    signal?: AbortSignal;
+    readParams: Parameters<typeof fetchAndApplySessionById>[0];
+}>): Promise<CapturedTupleRead> {
+    const snapshot = params.result.ok ? params.result.metadataTupleMutationSnapshot : null;
+    if (!snapshot || (!params.requestedTuple && (snapshot.mode === 'shared_editor'
+        || readCredentialAuthorityKind(params.credentials.token) !== 'account'))) return params.result;
+    try {
+        if (snapshot.mode !== 'shared_editor') await params.accountCurrentnessSource.read();
+        const captured = await withMetadataTupleWriterContext({ ...params,
+            includeMetadataTupleMutationSnapshot: true });
+        if (params.requestedTuple) return captured;
+        let current = captured;
+        const initialSnapshot = captured.ok ? captured.metadataTupleMutationSnapshot : null;
+        if (!initialSnapshot || initialSnapshot.mode === 'shared_editor' || !captured.metadataTupleWriterContext) return params.result;
+        const writer = () => {
+            params.accountCurrentnessSource.assertCurrent();
+            if (params.signal?.aborted) throw params.signal.reason ?? new Error('Session maintenance cancelled');
+            if (params.isCurrent?.() === false) throw new Error('Session maintenance authority retired');
+            if (!current.metadataTupleWriterContext) throw new Error('Session tuple writer unavailable');
+            return current.metadataTupleWriterContext;
+        };
+        await updateSessionMetadataWithRetry({
+            sessionId: params.sessionId,
+            initialSnapshot,
+            getSession: () => ({ metadata: initialSnapshot.value.metadata, metadataVersion: initialSnapshot.metadataVersion,
+                metadataLayoutVersion: initialSnapshot.metadataLayoutVersion }),
+            refreshSessions: async () => { throw new Error('Session maintenance requires its captured full tuple'); },
+            acquireTupleSnapshot: async () => {
+                current = await withMetadataTupleWriterContext({
+                    result: await fetchAndApplySessionById({ ...params.readParams, prefetched: undefined,
+                        includeMetadataTupleMutationSnapshot: true, fresh: true }),
+                    includeMetadataTupleMutationSnapshot: true, credentials: params.credentials,
+                    accountCurrentnessSource: params.accountCurrentnessSource, encryption: params.encryption, sessionId: params.sessionId,
+                });
+                if (!current.ok || !current.metadataTupleMutationSnapshot) throw new Error('Session tuple refresh unavailable');
+                writer();
+                return current.metadataTupleMutationSnapshot;
+            },
+            tupleCrypto: {
+                encryptPayload: payload => writer().encryptPayload(payload),
+                encodeOwnerMetadata: metadata => writer().encodeOwnerMetadata(metadata),
+                encodeSharedDisplay: display => writer().encodeSharedDisplay(display),
+                encodeOwnerDisplay: display => writer().encodeOwnerDisplay(display),
+            },
+            getOwnerMigrationCurrentness: () => writer().ownerMigrationCurrentness,
+            emitUpdateMetadata: payload => {
+                writer();
+                if (!('mode' in payload)) throw new Error('Session display maintenance requires a tuple patch');
+                return emitSessionMetadataTuplePatch({ sessionId: params.sessionId, patch: payload,
+                    request: (path, init) => params.request(path, { ...init, signal: params.signal }),
+                    assertCurrent: () => { writer(); } });
+            },
+            // A CAS receipt is not a freshly opened full Session. Ordinary server
+            // publication/read currentness owns any subsequent local version advance.
+            applyTupleSnapshot: () => {},
+            updater: 'ensureDisplayProjection',
+        });
+        return { ...params.result, displayProjectionMaintenance: 'satisfied' };
+    } catch (error) {
+        if (params.requestedTuple) throw error;
+        console.warn('[SessionDisplay] Owner display maintenance deferred; readable full Session retained');
+        return { ...params.result, displayProjectionMaintenance: 'deferred' };
+    }
+}
+
+/** Ordinary reads publish immediately; explicit maintenance keeps its containing work budget. */
+async function completeAuthorizedFullRead(params: Parameters<typeof maintainAuthorizedFullRead>[0] & Readonly<{
+    awaitDisplayProjectionMaintenance?: true;
+}>): Promise<CapturedTupleRead> {
+    if (params.requestedTuple || params.awaitDisplayProjectionMaintenance) return maintainAuthorizedFullRead(params);
+    const snapshot = params.result.ok ? params.result.metadataTupleMutationSnapshot : null;
+    if (!snapshot || snapshot.mode === 'shared_editor' || readCredentialAuthorityKind(params.credentials.token) !== 'account') return params.result;
+    const serverId = params.readParams.serverId;
+    if (!serverId) {
+        console.warn('[SessionDisplay] Owner display maintenance deferred; full read has no captured Home');
+        return params.result;
+    }
+    // The caller can release its read authority as soon as this returns. The
+    // existing scoped authority owns the maintenance carrier until its CAS ends.
+    // Adopt the read's admitted HTTP witness and subscribe before any await, so
+    // disposing the parent observation neither loses invalidation nor adds a read.
+    let maintenanceRequest = params.request;
+    const source = createOperationAccountCurrentnessSource({ credentials: params.credentials, serverId,
+        initial: params.accountCurrentnessSource.peek(),
+        request: (path, init) => maintenanceRequest(path, init),
+    });
+    fireAndForget(runWithServerRequestAuthorityForServerAccountScope({ serverId, activeRequest: params.request,
+        signal: params.signal }, async authority => {
+        const credentials = authority.context.credentials;
+        if (!credentials || resolveAuthCredentialsScopeKey(credentials) !== resolveAuthCredentialsScopeKey(params.credentials)) {
+            throw new Error('Session display maintenance Account changed');
+        }
+        maintenanceRequest = authority.request;
+        await maintainAuthorizedFullRead({ ...params, credentials, request: authority.request, accountCurrentnessSource: source,
+            readParams: { ...params.readParams, request: authority.request, readTransport: authority.readTransport,
+                fetchAccountCurrentness: source.read, ensureAccountCurrentness: source.ensureCurrent,
+                isCurrent: () => source.isCurrent() && params.isCurrent?.() !== false },
+        });
+    }).finally(() => source.dispose()), { onError: () => console.warn('[SessionDisplay] Owner display maintenance deferred; readable full Session retained') });
+    return params.result;
 }
 
 export async function fetchSessionByIdWithServerScope(params: Readonly<{
@@ -349,6 +496,8 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
     timeoutMs?: number;
     signal?: AbortSignal;
     includeTurnsProjection?: boolean | 'required';
+    /** Explicit list maintenance awaits its CAS inside the containing concurrency budget. */
+    awaitDisplayProjectionMaintenance?: true;
     authority?: ServerAccountRequestAuthority;
     accountCurrentness?: AccountEncryptionCurrentnessResponse;
     isCurrent?: () => boolean;
@@ -361,6 +510,7 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
     Awaited<ReturnType<typeof fetchAndApplySessionById>>
     & Readonly<{
         metadataTupleWriterContext?: SessionMetadataTupleWriterContext;
+        displayProjectionMaintenance?: 'satisfied' | 'deferred';
     }>
 > {
     if (params.sessionKey !== undefined) {
@@ -409,7 +559,7 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
                 serverId: activeCurrentnessServerId,
             }));
         const activeEncryption = getScopedSessionByIdEncryption(params.activeEncryption ?? null);
-        const result = await fetchAndApplySessionById({
+        const readParams = {
             sessionId: params.sessionId,
             prefetched: params.prefetched,
             contentDemand: params.contentDemand,
@@ -432,27 +582,27 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
             timeoutMs: params.timeoutMs,
             includeTurnsProjection: params.includeTurnsProjection,
             includeMetadataTupleMutationSnapshot:
-                params.includeMetadataTupleMutationSnapshot,
+                params.includeMetadataTupleMutationSnapshot === true
+                || ((params.contentDemand === undefined || params.contentDemand === 'session')
+                    && readCredentialAuthorityKind(params.activeCredentials.token) === 'account'),
+            fresh: params.includeMetadataTupleMutationSnapshot === true,
             isCurrent: () => accountCurrentnessSource.isCurrent() && params.isCurrent?.() !== false,
             accessProjectionVersion: params.prefetched ? params.prefetched.accessProjectionVersion : readSessionDetailAccessProjectionVersion(params.serverId),
             clientEncryptionRequirement,
-        });
-        if (
-            params.includeMetadataTupleMutationSnapshot === true
-            && result.ok
-            && result.metadataTupleMutationSnapshot
-            && result.metadataTupleMutationSnapshot.mode !== 'shared_editor'
-        ) {
-            await accountCurrentnessSource.read();
-        }
-        return withMetadataTupleWriterContext({
+        } satisfies Parameters<typeof fetchAndApplySessionById>[0];
+        const result = await fetchAndApplySessionById(readParams);
+        return await completeAuthorizedFullRead({
             result,
-            includeMetadataTupleMutationSnapshot:
-                params.includeMetadataTupleMutationSnapshot,
+            readParams,
+            awaitDisplayProjectionMaintenance: params.awaitDisplayProjectionMaintenance,
+            requestedTuple: params.includeMetadataTupleMutationSnapshot === true,
             credentials: params.activeCredentials,
             accountCurrentnessSource,
             encryption: activeEncryption,
             sessionId: params.sessionId,
+            request,
+            isCurrent: params.isCurrent,
+            signal: params.signal,
         });
     }
 
@@ -480,7 +630,7 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
             initial: params.accountCurrentness,
             serverId: context.targetServerId,
         }));
-    const result = await fetchAndApplySessionById({
+    const readParams = {
         sessionId: params.sessionId,
         prefetched: params.prefetched,
         contentDemand: params.contentDemand,
@@ -503,27 +653,27 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
         timeoutMs: params.timeoutMs,
         includeTurnsProjection: params.includeTurnsProjection,
         includeMetadataTupleMutationSnapshot:
-            params.includeMetadataTupleMutationSnapshot,
+            params.includeMetadataTupleMutationSnapshot === true
+            || ((params.contentDemand === undefined || params.contentDemand === 'session')
+                && readCredentialAuthorityKind(context.credentials.token) === 'account'),
+        fresh: params.includeMetadataTupleMutationSnapshot === true,
         isCurrent: () => accountCurrentnessSource.isCurrent() && params.isCurrent?.() !== false,
         accessProjectionVersion: params.prefetched ? params.prefetched.accessProjectionVersion : readSessionDetailAccessProjectionVersion(context.targetServerId),
         clientEncryptionRequirement: scopedClientEncryptionRequirement,
-    });
-    if (
-        params.includeMetadataTupleMutationSnapshot === true
-        && result.ok
-        && result.metadataTupleMutationSnapshot
-        && result.metadataTupleMutationSnapshot.mode !== 'shared_editor'
-    ) {
-        await accountCurrentnessSource.read();
-    }
-    return withMetadataTupleWriterContext({
+    } satisfies Parameters<typeof fetchAndApplySessionById>[0];
+    const result = await fetchAndApplySessionById(readParams);
+    return await completeAuthorizedFullRead({
         result,
-        includeMetadataTupleMutationSnapshot:
-            params.includeMetadataTupleMutationSnapshot,
+        readParams,
+        awaitDisplayProjectionMaintenance: params.awaitDisplayProjectionMaintenance,
+        requestedTuple: params.includeMetadataTupleMutationSnapshot === true,
         credentials: context.credentials,
         accountCurrentnessSource,
         encryption: scopedEncryption,
         sessionId: params.sessionId,
+        request,
+        isCurrent: params.isCurrent,
+        signal: params.signal,
     });
     } finally {
         ownedAccountCurrentnessSource?.dispose();

@@ -34,48 +34,6 @@ function createLease(status: NativeSshTunnelLease['status'] = 'ready'): NativeSs
     };
 }
 
-function createSupervisor(): NativeSshTunnelSupervisor {
-    let snapshot: NativeSshTunnelSnapshot = {
-        leases: [],
-        platformLimitations: [],
-    };
-
-    return {
-        ensureTunnel: vi.fn(async () => {
-            snapshot = {
-                ...snapshot,
-                leases: [createLease()],
-            };
-            return createLease();
-        }),
-        listTunnels: vi.fn(() => snapshot),
-        releaseTunnel: vi.fn(async () => {
-            snapshot = {
-                ...snapshot,
-                leases: [],
-            };
-        }),
-        markSuspended: vi.fn(() => {
-            snapshot = {
-                leases: snapshot.leases.map(() => createLease('degraded')),
-                platformLimitations: [{
-                    id: 'native-ssh.platform-suspended',
-                    severity: 'warning',
-                    reason: 'platform-suspended',
-                    message: 'settings.accessEndpoints.limitation.platform-suspended',
-                }],
-            };
-        }),
-        markForeground: vi.fn(async () => {
-            snapshot = {
-                leases: snapshot.leases.map(() => createLease('ready')),
-                platformLimitations: [],
-            };
-        }),
-        dispose: vi.fn(async () => { snapshot = { leases: [], platformLimitations: [] }; }),
-    };
-}
-
 function createRequest() {
     return {
         remoteHostId: 'host-a',
@@ -325,145 +283,21 @@ describe('app native SSH tunnel runtime', () => {
         }
     });
 
-    it('keeps one canonical singleton and notifies subscribers after snapshot updates', async () => {
-        const loaded = await import('./runtime').catch(() => null);
-        expect(loaded).not.toBeNull();
-
-        const supervisor = createSupervisor();
-        const firstRuntime = loaded!.getNativeSshTunnelRuntime({
-            createSupervisor: () => supervisor,
-        });
-        const secondRuntime = loaded!.getNativeSshTunnelRuntime({
-            createSupervisor: () => createSupervisor(),
-        });
-        expect(secondRuntime).toBe(firstRuntime);
-
-        const snapshots: NativeSshTunnelSnapshot[] = [];
-        const unsubscribe = firstRuntime.subscribe(() => {
-            snapshots.push(firstRuntime.listTunnels());
-        });
-
-        await firstRuntime.ensureTunnel(createRequest());
-        unsubscribe();
-        await firstRuntime.releaseTunnel('lease-a');
-
-        expect(snapshots).toHaveLength(1);
-        expect(snapshots[0]?.leases.map((lease) => lease.leaseId)).toEqual(['lease-a']);
-        expect(firstRuntime.listTunnels().leases).toEqual([]);
-
-        await loaded!.disposeNativeSshTunnelRuntime();
-    });
-
-    it('rejects new tunnel starts while the native app is suspended', async () => {
-        const loaded = await import('./runtime').catch(() => null);
-        expect(loaded).not.toBeNull();
-
-        const supervisor = createSupervisor();
-        const runtime = loaded!.createNativeSshTunnelRuntime({ supervisor });
+    it('rejects new tunnel starts while the native app is suspended without starting native work', async () => {
+        const { createNativeSshTunnelSupervisor } = await import('./supervisor');
+        const { createNativeSshTunnelRuntime, disposeNativeSshTunnelRuntime } = await import('./runtime');
+        const adapter = {
+            startLoopbackTunnel: vi.fn(async () => ({ nativeTunnelId: 'suspended-native', localPort: 49152 })),
+            stopLoopbackTunnel: vi.fn(async () => undefined),
+        };
+        const runtime = createNativeSshTunnelRuntime({ supervisor: createNativeSshTunnelSupervisor({ adapter }) });
 
         runtime.markSuspended();
 
         await expect(runtime.ensureTunnel(createRequest())).rejects.toThrow('native_ssh_tunnel_suspended');
-        expect(supervisor.ensureTunnel).not.toHaveBeenCalled();
-        await loaded!.disposeNativeSshTunnelRuntime();
-    });
-
-    it('keys credential material by the full credential ref and clears it when the lease is released', async () => {
-        const loaded = await import('./runtime').catch(() => null);
-        expect(loaded).not.toBeNull();
-
-        const lease = createLease();
-        let released = false;
-        const supervisor: NativeSshTunnelSupervisor = {
-            ensureTunnel: vi.fn(async () => lease),
-            listTunnels: vi.fn(() => ({ leases: released ? [] : [lease], platformLimitations: [] })),
-            releaseTunnel: vi.fn(async () => {
-                released = true;
-            }),
-            markSuspended: vi.fn(),
-            markForeground: vi.fn(async () => undefined),
-            dispose: vi.fn(async () => undefined),
-        };
-        const runtime = loaded!.createNativeSshTunnelRuntime({
-            supervisor,
-        });
-
-        const credentialsRef = createRequest().credentialsRef;
-        loaded!.setNativeSshTunnelCredentialResolution(credentialsRef, {
-            auth: {
-                username: 'dev',
-                password: 'secret-a',
-            },
-        });
-        loaded!.setNativeSshTunnelCredentialResolution({
-            remoteHostId: 'host-a',
-            credentialId: 'cred-b',
-            storage: 'session-memory',
-        }, {
-            auth: {
-                username: 'dev',
-                password: 'secret-b',
-            },
-        });
-
-        await runtime.ensureTunnel(createRequest());
-        await runtime.releaseTunnel('lease-a');
-
-        expect(loaded!.readNativeSshTunnelCredentialResolution(credentialsRef)).toBeNull();
-        expect(loaded!.readNativeSshTunnelCredentialResolution({
-            remoteHostId: 'host-a',
-            credentialId: 'cred-b',
-            storage: 'session-memory',
-        })).toEqual({
-            auth: {
-                username: 'dev',
-                password: 'secret-b',
-            },
-        });
-        await loaded!.disposeNativeSshTunnelRuntime();
-    });
-
-    it('keeps credential material while a shared lease remains retained', async () => {
-        const loaded = await import('./runtime').catch(() => null);
-        expect(loaded).not.toBeNull();
-
-        let releaseCalls = 0;
-        const lease = createLease();
-        const supervisor: NativeSshTunnelSupervisor = {
-            ensureTunnel: vi.fn(async () => lease),
-            listTunnels: vi.fn(() => ({
-                leases: releaseCalls < 2 ? [lease] : [],
-                platformLimitations: [],
-            })),
-            releaseTunnel: vi.fn(async () => {
-                releaseCalls += 1;
-            }),
-            markSuspended: vi.fn(),
-            markForeground: vi.fn(async () => undefined),
-            dispose: vi.fn(async () => undefined),
-        };
-        const runtime = loaded!.createNativeSshTunnelRuntime({ supervisor });
-        const credentialsRef = createRequest().credentialsRef;
-        loaded!.setNativeSshTunnelCredentialResolution(credentialsRef, {
-            auth: {
-                username: 'dev',
-                password: 'secret-a',
-            },
-        });
-
-        await runtime.ensureTunnel(createRequest());
-        await runtime.releaseTunnel('lease-a');
-
-        expect(loaded!.readNativeSshTunnelCredentialResolution(credentialsRef)).toEqual({
-            auth: {
-                username: 'dev',
-                password: 'secret-a',
-            },
-        });
-
-        await runtime.releaseTunnel('lease-a');
-        expect(loaded!.readNativeSshTunnelCredentialResolution(credentialsRef)).toBeNull();
-        await loaded!.disposeNativeSshTunnelRuntime();
+        expect(adapter.startLoopbackTunnel).not.toHaveBeenCalled();
+        await runtime.dispose();
+        await disposeNativeSshTunnelRuntime();
     });
 
     it('clears every credential ref that reused the same lease after final release', async () => {
@@ -504,6 +338,15 @@ describe('app native SSH tunnel runtime', () => {
                 password: 'secret-b',
             },
         });
+        // Credential material is keyed by the full ref: a sibling ref that never
+        // took part in the lease is untouched by its release.
+        const siblingRef = {
+            remoteHostId: 'host-a',
+            credentialId: 'cred-sibling',
+            storage: 'session-memory' as const,
+        };
+        const siblingCredentials = { auth: { username: 'dev', password: 'secret-sibling' } };
+        loaded!.setNativeSshTunnelCredentialResolution(siblingRef, siblingCredentials);
 
         await runtime.ensureTunnel(createRequest());
         await runtime.ensureTunnel({
@@ -528,6 +371,7 @@ describe('app native SSH tunnel runtime', () => {
         await runtime.releaseTunnel('lease-a');
         expect(loaded!.readNativeSshTunnelCredentialResolution(firstRef)).toBeNull();
         expect(loaded!.readNativeSshTunnelCredentialResolution(secondRef)).toBeNull();
+        expect(loaded!.readNativeSshTunnelCredentialResolution(siblingRef)).toEqual(siblingCredentials);
         await loaded!.disposeNativeSshTunnelRuntime();
     });
 

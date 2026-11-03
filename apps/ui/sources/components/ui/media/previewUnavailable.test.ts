@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { t } from '@/text';
 import { previewUnavailableCard, resolvePreviewUnavailable } from './previewUnavailable';
 
 vi.mock('react-native', async () => {
@@ -21,11 +22,11 @@ describe('why a preview has no picture', () => {
 
     it('says why, and only an unfinished read can be retried', () => {
         expect(previewUnavailableCard({ kind: 'tooLarge', sizeBytes: 40_265_318 }, 'hero.png'))
-            .toMatchObject({ kind: 'empty', title: 'Too large to preview', reason: '40.3 MB', retryable: false });
-        expect(previewUnavailableCard({ kind: 'unsupported' }, 'hero.heic')).toMatchObject({ kind: 'empty', title: "Can't preview this format", retryable: false });
-        expect(previewUnavailableCard({ kind: 'missing' }, 'hero.png')).toMatchObject({ kind: 'empty', title: 'File not found', retryable: false });
-        expect(previewUnavailableCard({ kind: 'unverified', error: 'hash' }, 'hero.png')).toMatchObject({ kind: 'error', title: 'This image could not be read', retryable: false });
+            .toMatchObject({ kind: 'empty', title: t('hunkReview.imageTooLarge'), reason: '40.3 MB', retryable: false });
+        expect(previewUnavailableCard({ kind: 'unsupported' }, 'hero.heic')).toMatchObject({ kind: 'empty', title: t('hunkReview.imageUnsupported'), retryable: false });
+        expect(previewUnavailableCard({ kind: 'missing' }, 'hero.png')).toMatchObject({ kind: 'empty', title: t('hunkReview.imageMissing'), retryable: false });
+        expect(previewUnavailableCard({ kind: 'unverified', error: 'hash' }, 'hero.png')).toMatchObject({ kind: 'error', title: t('hunkReview.imageUnreadable'), retryable: false });
         expect(previewUnavailableCard({ kind: 'loadFailed', error: 'interrupted' }, 'hero.png'))
-            .toEqual({ kind: 'error', title: "Couldn't load hero.png", diagnosticCode: 'interrupted', retryable: true });
+            .toEqual({ kind: 'error', title: t('files.viewer.loadFailed', { name: 'hero.png' }), diagnosticCode: 'interrupted', retryable: true });
     });
 });

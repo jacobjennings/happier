@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { callSocketRpc, emitWithAckCancellable, type SocketRpcAckScope } from './callSocketRpc.js';
 import { readRpcRequestDisposition } from './rpcDisposition.js';
 import { socketRpcCodec, type SocketRpcContent } from './socketRpcCodec.js';
-import { RPC_ERROR_CODES, RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { RPC_ERROR_CODES, RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 
 function cipher(): SocketRpcContent {
@@ -160,16 +160,12 @@ it('classifies a disconnected Goal caller and allows a fresh call after reconnec
   expect(requests).toEqual([`m:${RPC_METHODS.DAEMON_SESSION_GOAL_SET_V2}`, `m:${RPC_METHODS.DAEMON_SESSION_GOAL_GET}`]);
 });
 it.each([
-  { method: RPC_METHODS.MACHINES_VITALS_GET, errorCode: RPC_ERROR_CODES.TRANSPORT_UNAVAILABLE },
-  { method: RPC_METHODS.MACHINES_VITALS_HISTORY_GET, errorCode: RPC_ERROR_CODES.TRANSPORT_UNAVAILABLE },
-  { method: 'capabilities.describe', errorCode: RPC_ERROR_CODES.TRANSPORT_UNAVAILABLE },
-  { method: 'capabilities.detect', errorCode: RPC_ERROR_CODES.TRANSPORT_UNAVAILABLE },
-  { method: RPC_METHODS.DAEMON_PROVIDERS_MODEL_PROJECTION, errorCode: RPC_ERROR_CODES.TRANSPORT_UNAVAILABLE },
-  { method: RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE, errorCode: RPC_ERROR_CODES.TRANSPORT_UNAVAILABLE },
-  { method: RPC_METHODS.STOP_SESSION, errorCode: RPC_ERROR_CODES.OUTCOME_UNKNOWN },
-  { method: RPC_METHODS.SESSION_SPAWN_NEW, errorCode: RPC_ERROR_CODES.OUTCOME_UNKNOWN },
-  { method: 'plugin.unclassified.read', errorCode: RPC_ERROR_CODES.OUTCOME_UNKNOWN },
-])('settles issued $method on disconnect before its deadline without replay', async ({ method, errorCode }) => {
+  { method: RPC_METHODS.MACHINES_VITALS_GET, targetKind: 'machine', errorCode: RPC_ERROR_CODES.TRANSPORT_UNAVAILABLE },
+  { method: SESSION_RPC_METHODS.EXECUTION_RUN_LIST, targetKind: 'session', errorCode: RPC_ERROR_CODES.TRANSPORT_UNAVAILABLE },
+  { method: RPC_METHODS.STOP_SESSION, targetKind: 'machine', errorCode: RPC_ERROR_CODES.OUTCOME_UNKNOWN },
+  { method: 'plugin.unclassified.read', targetKind: 'machine', errorCode: RPC_ERROR_CODES.OUTCOME_UNKNOWN },
+] as const)(
+  'settles issued $method on disconnect before its deadline without replay', async ({ method, targetKind, errorCode }) => {
   const socket = await setup();
   const requests: string[] = [];
   let observeIssued!: () => void;
@@ -179,7 +175,7 @@ it.each([
     observeIssued();
   }));
   let failure: unknown;
-  const pending = callSocketRpc({ socket, target: { kind: 'machine', id: 'm' }, method,
+  const pending = callSocketRpc({ socket, target: { kind: targetKind, id: 'm' }, method,
     params: {}, content: { mode: 'plain' }, timeoutMs: 180_000, requestId: 'original-issued-call' })
     .catch((error: unknown) => { failure = error; });
   await issued;
@@ -410,6 +406,41 @@ it('distinguishes an unsealed pre-execution refusal from response decryption fai
   expect(undecodable).toMatchObject({ rpcErrorCode: RPC_ERROR_CODES.UPDATE_REQUIRED });
   expect(readRpcRequestDisposition(refusal)).toBe('notSent');
   expect(readRpcRequestDisposition(undecodable)).toBe('outcomeUnknown');
+});
+it.each(['reply', 'disconnect'] as const)('retains an issued native ACK after local cancellation until %s', async outcome => {
+  const socket = await setup();
+  let acknowledge!: (value: unknown) => void;
+  let observeIssued!: () => void;
+  const issued = new Promise<void>(resolve => { observeIssued = resolve; });
+  server.sockets.sockets.forEach(remote => remote.on('rpc-call', (_payload, ack) => {
+    acknowledge = ack;
+    observeIssued();
+  }));
+  let uses = 0;
+  // This lease is the resource boundary; the real native socket still owns its
+  // timeout scope, buffering, cancellation packet and acknowledgement promise.
+  const lease = {
+    get connected() { return socket.connected; },
+    timeout: socket.timeout.bind(socket),
+    emit: socket.emit.bind(socket),
+    retain: () => {
+      uses += 1;
+      return () => { uses -= 1; };
+    },
+  };
+  const controller = new AbortController();
+  const pending = emitWithAckCancellable({ socket: lease, event: 'rpc-call', payload: {},
+    requestId: 'retained-ack', signal: controller.signal, timeoutMs: null }).catch((error: unknown) => error);
+  await issued;
+  expect(uses).toBe(1);
+  controller.abort();
+  const failure = await pending;
+  expect(failure).toMatchObject({ code: 'SOCKET_RPC_ABORTED' });
+  expect(readRpcRequestDisposition(failure)).toBe('outcomeUnknown');
+  expect(uses).toBe(1);
+  if (outcome === 'reply') acknowledge({ ok: true });
+  else socket.disconnect();
+  await vi.waitFor(() => { expect(uses).toBe(0); });
 });
 it('cancels an issued call and marks the unresolved outcome', async () => {
   const socket = await setup();

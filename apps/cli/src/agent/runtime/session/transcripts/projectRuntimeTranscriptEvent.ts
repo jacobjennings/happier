@@ -1,3 +1,4 @@
+import { projectRuntimeCompactionEvent } from './projectRuntimeCompactionEvent';
 import { isForegroundTurnRuntimeTranscriptEvent, isSessionScopedRuntimeTranscriptEvent } from '../events/runtimeTranscriptScope';
 import type { AgentSessionRuntimeEvent } from '@happier-dev/protocol/runtime';
 import type { AgentSessionSkillDelivery } from '@happier-dev/plugin-sdk/agents/runtime';
@@ -121,6 +122,7 @@ export type RuntimeTranscriptProjectionResult =
       | 'tool-progress'
       | 'tool-call'
       | 'mcp-tool-usage'
+      | 'context-compaction'
       | 'skill-usage'
       | 'tool-result'
       | 'file-edit'
@@ -712,6 +714,7 @@ async function projectRuntimeTranscriptEventNow(
   if (event.sessionId !== params.session.sessionId) {
     return { projected: false, reason: 'session_mismatch' };
   }
+  if (event.kind === 'context-compaction') return projectRuntimeCompactionEvent({ ...params, event });
   if (event.kind === 'skill-usage') {
     if (!params.usageAccount) return { projected: false, reason: 'unsupported_event' };
     const skillIds = [...new Set(event.skills.flatMap(skill => {
@@ -1092,7 +1095,8 @@ async function projectRuntimeTranscriptEventNow(
   const provider = params.provider;
   const channel = event.role === 'reasoning' ? 'reasoning' : 'assistant';
   const commit = async (): Promise<TranscriptMessageCommitResult> => {
-    if (params.runtimeMessageDeltaBridge) {
+    // Peer-delivered text is a whole message from another agent, never a stream segment of this Agent's reply.
+    if (params.runtimeMessageDeltaBridge && !event.peer) {
       assertRequiredTranscriptAdmission(params.admission, event.kind);
       const summary = await params.runtimeMessageDeltaBridge.finalizeSegment({
         ...buildRuntimeMessageStreamArgs(event, channel),
@@ -1118,7 +1122,8 @@ async function projectRuntimeTranscriptEventNow(
       provider,
       body: event.role === 'reasoning'
         ? { type: 'thinking', text: event.text, ...(event.sidechainId ? { sidechainId: event.sidechainId } : {}) }
-        : { type: 'message', message: event.text, ...(event.sidechainId ? { sidechainId: event.sidechainId } : {}) },
+        : { type: 'message', message: event.text, ...(event.sidechainId ? { sidechainId: event.sidechainId } : {}),
+          ...(event.peer ? { peer: event.peer } : {}) },
       localId: event.messageId,
       meta: {
         source: 'runtime',

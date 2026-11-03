@@ -1,6 +1,7 @@
 import { HAPPIER_FRESHNESS_LINE_METRICS, HappierBanner, HappierPressable, happierPageTextMetrics, type HappierBannerPoint } from '@happier-dev/plugin-ui/presentation';
 import * as React from 'react';
 import { View } from 'react-native';
+import { readHappierVisibleLayoutWidth } from '@happier-dev/plugin-ui/presentation/pageMetrics';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { IconButton } from '@/components/ui/buttons/IconButton';
@@ -9,6 +10,7 @@ import { TextLinkButton } from '@/components/ui/buttons/TextLinkButton';
 import { Icon, ICON_SIZE, type IconName } from '@/components/ui/icons/Icon';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { PAGE_LIST_METRICS } from '@/components/ui/lists/pageListMetrics';
+import { usePageListInsets } from '@/components/ui/lists/listPresentation';
 import { usePluginUiTheme } from '@/components/plugins/surfaces/pluginUiThemeProjection';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
@@ -87,6 +89,7 @@ export const AttentionBanner = React.memo(function AttentionBanner(props: Readon
     const palette = theme.colors.state[tone];
     const iconName: IconName = props.iconName ?? (tone === 'neutral' ? 'info' : 'warning');
     const presentationTheme = usePluginUiTheme(theme);
+    const contained = usePageListInsets() === 'contained';
     const [detailsOpen, setDetailsOpen] = React.useState(false);
     const [compact, setCompact] = React.useState(false);
     const fullWidthAction = compact && props.compactActionPlacement === 'full-width';
@@ -131,7 +134,7 @@ export const AttentionBanner = React.memo(function AttentionBanner(props: Readon
                 compactActionPlacement={props.compactActionPlacement}
                 // Two or more ways forward, or a list of steps, never share a line with the words.
                 actionPlacement={props.actionPlacement ?? (props.secondaryAction || (props.moreActions?.length ?? 0) > 0 ? 'below' : undefined)}
-                onLayout={(event) => { const width = event.nativeEvent.layout.width; if (width > 0) setCompact(width < PAGE_LIST_METRICS.rowStackBelowWidthPx); }}
+                onLayout={(event) => { const width = readHappierVisibleLayoutWidth(event.nativeEvent.layout.width); if (width !== null) setCompact(width < PAGE_LIST_METRICS.rowStackBelowWidthPx); }}
                 details={<>
                     {hasDetails ? (
                         <HappierPressable
@@ -165,7 +168,9 @@ export const AttentionBanner = React.memo(function AttentionBanner(props: Readon
                 ) : undefined}
             />
     );
-    return props.placement === 'inline' ? banner : <ItemGroup surface="none">{banner}</ItemGroup>;
+    // A banner is a box with its own edge, not a bare row: in a contained scope it stays on the column instead of bleeding into
+    // its padding, and on a page it keeps the sheets' inset, so its edge is theirs.
+    return props.placement === 'inline' ? banner : <ItemGroup surface="none" containerStyle={contained ? styles.column : undefined}>{banner}</ItemGroup>;
 });
 
 function AttentionBannerStrip(props: React.ComponentProps<typeof AttentionBanner>) {
@@ -198,9 +203,13 @@ function AttentionBannerStrip(props: React.ComponentProps<typeof AttentionBanner
             )}
             action={hasActions ? (
                 <>
+                    {/* A text link keeps to the start of its line (it ends sentences); its own box centres it
+                        on the strip's action row beside the bordered button instead of riding high. */}
                     {links.map(({ action, testID }) => (
-                        <TextLinkButton key={testID} testID={action.testID ?? testID} tone="strong" size="meta"
-                            label={action.label} onPress={action.onPress} disabled={action.disabled} />
+                        <View key={testID}>
+                            <TextLinkButton testID={action.testID ?? testID} tone="strong" size="meta"
+                                label={action.label} onPress={action.onPress} disabled={action.disabled} />
+                        </View>
                     ))}
                     {props.action ? <BannerButton action={props.action} testID={`${props.testID}.action`} /> : null}
                 </>
@@ -258,6 +267,7 @@ const stripStyles = StyleSheet.create((theme) => ({
 }));
 
 const stylesheet = StyleSheet.create((theme) => ({
+    column: { marginHorizontal: 0 },
     actions: {
         flexDirection: 'row',
         alignItems: 'center',

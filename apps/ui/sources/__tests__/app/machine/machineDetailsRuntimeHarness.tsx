@@ -97,11 +97,12 @@ export async function arrangeMachineDetailsHomeForTests(
         if (url.pathname === '/v1/account/encryption') return Response.json({ mode: 'plain', updatedAt: 1 });
         if (url.pathname === '/v1/account/encryption/currentness') return Response.json(createPlainAccountEncryptionCurrentnessFixture());
         if (url.pathname === '/v2/account/settings') return Response.json({ content: { t: 'plain', v: options.settings ?? {} }, version: 1 });
-        const session = options.sessions?.find(candidate => url.pathname === `/v2/sessions/${encodeURIComponent(candidate.id)}`);
+        const session = options.sessions?.find(candidate => url.pathname === `/v2/sessions/${encodeURIComponent(candidate.id)}`
+            || url.pathname === `/v1/sessions/${encodeURIComponent(candidate.id)}/turns`);
         if (session) {
             await state.beforeSessionRead?.();
-            // Stop first persists its explicit hold through the real tuple writer.
-            // Keep GET and PATCH on the canonical HTTP fixture instead of answering a PATCH with a GET record.
+            // Exact Session reads include their turns in the snapshot batch.
+            // Keep both reads and metadata PATCH on the canonical HTTP fixture.
             return sessionHttp.handle(input, init);
         }
         if (url.pathname === '/v1/machines') {

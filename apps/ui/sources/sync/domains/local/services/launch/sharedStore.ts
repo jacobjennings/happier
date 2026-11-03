@@ -1,4 +1,5 @@
 import { createSharedSubscriptionStore } from '@/sync/runtime/subscriptions/sharedSubscriptionStore';
+import { subscribeMachineRpcRecovery } from '@/sync/runtime/orchestration/serverScopedRpc/subscribeMachineRpcRecovery';
 import {
     type LocalServiceLauncherSnapshotClientInput,
     type LocalServiceLauncherSnapshotClientResult,
@@ -9,6 +10,7 @@ import {
     applyLocalServiceLauncherSnapshot,
     createLocalServiceLauncherState,
     failLocalServiceLauncherRefresh,
+    readLocalServiceLauncherSnapshotTime,
 } from './store';
 import type { LocalServiceLauncherSnapshot, LocalServiceLauncherState } from './types';
 import {
@@ -124,7 +126,15 @@ const store = createSharedSubscriptionStore<
     normalizeInput,
     storeKey,
     defaultSnapshotClient,
+    // A launcher read can fail while inventory remains healthy and unchanged. Its own
+    // demand must recover on the same authenticated reconnect, without a scan delta.
+    subscribeRecovery: (input, recover) => subscribeMachineRpcRecovery({ ...input, expectedAccountId: input.accountId }, () => {
+        // A retired inventory owns recovery until its current snapshot arrives. Its
+        // availability publication requests this projection once, after that barrier.
+        if (!inventorySubscriptions.get(storeKey(normalizeInput(input)))?.isUnavailable()) recover(true);
+    }),
     beginRefresh: (state, input) => {
+        if (state.updatedAt !== null) return state;
         const normalized = normalizeInput(input);
         return applyLocalServiceLauncherRefreshStarted(state, {
             machineId: normalized.machineId,
@@ -136,9 +146,10 @@ const store = createSharedSubscriptionStore<
         if (getLocalServiceInventoryState(input).refreshState === 'error') {
             // A retired inventory watch cannot prove that an old absence or lifetime is
             // current. Keep the same rows and daemon timestamp, with existing stale UI.
-            return failRefresh({ ...state, targetsById: new Map([...state.targetsById].map(([id, target]) =>
-                [id, { ...target, state: 'stale' as const, actions: [] }])) }, normalized, 'request_failed');
+            return (current: LocalServiceLauncherState) => failLocalServiceLauncherRefresh(current, { machineId: normalized.machineId,
+                sessionId: normalized.sessionId ?? undefined, reasonCode: 'request_failed', stale: true });
         }
+        const receivedAt = readLocalServiceLauncherSnapshotTime(state);
         const result = await snapshotClient({
             machineId: normalized.machineId,
             serverId: normalized.serverId,
@@ -149,12 +160,11 @@ const store = createSharedSubscriptionStore<
             ...(normalized.accountId ? { accountId: normalized.accountId } : {}),
             signal,
         });
-        // An Action can publish while this network read is pending. Reconcile
-        // against the current owner state so its native timestamp orders both paths.
-        const current = getLocalServiceLauncherState(input);
-        return result.ok
+        // An Action can publish during the read or after this callback returns.
+        // Reconcile once, atomically at the shared owner's commit boundary.
+        return (current: LocalServiceLauncherState) => result.ok
             ? applyLocalServiceLauncherSnapshot(current, result.snapshot)
-            : current.updatedAt !== state.updatedAt ? current : failRefresh(current, normalized, result.reason);
+            : readLocalServiceLauncherSnapshotTime(current) !== receivedAt ? current : failRefresh(current, normalized, result.reason);
     },
     failRefresh: (state, input) => (
         failRefresh(state, normalizeInput(input), 'request_failed')
@@ -168,7 +178,7 @@ const store = createSharedSubscriptionStore<
 
 // Freshness belongs to the launcher store, including complete managed-binding reads made
 // outside a Services page. All projections share the inventory's one parked Machine watch.
-const inventorySubscriptions = new Map<string, { input: LocalServiceLauncherStoreKeyInput; count: number; dispose(): void }>();
+const inventorySubscriptions = new Map<string, { input: LocalServiceLauncherStoreKeyInput; count: number; isUnavailable(): boolean; dispose(): void }>();
 
 export function getLocalServiceLauncherState(
     input: LocalServiceLauncherStoreKeyInput,
@@ -205,7 +215,7 @@ export function subscribeLocalServiceLauncherStore(
             // declaration hydration independent of that scan, then reconcile its result.
             if (availabilityChanged || (generationChanged && next.generatedAt !== null)) store.invalidate(input);
         }, options?.inventorySnapshotClient ? { snapshotClient: options.inventorySnapshotClient } : undefined);
-        subscription = { input, count: 0, dispose };
+        subscription = { input, count: 0, isUnavailable: () => unavailable, dispose };
         inventorySubscriptions.set(key, subscription);
     }
     subscription.count++;

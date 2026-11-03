@@ -108,6 +108,10 @@ export function useProjectsSourcesComposition(openedSourceIds: ReadonlySet<strin
             navigate: navigateToOpen }), { tag: 'projects.open' });
     }, [navigateToOpen]);
 
+    const dismissSourceCreation = React.useCallback(() => {
+        creationTarget.current = null;
+        sources.controller.discard();
+    }, [sources.controller]);
     return { addSources, saved, cloneRepository, sources: sources.state.rows, teamName, saveAsSource, saveSourceCreation,
-        sourceCreation: sources, dismissSourceCreation: () => { creationTarget.current = null; sources.controller.discard(); } };
+        sourceCreation: sources, dismissSourceCreation };
 }

@@ -1,5 +1,6 @@
 import { RPC_METHODS } from '@happier-dev/protocol/rpc/methods';
 import type { UiBrowserRecordingCaptureFrameRequestV1 } from '@happier-dev/protocol';
+import type { SocketRpcAnsweringClientV1, SocketRpcAnsweringClientCandidateV1 } from '@happier-dev/protocol/socketRpc';
 
 import type { ReverseDesktopBrowserRecordingCaptureUiCall } from '../adapters/reverseCaptureInvoke';
 
@@ -12,10 +13,11 @@ export type ReverseCaptureMachineRpcClient = Readonly<{
   callConnectedClientRpc: (
     method: string,
     params: unknown,
-    options?: Readonly<{ timeoutMs?: number; signal?: AbortSignal; onIssued?: () => void }>,
+    options?: Readonly<{ timeoutMs?: number | null; signal?: AbortSignal; onIssued?: () => void;
+      answeringClient?: SocketRpcAnsweringClientV1 }>,
   ) => Promise<
     | Readonly<{ ok: true; result: unknown }>
-    | Readonly<{ ok: false; error?: string; errorCode?: string }>
+    | Readonly<{ ok: false; error?: string; errorCode?: string; answeringClients?: readonly SocketRpcAnsweringClientCandidateV1[] }>
   >;
 }>;
 

@@ -1,16 +1,13 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import {
     closeGitPullRequestForm,
     moveGitPullRequestForm,
     readGitPullRequestFormState,
     requestGitPullRequestForm,
-    resetGitPullRequestFormsForTests,
     resolveGitPullRequestFormAfterCreate,
     resolveGitPullRequestFormPlacement,
 } from './gitPullRequestFormState';
-
-afterEach(() => resetGitPullRequestFormsForTests());
 
 describe('where a new pull request form opens', () => {
     it('follows the placement setting on a wide screen and always uses Details on a phone', () => {

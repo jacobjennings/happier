@@ -13,12 +13,9 @@ const gestureState = vi.hoisted(() => ({
 }));
 
 vi.mock('react-native', async () => {
-    const actual = await vi.importActual<typeof import('react-native')>('react-native');
-
-    return {
-        ...actual,
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeWebMock({
         Platform: {
-            ...actual.Platform,
             get OS() {
                 return runtime.platform;
             },
@@ -32,7 +29,7 @@ vi.mock('react-native', async () => {
             scale: 1,
             width: runtime.width,
         }),
-    };
+    });
 });
 
 vi.mock('react-native-safe-area-context', () => ({
@@ -111,7 +108,6 @@ describe('StorySheetFrame', () => {
             </StorySheetFrame>
         );
 
-        expect(screen.findByTestId('story-sheet-handle')).toBeNull();
         expect(screen.findByTestId('story-sheet')?.props.style).toEqual(
             expect.arrayContaining([expect.objectContaining({ height: 740, width: 390 })]),
         );
@@ -130,7 +126,6 @@ describe('StorySheetFrame', () => {
             </StorySheetFrame>
         );
 
-        expect(screen.findByTestId('story-sheet-handle')).toBeNull();
         expect(gestureState.enabledCalls).toContain(false);
     });
 

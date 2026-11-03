@@ -21,7 +21,9 @@ export function createGuardLeftBehindActionExecutor(params: Readonly<{
         || !captured.verifyMachineAdmissionCurrent || !await captured.verifyMachineAdmissionCurrent()) {
         return { ok: false, errorCode: 'scope-retired', error: 'scope-retired' };
       }
-      const input = MachineProcessesCleanUpInputV1Schema.parse({ serverId: captured.serverId, machineId: admission.machineId, refs: [...request.refs] });
+      // Action operands travel across clients; the creator-local profile id
+      // stays in executionOriginV1, while the target uses the captured Home id.
+      const input = MachineProcessesCleanUpInputV1Schema.parse({ serverId: captured.serverIdentityId, machineId: admission.machineId, refs: [...request.refs] });
       const context: RpcActionExecutorContext = { ...captured,
         ...(request.sessionId ? { defaultSessionId: request.sessionId } : {}),
         ...(request.signal ? { signal: request.signal } : {}) };

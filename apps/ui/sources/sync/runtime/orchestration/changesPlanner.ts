@@ -3,10 +3,13 @@ import { ACCOUNT_SESSION_FOLLOW_CHANGE_ENTITY_ID } from '@happier-dev/protocol/s
 import {
     ChangeKindSchema,
     HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1,
+    isMachineProjectionChangeKindV1,
     PROVIDER_ACCOUNT_USAGE_ACCOUNT_CHANGE_ENTITY_ID_V1,
     SessionOrganizationChangeHintSchema,
     TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1,
+    readConnectedServicesAccountChangeV1,
     readSessionUpdatedMessageChangeHintV1,
+    PluginDomainChangeEntrySchema,
     type ChangeKind,
 } from '@happier-dev/protocol/changes';
 import { AuthoringMemoryChangeHintV1Schema } from '@happier-dev/protocol/account/authoringMemory';
@@ -88,6 +91,7 @@ export const CHANGE_CHECKPOINT_COVERAGE = {
     friend_accepted: { plannerOwner: 'friends', snapshotDomain: 'friends' },
     kv: { plannerOwner: 'kv', snapshotDomain: 'todos' },
     machine: { plannerOwner: 'machines', snapshotDomain: 'machines' },
+    machineRecipientAccess: { plannerOwner: 'machines', snapshotDomain: 'machines' },
     machinePool: { plannerOwner: 'machine-pools', snapshotDomain: 'machine-pools' },
     pet: { plannerOwner: 'pets', snapshotDomain: 'pets' },
     savedSecretResource: { plannerOwner: 'saved-secrets', snapshotDomain: 'saved-secret-resource-catalog' },
@@ -241,6 +245,7 @@ export function changeRequiresSavedSecretCatalogRefresh(change: Pick<ApiChangeEn
             || Object.keys(change.hint).some((key) => key !== 'settingsVersion'));
     return change.kind === 'savedSecretResource'
         || (change.kind === 'account' && change.entityId === TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1)
+        || readConnectedServicesAccountChangeV1(change) !== null
         || isAccountCurrentnessChange;
 }
 
@@ -414,7 +419,7 @@ const ROW_LEVEL_SESSION_CHANGE_HINT_KEYS = new Set([
     'sessionDiscussions',
 ]);
 
-function isRowLevelSessionChangeHint(hint: unknown): boolean {
+export function isRowLevelSessionChangeHint(hint: unknown): boolean {
     if (hint === null || hint === undefined) return true;
     if (!isRecord(hint)) return false;
     const keys = Object.keys(hint);
@@ -565,6 +570,12 @@ export function planSyncActionsFromChanges(
             if (changeRequiresSavedSecretCatalogRefresh(change)) {
                 invalidateSavedSecretResources = true;
             }
+            if (change.entityId !== 'self' && readConnectedServicesAccountChangeV1(change)) {
+                // The Account profile owns Connected Service status and descriptors;
+                // these dedicated rows do not change encrypted Account settings.
+                invalidateProfile = true;
+                continue;
+            }
             if (change.entityId.startsWith('workflow-run:')) {
                 const runId = change.entityId.slice('workflow-run:'.length);
                 if (runId) workflowRunIdsToRefresh.add(runId);
@@ -621,7 +632,7 @@ export function planSyncActionsFromChanges(
             continue;
         }
 
-        if (kind === 'machine') {
+        if (isMachineProjectionChangeKindV1(kind)) {
             invalidateMachines = true;
             continue;
         }
@@ -766,6 +777,26 @@ export function plannedChangesAffectProfileCatalog(planned: PlannedChangeActions
         || planned.changes.some(change => change.kind === 'account' && isProfileCatalogAccountChangeEntityIdV1(change.entityId));
 }
 
+/** Private trigger projections consume definitions, their sources and access, never Machine liveness or Run receipts. */
+export function plannedChangesAffectWorkflowTriggers(planned: PlannedChangeActions): boolean {
+    if (planned.invalidate.automations || planned.invalidate.settings || planned.invalidate.profile
+        || planned.invalidate.artifacts || planned.invalidate.savedSecretResources || planned.unsupportedChanges.length > 0) return true;
+    return planned.changes.some(change => {
+        if (change.kind === 'share' || change.kind === 'machineRecipientAccess') return true;
+        if (change.kind !== 'pluginDomain') return false;
+        const parsed = PluginDomainChangeEntrySchema.safeParse(change);
+        // Collection/KV/webhook receipts cannot change the trigger definition or its authoring source.
+        return !parsed.success || parsed.data.hint.pluginDomain === 'availability' || parsed.data.hint.pluginDomain === 'settings';
+    });
+}
+
+/** Kind-only routing for secondary Homes; unknown Account/plugin facts retain the existing recovery read. */
+export function accountChangeKindsAffectWorkflowTriggers(changeKinds: readonly string[] | undefined): boolean {
+    return changeKinds === undefined || changeKinds.length === 0 || changeKinds.some(kind => !isKnownChangeKind(kind)
+        || kind === 'account' || kind === 'automation' || kind === 'artifact' || kind === 'share'
+        || kind === 'machineRecipientAccess' || kind === 'pluginDomain' || kind === 'savedSecretResource');
+}
+
 /** Usage observes opened Machine inputs directly and consumes neither draft nor workflow Run rows. */
 export function plannedChangesAffectUsageQuery(planned: PlannedChangeActions): boolean {
     const workflowEntityIds = new Set(planned.workflowRunIdsToRefresh.map(runId => `workflow-run:${runId}`));
@@ -793,6 +824,7 @@ function plannedChangesAffectEverySessionListQuery(planned: PlannedChangeActions
             change.entityId === TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1
             || change.entityId === HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1
         ) return true;
+        if (readConnectedServicesAccountChangeV1(change)) return true;
         if (change.entityId !== 'self') return false;
 
         // Settings writes identify their exact version. Other `self` changes can

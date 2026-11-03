@@ -6,15 +6,23 @@ import { describe, expect, it, vi } from 'vitest';
 import { installPopoverCommonModuleMocks } from '@/components/ui/popover/popoverTestHelpers';
 
 installPopoverCommonModuleMocks({
-  reactNative: async () => ({
-    ...(await vi.importActual('react-native-web')),
-    useWindowDimensions: () => ({
+  reactNative: async () => {
+    const native = await vi.importActual<typeof import('react-native')>('react-native-web');
+    const dimensions = () => ({
       width: 1440,
       height: 1000,
       scale: 1,
       fontScale: 1,
-    }),
-  }),
+    });
+    return {
+      ...native,
+      useWindowDimensions: dimensions,
+      Dimensions: {
+        get: dimensions,
+        addEventListener: native.Dimensions.addEventListener.bind(native.Dimensions),
+      },
+    };
+  },
 });
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -24,6 +32,51 @@ const { PopoverPortalTargetProvider } =
   await import('@/components/ui/popover/PopoverPortalTargetProvider');
 
 describe('composer menu clearance on web', () => {
+  it('renders nothing while closed and its surface and rows once open', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const menu = (open: boolean) => (
+      <PopoverPortalTargetProvider>
+        <CommandMenu
+          open={open}
+          anchor={{ kind: 'rect', rect: { left: 40, top: 840, height: 20 } }}
+          query=""
+          items={[{ id: 'code', label: 'Code block' }]}
+          selectedIndex={0}
+          onMoveUp={() => {}}
+          onMoveDown={() => {}}
+          onSelect={() => {}}
+          onRequestClose={() => {}}
+          testID="picker"
+        />
+      </PopoverPortalTargetProvider>
+    );
+    try {
+      await act(async () => root.render(menu(false)));
+      expect(document.querySelector('[data-testid="picker:surface"]')).toBeNull();
+      expect(document.querySelector('[data-testid="picker:list"]')).toBeNull();
+      expect(document.body.textContent).not.toContain('Code block');
+      await act(async () => root.render(menu(true)));
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="picker:surface"]')).not.toBeNull();
+        expect(document.body.textContent).toContain('Code block');
+      });
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('stays above the composer when the composer moves without the caret moving', async () => {
     const container = document.createElement('div');
     document.body.append(container);

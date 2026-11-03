@@ -75,7 +75,7 @@ export function docToMarkdown(doc: JSONContent): string {
  * Goes through `markdownToDoc` for the parse half so the risky-markdown pre-pass
  * runs (raw HTML / comments → byte-verbatim atoms). Serialize then re-emits the
  * original bytes verbatim, so a clean document round-trips losslessly — exactly
- * the property the eligibility gate's `preservesEmbeddedHtml` check depends on.
+ * the property the eligibility gate's embedded-HTML preservation check depends on.
  */
 export function roundTripMarkdown(markdown: string): string {
     return getManager().serialize(markdownToDoc(markdown));

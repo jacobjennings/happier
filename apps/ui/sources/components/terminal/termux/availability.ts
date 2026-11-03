@@ -12,8 +12,6 @@ export type TermuxRendererSelectionOptions = Readonly<{
     platform: string;
     availability: TerminalNativeAvailability | unknown;
     accessibilityAccepted: boolean;
-    packageProofAccepted: boolean;
-    crashFallbackAvailable: boolean;
 }>;
 
 export function resolveTermuxRendererSelection(options: TermuxRendererSelectionOptions): TermuxRendererSelection {
@@ -23,14 +21,6 @@ export function resolveTermuxRendererSelection(options: TermuxRendererSelectionO
 
     if (!options.featureEnabled) {
         return { renderer: 'xterm-webview', reason: 'feature-disabled' };
-    }
-
-    if (!options.packageProofAccepted) {
-        return { renderer: 'xterm-webview', reason: 'package-proof-unaccepted' };
-    }
-
-    if (!options.crashFallbackAvailable) {
-        return { renderer: 'xterm-webview', reason: 'crash-fallback-unavailable' };
     }
 
     const availability = normalizeTerminalNativeAvailability(options.availability);

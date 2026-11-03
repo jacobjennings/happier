@@ -60,13 +60,12 @@ import { EnrolledComputerSetup } from './EnrolledComputerSetup';
 
 const DESKTOP_QR_SCAN_FEATURE_ID = 'auth.pairing.boundQrV2' as const;
 
-export type ScannedHomeEnrollmentPartialCommit = Readonly<{
+type ScannedHomeEnrollmentPartialCommit = Readonly<{
     kind: 'partial_commit';
     error: HomeProfileAdoptionPartialCommitFailure;
 }>;
 
-/** Keeps owner-provided recovery facts intact at the forward QR caller boundary. */
-export function classifyScannedHomeEnrollmentPartialCommit(
+function classifyScannedHomeEnrollmentPartialCommit(
     error: unknown,
 ): ScannedHomeEnrollmentPartialCommit | null {
     return isHomeProfileAdoptionPartialCommitFailure(error)

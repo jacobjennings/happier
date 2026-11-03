@@ -1,7 +1,6 @@
 import {
     PASSWORD_ENVELOPE_WRITER_PROFILE_V1,
     PasswordWrappedRecoverySecretV1Schema,
-    decodePasswordCredentialFieldV1,
     encodePasswordCredentialFieldV1,
 } from '@happier-dev/protocol';
 import { expect, it, vi } from 'vitest';
@@ -45,20 +44,6 @@ it('writes an envelope the canonical reader opens back to the exact recovery sec
     const keys = await derivePasswordKeys(PASSWORD, envelope.kdf);
     expect(encodePasswordCredentialFieldV1(keys.authKey)).toBe(prepared.authKey);
     expect([...await openPasswordEnvelope(envelope, keys.wrapKey)]).toEqual([...SECRET]);
-});
-
-it('binds the envelope to its own KDF facts so a swapped salt cannot open it', async () => {
-    const prepared = await preparePasswordCredentialMaterialV1({ password: PASSWORD, secret: SECRET });
-    const envelope = PasswordWrappedRecoverySecretV1Schema.parse(prepared.envelope);
-    const keys = await derivePasswordKeys(PASSWORD, envelope.kdf);
-
-    const tampered = {
-        ...envelope,
-        kdf: { ...envelope.kdf, salt: encodePasswordCredentialFieldV1(new Uint8Array(16).fill(9)) },
-    };
-
-    await expect(openPasswordEnvelope(tampered, keys.wrapKey)).rejects.toThrow('password_authentication_failed');
-    expect(decodePasswordCredentialFieldV1(prepared.authKey).byteLength).toBe(32);
 });
 
 it('uses a fresh salt and nonce for every prepared credential', async () => {

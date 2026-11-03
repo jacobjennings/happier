@@ -43,16 +43,15 @@ function defaultProps(
     };
 }
 
-beforeEach(async () => {
+// These specs use the process-wide default cross-mount cache on purpose (the
+// stale-row spec pre-populates it through a first mount), so every spec keys
+// its section with an id no other spec in this file uses.
+beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
-    const mod = await import('../useSelectionListDynamicSections');
-    mod.__resetDynamicSectionCacheForTests();
 });
 
-afterEach(async () => {
+afterEach(() => {
     vi.useRealTimers();
-    const mod = await import('../useSelectionListDynamicSections');
-    mod.__resetDynamicSectionCacheForTests();
 });
 
 /**
@@ -107,7 +106,7 @@ describe('SelectionList stale dynamic row keyboard focus + a11y (FR4-2)', () => 
         // last successful options keyed by the canonical JSON identity tuple.
 
         const root1 = makeStep({
-            id: 'dyn',
+            id: 'dyn-stale',
             title: 'DYN',
             debounceMs: 0,
             resolverKey: 'k1',
@@ -139,7 +138,7 @@ describe('SelectionList stale dynamic row keyboard focus + a11y (FR4-2)', () => 
         // `lastSuccessOptions` from the cache, and the render plan emits
         // `dynamicState: 'loading', isStale: true` with those options.
         const root2 = makeStep({
-            id: 'dyn',
+            id: 'dyn-stale',
             title: 'DYN',
             debounceMs: 0,
             resolverKey: 'k1',
@@ -195,7 +194,7 @@ describe('SelectionList stale dynamic row keyboard focus + a11y (FR4-2)', () => 
         // No cached entry; resolver never resolves; descriptor opts into
         // first-load skeletons.
         const root = makeStep({
-            id: 'dyn',
+            id: 'dyn-skeleton',
             title: 'DYN',
             debounceMs: 0,
             showSkeletonsOnFirstLoad: true,
@@ -210,8 +209,13 @@ describe('SelectionList stale dynamic row keyboard focus + a11y (FR4-2)', () => 
             await Promise.resolve();
         });
 
-        // No real option wrappers should exist (skeleton-only).
-        expect(screen.findAllByTestId('sl:root:option-wrapper:stale-a')).toHaveLength(0);
+        // The section is in its skeleton-only loading state…
+        expect(screen.findByTestId('sl:section:dyn-skeleton:loading:row-0')).not.toBeNull();
+        // …and no skeleton placeholder leaks into the list as an option row.
+        const optionWrappers = screen.findAll((node) => (
+            typeof node.props?.testID === 'string' && node.props.testID.startsWith('sl:root:option-wrapper:')
+        ));
+        expect(optionWrappers).toHaveLength(0);
 
         // aria-activedescendant must NOT be set because there is no focusable
         // option (skeleton rows are not focusable).

@@ -9,16 +9,18 @@ import { useMachineDirectConnectionSummary } from '@/components/settings/connect
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { useSettings } from '@/sync/domains/state/storage';
+import { useSetting } from '@/sync/domains/state/storage';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { resolveTerminalHost } from '@/sync/domains/settings/terminalSettings';
 import { t } from '@/text';
 import { usePreferredLanguage } from '@/text/usePreferredLanguage';
 import { formatOSPlatform } from '@/utils/sessions/sessionUtils';
+import { readComputerUseSettingsForMachine } from '@happier-dev/protocol/computer/v1';
 
 import { useMachinesDoor } from './machinesDoor';
 import {
     describeMachineAgentsReady,
+    describeMachineComputerUse,
     describeMachineDoctorSummary,
     describeMachineSharingSummary,
     describeMachineTerminalHost,
@@ -29,6 +31,7 @@ const ROW_ICONS: Readonly<Record<MachineThisMachinePageId, IconName>> = {
     sharing: 'users',
     agents: 'sparkle',
     terminal: 'terminal',
+    computer: 'cursor',
     connection: 'arrows-left-right',
     installables: 'cube',
     doctor: 'first-aid-kit',
@@ -50,7 +53,12 @@ export const MachineThisMachineSection = React.memo(function MachineThisMachineS
     const door = useMachinesDoor();
     const machineId = props.machine.id;
     const agents = useMachineAgents({ serverId: props.serverId, machineId, load: false });
-    const settings = useSettings();
+    const sessionTerminalHost = useSetting('sessionTerminalHost');
+    const sessionUseTmux = useSetting('sessionUseTmux');
+    const sessionTmuxByMachineId = useSetting('sessionTmuxByMachineId');
+    const sessionTerminalHostByMachineId = useSetting('sessionTerminalHostByMachineId');
+    const computerUseByMachineId = useSetting('computerUseByMachineId');
+    const settings = { sessionTerminalHost, sessionUseTmux, sessionTmuxByMachineId, sessionTerminalHostByMachineId };
     const terminalHost = resolveTerminalHost({ settings, machineId });
     const connection = useMachineDirectConnectionSummary(machineId);
     const doctor = React.useMemo(() => readCachedMachineDoctorSnapshot({ serverId: props.serverId, machineId }), [machineId, props.serverId]);
@@ -67,6 +75,7 @@ export const MachineThisMachineSection = React.memo(function MachineThisMachineS
         sharing: describeMachineSharingSummary(props.machine),
         agents: agentsReady ?? undefined,
         terminal: describeMachineTerminalHost(terminalHost),
+        computer: describeMachineComputerUse(readComputerUseSettingsForMachine({ computerUseByMachineId }, machineId)),
         connection,
         installables: undefined,
         doctor: describeMachineDoctorSummary(doctor),

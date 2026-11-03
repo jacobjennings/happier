@@ -1,3 +1,4 @@
+import type { HostRequesterExecutionIdentity } from '@/daemon/agentIsolation/agentIsolationLaunchPolicy';
 import type { ActionExecutorDeps } from '@happier-dev/protocol/actions/executor/types';
 import type { ProcessEnvInput } from '@/utils/processEnv/buildScopedProcessEnv';
 import type { createWorkspaceExecutionConfigClientV1 } from '@happier-dev/protocol/workspaces/workspaceExecutionConfigClientV1';
@@ -52,6 +53,10 @@ export type ProjectFiniteActionRuntime = ProjectRuntimeAccountAccess & Readonly<
     machineId: string;
     accountId: string;
     serverHttpBaseUrl: string;
+    /** Installed receiving connection Home, never a profile label or workspace operand. */
+    resolveHostHomeServerIdentityId?: (signal?: AbortSignal) => Promise<string | null>;
+    /** Captured by the installed Project runtime owner, never an Action operand. */
+    requesterIdentity?: HostRequesterExecutionIdentity;
     /** Exact Account custody lifetime supplied by the installed host constructor. */
     isCurrent?: () => Promise<boolean>;
     /** Fresh Machine/root admission at native effects; isCurrent owns local custody. */
@@ -160,6 +165,11 @@ export function createProjectFiniteAction(runtime: ProjectFiniteActionRuntime, i
         const parsed = PROJECT_ACTION_INPUT_SCHEMAS_V1[args.actionId].safeParse(args.input);
         if (!parsed.success) return failure('invalid_parameters');
         const request = { actionId: args.actionId, input: parsed.data } as FiniteRequest;
+        // Remembered consent is an approving-Account effect. Native preparation
+        // cannot reinterpret it as This time or become a second Trust writer.
+        if (request.actionId === 'projects.prepare' && request.input.consentScope === 'untilChanged') {
+            return failure('project_setup_consent_invalid');
+        }
         const nativeInvocations = new Set<ProjectNativeEffectCaptureForHost>();
         let nativeOperation: ProjectSetupOperationContext | undefined;
         let nativeCustody: ReturnType<typeof createProjectNativeInvocationCustody> | undefined;
@@ -957,4 +967,17 @@ export function createProjectFiniteAction(runtime: ProjectFiniteActionRuntime, i
             throw error;
         } finally { if (!runStarted && !nativeUncertain) await releaseNativeInvocations(); }
     };
+}
+
+export async function readProjectRuntimeAdmissionRefusal(runtime: ProjectFiniteActionRuntime, ingress: RpcHandlerContext): Promise<ActionExecuteFailure | null> {
+    const requester = await readProjectRuntimeRequesterRefusal(runtime, ingress);
+    if (requester) return requester;
+    // Restricted requester resolution already verifies the installed, Account,
+    // HTTP and Machine custody together at its canonical owner.
+    if (ingress.callerInputAuthorization) return null;
+    const custody = await readProjectRuntimeCurrentnessRefusal(runtime, ingress.signal);
+    if (custody) return custody;
+    if (!ingress.verifyMachineAdmissionCurrent) return failure('machine_admission_required');
+    if (!await ingress.verifyMachineAdmissionCurrent()) return failure('machine_admission_changed');
+    return ingress.signal.aborted ? failure('cancelled') : null;
 }

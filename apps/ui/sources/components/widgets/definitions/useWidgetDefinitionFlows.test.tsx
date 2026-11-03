@@ -822,7 +822,13 @@ describe('widget definition flows', () => {
         }
     });
 
-    it.each(['builtin', 'installed', 'inline'] as const)('opens About for a %s definition without reading a private Artifact', async (kind) => {
+    it.each([
+        ...(['builtin', 'installed', 'inline'] as const).flatMap(kind => [
+            { kind, shared: false, readable: true }, { kind, shared: true, readable: true },
+        ]),
+        { kind: 'builtin' as const, shared: true, readable: false },
+        { kind: 'artifact' as const, shared: true, readable: true },
+    ])('opens About for a $kind definition (shared=$shared, readable=$readable) without reading a private Artifact', async ({ kind, shared, readable }) => {
         const serverId = await addDefinitionHome();
         const React = await import('react');
         const { View, Pressable } = await import('react-native');
@@ -834,14 +840,19 @@ describe('widget definition flows', () => {
         const projection = widgetProjectionOf([{ pluginId: 'acme.checks', localId: 'checks', title: 'Installed checks' }], {
             'acme.checks': widgetInstalledPackage('acme.checks', 'Checks plugin'),
         });
+        const { WidgetAboutPanel } = await import('./WidgetAboutPanel');
         const definition: import('@happier-dev/protocol/widgets').WidgetDefinitionRefV1 = kind === 'builtin'
             ? { kind, id: 'changes' }
             : kind === 'installed' ? { kind, surface: { pluginId: 'acme.checks', localId: 'checks' } }
+                : kind === 'artifact' ? { kind, artifactId: 'private-owner-definition' }
                 : { kind, definition: { v: 1, id: 'shared-copy', ...DRAFT,
                     provenance: { source: { kind: 'session', serverId, sessionId: 'shared', itemId: 'shared-copy' } } } };
         function Card() {
             const flows = useWidgetDefinitionFlows({ instance: { v: 1, id: 'copy', definition, bindings: {} },
-                scope: { serverId, accountId: ACCOUNT_ID, owner: { kind: 'home' } }, anchorRef: React.useRef(null), testID: 'aboutCopy' });
+                scope: { serverId, accountId: shared ? 'layout-owner' : ACCOUNT_ID,
+                    ...(shared ? { artifactId: 'shared-layout' } : {}), owner: { kind: 'project', projectId: 'project' } },
+                ...(shared ? { admittedViewer: { serverId, accountId: ACCOUNT_ID }, isCurrent: () => readable } : {}),
+                anchorRef: React.useRef(null), testID: 'aboutCopy' });
             return React.createElement(View, {}, flows.about ? React.createElement(Pressable, { testID: 'open', onPress: flows.about }) : null, flows.panel);
         }
         const before = harness.requests.length;
@@ -854,6 +865,7 @@ describe('widget definition flows', () => {
             expect(screen.findByTestId('open')).not.toBeNull();
             await act(async () => { await screen.pressByTestIdAsync('open'); });
             expect(screen.findByTestId('aboutCopy.about')).not.toBeNull();
+            expect(screen.tree.root.findAllByType(WidgetAboutPanel)).toHaveLength(readable && kind !== 'artifact' ? 1 : 0);
             expect(screen.findByTestId('aboutCopy.about.duplicate')).toBeNull();
             if (kind === 'installed') expect(screen.getTextContent()).toContain('Checks plugin');
             if (kind === 'inline') expect(screen.getTextContent()).toContain(DRAFT.name);
@@ -881,6 +893,21 @@ describe('widget definition flows', () => {
             expect(hook.getCurrent().definition).toBeNull();
             await act(async () => { publishAppliedActiveServerSnapshot(snapshot); });
             expect(hook.getCurrent().definition).toBe(definition);
+        } finally { await hook.unmount(); publishAppliedActiveServerSnapshot(snapshot); }
+    });
+
+    it('reports another Account’s saved definition as a durable unavailable definition, distinct from a Home that is not applied', async () => {
+        const serverId = await addDefinitionHome();
+        const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
+        const { publishAppliedActiveServerSnapshot } = await import('@/sync/runtime/orchestration/appliedActiveServerRuntime');
+        const { useWidgetDefinition } = await import('@/sync/domains/widgets/useWidgetDefinition');
+        const { renderHook } = await import('@/dev/testkit/hooks/renderHook');
+        const snapshot = getActiveServerSnapshot();
+        publishAppliedActiveServerSnapshot(snapshot);
+        const ownerScope = { serverId, accountId: 'account-owner', owner: { kind: 'home' as const } };
+        const hook = await renderHook(() => useWidgetDefinition(ownerScope, { kind: 'artifact', artifactId: 'owner-private-definition' }));
+        try {
+            expect(hook.getCurrent()).toEqual({ definition: null, state: 'unavailable', reasonCode: 'widget_definition_unavailable' });
         } finally { await hook.unmount(); publishAppliedActiveServerSnapshot(snapshot); }
     });
 

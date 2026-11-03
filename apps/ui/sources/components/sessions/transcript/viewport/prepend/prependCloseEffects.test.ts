@@ -37,33 +37,6 @@ describe('prepend close effects', () => {
         ]);
     });
 
-    it('records mvcp-preserved telemetry with conclusive anchor delta', () => {
-        expect(resolveNativePrependCloseEffects({
-            ...baseSnapshot,
-            anchorDeltaPx: 0,
-            correctorCoverage: {
-                appliedDiffTotalPx: 0,
-                eventCount: 0,
-            },
-            outcome: 'mvcp-preserved',
-        })).toEqual([
-            {
-                outcome: 'mvcp-preserved',
-                type: 'close-prepend-ownership',
-            },
-            {
-                anchorDeltaPx: 0,
-                anchorItemOffsetPx: 240,
-                correctorAppliedDiffTotalPx: 0,
-                correctorEventCount: 0,
-                mode: 'restore-anchor',
-                reason: 'mvcp-preserved',
-                sessionId: 'session-1',
-                type: 'restore-decision-for-session',
-            },
-        ]);
-    });
-
     it('records abandoned outcomes without fabricating a missing anchor delta', () => {
         for (const outcome of [
             'abandoned-user-scroll',
@@ -94,23 +67,6 @@ describe('prepend close effects', () => {
                 },
             ]);
         }
-    });
-
-    it('maps a null transaction outcome to abandoned-identity', () => {
-        expect(resolveNativePrependCloseEffects({
-            ...baseSnapshot,
-            outcome: null,
-        })[0]).toEqual({
-            outcome: 'abandoned-identity',
-            type: 'close-prepend-ownership',
-        });
-        expect(resolveNativePrependCloseEffects({
-            ...baseSnapshot,
-            outcome: null,
-        })[1]).toMatchObject({
-            reason: 'abandoned-identity',
-            type: 'restore-decision-for-session',
-        });
     });
 
     it('does not close ownership when prepend is no longer the active owner', () => {

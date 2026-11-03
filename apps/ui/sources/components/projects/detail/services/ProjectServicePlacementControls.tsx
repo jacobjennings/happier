@@ -22,6 +22,9 @@ import { renderDropdownItemTriggerRightElement } from '@/components/ui/forms/dro
 import { resolveFieldBoxColors } from '@/components/ui/forms/fieldBox';
 import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { Item } from '@/components/ui/lists/Item';
+import { PAGE_LIST_METRICS } from '@/components/ui/lists/pageListMetrics';
+import { ItemGroupRowPositionBoundary } from '@/components/ui/lists/ItemGroupRowPosition';
+import { Text } from '@/components/ui/text/Text';
 import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import { openActionOperationDetail } from '@/components/inbox/actionOperations/openActionOperationDetail';
 import { useServerCredentialAccountScopeBinding } from '@/sync/domains/scope/useServerCredentialAccountScopes';
@@ -40,9 +43,10 @@ import type { ServerScopedMachinePoolSelection } from '@/components/sessions/new
 import type { FrontDoorRuntimeActionExecute } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
 import { describeManagedCreationProgress } from '@/components/settings/machines/managed/managedCreationProgressPresentation';
 import { resolveReasonCopy } from '@/sync/domains/surfaces/copy/resolveReasonCopy';
+import { isProjectServiceTargetFromSource, type ProjectServiceSource } from './projectServiceSource';
 
 /** The SOURCE checkout a declared service belongs to: its Home, accepted ref and own Machine. */
-export type ProjectServiceSource = Readonly<{ serverId: string; refId: string; machineId: string }>;
+export type { ProjectServiceSource } from './projectServiceSource';
 
 type ReadyPlacement = Extract<
   ProjectServicePlacementGetResultV1,
@@ -271,6 +275,11 @@ export function ProjectServicePlacementControls(
     nativeTarget?: ServiceRow['target'];
     /** Changes whenever the Services feed observes this service's lifecycle; the binding is then re-read. */
     lifecycleKey?: string;
+    /**
+     * Injected by a grouped list that hosts this control as one row: whether a hairline follows its last
+     * row. The group's own position cannot say it, because the rows inside are this control's.
+     */
+    showDivider?: boolean;
   }>,
 ) {
   const observation = useProjectServicePlacementObservation(props.serviceName);
@@ -282,6 +291,7 @@ function ProjectServicePlacementControlsBody(props: React.ComponentProps<typeof 
   const testID = props.testID ?? `project-service-placement:${props.serviceName}`;
   const { theme } = useUnistyles();
   const compact = useViewportClass() === 'compact';
+  const trailingDivider = props.showDivider === true;
   const placement = useProjectServicePlacement(props.source, props.serviceName, { lifecycleKey: props.lifecycleKey });
   const { refresh } = placement;
   const anchorRef = React.useRef<View>(null);
@@ -414,12 +424,14 @@ function ProjectServicePlacementControlsBody(props: React.ComponentProps<typeof 
 
   if (state.kind === 'refused' || state.kind === 'error') {
     return (
-      <View testID={testID}>
-        <Item testID={`${testID}.unavailable`} title={t('projectServices.runsOn')}
-          subtitle={state.reasonCode ? resolveReasonCopy({ kind: 'localServiceAction', reasonCode: state.reasonCode }).body
-            : t('projectServices.settingsUnavailable')} mode="info" showChevron={false} />
-        {operationBanner}
-      </View>
+      <ItemGroupRowPositionBoundary>
+        <View testID={testID}>
+          <Item testID={`${testID}.unavailable`} title={t('projectServices.runsOn')}
+            subtitle={state.reasonCode ? resolveReasonCopy({ kind: 'localServiceAction', reasonCode: state.reasonCode }).body
+              : t('projectServices.settingsUnavailable')} mode="info" showChevron={false} showDivider={compact && trailingDivider} />
+          {operationBanner}
+        </View>
+      </ItemGroupRowPositionBoundary>
     );
   }
 
@@ -450,6 +462,7 @@ function ProjectServicePlacementControlsBody(props: React.ComponentProps<typeof 
         : observed?.status === 'absent'
           ? !portable ? t('projectServices.thisMachine', { name: sourceName }) : desiredName
           : null);
+  // Why the row cannot act, or where its next start goes: always the row's own subtitle.
   const hint = observed?.status === 'unavailable'
       ? undefined
       : observed?.status === 'ambiguous'
@@ -460,11 +473,24 @@ function ProjectServicePlacementControlsBody(props: React.ComponentProps<typeof 
           ? moveBlockedReason
           : stoppedBeforeStart && desiredName
           ? t('projectServices.willStartOn', { name: desiredName })
-          : displayedActual || !runsOn
-            ? undefined
-            : runsOn.kind === 'primary'
-              ? t('projectServices.runsHere')
-              : label.name ? t('projectServices.runsOnWorker', { name: label.name }) : undefined;
+          : undefined;
+  // Where it runs, as a plain statement: the subtitle on a phone, the lab's helper line under the rows on a
+  // wider page (RUNSON). A live service names only the checkout's own machine; one running elsewhere has no
+  // sentence of its own here.
+  const where = hint !== undefined || observed?.status === 'unavailable' ? undefined
+    : displayedActual
+      ? displayedActual.machineId === props.source.machineId ? t('projectServices.runsHere') : undefined
+      : !runsOn ? undefined
+        : runsOn.kind === 'primary'
+          ? t('projectServices.runsHere')
+          : label.name ? t('projectServices.runsOnWorker', { name: label.name }) : undefined;
+  // Under the rows, on their text edge (the rows reserve the leading column the Services row's mark sits in).
+  const noteStyle = {
+    color: theme.colors.text.secondary,
+    paddingLeft: PAGE_LIST_METRICS.rowPaddingHorizontalPx + PAGE_LIST_METRICS.rowLeadingColumnPx + PAGE_LIST_METRICS.rowLeadingGapPx,
+    paddingRight: PAGE_LIST_METRICS.rowPaddingHorizontalPx,
+    paddingBottom: theme.space.s8,
+  };
 
   const choose = (choice: ProjectExecutionChoiceV1, selectedPool?: ServerScopedMachinePoolSelection) => {
     if (!ready || !custodyKnown || !portable || placement.busy || moving) return;
@@ -575,15 +601,20 @@ function ProjectServicePlacementControlsBody(props: React.ComponentProps<typeof 
     });
   };
 
+  // A statement with its own sentence ("runs on the primary checkout") leaves a phone row no room for the value
+  // beside it: the value reads under the sentence, at full width, instead of squeezing the sentence into a column.
+  const plainValueBeneath = compact && !portable && Boolean(value) && Boolean(hint);
   return (
+    <ItemGroupRowPositionBoundary>
     <View testID={testID}>
       <View ref={anchorRef} collapsable={false}>
         <Item
           testID={`${testID}.runsOn`}
           title={t('projectServices.runsOn')}
-          subtitle={hint}
+          subtitle={hint ?? (compact ? where : undefined)}
+          showDivider={compact && (portable || trailingDivider)}
           showChevron={compact && portable}
-          accessoryLayout="adaptive"
+          accessoryLayout={plainValueBeneath ? 'stacked' : 'adaptive'}
           // A primary-only service has nothing to choose: its row is a plain statement, not a dimmed control.
           disabled={portable && disabled}
           accessibilityExpanded={pickerOpen}
@@ -592,7 +623,9 @@ function ProjectServicePlacementControlsBody(props: React.ComponentProps<typeof 
             refresh();
             setPickerOpen(true);
           } } : {})}
-          {...(compact || !portable
+          {...(plainValueBeneath
+            ? { rightElement: <Text variant="body" style={{ color: theme.colors.text.primary }}>{value}</Text> }
+            : compact || !portable
             ? { detail: value ?? undefined }
             : {
                 rightElement: renderDropdownItemTriggerRightElement({
@@ -621,6 +654,7 @@ function ProjectServicePlacementControlsBody(props: React.ComponentProps<typeof 
           title={t('projectServices.whenUnavailable')}
           accessoryLayout={compact ? 'stacked' : 'adaptive'}
           disabled={!placement.canSaveNextStart || moving}
+          showDivider={compact && trailingDivider}
           value={placement.displayPlacement?.placement.unavailable ?? 'fail'}
           options={[
             { id: 'primary', label: t('projectServices.fallbackPrimary') },
@@ -632,6 +666,7 @@ function ProjectServicePlacementControlsBody(props: React.ComponentProps<typeof 
           }}
         />
       ) : null}
+      {where && !compact ? <Text testID={`${testID}.note`} variant="meta" style={noteStyle}>{where}</Text> : null}
       {notice ? <AttentionBanner testID={`${testID}.notice`} tone="neutral" title={notice} /> : null}
       {managedMove === 'confirm' && managed.draft ? <AttentionBanner testID={`${testID}.move`} tone="neutral"
         title={t('projectServices.moveConfirm', { service: props.serviceName, from: fromName, to: managed.draft.receipt.launch.name })}
@@ -718,6 +753,7 @@ function ProjectServicePlacementControlsBody(props: React.ComponentProps<typeof 
         />
       ) : null}
     </View>
+    </ItemGroupRowPositionBoundary>
   );
 }
 
@@ -735,7 +771,7 @@ export function createProjectServicePlacementRenderer(
     if (!declaration || declaration.selection.kind !== 'manifest') return null;
     // Another checkout's service (This machine scope) has its own placement; only this checkout's
     // declarations, or their copies running on a worker, show this checkout's Runs on.
-    if (declaration.workspaceRefId !== source.refId && row.target.machineId === source.machineId) return null;
+    if (!isProjectServiceTargetFromSource(source, row.target)) return null;
     // Placement lives on the SOURCE checkout's ref; a running worker copy carries its own ref.
     return (
       <ProjectServicePlacementControls

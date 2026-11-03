@@ -67,20 +67,6 @@ describe('/search Universal Search command context', () => {
         ]));
     });
 
-    it('frames the direct web route with the canonical application content-width owner', async () => {
-        const Route = (await import('@/app/(app)/search')).default;
-
-        const screen = await renderScreen(
-            <UniversalSearchRuntimeProvider value={{ open: vi.fn(), buildCommands: vi.fn(() => []) }}>
-                <Route />
-            </UniversalSearchRuntimeProvider>,
-        );
-
-        const page = screen.root.findByProps({ testID: 'universal-search-route-page' });
-        expect(page.findByType('ConstrainedScreenContent' as never)).toBeTruthy();
-        expect(page.findAllByType('UniversalSearchController' as never)).toHaveLength(1);
-    });
-
     it('exposes a route-owned close control on the direct web Search page', async () => {
         const Route = (await import('@/app/(app)/search')).default;
         const screen = await renderScreen(

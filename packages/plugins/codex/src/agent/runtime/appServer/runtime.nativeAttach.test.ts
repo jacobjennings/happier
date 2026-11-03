@@ -17,6 +17,27 @@ vi.mock('node:os', async importOriginal => {
 });
 
 describe('native Codex attachment preparation', () => {
+  it('projects a flattened upstream model_not_found through the real native failure wiring', async () => {
+    await withFixture(async ({ openConfiguredSession, emitNotification }) => {
+      const session = await openConfiguredSession();
+      const events: AgentSessionRuntimeEvent[] = [];
+      session.watch(event => events.push(AgentSessionRuntimeEventSchema.parse(event)));
+      await expect(session.send({ inputIds: ['model-probe'], input: { text: 'Reply OK.' },
+        delivery: { kind: 'newTurn', turnId: 'model-probe-turn' } })).resolves.toMatchObject({ status: 'admitted' });
+      emitNotification('turn/completed', { threadId: 'fresh-thread', turn: {
+        id: 'provider-turn-1', status: 'failed', error: { codexErrorInfo: 'other',
+          message: `HTTP 400: ${JSON.stringify({ error: { type: 'invalid_request_error',
+            code: 'model_not_found', param: null, message: 'PRIVATE_PROVIDER_BODY' } })}` },
+      } });
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+        kind: 'turn-failed', turnId: 'model-probe-turn', diagnostic: expect.objectContaining({
+          code: 'provider_model_not_found', message: expect.stringMatching(/choose another model/i),
+        }),
+      })));
+      expect(JSON.stringify(events)).not.toContain('PRIVATE_PROVIDER_BODY');
+    });
+  });
+
   it('maps startup instructions to native developerInstructions on create', async () => {
     await withFixture(async ({ openConfiguredSession, requests }) => {
       await openConfiguredSession();
@@ -85,6 +106,58 @@ describe('native Codex attachment preparation', () => {
     }, { providerBinding: { connectionId: 'pc_work', model: { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
       upstream: { protocol: 'openai-responses', normalizedUrl: 'https://gateway.example.test/v1', credential: 'apiKey' },
       materialization: { v: 1, kind: 'engineConfig', engineConfig } } });
+  });
+
+  it.each([
+    { requested: 'medium', expected: 'low' },
+    { requested: 'max', expected: 'max' },
+  ])('applies only the selected Provider model effort subset ($requested)', async ({ requested, expected }) => {
+    const engineConfig = { v: 1 as const, modelProvider: 'ollama', config: {} };
+    await withFixture(async ({ openConfiguredSession, requests }) => {
+      const session = await openConfiguredSession();
+      await session.updateConfiguration?.({
+        mode: { value: null, updatedAtMs: 1 }, model: { value: 'fixture-model', updatedAtMs: 1 },
+        permissionIntent: { value: 'read-only', updatedAtMs: 1 },
+        options: { reasoning_effort: { value: requested, updatedAtMs: 2 } },
+      });
+      await session.send({ inputIds: ['effort-input'], input: { text: 'Reply OK.' },
+        delivery: { kind: 'newTurn', turnId: 'effort-turn' } });
+      expect(requests.find(request => request.method === 'turn/start')?.params).toMatchObject({ effort: expected });
+    }, { providerBinding: { connectionId: 'pc_work',
+      model: { id: 'fixture-model', name: 'Fixture', capabilities: { reasoningControls: 'supported' },
+        modelOptions: [{ id: 'reasoning_effort', name: 'Thinking', type: 'select', currentValue: 'high',
+          options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }, { value: 'max', name: 'Max' }] }] },
+      upstream: { protocol: 'openai-responses', normalizedUrl: 'https://gateway.example.test/v1', credential: 'apiKey' },
+      materialization: { v: 1, kind: 'engineConfig', engineConfig } } });
+  });
+
+  it.each([
+    { scope: 'session', requested: 'max', declared: true, expected: 'max' },
+    { scope: 'run', requested: 'max', declared: true, expected: 'max' },
+    { scope: 'session', requested: 'medium', declared: true, expected: undefined },
+    { scope: 'run', requested: 'medium', declared: true, expected: undefined },
+    { scope: 'session', requested: 'high', declared: false, expected: undefined },
+    { scope: 'run', requested: 'high', declared: false, expected: undefined },
+  ])('applies declared Provider effort at $scope startup ($requested, declared=$declared)', async ({ scope, requested, declared, expected }) => {
+    await withFixture(async ({ openConfiguredSession, openConfiguredRun, requests }) => {
+      const conversation = scope === 'session' ? await openConfiguredSession() : await openConfiguredRun();
+      await conversation.send({ inputIds: ['effort-input'], input: { text: 'Reply OK.' },
+        delivery: { kind: 'newTurn', turnId: 'effort-turn' } });
+      const thread = requests.find(request => request.method === 'thread/start')?.params;
+      const turn = requests.find(request => request.method === 'turn/start')?.params;
+      expect(turn).toHaveProperty('model', 'fixture-model');
+      expect(turn?.effort).toBe(expected);
+      expect((thread?.config as Record<string, unknown> | undefined)?.model_reasoning_effort).toBe(expected);
+    }, { configuration: {
+      mode: { value: null, updatedAtMs: 1 }, model: { value: 'stale-selected-model', updatedAtMs: 1 },
+      permissionIntent: { value: 'read-only', updatedAtMs: 1 },
+      options: { reasoning_effort: { value: requested, updatedAtMs: 1 } },
+    }, providerBinding: { connectionId: 'pc_work',
+      model: { id: 'fixture-model', name: 'Fixture', capabilities: { reasoningControls: 'supported' },
+        ...(declared ? { modelOptions: [{ id: 'reasoning_effort', name: 'Thinking', type: 'select', currentValue: 'high',
+          options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }, { value: 'max', name: 'Max' }] }] } : {}) },
+      upstream: { protocol: 'openai-responses', normalizedUrl: 'https://gateway.example.test/v1', credential: 'apiKey' },
+      materialization: { v: 1, kind: 'engineConfig', engineConfig: { v: 1, modelProvider: 'ollama', config: {} } } } });
   });
 
   it.skipIf(process.platform === 'win32')('keeps the primary turn active when a completed execution run releases its process', async () => {

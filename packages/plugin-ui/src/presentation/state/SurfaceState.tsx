@@ -22,6 +22,11 @@ export type HappierSurfaceStateAction = Readonly<{
   disabled?: boolean;
   /** Pending work owned by the caller; a returned promise also drives the shared pending behaviour. */
   busy?: boolean;
+  /**
+   * The next step continues the person's work (open the page again, go where it now lives) rather
+   * than retrying a failure, so as the primary action it takes the filled tone whatever the kind.
+   */
+  invitation?: boolean;
 }>;
 
 /** A present-tense line under the copy ("Reconnecting · next try in 8 s"); `busy` draws a working ring. */
@@ -49,7 +54,8 @@ export type HappierSurfaceStateTextRole =
   | 'lineAction'
   | 'live'
   | 'quiet'
-  | 'quietLink';
+  | 'quietLink'
+  | 'details';
 
 /**
  * What a host or plugin adapter supplies: its typography, button, spinner and tile, never layout.
@@ -97,10 +103,15 @@ export type HappierSurfaceStateBindings = Readonly<{
       action?: ReactNode;
     }>,
   ) => ReactNode;
-  /** The collapsed "Details" disclosure's toggle and code, when the host draws its own. */
-  renderDetailsToggle?: (open: boolean) => ReactNode;
+  /**
+   * The "Details" disclosure's compact caret for its open state; its label is the `details` text role and the
+   * toggle itself is the shared `HappierDisclosureToggle`.
+   */
+  renderDetailsCaret: (open: boolean) => ReactNode;
   renderDetailsCode?: (details: string) => ReactNode;
   detailsLabel: string;
+  /** The keyboard focus ring's ink; absent, the environment theme's. */
+  focusRing?: string;
   /** Fill under a pressed or hovered inline recovery. */
   pressedFill: string;
 }>;
@@ -238,7 +249,9 @@ export function HappierSurfaceState(props: HappierSurfaceStateProps) {
       label={bindings.detailsLabel}
       align={props.layout === 'inline' ? 'start' : 'center'}
       details={props.diagnosticCode}
-      renderToggle={bindings.renderDetailsToggle}
+      renderCaret={bindings.renderDetailsCaret}
+      renderLabel={(label) => bindings.renderText({ role: 'details', children: label })}
+      focusColor={bindings.focusRing}
       renderDetails={bindings.renderDetailsCode}
     />
   ) : diagnosticMarker;
@@ -356,7 +369,7 @@ export function HappierSurfaceState(props: HappierSurfaceStateProps) {
             {bindings.renderButton({
               action,
               emphasis: index === 0 ? 'primary' : 'secondary',
-              tone: index === 0 ? tone : 'secondary',
+              tone: index === 0 ? (action.invitation === undefined ? tone : action.invitation ? 'filled' : 'secondary') : 'secondary',
               compact,
               fullWidth,
               testID:

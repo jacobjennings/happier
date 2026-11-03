@@ -4,7 +4,6 @@ import {
     resolveStoryDeckImageSources,
     resolveStoryDeckMediaSources,
     resolveStoryDeckPosterImageSources,
-    resolveStoryDeckPosterSources,
 } from './StoryDeckMediaSources';
 
 describe('resolveStoryDeckMediaSources', () => {
@@ -45,26 +44,28 @@ describe('resolveStoryDeckMediaSources', () => {
     });
 });
 
-describe('resolveStoryDeckPosterSources', () => {
+describe('resolveStoryDeckPosterImageSources remote posters', () => {
     it('accepts explicit poster fallback URLs from future media contracts', () => {
-        expect(resolveStoryDeckPosterSources({
+        expect(resolveStoryDeckPosterImageSources({
             posterKey: 'poster-key',
             posterUrl: 'http://localhost:4150/poster.png',
             posterFallbackUrl: 'https://cdn.example.com/poster.png',
-        }).urls).toEqual([
-            'http://localhost:4150/poster.png',
-            'https://cdn.example.com/poster.png',
+        }).sources).toEqual([
+            expect.objectContaining({ kind: 'remote', uri: 'http://localhost:4150/poster.png' }),
+            expect.objectContaining({ kind: 'remote', uri: 'https://cdn.example.com/poster.png' }),
         ]);
     });
 
     it('uses surface-specific poster overrides independently from the video override', () => {
-        expect(resolveStoryDeckPosterSources({
+        expect(resolveStoryDeckPosterImageSources({
             key: 'mobile-demo.mp4',
             posterUrl: 'https://cdn.example.com/mobile-poster.webp',
             desktop: {
                 posterUrl: 'https://cdn.example.com/desktop-poster.webp',
             },
-        }, { surface: 'desktop' }).urls).toEqual(['https://cdn.example.com/desktop-poster.webp']);
+        }, { surface: 'desktop' }).sources).toEqual([
+            expect.objectContaining({ kind: 'remote', uri: 'https://cdn.example.com/desktop-poster.webp' }),
+        ]);
     });
 });
 

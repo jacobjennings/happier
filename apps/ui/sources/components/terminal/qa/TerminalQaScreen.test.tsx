@@ -124,8 +124,6 @@ describe('TerminalQaScreen', () => {
             nativeRenderer: {
                 featureEnabled: true,
                 platform: 'ios',
-                packageProofAccepted: true,
-                crashFallbackAvailable: true,
             },
         });
         expect(pane?.props.nativeRenderer.accessibilityAccepted).toBe(true);

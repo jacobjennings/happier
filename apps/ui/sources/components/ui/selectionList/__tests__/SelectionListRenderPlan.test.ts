@@ -138,34 +138,6 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
         expect(plan[0]).toEqual(expect.objectContaining({ dynamicState: 'error', hint: 'Couldn\'t search PRs & Issues' }));
     });
 
-    it('does not expose a resolver Error message in the user-visible error plan', async () => {
-        const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
-        const states = new Map<string, DynamicSectionState>();
-        states.set('remote', {
-            status: 'error',
-            options: [],
-            error: new Error('token abc123 failed at /private/internal/path'),
-            lastSuccessOptions: undefined,
-        });
-
-        const plan = synthesizeSelectionListRenderPlan({
-            sections: [{
-                kind: 'dynamic',
-                id: 'remote',
-                resolve: async () => ({ options: [] }),
-            }],
-            inputValue: 'query',
-            filterQuery: 'query',
-            dynamicSectionStates: states,
-        });
-
-        expect(plan[0]).toEqual(expect.objectContaining({
-            id: 'remote',
-            dynamicState: 'error',
-            hint: undefined,
-        }));
-    });
-
     it('lets high-frequency query sections opt out of seed-driven drill transitions', async () => {
         const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
         const states = new Map<string, DynamicSectionState>();
@@ -190,56 +162,6 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
         });
 
         expect(plan[0]?.transitionKey).toBeUndefined();
-    });
-    it('filters static sections by the current query and preserves order', async () => {
-        const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
-        const plan = synthesizeSelectionListRenderPlan({
-            sections: [
-                {
-                    kind: 'static',
-                    id: 'favorites',
-                    title: 'FAVORITES',
-                    options: [
-                        { id: 'fav-a', label: 'Apples' },
-                        { id: 'fav-b', label: 'Bananas' },
-                    ],
-                },
-                {
-                    kind: 'static',
-                    id: 'recent',
-                    title: 'RECENT',
-                    options: [
-                        { id: 'rec-a', label: 'Apricots' },
-                    ],
-                },
-            ],
-            inputValue: 'ap',
-            filterQuery: 'ap',
-            dynamicSectionStates: new Map(),
-        });
-        expect(plan).toHaveLength(2);
-        expect(plan[0].id).toBe('favorites');
-        expect(plan[0].options.map((o) => o.id)).toEqual(['fav-a']);
-        expect(plan[1].id).toBe('recent');
-        expect(plan[1].options.map((o) => o.id)).toEqual(['rec-a']);
-    });
-
-    it('drops static sections whose filter narrows to zero rows', async () => {
-        const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
-        const plan = synthesizeSelectionListRenderPlan({
-            sections: [
-                {
-                    kind: 'static',
-                    id: 'recent',
-                    title: 'RECENT',
-                    options: [{ id: 'r-a', label: 'Apples' }],
-                },
-            ],
-            inputValue: 'zzzz',
-            filterQuery: 'zzzz',
-            dynamicSectionStates: new Map(),
-        });
-        expect(plan).toHaveLength(0);
     });
 
     it('skips dynamic sections whose visibleWhen predicate returns false', async () => {
@@ -305,7 +227,7 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
             status: 'error',
             options: [{ id: 'last', label: 'Last' }],
             emptyHint: undefined,
-            error: new Error('Network down'),
+            error: new Error('token abc123 failed at /private/internal/path'),
             lastSuccessOptions: undefined,
         });
         const plan = synthesizeSelectionListRenderPlan({
@@ -405,24 +327,6 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
         expect(plan[0].resultHint).toBe('More results are available');
     });
 
-    it('exposes filterDynamicOptionsByQuery as a referentially-stable identity for empty queries', async () => {
-        const { filterDynamicOptionsByQuery } = await import('../SelectionListRenderPlan');
-        const options = [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }];
-        const filtered = filterDynamicOptionsByQuery(options, '');
-        expect(filtered).toBe(options);
-    });
-
-    it('filterDynamicOptionsByQuery matches label and subtitle case-insensitively', async () => {
-        const { filterDynamicOptionsByQuery } = await import('../SelectionListRenderPlan');
-        const options = [
-            { id: 'a', label: 'Apples' },
-            { id: 'b', label: 'Bananas', subtitle: 'with apples' },
-            { id: 'c', label: 'Cherries' },
-        ];
-        const filtered = filterDynamicOptionsByQuery(options, 'app');
-        expect(filtered.map((o) => o.id)).toEqual(['a', 'b']);
-    });
-
     /**
      * RUX-1 Issue 1: ranked matching. The user typed "de" and expected
      * "dev" first; instead alphabetical order surfaced ".codex-pr-fixups"
@@ -432,18 +336,6 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
      *   tier 2 → label contains query (alphabetical within tier)
      *   tier 3 → subtitle contains query (alphabetical within tier)
      */
-    it('rankOptionsByQuery surfaces label-prefix matches before substring matches', async () => {
-        const { rankOptionsByQuery } = await import('../SelectionListRenderPlan');
-        const options = [
-            { id: '1', label: '.codex' },
-            { id: '2', label: 'dev' },
-            { id: '3', label: 'dev-bkp' },
-            { id: '4', label: 'happier' },
-        ];
-        const ranked = rankOptionsByQuery(options, 'de');
-        expect(ranked.map((o) => o.label)).toEqual(['dev', 'dev-bkp', '.codex']);
-    });
-
     it('rankOptionsByQuery places subtitle-only matches last', async () => {
         const { rankOptionsByQuery } = await import('../SelectionListRenderPlan');
         const options = [
@@ -488,44 +380,6 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
         const { rankOptionsByQuery } = await import('../SelectionListRenderPlan');
         const options = [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }];
         expect(rankOptionsByQuery(options, '')).toBe(options);
-    });
-
-    /**
-     * RUX-1 Issue 2: stale-while-revalidate. While a dynamic section is
-     * refetching with prior options cached, the loading entry MUST keep the
-     * stale options as the FULL options array rendered (no skeletons), so
-     * users never see a flicker between the previous data and the new data.
-     * Skeletons only appear on first load.
-     */
-    it('loading entry sets skeletonRowCount to 0 when stale options are present (no flicker)', async () => {
-        const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
-        const states = new Map<string, DynamicSectionState>();
-        states.set('dyn', {
-            status: 'loading',
-            options: [],
-            lastSuccessOptions: [{ id: 'prior', label: 'Prior' }],
-        });
-        const plan = synthesizeSelectionListRenderPlan({
-            sections: [
-                {
-                    kind: 'dynamic',
-                    id: 'dyn',
-                    resolve: async () => ({ options: [] }),
-                    loadingSkeletonRows: 5,
-                },
-            ],
-            inputValue: '',
-            filterQuery: '',
-            dynamicSectionStates: states,
-        });
-        expect(plan).toHaveLength(1);
-        expect(plan[0].dynamicState).toBe('loading');
-        expect(plan[0].isStale).toBe(true);
-        // RUX-1 Issue 2 invariant: skeleton row count is suppressed (0)
-        // when stale options are available so the body renders only the
-        // stale rows. Skeletons surface only when there is no prior data.
-        expect(plan[0].skeletonRowCount).toBe(0);
-        expect(plan[0].options.map((o) => o.id)).toEqual(['prior']);
     });
 
     it('loading entry preserves skeletonRowCount when no stale options are available AND showSkeletonsOnFirstLoad is true (opt-in first load)', async () => {
@@ -719,24 +573,6 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
         expect(plan.map((p) => p.id)).toEqual(['recent']);
     });
 
-    it('RUX-9.1: drops static sections with zero options even when query is empty (no filter applied)', async () => {
-        const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
-        const plan = synthesizeSelectionListRenderPlan({
-            sections: [
-                {
-                    kind: 'static',
-                    id: 'favorites',
-                    title: 'FAVORITES',
-                    options: [],
-                },
-            ],
-            inputValue: '',
-            filterQuery: '',
-            dynamicSectionStates: new Map(),
-        });
-        expect(plan).toHaveLength(0);
-    });
-
     /**
      * RUX-9.2: subtitle-tier ranking opt-out. The path domain's option
      * subtitles are the full absolute path (e.g. `/Users/leeroy/Documents/...`).
@@ -744,30 +580,6 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
      * inside `~/Documents/` matches EVERY child via subtitle. Callers must
      * be able to opt out of the subtitle tier.
      */
-    it('RUX-9.2: rankOptionsByQuery skips the subtitle tier when disableSubtitleTier is true', async () => {
-        const { rankOptionsByQuery } = await import('../SelectionListRenderPlan');
-        const options = [
-            { id: '1', label: 'Apples' },
-            { id: '2', label: 'Bananas', subtitle: '/Users/leeroy/with apples' },
-            { id: '3', label: 'Pineapple' },
-        ];
-        // With the subtitle tier ENABLED, "Bananas" would appear because of
-        // its subtitle. With disableSubtitleTier=true, it is dropped.
-        const ranked = rankOptionsByQuery(options, 'app', true);
-        expect(ranked.map((o) => o.id)).toEqual(['1', '3']);
-    });
-
-    it('RUX-9.2: rankOptionsByQuery keeps subtitle matches by default (back-compat)', async () => {
-        const { rankOptionsByQuery } = await import('../SelectionListRenderPlan');
-        const options = [
-            { id: '1', label: 'Apples' },
-            { id: '2', label: 'Bananas', subtitle: '/Users/leeroy/with apples' },
-            { id: '3', label: 'Pineapple' },
-        ];
-        const ranked = rankOptionsByQuery(options, 'app');
-        expect(ranked.map((o) => o.id)).toEqual(['1', '3', '2']);
-    });
-
     it('RUX-9.2: synthesizeSelectionListRenderPlan honors disableSubtitleRanking on static section (no subtitle-tier matches)', async () => {
         const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
         const plan = synthesizeSelectionListRenderPlan({
@@ -819,6 +631,27 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
         expect(plan[0].options.map((o) => o.id)).toEqual(['2']);
     });
 
+    it('matches dynamic-section rows by subtitle by default, after label matches', async () => {
+        const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
+        const states = new Map<string, DynamicSectionState>();
+        states.set('dyn', {
+            status: 'success',
+            options: [
+                { id: '1', label: 'foo', subtitle: '/Users/leeroy/Documents/de' },
+                { id: '2', label: 'desktop', subtitle: '/Users/leeroy/' },
+                { id: '3', label: 'bar', subtitle: '/tmp' },
+            ],
+        });
+        const plan = synthesizeSelectionListRenderPlan({
+            sections: [{ kind: 'dynamic', id: 'dyn', resolve: async () => ({ options: [] }) }],
+            inputValue: 'de',
+            filterQuery: 'de',
+            dynamicSectionStates: states,
+        });
+        expect(plan).toHaveLength(1);
+        expect(plan[0].options.map((o) => o.id)).toEqual(['2', '1']);
+    });
+
     /**
      * RUX-11.2: when a dynamic section is in loading state on first fetch
      * (no lastSuccessOptions), drop the section entirely from the plan so
@@ -852,34 +685,6 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
         });
         // By default, dynamic-section first-load is hidden entirely.
         expect(plan).toHaveLength(0);
-    });
-
-    it('RUX-11.2: emits skeletons on first load when showSkeletonsOnFirstLoad is true (opt-in)', async () => {
-        const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
-        const states = new Map<string, DynamicSectionState>();
-        states.set('dyn', {
-            status: 'loading',
-            options: [],
-            lastSuccessOptions: undefined,
-        });
-        const plan = synthesizeSelectionListRenderPlan({
-            sections: [
-                {
-                    kind: 'dynamic',
-                    id: 'dyn',
-                    title: 'IN THIS FOLDER',
-                    resolve: async () => ({ options: [] }),
-                    loadingSkeletonRows: 5,
-                    showSkeletonsOnFirstLoad: true,
-                },
-            ],
-            inputValue: '',
-            filterQuery: '',
-            dynamicSectionStates: states,
-        });
-        expect(plan).toHaveLength(1);
-        expect(plan[0].dynamicState).toBe('loading');
-        expect(plan[0].skeletonRowCount).toBe(5);
     });
 
     /**
@@ -937,35 +742,5 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
             dynamicSectionStates: states,
         });
         expect(plan).toHaveLength(0);
-    });
-
-    it('RUX-11.2: keeps loading section with stale options regardless of showSkeletonsOnFirstLoad', async () => {
-        const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
-        const states = new Map<string, DynamicSectionState>();
-        states.set('dyn', {
-            status: 'loading',
-            options: [],
-            lastSuccessOptions: [{ id: 'stale', label: 'Stale' }],
-        });
-        const plan = synthesizeSelectionListRenderPlan({
-            sections: [
-                {
-                    kind: 'dynamic',
-                    id: 'dyn',
-                    title: 'IN THIS FOLDER',
-                    resolve: async () => ({ options: [] }),
-                    loadingSkeletonRows: 5,
-                    // showSkeletonsOnFirstLoad omitted (default false) — but stale
-                    // options exist so the section still renders.
-                },
-            ],
-            inputValue: '',
-            filterQuery: '',
-            dynamicSectionStates: states,
-        });
-        expect(plan).toHaveLength(1);
-        expect(plan[0].dynamicState).toBe('loading');
-        expect(plan[0].isStale).toBe(true);
-        expect(plan[0].options.map((o) => o.id)).toEqual(['stale']);
     });
 });

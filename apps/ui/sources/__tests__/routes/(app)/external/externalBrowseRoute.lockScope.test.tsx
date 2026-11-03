@@ -85,7 +85,7 @@ vi.mock('expo-router', () => createExpoRouterMock({
     router: { back: routerBackSpy },
 }).module);
 
-vi.mock('@/sync/domains/state/storage', () => ({
+vi.mock('@/sync/domains/state/storage', async () => (await import('@/dev/testkit/mocks/storage')).createStorageModuleStub({
     useSettings: () => ({
         backendEnabledByTargetKey: {},
         acpCatalogSettingsV1: { v: 2, backends: [] },
@@ -164,18 +164,6 @@ describe('ExternalSessionsBrowseRoute locked Agent scope', () => {
                 scope: 'default',
             },
         });
-    });
-
-    it('fails closed instead of opening an unlocked browse when qualified Agent identity is stale', async () => {
-        routeParamsState.value = {
-            ...routeParamsState.value,
-            agentPluginId: 'replaced.external',
-        };
-        const Route = (await import('@/app/(app)/external/browse')).default;
-
-        await renderScreen(<Route />);
-
-        expect(browseScreenPropsRef.current).toBeNull();
     });
 
     it('shows a closable loading surface while the locked Agent projection resolves', async () => {

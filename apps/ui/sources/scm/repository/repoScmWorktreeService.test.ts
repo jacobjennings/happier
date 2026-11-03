@@ -185,67 +185,30 @@ describe('repoScmWorktreeService', () => {
         });
     });
 
-    it('delegates repo-native worktree creation to the canonical machine SCM worktree RPC', async () => {
-        machineScmWorktreeCreateMock.mockResolvedValue({
-            success: true,
-            worktreePath: '/repo/.dev/worktree/feature-auth',
-            branchName: 'feature-auth',
-            repositoryRootPath: '/repo',
-            sourceRootPath: '/repo',
-        });
-
-        const { repoScmWorktreeService } = await import('./repoScmWorktreeService');
-        const result = await repoScmWorktreeService.createWorktreeForMachinePath({
-            machineId: 'machine-1',
-            path: '/repo/packages/app',
-            baseRef: 'feature/auth',
-        });
-
-        expect(machineScmWorktreeCreateMock).toHaveBeenCalledWith(
-            'machine-1',
-            {
-                cwd: '/repo/packages/app',
-                baseRef: 'feature/auth',
-                branchMode: 'new',
-                displayName: expect.any(String),
-            },
-        );
-        expect(result.success).toBe(true);
-    });
-
-    it('keeps explicit server scope when delegating worktree creation to machine SCM RPCs', async () => {
-        machineScmWorktreeCreateMock.mockResolvedValue({
-            success: true,
-            worktreePath: '/repo/.dev/worktree/feature-auth',
-            branchName: 'feature-auth',
-            repositoryRootPath: '/repo',
-            sourceRootPath: '/repo',
-        });
-
-        const { repoScmWorktreeService } = await import('./repoScmWorktreeService');
-        const result = await repoScmWorktreeService.createWorktreeForMachinePath({
-            machineId: 'machine-1',
-            path: '/repo/packages/app',
-            baseRef: 'feature/auth',
-            serverId: 'server-b',
-        });
-
-        expect(machineScmWorktreeCreateMock).toHaveBeenCalledWith(
-            'machine-1',
-            expect.objectContaining({
-                cwd: '/repo/packages/app',
-                baseRef: 'feature/auth',
-            }),
+    it.each([
+        [
+            'defaults to a new branch from the base ref',
+            { baseRef: 'feature/auth' },
+            { cwd: '/repo/packages/app', baseRef: 'feature/auth', branchMode: 'new', displayName: expect.any(String) },
+            undefined,
+        ],
+        [
+            'keeps explicit server scope',
+            { baseRef: 'feature/auth', serverId: 'server-b' },
+            expect.objectContaining({ cwd: '/repo/packages/app', baseRef: 'feature/auth' }),
             { serverId: 'server-b' },
-        );
-        expect(result.success).toBe(true);
-    });
-
-    it('forwards existing-branch worktree creation through the canonical machine SCM worktree RPC', async () => {
+        ],
+        [
+            'forwards existing-branch creation',
+            { displayName: 'feature/auth', branchMode: 'existing' as const },
+            { cwd: '/repo/packages/app', displayName: 'feature/auth', branchMode: 'existing' },
+            undefined,
+        ],
+    ])('delegates worktree creation to the canonical machine SCM worktree RPC: %s', async (_title, input, expectedRequest, expectedOptions) => {
         machineScmWorktreeCreateMock.mockResolvedValue({
             success: true,
             worktreePath: '/repo/.dev/worktree/feature-auth',
-            branchName: 'feature/auth',
+            branchName: 'feature-auth',
             repositoryRootPath: '/repo',
             sourceRootPath: '/repo',
         });
@@ -254,17 +217,13 @@ describe('repoScmWorktreeService', () => {
         const result = await repoScmWorktreeService.createWorktreeForMachinePath({
             machineId: 'machine-1',
             path: '/repo/packages/app',
-            displayName: 'feature/auth',
-            branchMode: 'existing',
+            ...input,
         });
 
         expect(machineScmWorktreeCreateMock).toHaveBeenCalledWith(
             'machine-1',
-            {
-                cwd: '/repo/packages/app',
-                displayName: 'feature/auth',
-                branchMode: 'existing',
-            },
+            expectedRequest,
+            ...(expectedOptions ? [expectedOptions] : []),
         );
         expect(result.success).toBe(true);
     });

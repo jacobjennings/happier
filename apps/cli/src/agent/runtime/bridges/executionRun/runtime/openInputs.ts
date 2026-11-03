@@ -1,7 +1,8 @@
 import { AgentSessionConfigurationSnapshotV1Schema } from '@happier-dev/protocol/runtime/agentSessionV1';
 import { ProviderBoundModelRefSchema } from '@happier-dev/protocol/providers/model-selection';
 import { ProviderDefaultModelSelectionsByAgentTargetKeyV1StoredSchema } from '@happier-dev/protocol/providers/selection/v1';
-import { ConnectedServiceBindingsV2Schema, projectConnectedServiceBindingsForChild } from '@happier-dev/protocol/connect/connected-service-bindings';
+import { ConnectedServiceBindingsV2Schema } from '@happier-dev/protocol/connect/connected-service-bindings';
+import { resolveAgentStartBaselineSelectionV1 } from '@happier-dev/protocol/actions/executor/agentStartAdmission';
 import { TeamCredentialProviderModelSelectionV1Schema } from '@happier-dev/protocol/teams/credentials/resourceV1';
 import { buildBackendTargetKeyV2, readBackendTargetRefV2 } from '@happier-dev/protocol/backends/targets/backendTargetRefV2';
 import type { AcpConfigOptionOverridesV1, BackendTargetRefV2Input, ConnectedServiceBindingsV2, ProviderBoundModelRef, TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protocol';
@@ -78,13 +79,12 @@ function projectInheritedConnectedServices(
             throw childSelectionRefusal('execution_run_child_choice_required',
                 'Choose a connected account or pool supported by the child Agent.');
         }
-        if (binding.source === 'team_resource' && binding.deliveryMode === 'direct') {
-            throw childSelectionRefusal('execution_run_child_choice_required',
-                'Choose a child credential route; direct Team credential custody cannot be inherited.');
-        }
         bindingsByServiceId[serviceId] = binding;
     }
-    return projectConnectedServiceBindingsForChild({ v: 2, bindingsByServiceId });
+    const target = readBackendTargetRefV2(backendTarget);
+    return resolveAgentStartBaselineSelectionV1({ targetKey: buildBackendTargetKeyV2(target),
+        profileId: undefined, connectedServices: undefined,
+    }, { agentTarget: target, connectedServices: { v: 2, bindingsByServiceId } }).connectedServices ?? null;
 }
 
 /** Resolves child omissions once, before credential or Provider materialization. */
@@ -106,8 +106,8 @@ export type ExecutionRunChildSelectionInput = Readonly<{
 /** Only omissions that inherit parent custody need to join its startup. */
 export function executionRunChildSelectionNeedsAppliedParent(input: ExecutionRunChildSelectionInput): boolean {
     return input.lifecycle === 'attached' && input.childSelection !== 'agentDefault'
-        && input.modelSelection === undefined && input.teamCredentialModel === undefined
-        && !(input.modelId !== undefined && (input.connectedServices !== undefined
+        && input.modelSelection !== null && !input.modelSelection?.providerConnectionId && input.teamCredentialModel === undefined
+        && !((input.modelSelection !== undefined || input.modelId !== undefined) && (input.connectedServices !== undefined
             || (input.connectedServicesDefaultServiceIds?.length ?? 0) > 0));
 }
 
@@ -193,6 +193,12 @@ function resolveExecutionRunChildSelectionInput(input: ExecutionRunChildSelectio
     if ((parent.modelId !== null && parent.modelId !== parentModelId)
         || (parentModelTargetKey && !areExecutionRunBackendTargetsEqual(parentModelTargetKey, parent.backendTarget))) {
         throw childSelectionRefusal('execution_run_parent_selection_unavailable', 'The parent applied model and route are inconsistent.');
+    }
+    if (selection) {
+        return { ...explicit,
+            connectedServices: projectInheritedConnectedServices(parent.connectedServices, input.backendTarget, sameAgent),
+            inheritedFromDifferentAgent: !sameAgent,
+        };
     }
     if (!parentModelId && !modelId && input.fallbackSelection) {
         return resolveExecutionRunChildSelectionInput({ ...input, lifecycle: 'independent',

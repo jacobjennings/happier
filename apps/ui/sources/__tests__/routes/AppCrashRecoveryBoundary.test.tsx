@@ -61,6 +61,9 @@ describe('AppCrashRecoveryBoundary', () => {
     expect(screen.findByTestId('app-crash-restart')).toBeTruthy();
     expect(screen.findByTestId('app-crash-report-bug')).toBeTruthy();
     expect(screen.findByTestId('app-crash-copy-details')).toBeTruthy();
+    // Web (the default test platform) keeps the fallback inline: no native overlay host.
+    expect(screen.findAllByTestId('app-crash-recovery-full-window-overlay')).toHaveLength(0);
+    expect(screen.findAllByTestId('app-crash-recovery-native-overlay-fallback')).toHaveLength(0);
   });
 
   it('includes a component stack section in fallback details when React provides it', async () => {
@@ -76,6 +79,7 @@ describe('AppCrashRecoveryBoundary', () => {
         </AppCrashRecoveryBoundary>);
     consoleError.mockRestore();
 
+    expect(screen.getTextContent()).toContain('boom');
     expect(screen.getTextContent()).toContain('Component stack');
     expect(screen.getTextContent()).toContain('Wrapper');
     expect(screen.getTextContent()).toContain('Thrower');
@@ -97,30 +101,6 @@ describe('AppCrashRecoveryBoundary', () => {
     const scrollView = screen.findByType(ScrollView);
     expect(scrollView.props.style).toEqual(expect.objectContaining({ flex: 1 }));
     expect(scrollView.props.contentContainerStyle).toEqual(expect.objectContaining({ flexGrow: 1 }));
-  });
-
-  it('includes the React component stack in crash details when available', async () => {
-    const { AppCrashRecoveryBoundary } = await import('@/components/appShell/AppCrashRecoveryBoundary');
-    const Wrapper = () => <Thrower />;
-    const Thrower = () => {
-      throw new Error('boom');
-    };
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    const screen = await renderScreen(<AppCrashRecoveryBoundary onRestart={() => {}}>
-          <Wrapper />
-        </AppCrashRecoveryBoundary>);
-    consoleError.mockRestore();
-
-    const textContent = screen.findAllByType('Text' as never)
-      .map((node) => {
-        const value = node.props.children;
-        return Array.isArray(value) ? value.join('') : String(value ?? '');
-      })
-      .join('\n');
-
-    expect(textContent).toContain('boom');
-    expect(textContent).toContain('Wrapper');
   });
 
   it('hosts the native crash fallback in a full-window overlay without RN Modal', async () => {
@@ -155,20 +135,6 @@ describe('AppCrashRecoveryBoundary', () => {
       expect(screen.findByTestId('app-crash-recovery-native-overlay-fallback')?.findByProps({ testID: 'app-crash-restart' })).toBeTruthy();
     } finally {
       platform.OS = originalOs;
-      consoleError.mockRestore();
-    }
-  });
-
-  it('keeps the web crash fallback inline without a modal host', async () => {
-    const reactNative = await import('react-native');
-    expect((reactNative.Platform as { OS: string }).OS).toBe('web');
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      const { AppCrashRecoveryBoundary } = await import('@/components/appShell/AppCrashRecoveryBoundary');
-      const Thrower = () => { throw new Error('boom'); };
-      const screen = await renderScreen(<AppCrashRecoveryBoundary onRestart={() => {}}><Thrower /></AppCrashRecoveryBoundary>);
-      expect(screen.findByTestId('app-crash-restart')).toBeTruthy();
-    } finally {
       consoleError.mockRestore();
     }
   });

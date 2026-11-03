@@ -2,6 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 
+import { createEndpointReadinessProbe } from './createEndpointReadinessProbe';
+import {
+    acquireServerReachabilitySupervisor,
+    peekServerReachabilityState,
+    resetServerReachabilitySupervisors,
+} from './serverReachabilitySupervisorPool';
+
 const runtimeFetchMock = vi.hoisted(() => vi.fn());
 const appState = vi.hoisted(() => ({ currentState: 'active' as string }));
 
@@ -25,11 +32,9 @@ vi.mock('react-native', async () => {
 
 describe('createEndpointReadinessProbe', () => {
     afterEach(async () => {
-        const { resetServerReachabilitySupervisors } = await import('./serverReachabilitySupervisorPool');
         await resetServerReachabilitySupervisors();
         runtimeFetchMock.mockReset();
         appState.currentState = 'active';
-        vi.resetModules();
         vi.useRealTimers();
     });
 
@@ -37,7 +42,6 @@ describe('createEndpointReadinessProbe', () => {
         runtimeFetchMock
             .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
 
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
         const probe = createEndpointReadinessProbe({
             endpoint: 'https://server.example.test',
             token: async () => 'token-1',
@@ -56,9 +60,7 @@ describe('createEndpointReadinessProbe', () => {
         vi.useFakeTimers();
         const response = createDeferred<Response>();
         runtimeFetchMock.mockReturnValue(response.promise);
-        const { acquireServerReachabilitySupervisor } = await import('./serverReachabilitySupervisorPool');
         const leasePromise = acquireServerReachabilitySupervisor({ serverUrl: 'https://shared.example.test', token: 'token-1' });
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
         let settled = false;
         const result = createEndpointReadinessProbe({ endpoint: 'https://shared.example.test', token: 'token-1' })()
             .then((value) => { settled = true; return value; });
@@ -74,9 +76,7 @@ describe('createEndpointReadinessProbe', () => {
         vi.useFakeTimers();
         const response = createDeferred<Response>();
         runtimeFetchMock.mockReturnValue(response.promise);
-        const { acquireServerReachabilitySupervisor, peekServerReachabilityState } = await import('./serverReachabilitySupervisorPool');
         const leasePromise = acquireServerReachabilitySupervisor({ serverUrl: 'https://shared.example.test', token: 'token-1' });
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
         const controller = new AbortController();
         const result = createEndpointReadinessProbe({ endpoint: 'https://shared.example.test', token: 'token-1', signal: controller.signal })();
         const rejection = expect(result).rejects.toMatchObject({ name: 'AbortError' });
@@ -94,7 +94,6 @@ describe('createEndpointReadinessProbe', () => {
         appState.currentState = 'background';
         runtimeFetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
 
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
 
         const probe = createEndpointReadinessProbe({
             endpoint: 'https://server.example.test',
@@ -113,7 +112,6 @@ describe('createEndpointReadinessProbe', () => {
 
             runtimeFetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
 
-            const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
             const probe = createEndpointReadinessProbe({
                 endpoint: 'https://server.example.test',
                 token: 'token-1',
@@ -129,7 +127,6 @@ describe('createEndpointReadinessProbe', () => {
     it('fails closed without network calls when the endpoint URL is invalid', async () => {
         runtimeFetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
 
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
         const probe = createEndpointReadinessProbe({
             endpoint: 'localhost:3000',
             token: 'token-1',
@@ -144,97 +141,46 @@ describe('createEndpointReadinessProbe', () => {
         expect(runtimeFetchMock).toHaveBeenCalledTimes(0);
     });
 
-    it('strips username/password userinfo from the endpoint before probing', async () => {
+    it.each([
+        { name: 'tokenless /health', token: null },
+        { name: 'authenticated ping', token: 'token-1' },
+    ])('returns server_unreachable when the $name probe is non-ok (404)', async ({ token }) => {
         runtimeFetchMock
-            .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+            .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false }), { status: 404 }));
 
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
-        const probe = createEndpointReadinessProbe({
-            endpoint: 'https://user:pass@server.example.test',
-            token: 'token-1',
-        });
-
-        await expect(probe()).resolves.toEqual(expect.objectContaining({ status: 'ready' }));
-        expect(runtimeFetchMock).toHaveBeenCalledTimes(1);
-        expect(runtimeFetchMock.mock.calls[0]?.[0]).toBe('https://server.example.test/v1/auth/ping');
-    });
-
-    it('returns server_unreachable when readiness probes are non-ok', async () => {
-        runtimeFetchMock
-            .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false }), { status: 404 })); // /health
-
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
         const probe = createEndpointReadinessProbe({
             endpoint: 'https://server.example.test',
-            token: 'token-1',
-        });
-
-        await expect(probe()).resolves.toEqual(
-            expect.objectContaining({
-                status: 'server_unreachable',
-            }),
-        );
-        expect(runtimeFetchMock).toHaveBeenCalledTimes(1);
-    });
-
-    it('returns server_unreachable when /health is missing', async () => {
-        runtimeFetchMock
-            .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false }), { status: 404 })); // /health
-
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
-        const probe = createEndpointReadinessProbe({
-            endpoint: 'https://server.example.test',
-            token: null,
+            token,
         });
 
         await expect(probe()).resolves.toEqual(expect.objectContaining({ status: 'server_unreachable' }));
         expect(runtimeFetchMock).toHaveBeenCalledTimes(1);
     });
 
-    it('preserves the canonical retry schedule when a probe responds with 429', async () => {
-        vi.useFakeTimers();
-        runtimeFetchMock
-            .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 429, headers: { 'Retry-After': '2' } })); // /health
-
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
-        const probe = createEndpointReadinessProbe({
-            endpoint: 'https://server.example.test',
-            token: 'token-1',
-        });
-
-        await expect(probe()).resolves.toEqual(
-            expect.objectContaining({
-                status: 'retry_later',
-                retryAfterMs: 2000,
-            }),
-        );
-        expect(runtimeFetchMock).toHaveBeenCalledTimes(1);
-    });
-
-    it('marks proxy maintenance 503 responses as planned server restarts', async () => {
-        vi.useFakeTimers();
-        runtimeFetchMock
-            .mockResolvedValueOnce(new Response('Server reload in progress\n', {
+    it.each([
+        {
+            name: '429 with Retry-After',
+            response: () => new Response(JSON.stringify({ ok: true }), { status: 429, headers: { 'Retry-After': '2' } }),
+            expected: { status: 'retry_later', retryAfterMs: 2000 },
+        },
+        {
+            name: 'proxy-maintenance 503 as a planned server restart',
+            response: () => new Response('Server reload in progress\n', {
                 status: 503,
-                headers: {
-                    'Retry-After': '2',
-                    'X-Happier-Retry-Reason': 'server_restarting',
-                },
-            })); // /health
+                headers: { 'Retry-After': '2', 'X-Happier-Retry-Reason': 'server_restarting' },
+            }),
+            expected: { status: 'retry_later', retryAfterMs: 2000, reason: 'server_restarting' },
+        },
+    ])('maps $name to retry_later with the canonical retry schedule', async ({ response, expected }) => {
+        vi.useFakeTimers();
+        runtimeFetchMock.mockResolvedValueOnce(response());
 
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
         const probe = createEndpointReadinessProbe({
             endpoint: 'https://server.example.test',
             token: 'token-1',
         });
 
-        await expect(probe()).resolves.toEqual(
-            expect.objectContaining({
-                status: 'retry_later',
-                retryAfterMs: 2000,
-                reason: 'server_restarting',
-            }),
-        );
+        await expect(probe()).resolves.toEqual(expect.objectContaining(expected));
         expect(runtimeFetchMock).toHaveBeenCalledTimes(1);
     });
 
@@ -242,7 +188,6 @@ describe('createEndpointReadinessProbe', () => {
         runtimeFetchMock
             .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false }), { status: 401 })); // /v1/auth/ping
 
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
         const probe = createEndpointReadinessProbe({
             endpoint: 'https://server.example.test',
             token: 'token-1',
@@ -265,7 +210,6 @@ describe('createEndpointReadinessProbe', () => {
             .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 })) // /health
             .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false }), { status: 401 })); // would be /v1/auth/ping
 
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
         const probe = createEndpointReadinessProbe({
             endpoint: 'https://server.example.test',
             token: () => null,
@@ -281,7 +225,6 @@ describe('createEndpointReadinessProbe', () => {
         try {
             globalWithLocation.location = { protocol: 'https:' };
 
-            const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
             const probe = createEndpointReadinessProbe({
                 endpoint: 'http://server.example.test',
                 token: null,
@@ -299,18 +242,20 @@ describe('createEndpointReadinessProbe', () => {
         }
     });
 
-    it('strips userinfo credentials from probe URLs before issuing network calls', async () => {
-        runtimeFetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 })); // /health
+    it.each([
+        { name: 'tokenless', token: null, url: 'https://custom.example.test:9443/base/health' },
+        { name: 'authenticated', token: 'token-1', url: 'https://custom.example.test:9443/base/v1/auth/ping' },
+    ])('strips userinfo/query/hash from $name probe URLs before issuing network calls', async ({ token, url }) => {
+        runtimeFetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
 
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
         const probe = createEndpointReadinessProbe({
             endpoint: 'https://admin:secret@custom.example.test:9443/base?token=abc#frag',
-            token: null,
+            token,
         });
 
         await expect(probe()).resolves.toEqual(expect.objectContaining({ status: 'ready' }));
         expect(runtimeFetchMock).toHaveBeenCalledTimes(1);
-        expect(runtimeFetchMock.mock.calls[0]?.[0]).toBe('https://custom.example.test:9443/base/health');
+        expect(runtimeFetchMock.mock.calls[0]?.[0]).toBe(url);
     });
 
     it('sanitizes error messages from runtimeFetch failures', async () => {
@@ -320,7 +265,6 @@ describe('createEndpointReadinessProbe', () => {
             )
             ;
 
-        const { createEndpointReadinessProbe } = await import('./createEndpointReadinessProbe');
         const probe = createEndpointReadinessProbe({
             endpoint: 'https://admin:secret@custom.example.test:9443/path/?token=abc#frag',
             token: 'token-1',
@@ -331,10 +275,8 @@ describe('createEndpointReadinessProbe', () => {
         if (result.status !== 'server_unreachable') {
             throw new Error('Expected server_unreachable');
         }
-        expect(result.errorMessage).toContain('https://custom.example.test:9443/path');
+        // Redaction detail is owned by sanitizeEndpointErrorMessage.test.ts; this proves the probe applies it.
         expect(result.errorMessage).not.toContain('admin:secret@');
-        expect(result.errorMessage).not.toContain('token=abc');
-        expect(result.errorMessage).toContain('Bearer [REDACTED]');
         expect(result.errorMessage).not.toContain('hdr.eyJ');
         expect(runtimeFetchMock).toHaveBeenCalledTimes(1);
     });

@@ -10,6 +10,25 @@ const project = (key: string, checkouts: ProjectsTreeCheckout[], teamLabel: stri
 const shape = (rows: ReturnType<typeof buildProjectsTreeRows>) => rows.map((row) => `${'  '.repeat(row.level)}${row.title}${row.titleQualifier ? ` (${row.titleQualifier})` : ''}${row.expandable ? (row.expanded ? ' v' : ' >') : ''}`);
 
 describe('buildProjectsTreeRows (lab p-projects RULES)', () => {
+    it('retains 150 unchanged Project inputs and replaces only the Project whose Machine facts changed', () => {
+        const groups = Array.from({ length: 150 }, (_, index) => ({ projectKey: { projectKey: `project-${index}` },
+            items: [{ id: `ref-${index}`, serverId: 'home-a', machineId: `machine-${index}`, rootPath: `/repo-${index}` }],
+        }));
+        const input = { groups, projectName: (ref: typeof groups[number]['items'][number]) => ref.id,
+            machine: (id: string) => ({ name: id, homeDir: null, online: true }),
+        };
+        const before = buildProjectsTreeProjects(input);
+        expect(buildProjectsTreeProjects({ ...input, previousProjects: before })).toBe(before);
+        const after = buildProjectsTreeProjects({ ...input, previousProjects: before,
+            machine: id => ({ name: id === 'machine-27' ? 'Renamed Machine' : id, homeDir: null, online: true }),
+        });
+        expect(after.filter((project, index) => project !== before[index]).map(project => project.key)).toEqual(['project-27']);
+        expect(after[27]?.checkouts[0]?.machineName).toBe('Renamed Machine');
+        const reordered = buildProjectsTreeProjects({ ...input, groups: [...groups].reverse(), previousProjects: before });
+        expect(reordered[0]).toBe(before[149]);
+        expect(reordered[149]).toBe(before[0]);
+    });
+
     it('joins authorized Source and exact-checkout facts without changing checkout order or addresses', () => {
         const refs = [
             { id: 'same-id', serverId: 'home-a', machineId: 'devbox', rootPath: '/work/first', source: { sourceId: 'source-a', revision: 1 } },

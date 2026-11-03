@@ -5,34 +5,37 @@ import { createXtermWriteQueue } from './writeQueue';
 describe('createXtermWriteQueue', () => {
     it('serializes writes and invokes completions after parser callbacks', () => {
         const scheduled: Array<() => void> = [];
+        const written: string[] = [];
         const parserCallbacks: Array<() => void> = [];
-        const onComplete = vi.fn();
+        const completed: string[] = [];
         const queue = createXtermWriteQueue({
-            write: (_data, callback) => parserCallbacks.push(callback),
+            write: (data, callback) => {
+                written.push(String(data));
+                parserCallbacks.push(callback);
+            },
             schedule: (flush) => scheduled.push(flush),
             maxPendingBytes: 1024,
         });
 
-        expect(queue.enqueue({ data: 'one', byteLength: 3, onComplete })).toBe(true);
-        expect(queue.enqueue({ data: 'two', byteLength: 3, onComplete })).toBe(true);
-        expect(queue.pendingBytes()).toBe(6);
-        expect(queue.pendingCount()).toBe(2);
+        expect(queue.enqueue({ data: 'one', byteLength: 3, onComplete: () => completed.push('one') })).toBe(true);
+        expect(queue.enqueue({ data: 'two', byteLength: 3, onComplete: () => completed.push('two') })).toBe(true);
+        expect(written).toEqual([]);
 
         scheduled.shift()?.();
-        expect(queue.pendingBytes()).toBe(3);
-        expect(queue.pendingCount()).toBe(2);
-        expect(onComplete).not.toHaveBeenCalled();
+        scheduled.shift()?.();
+        expect(written).toEqual(['one']);
+        expect(completed).toEqual([]);
 
         parserCallbacks.shift()?.();
-        expect(onComplete).toHaveBeenCalledTimes(1);
+        expect(completed).toEqual(['one']);
+        expect(written).toEqual(['one']);
         scheduled.shift()?.();
+        expect(written).toEqual(['one', 'two']);
         parserCallbacks.shift()?.();
-        expect(onComplete).toHaveBeenCalledTimes(2);
-        expect(queue.pendingBytes()).toBe(0);
-        expect(queue.pendingCount()).toBe(0);
+        expect(completed).toEqual(['one', 'two']);
     });
 
-    it('rejects writes that would exceed the pending-byte cap', () => {
+    it('rejects writes that would exceed the pending-byte cap and frees the budget on clear', () => {
         const onReject = vi.fn();
         const queue = createXtermWriteQueue({
             write: () => {},
@@ -48,13 +51,21 @@ describe('createXtermWriteQueue', () => {
             pendingBytes: 4,
             maxPendingBytes: 4,
         });
+
+        queue.clear();
+        expect(queue.enqueue({ data: 'efgh', byteLength: 4 })).toBe(true);
     });
 
     it('drops stale parser callbacks after clear', () => {
+        const written: string[] = [];
         const parserCallbacks: Array<() => void> = [];
         const onComplete = vi.fn();
+        const onNextComplete = vi.fn();
         const queue = createXtermWriteQueue({
-            write: (_data, callback) => parserCallbacks.push(callback),
+            write: (data, callback) => {
+                written.push(String(data));
+                parserCallbacks.push(callback);
+            },
             schedule: (flush) => flush(),
             maxPendingBytes: 1024,
         });
@@ -64,7 +75,11 @@ describe('createXtermWriteQueue', () => {
         parserCallbacks.shift()?.();
 
         expect(onComplete).not.toHaveBeenCalled();
-        expect(queue.pendingBytes()).toBe(0);
-        expect(queue.pendingCount()).toBe(0);
+
+        queue.enqueue({ data: 'next', byteLength: 4, onComplete: onNextComplete });
+        expect(written).toEqual(['hello', 'next']);
+        parserCallbacks.shift()?.();
+        expect(onNextComplete).toHaveBeenCalledTimes(1);
+        expect(onComplete).not.toHaveBeenCalled();
     });
 });

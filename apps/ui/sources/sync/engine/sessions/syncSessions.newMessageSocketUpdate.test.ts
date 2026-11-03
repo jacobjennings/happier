@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildSessionMessageObservationFactsV1 } from '@happier-dev/protocol';
 import type { DecryptedMessage, Session } from '@/sync/domains/state/storageTypes';
 import { handleNewMessageSocketUpdate } from './sessionSocketUpdate';
+import { sessionRuntimeObservations } from '@/sync/domains/session/sessionRuntimeObservation';
 import { createRawMessageNormalizationSequenceState, type NormalizedMessage } from "@happier-dev/session-core/raw";
+import { createReducer, reducer } from '@happier-dev/session-core/reducer';
 import { createSessionMessageApplyCoalescer } from './sessionMessageApplyCoalescer';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { flushRealtimeFanoutTelemetry, resetRealtimeFanoutTelemetry } from '@/sync/runtime/performance/realtimeFanoutTelemetry';
@@ -34,6 +37,7 @@ function buildUpdate(params: {
     createdAt: number;
     body: {
         t: 'new-message';
+        delivery: 'full';
         sid?: string;
             message: {
                 id: string;
@@ -55,6 +59,7 @@ function buildUpdate(params: {
         createdAt: 1_000,
         body: {
             t: 'new-message',
+            delivery: 'full',
             sid: params.sid ?? 's1',
             message: {
                 id: params.messageId,
@@ -144,6 +149,7 @@ function buildHarness(overrides: Partial<Parameters<typeof handleNewMessageSocke
         isMutableToolCall: () => false,
         invalidateScmStatus: () => {},
         isSessionMessagesLoaded: () => true,
+        isSessionFullContentConsumerActive: () => true,
         getSessionMaterializedMaxSeq: () => 1,
         markSessionMaterializedMaxSeq,
         onMessageGapDetected,
@@ -153,15 +159,76 @@ function buildHarness(overrides: Partial<Parameters<typeof handleNewMessageSocke
 }
 
 describe('handleNewMessageSocketUpdate', () => {
+    it('keeps a neutral hint from advancing meaningful activity', async () => {
+        const update = buildUpdate({ messageId: 'm2', messageSeq: 2,
+            attentionImpact: { affectsUnread: false, affectsMeaningfulActivity: false } });
+        const facts = buildSessionMessageObservationFactsV1(update.body.message);
+        const harness = buildHarness({
+            updateData: { ...update, body: { ...update.body, delivery: 'hint', message: facts } },
+            isSessionFullContentConsumerActive: () => false,
+            getSession: () => ({ ...buildSession('s1'), meaningfulActivityAt: 10 }),
+        });
+        await handleNewMessageSocketUpdate(harness.params);
+        expect(harness.applySessions.mock.calls[0]?.[0]?.[0]).toMatchObject({
+            seq: 2, meaningfulActivityAt: 10,
+        });
+    });
+    it('records a late bodyless hint for a current consumer without decrypting or materializing it', async () => {
+        const update = buildUpdate({ messageId: 'm2', messageSeq: 2, attentionImpact: userAttentionImpact });
+        const facts = buildSessionMessageObservationFactsV1(update.body.message);
+        const markSessionKnownRemoteSeq = vi.fn();
+        const markSessionTranscriptDeferred = vi.fn();
+        const getSessionEncryption = vi.fn(() => null);
+        const harness = buildHarness({
+            updateData: { ...update, body: { ...update.body, delivery: 'hint', message: facts } },
+            isSessionActivelyViewed: () => true,
+            isSessionFullContentConsumerActive: () => true,
+            getSessionEncryption,
+            markSessionKnownRemoteSeq,
+            markSessionTranscriptDeferred,
+        });
+        await handleNewMessageSocketUpdate(harness.params);
+        expect(getSessionEncryption).not.toHaveBeenCalled();
+        expect(harness.applyMessages).not.toHaveBeenCalled();
+        expect(harness.markSessionMaterializedMaxSeq).not.toHaveBeenCalled();
+        expect(markSessionKnownRemoteSeq).toHaveBeenCalledWith('s1', 2);
+        expect(markSessionTranscriptDeferred).toHaveBeenCalledWith('s1', {
+            updateType: 'new-message', seq: 2, messageId: 'm2',
+        });
+        expect(harness.onMessageGapDetected).toHaveBeenCalledWith('s1', {
+            prevMaterializedMaxSeq: 1, messageSeq: 2,
+        });
+    });
     beforeEach(() => {
         vi.useFakeTimers();
     });
 
     afterEach(() => {
+        sessionRuntimeObservations.clear();
         vi.useRealTimers();
         resetRealtimeFanoutTelemetry();
         syncPerformanceTelemetry.configure({ enabled: false });
         syncPerformanceTelemetry.reset();
+    });
+
+    it.each([false, true])('keeps committed Run input in its sidechain (sequence normalization: %s)', async (sequenceNormalization) => {
+        const sidechainId = 'subagent_run_dbbb89d2-redacted';
+        const update = buildUpdate({ messageId: 'cmvmloos400c9mc4s7gpiqeqi', messageSeq: 3,
+            content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'x'.repeat(111_733) } } } });
+        const harness = buildHarness({
+            updateData: { ...update, body: { ...update.body, message: { ...update.body.message, sidechainId } } },
+            getSession: () => ({ ...buildSession('s1'), encryptionMode: 'plain' }),
+            ...(sequenceNormalization ? { rawMessageNormalizationState: createRawMessageNormalizationSequenceState() } : {}),
+        });
+        await handleNewMessageSocketUpdate(harness.params);
+        const normalized: NormalizedMessage | undefined = harness.applyMessages.mock.calls[0]?.[1]?.[0];
+        expect(normalized).toMatchObject({ role: 'user', sidechainId, isSidechain: true });
+        if (!normalized) throw new Error('Run input was not materialized');
+        const state = createReducer();
+        expect(reducer(state, [normalized]).messages).toEqual([]);
+        expect(state.sidechains.get(sidechainId)).toMatchObject([{ realID: update.body.message.id, role: 'user' }]);
+        expect(reducer(state, [normalized]).messages).toEqual([]);
+        expect(state.sidechains.get(sidechainId)).toHaveLength(1);
     });
 
     it('preserves update message seq on normalized messages', async () => {
@@ -359,7 +426,6 @@ describe('handleNewMessageSocketUpdate', () => {
             getSessionMaterializedMaxSeq: () => 2,
             isSessionActivelyViewed: () => false,
             isSessionFullContentConsumerActive: () => false,
-            realtimeProjectionMode: 'enabled',
             markSessionKnownRemoteSeq,
             markSessionTranscriptDeferred,
         } as Partial<Parameters<typeof handleNewMessageSocketUpdate>[0]>);
@@ -405,7 +471,6 @@ describe('handleNewMessageSocketUpdate', () => {
             } as Session),
             isSessionActivelyViewed: () => false,
             isSessionFullContentConsumerActive: () => false,
-            realtimeProjectionMode: 'enabled',
             markSessionKnownRemoteSeq,
             markSessionTranscriptDeferred,
         } as Partial<Parameters<typeof handleNewMessageSocketUpdate>[0]>);
@@ -451,7 +516,6 @@ describe('handleNewMessageSocketUpdate', () => {
             getSessionEncryption: () => ({ decryptMessage }),
             isSessionActivelyViewed: () => false,
             isSessionFullContentConsumerActive: () => false,
-            realtimeProjectionMode: 'enabled',
             markSessionKnownRemoteSeq,
             markSessionTranscriptDeferred,
         });
@@ -499,7 +563,6 @@ describe('handleNewMessageSocketUpdate', () => {
             }),
             isSessionActivelyViewed: () => false,
             isSessionFullContentConsumerActive: () => false,
-            realtimeProjectionMode: 'enabled',
             applyCacheOnlySessionProjectionPatch,
             markSessionKnownRemoteSeq,
             markSessionTranscriptDeferred,
@@ -524,7 +587,7 @@ describe('handleNewMessageSocketUpdate', () => {
         });
     });
 
-    it('records shadow routing but still applies the current full transcript path', async () => {
+    it('records projection routing and preserves hidden durable-only side channels', async () => {
         syncPerformanceTelemetry.configure({
             enabled: true,
             slowThresholdMs: 1_000_000,
@@ -546,18 +609,19 @@ describe('handleNewMessageSocketUpdate', () => {
             } as Session),
             isSessionActivelyViewed: () => false,
             isSessionFullContentConsumerActive: () => false,
-            realtimeProjectionMode: 'shadow',
+            onTranscriptSkippedDurableMessage: ({ rawMessage }) => {
+                expect(rawMessage).toHaveProperty('content');
+            },
         } as Partial<Parameters<typeof handleNewMessageSocketUpdate>[0]>);
 
         await handleNewMessageSocketUpdate(params);
 
-        expect(decryptMessage).toHaveBeenCalledTimes(1);
-        expect(applyMessages).toHaveBeenCalledTimes(1);
+        expect(decryptMessage).not.toHaveBeenCalled();
+        expect(applyMessages).not.toHaveBeenCalled();
         const routeEvent = syncPerformanceTelemetry.snapshot().events.find((event) =>
             event.name === 'sync.sessions.socket.message.routeDecision',
         );
         expect(routeEvent?.fields.projectionOnly).toBe(1);
-        expect(routeEvent?.fields.shadowMode).toBe(1);
     });
 
     it('applies plaintext realtime messages when the session is plain and session encryption is unavailable', async () => {
@@ -637,6 +701,26 @@ describe('handleNewMessageSocketUpdate', () => {
             latestTurnStatus: 'in_progress',
             lastRuntimeIssue: expect.objectContaining({ source: 'agent_status_error' }),
             thinking: true,
+        });
+    });
+
+    it.each([1_000, 3_000])('orders lifecycle replay against the full-publication witness (%s)', async createdAt => {
+        const session = { ...buildSession('s1'), serverId: 'lifecycle-witness-home', encryptionMode: 'plain' as const,
+            updatedAt: 100, latestTurnStatus: 'completed' as const };
+        const address = { serverId: session.serverId, sessionId: session.id };
+        sessionRuntimeObservations.observe(address, { active: true, activeAt: 100 });
+        sessionRuntimeObservations.recordFullPublication(address, 2_000);
+        const update = buildUpdate({ sid: session.id, messageId: 'witness-lifecycle', messageSeq: 2,
+            content: { t: 'plain', v: { role: 'agent', content: { type: 'acp', agentId: 'test-provider',
+                data: { type: 'task_started', id: 'turn-1' } } } } });
+        update.body.message.createdAt = createdAt;
+        const { params, applySessions } = buildHarness({ updateData: update, getSession: () => session });
+
+        await handleNewMessageSocketUpdate(params);
+
+        expect(applySessions.mock.calls[0]?.[0]?.[0]).toMatchObject({
+            latestTurnStatus: createdAt > 2_000 ? 'in_progress' : 'completed',
+            thinking: createdAt > 2_000,
         });
     });
 
@@ -830,7 +914,6 @@ describe('handleNewMessageSocketUpdate', () => {
         const requestSessionShellRefresh = vi.fn();
         const { params, applyMessages, fetchSessions, markSessionMaterializedMaxSeq, applySessions } = buildHarness({
             getSession: () => undefined,
-            realtimeProjectionMode: 'enabled',
             isSessionFullContentConsumerActive: () => true,
             requestSessionShellRefresh,
         });
@@ -859,7 +942,6 @@ describe('handleNewMessageSocketUpdate', () => {
             getSessionEncryption: () => ({ decryptMessage }),
             isSessionActivelyViewed: () => false,
             isSessionFullContentConsumerActive: () => false,
-            realtimeProjectionMode: 'enabled',
             markSessionKnownRemoteSeq,
             markSessionTranscriptDeferred,
         });
@@ -1079,7 +1161,6 @@ describe('handleNewMessageSocketUpdate', () => {
         const { params } = buildHarness({
             getSession: (sessionId: string) => sessions.get(sessionId),
             getSessionEncryption: () => ({ decryptMessage }),
-            realtimeProjectionMode: 'enabled',
             isSessionActivelyViewed: (sessionId: string) => sessionId === 's2',
             isSessionFullContentConsumerActive: () => false,
             markSessionTranscriptDeferred,

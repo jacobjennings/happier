@@ -107,7 +107,7 @@ export const SessionWorkMapView = React.memo((props: Readonly<{
         const runs = folded.filter((item) => item.kind === 'background_run').length;
         const names = folded.filter((item) => item.kind !== 'background_run').map((item) => item.title);
         if (runs > 0) names.push(t('sessionWork.map.backgroundRuns', { count: runs }));
-        return joinHappierFacts(t('sessionWork.map.folded'), names.join(', '));
+        return t('sessionWork.map.folded', { names: names.join(', ') });
     }, [projection]);
 
     return (
@@ -124,7 +124,7 @@ export const SessionWorkMapView = React.memo((props: Readonly<{
             isNodeDisabled={isNodeDisabled}
             onOpen={onOpen}
         />
-        {foldNote ? <Text testID={`${props.testIDPrefix}-fold-note`} numberOfLines={1} style={styles.foldNote}>{foldNote}</Text> : null}
+        {foldNote ? <Text testID={`${props.testIDPrefix}-fold-note`} style={styles.foldNote}>{foldNote}</Text> : null}
         </View>
     );
 });

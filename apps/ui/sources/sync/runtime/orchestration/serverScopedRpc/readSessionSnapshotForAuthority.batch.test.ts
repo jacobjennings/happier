@@ -44,7 +44,7 @@ it('shares exact observations across captured transports while fencing a retired
     await expect(first).resolves.toBe('retired');
     await expect(second).resolves.toMatchObject({ session: { id: 'captured' } });
     expect(home!.requests.filter(request => request.path === '/v2/sessions/read-batch')).toHaveLength(1);
-    expect(home!.requests.filter(request => request.path === '/v2/sessions/captured')).toHaveLength(0);
+    expect(home!.requests.filter(request => request.method === 'GET' && request.path === '/v2/sessions/captured')).toHaveLength(0);
 });
 
 it('gathers overlapping same-authority Session projections across independent consumers without retaining settled observations', async () => {
@@ -183,7 +183,7 @@ it.each([false, true])('opens identical single and batch Usage evidence with sha
             expect(batchRequests).toHaveLength(2);
             expect(batchRequests.every(request => SessionReadBatchRequestV1Schema.parse(request.body).accessProjectionVersion
                 === (sharingEnabled ? 1 : undefined))).toBe(true);
-            expect(home!.requests.filter(request => /^\/v2\/sessions\/(first|second)$/.test(request.path))
+            expect(home!.requests.filter(request => request.method === 'GET' && /^\/v2\/sessions\/(first|second)$/.test(request.path))
                 ).toHaveLength(0);
             await expect(readSessionSnapshotsForAuthority({ authority, sessionIds: ids, accountCurrentnessSource: currentness,
                 isCurrent: () => false })).rejects.toMatchObject({ errorCode: 'stale_response' });

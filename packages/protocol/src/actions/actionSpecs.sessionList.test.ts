@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { getActionContextualDefaults, getActionSpec } from './actionSpecs.js';
-import { bindSessionListCliInput, SessionListCliInputSchema } from './specs/sessionListCli.js';
+import { bindSessionListCliInput, SessionListCliInputSchema } from './specs/session/listCli.js';
 
 const query = {
   v: 1,

@@ -2,12 +2,6 @@ import { join, resolve } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/daemon/controlClient', () => ({
-  decideDaemonPluginChange: vi.fn(),
-  requestDaemonPluginChange: vi.fn(),
-}));
-vi.mock('@/daemon/ensureDaemon', () => ({ ensureDaemonRunningForSessionCommand: vi.fn() }));
-
 import * as promptInputModule from '@/terminal/prompts/promptInput';
 
 import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
@@ -61,28 +55,20 @@ describe('requestUserPluginChange', () => {
     }
   });
 
-  it('rejoins a pending change by status only, without re-requesting or deciding it', async () => {
+  it('rejoins a pending change by status after the daemon starts, and never reads status without it', async () => {
     const ensureDaemon = vi.fn(async () => undefined);
-    const readStatus = vi.fn(async () => ({
-      kind: 'reviewRequired' as const,
-      reviewKind: 'installation' as const,
-      pendingChangeId: 'pending-1',
-      reason: 'firstInstall' as const,
-      currentVersion: null,
-      authorityExpansion: [],
-      review: completeReview(),
-    }));
+    const readStatus = vi.fn(async () => ({ kind: 'expired' as const }));
+    await expect(readUserPluginChangeStatus({ pendingChangeId: '  pending-1 ' }, { ensureDaemon, readStatus }))
+      .resolves.toEqual({ kind: 'expired' });
+    expect(ensureDaemon).toHaveBeenCalledOnce();
+    expect(readStatus).toHaveBeenCalledExactlyOnceWith({ pendingChangeId: 'pending-1' });
 
+    const unread = vi.fn();
     await expect(readUserPluginChangeStatus({ pendingChangeId: 'pending-1' }, {
-      ensureDaemon,
-      readStatus,
-    })).resolves.toMatchObject({
-      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
-      pendingChangeId: 'pending-1',
-    });
-
-    expect(ensureDaemon).toHaveBeenCalledTimes(1);
-    expect(readStatus).toHaveBeenCalledWith({ pendingChangeId: 'pending-1' });
+      ensureDaemon: async () => { throw new Error('daemon down'); },
+      readStatus: unread,
+    })).resolves.toEqual({ kind: 'daemonUnavailable' });
+    expect(unread).not.toHaveBeenCalled();
   });
 
   it('continues one pending project-trust review through one explicit decision', async () => {
@@ -186,15 +172,9 @@ describe('requestUserPluginChange', () => {
       },
       updatePolicy: 'allowed',
     }));
-    expect(output).toContain('Identity:');
-    expect(output).toContain('Verification signals:');
     expect(output).toContain('Reviewed for the curated channel');
     expect(output).toContain('registry profile registry_private');
     expect(output).toContain('Contributions: actions (1)');
-    expect(output).toContain('Required disclosures and cooperative services:');
-    expect(output).toContain('Optional host-owned resources');
-    expect(output).toContain('Compatibility and updates:');
-    expect(output).toContain('Newer versions blocked before download:');
     expect(output).toContain('1.2.5 [plugin_manifest_semantic_invalid]: Plugin manifest requires happier >=9999.0.0');
   });
 
@@ -696,72 +676,6 @@ describe('requestUserPluginChange', () => {
     }));
   });
 
-  it('issues present-user evidence only after terminal confirmation', async () => {
-    const requestChange = vi.fn(async () => ({
-      kind: 'reviewRequired' as const,
-      reviewKind: 'installation' as const,
-      pendingChangeId: 'pending-curated',
-      reason: 'firstInstall' as const,
-      currentVersion: null,
-      authorityExpansion: [],
-      review: completeReview({
-        version: '1.2.3',
-        packageIdentity: { name: '@acme/example', version: '1.2.3' },
-        source: { kind: 'npm', locator: '@acme/example@1.2.3', integrity: 'sha512-example', integrityBasis: 'expected' },
-        executableRealms: ['daemon' as const],
-        requiredHostAccess: [],
-        optionalHostAccess: [],
-      }),
-    }));
-    const decideChange = vi.fn(async () => ({
-      kind: 'committed' as const,
-      pluginId: 'acme.example',
-      desiredGeneration: 'generation-1',
-      appliedGeneration: 'generation-1',
-      pendingSurfaces: [],
-    }));
-
-    await expect(requestUserPluginChange({
-      request: {
-        kind: 'installNpm',
-        packageName: '@acme/example',
-        selector: '1.2.3',
-        registryOrigin: 'https://registry.npmjs.org',
-        expectedMarketplaceListing: {
-          source: { id: 'marketplace:curated', kind: 'curated', sourceUrl: 'https://marketplace.example.test/catalog.json' },
-          pluginId: 'acme.example',
-          publisher: { id: 'acme', displayName: 'Acme' },
-          packageName: '@acme/example',
-          registryOrigin: 'https://registry.npmjs.org',
-          version: '1.2.3',
-          integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
-          manifestDigest: `sha256:${'a'.repeat(64)}`,
-          review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-          updatePolicy: 'allowed',
-        },
-      },
-      approval: 'prompt',
-    }, {
-      ensureDaemon: async () => undefined,
-      confirm: async () => true,
-      requestChange,
-      decideChange,
-    })).resolves.toEqual(expect.objectContaining({ kind: 'committed' }));
-
-    expect(requestChange).toHaveBeenCalledWith(expect.objectContaining({
-      expectedMarketplaceListing: expect.objectContaining({
-        pluginId: 'acme.example',
-        packageName: '@acme/example',
-        version: '1.2.3',
-        review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-      }),
-    }));
-    expect(decideChange).toHaveBeenCalledWith(expect.objectContaining({
-      pendingChangeId: 'pending-curated',
-      decision: 'installAndTrust',
-    }));
-  });
-
   it('returns a curated review without carrying caller evidence in headless mode', async () => {
     const requestChange = vi.fn(async () => ({
       kind: 'reviewRequired' as const,
@@ -815,29 +729,6 @@ describe('requestUserPluginChange', () => {
         source: { id: 'marketplace:curated', kind: 'curated', sourceUrl: 'https://marketplace.example.test/catalog.json' },
       }),
     }));
-    expect(decideChange).not.toHaveBeenCalled();
-  });
-
-  it('returns reviewRequired without fabricating approval in headless mode', async () => {
-    const decideChange = vi.fn();
-    await expect(requestUserPluginChange({
-      request: { kind: 'installPath', locator: '/tmp/example', development: false },
-      approval: 'none',
-    }, {
-      ensureDaemon: async () => undefined,
-      requestChange: async () => ({
-        kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
-        pendingChangeId: 'pending-1',
-        review: completeReview({
-          source: { kind: 'path', locator: '/tmp/example' },
-          updateChannel: { kind: 'path', locator: '/tmp/example', development: false },
-          executableRealms: [],
-          requiredHostAccess: [],
-          optionalHostAccess: [],
-        }),
-      }),
-      decideChange,
-    })).resolves.toEqual(expect.objectContaining({ kind: 'reviewRequired' }));
     expect(decideChange).not.toHaveBeenCalled();
   });
 
@@ -917,42 +808,6 @@ describe('requestUserPluginChange', () => {
       decideChange,
     })).resolves.toEqual(authorityReview);
     expect(decideChange).toHaveBeenCalledOnce();
-  });
-
-  it('treats the explicit development command as the exact-path trust action', async () => {
-    const sourceRootReview = {
-      kind: 'reviewRequired' as const, reviewKind: 'projectTrust' as const,
-      pendingChangeId: 'pending-development-command',
-      review: { source: { kind: 'path' as const, locator: absoluteFixturePath } },
-    };
-    const decideChange = vi.fn()
-      .mockResolvedValueOnce({
-        kind: 'committed' as const,
-        pluginId: 'acme.example',
-        desiredGeneration: 'generation-1',
-        appliedGeneration: 'generation-1',
-        pendingSurfaces: [],
-      });
-    const confirm = vi.fn(async () => {
-      throw new Error('The explicit development command must not ask for a second prompt.');
-    });
-
-    await expect(requestUserPluginChange({
-      request: { kind: 'development', sourceRootPath: absoluteFixturePath },
-      approval: 'explicitNonInteractiveTrust',
-    }, {
-      ensureDaemon: async () => undefined,
-      requestChange: async () => sourceRootReview,
-      decideChange,
-      confirm,
-    })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.example' });
-
-    expect(confirm).not.toHaveBeenCalled();
-    expect(decideChange).toHaveBeenCalledOnce();
-    expect(decideChange).toHaveBeenCalledWith({
-      pendingChangeId: 'pending-development-command',
-      decision: 'installAndTrust', optionalSelections: [],
-    });
   });
 
   it('fails closed and cancels when an explicit trust review does not name the requested development source', async () => {

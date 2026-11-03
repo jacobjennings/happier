@@ -1,57 +1,45 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
-const setPendingSetupIntentMock = vi.hoisted(() => vi.fn());
-const getPendingSetupIntentMock = vi.hoisted(() => vi.fn());
-const isDesktopHostMock = vi.hoisted(() => vi.fn());
+import { standardCleanup } from '@/dev/testkit';
+import { clearPendingSetupIntent, getPendingSetupIntent, setPendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent';
+import { upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
 
-vi.mock('@/sync/domains/pending/pendingSetupIntent', () => ({
-    setPendingSetupIntent: (value: unknown) => setPendingSetupIntentMock(value),
-    getPendingSetupIntent: () => getPendingSetupIntentMock(),
-    clearPendingSetupIntent: vi.fn(),
-}));
+import { setOnboardingWizardAwaitingAuthResumeIntent, setOnboardingWizardPreAuthResumeIntent } from './wizardResume';
 
-vi.mock('@/utils/platform/desktopHost', () => ({
-    isDesktopHost: () => isDesktopHostMock(),
-}));
+const RELAY_URL = 'https://relay.example.test';
+
+async function activateRelay(): Promise<void> {
+    await upsertAndActivateServer({
+        serverUrl: RELAY_URL,
+        source: 'manual',
+        scope: 'device',
+        replaceEquivalentStoredUrl: true,
+    });
+}
 
 describe('wizardResume', () => {
     afterEach(() => {
-        vi.clearAllMocks();
-    });
-
-    it('routes back to the setup wizard only for awaiting-auth desktop resumes', async () => {
-        const { resolveWizardAuthReturnToRoute } = await import('./wizardResume');
-
-        isDesktopHostMock.mockReturnValue(true);
-        getPendingSetupIntentMock.mockReturnValue({ branch: 'thisComputer', phase: 'awaiting_auth', relayUrl: 'https://relay.example.test' });
-        expect(resolveWizardAuthReturnToRoute()).toBe('/');
-
-        getPendingSetupIntentMock.mockReturnValue({ branch: 'thisComputer', phase: 'pre_auth', relayUrl: 'https://relay.example.test' });
-        expect(resolveWizardAuthReturnToRoute()).toBe('/');
-
-        isDesktopHostMock.mockReturnValue(false);
-        getPendingSetupIntentMock.mockReturnValue({ branch: 'thisComputer', phase: 'awaiting_auth', relayUrl: 'https://relay.example.test' });
-        expect(resolveWizardAuthReturnToRoute()).toBe('/');
+        clearPendingSetupIntent();
+        standardCleanup();
     });
 
     it('persists onboarding resume phases through the canonical pending setup intent', async () => {
-        const {
-            setOnboardingWizardPreAuthResumeIntent,
-            setOnboardingWizardAwaitingAuthResumeIntent,
-        } = await import('./wizardResume');
+        await activateRelay();
 
-        setOnboardingWizardPreAuthResumeIntent('https://relay.example.test/');
-        expect(setPendingSetupIntentMock).toHaveBeenCalledWith({
-            branch: 'thisComputer',
-            phase: 'pre_auth',
-            relayUrl: 'https://relay.example.test/',
-        });
+        setOnboardingWizardPreAuthResumeIntent(`${RELAY_URL}/`);
+        expect(getPendingSetupIntent()).toMatchObject({ branch: 'thisComputer', phase: 'pre_auth' });
 
-        setOnboardingWizardAwaitingAuthResumeIntent('https://relay.example.test/');
-        expect(setPendingSetupIntentMock).toHaveBeenCalledWith({
-            branch: 'thisComputer',
-            phase: 'awaiting_auth',
-            relayUrl: 'https://relay.example.test/',
-        });
+        setOnboardingWizardAwaitingAuthResumeIntent(`${RELAY_URL}/`);
+        expect(getPendingSetupIntent()).toMatchObject({ branch: 'thisComputer', phase: 'awaiting_auth' });
+    });
+
+    it('never replaces a pending Ask Happier continuation with a wizard resume', async () => {
+        await activateRelay();
+        setPendingSetupIntent({ branch: 'askHappier', phase: 'awaiting_auth', relayUrl: RELAY_URL });
+
+        setOnboardingWizardPreAuthResumeIntent(RELAY_URL);
+        setOnboardingWizardAwaitingAuthResumeIntent(RELAY_URL);
+
+        expect(getPendingSetupIntent()).toMatchObject({ branch: 'askHappier', phase: 'awaiting_auth' });
     });
 });

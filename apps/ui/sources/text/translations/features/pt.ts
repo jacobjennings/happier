@@ -270,6 +270,7 @@ const actionConfirmationTranslations = { pt: {
         homeUnavailable: 'Esta aprovação pertence a um Home indisponível neste dispositivo. Volte a ligar esse Home para decidir.',
         turnedOffTitle: 'Ação desativada',
         turnedOffMessage: 'Esta ação está desativada, por isso nada foi alterado. Podes voltar a ativá-la em Definições → Ações.',
+        turnedOffReadMessage: 'Esta ação está desativada, por isso nada foi carregado. Podes voltar a ativá-la em Definições → Ações.',
         openActionSettings: 'Abrir definições de Ações',
     } } as const satisfies Pick<Record<string, ActionConfirmationTranslations>, "pt">;
 
@@ -565,15 +566,21 @@ const pt: typeof en = {
     descriptions: {
         conversation: ({ machine }) => `Pergunte o que quiser sem interromper esta sessão. Ela roda em ${machine} ao lado; nada volta a menos que você envie.`,
     },
+    placeholders: {
+        review: 'Em que os revisores devem se concentrar?',
+    },
     chips: {
         engineTitle: 'Quem responde',
         addReviewer: 'Adicionar revisor',
+        reviewer: 'Revisor',
+        reviewerNeeded: 'Adicione um revisor para começar',
         removeReviewer: ({ name }) => `Remover ${name}`,
         scope: 'O que revisar',
         advanced: 'Avançado',
     },
     reportToSession: 'Reportar a esta sessão',
     startsWhenYouSend: ({ count }) => count > 1 ? `${count} revisões começam ao enviar` : 'Começa ao enviar',
+    thisFolder: 'esta pasta',
     offline: ({ machine }) => `${machine} está offline. O agente começa lá; seu rascunho fica aqui até ela voltar.`,
     menu: {
         askSection: 'Pedir a um agente',
@@ -1041,6 +1048,7 @@ const artifactsBrowserTranslations = { pt: {
         },
         proposal: {
             title: 'Edição sugerida',
+            titleBy: ({ who }) => `${who} sugere uma edição`,
             basedOn: ({ n }) => `Baseada na versão ${n}`,
             current: ({ n }) => `Versão ${n} · atual`,
             before: 'Antes',
@@ -1220,6 +1228,8 @@ const pt: BoardsTranslations = {
     meta: {
         needYou: ({ count }) => `${count} precisa${count === 1 ? '' : 'm'} de você`,
         items: ({ count }) => (count === 1 ? '1 item' : `${count} itens`),
+        itemsAtLeast: ({ count }) => `${count}+ itens`,
+        needYouAtLeast: ({ count }) => `${count}+ precisam de você`,
         handPicked: 'Escolhidos à mão',
         empty: 'Vazio',
         moreSources: ({ count }) => `+ ${count}`,
@@ -1304,10 +1314,22 @@ const pt: BoardsTranslations = {
         empty: 'Nada encontrado.',
         noMatch: ({ query }) => `Nada corresponde a “${query}”`,
     },
+    /** Candidates an answered filter could not classify: said once under the header, qualifying every count. */
+    undetermined: {
+        sessions: ({ count }) => (count === 1 ? `1 sessão não pôde ser verificada` : `${count} sessões não puderam ser verificadas`),
+        runs: ({ count }) => (count === 1 ? `1 execução não pôde ser verificada` : `${count} execuções não puderam ser verificadas`),
+        items: ({ count }) => (count === 1 ? `1 item não pôde ser verificado` : `${count} itens não puderam ser verificados`),
+        projectAssociation: 'A associação com o projeto não foi publicada ou não está visível para você.',
+        filterFacts: 'As informações necessárias para este filtro não estão disponíveis.',
+    },
     empty: {
         title: 'Escolha o que este quadro mostra',
         body: 'Adicione sessões, fluxos de trabalho, execuções ou máquinas à mão, ou mostre uma seção como Precisa de você. Você organiza; o quadro os mantém ao vivo.',
         action: 'Adicionar ao quadro',
+        sourcedTitle: 'Nada por enquanto',
+        sourcedBody: 'Os itens que correspondem à origem deste quadro aparecem aqui assim que chegam. Você também pode adicionar alguns à mão.',
+        uncheckedTitle: 'Nenhuma correspondência confirmada ainda',
+        pendingTitle: 'Verificando o que corresponde…',
     },
     widgets: {
         group: 'Widgets',
@@ -1629,6 +1651,30 @@ type MachineParams = Shared_computerUseTranslations.MachineParams;
 type ComputerUseTranslations = Shared_computerUseTranslations.ComputerUseTranslations;
 
 const computerUseTranslations = { pt: {
+        providers: {
+            pageDescription: ({ machine }) => `Como os agentes veem e controlam a tela de ${machine}.`,
+            sectionTitle: "Provedores",
+            sectionDescription: "Os agentes usam o padrão, a menos que peçam outro provedor ativado.",
+            offlineDescription: ({ machine }) => `${machine} está offline, então não é possível ativar provedores agora.`,
+            cuaDescription: "Rápido. Trabalha com o que está na tela.",
+            agentDesktopDescription: "Age sobre controles com nome. Mais lento, usa menos tokens.",
+            status: {
+                checking: "Verificando…",
+                installsOnEnable: "É instalado quando você o ativa",
+                installing: "Instalando…",
+                installed: "Instalado",
+                missing: "Não instalado",
+                failed: "Não foi possível instalar",
+                unavailable: "Indisponível nesta máquina",
+            },
+            install: "Instalar",
+            retry: "Tentar novamente",
+            defaultTitle: "Padrão",
+            makeDefault: "Tornar padrão",
+            loadFailedTitle: "Não foi possível carregar as configurações de controle do computador",
+            saveFailed: "Não foi possível salvar a alteração",
+            summaryPair: ({ first, second }) => `${first} e ${second}`,
+        },
         approval: {
             sectionTitle: 'No computador',
             act: {
@@ -1813,6 +1859,8 @@ const computerUseTranslations = { pt: {
             pressKey: ({ key }) => `Pressionou ${key}`,
             press: 'Pressionou uma tecla',
             pressRunning: 'Pressionando uma tecla',
+            drag: 'Arrastou',
+            wheel: 'Rolou',
             mayHaveLanded: 'pode ter sido aplicado',
             failed: 'Não foi concluído',
         },
@@ -2607,9 +2655,11 @@ const pt: EntityDragDropTranslations = {
         putUnderDetail: 'Reporta a ela · as duas continuam em execução',
         moveAbove: ({ target }) => `Mover para cima de ${target}`,
         moveBelow: ({ target }) => `Mover para baixo de ${target}`,
+        moveBefore: ({ target }) => `Mover para antes de ${target}`,
+        moveAfter: ({ target }) => `Mover para depois de ${target}`,
         orderDetail: 'Muda só a ordem',
         moveToFolder: ({ folder }) => `Mover para ${folder}`,
-        folderDetail: 'Só a pasta · não reporta a ninguém',
+        folderDetail: 'Continua a correr onde está', leaveSectionDetail: 'Sai da sua secção',
         moveToTopLevel: 'Mover para o nível superior',
         topLevelDetail: 'Fora da pasta · nada mais muda',
         cantPutUnder: ({ target }) => `Não é possível colocar sob ${target}`,
@@ -2654,7 +2704,7 @@ const pt: EntityDragDropTranslations = {
         foldersOff: 'As pastas estão desativadas neste Home',
         gone: 'Esse lugar acabou de desaparecer',
         generic: 'Este lugar não pode recebê-la',
-        otherGroup: 'Pertence a outro grupo',
+        otherGroup: 'Uma sessão fica no projeto onde corre. Coloque-a numa secção',
         cantHold: 'Essa linha não pode conter nada',
         fixedItem: 'Não pode ser movido nesta lista',
     },
@@ -5908,6 +5958,7 @@ const machineDetailPageTranslations = { pt: translated({
                 sharing: "Partilha",
                 agents: "Agentes",
                 terminal: "Terminal",
+                computer: "Controle do computador",
                 connection: "Ligação",
                 tools: "Ferramentas",
                 doctor: "Diagnóstico",
@@ -6328,8 +6379,8 @@ const machineDetailPageTranslations = { pt: translated({
                 },
                 customSustain: {
                     title: "Durante quanto tempo",
-                    body: "Qualquer número inteiro de minutos, até uma semana (10080).",
-                    invalid: "Introduza um número inteiro de minutos de 1 a 10080.",
+                    body: "Qualquer número inteiro de minutos, até uma semana (10080). Indique uma unidade: ms, s, min, h ou d.",
+                    invalid: "Introduza um número inteiro de minutos de 1 a 10080. Indique uma unidade: ms, s, min, h ou d.",
                 },
                 customCpu: {
                     title: "CPU acima de",
@@ -6637,7 +6688,7 @@ const machineDetailPageTranslations = { pt: translated({
                     customTitle: "Sugerir itens sem uso após",
                 },
                 days: ({ days }) => `${days} ${days === 1 ? 'dia' : 'dias'}`,
-                customDays: { body: "Qualquer número inteiro de dias, 1 ou mais.", invalid: "Introduza um número inteiro de dias, 1 ou mais." },
+                customDays: { body: "Qualquer número inteiro de dias, 1 ou mais. Indique uma unidade: ms, s, min, h ou d.", invalid: "Introduza um número inteiro de dias, 1 ou mais. Indique uma unidade: ms, s, min, h ou d." },
             },
             scope: {
                 label: "O que mostrar",
@@ -6902,8 +6953,8 @@ const machineDetailPageTranslations = { pt: translated({
                 milliseconds: ({ milliseconds }) => `${milliseconds} ms`,
                 customIdle: {
                     title: "Fecho de ferramentas inativas",
-                    body: "Introduza milissegundos, segundos, minutos ou horas; pelo menos 1 segundo.",
-                    invalid: "Introduza uma duração de pelo menos 1 segundo.",
+                    body: "Introduza milissegundos, segundos, minutos ou horas; pelo menos 1 segundo. Indique uma unidade: ms, s, min, h ou d.",
+                    invalid: "Introduza uma duração de pelo menos 1 segundo. Indique uma unidade: ms, s, min, h ou d.",
                 },
                 customBrowsers: {
                     title: "Navegadores em simultâneo",
@@ -6959,7 +7010,7 @@ const machineDetailPageTranslations = { pt: translated({
                 sustainHelp: "Um pico durante uma compilação nunca a aciona.",
                 cooldownTitle: "Depois esperar entre os passos",
                 cooldownHelp: "Após cada passo, o Happier espera esse tempo e verifica se a memória diminuiu.",
-                customMinutes: { title: "Por quanto tempo", body: "Qualquer número inteiro de minutos, 1 ou mais, como 3 ou 90.", invalid: "Digite um número inteiro de minutos, 1 ou mais." },
+                customMinutes: { title: "Por quanto tempo", body: "Qualquer número inteiro de minutos, 1 ou mais, como 3 min ou 1.5 h. Indique uma unidade: ms, s, min, h ou d.", invalid: "Digite um número inteiro de minutos, 1 ou mais. Indique uma unidade: ms, s, min, h ou d." },
             },
             ladder: {
                 label: "O que a proteção de memória faria",
@@ -7061,7 +7112,7 @@ const machineDetailPageTranslations = { pt: translated({
                 graceHelp: "Dá a um processo um momento para terminar sozinho.",
                 atOnce: "Imediatamente",
                 seconds: ({ seconds }) => `${seconds} s`,
-                customGrace: { title: "Quanto esperar", body: "Segundos ou minutos, como 45 s ou 3 min.", invalid: "Digite um número de segundos ou minutos, 0 ou mais." },
+                customGrace: { title: "Quanto esperar", body: "Segundos ou minutos, como 45 s ou 3 min. Indique uma unidade: ms, s, min, h ou d.", invalid: "Digite um número de segundos ou minutos, 0 ou mais. Indique uma unidade: ms, s, min, h ou d." },
             },
             limits: {
                 title: "Limites e energia",
@@ -7802,7 +7853,7 @@ return { nativePasswordTranslations };
 const Domain_navigationPlacementTranslations = (() => {
 type NavigationPlacementTranslation = Shared_navigationPlacementTranslations.NavigationPlacementTranslation;
 
-const navigationPlacementTranslations = { pt: { customize: 'Personalizar…', title: 'Navegação', description: 'Escolha o que fica visível, vai para Mais ou fica oculto. Arraste para reordenar. Salvo neste dispositivo.', pinned: 'Fixado', overflow: 'Mais', hidden: 'Oculto', reset: 'Redefinir', appRail: 'Barra esquerda', sessionRail: 'Barra da sessão', workspaceRail: 'Barra do espaço de trabalho', sessionTabBar: 'Abas do telefone', phoneLauncher: 'Atalhos do telefone' } } satisfies Pick<Record<string, NavigationPlacementTranslation>, "pt">;
+const navigationPlacementTranslations = { pt: { customize: 'Personalizar…', title: 'Navegação', description: 'Escolha o que fica visível, vai para Mais ou fica oculto. Arraste para reordenar. Salvo neste dispositivo.', pinned: 'Fixado', overflow: 'Mais', hidden: 'Oculto', reset: 'Redefinir', appRail: 'Barra esquerda', sessionRail: 'Barra da sessão', workspaceRail: 'Barra do espaço de trabalho', sessionTabBar: 'Abas do telefone', phoneLauncher: 'Atalhos do telefone', composer: 'Compositor' } } satisfies Pick<Record<string, NavigationPlacementTranslation>, "pt">;
 
 return { navigationPlacementTranslations };
 })();
@@ -8433,7 +8484,8 @@ const Domain_pluginSettingsPresentationTranslations = (() => {
 const english = Shared_pluginSettingsPresentationTranslations.english;
 
 const pluginSettingsPresentationTranslations = { pt: {
-        rowStatus: { enabled: 'Ativado', disabled: 'Desativado', incompatible: 'Não compatível', trustRemoved: 'Confiança removida', needsAttention: 'Requer atenção' },
+        enablement: {"account": "Na sua conta", "machine": "Nesta máquina", "description": "Ambos devem estar ativados para o plugin funcionar aqui. Desativá-lo mantém os dados e as conexões.", "accountScope": "Todas as suas máquinas", "accountOff": "Desativado na sua conta, por isso não funciona em nenhuma das suas máquinas. Os dados e as conexões são mantidos.", "machineOff": "Desativado nesta máquina. As suas outras máquinas não são afetadas, e os dados e as conexões são mantidos."},
+        rowStatus: { enabled: 'Ativado', disabled: 'Desativado', incompatible: 'Não compatível', trustRemoved: 'Confiança removida', needsAttention: 'Requer atenção', offInAccount: 'Desativado na conta' },
         developmentPhase: { observing: 'A observar', preparingDependencies: 'A preparar dependências', compiling: 'A compilar', validating: 'A validar', active: 'Ativo', retainedIncumbent: 'Versão anterior ativa', unavailable: 'Indisponível' },
         developmentDiagnostic: { manifestMissing: 'Esta pasta não tem manifesto de plugin. Adicione .happier-plugin/plugin.json ou escolha a pasta do plugin.', projectMissing: 'Esta pasta já não existe. Remova-a do desenvolvimento ou escolha onde o plugin está agora.' },
         rowSource: { bundled: 'Incluído no Happier', npm: 'Pacote npm', archive: 'Ficheiro de arquivo', localPath: 'Pasta local', other: 'Origem configurada' },
@@ -9069,9 +9121,12 @@ const rolesTranslations = { pt: {
             sectionTitle: 'Funções',
             allRoles: 'Todas as funções',
             inUse: ({ count }) => `${count} em uso`,
-            changed: 'alterada',
-            thisSession: 'esta sessão',
+            changedHere: 'Alterado aqui',
+            addedHere: 'Adicionado aqui',
             reset: 'Repor',
+            runsInBackground: 'roda em segundo plano',
+            approvalReviewerFollowsDefault: ({ value }) => `Segue seu padrão · ${value}`,
+            approvalReviewerOverride: ({ value }) => `Definido aqui · padrão: ${value}`,
             newRoleForSession: 'Nova função para esta sessão',
             changeForSession: 'Alterar para esta sessão',
             editNotes: 'Editar notas',
@@ -9196,7 +9251,7 @@ const runPageTranslations = { pt: {
         launcher: {
             titles: { review: 'Pedir uma revisão', plan: 'Pedir um plano', delegate: 'Delegar uma tarefa' },
             descriptions: {
-                review: ({ machine }) => `Cada agente revisa as mudanças em ${machine} por conta própria; aqui você recebe um resultado de cada um.`,
+                review: ({ folder }) => `Cada agente revisa as mudanças em ${folder} por conta própria; aqui você recebe um resultado de cada um.`,
                 plan: ({ machine }) => `O agente lê o código em ${machine} e propõe um plano aqui. Ele não muda nada.`,
                 delegate: ({ machine }) => `O agente trabalha em ${machine} com as permissões abaixo e relata aqui.`,
             },
@@ -9294,7 +9349,7 @@ type SecretsSettingsCopy = Shared_secretsSettingsTranslations.SecretsSettingsCop
 const en = Shared_secretsSettingsTranslations.en;
 
 const pt: SecretsSettingsCopy = {
-    purpose: "Chaves API e tokens para agentes e servidores MCP. Os valores salvos não são exibidos novamente.",
+    purpose: "Chaves de API e tokens para agentes e servidores MCP. Os valores ficam ocultos, a menos que alguém que gere o segredo o revele.",
     yoursTitle: 'Seus segredos',
     yoursDescription: 'Segredos que você salvou ou possui. Escolha-os onde o Happier pedir uma chave.',
     sharedWithYouTitle: 'Compartilhados com você',
@@ -9323,6 +9378,27 @@ const pt: SecretsSettingsCopy = {
     storagePlain: 'Gerenciado pelo Home',
     storagePlainDescription: 'Este Home o guarda e pode lê-lo para entregá-lo.',
     save: 'Salvar segredo',
+    revealValue: "Mostrar valor",
+    hideValue: "Ocultar valor",
+    revealConfirmTitle: ({ name }: { name: string }) => `Mostrar “${name}”?`,
+    revealConfirmBody: "O valor fica visível neste dispositivo até você ocultá-lo ou sair. Revelações e cópias ficam registradas no histórico.",
+    revealConfirm: "Mostrar",
+    valueUnavailable: "Salvo. Não pode ser mostrado neste dispositivo agora.",
+    valueRefused: "Não foi possível mostrar o valor, então nada foi exibido.",
+    copyRefused: "Não foi possível copiar o valor. Mostre-o novamente para tentar.",
+    copyUnrecorded: "O valor pode estar na área de transferência, mas esta cópia não pôde ser registrada.",
+    historyTitle: "Histórico de revelações",
+    historyEmpty: "Ninguém revelou este valor.",
+    historyUnavailable: "Não foi possível carregar o histórico.",
+    historyRevealed: "Revelado",
+    historyRevealedCopied: "Revelado e copiado",
+    historyCopyNotConfirmed: "Revelado · cópia não confirmada",
+    historyNotShown: "Não exibido",
+    historyUnconfirmed: "Revelação não confirmada",
+    historyThisDevice: "Este dispositivo",
+    historyOtherDevice: "Outro dispositivo",
+    historyUnknownActor: "Alguém",
+    historyOlder: "Mostrar anteriores",
 };
 
 const secretsSettingsTranslations = { pt } as const;
@@ -9624,6 +9700,24 @@ const sessionBoardTranslations = { pt: {
                 unpin: 'Desafixar desta vista',
                 pinToBoard: 'Fixar no quadro',
                 moveToView: ({ title }) => `Mover para ${title}`,
+                network: 'Acesso à rede…',
+            },
+            network: {
+                title: 'Acesso à rede',
+                hint: 'Que sites este visual pode contactar a partir do navegador que o mostra.',
+                reach: 'Pode contactar',
+                none: 'Nenhum',
+                sites: 'Sites específicos',
+                open: 'Qualquer site',
+                sitesLabel: 'Sites',
+                sitesPlaceholder: 'https://api.example.com',
+                sitesInvalid: ({ sites }) => `Não é um endereço de site: ${sites}. Use https://example.com.`,
+                sitesNeeded: 'Adicione pelo menos um site.',
+                noneConsequence: 'Funciona por si só e não faz pedidos externos.',
+                sitesConsequence: 'Só pode contactar os sites listados. O código e os recursos remotos podem mudar.',
+                openConsequence: 'Pode contactar qualquer site, enviar-lhe o conteúdo e revelar o IP de quem o vê. O código remoto pode mudar.',
+                shareOffNote: 'Um link público ainda pode ser partilhado sem acesso à rede.',
+                failed: 'Não foi possível alterar o acesso à rede. Tente novamente.',
             },
             moved: {
                 before: ({ title }) => `${title} movido para antes.`,
@@ -10841,6 +10935,7 @@ const pt: typeof en = {
         muteFailed: 'Não foi possível silenciar',
         truncated: "Resultado abreviado.",
         wokenBy: ({ count }) => (count === 1 ? 'Despertado por uma atualização' : `Despertado por ${count} atualizações`),
+        updateCount: ({ count }) => (count === 1 ? '1 atualização' : `${count} atualizações`),
         notFromYou: 'não é uma mensagem sua',
     },
     workerFollow: {
@@ -10879,9 +10974,10 @@ const pt: typeof en = {
         expandMap: 'Abrir o mapa ao lado da sessão',
     },
     map: {
-        folded: "O trabalho concluído é recolhido",
+        folded: ({ names }) => `O trabalho concluído fica em Lista: ${names}`,
         backgroundRuns: ({ count }) => (count === 1 ? "1 execução em segundo plano" : `${count} execuções em segundo plano`),
         positionUnder: ({ position, total, parent }) => `${position} de ${total} sob ${parent}`,
+        waitingOn: ({ count }) => `Aguardando ${count}`,
     },
     actions: {
         showInTranscript: 'Mostrar na transcrição',
@@ -11551,6 +11647,10 @@ const shareSheetTranslations = { pt: {
         remove: 'Remover acesso',
         confirmRemove: 'Confirmar remoção',
         removedAnnouncement: ({ name }) => `${name} não tem mais acesso`,
+        removeLosesPerson: ({ name }) => `${name} perde o acesso em todos os dispositivos.`,
+        removeLosesMembers: ({ name }) => `Os membros de ${name} perdem o acesso em todos os dispositivos.`,
+        removeKeepsOtherAccess: "O acesso compartilhado com eles de outra forma continua.",
+        removeKeepsTheirWork: "Os próprios checkouts, sessões e widgets deles continuam sendo deles.",
         browseAll: 'Ver tudo',
         browsePeople: 'Ver todas as pessoas',
         browseTeams: 'Ver todas as equipes',
@@ -13006,7 +13106,7 @@ const voiceMomentsTranslations = { pt: {
         setupClose: 'Fechar',
         needsYouEnded: 'A voz terminou. A aprovação ainda aguarda na Caixa de entrada.',
         needsYouReview: 'Revisar solicitação',
-        needsYouTapToDecide: 'Lido em voz alta · decida aqui, não por voz',
+        needsYouTapToDecide: "Lido em voz alta · toque para decidir aqui",
         briefMe: 'Me atualize',
         briefMeA11y: 'Me atualize: a voz lê o que precisa de você, o que falhou e o que está pronto',
         briefNeedsYou: 'Precisa de você',
@@ -13014,7 +13114,7 @@ const voiceMomentsTranslations = { pt: {
         briefReady: 'Pronto',
         briefIncomplete: 'Parte do trabalho ainda não carregou, então pode não ser tudo.',
         briefCaughtUp: 'Nada precisa de você agora.',
-        briefNotSpoken: 'A voz não pode ler isso agora. A lista está toda aqui.',
+        briefNotSpoken: "A voz não pode ler isso agora.",
         briefStop: 'Parar',
         continueTitle: 'Continuar falando aqui',
         continueDetail: ({ device }) => `Você estava falando no ${device}`,
@@ -13110,7 +13210,7 @@ const defineVoiceReadinessTranslation = Shared_voiceReadinessTranslations.define
 
 const voiceReadinessTranslations = { pt: defineVoiceReadinessTranslation({
     ready: 'A função de Voz está pronta.',
-    permissionAnnouncement: ({ summary }) => `A sessão de código precisa de permissão para ${summary}. Revê-a na interface da sessão para aprovar ou recusar.`,
+    permissionAnnouncement: ({ summary }) => `A sessão de código precisa de permissão para ${summary}.`,
     userActionAnnouncement: ({ question }) => `A sessão de código precisa da tua resposta. ${question}`,
     userActionFallback: 'A sessão de código precisa da tua resposta. Responde à pergunta para eu poder continuar.',
     requestedTool: 'a ferramenta pedida',
@@ -13438,7 +13538,7 @@ const pt: VoiceSettingsPagesCopy = {
       toolsTitle: 'Nomes das ferramentas',
       toolsDescription: 'Como “Arquivo editado”. Argumentos e caminhos de arquivos nunca são compartilhados.',
       permissionsTitle: 'Pedidos de permissão',
-      permissionsDescription: 'Para ele dizer o que precisa de você. Você ainda aprova com um toque.',
+      permissionsDescription: "Para ler solicitações em voz alta e ajudar você a respondê-las.",
       devicesTitle: 'Suas máquinas e dispositivos',
       devicesDescription: 'Nomes e status online, para iniciar sessões onde você pedir.',
       liveTitle: 'Enquanto você fala',
@@ -13523,7 +13623,11 @@ const pt: VoiceSettingsPagesCopy = {
       itMayReadOnly: 'Só ler',
       itMayReadOnlyDescription: 'Lê suas sessões e arquivos e não muda nada.',
       itMayAsk: 'Perguntar antes',
-      itMayAskDescription: 'Cada mudança pergunta a você antes. Um “sim” falado nunca aprova; você toca.',
+      itMayAskDescription: "Cada mudança pergunta a você antes.",
+      approvalsTitle: "Aprovações",
+      approvalsDescription: "Quando uma sessão pede permissão enquanto você fala.",
+      canApproveRequestsTitle: "O agente de Voz pode aprovar solicitações",
+      canApproveRequestsDescription: "Ele lê cada solicitação em voz alta e responde do jeito que você disser. Desativado: você decide cada uma com um toque.",
       itMaySafe: 'Mudanças seguras',
       itMaySafeDescription: 'Faz sozinho as mudanças seguras no espaço de trabalho e pergunta pelo resto.',
       itMayAnything: 'Qualquer coisa',
@@ -13640,6 +13744,7 @@ const walkthroughSettingsTranslations = { pt: copy({
         model: 'Modelo de resumo',
         modelDescription: 'Usado para explicações, guias e propostas de commits.',
         chooseModel: 'Escolher modelo',
+        sessionModel: 'Modelo da sessão',
         searchModels: 'Buscar modelos',
         loadModels: "Procurar mais modelos",
         loadFailed: "Não foi possível carregar os percursos guardados.",
@@ -13655,6 +13760,7 @@ const walkthroughSettingsTranslations = { pt: copy({
         costPremium: "Custo alto",
         loadingModels: "Carregando modelos…",
         noModels: "Nenhum modelo encontrado",
+        chooseMachineForModels: "Escolha primeiro uma máquina para ver os modelos dela.",
         loadModelsFailed: "Não foi possível carregar os modelos. Tente novamente.",
         startFailure: {
             notInstalled: { title: "Não está instalado nesta máquina", next: "Verifique o comando e o diretório de trabalho e tente novamente." },
@@ -13720,6 +13826,7 @@ const walkthroughTranslations = { pt: {
             saved: walkthroughSavedTranslations.pt,
             progress: walkthroughProgressTranslations.pt,
             eyebrow: 'Roteiro',
+            conversationTitle: 'Conversa sobre o roteiro',
             generated: 'Gerado',
             generatedBy: ({ model }) => `Gerado · ${model}`,
             generatedA11y: 'Escrito por um modelo',
@@ -13767,6 +13874,25 @@ const walkthroughTranslations = { pt: {
             nextStop: 'Próxima parada',
             done: 'Concluído',
             evidence: { displayFailed: 'Não foi possível mostrar o código salvo. O arquivo continua em Arquivos.', binary: 'Arquivo binário, descrito pelos metadados. Mostrado, não analisado.', unavailable: ({ reason }) => `Não foi possível ler (${reason}). Continua na lista; nada aqui afirma que foi revisado.` },
+            stopNumber: ({ number }) => `Parada ${number}`,
+            receipt: {
+                wrote: 'Escreveu o roteiro',
+                updated: 'Atualizou o roteiro',
+                savedAnalysis: 'Salvou a análise das alterações',
+                updatedAnalysis: 'Atualizou a análise das alterações',
+                stopCount: ({ count }) => (count === 1 ? '1 parada' : `${count} paradas`),
+                open: 'Abrir roteiro',
+                openChanges: 'Abrir alterações',
+                stopChanged: ({ number }) => `parada ${number} alterada`,
+                stopsChanged: ({ numbers }) => `paradas ${numbers} alteradas`,
+                stopsRemoved: ({ count }) => (count === 1 ? '1 parada removida' : `${count} paradas removidas`),
+                stopsMergedInto: ({ count, number }) => `${count} paradas mescladas na parada ${number}`,
+                titleEditKept: 'seu título editado foi mantido',
+                lastChangeUndone: 'última alteração desfeita',
+                undo: 'Desfazer',
+                undoing: 'Desfazendo…',
+                undone: 'Desfeito',
+            },
             notice: {
                 stale: 'Arquivos mudaram depois que isto foi escrito',
                 refresh: 'Atualizar roteiro',
@@ -14148,6 +14274,14 @@ const widgetGlanceTranslations = { pt: {
         servicesLoading: 'Carregando serviços locais',
         servicesReadFailed: 'Não foi possível ler os serviços locais. Tente novamente.',
         noMachine: 'Esta sessão não tem uma máquina para consultar.',
+        appEmptyTitle: 'Nada em execução',
+        appUnlistedTitle: 'Serviços não listados',
+        appUnlistedOffline: ({ machine }: { machine: string }) => `${machine} está offline.`,
+        appUnlistedMany: ({ count }: { count: number }) => `${count} máquinas estão inacessíveis.`,
+        appEmptyReason: 'Os servidores web que executa nas suas máquinas aparecem aqui.',
+        machineOffline: ({ machine }: { machine: string }) => `${machine} está offline: os seus serviços não são listados.`,
+        machineUnreadable: ({ machine }: { machine: string }) => `Não foi possível ler agora os serviços de ${machine}.`,
+        machinesNotListed: ({ count }: { count: number }) => `Não é possível contactar ${count} máquinas: os seus serviços não são listados.`,
         changedCount: ({ count }) => `${count} alterados`,
         moreFiles: ({ count }) => (count === 1 ? 'mais 1 arquivo' : `mais ${count} arquivos`),
         runningCount: ({ count }) => `${count} em execução`,
@@ -14170,6 +14304,10 @@ const pt: WorkStatusTranslations = {
         finished: 'Concluído',
         idle: 'Ocioso',
         offline: 'Offline',
+    },
+    words: {
+        permission: 'Permissão',
+        question: 'Pergunta',
     },
 };
 

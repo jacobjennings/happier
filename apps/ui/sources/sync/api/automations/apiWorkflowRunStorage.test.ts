@@ -174,6 +174,6 @@ it('uses captured ordinary credentials and propagates canonical transport errors
     expect(request).toHaveBeenCalledWith('/v3/automations/runs/workflow-storage', expect.objectContaining({
         method: 'POST', body: JSON.stringify({ operation: 'get', runId: 'run-id' }),
         headers: { Authorization: 'Bearer captured-token', 'Content-Type': 'application/json' },
-    }), { includeAuth: false });
+    }), { includeAuth: false, recoveryRead: 'unbounded' });
     expect(runtimeFetch).not.toHaveBeenCalled();
 });

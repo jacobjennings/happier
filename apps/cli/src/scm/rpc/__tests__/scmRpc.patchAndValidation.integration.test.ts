@@ -1,18 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { writeFileSync } from 'fs';
 import { join } from 'path';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
-import { createTestRpcManager, runGit as git } from './testRpcHarness';
+import { createGitWorkspace, createTestRpcManager, runGit as git } from './testRpcHarness';
 
 describe('git RPC handlers', () => {
     it('stages file-level changes and reports them in snapshot totals', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'hello\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'init']);
@@ -28,14 +24,11 @@ describe('git RPC handlers', () => {
 
         const status = await call<any, { cwd?: string }>(RPC_METHODS.SCM_STATUS_SNAPSHOT, { cwd: '.' });
         expect(status.success).toBe(true);
-        expect(status.snapshot.totals.includedFiles).toBeGreaterThan(0);
+        expect(status.snapshot.totals).toMatchObject({ includedFiles: 1, pendingFiles: 0 });
     }, 20_000);
 
     it('stages a selected hunk patch and leaves remaining lines unstaged', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'a\nb\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'init']);
@@ -69,10 +62,7 @@ describe('git RPC handlers', () => {
     });
 
     it('returns CHANGE_APPLY_FAILED when selected hunk patch no longer matches worktree', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'a\nb\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'init']);
@@ -99,10 +89,7 @@ describe('git RPC handlers', () => {
     });
 
     it('stages selected patch lines with no-newline markers', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'a');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'init']);
@@ -133,10 +120,7 @@ describe('git RPC handlers', () => {
     });
 
     it('unstages selected patch lines with no-newline markers', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'a');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'init']);
@@ -169,10 +153,7 @@ describe('git RPC handlers', () => {
     });
 
     it('stages selected hunk patches regardless of apply.whitespace repo config', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         git(workspace, ['config', 'apply.whitespace', 'error']);
         writeFileSync(join(workspace, 'a.txt'), 'a\n');
         git(workspace, ['add', 'a.txt']);
@@ -201,10 +182,7 @@ describe('git RPC handlers', () => {
     });
 
     it('rejects unsafe commit refs for diff-commit requests', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'hello\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'init']);
@@ -220,10 +198,7 @@ describe('git RPC handlers', () => {
     });
 
     it('rejects unsafe commit refs for commit-revert requests', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'hello\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'init']);

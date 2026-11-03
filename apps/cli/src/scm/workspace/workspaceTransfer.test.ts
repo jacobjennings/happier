@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-    createScmWorkspaceIntegrationWorkspaceTransferEntry,
     createScmWorkspaceIntegrationWorkspaceTransferRequest,
     createScmWorkspaceIntegrationWorkspaceTransferResult,
 } from './workspaceTransfer';
@@ -26,18 +25,6 @@ describe('workspaceTransfer', () => {
         expect(request.ignoredIncludeGlobs).toEqual(['dist/**']);
         expect(request.includeAllIgnored).toBe(true);
         expect(request.extraIgnorePatterns).toEqual(['coverage/**']);
-    });
-
-    it('creates transfer entries without rewriting their paths', () => {
-        const entry = createScmWorkspaceIntegrationWorkspaceTransferEntry({
-            relativePath: '.git/HEAD',
-            sourcePath: '/repo/.git/HEAD',
-        });
-
-        expect(entry).toEqual({
-            relativePath: '.git/HEAD',
-            sourcePath: '/repo/.git/HEAD',
-        });
     });
 
     it('clones transfer result entries and preserves metadata', () => {

@@ -5,9 +5,6 @@ import { ProjectServicePlacementGetV1Schema, ProjectServicePlacementSetV1Schema,
 import type { PreNormalizedActionSpec } from '../actionSpecs.js';
 import type { ActionInputFieldHint } from '../actionInputHintsRuntime.js';
 
-export const PROJECT_SERVICE_PLACEMENT_ACTION_IDS_V1 = [
-  'projects.service.placement.get', 'projects.service.placement.set',
-] as const;
 type ProjectServicePlacementActionInputSchemas = Readonly<{
   'projects.service.placement.get': typeof ProjectServicePlacementGetV1Schema;
   'projects.service.placement.set': typeof ProjectServicePlacementSetV1Schema;
@@ -56,3 +53,5 @@ export const PROJECT_SERVICE_PLACEMENT_ACTION_SPECS = PROJECT_SERVICE_PLACEMENT_
     outputSchema: ProjectServicePlacementActionOutputSchemasV1[id],
   };
 });
+import { PROJECT_SERVICE_PLACEMENT_ACTION_IDS_V1 } from './projectWorkersActionIdsV1.js';
+export { PROJECT_SERVICE_PLACEMENT_ACTION_IDS_V1 } from './projectWorkersActionIdsV1.js';

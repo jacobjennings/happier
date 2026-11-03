@@ -2,20 +2,18 @@ import * as React from 'react';
 import { Platform, View, type StyleProp, type ViewStyle } from 'react-native';
 import { HAPPIER_SEARCH_FIELD_METRICS, HappierSearchFieldBox } from '@happier-dev/plugin-ui/presentation';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useHappierNativeMinimumInteractiveTargetSize } from '@happier-dev/plugin-ui/environment';
 
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveThemeControlEdge } from '@/components/ui/surfaces/themeRaisedEdge';
 import { useLayoutMaxWidth } from '@/components/ui/layout/layout';
 import { resolveItemGroupContentHorizontalInsetPx } from '@/components/ui/lists/itemGroupSpacing';
 import { TextInput } from '@/components/ui/text/Text';
-import { isTouchPrimaryPointer, resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 
 /**
  * The compact search field's measures, for every search field that is not a page-wide `SearchHeader`
  * (page, rail and inline placements, and any search field drawn in the same shape). The lab's field:
- * 32px tall under a precise pointer, the glass 10px in and 8px before the text. On a touch-primary
- * device the field takes the platform touch floor instead.
+ * 32px tall under every pointer, the glass 10px in and 8px before the text. A finger reaches the
+ * touch target through the shared hit area; the field is never drawn taller for it.
  */
 export const COMPACT_SEARCH_FIELD_METRICS = HAPPIER_SEARCH_FIELD_METRICS;
 
@@ -24,11 +22,6 @@ type CompactSearchFieldLayoutStyle = Pick<ViewStyle,
     | 'flex' | 'flexGrow' | 'flexShrink' | 'flexBasis' | 'minWidth' | 'width' | 'maxWidth'
     | 'marginTop' | 'marginBottom' | 'marginLeft' | 'marginRight' | 'marginHorizontal'
 >;
-
-/** The field's height here: the touch floor where a finger is the pointer, else the compact height. */
-export function resolveCompactSearchFieldHeightPx(platform: string = Platform.OS): number {
-    return isTouchPrimaryPointer(platform) ? resolveMinimumInteractiveTargetSize(platform) : COMPACT_SEARCH_FIELD_METRICS.heightPx;
-}
 
 /**
  * The compact bordered search field of navigation rails and collection lists: a paper-coloured well
@@ -60,9 +53,16 @@ export const CompactSearchField = React.memo(function CompactSearchField(props: 
      * remaining width, so the pair spans exactly the content column.
      */
     accessory?: React.ReactNode;
+    /** `below` stacks the accessory under the field at the column's full width (a phone, where beside it would squeeze the field). */
+    accessoryPlacement?: 'beside' | 'below';
 } & CompactSearchFieldInputOptions>) {
     const frame = <CompactSearchFieldFrame {...props} />;
-    const field = props.accessory ? (
+    const field = props.accessory && props.accessoryPlacement === 'below' ? (
+        <View style={compactSearchFieldStyles.accessoryStack}>
+            {frame}
+            {props.accessory}
+        </View>
+    ) : props.accessory ? (
         <View style={compactSearchFieldStyles.accessoryRow}>
             <View style={compactSearchFieldStyles.accessoryField}>{frame}</View>
             {props.accessory}
@@ -98,6 +98,8 @@ function PageSearchColumn(props: Readonly<{ testID?: string; children: React.Rea
 type CompactSearchFieldInputOptions = Readonly<{
     /** Drawn inside the well after the input, before the trailing inset. */
     trailing?: React.ReactNode;
+    /** Resolves to the field's drawn frame, for what opens under the field (a list's filter editor). */
+    anchorRef?: React.RefObject<View | null>;
     /** The input's accessible name when it differs from the placeholder. */
     accessibilityLabel?: string;
     autoFocus?: boolean;
@@ -126,10 +128,8 @@ const CompactSearchFieldFrame = React.memo(function CompactSearchFieldFrame(prop
     const { theme } = useUnistyles();
     const styles = compactSearchFieldStyles;
     const inputRef = React.useRef<React.ElementRef<typeof TextInput> | null>(null);
-    // The whole drawn field is the touch target: a tap on the glass, the padding or the border
-    // focuses the input. On phones it takes the shared native touch floor; pointer platforms keep
-    // the rail's density.
-    const nativeMinimumTargetSize = useHappierNativeMinimumInteractiveTargetSize();
+    // The whole drawn field is the press target: a tap on the glass, the padding or the border
+    // focuses the input, and under a finger the shared hit area reaches past the 32px well.
     const focusInput = React.useCallback(() => inputRef.current?.focus?.(), []);
     const ownerRef = props.inputRef;
     const setInput = React.useCallback((node: React.ElementRef<typeof TextInput> | null) => {
@@ -138,13 +138,12 @@ const CompactSearchFieldFrame = React.memo(function CompactSearchFieldFrame(prop
         else if (ownerRef) (ownerRef as React.MutableRefObject<React.ElementRef<typeof TextInput> | null>).current = node;
     }, [ownerRef]);
     return (
-        <View testID={props.testID ? `${props.testID}.layout` : undefined} style={props.style}>
+        <View ref={props.anchorRef} collapsable={false} testID={props.testID ? `${props.testID}.layout` : undefined} style={props.style}>
             <HappierSearchFieldBox
                 testID={props.testID}
                 onFocusInput={focusInput}
                 colors={{ backgroundColor: theme.colors.edge.fill, borderColor: theme.colors.border.default, edge: resolveThemeControlEdge(theme, 'default') }}
                 radius={theme.borderRadius.lg}
-                minimumTargetSize={nativeMinimumTargetSize ?? resolveCompactSearchFieldHeightPx()}
                 leading={
                     <Icon name="magnifying-glass" size={COMPACT_SEARCH_FIELD_METRICS.iconSizePx} color={theme.colors.text.secondary} />
                 }
@@ -202,6 +201,10 @@ const compactSearchFieldStyles = StyleSheet.create((theme) => ({
         flexDirection: 'row',
         alignItems: 'center',
         gap: theme.space.s8,
+    },
+    accessoryStack: {
+        gap: theme.space.s8,
+        alignItems: 'stretch',
     },
     accessoryField: {
         flex: 1,

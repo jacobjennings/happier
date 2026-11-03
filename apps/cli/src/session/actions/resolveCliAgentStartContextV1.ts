@@ -98,7 +98,7 @@ export function resolveCliAgentStartContextV1(input: Readonly<{
       agentModeId: mode, configOptions,
       ...(typeof metadata.profileId === 'string' ? { profileId: metadata.profileId } : {}),
       connectedServices: (input.appliedChildSelection !== undefined ? applied?.teamCredentialModel ? undefined : applied?.connectedServices
-        : connectedServices.success ? connectedServices.data : undefined) ?? undefined,
+        : connectedServices.success ? connectedServices.data : undefined),
       capabilitySelection: readSessionCapabilitySelectionFromMetadataV1(metadata),
       ...(metadata.transcriptStorage === 'direct' || metadata.transcriptStorage === 'persisted' ? { transcriptStorage: metadata.transcriptStorage } : {}),
     } } : {}) },

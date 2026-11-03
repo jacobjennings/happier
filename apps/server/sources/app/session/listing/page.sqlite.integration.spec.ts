@@ -61,6 +61,35 @@ describe("Session listing predicate composition (SQLite)", () => {
     afterAll(async () => { await harness?.close(); });
     afterEach(() => vi.unstubAllEnvs());
 
+    it('lists document revisions without selecting or disclosing full documents', async () => {
+        const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: 'plain' } });
+        const session = await db.session.create({ data: { accountId: owner.id, tag: randomUUID(),
+            metadata: '{"v":1}', metadataVersion: 7, metadataLayoutVersion: 1,
+            ownerMetadata: '{"t":"plain","v":{"v":1}}', agentState: '{}', agentStateVersion: 8,
+            encryptionMode: 'plain' } });
+        const selectedDocumentFields: string[] = [];
+        const stop = observeSqliteRequests({ before: request => {
+            if (request.model !== 'Session' || request.action !== 'findMany') return;
+            const select = (request.args as { select?: Record<string, unknown> } | undefined)?.select;
+            for (const field of ['metadata', 'ownerMetadata', 'agentState']) {
+                if (select?.[field]) selectedDocumentFields.push(field);
+            }
+        } });
+        try {
+            const page = await listSessionsForAccount({ userId: owner.id, authentication,
+                source: { kind: 'legacy', storage: 'active', limit: 10 }, rowRepresentabilityWhere: {},
+                timing: createV2SessionListServerTiming({ headers: {} }) });
+            expect(page?.sessions).toHaveLength(1);
+            expect(page?.sessions[0]).toMatchObject({ id: session.id, documents: 'omitted',
+                metadataAudience: 'owner', agentStateDocument: 'omitted', metadataLayoutVersion: 1,
+                metadataVersion: 7, agentStateVersion: 8 });
+            expect(page?.sessions[0]).not.toHaveProperty('metadata');
+            expect(page?.sessions[0]).not.toHaveProperty('ownerMetadata');
+            expect(page?.sessions[0]).not.toHaveProperty('agentState');
+            expect(selectedDocumentFields).toEqual([]);
+        } finally { stop(); }
+    });
+
     it("filters exact folder ANY and tag ANY together before stable cursor paging", async () => {
         await verifyFolderSessionListing();
     });
@@ -122,8 +151,8 @@ describe("Session listing predicate composition (SQLite)", () => {
             let projectionReads = 0;
             const stop = observeSqliteRequests({ before: request => {
                 if (request.model) requests.push(`${request.model}.${request.action}`);
-                const args = request.args as { select?: { metadata?: boolean } } | undefined;
-                if (request.model === "Session" && request.action === "findMany" && args?.select?.metadata) {
+                const args = request.args as { select?: { metadataVersion?: boolean } } | undefined;
+                if (request.model === "Session" && request.action === "findMany" && args?.select?.metadataVersion) {
                     projectionReads += 1;
                 }
             } });
@@ -179,7 +208,7 @@ describe("Session listing predicate composition (SQLite)", () => {
         Object.defineProperty(delegate, 'findMany', { configurable: true, writable: true,
             value: async (...args: Parameters<typeof original>) => {
                 const rows = await original(...args);
-                if (!paused && args[0]?.select?.metadata) { paused = true; enter(); await release; }
+                if (!paused && args[0]?.select?.metadataVersion) { paused = true; enter(); await release; }
                 return rows;
             } });
         const response = findV2SessionListRows(input);
@@ -235,7 +264,7 @@ describe("Session listing predicate composition (SQLite)", () => {
         const { viewer, shared } = await fixture();
         const rows = await inTx(async (tx) => findV2SessionListRows({
             userId: viewer.id, where: { id: shared.id },
-            source: { kind: "effective", reader: tx, accessMode: "effective_access_v1", allowProjectionFallback: false, baseWhere: { AND: [
+            source: { kind: "effective", reader: tx, accessMode: "effective_access_v1", baseWhere: { AND: [
                 await buildSessionAccessWhere({
                     tx,
                     accountId: viewer.id,
@@ -1051,7 +1080,6 @@ describe("Session listing predicate composition (SQLite)", () => {
                     reader,
                     baseWhere: { accountId: owner.id },
                     accessMode: "effective_access_v1",
-                    allowProjectionFallback: false,
                     discussionReader: reader,
                 },
                 where: attention.candidateWhere,
@@ -1136,7 +1164,7 @@ describe("Session listing predicate composition (SQLite)", () => {
                 );
                 const rows = await findV2SessionListRows({
                     userId: viewer.id,
-                    source: { kind: "effective", reader, baseWhere, accessMode: "effective_access_v1", allowProjectionFallback: false },
+                    source: { kind: "effective", reader, baseWhere, accessMode: "effective_access_v1" },
                     orderBy: V2_SESSION_LIST_ORDER_BY,
                     take: limit,
                 });

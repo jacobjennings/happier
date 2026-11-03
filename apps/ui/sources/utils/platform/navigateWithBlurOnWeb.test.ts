@@ -1,56 +1,45 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-describe('navigateWithBlurOnWeb', () => {
-    it('blurs the active element before running the navigation action on web', async () => {
-        vi.resetModules();
-        vi.doMock('react-native', async () => {
+const platform = vi.hoisted(() => ({ OS: 'web' as string }));
+
+vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-    return createReactNativeWebMock(
-        {
-            Platform: {
-                OS: 'web',
-            },
-        }
-    );
+    return createReactNativeWebMock({
+        Platform: {
+            get OS() { return platform.OS; },
+        },
+    });
 });
 
-        const blurSpy = vi.fn();
-        const originalDocument = globalThis.document;
-        Object.defineProperty(globalThis, 'document', {
-            configurable: true,
-            value: { activeElement: { blur: blurSpy } },
-        });
+import { navigateWithBlurOnWeb } from './navigateWithBlurOnWeb';
 
-        const { navigateWithBlurOnWeb } = await import('./navigateWithBlurOnWeb');
+describe('navigateWithBlurOnWeb', () => {
+    afterEach(() => {
+        platform.OS = 'web';
+        vi.unstubAllGlobals();
+    });
+
+    it('blurs the active element before running the navigation action on web', () => {
+        const blurSpy = vi.fn();
+        vi.stubGlobal('document', { activeElement: { blur: blurSpy } });
         const actionSpy = vi.fn();
+
         navigateWithBlurOnWeb(actionSpy);
 
         expect(blurSpy).toHaveBeenCalledTimes(1);
         expect(actionSpy).toHaveBeenCalledTimes(1);
-
-        Object.defineProperty(globalThis, 'document', {
-            configurable: true,
-            value: originalDocument,
-        });
+        expect(blurSpy.mock.invocationCallOrder[0]).toBeLessThan(actionSpy.mock.invocationCallOrder[0]);
     });
 
-    it('runs the navigation action without trying to blur on native', async () => {
-        vi.resetModules();
-        vi.doMock('react-native', async () => {
-    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-    return createReactNativeWebMock(
-        {
-            Platform: {
-                OS: 'ios',
-            },
-        }
-    );
-});
-
-        const { navigateWithBlurOnWeb } = await import('./navigateWithBlurOnWeb');
+    it('runs the navigation action without trying to blur on native', () => {
+        platform.OS = 'ios';
+        const blurSpy = vi.fn();
+        vi.stubGlobal('document', { activeElement: { blur: blurSpy } });
         const actionSpy = vi.fn();
+
         navigateWithBlurOnWeb(actionSpy);
 
         expect(actionSpy).toHaveBeenCalledTimes(1);
+        expect(blurSpy).not.toHaveBeenCalled();
     });
 });

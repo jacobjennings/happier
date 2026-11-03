@@ -153,6 +153,7 @@ export const ProjectCommandOutputPage = React.memo(
             <ProjectCommandOutputFrame>
               <ProjectCommandOutputPane
                 operation={operation}
+                ownerStatesExit
                 title={props.name}
                 height={outputHeight}
                 presentation="page"

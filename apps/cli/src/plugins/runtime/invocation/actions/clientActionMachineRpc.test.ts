@@ -9,13 +9,48 @@ const request: UiContributedActionExecuteRequestV1 = {
 };
 
 describe('client Action machine RPC outcome custody', () => {
-  it('refuses a missing answering UI before issuing any effect', async () => {
+  it.each([
+    { clientId: 'app-b', clients: ['app-a', 'app-b'], expected: 'app-b' },
+    { clientId: undefined, clients: ['app-b'], expected: 'app-b' },
+    { clientId: undefined, clients: ['app-a', 'app-b'], expected: 'client_ambiguous' },
+    { clientId: 'disconnected', clients: ['app-a', 'app-b'], expected: 'client_not_available' },
+  ])('uses the shared client-choice rule for contributed UI Actions: $expected', async ({ clientId, clients, expected }) => {
+    const { selectRpcTarget } = await import('../../../../../../server/sources/app/api/socket/rpc/rpcTargetSelection');
+    const effects: string[] = [];
+    const execute = createClientActionMachineRpcExecutor(() => ({
+      callConnectedClientRpc: async (_method, _request, options) => {
+        const targets = clients.map(id => ({ id, timeout: () => ({ emitWithAck: async () => {
+          effects.push(id); return { ok: true, result: { client: id } };
+        } }) }));
+        const selection = selectRpcTarget({ targets, answeringClient: options.answeringClient });
+        if (selection.type === 'ambiguous') return { ok: false, errorCode: 'RPC_CLIENT_AMBIGUOUS', answeringClients: selection.clients };
+        if (selection.type !== 'target') return { ok: false, errorCode: 'RPC_CLIENT_NOT_AVAILABLE' };
+        options.onIssued();
+        return { ok: true, result: await selection.target.timeout(0).emitWithAck('rpc-request', {}) };
+      },
+    }));
+    const result = await execute(request, { signal: new AbortController().signal, ...(clientId ? { clientId } : {}) });
+    if (expected.startsWith('app-')) {
+      expect(result).toMatchObject({ ok: true, result: { client: expected } });
+      expect(effects).toEqual([expected]);
+    } else {
+      expect(result).toMatchObject({ ok: false, errorCode: expected, actionHandlerInvocation: 'notStarted' });
+      expect(effects).toEqual([]);
+      if (expected === 'client_ambiguous') expect(result).toMatchObject({ data: {
+        clients: clients.map(id => ({ id, deviceLabel: null })), recovery: { inputField: 'clientId' },
+      } });
+    }
+  });
+  it('uses a live answering UI even without a positive registration hint', async () => {
     const execute = createClientActionMachineRpcExecutor(() => ({
       hasConnectedClientRpcHandler: () => false,
-      callConnectedClientRpc: async () => { throw new Error('Must not issue without an answering UI'); },
+      callConnectedClientRpc: async (_method, _payload, options) => {
+        options.onIssued();
+        return { ok: true, result: { ok: true, result: { delivered: true } } };
+      },
     }));
     expect(await execute(request, {})).toMatchObject({
-      ok: false, errorCode: 'plugin_action_client_target_unavailable', actionHandlerInvocation: 'notStarted',
+      ok: true, result: { delivered: true },
     });
   });
 
@@ -53,15 +88,34 @@ describe('client Action machine RPC outcome custody', () => {
     expect(issuedRequests).toBe(1);
   });
 
-  it('retains a definitive RPC-method refusal even after request issuance', async () => {
+  it.each(['RPC_METHOD_NOT_AVAILABLE', 'RPC_METHOD_NOT_FOUND'])('retains a definitive %s refusal even after request issuance', async errorCode => {
     const execute = createClientActionMachineRpcExecutor(() => ({
       hasConnectedClientRpcHandler: () => true,
       callConnectedClientRpc: async (_method, _payload, options) => {
         options.onIssued();
-        return { ok: false, errorCode: 'RPC_METHOD_NOT_AVAILABLE' };
+        return { ok: false, errorCode };
       },
     }));
     expect(await execute(request, {})).toMatchObject({
+      ok: false, errorCode: 'plugin_action_client_target_unavailable', actionHandlerInvocation: 'notStarted',
+    });
+  });
+
+  it.each([undefined, 'app-b'])('retains a decoded UI retirement refusal as not started (clientId: %s)', async clientId => {
+    const execute = createClientActionMachineRpcExecutor(() => ({
+      callConnectedClientRpc: async (_method, _payload, options) => {
+        options.onIssued();
+        return { ok: true, result: { error: 'Method not found', errorCode: 'RPC_METHOD_NOT_FOUND' } };
+      },
+      hasConnectedClientRpcHandler: () => true,
+    }));
+    expect(await execute(request, { ...(clientId ? { clientId } : {}) })).toMatchObject({
+      ok: false, errorCode: clientId ? 'client_not_available' : 'plugin_action_client_target_unavailable', actionHandlerInvocation: 'notStarted',
+    });
+  });
+
+  it('refuses an absent machine transport without issuing an effect', async () => {
+    expect(await createClientActionMachineRpcExecutor(() => null)(request, {})).toMatchObject({
       ok: false, errorCode: 'plugin_action_client_target_unavailable', actionHandlerInvocation: 'notStarted',
     });
   });

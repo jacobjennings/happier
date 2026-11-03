@@ -2642,6 +2642,34 @@ describe("sessionWriteService", () => {
             });
         });
 
+        it.each(['e2ee', 'plain'] as const)('keeps owner idle-compaction writes quiet for %s Sessions', async (mode) => {
+            storagePolicyEnv.set("HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY", "optional");
+            const createdAt = new Date("2020-01-01T00:00:00.000Z");
+            const localId = 'context-compaction:idle:native-compact:completed:8';
+            const content: PrismaJson.SessionMessageContent = mode === 'e2ee'
+                ? { t: 'encrypted', c: 'opaque' }
+                : { t: 'plain', v: { role: 'agent', content: { type: 'event', id: localId,
+                    data: { type: 'context-compaction', phase: 'completed', trigger: 'idle', lifecycleId: 'native-compact' } } } };
+            currentTx.session.findUnique.mockResolvedValueOnce({ accountId: 'u1', encryptionMode: mode, shares: [],
+                seq: 9, lastViewedSessionSeq: 9, pendingCount: 0, pendingPermissionRequestCount: 0,
+                pendingUserActionRequestCount: 0, latestTurnStatus: null, lastRuntimeIssue: null, active: true, archivedAt: null });
+            currentTx.session.update.mockResolvedValue({ seq: 10 });
+            currentTx.session.updateMany.mockResolvedValue({ count: 1 });
+            currentTx.sessionMessage.create.mockResolvedValue({ id: 'm-idle', seq: 10, localId, sidechainId: null,
+                messageRole: 'event', content, createdAt, updatedAt: createdAt });
+            accountCursorRows.mockResolvedValueOnce([{ cursor: 101 }]);
+            const result = await createSessionMessage({ authentication, inputAdmission: 'authenticatedAccount',
+                actorUserId: 'u1', sessionId: 's1', content, localId, messageRole: 'event' });
+            expect(result.ok).toBe(true);
+            if (!result.ok || result.didWrite === false) throw new Error('Expected the owner event to be written');
+            expect(result.badgeAttentionChanged).toBe(false);
+            expect(result.attentionImpact).toEqual({ affectsUnread: false, affectsMeaningfulActivity: false });
+            expect(currentTx.session.updateMany).not.toHaveBeenCalled();
+            expect(currentTx.accountSessionReadState.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+                data: { lastViewedSessionSeq: 10, unreadSince: null },
+            }));
+        });
+
         it("derives non-unread attention for owner-authored encrypted maintenance event local ids", async () => {
             const createdAt = new Date("2020-01-01T00:00:00.000Z");
 
@@ -7595,6 +7623,7 @@ describe("sessionWriteService", () => {
             currentTx.session.findUnique
                 .mockResolvedValueOnce({ accountId: "u1", shares: [] })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     active: false,
                     metadataLayoutVersion: 1,
                     metadataVersion: 4,
@@ -7638,6 +7667,7 @@ describe("sessionWriteService", () => {
                     agentStateVersion: 8,
                 },
                 data: {
+                    displayProjectionV1: null,
                     metadata: "shared-new",
                     metadataVersion: 5,
                     ownerMetadata: storedOwnerMetadata,
@@ -7663,6 +7693,7 @@ describe("sessionWriteService", () => {
             currentTx.session.findUnique
                 .mockResolvedValueOnce({ accountId: "u1", shares: [] })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     active: true,
                     metadataLayoutVersion: 1,
                     metadataVersion: 4,
@@ -7705,6 +7736,7 @@ describe("sessionWriteService", () => {
             currentTx.session.findUnique
                 .mockResolvedValueOnce({ accountId: "u1", shares: [] })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     active: true,
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
@@ -7754,6 +7786,7 @@ describe("sessionWriteService", () => {
             currentTx.session.findUnique
                 .mockResolvedValueOnce({ accountId: "u1", shares: [] })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     active: false,
                     metadataLayoutVersion: 1,
                     metadataVersion: 4,
@@ -7763,6 +7796,7 @@ describe("sessionWriteService", () => {
                     agentState: "agent-old",
                 })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     active: true,
                     metadataLayoutVersion: 1,
                     metadataVersion: 4,
@@ -7804,6 +7838,7 @@ describe("sessionWriteService", () => {
                     agentStateVersion: 8,
                 },
                 data: {
+                    displayProjectionV1: null,
                     metadata: "shared-new",
                     metadataVersion: 5,
                     ownerMetadata: storedOwnerMetadata,
@@ -7823,6 +7858,7 @@ describe("sessionWriteService", () => {
             currentTx.session.findUnique
                 .mockResolvedValueOnce({ accountId: "u1", shares: [] })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     active: false,
                     metadataLayoutVersion: 1,
                     metadataVersion: 4,
@@ -7832,6 +7868,7 @@ describe("sessionWriteService", () => {
                     agentState: "agent-old",
                 })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     active: true,
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
@@ -7882,6 +7919,7 @@ describe("sessionWriteService", () => {
             currentTx.session.findUnique
                 .mockResolvedValueOnce({ accountId: "u1", shares: [] })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     active: true,
                     metadataLayoutVersion: 1,
                     metadataVersion: 4,
@@ -7921,6 +7959,7 @@ describe("sessionWriteService", () => {
                     agentStateVersion: 8,
                 },
                 data: {
+                    displayProjectionV1: null,
                     metadata: "shared-new",
                     metadataVersion: 5,
                     ownerMetadata: storedOwnerMetadata,
@@ -7949,6 +7988,7 @@ describe("sessionWriteService", () => {
                     shares: [{ sharedWithUserId: "u2" }],
                 })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
                     metadata: "shared-old",
@@ -8008,6 +8048,7 @@ describe("sessionWriteService", () => {
                     shares: [{ sharedWithUserId: "u2" }],
                 })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     metadataLayoutVersion: 0,
                     metadataVersion: 4,
                     metadata: "legacy-whole-bag",
@@ -8040,6 +8081,7 @@ describe("sessionWriteService", () => {
             currentTx.session.findUnique
                 .mockResolvedValueOnce({ accountId: "u1", shares: [] })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
                     metadata: "shared-safe",
@@ -8079,6 +8121,7 @@ describe("sessionWriteService", () => {
             currentTx.session.findUnique
                 .mockResolvedValueOnce({ accountId: "u1", shares: [] })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
                     metadata: "shared-current",
@@ -8132,6 +8175,7 @@ describe("sessionWriteService", () => {
             currentTx.session.findUnique
                 .mockResolvedValueOnce({ accountId: "u1", shares: [] })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
                     metadata: "shared-current",
@@ -8140,6 +8184,7 @@ describe("sessionWriteService", () => {
                     agentState: "agent-current",
                 })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
                     metadata: "shared-current",
@@ -8177,6 +8222,7 @@ describe("sessionWriteService", () => {
                     agentStateVersion: 9,
                 },
                 data: {
+                    displayProjectionV1: null,
                     metadata: "shared-replacement",
                     metadataVersion: 6,
                     ownerMetadata: storedOwnerMetadata,
@@ -8214,6 +8260,7 @@ describe("sessionWriteService", () => {
                     shares: [{ sharedWithUserId: "u2" }],
                 })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
                     metadata: "shared-old",
@@ -8239,11 +8286,13 @@ describe("sessionWriteService", () => {
                     id: "s1",
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
+                    ownerMetadata: storedOwnerMetadata,
                     AND: [(await import("@/app/session/access/sessionAccessWhere")).buildSessionAccessWhere({
                         accountId: "u2", capability: "submitAgentInput", mode: "legacy_owner_or_direct",
                     })],
                 },
                 data: {
+                    displayProjectionV1: null,
                     metadata: "shared-new",
                     metadataVersion: 6,
                 },
@@ -8294,6 +8343,7 @@ describe("sessionWriteService", () => {
                     shares: [{ sharedWithUserId: "u2" }],
                 })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
                     metadata: "shared-old",
@@ -8302,6 +8352,7 @@ describe("sessionWriteService", () => {
                     agentState: "owner-full-state",
                 })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
                     metadata: "shared-old",
@@ -8332,11 +8383,12 @@ describe("sessionWriteService", () => {
                     id: "s1",
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
+                    ownerMetadata: storedOwnerMetadata,
                     AND: [(await import("@/app/session/access/sessionAccessWhere")).buildSessionAccessWhere({
                         accountId: "u2", capability: "renameSession", mode: "legacy_owner_or_direct",
                     })],
                 },
-                data: { metadata: "shared-new", metadataVersion: 6 },
+                data: { displayProjectionV1: null, metadata: "shared-new", metadataVersion: 6 },
             });
             expect(res).toEqual({ ok: false, error: "forbidden" });
             expect(accountCursorRows).not.toHaveBeenCalled();
@@ -8349,6 +8401,7 @@ describe("sessionWriteService", () => {
                     shares: [{ sharedWithUserId: "u2" }],
                 })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
                     metadata: "shared-old",
@@ -8357,6 +8410,7 @@ describe("sessionWriteService", () => {
                     agentState: "owner-full-state",
                 })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
                     metadata: "shared-old",
@@ -8386,11 +8440,13 @@ describe("sessionWriteService", () => {
                     id: "s1",
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
+                    ownerMetadata: storedOwnerMetadata,
                     AND: [(await import("@/app/session/access/sessionAccessWhere")).buildSessionAccessWhere({
                         accountId: "u2", capability: "submitAgentInput", mode: "legacy_owner_or_direct",
                     })],
                 },
                 data: {
+                    displayProjectionV1: null,
                     metadata: "shared-new",
                     metadataVersion: 6,
                 },
@@ -8406,6 +8462,7 @@ describe("sessionWriteService", () => {
                     shares: [{ sharedWithUserId: "u2" }],
                 })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     metadataLayoutVersion: 0,
                     metadataVersion: 5,
                     metadata: "legacy-whole-bag",
@@ -8434,6 +8491,7 @@ describe("sessionWriteService", () => {
             currentTx.session.findUnique
                 .mockResolvedValueOnce({ accountId: "u1", shares: [] })
                 .mockResolvedValueOnce({
+                    displayProjectionV1: null,
                     metadataLayoutVersion: 1,
                     metadataVersion: 6,
                     metadata: "shared-editor-newer",

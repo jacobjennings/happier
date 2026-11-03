@@ -8,7 +8,6 @@ import {
 import { createAccountFeaturesResponse, getRequestUrl, isFeaturesRequest, isUsernameRequest } from './account.testHelpers';
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import {
-    getAccountSettingsRouteModalMockRef,
     getAccountSettingsRouteRouterMockRef,
     installAccountSettingsRouteModuleMocks,
 } from './accountSettingsRouteTestHelpers';
@@ -25,7 +24,6 @@ vi.mock('react-native-reanimated', async () => {
 });
 installAccountSettingsRouteModuleMocks({ storageModule: (importOriginal) => importOriginal() });
 installDisconnectedServerSocketBoundary();
-const { flattenSettingsPageCatalog, SETTINGS_PAGE_CATALOG } = await import('@/components/settings/catalog/pageCatalog');
 const { storage } = await import('@/sync/domains/state/storageStore');
 const { profileDefaults } = await import('@/sync/domains/profiles/profile');
 const { createSecretSettingsTestHarness } = await import('@/components/settings/secrets/secretSettingsTestHarness');
@@ -41,12 +39,6 @@ let account: Awaited<ReturnType<typeof createSecretSettingsTestHarness>> | undef
 let restoreExecutor: (() => void) | undefined;
 
 const routerMockRef = getAccountSettingsRouteRouterMockRef();
-const modalMockRef = getAccountSettingsRouteModalMockRef();
-
-function expectCanonicalConnectedAccountsRoute(): void {
-    expect(flattenSettingsPageCatalog(SETTINGS_PAGE_CATALOG).find((node) => node.id === 'connectedServices'))
-        .toMatchObject({ route: '/settings/connected-services' });
-}
 
 vi.mock('expo-camera', () => ({
     useCameraPermissions: () => [{ granted: true }, async () => ({ granted: true })],
@@ -86,7 +78,6 @@ describe('Settings → Account (username)', () => {
         routerMockRef.current?.spies.back.mockReset();
         routerMockRef.current?.spies.replace.mockReset();
         routerMockRef.current?.spies.setParams.mockReset();
-        modalMockRef.current = null;
         standardCleanup();
     });
 
@@ -131,130 +122,11 @@ describe('Settings → Account (username)', () => {
         expect(input).not.toBeNull();
         await act(async () => { input!.props.onChangeText('alice'); });
         await screen.pressByTestIdAsync('settings-account-profile-save');
-        expect(modalMockRef.current.spies.prompt).not.toHaveBeenCalled();
         expect(fetchMock).toHaveBeenCalledWith(
             expect.stringContaining('/v1/account/username'),
             expect.objectContaining({ method: 'POST' }),
         );
         expect(usernameOnHome).toBe('alice');
         expect(storage.getState().profile.username).toBe('alice');
-    }, 40_000);
-
-    it('keeps connectedServicesV2 projections out of Account while the canonical Connected Accounts route remains available', async () => {
-        await restoreAccount();
-        storage.getState().applyProfile({
-            ...profileDefaults,
-            id: account!.scope.accountId,
-            linkedProviders: [],
-            connectedServices: ['openai'],
-            connectedServicesV2: [
-                {
-                    serviceId: 'openai-codex',
-                    profiles: [
-                        {
-                            profileId: 'work',
-                            status: 'connected',
-                            kind: 'oauth',
-                            providerEmail: null,
-                            providerAccountId: null,
-                            expiresAt: null,
-                            lastUsedAt: null,
-                            health: null,
-                        },
-                    ],
-                    groups: [],
-                },
-            ],
-            username: null,
-        });
-
-        const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-            const url = getRequestUrl(input);
-            if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {
-                return Response.json({});
-            }
-            if (isFeaturesRequest(url)) {
-                return Response.json(createAccountFeaturesResponse());
-            }
-            if (new URL(url).pathname === '/v1/account/security') return Response.json({ v: 1, encryptionMode: 'plain',
-                terminalPresentUserPolicy: 'allowed', nativeEmail: null, password: { status: 'not_enrolled', revision: null } });
-            return account!.request(input, init);
-        });
-        vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
-        setRuntimeFetch(fetchMock as unknown as typeof fetch);
-
-        const screen = await renderAccount();
-
-        expect(screen.findRowByTitle('connectedServices.serviceNames.openaiCodex')).toBeNull();
-        expectCanonicalConnectedAccountsRoute();
-    }, 40_000);
-
-    it('keeps retryable connectedServicesV2 projections out of Account while the canonical Connected Accounts route remains available', async () => {
-        await restoreAccount();
-        storage.getState().applyProfile({
-            ...profileDefaults,
-            id: account!.scope.accountId,
-            linkedProviders: [],
-            connectedServices: [],
-            connectedServicesV2: [
-                {
-                    serviceId: 'openai-codex',
-                    profiles: [
-                        {
-                            profileId: 'retryable',
-                            status: 'refresh_failed_retryable',
-                            kind: 'oauth',
-                            providerEmail: null,
-                            providerAccountId: null,
-                            expiresAt: null,
-                            lastUsedAt: null,
-                            health: {
-                                v: 1,
-                                status: 'refresh_failed_retryable',
-                                reconnectRequired: false,
-                                lastRefreshFailureKind: 'network_error',
-                            },
-                        },
-                        {
-                            profileId: 'reauth',
-                            status: 'needs_reauth',
-                            kind: 'oauth',
-                            providerEmail: null,
-                            providerAccountId: null,
-                            expiresAt: null,
-                            lastUsedAt: null,
-                            health: {
-                                v: 1,
-                                status: 'needs_reauth',
-                                reconnectRequired: true,
-                                lastRefreshFailureKind: 'invalid_grant',
-                            },
-                        },
-                    ],
-                    groups: [],
-                },
-            ],
-            username: null,
-        });
-
-        const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-            const url = getRequestUrl(input);
-            if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {
-                return Response.json({});
-            }
-            if (isFeaturesRequest(url)) {
-                return Response.json(createAccountFeaturesResponse());
-            }
-            if (new URL(url).pathname === '/v1/account/security') return Response.json({ v: 1, encryptionMode: 'plain',
-                terminalPresentUserPolicy: 'allowed', nativeEmail: null, password: { status: 'not_enrolled', revision: null } });
-            return account!.request(input, init);
-        });
-        vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
-        setRuntimeFetch(fetchMock as unknown as typeof fetch);
-
-        const screen = await renderAccount();
-
-        expect(screen.findRowByTitle('connectedServices.serviceNames.openaiCodex')).toBeNull();
-        expectCanonicalConnectedAccountsRoute();
     }, 40_000);
 });

@@ -92,7 +92,7 @@ function update(seq: number): ApiUpdateContainer {
         id: `u${seq}`,
         seq: 100 + seq,
         createdAt: seq,
-        body: { t: 'new-message', sid: SESSION_ID, message: message(seq) },
+        body: { t: 'new-message', delivery: 'full' as const, sid: SESSION_ID, message: message(seq) },
     };
 }
 
@@ -211,7 +211,9 @@ describe('sync socket gap recovery', () => {
         const sync = await seedSession();
         requestMock.mockImplementation(async () => page([2, 3, 4]));
         const sidechainUpdate = update(5);
-        if (sidechainUpdate.body.t !== 'new-message') throw new Error('Expected new-message fixture');
+        if (sidechainUpdate.body.t !== 'new-message' || sidechainUpdate.body.delivery !== 'full') {
+            throw new Error('Expected full new-message fixture');
+        }
         sidechainUpdate.body.message.content = {
             t: 'plain',
             v: {

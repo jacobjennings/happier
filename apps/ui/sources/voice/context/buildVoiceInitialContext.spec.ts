@@ -366,7 +366,8 @@ describe('buildVoiceInitialContext', () => {
     expect(out).toContain('Reply with answerUserActionRequest');
   });
 
-  it('includes already-pending permission requests from transcript tool calls when agentState is missing', () => {
+  it.each([true, false])('includes pending permission guidance from the current preference when agentState is missing (enabled=%s)', (canApproveRequests) => {
+    storage.setState(state => ({ settings: { ...state.settings, voice: { ...state.settings.voice, canApproveRequests } } }));
     storage.setState((state: any) => ({
       ...state,
       sessions: {
@@ -424,8 +425,10 @@ describe('buildVoiceInitialContext', () => {
     expect(out).toContain('## Pending Requests');
     expect(out).toContain('Coding assistant is requesting permission to use write in');
     expect(out).toContain('<request_id>perm_voice_1</request_id>');
-    expect(out).toContain('Tell the human to use the canonical session UI to approve or deny it.');
-    expect(out).toContain('A spoken answer does not decide this permission request.');
+    expect(out).toContain(canApproveRequests ? 'Voice approvals are enabled' : 'Voice approvals are off');
+    expect(out).toContain('Native Codex Realtime cannot decide requests');
+    if (canApproveRequests) expect(out).toContain('Use the canonical request tools to approve or deny');
+    else expect(out).toContain('A tap in the request UI is required');
   });
 
   it('does not include a target session pending permission request when sharing is disabled', () => {

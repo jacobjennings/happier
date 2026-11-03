@@ -14,12 +14,18 @@ import {
     projectSessionSharedMetadataV1,
     sealEncryptedDataKeyEnvelopeV1,
     sealSessionOwnerMetadataEnvelopeV1,
+    V2SessionRecordSchema,
 } from '@happier-dev/protocol';
-import { fetchAndApplySessions } from './sessionSnapshot';
+import { fetchAndApplySessions as fetchAndApplySessionsSource } from './sessionSnapshot';
+import { createCompactSessionListFetchBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
 import { hasAuthoritativeSessionRouteData } from '@/sync/domains/session/hasAuthoritativeSessionRouteData';
 import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 import { isUserFacingSession } from '@/sync/domains/session/listing/isUserFacingSession';
 import { sessionDisplayTitle } from '@/utils/sessions/sessionDisplayTitle';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { buildSessionListCacheEntryFromRenderable } from '@/sync/domains/state/warmCacheAdapters';
+import { SessionListCacheEntryV1Schema } from '@/sync/domains/state/warmCachePersistence';
+import { createDataKeyAccountEncryptionCurrentnessFixture } from '@/dev/testkit/fixtures/accountEncryptionCurrentness';
 
 /**
  * Single-Session hydration must settle. A Session the viewer is authorized to see but cannot
@@ -49,6 +55,14 @@ function sessionResponse(session: Record<string, unknown>): Response {
     return new Response(JSON.stringify({ session }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
+    });
+}
+
+function fetchAndApplySessions(params: Parameters<typeof fetchAndApplySessionsSource>[0]) {
+    const request = params.request;
+    return fetchAndApplySessionsSource({ ...params,
+        ...(request ? { request: createCompactSessionListFetchBoundary(async (path, init) => path === '/v2/sessions/read-batch'
+            ? undefined : request(path, init)) } : {}),
     });
 }
 
@@ -87,6 +101,9 @@ function createEncryption(openEnvelope: (value: string) => Uint8Array | null = (
                 decryptMetadata: async (_version: number, value: string) => ({ decrypted: value }),
                 decryptMetadataPayload: async (_version: number, value: string) => ({ decrypted: value }),
                 decryptAgentState: async () => null,
+                decryptAgentStateResult: async (_version: number, value: string | null | undefined) => value === undefined
+                    ? { status: 'unavailable' as const }
+                    : { status: 'available' as const, value: null },
             }
             : null
     ));
@@ -97,6 +114,29 @@ function createEncryption(openEnvelope: (value: string) => Uint8Array | null = (
         getSessionEncryption,
     } as unknown as SessionByIdEncryption;
     return { encryption, decryptEncryptionKey, initializeSessions, removeSessionEncryption };
+}
+
+async function openOwnerRowFixture(row: Record<string, unknown>, credentials: AuthCredentials, encryption: Encryption,
+    accountCurrentness: AccountEncryptionCurrentnessResponse) {
+    let opened: Session | undefined;
+    await fetchAndApplySessions({ credentials, accountCurrentness, encryption,
+        sessionDataKeys: new Map(), request: async () => Response.json({ sessions: [row], nextCursor: null, hasNext: false }),
+        requiredHydrationSessionIds: ['s_locked'], awaitSessionListHydration: true,
+        applySessions: sessions => { opened = sessions[0]; }, log: { log() {} },
+    });
+    if (!opened || opened.encryptedContentAvailability !== 'ready' || !hasAuthoritativeSessionRouteData(opened)) {
+        throw new Error('The owner fixture did not open its full documents');
+    }
+    const renderable = buildSessionListRenderableFromSession(opened);
+    const cache = SessionListCacheEntryV1Schema.parse(JSON.parse(JSON.stringify(buildSessionListCacheEntryFromRenderable(renderable))));
+    return { session: opened, renderable, cache };
+}
+
+async function encryptOwnerSharedMetadata(encryption: Encryption) {
+    await encryption.initializeSessions(new Map([['s_locked', null]]));
+    return encryption.getSessionEncryption('s_locked')!.encryptRaw(projectSessionSharedMetadataV1({
+        metadata: { summary: { text: 'Shared title', updatedAt: 1 } },
+    }));
 }
 
 async function hydrateRow(params: Readonly<{
@@ -318,14 +358,17 @@ describe('fetchAndApplySessionById locked continuity', () => {
             sessionDataKeys: new Map(),
             sessionDataKeyEnvelopes: new Map(),
             request: async () => new Response(JSON.stringify({
-                sessions: [buildRow({
+                sessions: [V2SessionRecordSchema.parse(buildRow({
+                    // Current recipient transport is privacy-projected; the separate legacy owner case stays layout 0.
+                    metadataLayoutVersion: 1,
+                    share: undefined,
                     effectiveAccess: {
                         v: 1,
                         level: 'view',
                         sources: [{ kind: 'team', teamId: 'team-1', requiredByTeamPolicy: false }],
                         capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view', canApprovePermissions: false }),
                     },
-                })],
+                }))],
                 nextCursor: null,
                 hasNext: false,
             }), { status: 200 }),
@@ -345,6 +388,7 @@ describe('fetchAndApplySessionById locked continuity', () => {
         ['voice_carrier', true, false],
     ] as const)('uses independently opened owner metadata to classify a locked owner (%s)', async (key, hidden, visible) => {
         const contentKeys = tweetnacl.box.keyPair();
+        const accountCurrentness = createDataKeyAccountEncryptionCurrentnessFixture({ machineKey: contentKeys.secretKey, publicKey: contentKeys.publicKey });
         const credentials = {
             token: 't',
             encryption: {
@@ -369,7 +413,7 @@ describe('fetchAndApplySessionById locked continuity', () => {
 
         const result = await fetchAndApplySessionById({
             sessionId: 's_locked',
-            accountCurrentness: E2EE_ACCOUNT_CURRENTNESS,
+            accountCurrentness,
             credentials,
             encryption,
             sessionDataKeys: new Map(),
@@ -406,9 +450,8 @@ describe('fetchAndApplySessionById locked continuity', () => {
     });
 
     it('keeps an owner row visible when a list refresh reuses the warm-cache owner projection', async () => {
-        const { buildSessionListCacheEntryFromRenderable } = await import('@/sync/domains/state/warmCacheAdapters');
-        const { buildSessionListRenderableFromCacheEntry } = await import('@/sync/domains/state/warmCacheAdapters');
         const contentKeys = tweetnacl.box.keyPair();
+        const accountCurrentness = createDataKeyAccountEncryptionCurrentnessFixture({ machineKey: contentKeys.secretKey, publicKey: contentKeys.publicKey });
         const credentials = {
             token: 't',
             encryption: {
@@ -427,6 +470,7 @@ describe('fetchAndApplySessionById locked continuity', () => {
         });
         const row = buildRow({
             metadataLayoutVersion: 1,
+            metadata: await encryptOwnerSharedMetadata(encryption),
             ownerMetadata,
             effectiveAccess: {
                 v: 1,
@@ -435,25 +479,12 @@ describe('fetchAndApplySessionById locked continuity', () => {
                 capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'owner', canApprovePermissions: true }),
             },
         });
-        // What the list rendered and the warm cache persisted for this row: the owner projection.
-        const ownerRenderable = buildSessionListRenderableFromCacheEntry({
-            sessionId: 's_locked',
-            metadataLayoutVersion: 1,
-            metadataVersion: 4,
-            agentStateVersion: 5,
-            updatedAt: 2,
-            createdAt: 1,
-            active: true,
-            activeAt: 2,
-            archivedAt: null,
-            name: 'Owner title',
-            path: '/home/u/owner',
-        });
-        const cachedEntry = buildSessionListCacheEntryFromRenderable(ownerRenderable);
+        // Persist a projection actually admitted by the full reader, not a fabricated warm row.
+        const { renderable: ownerRenderable, cache: cachedEntry } = await openOwnerRowFixture(row, credentials, encryption, accountCurrentness);
         const rendered: unknown[] = [];
 
         await fetchAndApplySessions({
-            accountCurrentness: E2EE_ACCOUNT_CURRENTNESS,
+            accountCurrentness,
             credentials,
             encryption,
             sessionDataKeys: new Map(),
@@ -478,8 +509,8 @@ describe('fetchAndApplySessionById locked continuity', () => {
     // fallback until the next socket frame re-projects the Session (golden-journey-2 step 9).
     it.each(['ready', 'encrypted_content_unavailable'] as const)('keeps the hydrated Session content fact on a list refresh row (%s)', async (availability) => {
         const { buildSessionListRenderableFromCacheEntry } = await import('@/sync/domains/state/warmCacheAdapters');
-        const { createSessionFixture } = await import('@/dev/testkit/fixtures/sessionFixtures');
         const contentKeys = tweetnacl.box.keyPair();
+        const accountCurrentness = createDataKeyAccountEncryptionCurrentnessFixture({ machineKey: contentKeys.secretKey, publicKey: contentKeys.publicKey });
         const credentials = {
             token: 't',
             encryption: {
@@ -498,6 +529,7 @@ describe('fetchAndApplySessionById locked continuity', () => {
         });
         const row = buildRow({
             metadataLayoutVersion: 1,
+            metadata: await encryptOwnerSharedMetadata(encryption),
             ownerMetadata,
             effectiveAccess: {
                 v: 1,
@@ -506,16 +538,8 @@ describe('fetchAndApplySessionById locked continuity', () => {
                 capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'owner', canApprovePermissions: true }),
             },
         });
-        const hydratedSession = createSessionFixture({
-            id: 's_locked',
-            encryptionMode: 'e2ee',
-            encryptedContentAvailability: availability,
-            metadataLayoutVersion: 1,
-            metadataVersion: 4,
-            agentStateVersion: 5,
-            metadata: { v: 1 } as never,
-            ownerMetadataView: { path: '/home/u/owner' } as never,
-        });
+        const { session: opened } = await openOwnerRowFixture(row, credentials, encryption, accountCurrentness);
+        const hydratedSession = { ...opened, encryptedContentAvailability: availability };
         // The row an earlier refresh wrote: it carries no content fact of its own.
         const previousRow = buildSessionListRenderableFromCacheEntry({
             sessionId: 's_locked',
@@ -533,7 +557,7 @@ describe('fetchAndApplySessionById locked continuity', () => {
         const rendered: unknown[] = [];
 
         await fetchAndApplySessions({
-            accountCurrentness: E2EE_ACCOUNT_CURRENTNESS,
+            accountCurrentness,
             credentials,
             encryption,
             sessionDataKeys: new Map(),
@@ -553,8 +577,8 @@ describe('fetchAndApplySessionById locked continuity', () => {
     // must carry the settled fact persisted with its cached row, or an own readable Session reads
     // as "Encrypted session" until hydration.
     it('takes the content fact of a cold refresh row from its warm-cache row', async () => {
-        const { buildSessionListCacheEntryFromRenderable, buildSessionListRenderableFromCacheEntry } = await import('@/sync/domains/state/warmCacheAdapters');
         const contentKeys = tweetnacl.box.keyPair();
+        const accountCurrentness = createDataKeyAccountEncryptionCurrentnessFixture({ machineKey: contentKeys.secretKey, publicKey: contentKeys.publicKey });
         const credentials = {
             token: 't',
             encryption: {
@@ -573,6 +597,7 @@ describe('fetchAndApplySessionById locked continuity', () => {
         });
         const row = buildRow({
             metadataLayoutVersion: 1,
+            metadata: await encryptOwnerSharedMetadata(encryption),
             ownerMetadata,
             effectiveAccess: {
                 v: 1,
@@ -581,27 +606,11 @@ describe('fetchAndApplySessionById locked continuity', () => {
                 capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'owner', canApprovePermissions: true }),
             },
         });
-        const cachedEntry = buildSessionListCacheEntryFromRenderable({
-            ...buildSessionListRenderableFromCacheEntry({
-                sessionId: 's_locked',
-                metadataLayoutVersion: 1,
-                metadataVersion: 4,
-                agentStateVersion: 5,
-                updatedAt: 2,
-                createdAt: 1,
-                active: true,
-                activeAt: 2,
-                archivedAt: null,
-                name: '',
-                path: '/home/u/owner',
-            }),
-            encryptionMode: 'e2ee',
-            encryptedContentAvailability: 'ready',
-        });
+        const { cache: cachedEntry } = await openOwnerRowFixture(row, credentials, encryption, accountCurrentness);
         const rendered: unknown[] = [];
 
         await fetchAndApplySessions({
-            accountCurrentness: E2EE_ACCOUNT_CURRENTNESS,
+            accountCurrentness,
             credentials,
             encryption,
             sessionDataKeys: new Map(),
@@ -651,13 +660,18 @@ describe('fetchAndApplySessionById locked continuity', () => {
             log: { log: () => {} },
             includeTurnsProjection: false,
         });
-        expect(result.ok).toBe(true);
-        expect(applied).toEqual([expect.objectContaining({
-            id: 's_locked',
-            metadata: null,
-            encryptedContentAvailability: kind === 'wrong_key' ? 'encrypted_content_unavailable' : 'ready',
-        })]);
-        const snapshotApplied: unknown[] = [];
+        if (kind === 'wrong_key') {
+            expect(result.ok).toBe(true);
+            expect(applied).toEqual([expect.objectContaining({
+                id: 's_locked', metadata: null, encryptedContentAvailability: 'encrypted_content_unavailable',
+            })]);
+        } else {
+            // An authenticated non-Metadata payload is not an opened full document.
+            expect(result).toMatchObject({ ok: false, errorCode: 'stale_response', session: null });
+            expect(applied).toEqual([]);
+        }
+        const snapshotApplied: Session[] = [];
+        const displayed: unknown[] = [];
         await fetchAndApplySessions({
             credentials: { token: 't', secret: encodeBase64(secret, 'base64') },
             accountCurrentness: E2EE_ACCOUNT_CURRENTNESS,
@@ -669,12 +683,23 @@ describe('fetchAndApplySessionById locked continuity', () => {
                 nextCursor: null, hasNext: false,
             }),
             applySessions: (sessions) => snapshotApplied.push(...sessions),
+            applySessionListRenderables: rows => displayed.push(...rows),
+            requiredHydrationSessionIds: ['s_locked'],
+            awaitSessionListHydration: true,
             log: { log: () => {} },
         });
         expect(snapshotApplied).toEqual([expect.objectContaining({
             id: 's_locked',
+            metadata: null,
             encryptedContentAvailability: kind === 'wrong_key' ? 'encrypted_content_unavailable' : 'ready',
         })]);
+        // Authentication success alone cannot make an unsupported metadata body control-ready.
+        expect(hasAuthoritativeSessionRouteData(snapshotApplied[0]))
+            .toBe(kind === 'wrong_key');
+        expect(displayed.at(-1)).toMatchObject({
+            id: 's_locked',
+            encryptedContentAvailability: kind === 'wrong_key' ? 'encrypted_content_unavailable' : 'ready',
+        });
     });
 
     it('settles an authorized Session whose envelope has not arrived as pending, not as a failure', async () => {
@@ -751,20 +776,34 @@ describe('fetchAndApplySessionById locked continuity', () => {
     });
 
     it('keeps the owner-only account reader for a legacy-credential Session with no envelope', async () => {
-        const encryption = createEncryption();
-        const { result, applied } = await hydrateRow({
-            row: buildRow({ share: null }),
+        const secret = new Uint8Array(32).fill(7);
+        const encryption = await Encryption.create(secret);
+        await encryption.initializeSessions(new Map([['s_locked', null]]));
+        const metadata = { path: '/retained/legacy', host: 'retained-host', name: 'Retained title' };
+        const ciphertext = await encryption.getSessionEncryption('s_locked')!.encryptRaw(metadata);
+        const decryptEncryptionKey = vi.spyOn(encryption, 'decryptEncryptionKey');
+        const initializeSessions = vi.spyOn(encryption, 'initializeSessions');
+        const applied: unknown[] = [];
+        const result = await fetchAndApplySessionById({
+            sessionId: 's_locked', accountCurrentness: E2EE_ACCOUNT_CURRENTNESS,
+            credentials: { token: 't', secret: encodeBase64(secret) },
             encryption,
+            sessionDataKeys: new Map(),
+            request: async () => sessionResponse(buildRow({ metadata: ciphertext, share: null })),
+            applySessions: sessions => applied.push(...sessions),
+            includeTurnsProjection: false, log: { log() {} },
         });
 
         expect(result.ok).toBe(true);
-        expect(encryption.decryptEncryptionKey).not.toHaveBeenCalled();
-        expect([...(encryption.initializeSessions.mock.calls[0]?.[0] as Map<string, Uint8Array | null>).entries()])
+        expect(decryptEncryptionKey).not.toHaveBeenCalled();
+        expect([...(initializeSessions.mock.calls[0]?.[0] ?? new Map()).entries()])
             .toEqual([['s_locked', null]]);
-        expect(applied).toEqual(expect.objectContaining({
+        expect(applied).toEqual([expect.objectContaining({
             id: 's_locked',
+            metadataLayoutVersion: 0,
             encryptedContentAvailability: 'ready',
-            metadata: expect.objectContaining({ decrypted: 'encrypted-metadata' }),
-        }));
+            metadata: expect.objectContaining(metadata),
+        })]);
+        expect(hasAuthoritativeSessionRouteData(result.session)).toBe(true);
     });
 });

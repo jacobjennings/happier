@@ -89,6 +89,7 @@ describe('install and Computer repair share configurable Action approval', () =>
                 result: { status: 'executed', execution: { ok: true } } });
         }
         await waitForHomeGovernance(() => expect(refresh).toHaveBeenCalled());
+        if (caller === 'installer' && policy === 'Allowed') expect(boundary.alert).toHaveBeenCalledWith('common.success', 'deps.installed');
         expect(boundary.rpc.mock.calls).toHaveLength(1);
         expect(boundary.rpc.mock.calls[0]?.[0]).toMatchObject({ serverId, machineId: 'machine',
             method: RPC_METHODS.CAPABILITIES_INVOKE, payload: { id: COMPUTER_CUA_DRIVER_DEP_ID, method: 'install' } });

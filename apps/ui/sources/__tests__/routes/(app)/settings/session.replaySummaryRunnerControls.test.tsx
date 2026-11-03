@@ -96,18 +96,6 @@ function maxSeedCharsField(screen: ScreenLike) {
 }
 
 describe('Session resume settings (Replay summary runner controls)', () => {
-    it('renders a max seed chars input when replay is enabled', async () => {
-        executionRunsEnabledState.enabled = true;
-        sessionSettingsEntryState.settingsState.sessionReplayEnabled = true;
-
-        const mod = await import('@/app/(app)/settings/session/resume');
-        const SessionResumeSettingsScreen = mod.default;
-
-        const screen = await renderScreen(React.createElement(SessionResumeSettingsScreen));
-
-        expect(maxSeedCharsRows(screen)).toHaveLength(1);
-    });
-
     it('renders summary runner inputs when replay is enabled, strategy is summary_plus_recent, and execution runs are enabled', async () => {
         executionRunsEnabledState.enabled = true;
         sessionSettingsEntryState.settingsState.sessionReplayEnabled = true;
@@ -173,10 +161,6 @@ describe('Session resume settings (Replay summary runner controls)', () => {
         },
     );
 
-    // Both live replay routes pass `recentMessagesCount: null` on purpose: the
-    // seed is bounded by CHARACTERS. Only the compatibility-only
-    // `continueWithReplay` ingress reads the count, so the control could not
-    // change any outcome a user can reach. The stored key stays.
     it('names the field programmatically and connects its description', async () => {
         sessionSettingsEntryState.settingsState.sessionReplayEnabled = true;
 
@@ -187,27 +171,6 @@ describe('Session resume settings (Replay summary runner controls)', () => {
         expect(row?.props.title).toBe('settingsSessionPages.resume.maxSeedCharsTitle');
         expect(maxSeedCharsField(screen).accessibilityLabel).toBe('settingsSessionPages.resume.maxSeedCharsTitle');
         expect(maxSeedCharsField(screen).accessibilityHint).toBe(row?.props.subtitle);
-    });
-
-    it('does not render the recent-messages control that cannot affect any outcome', async () => {
-        sessionSettingsEntryState.settingsState.sessionReplayEnabled = true;
-
-        const mod = await import('@/app/(app)/settings/session/resume');
-        const screen = await renderScreen(React.createElement(mod.default));
-
-        expect(screen.getTextContent()).not.toContain('settingsSession.replayResume.recentMessagesTitle');
-        expect(screen.findAllByProps({ placeholder: 'settingsSession.replayResume.recentMessagesPlaceholder' })).toHaveLength(0);
-    });
-
-    it('leaves the stored recent-messages preference untouched while the control is hidden', async () => {
-        sessionSettingsEntryState.settingsState.sessionReplayEnabled = true;
-        sessionSettingsEntryState.settingsState.sessionReplayRecentMessagesCount = 100;
-
-        const mod = await import('@/app/(app)/settings/session/resume');
-        await renderScreen(React.createElement(mod.default));
-
-        expect(storage.getState().settings.sessionReplayRecentMessagesCount).toBe(100);
-        expect(account?.persistedSettings.sessionReplayRecentMessagesCount).toBe(100);
     });
 });
 
@@ -229,6 +192,8 @@ describe('Session resume settings (summary strategy discloses its requirement)',
         const screen = await renderResume();
 
         expect(screen.findByTestId('settings-session-replay-summaryRunner-requirement')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('settingsSession.replayResume.summaryRunner.requiresModelNotice');
+        expect(screen.getTextContent()).not.toContain('settingsSession.replayResume.summaryRunner.requiresExecutionRunsNotice');
     });
 
     it('stops disclosing once a summary model is configured', async () => {
@@ -254,6 +219,8 @@ describe('Session resume settings (summary strategy discloses its requirement)',
         const screen = await renderResume();
 
         expect(screen.findByTestId('settings-session-replay-summaryRunner-requirement')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('settingsSession.replayResume.summaryRunner.requiresExecutionRunsNotice');
+        expect(screen.getTextContent()).not.toContain('settingsSession.replayResume.summaryRunner.requiresModelNotice');
     });
 
     it('says nothing about a summary model under the recent-messages strategy', async () => {

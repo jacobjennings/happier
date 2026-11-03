@@ -26,7 +26,7 @@ function throwUnsupportedResponse(method: string): never {
 /**
  * Keep the failure class, not the internal exception message. The shared filesystem
  * presenter translates the code; an unclassified relay exception is not evidence
- * that a daemon method is missing. Parsed daemon failures remain unchanged.
+ * that a daemon method is missing. Daemon failures are normalized separately.
  */
 function toMachineFileBrowserRpcError(error: unknown): Readonly<{ ok: false; error: string; errorCode: string }> {
     const errorCode = readRpcErrorCode(error)
@@ -47,6 +47,15 @@ function toMachineFileBrowserDirectoryRpcError(error: unknown): Extract<DaemonFi
     return toMachineFileBrowserRpcError(error);
 }
 
+function normalizeDaemonFilesystemFailure(
+    failure: Extract<DaemonFilesystemListDirectoryResponse, { ok: false }>,
+): Extract<DaemonFilesystemListDirectoryResponse, { ok: false }> {
+    // Older daemons (including 0.2) send Node's message without its code.
+    // Decode that shape once at ingress; presenters consume codes, never paths.
+    const errorCode = failure.errorCode ?? /^(ENOENT|EACCES|EPERM)(?=:|$)/.exec(failure.error)?.[1];
+    return errorCode ? { ...failure, error: errorCode, errorCode } : failure;
+}
+
 export async function machineFilesystemListRoots(
     machineId: string,
     opts?: MachineFileBrowserOpts,
@@ -65,7 +74,7 @@ export async function machineFilesystemListRoots(
         if (!parsed.success) {
             throwUnsupportedResponse(RPC_METHODS.DAEMON_FILESYSTEM_LIST_ROOTS);
         }
-        return parsed.data;
+        return parsed.data.ok ? parsed.data : normalizeDaemonFilesystemFailure(parsed.data);
     } catch (error) {
         if (opts?.signal?.aborted) throw error;
         return toMachineFileBrowserRootsRpcError(error);
@@ -92,7 +101,7 @@ export async function machineFilesystemListDirectory(
         if (!parsed.success) {
             throwUnsupportedResponse(RPC_METHODS.DAEMON_FILESYSTEM_LIST_DIRECTORY);
         }
-        return parsed.data;
+        return parsed.data.ok ? parsed.data : normalizeDaemonFilesystemFailure(parsed.data);
     } catch (error) {
         if (opts?.signal?.aborted) throw error;
         return toMachineFileBrowserDirectoryRpcError(error);

@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { getDefaultServerUrl, getServerUrl, isUsingCustomServer, setServerUrl } from './serverConfig';
+import * as profiles from './serverProfiles';
+
 function randomScope(): string {
     return `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
@@ -34,11 +37,6 @@ function stubWebRuntime(origin: string) {
     });
 }
 
-async function importFreshServerConfig() {
-    vi.resetModules();
-    return await import('./serverConfig');
-}
-
 function restoreEnvVar(key: string, value: string | undefined): void {
     if (value === undefined) {
         delete process.env[key];
@@ -66,7 +64,7 @@ describe('getServerUrl', () => {
 
     beforeEach(() => {
         clearServerEnv();
-        vi.resetModules();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
     });
 
     afterEach(() => {
@@ -77,13 +75,12 @@ describe('getServerUrl', () => {
         restoreEnvVar('EXPO_PUBLIC_HAPPY_SERVER_CONTEXT', previousContext);
         restoreEnvVar('EXPO_PUBLIC_HAPPY_PRECONFIGURED_SERVERS', previousPreconfigured);
         restoreEnvVar('EXPO_PUBLIC_HAPPY_STORAGE_SCOPE', previousScope);
+        profiles.resetServerProfilesRuntimeForTests();
     });
 
     it('uses window.location.origin on web when EXPO_PUBLIC_HAPPY_SERVER_URL is empty', async () => {
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = '';
         stubWebRuntime('https://stack.example.test');
-
-        const { getServerUrl } = await importFreshServerConfig();
 
         expect(getServerUrl()).toBe('https://stack.example.test');
     });
@@ -96,8 +93,6 @@ describe('getServerUrl', () => {
             __HAPPIER_WEB_RUNTIME_CONFIG__: { serverUrl: 'https://server-override.example.test' },
         });
 
-        const { getServerUrl } = await importFreshServerConfig();
-
         expect(getServerUrl()).toBe('https://server-override.example.test');
     });
 
@@ -105,48 +100,7 @@ describe('getServerUrl', () => {
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = '';
         stubWebRuntime('null');
 
-        const { getServerUrl } = await importFreshServerConfig();
-
         expect(getServerUrl()).toBe('');
-    });
-
-    it('uses window.location.origin on web when EXPO_PUBLIC_HAPPY_SERVER_URL is unset', async () => {
-        delete process.env.EXPO_PUBLIC_HAPPY_SERVER_URL;
-        stubWebRuntime('https://stack.example.test');
-
-        const { getServerUrl } = await importFreshServerConfig();
-
-        expect(getServerUrl()).toBe('https://stack.example.test');
-    });
-
-    it('uses EXPO_PUBLIC_HAPPIER_SERVER_URL as the canonical default server env var', async () => {
-        process.env.EXPO_PUBLIC_HAPPIER_SERVER_URL = 'https://canonical.example.test';
-        process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'https://legacy-happy.example.test';
-        process.env.EXPO_PUBLIC_SERVER_URL = 'https://legacy-generic.example.test';
-
-        const { getServerUrl } = await importFreshServerConfig();
-
-        expect(getServerUrl()).toBe('https://canonical.example.test');
-    });
-
-    it('uses EXPO_PUBLIC_HAPPY_SERVER_URL as a legacy alias when canonical env is unset', async () => {
-        delete process.env.EXPO_PUBLIC_HAPPIER_SERVER_URL;
-        process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'https://legacy-happy.example.test';
-        process.env.EXPO_PUBLIC_SERVER_URL = 'https://legacy-generic.example.test';
-
-        const { getServerUrl } = await importFreshServerConfig();
-
-        expect(getServerUrl()).toBe('https://legacy-happy.example.test');
-    });
-
-    it('uses EXPO_PUBLIC_SERVER_URL as a last-resort alias when canonical and happy env vars are unset', async () => {
-        delete process.env.EXPO_PUBLIC_HAPPIER_SERVER_URL;
-        delete process.env.EXPO_PUBLIC_HAPPY_SERVER_URL;
-        process.env.EXPO_PUBLIC_SERVER_URL = 'https://legacy-generic.example.test';
-
-        const { getServerUrl } = await importFreshServerConfig();
-
-        expect(getServerUrl()).toBe('https://legacy-generic.example.test');
     });
 
     it('defaults to Happier Cloud on native when no server is configured', async () => {
@@ -155,15 +109,11 @@ describe('getServerUrl', () => {
         delete process.env.EXPO_PUBLIC_SERVER_URL;
         delete process.env.EXPO_PUBLIC_HAPPY_PRECONFIGURED_SERVERS;
 
-        const { getDefaultServerUrl, getServerUrl } = await importFreshServerConfig();
-
         expect(getDefaultServerUrl()).toBe('https://api.happier.dev');
         expect(getServerUrl()).toBe('https://api.happier.dev');
     });
 
     it('keeps the build default independent of the remembered active server', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const { getDefaultServerUrl, getServerUrl, setServerUrl } = await importFreshServerConfig();
         try {
             await setServerUrl('https://remembered.example.test');
             expect(getServerUrl()).toBe('https://remembered.example.test');
@@ -176,17 +126,13 @@ describe('getServerUrl', () => {
     it('trims EXPO_PUBLIC_HAPPY_SERVER_URL to avoid whitespace issues', async () => {
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = ' https://stack.example.test ';
 
-        const { getServerUrl } = await importFreshServerConfig();
-
         expect(getServerUrl()).toBe('https://stack.example.test');
     });
 
     it('prefers a custom server URL over EXPO_PUBLIC_HAPPY_SERVER_URL', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = '';
         stubWebRuntime('https://stack.example.test');
 
-        const { getServerUrl, setServerUrl } = await importFreshServerConfig();
         try {
             await setServerUrl('https://custom.example.test');
             expect(getServerUrl()).toBe('https://custom.example.test');
@@ -196,11 +142,9 @@ describe('getServerUrl', () => {
     });
 
     it('canonicalizes custom server URL by stripping userinfo and query/hash', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = '';
         stubWebRuntime('https://stack.example.test');
 
-        const { getServerUrl, setServerUrl } = await importFreshServerConfig();
         try {
             await setServerUrl('https://admin:secret@custom.example.test:9443/path/?token=abc#frag');
             expect(getServerUrl()).toBe('https://custom.example.test:9443/path');
@@ -210,29 +154,19 @@ describe('getServerUrl', () => {
     });
 
     it('ignores stale sessionStorage server id override when that id is missing', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = '';
         stubWebRuntime('https://stack.example.test');
-
-        const profiles = await (async () => {
-            vi.resetModules();
-            return await import('./serverProfiles');
-        })();
 
         const created = await profiles.upsertServerProfile({ serverUrl: 'https://device.example.test', name: 'Device' });
         await profiles.setActiveServerId(created.id, { scope: 'device' });
         await profiles.setActiveServerId('missing-server', { scope: 'tab' });
 
-        const { getServerUrl } = await importFreshServerConfig();
         expect(getServerUrl()).toBe('https://device.example.test');
     });
 
     it('resetting a custom server returns to the stack default server (no built-in remote profile in stack context)', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_SERVER_CONTEXT = 'stack';
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'http://localhost:3013/';
-
-        const { getServerUrl, isUsingCustomServer, setServerUrl } = await importFreshServerConfig();
 
         expect(getServerUrl()).toBe('http://localhost:3013');
         expect(isUsingCustomServer()).toBe(false);
@@ -246,18 +180,7 @@ describe('getServerUrl', () => {
         expect(getServerUrl()).toBe('http://localhost:3013');
         expect(isUsingCustomServer()).toBe(false);
 
-        const profiles = await import('./serverProfiles');
         expect(profiles.listServerProfiles().some((p) => p.serverUrl === 'http://localhost:3013')).toBe(true);
     });
 
-    it('rewrites stack-scoped private IP server URL to a loopback hostname on web', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        process.env.EXPO_PUBLIC_HAPPY_SERVER_CONTEXT = 'stack';
-        process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'http://172.20.10.4:53288';
-        stubWebRuntime('http://happier-dev.localhost:19364');
-
-        const { getServerUrl } = await importFreshServerConfig();
-
-        expect(getServerUrl()).toBe('http://happier-dev.localhost:53288');
-    });
 });

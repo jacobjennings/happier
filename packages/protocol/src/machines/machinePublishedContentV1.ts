@@ -1,3 +1,10 @@
+import { MachineReachabilityObservationV1Schema } from './reachability/machineReachabilityPostureV1.js';
+import { MachineSetupDesiredV1Schema } from './setup/machineSetupSourcesV1.js';
+import { MachineAgentIsolationPolicyV1Schema } from './agentIsolationV1.js';
+import { MachineAdminAccessV1Schema } from './adminAccessV1.js';
+import { MachineServiceWatchesV1Schema } from './machineServiceWatchesV1.js';
+import { MachineReachabilityPostureV1Schema } from './reachability/machineReachabilityPostureV1.js';
+import { AccessProviderSelectionV1Schema } from '../plugins/contributions/accessProviders.js';
 import { z } from 'zod/mini';
 
 import { lazyZodSchema } from '../lazyZodSchema.js';
@@ -11,6 +18,8 @@ import { PeerLoopbackEndpointCandidateV1Schema } from './peer/mediation/loopback
 import { MachineFinitePolicyV1Schema } from './machineFinitePolicyV1.js';
 import { MachineResourcesPolicyV1Schema } from './resources/machineResourcesPolicyV1.js';
 import { MachinePublishedResourceSummaryV1Schema } from './resources/machineResourceSummaryV1.js';
+import { MachineSetupObservationV1Schema } from './setup/machineSetupObservationV1.js';
+
 import { ActivityDecisionV1Schema } from './managed/managedIntentV1.js';
 import { DevcontainerChildProjectionV1Schema, managedDevcontainerChildProjectionsEqualV1, type DevcontainerChildProjectionV1 } from './managed/devcontainerV1.js';
 
@@ -22,9 +31,15 @@ export const MachinePublishedAgentInventoryV1Schema = lazyZodSchema(() => z.stri
 
 /** One share-wide projection: neither owner nor recipient receives private work here. */
 export const MachinePublishedMetadataV1Schema = lazyZodSchema(() => z.strictObject({
+  setup: z.optional(MachineSetupDesiredV1Schema),
   devcontainerChild: z.optional(DevcontainerChildProjectionV1Schema),
   finitePolicyV1: z.optional(MachineFinitePolicyV1Schema),
+  agentIsolation: z.optional(MachineAgentIsolationPolicyV1Schema),
+  adminAccess: z.optional(MachineAdminAccessV1Schema),
   resourcesPolicyV1: z.optional(MachineResourcesPolicyV1Schema),
+  serviceWatchesV1: z.optional(MachineServiceWatchesV1Schema),
+  reachabilityPosture: z.optional(MachineReachabilityPostureV1Schema),
+  accessProviderSelections: z.optional(z.array(AccessProviderSelectionV1Schema)),
   host: z.string(),
   platform: z.string(),
   happyCliVersion: z.string(),
@@ -64,6 +79,7 @@ export const MachinePublishedWorkspaceSyncV1Schema = WorkspaceSyncRuntimeEventV1
 const PeerFlowSchema = lazyZodSchema(() => z.strictObject({ active: z.boolean() }));
 
 export const MachinePublishedDaemonStateV1Schema = lazyZodSchema(() => z.strictObject({
+  setup: z.optional(MachineSetupObservationV1Schema),
   status: z.string(),
   pid: z.optional(z.number()),
   httpPort: z.optional(z.number()),
@@ -96,6 +112,7 @@ export const MachinePublishedDaemonStateV1Schema = lazyZodSchema(() => z.strictO
   localServices: z.optional(LocalServiceMachineSummaryV1Schema),
   resources: z.optional(MachinePublishedResourceSummaryV1Schema),
   managedActivity: z.optional(ActivityDecisionV1Schema),
+  reachability: z.optional(MachineReachabilityObservationV1Schema)
 }));
 
 /** Persistence readers discard additive/retired fields; these are not disclosure proofs. */

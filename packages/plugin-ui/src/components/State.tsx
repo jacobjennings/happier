@@ -42,11 +42,12 @@ import {
 import { HappierPressable } from '../presentation/interaction/Pressable.js';
 import { HappierEmptySlot } from '../presentation/state/EmptySlot.js';
 import { HappierText } from '../presentation/text/Text.js';
+import { HappierDisclosureCaret } from './DisclosureCaret.js';
 import { PluginUiIconGlyph, type IconName } from './Icon.js';
 import { usePluginTheme, usePluginTranslation } from './PluginUiProvider.js';
 import { resolveAuthorText } from './resolveAuthorText.js';
 import { Spinner } from './Spinner.js';
-import { Button } from './Button.js';
+import { Button, PluginUiQuietStateActionContext } from './Button.js';
 import { HappierSpinner } from '../presentation/feedback/Spinner.js';
 
 const STATE_LOADING_TRANSLATION_KEY = 'happier.plugin-ui.state.loading';
@@ -62,7 +63,7 @@ const STATE_STALE_TRANSLATION_KEY = 'happier.plugin-ui.state.stale';
  * The size a state is drawn at: the author's, else the container the host mounted the surface in
  * (a session sidebar tab is a `pane`), else the unsized centred column.
  */
-function useStateSize(size: HappierStateSize | undefined): HappierStateSize | undefined {
+function useStateSize(size: HappierStateSize | undefined): HappierStateSize | 'line' | undefined {
   const hostSize = useOptionalPluginUiPresentationHost()?.stateSize;
   return size ?? hostSize;
 }
@@ -218,12 +219,29 @@ function SpinnerLoadingState(props: LoadingStateProps): ReactElement {
  * content column, a centred pane state, or one quiet line among rows.
  */
 export function EmptyState(props: EmptyStateProps): ReactElement {
+  return <QuietStateActions><EmptyStateView {...props} /></QuietStateActions>;
+}
+
+/**
+ * In a container that never owns its page's primary (the host's `stateActions: 'quiet'`, a widget card), the
+ * author's own action Buttons inside a state draw quiet, as the host's states there do: one frame decision,
+ * never a variant restated per widget.
+ */
+function QuietStateActions(props: Readonly<{ children: ReactNode }>): ReactElement {
+  const quiet = useOptionalPluginUiPresentationHost()?.stateActions === 'quiet';
+  return quiet ? <PluginUiQuietStateActionContext.Provider value>{props.children}</PluginUiQuietStateActionContext.Provider> : <>{props.children}</>;
+}
+
+function EmptyStateView(props: EmptyStateProps): ReactElement {
   const { translate, title, description } = useResolvedCopy(props);
   const theme = usePluginTheme();
   const palette = useOptionalHappierUiPalette(theme);
   const chrome = useHappierPageChrome();
-  const stateSize = useStateSize(props.size);
-  const scene = useStateScene(props.scene, props.layout ?? 'centered', stateSize, props.testID);
+  const resolvedSize = useStateSize(props.size);
+  // A line container makes an unplaced state its one quiet line; an explicit layout or size still wins.
+  const layout = props.layout ?? (resolvedSize === 'line' ? 'line' : 'centered');
+  const stateSize = resolvedSize === 'line' ? undefined : resolvedSize;
+  const scene = useStateScene(props.scene, layout, stateSize, props.testID);
   const pageSheetInsetPx = useHappierColumnEdgeRemainder(HAPPIER_EMPTY_STATE_FRAME.page.marginHorizontal);
   const unavailableReason = resolveAuthorText(
     translate,
@@ -231,7 +249,7 @@ export function EmptyState(props: EmptyStateProps): ReactElement {
     props.actionUnavailableReasonKey,
   );
 
-  if (props.layout === 'line') {
+  if (layout === 'line') {
     return (
       <HappierStateLine
         testID={props.testID}
@@ -259,7 +277,7 @@ export function EmptyState(props: EmptyStateProps): ReactElement {
     </View>
   ) : primaryAction ?? props.secondaryAction;
   const add = props.variant === 'add';
-  const page = props.layout === 'page';
+  const page = layout === 'page';
   const size = page ? undefined : stateSize;
   const state = (
     <HappierInfoState testID={add || page ? undefined : props.testID} action={action} size={size}>
@@ -491,6 +509,10 @@ const UNSIZED_STATE_GLYPH_PX = 32;
 const UNSIZED_STATE_GLYPH_GAP_PX = 8;
 
 function SurfaceStateAdapter(authored: SurfaceStateProps & Readonly<{ actionSlot?: ReactNode }>): ReactElement {
+  return <QuietStateActions><SurfaceStateAdapterView {...authored} /></QuietStateActions>;
+}
+
+function SurfaceStateAdapterView(authored: SurfaceStateProps & Readonly<{ actionSlot?: ReactNode }>): ReactElement {
   // While the host has one sentence about a part that cannot run now (its Machine cannot be reached), a
   // failure state says that sentence in its own place, with its own action, instead of its own copy:
   // the cause is said once, where it failed, and the host draws nothing of its own beside it.
@@ -510,10 +532,12 @@ function SurfaceStateAdapter(authored: SurfaceStateProps & Readonly<{ actionSlot
   const title = resolveAuthorText(translate, props.title, props.titleKey);
   const description = resolveAuthorText(translate, props.description, props.descriptionKey);
   const note = resolveAuthorText(translate, props.note, props.noteKey);
+  const quietActions = useContext(PluginUiQuietStateActionContext);
   const resolveAction = (action: SurfaceStateAction | undefined): HappierSurfaceStateAction | undefined => {
     if (!action) return undefined;
     const label = resolveAuthorText(translate, action.label, action.labelKey) ?? '';
-    return { label, onPress: () => action.onPress() as void | Promise<unknown>, disabled: action.disabled, busy: action.busy, testID: action.testID };
+    return { label, onPress: () => action.onPress() as void | Promise<unknown>, disabled: action.disabled, busy: action.busy, testID: action.testID,
+      ...(quietActions ? { invitation: false } : {}) };
   };
   const line = size === 'line';
   const metrics = size && size !== 'line' ? HAPPIER_STATE_SIZE_METRICS[size] : null;
@@ -533,6 +557,7 @@ function SurfaceStateAdapter(authored: SurfaceStateProps & Readonly<{ actionSlot
       if (role === 'quietLink') {
         return <HappierText testID={testID} accessibilityRole="link" onPress={onPress} tone="secondary" style={{ textDecorationLine: 'underline' }}>{children}</HappierText>;
       }
+      if (role === 'details') return <HappierText accessible={false} variant="meta" tone="secondary">{children}</HappierText>;
       if (role === 'lineAction') return <HappierText tone="neutral" style={{ ...textMetrics, fontWeight: '600' }}>{children}</HappierText>;
       if (role === 'quiet') return <HappierText testID={testID} tone="muted" style={{ ...textMetrics, textAlign: align === 'start' ? 'auto' : 'center' }}>{children}</HappierText>;
       return <HappierText testID={testID} tone="secondary" tabularNumbers={role === 'live'} style={textMetrics}>{children}</HappierText>;
@@ -564,6 +589,8 @@ function SurfaceStateAdapter(authored: SurfaceStateProps & Readonly<{ actionSlot
       </HappierInfoState>
     ),
     detailsLabel: translate(STATE_DETAILS_TRANSLATION_KEY, 'Details'),
+    renderDetailsCaret: (open) => <HappierDisclosureCaret expanded={open} density="compact" />,
+    focusRing: theme.colors.focus,
     pressedFill: theme.colors.control,
   };
   return (

@@ -1,3 +1,4 @@
+import type { PluginSecretSourceRuntimeV1 } from '../secretSources.js';
 import type { ActionHandler } from '../actions/service.js';
 import type { PluginCaptureSourceRuntime } from '../captureSources.js';
 import type { PluginProjectNativeAdapterRuntimeV1 } from '../projectNativeAdapters.js';
@@ -36,6 +37,7 @@ import type { BackgroundServiceRunner } from '../backgroundServices.js';
 import type { AgentExternalSessionHooksContribution } from '../externalSessionHooks.js';
 import type { PluginDynamicResourceRuntime } from '../services/resources.js';
 import type { PluginConnectedAccountRuntime } from '../services/index.js';
+import type { ConnectedAccountPortableRuntime } from '../connectedAccounts.js';
 import type { AgentExternalSessionTakeoverContribution } from '../sessions/externalSessionTakeover.js';
 import type {
     ManagedProviderRuntime,
@@ -56,6 +58,8 @@ type CapturedActionHandler = (input: never, context: never) => ReturnType<Action
  * owner; adding a second hand-maintained family map is a correctness bug.
  */
 export interface PluginRegistrationValueByFamily {
+    secretSources: PluginSecretSourceRuntimeV1;
+
     workItems: PluginWorkItemsRuntime;
     dragSources: PluginDragSourceRuntime;
     dropTargets: PluginDropTargetRuntime;
@@ -115,12 +119,14 @@ export type PluginAgentRuntimeRegistration = PluginRegistrationValueByFamily['ag
 
 export type PluginRegistrationFamily = keyof PluginRegistrationValueByFamily;
 
-type PluginRuntimeRegistrationFor<TFamily extends PluginRegistrationFamily> = Readonly<{
+type PluginRuntimeRegistrationFor<TFamily extends PluginRegistrationFamily, TRealm extends 'daemon' | 'account'> = Readonly<{
     family: TFamily;
     localId: string;
-    value: PluginRegistrationValueByFamily[TFamily];
+    value: TFamily extends 'connectedAccountDescriptors'
+        ? TRealm extends 'account' ? ConnectedAccountPortableRuntime : PluginRegistrationValueByFamily[TFamily]
+        : PluginRegistrationValueByFamily[TFamily];
 }>;
 
-export type PluginRuntimeRegistration = {
-    [TFamily in PluginRegistrationFamily]: PluginRuntimeRegistrationFor<TFamily>;
+export type PluginRuntimeRegistration<TRealm extends 'daemon' | 'account' = 'daemon'> = {
+    [TFamily in PluginRegistrationFamily]: PluginRuntimeRegistrationFor<TFamily, TRealm>;
 }[PluginRegistrationFamily];

@@ -8,13 +8,11 @@ describe('readStoredSessionRawRecord', () => {
             data: { type: 'runtime-config-outcome', runtime: 'codex', status: 'applied', message: 'Updated',
                 changes: [{ key: 'model', effective: 'current', retired: true }] } } };
         const content = kind === 'plain' ? { t: 'plain', v: raw } : { t: 'encrypted', c: JSON.stringify(raw) };
-        await expect(readStoredSessionRawRecord({ content,
-            decryptEncrypted: ciphertext => JSON.parse(ciphertext) as unknown,
-        })).resolves.toMatchObject({ role: 'agent', content: { type: 'event', data: {
-            type: 'runtime-config-outcome', changes: [{ key: 'model', effective: 'current' }],
-        } } });
         const parsed = await readStoredSessionRawRecord({ content,
             decryptEncrypted: ciphertext => JSON.parse(ciphertext) as unknown });
+        expect(parsed).toMatchObject({ role: 'agent', content: { type: 'event', data: {
+            type: 'runtime-config-outcome', changes: [{ key: 'model', effective: 'current' }],
+        } } });
         expect(parsed).not.toHaveProperty('content.data.changes.0.retired');
         await expect(readStoredSessionRawRecord({ content: { t: 'plain', v: { ...raw, content: { ...raw.content,
             data: { ...raw.content.data, status: 'invalid-status' } } } } })).resolves.toBeNull();
@@ -77,7 +75,11 @@ describe('readStoredSessionRawRecord', () => {
         await expect(readStoredSessionMessage(params)).resolves.toBeNull();
     });
 
-    it('parses a plain content envelope', async () => {
+    it.each([
+        ['a raw record directly', (raw: unknown) => raw],
+        ['a stringified plain content envelope', (raw: unknown) => JSON.stringify({ t: 'plain', v: raw })],
+        ['a stringified raw record', (raw: unknown) => JSON.stringify(raw)],
+    ])('parses %s (legacy payload) like the canonical plain envelope', async (_label, encode) => {
         const rawRecord = {
             role: 'agent',
             content: {
@@ -93,72 +95,10 @@ describe('readStoredSessionRawRecord', () => {
             },
         } as const;
 
-        const parsed = await readStoredSessionRawRecord({ content: { t: 'plain', v: rawRecord } });
-        expect(parsed?.role).toBe('agent');
-        expect(parsed?.content.type).toBe('output');
-    });
-
-    it('parses a raw record directly (legacy payload)', async () => {
-        const rawRecord = {
-            role: 'agent',
-            content: {
-                type: 'output',
-                data: {
-                    type: 'user',
-                    message: {
-                        role: 'user',
-                        content: 'Plain string message',
-                    },
-                    uuid: 'string-uuid',
-                },
-            },
-        } as const;
-
-        const parsed = await readStoredSessionRawRecord({ content: rawRecord });
-        expect(parsed?.role).toBe('agent');
-        expect(parsed?.content.type).toBe('output');
-    });
-
-    it('parses a stringified plain content envelope (legacy payload)', async () => {
-        const rawRecord = {
-            role: 'agent',
-            content: {
-                type: 'output',
-                data: {
-                    type: 'user',
-                    message: {
-                        role: 'user',
-                        content: 'Plain string message',
-                    },
-                    uuid: 'string-uuid',
-                },
-            },
-        } as const;
-
-        const parsed = await readStoredSessionRawRecord({ content: JSON.stringify({ t: 'plain', v: rawRecord }) });
-        expect(parsed?.role).toBe('agent');
-        expect(parsed?.content.type).toBe('output');
-    });
-
-    it('parses a stringified raw record (legacy payload)', async () => {
-        const rawRecord = {
-            role: 'agent',
-            content: {
-                type: 'output',
-                data: {
-                    type: 'user',
-                    message: {
-                        role: 'user',
-                        content: 'Plain string message',
-                    },
-                    uuid: 'string-uuid',
-                },
-            },
-        } as const;
-
-        const parsed = await readStoredSessionRawRecord({ content: JSON.stringify(rawRecord) });
-        expect(parsed?.role).toBe('agent');
-        expect(parsed?.content.type).toBe('output');
+        const canonical = await readStoredSessionRawRecord({ content: { t: 'plain', v: rawRecord } });
+        const parsed = await readStoredSessionRawRecord({ content: encode(rawRecord) });
+        expect(parsed).toMatchObject({ role: 'agent', content: { type: 'output', data: { type: 'user', uuid: 'string-uuid' } } });
+        expect(parsed).toEqual(canonical);
     });
 
     it('preserves stored message role metadata when reading plain messages', async () => {

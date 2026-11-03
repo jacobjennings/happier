@@ -19,10 +19,7 @@ import {
 } from '@/components/sessions/transcript/webTranscriptScrollMetrics';
 import type { TranscriptListShellPlatformInteractionProps } from '@/components/sessions/transcript/viewport/shell/TranscriptListShell';
 import type { WebScrollMovementFact } from '@/components/sessions/transcript/scroll/resolveWebGenuineScrollMovement';
-import {
-    applyTranscriptLifecycleScrollObservationPlan,
-    type TranscriptLifecycleScrollObservationPlanContinuationInput,
-} from '@/components/sessions/transcript/viewport/lifecycle/lifecycleHostScrollObservationApplier';
+import { applyTranscriptLifecycleScrollObservationPlan } from '@/components/sessions/transcript/viewport/lifecycle/lifecycleHostScrollObservationApplier';
 import {
     observeTranscriptScrollIngress,
     type TranscriptScrollIngressCallbacks,
@@ -1156,7 +1153,7 @@ export function useTranscriptScrollObservationHost(
     const applyLifecycleHostScrollObservationPlan = React.useCallback((
         plan: ScrollObservationPlan,
         callbacks: Readonly<{
-            continueAfterEarlyEffects: (input: TranscriptLifecycleScrollObservationPlanContinuationInput) => void;
+            continueAfterEarlyEffects: () => void;
             recordNativeScrollObservation: (reason: TranscriptViewportTelemetryObservationReason) => void;
         }>,
     ): boolean => {

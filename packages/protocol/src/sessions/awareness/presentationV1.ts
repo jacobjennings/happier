@@ -50,9 +50,16 @@ export function readSessionAwarenessPresentationV1(awareness: SessionAwarenessPr
   if (primary === 'usage_limited') return 'usage_limited';
   if (awareness.operational.reasons?.includes('runtime_unservable')) return 'recoverable_unservable';
   if (awareness.operational.reasons?.includes('resuming')) return 'resuming';
-  if (awareness.processTerminalState === 'stopped' && primary !== 'working') return 'stopped';
-  if (awareness.runtime === 'offline') return 'disconnected';
-  if (awareness.freshness === 'stale') return 'stale';
+  // A completed turn is settled evidence even after its publisher detaches. Process stop,
+  // presence loss and observation expiry describe runtime reachability; none reopens that work.
+  // Requests, explicit resume and runtime serviceability failures retain their precedence above.
+  if (primary !== 'ready') {
+    if (awareness.processTerminalState === 'stopped' && primary !== 'working') return 'stopped';
+    if (awareness.runtime === 'offline') return 'disconnected';
+    // Observation age does not settle reported background work. Keep its shared Work bucket,
+    // filter and rank; localized presenters use freshness separately to state uncertainty.
+    if (awareness.freshness === 'stale' && awareness.runtime !== 'background_active') return 'stale';
+  }
   // Operational evidence and runtime reachability are orthogonal: an active turn or pending
   // request stays meaningful without a presence channel, while no operational fact stays unknown.
   if (primary === 'working') return 'thinking';
@@ -73,8 +80,18 @@ export function readSessionAwarenessWorkStatusV1(input: Readonly<{
   state: SessionAwarenessPresentationStateV1;
   bucket: 'needs_you' | 'working' | 'finished' | 'idle' | 'offline';
   tone: 'neutral' | 'attention' | 'danger';
+  /** Action-required is either a real request or deliberate Pending input recovery. */
+  actionRequiredReason?: 'request' | 'blocked_input';
 }> {
-  return readSessionPresentationStateWorkStatusV1(readSessionAwarenessPresentationV1(input.awareness), input.settled);
+  const status = readSessionPresentationStateWorkStatusV1(readSessionAwarenessPresentationV1(input.awareness), input.settled);
+  if (status.state !== 'action_required') return status;
+  const reasons = input.awareness.operational.reasons;
+  const personal = input.awareness.viewer?.attention.reasons;
+  // The operational primary also says action_required for blocked input. Concurrent real
+  // requests win; an older caller with only the primary retains its existing request meaning.
+  const blocked = reasons?.includes('blocked_input') || personal?.includes('pending_blocked');
+  const request = reasons?.includes('action_required') || personal?.includes('user_action_required');
+  return { ...status, actionRequiredReason: blocked && !request ? 'blocked_input' : 'request' };
 }
 
 function readSessionPresentationStateWorkStatusV1(

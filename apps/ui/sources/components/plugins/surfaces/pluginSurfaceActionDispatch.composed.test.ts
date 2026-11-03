@@ -575,6 +575,156 @@ function resolveDaemonTargetAction(
 }
 
 describe('Account Action placement through the executable dispatcher', () => {
+    it.each([
+        { coldBinding: false, settlement: 'ready' },
+        { coldBinding: true, settlement: 'ready' },
+        { coldBinding: true, settlement: 'unavailable' },
+        { coldBinding: true, settlement: 'cancelled' },
+        { coldBinding: true, settlement: 'withdrawn' },
+        { coldBinding: true, settlement: 'retargeted' },
+        { coldBinding: true, settlement: 'declaration-withdrawn' },
+        { coldBinding: true, settlement: 'declaration-replaced' },
+    ] as const)('waits for the mounted Machine settlement before nested Account continuation dispatch ($settlement, cold binding=$coldBinding)', async ({ coldBinding, settlement }) => {
+        const accountLifetime = clientAccountLifetime();
+        const sourceId = 'acme.provider-source';
+        let provider = PluginProjectedActionV2Schema.parse({ ...resolveDaemonTargetAction({ pluginId: sourceId, localId: 'list' }), surfaces: ['plugin'] });
+        let providerCurrent = true;
+        const machine = vi.fn<PluginSurfaceContributedActionTransport>(async () => ({ supported: true,
+            result: { ok: true, result: { rows: ['provider'] } } }));
+        let entered = 0;
+        let enteredSignal: AbortSignal | undefined;
+        const target = definePlugin({ id: CALLER_PLUGIN_ID, version: '1.2.3', actions: {
+            'refresh-index': { title: 'Account entry', scopes: ['global'], surfaces: ['ui'], dangerLevel: 'safe',
+                execution: { target: 'account', account: { artifactId: CLIENT_ACTION_TARGET.artifactId,
+                    exportName: CLIENT_ACTION_TARGET.exportName } }, run: async () => null },
+        } });
+        const parsed = ingestPluginManifestV2(target.manifest);
+        if (!parsed.ok) throw new Error(JSON.stringify(parsed.diagnostics));
+        replacePluginAccountAvailabilityProjection({ scope: accountLifetime.scope, snapshot: { availabilityCursor: 1,
+            materializations: [], snapshots: [], intentReads: [{ pluginId: parsed.manifest.id, response: {
+                availabilityCursor: 1, hostingCapability: { enabled: false }, packageAssets: [], uiArtifacts: [],
+                intent: { pluginId: parsed.manifest.id, desiredVersion: parsed.manifest.version, enabled: true,
+                    offlineUiHosting: 'disabled', writableCollections: [], revision: 'one' },
+                release: { ref: { pluginId: parsed.manifest.id, version: parsed.manifest.version },
+                    archiveDigestSha256: `sha256:${'a'.repeat(64)}`, normalizedManifest: parsed.manifest,
+                    collectionContracts: [], uiSlots: [], packageAssetArchive: { archiveDigestSha256: `sha256:${'b'.repeat(64)}`, resources: [] } },
+            } }] } });
+        const selected = readPluginAccountAvailability(accountLifetime.scope).readCurrentAccountExecution(CALLER_PLUGIN_ID);
+        if (selected.kind !== 'available') throw new Error('Expected current Account requester custody');
+        const activation = createClientActionActivation({ accountPlacement: true, accountLifetime,
+            accountManifest: target.manifest, occurrenceId: selected.custodyId,
+            accountHandler: async (_value, context) => {
+                entered += 1;
+                enteredSignal = context.signal;
+                return await context.services.actions.execute({ pluginId: sourceId, localId: 'list' }, {});
+            } });
+        await activation.composition.unload();
+        await activation.composition.reconcile([activation.activation]);
+        const actionInputSelectionFactsKey = createPluginActionInputSelectionFactsPublication().publish({ targetPluginId: CALLER_PLUGIN_ID });
+        const facts = { pluginId: CALLER_PLUGIN_ID, contributionId: 'panel', surfaceId: 'nested-pending-panel',
+            placement: 'appSurface' as const, platform: 'web' as const, channel: 'internal' as const,
+            machineId: CLIENT_ACTION_ORIGIN.materializationRef.machineId, serverId: accountLifetime.scope.serverId, occurrenceId: selected.custodyId,
+            accountExecutionOrigin: { serverId: accountLifetime.scope.serverId, accountId: accountLifetime.scope.accountId,
+                custodyId: selected.custodyId, sourceCustody: selected.sourceCustody },
+            executionOrigin: CLIENT_ACTION_ORIGIN, accountLifetime, actionInputSelectionFactsKey,
+            interactionEnabled: true, pluginUiProjection: activation.projection,
+            resolveContributedAction: (identity: PluginContributionIdentityV1) => identity.pluginId === sourceId
+                ? (providerCurrent ? provider : null) : resolveExactClientAction(activation.action)(identity) };
+        type Admission = { daemonReady: boolean; originCurrent: boolean; pending: boolean; bound: boolean; machineId?: string };
+        const hook = await renderHook((admission: Admission) => useBoundPluginSurfaceController({
+            facts: { ...facts, daemonOccurrenceId: admission.bound ? 'machine-lease-current' : undefined,
+                machineId: admission.machineId ?? facts.machineId,
+                daemonConnectionFailure: { code: 'timeout', reasonCode: 'plugin_machine_unreachable' },
+                daemonInteractionEnabled: admission.daemonReady, isDaemonConnectionPending: () => admission.pending },
+            binding: { executeContributedAction: machine, isExecutionOriginCurrent: () => admission.originCurrent },
+        }), { initialProps: { daemonReady: false, originCurrent: true, pending: true, bound: !coldBinding } });
+        try {
+            const controller = hook.getCurrent();
+            expect(controller.isRequesterAdmitted()).toBe(true);
+            expect(controller.interactive).toBe(true);
+            expect(controller.canInteractWithDaemon()).toBe(false);
+            let settled = false;
+            const cancellation = new AbortController();
+            const read = Promise.resolve(controller.hostApi.handleRequest({ version: 1, requestId: 'nested-pending-read',
+                surface: controller.surfaceContext, method: 'executeAction',
+                payload: { action: { pluginId: CALLER_PLUGIN_ID, localId: activation.action.id }, input: {} },
+            }, { signal: cancellation.signal }));
+            void read.then(() => { settled = true; }, () => { settled = true; });
+            await vi.waitFor(() => expect(entered).toBe(1));
+            await act(async () => {});
+            expect(enteredSignal?.aborted).toBe(false);
+            expect(machine).not.toHaveBeenCalled();
+            expect(settled, 'daemon readiness is pending even though caller interaction and origin currentness are admitted').toBe(false);
+            expect(await hook.rerender({ daemonReady: true, originCurrent: false, pending: true, bound: true })).toBe(controller);
+            expect(controller.canInteractWithDaemon()).toBe(false);
+            expect(settled).toBe(false);
+            expect(machine).not.toHaveBeenCalled();
+            if (settlement === 'unavailable') {
+                expect(await hook.rerender({ daemonReady: false, originCurrent: true, pending: false, bound: false })).toBe(controller);
+                await expect(read).resolves.toMatchObject({ code: 'timeout', diagnostics: expect.arrayContaining(['plugin_machine_unreachable']) });
+            } else if (settlement === 'cancelled' || settlement === 'withdrawn') {
+                if (settlement === 'cancelled') cancellation.abort();
+                else accountLifetime.retire();
+                await expect(read).resolves.toMatchObject({ code: 'timeout', diagnostics: ['plugin_ui_action_outcome_unknown'] });
+                expect(enteredSignal?.aborted).toBe(true);
+            } else if (settlement === 'retargeted') {
+                await hook.rerender({ daemonReady: true, originCurrent: true, pending: false, bound: true, machineId: 'replacement-machine' });
+                await expect(read).resolves.toMatchObject({ code: 'unavailable', diagnostics: ['plugin_ui_generation_retired'] });
+            } else if (settlement === 'declaration-withdrawn') {
+                providerCurrent = false;
+                await hook.rerender({ daemonReady: true, originCurrent: true, pending: false, bound: true });
+                await expect(read).resolves.toMatchObject({ code: 'unavailable', diagnostics: ['plugin_surface_action_projection_unavailable'] });
+            } else if (settlement === 'declaration-replaced') {
+                provider = { ...provider, occurrenceId: 'replacement-contributor' };
+                await hook.rerender({ daemonReady: true, originCurrent: true, pending: false, bound: true });
+                await expect(read).resolves.toMatchObject({ code: 'unavailable', diagnostics: ['plugin_ui_generation_retired'] });
+            }
+            if (settlement !== 'ready') {
+                expect(entered).toBe(1);
+                expect(machine).not.toHaveBeenCalled();
+                return;
+            }
+            expect(await hook.rerender({ daemonReady: true, originCurrent: true, pending: false, bound: true })).toBe(controller);
+            await expect(read).resolves.toEqual({ rows: ['provider'] });
+            expect(enteredSignal?.aborted).toBe(false);
+            expect(entered).toBe(1);
+            expect(machine).toHaveBeenCalledTimes(1);
+            expect(machine.mock.calls[0]?.[0]).toBe(CLIENT_ACTION_ORIGIN.materializationRef.machineId);
+        } finally { await hook.unmount(); await activation.composition.unload(); accountLifetime.retire(); }
+    });
+
+    it('does not replay an entered Account handler that throws an unavailable diagnostic while its Machine is pending', async () => {
+        const accountLifetime = clientAccountLifetime();
+        let entered = 0;
+        const activation = createClientActionActivation({ accountPlacement: true, accountLifetime,
+            accountHandler: async () => {
+                entered += 1;
+                throw new PluginError({ code: 'plugin_surface_contributed_action_unavailable' });
+            } });
+        await activation.composition.unload();
+        await activation.composition.reconcile([activation.activation]);
+        const actionInputSelectionFactsKey = createPluginActionInputSelectionFactsPublication().publish({ targetPluginId: CALLER_PLUGIN_ID });
+        const hook = await renderHook((pending: boolean) => useBoundPluginSurfaceController({ facts: {
+            pluginId: CALLER_PLUGIN_ID, contributionId: 'panel', surfaceId: 'entered-account-failure',
+            placement: 'appSurface', platform: 'web', channel: 'internal',
+            machineId: CLIENT_ACTION_ORIGIN.materializationRef.machineId, serverId: accountLifetime.scope.serverId,
+            occurrenceId: 'requester-current', executionOrigin: CLIENT_ACTION_ORIGIN, accountLifetime, actionInputSelectionFactsKey,
+            interactionEnabled: true, daemonInteractionEnabled: !pending, isDaemonConnectionPending: () => pending,
+            pluginUiProjection: activation.projection, resolveContributedAction: resolveExactClientAction(activation.action),
+        } }), { initialProps: true });
+        try {
+            let settled = false;
+            const read = hook.getCurrent().dispatchAction({ pluginId: CALLER_PLUGIN_ID, localId: activation.action.id }, {});
+            void read.then(() => { settled = true; }, () => { settled = true; });
+            await vi.waitFor(() => expect(entered).toBe(1));
+            await act(async () => {});
+            expect(settled, 'an entered handler failure is terminal, not pre-invocation connection admission').toBe(true);
+            await expect(read).resolves.toMatchObject({ code: 'unavailable', diagnostics: ['plugin_surface_contributed_action_unavailable'] });
+            await hook.rerender(false);
+            expect(entered).toBe(1);
+        } finally { await hook.unmount(); await activation.composition.unload(); accountLifetime.retire(); }
+    });
+
     it('finishes an entered Account Action across its unchanged caller Resource declaration refresh', async () => {
         const accountLifetime = clientAccountLifetime();
         let enteredSignal: AbortSignal | undefined;
@@ -3814,10 +3964,10 @@ describe('mounted executeAction handler', () => {
             },
         });
 
-        await expect(api.handleRequest(
+        await expect(Promise.resolve(api.handleRequest(
             executeActionRequest({ action: 'refresh-index', input: {} }),
             { signal: cancellation.signal },
-        )).resolves.toEqual({
+        ))).resolves.toEqual({
             code: 'unavailable',
             diagnostics: ['plugin_ui_invocation_aborted'],
         });
@@ -4673,4 +4823,75 @@ describe('external author Doc collaboration through physical SDK carriers', () =
             expect(homes.artifacts(serverId).read(created.artifactId)?.bodyVersion).toBe(created.revision.bodyVersion);
         } finally { await carrier.dispose(); host.dispose?.(); account.dispose(); await homes.reset(); }
     });
+});
+
+
+describe('client Action Session-open continuation', () => {
+    it.each(['sameAccount', 'foreignAccount', 'retiredCapture'] as const)(
+        'fences raw mounted exact Session addresses to the captured Account (%s)', async mode => {
+        const { createDefaultActionExecutor } = await import('@/sync/ops/actions/defaultActionExecutor');
+        const { createFrontDoorActionExecute } = await import('@/sync/ops/actions/frontDoorRuntimeActionExecutor');
+        const { createSessionFixture, createPlainSessionByIdResponseFixture } = await import('@/dev/testkit/fixtures/sessionFixtures');
+        const { buildSessionTurnsProjectionV1 } = await import('@happier-dev/protocol/sessions/turns/sessionTurnV1');
+        const accountLifetime = clientAccountLifetime();
+        const originHome = rpcHomes.get('server-client-action')!.id;
+        const targetHome = mode === 'foreignAccount'
+            ? (await network.addHome('https://raw-address-foreign-account', 'another-account')).id
+            : rpcHomes.get('server-wire')!.id;
+        const opened: Array<{ sessionId: string; serverId?: string }> = [];
+        let sessionReads = 0;
+        const displayWarnings = vi.spyOn(console, 'warn');
+        onTestFinished(() => displayWarnings.mockRestore());
+        const execute = createFrontDoorActionExecute(createDefaultActionExecutor({
+            openSession: (sessionId, options) => { opened.push({ sessionId, serverId: options?.serverId }); },
+        }));
+        network.setHttpResponder(async (url, init) => {
+            const parsedUrl = new URL(String(url));
+            if (mode === 'retiredCapture' && parsedUrl.origin === rpcHomes.get('server-wire')!.serverUrl) accountLifetime.retire();
+            if (parsedUrl.pathname === '/v2/sessions/reviewed') {
+                if ((init?.method ?? 'GET') === 'GET') sessionReads += 1;
+                // End a regressed continuation at the network boundary so the
+                // count assertion reports the loop instead of a test timeout.
+                if (sessionReads > 4) accountLifetime.retire();
+                return Response.json(createPlainSessionByIdResponseFixture(createSessionFixture({ id: 'reviewed' })));
+            }
+            if (parsedUrl.pathname === '/v1/sessions/reviewed/turns') {
+                return Response.json(buildSessionTurnsProjectionV1({ sessionId: 'reviewed', updatedAt: 1, turns: [] }));
+            }
+            return createEmptyAccountBootstrapHttpResponse(parsedUrl.pathname, init);
+        });
+        const controller = createBoundPluginSurfaceController({ facts: {
+            ...surfaceContext(), serverId: originHome, accountLifetime,
+            machineId: CLIENT_ACTION_ORIGIN.materializationRef.machineId,
+            executionOrigin: CLIENT_ACTION_ORIGIN, occurrenceId: 'raw-address-mount',
+            interactionEnabled: true, daemonInteractionEnabled: true,
+        }, binding: { executeHostAction: execute } });
+        try {
+            const outcome = await controller.hostApi.handleRequest(executeActionRequest({ action: 'session.open',
+                input: { sessionId: 'reviewed' }, sessionAddress: { serverId: targetHome, sessionId: 'reviewed' } }))
+                .then(value => ({ kind: 'value' as const, value }), error => ({ kind: 'error' as const, error }));
+            if (mode === 'retiredCapture' && outcome.kind === 'error') {
+                expect(outcome.error).toMatchObject({ name: 'AbortError' });
+                expect(opened).toEqual([]);
+                return;
+            }
+            expect(outcome.kind).toBe('value');
+            if (outcome.kind !== 'value') throw outcome.error;
+            const result = outcome.value;
+            if (mode === 'sameAccount') {
+                expect(sessionReads).toBe(1);
+                expect(result, JSON.stringify(result)).toMatchObject({ status: 'opened', sessionId: 'reviewed', serverId: targetHome });
+                expect(opened).toEqual([{ sessionId: 'reviewed', serverId: targetHome }]);
+                const readsAtIdle = sessionReads;
+                displayWarnings.mockClear();
+                await new Promise(resolve => setTimeout(resolve, 0));
+                expect(sessionReads).toBe(readsAtIdle);
+                expect(displayWarnings.mock.calls.filter(([message]) => String(message).includes('[SessionDisplay]'))).toHaveLength(0);
+            } else {
+                expect(result, JSON.stringify(result)).toMatchObject({ code: 'unavailable' });
+                expect(opened).toEqual([]);
+            }
+        } finally { controller.dispose(); accountLifetime.retire(); }
+    });
+
 });

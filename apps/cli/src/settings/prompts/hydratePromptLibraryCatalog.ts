@@ -1,3 +1,4 @@
+import { recordPromptPreparationFailure } from '@/agent/prompts/library/homeReadPreparationError';
 import { $ZodError } from 'zod/v4/core';
 import { isRetryableAccountEncryptionCurrentnessError } from '@/api/client/accountEncryptionCurrentness';
 import { readPromptLibraryCatalogRecordV1, readRetainedPromptLibraryRecordV1, type PromptLibraryCatalogSnapshotV1 } from '@happier-dev/protocol/prompts/library/promptLibraryCatalogV1';
@@ -35,6 +36,7 @@ export type ActivePromptLibraryRecordRead = ReturnType<typeof readPromptLibraryC
   | Readonly<{ status: 'unavailable'; reason: 'catalog-unobserved' }>;
 
 function catalogReadFailure(error: unknown, aborted: boolean, current: boolean): Extract<PromptLibraryCatalogSnapshotV1, { status: 'unavailable' }> {
+  recordPromptPreparationFailure('prompt-library.read', error);
   const code = error instanceof Error && 'code' in error ? error.code : undefined;
   return { status: 'unavailable', reason: aborted ? 'cancelled'
     : !current || code === 'scope-retired' ? 'scope-retired'
@@ -46,7 +48,7 @@ function catalogReadFailure(error: unknown, aborted: boolean, current: boolean):
 }
 
 /** One existing-loader demand for a real key in the caller's captured Account lifetime. */
-export async function prepareActivePromptLibraryRecord(input: ActivePromptLibraryDemand): Promise<ActivePromptLibraryRecordRead> {
+async function demandActivePromptLibraryRecord(input: ActivePromptLibraryDemand): Promise<ActivePromptLibraryRecordRead> {
   input.signal?.throwIfAborted();
   const operation = input.operationContext;
   if (operation) {
@@ -146,6 +148,18 @@ export async function prepareActivePromptLibraryRecord(input: ActivePromptLibrar
   return admitted.promptLibraryCatalog ? readPromptLibraryCatalogRecordV1({ catalog: admitted.promptLibraryCatalog,
     key: input.key, rawSettings: admitted.source === 'none' ? undefined : admitted.rawSettings })
     : { status: 'unavailable', reason: 'catalog-unobserved' };
+}
+
+export async function prepareActivePromptLibraryRecord(input: ActivePromptLibraryDemand): Promise<ActivePromptLibraryRecordRead> {
+  try {
+    const read = await demandActivePromptLibraryRecord(input);
+    if (read.status !== 'ready') recordPromptPreparationFailure('prompt-library.read', undefined,
+      read.status === 'unavailable' ? read.reason : 'invalid-stored-content');
+    return read;
+  } catch (error) {
+    recordPromptPreparationFailure('prompt-library.read', error);
+    throw error;
+  }
 }
 
 /** Role preparation delegates to the same key demand used by Coding and Voice. */

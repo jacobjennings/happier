@@ -1,3 +1,13 @@
+import { createRequesterSessionCredentialCustody } from '../sessionEncryption/requesterSessionCredentials';
+import { access } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { readProcessIdentityByPid } from '../processIdentity';
+import { isSessionRunnerActive } from '../sessions/isSessionRunnerActive';
+import type { TrackedSession } from '../types';
+import { MachineInstallationProofV1Schema, verifyMachineInstallationProof } from '@happier-dev/protocol/machines/identity/installationIdentity';
+import { SocketRpcMachineAdmissionContextV1Schema } from '@happier-dev/protocol/machines/machineAccessV1';
+import { z } from 'zod/mini';
 import { describe, expect, it, vi } from 'vitest';
 import fastify from 'fastify';
 import {
@@ -2961,11 +2971,20 @@ describe('bootstrapMachineSyncRuntime', () => {
         result.machineConnectionStateCleanup?.();
     });
 
-    it('publishes CLI update facts and settles startup orphans only on connect, retrying retained evidence on reconnect or resume', async () => {
+    it.each(['owner', 'withdrawn-requester', 'withdrawn-requester-successor'] as const)('publishes CLI update facts and settles %s startup orphans only on connect, retrying retained evidence on reconnect or resume', async principal => {
         await withConfiguredDaemonTestHome({ prefix: 'bootstrap-orphan-reconnect-' }, async ({ homeDir }) => {
         const app = fastify();
         const pid = 999_312_859;
         const processStartTimeMs = 123;
+        const credentials = { token: `header.${Buffer.from(JSON.stringify({ sub: 'machine-owner' })).toString('base64url')}.signature`, encryption: null };
+        const installation = readOrCreateInstallationIdentitySync();
+        const attribution = { serverId: 'fixture-home', machineId: 'machine-k5', installationId: installation.installationId, accountId: 'foreign-requester' };
+        const requesterCustody = principal !== 'owner'
+            ? await createRequesterSessionCredentialCustody({ happyHomeDir: homeDir, sessionId: 'startup-orphan', attribution,
+                credentials: { token: 'requester-fixture', encryption: null } }) : null;
+        const successorState: { tracked: TrackedSession | null; exited: Promise<unknown> } = {
+            tracked: null, exited: Promise.resolve(),
+        };
         let controlRetired = false;
         app.get('/v2/sessions', async () => ({ sessions: [], nextCursor: null, hasNext: false }));
         app.get('/v2/sessions/startup-orphan', async () => ({ session: createSessionRecordFixture({ id: 'startup-orphan',
@@ -2973,6 +2992,18 @@ describe('bootstrapMachineSyncRuntime', () => {
             metadata: JSON.stringify({ path: homeDir, hostPid: pid, hostProcessStartTimeMs: processStartTimeMs }) }) }));
         app.get('/v1/account/encryption/currentness', async () => ({ mode: 'plain', version: 1,
             signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1 }));
+        app.post('/v1/machines/machine-k5/admission/verify', async request => {
+            const body = z.object({ context: SocketRpcMachineAdmissionContextV1Schema, method: z.string(),
+                custodySubjectAccountId: z.string(), proof: MachineInstallationProofV1Schema }).parse(request.body);
+            expect(body).toMatchObject({ method: 'machine-k5:daemon.machineAccessLoss', custodySubjectAccountId: attribution.accountId,
+                context: { actorAccountId: 'machine-owner', custodianAccountId: 'machine-owner', machineId: 'machine-k5',
+                    installationId: installation.installationId, role: 'manage', encryptionMode: 'e2ee' } });
+            expect(verifyMachineInstallationProof({ payload: { version: 1, machineId: 'machine-k5',
+                installationId: installation.installationId, accountId: 'machine-owner', rpcAdmission: {
+                    context: body.context, method: body.method, custodySubjectAccountId: body.custodySubjectAccountId,
+                } }, proof: body.proof, publicKey: installation.publicKey })).toBe(true);
+            return { v: 1, ok: true };
+        });
         app.patch('/v2/sessions/startup-orphan', async request => {
             const mutation = SessionMetadataTuplePatchV1Schema.parse(request.body);
             expect(mutation).toMatchObject({ mode: 'owner_migration', target: { ownerMetadata: { t: 'plain', v: {
@@ -2993,8 +3024,19 @@ describe('bootstrapMachineSyncRuntime', () => {
                 authority: { kind: 'generation' as const, publisherGeneration: '1' } };
         });
         const finalizeMachineSessionTerminal = vi.fn(async () => {
-            orphanSessionActive = false;
-            return { v: 1 as const, status: 'closed' as const, sessionId: 'startup-orphan' };
+            if (principal === 'withdrawn-requester-successor') {
+                const child = spawn(process.execPath, ['-e', "process.send('ready'); setInterval(() => {}, 1000)"],
+                    { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+                successorState.exited = once(child, 'exit');
+                successorState.tracked = { pid: child.pid!, childProcess: child, startedBy: 'daemon', happySessionId: 'startup-orphan' };
+                await once(child, 'message');
+                const identity = await readProcessIdentityByPid(child.pid!);
+                if (!identity) throw new Error('Successor process identity unavailable');
+                successorState.tracked.processStartTimeMs = identity.processStartTimeMs;
+                successorState.tracked.processCommandHash = identity.processCommandHash;
+            }
+            orphanSessionActive = successorState.tracked !== null;
+            return { v: 1 as const, status: successorState.tracked ? 'superseded' as const : 'closed' as const, sessionId: 'startup-orphan' };
         });
         let storedMetadata: Record<string, unknown> | null = null;
         const updateMachineMetadata = vi.fn(async (handler: (metadata: unknown) => Record<string, unknown>) => {
@@ -3052,11 +3094,12 @@ describe('bootstrapMachineSyncRuntime', () => {
 
         const result = await bootstrapMachineSyncRuntime({
             cliVersion: '0.3.1',
-            credentials: { token: 'fixture', encryption: null },
+            credentials,
             machineId: machine.id,
+            requesterServerId: attribution.serverId,
             machine,
             preferredHost: 'host.local',
-            happyHomeDir: '/tmp/happy-home',
+            happyHomeDir: homeDir,
             happyLibDir: '/tmp/happy-lib',
             readCliUpdateFacts: () => ({ ...facts }),
             watchCliUpdateRecord: (onChange) => {
@@ -3076,7 +3119,8 @@ describe('bootstrapMachineSyncRuntime', () => {
             spawnSessionForInternalResume: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
             spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
             stopSession: stopSessionForRemoval,
-            isSessionAlreadyRunning: vi.fn(async () => false),
+            isSessionAlreadyRunning: async sessionId => await isSessionRunnerActive({ sessionId,
+                trackedSessions: successorState.tracked ? [successorState.tracked] : [] }),
             loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
@@ -3094,7 +3138,8 @@ describe('bootstrapMachineSyncRuntime', () => {
         expect(stopSessionForRemoval).toHaveBeenCalledWith('deleted-session');
         // This obligation appears after bootstrap; reconnect must discover the
         // canonical marker rather than relying on the initial in-memory list.
-        await writeSessionMarker({ pid, happySessionId: 'startup-orphan', startedBy: 'daemon', processStartTimeMs });
+        await writeSessionMarker({ pid, happySessionId: 'startup-orphan', startedBy: 'daemon', processStartTimeMs,
+            ...(requesterCustody ? { requesterWorkAttributionV1: attribution } : {}) });
         expect(captureMachineSessionTerminal).not.toHaveBeenCalled();
         await onConnect();
         expect(orphanSessionActive).toBe(true);
@@ -3104,9 +3149,13 @@ describe('bootstrapMachineSyncRuntime', () => {
         expect(captureMachineSessionTerminal).toHaveBeenCalledTimes(1);
         publicationQuiescing = false;
         await result.resumeMachineConnectionPublications();
-        expect(orphanSessionActive).toBe(false);
-        expect(controlRetired).toBe(true);
+        expect(orphanSessionActive).toBe(principal === 'withdrawn-requester-successor');
+        expect(controlRetired).toBe(principal === 'owner');
         expect(await readSessionMarkerForPid(pid)).toBeNull();
+        if (requesterCustody) {
+            // Orphan recovery does not own requester credential lifetime.
+            await expect(access(requesterCustody.path)).resolves.toBeUndefined();
+        }
         expect(finalizeMachineSessionTerminal).toHaveBeenCalledWith({
             sessionId: 'startup-orphan', authority: { kind: 'generation', publisherGeneration: '1' },
         });
@@ -3115,19 +3164,24 @@ describe('bootstrapMachineSyncRuntime', () => {
         expect(updateMachineMetadata).toHaveBeenCalledTimes(1);
         expect(storedMetadata).toMatchObject({ cliUpdate: facts });
 
-        // An event whose facts did not change publishes nothing.
-        recordChanged.notify?.();
-        await vi.waitFor(() => expect(updateMachineMetadata).toHaveBeenCalledTimes(1));
-
-        // A remote update that failed before activation recorded its end without restarting this daemon.
-        facts.lastUpdate = { targetVersion: '0.3.2', outcome: 'failed', at: 9, message: 'GitHub returned 503. Nothing was changed.' };
-        recordChanged.notify?.();
-        await vi.waitFor(() => expect(updateMachineMetadata).toHaveBeenCalledTimes(2));
-        expect(storedMetadata).toMatchObject({ cliUpdate: { lastUpdate: { outcome: 'failed', targetVersion: '0.3.2' } } });
+        if (principal === 'owner') {
+            // Update watcher coverage stays with the original owner case; the
+            // foreign cases above decide terminal recovery and successor custody.
+            recordChanged.notify?.();
+            await vi.waitFor(() => expect(updateMachineMetadata).toHaveBeenCalledTimes(1));
+            facts.lastUpdate = { targetVersion: '0.3.2', outcome: 'failed', at: 9, message: 'GitHub returned 503. Nothing was changed.' };
+            recordChanged.notify?.();
+            await vi.waitFor(() => expect(updateMachineMetadata).toHaveBeenCalledTimes(2));
+            expect(storedMetadata).toMatchObject({ cliUpdate: { lastUpdate: { outcome: 'failed', targetVersion: '0.3.2' } } });
+        }
 
         result.machineConnectionStateCleanup?.();
         expect(stopWatching).toHaveBeenCalledTimes(1);
-        } finally { restoreHttp(); await app.close(); }
+        } finally {
+            successorState.tracked?.childProcess?.kill('SIGTERM');
+            await successorState.exited;
+            restoreHttp(); await app.close();
+        }
         });
     });
 });

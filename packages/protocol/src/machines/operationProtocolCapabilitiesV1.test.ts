@@ -14,6 +14,19 @@ function readCapabilitySchema(): CapabilitySchema {
 }
 
 describe('MachineOperationProtocolCapabilitiesV1', () => {
+  it('negotiates private authoring provenance independently and fails closed on an unknown epoch', () => {
+    const capability = 'sessionSpawnAuthoringOrigin';
+    const capabilities = { sessionSpawnAuthoringOrigin: { protocolVersions: [1] }, sessionSpawn: { protocolVersions: [1] } };
+    expect(protocol.MachineOperationProtocolCapabilitiesV1Schema.safeParse(capabilities).success).toBe(true);
+    expect(protocol.supportsMachineOperationProtocolCapabilityV1(capabilities, capability)).toBe(true);
+    expect(protocol.supportsMachineOperationProtocolCapabilityV1({}, capability)).toBe(false);
+    expect(protocol.supportsMachineOperationProtocolCapabilityV1({ ...capabilities,
+      sessionSpawnAuthoringOrigin: { protocolVersions: [2] },
+    }, capability)).toBe(false);
+    expect(protocol.supportsMachineOperationProtocolCapabilityV1({ ...capabilities,
+      sessionSpawnAuthoringOrigin: { protocolVersions: [2] },
+    }, 'sessionSpawn')).toBe(true);
+  });
   it('advertises personal connection broker authority only with the supported second epoch', () => {
     expect(protocol.MachineOperationProtocolCapabilitiesV1Schema.safeParse({
       providerBrokerIngress: { protocolVersions: [1, 2] },

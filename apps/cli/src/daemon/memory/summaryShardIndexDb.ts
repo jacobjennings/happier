@@ -66,6 +66,8 @@ export type SummaryShardIndexDbHandle = Readonly<{
   getLatestShardSeqTo: (args: Readonly<{ sessionId: string }>) => number;
   /** Every Session id this index currently retains derived rows or progress for. */
   listIndexedSessionIds: () => readonly string[];
+  /** Exact existence of rows removed by deleteSessionIndexData, including zero-progress cursors. */
+  hasSessionIndexData: (sessionId: string) => boolean;
   pruneSessionArtifacts: (args: Readonly<{
     sessionId: string;
     policyKey: string;
@@ -108,7 +110,7 @@ export type SummaryShardIndexDbHandle = Readonly<{
 
 export type SummaryShardIndexReader = Pick<SummaryShardIndexDbHandle,
   'getIndexPolicyKeys' | 'search' | 'getSummaryIndexStats' | 'getLatestShardSeqTo' |
-  'listIndexedSessionIds' | 'getMemorySessionIndexStatus' | 'getMemorySessionIndexErrorCode' |
+  'listIndexedSessionIds' | 'hasSessionIndexData' | 'getMemorySessionIndexStatus' | 'getMemorySessionIndexErrorCode' |
   'getMemoryIndexQueueTelemetry' | 'close'> & Readonly<{
     getSessionCursors: (args: Readonly<{ sessionId: string; nowMs: number }>) => ReturnType<SummaryShardIndexDbHandle['getSessionCursors']>;
   }>;
@@ -272,6 +274,7 @@ export function openSummaryShardIndexReader(args: Readonly<{ dbPath: string }>):
       getSummaryIndexStats: handle.getSummaryIndexStats,
       getLatestShardSeqTo: handle.getLatestShardSeqTo,
       listIndexedSessionIds: handle.listIndexedSessionIds,
+      hasSessionIndexData: handle.hasSessionIndexData,
       getSessionCursors: args => handle.getSessionCursors({ ...args, readOnly: true }),
       getMemorySessionIndexStatus: handle.getMemorySessionIndexStatus,
       getMemorySessionIndexErrorCode: handle.getMemorySessionIndexErrorCode,
@@ -489,6 +492,11 @@ function createSummaryShardIndexDbHandle(db: SqliteDatabaseSync): SummaryShardIn
     SELECT sessionId FROM session_cursors;
   `);
   const deleteSessionShardsStmt = db.prepare(`DELETE FROM summary_shards WHERE sessionId = ?;`);
+  const hasSessionIndexDataStmt = db.prepare(`
+    SELECT EXISTS(SELECT 1 FROM summary_shards WHERE sessionId = ?)
+      OR EXISTS(SELECT 1 FROM session_cursors WHERE sessionId = ?)
+      OR EXISTS(SELECT 1 FROM memory_session_index_state WHERE sessionId = ?) AS present;
+  `);
   const deleteSessionCursorStmt = db.prepare(`DELETE FROM session_cursors WHERE sessionId = ?;`);
   const deleteSessionIndexStateStmt = db.prepare(`DELETE FROM memory_session_index_state WHERE sessionId = ?;`);
   const pruneSessionArtifactsStmt = db.prepare(`
@@ -765,6 +773,10 @@ function createSummaryShardIndexDbHandle(db: SqliteDatabaseSync): SummaryShardIn
       if (!id) return;
       const value = Math.max(0, Math.trunc(seq));
       (lane === 'hints' ? rewindHintCursorStmt : rewindDeepCursorStmt).run(value, Date.now(), id);
+    },
+    hasSessionIndexData: sessionId => {
+      const row = hasSessionIndexDataStmt.get(sessionId, sessionId, sessionId) as { present: number };
+      return row.present === 1;
     },
     deleteSessionIndexData: ({ sessionId }) => {
       const id = String(sessionId ?? '').trim();

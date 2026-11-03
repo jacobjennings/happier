@@ -1,9 +1,11 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// The static storage graph reaches the Socket.IO transport; register its external boundary before any import.
+vi.mock('socket.io-client', async (importOriginal) =>
+    (await import('@/dev/testkit/harness/serverAccountConnectionHarness')).createSocketIoClientBoundary(importOriginal));
 import type { ReactTestRendererJSON } from 'react-test-renderer';
 import { act } from 'react-test-renderer';
 import { renderScreen } from '@/dev/testkit';
-import { storage } from '@/sync/domains/state/storageStore';
 import { installSessionPaneRuntimeTestHarness } from '@/components/sessions/panes/sessionPaneRuntimeTestHarness';
 import { installAgentInputCommonModuleMocks } from './agentInputTestHelpers';
 
@@ -32,6 +34,7 @@ installAgentInputCommonModuleMocks({
     },
 });
 const runtime = installSessionPaneRuntimeTestHarness();
+const { storage } = await import('@/sync/domains/state/storageStore');
 let AgentInput: typeof import('./AgentInput')['AgentInput'];
 beforeEach(async () => {
     ({ AgentInput } = await import('./AgentInput'));

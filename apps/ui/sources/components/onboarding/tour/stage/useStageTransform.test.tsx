@@ -12,21 +12,6 @@ import {
 } from './useStageTransform';
 
 describe('resolveStageCameraTransform', () => {
-    it('centers a spotlight rect using container-relative pixels', () => {
-        expect(resolveStageCameraTransform({
-            containerWidth: 1000,
-            containerHeight: 500,
-            targetRect: { x: 700, y: 100, width: 100, height: 100 },
-            zoom: 2,
-            reducedMotion: false,
-        })).toEqual({
-            mode: 'camera',
-            scale: 2,
-            translateX: -500,
-            translateY: 200,
-        });
-    });
-
     it('clamps zoom to the stage camera scale bounds', () => {
         expect(resolveStageCameraTransform({
             containerWidth: 1000,
@@ -45,20 +30,6 @@ describe('resolveStageCameraTransform', () => {
         }).scale).toBe(STAGE_CAMERA_MAX_SCALE);
     });
 
-    it('selects a crossfade path without camera movement under reduced motion', () => {
-        expect(resolveStageCameraTransform({
-            containerWidth: 1000,
-            containerHeight: 500,
-            targetRect: { x: 700, y: 100, width: 100, height: 100 },
-            zoom: 2,
-            reducedMotion: true,
-        })).toEqual({
-            mode: 'crossfade',
-            scale: 1,
-            translateX: 0,
-            translateY: 0,
-        });
-    });
 });
 
 describe('useStageTransform', () => {

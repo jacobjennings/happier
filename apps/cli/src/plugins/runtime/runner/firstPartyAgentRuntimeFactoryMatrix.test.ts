@@ -918,6 +918,7 @@ function createPiExecBoundaryContext(input: Readonly<{
                     }),
                 },
                 clients: {
+                    ...baseContext.services.exec.clients,
                     spawn: async <K extends PluginProtocolClientKind>(
                         spec: PluginProtocolClientSpecByKind<K>,
                         _options?: { signal?: AbortSignal },
@@ -1182,7 +1183,6 @@ describe('first-party runner Agent factory matrix', () => {
                                     },
                                 }]]),
                                 rejectedGenerations: new Map(),
-                                isCurrent: async () => true,
                             },
                         });
                         try {

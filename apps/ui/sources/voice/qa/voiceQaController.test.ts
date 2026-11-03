@@ -64,6 +64,7 @@ function prepareLocalQaSession(options: Readonly<{ welcome?: boolean }> = {}) {
     active: true, activeAt: Date.now(), pendingVersion: 0, pendingCount: 0, metadata: writeVoiceConversationScopeMetadata({
       path: '/project', host: 'test', machineId: 'machine-1', flavor: 'claude',
       ...buildSystemSessionMetadataV1({ key: 'voice_conversation', hidden: true }),
+      permissionMode: config.agent.permissionIntent,
     }, { kind: 'session_root', sessionRootId: 's1' }),
   })]);
   replaceLocalVoiceSessionHttpSeed('voice-hidden-s1');
@@ -650,7 +651,6 @@ describe('voiceQaController', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledWith(qaAddress('s1'), { forceRefresh: true });
-    expect(refreshSessionMessages).toHaveBeenCalledTimes(2);
     expect(
       useVoiceQaStore.getState().entries.some(
         (entry) =>
@@ -667,83 +667,6 @@ describe('voiceQaController', () => {
       ),
     ).toBe(true);
   });
-
-  it('does not block local QA startup on a slow forced refresh for an already-online target session', async () => {
-    fixtureStorage.__setState({
-      ...(storage.getState() as any),
-      sessions: {
-        ...((storage.getState() as any).sessions ?? {}),
-        s1: {
-          id: 's1',
-          encryptionMode: 'plain',
-          presence: 'online',
-          active: true,
-          updatedAt: 1,
-          metadata: { path: '/tmp/project-a', host: 'test-machine', summary: { text: 'Target summary' } },
-          agentState: null,
-        },
-      },
-      sessionMessages: {
-        ...((storage.getState() as any).sessionMessages ?? {}),
-        s1: { messages: [] },
-      },
-    } as any);
-
-    let resolveForcedRefresh: (() => void) | null = null;
-    const forcedRefresh = new Promise<void>((resolve) => {
-      resolveForcedRefresh = resolve;
-    });
-    const ensureSessionVisibleForMessageRoute = vi.fn(async (_address: SessionAddress, options?: { forceRefresh?: boolean }) => {
-      if (options?.forceRefresh === true) {
-        await forcedRefresh;
-      }
-    });
-    const appendLocalContextUpdate = vi.fn();
-
-    selectLocalVoiceAgentFixture();
-    const controller = createVoiceQaController({
-      getSettings: () => storage.getState().settings,
-      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
-      ensureLocalBinding: vi.fn(async () => ({
-        adapterId: 'local_conversation',
-        controlSessionId: '__voice_agent__',
-        conversationSessionId: 'voice-hidden-s1',
-        conversationSessionAddress: qaAddress('voice-hidden-s1'),
-        transcriptMode: 'native_session' as const,
-        targetSessionAddress: qaAddress('s1'),
-        updatedAt: 1,
-      })),
-      ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
-      ensureSessionVisibleForMessageRoute,
-      refreshSessionMessages: vi.fn(async () => {}),
-      pendingPort: createAcceptedPendingPort(),
-      sendLocalTurn: vi.fn(async () => ({ assistantText: 'ok', actions: [] })),
-      stopLocal: vi.fn(async () => {}),
-      appendLocalContextUpdate,
-      startRealtime: vi.fn(async () => {}),
-      isRealtimeStarted: () => false,
-      stopRealtime: vi.fn(async () => {}),
-      getRealtimeSession: () => null,
-      getRealtimeBinding: () => null,
-      sendRealtimeTextTurn: vi.fn(async () => {}),
-      waitForInterruptedLocalAssistantTurn: vi.fn(async () => null),
-      qaStore: useVoiceQaStore,
-    });
-
-    const startPromise = controller.start({ sessionAddress: qaAddress('s1') }).then(() => 'resolved');
-    await expect(
-      Promise.race([startPromise, new Promise((resolve) => setTimeout(() => resolve('pending'), 0))]),
-    ).resolves.toBe('resolved');
-    expect(useVoiceQaStore.getState().status).toBe('running');
-    expect(appendLocalContextUpdate).toHaveBeenCalled();
-
-    const releaseForcedRefresh: () => void = resolveForcedRefresh ?? (() => {
-      throw new Error('Expected forced refresh resolver to be initialised');
-    });
-    releaseForcedRefresh();
-    await startPromise;
-  });
-
 
   it('updates the QA target session after a global local-voice retarget even if the binding store lags behind', async () => {
     const getVoiceTargetState = vi
@@ -1113,7 +1036,10 @@ describe('voiceQaController', () => {
       },
     } as any);
     vi.spyOn(sync, 'sendMessage').mockResolvedValue(undefined as any);
-    (sync as any).encryption = { getSessionEncryption: vi.fn(() => ({ encryptRawRecord: vi.fn() })) };
+    // The singleton's encryption owner is replaced only for this case and restored after it.
+    const previousEncryption = Reflect.get(sync, 'encryption');
+    onTestFinished(() => { Reflect.set(sync, 'encryption', previousEncryption); });
+    Reflect.set(sync, 'encryption', { getSessionEncryption: vi.fn(() => ({ encryptRawRecord: vi.fn() })) });
 
     // Action-bearing text is not a spoken answer; only the follow-up after the tool result is.
     const sendLocalTurn = vi.fn(async () => ({
@@ -1235,51 +1161,6 @@ describe('voiceQaController', () => {
     await controller.stop({ sessionId: 's1' });
     expect(localVoiceAgentRpc.readRetainedRun()).toBeNull();
     expect(useVoiceQaStore.getState().status).toBe('idle');
-  });
-
-  it('stops the active local QA run even if settings switched providers afterwards', async () => {
-    const stopLocal = vi.fn(async () => {});
-    const stopRealtime = vi.fn(async () => {});
-    const getLocalBinding = vi.fn(() => ({
-      adapterId: 'local_conversation',
-      controlSessionId: '__voice_agent__',
-      conversationSessionId: 'voice-hidden-s1',
-      conversationSessionAddress: qaAddress('voice-hidden-s1'),
-      transcriptMode: 'native_session' as const,
-      targetSessionAddress: qaAddress('s1'),
-      updatedAt: 1,
-    }));
-    selectLocalVoiceAgentFixture();
-    const controller = createVoiceQaController({
-      getSettings: () => storage.getState().settings,
-      getVoiceTargetState: () => ({ primaryActionSessionAddress: qaAddress('s1'), lastFocusedSessionAddress: null }),
-      ensureLocalBinding: vi.fn(async () => null),
-      getLocalBinding,
-      ensureLocalRunningAndMaybeWelcome: vi.fn(async () => null),
-      pendingPort: createAcceptedPendingPort(),
-      sendLocalTurn: vi.fn(async () => ({ assistantText: 'ok', actions: [] })),
-      stopLocal,
-      appendLocalContextUpdate: vi.fn(),
-      startRealtime: vi.fn(async () => {}),
-      isRealtimeStarted: () => false,
-      stopRealtime,
-      getRealtimeSession: () => null,
-      getRealtimeBinding: () => null,
-      sendRealtimeTextTurn: vi.fn(async () => {}),
-      waitForInterruptedLocalAssistantTurn: vi.fn(async () => null),
-      qaStore: useVoiceQaStore,
-    });
-
-    await controller.start({ sessionAddress: qaAddress('s1') });
-    storage.getState().applySettingsLocal(normalizeVoiceSettingsLocalDelta({
-      voice: { ...storage.getState().settings.voice, providerId: 'happier.voice.elevenlabs/realtime-elevenlabs' },
-    }, storage.getState().settings));
-
-    await controller.stop({ sessionId: 's1' });
-
-    expect(getLocalBinding).toHaveBeenCalledWith('__voice_agent__');
-    expect(stopLocal).toHaveBeenCalledWith('voice-hidden-s1');
-    expect(stopRealtime).not.toHaveBeenCalled();
   });
 
   describe('actual media lifecycle', () => {

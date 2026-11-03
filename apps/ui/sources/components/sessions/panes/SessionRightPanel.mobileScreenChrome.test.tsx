@@ -82,10 +82,13 @@ describe('SessionRightPanel (mobile screen chrome)', () => {
         expect(screen.findByTestId('session-rightpanel-tab:git')).toBeNull();
     });
 
-    it('keeps the active pane header reachable on a screen without the action rail', async () => {
+    it('keeps the active pane header reachable on a screen even inside an action rail', async () => {
         const { SessionRightPanel } = await import('./SessionRightPanel');
+        const { PaneActionRailContext } = await import('@/components/appShell/panes/PaneActionRailContext');
         const screen = await renderScreen(
-            <SessionRightPanel sessionId="s1" scopeId="session:s1" presentation="screen" />,
+            <PaneActionRailContext.Provider value={{ visible: true, contentWidthPx: 1000 }}>
+                <SessionRightPanel sessionId="s1" scopeId="session:s1" presentation="screen" />
+            </PaneActionRailContext.Provider>,
         );
         expect(screen.findHostByTestId('session-rightpanel-header')).not.toBeNull();
     });

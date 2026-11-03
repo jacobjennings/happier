@@ -7,10 +7,7 @@ export type TranscriptMountSettleTuning = Readonly<{
 }>;
 
 export type TranscriptMountSettleSnapshot = Readonly<{
-    firstListPaint: boolean;
-    layoutCommitObserved: boolean;
     stableSettle: boolean;
-    isMountSettleActive: boolean;
 }>;
 
 export type TranscriptMountSettleMetrics = Readonly<{
@@ -111,12 +108,7 @@ export function createTranscriptMountSettlePinCoordinator(
     };
 
     function buildSnapshot(): TranscriptMountSettleSnapshot {
-        return {
-            firstListPaint,
-            layoutCommitObserved,
-            stableSettle,
-            isMountSettleActive: !stableSettle,
-        };
+        return { stableSettle };
     }
 
     function ensureSession(nextSessionId: string): boolean {

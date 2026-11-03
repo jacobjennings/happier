@@ -307,7 +307,7 @@ export const ActionOperationDetailModal = React.memo(function ActionOperationDet
                             : projectCommandMachineName ?? detail.machineEnvironment!.machineId}
                     />
                     <View style={styles.output}>
-                        <ProjectCommandOutputPane operation={operation} title={detail.projectCommand ? describeProjectCommandPurpose(detail.projectCommand.purpose)
+                        <ProjectCommandOutputPane operation={operation} ownerStatesExit title={detail.projectCommand ? describeProjectCommandPurpose(detail.projectCommand.purpose)
                             : t('managedMachines.creation.setup')} height={280} />
                     </View>
                 </ItemGroup>

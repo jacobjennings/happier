@@ -168,7 +168,8 @@ describe('happier agents --json', () => {
       expect(first).toEqual(expect.objectContaining({
         id: 'acme.agents-list/listed',
         title: 'Admitted Agent',
-        installed: expect.any(Boolean),
+        // PATH is empty and the declaration has no managed install, so the admitted Agent is listed but not installed.
+        installed: false,
       }));
       expect(first.source === null || typeof first.source === 'string').toBe(true);
       expect(first.command === null || typeof first.command === 'string').toBe(true);
@@ -263,6 +264,23 @@ describe('happier agents --json', () => {
           },
         },
       });
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('plans an admitted Agent install locally for agents install --dry-run', async () => {
+    const output = captureConsoleLogAndMuteStdout();
+    try {
+      await handleAgentsCommand(['install', 'acme.providers.list', '--dry-run', '--json']);
+      const parsed = JSON.parse(output.logs.join('\n').trim());
+      expect(parsed.ok).toBe(true);
+      expect(parsed.kind).toBe('agents_install');
+      expect(parsed.data.agentId).toBe('acme.providers.list');
+      expect(parsed.data.plan).toEqual(expect.objectContaining({
+        agentId: 'acme.providers.list',
+        installMode: 'managed_package',
+      }));
     } finally {
       output.restore();
     }

@@ -33,6 +33,7 @@ const requests = installSessionActionRpcBoundary((request, context) => {
     return respond(request, context);
 });
 const { useDaemonVoiceModelCatalogState } = await import('./useDaemonVoiceModelCatalogState');
+const { useVoiceSettingsReadinessInputs } = await import('../../useVoiceSettingsReadinessInputs');
 const { buildModelCatalogRows } = await import('./buildModelCatalogRows');
 const { storage } = await import('@/sync/domains/state/storage');
 const { settingsParse } = await import('@/sync/domains/settings/settings');
@@ -41,6 +42,7 @@ const { captureActiveServerAccountScopeLifetime, retireActiveServerAccountScopeL
 const { publishMachineContributionRegistryProjectionInvalidation } = await import('@/sync/ops/machineContributionRegistryProjectionRevision');
 const { renderMountedCurrentUiContext } = await import('@/dev/testkit/harness/mountedCurrentUiContext');
 const { createDefaultActionExecutor } = await import('@/sync/ops/actions/defaultActionExecutor');
+const { AuthProvider } = await import('@/auth/context/AuthContext');
 // Load the declaration's operation leaf before the timed confirmation flow.
 await import('../../voiceSettingsOperationInvoker');
 const STT_PACK = listModelPackCatalogEntries('stt_sherpa')[0]!.packId;
@@ -111,6 +113,11 @@ function TestHarness(props: Readonly<{ enabled?: boolean; refreshKey?: string; s
         install: owner.install, remove: owner.remove, refresh: owner.refresh, cancel: owner.cancel,
     });
 }
+function ReadinessHarness(props: Readonly<{ purpose: 'conversation' | 'dictation'; probeMachine: boolean }>) {
+    const voice = storage(state => state.settings.voice);
+    const inputs = useVoiceSettingsReadinessInputs(voice, props);
+    return React.createElement('Readiness', { purpose: props.purpose, ...inputs.localAvailability.daemon });
+}
 const state = (tree: ReactTestRenderer) => tree.root.findByType('State').props;
 async function mount(props: React.ComponentProps<typeof TestHarness> = {}) {
     const { tree } = await renderScreen(<TestHarness {...props} />);
@@ -154,6 +161,38 @@ describe('useDaemonVoiceModelCatalogState', () => {
         }
     });
     afterEach(async () => { vi.useRealTimers(); await account.reset(); vi.restoreAllMocks(); });
+
+    it('shares selected-role model facts between passive hubs and pages without probing from the hub', async () => {
+        const voice = settingsParse({ voice: { providerId: 'local_conversation',
+            executionMachine: { mode: 'fixed', machineId: 'machine-a' },
+            dictation: { sttBinding: 'same_as_local' },
+            providers: { local_conversation: { schemaVersion: 1, config: {
+                stt: { provider: 'local_neural', localNeural: { execution: 'daemon', assetId: STT_PACK } },
+                tts: { provider: 'local_neural', localNeural: { execution: 'daemon' } },
+            } } },
+        } }).voice;
+        storage.setState({ settings: { ...storage.getState().settings, voice } });
+        const screen = await renderScreen(<AuthProvider initialCredentials={{ token: 'token-1', secret: 'secret-1' }}>
+            <ReadinessHarness purpose="conversation" probeMachine={false} />
+            <ReadinessHarness purpose="dictation" probeMachine={false} />
+        </AuthProvider>);
+        await settle();
+        expect(screen.tree.root.findAllByType('Readiness').map(node => node.props.modelState)).toEqual(['unknown', 'unknown']);
+        expect(listingRequests()).toHaveLength(0);
+        catalogReply([status(STT_PACK, { installState: 'installed' })]);
+        const page = await renderScreen(<AuthProvider initialCredentials={{ token: 'token-1', secret: 'secret-1' }}>
+            <ReadinessHarness purpose="dictation" probeMachine />
+        </AuthProvider>);
+        await settle();
+        expect(page.tree.root.findByType('Readiness').props.modelState).toBe('ready');
+        expect(screen.tree.root.findAllByType('Readiness').map(node => node.props.modelState)).toEqual(['unknown', 'ready']);
+        expect(listingRequests()).toHaveLength(1);
+        await page.unmount();
+        await settle();
+        expect(screen.tree.root.findAllByType('Readiness').map(node => node.props.modelState)).toEqual(['unknown', 'ready']);
+        expect(listingRequests()).toHaveLength(1);
+        await screen.unmount();
+    });
 
     it('refuses manual model mutations when settings.invoke is disabled while settings.set remains admitted', async () => {
         const scope = storage.getState().settingsScope!;

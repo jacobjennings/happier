@@ -2,27 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
+const { shouldRunPostinstall } = require('../../../../../scripts/postinstall/shouldRunPostinstall.cjs') as {
+    shouldRunPostinstall(input: { workspace: string; scope: string }): boolean;
+};
 
 describe('shouldRunPostinstall', () => {
-    it('runs by default when scope is unset', () => {
-        const mod = require('../../../../../scripts/postinstall/shouldRunPostinstall.cjs') as any;
-        expect(typeof mod.shouldRunPostinstall).toBe('function');
-
-        expect(mod.shouldRunPostinstall({ workspace: 'server', scope: '' })).toBe(true);
-    });
-
-    it('skips when scope is set and workspace is not included', () => {
-        const mod = require('../../../../../scripts/postinstall/shouldRunPostinstall.cjs') as any;
-        expect(mod.shouldRunPostinstall({ workspace: 'server', scope: 'ui,protocol' })).toBe(false);
-    });
-
-    it('runs when scope includes workspace', () => {
-        const mod = require('../../../../../scripts/postinstall/shouldRunPostinstall.cjs') as any;
-        expect(mod.shouldRunPostinstall({ workspace: 'server', scope: 'ui,server' })).toBe(true);
-    });
-
-    it('treats scope=all as allowing everything', () => {
-        const mod = require('../../../../../scripts/postinstall/shouldRunPostinstall.cjs') as any;
-        expect(mod.shouldRunPostinstall({ workspace: 'server', scope: 'all' })).toBe(true);
+    it.each([
+        { scope: '', expected: true },
+        { scope: 'ui,protocol', expected: false },
+        { scope: 'ui,server', expected: true },
+        { scope: 'all', expected: true },
+    ])('returns $expected for the server workspace when the scope is $scope', ({ scope, expected }) => {
+        expect(shouldRunPostinstall({ workspace: 'server', scope })).toBe(expected);
     });
 });

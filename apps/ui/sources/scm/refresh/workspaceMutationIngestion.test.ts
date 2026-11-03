@@ -83,6 +83,22 @@ describe('createWorkspaceMutationIngestion', () => {
         flushNextTimer();
 
         expect(invalidateUnknownMutation).toHaveBeenCalledTimes(1);
+
+        // Read-only Diff inspection refreshes nothing; a provider turn change-set Diff refreshes its paths.
+        invalidateKnownMutation.mockClear();
+        invalidateUnknownMutation.mockClear();
+        ingestion.ingest('s1', [toolCallMessage('Diff', { files: [{ file_path: 'src/app.ts', oldText: 'old', newText: 'new' }] })]);
+        flushNextTimer();
+        expect(invalidateKnownMutation).not.toHaveBeenCalled();
+        expect(invalidateUnknownMutation).not.toHaveBeenCalled();
+
+        ingestion.ingest('s1', [toolCallMessage('ProviderDiff', {
+            files: [{ file_path: 'src/native.ts', oldText: 'old', newText: 'new' }],
+            _happier: { canonicalToolName: 'Diff', workspaceMutationSignal: 'turn-change-set', sessionChangeScope: 'turn' },
+        })]);
+        flushNextTimer();
+        expect(invalidateKnownMutation).toHaveBeenCalledWith('s1', ['src/native.ts'], null);
+        expect(invalidateUnknownMutation).not.toHaveBeenCalled();
     });
 
     it('keeps the same Session id on two Homes as two pending mutation scopes', () => {

@@ -31,12 +31,6 @@ vi.mock('@/features/serverFeaturesClient', () => ({
   fetchServerFeaturesSnapshot: mockFetchServerFeaturesSnapshot,
 }));
 
-vi.mock('./configuration', () => ({
-  configuration: {
-    serverUrl: 'https://api.example.com',
-  },
-}));
-
 describe('ApiClient connected services v2', () => {
   beforeEach(() => {
     mockPost.mockReset();

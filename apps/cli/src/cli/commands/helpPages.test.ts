@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { captureConsoleText } from '@/testkit/logger/captureOutput';
 
@@ -8,28 +8,20 @@ import { showRelayHelp } from './relay/help';
 import { handleAgentsCommand } from './agents';
 
 describe('CLI help output standardization', () => {
-  it('renders auth, machine, relay, and agents help pages with shared structure', async () => {
+  // Each page is rendered on its own so one page's Usage section cannot satisfy another's.
+  it.each([
+    ['auth', () => showAuthHelp(), ['happier auth', 'Usage:', 'Options:']],
+    ['machine', () => showMachineHelp(), ['happier machine', 'Set up remote machines', 'Usage:', '--ssh-user <user>', '--ssh-host <host>']],
+    ['relay', () => showRelayHelp(), ['happier relay', 'Usage:', 'happier relay access status', '--ssh-auth agent|keyfile|password', '--upstream-url <url>']],
+    ['agents', async () => await handleAgentsCommand(['help']), ['happier agents', 'Agent CLI helpers', 'Usage:']],
+  ] as const)('renders the %s help page with a Usage section and its documented flags', async (_page, render, expectedContents) => {
     const output = captureConsoleText();
     try {
-      showAuthHelp();
-      showMachineHelp();
-      showRelayHelp();
-      await handleAgentsCommand(['help']);
-
+      await render();
       const text = output.text();
-      expect(text).toContain('happier auth');
-      expect(text).toContain('Usage:');
-      expect(text).toContain('Options:');
-      expect(text).toContain('happier machine');
-      expect(text).toContain('Set up remote machines');
-      expect(text).toContain('happier relay');
-      expect(text).toContain('--ssh-user <user>');
-      expect(text).toContain('--ssh-host <host>');
-      expect(text).toContain('happier relay access status');
-      expect(text).toContain('--ssh-auth agent|keyfile|password');
-      expect(text).toContain('--upstream-url <url>');
-      expect(text).toContain('happier agents');
-      expect(text).toContain('Agent CLI helpers');
+      for (const expected of expectedContents) {
+        expect(text).toContain(expected);
+      }
     } finally {
       output.restore();
     }

@@ -5,6 +5,7 @@ import Constants from 'expo-constants';
 import uiPackage from '../../../../../package.json';
 import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
+import { markRpcRequestDisposition } from '@happier-dev/sync-client';
 import { TerminalStreamReadResponseSchema } from '@happier-dev/protocol/terminal/stream';
 import { TerminalStreamInputResponseSchema } from '@happier-dev/protocol/terminal/input';
 import type { FrontDoorActionExecute } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
@@ -201,7 +202,10 @@ export function createMachineRpcTerminalStreamCarrier(
         }
         const response = await execute(actionId, input, { surface: 'ui', authority: 'present_user', actionCaller: { kind: 'host' },
             serverId: options.serverId, expectedAccountId: options.accountId, signal: options.signal });
-        if (!response.ok) throw Object.assign(new Error(response.error), { code: response.errorCode ?? response.error });
+        if (!response.ok) {
+            const error = Object.assign(new Error(response.error), { code: response.errorCode ?? response.error });
+            throw response.effectAttempted === false ? markRpcRequestDisposition(error, 'notSent') : error;
+        }
         const approval = ActionApprovalRequestCreatedResultSchema.safeParse(response.result);
         if (approval.success) throw new TerminalStreamInputError(approval.data.kind);
         return response.result;
@@ -316,6 +320,10 @@ export function createMachineRpcTerminalStreamCarrier(
                 controlCursorTerminalId = request.terminalId;
                 controlCursor = 0;
             }
+            // A zero-credit control read leaves maxBytes absent: the byte RPC
+            // admits positive page sizes only, with credit separately pausing bytes.
+            const maxBytes = request.maxBytes ?? (request.creditBytes !== undefined && request.creditBytes > 0
+                ? request.creditBytes : undefined);
             const readBytes = (includeControlCursor: boolean) => readMachineBytes(
                 {
                     terminalId: request.terminalId,
@@ -323,7 +331,9 @@ export function createMachineRpcTerminalStreamCarrier(
                     ...(includeControlCursor ? { controlCursor } : {}),
                     ...(request.ackedByteOffset === undefined ? {} : { ackedByteOffset: request.ackedByteOffset }),
                     ...(request.creditBytes === undefined ? {} : { creditBytes: request.creditBytes }),
-                    ...(request.maxBytes === undefined ? {} : { maxBytes: request.maxBytes }),
+                    // Byte replay uses the admitted credit window instead of the
+                    // daemon's smaller default write chunk. Legacy keeps its own defaults.
+                    ...(maxBytes === undefined ? {} : { maxBytes }),
                     ...(request.maxFrames === undefined ? {} : { maxFrames: request.maxFrames }),
                     ...(request.rendererId === undefined ? {} : { rendererId: request.rendererId }),
                     ...(request.surfaceEpoch === undefined ? {} : { surfaceEpoch: request.surfaceEpoch }),

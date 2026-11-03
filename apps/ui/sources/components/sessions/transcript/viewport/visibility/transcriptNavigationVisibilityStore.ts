@@ -10,7 +10,6 @@ export type NavigationVisibilityStore = Readonly<{
     hasSubscribers: () => boolean;
     set: (next: NavigationVisibilitySnapshot | null) => void;
     subscribe: (listener: () => void) => () => void;
-    subscriberCount: () => number;
     /**
      * Notifies when consumer presence may have changed (a rail/pane mounted or
      * unmounted). Publication is subscriber-gated, so the arrival of the FIRST
@@ -102,9 +101,6 @@ export function createTranscriptNavigationVisibilityStore(
                 if (!listeners.delete(listener)) return;
                 notifyPresence();
             };
-        },
-        subscriberCount() {
-            return listeners.size;
         },
         subscribeSubscriberPresence(listener) {
             presenceListeners.add(listener);

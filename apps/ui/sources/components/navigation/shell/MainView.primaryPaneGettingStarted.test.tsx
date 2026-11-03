@@ -187,10 +187,6 @@ vi.mock('@/components/ui/navigation/HeaderLogo', () => ({
     HeaderLogo: 'HeaderLogo',
 }));
 
-vi.mock('@/components/voice/surface/VoiceSurface', () => ({
-    VoiceSurface: 'VoiceSurface',
-}));
-
 vi.mock('@/components/ui/status/StatusDot', () => ({
     StatusDot: 'StatusDot',
 }));

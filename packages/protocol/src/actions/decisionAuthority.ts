@@ -1,13 +1,14 @@
+import { projectNativeJsonValueForTransport } from '../json/strictJsonValue.js';
 import { evaluateApiTokenGrantV1, type ApiTokenGrantV1 } from '../auth/apiTokenGrant.js';
 import type { ActionRequiredAuthority } from './metadata.js';
 import type { ActionSpec } from './actionSpecs.js';
 import type { ActionId } from './actionIds.js';
-import { isPresentUserSettingWriteV1 } from './accountSettingDeclarations.js';
 import { HandoffWorkspaceActionV1Schema } from '../sessions/control/handoff/workspaceSyncSchemas.js';
 import { readRecord } from '../inputs/inputRecords.js';
 import { isRoleActionIdV1 } from '../prompts/roles/roleActionIdsV1.js';
 import { createCanonicalJsonSigningInput } from '../crypto/canonicalJson.js';
 import { computeCanonicalDomainSeparatedDigest } from '../crypto/canonicalDigest.js';
+import { isProjectSetupTrustRequestV1 } from './projectActionFamily.js';
 
 /** Safe Session relocation can contain an explicitly chosen workspace-writing effect. */
 export function isActionWorkspaceWriteV1(
@@ -67,12 +68,19 @@ export function isAutomationApprovalRequestSurface(
   // Pass-up still requires the authenticated manager at the question owner.
   if (surface === 'voice' && spec?.id === 'session.user_action.answer') return readRecord(input).disposition !== 'pass_up';
   return surface === 'agent' || surface === 'mcp' || surface === 'plugin'
-    || (surface === 'cli' && isLegacyWorkflowConversionInputV1(spec, input));
+    || (surface === 'cli' && (isLegacyWorkflowConversionInputV1(spec, input)
+      || isProjectSetupTrustRequestV1(spec?.id ?? '', input)));
 }
 
 /** Exact admitted operands, including their domain revision, bound by the approval owner. */
-export function computeActionInputApprovalDigestV1(actionId: ActionId, input: unknown): string {
-  return computeCanonicalDomainSeparatedDigest('action.present-user-approval.v1', [actionId, createCanonicalJsonSigningInput(input)]);
+export function computeActionInputApprovalDigestV1(actionId: ActionId, input: unknown,
+  sessionTargetsV1?: import('./sessionTargetV1.js').ActionResolvedSessionTargetsV1): string {
+  // Native schema outputs may retain optional undefined members that transport omits.
+  const parts = [actionId, createCanonicalJsonSigningInput(projectNativeJsonValueForTransport(input))];
+  // A many-capable operand retains its selector; its already-resolved target
+  // snapshot is part of this operation, not another selection or authority.
+  if (sessionTargetsV1) parts.push(createCanonicalJsonSigningInput(projectNativeJsonValueForTransport(sessionTargetsV1)));
+  return computeCanonicalDomainSeparatedDigest('action.present-user-approval.v1', parts);
 }
 
 /** Requestability follows the Action owner, not a second mutation allowlist. */
@@ -99,8 +107,8 @@ export function requiresPresentUserExecutionAuthorityForActionInputV1(
   input?: unknown,
 ): boolean {
   return spec.requiredAuthority === 'present_user'
+    || isProjectSetupTrustRequestV1(spec.id, input)
     || isPublicLinkCreationActionV1(spec.id)
-    || isPresentUserSettingWriteV1(spec.id, input)
     || isLegacyWorkflowConversionInputV1(spec, input)
     || isSessionMessageHumanReturnInputV1(spec, input)
     || (spec.id === 'session.open' && typeof input === 'object' && input !== null
@@ -132,17 +140,24 @@ export function resolveCredentialActionAdmissionV1(input: Readonly<{
   surface?: string | null;
   hasExternalCredential?: boolean;
   actionInput?: unknown;
+  /** Host-stamped native Realtime input restriction, never a grant or Action input. */
+  nativeRealtimeInput?: true;
   /** Host-validated current Session question origin; eligibility remains with the receiving question owner. */
   hasSessionQuestionAnswerOrigin?: boolean;
 }>): { ok: true } | { ok: false; errorCode: 'present_user_required' } {
+  if (input.nativeRealtimeInput && (
+    (DECISION_ACTION_IDS as readonly string[]).includes(input.spec.id)
+    || input.spec.id === 'execution.run.permission.respond'
+    || input.spec.id === 'session.permission.remote.respond'
+  )) return { ok: false, errorCode: 'present_user_required' };
   if (input.spec.id === 'session.user_action.answer' && input.hasSessionQuestionAnswerOrigin
     && !input.hasExternalCredential && !input.grant) return { ok: true };
   // Host Agent/MCP decisions reach the shared, user-waivable approval
-  // policy. External credentials retain the opt-in approve authority; changing
-  // this Action's minimum authority must not widen token or terminal access.
+  // policy, including the authenticated Home mint before a local surface is
+  // known. External credentials retain their separate opt-in approve authority.
   if (input.spec.id === 'session.permission.respond' || input.spec.id === 'approval.request.decide') {
     return canCredentialDecideV1(input)
-      || ((input.surface === 'agent' || input.surface === 'mcp') && !input.hasExternalCredential && !input.grant)
+      || (input.surface !== 'api' && input.surface !== 'voice' && !input.hasExternalCredential && !input.grant)
       ? { ok: true }
       : { ok: false, errorCode: 'present_user_required' };
   }

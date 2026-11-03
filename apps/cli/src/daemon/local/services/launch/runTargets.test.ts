@@ -40,6 +40,25 @@ describe('discoverLocalServiceRunTargets', () => {
             }
         } finally { await rm(root, { recursive: true, force: true }); }
     });
+    it('projects one declaration per native source even when its manifest name differs from the detected target', async () => {
+        const root = await makeRepo();
+        try {
+            await mkdir(join(root, '.happier'));
+            await writeJson(join(root, 'package.json'), { name: 'storefront', scripts: { dev: 'python3 -m http.server 5173', preview: 'vite preview' } });
+            await writeJson(join(root, '.happier/project.json'), { version: 1, services: {
+                web: { source: { kind: 'native', tool: 'package_script', file: '.\\package.json', target: 'dev' }, port: 5173 },
+                database: { source: { kind: 'native', tool: 'compose', file: './compose.yaml', target: 'db' } },
+            } });
+            await writeFile(join(root, 'compose.yaml'), 'services:\n  db:\n    image: postgres\n  cache:\n    image: redis\n');
+            const refs = ['one', 'two'].map(id => ({ id, serverId: 'home', machineId: 'machine', rootPath: root, createdAtMs: 1 }));
+            const targets = await discoverLocalServiceRunTargets({ roots: [root], acceptedWorkspaceRefs: refs });
+            for (const ref of refs) {
+                expect(targets.filter(target => 'workspaceId' in target && target.workspaceId === ref.id)
+                    .map(target => 'title' in target ? target.title : target.id).sort())
+                    .toEqual(['cache', 'database', 'storefront:preview', 'web']);
+            }
+        } finally { await rm(root, { recursive: true, force: true }); }
+    });
     it('names detected listeners from one matching declaration in their own accepted checkout without granting managed custody', async () => {
         const root = await makeRepo();
         try {

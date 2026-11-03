@@ -22,13 +22,14 @@ const ALL_OUTCOMES: readonly TeamInvitationAcceptResultV1[] = [
 
 describe('resolveTeamJoinPresentation', () => {
     it('covers every outcome the contract can return with a distinct title', () => {
-        // If the union grows, this fails rather than silently falling through to
-        // a generic error for the new outcome.
+        // Exhaustiveness over the union is enforced by the owner's switch return type;
+        // this proves each listed outcome is a real contract shape with its own title.
         for (const outcome of ALL_OUTCOMES) {
             expect(TeamInvitationAcceptResultV1Schema.safeParse(outcome).success).toBe(true);
         }
         const titles = ALL_OUTCOMES.map((outcome) => resolveTeamJoinPresentation(outcome).title);
         expect(titles.every((title) => title.length > 0)).toBe(true);
+        expect(new Set(titles).size).toBe(titles.length);
     });
 
     it('distinguishes a fresh join from an existing membership', () => {

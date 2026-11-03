@@ -41,14 +41,3 @@ export function resolveExplicitReturnToLiveTailApplyEffects(params: Readonly<{
     }
     return applyEffects;
 }
-
-export function resolveExplicitReturnToLiveTailViewportEffects(params: Readonly<{
-    effects: readonly TranscriptViewportLifecycleEffect[];
-    sessionId: string;
-}>): readonly ExplicitReturnToLiveTailViewportEffect[] {
-    return resolveExplicitReturnToLiveTailApplyEffects(params).filter((
-        effect,
-    ): effect is ExplicitReturnToLiveTailViewportEffect => (
-        effect.type === 'apply-explicit-return-to-live-tail-viewport'
-    ));
-}

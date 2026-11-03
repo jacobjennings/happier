@@ -10,6 +10,39 @@ This page describes the platform's owners and its admission vocabulary. The publ
 contract lives in [api.md](api.md#external-action-api-developer-preview-source-contract); the CLI
 host is in [cli-architecture.md](cli-architecture.md#action-derived-command-arguments).
 
+In unreleased 0.3 source, Agent and external MCP Action tools default to
+`discoverable_only`, with the shared direct allow-list and each Action's explicit
+`toolExposure` metadata resolved by `getDefaultActionToolExposureMode` in
+`packages/protocol/src/actions/actionSurfaceAvailability.ts`. CLI defaults stay
+direct. Account `actionsSettingsV1.actions[id].toolExposureModes` overrides the
+default independently for `agent`, `mcp`, and `cli`. A `direct` override adds the
+enabled Action's named tool; `discoverable_only` removes that named tool even
+for an allow-listed Action. Discovery and `action_execute` retain the same
+availability, authority, and approval checks. Settings uses this resolver for
+its default label. `happier mcp serve` captures Account Action settings at
+startup; restart that MCP process after changing its exposure preferences.
+
+In unreleased 0.3 source, an automatic managed-Machine retention wait superseded
+before policy admission or native execution settles as `cancelled`. A successful
+manual Stop or Delete therefore does not turn that obsolete wait into a failed
+Action. The controller retains the `intent_changed` supersession diagnostic;
+explicit Action conflicts, admission failures and issued native effects keep
+their existing settlement semantics. Pending Stop/Suspend recovery uses the
+Home's policy-admission provenance projected in the controller census, rather
+than treating matching desired and submitted intents as policy ownership.
+
+In unreleased 0.3 source, `localServices.inventory.list` accepts
+`projection: 'count'` with its existing target and returns the strict
+`{summary: LocalServiceMachineSummaryV1}` result. The existing inventory snapshot
+Machine RPC accepts the same projection. Both read the daemon inventory owner's
+current summary through `getSummary()` without scanning, refreshing or watching.
+Omitting the projection preserves the existing full snapshot result. A ready
+summary reports its running-service count, including zero; unknown, error,
+disabled and unsupported count reads supply no count. Session rail readers reuse
+received Machine or inventory summaries first, then make at most one scalar read
+per mounted Session address and target Machine, without retry or a full-inventory
+fallback. Project rails use held summaries only.
+
 In unreleased 0.3 UI source, `captureLazyActionAccountContext` binds an Action to
 its explicit Home and Account rather than the focused Sync transport lifetime.
 Refreshing that Account's bearer preserves the captured authority when its
@@ -19,6 +52,17 @@ replacement restricted credentials retire it. Invocation cancellation remains
 separate from Account-only cleanup. A manual Session launch refused before
 dispatch ends its local attempt and returns the mounted composer to its existing
 failure surface, preserving the draft for another Send.
+
+A signed external Action spends one Home verification per target at ingress, the
+same decision whether it arrived over RPC or the local HTTP route. Effect sites
+then consume local cancellation and the installation pin, so admitted work
+finishes and withdrawal applies at the next signed request. Approval replay is a
+new admission: its requester preparation and signed effect each verify once, then
+replay work stays local. For an Account request, Home verifies the retained root
+Action while the installation signature binds the approved effect, input and
+target. PAT replay also checks the resolved effect against the captured grant.
+A forwarded child keeps its receiving Machine's proof, and
+open-ended terminal access keeps `verifyMachineAuthorityCurrent`.
 
 The unreleased Files & Editor work adds workspace replace preview/apply and SCM
 blame intents through this same catalog. Preview and blame are safe reads;
@@ -107,12 +151,47 @@ Plain Session IDs retain their existing result shape. Group sends/status reads
 return each target's outcome. Native participant recipients remain separate
 inside-Session routing identities.
 
+For plugin `session.message.send` in unreleased 0.3 source, attachment local ids
+resolve to the sender's declaration first, then to the immediate host-stamped
+initiating plugin's declaration. A delegated Triage → Channels send can retain
+`happier.triage/entry` while Channels owns the send. Callers cannot author that
+identity or borrow a grandparent caller; an undeclared selection returns
+`session_input_invalid` before persistence. Session creation projects that
+initial-input refusal as `invalid_input`. Fresh sends, retry correspondence
+and pending-first-input handoff share the same
+[attachment identity owner](plugin-platform.md#session-send-attachment-identity-03-development).
+
 `session.targets.resolve { target, actionId }` is the safe read-only inspection
 Action for that same resolver. It exposes authorized addresses and complete or
 unavailable coverage through the catalog's UI, Voice, Agent, MCP, CLI and SDK
 projections. The picker delegates to this Action; it owns no separate traversal.
 Inspection creates no effect or approval. The eventual operation prepares its
 own current selection once, then retains that concrete list for approval/replay.
+
+In unreleased 0.3 source, the SDK host-Action `execute` overload and UI Action
+execution options accept `sessionAddress: ActionSessionAddressV1` when a caller
+already holds an exact Home/Session result. This is a routing constraint, not a
+selector or grant: the Action's declared operand must contain exactly one plain
+Session-id string matching the address, and canonical resolution must yield
+that same single qualified target before policy or effects. Selector objects,
+reserved selector shorthand and contributed-Action references do not accept
+this option. The host retains its original authorization anchor, captured
+Account, explicit credential fences and retirement cancellation. CLI execution
+cannot use the option to leave its admitted Home. Omitting it preserves existing
+selection and fanout behavior; no qualified-string grammar is introduced.
+
+External installed plugins in 0.3 development source declare the same
+`sessionTarget: { field, cardinality }` on their public Action declaration.
+Discovery retains that metadata. Inspection accepts the canonical qualified
+Action id (`<pluginId>/actions/<localId>`); invocation uses `action.invoke` with
+the ordinary contribution reference and input. The executor projects the
+declared field beneath `input` and resolves it before the plugin's exact-input
+parser, approval or handler. The same resolver enforces cardinality and the
+caller's available subtree. Each concrete invocation retains its reviewed
+target in approval custody; changed membership never expands it during replay.
+Preparation reads remain signed under the admitted `action.invoke` or
+`session.targets.resolve` root. Selection grants no additional handler or
+Session mutation authority.
 
 For Session-placed Actions with exact targets in 0.3 development, original CLI
 invocation reuses the ingress selector owner and the protected-message Session transport lookup
@@ -196,6 +275,32 @@ owners; a selector, UI control or Voice tool supplies no alternative policy.
 These development contracts do not establish completed composer, Voice or
 loaded-runtime validation.
 
+The 0.3 composer retains each cross-Session Ask/Send as one informational source
+transcript event. Its encrypted/plain content contains the person's text, reply
+mode, frozen concrete targets and immediate admission receipts. A deterministic
+key derived from the submission localId keeps retries on that row without
+colliding with a self-targeted input. It does not submit input or start a turn in
+the asker. Agent-tool invocations reuse their existing tool-call row.
+Receipt updates retain the entry's original target membership and successful
+admissions. The transcript entry is presentation, not trusted replay custody:
+it never supplies executable target operands or synthesizes Action acceptance.
+The composer's device-local draft supplement retains execution retry custody:
+the Action-resolved target snapshot and each real admission receipt belong to
+the exact draft attempt. Retrying an unchanged draft passes only refused or
+uncertain leaves, with their original operation identity, through the existing
+Action executor. It does not re-enumerate a changed selector. Previously admitted
+leaves remain visible in the source entry; editing the draft starts a new attempt.
+
+The transcript result reader joins these identities to the original receivers'
+reply custody and admitted returned-answer facts. Concurrent displayed demand
+shares an exact-key HTTP batch; settled rows do not poll or read on unrelated
+arrivals. The source entry owns presentation history, not reply fulfillment or
+execution authority. These data hooks do not establish completion of the result
+row's visual composition or loaded-runtime acceptance.
+A refused or uncertain operation key is not proof of an admitted question:
+those rows do not attach an original or returned answer by localId alone. A
+confirmed retry can establish that binding through the existing Action owner.
+
 In 0.3 development source, `session.status.get {sessionId, readiness: true}`
 adds an operation-scoped diagnostic to the ordinary readable status. It composes
 the existing qualified Machine reachability, Agent inventory/sign-in and invocation
@@ -248,13 +353,54 @@ only current surface names. This forward reader remains while 0.2-created
 Account settings are supported; it does not change dangerous defaults or add a
 0.3-to-0.2 rollback writer.
 
-UI writes and effects enter the Action executor so the same intent has one
-enabled, surface, authority and approval policy. UI reads may use the shared
-domain transport or retained subscription when an equivalent typed read Action
-exists: the server authorizes every read, and the Action supplies Agent parity.
-This includes refresh, retry and paging through that same read owner. It does
-not permit a raw write or effect through the read transport. Public pre-auth
-reads and signed-out draft bootstrap retain their existing authority boundaries.
+UI writes, effects and reads with an equivalent typed read Action must enter
+the Action executor so the same intent has one enabled, surface, authority and
+approval policy. Settings → Actions per-Action Ask-first and disabled settings
+apply to UI reads, including refresh, retry and paging. A retained subscription
+may own demand, paging and publication, but acquires its data through that same
+Action front door; the shared domain transport stays below Action admission.
+Public pre-auth reads and signed-out draft bootstrap retain their existing
+authority boundaries.
+
+In 0.3 development, client-routed UI Actions accept optional `clientId`, an exact
+answering socket id. The server selects only an eligible handler with that id;
+a disconnected or ineligible selection returns `client_not_available` without
+substituting another client. Socket ids expire on reconnect.
+Once an exact client answers, its result is terminal; a receiver refusal does
+not switch to an incumbent headless fallback owner.
+
+Without `clientId`, the server uses the sole eligible App or the App with the
+unique most recent focus transition observed through the existing `ui-focus`
+push. Focus history belongs to the live socket and is lost on disconnect;
+missing or tied history returns `client_ambiguous` before execution. That
+refusal includes `details.clients` (id, nullable device label and available
+focus state) and `details.recovery.inputField: "clientId"`, so the caller can
+retry with an exact candidate. No client-discovery Action is required for that
+recovery. Unadvertised device labels remain null. No focus timer or polling is
+introduced.
+
+Contributed plugin client Actions use the same receiver selection. Invoke the
+host `action.invoke` envelope with optional `clientId` alongside `action` and
+`input`; the selector is not a field in the plugin's business input. The shared
+host transport keeps the plugin request schema and occurrence checks unchanged.
+Supplying `clientId` for a non-client contributed Action returns
+`client_routing_not_applicable` before its handler runs.
+
+Generic client-placed Actions from a bound Session reach an eligible App viewing
+that Session through the existing Session reverse-RPC method. An absent viewer
+returns typed unavailability. Explicit mounted Work, current-context command, Workflow draft,
+Library view and plugin execution-origin addresses keep their routing contracts;
+Library view and execution-origin discovery enumerate the connected clients.
+Standalone CLI destination selectors are not caller Sessions: opening a Session
+uses the answering App even when that destination is not already viewed. Agent
+bridges and explicit Session caller provenance retain their bound routing.
+
+Voice conversation (including History) and client-placed Settings operations use the generic answering-client
+room even for a Session caller, so visiting Home or Settings does not withdraw
+them. They use the same exact-client, sole-client and focus selection rule among
+signed-in clients connected to the target Machine; absence returns `noClient` with
+a `connect_client` recovery instruction. Composer and other view-specific
+operations retain their exact Session routing.
 
 In 0.3 development, `ui.pet.choose` is the shared UI, Agent and MCP pet-selection
 Action, executed by the answering client through the existing reverse dispatcher.
@@ -298,8 +444,16 @@ Artifact header and body before returning metadata for built-in and plugin
 approvals; it does not hydrate transcripts or return approval bodies.
 The existing page bound is 1–100 matching entries (default 32). Optional
 `actionId` filters built-in approvals by Action id; plugin Action approvals use
-`action.invoke`. Pass a non-null `nextCursor` back as `cursor`, retaining the
-same status and Action filter, to continue. A null `nextCursor` marks source exhaustion;
+`action.invoke`. `workflowRunId` selects open requests whose admitted execution
+origin caller is that Run, including participant invitations and external plugin
+Actions, alongside Discussion-result publications correlated by their admitted
+return binding. It defaults the status to `open`. The Run page uses that same
+approval correlation over the open-request projection;
+unrelated document arrivals do not rescan the Artifact inventory. Discovery
+uses the existing kind/state query and exact body hydration, and ends once
+the viewed Run is terminal with settled custody.
+Pass a non-null `nextCursor` back as `cursor`, retaining the
+same status, Action and Run filters, to continue. A null `nextCursor` marks source exhaustion;
 a full final page may require one empty continuation read. The cursor is the
 ArtifactStore's opaque continuation, including the position after skipped
 nonmatching Artifacts. It grants no access or decision authority.
@@ -329,8 +483,11 @@ An explicitly required status report keeps its live invocation in the existing
 blocking approval flow until the write executes or approval is refused. The
 shared SDK Actions adapter joins identical in-flight reports from the same
 source service and cancellation lifetime, so repeated wakes observe the same
-pending approval. A returned report acknowledges publication, not merely an
-approval request. Refusals return to the source's existing recovery cadence.
+pending approval. A returned report acknowledges an accepted status, not merely
+an approval request. After currentness admission, equal source or catalog facts
+do not advance their status revision or publish an Account-change wake. New
+occurrence timestamps, counter deltas and changed reporter or status facts still
+publish. Refusals return to the source's existing recovery cadence.
 
 In 0.3 development source, an `approval_stale` failure retains the failed
 authority or custody fact as `execution.details.reason` on its approval Artifact.
@@ -339,6 +496,20 @@ admits diagnostic codes only, without Account, Home, Machine or credential value
 Decision observations and Action Operation errors preserve that same typed fact;
 the existing new-session error code includes it. These diagnostics do not change
 approval policy, origin verification or execution authority.
+
+Mounted UI Actions use live-only approval custody when they explicitly retain
+private operands or local delivery ports. A serializable write does not acquire
+that view lifetime merely because it has an effect: its durable approval remains
+reviewable after the initiating view unmounts. Credential and Account retirement
+still revoke authority through the existing scope owner.
+
+In 0.3 development, an authenticated, strict-envelope `approval.request.decide`
+HTTP invocation retains its daemon-owned decision after the reviewing client
+disconnects. HTTP observation lifetime does not withdraw that explicit decision;
+the existing `reject` and `cancel` decisions retain their own domain meaning.
+Other HTTP Actions keep cooperative request-disconnect cancellation. This adds
+no retry queue or process-restart guarantee and does not waive current daemon,
+credential, approval-origin or publication admission.
 
 In 0.3 development, open Action approval cards remain available in an inactive,
 resumable Session. The Artifact owns the decision; the approving app replays it
@@ -417,7 +588,11 @@ acquired privately after admission and never become Action input.
 
 Specs also own host-only `approvalPolicy` and `originalExecution` metadata.
 Approval settings consume the declared confirmation defaults, while server
-original-root ingress consumes supported execution placements. Home cannot open
+original-root ingress accepts catalog Account, Machine and client placements by
+default, while an explicit `accountRoot: 'separate'` declaration keeps a separate
+entry point. Signed-root validity, credential policy, surface and target admission
+remain at their existing owners. Session roots retain their declared surface and
+authority requirements. Home cannot open
 encrypted operands: the receiving daemon still resolves the exact placement
 from schema-admitted input. Native-purpose metadata selects the existing strict
 transport checks; it does not grant authority or relax their target binding.
@@ -426,10 +601,22 @@ In 0.3 development, `approvalPolicy.uiConfirmation: 'direct'` declares direct
 default admission for a present user on the UI surface. Reversible capability
 settings use this declaration; Agent, CLI and MCP callers retain the dangerous
 default, and unknown surfaces fail closed. Explicit Ask settings still win.
+Present-user UI authority comes from a host-mediated control. A raw plugin
+`hostApi.executeAction` call retains plugin/automation authority, including when
+a plugin click handler starts it; declaring a direct UI policy does not upgrade
+that caller or its nested Actions.
 `uiConfirmation: 'policy'` retains the shared confirmation policy. Plugin install
 uses that policy for the first Install & Trust trusted-code disclosure. A host
 confirmation for that exact Action satisfies the default once; explicit Ask
 still applies.
+
+`uiConfirmationForInput` is evaluated only for a present person's UI request.
+In unreleased 0.3 source, Session visuals use the same Agent approval floor as
+other danger Actions, including a visual authored by its own Session Agent
+with no network or host Actions. Visual preparation retains capability and
+revision checks but cannot waive Agent approval. Ask first creates one request
+before any write; Allowed and Blocked retain their shared policy meanings.
+The same no-network visual remains direct for a present person in the app.
 
 Present-user Session responsibility and lead assignment, Home restart, local
 runtime restart and remote-host relay restart use the direct UI default because
@@ -463,6 +650,12 @@ defaults. These declarations use the same shared approval policy: explicit Ask
 still asks, and Agent, MCP and CLI requests retain their approval defaults.
 Credential replacement, account revocation, pool deletion and quota reset
 retain their confirmation defaults.
+
+In 0.3 development, a New Session seed that names a Machine without a folder
+keeps that folder unresolved through draft hydration. The existing placement
+owner selects that Machine's recent folder or home; hydration never invents `/`.
+Explicit folder choices, including `/`, stay authored choices. This does not
+change the separate no-folder intent, whose private directory belongs to the target daemon.
 
 Missing-folder preparation for `session.spawn_new` uses the same approval
 resolver. The target daemon still supplies the exact directory proof; creating
@@ -519,9 +712,10 @@ answering device's preference for its current Account and Home, for UI, Agent,
 MCP and CLI alike. CLI/MCP inputs accept an optional `clientId` identifying
 the exact answering app socket. List returns `answeringClientId` and eligible
 `answeringClientIds` for follow-up
-calls; socket ids expire on reconnect. Without a selector, reads keep their
-current answering-client selection, while set/clear return `client_ambiguous`
-if several clients are eligible. A missing selected client is unavailable;
+calls; socket ids expire on reconnect. All three operations follow the shared
+client-choice rule: exact selector, sole eligible client, or unique latest
+pushed focus transition. Otherwise `client_ambiguous` lists candidates in
+`details.clients` for an exact retry. A missing selected client is unavailable;
 the transport never substitutes another device. Set admits an exact current origin but stores only its
 Home-qualified Machine; each operation resolves fresh source custody. An
 unavailable explicit Machine stays selected and blocks its operations. With no
@@ -605,6 +799,12 @@ refresh or retry, so no outcome line, banner or alert follows; callers that pres
 failures check the same predicate before they alert. Callers that deliberately word rejected and
 canceled differently (Team sign-in, API tokens, Session board, Team settings) read the code itself.
 
+In 0.3 development, aborting an ordinary blocking approval wait returns `cancelled`
+to its original caller and retires that waiter without executing the Action or
+withdrawing the durable approval. Explicit human Reject and Cancel decisions
+retain `approval_rejected` and `approval_canceled`. A host-retained intent that
+owns withdrawal keeps its existing approval-cancellation transition.
+
 In 0.3 development, declared Settings feedback follows the same quiet-decline contract. The scoped
 plugin Settings adapter preserves it as `status: 'declined'` for Account and daemon writes, including
 secrets. The record and field owners release their pending state and retain the draft and last saved
@@ -682,6 +882,22 @@ Ordinary PAT roots cannot substitute unrelated effect ids. Existing composite PA
 (`approval.request.create`, `action.invoke`, or a qualified plugin Action) may resolve a native effect,
 which must still match its canonical transport and authority. Explicit native phases retain their
 named child read effects.
+In 0.3 development, public-profile preparation retains its signed root while
+reading the captured Account's owner record. Snapshot preparation reads only the
+typed `public_eligible_personal` Usage population, including its preceding-period
+comparison; it receives no quota grant or all-personal-history fallback. Prepared
+publication writes use their existing closed transport schemas and exact paths,
+not the caller-facing intent grammar. Current Account/source admission and the
+ordinary Action approval policy still apply to every operation.
+
+Profile editing reuses those existing Actions: preview accepts explicit draft
+field, metadata, period and presentation inputs; update applies reviewed changes;
+publish makes the selected edition public. `settings.get`/`settings.set` with
+`target.kind: 'public_profile_draft'` address the answering client's mounted Look
+draft, not the published record or ordinary Account preferences. Named layouts
+and presets use `widgets.area.layout.*`; selecting or editing a draft is not
+publication. Plain-language Action discovery searches these declared operations
+without adding authority or new profile-editing Actions.
 Routes that act on several Sessions declare every operand through the same binding owner; a Follow
 source write proves both source and destination. Manager assignment declares the child, new manager and expected
 manager; only an explicitly nullable operand may omit a Session with `null`, so detachment remains valid
@@ -778,7 +994,20 @@ and copied target inputs, then consumes This time or Skip inside the original
 reservation. It admits no second preparation and writes no Trust row. Skip
 records no target setup completion; a skipped Service setup declines its waiting
 Start. Changed inputs remain held and cancellation cannot be reversed by a late
-decision. Until it changes uses the existing approving-Account Trust writer.
+decision. Agents may request Until it changes through `projects.prepare` with
+`consentScope: 'untilChanged'`, the exact `heldOperationId` and reviewed
+`expectedEffectDigest`. `workspace` names that retained operation's actual target
+checkout, including a worker target, rather than reconstructing it from SOURCE.
+This is a request for a present person's decision in the
+ordinary approval card/Inbox flow, even when invocation approval is waived.
+Approval runs in the approving app and delegates to the same
+`decideProjectSetupConsent` → `rememberReviewedProjectEffect` → approving-Account
+Trust CAS writer as the UI button. It remeasures the retained target review
+before writing; a changed digest is not covered. Agents cannot approve their own
+request, and rejection, cancellation or an expired/stale request remembers
+nothing. Ordinary preparation, This time and Skip retain their Machine owner;
+the native preparation RPC cannot write remembered consent. This is undeployed
+0.3 behavior, refactored in place without a compatibility alias or second writer.
 Exact current target completion can still satisfy another same-digest hold
 without repeating setup effects.
 Ordinary `actionOperation.get.v2` reconciliation returns its retained snapshot
@@ -792,6 +1021,22 @@ field-sensitive approval default. The approval-policy owner consumes it after
 explicit settings; discovery retains the conservative declared safety. Provider
 connection updates use this for display-name edits. Malformed input and updates
 to routing, credentials, slots, placement or helper models retain danger by default.
+
+The same owner resolves `settings.set` and `settings.reset` from the selected
+built-in declaration. A reversible personal preference explicitly declares
+`agentSafety: 'safe'`; an omitted declaration policy, unknown anchor, sensitive
+setting or present-person-only setting retains danger. List density and
+navigation placements use this declaration-owned default. Inputs cannot supply
+their own safety, and explicit Settings → Actions approval choices still win.
+`settings.invoke` retains its declaration's operation approval policy. These
+defaults do not change setting value validation, surface restrictions or
+execution authority.
+
+The development-only `session.list.statusWords` declaration is a safe personal
+Account preference, defaulting to `false`. Sessions/Runs, Workflow and Discussion
+work columns share its `sessionListStatusWords` value; UI readers use the existing
+`useSetting` hook and controls use the canonical `settings.set` writer with that
+anchor. `settings.reset` restores icon-only status. There is no per-column store.
 
 Model favorites use the safe Account Action `models.favorite.set`, with an exact
 favorite selection and a membership boolean. UI stars and daemon/Agent callers
@@ -937,6 +1182,11 @@ That signed Account approval origin retains `account_automation`; neither the
 carrier's UI ingress nor its Home signature turns the Voice model into a human.
 The server preserves the authenticated lowering ceiling on both direct Account
 origination and re-entry through an already-signed root.
+
+Local and capable realtime callers supply the same host-playback capability;
+the dispatcher resumes the captured Action immediately after that playback completes,
+without requiring a second model tool call. Local settings writes and approval decisions
+report the owner's saved-value or decision result instead of model-authored completion prose.
 An attempt ID does not upgrade authority: terminal credentials retain automation
 authority on UI, can request policy-required approval, and cannot decide it. The
 approval UI preserves `present_user_required` and directs the person to an Account
@@ -1107,6 +1357,12 @@ also accepts an input predicate. `writesLocal` alone does not assert that an
 operation is reversible. Explicit Ask and surface waivers remain user policy;
 conditional defaults do not grant human authority. Plugin/background defaults
 remain unchanged.
+The scoped form also accepts `default: <input predicate>` for the other
+requesters. This lets a mixed read/write Action retain safe read operands and
+automated write confirmation while `{ presentUserUi: false }` makes its
+reversible person-operated writes direct. Both predicates use the same parsed
+input and canonical confirmation owner. Older strict manifest readers reject
+this undeployed extension through existing compatibility admission.
 These display facts do not grant execution authority. Qualified Action ids retain
 their encoded dynamic route segment through workspace navigation so their Settings
 controls remain reachable.
@@ -1343,6 +1599,16 @@ family's withheld operations available by default.
 
 Review verdict Actions declare the CLI paths `reviews comments list`,
 `reviews comments transition`, and `reviews comments set-disposition`.
+In development source, `review.apply` (`actions invoke review.apply` in the CLI,
+`review_apply` on MCP) accepts a one-Session target and reviewed `{runId, findings}` sets. The
+review card and external plugins invoke that same Action. It reloads the scoped
+ReviewComments, including references reused from earlier rounds, selects current
+accepted groups, and sends the canonical verify-first instructions through
+`session.message.send`. Each reviewer retains its own evidence, thread references
+and current comment CAS. Empty acceptance sends nothing; review and delivery
+refusals remain typed. Applying does not itself write dispositions: the verifier
+uses the existing ReviewComment Actions. The public SDK reviews entrypoint exports
+the input schema and canonical verification renderer/instruction texts.
 `session run ensure` projects `execution.run.ensure`, which is also exposed to
 UI and MCP. Surface exposure alone does not prove that a UI control uses the
 Action front door or that its host has the required dependency: those callers
@@ -1538,6 +1804,10 @@ user's concurrently accepted deny override is not erased by a stale candidate.
 Workers copy the effective role set and notes at birth. Explicit
 `session.roles.apply_to_reports` updates same-Account reporting Sessions; a
 reporting relation itself grants no access or authority. The
+public Role/notes edit owner likewise reads only current/requested/edited external
+bodies not already complete in the Session snapshot, retaining its post-await
+authority and monotone workspace-policy checks. List, Apply and full-spawn reads
+still acquire their complete inventory. The
 [`manager relation schema`](../packages/protocol/src/sessions/follow/sessionManagerV1.ts)
 requires the expected current manager, and the relation owner checks input, audience
 and cycles. Reparenting is not a new creation origin or a lower causal work depth.
@@ -1611,6 +1881,10 @@ workspace-writing Action admission. Agent invocations can tighten it; relaxation
 requires present-user authority. It is not a permission-mode override. Reviewer's
 automatic allow-once answers also remain within that ceiling. Direct
 `session.approval_reviewer.set` requires a present user for direct configuration.
+Its required `enabled` input accepts `true`, `false`, or `null`. A boolean sets
+the Session override; `null` removes it so the permission owner follows the
+Account default again. Clearing an absent override does not publish metadata.
+The stored field remains an optional boolean; `null` is an Action input only.
 An agent may request the session choice or the Account default
 (`settings.set`, anchor `delegation.approvalReviewerEnabled`), but the change
 applies only after present-user approval (approved ORC r0.5-W option b).
@@ -1643,7 +1917,9 @@ names, parent ids and the catalog revision. A complete list has
 `not_found` with that same revision. Unavailable or incomplete folder data returns
 an unavailable result rather than an empty tree.
 
-These safe read Actions share the existing `artifact.folders.*` mutation owner.
+These safe read Actions declare `approval: { result: 'none' }` and share the
+existing `artifact.folders.*` mutation owner. Ordinary Action settings and caller
+admission still apply.
 They expose personal organization without loading Artifact bodies or changing
 document content, grants or another person's placement. UI subscriptions may read
 the same catalog directly; Agent, MCP, CLI and RPC reads use the declared Actions.
@@ -1652,6 +1928,16 @@ lists the canonical Actions, admission and surface declarations; the generated
 [SDK Action type map](../packages/plugin-sdk/src/actions/actionTypeMap.generated.ts)
 projects their exact input and result contracts. This is development source
 behavior; loaded-runtime validation remains an integration obligation.
+
+### Session Bot marker (development)
+
+`session.bot.set` promotes a regular Session to a Bot with `bot: { kind: 'bot' }`
+and demotes it with `bot: null`. The reversible marker writes through the
+Account metadata owner without waking the execution host. Its declaration uses
+`approval: { result: 'none' }`; ordinary Action settings and caller admission
+still apply. The same Action is exposed on UI, CLI, Agent, MCP and voice surfaces.
+This describes 0.3 development source, not a released feature or a separate
+permission for Bot actions.
 
 ### Prompt and skill saves (development)
 
@@ -1762,6 +2048,13 @@ headless hosts do not report those effects as completed. Move is outside this
 parity slice. These are unreleased source contracts, not package or loaded-runtime
 certification.
 
+In the development UI, inventory diagnostics use the shared surface-reason copy
+owner. **Local service scan needs attention** distinguishes missing/unreadable
+Project roots, unavailable accepted-workspace information, scan deadline
+incompleteness and process enumeration failure. A partial inventory is not a
+service Start failure; lifecycle and preview outcomes keep their own reasons.
+See the published [local service previews guide](../apps/docs/content/docs/self-hosting/local-service-previews.mdx).
+
 ### Remote hosts (development)
 
 `remote_hosts.*` is declared by the Protocol Remote host family and executes
@@ -1816,6 +2109,15 @@ revoke-and-Provider-cleanup owner and reports pending cleanup without disguising
 it as successful completion. Replacement and undo retain the existing Home
 enrollment endpoints and their HTTP refusal results.
 
+The development “This computer” Add flow uses `machines.add.local.start` on the
+answering desktop App. Its only public input is the focused `serverId`; the
+existing local setup owner captures the Home, signed-in Account and native
+setup prompts privately and retains its task in the ordinary Add draft. It
+uses dangerous-Action approval (Ask first by default), preserving the separate
+exact Account-move confirmation and native setup consent. UI and Agent/MCP
+consume that same client-placed Action; an absent answering App is unavailable,
+and standalone CLI, RPC and Voice execution are not advertised.
+
 The development SSH add flow uses `machines.add.ssh.start/status/respond/cancel`
 at its existing client task owner. Start accepts a direct target or a saved-host
 id and expected catalog revision. Password/private-key material is not Action
@@ -1831,6 +2133,27 @@ the captured pending native start, receiving `{ pendingCanceled: true }`; the
 existing retained start-promise owner cancels a native id that arrives later.
 These client-placed Actions are available on UI and through an answering App for
 Agent/MCP; they do not promise headless CLI, RPC or Voice execution.
+
+Managed installation questions use the development client-placed
+`machines.managed.bootstrap.respond` Action through that same answering-App
+placement. Its strict input identifies the Home profile and identity, managed
+resource, creation operation, installer task, exact projected question and explicit approval or refusal.
+The client reads that exact resource and operation, checks the retained native
+resource/controller and current unanswered question, and answers the existing
+`tool.systemTasks` task. The managed prompt union covers SSH host trust, host-key
+replacement, Account sign-in and remote background-service replacement. Trust
+questions retain the host and current/new fingerprints for review. The response
+must match the current question, so a stale trust decision cannot approve a later
+sign-in question on the same task. Managed SSH uses its generated unencrypted
+keyfile; password entry remains with the ordinary SSH setup owner.
+The existing task response also carries the expected question kind, which the
+task owner checks synchronously when accepting the answer.
+The Action never accepts a caller-selected controller
+or arbitrary task answer. UI and Agent/MCP use the same executor and configurable
+dangerous-Action approval policy; automation defaults to Ask. Action approval
+does not replace the installer's sign-in consent, and an answered task receipt
+does not claim enrollment has completed. Headless CLI, RPC and Voice are not
+exposed for this client placement.
 
 Stop, revoke, replacement and undo use the canonical dangerous-Action policy
 (Ask first by default). The mounted page's existing explicit confirmations are
@@ -1871,6 +2194,37 @@ The Guard-get operation lifetime is declared once in the Protocol's
 and consumed by both CLI and UI adapters. After bounded transport setup,
 `machines.guard.get` waits for the caller's completion or cancellation; reads
 still check the captured Account before disclosing the answer.
+
+Desktop Guard stop warnings use the existing notification channel's native
+interaction boundary (`sendTauriLocalNotification` → `tauriNotificationPlugin`
+→ `src-tauri/src/desktop_notifications`). The OS carries the original occurrence
+and canonical action identifiers back through `useNotificationResponseRouting`.
+`guardStopWarningLifecycle` rechecks the saved Home, current Account and current
+warning before invoking the normal Action executor, and owns withdrawal through
+the same transport interface used by Expo. Rust owns OS handles only; it does
+not decide Guard eligibility or Action approval. Ordinary text notifications
+retain their existing plugin delivery within that same channel.
+
+This is unreleased development implementation, pending loaded desktop validation.
+The native notification retains the original Home, Account and warning occurrence:
+macOS uses `userInfo`, and Windows uses protocol activation arguments with the
+installed channel's URL scheme. A process-local response queue bridges native
+launch to renderer readiness; there is no notification disk store. Recovered
+responses enter the same parser and Guard currentness checks, refuse an Account
+rebind, and cannot execute permission answers or plugin Actions through this
+Guard-only native route. Delivered macOS/Windows warnings are read from OS history
+so the existing withdrawal owner can reconcile them after restart.
+
+Linux requires an action-capable notification daemon and the original sending
+connection: full process exit ends XDG action delivery. Reopen the app to use
+the current in-app warning in that state. macOS requires a real application
+bundle and notification permission. Windows protocol activation requires the
+installed application's AppUserModelID and registered URL scheme; Action Center
+persistence additionally needs the shortcut's `ToastActivatorCLSID`, which the
+current stock installer does not set. Retained Windows cold-start activation
+therefore remains incomplete. Signed/installed native notification journeys are
+release checks; host tests do not establish visible delivery or OS activation.
+
 `machines.list { refresh: true }` runs the existing Home machine inventory
 fetch-and-apply owner before listing, including Overview Retry and page refresh.
 Omitting `refresh` retains the cached UI list; the CLI inventory already fetches
@@ -2002,6 +2356,19 @@ declaring another filter grammar. Home, Account credentials and access belong
 to the captured invocation, not the query. Scope and cost-basis fields may
 follow context independently through the general input-field contract; metric
 and breakdown remain own values.
+
+In development source, an installed Session's `usage.query` and `usage.export`
+spend their existing Home-issued Action authorization for the accounting query,
+captured Account mode/settings/profile reads and retained quota reads.
+Coach dismiss/snooze/apply/undo roots consume the same evidence reads without
+gaining mutation authority; their existing approval and mutation-owner policies
+remain in force. `usage.calendar.export` admits only its retained quota read.
+The `usage.recap.private.*` roots consume the same query and quota reads for
+private composition. The Home purpose owner admits those exact routes and
+schemas under the original Action root; it
+does not grant Account mutations, broaden public-source recap access or substitute
+the daemon's bearer. Session-source currentness and ordinary route-level Account
+access still apply.
 
 Session filters admit the captured caller's current transcript-read access,
 including a Can-view grant. Accounting totals and message counts remain scoped
@@ -2246,8 +2613,18 @@ period and undated merged PRs are separate facts. Optional or null projections
 mean unavailable, not zero. These private result fields do not authorize public
 disclosure; public population admission and field policy remain separate.
 
-`usage.recap.compose` returns a strict private selected-field preview from that
-same authorized query slice. One result supports Daybreak (default), Sigil,
+`usage.recap.private.compose` returns a strict private selected-field preview from that
+same authorized query slice. In current 0.3 development, private compose, export
+and delivery accept `sourceSelection`: `whole_usage` (default) or `happier_only`.
+This choice is independent of the parent page's capture-source filter. It
+projects one canonical query, clearing that inherited filter and selecting
+witnessed `execution: 'happier'` only for Happier-only output. The accounting
+owner filters execution after reconciliation; a capture-source id cannot prove
+execution. Whole usage includes unknown execution with explicit coverage, while
+Happier-only never promotes unknown turns into witnessed Happier work. Private
+detail follows the same admitted turn membership. A server that cannot admit
+the execution filter refuses it instead of returning broader facts.
+One result supports Daybreak (default), Sigil,
 Editorial, Glass, Holo, Skyline and Terminal, with square, story and
 link-preview formats. These choices do not change the admitted facts. Private names
 and dollars are excluded by default; unselected private identities, paths and money
@@ -2357,7 +2734,9 @@ inactive Session model-owner condition; missing active-runtime revision facts ar
 not invented. Missing matched completed requests stay insufficient.
 The existing Account `usageCoachPreferencesV1` declaration (`usage.coachPreferences`)
 owns all built-in check choices, the model mode and evidence-scoped dismiss/snooze
-state. `settings.get`/`settings.set` provide the same read/write owner for agents
+state. Coach dismissal/snooze writes remove expired snoozes and replace that exact
+evidence key's previous state; another finding from the same check remains
+independent. `settings.get`/`settings.set` provide the same read/write owner for agents
 and clients. Disabled checks are skipped by the single evaluator before their
 evidence is inspected, including while older detail is retained during refresh.
 An unavailable Account preference read does not silently enable checks; the
@@ -2387,11 +2766,11 @@ without applying remedies. Source implementation and loaded UI/Automation
 validation are separate evidence; registration alone is not availability.
 
 Compose produces data without publishing, rendering an image or opening a
-share sheet. `usage.recap.export` is client-placed: it composes the same selected
+share sheet. `usage.recap.private.export` is client-placed: it composes the same selected
 facts, then returns strict PNG file bytes with their field manifest and as-of.
 A headless caller receives compose data and explicit image unavailability, not
 a fabricated image. The client renderer uses the same recap card as the preview.
-`usage.recap.deliver` accepts the same closed source intent plus `copy`, `save`
+`usage.recap.private.deliver` accepts the same closed source intent plus `copy`, `save`
 or `share`, never caller-supplied image bytes or paths, and owns explicit client
 delivery through compose, rendering and the existing image-delivery adapter.
 Its result distinguishes delivered, cancelled, unavailable and failed outcomes.
@@ -2404,7 +2783,16 @@ Account retirement prevents a late render from disclosing bytes. These are
 development-source contracts; source checks do not establish loaded UI or release
 availability.
 
-An explicit `{source:{kind:'public_profile'}}` recap reads the captured Account's
+The separate `usage.recap.compose`, `.export` and `.deliver` roots require
+`{source:{kind:'public_profile'}}`. Private source privilege is visible in the
+signed root, not inferred from an input digest or a caller claim. UI and agents
+use the same source-specific roots and the same canonical recap composition,
+rendering and delivery owners. Public roots reject private query inputs and
+receive no private accounting or quota privilege; private roots reject public
+source inputs. This is an in-place 0.3 development contract, not a released
+compatibility alias.
+
+A public-source recap reads the captured Account's
 currently admitted public view through `/v1/account/public-profile/view` rather
 than re-querying private Usage or accepting a supplied snapshot or username.
 Only admitted public fields reach the existing style model; unavailable public
@@ -2562,6 +2950,26 @@ Concrete UI/CLI drivers bind the source or destination identity to their actual
 local byte adapter. Generic Action clients without that adapter return a typed
 unavailable result before preparing a transfer; an arbitrary identity is never
 interpreted as permission to read or write a local filesystem path.
+
+In development, a plugin Action that acquires provider bytes can use
+`context.services.fs.prepareDownload({ name, bytes, destination }, { signal })`.
+The Action declares file-writing danger and an Activity operation, and its strict
+input admits the receiver's opaque top-level destination. This capability grants
+no workspace root or arbitrary output path. The provider Action itself is the
+effect authority: it does not invoke a second filesystem Action. Present-person
+and automated approval follow that same Action's declaration and Settings.
+The existing operation returns the canonical accepted receipt to the caller
+before delivery; `prepareDownload` remains pending inside the handler until the
+existing receiver completes or fails. Its receipt names the actual operation,
+and the incumbent transfer lifecycle retains the binary source through ACK,
+cancellation, authority retirement or expiry. Provider bytes and signed provider
+URLs never become Action JSON. The caller-held receiving device still owns Save
+As, overwrite choice, integrity verification, destination completion and ACK.
+Only the physically owned transfer advertises Stop support; an arbitrary plugin
+AbortSignal is not a cancellation guarantee. Native failure or an unconfirmed
+transfer cannot become a successful operation merely because the handler returns
+valid result JSON. The operation also waits for later handler work, preserving
+its failures, and a late Stop cannot undo already confirmed delivery.
 
 Save As and clipboard placement remain client-local effects. The Action layer
 admits and references the existing transfer lifecycle, while the requester-owned
@@ -2875,7 +3283,11 @@ The mounted [entity runtime](../apps/ui/sources/components/ui/treeDragDrop/entit
 
 Client draft, canvas and picker Actions require their exact answering mounted owner and return typed unavailable when it is absent. Repository upload picking requests acquisition through the existing transfer owner; it does not fabricate OS file handles in JSON or promise upload completion. The generated [host Action reference](../apps/docs/content/docs/plugins/api/host-actions.mdx) owns the complete ids, inputs, outputs and execution placements. [Plugin source/target authoring](plugin-platform.md#entity-drag-sources-and-drop-targets-03-development) describes the declaration and Action allowlist seam. This is 0.3 development behavior, pending the composed loaded-platform journey.
 
-In 0.3 development, `workflow.authoring.draft.get` reads the answering client's mounted Workflow editor (omit `draftId` to list drafts in the exact Home/Account scope). It returns the authored definition, block labels, settings, validation issues, dirty state and `draftRevision`. `.edit` accepts the same Protocol edit operations as `workflow.definition.edit` and an optional `settings` patch for description, project target, execution target and trigger drafts, guarded by `expectedDraftRevision`. Supply operations, settings or both; a combined edit is one undoable change and highlights changed blocks. Trigger settings use the desired rows and context returned by `.get`, not a durable trigger write. Native settings controls share this snapshot mutation owner, including on a new unsaved Workflow. Stale revisions, invalid edit operations and unavailable trigger restoration are refused without partial edits. Definition operations and description require document-edit access; a view recipient retains the native editor's personal target and trigger permissions, but not Undo, Redo or Discard authority. `.undo` and `.redo` use the existing editor history. These operations neither save nor run. `.save` is an explicit write through the host's existing validation, saved-revision CAS and trigger Save, and waits for its outcome. Its definition and trigger child Actions retain the admitted caller's surface, authority, identity, provenance and restrictions; parent confirmation or approval bypass is not consent for a child Action. Agent trigger approval can keep Save pending without a trigger effect; native Save retains UI admission. Save preserves its existing sequence rather than becoming transactional: a definition or personal target already saved can remain committed if a later trigger write is refused, with pending trigger edits retained for retry. `.discard` is danger/present-user-authority, requires human approval for automated callers and follows the existing confirmation. Cancel retains the draft; saved-document Discard changes stays undoable. If a route change or import replaces the draft while confirmation is open, the confirmation is refused and the replacement's content and history stay intact. Conversation binding shares this mounted registration. No/ambiguous matching owner is `unavailable`, and a Home/Account mismatch is refused; no Action opens, loads or creates an editor. These are client-placed Agent/MCP and conventional Voice surfaces, with CLI/RPC disabled.
+In 0.3 development, `workflow.authoring.draft.get` reads the answering client's mounted Workflow editor (omit `draftId` to list drafts in the exact Home/Account scope). It returns the authored definition, block labels, settings, validation issues, dirty state and `draftRevision`. `.edit` accepts the same Protocol edit operations as `workflow.definition.edit` and an optional `settings` patch for description, project target, execution target and trigger drafts, guarded by `expectedDraftRevision`. Supply operations, settings or both; a combined edit is one undoable change and highlights changed blocks. Trigger settings use the desired rows and context returned by `.get`, not a durable trigger write. Native settings controls share this snapshot mutation owner, including on a new unsaved Workflow. Stale revisions, invalid edit operations and unavailable trigger restoration are refused without partial edits. Definition operations and description require document-edit access; a view recipient retains the native editor's personal target and trigger permissions, but not Undo, Redo or Discard authority. `.undo` and `.redo` use the existing editor history. These operations neither save nor run. `.save` is an explicit write through the host's existing validation, saved-revision CAS and trigger Save, and waits for its outcome. Its definition and trigger child Actions retain the admitted caller's surface, authority, identity, provenance and restrictions; parent confirmation or approval bypass is not consent for a child Action. Agent trigger approval can keep Save pending without a trigger effect; native Save retains UI admission. Save preserves its existing sequence rather than becoming transactional: a definition or personal target already saved can remain committed if a later trigger write is refused, with pending trigger edits retained for retry. `.discard` is danger/present-user-authority, requires human approval for automated callers and follows the existing confirmation. Cancel retains the draft; saved-document Discard changes stays undoable. If a route change or import replaces the draft while confirmation is open, the confirmation is refused and the replacement's content and history stay intact. Conversation binding shares this mounted registration. No/ambiguous matching owner is `unavailable`, and a Home/Account mismatch is refused; no Action opens, loads or creates an editor. These client-placed Actions are exposed through Agent/MCP, conventional Voice and the existing answering-client CLI transport; raw RPC exposure remains disabled.
+
+The shared edit operations include `upsert_role { role }` and `remove_role { roleId }` for definition-local roles. Upsert adds or replaces the canonical `WorkflowRoleV1` entry by its unchanged id, including inline name/instructions, engine and runs-as or a catalog-role pin. Remove deletes that local entry, restoring catalog inheritance for a referenced role. The native Roles editor dispatches these same operations as one history batch per edit; saved-definition validation and frozen Run role admission keep their existing owners. CLI commands follow the Action ids (`workflow authoring draft get|edit|undo|redo|save|discard`, `workflow run review draft set` and `workflow library view get|set|reset`). Review preparation and Library-view commands still operate only on the answering client's mounted owners, with their existing authority and confirmation rules.
+
+The shared saved-definition owner applies `admitAgentStartV1` to agent create, update and edit, including child Actions from mounted draft Save and Save as copy. It checks the materialized permission ceiling even when an Action-only or Wait-only workflow starts no Agents, and resolves nested plugin workflows through the same materializer. The same ceiling governs Run admission: non-Agent leaves contribute declared permissions, including inherited defaults; omission grants no additional authority. Agent steps retain their canonical `default` permission when omitted, and resolved child starts contribute their effective permissions. An excessive ceiling returns `definition_exceeds_authority` with the policy cause before the Artifact write; the stored content and revision stay unchanged. Mounted draft Save retains the canonical failure code in its refusal's `reason` and keeps the local edits. Missing caller context is refused rather than treated as a human edit. Human definition edits remain unrestricted by Agent-start policy. Trigger writes consume that same ceiling and policy; import and capture only prepare unsaved content.
 
 `workflow.run.review.draft.set` sets only the displayed human value buffer for an exact mounted hold (`draftId` is the invocation id, plus `runId` and `expectedContentRevision`). It preserves Keep my edits / Use newer when another result arrives and never publishes or accepts a result. Acceptance remains `workflow.run.invocations.complete_review`. Saved-definition edits and agent result publication keep their separate persisted contracts; mounted-draft Actions do not add another store or channel.
 
@@ -2953,6 +3365,26 @@ instead of guessing a column. A cold project returns `loading`, never an
 authoritative empty result. Diagnostics explicitly request a fresh check.
 Queries and Restart retain caller cancellation without a separate operation
 deadline; transport connection and setup keep their canonical finite budgets.
+
+The editing-intelligence extension uses the same session scope and disk-text
+rules for `code.completion.list`, `code.signature.get`,
+`code.typeDefinition.get`, `code.implementation.get`,
+`code.symbols.workspace` and `code.callHierarchy.get`. Workspace symbols accept
+a query string; call hierarchy accepts a position for every direction and
+prepares incoming/outgoing targets in the same request. Returned server/item
+ids are also usable while their document stays open; they are not durable
+references across a server close. `code.diagnostics.list`
+accepts `scope: 'project'` for an explicit whole-project check. These are safe
+reads; unsupported server capabilities remain unavailable.
+
+`code.format.apply` and `code.imports.organize` accept
+`operation: {kind: 'preview'}` to return normalized, hash-guarded edits and
+`operation: {kind: 'apply', files}` to apply the reviewed result. Format preview
+also accepts a zero-based UTF-16 `range` for a selection and `formattingOptions`.
+Apply has the normal danger approval default for automated callers and direct
+confirmation for a present user. Its separate Machine routes preserve Action
+admission and use the existing guarded multi-file writer, per-file outcomes
+and inverse edits for Undo. These additions are unreleased development source.
 
 When no server is capable of definition or reference lookup, an explicit symbol
 uses the existing workspace content-search owner. Definitions are approximate
@@ -3197,7 +3629,15 @@ gain producer identity or permission to resolve another plugin's item.
 
 List search, kind filtering and sorting operate on decrypted headers at the
 key-holding host, using the existing paginated server list. The server never
-indexes plaintext titles or provenance for E2EE Accounts. Publication copies
+indexes plaintext titles or provenance for E2EE Accounts. Explicit `kind` or
+`kinds` approval selection also exposes admitted approval headers through
+`artifact.list` for the captured Account's own native Inbox caller;
+`approvalStates` narrows that same server query before paging. API credentials,
+plugin callers and restricted Session RPCs retain specialized approval reads.
+This header-only development read carries Action, Session, Machine and Run ids,
+state and timestamps without opening receipt bodies. Broad document listing
+still hides approvals, and approval body reads and mutations retain their
+specialized owner. Publication copies
 only from the authenticated caller's own validated workspace through the file
 transfer owner, completes that transfer before creating content, and records
 host-derived Session, Run, machine, path and digest provenance in private revision metadata.
@@ -3208,10 +3648,18 @@ Session's workspace through the existing confined upload target and transfer fin
 It preserves existing files unless `overwrite` is explicitly approved, refuses escaping
 destinations and internal document kinds, and returns only an Artifact id, workspace-relative
 path and byte count. It does not expose raw bytes in the transcript or replace Account blob
-access with workspace-path-only filesystem download. The UI keeps its existing browser/native
-download destination; this workspace-write Action is advertised to Agents, MCP and CLI,
-not as a second UI-local downloader. These are development-source contracts; Plain/E2EE
+access with workspace-path-only filesystem download. These are development-source contracts; Plain/E2EE
 composed live export remains part of the next owner-authorized QA pass.
+
+In the same development source, `artifact.export` also accepts
+`{ portable: { kind: 'role' | 'launch-profile', document } }`. The document must
+pass its canonical Role or value-free Launch Profile schema. This arm runs on
+the answering client and uses the existing browser download/native share owner
+used by “Send a copy”; it neither grants access nor writes an Artifact. Its
+receipt contains `exported: true` and the file name. UI controls enter the same
+Action as Agent callers, retaining per-Action enablement and the automated
+Ask-first default. The original `{ artifactId, path, overwrite? }` input and
+workspace receipt remain Machine-owned and unchanged.
 
 Body updates retain prior bodies transactionally. Restore compares the read
 header and body versions and advances both atomically. The key-holding host
@@ -3334,6 +3782,17 @@ Relation membership does not replace ordinary Home access or grant other
 mutation rights. Caller identity, turn depth and subtree membership cannot be
 supplied in Action input.
 
+In 0.3 development, an Agent answering a host-addressed Discussion question can
+also use `session.transcript.get` for that Discussion's quoted source Session,
+including transcript pages beyond the selected message. The scope owner reads
+the current Discussion and its exact question under the protected original
+cutoff; a navigation anchor alone grants nothing. The two preparation reads
+retain the signed transcript Action root. Ordinary source Session read access
+still applies, and the final transcript read rechecks that the full current
+runtime audience may receive the source. Revoked access, a mismatched source or
+an unreadable question cannot authorize a foreign Session read. This does not
+widen an external plugin caller's Session scope.
+
 The development `session.archive` Action accepts optional `alsoArchiveReports`.
 Omission or `false` archives only the selected Session. With `true`, the archive
 owner reads the current Home's active Session list and archives only unarchived
@@ -3381,6 +3840,18 @@ present users. Missing or malformed transported provenance refuses the edit,
 including when an older Home drops the new origin header. Role mutations still
 enter the target's registered metadata outbox; this adds no role store.
 
+In 0.3 development, `workflow.run.read_state.set` acknowledges an owner Account's
+actually opened failed Run with `{runId, revision, failedAt}`. The Home verifies
+the observed failure timestamp and current revision; a repeat acknowledgement of
+that same failure is idempotent even after custody bookkeeping advances revision.
+It records `attentionSeenFailureAt` without changing operational revision or
+terminal history. Non-owner Team/Artifact viewers retain Failed status but neither
+receive the failure notice nor write its marker. Full summaries, source strips and
+latest-Automation summaries expose canonical `failureUnseen` and
+`invocationAttentionRequired` constituents of `attentionRequired`; a genuine hold
+can remain after the failure is seen. Opening an authorized active detail writes
+the acknowledgement; collection loading, passive observation and Work peeks do not.
+
 The execution owner now exposes permission-attention selectors and passive
 snapshots through the same `execution.run.wait` observation. The workflow owner
 also accepts an optional nonempty, unique `conditions` set from `terminal`,
@@ -3426,32 +3897,50 @@ and complete catalog coverage, including the named declarative-node grammar, Act
 support declarations and icon vocabulary. This witness is excluded from Protocol's
 normal dependency build: DTO staleness fails the correspondence gate, never the SDK's
 prerequisite compilation. After changing a schema, regenerate its declaration
-projection through the same producer. Existing public projections keep
+projection through the same producer, under its existing publication lease.
+The lane changing that input runs the writer; a consumer-only edit reuses the
+prepared projection. Integration retains the full correspondence and public
+surface checks. Existing public projections keep
 validator slots opaque, erase validator-only string brands, and admit readonly JSON
 inputs without changing normalized result types.
 
-The retained Action-map producer derives each family from its selected canonical
-schema expressions in an independent compiler program, then projects the generated
-neutral declaration closure into SDK family modules and a small
-`actionTypeMap.generated.ts` index. Each family program exits before the next starts;
-its virtual declaration placement follows the module defining each canonical family
+The retained Action-map producer prepares the canonical schema expressions in one
+compiler program and shares its checker across families and public support types.
+Full and scoped derivations use the same catalog inference order; scope selects
+the outputs to publish. Each family is rendered separately, then the generated
+neutral declaration closure projects into SDK family modules and a small
+`actionTypeMap.generated.ts` index. The printer sorts union members by rendered
+text while preserving property and intersection order. Virtual declaration
+placement follows the module defining each canonical family
 export, with no separate placement list or persisted Protocol DTO copies.
 The producer never renders one whole-catalog structural map. Public support and the
 declarative UI grammar are derived from their canonical owners by the same producer.
 Stable public support exports remain derivation roots even when an Action schema
 inlines their uses; recursive interfaces retain their canonical readonly heritage.
+The same producer loads the normalized runtime catalog once in memory and emits
+`clientRoutedActionIds.generated.ts` as the type-only effective client-capable set.
+Protocol's `WithClientRoutingInput` consumes it for both public input maps and
+schema carriers; widened schema metadata never reclassifies placement. The
+generator's cheap exhaustive parity test checks every plugin-visible client-capable
+Action and the outer `action.invoke` selector against runtime schemas and SDK types.
+Runtime input normalization and routing remain catalog-owned.
+Schema-only projections without that client-input helper do not evaluate registry
+metadata; they retain the schema expression/type projection boundary.
 The SDK's declarative UI aliases consume that generated neutral grammar;
 Protocol remains the runtime parser and policy owner. SDK runtime delegates and
 validated values cross one private declaration-projection seam, retaining canonical
 identity and validation without making SDK compilation depend on DTO freshness.
 
 Use the SDK's `generate:action-type-map` command after editing canonical schemas.
-`check:action-type-map` compares the SDK outputs without
+`check:action-type-map` compares the SDK outputs and generated placement type without
 writing source; the compiler correspondence suite independently verifies their types.
 The authoritative local checkout owns all generated source writes. Its existing
-derivation lock, publication lock, input fencing and cache cover every generated family
-module and the index. Checks retain derivation custody and source fencing but do not
-take the global publication lock. One independently filtered CI drift job checks
+`.project/tmp/plugin-sdk-action-type-map.lock` covers derivation, every generated
+family module, the index and the input cache through publication. Checks use that
+same lease and retain source fencing. Neither mode acquires the CLI dist publication
+lease: the DTO producer writes SDK source, while CLI builds and declaration emitters
+publish their respective dist outputs under their existing output leases.
+One independently filtered CI drift job checks
 current output; ordinary root typechecking does not run schema derivation.
 Declaration/publication checks enforce current output;
 ordinary internal `build:prepared` dependency compilation does not regenerate or
@@ -3570,6 +4059,10 @@ previews it. The mounted Board controller keeps that request while a reply that
 draws the item is on screen; opening the item on a Board host takes it back, and
 `unavailable` is the typed result when no such reply is visible. It changes only
 this viewer's single-runner election, never the item or its Board placement.
+The optional `occurrenceId` selects an existing mounted reply occurrence. An
+unknown or retired occurrence returns `unavailable`; omitting it selects the
+reply that has been visible longest. The reply's UI uses this same Action
+through the Session shell's current-client presentation port.
 
 The same development presentation subset admits `viewer.open` and
 `viewer.source.select` with source `computer` or `browser`, plus `viewer.close`,
@@ -3591,6 +4084,13 @@ external-principal or Agent-origin internal replay.
 The mounted source/frame port supplies availability; without it the current
 presentation owner returns `unavailable`. Schema acceptance alone does not mean
 the shared viewer shell is integrated or available in a loaded client.
+
+The development author subset also admits `work.view.select` (`view: list | map`),
+`work.recent.show_more` and `work.map.expand`. The existing mounted Work pane owns
+these controls and its local view/disclosure state; hiding or unmounting that
+pane makes them unavailable. Map expansion uses the existing details pane and
+is unavailable on a phone. Neither an intent nor a plugin invocation persists
+this ephemeral state or creates a second presentation target.
 
 Viewer bindings resolve the viewing Account's qualified, existing Connected
 Account purpose selection. There is no per-instance viewer override or widget
@@ -3696,7 +4196,18 @@ payloads. A malformed successful mutation response remains `outcome_unknown`,
 not an invitation to repeat the write.
 
 Workflow review completion continues to require a present-user decision through
-the existing approval path with the exact Run/revision custody. In 0.3 development
+the existing approval path with the exact Run/revision custody.
+
+In 0.3 development, the person's own Workflow UI edits and Run now are direct by
+default. Run now starts a cancellable Run; its steps retain their own approval
+rules. Removing one trigger leaves the Habit available for another trigger.
+Deleting a whole Habit, saved Workflow definition, document, or Run history has
+no product restore path and retains confirmation with the localized Delete verb.
+Mounted draft Discard uses the editor's existing confirmation. Explicit per-Action,
+per-surface Ask first settings still win; Agent, CLI, MCP and automation defaults
+and scoped Session-trigger admission remain unchanged.
+
+In 0.3 development
 source, an Agent, MCP or CLI caller may request retained legacy trigger conversion
 through `workflow.trigger.update` with `confirmLegacyConversion: true` and the
 reviewed inline target, project and `expectedRevision`. This input requires
@@ -3715,11 +4226,34 @@ Session source checks. Unapproved or denied requests do not convert; a stale
 revision returns `currentness_conflict`. The app's direct review-and-Save path
 continues through the same conversion owner.
 
+In 0.3 development, `workflow.trigger.list` also accepts the exact structural
+`{ managedTarget: { homeId, managedId } }` selector. Machine rule reads and
+controller Moves share this selection at the Automation owner. Only matching
+definitions and temporarily unindexed rows are opened; the private inline
+Action still determines the rule. The selector is carried through the
+[Automation definition query](api.md#automation-definitions-03-development),
+not an Account-wide trigger census.
+
 `workflow.definition.list` opens saved definitions through the existing batched
-Artifact read. Account pages return before unrelated plugin discovery; the existing
+Artifact read. In 0.3 development, saved-definition pages request trigger summary
+facts only for that page's definition IDs. The CLI/UI Automation adapters carry
+this set through `POST /v3/automations/query` to the existing Account list query
+and projection; singleton trigger reads retain their GET selectors. The set
+inherits the structural Artifact page maximum. An unsupported or failed query
+marks returned definitions with a typed `triggerSummaryErrorCode`; authorized
+definition content remains listed. While that field is present, `triggers: []`
+and `nextRunAt: null` are unavailable enrichment, not evidence of no triggers.
+The library shows the existing localized unavailable label and trigger filters
+retain unknown coverage. No Account-wide fallback or retry census is performed.
+Account pages return before unrelated plugin discovery; the existing
 `nextCursor` carries the plugin continuation after the Account pages. The shared
 library displays saved rows while that continuation is pending and retains them
-if plugin discovery fails. A recognized Workflow header with missing or invalid required fields,
+if plugin discovery fails. In 0.3 development, an exact plugin open supplies
+`workflow: 'plugin:<pluginId>/<localId>'` to the same list Action, without a cursor
+or limit. The shared source resolver returns only that admitted plugin descriptor,
+or an empty plugin list when unavailable, without reading saved Artifact pages.
+Mounted reference and catalog readers reuse an already-admitted library hit.
+A recognized Workflow header with missing or invalid required fields,
 or a readable header with a missing, malformed or
 unreadable body, remains a typed `contentStatus: 'unavailable'` row with
 `stepCount: null` and `contentUnavailableReason`; valid neighbors still load.
@@ -3733,12 +4267,18 @@ Stored Workflow readers drop unknown fields recursively, including a stray heade
 only the canonical shape. Attribution belongs only to owner-private revision
 provenance, never to a shared header. Restoration projects the same known fields;
 request and Action inputs remain strict. Raw Account encryption conversion preserves rejected bytes without
-making them readable. Transport, authentication and Account-mode failures
+making them readable. Artifact transport, authentication and Account-mode failures
 remain request-wide, and an unopened header is never inferred to be a Workflow.
 The lean row's `nextRunAt` is the earliest persisted occurrence among enabled
 scheduled triggers in enabled Account-level sets, or null when none is scheduled.
 The shared trigger summary owner reads this scheduler fact without opening private
 trigger context or calculating schedules in clients or Boards.
+
+Mounted Run controls consume the shared Run row's current caller access, including
+same-revision lean refreshes. The existing Account change feed revalidates access
+on Run changes, grants on the Run's source Artifact, and Team membership changes;
+revoked Runs leave the shared row owner. Frozen accepted detail is not an access
+snapshot for later controls, and no polling timer is involved.
 
 Frozen Action input and output schemas use the same Protocol-owned draft-07
 JSON Schema dialect and Ajv compiler. Self-contained `definitions` and `$defs`
@@ -3808,18 +4348,20 @@ additional authority. A client plugin Action's nested host Actions do not inheri
 that bypass: they enter ordinary plugin-surface policy with their own caller
 provenance, so defaults, explicit Ask-first settings and waivers apply separately.
 
-The existing server routing selects the lexicographically first eligible socket
-id advertising the method in that Account's machine/method room, excluding the
-calling socket, or refuses multiple receivers when the invocation requires one.
+The server selects eligible handlers in that Account's machine/method room,
+excluding the calling socket. Every client-routed UI Action uses the shared
+exact-client, sole-client and pushed-focus rule described above; ambiguity
+returns candidates before any receiver executes.
 Session-bound Next and conversation search select the app viewing the invoking
 Session through its Session-qualified method, while retaining their Account-wide
 operation scope. No matching view is `noClient`; multiple matching views are
-`client_ambiguous`. Unbound calls use the generic client room and require one receiver.
+`client_ambiguous` unless the shared focus rule selects a unique receiver.
+Unbound calls use the generic client room with the same selection rule.
 Daemon availability advertisements are hints, and the server's current
 registration selection decides absence rather than a daemon-local negative.
 Action inputs still address their exact Session, composer or
-mounted surface where supported; delivery does not elect a device or retarget
-an absent view. Browser automation retains its separate exact-view controller
+mounted surface where supported; client choice does not retarget an absent view.
+Browser automation retains its separate exact-view controller
 custody and interrupted-completion contract. Contributed plugin client Actions
 retain their own artifact/schema and plugin-occurrence lifecycle dispatch.
 
@@ -3859,6 +4401,24 @@ the CLI does not claim that the view opened. The catalog's `placements` field li
 locations such as command palettes and menus; it does not report connected
 clients. Tool exposure remains a separate policy: removing a transport-gap
 override does not change the default Agent discovery budget.
+
+In 0.3 development source, `projects.pages.list {workspaceRefId,serverId}` is
+the safe client read for an accepted Project's built-in and applicable plugin
+pages. Its closed `{pages}` result carries host-generated `href`, title, icon,
+kind and disabled reason, plus exact plugin/local destination identity for
+plugin entries. It uses the same Project context, policy and page catalog as
+the rendered shell, with no navigation, SCM discovery or Run-on selection.
+Open the returned href with `workspace.tabs.open`; no second page-open Action
+or Machine-targeted `projects.open` step is involved.
+
+Project tab customization uses `settings.get` / `settings.set` at
+`appearance.navigationPlacements`, with a single-surface patch
+`{projectTabBar:{orderedIds,placements}}`. The existing placement writer merges
+it into current device-local preferences, preserving other surfaces and inert
+removed ids. Desktop and phone share that Project surface. The declaration's
+safe personal-preference policy supplies the normal no-default-approval behavior;
+explicit user Action settings still apply. Hiding changes navigation placement,
+not policy admission or direct-route authority.
 
 Workspace tabs/groups/split/resize, `updates.*`, `machines.cli.update`,
 `app.updates.*`, Account sign-out/forget-all/delete, prompt-template authoring and
@@ -3962,6 +4522,21 @@ owner is unavailable; a view that the Library does not offer is refused. These
 choices stay in the mounted client's presentation state, without server
 persistence or cross-window coordination.
 
+Library view inputs accept optional `clientId` (CLI `--client-id`). Run
+`happier workflow library view get --json` to read the selected answering
+client and discover `answeringClientId` plus eligible `answeringClientIds`.
+When no unique focus fact can choose among several clients, this read returns
+`client_ambiguous` with `details.clients` instead.
+If that client has no focused Library, the unavailable result retains these
+addresses in its error details.
+Read each candidate with `--client-id <id>` to identify its mounted Library,
+then use the same selector for set/reset. All three operations use the shared
+client-choice rule and refuse unresolved ambiguity before execution.
+An absent selected client is unavailable; no other app is substituted.
+Socket ids expire on reconnect. The existing `answering-client.v1/` operation
+protects selection on the relay; an unsupported relay returns
+`client_routing_update_required` without unselected delivery.
+
 `settings.list/get/set/invoke` discover U4 setting declarations by anchor. Explicit
 declaration bindings name the canonical Account or device preference key or an
 owner-backed nested field and its exact mutation schema;
@@ -3997,6 +4572,19 @@ writes use the answering client's picture catalog to retain only differences
 from each known picture's release look; an absent catalog entry retains its
 authored overrides. Look entries contain `look`, `strength` (0–1) and `dissolve`.
 The UI's Fade control is that dissolve style, not a separate numeric override.
+The saved picture reference remains the person's choice. Home's hourly idle
+resettle derives the shown built-in picture from that choice and its optional
+`picture.selectedAtMs`; it never writes Account settings. Picking, Shuffle and
+the picture-reference Action record a deliberate selection time, so the chosen
+picture appears first. Full-object Home and Project mutations also anchor a changed
+picture source/reference at the mutation owner; presentation-only edits retain
+the selection time. Home and inheriting readers share one admitted display sample,
+including a Look editor opened later while writing withholds a resettle. The sample
+advances on a deliberate selection, an admitted resettle or a fresh arrival, with
+no polling or automatic Settings writes. Older stored choices without a time use the Unix epoch
+for the same deterministic sequence. Own pictures, contributed pictures and
+explicit Project overrides keep their selected picture. Look's picker shows
+the saved choice; its per-picture controls and credit describe the shown picture.
 Glass preset and intensity retain their
 existing `appearance.glassPreset` and `appearance.glassIntensity` bindings.
 
@@ -4258,6 +4846,17 @@ Declared speech endpoints share the rendered endpoint normalization and consent 
 HTTPS clears insecure-origin consent, while HTTP consent is bound to the exact origin
 and reachable execution computer and rechecked before each prepared mutation applies.
 
+### Native Realtime Session authority (development)
+
+Native Realtime Start is **Session-owner-only** in 0.3 development: it uses the
+owner's Agent account. The server verifies ownership at the canonical Session RPC
+policy, and the host requires trusted owner-classified Start context before
+creating its live-attempt input admission. Missing owner proof refuses native
+Start, not unrelated Session operations. Shared editors retain ordinary input and
+question-answer access. Native turns use the existing Action discovery/execution
+and approval policy, but cannot decide approval requests; End, disconnect or
+retirement withdraws their input admission.
+
 ### Client-local Voice controls (development)
 
 Standalone realtime Voice advertises hot-path Actions directly. Discover other
@@ -4289,7 +4888,39 @@ dismissal and reads are direct by default. The current attempt read
 reports captured destinations and actual availability, rather than promising
 that an unsupported host can start Voice. Brief delivery remains demand-mounted
 on the ready Home/Inbox surface; missing owners return typed unavailability.
-Approvals inside a brief remain tap-only and cannot be answered by speech.
+In 0.3 development, **Voice agent can approve requests** (`voice.canApproveRequests`)
+defaults on for Local Voice and realtime modes exposing host decision tools. The
+Voice agent may approve or deny any pending request on the person's behalf through
+the existing decision owners, including requests surfaced in a brief.
+Prompt guidance tells it to read the request, ask, and follow the person's answer.
+Decisions are attributed to the Voice agent acting for the person. Turning the
+setting off requires a tap in the request UI. The captured Account's current
+preference is checked again when a prepared decision resumes and immediately
+before its decision write or Session response is issued. Revocation returns
+`present_user_required`; it does not undo an already-issued effect or receipt.
+Explicit cancellation of an approved but unclaimed request is still a new
+decision write and revalidates delegation; passive execution claims/results do
+not acquire that check.
+Current V2 approval decisions record the host-derived optional
+`decidedVia: 'voice'` for both approval and rejection, alongside the unchanged
+deciding Account and requester provenance. Absence in history is unknown, not
+evidence of a person's tap. Requester/Bot Session confirmation carries the
+guarded host's private `decisionSource: 'voice'` through the existing authenticated
+RPC packet. Ingress validates the exact literal only after requester/Session
+admission, removes it before strict Action parsing and carries it on verified
+requester context to the remote canonical decision writer. Its surface stays
+`rpc`; no new authority is granted, and neither modality field is public Action
+input. On this requester path the modality is reported by the deciding person's own
+authenticated client and is not independently host-verified, so `decidedVia` there is
+an attribution label, never an authority input; a modified client of that same person
+could mislabel its own decision, and nothing else trusts the field. The received viewer Artifact is not rewritten. Native Session response
+history retains its existing
+format. Other automated callers retain their
+existing authority floors. Ending Voice leaves pending requests reachable.
+Native Codex Realtime is excluded: its agent reads the request within the sharing
+policy, says that it cannot decide there, and directs the person to tap the request
+or switch to Local Voice. This does not widen its current-UI-only host surface or
+the attached Agent's authority. See [plugin platform](plugin-platform.md).
 
 Presentation Actions borrow the answering window's mounted owners: Glance
 open/close, transcript visibility, Companion reveal, normalized Island/Orb
@@ -4316,6 +4947,18 @@ cancel inserts nothing. Retired, hidden, disabled or other-Account fields return
 typed unavailability rather than targeting another input. The one current-UI
 mount and existing Dictation controller own this capability; no draft or recorder
 is created by the Action adapter.
+
+In 0.3 development source, `ui.voice_global.history.search`, `.load_older`,
+`.export` and `.clear` use the answering client's existing History consumer.
+Search filters loaded text and provider names; explicit refresh rediscovers the
+owned Voice conversations through the ordinary active and archived Session-list
+owner. Ordinary user and Agent text belongs to that conversation's history;
+direct-media provenance is not a second membership rule. Export streams the loaded or complete history,
+optionally filtered, to the client's download/share target and returns file
+metadata. Clear retains destructive approval and deletes the discovered owned
+Voice conversations through ordinary Session deletion. The legacy direct-media
+carrier is no longer a History search/export source. The History page uses the same Actions and
+consumer, including Account currentness, pagination and delete-wins retirement.
 
 The 0.3 development `settings.invoke` operations `voiceConversations.readiness`
 and `voiceDictation.readiness` return the page/setup's semantic readiness and
@@ -4441,6 +5084,24 @@ an uncertain effect. Channels has no literal rename field: the displayed
 endpoint label is not a newly writable preference.
 
 These are development-source contracts, not a released availability claim.
+
+The development `happier.channels/actions/session-pull-request-watch-v1` Action
+owns linked-PR watch reads and configuration in Account placement. Its Account
+`list` arm has no Session operand; targeted arms retain canonical one-Session
+resolution and binding revision checks. Off, Notify, Analyse, Address and
+Auto-fix are declared for every Agent. Address/Auto-fix instructions scope work
+to the bound head branch, prohibit force-push/merge/enqueue/auto-merge, and direct
+replies through the existing marked publication Actions. These are task
+instructions, not a native-shell interceptor or an enforcement capability.
+Ordinary Action and Session approval policy remains authoritative.
+
+For Auto-fix preparation, existing `scm.status.snapshot` and `scm.remote.pull`
+Actions accept optional `sessionId: SessionTargetV1`. A supplied operand selects
+the admitted Session's checkout rather than an unrelated inherited Machine or
+execution-run target; an omitted operand preserves existing SCM placement.
+The existing pull owner still decides fast-forward and dirty-work behavior.
+The counted fixing sequence, C1 continuation/attention and composed watch journey
+remain integration work; these declarations alone do not prove a completed loop.
 
 The safe Channels management reads share the UI's Account projection owners:
 `connection/list-v1`, `binding/list-v1`, `ingress/attention-v1`,
@@ -4666,11 +5327,19 @@ before resuming or starting the Run. An unavailable host start context returns t
 content-free `details.issues` path `host`; Run refusals retain their authoritative
 creation certainty through the existing failure projector.
 
-For an Agent Session's `session.spawn_new`, omitted `connectedServices` inherits
-the parent selection when the resolved child Agent is the same. An explicit
-binding object overrides it; `{v:2,bindingsByServiceId:{}}` selects native
+In 0.3 development source, Session-caller starts inherit an omitted Launch Profile
+and `connectedServices` from the authenticated baseline when the resolved child
+Agent and Machine are the same. This applies to `session.spawn_new`, attached
+execution Runs, Review, planning, delegation, Voice, Approval reviewer Roles and
+Workflow leaves carrying that baseline. A model reference alone does not clear
+Connected authentication. Run `launchProfileId` names the Launch Profile;
+Run `profileId` still names a plugin execution Profile. Explicit bindings,
+native resets and Account-default choices retain precedence. An explicit binding
+object overrides inheritance; `{v:2,bindingsByServiceId:{}}` selects native
 authentication. Root and different-Agent Session starts use Account defaults
-when omitted. `session.status.get` on `self` exposes the authorized Session's
+when omitted; incompatible attached Run inheritance returns the existing typed
+child-choice refusal. Inherited choices are re-admitted before materialization.
+`session.status.get` on `self` exposes the authorized Session's
 content-free `connectedServices` selection for explicit reuse; a missing field
 means unavailable selection evidence, not native authentication. Pool reads and
 inheritance preserve the pool id without pinning its current member.
@@ -5066,6 +5735,16 @@ CLI command is exposed through that ingress; undeclared client Actions remain cl
 standalone CLI without an answering app receives the typed `noClient`/unavailable result
 unless that Action declares a headless source, as `inbox.get` does below.
 
+In unreleased 0.3 source, a daemon plugin's ordinary contributed-Action call
+reads the exact placement descriptor with its host-stamped `plugin` surface and
+`account_automation` authority. A Machine-placed callee in the bound runtime
+executes locally through canonical Action admission and the current runtime
+invoker, without repeating Account/Machine selection. Plugin-only descriptors
+remain unavailable to CLI callers. A plugin call without a bound execution
+owner returns `plugin_action_execution_placement_unavailable`; it cannot borrow
+CLI authority. Account placement and explicit target-routing currentness checks
+retain their existing owners.
+
 In 0.3 development, placement is resolved independently for each child of a
 composite Action. `executeHostChild` sends Machine-placed children through the
 credentialed host's existing root placement router, including during an
@@ -5080,6 +5759,14 @@ refuses a missing daemon-applied runtime before materialization or storage. Its
 existing `target_unavailable` result carries reason
 `requester_runtime_unavailable` and retains
 `PLUGIN_DAEMON_RUNTIME_UNAVAILABLE` in `details.errorCode`.
+
+In 0.3 development, Workflow Run list names are private display projections of
+the accepted snapshot. Authored metadata wins; an accepted built-in catalog
+reference without metadata uses its portable built-in title. Anonymous inline
+Runs remain unnamed, and unreadable private content remains unavailable. This
+does not rewrite accepted/replay metadata, query a mutable definition, or add
+per-row reads. Opened detail publishes the same display metadata into the
+Account Run store.
 
 In 0.3 development, `session.work.get` and `inbox.get` use this same CLI ingress to
 prefer the answering app's mounted canonical projection for the exact Home and
@@ -5099,10 +5786,14 @@ client placement, retaining their existing authority, approval, and domain
 contracts. `inbox.mark_all_read` reports client absence as the typed
 `unavailable`/`noClient` failure rather than an acknowledgement list.
 
-The development `inbox.get` ready result includes the mounted model's canonical
+The development `inbox.get` ready or partial result includes the mounted model's canonical
 `items`: type, view, read state, qualified source, exact focus and `pageRoute`.
 Discussion rows retain their exact message reference and Doc proposal disposition;
 `coverage.discussions` reports complete, partial or unavailable source coverage.
+An incomplete private Artifact source preserves other admitted rows in a `partial`
+result, with notice coverage in `coverage.sources`. Pending reads retain
+`isLoading`; failed or unreadable Artifact coverage sets `refreshFailed`. An empty
+incomplete projection still returns `loading` or `unavailable`, never caught up.
 Opening a proposal marks it read without deciding it. The existing grouping and
 source-id fields remain projections of the same mounted model.
 
@@ -5138,6 +5829,15 @@ in source each class is a combination of existing fields, so there is no `class`
 | **Q** (query) | `safety: 'safe'`, `requiredAuthority: 'account_automation'` | A read. Agent-exposed by default. |
 | **M** (agent may propose) | `safety: 'danger'`, `requiredAuthority: 'account_automation'` | A consequential mutation an Agent may invoke, reaching human consent through the derived approval floor rather than through a refusal. |
 | **H** (human only) | `requiredAuthority: 'present_user'` | Account security, root-token administration, sign-out-everywhere, plugin trust/install/secrets/hooks/grants, Runner activation and declared Team identity/directory administration require present-user authority. Token decisions and conversational input have the explicit admission exceptions below. |
+
+In 0.3 development, the Account preference **Voice agent can approve requests**
+(`voice.canApproveRequests`, default on) delegates approval and denial of pending
+requests to the host's Voice agent in Local Voice and host-tool realtime modes,
+acting for the person. Native Codex Realtime is excluded. This is a narrow decision
+capability through the existing approval owners, not direct execution authority for
+other effects. The original Account and request entitlements still apply. Turning
+the setting off restores the tap requirement; Agent, MCP, API-token and other
+non-Voice callers keep the authority rules below.
 
 `resolveCredentialActionAdmissionV1` admits `approval.request.decide` and
 `session.permission.respond` for a present user or an API token with opt-in
@@ -5252,8 +5952,28 @@ responsibility consent, not proof that resources were deleted or authority to
 retry without normal Action admission.
 
 Session Actions include `session.delete` (the existing durable Session deletion;
-the daemon owns managed-folder cleanup), `session.folder.set` and `session.tags.set`
-(the existing Session-organization assignment routes). In current 0.3 development,
+the daemon owns managed-folder cleanup), `session.section.set` and `session.tags.set`
+(the existing Session-organization assignment routes).
+
+In 0.3 development, the canonical `session.delete` executor owns the bounded
+Stop and Delete operation. It uses the existing Home DELETE first: inactive
+Sessions delete without contacting their computer. Only the Home's typed
+`session_active` refusal invokes the exact reviewed `session.stop` child; a
+confirmed Stop permits one Delete retry. An incomplete Stop, failed Stop hold,
+refusal, deferred review or cancellation prevents that retry. Stop Require is
+included in the Delete review, and Agent requests retain their ordinary Action
+policy. The host-local child declaration supplies the existing reviewed-child
+issuer; it adds no caller operand, discovery field or second approval owner.
+A person's confirmed Delete also confirms that declared Stop child, so the
+operation does not ask again unless an explicit Require policy needs review.
+Session Info and list menus use the same Delete operation; their Stop and Delete
+wording does not decide whether a Stop runs. Inactive deletion, including an
+offline computer, keeps the direct Home path.
+Direct Home DELETE retains its inactive guard and typed absent/active/conflict
+responses. Delete adds no separate liveness read.
+
+
+In current 0.3 development,
 ordinary `session.open` navigates without starting a process. Explicit `intent: 'resume'`
 resumes through the same Action admission and exact-Home Session reader; durable
 approval retains that intent rather than settling it as navigation. It also accepts
@@ -5272,11 +5992,45 @@ target; previews never contain credential values or private credential paths.
 Session and native Action delivery retain current Account and Machine custody
 checks even when the caller has configured an approval waiver.
 
-The `session.folders.*` and `session.tags.*` list/create/rename/delete Actions project
-the existing organization snapshot and upsert/delete routes. They do not introduce
-another organization store. The host seals display envelopes for the persisted Account
-encryption mode and opens them for an authorized read. Rename uses the existing upsert
-contract, including the caller's retained key, parent and ordering fields.
+In unreleased 0.3 source, `session.sections.list/create/update/reorder/delete/archive`
+and `session.section.set` expose Account sections through the existing organization
+snapshot and folder mutation owners. A section belongs to one Account on one Home;
+it can contain Sessions from different Projects and Machines without changing where
+they execute. Public operands use `sectionId`. Persisted folder identities and the
+existing folder HTTP DTOs keep `folderId`; the Action seam translates once. The
+generated Action reference owns the exact schemas.
+
+Names and icons remain private display content. The host seals `{name,icon}` for
+the persisted Account encryption mode and opens it for authorized reads. Retained
+0.2 folder displays and assignments remain readable; a locked display retains its
+identity and membership. Update preserves omitted fields, and the folder record's
+`sortKey` alone orders sections. Tag Actions keep their existing upsert contract.
+
+Explicit reorder may normalize retained null, padded or duplicate order keys.
+An opened sibling with no name, including a retained `display:null`, does not
+block this order-only write: its original display, identity and parent fields
+are preserved. It remains unavailable as a named Section; no title is invented.
+Genuinely unreadable or mode-mismatched display evidence still prevents a repair
+that would rewrite that definition. Stored readers ignore unknown fields;
+fresh Action and mutation inputs remain closed.
+
+Section removal uses the existing folder DELETE nonrecursively: only the named
+definition is archived. Its own assignments and direct legacy children move to its
+parent; at root, its own assignments clear. Child assignments and Sessions survive.
+The historical `moveAssignmentsToParent` input literal is unchanged. A repeated
+removal reports no removed definition or affected assignments. An older 0.2 Home
+still performs its older recursive removal; a 0.3 client adds no alternate route
+or negotiation for that operation.
+
+Section organization and removal are safe Actions under the ordinary configurable
+approval policy. Archive reads exact section assignment membership, including
+unloaded Sessions, and invokes each member's existing `session.archive` policy.
+Its result distinguishes archived, failed and unknown members. An acknowledged
+assignment result includes captured previous membership for an inverse move;
+unknown outcomes supply no Undo. Undo rechecks membership when activated and
+preserves an intervening move. Public spawn placement also uses `sectionId`, mapped
+at Action admission into the existing internal `folderId` birth placement before
+Session creation; drafts, correspondence and replay retain that internal shape.
 
 Class-H token-management and security rows remain excluded from public API
 execution. Agent and MCP exposure is still authored per row; other class-H rows
@@ -5316,6 +6070,52 @@ Session awareness and pending-request owners (`components/plugins/surfaces/plugi
 scoped to the mounted Account's own Session store.
 
 ## Approval is decided in one place
+
+In 0.3 development, a retained native plugin `discussion.post` or
+`discussion.reply` keeps its open person approval when its executable generation
+retires. The successor reconstructs the native operands from the existing
+retained obligation and rejoins through the approval creation owner. Account,
+Home, Machine, plugin, contribution, `localId` and canonical input must match;
+generation custody and invocation correlation may change. The original consent
+and decision remain unchanged: approval permits one publication, rejection none.
+Explicit caller withdrawal still cancels; changed input cannot rejoin. The
+successor's live factory-bound custody supplies execution, never a new person
+authority or an executable origin reconstructed from an Artifact.
+Attachment-bearing publications keep attempt identity: retirement cancels their
+Ask and the successor asks again with its freshly materialized file paths.
+
+Accepted glitch in 0.3 development: if a retained request retires with no
+successor because the plugin is disabled or uninstalled, or the obligation is
+dropped, its Ask stays open without an executor. Approving it cannot publish
+while there is no matching successor. The stale Ask and absent publication are
+visible and recoverable: the person can reject it or restore the plugin and
+obligation so a matching successor can rejoin. There is no sweeper or timer.
+
+In unreleased 0.3 Plugin UI source, `Action.Control` binds a host-rendered control
+to an Action reference and controller. Its button is physically owned by the mounted
+host on native and hosted-web, including details panes. A press asks that controller
+to freshly prepare one invocation; the host then executes it with `surface: 'ui'`,
+`authority: 'present_user'` and a host caller. The plugin never receives that authority.
+Its ordinary `executeAction` and `Action.Execute` requests remain plugin automation.
+The canonical approval policy therefore keeps direct person-UI compute distinct from
+Agent, MCP and raw plugin defaults, while explicit Settings Ask and setup consent
+continue to apply. Allowing a Project preference does not run its command. Settlement
+returns the existing Action envelope to the preparing controller; an uncertain
+acceptance is never retried automatically. See [mounted host Action controls](plugin-platform.md#mounted-host-action-controls-03-development).
+
+In 0.3 development, original CLI input requiring Machine admission, including
+E2EE input, carries `actionRequestAttributionV1` in its protected request
+before content sealing. The message producer uses the sending Account credential,
+checked against the Home-admitted Account binding on routed sends. Machine
+ownership never supplies the requesting person, including on shared Machines.
+Conflicting requester, input or persona claims are refused before admission.
+The receiver retains this fact in protected input authority for the Agent's
+subsequent Actions; authored message metadata cannot supply it. Ordinary UI and
+plaintext CLI sends keep their authenticated Account-receipt path. A routed
+plaintext send requiring Machine admission carries the same attribution without
+requiring Account encryption keys. Already-persisted input
+without attribution remains unknown and fails closed when requester confirmation
+is needed; there is no owner fallback or attribution backfill.
 
 In 0.3 development, replay uses the approval's validated origin Session as its
 contextual `defaultSessionId` when the proposal omits `sessionId`, including when
@@ -5444,6 +6244,12 @@ typed `profile_missing` cause, and Protocol applies the entry's `required` polic
 to both header-only and body reads. Required entries still fail closed; no other
 Home's credentials are substituted. Missing preparation scope and transient
 transport failures remain unavailable rather than proving absence.
+Optional stack entries may be omitted only for `not_found`, with the existing
+coding Session capability notice. Transient failures return `preparation_pending`;
+locked/mode-mismatched, wrong-kind and malformed content return
+`attachment_unavailable`, just as required entries do. Coding and bound Voice
+share this decision. Existing accepted-input retention owns retry; preparation
+does not turn failed reads into empty text or introduce another queue or timer.
 Disabled or inherited-suppressed
 entries are not admitted; intentionally memory-off entries are omitted too.
 Typed preparation errors carry partial `admittedEntries`, including the failed
@@ -5579,6 +6385,9 @@ prompt document, and its confirmation belongs to the Action policy.
 
 `prompt_doc.get` returns the actual Artifact revision
 `{headerVersion, bodyVersion}` with its current title and Markdown.
+Its optional `provenance.savedBy` projects only the opened private revision's
+person or Agent/Session identity. Workspace source paths and restore metadata
+remain outside this Action's result. Missing revision attribution stays unknown.
 `prompt_doc.update` accepts that read's optional `expectedRevision`.
 `updatePromptDocInLibrary` compares both versions against its fresh read before
 constructing the mutation. A changed review basis returns `version_mismatch`
@@ -5596,6 +6405,18 @@ same specs and policy; authenticated human authority decides required approvals.
 An approval decision is not a saved-content receipt: the mutation result determines
 whether the write succeeded or conflicted. The Work editor and its retained-draft
 review UI remain development integration work.
+
+The Instructions detail read model consumes that same revision attribution and
+the Session's existing approval receipts. An authenticated approving Account is
+shown only when an executed `prompt_doc.update` receipt names this exact document
+and accepted body version. A later body edit cannot inherit that approval, and
+a denied edit leaves the previous body and its provenance intact. Pending,
+updated, denied, conflicted, canceled and failed results come from the existing
+approval lifecycle; the diff read model exposes the same outcome for its result
+surface. The detail hydrates only this Action's receipts. A foreign-Home document
+keeps its own private revision actor but cannot borrow a same-id receipt from the
+Session's Home. Names remain display projections of admitted identities, never
+inferred from timestamps, titles or the Account currently viewing the page.
 
 ### Memory documents (0.3 development)
 
@@ -5681,6 +6502,12 @@ memory pointer or another memory store.
 The first `memory.remember` may instead name a qualified Session and reviewed
 metadata revision. This Session-targeted form requires the Session's current memory
 choice to be on; an off choice refuses before document reads or creation.
+The Session target is an exact owner view in the captured Account/Home, not any
+readable recipient metadata view. Clients refuse an unavailable owner proof with
+`session_target_unavailable` before reading private Project context; a published
+Session Project key does not grant that authority. Released layout-zero owner
+projections remain usable through the canonical access normalizer. Direct
+document-targeted memory continues to use its separate Artifact access contract.
 Unrelated Session metadata revisions do not invalidate admission: the owner
 rechecks the memory choice and selected target, while the reviewed document
 revision and approval target remain strict. A Bot
@@ -5807,6 +6634,18 @@ another caller's write (agent-start policy and materializer) is relayed to the
 authorized host, and Keep going on an opened Session reads native-goal ownership over
 that Session's `session.goal.get`. An unreachable host yields typed `target_unavailable`.
 
+In unreleased 0.3 source, New's managed Workflow continuation acquires and enrolls
+the reviewed Machine through the existing managed-creation owner, then admits the
+durable Workflow Run through the existing Run owner. Only an accepted Run can
+become the `workflow_run` source of its creation-scoped FIN rule. Keep writes no
+rule; Stop/Delete use the existing controller-pinned, after-idle managed Action
+binding. An incomplete binding retains that accepted Run for repair within the
+current composer instead of admitting another task. Finite Action operation ids
+are never task-finish identities. Workflow composer progress-badge pass-through
+and task-specific scope-choice labels remain UI integration work; this source
+continuation alone does not make that choice reachable in the rendered workflow
+composer.
+
 Development Session-trigger admission: the Protocol trigger owner uses
 `resolveActionAgentStartContextV1` and `admitAgentStartV1`, not captured subtree
 membership. Foreign Session access is re-proved after awaited preparation and
@@ -5846,6 +6685,10 @@ reports a created approval artifact to its caller, and the present-user UI, whos
 continuation follows the artifact and consumes the replayed typed result. In 0.3 development,
 CLI invocations also return `approval_request_created` with the Artifact id before exiting;
 they do not silently retain the daemon HTTP request while waiting for a human decision.
+Explicit `approval.request.create` uses the same surface and custody policy for its
+target Action; an ordinary CLI/UI proposal can therefore execute after the requesting
+invocation ends. Live-only input remains ineligible for explicit durable creation,
+and live-only result custody retains its existing continuation requirement.
 The operation has not executed when that result returns. In development source,
 the mounted experimental Provider-model confirmation retains its exact invocation
 through the existing blocking approval owner. Changing its Agent target, Home,
@@ -5931,6 +6774,13 @@ copied from a transcript alone cannot supply that Machine proof.
 such as passwords. The artifact carries only the declared input projection from creation, and a
 replay without the live invocation fails closed. CLI rows with either live-only custody declaration
 retain their blocking invocation; Agent and MCP blocking callers are unchanged.
+In 0.3 development, deciding a request whose live input invocation has ended settles
+the Artifact as `failed`, with `approval_stale`, reason `live_invocation_unavailable`
+and `effectAttempted: false`. The Approve Action returns that typed refusal, including
+on repeat decisions; the requester and Inbox can read the same terminal receipt.
+Re-run the original Action to supply fresh live inputs. An attached caller instead
+executes once with its retained input and receives its terminal result. Approval
+history never acquires the omitted inputs, and durable-input replay is unchanged.
 
 The development personal Saved Secret `secrets.create` and `secrets.update`
 Actions use this live-only input custody when carrying a value. Their observation
@@ -6108,12 +6958,23 @@ acknowledgement. Cancellation can stop a pending call, but cannot erase its
 received effect receipt or authorize a replay. Passive read observations retain
 their caller-lifetime and reconnect withdrawal.
 
-In 0.3 development, an issued read whose original Socket.IO namespace is
-lost settles as `RPC_TRANSPORT_UNAVAILABLE`, without waiting for its authored
-deadline. Read-only classification derives from the bound Action's none/read
-effect metadata or an explicit internal-read fact at the RPC governance owner;
-an unclassified method is not assumed to be a read. The error retains its issued
-disposition: this local transport failure is not a pre-execution refusal.
+For transported RPCs in 0.3 development, the existing `rpc-cancel` follows the
+caller's connection-local correlation through the Home to the exact target.
+The target's `RpcHandlerManager` owns the native acknowledgement: once it has
+observed cancellation, it skips abandoned response encoding and suppresses the
+callback, including cancellation received during asynchronous encoding or
+cleanup. Machine, Session and ephemeral receivers share this owner. Calls with
+`waitForResultOnCancel: true` keep their cooperative result custody; the Home
+forwards that existing policy to the target. Older daemons may still send their
+late result, which an already-cancelled caller discards. Cancellation cannot
+retract bytes emitted before it reaches the target.
+
+In 0.3 development, an issued call whose original Socket.IO namespace is
+lost settles as `RPC_OUTCOME_UNKNOWN`, including reads, without waiting for its
+authored deadline. Its issued disposition survives serialization; a namespace
+disconnect is distinct from `RPC_TRANSPORT_UNAVAILABLE` during target discovery
+or before dispatch. Replies belong to the original namespace acknowledgement;
+another connection for the same Account or purpose cannot receive that ACK.
 Existing demanded-read owners revalidate on their ordinary reconnect wake;
 an authenticated Home reconnect requests a fresh snapshot even while an old
 watch is parked or preparing. Ordinary Machine request-success wakes only renew
@@ -6282,9 +7143,31 @@ change the unaddressed route's receiving client.
 
 ## Finite Project command observation and output (0.3 development)
 
+`projects.compute.exec` accepts an optional `execution: 'primary' | 'portable'`
+constraint. Omission keeps portable placement. `primary` pins admission and
+execution to the accepted source checkout's Machine, even when saved worker
+preferences select another Machine. An explicit worker choice or conflicting
+accepted Machine is refused before launch. Front-door routing and daemon
+admission use the same Project placement resolver; older strict readers refuse
+an unsupported explicit constraint rather than silently running it elsewhere.
+
 The public operation Actions adapt the existing Account-scoped Machine operation
 authority; they do not add an operation store or execution controller. Get may
 wait for the admitted operation's terminal result without replaying its launch.
+
+In current 0.3 development source, request-id deduplication holds only while the
+daemon still holds the Account/Machine-scoped Action receipt; changed input is
+rejected with `action_request_input_conflict` while that receipt is retained.
+Receipts are process-local, with settled history limited to 50 entries / 24 h.
+After a daemon restart or receipt eviction, Project commands and prepared
+transfers may run again under the same request id. Finite `projects.prepare`,
+`projects.script.run`, `projects.compute.exec` and prepared filesystem
+copy/upload/download lack a durable request-to-run or request-to-transfer
+settlement record. Re-admitting the same request id after receipt loss can start
+another effect. Project setup completion records describe current readiness,
+and transfer staging files hold bytes; neither recovers the original request's
+result. Durable effect-owner replay for these families remains unimplemented.
+
 Qualified operation observation, Stop and output retain their original Machine;
 an unavailable original does not redirect them to a replacement Machine. This
 also applies to retained Workflow observation and recovery.
@@ -6449,6 +7332,57 @@ Attribution grants no authority. Unknown or
 autonomous causes never become the Bot owner, and retained history is not a full
 audit log. Byline rendering is still being integrated.
 
+A direct person-started Workflow Run freezes `authenticatedStarterV1` inside its
+accepted origin when the receiving host has current, Home-authenticated Account
+custody for that direct UI or CLI invocation. Public start inputs cannot supply
+this fact. Original CLI input uses REQATTR's authenticated Account or paired
+terminal classification, independently of execution authority and terminal
+approval policy. CLI Workflow birth uses the existing Home-issued Machine proof
+and sealed requester context even on the caller's own Machine; private daemon
+root control alone carries no authenticated requester custody.
+A CLI running inside an Agent Session retains its Agent cause
+and cannot stamp a person starter. The credential reader preserves private Session
+custody through an explicit saved-Home selector; that custody never qualifies as
+interactive stored credentials in the shared approval/starter classification.
+An original CLI start without that person classification returns
+`approval_requester_unavailable` before Run admission.
+The starter contains the qualified Account and original request id;
+it does not invent a Session before a participant exists. A Session participant
+then supplies its actual Session persona when producing protected input and
+retains the starter as the requester. An existing admitted causal attribution
+takes precedence. The fact grants neither permission nor approval, and does not
+convert the Run owner's or executing daemon's credentials into a person.
+Workflow steps apply the same precedence. Before any participant Session exists,
+including its `discussion.invite`, the exact accepted starter is the approval
+subject. The host carries `authenticatedStarterV1` on its `workflowRun` caller;
+the shared approval owner binds confirmation to that person's Account and Home,
+through ordinary Account approval and exact-daemon replay. An origin Session is
+not required. The invitation's existing replay-currentness owner compares the
+retained starter with the accepted snapshot; a substituted or omitted subject
+cannot acquire consent. No Session or Run persona is fabricated.
+A person starting another round or replay starts a new Run with that person's
+authenticated starter; the prior Run's requester and program remain unchanged.
+
+Scheduled, triggered and Agent-started Runs without an admitted person retain
+unknown requester attribution. When their Workflow Action block or Agent Action
+requires approval, the shared requester decision returns
+`approval_requester_unavailable` before creating an Artifact or performing an
+effect. An origin Session or daemon credential does not identify a requester.
+A retained, unsettled Workflow approval without either that causal requester or
+the accepted starter also refuses before decision or replay; old cards cannot
+restore missing person attribution. Settled history remains observable.
+A starter never
+waives an Action prompt: the entitled person decides through the existing
+approval flow, and the original executor performs the effect.
+In unreleased 0.3, detached Workflow Agent steps have `sessionId:null` and cannot
+bind the Session requester required by this approval flow. A danger Action that
+requires approval returns `approval_requester_unavailable`, creates no approval
+Artifact and performs no effect. The native Run input and Workflow step settle
+visibly as failed with that code, even if the Agent consumes the tool error.
+Safe Actions and person-attributed Workflow Action approvals keep their existing behavior.
+Detached Agents do not acquire a fabricated Session or a Run-persona approval
+route.
+
 A shared request's outward write defaults to confirmation under the existing
 Actions policy. A known cross-Account requester gets a signed
 `requesterConfirmation` binding the request, exact Action/input digest, admitting
@@ -6456,7 +7390,8 @@ Bot Session and execution Account. The original executor checks a current
 authenticated decision from that requester; another person cannot substitute.
 When confirmation is required but the requester cannot be bound, admission
 returns `approval_requester_unavailable` without creating an owner-decided
-approval. Attribution stays unknown. Requester consent never promotes the
+approval. This includes failure to bind consent to its signed execution origin;
+known attribution cannot substitute for that binding. Requester consent never promotes the
 Bot's execution authority to present-person authority; a person-only Action
 still requires its own entitled person. Ordinary same-Account approvals retain
 their existing authority, and an explicitly waived prompt still requires the
@@ -6488,3 +7423,41 @@ its own authority and binding. People/Bot readiness rendering remains in progres
 - [cli-architecture.md](cli-architecture.md) — how a spec row becomes a CLI command.
 - [peer-mediation.md](peer-mediation.md) — the Machine-RPC route classes and which methods may go direct.
 - [session-collaboration.md](session-collaboration.md) — the Session-side owners many of these Actions call.
+
+## Machine reachability inspection (0.3 development)
+
+`machines.reachability.inspect` observes a Machine even when its saved posture is
+absent. A general inspection returns nullable `posture` and protected native
+firewall facts in `observation.nativeFirewall`, using the existing root CHECK
+interpreter without APPLY or an interactive elevation prompt. Available facts
+include the actual SSH endpoints and their source ranges; unavailable native
+facts name `requiredFact`. Desired posture is never treated as observed SSH
+exposure. A provider-specific membership review reads only its selected provider.
+
+Reviewing an explicit first posture uses the same native observation as its plan
+basis while `posture` stays null. Configure observes those facts again and rejects
+`plan_changed` before saving if they differ from the reviewed digest. Unavailable
+native facts return `required_fact_unavailable`; no default posture or SSH
+decision is inferred. Existing saved-posture reviews retain their revision basis.
+
+Recovery may carry optional `confirmedAtMs`, the time a person explicitly
+confirmed that recovery path. A console confirmation remains `userAttested`,
+not a native sign-in verification. It is saved in the existing posture through
+the same reviewed configure Action; inspection never creates or refreshes it.
+Older undated recovery values remain readable. This is an unreleased 0.3 closed
+schema extension requiring matching development readers and writers.
+
+The Network field hook projects native SSH endpoints separately from the saved
+SSH policy. Its selected ingress capability describes availability and required
+ports; it does not prove a service or Domain is exposed. Effective Docker
+bindings alone likewise do not establish internet reachability. Joined-service
+exposure must come from the admitted deployment and Domain owners.
+
+Without the required administrator access, inspection returns the elevation
+owner's typed refusal, such as `mode_none` or `not_preauthorized`. A missing
+managed executable returns `managed_cli_unavailable` with the installation
+recovery in `details.recovery: {kind: install_managed_cli, executablePath}`.
+Inspection does not save a posture or change firewall
+rules. The optional native-facts field is an unreleased 0.3 closed Protocol
+extension requiring matching development readers; there is no persisted-format
+migration or released compatibility adapter.

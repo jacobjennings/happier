@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { RoleArtifactV1Schema, type RoleArtifactV1 } from './roleArtifactV1.js';
 import { WorkflowRoleV1Schema } from './rolesV1.js';
 import { createStoredReadSchema } from '../../json/storedReadSchema.js';
-import { resolveRoleSelectionV1, readSessionWorkspaceWritesV1 } from './resolveRoleSelectionV1.js';
+import { resolveRoleDefinitionV1, resolveRoleSelectionV1, readSessionWorkspaceWritesV1 } from './resolveRoleSelectionV1.js';
 import { WorkflowActionFailureV1Schema } from '../../workflows/workflowProgressV1.js';
 import { createSessionOwnerMetadataV1, projectSessionOwnerCompatibilityViewV1,
   projectSessionSharedMetadataV1 } from '../../sessions/metadata/sessionMetadataEnvelopesV1.js';
@@ -10,6 +10,21 @@ import { createSessionOwnerMetadataV1, projectSessionOwnerCompatibilityViewV1,
 const role: RoleArtifactV1 = { name: 'UI work', instructions: 'Settings instructions', engine: { agentTargetKey: 'agent:claude', modelId: 'settings-model' }, runsAs: { kind: 'session' }, workspaceWrites: 'allow', secondOpinion: 'off', enabled: true };
 
 describe('resolveRoleSelectionV1', () => {
+  it('resolves disabled declarations through the same layers while execution admission still refuses them', () => {
+    const roleId = 'plugin:acme/disabled';
+    const engine = { agentTargetKey: 'agent:example.agents/external', modelId: 'session-model' };
+    const input = { roleId, pluginRoles: [{ pluginId: 'acme', localId: 'disabled', role: { ...role, enabled: false } }],
+      settingsOverrides: { [roleId]: { roleId, instructionsOverride: 'Reader instructions' } },
+      sessionRoles: { overrides: { [roleId]: { roleId, engine } }, sessionRoles: {}, notes: '' },
+    };
+    expect(resolveRoleDefinitionV1(input)).toEqual({ ok: true, selection: {
+      ...role, roleId, enabled: false, instructions: 'Reader instructions', engine, changedAt: 'session',
+    } });
+    expect(resolveRoleSelectionV1(input)).toEqual({ ok: false, refusal: { code: 'role_target_unavailable', roleId } });
+    expect(resolveRoleDefinitionV1({ roleId: 'missing' })).toEqual({ ok: false,
+      refusal: { code: 'role_target_unavailable', roleId: 'missing' } });
+  });
+
   it('preserves declaration and plugin delegation traits and merges explicit false independently at every layer', () => {
     const declared = { ...role, canDelegateToOtherRoles: true };
     expect(RoleArtifactV1Schema.safeParse(declared).success).toBe(true);

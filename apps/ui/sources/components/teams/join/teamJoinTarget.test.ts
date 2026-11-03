@@ -44,7 +44,6 @@ import {
     acquirePortableHomeLinkTarget,
     isTeamInvitationTargetBindingValidBeforeResolution,
     resolvePortableHomeLinkTarget,
-    resolveTeamJoinTarget,
     usePortableHomeLinkTarget,
     type PortableHomeLinkTargetState,
 } from './teamJoinTarget';
@@ -100,7 +99,7 @@ async function addHome(serverUrl: string, identity: string): Promise<Readonly<{ 
     return { profileId: profile.id };
 }
 
-describe('resolveTeamJoinTarget', () => {
+describe('resolvePortableHomeLinkTarget', () => {
     it('keeps an unobserved descriptor target unrouted while retaining it for acquisition', () => {
         const carrier = currentLinkCarrier({
             homeServerIdentityId: 'srv_fresh_home',
@@ -127,7 +126,7 @@ describe('resolveTeamJoinTarget', () => {
         const { profileId } = await addHome('https://acme-home.example', 'srv_acme_home');
         await addHome('https://other-home.example', 'srv_other_home');
 
-        const target = resolveTeamJoinTarget('srv_acme_home');
+        const target = resolvePortableHomeLinkTarget('srv_acme_home');
 
         expect(target).toEqual({
             kind: 'resolved',
@@ -142,13 +141,13 @@ describe('resolveTeamJoinTarget', () => {
         // is not the Home's portable identity and must not select a target.
         const { profileId } = await addHome('https://acme-home.example', 'srv_acme_home');
 
-        expect(resolveTeamJoinTarget(profileId).kind).not.toBe('resolved');
+        expect(resolvePortableHomeLinkTarget(profileId).kind).not.toBe('resolved');
     });
 
     it('reports a well-formed identity this device has not adopted as a recoverable unknown Home', async () => {
         await addHome('https://acme-home.example', 'srv_acme_home');
 
-        expect(resolveTeamJoinTarget('srv_home_elsewhere')).toEqual({
+        expect(resolvePortableHomeLinkTarget('srv_home_elsewhere')).toEqual({
             kind: 'unknown_home',
             homeServerIdentityId: 'srv_home_elsewhere',
         });
@@ -158,7 +157,7 @@ describe('resolveTeamJoinTarget', () => {
         await addHome('https://acme-home.example', 'srv_acme_home');
 
         for (const carrier of [null, undefined, '', '   ']) {
-            expect(resolveTeamJoinTarget(carrier)).toEqual({ kind: 'unresolved' });
+            expect(resolvePortableHomeLinkTarget(carrier)).toEqual({ kind: 'unresolved' });
         }
     });
 });
@@ -235,6 +234,7 @@ describe('acquirePortableHomeLinkTarget', () => {
 
         await acquirePortableHomeLinkTarget(acquisitionRequest());
 
+        expect(homeFetch).toHaveBeenCalled();
         // The bearer lives in the mounted route, and the verification request is
         // the unauthenticated public feature projection. Anything else would tell
         // an unverified endpoint the secret it is being asked to prove it owns.

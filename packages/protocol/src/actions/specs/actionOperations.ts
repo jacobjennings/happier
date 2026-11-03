@@ -1,28 +1,28 @@
 import { z } from 'zod/mini';
 
-import { lazyZodSchema } from '../../lazyZodSchema.js';
+import { lazyDefinition, lazyZodSchema } from '../../lazyZodSchema.js';
 import { TerminalStreamReadRequestSchema, TerminalStreamReadOkResponseSchema } from '../../terminal/stream.js';
 import { ActionOperationListV1RequestSchema, ActionOperationListV1ResponseSchema,
-  ActionOperationGetV1RequestSchema, ActionOperationGetV2RequestSchema, ActionOperationGetV1ResponseSchema,
+  ActionOperationGetV2RequestSchema, ActionOperationGetV1ResponseSchema,
   ActionOperationCancelV1ResponseSchema } from '../operations/v1.js';
 import type { PreNormalizedActionSpec } from '../actionSpecs.js';
 import type { ActionInputFieldHint } from '../actionInputHintsRuntime.js';
+import { projectZodProtocolSchema } from '../../plugins/actions/internalProtocolZodAdapter.js';
+import { ActionOperationAddressV1Schema } from '../operations/addressV1.js';
+import { ManagedGetInputV1Schema } from '../../machines/managed/actionsV1.js';
+export { ActionOperationAddressV1Schema } from '../operations/addressV1.js';
 
-export const ACTION_OPERATION_ACTION_IDS_V1 = [
-  'action.operations.list', 'action.operations.get', 'action.operations.cancel',
-  'projects.execution.output.read', 'projects.execution.output.open', 'projects.execution.output.copy',
-] as const;
-export type ActionOperationActionIdV1 = typeof ACTION_OPERATION_ACTION_IDS_V1[number];
+import { ACTION_OPERATION_ACTION_IDS_V1, type ActionOperationActionIdV1 } from '../operations/actionIdsV1.js';
+export { ACTION_OPERATION_ACTION_IDS_V1, type ActionOperationActionIdV1 } from '../operations/actionIdsV1.js';
 export const ActionOperationActionIdV1Schema = lazyZodSchema(() => z.enum(ACTION_OPERATION_ACTION_IDS_V1));
 
 const homeMachine = { serverId: z.string().check(z.trim(), z.minLength(1)), machineId: z.string().check(z.trim(), z.minLength(1)) };
-export const ActionOperationAddressV1Schema = lazyZodSchema(() => z.strictObject({
-  ...homeMachine, operationId: ActionOperationGetV1RequestSchema.shape.operationId,
-}));
+const managedObservation = () => ({ ...homeMachine, managed: z.optional(ManagedGetInputV1Schema) });
+export const ActionOperationAddressV1ProtocolSchema = lazyDefinition(() => projectZodProtocolSchema(ActionOperationAddressV1Schema));
 export const ActionOperationListActionInputV1Schema = lazyZodSchema(() =>
-  (<T extends z.ZodMiniObject>(schema: T) => z.core.clone(schema, { ...schema._zod.def, catchall: z.never() }) as z.ZodMiniObject<T['shape'], z.core.$strict>)(z.safeExtend(ActionOperationListV1RequestSchema, homeMachine)));
+  (<T extends z.ZodMiniObject>(schema: T) => z.core.clone(schema, { ...schema._zod.def, catchall: z.never() }) as z.ZodMiniObject<T['shape'], z.core.$strict>)(z.safeExtend(ActionOperationListV1RequestSchema, managedObservation())));
 export const ActionOperationGetActionInputV1Schema = lazyZodSchema(() =>
-  (<T extends z.ZodMiniObject>(schema: T) => z.core.clone(schema, { ...schema._zod.def, catchall: z.never() }) as z.ZodMiniObject<T['shape'], z.core.$strict>)(z.safeExtend(ActionOperationGetV2RequestSchema, homeMachine)));
+  (<T extends z.ZodMiniObject>(schema: T) => z.core.clone(schema, { ...schema._zod.def, catchall: z.never() }) as z.ZodMiniObject<T['shape'], z.core.$strict>)(z.safeExtend(ActionOperationGetV2RequestSchema, managedObservation())));
 
 // The terminal owner defines every cursor, credit and byte boundary. Only its
 // terminal address is replaced by a qualified operation address at this seam.

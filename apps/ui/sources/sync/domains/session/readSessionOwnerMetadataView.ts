@@ -10,7 +10,7 @@ import type { AccountEncryptionIdentity } from '@happier-dev/sync-client';
 export type SessionOwnerMetadataAuthority = Readonly<{
   accountMode?: AccountEncryptionCurrentnessResponse['mode'];
   credentials: AuthCredentials;
-  accountCurrentness?: AccountEncryptionCurrentnessResponse;
+  accountCurrentness?: AccountEncryptionIdentity;
 }>;
 
 /** In-memory provenance travels with the Session/list projection, never with wire or warm-cache data. */

@@ -313,6 +313,8 @@ export async function settlePersistedMaterializedTemporaryComputerSession(
                         sessionId: input.sessionId,
                         serverId: input.scope.serverId,
                         origin: reopenedAuthoringOrigin,
+                        // Runner activation has no ordinary Machine spawn origin handoff.
+                        originPersistence: 'legacy-checkpoint',
                         shouldContinue: () => authoringOriginAccountLifetime?.isCurrent() === true,
                         updateSessionMetadataWithRetry: sync.patchSessionMetadataWithRetry,
                     });

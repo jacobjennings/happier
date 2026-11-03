@@ -18,6 +18,7 @@ describe('resolveSystemTaskFailureMessage', () => {
         const { readSystemTaskStartErrorMessage } = await import('./systemTaskStartError');
         const error = Object.assign(new Error('system_task_setup_in_progress'), { code: 'system_task_setup_in_progress' });
         expect(readSystemTaskStartErrorMessage(error)).toBe(t('machine.thisComputer.setupAlreadyRunning'));
+        expect(readSystemTaskStartErrorMessage(new Error('  failed to start hsetup  '))).toBe('failed to start hsetup');
     });
 
     it('names the failed acquisition phase without exposing its raw diagnostics', async () => {

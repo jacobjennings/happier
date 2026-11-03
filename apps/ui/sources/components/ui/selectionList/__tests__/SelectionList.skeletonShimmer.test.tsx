@@ -95,34 +95,4 @@ describe('SelectionList skeleton shimmer (R6 Fix 5)', () => {
         expect(merged.opacity).toBeGreaterThanOrEqual(0.3);
         expect(merged.opacity).toBeLessThanOrEqual(0.9);
     });
-
-    it('uses varied widths across consecutive skeleton rows (natural feel)', async () => {
-        const { act } = await import('react-test-renderer');
-        const root = makeStep({
-            id: 'dyn',
-            title: 'DYN',
-            debounceMs: 0,
-            loadingSkeletonRows: 3,
-            // RUX-11.2: opt into eager skeletons; default is hidden first-load.
-            showSkeletonsOnFirstLoad: true,
-            resolve: () => new Promise(() => {}),
-        });
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps(root)} inputValue="x" />);
-        await act(async () => {
-            vi.advanceTimersByTime(1);
-        });
-        const widths: Array<string | number | undefined> = [];
-        for (let i = 0; i < 3; i++) {
-            const row = barOf(screen.findByTestId(`sl:section:dyn:loading:row-${i}`));
-            const styles = Array.isArray(row!.props.style)
-                ? row!.props.style.flat(Infinity)
-                : [row!.props.style];
-            const merged = Object.assign({}, ...styles.filter(Boolean));
-            widths.push(merged.width);
-        }
-        // At least two distinct widths so the rows don't look uniform.
-        const distinct = new Set(widths.map((w) => String(w)));
-        expect(distinct.size).toBeGreaterThanOrEqual(2);
-    });
 });

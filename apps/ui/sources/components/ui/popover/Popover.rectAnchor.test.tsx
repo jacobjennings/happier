@@ -328,7 +328,7 @@ describe('Popover (rect anchor)', () => {
         expect(left).toBeGreaterThanOrEqual(0);
     });
 
-    it('accepts optional width in the rect anchor and renders correctly', async () => {
+    it('matches the popover width to the width a rect anchor supplies', async () => {
         const { Popover } = await import('./Popover');
         const { OverlayPortalProvider, OverlayPortalHost } = await import('./OverlayPortal');
         const { PopoverPortalTargetContextProvider } = await import('./PopoverPortalTarget');
@@ -373,7 +373,66 @@ describe('Popover (rect anchor)', () => {
         expect(contentView).toBeTruthy();
 
         const style = flattenStyle(contentView?.props?.style);
-        // With width=50, the popover should still position correctly.
+        expectVisualTop(style, 218);
+        // matchAnchorWidth defaults on, so the visible surface takes the rect's width.
+        const padding = Number(style.paddingLeft ?? 0);
+        expect(readNumericStyle(style, 'width') - padding * 2).toBe(50);
+    });
+
+    it('lets the anchor prop win over anchorRef when both are provided', async () => {
+        const { Popover } = await import('./Popover');
+        const { OverlayPortalProvider, OverlayPortalHost } = await import('./OverlayPortal');
+        const { PopoverPortalTargetContextProvider } = await import('./PopoverPortalTarget');
+
+        const portalRootNode = {
+            measureInWindow: (cb: any) => cb(0, 0, 1000, 800),
+            measure: (cb: any) => cb(0, 0, 1000, 800, 0, 0),
+        } as any;
+
+        // anchorRef points to a different location.
+        const anchorNode = {
+            measureInWindow: (cb: any) => cb(0, 500, 150, 40),
+        } as any;
+        const anchorRef = { current: anchorNode } as any;
+
+        const portalTarget = {
+            rootRef: { current: portalRootNode },
+            layout: { width: 1000, height: 800 },
+        } as const;
+
+        const screen = await renderScreen(
+            <PopoverPortalTargetContextProvider value={portalTarget}>
+                <OverlayPortalProvider>
+                    <Popover
+                        open
+                        anchorRef={anchorRef}
+                        anchor={{
+                            kind: 'rect',
+                            rect: { left: 100, top: 200, height: 18 },
+                        }}
+                        portal={{ native: true }}
+                        placement="bottom"
+                        gap={0}
+                        maxHeightCap={300}
+                        onRequestClose={() => {}}
+                    >
+                        {() => React.createElement('PopoverChild')}
+                    </Popover>
+                    <OverlayPortalHost />
+                </OverlayPortalProvider>
+            </PopoverPortalTargetContextProvider>,
+        );
+
+        await act(async () => {
+            await flushHookEffects({ cycles: 2, turns: 6, frames: 1 });
+        });
+
+        const contentView = findPopoverContentView(screen);
+        expect(contentView).toBeTruthy();
+
+        const style = flattenStyle(contentView?.props?.style);
+        // anchor prop should win: rect at y=200, height=18 => popup at 218.
+        // If anchorRef won, we'd see 500+40=540.
         expectVisualTop(style, 218);
     });
 });

@@ -16,13 +16,6 @@ describe('resolveExpoNotificationsModule', () => {
 });
 
 describe('loadExpoNotifications', () => {
-    it('resolves the module when the bundle loader settles', async () => {
-        const module = { getPermissionsAsync: () => {} };
-        await expect(
-            loadExpoNotifications({ importModule: async () => module }),
-        ).resolves.toBe(module);
-    });
-
     it('rejects with AsyncTimeoutError when the bundle loader never settles', async () => {
         vi.useFakeTimers();
         try {

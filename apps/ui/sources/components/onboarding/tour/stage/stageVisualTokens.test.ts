@@ -8,11 +8,6 @@ describe('stageVisualTokens', () => {
 
         expect(stageVisualTokens.horizon.dark.skyGradient).toBe('linear-gradient(180deg, #050508 0%, #0A0A10 100%)');
         expect(stageVisualTokens.horizon.light.skyGradient).toBe('linear-gradient(180deg, #FAF9F7 0%, #F3EDE6 100%)');
-        expect(stageVisualTokens.horizon.idleBreath).toMatchObject({
-            durationMs: 20_000,
-            scalePeak: 1.012,
-            bloomOpacityDelta: 0.1,
-        });
         expect(stageVisualTokens.horizon.noiseOpacity).toBe(0.02);
         expect(stageVisualTokens.horizon.noiseTileDataUri).toMatch(/^data:image\/png;base64,/);
 
@@ -49,37 +44,19 @@ describe('stageVisualTokens', () => {
             width: 440,
             minWidth: 400,
             maxWidth: 460,
-            topBlockOffsetRatio: 0.18,
-            actionBaselineBottomRatio: 0.16,
-            locatorRuleWidth: 24,
             primaryHeight: 44,
             primaryRadius: 22,
-            activeDotWidth: 16,
-            inactiveDotSize: 4,
             trailingRailWidth: 136,
         });
 
         expect(stageVisualTokens.motion).toMatchObject({
-            beatTransitionMs: 800,
             skipTransitionMs: 240,
             hoverMs: 120,
-            hoverTranslateY: -1,
-            springDamping: 18,
-            springStiffness: 320,
-            focusRingWidth: 2,
-            focusRingAlpha: 0.4,
         });
-        // Press feedback is owned by usePressFeedback (motionTokens.press), not the stage tokens.
-        expect(stageVisualTokens.motion).not.toHaveProperty('pressScale');
     });
 
-    it('shares ONE planet framing recipe and display headline scale with the welcome brand pane', () => {
-        // The welcome screen's `PlanetBackground variant="desktop"` recipe:
-        // full-bleed cover anchored at 80%/50% so the disc reads as a LOW
-        // HORIZON (spec §1). The journey must not run a second framing.
-        expect(stageVisualTokens.horizon.planetBackgroundSize).toBe('cover');
-        expect(stageVisualTokens.horizon.planetBackgroundPosition).toBe('80% 50%');
-
+    it('shares the display headline scale with the welcome brand pane', () => {
+        // The shared planet framing is proven where it renders (StagePane.test.tsx).
         // BrandTagline's desktop display scale (48 / 48 / -1.8).
         expect(stageVisualTokens.narration.titleFontSize).toBe(48);
         expect(stageVisualTokens.narration.titleLineHeight).toBe(48);

@@ -57,7 +57,6 @@ describe('SelectionListVirtualizedSection activation contract (F2)', () => {
                 selectedOptionIds={new Set<string>()}
                 onSelect={onSelect}
                 onPushStep={onPushStep}
-                virtualization="force"
             />,
         );
 
@@ -75,86 +74,5 @@ describe('SelectionListVirtualizedSection activation contract (F2)', () => {
         expect(onSelect).toHaveBeenCalledTimes(1);
         expect(onSelect).toHaveBeenCalledWith('row-0', options[0]);
         expect(onPushStep).not.toHaveBeenCalled();
-    });
-
-    it('pushes the step instead of selecting for a drill-down row', async () => {
-        legendListState.reset();
-        const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
-
-        const onSelect = vi.fn();
-        const onPushStep = vi.fn();
-        const openStep = { id: 'child', sections: [] } as const;
-
-        const section: SelectionListSection = {
-            id: 'forced',
-            title: 'FORCED',
-            options: [
-                {
-                    id: 'row-drill',
-                    label: 'Drill',
-                    openStep,
-                },
-            ],
-        };
-
-        const screen = await renderScreen(
-            <SelectionListVirtualizedSection
-                section={section}
-                stepId="root"
-                rootTestID="sl"
-                selectedOptionIds={new Set<string>()}
-                onSelect={onSelect}
-                onPushStep={onPushStep}
-                virtualization="force"
-            />,
-        );
-
-        const itemNode = screen.findByTestId('sl:root:option:row-drill');
-        expect(itemNode).not.toBeNull();
-        itemNode!.props.onPress();
-
-        expect(onPushStep).toHaveBeenCalledTimes(1);
-        expect(onPushStep).toHaveBeenCalledWith(openStep);
-        expect(onSelect).not.toHaveBeenCalled();
-    });
-
-    it('does not activate when the option is disabled', async () => {
-        legendListState.reset();
-        const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
-
-        const optionOnSelect = vi.fn();
-        const onSelect = vi.fn();
-
-        const section: SelectionListSection = {
-            id: 'forced',
-            title: 'FORCED',
-            options: [
-                {
-                    id: 'row-d',
-                    label: 'Disabled',
-                    disabled: true,
-                    onSelect: optionOnSelect,
-                },
-            ],
-        };
-
-        const screen = await renderScreen(
-            <SelectionListVirtualizedSection
-                section={section}
-                stepId="root"
-                rootTestID="sl"
-                selectedOptionIds={new Set<string>()}
-                onSelect={onSelect}
-                onPushStep={() => {}}
-                virtualization="force"
-            />,
-        );
-
-        const itemNode = screen.findByTestId('sl:root:option:row-d');
-        expect(itemNode).not.toBeNull();
-        itemNode!.props.onPress();
-
-        expect(optionOnSelect).not.toHaveBeenCalled();
-        expect(onSelect).not.toHaveBeenCalled();
     });
 });

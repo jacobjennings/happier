@@ -521,22 +521,16 @@ describe('app.config.js', () => {
         expect(envValue).toBe('production');
     });
 
-    it('uses the configured native runtime train for internaldev OTA updates', () => {
-        const exp = withCleanEnv(() => getPublicConfig());
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const pkg = require('../../../package.json');
-        expect(exp.runtimeVersion).toBe(pkg.happierExpoRuntimeVersion);
-    });
-
-    it('uses the configured native runtime train for internalpreview OTA updates', () => {
-        const exp = withCleanEnv(() => {
-            process.env.APP_ENV = 'internalpreview';
-            return getPublicConfig();
-        });
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const pkg = require('../../../package.json');
-        expect(exp.runtimeVersion).toBe(pkg.happierExpoRuntimeVersion);
-    });
+    it.each([undefined, 'internalpreview', 'preview', 'production'])(
+        'uses the configured native runtime train for OTA updates (APP_ENV=%s)',
+        (appEnv) => {
+            const exp = withCleanEnv(() => {
+                if (appEnv) process.env.APP_ENV = appEnv;
+                return getPublicConfig();
+            });
+            expect(exp.runtimeVersion).toBe(readUiPackageJson().happierExpoRuntimeVersion);
+        },
+    );
 
     it('keeps Expo fingerprint runtime policy for the publicdev lane', () => {
         const exp = withCleanEnv(() => {
@@ -544,26 +538,6 @@ describe('app.config.js', () => {
             return getPublicConfig();
         });
         expect(exp.runtimeVersion).toEqual({ policy: 'fingerprint' });
-    });
-
-    it('uses the configured native runtime train for preview lane OTA updates', () => {
-        const exp = withCleanEnv(() => {
-            process.env.APP_ENV = 'preview';
-            return getPublicConfig();
-        });
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const pkg = require('../../../package.json');
-        expect(exp.runtimeVersion).toBe(pkg.happierExpoRuntimeVersion);
-    });
-
-    it('uses the configured native runtime train for production lane OTA updates', () => {
-        const exp = withCleanEnv(() => {
-            process.env.APP_ENV = 'production';
-            return getPublicConfig();
-        });
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const pkg = require('../../../package.json');
-        expect(exp.runtimeVersion).toBe(pkg.happierExpoRuntimeVersion);
     });
 
     it('bumps the non-publicdev runtime train when first-party Expo native modules are part of the shipped app surface', () => {
@@ -581,15 +555,8 @@ describe('app.config.js', () => {
         // These trains predate the compiled Android file-actions module.
         expect(pkg.happierExpoRuntimeVersion).not.toBe('0.2.1-native');
         expect(pkg.happierExpoRuntimeVersion).not.toBe('0.2.7-native');
-    });
-
-    it('keeps the upgraded Unistyles bindings off the previous native OTA train', () => {
-        const exp = withCleanEnv(() => {
-            process.env.APP_ENV = 'production';
-            return getPublicConfig();
-        });
         // This train was built with Unistyles 3.2.4 and Nitro Modules 0.35.6.
-        expect(exp.runtimeVersion).not.toBe('0.3.0-native');
+        expect(pkg.happierExpoRuntimeVersion).not.toBe('0.3.0-native');
     });
 
     it('allows forcing an Expo runtime policy for development diagnostics', () => {
@@ -676,35 +643,18 @@ describe('app.config.js', () => {
         expect(exp.extra?.eas?.projectId).toBe(DEFAULT_EAS_PROJECT_ID);
     });
 
-    it('enables iOS background audio by default in development', () => {
+    it.each([
+        { appEnv: 'development', legacyOverride: undefined },
+        { appEnv: 'preview', legacyOverride: undefined },
+        { appEnv: 'preview', legacyOverride: 'false' },
+    ])('enables iOS background audio for $appEnv (legacy override: $legacyOverride)', ({ appEnv, legacyOverride }) => {
         const exp = withCleanEnv(() => {
-            process.env.APP_ENV = 'development';
+            process.env.APP_ENV = appEnv;
+            if (legacyOverride !== undefined) process.env.EXPO_PUBLIC_IOS_BACKGROUND_AUDIO = legacyOverride;
             return getPublicConfig();
         });
 
-        const plugin = (exp.plugins ?? []).find((entry: any) => Array.isArray(entry) && entry[0] === 'react-native-audio-api');
-        expect(plugin).toEqual(['react-native-audio-api', expect.objectContaining({ iosBackgroundMode: true })]);
-    });
-
-    it('enables iOS background audio by default in preview', () => {
-        const exp = withCleanEnv(() => {
-            process.env.APP_ENV = 'preview';
-            return getPublicConfig();
-        });
-
-        const plugin = (exp.plugins ?? []).find((entry: any) => Array.isArray(entry) && entry[0] === 'react-native-audio-api');
-        expect(plugin).toEqual(['react-native-audio-api', expect.objectContaining({ iosBackgroundMode: true })]);
-    });
-
-    it('keeps iOS background audio enabled when a legacy env override is false', () => {
-        const exp = withCleanEnv(() => {
-            process.env.APP_ENV = 'preview';
-            process.env.EXPO_PUBLIC_IOS_BACKGROUND_AUDIO = 'false';
-            return getPublicConfig();
-        });
-
-        const plugin = (exp.plugins ?? []).find((entry: any) => Array.isArray(entry) && entry[0] === 'react-native-audio-api');
-        expect(plugin).toEqual(['react-native-audio-api', expect.objectContaining({ iosBackgroundMode: true })]);
+        expect(getPluginOptions(exp, 'react-native-audio-api')).toEqual(expect.objectContaining({ iosBackgroundMode: true }));
     });
 
     it('bundles Happier notification sounds through expo-notifications', () => {

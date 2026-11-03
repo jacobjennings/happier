@@ -1,4 +1,5 @@
 import chalk from 'chalk';
+import { renderHelpPage } from '@happier-dev/cli-common/output';
 
 import { applyBackgroundServiceRepairPlan } from '@/diagnostics/backgroundServiceRepair';
 import type { BackgroundServiceRepairPlan } from '@/diagnostics/backgroundServiceRepair';
@@ -205,10 +206,38 @@ function printPlannedServiceRemovals(plan: BackgroundServiceRepairPlan): void {
   if (lines.length > 0) console.log(['', ...lines].join('\n'));
 }
 
+function printServiceRepairHelp(commandPath: string): void {
+  const command = `${commandPath} repair`;
+  console.log(renderHelpPage({
+    title: command,
+    subtitle: 'Plan or apply automatic startup repairs',
+    usage: [
+      { label: command, description: 'Show the repair report, then walk through suggested fixes' },
+      { label: `${command} --yes`, description: 'Apply the repairs that need no confirmation' },
+      { label: `${command} --report-only`, description: 'Show the repair report without prompting' },
+    ],
+    sections: [{
+      title: 'Options:',
+      rows: [
+        { label: '--json', description: 'Print the plan, or the applied result with --yes, as JSON' },
+        { label: '--server <id|name|url>', description: 'Limit findings to one server profile' },
+        { label: '--mode user|system', description: 'Prefer user or system automatic startup' },
+        { label: '--system-user <name>', description: 'Run system automatic startup as this user' },
+        { label: '--migrate', description: 'Apply the upgrade migration repairs' },
+        { label: '--plugin-recovery', description: 'Explain how to start once without external plugins' },
+      ],
+    }],
+  }));
+}
+
 export async function handleServiceRepairCliCommand(params: Readonly<{
   argv: readonly string[];
   commandPath: string;
 }>): Promise<void> {
+  if (params.argv.includes('--help') || params.argv.includes('-h')) {
+    printServiceRepairHelp(params.commandPath);
+    return;
+  }
   const parsed = parseRepairInvocation(params.argv);
   const systemUser = resolveBackgroundServiceRepairSystemUser({
     preferredMode: parsed.mode,

@@ -89,6 +89,7 @@ export type SessionActionTarget = Readonly<{
     toolCallsOverride?: boolean | null;
     canResume: boolean;
     canDelete: boolean;
+    canStopAndDelete: boolean;
     followEnabled?: boolean;
     readStateAction: SessionReadStateAction;
     attentionStandingAction: SessionAttentionStandingAction;
@@ -103,10 +104,6 @@ export type SessionActionOperationResult = Readonly<{
     recovery?: SessionStopRecovery;
     reports?: SessionArchiveActionResultV1['reports'];
     reportsError?: SessionArchiveActionResultV1['reportsError'];
-}>;
-
-export type SessionDeletePresentUserConfirmation = Readonly<{
-    actionId: 'session.delete';
 }>;
 
 export type SessionActionExecutionInput = Readonly<{
@@ -140,7 +137,9 @@ export type SessionActionExecutionOperations = Readonly<{
     resumeSession?: (sessionId: string) => void | Promise<void>;
     deleteSession?: (sessionId: string, opts?: Readonly<{
         serverId?: string | null;
-        presentUserConfirmation?: SessionDeletePresentUserConfirmation;
+        confirmed?: true;
+        signal?: AbortSignal;
+        expectedAccountId?: string;
     }>) => Promise<SessionActionOperationResult>;
     setPinned?: (
         sessionId: string,
@@ -170,6 +169,6 @@ export type SessionActionExecutionOperations = Readonly<{
 
 export type SessionActionExecutionContext = Readonly<{
     hideInactiveSessions?: boolean;
-    presentUserConfirmation?: SessionDeletePresentUserConfirmation;
+    confirmed?: true;
     operations?: SessionActionExecutionOperations;
 }>;

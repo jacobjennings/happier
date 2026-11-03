@@ -54,17 +54,16 @@ function resolveConcurrencyFlagValue(argv) {
   return null;
 }
 
-const DEFAULT_MAX_FILES_PER_SHARD = 16;
-
-export function resolveVitestShardCount(env) {
-  const override = parsePositiveInt(env?.HAPPIER_UI_VITEST_SHARDS);
-  return override ?? 32;
-}
+// Each Vitest process pays a cold transform of the shared UI graph, so the per-process
+// file budget dominates whole-suite cost. Same host, same 128 files, two workers:
+// 8x16 took 1292s (transform 707s, peak tree RSS 5.3 GB); 1x128 took 700s (transform 157s,
+// peak tree RSS 3.8 GB). Workers are recycled per file, so a larger budget does not grow
+// worker retention.
+const DEFAULT_MAX_FILES_PER_SHARD = 128;
 
 export function resolveVitestShardCountForFileCount(env, fileCount) {
   const override = parsePositiveInt(env?.HAPPIER_UI_VITEST_SHARDS);
-  // The UI suite has a large module graph (React Native stubs + Expo/web shims).
-  // Bound module-graph retention by restarting after small file buckets.
+  // Bound each process's module-graph retention by the measured file budget above.
   // Explicit overrides remain available for focused diagnosis.
   const collectedFileCount = Number.isFinite(fileCount) && fileCount > 0 ? Math.floor(fileCount) : 1;
   return override ?? Math.max(parsePositiveInt(env?.HAPPIER_UI_VITEST_PARTS) ?? 1,

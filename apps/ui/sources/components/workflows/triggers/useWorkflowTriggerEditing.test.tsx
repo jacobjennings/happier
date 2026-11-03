@@ -193,6 +193,34 @@ afterEach(async () => {
 });
 
 describe('workflow trigger editing lifetime', () => {
+    it('does not reopen private trigger definitions for unrelated planned Home arrivals', async () => {
+        seed(set);
+        const { captureActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
+        const { publishHomeAccountChange } = await import('@/sync/runtime/orchestration/homeAccountChange');
+        const { planSyncActionsFromChanges } = await import('@/sync/runtime/orchestration/changesPlanner');
+        const lifetime = captureActiveServerAccountScopeLifetime();
+        if (!lifetime) throw new Error('Expected the real Account lifetime');
+        const hook = await renderHook(() => useWorkflowTriggerSets({ scope: 'account_all' }, lifetime));
+        await waitForHomeGovernance(() => expect(hook.getCurrent().status).toBe('ready'));
+        const detailReads = () => home.requests.filter(request => request.path === `/v3/automations/${set.automationId}`).length;
+        const initialReads = detailReads();
+        expect(initialReads).toBe(1);
+        for (let index = 0; index < 12; index++) {
+            const changes = [{ cursor: index + 1, kind: 'machine' as const, entityId: `machine-${index}`, changedAt: index + 1, hint: null }];
+            const planned = planSyncActionsFromChanges(changes);
+            await act(async () => publishHomeAccountChange(serverId, changes.map(change => change.entityId), {
+                feedPageConsumed: true, changeKinds: changes.map(change => change.kind),
+                accountSettingsAffects: planned.invalidate.settings, profileCatalogAffects: false,
+            }));
+            await flushHookEffects();
+        }
+        expect(detailReads() - initialReads).toBe(0);
+        expect(hook.getCurrent().sets.map(value => value.automationId)).toEqual([set.automationId]);
+        await act(async () => publishHomeAccountChange(serverId, undefined, { source: 'connected' }));
+        await waitForHomeGovernance(() => expect(detailReads()).toBe(initialReads + 1));
+        await hook.unmount();
+    });
+
     it('keeps an addressed saved workflow trigger acknowledgement visible without a socket wake', async () => {
         const { captureActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');
         const lifetime = captureActiveServerAccountScopeLifetime();

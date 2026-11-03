@@ -11,6 +11,7 @@ import { hunkReviewTranslations } from './hunkReviewTranslations.shared';
 import { capabilityKitTranslations } from './capabilityKitTranslations';
 
 import { workspaceTabKeyboardTranslations } from './workspaceTabTranslations.shared';
+import { sessionListSpacesKeyboardTranslations } from './sessionListSpacesKeyboardTranslations.shared';
 import { reviewKeyboardTranslations } from './reviewKeyboardTranslations.shared';
 import { paneArrangementTranslations, paneKeyboardTranslations, paneRegionLabels } from './paneKeyboardTranslations';
 import { mediaKeyboardTranslations } from './mediaKeyboardTranslations';
@@ -1665,6 +1666,7 @@ export const ru: TranslationStructure = {
             codeProblemNext: 'Следующая проблема',
             codeProblemPrevious: 'Предыдущая проблема',
     ...workspaceTabKeyboardTranslations,
+    ...sessionListSpacesKeyboardTranslations['ru'],
     ...reviewKeyboardTranslations['ru'],
     ...paneKeyboardTranslations['ru'].commands,
     ...mediaKeyboardTranslations['ru'],
@@ -4078,6 +4080,8 @@ export const ru: TranslationStructure = {
       poolAccounts: ({ count }: { count: number }) => count % 10 === 1 && count % 100 !== 11 ? `${count} аккаунт` : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14) ? `${count} аккаунта` : `${count} аккаунтов`,
       poolAccountsInUse: ({ accounts, account }: { accounts: string; account: string }) => `${accounts} · используется: ${account}`,
       requiredPrompt: 'Выберите учётную запись или группу',
+    signInToChoose: 'Войдите в этот Home, чтобы выбрать учётную запись',
+    requiredAccountPrompt: 'Выберите учётную запись',
       notSet: 'Не задано',
       ownSignIn: ({ agent }: { agent: string }) => `Собственный вход ${agent}`,
       legacyUnavailable: 'Этот сервер пока не может показать цели подключённых учётных записей',
@@ -4398,7 +4402,7 @@ export const ru: TranslationStructure = {
       },
     },
     oauthPaste: {
-      invalidConfig: "Неверная конфигурация подключённого сервиса.",
+      invalidConfig: "Это не код и не адрес со страницы входа. Скопируйте его ещё раз и вставьте сюда.",
       connectWebGroupTitle: "Подключить (web)",
       connectWebDescription:
         "Откройте URL авторизации, завершите OAuth в браузере, затем скопируйте и вставьте итоговый URL редиректа обратно в Happier.",
@@ -5794,6 +5798,23 @@ export const ru: TranslationStructure = {
       bannerTitle: 'Эта машина не в сети',
       bannerDescription: 'Показано последнее известное состояние. Действия с машиной недоступны до повторного подключения.',
     },
+    idleCompaction: {
+      title: 'Сжимать в простое',
+      description: 'Сжимает длинные разговоры до истечения кеша промптов, чтобы следующее сообщение начиналось быстро и стоило меньше.',
+      whenTitle: 'Когда сжимать',
+      whenOverTokens: ({ tokens }: { tokens: string }) => `Больше ${tokens} токенов`,
+      whenAnySize: 'Любой размер',
+      minContextTokens: 'Минимальный размер разговора',
+      minContextTokensDescription: 'Более короткие разговоры не сжимаются.',
+      minContextTokensNone: 'Без минимума',
+      tokensUnit: 'токенов',
+      cacheWindowOverrideMs: 'Окно кеша',
+      cacheWindowDescription: '«Автоматически» следует за провайдером. Выбранное вами окно заменяет его.',
+      cacheWindowAutomatic: 'Автоматически',
+      cacheWindowCustom: 'Своё',
+      cacheWindowCustomOption: 'Своё…',
+      minutesUnit: 'минут',
+    },
     detailPage: {
       kindCodingAgent: 'Агент для программирования',
       usedByNewSessions: 'используется в новых сессиях',
@@ -6788,6 +6809,8 @@ export const ru: TranslationStructure = {
     connectionTimeout: "Время соединения истекло",
     authenticationFailed: "Ошибка авторизации",
     permissionDenied: "Доступ запрещен",
+    machineAdminAccessRequired: 'Настройте доступ администратора для этой машины, затем попробуйте добавить домен снова.',
+    machineManagedCliUnavailable: "Установите или обновите Happier на этой машине, затем попробуйте добавить домен снова.",
     permissionDeniedReadOnlyMode: "Отклонено режимом «Только чтение» (операции записи запрещены).",
     permissionCanceled: "Разрешение отменено",
     permissionCanceledSessionInactive: "Сессия неактивна — этот запрос разрешения нельзя подтвердить.",
@@ -7866,6 +7889,9 @@ export const ru: TranslationStructure = {
     thinking: "Думает",
     thinkingSince: "Думает с",
     thinkingLevel: "Уровень размышлений",
+    peerReportFrom: ({ name }: { name: string }) => `Отчёт от ${name}`,
+    peerMessageFrom: ({ name }: { name: string }) => `Сообщение от ${name}`,
+    peerUnnamedSender: "другого агента",
     cliVersion: "Версия CLI",
     cliVersionOutdated: "Требуется обновление CLI",
     cliVersionOutdatedMessage: ({
@@ -7881,6 +7907,8 @@ export const ru: TranslationStructure = {
     deleteSession: "Удалить сессию",
     deleteSessionSubtitle: "Удалить эту сессию навсегда",
     deleteSessionConfirm: "Удалить сессию навсегда?",
+    stopAndDeleteSession: "Остановить и удалить",
+    stopAndDeleteSessionWarning: "Сессия будет остановлена, а все её сообщения и данные будут удалены навсегда. Это действие нельзя отменить.",
     deleteSessionWarning:
       "Это действие нельзя отменить. Все сообщения и данные, связанные с этой сессией, будут удалены навсегда.",
     failedToDeleteSession: "Не удалось удалить сессию",
@@ -8253,6 +8281,7 @@ encryptedUnavailable: "Зашифрованные данные недоступ�
       },
     },
         pendingActivation: {
+    held: { title: "Остановлено вами", body: "Сообщение останется в очереди, пока вы не возобновите этот сеанс." },
             waiting_offline: { title: 'Сообщение в очереди для этой машины', body: 'Оно будет обработано, когда эта машина и её daemon снова будут онлайн.' },
             waiting: { title: 'Ожидание возобновления', body: 'Ваше сообщение сохранено в очереди, пока daemon возобновляет эту сессию.' },
             failed: { title: 'Не удалось возобновить сессию', body: 'Ваше сообщение по-прежнему сохранено в очереди. Повторите попытку, когда будете готовы.' },
@@ -8282,8 +8311,11 @@ encryptedUnavailable: "Зашифрованные данные недоступ�
         provider_endpoint_unavailable: "Конечная точка провайдера недоступна. Проверьте Gateway и его подключение к компьютеру, затем повторите запуск сессии.",
         plugin_mcp_preparation_unavailable: "Подготовка MCP плагина недоступна. Проверьте целевой компьютер, затем повторите запуск сессии.",
         agent_runtime_daemon_service_generation_not_current: "Поколение агента раннера больше не актуально. Повторите запуск сессии на целевом компьютере.",
+        plugin_disabled: "Этот плагин агента отключён. Включите его в разделе «Плагины», чтобы возобновить сессию.",
         native_agent_privileged_effect_authority_unavailable: "Полномочия демона раннера недоступны. Проверьте целевой компьютер, затем повторите запуск сессии.",
         native_agent_privileged_effect_outcome_unknown: "Не удалось подтвердить подготовку демона раннера. Проверьте сессию и целевой компьютер, прежде чем повторять попытку.",
+        daemon_draining: "Целевой компьютер временно приостанавливает новые задачи. Повторите запуск сессии, когда он будет готов.",
+        daemon_shutting_down: "Happier завершает работу на целевом компьютере. Перезапустите его там и повторите запуск сессии.",
         skills_unavailable: "Доставка навыков недоступна. Проверьте целевой компьютер, затем повторите запуск сессии.",
         team_credential_provider_selection_not_current: "Выбранный провайдер Team недоступен. Проверьте выбор модели Team, затем повторите запуск сессии.",
         teamCredential: "Общие учётные данные Team отклонили запрос.",
@@ -8592,6 +8624,32 @@ encryptedUnavailable: "Зашифрованные данные недоступ�
           askedFromHere: 'Спрошено отсюда',
           openQuestion: 'Открыть вопрос',
           questionUnavailable: 'Не удалось загрузить вопрос',
+          showMore: 'Показать ещё',
+          showLess: 'Показать меньше',
+        },
+        askRecord: {
+          asked: 'Вопрос для',
+          sentTo: 'Отправлено:',
+          groupAsked: 'Эта сессия спросила:',
+          groupSentTo: 'Эта сессия отправила:',
+          answered: 'Ответил',
+          passed: 'Пропустил',
+          cancelled: 'Отменено',
+          noAnswer: 'Без ответа',
+          noAnswerYet: 'Ответа пока нет',
+          sent: 'Отправлено',
+          waitsForYou: 'Ждёт вас',
+          notSent: 'Не отправлено',
+          notAnswered: 'Не смог ответить',
+          unsure: 'Неясно, отправлено ли',
+          unavailable: 'Не удалось проверить',
+          selectorFallback: 'Сессии',
+          retryHint: 'Отправьте снова из поля ввода, чтобы повторить только недоставленные.',
+          summaryAnswered: ({ count }: { count: number }) => `ответили: ${count}`,
+          summaryPassed: ({ count }: { count: number }) => `пропустили: ${count}`,
+          summaryFailed: ({ count }: { count: number }) => `не доставлено: ${count}`,
+          summarySent: ({ count }: { count: number }) => `отправлено: ${count}`,
+          summaryWaiting: ({ count }: { count: number }) => `ожидают: ${count}`,
         },
         subagents: {
           messages: {
@@ -8749,6 +8807,7 @@ encryptedUnavailable: "Зашифрованные данные недоступ�
             blocked: 'Заблокировано',
             delivering: 'Доставляется',
             queuedInClaude: 'В очереди в Claude',
+            nextTurn: 'Ждёт следующего хода',
           },
           queuedReasons: {
             waitingForForegroundTurn: 'Ожидание завершения текущего хода',
@@ -9177,6 +9236,7 @@ encryptedUnavailable: "Зашифрованные данные недоступ�
         voiceSurface: {
             reviewCredentials: 'Проверить учётные данные',
             connectAgent: 'Подключить',
+            setUpAgent: ({ agent }: { agent: string }) => `Настроить ${agent}`,
             installAgentRuntime: 'Установить',
             updateAgentRuntime: 'Обновить',
             reconnect: 'Переподключить',
@@ -9192,6 +9252,7 @@ encryptedUnavailable: "Зашифрованные данные недоступ�
           orbExpand: "Развернуть голос",
           orbCollapse: "Свернуть голос",
           delegatedWorking: "Работает…",
+          earlierTurnsLeftOut: "Ранние части этого разговора опущены, чтобы он поместился в память модели.",
           composerStartHint: "Начинает голосовой разговор об этой сессии.",
           composerGlobalStartHint: "Начинает голосовой разговор, не привязанный ни к одной сессии.",
           composerEndHint: "Завершает голосовой разговор. Уже начатая работа над кодом продолжается.",
@@ -9306,6 +9367,18 @@ encryptedUnavailable: "Зашифрованные данные недоступ�
             people: 'Люди',
         },
         suggestionTypeMoreToNarrow: 'Введите больше, чтобы сузить',
+        commands: {
+            compact: 'Сжать разговор',
+            clear: 'Очистить разговор',
+            help: 'Показать доступные команды',
+            reset: 'Сбросить сессию',
+            export: 'Экспортировать разговор',
+            debug: 'Показать отладочную информацию',
+            status: 'Показать состояние подключения',
+            stop: 'Остановить текущую операцию',
+            abort: 'Прервать текущую операцию',
+            cancel: 'Отменить текущую операцию',
+        },
       stopCodingTurn: "Остановить ход программирования",
         nonSteerableSend: {
             title: 'Агент занят',
@@ -10666,6 +10739,9 @@ encryptedUnavailable: "Зашифрованные данные недоступ�
       emptyTitle: 'Локальные службы не обнаружены',
       errorTitle: 'Сканирование локальных служб требует внимания',
       scanCause: {
+        rootDenied: ({ path }: { path: string }) => `Нет прав на чтение ${path}`,
+        rootMissing: ({ path }: { path: string }) => `${path} не найден`,
+        rootUnreadable: ({ path }: { path: string }) => `Не удалось прочитать ${path}`,
         workspacesUnavailable: 'Не удалось прочитать, какие проекты открыты на этой машине, поэтому часть служб может отсутствовать.',
         partial: 'Сканирование на этой машине не уложилось во время, поэтому часть запущенных служб может отсутствовать.',
         failed: 'Эта машина не смогла перечислить свои процессы, поэтому запущенные службы найти нельзя.',
@@ -10739,6 +10815,9 @@ encryptedUnavailable: "Зашифрованные данные недоступ�
       waitingAddress: 'Запущен. Ожидание адреса.',
       noAddress: 'Нет адреса',
       failed: 'Не удалось запустить сервис.',
+      reviewOutput: 'Посмотреть вывод',
+      address: 'Адрес',
+      addressOpensHere: 'Открывается на этом телефоне через Локальные сервисы',
     },
     session: {
       thisSessionTitle: 'Эта сессия',
@@ -10898,10 +10977,36 @@ encryptedUnavailable: "Зашифрованные данные недоступ�
             runScriptA11y: 'Запустить скрипт в новой вкладке терминала',
             failure: {
                 title: 'Действие не выполнено',
-                refused: 'Машина отклонила это действие. Проверьте разрешения локальных служб на этой машине и попробуйте снова.',
+                refused: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "Машина отклонила это действие."
+                  : 'Машина отклонила это действие. Проверьте разрешения локальных служб на этой машине и попробуйте снова.',
                 unavailable: 'Это действие недоступно для этой службы на этой машине.',
-                incomplete: 'Действие не завершилось. Вы можете попробовать ещё раз.',
-                outcomeUnknown: 'Результат действия неизвестен. Проверьте эту службу на выбранной машине, прежде чем повторять попытку.',
+                incomplete: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "Действие не завершилось."
+                  : 'Действие не завершилось. Вы можете попробовать ещё раз.',
+                serviceNotRunning: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "Этот сервис больше не работает."
+                  : 'Этот сервис больше не работает; проверьте раздел «Сервисы».',
+                namedServiceNotRunning: ({ service, servicesActionOffered = false }: { service: string; servicesActionOffered?: boolean }) => servicesActionOffered
+                  ? `${service} больше не работает.`
+                  : `${service} больше не работает; проверьте раздел «Сервисы».`,
+                previewNotReady: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "Этот сервис ещё не готов к открытию."
+                  : 'Этот сервис ещё не готов к открытию; проверьте раздел «Сервисы».',
+                browserViewUnavailable: "Happier не удалось открыть встроенный просмотр браузера. Попробуйте ещё раз чуть позже.",
+                startFailedTitle: "Не удалось запустить сервис",
+                startFailed: "Сервис остановился до завершения запуска.",
+                namedStartFailed: ({ service }: { service: string }): string => `${service} остановился до завершения запуска.`,
+                previewFailed: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "Не удалось открыть предпросмотр."
+                  : 'Не удалось открыть предпросмотр; проверьте «Сервисы» и повторите попытку.',
+                previewUnavailable: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "Доступ к предпросмотру недоступен."
+                  : 'Доступ к предпросмотру недоступен; проверьте раздел «Сервисы».',
+                namedReason: ({ service, reason }: { service: string; reason: string }) => `${service}: ${reason}`,
+                outcomeUnknown: ({ servicesActionOffered = false }: { servicesActionOffered?: boolean } = {}) => servicesActionOffered
+                  ? "Результат действия неизвестен."
+                  : 'Результат действия неизвестен. Проверьте эту службу на выбранной машине, прежде чем повторять попытку.',
       portInUse: ({ port }: { port: number }) => `Порт ${port} уже занят. Остановите существующий сервис или выберите другой порт.`,
       portInUseSameProject: ({ port }: { port: number }) => `Порт ${port} уже занят этим проектом. Используйте работающий сервис или выберите другой порт.`,
       processExit: ({ code }: { code: string }) => `Сервис завершился с кодом ${code}. Перед повторной попыткой проверьте подробности.`,
@@ -11124,14 +11229,21 @@ encryptedUnavailable: "Зашифрованные данные недоступ�
       previewElsewhere: `Это устройство не может открыть его напрямую. Поделитесь ссылкой в разделе «Сервисы», чтобы открыть его здесь.`,
       previewEndedTitle: `Этот предпросмотр завершён`,
       previewEnded: `Сервис перестал им делиться, или ссылка отозвана. Откройте его снова в разделе «Сервисы».`,
-      previewEndedLastPage: ({ page }: { page: string }) => `Последняя страница: ${page}. Сервис перестал им делиться, или ссылка отозвана. Откройте его снова в разделе «Сервисы».`,
+      previewEndedLastPageDetail: ({ page }: { page: string }) => `Последняя страница: ${page}`,
+      previewEndedStopped: `Сервис перестал им делиться, или ссылка отозвана.`,
+      previewEndedServiceStopped: ({ service }: { service: string }) => `${service} остановлен.`,
       previewEndedRunning: `Сервис запущен, поэтому его можно снова открыть здесь.`,
-      previewEndedRunningLastPage: ({ page }: { page: string }) => `Последняя страница: ${page}. Сервис запущен, поэтому его можно снова открыть здесь.`,
+      previewEndedNamed: ({ service }: { service: string }) => `Сервис ${service} перестал им делиться, или ссылка отозвана. Откройте его снова в разделе «Сервисы».`,
+      previewEndedStoppedNamed: ({ service }: { service: string }) => `Сервис ${service} перестал им делиться, или ссылка отозвана.`,
+      previewEndedRunningNamed: ({ service }: { service: string }) => `Сервис ${service} запущен, поэтому его можно снова открыть здесь.`,
       openAgain: `Открыть снова`,
       openServices: `Перейти к сервисам`,
       previewTransportUnavailableTitle: `Не удаётся подключиться к предпросмотру`,
-      previewTransportUnavailable: `Компьютер, на котором он запущен, сейчас не отвечает. Перезагрузите, чтобы попробовать снова.`,
+      previewTransportUnavailable: `Компьютер, на котором он запущен, сейчас не отвечает.`,
       closeTab: `Закрыть вкладку`,
+      previewTransportUnavailableNamed: ({ machine }: { machine: string }) => `${machine} сейчас не отвечает на запросы этого предпросмотра.`,
+      startService: ({ service }: { service: string }) => `Запустить ${service}`,
+      startAgain: `Запустить снова`,
       desktopEngineUnavailable: "Встроенный движок браузера недоступен на этом компьютере.",
       desktopWebView: "Встроенный движок браузера недоступен на этом компьютере. Эту страницу всё ещё можно открыть в системном браузере.",
       desktopWebViewUnsupportedPlatform: "Встроенный просмотр пока недоступен на этой платформе.",
@@ -12520,6 +12632,9 @@ settingsSession: {
       retry: 'Повторить',
       roleYou: 'Вы',
       roleAssistant: 'Ассистент',
+      recoveryDescription: 'Не удалось подтвердить доставку части ваших сообщений. Ничего не будет отправлено повторно или удалено, пока вы не решите.',
+      recoveryTitle: 'Проверить удержанные сообщения',
+      recoveryOpenFailed: 'Не удалось открыть голосовой разговор. Попробуйте ещё раз.',
     },
     dictation: {
       title: 'Диктовка',
@@ -13528,6 +13643,7 @@ settingsSession: {
         tts_failed: "Не удалось синтезировать речь.",
         turn_aborted: "Голосовой ход отменён.",
         authentication_required: "Подключите выбранного агента, чтобы использовать голосовой режим.",
+        agent_signed_out: ({ agent, machine }: { agent: string; machine: string }) => `У ${agent} нет подключённой учётной записи по умолчанию, и вход на ${machine} не выполнен.`,
         session_unavailable: "Выбранный сеанс больше недоступен для голосового режима.",
         unsupported_runtime: "Установите среду выбранного агента, чтобы использовать голосовой режим.",
         update_required: "Обновите среду выбранного агента, чтобы использовать голосовой режим.",
@@ -13535,6 +13651,7 @@ settingsSession: {
         mic_unavailable: 'Микрофон не найден. Подключите его и попробуйте снова.',
         speech_recognition_unavailable: 'Распознавание речи здесь недоступно. Выберите другой движок распознавания речи.',
         previous_session_stop_failed: 'Не удалось остановить предыдущий голосовой сеанс.',
+        agent_selection_unavailable: 'Выбранный агент недоступен. Выберите агента в настройках голоса.',
       },},
     privacy: {
       title: "Передача контекста",
@@ -13867,7 +13984,7 @@ settingsSession: {
     onboardingShowcase: {
         details: {
             ...PRODUCT_STORY_DETAILS_ENGLISH,
-            voice: { ...PRODUCT_STORY_DETAILS_ENGLISH.voice, body: "Спрашивайте о сессиях и обсуждайте следующие изменения вслух. Запросы разрешений по-прежнему требуют нажатия." },
+            voice: { ...PRODUCT_STORY_DETAILS_ENGLISH.voice, body: "Спрашивайте о сессиях и отправляйте сообщения голосом. Разрешите голосовому агенту одобрять запросы за вас или отключите это в настройках Голоса." },
             handoff: {
                 wideTitle: "Перенесите запущенную сессию\nна другую машину.",
                 body: "Передайте запущенную сессию на настольный компьютер, VPS или машину для разработки и продолжите с того места, где остановились. Рабочее дерево можно перенести вместе с ней: целиком или только изменения. Happier создаст копию рядом, ничего не перезаписывая, а игнорируемые файлы останутся на месте, если вы не укажете их явно.",
@@ -13889,7 +14006,7 @@ settingsSession: {
                         "existingTitle": "Существующие сессии уже здесь",
                         "existingBody": "Любую сессию Claude, Codex или OpenCode, запущенную на вашей машине, можно открыть в Happier вживую.",
                         "voiceTitle": "Голосовой ассистент для брейншторма",
-                        "voiceBody": "Узнавайте, что делают агенты, и отправляйте сообщения голосом. Запросы разрешений подтверждайте нажатием.",
+                        "voiceBody": "Спрашивайте о сессиях и отправляйте сообщения голосом. Разрешите голосовому агенту одобрять запросы за вас или отключите это в настройках Голоса.",
                         "reviewTitle": "Проверяйте diff и оставляйте комментарии",
                         "reviewBody": "Отмечайте конкретные строки в файлах или diff, выбирайте заметки для отправки и передавайте их агенту.",
                         "subagentsTitle": "Subagents между провайдерами",
@@ -14108,6 +14225,7 @@ settingsSession: {
   },
 
   terminalEmbedded: {
+    inputRecovery: "Доставка ввода не подтверждена. Скопируйте ввод и проверьте терминал, прежде чем продолжить.",
     nativeAccessibility: {
       terminalLabel: 'Терминал',
       fallbackValue: 'Содержимое нативного терминала недоступно. Используйте xterm WebView для доступного содержимого терминала.',
@@ -15010,6 +15128,12 @@ settingsSession: {
     runtimeConfigOutcomeRequiresInteractiveControl: 'Требуется действие в терминале',
     runtimeConfigOutcomeUnsupported: 'Не поддерживается',
     runtimeConfigOutcomeFailed: 'Не удалось применить',
+    contextCompactionIdleStarted: 'Сжатие в простое…',
+    contextCompactionIdleCompleted: 'Сжато в простое',
+    contextCompactionIdleDetail: 'До истечения кеша промптов',
+    contextCompactionIdleDetailCounts: ({ before, after }: { before: string; after: string }) => `${before} → ${after} токенов · до истечения кеша промптов`,
+    contextCompactionIdleFailed: 'Не удалось сжать в простое',
+    contextCompactionIdleFailedDetail: 'Разговор сохраняет полный размер.',
     contextCompactionStarted: "Сжатие контекста...",
     contextCompactionCompleted: "Контекст сжат",
     contextCompactionFailed: "Не удалось сжать контекст",
@@ -17097,6 +17221,8 @@ settingsSession: {
         targetMismatchHint: "Выберите машину заново. Если проблема повторяется, подключите её к этому Home заново и повторите попытку. Ваш выбор сохранён.",
         invalidFolder: "Выберите папку внутри этого checkout’а.",
         unsupported: "Эта машина не может подготовить проект.",
+        cloneUnsupported: "Эта машина не может клонировать репозитории.",
+        hostingProviderUnavailable: "Хостинг-провайдер этой Source недоступен на этой машине.",
         setupFailed: ({ project }: { project: string }) => `${project} открыт, но настройка не удалась.`,
         filesKept: "Checkout сохранён. Исправьте настройку или откройте «Скрипты», чтобы повторить.",
         openScripts: "Открыть скрипты",
@@ -17156,6 +17282,18 @@ settingsSession: {
         agentWaitedFor: ({ name }: { name: string }) => `Дождался ${name}`,
         agentAccepted: "Принято",
         agentOn: ({ machine }: { machine: string }) => `на ${machine}`,
+        environment: {
+            host: "Окружение хоста",
+            empty: "Нативное окружение не обнаружено",
+            checking: "Проверяем доступные инструменты…",
+            pending: "Ожидается подтверждение для вычисления этого окружения",
+            preparing: ({ tool, machine }: { tool: string; machine: string }) => `Подготовка ${tool} на ${machine}…`,
+            unavailable: ({ tool }: { tool: string }) => `${tool} недоступен на этой машине`,
+            failed: "Не удалось подготовить нативное окружение. Посмотрите вывод.",
+            changed: "Входные данные окружения изменились. Проверьте снова.",
+            unevaluated: "Определения Nix читаются после вычисления этого окружения.",
+            noFallback: "В окружении хоста ничего не запускалось",
+        },
         definition: {
             inspecting: "Поиск команд проекта…",
             partial: "Некоторые определения не удалось прочитать",
@@ -17169,6 +17307,7 @@ settingsSession: {
         },
         run: {
             notRun: "В этом checkout ещё не запускался",
+            waitsForSetup: "Ждёт настройки",
             accepted: "Принято. Ожидает запуска.",
             running: ({ machine }: { machine: string }) => `Выполняется на ${machine}`,
             completed: ({ time }: { time: string }) => `Завершено ${time}`,
@@ -17199,6 +17338,7 @@ settingsSession: {
             values: "Значения",
             valuesNote: "Только имена; значения подставляются при запуске.",
             stepsUnavailable: "Не удалось прочитать шаги настройки.",
+            review: "Проверить настройку",
             from: "Из",
             viewFile: "Открыть файл",
             sharedScope: ({ osUser, machine }: { osUser: string; machine: string }) => `Выполняется как ${osUser} на ${machine}. Ваше одобрение для этого проекта действует, пока настройка не изменится.`,
@@ -17208,6 +17348,10 @@ settingsSession: {
             consequenceThisTime: "Запускает настройку сейчас. В следующий раз Happier спросит снова.",
             consequenceSkip: "Пропускает настройку для этого вызова, не отмечая её как готовую.",
             consequenceUntilChanged: "Действует для этого проекта на любой машине, включая общую машину коллеги, пока не изменятся команда, инструменты или файл проекта. Коллеги одобряют сами за себя.",
+            agentAsksRememberedTitle: "Запустить настройку и запомнить её для этого проекта?",
+            agentAsksRemembered: "Агент просит запомнить эту настройку",
+            agentAsksRememberedBody: "Если вы одобрите, настройка выполнится сейчас, а эта проверка будет пропускаться для вас в этом проекте на любой из ваших машин, пока не изменятся команда, инструменты или файл проекта.",
+            agentAsksRememberedRow: "Просит запомнить эту настройку",
             readySince: ({ time }: { time: string }) => `Готова для этих входных данных с ${time}`,
             notRunYet: "Настройка ещё не запускалась для этой версии",
             needsReview: "Настройка изменилась. Проверьте её в разделе «Скрипты»",
@@ -17246,10 +17390,10 @@ settingsSession: {
             environment: "Окружение",
             environmentBody: "Каждый агент, терминал, скрипт и сервис этого проекта запускается внутри него. Определено чтением файлов; ничего не вычисляется, пока настройка не одобрена.",
             toolsFrom: "Инструменты из",
-            hostTools: "Инструменты этой машины",
             toolAvailable: ({ machine }: { machine: string }) => `Доступно на ${machine}`,
             toolUnavailable: ({ machine }: { machine: string }) => `Не установлено на ${machine}`,
             toolUnresolved: ({ machine }: { machine: string }) => `Не подтверждено на ${machine}`,
+            toolsCount: ({ available, total, machine }: { available: number; total: number; machine: string }) => `Доступно ${available} из ${total} на ${machine}`,
             toolRequested: ({ version, file }: { version: string; file: string }) => `Требует ${version} в ${file}`,
             alsoFound: ({ names }: { names: string }) => `также найдено: ${names}`,
             setup: "Настройка",
@@ -17293,6 +17437,7 @@ settingsSession: {
             title: "Вывод",
             ranOn: "Выполняется на",
             openInTerminal: "Открыть в терминале",
+            earlierNotKept: "Более ранний вывод больше не хранится",
             purpose: {
                 setup: "Настройка",
                 teardown: "Очистка",
@@ -17428,6 +17573,7 @@ settingsSession: {
         rowsLoadingTitle: "Загрузка проектов",
         rowsUnavailableTitle: "Не удалось загрузить проекты.",
         rowsUnavailableBody: "Ничего не удалено. Попробуйте ещё раз через минуту.",
+        rowsStaleReason: "Не удалось обновить проекты.",
         openInvalidTitle: "Эта ссылка не указывает на один checkout.",
         openInvalidBody: "Откройте проект из Проектов.",
         backToProjects: "Назад к Проектам",
@@ -17813,6 +17959,8 @@ settingsSession: {
     marketplaceInstallReviewBody: ({ identity, verification, executableRealms, contributions, uiArtifacts, requiredAccess, optionalAccess, compatibility }: { identity: string; verification: string; executableRealms: string; contributions: string; uiArtifacts: string; requiredAccess: string; optionalAccess: string; compatibility: string }) => `Идентификация:\n${identity}\n\nСигналы проверки:\n${verification}\n\nИсполняемый код: ${executableRealms}\nВозможности: ${contributions}\nАртефакты интерфейса: ${uiArtifacts}\n\nДоверенный код демона и React Native выполняется с полномочиями приложения или процесса и может напрямую использовать файлы, сеть, окружение и процессы. Указанный ниже доступ к хосту описывает сервисы, посредником для которых выступает Happier; это не песочница для исполняемого кода плагина.\n\nОбязательные раскрытия и кооперативные сервисы:\n${requiredAccess}\n\nНеобязательные ресурсы хоста (по умолчанию отключены):\n${optionalAccess}\n\nСовместимость и обновления:\n${compatibility}`,
     marketplaceInstallDecisionFailed: ({ outcome }: { outcome: string }) => `Плагин не установлен (${outcome}).`,
     marketplaceChangeDecisionFailed: ({ action, outcome }: { action: string; outcome: string }) => `${action}: сбой (${outcome}).`,
+    marketplaceInstallRefused: ({ reason }: { reason: string }) => `Плагин не установлен.\n\n${reason}`,
+    marketplaceChangeRefused: ({ action, reason }: { action: string; reason: string }) => `${action}: сбой.\n\n${reason}`,
     pluginChangeConfirmBody: ({ action, name, machine, server }: { action: string; name: string; machine: string; server: string }) => `Подтвердите «${action}» для ${name} на ${machine} (${server}).`,
     pluginChangeConfirmTarget: ({ machine, server }: { machine: string; server: string }) => `Это применяется к ${machine} (${server}).`,
     forgetTrust: "Забыть доверие",
@@ -18141,7 +18289,7 @@ settingsSession: {
         transportUnavailable: "Happier не удалось связаться с источником этого вида. Проверьте соединение и попробуйте снова.",
         sourceUnavailable: "Файлы выбранного вида плагина недоступны. Попробуйте загрузить его снова.",
         viewNotCurrent: "Выбранное представление плагина больше не актуально. Откройте страницу заново, обновите плагин на его компьютере или выберите другой компьютер.",
-        unavailableGeneric: 'Возможно, он ещё запускается. Повторите попытку через минуту.',
+        unavailableGeneric: 'Возможно, он ещё запускается.',
         crashLoop: 'Плагин остановлен после повторных сбоев.',
         disabledByPolicy: 'Это представление плагина отключено текущими настройками или несовместимостью.',
         hostedWebUnavailableTitle: 'Размещенное представление плагина недоступно',
@@ -18170,8 +18318,9 @@ settingsSession: {
         alwaysRemembered: 'Всегда в памяти:',
         searchable: 'Доступно для поиска:',
         countsUnavailable: 'Не удалось загрузить счётчики',
-        countsNeedMachine: 'Счётчики берутся из индекса памяти машины.',
-        searchNeedMachine: 'Поиск работает по индексу памяти машины.',
+        countsNeedMachine: 'Выберите машину, чтобы загрузить счётчики.',
+        countsOff: 'Выключена. Счётчики появятся, когда память будет включена.',
+        searchNeedMachine: 'Выберите машину, чтобы искать в памяти.',
         factCount: ({ count }: { count: number }) => `${count} ${count % 10 === 1 && count % 100 !== 11 ? 'факт' : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14) ? 'факта' : 'фактов'}`,
         topicsLabel: 'Темы:',
         showAll: ({ count }: { count: number }) => `Показать все (${count})`,
@@ -18451,6 +18600,7 @@ settingsSession: {
         policyScope: "Изменения библиотеки промптов агентами, во всех сессиях",
         changedBy: (params: { name: string }) => `Изменено: ${params.name}`,
         approvedBy: (params: { name: string }) => `Одобрено: ${params.name}`,
+        approvedByVoice: (params: { name: string }) => `Одобрено агентом Voice от имени ${params.name}`,
         detachHelp: 'Документ останется в библиотеке промптов.',
         chooseDocument: 'Выбрать документ',
         openInLibrary: 'Открыть в библиотеке промптов',

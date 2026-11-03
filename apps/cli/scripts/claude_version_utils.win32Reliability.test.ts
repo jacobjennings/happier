@@ -3,9 +3,28 @@ import { describe, expect, it } from 'vitest';
 import {
   chooseWindowsClaudePathFromPathAndNative,
   buildClaudeBinarySpawnInvocation,
+  pickClaudePathFromWhichOrWhereOutput,
 } from '../scripts/claude_version_utils.cjs';
 
 describe('claude_version_utils (win32 reliability helpers)', () => {
+  describe('pickClaudePathFromWhichOrWhereOutput', () => {
+    it('prefers claude.exe over claude.cmd when "where claude" returns multiple matches', () => {
+      const cmd = 'C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd';
+      const exe = 'C:\\Users\\me\\AppData\\Local\\Claude\\claude.exe';
+      const output = `${cmd}\r\n${exe}\r\n`;
+
+      expect(pickClaudePathFromWhichOrWhereOutput(output, 'win32', () => true)).toBe(exe);
+    });
+
+    it('avoids WindowsApps app-execution-alias stubs when another match exists', () => {
+      const windowsAppsExe = 'C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\claude.exe';
+      const npmCmd = 'C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd';
+      const output = `${windowsAppsExe}\r\n${npmCmd}\r\n`;
+
+      expect(pickClaudePathFromWhichOrWhereOutput(output, 'win32', () => true)).toBe(npmCmd);
+    });
+  });
+
   describe('chooseWindowsClaudePathFromPathAndNative', () => {
     it('prefers the native installer .exe when PATH resolves to a .cmd shim', () => {
       const selected = chooseWindowsClaudePathFromPathAndNative(

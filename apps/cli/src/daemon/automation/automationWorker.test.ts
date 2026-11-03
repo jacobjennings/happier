@@ -362,7 +362,7 @@ describe('automationWorker', () => {
       if (!url.endsWith('/v3/automations/runs/claim')) return { data: { ok: true } };
       if (claimed) return { data: { run: null, automation: null, accountCurrentness: null } };
       claimed = true;
-      return { data: { run: { id: runId, automationId: 'automation-park', attempt: 1, revision: 0,
+      return { data: { run: { id: runId, automationId: 'automation-park', leaseExpiresAt: now + 30_000, attempt: 1, revision: 0,
         recipeKind: 'workflow-v2', triggerId: null, triggerRetired: false, cause: { kind: 'manual', invokedAt: now },
         executionInputEnvelope: '{}', automationEvidenceEnvelope: null, workflowAcceptedSnapshotEnvelope: acceptedEnvelope },
         automation: { id: 'automation-park', name: 'Park', enabled: true }, accountCurrentness: V3_CLAIM_CURRENTNESS } };
@@ -476,7 +476,7 @@ describe('automationWorker', () => {
     }
   });
 
-  it('does not decode or migrate Account definitions while the current assignment inventory contains only Workflow recipes', async () => {
+  it('only selects unindexed definitions at startup while the current assignment inventory contains only Workflow recipes', async () => {
     const now = Date.now();
     process.env.HAPPIER_SERVER_URL = 'https://api.example.test';
     process.env.HAPPIER_WEBAPP_URL = 'https://app.example.test';
@@ -491,7 +491,7 @@ describe('automationWorker', () => {
     try {
       await worker.refreshAssignments();
       await waitForCondition(() => mockPost.mock.calls.length > 0);
-      expect(migrationBoundary.list).not.toHaveBeenCalled();
+      expect(migrationBoundary.list).toHaveBeenCalledExactlyOnceWith({ token: 'token-1', managedTargetUnindexed: true, signal: expect.any(AbortSignal) });
       expect(migrationBoundary.get).not.toHaveBeenCalled();
       expect(migrationBoundary.reconcile).not.toHaveBeenCalled();
     } finally { worker.stop(); }
@@ -596,6 +596,43 @@ describe('automationWorker', () => {
       await vi.waitFor(() => expect(recoverWorkflowRuns).toHaveBeenCalledOnce());
     } finally {
       worker.stop();
+    }
+  });
+
+  it('honours claim Retry-After through the worker scheduler and cancels its pending retry on stop', async () => {
+    vi.useFakeTimers();
+    let worker: ReturnType<typeof startAutomationWorker> | undefined;
+    try {
+      const now = Date.now();
+      process.env.HAPPIER_SERVER_URL = 'https://api.example.test';
+      process.env.HAPPIER_WEBAPP_URL = 'https://app.example.test';
+      process.env.HAPPIER_HOME_DIR = join(os.tmpdir(), `happier-retry-after-${now}-${Math.random()}`);
+      reloadCapacityConfiguration();
+      mockGet.mockReset().mockResolvedValue({ data: { assignments: [], settings: DEFAULT_WORKER_SETTINGS } });
+      mockPost.mockReset().mockRejectedValue({ response: { status: 429, headers: { 'retry-after': '600' } } });
+      worker = startCapacityAutomationWorker({ token: 'token-1', credentials: { token: 'token-1', encryption: null },
+        machineId: 'machine-1', env: { NODE_ENV: 'test' } });
+      await worker.refreshAssignments();
+      worker.handleServerUpdate({ id: 'retry-after-wake', seq: 1, createdAt: now, body: {
+        t: 'automation-run-updated', runId: 'retry-after-run', automationId: null, state: 'queued', scheduledAt: now,
+        startedAt: null, finishedAt: null, updatedAt: now, machineId: null, targetMachineId: 'machine-1',
+      } } satisfies Update);
+      await vi.advanceTimersByTimeAsync(0);
+      await settleRequestDispatch();
+      expect(mockPost).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(mockPost).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(mockPost).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await settleRequestDispatch();
+      expect(mockPost).toHaveBeenCalledTimes(2);
+      worker.stop();
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(mockPost).toHaveBeenCalledTimes(2);
+    } finally {
+      worker?.stop();
+      vi.useRealTimers();
     }
   });
 
@@ -1296,7 +1333,7 @@ describe('automationWorker', () => {
       claims.push(body.scope);
       const index = ordinal++;
       return { data: index >= ids.length ? { run: null, automation: null, accountCurrentness: null } : {
-        run: { id: ids[index], automationId: `automation-${index}`, attempt: 1, revision: 0, recipeKind: 'workflow-v2',
+        run: { id: ids[index], automationId: `automation-${index}`, leaseExpiresAt: now + 30_000, attempt: 1, revision: 0, recipeKind: 'workflow-v2',
           triggerId: null, triggerRetired: false, cause: { kind: 'manual', invokedAt: now },
           executionInputEnvelope: '{}', automationEvidenceEnvelope: null, workflowAcceptedSnapshotEnvelope: accepted[index] },
         automation: { id: `automation-${index}`, name: 'Capacity', enabled: true,

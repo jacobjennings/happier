@@ -38,8 +38,9 @@ describe('atomic Voice Agent selection', () => {
         const selected = applyVoiceAgentSelection(voiceSettingsDefaults, { kind: 'catalog', entry: second });
         expect(readLocalConversationVoiceSettings(selected).agent).toMatchObject({
             agentId: second.agentId, agentTargetKey: second.backendTargetKey,
-            agentIdentity: second.identity, agentProjectionGeneration: second.projectionGeneration,
+            agentIdentity: second.identity,
         });
+        expect(readLocalConversationVoiceSettings(selected).agent).not.toHaveProperty('agentProjectionGeneration');
     });
     it('does not activate an imported Chat intent from Agent choice alone without current selectable model facts', () => {
         const local = readLocalConversationVoiceSettings(voiceSettingsDefaults);
@@ -54,10 +55,11 @@ describe('atomic Voice Agent selection', () => {
     });
 
     it.each([
-        { authorized: false, confirmed: true, expected: 'needs_selection' },
-        { authorized: true, confirmed: false, expected: 'needs_selection' },
-        { authorized: true, confirmed: true, expected: 'configured' },
-    ] as const)('uses the incumbent model picker admission for BOTH imported Chat models: %o', ({ authorized, confirmed, expected }) => {
+        { authorized: false, chatConfirmed: true, commitConfirmed: true, expected: 'needs_selection' },
+        { authorized: true, chatConfirmed: false, commitConfirmed: true, expected: 'needs_selection' },
+        { authorized: true, chatConfirmed: true, commitConfirmed: false, expected: 'needs_selection' },
+        { authorized: true, chatConfirmed: true, commitConfirmed: true, expected: 'configured' },
+    ] as const)('uses the incumbent model picker admission for BOTH imported Chat models: %o', ({ authorized, chatConfirmed, commitConfirmed, expected }) => {
         const local = readLocalConversationVoiceSettings(voiceSettingsDefaults);
         const connectionId = ProviderConnectionIdSchema.parse('voice-openai-compatible-chat');
         const agentTargetKey = 'agent:happier.agent.opencode/opencode';
@@ -76,7 +78,8 @@ describe('atomic Voice Agent selection', () => {
                 sources: { manual: true, static: false, probe: false }, confidence: 'manual',
                 compatibility: { result: { status: 'experimental', selectedProtocol: 'openai-chat',
                     reasons: ['compatibility_evidence_missing'], confirmationScope: { kind: 'model', modelId } },
-                    compatibilityFingerprint: 'compatibility:v1:legacy-chat', confirmed: modelId === 'legacy-commit' ? confirmed : true },
+                    compatibilityFingerprint: `compatibility:v1:${modelId}`,
+                    confirmed: modelId === 'legacy-commit' ? commitConfirmed : chatConfirmed },
                 endpointHealth: 'available', catalog: { stale: false }, loadState: 'unknown', visibility: 'visible',
             })),
         })] });
@@ -91,8 +94,8 @@ describe('atomic Voice Agent selection', () => {
             agentId: 'external-registry-id',
             agentTargetKey: 'agent:acme.voice/agents/conversation',
             agentIdentity: { pluginId: 'acme.voice', localId: 'agents/conversation' },
-            agentProjectionGeneration: 7,
         });
+        expect(readLocalConversationVoiceSettings(persisted).agent).not.toHaveProperty('agentProjectionGeneration');
         const bundled = applyVoiceAgentSelection(persisted, {
             kind: 'catalog',
             entry: {
@@ -103,7 +106,7 @@ describe('atomic Voice Agent selection', () => {
         });
         expect(readLocalConversationVoiceSettings(bundled).agent).toMatchObject({
             agentId: 'codex', agentTargetKey: 'agent:happier.agent.codex/codex',
-            agentIdentity: null, agentProjectionGeneration: null,
+            agentIdentity: null,
         });
     });
 
@@ -113,7 +116,21 @@ describe('atomic Voice Agent selection', () => {
         expect(applyVoiceAgentSelection(external, { kind: 'custom', agentId: '  ' })).toBe(external);
         const changed = applyVoiceAgentSelection(external, { kind: 'custom', agentId: '  claude  ' });
         expect(readLocalConversationVoiceSettings(changed).agent).toMatchObject({
-            agentId: 'claude', agentTargetKey: null, agentIdentity: null, agentProjectionGeneration: null,
+            agentId: 'claude', agentTargetKey: null, agentIdentity: null,
         });
+    });
+
+    it('keeps stored selections readable when unknown observation fields are present', () => {
+        const selected = applyVoiceAgentSelection(voiceSettingsDefaults, externalChoice);
+        const local = readLocalConversationVoiceSettings(selected);
+        const stored = { ...selected, providers: { ...selected.providers, local_conversation: {
+            schemaVersion: 1, config: { ...local, agent: { ...local.agent,
+                agentProjectionGeneration: 7, futureObservation: { version: 2 },
+            } },
+        } } };
+        const actual = readLocalConversationVoiceSettings(settingsParse({ voice: stored }).voice).agent;
+        expect(actual).toMatchObject({ agentId: externalChoice.entry.agentId,
+            agentTargetKey: externalChoice.entry.backendTargetKey, agentIdentity: externalChoice.entry.identity });
+        expect(actual).not.toHaveProperty('agentProjectionGeneration');
     });
 });

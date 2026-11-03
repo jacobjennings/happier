@@ -3,7 +3,6 @@ export type NativeScrollAwayGestureLiveTailBailDecision =
     | Readonly<{
         reason:
             | 'no-open-trusted-away-gesture'
-            | 'not-native'
             | 'outside-live-tail-threshold'
             | 'trusted-observation';
         type: 'continue';
@@ -12,11 +11,9 @@ export type NativeScrollAwayGestureLiveTailBailDecision =
 export function resolveNativeScrollAwayGestureLiveTailBailDecision(params: Readonly<{
     distanceFromLiveTailPx: number;
     hasOpenTrustedAwayGesture: boolean;
-    isNative: boolean;
     isTrusted: boolean;
     pinThresholdPx: number;
 }>): NativeScrollAwayGestureLiveTailBailDecision {
-    if (!params.isNative) return { reason: 'not-native', type: 'continue' };
     if (!params.hasOpenTrustedAwayGesture) {
         return { reason: 'no-open-trusted-away-gesture', type: 'continue' };
     }

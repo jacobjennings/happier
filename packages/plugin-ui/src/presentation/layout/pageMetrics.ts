@@ -10,7 +10,20 @@ export const HAPPIER_PUBLIC_PROFILE_HERO_METRICS = Object.freeze({
   /** Existing owner-preview recomposition threshold. */
   singleColumnBelowWidthPx: 640,
   horizonAt: 0.6,
+  /** A paused or unavailable page's quiet horizon (lab `ppstate-X`): a small planet, no picture. */
+  quietBandHeightPx: Object.freeze({ wide: 260, phone: 220 }),
 });
+
+/**
+ * A Rise planet in a profile band (lab `c3hero`): round, its radius from the column rather than Home's
+ * pane-wide arc, and its limb high in the band. The identity starts under the band, so the planet fills
+ * the sky under the brand bar instead of leaving it empty. App and server paint the band from this.
+ */
+export function resolveHappierPublicProfilePlanetBand(pane: Readonly<{ width: number; height: number }>):
+  Readonly<{ limb: number; radius: number }> {
+  const phone = pane.width < HAPPIER_PUBLIC_PROFILE_HERO_METRICS.singleColumnBelowWidthPx;
+  return { limb: 0.25 * pane.height, radius: phone ? 0.68 * pane.width : Math.min(0.46 * pane.width, 680) };
+}
 
 /** The gap between a row's title and its title-line meta (one owner with the gap the renderers draw). */
 export const HAPPIER_ROW_TITLE_META_GAP_PX = 12;
@@ -68,6 +81,8 @@ export const HAPPIER_PAGE_METRICS = Object.freeze({
   /** An iPhone's band (app-surfaces `.phone .am-phn`), the native navigation bar's height. */
   paneHeaderUnderNativeChromeHeightPx: 44,
   controlHeightPx: 32,
+  /** The dense control inside a row, card or detail header (settings lab `.btn.sm`): a small button draws this tall. */
+  smallControlHeightPx: 28,
   /**
    * A Collection toolbar's row: the inline find capsule (the search field that leads it) is its tallest control,
    * and the host's loading identity for a toolbar page holds the same height so the title does not move.
@@ -146,7 +161,8 @@ export const HAPPIER_PAGE_METRICS = Object.freeze({
    * Below this width a Collection's one toolbar row (the page's name, a readable search, the lens and filters
    * leading; freshness, Refresh, ⋯, the arrangement switch and the page's Run on trailing) no longer fits, so
    * `CollectionToolbar` folds into its two calm rows instead of wrapping control by control — a list narrowed
-   * beside a details pane, a small window, a phone.
+   * beside a details pane, a small window, a phone. It is the least fold width: a page whose real controls need more
+   * (a long freshness, Run on) reports its wrapped row and `Collection` folds at that measured width instead.
    */
   toolbarFoldBelowWidthPx: 1080,
   /**
@@ -259,6 +275,16 @@ export function isHappierSectionActionStacked(input: Readonly<{
   const titleWidthPx = input.titleWidthPx;
   return !(input.hasDescription !== true && typeof titleWidthPx === 'number' && titleWidthPx > 0
     && titleWidthPx < roomBesideActionPx - 0.5);
+}
+
+/**
+ * The width a layout event reports when it describes a visible box, else `null`. A retained pane that is
+ * hidden (`display: none`, an inactive Activity) reports width 0, which says nothing about the layout it will
+ * have when shown: measuring consumers keep their last visible width until a real resize. This is the one
+ * owner of that rule, so a consumer cannot forget it and recompose for a phantom zero.
+ */
+export function readHappierVisibleLayoutWidth(widthPx: number): number | null {
+  return Number.isFinite(widthPx) && widthPx > 0 ? widthPx : null;
 }
 
 /**

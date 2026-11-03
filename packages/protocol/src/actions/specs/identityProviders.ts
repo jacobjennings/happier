@@ -73,6 +73,8 @@ export const MANAGED_IDENTITY_PROVIDER_ACTION_SPECS: readonly PreNormalizedActio
     const metadata = METADATA[id];
     return {
       id, approval: { result: 'required' },
+      ...(id === 'identity.providers.secret.replace' || id === 'identity.providers.remove'
+        ? { irreversible: true as const } : {}),
       // Removal and secret replacement destroy retained configuration. Other
       // configuration/test effects are reversible.
       ...(['identity.providers.create', 'identity.providers.update', 'identity.providers.validate',

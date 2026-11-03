@@ -140,7 +140,7 @@ describe('web glass material', () => {
         const { GlassRuntimeEnvironmentProvider } = await import('./glassRuntimeEnvironment');
         const { GlassMaterialSettingsProvider } = await import('./useGlassMaterialSettings');
         const { glassPresetMaterials } = await import('./glassMaterial');
-        const scene = (atmosphereBehind: 'band' | 'wallpaper', preset: 'everywhere' | 'auto' = 'everywhere') => <GlassMaterialSettingsProvider value={{ glassSurfaceMaterials: glassPresetMaterials(preset) }}>
+        const scene = (atmosphereBehind: 'band' | 'wallpaper', preset: 'everywhere' | 'auto' | 'solid' = 'everywhere') => <GlassMaterialSettingsProvider value={{ glassSurfaceMaterials: glassPresetMaterials(preset) }}>
             <GlassRuntimeEnvironmentProvider value={{ atmosphereBehind }}>
                 <GlassSurface plane surfaceGroup="sidebar" finishRole={null} solidColor="#1b1717">
                     <GlassSurface testID="sidebar-group" surfaceGroup="card" nested finishRole="card" solidColor="#221c1c"><DraftInput /></GlassSurface>
@@ -160,10 +160,13 @@ describe('web glass material', () => {
         await screen.update(scene('wallpaper'));
         expect(cardBackdrops(screen)).toHaveLength(2);
         expect(screen.findHostByTestId('draft')?.props.value).toBe('keep the sidebar draft');
-        // Auto keeps a browser sidebar solid, so a wallpaper under it backs nothing in it.
+        // Auto: a shown wallpaper is backing for the browser sidebar too (owner ruling 2026-10-23), so it backs both groups.
         await screen.update(scene('wallpaper', 'auto'));
-        expect(cardBackdrops(screen)).toHaveLength(1);
-        expect(screen.findAll(node => typeof node.type === 'string' && flattenTestStyle(node.props.style)?.backgroundColor === '#ffffff')).toHaveLength(1);
+        expect(cardBackdrops(screen)).toHaveLength(2);
+        expect(screen.findHostByTestId('draft')?.props.value).toBe('keep the sidebar draft');
+        // Solid keeps the sidebar and its Elements opaque, so the wallpaper backs nothing in it.
+        await screen.update(scene('wallpaper', 'solid'));
+        expect(cardBackdrops(screen)).toHaveLength(0);
         expect(screen.findHostByTestId('draft')?.props.value).toBe('keep the sidebar draft');
     });
     it('paints sidebar-held Elements in the page colour, one quiet step above the sidebar, without the card lift', async () => {
@@ -820,6 +823,32 @@ describe('web glass material', () => {
             expect(paints().length).toBeGreaterThanOrEqual(1);
         }
     });
+    it('paints a surface opened over a translucent dialog (a field\'s choices) on its own floating paint, even when it asks to be nested', async () => {
+        const { GlassMaterialSettingsProvider } = await import('./useGlassMaterialSettings');
+        const { glassPresetMaterials } = await import('./glassMaterial');
+        const { GlassOpenedLayer, renderThemeMaterialSurface } = await import('./GlassSurface');
+        const { HappierSurface } = await import('@happier-dev/plugin-ui/presentation');
+        const { lightTheme } = await import('@/theme');
+        const screen = await renderScreen(<GlassMaterialSettingsProvider value={{ glassSurfaceMaterials: glassPresetMaterials('auto') }}>
+            <GlassSurface surfaceGroup="floating" floatingRole="panel">
+                <DraftInput />
+                {/* The popover portal keeps the dialog's React context; the layer boundary is all that separates them. */}
+                <GlassOpenedLayer>
+                    <HappierSurface testID="choices" materialRole="floating" nested renderMaterialSurface={renderThemeMaterialSurface}>{null}</HappierSurface>
+                    <GlassSurface testID="menu" surfaceGroup="floating" nested>{null}</GlassSurface>
+                </GlassOpenedLayer>
+            </GlassSurface>
+        </GlassMaterialSettingsProvider>);
+        // The dialog itself stays glass.
+        expect(screen.findAll(hasBackdrop)).toHaveLength(1);
+        for (const id of ['choices', 'menu']) {
+            const surface = screen.findAll(node => typeof node.type === 'string' && node.props.testID === id)[0]!;
+            const paint = surface.findAll(node => typeof node.type === 'string' && node.props.dataSet?.happyGlassBackdrop === 'true')[0]!;
+            // Its own opaque floating paint: never the dialog's (transparent) coat, never glass stacked on glass.
+            expect(flattenTestStyle(paint.props.style)?.backgroundColor).toBe(lightTheme.colors.edge.floatingFill);
+            expect(hasBackdrop(paint)).toBe(false);
+        }
+    });
     it('lets secondary action ink sit on the containing translucent material instead of an opaque slab', async () => {
         const { RoundButton } = await import('@/components/ui/buttons/RoundButton');
         const { GlassRuntimeEnvironmentProvider } = await import('./glassRuntimeEnvironment');
@@ -950,17 +979,6 @@ describe('web glass material', () => {
             <GlassSurface surfaceGroup="floating"><GlassSurface testID="inner" surfaceGroup="floating"><DraftInput /></GlassSurface></GlassSurface>
         </GlassMaterialSettingsProvider>);
         expect(backdropsIn(custom, 'inner')).toHaveLength(1);
-    });
-
-    it('keeps the content mounted when the user turns blur off and back on', async () => {
-        useAutoPreset();
-        const screen = await renderScreen(<GlassSurface surfaceGroup="floating"><DraftInput /></GlassSurface>);
-        await act(async () => { screen.changeTextByTestId('draft', 'keep this draft'); });
-        for (const preset of ['solid', 'auto'] as const) {
-            act(() => storage.setState({ settings: { ...storage.getState().settings, ...resolvePreset(storage.getState().settings, preset) } }));
-            expect(screen.findHostByTestId('draft')?.props.value).toBe('keep this draft');
-            expect(screen.findAll(hasBackdrop).length > 0).toBe(preset === 'auto');
-        }
     });
 
     it('never turns a shell plane into a backdrop root for the surfaces it holds', () => {

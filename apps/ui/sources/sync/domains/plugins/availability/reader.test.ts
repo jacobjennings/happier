@@ -1,4 +1,6 @@
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import * as availability from '@happier-dev/protocol/plugins/availability';
 import * as canonicalJson from '@happier-dev/protocol/crypto/canonicalJson';
 import * as uiProjection from '@/sync/domains/plugins/ui/projection';
@@ -118,6 +120,25 @@ function snapshot(overrides: Partial<PluginAccountAvailabilitySnapshot> = {}): P
 }
 
 describe('Plugin Account Availability reader', () => {
+    it('reads desired Account enablement without requiring a release, declaration or Machine materialization', () => {
+        const store = createPluginAccountAvailabilityReaderStore();
+        const reader = store.bind(scope);
+        const pluginId = 'com.acme.fixture';
+        expect(reader.readCurrentAccountEnablement(pluginId)).toBeNull();
+        store.replace({ scope, snapshot: snapshot({ intentReads: [] }), intentCensusIncomplete: true });
+        expect(reader.readCurrentAccountEnablement(pluginId)).toBeNull();
+        const incompleteObservation = reader.getObservationSnapshot();
+        store.replace({ scope, snapshot: snapshot({ intentReads: [] }) });
+        expect(reader.readCurrentAccountEnablement(pluginId)).toBe(true);
+        expect(reader.getObservationSnapshot()).not.toBe(incompleteObservation);
+        const disabled = PluginAccountAvailabilityIntentReadResponseV1Schema.parse({ ...intentRead(), availabilityCursor: 44,
+            intent: { ...intentRead().intent!, desiredVersion: null, enabled: false }, release: null, uiArtifacts: [], packageAssets: [] });
+        store.replace({ scope, snapshot: snapshot({ availabilityCursor: 44, intentReads: [{ pluginId, response: disabled }],
+            materializations: [], snapshots: [] }) });
+        expect(reader.readCurrentAccountEnablement(pluginId)).toBe(false);
+        expect(store.bind({ ...scope, accountId: 'another-account' }).readCurrentAccountEnablement(pluginId)).toBeNull();
+    });
+
     it('publishes stable semantic UI inputs while observations advance and real declaration/lifecycle changes remain visible', () => {
         const store = createPluginAccountAvailabilityReaderStore();
         const reader = store.bind(scope);
@@ -260,6 +281,254 @@ describe('Plugin Account Availability reader', () => {
         unsubscribe();
     });
 
+    it('loads only the demanded bundled declaration, retains discovery, and fences Account replacement', async () => {
+        const loaded: string[] = [];
+        const graph = PluginUiArtifactsManifestEntryV2Schema.parse({ artifactId: 'account-actions', tier: 'reactNative',
+            entry: 'react-native/account-actions/entry.cjs.bundle', digest: artifactDigest,
+            files: [{ relativePath: 'react-native/account-actions/entry.cjs.bundle', digest: artifactDigest, byteSize: 1 }],
+            builtWith: { bundler: 'esbuild', version: '1.0.0' }, executable: { exports: ['activate'] }, hostUiApiRange: '^1.0.0' });
+        const bundles = ['com.acme.first', 'com.acme.second'].map(pluginId => {
+            const manifest = PluginPortableReleaseManifestV1Schema.parse({ schemaVersion: 2, id: pluginId,
+                version: '1.0.0', displayName: pluginId, runtime: { apiVersion: 1 }, contributes: {
+                    actions: [{ id: 'read', title: 'Read', surfaces: ['ui'], scopes: ['global'], placementBindings: [], dangerLevel: 'safe',
+                        execution: { target: 'account', account: { artifactId: graph.artifactId, exportName: 'activate' } },
+                        inputSchema: { type: 'object', additionalProperties: false } }],
+                    ui: { renderers: [{ id: 'body', kind: 'reactNative', artifact: 'body' }],
+                        views: [{ id: 'page', container: 'appPage', target: { kind: 'app' }, renderer: 'body', title: pluginId }] },
+                } });
+            const declaration = { pluginId, pluginVersion: manifest.version, packageName: `@acme/${pluginId}`,
+                displayName: pluginId, normalizedManifest: manifest, artifactGraphs: [graph], entriesById: projectPluginPortableUiDeclarationsV1(manifest) };
+            return { pluginId, pluginVersion: manifest.version, packageName: declaration.packageName,
+                displayName: pluginId, entriesById: declaration.entriesById, artifactGraphs: [graph],
+                presentationManifest: { ...manifest, contributes: { ...manifest.contributes,
+                    actions: manifest.contributes.actions.map(({ inputSchema: _schema, ...action }) => action) } },
+                loadDeclaration: async () => { loaded.push(pluginId); return declaration; } };
+        });
+        const store = createPluginAccountAvailabilityReaderStore({ hostBundledUi: bundles });
+        const empty = snapshot({ intentReads: [], materializations: [], snapshots: [] });
+        store.replace({ scope, snapshot: empty });
+        const reader = store.bind(scope);
+        expect(Object.keys(reader.readAccountUiProjection()?.surfacePlacementsById ?? {})).toHaveLength(2);
+        expect(loaded).toEqual([]);
+        expect(reader.readCurrentArtifact({ pluginId: 'com.acme.first', contributionId: 'read', tier: 'reactNative', platform: 'web' }))
+            .toMatchObject({ kind: 'available', artifact: { digest: artifactDigest } });
+        expect(loaded).toEqual([]);
+        await Promise.all([reader.ensureCurrentAccountExecution('com.acme.first'), reader.ensureCurrentAccountExecution('com.acme.first')]);
+        expect(loaded).toEqual(['com.acme.first']);
+        expect(reader.readCurrentAccountExecution('com.acme.first').kind).toBe('available');
+        expect(reader.readCurrentAccountExecution('com.acme.second').kind).toBe('unavailable');
+        store.replace({ scope: { ...scope, accountId: 'other' }, snapshot: empty });
+        expect((await reader.ensureCurrentAccountExecution('com.acme.second')).kind).toBe('unavailable');
+        expect(loaded).toEqual(['com.acme.first']);
+    });
+
+    it('loads only provisioner declarations for fresh Account discovery and honors disabled selections', async () => {
+        const loaded: string[] = [];
+        const bundles = ['machine-vercel', 'vercel-ai-gateway'].map(name => {
+            const manifest = PluginPortableReleaseManifestV1Schema.parse(JSON.parse(readFileSync(
+                resolve('../../apps/cli/assets/bundled-plugin-manifests', `${name}.json`), 'utf8')));
+            const declaration = { pluginId: manifest.id, pluginVersion: manifest.version,
+                packageName: `@happier-dev/plugins-${name}`, displayName: manifest.id,
+                normalizedManifest: manifest, entriesById: projectPluginPortableUiDeclarationsV1(manifest) };
+            return { ...declaration, normalizedManifest: undefined, presentationManifest: manifest,
+                loadDeclaration: async () => { loaded.push(manifest.id); return declaration; } };
+        });
+        const store = createPluginAccountAvailabilityReaderStore({ hostBundledUi: bundles });
+        expect(await store.bind(scope).ensureCurrentAccountExecutionDeclarations({ family: 'machineProvisioners' }))
+            .toEqual({ kind: 'unavailable', code: 'account_availability_not_loaded' });
+        store.replace({ scope, snapshot: snapshot({ intentReads: [], materializations: [], snapshots: [] }) });
+        const selected = await store.bind(scope).ensureCurrentAccountExecutionDeclarations({ family: 'machineProvisioners' });
+        expect(selected.kind === 'available' ? selected.declarations.map(selection => selection.manifest.id) : selected).toEqual(['happier.machine.vercel']);
+        expect(loaded).toEqual(['happier.machine.vercel']);
+        store.replace({ scope, snapshot: snapshot({ materializations: [], snapshots: [], intentReads: [{
+            pluginId: 'happier.machine.vercel', response: { ...intentRead(), release: null, uiArtifacts: [], packageAssets: [],
+                intent: { ...intentRead().intent!, pluginId: 'happier.machine.vercel', enabled: false } },
+        }] }) });
+        expect(await store.bind(scope).ensureCurrentAccountExecutionDeclarations({ family: 'machineProvisioners' }))
+            .toEqual({ kind: 'available', declarations: [] });
+        expect(loaded).toEqual(['happier.machine.vercel']);
+    });
+
+    it.each([true, false])('fulfills one bundled declaration without revisiting unrelated Machine census rows (presentation schemas: %s)', async (presentationIncludesSchemas) => {
+        const pluginIds = Array.from({ length: 100 }, (_, index) => `com.acme.census-${String(index).padStart(3, '0')}`);
+        const demandedPluginId = pluginIds[0]!;
+        const targetPluginId = pluginIds[1]!;
+        const loaded: string[] = [];
+        const graph = PluginUiArtifactsManifestEntryV2Schema.parse({ artifactId: 'account-actions', tier: 'reactNative',
+            entry: 'react-native/account-actions/entry.cjs.bundle', digest: artifactDigest,
+            files: [{ relativePath: 'react-native/account-actions/entry.cjs.bundle', digest: artifactDigest, byteSize: 1 }],
+            builtWith: { bundler: 'esbuild', version: '1.0.0' }, executable: { exports: ['activate'] }, hostUiApiRange: '^1.0.0' });
+        const bundles = pluginIds.map(pluginId => {
+            const manifest = PluginPortableReleaseManifestV1Schema.parse({ schemaVersion: 2, id: pluginId,
+                version: '1.0.0', displayName: pluginId, runtime: { apiVersion: 1 }, contributes: {
+                    actions: [{ id: 'read', title: 'Read', surfaces: ['ui'], scopes: ['global'], placementBindings: [], dangerLevel: 'safe',
+                        execution: { target: 'account', account: { artifactId: graph.artifactId, exportName: 'activate' } },
+                        inputSchema: { type: 'object', additionalProperties: false } }],
+                    ...(pluginId === demandedPluginId ? { targetedPluginContributions: [{ id: 'source',
+                        target: { pluginId: targetPluginId, pointId: 'sources' }, protocol: { id: 'sources', version: 1 },
+                        operations: { read: 'read' } }] } : {}),
+                    ui: { renderers: [{ id: 'body', kind: 'reactNative', artifact: 'body' }],
+                        views: [{ id: 'page', container: 'appPage', target: { kind: 'app' }, renderer: 'body', title: pluginId }] },
+                } });
+            const declaration = { pluginId, pluginVersion: manifest.version, packageName: `@acme/census-${pluginId.slice(-3)}`,
+                displayName: pluginId, normalizedManifest: manifest, artifactGraphs: [graph],
+                entriesById: projectPluginPortableUiDeclarationsV1(manifest) };
+            // Equal semantics isolate target readiness; the stripped variant also requires installed-schema publication.
+            const presentationManifest = presentationIncludesSchemas ? manifest : { ...manifest, contributes: { ...manifest.contributes,
+                actions: manifest.contributes.actions.map(({ inputSchema: _schema, ...action }) => action) } };
+            return { ...declaration, normalizedManifest: undefined, presentationManifest,
+                loadDeclaration: async () => { loaded.push(pluginId); return declaration; } };
+        });
+        const machineIds = Array.from({ length: 199 }, (_, index) => `machine-${index}`);
+        const machineIdSet = new Set(machineIds);
+        const materializations = Array.from({ length: 4_747 }, (_, index) => PluginMachineMaterializationV1Schema.parse({
+            serverIdentityId: 'srv_fixture', machineId: machineIds[index % machineIds.length], materializationId: `install-${index}`,
+            pluginId: pluginIds[index % pluginIds.length], version: '1.0.0', sourceClass: 'bundledFirstParty',
+            portableRelease: false, enabled: true, trustState: 'trusted', observedAt: 1_700_000_000_000, uiArtifacts: [],
+        }));
+        const store = createPluginAccountAvailabilityReaderStore({ hostBundledUi: bundles });
+        store.replace({ scope, snapshot: snapshot({ intentReads: [], materializations,
+            snapshots: machineIds.map(machineId => ({ serverIdentityId: 'srv_fixture', machineId,
+                materializations: materializations.filter(row => row.machineId === machineId) })) }) });
+        const reader = store.bind(scope);
+        if (!presentationIncludesSchemas) {
+            // Clock-only replacement retains UI rows while the current admission owns newer census objects.
+            const initialUi = reader.readUiProjectionInputs();
+            const clocked = materializations.map(row => ({ ...row, observedAt: row.observedAt + 1 }));
+            store.replace({ scope, snapshot: snapshot({ intentReads: [], materializations: clocked,
+                snapshots: machineIds.map(machineId => ({ serverIdentityId: 'srv_fixture', machineId,
+                    materializations: clocked.filter(row => row.machineId === machineId) })) }) });
+            expect(reader.readUiProjectionInputs()).toBe(initialUi);
+        }
+        const before = reader.readUiProjectionInputs()!;
+        const observations = new Map(pluginIds.map(pluginId => [pluginId, reader.getObservationSnapshot(pluginId)]));
+        const notifications = new Map(pluginIds.map(pluginId => [pluginId, 0]));
+        for (const pluginId of pluginIds) {
+            onTestFinished(reader.subscribe(() => notifications.set(pluginId, notifications.get(pluginId)! + 1), pluginId));
+        }
+        expect(reader.readCurrentAccountExecution(demandedPluginId).kind).toBe('unavailable');
+        if (!presentationIncludesSchemas) {
+            expect(before.installedPlugins?.find(plugin => plugin.pluginId === demandedPluginId)?.installations[0]
+                ?.declaration?.contributes.actions[0]?.inputSchema).toBeUndefined();
+        }
+        const affectedInstallations = materializations.filter(row => row.pluginId === demandedPluginId).length;
+        const keyBuilds = new Map(pluginIds.map(pluginId => [pluginId, 0]));
+        const originalStringify = JSON.stringify;
+        // Observe native key serialization while preserving the real admission, projection, and comparison logic.
+        const serialization = vi.spyOn(JSON, 'stringify').mockImplementation((...args) => {
+            const value: unknown = args[0];
+            if (Array.isArray(value) && value.length === 4 && value.every(item => typeof item === 'string')
+                && keyBuilds.has(value[0]) && value[1] === 'srv_fixture' && machineIdSet.has(value[2])) {
+                keyBuilds.set(value[0], keyBuilds.get(value[0])! + 1);
+            }
+            return originalStringify(...args);
+        });
+        onTestFinished(() => serialization.mockRestore());
+        const startedAt = performance.now();
+        const result = await reader.ensureCurrentAccountExecution(demandedPluginId);
+        const elapsedMs = performance.now() - startedAt;
+        const totalKeys = [...keyBuilds.values()].reduce((sum, count) => sum + count, 0);
+        const unrelatedKeys = totalKeys - keyBuilds.get(demandedPluginId)!;
+        const firstNotifications = [...notifications.values()].reduce((sum, count) => sum + count, 0);
+        const repeatedResults = await Promise.all(Array.from({ length: 24 }, () => reader.ensureCurrentAccountExecution(demandedPluginId)));
+        const repeatedKeys = [...keyBuilds.values()].reduce((sum, count) => sum + count, 0) - totalKeys;
+        const repeatedNotifications = [...notifications.values()].reduce((sum, count) => sum + count, 0) - firstNotifications;
+        serialization.mockRestore();
+        const unrelatedNotifications = [...notifications].filter(([pluginId]) => pluginId !== demandedPluginId && pluginId !== targetPluginId)
+            .reduce((sum, [, count]) => sum + count, 0);
+        console.info('UNION-CHURN declaration census cost', { presentationIncludesSchemas, clockOnlyReplacement: !presentationIncludesSchemas,
+            machines: machineIds.length, plugins: pluginIds.length,
+            materializations: materializations.length, affectedInstallations, totalKeys, unrelatedKeys, elapsedMs,
+            sourceNotifications: notifications.get(demandedPluginId), targetNotifications: notifications.get(targetPluginId), unrelatedNotifications,
+            repeatedDemands: repeatedResults.length, repeatedKeys, repeatedNotifications });
+        expect(result.kind).toBe('available');
+        expect(repeatedResults.every(result => result.kind === 'available')).toBe(true);
+        expect(repeatedKeys).toBe(0);
+        expect(repeatedNotifications).toBe(0);
+        expect(loaded).toEqual([demandedPluginId]);
+        const after = reader.readUiProjectionInputs()!;
+        expect(after.materializations).toBe(before.materializations);
+        const fulfilled = after.installedPlugins?.find(plugin => plugin.pluginId === demandedPluginId);
+        expect(fulfilled?.installations).toHaveLength(affectedInstallations);
+        for (const installation of fulfilled?.installations ?? []) {
+            expect(installation).toBeDefined();
+            expect(installation.declaration?.contributes.actions[0]?.inputSchema).toMatchObject({ type: 'object', additionalProperties: false });
+        }
+        for (const plugin of before.installedPlugins ?? []) {
+            if (plugin.pluginId !== demandedPluginId) {
+                expect(after.installedPlugins?.find(row => row.pluginId === plugin.pluginId)).toBe(plugin);
+            }
+        }
+        for (const pluginId of pluginIds) {
+            if (pluginId === demandedPluginId || pluginId === targetPluginId) {
+                expect(reader.getObservationSnapshot(pluginId)).not.toBe(observations.get(pluginId));
+                expect(notifications.get(pluginId)).toBe(1);
+            } else {
+                expect(reader.getObservationSnapshot(pluginId)).toBe(observations.get(pluginId));
+                expect(notifications.get(pluginId)).toBe(0);
+            }
+        }
+        expect.soft(unrelatedKeys).toBe(0);
+        // Match previous/current admission and UI order by canonical installation identity, only for affected rows.
+        expect.soft(totalKeys).toBeLessThanOrEqual(4 * affectedInstallations);
+    });
+
+    it.each([1, 4])('derives only K Account declaration slices for K=%s demands across 100 plugins', async (demandCount) => {
+        const pluginIds = Array.from({ length: 100 }, (_, index) => `com.acme.demand-${index}`);
+        const graph = PluginUiArtifactsManifestEntryV2Schema.parse({ artifactId: 'account-actions', tier: 'reactNative',
+            entry: 'react-native/account-actions/entry.cjs.bundle', digest: artifactDigest, files: [{ relativePath: 'react-native/account-actions/entry.cjs.bundle', digest: artifactDigest, byteSize: 1 }],
+            builtWith: { bundler: 'esbuild', version: '1.0.0' }, executable: { exports: ['activate'] }, hostUiApiRange: '^1.0.0' });
+        const bundles = pluginIds.map(pluginId => {
+            const manifest = PluginPortableReleaseManifestV1Schema.parse({ schemaVersion: 2, id: pluginId, version: '1.0.0',
+                displayName: pluginId, runtime: { apiVersion: 1 }, contributes: {
+                    actions: [{ id: 'read', title: 'Read', surfaces: ['ui'], scopes: ['global'], placementBindings: [], dangerLevel: 'safe',
+                        execution: { target: 'account', account: { artifactId: graph.artifactId, exportName: 'activate' } },
+                        inputSchema: { type: 'object', additionalProperties: false } }],
+                } });
+            const declaration = { pluginId, pluginVersion: manifest.version, packageName: `@acme/demand-${pluginId.split('-').at(-1)}`,
+                displayName: pluginId, normalizedManifest: manifest, artifactGraphs: [graph], entriesById: {} };
+            return { ...declaration, normalizedManifest: undefined,
+                presentationManifest: { ...manifest, contributes: { ...manifest.contributes,
+                    actions: manifest.contributes.actions.map(({ inputSchema: _schema, ...action }) => action) } },
+                loadDeclaration: async () => declaration };
+        });
+        const store = createPluginAccountAvailabilityReaderStore({ hostBundledUi: bundles });
+        store.replace({ scope, snapshot: snapshot({ intentReads: [], snapshots: [], materializations: [] }) });
+        const reader = store.bind(scope);
+        const before = reader.readAccountUiProjection()!;
+        let projectedEntries = 0;
+        let censusSorts = 0;
+        const normalize = uiProjection.normalizePluginInstalledUiDeclarations;
+        // Instrument cost while running the real normalization and native sort unchanged.
+        const derivations = vi.spyOn(uiProjection, 'normalizePluginInstalledUiDeclarations').mockImplementation(entries => {
+            projectedEntries += Object.keys(entries).length;
+            return normalize(entries);
+        });
+        const nativeSort = Array.prototype.sort;
+        const sorts = vi.spyOn(Array.prototype, 'sort').mockImplementation(function (this: unknown[], compare) {
+            if (this.length === pluginIds.length && this.every(value => typeof value === 'string' && pluginIds.includes(value))) censusSorts++;
+            return nativeSort.call(this, compare);
+        });
+        onTestFinished(() => { derivations.mockRestore(); sorts.mockRestore(); });
+        const publications = new Map(pluginIds.map(pluginId => [pluginId, 0]));
+        for (const pluginId of pluginIds) onTestFinished(reader.subscribe(() => publications.set(pluginId, publications.get(pluginId)! + 1), pluginId));
+        for (const pluginId of pluginIds.slice(0, demandCount)) {
+            expect((await reader.ensureCurrentAccountExecution(pluginId)).kind).toBe('available');
+            const key = `${pluginId}/read`;
+            expect(reader.readAccountUiProjection()!.actionsById[key]?.accountActionDeclaration?.inputSchema).toMatchObject({ type: 'object' });
+        }
+        derivations.mockRestore(); sorts.mockRestore();
+        console.info('AVAIL-CENSUS demand cost', { plugins: pluginIds.length, demandCount, projectedEntries, censusSorts,
+            publications: [...publications.values()].reduce((sum, value) => sum + value, 0) });
+        expect.soft(projectedEntries).toBe(demandCount);
+        expect.soft(censusSorts).toBe(0);
+        const after = reader.readAccountUiProjection()!;
+        for (const [index, pluginId] of pluginIds.entries()) {
+            expect(publications.get(pluginId)).toBe(index < demandCount ? 1 : 0);
+            if (index >= demandCount) expect(after.actionsById[`${pluginId}/read`]).toBe(before.actionsById[`${pluginId}/read`]);
+        }
+    });
+
     it('acquires app-owned bundled declarations only on first publication and updates pre-bound readers', () => {
         const manifest = PluginPortableReleaseManifestV1Schema.parse(intentRead().release!.normalizedManifest);
         const bundle = {
@@ -400,9 +669,11 @@ describe('Plugin Account Availability reader', () => {
         const manifest = PluginPortableReleaseManifestV1Schema.parse({
             ...intentRead().release!.normalizedManifest,
             contributes: { actions: [{ id: 'read', title: 'Read', scopes: ['global'], surfaces: ['ui', 'cli'],
+                sessionTarget: { field: 'sessionId', cardinality: 'one' },
                 placementBindings: [], dangerLevel: 'safe', execution: {
                     target: 'account', account: { artifactId: artifactGraph.artifactId, exportName: 'activate' },
-                }, inputSchema: { type: 'object', additionalProperties: false }, resultSchema: { type: 'object' } }],
+                }, inputSchema: { type: 'object', properties: { sessionId: { type: 'string', minLength: 1 } },
+                    required: ['sessionId'], additionalProperties: false }, resultSchema: { type: 'object' } }],
                 ui: { renderers: [{ id: 'account-page-renderer', kind: 'reactNative', artifact: artifactGraph.artifactId,
                     requiredHostMethods: ['executeAction'] }], views: [{ id: 'account-page', container: 'appPage',
                     title: 'Account page', target: { kind: 'app' }, renderer: 'account-page-renderer' }] } },
@@ -422,6 +693,7 @@ describe('Plugin Account Availability reader', () => {
         if (selected.kind !== 'available') throw new Error('Missing selected Account declaration');
         expect(action?.accountActionDeclaration).toBe(selected.manifest.contributes.actions![0]);
         expect(action).toMatchObject({ pluginId: manifest.id, id: 'read', execution: manifest.contributes.actions![0]!.execution,
+            sessionTarget: { field: 'sessionId', cardinality: 'one' },
             accountActionDeclaration: selected.manifest.contributes.actions![0], hostAccountOrigin: { ...scope, sourceCustody: { kind: 'account_release' } },
             authorization: { generation: { appliedGeneration: null } } });
         const custodyId = action?.occurrenceId;
@@ -478,7 +750,7 @@ describe('Plugin Account Availability reader', () => {
         if (!changedAction) throw new Error('Missing replaced Account Action');
         const changedDeclaration = changedAction.accountActionDeclaration;
         expect(changedDeclaration).not.toBe(action.accountActionDeclaration);
-        expect(changedDeclaration?.inputSchema).toEqual({ type: 'object', additionalProperties: false });
+        expect(changedDeclaration?.inputSchema).toEqual(manifest.contributes.actions![0]!.inputSchema);
         expect(readPluginUiAccountExecutableOrigin(changedAction)?.sourceCustody).toMatchObject({ version: '2.0.0' });
         store.replace({ scope, snapshot: snapshot({ intentReads: [{ pluginId: manifest.id,
             response: { ...changed, intent: { ...changed.intent!, enabled: false } } }], materializations: [], snapshots: [] }) });

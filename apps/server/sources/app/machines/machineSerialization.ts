@@ -139,6 +139,8 @@ export function serializeAccessibleMachineRow(
         access: AccessibleMachineAccessV1;
         owned: boolean;
         callerDataEncryptionKey: Uint8Array | null;
+        recipientWorkPending?: boolean;
+        recipientWorkCursor?: number;
         devcontainerChild?: DevcontainerChildProjectionV1 | null;
         recipientAccountStoredContentProtocolVersion?: number | null;
     }>,
@@ -148,7 +150,9 @@ export function serializeAccessibleMachineRow(
         recipientAccountStoredContentProtocolVersion: options.recipientAccountStoredContentProtocolVersion,
         devcontainerChild: options.devcontainerChild,
     });
-    if (options.owned && options.access.accessState === 'ready') return { ...projection, access: options.access };
+    const recipientWork = options.access.role === 'manage' && options.recipientWorkPending !== undefined
+        ? { recipientWorkPending: options.recipientWorkPending, recipientWorkCursor: options.recipientWorkCursor } : {};
+    if (options.owned && options.access.accessState === 'ready') return { ...projection, access: options.access, ...recipientWork };
 
     const canReadContent = options.access.accessState === 'ready'
         && (options.access.resourceMode === 'plain' || options.callerDataEncryptionKey !== null);
@@ -160,6 +164,7 @@ export function serializeAccessibleMachineRow(
     // dataEncryptionKey is the recipient's own decryptable wrapping.
     return {
         ...projection,
+        ...recipientWork,
         access: options.access,
         metadata: canReadContent ? projection.metadata : null,
         devcontainerChild: canReadContent ? projection.devcontainerChild : null,

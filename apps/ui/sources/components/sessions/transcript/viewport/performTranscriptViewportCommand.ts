@@ -1,14 +1,10 @@
 import { Platform } from 'react-native';
 
-import {
-    performNativeStandardListViewportCommand,
-    resolveIndexScrollWriter,
-} from '@/components/sessions/transcript/viewport/driver/nativeStandardList';
+import { performNativeStandardListViewportCommand } from '@/components/sessions/transcript/viewport/driver/nativeStandardList';
 import { performWebDomViewportCommand } from '@/components/sessions/transcript/viewport/driver/webDom';
 import type { TranscriptViewportDriverDeps } from '@/components/sessions/transcript/viewport/driver/types';
 import type { TranscriptViewportCommand } from '@/components/sessions/transcript/viewport/transcriptViewportTypes';
 
-export { resolveIndexScrollWriter };
 export type TranscriptViewportPerformDeps = TranscriptViewportDriverDeps;
 
 /**

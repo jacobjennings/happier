@@ -1,42 +1,4 @@
-import * as React from 'react';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { createSessionFixture, createTestSessionTranscriptSource, standardCleanup, wrapWithSessionTranscriptSource } from '@/dev/testkit';
-import { installDisconnectedServerSocketBoundary } from './serverAccountConnectionHarness';
-import { loadSyncSingletonForTests } from './syncSingletonLoader';
-import { installTranscriptCommonModuleMocks } from '@/components/sessions/transcript/transcriptTestHelpers';
-
-installTranscriptCommonModuleMocks({
-    reactNative: async () =>
-        (await import('./chatListHarness')).createChatListHarnessReactNativeMock({ platformOs: 'web' }),
-});
-installDisconnectedServerSocketBoundary();
-vi.mock('@legendapp/list/react-native', async (importOriginal) => ({
-    ...(await importOriginal<typeof import('@legendapp/list/react-native')>()),
-    ...(await import('./chatListHarness')).createLegendChatListModuleMock(),
-}));
-vi.mock('react-native-safe-area-context', () => ({
-    useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
-    initialWindowMetrics: null,
-}));
-
-await loadSyncSingletonForTests();
-// Resolve the real transcript graph before installing the scoped scrolling DOM.
-const { ChatList } = await import('@/components/sessions/transcript/ChatList');
-
-const DELETED_LEGACY_CHAT_LIST_HARNESS_EXPORTS = [
-    ['legacy', 'ChatListHarnessState'].join(''),
-    ['render', 'LegacyChatList'].join(''),
-    ['reset', 'LegacyChatListHarness'].join(''),
-    ['trigger', 'LegacyChatListScroll'].join(''),
-    ['trigger', 'LegacyChatListInitialFill'].join(''),
-    ['trigger', 'LegacyChatListEndReached'].join(''),
-    ['get', 'CapturedFlatListProps'].join(''),
-    ['require', 'CapturedFlatListProps'].join(''),
-    ['build', 'LegacyChatListItems'].join(''),
-    ['create', 'LegacyChatListItemsModuleMock'].join(''),
-    ['create', 'LegacyChatListReactNativeMock'].join(''),
-    ['create', 'LegacyChatListStorageMock'].join(''),
-];
+import { describe, expect, it, vi } from 'vitest';
 
 describe('chatListHarness', () => {
     it('preserves real DOM event lifetime and mutable scroller layout measurements', async () => {
@@ -64,14 +26,6 @@ describe('chatListHarness', () => {
         });
         expect(globalThis.document).toBe(previousDocument);
         expect(globalThis.window).toBe(previousWindow);
-    });
-
-    it('does not export deleted legacy ChatList harness compatibility aliases', async () => {
-        const harnessModule = await import('./chatListHarness');
-
-        for (const deletedExport of DELETED_LEGACY_CHAT_LIST_HARNESS_EXPORTS) {
-            expect(harnessModule).not.toHaveProperty(deletedExport);
-        }
     });
 
     it('creates reusable fake web elements for transcript DOM anchoring scenarios', async () => {
@@ -163,43 +117,5 @@ describe('chatListHarness', () => {
         );
 
         expect((globalThis as any).HTMLElement).toBe(previousHTMLElement);
-    });
-
-    it('renders the real Legend chat list inside the installed web scroller DOM and returns the harness', async () => {
-        const {
-            ChatListHarnessWebElement,
-            createChatListHarnessWebScroller,
-            resetChatListHarness,
-            withRenderedChatListHarnessWebScroller,
-        } = await import('./chatListHarness');
-        resetChatListHarness({ platformOs: 'web' });
-        onTestFinished(standardCleanup);
-        const session = createSessionFixture({ serverId: 'test-server', metadata: null });
-        const source = createTestSessionTranscriptSource({
-            sessionId: session.id,
-            serverId: session.serverId,
-            messages: [{ kind: 'user-text', id: 'harness-message', localId: null, createdAt: 1, text: 'Harness transcript content' }],
-        });
-
-        const scroller = createChatListHarnessWebScroller({
-            clientHeight: 400,
-            scrollHeight: 1200,
-            scrollTop: 200,
-        });
-
-        await withRenderedChatListHarnessWebScroller(
-            scroller,
-            <ChatList session={session} sessionSurfaceKey={JSON.stringify(['test-server', session.id])} />,
-            async (screen) => {
-                expect(document.querySelector('div')).toBe(scroller);
-                expect(screen.findAllByType('LegendList')).toHaveLength(1);
-                expect(screen.findAllByType('LegendListItem')).toHaveLength(1);
-                expect(screen.getTextContent()).toContain('Harness transcript content');
-            },
-            {
-                dom: { HTMLElement: ChatListHarnessWebElement },
-                render: { wrapper: ({ children }) => wrapWithSessionTranscriptSource(<>{children}</>, source) },
-            },
-        );
     });
 });

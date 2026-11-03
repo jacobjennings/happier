@@ -1,6 +1,7 @@
 import type { InboxSessionAttentionEntry } from '@/activity/presentation/buildInboxSessionPresentation';
 import { readSessionManagerSessionIdV1 } from '@happier-dev/protocol/sessions/follow/sessionManagerV1';
 import type { Session } from '@/sync/domains/state/storageTypes';
+import type { SessionPresentationRecord } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
 import type { WorkflowRunRow } from '@/sync/store/domains/workflowRuns';
 import { approvalArtifactBodyMatchesHeaderV1 } from '@happier-dev/protocol/approvals/approvalArtifactHeaderV1';
@@ -31,14 +32,14 @@ export type InboxWorkItem =
     /** A worker whose machine went offline while its turn was in flight. */
     | Readonly<{ kind: 'stalled'; key: string; session: Session }>
     /** A session with a retained PR link, waiting for the person to land and settle it. */
-    | Readonly<{ kind: 'landing'; key: string; session: Session; link: InboxPullRequestLink }>
+    | Readonly<{ kind: 'landing'; key: string; session: SessionPresentationRecord; link: InboxPullRequestLink }>
     /** A session the person snoozed until `remindAt`; it stays in place, quietly. */
     | Readonly<{ kind: 'snoozed'; key: string; session: Session; remindAt: number }>
     | Readonly<{ kind: 'automation_run'; key: string; row: WorkflowRunRow }>
     | Readonly<{ kind: 'approval'; key: string; artifact: DecryptedArtifact }>;
 
 export type InboxWorkGroupRoot =
-    | Readonly<{ kind: 'lead'; sessionId: string; session: Session | null }>
+    | Readonly<{ kind: 'lead'; sessionId: string; session: SessionPresentationRecord | null }>
     | Readonly<{ kind: 'run'; runId: string; row: WorkflowRunRow }>
     | Readonly<{ kind: 'automation'; automationId: string; serverId: string; runId: string }>
     | Readonly<{ kind: 'other' }>;
@@ -59,10 +60,10 @@ export type InboxWorkGroupsInput = Readonly<{
     automationServerId: string | null;
     openApprovals: readonly DecryptedArtifact[];
     stalledSessions: readonly Session[];
-    landings: readonly Readonly<{ session: Session; link: InboxPullRequestLink }>[];
+    landings: readonly Readonly<{ session: SessionPresentationRecord; link: InboxPullRequestLink }>[];
     snoozed: readonly Readonly<{ session: Session; remindAt: number }>[];
     /** Store lookup used to walk `manager`; an unknown id stops the walk. */
-    resolveSession: (sessionId: string) => Session | null | undefined;
+    resolveSession: (sessionId: string) => SessionPresentationRecord | null | undefined;
     /**
      * The server origin link of a step session (ORC §3.1 `originRunId`, awareness `origin.runId`).
      * Absent until U4's awareness projection lands; then a step request folds under its run.
@@ -85,7 +86,7 @@ function normalizeId(value: string | null | undefined): string | null {
     return trimmed ? trimmed : null;
 }
 
-function hasReports(session: Session | null | undefined): boolean {
+function hasReports(session: SessionPresentationRecord | null | undefined): boolean {
     return (session?.managedSessions?.total ?? 0) > 0;
 }
 
@@ -206,7 +207,7 @@ export function buildInboxWorkGroups(input: InboxWorkGroupsInput, previous?: rea
         }
     }
 
-    const placeOnce = (session: Session, item: InboxWorkItem) => {
+    const placeOnce = (session: Pick<Session, 'id'>, item: InboxWorkItem) => {
         if (listedSessionIds.has(session.id)) return;
         listedSessionIds.add(session.id);
         placeSession(session.id, item);
@@ -279,5 +280,12 @@ function sortByRank(items: InboxWorkItem[]): readonly InboxWorkItem[] {
         const sorted = [...group].sort((a, b) => comparePendingRequestsByAge(a.request, b.request) || a.item.key.localeCompare(b.item.key));
         group.forEach(({ index }, position) => { ranked[index] = sorted[position]!.item; });
     }
+    // Approval age orders approval slots only; workflow and session priorities keep their places.
+    const approvals = ranked.filter(item => item.kind === 'approval')
+        .sort((a, b) => b.artifact.createdAt - a.artifact.createdAt || a.key.localeCompare(b.key));
+    let approvalIndex = 0;
+    ranked.forEach((item, index) => {
+        if (item.kind === 'approval') ranked[index] = approvals[approvalIndex++]!;
+    });
     return ranked;
 }

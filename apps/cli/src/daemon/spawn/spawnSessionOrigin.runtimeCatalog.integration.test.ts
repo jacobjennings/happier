@@ -1,7 +1,8 @@
 import axios from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION, deriveSessionCreationTagV1, SessionCreationCorrespondenceV1Schema, snapshotSessionRolesAtSpawnV1, projectSessionOwnerCompatibilityViewV1, type SessionRolesV1 } from '@happier-dev/protocol';
+import { CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION, deriveSessionCreationTagV1, SessionCreationCorrespondenceV1Schema, snapshotSessionRolesAtSpawnV1, type SessionRolesV1 } from '@happier-dev/protocol';
+import type { SessionOwnerCompatibilityViewV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import { ApiClient } from '@/api/api';
 import type { Metadata } from '@/api/types';
 import { initializeBackendRunSession } from '@/agent/runtime/initializeBackendRunSession';
@@ -13,6 +14,9 @@ import { readSessionCreateOriginFromEnv } from '@/session/shared/sessionCreateOr
 import { buildSessionMetadataEnvelopeCreateFields } from '@/session/metadata/buildSessionMetadataEnvelopeCreateFields';
 import { resolveSpawnChildEnvironment } from './resolveSpawnChildEnvironment';
 import { buildSpawnChildProcessEnv } from './buildSpawnChildProcessEnv';
+import { SessionSpawnNewActionInputV2Schema, SessionServerStartSpawnDraftV1Schema } from '@happier-dev/protocol/sessions/creation/sessionSpawnNewInputV2';
+import { buildCommittedLaunchMetadata } from '@/agent/runtime/createSessionMetadata';
+import { withoutFreshSessionCreationFields } from './commitDaemonLaunchSession';
 
 const originEnvKey = 'HAPPIER_SESSION_CREATE_ORIGIN_V1_JSON';
 const origin = { originKind: 'run_step' as const, originRunId: 'workflow-run-1', workDepth: 7 };
@@ -33,6 +37,98 @@ const runnerMetadata = {
 } satisfies Metadata;
 
 describe('host-stamped Session creation facts transport', () => {
+  const authoringOrigin = { kind: 'project' as const, accountId: 'original-account',
+    workspace: { serverId: 'original-home', workspaceId: 'original-workspace', machineId: 'original-machine', rootPath: '/original/repo' }, page: 'scripts' as const };
+  const authoringEnvKey = 'HAPPIER_SESSION_CREATE_AUTHORING_ORIGIN_V1_JSON';
+
+  it('admits private authoring provenance only for birth and excludes it from server-visible drafts', () => {
+    const request = { directory: '/repo', authoringOrigin };
+    expect(SpawnDaemonSessionRequestSchema.safeParse(request).success).toBe(true);
+    expect(pickDefinedSpawnSessionOptions(SpawnDaemonSessionRequestSchema.parse(request))).toMatchObject({ authoringOrigin });
+    for (const value of [{ ...authoringOrigin, extra: true }, { ...authoringOrigin, workspace: { machineId: 'missing-home' } }]) {
+      expect(SpawnDaemonSessionRequestSchema.safeParse({ ...request, authoringOrigin: value }).success).toBe(false);
+    }
+    expect(SpawnDaemonSessionRequestSchema.safeParse({ ...request, existingSessionId: 'existing' }).success).toBe(false);
+    expect(SpawnDaemonSessionRequestSchema.safeParse({ ...request, type: 'resume-session' }).success).toBe(false);
+    const action = { executionTarget: { serverId: 'target-home', machineId: 'target-machine' },
+      directory: { kind: 'path', path: '/repo' }, agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } }, authoringOrigin };
+    expect(SessionSpawnNewActionInputV2Schema.safeParse(action).success).toBe(true);
+    expect(SessionServerStartSpawnDraftV1Schema.safeParse(action).success).toBe(false);
+  });
+
+  it('includes authoring provenance in the initial owner envelope through daemon ingress and runner birth', async () => {
+    const options = { directory: '/repo', authoringOrigin };
+    const prepared = await resolveSpawnChildEnvironment({ options,
+      profileEnvironmentVariables: { [authoringEnvKey]: JSON.stringify({ ...authoringOrigin, page: 'code' }) },
+      daemonSpawnHooks: { augmentEnv: () => ({ [authoringEnvKey]: JSON.stringify({ ...authoringOrigin, page: 'changes' }) }) },
+      processEnv: {}, logDebug: () => {}, logInfo: () => {}, logWarn: () => {},
+    });
+    if (!prepared.ok) throw new Error(prepared.errorMessage);
+    const childEnv = buildSpawnChildProcessEnv({ processEnv: { [authoringEnvKey]: 'spoofed' }, extraEnv: prepared.extraEnvForChild });
+    expect(childEnv[authoringEnvKey]).toBe(JSON.stringify(authoringOrigin));
+    vi.stubEnv(authoringEnvKey, JSON.stringify(authoringOrigin));
+    const post = vi.spyOn(axios, 'post').mockRejectedValue(new Error('observed-create-boundary'));
+    const patch = vi.spyOn(axios, 'patch');
+    const api = await ApiClient.create(credentials);
+    await expect(initializeBackendRunSession({ api, sessionTag: 'authoring-birth', metadata: runnerMetadata,
+      state: { controlledByUser: false }, uiLogPrefix: '[test]',
+      startupMetadataOverrides: { permissionModeOverride: { mode: 'default', updatedAt: 1 } },
+    })).rejects.toMatchObject({ code: 'outcome_unknown' });
+    // The HTTP owner may retry an unknown transport outcome. Every attempt
+    // remains the same birth writer; no separate metadata PATCH is admitted.
+    expect(post).toHaveBeenCalled();
+    for (const [, attempt] of post.mock.calls) {
+      expect(attempt).toMatchObject({ ownerMetadata: { t: 'plain', v: { work: { authoringOriginV1: authoringOrigin } } } });
+    }
+    expect(patch).not.toHaveBeenCalled();
+    const body = post.mock.calls[0]?.[1] as { ownerMetadata: unknown; sharedMetadata: { ciphertext: string } };
+    expect(body.ownerMetadata).toMatchObject({ t: 'plain', v: { work: { authoringOriginV1: authoringOrigin } } });
+    expect(JSON.stringify(body.sharedMetadata)).not.toContain('/original/repo');
+    expect(body).not.toHaveProperty('authoringOrigin');
+    expect(body).not.toHaveProperty('authoringOriginV1');
+    const committed = buildCommittedLaunchMetadata({ options: { ...options, initialSessionRolesV1 }, directory: '/repo' });
+    expect(committed.work).toMatchObject({ authoringOriginV1: authoringOrigin, sessionRolesV1: initialSessionRolesV1 });
+    expect(withoutFreshSessionCreationFields(options)).not.toHaveProperty('authoringOrigin');
+  });
+
+  it('does not inherit authoring provenance and fails malformed custody before creating a Session', async () => {
+    const prepared = await resolveSpawnChildEnvironment({ options: { directory: '/repo' },
+      profileEnvironmentVariables: { [authoringEnvKey]: JSON.stringify(authoringOrigin) },
+      daemonSpawnHooks: { augmentEnv: () => ({ [authoringEnvKey]: JSON.stringify(authoringOrigin) }) },
+      processEnv: { [authoringEnvKey]: JSON.stringify(authoringOrigin) }, logDebug: () => {}, logInfo: () => {}, logWarn: () => {},
+    });
+    if (!prepared.ok) throw new Error(prepared.errorMessage);
+    expect(buildSpawnChildProcessEnv({ processEnv: { [authoringEnvKey]: JSON.stringify(authoringOrigin) },
+      extraEnv: prepared.extraEnvForChild })).not.toHaveProperty(authoringEnvKey);
+    vi.stubEnv(authoringEnvKey, '{');
+    const api = await ApiClient.create(credentials);
+    const post = vi.spyOn(axios, 'post');
+    await expect(initializeBackendRunSession({ api, sessionTag: 'invalid-authoring-birth', metadata: runnerMetadata,
+      state: { controlledByUser: false }, uiLogPrefix: '[test]',
+      startupMetadataOverrides: { permissionModeOverride: { mode: 'default', updatedAt: 1 } },
+    })).rejects.toThrow();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('opens the stored original origin when a birth tag rejoins instead of replacing it with a new candidate', async () => {
+    const stored = buildSessionMetadataEnvelopeCreateFields({ credentials, accountEncryptionMode: 'plain', storedContentMode: 'plain',
+      metadata: { ...runnerMetadata, work: { authoringOriginV1: authoringOrigin } }, agentState: null });
+    const candidate = { ...authoringOrigin, page: 'code' as const };
+    const post = vi.spyOn(axios, 'post').mockResolvedValue({ status: 200, data: {
+      created: false, organizationPlacement: { folderId: null, tagIds: [] },
+      session: { id: 'rejoined-authoring', seq: 0, metadataLayoutVersion: stored.metadataLayoutVersion,
+        metadata: stored.sharedMetadata.ciphertext, ownerMetadata: stored.ownerMetadata, metadataVersion: 1,
+        encryptionMode: 'plain', dataEncryptionKey: null, agentState: null, agentStateVersion: 0 },
+    } });
+    const patch = vi.spyOn(axios, 'patch');
+    const api = await ApiClient.create(credentials);
+    const result = await api.getOrCreateSession({ tag: 'accepted-authoring-tag',
+      metadata: { ...runnerMetadata, work: { authoringOriginV1: candidate } }, state: null });
+    expect(result?.metadata.work?.authoringOriginV1).toEqual(authoringOrigin);
+    expect(result?.sessionCreationOutcome?.disposition).toBe('rejoined');
+    expect(post.mock.calls[0]?.[1]).toMatchObject({ ownerMetadata: { t: 'plain', v: { work: { authoringOriginV1: candidate } } } });
+    expect(patch).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.stubEnv('HAPPIER_SERVER_URL', 'http://origin.example.test');
     reloadConfiguration();
@@ -201,13 +297,13 @@ describe('host-stamped Session creation facts transport', () => {
   it('carries host facts from the canonical spawned-session creator to daemon admission', async () => {
     let admitted: unknown;
     await expect(createSpawnedSession({
-      credentials, directory: '/repo', ...origin,
+      credentials, directory: '/repo', ...origin, authoringOrigin,
       directTransport: {
         spawn: async (request: unknown) => { admitted = request; throw new Error('observed-spawn-boundary'); },
         resolveSpawnSessionByNonce: async () => ({ status: 'not_found' }),
       },
     })).rejects.toThrow('observed-spawn-boundary');
-    expect(admitted).toMatchObject(origin);
+    expect(SpawnDaemonSessionRequestSchema.parse(admitted)).toMatchObject({ ...origin, authoringOrigin });
   });
 
   it('carries an explicit lead through protected daemon environment into the same child create request', async () => {
@@ -247,11 +343,13 @@ describe('host-stamped Session creation facts transport', () => {
     expect(JSON.parse(childEnv[rolesEnvKey]!)).toEqual(initialSessionRolesV1);
     vi.stubEnv(rolesEnvKey, childEnv[rolesEnvKey]!);
     const post = vi.spyOn(axios, 'post').mockRejectedValue(new Error('observed-create-boundary'));
+    // The runner writes work headlines through the flat compatibility field the owner-metadata split moves into `work`.
+    const ownerWorkCompatibilityFields: Pick<SessionOwnerCompatibilityViewV1, 'sessionWorkflowActivityHeadlineV1'> = {
+      sessionWorkflowActivityHeadlineV1: { v: 1, backendId: 'codex', updatedAt: 1, activeRuns: [] },
+    };
     const api = await ApiClient.create(credentials);
     await expect(initializeBackendRunSession({
-      api, sessionTag: 'worker-roles-tag', metadata: { ...projectSessionOwnerCompatibilityViewV1({ sharedMetadata: { v: 1 },
-        ownerMetadata: { v: 1, work: { sessionWorkflowActivityHeadlineV1: { v: 1, backendId: 'codex', updatedAt: 1, activeRuns: [] } } } }),
-        ...runnerMetadata },
+      api, sessionTag: 'worker-roles-tag', metadata: { ...runnerMetadata, ...ownerWorkCompatibilityFields },
       state: { controlledByUser: false }, uiLogPrefix: '[test]',
       startupMetadataOverrides: { permissionModeOverride: { mode: 'default', updatedAt: 1 } },
     })).rejects.toMatchObject({ code: 'outcome_unknown' });

@@ -27,7 +27,9 @@ async function mockPlatform(os: 'android' | 'ios' | 'web') {
     // The canonical boundary mock is shared by the real renderers. Changing its
     // platform avoids resetting and reloading the entire UI graph for each cell case.
     const { Platform } = await import('react-native');
-    Platform.OS = os;
+    const { createReactNativeNativeMock, createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    const boundary = os === 'web' ? await createReactNativeWebMock() : await createReactNativeNativeMock({ platformOS: os });
+    Object.defineProperties(Platform, Object.getOwnPropertyDescriptors(boundary.Platform));
 }
 
 async function renderTable(markdown: string, onLinkPress?: (url: string) => boolean | void) {

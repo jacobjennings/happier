@@ -20,6 +20,7 @@ describe('terminal renderer interaction contract', () => {
     it('routes keyboard, committed input, and selection through canonical helpers', () => {
         expect(shouldRendererCaptureKeyboard({ key: 'c', modifiers: ['meta'] })).toBe(false);
         expect(shouldRendererCaptureKeyboard({ key: 'Enter', modifiers: [] })).toBe(true);
+        expect(shouldRendererCaptureKeyboard({ key: 'v', modifiers: ['ctrl'] })).toBe(true);
         expect(resolveRendererCommittedInput('文')).toBe('文');
         expect(readRendererSelection({ hasSelection: () => true, getSelectionText: () => 'selected' })).toEqual({
             hasSelection: true,

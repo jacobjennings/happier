@@ -21,7 +21,7 @@ import {
     loadBundledPluginLocators,
     type BundledPluginLocator,
 } from '@/plugins/projection/registry/builtIn/locators';
-import { projectLoadedPluginContributes } from '@/plugins/projection/registry/resolvePluginContributions';
+import { projectLoadedPluginContributes } from '@/plugins/projection/registry/fullProjection';
 import type { ResolvedActionContribution } from '@/plugins/projection/registry/types';
 import {
     loadInstalledPlugins,
@@ -149,7 +149,6 @@ function fixtureGenerationAuthority(
         commit: null,
         generations: new Map(generations.map((generation) => [generation.pluginId, generation])),
         rejectedGenerations: new Map(),
-        isCurrent: async () => true,
     };
 }
 

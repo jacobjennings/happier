@@ -33,7 +33,34 @@ describe('serverReachabilitySupervisorPool (transport identity)', () => {
         vi.restoreAllMocks();
     });
 
-    it('treats a runtime origin equal to the server URL as the same transport', async () => {
+    it.each([
+        {
+            name: 'a runtime origin equal to the server URL',
+            // The socket owner starts without a distinct runtime origin; a plain request path then spells the same transport out.
+            initial: {},
+            next: { runtimeOrigin: 'https://example.test' },
+            sameTransport: true,
+        },
+        {
+            name: 'a runtime origin naming a different transport',
+            initial: {},
+            next: { runtimeOrigin: 'https://tunnel.example.test' },
+            sameTransport: false,
+        },
+        {
+            name: 'a re-leased carrier for the same endpoint',
+            // A fresh object each call: the carrier owner re-leased it, the transport did not change.
+            initial: { homeCarrier: carrierForEndpoint('endpoint-a') },
+            next: { homeCarrier: carrierForEndpoint('endpoint-a') },
+            sameTransport: true,
+        },
+        {
+            name: 'a carrier proving a different endpoint',
+            initial: { homeCarrier: carrierForEndpoint('endpoint-a') },
+            next: { homeCarrier: carrierForEndpoint('endpoint-b') },
+            sameTransport: false,
+        },
+    ])('$name: same transport=$sameTransport', async ({ initial, next, sameTransport }) => {
         setRuntimeFetch(async () => new Response(null, { status: 200, headers: new Headers() }));
         const serverUrl = 'https://example.test';
         const phases: string[] = [];
@@ -42,109 +69,20 @@ describe('serverReachabilitySupervisorPool (transport identity)', () => {
         }, null);
 
         try {
-            // The socket owner starts the supervisor without a distinct runtime origin.
-            await startServerReachabilitySupervisor({ serverUrl, token: null });
+            await startServerReachabilitySupervisor({ serverUrl, token: null, ...initial });
             expect(peekServerReachabilityState(serverUrl, null)?.phase).toBe('online');
 
             phases.length = 0;
 
-            // A plain request path starts the same entry and spells the very same transport
-            // out explicitly. That is not a transport change, so the supervisor — and the
-            // sync socket that mirrors its state — must not be torn down and rebuilt.
-            await startServerReachabilitySupervisor({ serverUrl, token: null, runtimeOrigin: serverUrl });
+            await startServerReachabilitySupervisor({ serverUrl, token: null, ...next });
 
-            expect(phases).not.toContain('shutting_down');
-            expect(phases).not.toContain('connecting');
-            expect(peekServerReachabilityState(serverUrl, null)?.phase).toBe('online');
-        } finally {
-            unsubscribe();
-        }
-    });
-
-    it('still re-probes when the runtime origin names a genuinely different transport', async () => {
-        setRuntimeFetch(async () => new Response(null, { status: 200, headers: new Headers() }));
-        const serverUrl = 'https://example.test';
-        const phases: string[] = [];
-        const unsubscribe = subscribeServerReachabilityState(serverUrl, (state) => {
-            phases.push(state.phase);
-        }, null);
-
-        try {
-            await startServerReachabilitySupervisor({ serverUrl, token: null });
-            expect(peekServerReachabilityState(serverUrl, null)?.phase).toBe('online');
-
-            phases.length = 0;
-
-            await startServerReachabilitySupervisor({
-                serverUrl,
-                token: null,
-                runtimeOrigin: 'https://tunnel.example.test',
-            });
-
-            expect(phases).toContain('shutting_down');
-            expect(peekServerReachabilityState(serverUrl, null)?.phase).toBe('online');
-        } finally {
-            unsubscribe();
-        }
-    });
-    it('treats a re-leased carrier for the same endpoint as the same transport', async () => {
-        setRuntimeFetch(async () => new Response(null, { status: 200, headers: new Headers() }));
-        const serverUrl = 'https://example.test';
-        const phases: string[] = [];
-        const unsubscribe = subscribeServerReachabilityState(serverUrl, (state) => {
-            phases.push(state.phase);
-        }, null);
-
-        try {
-            await startServerReachabilitySupervisor({
-                serverUrl,
-                token: null,
-                homeCarrier: carrierForEndpoint('endpoint-a'),
-            });
-            expect(peekServerReachabilityState(serverUrl, null)?.phase).toBe('online');
-
-            phases.length = 0;
-
-            // Same endpoint, second object: the carrier owner re-leased it, the transport did not change.
-            await startServerReachabilitySupervisor({
-                serverUrl,
-                token: null,
-                homeCarrier: carrierForEndpoint('endpoint-a'),
-            });
-
-            expect(phases).not.toContain('shutting_down');
-            expect(phases).not.toContain('connecting');
-            expect(peekServerReachabilityState(serverUrl, null)?.phase).toBe('online');
-        } finally {
-            unsubscribe();
-        }
-    });
-
-    it('still re-probes when the carrier proves a different endpoint', async () => {
-        setRuntimeFetch(async () => new Response(null, { status: 200, headers: new Headers() }));
-        const serverUrl = 'https://example.test';
-        const phases: string[] = [];
-        const unsubscribe = subscribeServerReachabilityState(serverUrl, (state) => {
-            phases.push(state.phase);
-        }, null);
-
-        try {
-            await startServerReachabilitySupervisor({
-                serverUrl,
-                token: null,
-                homeCarrier: carrierForEndpoint('endpoint-a'),
-            });
-            expect(peekServerReachabilityState(serverUrl, null)?.phase).toBe('online');
-
-            phases.length = 0;
-
-            await startServerReachabilitySupervisor({
-                serverUrl,
-                token: null,
-                homeCarrier: carrierForEndpoint('endpoint-b'),
-            });
-
-            expect(phases).toContain('shutting_down');
+            if (sameTransport) {
+                // Not a transport change: the supervisor, and the sync socket mirroring its state, must not be torn down.
+                expect(phases).not.toContain('shutting_down');
+                expect(phases).not.toContain('connecting');
+            } else {
+                expect(phases).toContain('shutting_down');
+            }
             expect(peekServerReachabilityState(serverUrl, null)?.phase).toBe('online');
         } finally {
             unsubscribe();

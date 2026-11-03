@@ -6,13 +6,16 @@ import { resolveRolesSnapshotV1 } from '@happier-dev/protocol/prompts/roles/reso
 import { readSessionRolesV1, SessionRolesV1Schema, snapshotSessionRolesAtSpawnV1, writeSessionRoleConfigurationV1ToMetadata } from '@happier-dev/protocol/prompts/roles/sessionRolesSnapshot';
 import { projectSessionSharedMetadataV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import { isRoleActionIdV1 } from '@happier-dev/protocol/prompts/roles/roleActionIdsV1';
-import { PROMPT_LIBRARY_ROWS_ROUTE_V1 } from '@happier-dev/protocol/prompts/library/promptLibraryRowsV1';
 import { buildBackendTargetKeyV2 } from '@happier-dev/protocol/backends/targets/backendTargetRefV2';
 import type { Metadata } from '@happier-dev/session-core/state';
+import { applyModelIntentSessionMetadata } from '@happier-dev/agents/session/state/metadataWriters';
 
-import { createSessionAccessFixture, createSessionFixture, renderHook, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createPlainSessionByIdResponseFixture, createSessionAccessFixture, createSessionFixture, renderHook, renderScreen, standardCleanup } from '@/dev/testkit';
 import { installDisconnectedServerSocketBoundary } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import { serveSessionActionHome } from '@/dev/testkit/harness/sessionActionHome';
+import { createPromptLibraryCatalogBoundary } from '@/dev/testkit/harness/promptLibraryCatalogBoundary';
+import { createSessionReadBatchHttpBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
+import { createArtifactListHttpResponse } from '@/dev/testkit/harness/artifactStoreBoundary';
 import { createPlainAccountEncryptionCurrentnessFixture } from '@/dev/testkit/fixtures/accountEncryptionCurrentness';
 import { parseDecryptedSessionMetadata } from '@/sync/engine/sessions/parsePlainSessionPayload';
 
@@ -26,6 +29,8 @@ const shared = vi.hoisted(() => ({
     refused: new Set<string>(),
     alerts: [] as unknown[][],
     platformOS: 'node',
+    /** Session metadata writes reaching the socket transport (the Approval reviewer's write path). */
+    metadataUpdates: [] as unknown[],
 }));
 
 // The platform is a host boundary: keyboard-only reveal is a web contract.
@@ -53,6 +58,15 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc', a
     return createServerScopedSessionRpcModuleMock({ importOriginal, overrides: { sessionRpcWithServerScope: shared.rpc } });
 });
 
+// The Session metadata socket emit is the transport boundary under the real Action and metadata writer.
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/emitSessionMetadataUpdateWithServerScope', () => ({
+    emitSessionMetadataUpdateWithServerScope: async (params: any) => {
+        shared.metadataUpdates.push(params);
+        const session = Object.values((await import('@/sync/domains/state/storageStore')).storage.getState().sessions).find((candidate: any) => candidate.id === params.sessionId) as any;
+        return { result: 'success', metadataLayoutVersion: 1, version: (session?.metadataVersion ?? 0) + 1, agentStateVersion: (session?.agentStateVersion ?? 0) + 1 };
+    },
+}));
+
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     // Counted copy keeps its count so a summary can be read back ("roles.session.countChanged:2").
@@ -65,6 +79,8 @@ vi.mock('@/text', async () => {
 
 installDisconnectedServerSocketBoundary();
 const { SessionRolesSection } = await import('./SessionRolesSection');
+const { RoleEnginePicker } = await import('@/components/roles/engine/RoleEngineField');
+const { roleActions } = await import('@/sync/ops/roles/roleActions');
 const { SessionNotesSection } = await import('./SessionNotesSection');
 const { useSessionWorkMenuActions } = await import('../sessionWorkMenuActions');
 const { SessionHandsOffRow } = await import('@/components/roles/session/sessionRole');
@@ -112,7 +128,72 @@ const researchRole = {
     enabled: true,
 };
 
+async function prepareRolesHome() {
+    shared.platformOS = 'node';
+    previousState = storage.getState();
+    previousSnapshot = getAppliedActiveServerSnapshot();
+    previousAvailable = isAppliedActiveServerRuntimeAvailable();
+    const promptCatalog = createPromptLibraryCatalogBoundary();
+    // Session reads (the Approval reviewer's metadata write reads its latest tuple) take the batch wire.
+    const sessionReads = createSessionReadBatchHttpBoundary(async request => {
+        const path = request.path;
+        if (path === '/v1/account/encryption/currentness') return Response.json(createPlainAccountEncryptionCurrentnessFixture());
+        if (path === '/v1/artifacts') return createArtifactListHttpResponse(request.url, []);
+        if (path.startsWith('/v2/sessions/')) {
+            const session = storage.getState().sessions[decodeURIComponent(path.slice('/v2/sessions/'.length))];
+            if (session) return Response.json(createPlainSessionByIdResponseFixture(session));
+        }
+        return await promptCatalog.handle(path, { method: request.method,
+            body: request.body === undefined ? undefined : JSON.stringify(request.body) }) ?? undefined;
+    });
+    const activeConnection = await serveSessionActionHome({
+        homes: [{ key: 'roles', serverUrl: 'https://session-roles.test', accountId: 'account-1', currentAccount: true }],
+        route: request => sessionReads.handle(request),
+    });
+    connection = activeConnection;
+    await activeConnection.restoreActiveConnection();
+    await act(async () => {
+        shared.calls = [];
+        shared.refused = new Set();
+        shared.alerts = [];
+        setMetadata({ work: { sessionRolesV1: {
+            roleId: 'orchestrator',
+            overrides: {
+                builder: { roleId: 'builder', engine: { agentTargetKey: buildBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' }), modelId: 'session-model' } },
+                orchestrator: { roleId: 'orchestrator', workspaceWrites: 'deny' },
+            },
+            sessionRoles: { 'session:research': researchRole },
+            notes: 'Keep the ledger backfill inside the API session.',
+        } } });
+        invalidateRoleCatalog();
+    });
+}
+
+async function disposeRolesHome() {
+    standardCleanup();
+    if (connection) await disconnectActiveServerConnection();
+    await connection?.dispose();
+    connection = undefined;
+    await act(async () => {
+        retireActiveServerAccountScopeLifetime();
+        storage.setState(previousState);
+        publishAppliedActiveServerSnapshot(previousSnapshot, previousAvailable);
+    });
+}
+
 describe('Work › Roles and Notes', () => {
+    it('does not mark default engine pins as changes in a fresh Session owner view', async () => {
+        const agentTargetKey = 'agent:happier.agent.codex/codex';
+        const defaultEngine = { agentTargetKey, modelId: 'session-model' };
+        setMetadata(applyModelIntentSessionMetadata(writeSessionRoleConfigurationV1ToMetadata({ flavor: 'codex' }, {
+            overrides: {}, sessionRoles: resolveRolesSnapshotV1({ defaultEngine }), notes: '',
+        }), { v: 1, selection: { ...defaultEngine, providerConnectionId: null }, updatedAt: 1 }));
+        const screen = await renderScreen(<SessionRolesSection sessionId="lead" />);
+        expect(screen.findAll(node => typeof node.props.testID === 'string'
+            && /^session-work-roles\.row\.[^.]+$/u.test(node.props.testID))).toHaveLength(0);
+        expect(declared(screen, 'session-work-roles.all', 'detail')!.props.detail).toBe(`roles.session.inUse:${enabledBuiltInCount}`);
+    });
+
     it.each(['override', 'snapshot'] as const)('renders one inherited difference and resets only its %s layer', async layer => {
         const inherited = snapshotSessionRolesAtSpawnV1({ leadSessionId: 'lead', roles: resolveRolesSnapshotV1({
             ...(layer === 'snapshot' ? { settingsOverrides: { builder: { roleId: 'builder', instructionsOverride: 'Inherited build instructions.' } } } : {}),
@@ -138,59 +219,12 @@ describe('Work › Roles and Notes', () => {
     });
 
     beforeEach(async () => {
-        shared.platformOS = 'node';
-        previousState = storage.getState();
-        previousSnapshot = getAppliedActiveServerSnapshot();
-        previousAvailable = isAppliedActiveServerRuntimeAvailable();
-        const activeConnection = await serveSessionActionHome({
-            homes: [{ key: 'roles', serverUrl: 'https://session-roles.test', accountId: 'account-1', currentAccount: true }],
-            route: request => {
-                const path = request.path;
-                if (path === '/v1/account/encryption/currentness') return Response.json(createPlainAccountEncryptionCurrentnessFixture());
-                if (path === '/v1/artifacts') return Response.json([]);
-                if (path === PROMPT_LIBRARY_ROWS_ROUTE_V1) return Response.json({ status: 'listed', rows: [{
-                    key: 'role-overrides', revision: 1,
-                    content: { t: 'plain', v: { key: 'role-overrides', value: { v: 1, overrides: {} } } },
-                }] });
-                return undefined;
-            },
-        });
-        connection = activeConnection;
-        await activeConnection.restoreActiveConnection();
-        await act(async () => {
-        shared.calls = [];
-        shared.refused = new Set();
-        shared.alerts = [];
-        setMetadata({
-            work: {
-                sessionRolesV1: {
-                    roleId: 'orchestrator',
-                    overrides: {
-                        builder: { roleId: 'builder', engine: { agentTargetKey: buildBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' }), modelId: 'session-model' } },
-                        orchestrator: { roleId: 'orchestrator', workspaceWrites: 'deny' },
-                    },
-                    sessionRoles: { 'session:research': researchRole },
-                    notes: 'Keep the ledger backfill inside the API session.',
-                },
-            },
-        });
-        invalidateRoleCatalog();
-        });
+        await prepareRolesHome();
         const catalog = await renderHook(() => useRoleCatalog());
         await vi.waitFor(() => expect(catalog.getCurrent().status).toBe('ready'));
     });
 
-    afterEach(async () => {
-        standardCleanup();
-        if (connection) await disconnectActiveServerConnection();
-        await connection?.dispose();
-        connection = undefined;
-        await act(async () => {
-            retireActiveServerAccountScopeLifetime();
-            storage.setState(previousState);
-            publishAppliedActiveServerSnapshot(previousSnapshot, previousAvailable);
-        });
-    });
+    afterEach(disposeRolesHome);
 
     it('shows only this session\'s differences on the flat page section, then All roles', async () => {
         const screen = await renderScreen(<SessionRolesSection sessionId="lead" />);
@@ -200,13 +234,19 @@ describe('Work › Roles and Notes', () => {
             .map((node: any) => node.props.testID);
         expect([...new Set(rowIds)]).toEqual([
             'session-work-roles.row.builder',
-            'session-work-roles.row.orchestrator',
             'session-work-roles.row.session:research',
         ]);
-        // Page anatomy: the header summarises the differences and explains the scope behind ⓘ.
+        // Lab csinfo I2: the header summarises the differences; the scope reads above the rows.
         const count = screen.findByTestId('session-agents-section-count:session-work-roles')!;
-        expect(count.props.children).toBe('roles.session.countChanged:2 · roles.session.countAdded:1');
-        expect(screen.findByTestId('session-work-roles-info')).toBeTruthy();
+        expect(count.props.children).toBe('roles.session.countChanged:1 · roles.session.countAdded:1');
+        expect(screen.findByTestId('session-work-roles.description')!.props.children).toBe('roles.session.info');
+        // Each difference is two lines: the name, then where it differs, its engine and how it runs.
+        const facts = (roleId: string) => declared(screen, `session-work-roles.row.${roleId}`, 'subtitle')!.props.subtitle as string;
+        expect(facts('builder').startsWith('roles.session.changedHere · ')).toBe(true);
+        expect(facts('session:research')).toMatch(/^roles\.session\.addedHere · .* · roles\.session\.runsInBackground$|^roles\.session\.addedHere · roles\.session\.runsInBackground$/u);
+        // Only a changed role offers Reset, always visible beside the row (never nested in its press target).
+        expect(screen.findByTestId('session-work-roles.row.builder.reset')).toBeTruthy();
+        expect(screen.findByTestId('session-work-roles.row.session:research.reset')).toBeNull();
         // "All roles" is the trailing row: the enabled catalog roles plus the session-only ones.
         expect(declared(screen, 'session-work-roles.all', 'detail')!.props.detail).toBe(`roles.session.inUse:${enabledBuiltInCount + 1}`);
         // The inline add form and the bulk actions are no longer in the section.
@@ -252,8 +292,6 @@ describe('Work › Roles and Notes', () => {
 
     it('resets a changed role back to its Settings default', async () => {
         const screen = await renderScreen(<SessionRolesSection sessionId="lead" />);
-        const row = screen.findByTestId('session-work-roles.row.builder')!;
-        await act(async () => { row.props.onHoverIn?.(); });
         await act(async () => { screen.findByTestId('session-work-roles.row.builder.reset')!.props.onPress(); });
         await vi.waitFor(() => expect(writes()).toEqual([{ actionId: 'session.roles.override.clear', input: { sessionId: 'lead', roleId: 'builder' } }]));
     });
@@ -301,34 +339,88 @@ describe('Work › Roles and Notes', () => {
         expect(screen.findByTestId('session-work-notes.field')).toBeTruthy();
     });
 
-    it('reveals a changed role\'s Reset on keyboard focus, without hover (web)', async () => {
-        const serverUrl = connection!.homes.roles.serverUrl;
-        const credentials = await TokenStorage.getCredentialsForServerUrl(serverUrl, { serverId: connection!.serverId });
-        if (!credentials) throw new Error('Expected fixture Home credentials');
-        shared.platformOS = 'web';
-        // The keyboard contract uses browser credential custody as the product does.
-        // Roll it back before returning to the suite's native platform boundary.
-        let browserWrite: Awaited<ReturnType<typeof TokenStorage.setCredentialsForServerUrlWithRollback>> = null;
-        try {
-            browserWrite = await TokenStorage.setCredentialsForServerUrlWithRollback(serverUrl, { serverId: connection!.serverId }, credentials);
-            if (!browserWrite) throw new Error('Expected browser fixture credentials');
+    it.each(['fresh', 'no-op override'] as const)('opens the first inherited Role edit (%s) before writing, preserves cancel, and shows a changed engine', async state => {
+        setMetadata({ work: { sessionRolesV1: { overrides: state === 'fresh' ? {} : { builder: { roleId: 'builder' } }, sessionRoles: {}, notes: '' } } });
+        const screen = await renderScreen(<SessionRolesSection sessionId="lead" serverId={connection!.serverId} />);
+        expect(screen.tree.findAllByType(RoleEnginePicker)).toHaveLength(0);
+        await screen.pressByTestIdAsync('session-work-roles.add');
+        await screen.pressByTestIdAsync('session-work-roles.add.change.builder');
+        const picker = () => screen.tree.findAllByType(RoleEnginePicker)[0]!;
+        expect(picker()).toBeTruthy();
+        expect(writes()).toEqual([]);
+        await act(async () => picker().props.onRequestClose());
+        expect(screen.findByTestId('session-work-roles.row.builder')).toBeNull();
+        await screen.pressByTestIdAsync('session-work-roles.add');
+        await screen.pressByTestIdAsync('session-work-roles.add.change.builder');
+        const engine = { agentTargetKey: buildBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' }), modelId: 'changed-model' };
+        // The real picker publishes a choice to the section; its Action and strict RPC remain real.
+        await act(async () => picker().props.onChange(engine));
+        await vi.waitFor(() => expect(writes()).toEqual([{
+            actionId: 'session.roles.override.set', input: { sessionId: 'lead', roleId: 'builder', engine },
+        }]));
+        const { sessionId: _sessionId, ...override } = RoleActionInputSchemasV1['session.roles.override.set'].parse(shared.calls[0]!.payload);
+        // Feed the transport's accepted tuple back through the real metadata producer, like a server echo.
+        await act(async () => setMetadata(writeSessionRoleConfigurationV1ToMetadata({}, {
+            overrides: { builder: override }, sessionRoles: {}, notes: '',
+        })));
+        expect(declared(screen, 'session-work-roles.row.builder', 'subtitle')!.props.subtitle).toContain('changed-model');
+        expect(screen.findByTestId('session-agents-section-count:session-work-roles')!.props.children).toBe('roles.session.countChanged:1');
+    });
+
+    it('opens the role\'s engine from its row', async () => {
+        const screen = await renderScreen(<SessionRolesSection sessionId="lead" />);
+        expect(screen.findByTestId('role-engine-catalog-state')).toBeNull();
+        await act(async () => { declared(screen, 'session-work-roles.row.builder', 'onPress')!.props.onPress(); });
+        // The engine popover (the composer's picker) mounts only once the row asks for it.
+        await vi.waitFor(() => expect(
+            screen.findByTestId('role-engine-catalog-state') ?? screen.findAll((node: any) => node.props?.selectedOptionId !== undefined)[0],
+        ).toBeTruthy());
+    });
+
+    describe('Approval reviewer for this session', () => {
+        const reviewerState = (screen: Awaited<ReturnType<typeof renderScreen>>) => ({
+            subtitle: declared(screen, 'session-work-roles.approvalReviewer', 'subtitle')!.props.subtitle,
+            value: declared(screen, 'session-work-roles.approvalReviewer', 'value')!.props.value,
+        });
+        const choose = async (screen: Awaited<ReturnType<typeof renderScreen>>, choice: 'default' | 'on' | 'off') => {
+            await screen.pressByTestIdAsync(`session-work-roles.approvalReviewer:${choice}`);
+            await vi.waitFor(() => expect(shared.metadataUpdates).toHaveLength(1));
+            // What the write stores (not its compare-and-set precondition).
+            return (shared.metadataUpdates[0] as { patch: { ownerMetadata: { v: { runtime?: Record<string, unknown> } } } }).patch.ownerMetadata.v.runtime ?? {};
+        };
+
+        it.each([false, true])('follows the Account default (%s) until it is set here', async (accountDefault) => {
+            await act(async () => { storage.setState({ settings: { ...storage.getState().settings, approvalReviewerEnabled: accountDefault } }); });
             const screen = await renderScreen(<SessionRolesSection sessionId="lead" />);
-            const slot = () => screen.findByTestId('session-work-roles.row.builder.resetSlot')!;
-            const pointerEvents = () => [slot().props.style].flat(Infinity)
-                .reduce((value: unknown, style: any) => style?.pointerEvents ?? value, undefined);
-            // Reset is in the tree (so Tab reaches it) but not shown until the row is hovered or focused.
-            expect(screen.findByTestId('session-work-roles.row.builder.reset')).toBeTruthy();
-            expect(pointerEvents()).toBe('none');
-            expect(screen.findByTestId('session-work-roles.row.builder.marker')).toBeTruthy();
-            await act(async () => { slot().props.onFocus(); });
-            expect(pointerEvents()).toBe('auto');
-            expect(screen.findByTestId('session-work-roles.row.builder.marker')).toBeNull();
-            await act(async () => { screen.findByTestId('session-work-roles.row.builder.reset')!.props.onPress(); });
-            await vi.waitFor(() => expect(writes()).toEqual([{ actionId: 'session.roles.override.clear', input: { sessionId: 'lead', roleId: 'builder' } }]));
-        } finally {
-            try { await browserWrite?.rollback(); }
-            finally { shared.platformOS = 'node'; }
-        }
+            expect(reviewerState(screen)).toEqual({ subtitle: 'roles.session.approvalReviewerFollowsDefault', value: 'default' });
+        });
+
+        it('reads the session\'s own choice over the Account default', async () => {
+            await act(async () => {
+                storage.setState({ settings: { ...storage.getState().settings, approvalReviewerEnabled: false } });
+                setMetadata({ approvalReviewerEnabled: true, work: { sessionRolesV1: { roleId: 'orchestrator', overrides: {}, sessionRoles: {}, notes: '' } } });
+            });
+            const screen = await renderScreen(<SessionRolesSection sessionId="lead" />);
+            expect(reviewerState(screen)).toEqual({ subtitle: 'roles.session.approvalReviewerOverride', value: 'on' });
+        });
+
+        it('sets it for this session through session.approval_reviewer.set', async () => {
+            shared.metadataUpdates = [];
+            const screen = await renderScreen(<SessionRolesSection sessionId="lead" />);
+            expect(await choose(screen, 'on')).toMatchObject({ approvalReviewerEnabled: true });
+            await vi.waitFor(() => expect(reviewerState(screen).value).toBe('on'));
+        });
+
+        it('returns a session to the Account default by clearing its own choice', async () => {
+            await act(async () => {
+                setMetadata({ approvalReviewerEnabled: true, work: { sessionRolesV1: { roleId: 'orchestrator', overrides: {}, sessionRoles: {}, notes: '' } } });
+            });
+            shared.metadataUpdates = [];
+            const screen = await renderScreen(<SessionRolesSection sessionId="lead" />);
+            // The session stops carrying a value (never a copy of today's default), so later default changes apply.
+            expect(await choose(screen, 'default')).not.toHaveProperty('approvalReviewerEnabled');
+            await vi.waitFor(() => expect(reviewerState(screen)).toEqual({ subtitle: 'roles.session.approvalReviewerFollowsDefault', value: 'default' }));
+        });
     });
 
     it('keeps the notes editor and the draft open when the save is refused', async () => {
@@ -345,7 +437,48 @@ describe('Work › Roles and Notes', () => {
         await vi.waitFor(() => expect(screen.findByTestId('session-work-notes.field')).toBeNull());
     });
 
-    it('keeps the new-role form and what was typed when adding the role is refused', async () => {
+});
+
+// Session-only role authoring consumes its own snapshot, including while the Account catalog is unavailable.
+describe('Session-only role identity', () => {
+    beforeEach(prepareRolesHome);
+    afterEach(disposeRolesHome);
+
+    it.each([
+        ['Review!', 'Review?'],
+        ['審査', '確認'],
+    ])('creates distinct session roles for %s and %s', async (firstName, secondName) => {
+        const screen = await renderScreen(<SessionRolesSection sessionId="lead" />);
+        for (const name of [firstName, secondName]) {
+            await screen.pressByTestIdAsync('session-work-roles.add');
+            await screen.pressByTestIdAsync('session-work-roles.add.new');
+            await act(async () => { screen.changeTextByTestId('session-work-roles.addForm.name', name); });
+            await screen.pressByTestIdAsync('session-work-roles.addForm.submit');
+            await vi.waitFor(() => expect(screen.findByTestId('session-work-roles.addForm')).toBeNull());
+        }
+        const roles = shared.calls.filter(call => call.method === 'session.roles.add')
+            .map(call => RoleActionInputSchemasV1['session.roles.add'].parse(call.payload));
+        expect(roles.map(input => input.role.name)).toEqual([firstName, secondName]);
+        expect(new Set(roles.map(input => input.roleId)).size).toBe(2);
+    });
+
+    it('updates an existing session role engine through session.roles.add with its existing identity', async () => {
+        const engine = { agentTargetKey: buildBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' }), modelId: 'updated-model' };
+        const { roleId, ...role } = researchRole;
+        const input = RoleActionInputSchemasV1['session.roles.add'].parse({ sessionId: 'lead', roleId, role: { ...role, engine } });
+        await act(async () => {
+            expect(await roleActions.addSessionRole('lead', input.roleId, input.role)).toMatchObject({ ok: true });
+        });
+        await vi.waitFor(() => expect(writes()).toHaveLength(1));
+        expect(writes()).toEqual([{
+            actionId: 'session.roles.add',
+            input: { sessionId: 'lead', roleId: researchRole.roleId, role: expect.objectContaining({
+                name: researchRole.name, instructions: researchRole.instructions, engine,
+            }) },
+        }]);
+    });
+
+    it('keeps the new-role draft identity when a refused write is retried after renaming', async () => {
         shared.refused.add('session.roles.add');
         const screen = await renderScreen(<SessionRolesSection sessionId="lead" />);
         await act(async () => { screen.findByTestId('session-work-roles.add')!.props.onPress(); });
@@ -355,7 +488,25 @@ describe('Work › Roles and Notes', () => {
         await vi.waitFor(() => expect(shared.alerts).toHaveLength(1));
         expect(writes().map((call) => call.actionId)).toEqual(['session.roles.add']);
         expect(screen.findByTestId('session-work-roles.addForm.name')!.props.value).toBe('Reviewer');
+        const first = RoleActionInputSchemasV1['session.roles.add'].parse(shared.calls[0]!.payload);
+        shared.refused.clear();
+        await act(async () => { screen.changeTextByTestId('session-work-roles.addForm.name', 'Revised reviewer'); });
+        await screen.pressByTestIdAsync('session-work-roles.addForm.submit');
+        await vi.waitFor(() => expect(screen.findByTestId('session-work-roles.addForm')).toBeNull());
+        const retried = RoleActionInputSchemasV1['session.roles.add'].parse(shared.calls[1]!.payload);
+        expect(retried.roleId).toBe(first.roleId);
+        expect(retried.role.name).toBe('Revised reviewer');
     });
+
+});
+
+describe('Work › Roles and Notes session scope', () => {
+    beforeEach(async () => {
+        await prepareRolesHome();
+        const catalog = await renderHook(() => useRoleCatalog());
+        await vi.waitFor(() => expect(catalog.getCurrent().status).toBe('ready'));
+    });
+    afterEach(disposeRolesHome);
 
     it('allows changing a worker\'s own copied roles and notes', async () => {
         const roles = await renderScreen(<SessionRolesSection sessionId="worker" serverId={connection!.serverId} copiedAtSpawn />);

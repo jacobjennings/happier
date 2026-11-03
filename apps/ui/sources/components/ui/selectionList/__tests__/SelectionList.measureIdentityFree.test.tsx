@@ -61,9 +61,13 @@ function defaultProps(overrides: Partial<SelectionListProps> = {}): SelectionLis
 }
 
 describe('SelectionList identity-free measure path (FR3-1 / FR3-8)', () => {
-    it('renders the listbox id+role exactly once across the visible body and hidden measure host', async () => {
+    it('renders the listbox, body and option identities exactly once across the visible body and hidden measure host', async () => {
         const { SelectionList } = await import('../SelectionList');
         const screen = await renderScreen(<SelectionList {...defaultProps()} />);
+        // Precondition: the orchestrator's one measure host is mounted, so every
+        // "exactly once" below is a real claim about its mirror.
+        expect(screen.findByTestId('sl:measure')).not.toBeNull();
+
         // The visible body renders the listbox `id` + `role="listbox"`. The
         // measure host's mirror is in measure-mode and must NOT also render
         // those identity props.
@@ -74,35 +78,11 @@ describe('SelectionList identity-free measure path (FR3-1 / FR3-8)', () => {
         }).findAll((node) => node.props?.role === 'listbox');
         expect(listboxNodes.length).toBe(1);
         expect((listboxNodes[0].props as { id?: string }).id).toBe('sl:listbox');
-    });
 
-    it('renders the body testID exactly once across the visible body and hidden measure host', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps()} />);
         expect(screen.findAllByTestId('sl:body').length).toBe(1);
-    });
-
-    it('renders each option wrapper testID exactly once', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps()} />);
         // Per-option wrappers: testID format is `sl:root:option-wrapper:<id>`.
-        expect(screen.findAllByTestId('sl:root:option-wrapper:a').length).toBe(1);
-        expect(screen.findAllByTestId('sl:root:option-wrapper:b').length).toBe(1);
-        expect(screen.findAllByTestId('sl:root:option-wrapper:c').length).toBe(1);
-    });
-
-    it('keeps the measure host mounted (RUX-14 contract) but with no listbox role descendant', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps()} />);
-        // The measure host's container testID is `sl:measure` — the
-        // orchestrator owns the one measure host in the tree.
-        const measure = screen.findByTestId('sl:measure');
-        expect(measure).not.toBeNull();
-        // No descendant of the measure host should advertise role="listbox"
-        // — the measure body must be identity-free at the API boundary.
-        const matches = (measure as unknown as {
-            findAll: (predicate: (n: { props: Record<string, unknown> }) => boolean) => Array<{ props: Record<string, unknown> }>;
-        }).findAll((node) => node.props?.role === 'listbox');
-        expect(matches.length).toBe(0);
+        for (const id of ['a', 'b', 'c']) {
+            expect(screen.findAllByTestId(`sl:root:option-wrapper:${id}`).length).toBe(1);
+        }
     });
 });

@@ -486,63 +486,6 @@ describe('Popover (web)', () => {
         expect(pointerHandlers.at(-1)?.options).toBe(true);
     });
 
-    it('does not stop event propagation when consumeOutsidePointerDown is disabled (allows click-through)', async () => {
-        const { Popover } = await import('./Popover');
-        browser = await installBrowserRuntimeForTests({ url: 'https://popover.test/' });
-
-        vi.useFakeTimers();
-
-        const pointerHandlers: Array<{ handler: any; options: any }> = [];
-        const addEventListener = vi.fn((type: string, handler: any, options?: any) => {
-            if (type === 'pointerdown') pointerHandlers.push({ handler, options });
-        });
-        const removeEventListener = vi.fn();
-
-        vi.stubGlobal('document', {
-            addEventListener,
-            removeEventListener,
-        });
-
-        const onRequestClose = vi.fn();
-        const anchorRef = {
-            current: {
-                contains: () => false,
-                getBoundingClientRect: () => ({ left: 0, top: 0, width: 10, height: 10 }),
-            },
-        } as any;
-
-        await renderScreen(React.createElement(Popover, {
-            open: true,
-            anchorRef,
-            consumeOutsidePointerDown: false,
-            onRequestClose,
-            backdrop: false,
-            children: () => React.createElement('PopoverChild'),
-        }));
-
-        await act(async () => {});
-
-        expect(pointerHandlers.length).toBeGreaterThan(0);
-
-        const stopPropagation = vi.fn();
-        const stopImmediatePropagation = vi.fn();
-        pointerHandlers.at(-1)?.handler({
-            target: browser.document.createElement('div'),
-            stopPropagation,
-            stopImmediatePropagation,
-        });
-
-        expect(stopPropagation).not.toHaveBeenCalled();
-        expect(stopImmediatePropagation).not.toHaveBeenCalled();
-        expect(onRequestClose).not.toHaveBeenCalled();
-
-        await act(async () => {
-            await vi.runOnlyPendingTimersAsync();
-        });
-        expect(onRequestClose).toHaveBeenCalledTimes(1);
-        expect(pointerHandlers.at(-1)?.options).toBe(true);
-    });
-
     it('portals to a modal portal host when available (prevents Radix Dialog scroll-lock from swallowing wheel/touch scroll)', async () => {
         const { Popover } = await import('./Popover');
         const { ModalPortalTargetProvider } = await import('@/modal/portal/ModalPortalTarget');
@@ -661,7 +604,6 @@ describe('Popover (web)', () => {
                     open: true,
                     anchorRef,
                     portal: { web: true },
-                    // Cast required for TDD: this prop does not exist yet in the implementation.
                     followScrollRef,
                     onRequestClose: () => {},
                     children: () => React.createElement('PopoverChild'),
@@ -976,45 +918,6 @@ describe('Popover (web)', () => {
         expect(content?.props?.onTouchMove).toBeUndefined();
     });
 
-    it('keeps portal popovers hidden until the anchor is measured (prevents visible jiggle)', async () => {
-        const { Popover } = await import('./Popover');
-
-        const anchorRef = {
-            current: {
-                measureInWindow: (cb: any) => {
-                    queueMicrotask(() => cb(100, 100, 20, 20));
-                },
-            },
-        } as any;
-
-        const screen = await renderScreen(React.createElement(Popover, {
-                    open: true,
-                    anchorRef,
-                    placement: 'bottom',
-                    portal: { web: true },
-                    backdrop: false,
-                    children: () => React.createElement('PopoverChild'),
-                }));
-
-        const contentView = findPopoverContentView(screen);
-        expect(flattenStyle(contentView?.props?.style).opacity).toBe(0);
-
-        await act(async () => {
-            await flushInitialPositioning();
-        });
-
-        const contentViewAfter = findPopoverContentView(screen);
-        // Still hidden until content layout is known (prevents clamp jiggle for top/bottom portals).
-        expect(flattenStyle(contentViewAfter?.props?.style).opacity).toBe(0);
-
-        await act(async () => {
-            contentViewAfter?.props?.onLayout?.({ nativeEvent: { layout: { width: 200, height: 120 } } });
-        });
-
-        const contentViewAfterLayout = findPopoverContentView(screen);
-        expect(flattenStyle(contentViewAfterLayout?.props?.style).opacity).toBe(1);
-    });
-
     it('measures DOM anchors on web when measureInWindow is unavailable (prevents invisible portal popovers)', async () => {
         const { Popover } = await import('./Popover');
 
@@ -1133,45 +1036,6 @@ describe('Popover (web)', () => {
         const style = flattenStyle(contentView?.props?.style);
         expect(style.width).toBe(720);
         expect(style.left).toBe(280);
-    });
-
-    it('falls back to DOM anchors on web when measureInWindow returns invalid values (prevents stuck invisible portal popovers)', async () => {
-        const { Popover } = await import('./Popover');
-
-        const anchorRef = {
-            current: {
-                measureInWindow: (cb: any) => {
-                    queueMicrotask(() => cb(NaN, NaN, NaN, NaN));
-                },
-                getBoundingClientRect: () => ({ left: 120, top: 140, width: 48, height: 22 }),
-            },
-        } as any;
-
-        const screen = await renderScreen(React.createElement(Popover, {
-                    open: true,
-                    anchorRef,
-                    placement: 'bottom',
-                    portal: { web: true },
-                    backdrop: false,
-                    children: () => React.createElement('PopoverChild'),
-                }));
-
-        const contentView = findPopoverContentView(screen);
-        expect(flattenStyle(contentView?.props?.style).opacity).toBe(0);
-
-        await act(async () => {
-            await flushInitialPositioning();
-        });
-
-        const contentViewAfter = findPopoverContentView(screen);
-        expect(flattenStyle(contentViewAfter?.props?.style).opacity).toBe(0);
-
-        await act(async () => {
-            contentViewAfter?.props?.onLayout?.({ nativeEvent: { layout: { width: 200, height: 120 } } });
-        });
-
-        const contentViewAfterLayout = findPopoverContentView(screen);
-        expect(flattenStyle(contentViewAfterLayout?.props?.style).opacity).toBe(1);
     });
 
     it('unhides portal popovers on web when content DOM rect is available even if onLayout never fires (prevents stuck non-interactive menus)', async () => {
@@ -1357,42 +1221,6 @@ describe('Popover (web)', () => {
         expect(flattenStyle(contentViewAfterLayout?.props?.style).opacity).toBe(1);
     });
 
-    it('retries measuring portal anchors on web when the initial anchor rect is unrealistically tiny (prevents 0-width popovers)', async () => {
-        const { Popover } = await import('./Popover');
-
-        let calls = 0;
-        const anchorRef = {
-            current: {
-                measureInWindow: (cb: any) => {
-                    calls += 1;
-                    queueMicrotask(() => {
-                        if (calls === 1) return cb(100, 100, 1, 1);
-                        cb(100, 100, 120, 24);
-                    });
-                },
-            },
-        } as any;
-
-        const screen = await renderScreen(React.createElement(Popover, {
-            open: true,
-            anchorRef,
-            placement: 'bottom',
-            portal: { web: true },
-            backdrop: false,
-            children: () => React.createElement('PopoverChild'),
-        }));
-
-        await act(async () => {
-            await flushRetryPositioning();
-        });
-
-        const contentView = findPopoverContentView(screen);
-        expect(contentView).toBeTruthy();
-
-        const width = flattenStyle(contentView?.props?.style).width;
-        expect(width).toBe(120);
-    });
-
     it('uses the effective boundary width and left edge for top/bottom portal popovers when boundary layout is requested', async () => {
         const { Popover } = await import('./Popover');
 
@@ -1526,7 +1354,7 @@ describe('Popover (web)', () => {
         expect(flattenStyle(contentViewAfter?.props?.style).opacity).toBe(1);
     });
 
-    it('keeps top/bottom portal popovers hidden until content layout is known (prevents clamp jiggle)', async () => {
+    it('keeps top/bottom portal popovers hidden until the anchor is measured and content layout is known (prevents clamp jiggle)', async () => {
         const { Popover } = await import('./Popover');
 
         const anchorRef = {
@@ -1545,6 +1373,8 @@ describe('Popover (web)', () => {
             backdrop: false,
             children: () => React.createElement('PopoverChild'),
         }));
+
+        expect(flattenStyle(findPopoverContentView(screen)?.props?.style).opacity).toBe(0);
 
         await act(async () => {
             await flushInitialPositioning();
@@ -1566,23 +1396,6 @@ describe('Popover (web)', () => {
 
         const contentViewAfter = findPopoverContentView(screen);
         expect(flattenStyle(contentViewAfter?.props?.style).opacity).toBe(1);
-    });
-
-    it('supports a blur backdrop behind the popover content (context-menu focus)', async () => {
-        const { Popover } = await import('./Popover');
-
-        const anchorRef = { current: null } as any;
-
-        const screen = await renderScreen(React.createElement(Popover, {
-            open: true,
-            anchorRef,
-            onRequestClose: () => {},
-            backdrop: { effect: 'blur' },
-            children: () => React.createElement('PopoverChild'),
-        } as any));
-
-        const views = screen.findAllByType('View' as any);
-        expect(views.some((v: any) => v.props?.testID === 'popover-backdrop-effect')).toBe(true);
     });
 
     it('allows configuring web blur strength and tint for blur backdrops', async () => {

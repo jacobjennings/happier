@@ -1340,8 +1340,8 @@ describe('executeSpawnSessionRequest', () => {
         ...DEFAULT_PROVIDER_SETTINGS_V1,
         migration: {
           v: 1,
-          completedSources: [{ sourceProfileId: 'deepseek', kind: 'connection', connectionId: 'pc_deepseek' }],
-          pendingCustomProfileIds: [], migratedAt: 2,
+          completedSources: [{ sourceProfileId: 'deepseek', kind: 'connection', connectionId: ProviderConnectionIdSchema.parse('pc_deepseek') }],
+          pendingCustomProfileIds: [], pendingConflicts: [], migratedAt: 2,
         },
       }).catalog,
     } });

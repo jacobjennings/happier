@@ -1,7 +1,8 @@
 import * as React from 'react';
+import { usePluginLocalizedTextResolver } from '@/sync/domains/plugins/ui/i18n';
 import { Platform, View, type LayoutChangeEvent } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { HAPPIER_PAGE_METRICS, HappierPageSectionContext, happierPageTextMetrics } from '@happier-dev/plugin-ui/presentation';
+import { HAPPIER_EMPTY_SLOT_METRICS, HAPPIER_ICON_BUTTON_SIZE, HAPPIER_PAGE_METRICS, HappierPageSectionContext, happierPageTextMetrics } from '@happier-dev/plugin-ui/presentation';
 import { SkeletonRows } from '@/components/ui/lists/SkeletonRows';
 import { EmptySlot } from '@/components/ui/empty/EmptySlot';
 import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
@@ -14,7 +15,8 @@ import { readWidgetGroupTitle } from '@/components/widgets/group/widgetGroupTitl
 import { buildWidgetGroupMembershipActions, describeWidgetGroup, describeWidgetGroupAmong, resolveWidgetGroupChildSizeLimit, WIDGET_GROUP_ICON, type WidgetGroupOperations } from '@/components/widgets/group/widgetGroupMenu';
 import { useWidgetCarriedIdentity } from '@/components/widgets/surface/widgetCarriedIdentity';
 import { describeWidgetGroupContext, readWidgetGroupFollowedValue, widgetGroupFollowSource, widgetGroupPinnedSource, widgetGroupSurfaceContext } from '@/components/widgets/group/widgetGroupInputs';
-import { resolveWidgetGroupCells, resolveWidgetGroupColumns } from '@happier-dev/plugin-ui/presentation';
+import { resolveWidgetGroupCells } from '@happier-dev/plugin-ui/components';
+import { resolveWidgetGroupColumns } from '@happier-dev/plugin-ui/presentation';
 import { resolveWidgetGroupPointerDestination, widgetGroupDropTarget, widgetLayoutCardDropTarget } from '@/components/widgets/group/widgetGroupDropTarget';
 import { WidgetGroupDropFeedback } from '@/components/widgets/group/WidgetGroupDropFeedback';
 import { WidgetGroupMembershipArrivalView, useWidgetGroupMembershipArrivals } from '@/components/widgets/group/widgetGroupMembershipArrival';
@@ -32,7 +34,6 @@ import { RowActionRevealSlot } from '@/components/ui/lists/RowActionRevealSlot';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { CardGrid, CardGridCell } from '@/components/ui/cardGrid/CardGrid';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import { ItemGroupColumn, ItemGroupColumns } from '@/components/ui/lists/ItemGroupColumns';
 import type { ItemAction } from '@/components/ui/lists/itemActions';
@@ -63,7 +64,7 @@ import type { WidgetBindingValueLabels } from '@/components/widgets/surface/useW
 import { useWidgetInstanceDescriptors } from '@/components/widgets/surface/useWidgetInstanceDescriptor';
 import { WidgetSurface } from '@/components/widgets/surface/WidgetSurface';
 import { runAcknowledgedWidgetSetupCommand, widgetProvidedContext, type WidgetSurfaceContext } from '@/components/widgets/surface/widgetSurfaceSetup';
-import { isBuiltinWidgetSwitchedOff, readWidgetDescriptor, type WidgetCandidate } from '@/components/widgets/widgetCatalog';
+import { isBuiltinWidgetSwitchedOff, readWidgetDescriptor, resolveWidgetInstanceTitle, type WidgetCandidate } from '@/components/widgets/widgetCatalog';
 import { useAtmosphereMoments } from '@/components/atmosphere/atmosphereMoments';
 import { t } from '@/text';
 import { useIsNearViewport, type NearViewportSpan } from '@/components/widgets/nearViewport';
@@ -93,7 +94,10 @@ export type WidgetAreaGeometry = 'grid' | 'column';
 const GEOMETRY_PLACEMENT: Readonly<Record<WidgetAreaGeometry, WidgetFramePlacement>> = { grid: 'home', column: 'companion' };
 /** Configuration stays in the quiet ⋯ menu; movement also has the shared grip. */
 const ALWAYS_OVERFLOW = Number.POSITIVE_INFINITY;
-const ADD_TARGET_PX = resolveMinimumInteractiveTargetSize(Platform.OS);
+// The header row holds the add IconButton at its drawn size; a finger reaches past it through the hit area.
+const HEADER_MIN_HEIGHT_PX = HAPPIER_ICON_BUTTON_SIZE;
+// The dashed Add line's own height (its padding and one row title line), so its placeholder holds the same room.
+const ADD_LINE_PX = 2 * HAPPIER_EMPTY_SLOT_METRICS.paddingPx + happierPageTextMetrics('rowTitle').lineHeight;
 /** The settled empty line's height (its description step), held while a page-section area loads. */
 const EMPTY_LINE_PX = happierPageTextMetrics('sectionDescription').lineHeight;
 
@@ -123,6 +127,12 @@ export type WidgetAreaProps = Readonly<{
     title: string;
     /** One quiet fact beside the title ("your widgets on this page"). */
     meta?: string;
+    /**
+     * One line about the area itself, under its header as a section's description sits under its title
+     * (an edited preset's "… is yours now" with Reset to preset): the header's controls and the line's own
+     * action then stand on separate lines rather than stacking at the trailing edge above the header.
+     */
+    notice?: React.ReactNode;
     /** The page's or project's name: "Add to PRs & Issues", "PRs & Issues uses Card". */
     surfaceName: string;
     /** Replaces the layout state with the host's own refusal (a Project without a known source). */
@@ -131,7 +141,9 @@ export type WidgetAreaProps = Readonly<{
      * A dashboard area (lab `p-overview`): no area header; the widgets, then one dashed "Add widget" line
      * that opens the same Add surface; an area emptied by Remove keeps its place and says so quietly.
      */
-    dashboard?: Readonly<{ addLabel: string; emptyTitle: string; /** The gallery says where the widget goes ("Add to Release · side area"). */ addTitle?: string;
+    dashboard?: Readonly<{ addLabel: string;
+        /** The quiet line an emptied area says; absent where a sibling area already says it (one message per state). */
+        emptyTitle?: string; /** The gallery says where the widget goes ("Add to Release · side area"). */ addTitle?: string;
         /**
          * An area that is one section of a page (a plugin page's widget area) holds its settled empty
          * line's place while it loads, rather than a card that may never come: the page around it does
@@ -298,7 +310,6 @@ function WidgetAreaWithLayout(props: WidgetAreaProps & Readonly<{ port: WidgetAr
                                 iconName="plus"
                                 variant="plain"
                                 accessibilityLabel={t('widgetAdd.areaAdd', { surface: props.surfaceName })}
-                                minimumInteractiveTargetSize={ADD_TARGET_PX}
                                 disabled={!canAdd}
                                 selected={addOpen}
                                 expanded={addOpen}
@@ -309,6 +320,7 @@ function WidgetAreaWithLayout(props: WidgetAreaProps & Readonly<{ port: WidgetAr
                     </View>
                 ) : null}
             />}
+            {props.display === 'add' ? null : props.notice}
             {props.display === 'add' ? null : state.status === 'loading' && props.dashboard?.holdsEmptyLineWhileLoading ? (
                 <View testID={`${props.testID}.loading`} style={styles.dashboardLoading}>
                     <SkeletonRows rows={1} lines={1} rowHeight={EMPTY_LINE_PX}
@@ -327,7 +339,10 @@ function WidgetAreaWithLayout(props: WidgetAreaProps & Readonly<{ port: WidgetAr
             ) : state.status === 'unavailable' ? (
                 readFailureNotice
             ) : ready && ready.placements.length === 0 && props.dashboard ? (
-                <Text testID={`${props.testID}.empty`} style={styles.dashboardEmpty}>{props.dashboard.emptyTitle}</Text>
+                props.dashboard.emptyTitle
+                    ? <Text testID={`${props.testID}.empty`} style={styles.dashboardEmpty}>{props.dashboard.emptyTitle}</Text>
+                    : null
+
             ) : ready && ready.placements.length === 0 ? (
                 <SurfaceStateCard
                     testID={`${props.testID}.empty`}
@@ -365,7 +380,6 @@ function WidgetAreaWithLayout(props: WidgetAreaProps & Readonly<{ port: WidgetAr
                         accessibilityLabel={t('widgetAdd.areaAdd', { surface: props.surfaceName })}
                         disabled={!canAdd}
                         expanded={addOpen}
-                        minHeight={ADD_TARGET_PX}
                         onPress={() => setAddOpen((open) => !open)}
                     />
                 </View>
@@ -454,10 +468,11 @@ function WidgetAreaPlacements(props: PlacementsProps): React.ReactElement {
     const items = React.useMemo(() => projectWidgetAreaItems(props.items, props.placements), [props.items, props.placements]);
     const widgets = React.useMemo(() => flattenWidgetLayoutWidgetsV1(items), [items]);
     const instances = React.useMemo(() => widgets.map(entry => entry.instance), [widgets]);
+    const localize = usePluginLocalizedTextResolver({ projection: runtime.pluginUiProjection });
     const installed = React.useMemo(() => instances.flatMap(instance => {
-        const candidate = readWidgetDescriptor(runtime.pluginUiProjection, instance.definition);
+        const candidate = readWidgetDescriptor(runtime.pluginUiProjection, instance.definition, instance.displayName ? undefined : localize);
         return candidate ? [candidate] : [];
-    }), [instances, runtime.pluginUiProjection]);
+    }), [instances, runtime.pluginUiProjection, localize]);
     const descriptors = useWidgetInstanceDescriptors(props.surface, instances, installed);
     const byId = React.useMemo(() => new Map(widgets.map((entry, index): [string, AreaWidget] => [entry.instance.id, {
         placement: { instance: entry.instance, ...(entry.size ? { size: entry.size } : {}), ...(entry.frameStyle ? { frameStyle: entry.frameStyle } : {}), ...(entry.area ? { area: entry.area } : {}) },
@@ -477,7 +492,7 @@ function WidgetAreaPlacements(props: PlacementsProps): React.ReactElement {
     }), [items, byId, columnOf]);
     const childTitle = React.useCallback((instanceId: string) => {
         const entry = byId.get(instanceId);
-        return entry?.placement.instance.displayName ?? entry?.descriptor?.title ?? instanceId;
+        return resolveWidgetInstanceTitle(entry?.placement.instance, entry?.descriptor);
     }, [byId]);
     const renderWidget = (instanceId: string, index: number, count: number, column: (typeof columns)[number], parent?: WidgetAreaGroupChild) => {
         const entry = byId.get(instanceId)!;
@@ -743,7 +758,7 @@ const WidgetAreaItem = React.memo(function WidgetAreaItem(props: PlacementsProps
     const bindingLabel = followsPage ? null : followedLabel;
     // Nor do those pages call their own built-ins "Built in": the source slot is for a plugin's name.
     // A plugin whose name is also the widget's title is not said twice ("qaf1 footprints  qaf1 footprints").
-    const shownTitle = (instance.displayName ?? candidate?.title)?.trim().toLocaleLowerCase();
+    const shownTitle = resolveWidgetInstanceTitle(instance, candidate).trim().toLocaleLowerCase();
     const sourceName = namesOwnScope && instance.definition.kind === 'builtin' ? undefined
         : candidate?.pluginName && candidate.pluginName.trim().toLocaleLowerCase() === shownTitle ? undefined : candidate?.pluginName;
     const followed = readWidgetGroupFollowedValue(instance, groupContext, groupLabels);
@@ -767,8 +782,10 @@ const WidgetAreaItem = React.memo(function WidgetAreaItem(props: PlacementsProps
         instance, candidate, scope: surface, context: itemContext, audience: props.isShared ? 'shared' : 'personal',
         ...(props.canEdit ? { setInputs: saveInputs } : {}), testID,
     });
-    const definition = useWidgetDefinitionFlows({ instance, scope: surface, providedContext: widgetProvidedContext(itemContext), anchorRef: edit.anchorRef, editInputs: edit.editInputs, testID });
-    const title = instance.displayName ?? candidate?.title ?? t('sessionBoard.item.pluginUnavailable.title');
+    const definition = useWidgetDefinitionFlows({ instance, scope: surface,
+        admittedViewer: props.admittedViewer ?? undefined, isCurrent: props.isCurrent,
+        providedContext: widgetProvidedContext(itemContext), anchorRef: edit.anchorRef, editInputs: edit.editInputs, testID });
+    const title = resolveWidgetInstanceTitle(instance, candidate);
     useCurrentUiContextLocalCommands(props.current && focused && collapsible && !switchedOff ? [{
         key: `${stableJsonStringify(surface)}:${instance.id}:disclosure`,
         title: `${t(collapsed ? 'projects.widgets.expand' : 'projects.widgets.collapse')}: ${title}`,
@@ -897,6 +914,7 @@ const WidgetAreaItem = React.memo(function WidgetAreaItem(props: PlacementsProps
                 instance={instance}
                 descriptor={candidate}
                 providedContext={providedContext}
+                projectContext={context.projectContext}
                 groupBindings={groupContext}
                 recordRevision={stableJsonStringify(instance)}
                 presentation="content"
@@ -910,7 +928,7 @@ const WidgetAreaItem = React.memo(function WidgetAreaItem(props: PlacementsProps
             </WidgetFrameBodyCaptionContext.Provider>
             </View>
         ) : <View testID={`${testID}.deferred`} style={{ minHeight: bodyHeight }} />,
-    }), [active, bodyHeight, candidate, edit.onRepairInputs, instance, onBodyLayout, providedContext, groupContext, runtime, surface, testID, size, props.admittedViewer, props.isCurrent, props.isReadPending]);
+    }), [active, bodyHeight, candidate, edit.onRepairInputs, instance, onBodyLayout, providedContext, context.projectContext, groupContext, runtime, surface, testID, size, props.admittedViewer, props.isCurrent, props.isReadPending]);
 
     if (switchedOff) return null;
     return (
@@ -1018,7 +1036,7 @@ function WidgetAreaAddPopover(props: Readonly<{
 
 const styles = StyleSheet.create((theme) => ({
     area: { gap: theme.space.s8 },
-    header: { flexDirection: 'row', alignItems: 'center', gap: theme.space.s8, minHeight: ADD_TARGET_PX },
+    header: { flexDirection: 'row', alignItems: 'center', gap: theme.space.s8, minHeight: HEADER_MIN_HEIGHT_PX },
     title: { ...Typography.default('semiBold'), ...happierPageTextMetrics('sectionTitle'), color: theme.colors.text.primary, flexShrink: 0 },
     // The section's title keeps its room; the quiet meta beside it is what gives way.
     meta: { ...Typography.default(), ...happierPageTextMetrics('meta'), color: theme.colors.text.tertiary, flexShrink: 1, minWidth: 0 },
@@ -1027,7 +1045,7 @@ const styles = StyleSheet.create((theme) => ({
     // Below the layout tabs' rule the line keeps a section header's breath, as a description under a title does.
     dashboardEmpty: { ...Typography.default(), ...happierPageTextMetrics('sectionDescription'), color: theme.colors.text.secondary, paddingTop: HAPPIER_PAGE_METRICS.sectionHeaderGapPx },
     dashboardLoading: { gap: theme.space.s8, paddingTop: HAPPIER_PAGE_METRICS.sectionHeaderGapPx },
-    addLineSpace: { height: ADD_TARGET_PX },
+    addLineSpace: { height: ADD_LINE_PX },
     // The frame fills its grid cell, so cards in one row share a height.
     cell: { flexGrow: 1 },
 }));

@@ -75,7 +75,6 @@ describe('cleanupAndShutdown', () => {
             const { configureLanguageServerHost, getLanguageServerHost, disposeLanguageServerHost } = await import('@/lsp/languageServerHost');
             const { createResolvedContributionRegistry } = await import('@/plugins/projection/registry/createResolvedContributionRegistry');
             const { createStablePluginExecService } = await import('@/plugins/runtime/invocation/services/exec');
-            const { DEFAULT_JSON_RPC_MAX_FRAME_BYTES } = await import('@/plugins/runtime/exec/jsonRpc');
             const { readSupervisedPluginProcessIdForHost } = await import('@/plugins/runtime/exec/processSupervisor');
             const { isPidAlive } = await import('@/testkit/process/spawn');
             const log = join(homeDir, 'messages.jsonl');
@@ -90,14 +89,14 @@ describe('cleanupAndShutdown', () => {
             const handles: PluginProtocolClientHandle<'jsonRpc'>[] = [];
             configureLanguageServerHost({ readCurrentContributionRegistry: () => registry, async openProtocol(input) {
                 // The real stdio child is the OS boundary; host lifecycle, codec and supervision remain real.
-                const service = createStablePluginExecService({ allowedExecutables: [input.definition.executable],
+                const service = createStablePluginExecService({
                     processOwner: input.processOwner, signal: input.signal, isOccurrenceCurrent: () => !input.signal.aborted,
                     resolveExecutable: async () => ({ command: process.execPath,
                         args: [resolve('src/lsp/__fixtures__/languageServer.cjs'), log, JSON.stringify({ delayHover: true })] }),
                     resolvePath: async () => homeDir,
                 });
                 const handle = await service.clients.spawn({ kind: 'jsonRpc', framing: 'contentLength',
-                    maxFrameBytes: DEFAULT_JSON_RPC_MAX_FRAME_BYTES, cancellationMethod: '$/cancelRequest',
+                    cancellationMethod: '$/cancelRequest',
                     launch: { executable: input.definition.executable, cwd: homeDir } });
                 handles.push(handle);
                 return handle;

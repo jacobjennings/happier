@@ -158,18 +158,17 @@ export function prepareMachineDataKeyEnvelopesDetachedForScope(
     );
 }
 
-type MachineRecipientPreparationInput = Pick<Machine, 'id' | 'dataEncryptionKey' | 'keyBasis' | 'metadataVersion'
-    | 'access' | 'storageMode' | 'revokedAt' | 'replacedByMachineId'> & Readonly<{ daemonStateVersion?: number }>;
+type MachineRecipientPreparationInput = Pick<Machine, 'id' | 'dataEncryptionKey' | 'keyBasis'
+    | 'access' | 'storageMode' | 'revokedAt' | 'replacedByMachineId'>
+    & Pick<FetchedMachineRow, 'recipientWorkPending' | 'recipientWorkCursor'>;
 
 function recipientPreparationInputs(machine: MachineRecipientPreparationInput, recipientChangeCursor: number | undefined) {
-    return { dataEncryptionKey: machine.dataEncryptionKey, keyBasis: machine.keyBasis,
-        // Warm projections can retain older decrypted display versions. Recipient
-        // preparation follows the published authority, not that hydration progress.
-        metadataVersion: machine.keyBasis?.metadataVersion ?? machine.metadataVersion,
-        daemonStateVersion: machine.keyBasis?.daemonStateVersion ?? machine.daemonStateVersion,
+    return { callerDataEncryptionKey: machine.dataEncryptionKey,
+        ownerDataEncryptionKey: machine.keyBasis?.dataEncryptionKey ?? machine.dataEncryptionKey,
         custodianAccountId: machine.access?.custodian.accountId, role: machine.access?.role,
         accessState: machine.access?.accessState, resourceMode: machine.access?.resourceMode,
         storageMode: machine.storageMode, revokedAt: machine.revokedAt,
+        recipientWorkPending: machine.recipientWorkPending,
         recipientChangeCursor: recipientChangeCursor ?? null };
 }
 
@@ -179,7 +178,7 @@ const machineRecipientPreparations = new Map<string, Readonly<{
     result: Promise<void>;
 }> & { invalidated: boolean; unprepared: boolean }>();
 
-/** Refresh admission is keyed by content/key/access inputs and canonical Machine change cursors,
+/** Refresh admission is keyed by owner-envelope/access/mode inputs and recipient-access change cursors,
  * not presence or row sequence. Only successful preparation is retained across reads; failed/pending
  * work remains retryable by the next admitted census (a recipient's missing Account binding can be
  * repaired without a Machine edit). Display/hydration publication is not new recipient demand.
@@ -203,8 +202,14 @@ export async function prepareMachineDataKeyEnvelopesForMachines(params: Readonly
             if (previous) previous.invalidated = true;
             return;
         }
-        const inputs = recipientPreparationInputs(machine, params.recipientChangeCursors.get(machine.id));
+        const publishedRow = publishedRows.get(machine.id);
+        const pending = publishedRow?.recipientWorkPending ?? machine.recipientWorkPending;
+        const rowCursor = publishedRow?.recipientWorkCursor ?? machine.recipientWorkCursor;
+        const changeCursor = params.recipientChangeCursors.get(machine.id);
+        const cursor = rowCursor === undefined ? changeCursor : changeCursor === undefined ? rowCursor : Math.max(rowCursor, changeCursor);
+        const inputs = recipientPreparationInputs({ ...machine, recipientWorkPending: pending }, cursor);
         const previous = machineRecipientPreparations.get(key);
+        const recipientChanged = previous !== undefined && previous.inputs.recipientChangeCursor !== inputs.recipientChangeCursor;
         if (previous) {
             if (!previous.invalidated && sameStrictJsonValue(previous.inputs, inputs)
                 && !previous.unprepared) return previous.result;
@@ -216,7 +221,12 @@ export async function prepareMachineDataKeyEnvelopesForMachines(params: Readonly
             }
         }
         if (!params.isCurrent()) return;
-        const publishedRow = publishedRows.get(machine.id);
+        // Only an explicit server answer proves no recipient work; an absent fact runs the exact pass.
+        if (pending === false && !recipientChanged) {
+            machineRecipientPreparations.set(key, { inputs, isCurrent: params.isCurrent, result: Promise.resolve(),
+                invalidated: false, unprepared: false });
+            return;
+        }
         const initialMachineRow = publishedRow ? MachinePublishedRowV1Schema.parse({ ...publishedRow,
             daemonState: publishedRow.daemonState ?? null, daemonStateVersion: publishedRow.daemonStateVersion ?? 0 }) : undefined;
         const result: Promise<void> = prepareMachineDataKeyEnvelopesDetachedForScope({ scope: params.scope, machineId: machine.id,

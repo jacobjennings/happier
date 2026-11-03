@@ -104,29 +104,6 @@ describe('SelectionListVirtualizedSection focus parity (F4)', () => {
         expect(otherItem!.props.selected).toBe(false);
     });
 
-    it('still marks selected rows as selected when no focus is set', async () => {
-        legendListState.reset();
-        scrollToIndex.mockClear();
-        const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
-
-        const section = makeSection(60);
-        const screen = await renderScreen(
-            <SelectionListVirtualizedSection
-                section={section}
-                stepId="root"
-                rootTestID="sl"
-                selectedOptionIds={new Set(['opt-7'])}
-                focusedOptionId={null}
-                onSelect={() => {}}
-                onPushStep={() => {}}
-            />,
-        );
-
-        const selectedItem = findItemComposite(screen, 'sl:root:option:opt-7');
-        expect(selectedItem).toBeTruthy();
-        expect(selectedItem!.props.selected).toBe(true);
-    });
-
     it('calls scrollToIndex(viewPosition: 0.5) when focusedOptionId changes to a row in this section', async () => {
         legendListState.reset();
         scrollToIndex.mockClear();

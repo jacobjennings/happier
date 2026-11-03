@@ -13,17 +13,20 @@ export type FirstPartySkillV1 = ReadOnlySkillV1 & Readonly<{
   provenance: Readonly<{ kind: 'first_party' }>;
 }>;
 
+/** Shared tool-use instructions; installing a Skill is not required for discovery. */
+export const HAPPIER_ACTION_DISCOVERY_GUIDANCE_V1 = `Use the Happier tools delivered in this session, through MCP or a native extension.
+Find \`action_spec_search\`, \`action_spec_get\`, and \`action_execute\` among your
+available tools; their server prefix may vary. Search for the operation, read its
+current schema, then execute its returned Action id with \`{ actionId, input }\`.
+A missing direct tool for an Action does not mean the Action is unavailable.
+Follow the returned availability, permission, and approval requirements.`;
+
 const happierGuide = `---
 name: happier
 description: Use Happier from this session
 ---
 
-Use the Happier tools delivered in this session, through MCP or a native extension.
-Find \`action_spec_search\`, \`action_spec_get\`, and \`action_execute\` among your
-available tools; their server prefix may vary. Search for the operation, read its
-current schema, then execute its returned Action id with \`{ actionId, input }\`.
-A missing direct tool for an Action does not mean the Action is unavailable.
-Follow the returned availability, permission, and approval requirements.
+${HAPPIER_ACTION_DISCOVERY_GUIDANCE_V1}
 
 For standalone CLI operations, first check that \`happier\` is on PATH and
 authenticated to the intended Happier Home. Read \`happier --help\`, then

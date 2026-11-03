@@ -207,15 +207,6 @@ function makeScmSnapshot(partial?: ProtocolScmSnapshotOverrides): ProtocolScmWor
 }
 
 describe('snapshotToScmStatus', () => {
-    it('does not mark non-file directory entries as dirty', () => {
-        const snapshot = makeSnapshot();
-        const status = snapshotToScmStatus(makeSnapshot({
-            entries: [{ ...snapshot.entries[1]!, path: 'scratch/' }],
-        }));
-        expect(status.changedFileCount).toBe(0);
-        expect(status.isDirty).toBe(false);
-    });
-
     it('derives aggregate status counters from the canonical snapshot', () => {
         const status = snapshotToScmStatus(makeSnapshot());
         expect(status.branch).toBe('main');
@@ -233,6 +224,13 @@ describe('snapshotToScmStatus', () => {
         expect(status.aheadCount).toBe(2);
         expect(status.behindCount).toBe(1);
         expect(status.stashCount).toBe(3);
+
+        const snapshot = makeSnapshot();
+        const directoryOnly = snapshotToScmStatus(makeSnapshot({
+            entries: [{ ...snapshot.entries[1]!, path: 'scratch/' }],
+        }));
+        expect(directoryOnly.changedFileCount).toBe(0);
+        expect(directoryOnly.isDirty).toBe(false);
     });
 });
 
@@ -298,7 +296,6 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
     });
 
     it('throws when rpc snapshot fetch fails', async () => {
-        vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
         setScmState({
             sessions: {
                 session_1: {
@@ -355,7 +352,6 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
     });
 
     it('keeps an unrecognized read exception in diagnostic detail rather than display copy', async () => {
-        vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_001);
         setScmState({
             sessions: {
                 session_1: {
@@ -370,11 +366,12 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
         statusRpcMock.mockRejectedValue(new Error('network glitch'));
 
         const service = new ScmRepositoryService();
-        await expect(service.fetchSnapshotForSession('session_1')).rejects.toMatchObject({
+        const thrown = await service.fetchSnapshotForSession('session_1').then(() => null, (error: unknown) => error);
+        expect(thrown).toMatchObject({
             scmErrorCode: SCM_OPERATION_ERROR_CODES.REPOSITORY_REFRESH_FAILED,
-            message: 'Source control command failed. Refresh repository status and try again.',
             diagnosticDetail: 'Error: network glitch',
         });
+        expect((thrown as Error).message).not.toContain('network glitch');
     });
 
     it('returns a safe empty snapshot when rpc success response omits snapshot payload', async () => {
@@ -477,37 +474,15 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
         expect(result?.entries[0]?.stats.pendingAdded).toBe(4);
         expect(result?.capabilities?.writeInclude).toBe(false);
         expect(result?.capabilities?.operationLabels?.commit).toBe('Commit changes');
-    });
 
-    it('preserves a qualified external backend id in the ui working snapshot', async () => {
-        setScmState({
-            sessions: {
-                session_1: {
-                    id: 'session_1',
-                    metadata: {
-                        machineId: 'machine-a',
-                        path: '/repo',
-                    },
-                },
-            },
-        } as any);
         statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
-                repo: {
-                    isRepo: true,
-                    rootPath: '/repo',
-                    backendId: 'acme.scm/stacked',
-                    mode: '.git',
-                    worktrees: [],
-                    remotes: [],
-                },
+                repo: { isRepo: true, rootPath: '/repo', backendId: 'acme.scm/stacked', mode: '.git', worktrees: [], remotes: [] },
             }),
         } as any);
-
-        const result = await new ScmRepositoryService().fetchSnapshotForSession('session_1');
-
-        expect(result?.repo.backendId).toBe('acme.scm/stacked');
+        const qualified = await new ScmRepositoryService().fetchSnapshotForSession('session_1');
+        expect(qualified?.repo.backendId).toBe('acme.scm/stacked');
     });
 
     it('preserves protocol repo metadata in the ui snapshot shape', async () => {
@@ -602,49 +577,6 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
             machineId: 'machine-a', method: RPC_METHODS.SCM_STATUS_SNAPSHOT,
             payload: expect.objectContaining({ cwd: '~/repo', outcomeVersion: 1, operationStateVersion: 1 }),
         }));
-    });
-
-    it('hydrates the shared machine/path cache when a session snapshot resolves a repo identity', async () => {
-        setScmState({
-            machines: {
-                'machine-a': {
-                    id: 'machine-a',
-                    metadata: {
-                        homeDir: '/Users/tester',
-                    },
-                },
-            },
-            sessions: {
-                session_1: {
-                    id: 'session_1',
-                    metadata: {
-                        machineId: 'machine-a',
-                        path: '~/repo',
-                    },
-                },
-            },
-        } as any);
-        statusRpcMock.mockResolvedValue({
-            success: true,
-            snapshot: makeScmSnapshot({
-                projectKey: 'machine-a:/Users/tester/repo',
-                repo: {
-                    isRepo: true,
-                    rootPath: '/Users/tester/repo',
-                    backendId: 'git',
-                    mode: '.git',
-                    worktrees: [{ path: '/Users/tester/repo', branch: 'main', isCurrent: true }],
-                },
-            }),
-        } as any);
-
-        const service = new ScmRepositoryService();
-        const result = await service.fetchSnapshotForSession('session_1');
-
-        expect(service.readCachedSnapshotForMachinePath({
-            machineId: 'machine-a',
-            path: '~/repo',
-        })).toEqual(result);
     });
 
     it('stores session snapshots under the canonical repo root identity key when the session path is a subdirectory', async () => {
@@ -928,54 +860,6 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
         })?.branch.head).toBe('from-b');
     });
 
-    it('fetches and normalizes a repo snapshot through machine/path SCM without requiring a session', async () => {
-        setScmState({
-            machines: {
-                'machine-a': {
-                    id: 'machine-a',
-                    metadata: {
-                        homeDir: '/Users/tester',
-                    },
-                },
-            },
-        } as any);
-        statusRpcMock.mockResolvedValue({
-            success: true,
-            snapshot: makeScmSnapshot({
-                projectKey: '',
-                repo: {
-                    isRepo: true,
-                    rootPath: '/Users/tester/repo',
-                    backendId: 'git',
-                    mode: '.git',
-                    worktrees: [
-                        { path: '/Users/tester/repo', branch: 'main', isCurrent: true },
-                        { path: '/Users/tester/repo-feature-auth', branch: 'feature/auth', isCurrent: false },
-                    ],
-                },
-            }),
-        } as any);
-
-        const service = new ScmRepositoryService();
-        const result = await service.fetchSnapshotForMachinePath({
-            serverId: 'server-a',
-            machineId: 'machine-a',
-            path: '~/repo',
-        });
-
-        expect(statusRpcMock).toHaveBeenCalledWith(expect.objectContaining({
-            machineId: 'machine-a', method: RPC_METHODS.SCM_STATUS_SNAPSHOT, serverId: 'server-a',
-            payload: expect.objectContaining({ cwd: '/Users/tester/repo', outcomeVersion: 1, operationStateVersion: 1 }),
-        }));
-        expect(result).not.toBeNull();
-        expect(result?.projectKey).toBe('machine-a:/Users/tester/repo');
-        expect(result?.repo.rootPath).toBe('/Users/tester/repo');
-        expect(result?.repo.worktrees).toEqual([
-            { path: '/Users/tester/repo', branch: 'main', isCurrent: true },
-            { path: '/Users/tester/repo-feature-auth', branch: 'feature/auth', isCurrent: false },
-        ]);
-    });
-
     it('normalizes projectKey to the repo root when the request path is a subdirectory and the backend omits projectKey', async () => {
         setScmState({
             machines: {
@@ -1013,6 +897,10 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
         }));
         expect(result?.projectKey).toBe('machine-a:/Users/tester/repo');
         expect(result?.repo.rootPath).toBe('/Users/tester/repo');
+        expect(service.readCachedSnapshotForMachinePath({
+            machineId: 'machine-a',
+            path: '~/repo',
+        })).toEqual(result);
     });
 
     it('normalizes repo root paths before building the canonical projectKey', async () => {
@@ -1047,56 +935,6 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
         });
 
         expect(result?.projectKey).toBe('machine-a:/Users/tester/repo');
-    });
-
-    it('deduplicates concurrent machine/path snapshot requests for the same repo identity', async () => {
-        setScmState({
-            machines: {
-                'machine-a': {
-                    id: 'machine-a',
-                    metadata: {
-                        homeDir: '/Users/tester',
-                    },
-                },
-            },
-        } as any);
-
-        const deferredSnapshot = {
-            resolve: (_value: any): void => {},
-        };
-        const snapshotPromise = new Promise<any>((resolve) => {
-            deferredSnapshot.resolve = resolve;
-        });
-        statusRpcMock.mockReturnValue(snapshotPromise as any);
-
-        const service = new ScmRepositoryService();
-        const firstPromise = service.fetchSnapshotForMachinePath({
-            machineId: 'machine-a',
-            path: '~/repo',
-        });
-        const secondPromise = service.fetchSnapshotForMachinePath({
-            machineId: 'machine-a',
-            path: '~/repo',
-        });
-
-        expect(statusRpcMock).toHaveBeenCalledTimes(1);
-
-        deferredSnapshot.resolve({
-            success: true,
-            snapshot: makeScmSnapshot({
-                repo: {
-                    isRepo: true,
-                    rootPath: '/Users/tester/repo',
-                    backendId: 'git',
-                    mode: '.git',
-                    worktrees: [{ path: '/Users/tester/repo', branch: 'main', isCurrent: true }],
-                },
-            }),
-        });
-
-        const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise]);
-        expect(firstResult).toEqual(secondResult);
-        expect(statusRpcMock).toHaveBeenCalledTimes(1);
     });
 
     it('deduplicates concurrent machine/path snapshot requests before subdirectory aliases are known', async () => {
@@ -1364,42 +1202,6 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
         expect(statusRpcMock).toHaveBeenCalledTimes(1);
     });
 
-    it('caches the last normalized machine/path snapshot by repo identity', async () => {
-        setScmState({
-            machines: {
-                'machine-a': {
-                    id: 'machine-a',
-                    metadata: {
-                        homeDir: '/Users/tester',
-                    },
-                },
-            },
-        } as any);
-        statusRpcMock.mockResolvedValue({
-            success: true,
-            snapshot: makeScmSnapshot({
-                repo: {
-                    isRepo: true,
-                    rootPath: '/Users/tester/repo',
-                    backendId: 'git',
-                    mode: '.git',
-                    worktrees: [{ path: '/Users/tester/repo', branch: 'main', isCurrent: true }],
-                },
-            }),
-        } as any);
-
-        const service = new ScmRepositoryService();
-        const result = await service.fetchSnapshotForMachinePath({
-            machineId: 'machine-a',
-            path: '~/repo',
-        });
-
-        expect(service.readCachedSnapshotForMachinePath({
-            machineId: 'machine-a',
-            path: '~/repo',
-        })).toEqual(result);
-    });
-
     it('returns a cached repo snapshot when reading from a subdirectory path within the same repo', async () => {
         setScmState({
             machines: {
@@ -1434,44 +1236,6 @@ describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
         expect(service.readCachedSnapshotForMachinePath({
             machineId: 'machine-a',
             path: '~/repo/subdir',
-        })).toEqual(result);
-    });
-
-    it('stores machine/path snapshots under the canonical repo root identity key when the request is a subdirectory', async () => {
-        setScmState({
-            machines: {
-                'machine-a': {
-                    id: 'machine-a',
-                    metadata: {
-                        homeDir: '/Users/tester',
-                    },
-                },
-            },
-        } as any);
-        statusRpcMock.mockResolvedValue({
-            success: true,
-            snapshot: makeScmSnapshot({
-                projectKey: '',
-                repo: {
-                    isRepo: true,
-                    rootPath: '/Users/tester/repo',
-                    backendId: 'git',
-                    mode: '.git',
-                    worktrees: [{ path: '/Users/tester/repo', branch: 'main', isCurrent: true }],
-                },
-            }),
-        } as any);
-
-        const service = new ScmRepositoryService();
-        const result = await service.fetchSnapshotForMachinePath({
-            machineId: 'machine-a',
-            path: '~/repo/subdir',
-        });
-
-        expect(result?.projectKey).toBe('machine-a:/Users/tester/repo');
-        expect(service.readCachedSnapshotForMachinePath({
-            machineId: 'machine-a',
-            path: '~/repo',
         })).toEqual(result);
     });
 

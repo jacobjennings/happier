@@ -6,6 +6,7 @@ import test from 'node:test';
 import YAML from 'yaml';
 
 import { requiredWorkspaceSyncRealBinaryEnvironment } from '../../apps/cli/scripts/runWorkspaceSyncRealIntegration.mjs';
+import { withoutV03GateSkip } from './testsWorkflowTestkit.mjs';
 
 const repoRoot = new URL('../..', import.meta.url).pathname;
 
@@ -39,7 +40,7 @@ test('the real workspace-sync lane invokes the canonical runner exactly once', (
 
   const invocations = job.steps.filter((step) => String(step.run ?? '').includes('test:workspace-sync:real'));
   assert.equal(invocations.length, 1, 'exactly one step may invoke the canonical real workspace-sync runner');
-  assert.equal(invocations[0].run.trim(), 'pnpm test:workspace-sync:real');
+  assert.equal(invocations[0].run.trim(), 'pnpm run test:workspace-sync:real');
 
   assert.equal(
     job.steps.some((step) => String(step.uses ?? '').startsWith('actions/upload-artifact@')),
@@ -48,7 +49,7 @@ test('the real workspace-sync lane invokes the canonical runner exactly once', (
   );
 
   const rootScripts = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).scripts;
-  assert.equal(rootScripts['test:workspace-sync:real'], 'pnpm workspace @happier-dev/cli test:workspace-sync:real');
+  assert.equal(rootScripts['test:workspace-sync:real'], 'pnpm --filter @happier-dev/cli run test:workspace-sync:real');
   const cliScripts = JSON.parse(readFileSync(join(repoRoot, 'apps/cli/package.json'), 'utf8')).scripts;
   assert.match(cliScripts['test:workspace-sync:real'], /hstack-exec .*--script=test:workspace-sync:real:local/u);
   assert.match(cliScripts['test:workspace-sync:real:local'], /runWorkspaceSyncRealIntegration\.mjs/u);
@@ -63,7 +64,7 @@ test('the required lane also proves the production signed release-acquisition pa
   // gate does so the two required owners cannot drift into two commands.
   assert.equal(
     acquisition.run.trim(),
-    'set -euo pipefail\npnpm workspace @happier-dev/cli-common test:mutagen-engine:live',
+    'set -euo pipefail\npnpm --filter @happier-dev/cli-common run test:mutagen-engine:live',
   );
   assert.equal(acquisition.env.HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION, '1');
   // Public verification only: the automatic workflow token plus the built-in Happier
@@ -86,7 +87,7 @@ test('the required lane also proves the production signed release-acquisition pa
     job.steps.some((step) => String(step.run ?? '').includes('cmd/mutagen-sidecar')),
     'the released artifact check must not displace the source-built broker/carrier integration',
   );
-  assert.ok(job.steps.some((step) => String(step.run ?? '').trim() === 'pnpm test:workspace-sync:real'));
+  assert.ok(job.steps.some((step) => String(step.run ?? '').trim() === 'pnpm run test:workspace-sync:real'));
   assert.doesNotMatch(acquisition.run, /go build|gh release download/u);
 
   // Ordinary unit lanes stay offline: the live test is inert unless explicitly opted in.
@@ -123,22 +124,6 @@ test('the required lane also proves the production signed release-acquisition pa
   assert.match(liveLauncher, /process\.kill\(process\.pid, signal\)/u);
 });
 
-test('one independent drift lane checks the generated public Action contract for all schema inputs', () => {
-  const workflow = loadWorkflow('tests.yml');
-  const job = workflow.jobs['action-map-drift'];
-  assert.ok(job);
-  const actionContract = stepNamed(job, 'Check generated public Action contract');
-  const invocations = Object.values(workflow.jobs).flatMap(candidate => candidate.steps ?? [])
-    .filter(step => /check:action-type-map|generated:finite/u.test(String(step.run ?? '')));
-  assert.deepEqual(invocations, [actionContract], 'one CI owner checks drift outside prerequisite builds');
-  assert.equal(actionContract.run.trim(), 'pnpm turbo run generated:finite --filter=@happier-dev/plugin-sdk');
-  assert.equal(actionContract.if, "inputs.select_jobs_explicitly || steps.changes.outputs.action_dtos == 'true'");
-  const filters = YAML.parse(stepNamed(job, 'Detect Action declaration inputs and outputs').with.filters).action_dtos;
-  for (const path of ['packages/**/src/**', 'packages/plugin-sdk/scripts/**', 'packages/plugin-sdk/package.json',
-    'scripts/workspaces/**', 'apps/stack/scripts/utils/proc/**', 'turbo.json', 'package.json', 'pnpm-lock.yaml']) {
-    assert.ok(filters.includes(path), `${path} must select Action DTO drift verification`);
-  }
-});
 
 test('the real workspace-sync lane supplies every executable input the canonical runner requires', () => {
   const job = workspaceSyncRealJob();
@@ -224,28 +209,11 @@ test('the real workspace-sync lane supplies every executable input the canonical
   assert.match(policy.run, /go_distribution_sha256/u);
 });
 
-test('only the real workspace-sync lane builds the Mutagen fork from source', () => {
-  const tests = loadWorkflow('tests.yml');
-  const builders = Object.entries(tests.jobs).filter(([, job]) =>
-    (job.steps ?? []).some((step) => String(step.run ?? '').includes('cmd/mutagen-sidecar')),
-  );
-  assert.deepEqual(builders.map(([id]) => id), ['workspace-sync-real'], 'a second Mutagen builder must not exist');
-});
 
-test('workspace-sync performance is an explicit manual/release mode on the existing real lane', () => {
-  const tests = loadWorkflow('tests.yml');
-  const job = workspaceSyncRealJob();
-  assert.equal(tests.on.workflow_call.inputs.run_workspace_sync_performance.default, false);
-  assert.match(job.if, /inputs\.run_workspace_sync_performance/u);
-  assert.equal(job.outputs.command_executed, `\${{ ${GATED_ON_SELECTION} }}`);
-  const run = stepNamed(job, 'Run real workspace sync over Mutagen and Iroh');
-  assert.equal(run.env.HAPPIER_RUN_WORKSPACE_SYNC_PERFORMANCE, "${{ inputs.run_workspace_sync_performance && '1' || '0' }}");
-  assert.equal(run.env.HAPPIER_WORKSPACE_SYNC_PERFORMANCE_FILE_BYTES, '1073741824');
-});
 
 test('the real workspace-sync lane selects itself from Lane 08 change surfaces', () => {
   const job = workspaceSyncRealJob();
-  assert.equal(job.if, '${{ !inputs.select_jobs_explicitly || inputs.run_workspace_sync_real || inputs.run_workspace_sync_performance }}');
+  assert.equal(withoutV03GateSkip(job.if), '${{ !inputs.select_jobs_explicitly || inputs.run_workspace_sync_real || inputs.run_workspace_sync_performance }}');
 
   const changes = stepNamed(job, 'Detect workspace sync-relevant changes');
   assert.equal(changes.id, 'changes');
@@ -319,7 +287,6 @@ test('the real workspace-sync lane selects itself from Lane 08 change surfaces',
     'apps/cli/src/settings/accountSettings/activeAccountSettingsSnapshot.ts',
     'apps/cli/src/settings/accountSettings/refreshAccountSettingsForMinimumVersion.ts',
     'apps/cli/src/settings/accountSettings/updateAccountSettingsV2WithRetry.ts',
-    'apps/cli/src/settings/accountSettings/workspaceRefsV1.ts',
     // Finite bootstrap deliberately stays on the native Machine transfer
     // owner; changes there must re-run the composed seed corridor.
     'apps/cli/src/machines/transfer/**',
@@ -434,38 +401,4 @@ test('the real workspace-sync lane selects itself from Lane 08 change surfaces',
     }
     assert.equal(step.if, GATED_ON_SELECTION, `step "${step.name}" must obey the workspace-sync change selection`);
   }
-});
-
-test('manual dispatch can select the real workspace-sync lane by name', () => {
-  const dispatch = loadWorkflow('tests-dispatch.yml');
-  assert.match(dispatch.on.workflow_dispatch.inputs.custom_checks.description, /workspace_sync_real/u);
-  assert.equal(
-    dispatch.jobs.resolve.outputs.run_workspace_sync_real,
-    '${{ steps.flags.outputs.run_workspace_sync_real }}',
-  );
-  assert.equal(
-    dispatch.jobs.tests.with.run_workspace_sync_real,
-    "${{ needs.resolve.outputs.run_workspace_sync_real == 'true' || inputs.workspace_sync_performance }}",
-  );
-  assert.equal(dispatch.jobs.tests.with.run_workspace_sync_performance, '${{ inputs.workspace_sync_performance }}');
-
-  const resolveStep = dispatch.jobs.resolve.steps.find((step) => step.id === 'flags');
-  assert.equal(
-    resolveStep?.run,
-    'node scripts/pipeline/checks/resolve-checks-plan.mjs --target hosted',
-    'manual dispatch must use the canonical hosted checks resolver',
-  );
-  assert.doesNotMatch(readWorkflowText('tests-dispatch.yml'), /wsrepl_lima/u, 'the retired WSREPL selection must not survive as a second owner');
-});
-
-test('ci_summary delegates every selector to the generic fail-closed collector', () => {
-  const tests = loadWorkflow('tests.yml');
-  const summary = tests.jobs.ci_summary;
-  assert.ok(summary.needs.includes('workspace-sync-real'), 'ci_summary must depend on the real workspace-sync lane');
-
-  const collector = summary.steps.find((step) => step.name === 'Collect every lane conclusion');
-  assert.equal(collector.env.CI_INPUTS_JSON, '${{ toJSON(inputs) }}');
-  assert.match(collector.run, /jobsForSelectedInputs/u);
-  assert.match(collector.run, /collectCiSummary/u);
-  assert.doesNotMatch(collector.run, /workspace-sync-real/u, 'the summary must not special-case one selector');
 });

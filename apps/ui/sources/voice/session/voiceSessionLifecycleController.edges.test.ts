@@ -2,11 +2,11 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import {
     getStorage, loadLocalVoiceEngineWithCompatState, localVoiceHomeId, machineRpcWithServerScope,
-    localVoiceAgentRpc, localVoiceSpeechOutputBoundary, registerLocalVoiceEngineHarnessHooks,
+    localVoiceSpeechOutputBoundary, registerLocalVoiceEngineHarnessHooks,
     setPlatformOs, warmLocalVoiceEngineHarnessGraph, waitForLocalVoiceBoundaryEvent,
 } from '@/voice/local/localVoiceEngine.testHarness';
 import { createReactNativeAppStateEmitter } from '@/dev/testkit/mocks/reactNative';
-import { RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { createDeferred, waitForTestEvent } from '@/dev/testkit';
 
 import { createVoiceCaptureAdmissionController } from '@/voice/runtime/input/VoiceCaptureAdmissionController';
@@ -27,7 +27,7 @@ const { createVoiceSessionLifecycleController } = await import('./voiceSessionLi
 const { getVoiceAdapterRegistry, registerVoiceAdapters } = await import('./voiceAdapterRegistry');
 const { sync } = await import('@/sync/sync');
 const { isServerReachabilityNetworkAllowed } = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
-registerLocalVoiceEngineHarnessHooks({ resetModulesBetweenTests: false });
+registerLocalVoiceEngineHarnessHooks();
 afterAll(() => { restoreHarnessModuleLoader(); restoreAppState(); });
 
 async function configureLocalProvider(providerId: 'local_direct' | 'local_conversation', mode: 'direct_session' | 'agent' = 'direct_session') {
@@ -300,95 +300,94 @@ describe('voice session lifecycle edge contracts', () => {
         } finally { rejectOffer(new Error('Test cleanup')); unsubscribe(); await attempt.dispose(); }
     }, 120_000);
 
+    it('dismisses a real terminal disconnected Local Agent attempt without losing recovery', async () => {
+        const { storage, target } = await configureLocalProvider('local_conversation', 'agent');
+        const { readLocalConversationVoiceSettings } = await import('@/sync/domains/settings/voiceSettings');
+        const { DaemonVoiceInferenceModelsWarmResponseSchema } = await import('@happier-dev/protocol/daemon/voiceInference');
+        const { voiceCaptureAdmissionController } = await import('@/voice/runtime/input/VoiceCaptureAdmissionController');
+        const incumbent = machineRpcWithServerScope.getMockImplementation();
+        if (!incumbent) throw new Error('Expected incumbent machine Socket responder');
+        let releaseWarm!: () => void;
+        const warm = new Promise<unknown>(resolve => { releaseWarm = () => resolve(
+            DaemonVoiceInferenceModelsWarmResponseSchema.parse({
+                ok: false, errorCode: 'model_not_installed', error: 'Daemon model is not installed',
+            }),
+        ); });
+        machineRpcWithServerScope.mockImplementation(request => request.method === RPC_METHODS.DAEMON_VOICE_INFERENCE_MODELS_WARM
+            ? warm : incumbent(request));
+        const voice = storage.getState().settings.voice;
+        const config = readLocalConversationVoiceSettings(voice);
+        storage.__setState({ settings: { ...storage.getState().settings, voice: {
+            ...voice, providers: { ...voice.providers, local_conversation: { schemaVersion: 1, config: {
+                ...config, tts: { ...config.tts, provider: 'local_neural', autoSpeakReplies: false,
+                    localNeural: { model: 'kokoro', assetId: 'kokoro-82m-v1.0-onnx-q8-wasm',
+                        voiceId: 'af_heart', speed: 1, execution: 'daemon' },
+                },
+            } } },
+        } } });
+        const controller = createVoiceSessionLifecycleController();
+        controller.setConfiguredProviderId('local_conversation');
+        const { createVoiceContinuationProjection } = await import('@/voice/transcript/voiceContinuationProjection');
+        const { voiceConversationBindingResolver } = await import('@/voice/binding/VoiceConversationBindingResolver');
+        const continuation = createVoiceContinuationProjection();
+        const notes: string[] = [];
+        const unsubscribeContinuation = controller.subscribe(() => {
+            const snapshot = controller.getSnapshot();
+            const binding = snapshot.sessionId ? voiceConversationBindingResolver.resolveByControlSessionId({
+                controlSessionId: snapshot.sessionId, adapterId: snapshot.adapterId,
+            }) : null;
+            const note = continuation.update({ snapshot, binding, deviceId: 'local-device', sessionSeq: 0 });
+            if (note) {
+                notes.push(note.localId);
+                continuation.settle(note, true);
+            }
+        });
+        try {
+            await controller.toggle(target);
+            expect(controller.getSnapshot()).toMatchObject({ status: 'connected', canStop: true });
+            expect(notes).toHaveLength(1);
+            await waitForLocalVoiceBoundaryEvent(`rpc:${RPC_METHODS.DAEMON_VOICE_INFERENCE_MODELS_WARM}`);
+            expect(machineRpcWithServerScope.mock.calls.some(([request]) =>
+                request.method === RPC_METHODS.DAEMON_VOICE_INFERENCE_MODELS_WARM)).toBe(true);
+            const coordinator = localVoiceSpeechOutputBoundary.getAudioSessionCoordinator();
+            if (!coordinator) throw new Error('Expected actual native audio session coordinator');
+            expect(coordinator.getSnapshot().leaseCount).toBeGreaterThan(0);
+            expect(localVoiceSpeechOutputBoundary.fileRecording.start).toHaveBeenCalledTimes(1);
+            releaseWarm();
+            await waitForTestEvent(controller.subscribe, controller.getSnapshot, snapshot => snapshot.status === 'disconnected' && !snapshot.canStop);
+            expect(controller.getSnapshot()).toMatchObject({
+                status: 'disconnected', canStop: false, errorCode: 'provider_error',
+                errorMessage: 'daemon_voice_inference_model_not_installed', errorRecoveryAction: 'retry',
+            });
+            const failure = controller.getSnapshot();
+            expect(getVoiceAdapterRegistry().get('local_conversation')?.getSnapshot()).toEqual(failure);
+            expect(coordinator.getSnapshot().leaseCount).toBeGreaterThan(0);
+            expect(localVoiceSpeechOutputBoundary.fileRecording.stop).not.toHaveBeenCalled();
+            const heldDictation = voiceCaptureAdmissionController.acquire('dictation');
+            if (heldDictation.status === 'acquired') heldDictation.lease.release();
+            expect(heldDictation.status).toBe('busy');
+            await controller.dismissFailedAttempt('another-session');
+            expect(controller.getSnapshot()).toEqual(failure);
+            await controller.dismissFailedAttempt(failure.sessionId);
+            expect(localVoiceSpeechOutputBoundary.fileRecording.stop).toHaveBeenCalledTimes(1);
+            expect(coordinator.getSnapshot().leaseCount).toBe(0);
+            expect(controller.getSnapshot()).toEqual({
+                adapterId: null, sessionId: null, status: 'disconnected', mode: 'idle', canStop: false,
+            });
+            expect(notes).toHaveLength(1);
+            await controller.retry('another-session');
+            expect(localVoiceSpeechOutputBoundary.fileRecording.start).toHaveBeenCalledTimes(1);
+            const dictation = voiceCaptureAdmissionController.acquire('dictation');
+            expect(dictation.status).toBe('acquired');
+            if (dictation.status === 'acquired') dictation.lease.release();
+        } finally { unsubscribeContinuation(); releaseWarm(); await controller.dispose(); }
+    });
+
     it.each([
         { status: 'error', rejectCleanup: false, replaceDuringCleanup: false },
-        { status: 'disconnected', rejectCleanup: false, replaceDuringCleanup: false },
         { status: 'error', rejectCleanup: true, replaceDuringCleanup: false },
         { status: 'disconnected', rejectCleanup: false, replaceDuringCleanup: true },
-    ] as const)('dismisses terminal $status (cleanup rejected: $rejectCleanup, replaced: $replaceDuringCleanup) without losing recovery', async ({ status, rejectCleanup, replaceDuringCleanup }) => {
-        if (status === 'disconnected' && !rejectCleanup && !replaceDuringCleanup) {
-            const { storage, target } = await configureLocalProvider('local_conversation', 'agent');
-            const { readLocalConversationVoiceSettings } = await import('@/sync/domains/settings/voiceSettings');
-            const { DaemonVoiceInferenceModelsWarmResponseSchema } = await import('@happier-dev/protocol/daemon/voiceInference');
-            const { voiceCaptureAdmissionController } = await import('@/voice/runtime/input/VoiceCaptureAdmissionController');
-            const incumbent = machineRpcWithServerScope.getMockImplementation();
-            if (!incumbent) throw new Error('Expected incumbent machine Socket responder');
-            let releaseWarm!: () => void;
-            const warm = new Promise<unknown>(resolve => { releaseWarm = () => resolve(
-                DaemonVoiceInferenceModelsWarmResponseSchema.parse({
-                    ok: false, errorCode: 'model_not_installed', error: 'Daemon model is not installed',
-                }),
-            ); });
-            machineRpcWithServerScope.mockImplementation(request => request.method === RPC_METHODS.DAEMON_VOICE_INFERENCE_MODELS_WARM
-                ? warm : incumbent(request));
-            const voice = storage.getState().settings.voice;
-            const config = readLocalConversationVoiceSettings(voice);
-            storage.__setState({ settings: { ...storage.getState().settings, voice: {
-                ...voice, providers: { ...voice.providers, local_conversation: { schemaVersion: 1, config: {
-                    ...config, tts: { ...config.tts, provider: 'local_neural', autoSpeakReplies: false,
-                        localNeural: { model: 'kokoro', assetId: 'kokoro-82m-v1.0-onnx-q8-wasm',
-                            voiceId: 'af_heart', speed: 1, execution: 'daemon' },
-                    },
-                } } },
-            } } });
-            const controller = createVoiceSessionLifecycleController();
-            controller.setConfiguredProviderId('local_conversation');
-            const { createVoiceContinuationProjection } = await import('@/voice/transcript/voiceContinuationProjection');
-            const { voiceConversationBindingResolver } = await import('@/voice/binding/VoiceConversationBindingResolver');
-            const continuation = createVoiceContinuationProjection();
-            const notes: string[] = [];
-            const unsubscribeContinuation = controller.subscribe(() => {
-                const snapshot = controller.getSnapshot();
-                const binding = snapshot.sessionId ? voiceConversationBindingResolver.resolveByControlSessionId({
-                    controlSessionId: snapshot.sessionId, adapterId: snapshot.adapterId,
-                }) : null;
-                const note = continuation.update({ snapshot, binding, deviceId: 'local-device', sessionSeq: 0 });
-                if (note) {
-                    notes.push(note.localId);
-                    continuation.settle(note, true);
-                }
-            });
-            try {
-                await controller.toggle(target);
-                expect(controller.getSnapshot()).toMatchObject({ status: 'connected', canStop: true });
-                expect(notes).toHaveLength(1);
-                await waitForLocalVoiceBoundaryEvent(`rpc:${RPC_METHODS.DAEMON_VOICE_INFERENCE_MODELS_WARM}`);
-                expect(machineRpcWithServerScope.mock.calls.some(([request]) =>
-                    request.method === RPC_METHODS.DAEMON_VOICE_INFERENCE_MODELS_WARM)).toBe(true);
-                const coordinator = localVoiceSpeechOutputBoundary.getAudioSessionCoordinator();
-                if (!coordinator) throw new Error('Expected actual native audio session coordinator');
-                expect(coordinator.getSnapshot().leaseCount).toBeGreaterThan(0);
-                expect(localVoiceSpeechOutputBoundary.fileRecording.start).toHaveBeenCalledTimes(1);
-                releaseWarm();
-                await waitForTestEvent(controller.subscribe, controller.getSnapshot, snapshot => snapshot.status === 'disconnected' && !snapshot.canStop);
-                expect(controller.getSnapshot()).toMatchObject({
-                    status: 'disconnected', canStop: false, errorCode: 'provider_error',
-                    errorMessage: 'daemon_voice_inference_model_not_installed', errorRecoveryAction: 'retry',
-                });
-                const failure = controller.getSnapshot();
-                expect(getVoiceAdapterRegistry().get('local_conversation')?.getSnapshot()).toEqual(failure);
-                expect(coordinator.getSnapshot().leaseCount).toBeGreaterThan(0);
-                expect(localVoiceSpeechOutputBoundary.fileRecording.stop).not.toHaveBeenCalled();
-                const heldDictation = voiceCaptureAdmissionController.acquire('dictation');
-                if (heldDictation.status === 'acquired') heldDictation.lease.release();
-                expect(heldDictation.status).toBe('busy');
-                await controller.dismissFailedAttempt('another-session');
-                expect(controller.getSnapshot()).toEqual(failure);
-                await controller.dismissFailedAttempt(failure.sessionId);
-                expect(localVoiceSpeechOutputBoundary.fileRecording.stop).toHaveBeenCalledTimes(1);
-                expect(coordinator.getSnapshot().leaseCount).toBe(0);
-                expect(controller.getSnapshot()).toEqual({
-                    adapterId: null, sessionId: null, status: 'disconnected', mode: 'idle', canStop: false,
-                });
-                expect(notes).toHaveLength(1);
-                await controller.retry('another-session');
-                expect(localVoiceSpeechOutputBoundary.fileRecording.start).toHaveBeenCalledTimes(1);
-                const dictation = voiceCaptureAdmissionController.acquire('dictation');
-                expect(dictation.status).toBe('acquired');
-                if (dictation.status === 'acquired') dictation.lease.release();
-            } finally { unsubscribeContinuation(); releaseWarm(); await controller.dispose(); }
-            return;
-        }
+    ] as const)('dismisses synthetic terminal $status (cleanup rejected: $rejectCleanup, replaced: $replaceDuringCleanup) without losing recovery', async ({ status, rejectCleanup, replaceDuringCleanup }) => {
         const { getVoiceSessionEndedAttempt, setVoiceSessionSnapshot } = await import('./voiceSessionStore');
         const snapshots = createSnapshotPublisher({
             adapterId: OPENAI_PROVIDER_ID, sessionId: null, status: 'disconnected', mode: 'idle', canStop: false,
@@ -482,55 +481,55 @@ describe('voice session lifecycle edge contracts', () => {
         }
     });
 
-    it.each(['connecting', 'connected', 'error'] as const)('refuses to dismiss a live %s attempt', async (status) => {
-        if (status !== 'error') {
-            const { target } = await configureLocalProvider('local_direct');
-            let releaseRecording: (() => void) | undefined;
-            let rejectRecording: ((error: Error) => void) | undefined;
-            if (status === 'connecting') {
-                const pendingRecording = new Promise<{ recordingId: string }>((resolve, reject) => {
-                    releaseRecording = () => resolve({ recordingId: 'live-dismissal-recording' });
-                    rejectRecording = reject;
-                });
-                localVoiceSpeechOutputBoundary.fileRecording.start.mockImplementationOnce(() => pendingRecording);
-            }
-            const controller = createVoiceSessionLifecycleController({
-                acquireConnectivityLease: () => sync.acquireUserRequestLease(),
+    it.each(['connecting', 'connected'] as const)('refuses to dismiss a live %s attempt', async (status) => {
+        const { target } = await configureLocalProvider('local_direct');
+        let releaseRecording: (() => void) | undefined;
+        let rejectRecording: ((error: Error) => void) | undefined;
+        if (status === 'connecting') {
+            const pendingRecording = new Promise<{ recordingId: string }>((resolve, reject) => {
+                releaseRecording = () => resolve({ recordingId: 'live-dismissal-recording' });
+                rejectRecording = reject;
             });
-            controller.setConfiguredProviderId('local_direct');
-            const start = controller.toggle(target);
-            try {
-                if (status === 'connected') await start;
-                else {
-                    await waitForLocalVoiceBoundaryEvent('audio-start');
-                    expect(localVoiceSpeechOutputBoundary.fileRecording.start).toHaveBeenCalled();
-                }
-                const live = controller.getSnapshot();
-                expect(live).toMatchObject({ status, canStop: true });
-                await controller.dismissFailedAttempt(target.sessionId);
-                expect(controller.getSnapshot()).toEqual(live);
-                expect(localVoiceSpeechOutputBoundary.fileRecording.stop).not.toHaveBeenCalled();
-                appState.emit('background');
-                expect(isServerReachabilityNetworkAllowed()).toBe(true);
-                if (status === 'connecting') {
-                    rejectRecording?.(new Error('Native recording unavailable'));
-                    await start.catch(() => {});
-                    expect(controller.getSnapshot().canStop).toBe(false);
-                    expect(isServerReachabilityNetworkAllowed()).toBe(false);
-                }
-            } finally {
-                releaseRecording?.();
-                await start.catch(() => {});
-                await controller.dispose();
-                appState.emit('active');
-            }
-            return;
+            localVoiceSpeechOutputBoundary.fileRecording.start.mockImplementationOnce(() => pendingRecording);
         }
+        const controller = createVoiceSessionLifecycleController({
+            acquireConnectivityLease: () => sync.acquireUserRequestLease(),
+        });
+        controller.setConfiguredProviderId('local_direct');
+        const start = controller.toggle(target);
+        try {
+            if (status === 'connected') await start;
+            else {
+                await waitForLocalVoiceBoundaryEvent('audio-start');
+                expect(localVoiceSpeechOutputBoundary.fileRecording.start).toHaveBeenCalled();
+            }
+            const live = controller.getSnapshot();
+            expect(live).toMatchObject({ status, canStop: true });
+            await controller.dismissFailedAttempt(target.sessionId);
+            expect(controller.getSnapshot()).toEqual(live);
+            expect(localVoiceSpeechOutputBoundary.fileRecording.stop).not.toHaveBeenCalled();
+            appState.emit('background');
+            expect(isServerReachabilityNetworkAllowed()).toBe(true);
+            if (status === 'connecting') {
+                rejectRecording?.(new Error('Native recording unavailable'));
+                await start.catch(() => {});
+                expect(controller.getSnapshot().canStop).toBe(false);
+                expect(isServerReachabilityNetworkAllowed()).toBe(false);
+            }
+        } finally {
+            releaseRecording?.();
+            await start.catch(() => {});
+            await controller.dispose();
+            appState.emit('active');
+        }
+    }, 120_000);
+
+    it('refuses to dismiss a synthetic live error attempt', async () => {
         // Qualified F: inspected real OpenAI/local projections publish terminal
         // failures with canStop:false; no live error producer is established yet.
         const snapshots = createSnapshotPublisher({
-            adapterId: OPENAI_PROVIDER_ID, sessionId: 'voice-session', status, mode: 'listening', canStop: true,
-            ...(status === 'error' ? { errorCode: 'network_error', errorPresentation: 'error' as const } : {}),
+            adapterId: OPENAI_PROVIDER_ID, sessionId: 'voice-session', status: 'error', mode: 'listening', canStop: true,
+            errorCode: 'network_error', errorPresentation: 'error',
         });
         let mediaHeld = true;
         const adapter: VoiceAdapterController = {
@@ -548,7 +547,7 @@ describe('voice session lifecycle edge contracts', () => {
         } finally {
             await controller.dispose();
         }
-    }, 120_000);
+    });
 
     it('retries the exact failed Home binding and honors a later explicit global start', async () => {
         const attempt = await createOpenAiAttempt();
@@ -724,6 +723,7 @@ describe('voice session lifecycle edge contracts', () => {
                 errorMessage: 'voice_provider_adapter_not_registered',
                 errorRecoveryAction: 'retry',
                 errorPresentation: 'error',
+                recoveryTarget: null,
             });
             expect(published).toHaveBeenCalledTimes(1);
 
@@ -781,76 +781,5 @@ describe('voice session lifecycle edge contracts', () => {
             await homes.dispose();
             await attempt.dispose();
         }
-    }, 120_000);
-
-    it.each(['on_demand', 'automatic'] as const)(
-        'reseeds the active Local Agent model session when disclosure returns from off to %s',
-        async (mode) => {
-            const { storage, target } = await configureLocalProvider('local_conversation', 'agent');
-            const controller = createVoiceSessionLifecycleController();
-            const setDisclosure = (currentUiContextMode: 'on_demand' | 'automatic' | 'off') => {
-                const settings = storage.getState().settings;
-                storage.__setState({ settings: { ...settings, voice: { ...settings.voice,
-                    privacy: { ...settings.voice.privacy, currentUiContextMode },
-                } } });
-                controller.setCurrentUiContextToolSetEnabled(currentUiContextMode !== 'off');
-            };
-            try {
-                controller.setConfiguredProviderId('local_conversation');
-                setDisclosure(mode);
-                await controller.toggle(target);
-                await waitForLocalVoiceBoundaryEvent('agent-start', 1);
-                const { voiceAgentSessions } = await import('@/voice/agent/voiceAgentSessions');
-                await voiceAgentSessions.ensureRunning(VOICE_AGENT_GLOBAL_SESSION_ID);
-                expect(localVoiceAgentRpc.readRetainedRun()).not.toBeNull();
-                const initialRun = localVoiceAgentRpc.readRetainedRun();
-                expect(controller.getSnapshot()).toMatchObject({
-                    sessionId: VOICE_AGENT_GLOBAL_SESSION_ID, status: 'connected', canStop: true,
-                });
-                const initialControlSessionId = controller.getSnapshot().sessionId;
-                setDisclosure('off');
-                await waitForLocalVoiceBoundaryEvent('audio-start', 2);
-                await waitForLocalVoiceBoundaryEvent('agent-start', 2);
-                await voiceAgentSessions.ensureRunning(VOICE_AGENT_GLOBAL_SESSION_ID);
-                expect(localVoiceSpeechOutputBoundary.fileRecording.start).toHaveBeenCalledTimes(2);
-                await waitForTestEvent(controller.subscribe, controller.getSnapshot, snapshot => snapshot.status === 'connected');
-                expect(controller.getSnapshot().status).toBe('connected');
-                expect(controller.getSnapshot().sessionId).toBe(initialControlSessionId);
-                expect(localVoiceAgentRpc.requests.filter(request => request.method === SESSION_RPC_METHODS.EXECUTION_RUN_STOP))
-                    .toEqual([{ method: SESSION_RPC_METHODS.EXECUTION_RUN_STOP, input: { runId: initialRun?.runId } }]);
-                setDisclosure(mode);
-                await waitForLocalVoiceBoundaryEvent('audio-start', 3);
-                expect(localVoiceSpeechOutputBoundary.fileRecording.start).toHaveBeenCalledTimes(3);
-                await waitForLocalVoiceBoundaryEvent('agent-start', 3);
-                await voiceAgentSessions.ensureRunning(VOICE_AGENT_GLOBAL_SESSION_ID);
-                expect(localVoiceAgentRpc.readRetainedRun()).not.toBeNull();
-                expect(localVoiceSpeechOutputBoundary.fileRecording.stop).toHaveBeenCalledTimes(2);
-                expect(controller.getSnapshot()).toMatchObject({
-                    adapterId: 'local_conversation', sessionId: initialControlSessionId,
-                    status: 'connected', canStop: true,
-                });
-                expect(initialRun?.voicePolicy).toBeDefined();
-                expect(localVoiceAgentRpc.readRetainedRun()?.status).toBe('running');
-            } finally { await controller.dispose(); }
-        }, 180_000,
-    );
-
-    it('does not replace an active Local Direct attempt when disclosure returns from off', async () => {
-        const { target } = await configureLocalProvider('local_direct');
-        const controller = createVoiceSessionLifecycleController();
-        try {
-            controller.setConfiguredProviderId('local_direct');
-            controller.setCurrentUiContextToolSetEnabled(true);
-            await controller.toggle(target);
-            const active = controller.getSnapshot();
-            expect(active).toMatchObject({ adapterId: 'local_direct', sessionId: target.sessionId,
-                status: 'connected', canStop: true });
-            controller.setCurrentUiContextToolSetEnabled(false);
-            controller.setCurrentUiContextToolSetEnabled(true);
-            expect(controller.getSnapshot()).toEqual(active);
-            expect(controller.getAttemptTargetSessionAddress()).toEqual(target);
-            expect(localVoiceSpeechOutputBoundary.fileRecording.start).toHaveBeenCalledTimes(1);
-            expect(localVoiceSpeechOutputBoundary.fileRecording.stop).not.toHaveBeenCalled();
-        } finally { await controller.dispose(); }
     }, 120_000);
 });

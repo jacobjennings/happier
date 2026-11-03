@@ -189,6 +189,7 @@ test('renderMutagenProject creates one-way source replicas while retaining targe
 
   for (const replicaOwnedProjection of [
     'apps/ui/sources/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts.js',
+    'apps/ui/sources/components/atmosphere/backdropWorkletCore.generated.js',
   ]) {
     assert.ok(rendered.includes(`- "${replicaOwnedProjection}"`));
   }

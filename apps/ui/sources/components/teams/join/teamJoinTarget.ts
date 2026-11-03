@@ -370,4 +370,3 @@ const ACQUIRING: PortableHomeLinkTargetState = Object.freeze({ kind: 'acquiring'
 
 /** Team-join compatibility name; portable Home link resolution has one owner. */
 export type TeamJoinTarget = PortableHomeLinkTarget;
-export const resolveTeamJoinTarget = resolvePortableHomeLinkTarget;

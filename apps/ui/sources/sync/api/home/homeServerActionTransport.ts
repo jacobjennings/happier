@@ -193,7 +193,7 @@ export async function requestHomeDomain<TValue, TCode extends string = HomeDomai
                     body: JSON.stringify(params.input),
                 }),
                 ...(params.signal ? { signal: params.signal } : {}),
-            }, { onIssued: () => {
+            }, { recoveryRead: params.effect === 'read' ? 'unbounded' : false, onIssued: () => {
                 issued = true;
                 if (params.effect === 'write') invalidateHomeAccountReadJoins(params.scope.serverId);
             } });

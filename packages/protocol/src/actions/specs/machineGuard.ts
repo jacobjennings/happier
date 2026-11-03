@@ -4,7 +4,7 @@ import { MACHINE_GUARD_ACTION_IDS } from '../../machines/guard/actionIdsV1.js';
 import { MachineGuardGetInputV1Schema, MachineGuardViewV1Schema } from '../../machines/guard/guardRpcV1.js';
 import { RPC_METHODS } from '../../rpc/methods.js';
 import { MACHINE_GUARD_ACTIVITY_ACTION_SPECS, MACHINE_GUARD_ACTIVITY_INPUT_SCHEMAS, MACHINE_GUARD_ACTIVITY_OUTPUT_SCHEMAS } from './machineGuardActivity.js';
-import type { PreNormalizedActionSpec } from '../actionSpecs.js';
+import type { ApprovalPresentationContext, PreNormalizedActionSpec } from '../actionSpecs.js';
 export { MACHINE_GUARD_ACTION_IDS } from '../../machines/guard/actionIdsV1.js';
 export type { MachineGuardActionId } from '../../machines/guard/actionIdsV1.js';
 export const MachineGuardActionIdSchema = lazyZodSchema(() => z.enum(MACHINE_GUARD_ACTION_IDS));
@@ -36,6 +36,25 @@ export const MACHINE_GUARD_ACTION_OUTPUT_SCHEMAS = {
 export type MachineGuardActionInput = z.infer<(typeof MACHINE_GUARD_ACTION_INPUT_SCHEMAS)[keyof typeof MACHINE_GUARD_ACTION_INPUT_SCHEMAS]>;
 const fields = [{ path: 'serverId', title: 'Home ID', widget: 'text', required: false }, { path: 'machineId', title: 'Machine ID', widget: 'text', required: true }] as const;
 const surfaces = { ui: true, cli: true, agent: true, mcp: true, voice: false, rpc: true } as const;
+const ceilingReviewFields = [
+  ...fields, { path: 'sessionId', title: 'Session', widget: 'text', required: true },
+  { path: 'ceiling', title: 'Ceiling', widget: 'text', required: true },
+  { path: 'room', title: 'Room', widget: 'text', required: true },
+  { path: 'ifReached', title: 'If reached', widget: 'text', required: true },
+  { path: 'bytes', title: 'Ceiling bytes', widget: 'json' },
+] as const;
+function presentSessionCeiling(input: unknown, context?: ApprovalPresentationContext) {
+  const value = MachineGuardSessionCeilingSetInputV1Schema.parse(input);
+  const memory = context?.machineMemory?.machineId === value.machineId ? context.machineMemory : undefined;
+  const format = (bytes: number) => context?.formatDataBytes?.(bytes, { kind: 'memory' }) ?? 'Not reported';
+  return { ...value,
+    ceiling: value.bytes === null ? 'No ceiling' : format(value.bytes),
+    room: memory?.availableBytes != null && memory.totalBytes != null
+      ? `${format(memory.availableBytes)} free of ${format(memory.totalBytes)}` : 'Not reported',
+    ifReached: value.bytes === null ? 'No session memory ceiling will be enforced.'
+      : 'The session stops where it can resume. Send another message to continue.',
+  };
+}
 export const MACHINE_GUARD_ACTION_SPECS = [
   { id: 'machines.guard.get', approval: {result: 'required'}, title: 'Read the guard', description: 'What the guard watches on a machine, and what it would stop first if memory ran short.',
     toolExposure: { agent: 'direct' },
@@ -53,7 +72,16 @@ export const MACHINE_GUARD_ACTION_SPECS = [
     inputSchema: MachineGuardKeepRunningInputV1Schema, outputSchema: MachineGuardKeepRunningResultV1Schema,
     cli: { acceptsServerId: true, commands: [{ path: ['machines', 'guard', 'idle-stop', 'keep-running'], visibility: 'canonical' }] },
     inputHints: { fields: [...fields, { path: 'sessionId', title: 'Session ID', widget: 'text' }, { path: 'terminalKey', title: 'Terminal key', widget: 'text' }] } },
-  { id: 'machines.guard.sessionCeiling.set', approvalPolicy: { agentDefault: 'authority' }, approval: {result: 'required'}, title: 'Change this session’s memory ceiling',
+  { id: 'machines.guard.sessionCeiling.set', approvalPolicy: { agentDefault: 'authority', requiredSurfaces: ['mcp', 'plugin'] }, approval: {result: 'required'}, title: 'Change this session’s memory ceiling',
+    approvalPresentation: {
+      summary: (input: unknown) => MachineGuardSessionCeilingSetInputV1Schema.safeParse(input).data?.bytes === null
+        ? 'Remove this session’s memory ceiling.' : 'Change how much memory this session can use.',
+      technicalInputPaths: ['bytes'], projectInput: presentSessionCeiling,
+      inputSchema: lazyZodSchema(() => z.extend(MachineGuardSessionCeilingSetInputV1Schema, {
+        ceiling: z.string(), room: z.string(), ifReached: z.string(),
+      })),
+      inputHints: { fields: ceilingReviewFields },
+    },
     toolExposure: { agent: 'discoverable_only' },
     prompting: { agentGuidance: 'Read machines.guard.get and machines.vitals.get first. If this session reached its Linux ceiling, explain the current ceiling and available room, then request the new bytes or null through this Action’s existing approval fields. Approval follows its own user setting; report now versus next-start application and unavailable platforms.' },
     description: 'On Linux, limits how much memory this session can use, now or from its next start.',

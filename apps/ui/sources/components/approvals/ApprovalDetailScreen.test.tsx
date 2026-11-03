@@ -2068,6 +2068,8 @@ describe('ApprovalDetailScreen', () => {
     const screen = await renderScreen(
       <ApprovalDetailScreen artifactId="artifact-1" />,
     );
+    // The requester line holds a placeholder until its exact-Home reading settles.
+    await waitForHomeGovernance(() => expect(screen.findByTestId('approvals.requester-title')).not.toBeNull());
     expect(
       screen.findByTestId('approvals.handoff-target-consequences'),
     ).not.toBeNull();
@@ -2146,6 +2148,8 @@ describe('ApprovalDetailScreen', () => {
     const screen = await renderScreen(
       <ApprovalDetailScreen artifactId="artifact-1" />,
     );
+    // The requester line holds a placeholder until its exact-Home reading settles.
+    await waitForHomeGovernance(() => expect(screen.findByTestId('approvals.requester-title')).not.toBeNull());
 
     const text = readRenderedText(screen);
     expect(text).toContain('sessionHandoff.targetApproval.replaceTarget');
@@ -2195,6 +2199,8 @@ describe('ApprovalDetailScreen', () => {
     const screen = await renderScreen(
       <ApprovalDetailScreen artifactId="artifact-1" />,
     );
+    // The requester line holds a placeholder until its exact-Home reading settles.
+    await waitForHomeGovernance(() => expect(screen.findByTestId('approvals.requester-title')).not.toBeNull());
 
     const text = readRenderedText(screen);
     expect(text).toContain('Approve answering the user');
@@ -3020,6 +3026,8 @@ describe('ApprovalDetailScreen', () => {
     // The decision is offered on the card itself; the standalone page is only a link away.
     expect(screen.findByTestId('approval-requester-thread-review')).toBeNull();
     expect(screen.findByTestId('approval-requester-thread-open')).not.toBeNull();
+    // The refusal reads the bar's one word, not a per-surface variant.
+    expect(decisionButton(screen, 'approval-requester-thread-decline')?.props.title).toBe('approvals.reject');
     await act(async () => {
       await screen.pressByTestIdAsync('approval-requester-thread-approve');
     });

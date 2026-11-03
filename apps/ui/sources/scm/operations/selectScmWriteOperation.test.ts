@@ -48,7 +48,7 @@ describe('selectScmWriteOperation', () => {
             inFlight: null,
             log: [{ id: '2', sessionId: 'session', operation: 'commit', status: 'success', timestamp: 2, detail: 'abc123def' }],
             machineReachable: true,
-        })).toMatchObject({ phase: 'succeeded', action: 'commit', id: '2', at: 2 });
+        })).toMatchObject({ phase: 'succeeded', action: 'commit', id: '2', at: 2, result: { sha: 'abc123def' } });
     });
 
     it('speaks for the last write the user made, not the refresh or selection bookkeeping that follows it', () => {

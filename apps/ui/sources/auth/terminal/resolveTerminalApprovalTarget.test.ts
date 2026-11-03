@@ -1,11 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
-import { installTokenStorageWebPlatformMocks } from '@/auth/storage/tokenStorage.testHelpers';
+import { installTokenStorageTestIsolation, installTokenStorageWebPlatformMocks } from '@/auth/storage/tokenStorage.testHelpers';
 import { installLocalStorageMock, installWebLockManagerMock } from '@/auth/storage/tokenStorage.web.testHelpers';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import * as profiles from '@/sync/domains/server/serverProfiles';
+import { resolveTerminalApprovalTarget } from './resolveTerminalApprovalTarget';
 
 // Native/browser storage are the only mocked boundaries; profile, credential and
 // terminal destination selection all execute their real owners.
 installTokenStorageWebPlatformMocks();
+installTokenStorageTestIsolation('terminal_destination');
 
 const descriptor: HomeConnectionDescriptorV1 = {
     v: 1,
@@ -18,14 +22,10 @@ const qaOrigin = 'http://happier-agent-qa.localhost:3018';
 const credentials = { token: 'test-home-token' };
 
 describe('terminal approval destination', () => {
-    let sequence = 0;
     let restoreStorage: () => void;
     let restoreLocks: () => void;
-    const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
 
     beforeEach(() => {
-        vi.resetModules();
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `terminal_destination_${sequence++}`;
         restoreStorage = installLocalStorageMock().restore;
         restoreLocks = installWebLockManagerMock().restore;
     });
@@ -33,30 +33,26 @@ describe('terminal approval destination', () => {
     afterEach(() => {
         restoreLocks();
         restoreStorage();
-        if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
-        else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
     });
 
-    async function establishHome() {
-        const profiles = await import('@/sync/domains/server/serverProfiles');
-        const profile = await profiles.adoptHomeProfile({
-            descriptor, source: 'manual', descriptorAuthority: 'current_connection_observation',
-        });
+    async function establishHome(
+        home: HomeConnectionDescriptorV1 = descriptor,
+        descriptorAuthority: 'advisory' | 'current_connection_observation' = 'current_connection_observation',
+    ) {
+        const profile = await profiles.adoptHomeProfile({ descriptor: home, source: 'manual', descriptorAuthority });
         await profiles.setActiveServerId(profile.id, { scope: 'device' });
-        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
         expect(await TokenStorage.setCredentialsForServerUrl(profile.serverUrl, {
-            serverId: descriptor.homeServerIdentityId,
+            serverId: home.homeServerIdentityId,
         }, credentials)).toBe(true);
-        return { profiles, profile };
+        return { profile };
     }
 
     it('keeps an explicit same-identity QA link on its already authenticated runtime origin', async () => {
-        const { profiles } = await establishHome();
+        await establishHome();
         expect(profiles.publishActiveServerRuntimeOrigin({
             target: profiles.captureActiveServerRuntimeTarget(),
             leaseId: 'verified-qa-connection', runtimeOrigin: qaOrigin, carrier: 'https',
         })).toBe(true);
-        const { resolveTerminalApprovalTarget } = await import('./resolveTerminalApprovalTarget');
         const target = await resolveTerminalApprovalTarget({
             parsed: { publicKeyB64Url: 'test-key', serverUrl: 'http://localhost:3018',
                 serverIdentityId: descriptor.homeServerIdentityId },
@@ -75,7 +71,6 @@ describe('terminal approval destination', () => {
 
     it('keeps an unverified explicit destination for sign-in without forwarding saved credentials', async () => {
         await establishHome();
-        const { resolveTerminalApprovalTarget } = await import('./resolveTerminalApprovalTarget');
         const target = await resolveTerminalApprovalTarget({
             parsed: { publicKeyB64Url: 'test-key', serverUrl: 'https://unverified.example.test',
                 serverIdentityId: descriptor.homeServerIdentityId },
@@ -87,7 +82,6 @@ describe('terminal approval destination', () => {
 
     it('retains the established transport when the link names the known canonical endpoint', async () => {
         await establishHome();
-        const { resolveTerminalApprovalTarget } = await import('./resolveTerminalApprovalTarget');
         const target = await resolveTerminalApprovalTarget({
             parsed: { publicKeyB64Url: 'test-key', serverUrl: descriptor.canonicalServerUrl,
                 serverIdentityId: descriptor.homeServerIdentityId },
@@ -97,7 +91,7 @@ describe('terminal approval destination', () => {
     });
 
     it('does not borrow another Home\'s active runtime origin for an identity-matching saved profile', async () => {
-        const { profiles } = await establishHome();
+        await establishHome();
         const other = await profiles.adoptHomeProfile({
             descriptor: { ...descriptor, homeServerIdentityId: 'srv_other_home',
                 canonicalServerUrl: 'https://other-home.example.test',
@@ -109,7 +103,6 @@ describe('terminal approval destination', () => {
             target: profiles.captureActiveServerRuntimeTarget(),
             leaseId: 'other-home-connection', runtimeOrigin: qaOrigin, carrier: 'https',
         })).toBe(true);
-        const { resolveTerminalApprovalTarget } = await import('./resolveTerminalApprovalTarget');
         const target = await resolveTerminalApprovalTarget({
             parsed: { publicKeyB64Url: 'test-key', serverUrl: qaOrigin,
                 serverIdentityId: descriptor.homeServerIdentityId },
@@ -117,5 +110,43 @@ describe('terminal approval destination', () => {
         });
         expect(target).toMatchObject({ endpointUrl: qaOrigin, credentials: null });
         expect(target.transportOptions).toBeUndefined();
+    });
+
+    it('never unlocks an identity-bound Home\'s credentials for a link that carries no identity', async () => {
+        await establishHome();
+        const target = await resolveTerminalApprovalTarget({
+            parsed: { publicKeyB64Url: 'test-key', serverUrl: descriptor.canonicalServerUrl },
+            allowLoopbackServerOverride: false,
+        });
+        expect(target).toEqual({ endpointUrl: descriptor.canonicalServerUrl, credentials: null });
+    });
+
+    it('refuses a supplied descriptor whose identity differs from the link destination', async () => {
+        await establishHome();
+        await expect(resolveTerminalApprovalTarget({
+            parsed: {
+                publicKeyB64Url: 'test-key', serverUrl: descriptor.canonicalServerUrl,
+                serverIdentityId: descriptor.homeServerIdentityId,
+                homeConnectionDescriptor: { ...descriptor, homeServerIdentityId: 'srv_other_home' },
+            },
+            allowLoopbackServerOverride: false,
+        })).rejects.toThrow('descriptor identity does not match');
+    });
+
+    it('requires a verified transport before approving through a Home known only from advice', async () => {
+        const advised: HomeConnectionDescriptorV1 = {
+            ...descriptor,
+            homeServerIdentityId: 'srv_advised_home',
+            canonicalServerUrl: 'https://advised-home.example.test',
+            endpoints: [{ kind: 'https', url: 'https://advised-home.example.test' }],
+        };
+        const { profile } = await establishHome(advised, 'advisory');
+        expect(profile.descriptorProvenance).toBe('advisory-only');
+
+        await expect(resolveTerminalApprovalTarget({
+            parsed: { publicKeyB64Url: 'test-key', serverUrl: advised.canonicalServerUrl,
+                serverIdentityId: advised.homeServerIdentityId },
+            allowLoopbackServerOverride: false,
+        })).rejects.toThrow('verified transport');
     });
 });

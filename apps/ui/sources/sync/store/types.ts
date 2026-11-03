@@ -1,3 +1,4 @@
+import type { SessionPublicationSource } from '../domains/session/sessionRuntimeObservation';
 import type { SessionModelOptionsContext } from '@/sync/domains/models/modelOptions';
 import type { TodoState } from '@/sync/domains/todos/todoOps';
 
@@ -46,7 +47,7 @@ import type { SessionOrganizationDomain } from './domains/sessionOrganization';
 import type { SessionListRenderableDelta } from './domains/sessionListIndexFinalization';
 import type { TranscriptLoadingDomain } from './domains/transcriptLoading';
 import type { ProjectAuthoringSessionInputs } from './domains/projectAuthoringSessions';
-import type { SessionsDomain } from './domains/sessions';
+import type { SessionsDomain, SessionListRowPatchOperation } from './domains/sessions';
 
 export type KnownEntitlements = 'voice' | 'pro';
 export type SessionModelMode = NonNullable<Session['modelMode']>;
@@ -115,23 +116,20 @@ export interface SessionsDomainSlice extends Pick<SessionsDomain,
     isSessionDraftsReady: boolean;
     activateSessionLocalStateScope: (scope: ServerAccountScope) => void;
     clearSessionLocalStateScope: () => void;
-    applySessions: (sessions: (Omit<Session, 'presence'> & { presence?: 'online' | number })[]) => void;
-    applyServerScopedSessionListRows: (
-        serverId: string,
-        sessions: SessionListRenderableSession[],
-        options: Readonly<{ source: 'ordinary' | 'archived' | 'query' | 'rowOnly'; mode: 'replace' | 'append' }>,
-    ) => void;
+    applySessions: (sessions: (Omit<Session, 'presence'> & { presence?: 'online' | number })[], source?: SessionPublicationSource) => void;
+    applyServerScopedSessionListRows: SessionsDomain['applyServerScopedSessionListRows'];
     applyServerScopedSessionListRowPatches: (
         serverId: string,
         patches: ReadonlyArray<Readonly<{
             sessionId: string;
-            patch: Readonly<Partial<Omit<SessionListRenderableSession, 'id'>>>;
+            patch: SessionListRowPatchOperation;
         }>>,
     ) => void;
     reconcileSessionListRowsForServerScope: (
         serverId: string,
         sessions: SessionListRenderableSession[],
         baseline: Readonly<Record<string, SessionListRenderableSession>>,
+        fullPublicationBaseline: Readonly<Record<string, number | undefined>>,
     ) => void;
     mergeSessionListRowsForServerScope: (serverId: string, sessions: SessionListRenderableSession[]) => void;
     clearSessionListRowsForServerScope: (serverId: string) => void;
@@ -289,7 +287,6 @@ export interface PetsDomainSlice {
 }
 
 export interface ProjectDomainSlice {
-    getProjects: () => import('../runtime/orchestration/projectManager').Project[];
     getProject: (projectId: string) => import('../runtime/orchestration/projectManager').Project | null;
     getProjectForSession: (sessionId: string, serverId?: string | null) => import('../runtime/orchestration/projectManager').Project | null;
     getProjectScmStatus: (projectId: string) => ScmStatus | null;

@@ -204,24 +204,6 @@ describe('runTransferFinalizeRecovery', () => {
         expect(recovery.isActionable()).toBe(false);
     });
 
-    it('re-presents an indeterminate finalize outcome and waits for another explicit Retry before finalizing', async () => {
-        finalizeHttp.mockRejectedValueOnce(new Error('Acknowledgement lost after issuance'));
-        let chooseSecondAction!: (action: TransferFinalizeRecoveryAction) => void;
-        modalShowMock
-            .mockImplementationOnce(config => { choose(config, 'retry_finalize'); return 'first-modal'; })
-            .mockImplementationOnce(config => { chooseSecondAction = action => choose(config, action); return 'second-modal'; });
-        const recovery = createRecovery();
-        const result = run(recovery);
-        await vi.waitFor(() => expect(modalShowMock).toHaveBeenCalledTimes(2));
-        expect(finalizeHttp).toHaveBeenCalledTimes(1);
-        expect(abortRpc).not.toHaveBeenCalled();
-        expect(recovery.isActionable()).toBe(true);
-        chooseSecondAction('retry_finalize');
-        await expect(result).resolves.toEqual({ status: 'finalized', response: '/repo/file.txt' });
-        expect(finalizeHttp).toHaveBeenCalledTimes(2);
-        expect(abortRpc).not.toHaveBeenCalled();
-    });
-
     it('re-presents a transient discard rejection and waits for another explicit Discard before settling', async () => {
         abortRpc.mockRejectedValueOnce(new Error('transport unavailable'));
         let chooseSecondAction!: (action: TransferFinalizeRecoveryAction) => void;

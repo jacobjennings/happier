@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
     applySidechainCommittedLayoutObservation,
     applySidechainOlderLoadObservation,
-    buildSidechainOlderLoadScrollObservedTelemetryEvent,
     resolveSidechainOlderLoadEdgeReachedObservation,
     resolveSidechainOlderLoadObservation,
     resolveSidechainOlderLoadScrollEventObservation,
@@ -244,18 +243,6 @@ describe('resolveSidechainOlderLoadObservation', () => {
         })).toEqual({ ok: false, reason: 'missing_offset' });
     });
 
-    it('ignores invalid offsets before reaching the pagination machine', () => {
-        expect(resolveSidechainOlderLoadObservation({
-            contentHeightPx: 1200,
-            dataOrder: 'oldest-first',
-            itemCount: 20,
-            layoutHeightPx: 400,
-            observation: { offsetY: Number.NaN, trigger: 'scroll' },
-            platformOS: 'ios',
-            viewportGuardThresholdPx: 80,
-        })).toEqual({ ok: false, reason: 'invalid_offset' });
-    });
-
     it('normalizes unmeasured and unscrollable content as non-scrollable pagination facts', () => {
         expect(resolveSidechainOlderLoadObservation({
             contentHeightPx: 300,
@@ -282,69 +269,6 @@ describe('resolveSidechainOlderLoadObservation', () => {
                 scrollable: false,
                 trigger: 'edge-reached',
                 webMetrics: null,
-            },
-        });
-    });
-
-    it('computes native distance and scrollability from measured content and layout facts', () => {
-        expect(resolveSidechainOlderLoadObservation({
-            contentHeightPx: 1600,
-            dataOrder: 'oldest-first',
-            itemCount: 20,
-            layoutHeightPx: 400,
-            observation: { offsetY: 200, trigger: 'scroll' },
-            platformOS: 'ios',
-            viewportGuardThresholdPx: 80,
-        })).toMatchObject({
-            ok: true,
-            pagination: {
-                itemsToOlderEdge: null,
-                offsetY: 200,
-                scrollable: true,
-                trigger: 'scroll',
-            },
-            telemetry: {
-                contentHeightPx: 1600,
-                distanceFromBottomPx: 1000,
-                itemCount: 20,
-                layoutHeightPx: 400,
-                offsetY: 200,
-                scrollable: true,
-                trigger: 'scroll',
-                webMetrics: null,
-            },
-        });
-    });
-
-    it('maps native newest-first raw offsets into canonical older-edge pagination offsets', () => {
-        expect(resolveSidechainOlderLoadObservation({
-            contentHeightPx: 1600,
-            dataOrder: 'newest-first',
-            itemCount: 20,
-            layoutHeightPx: 400,
-            observation: {
-                nativeObservedOffset: {
-                    canonicalOffsetY: 50,
-                    distanceFromLiveTailPx: 1150,
-                    isAtRawLiveTail: false,
-                    rawOffsetY: 1150,
-                },
-                trigger: 'edge-reached',
-            },
-            platformOS: 'ios',
-            viewportGuardThresholdPx: 80,
-        })).toMatchObject({
-            ok: true,
-            pagination: {
-                itemsToOlderEdge: null,
-                offsetY: 50,
-                scrollable: true,
-                trigger: 'edge-reached',
-            },
-            telemetry: {
-                distanceFromBottomPx: 1150,
-                offsetY: 50,
-                scrollable: true,
             },
         });
     });
@@ -490,55 +414,6 @@ describe('resolveSidechainOlderLoadObservation', () => {
                 trigger: 'edge-reached',
                 webMetrics,
             },
-        });
-    });
-
-    it('builds web scroll-observed telemetry from normalized sidechain older-load facts', () => {
-        expect(buildSidechainOlderLoadScrollObservedTelemetryEvent({
-            listContentHeightPx: 1400,
-            listLayoutHeightPx: 500,
-            paginationSnapshot: {
-                hasMore: true,
-                insideThreshold: true,
-                loadFailed: false,
-                phase: 'armed',
-                suspendedReasons: ['negative-offset'],
-            },
-            platformOS: 'web',
-            sessionId: 'session-1',
-            telemetry: {
-                contentHeightPx: 1200,
-                distanceFromBottomPx: 720,
-                itemCount: 15,
-                layoutHeightPx: 400,
-                offsetY: 80,
-                scrollable: true,
-                trigger: 'edge-reached',
-                webMetrics,
-            },
-            timestampMs: 123,
-        })).toEqual({
-            contentHeight: 1200,
-            distanceFromBottom: 720,
-            domClientHeight: 400,
-            domScrollHeight: 1200,
-            domScrollTop: 80,
-            listContentHeight: 1400,
-            listLayoutHeight: 500,
-            layoutHeight: 400,
-            listImplementation: 'legend',
-            mode: 'user-unpinned',
-            offsetY: 80,
-            paginationPhase: 'armed',
-            paginationSuspendedReasons: ['negative-offset'],
-            platform: 'web',
-            programmaticWebWrite: false,
-            reason: 'observed',
-            scrollable: true,
-            sessionId: 'session-1',
-            timestampMs: 123,
-            trigger: 'edge-reached',
-            type: 'scroll-observed',
         });
     });
 

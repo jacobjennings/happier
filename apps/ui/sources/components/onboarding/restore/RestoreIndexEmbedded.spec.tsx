@@ -42,7 +42,6 @@ vi.mock('@/components/account/restore/RestoreQrView', () => ({
 
 describe('RestoreIndexEmbedded', () => {
     it('switches from scanner-first to the QR view via an embedded callback (no route push)', async () => {
-        vi.resetModules();
         lastScanProps = null;
         lastQrProps = null;
 
@@ -87,7 +86,6 @@ describe('RestoreIndexEmbedded', () => {
     });
 
     it('forces the restore scanner and forwards an initial V2 pairing link unchanged', async () => {
-        vi.resetModules();
         lastScanProps = null;
         const initialPairingLink = 'happier:///pair?v=2&payload=opaque';
         const { RestoreIndexEmbedded } = await import('./RestoreIndexEmbedded');
@@ -110,7 +108,6 @@ describe('RestoreIndexEmbedded', () => {
     });
 
     it('hands a pasted link to the embedded scanner instead of routing away', async () => {
-        vi.resetModules();
         lastScanProps = null;
         const { RestoreIndexEmbedded } = await import('./RestoreIndexEmbedded');
 

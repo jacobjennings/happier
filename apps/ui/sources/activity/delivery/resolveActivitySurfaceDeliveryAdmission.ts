@@ -13,6 +13,7 @@ import { resolveRequestFollowEventV1, type FollowEventV1, type ResolveFollowDeli
 import { resolvePendingRequestAttentionReasonV1 } from '@happier-dev/protocol/sessions/personal/attention';
 import { selectOldestPendingRequest } from '@happier-dev/session-core/pending';
 import { listPendingSessionRequests } from '@/sync/domains/session/pending/listPendingSessionRequests';
+import { listSessionListPresentationPendingRequests } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { readCurrentPersonalFollowOnceOccurrenceForViewer } from '@/sync/domains/session/readState/sessionViewerAttention';
 import { isFollowDeliveryMutedV1 } from '@happier-dev/protocol/sessions/follow/sessionDeliveryMuteV1';
 import { areServerAccountScopesEqual } from '@/sync/domains/scope/serverAccountScope';
@@ -64,10 +65,11 @@ function resolveCandidateFollowIntent(candidate: SessionActivityAttention): Reso
         isSessionOwner: candidate.session.access?.level === 'owner',
     });
     const reasons = candidate.personalAttention.reasons;
-    const once = readCurrentPersonalFollowOnceOccurrenceForViewer(candidate.session);
+    const once = readCurrentPersonalFollowOnceOccurrenceForViewer(candidate.session, undefined, candidate.presentationSource);
     const pendingReason = candidate.reasons.hasPendingPermissionRequests ? 'permission_required'
         : candidate.reasons.hasPendingUserActionRequests ? 'user_action_required' : null;
-    const requests = pendingReason ? listPendingSessionRequests(candidate.session)
+    const requests = pendingReason ? (candidate.presentationSource ? listSessionListPresentationPendingRequests(candidate.presentationSource)
+        : 'agentState' in candidate.session ? listPendingSessionRequests(candidate.session) : [])
         .filter(request => resolvePendingRequestAttentionReasonV1(request) === pendingReason) : [];
     const request = requests.find(value => value.id === once?.requestId) ?? selectOldestPendingRequest(requests);
     // Counts retain Inbox attention, but unopened user-action content cannot

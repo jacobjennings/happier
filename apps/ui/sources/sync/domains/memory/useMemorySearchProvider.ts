@@ -182,19 +182,15 @@ export function useMemorySearchProvider(
         && (!requestedServerId || areServerProfileIdentifiersEquivalent(selectedDaemonServerId, requestedServerId));
     const machineChoiceNeeded = enabled && !isExplicitNone && documentsRequested && daemonMemorySearchEnabled
         && daemonTarget === null && !selectionServesRequestedHome;
-    const decision = React.useMemo(() => {
+    const decision = React.useMemo((): MemorySearchProvider => {
         if (!enabled || isExplicitNone) return NO_MEMORY_SEARCH_PROVIDER;
         const effectiveFeaturesSnapshot = requestedServerId ? scopedFeaturesSnapshot : featuresSnapshot;
         const capability = effectiveFeaturesSnapshot.status === 'ready'
             ? effectiveFeaturesSnapshot.features.capabilities.homeSearch
             : undefined;
-        const nextDaemonTarget = requestedServerId
-            ? daemonServerId && daemonMachineId
-                ? { serverId: daemonServerId, machineId: daemonMachineId }
-                : null
-            : daemonServerId && daemonMachineId
-                ? { serverId: daemonServerId, machineId: daemonMachineId }
-                : null;
+        const nextDaemonTarget = daemonServerId && daemonMachineId
+            ? { serverId: daemonServerId, machineId: daemonMachineId }
+            : null;
         const resolvedHomeReadiness = resolveHomeMemorySearchReadiness(capability);
         const selectionIdentity = selectedDaemonServerId && selectedDaemonMachineId ? { selectedDaemonTarget: {
             serverId: selectedDaemonServerId, machineId: selectedDaemonMachineId,

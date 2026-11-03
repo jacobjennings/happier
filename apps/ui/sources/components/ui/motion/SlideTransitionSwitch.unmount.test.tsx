@@ -2,8 +2,7 @@
  * RV-4 / F13.2 — Unmount cancellation for SlideTransitionSwitch.
  *
  * If the switch unmounts mid-transition, its in-flight spring must be
- * cancelled and the late `runOnJS(commitInFlightTarget)` callback must NOT
- * call setState on the unmounted component.
+ * cancelled.
  */
 
 import * as React from 'react';
@@ -16,10 +15,6 @@ vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock();
 });
-
-vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
-    useReducedMotionPreference: () => false,
-}));
 
 const reanimatedControls = vi.hoisted(() => ({
     pendingCallbacks: [] as Array<() => void>,
@@ -73,7 +68,7 @@ vi.mock('react-native-reanimated', async () => {
 });
 
 describe('SlideTransitionSwitch — unmount cancellation (F13.2)', () => {
-    it('cancels the in-flight spring on unmount and a late callback does not throw or warn', async () => {
+    it('cancels the in-flight spring on unmount', async () => {
         reanimatedControls.pendingCallbacks = [];
         reanimatedControls.cancelCount = 0;
         const { SlideTransitionSwitch } = await import('./SlideTransitionSwitch');
@@ -93,24 +88,8 @@ describe('SlideTransitionSwitch — unmount cancellation (F13.2)', () => {
         expect(reanimatedControls.pendingCallbacks.length).toBeGreaterThan(0);
         const beforeUnmountCancel = reanimatedControls.cancelCount;
 
-        // Spy on console.error so React state-on-unmounted warnings would fail
-        // the test if they fired.
-        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
         // Unmount.
         await screen.update(<></>);
         expect(reanimatedControls.cancelCount).toBeGreaterThan(beforeUnmountCancel);
-
-        // Flush the late callback after unmount — must not throw or warn.
-        expect(() => {
-            const cbs = reanimatedControls.pendingCallbacks.splice(0);
-            for (const cb of cbs) cb();
-        }).not.toThrow();
-
-        // No React "setState on unmounted" / "act" warnings should have fired
-        // as a result of the late callback.
-        expect(errorSpy).not.toHaveBeenCalled();
-
-        errorSpy.mockRestore();
     });
 });

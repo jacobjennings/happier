@@ -1,5 +1,5 @@
 import React from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
 
 import {
@@ -11,6 +11,7 @@ import {
 } from '@/dev/testkit/harness/popoverHarness';
 import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
 import { renderScreen } from '@/dev/testkit';
+import { installExpoBlurRequireStub } from '@/dev/testkit/mocks/expoBlur';
 import { motionTokens } from '@/components/ui/motion/motionTokens';
 import { installPopoverCommonModuleMocks } from './popoverTestHelpers';
 
@@ -22,14 +23,10 @@ const localSettingState = vi.hoisted(() => ({
 }));
 
 vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/sync/domains/state/storage')>();
-    return {
-        ...actual,
-        useLocalSetting: ((name: string) => {
-            if (name === 'uiBackdropBlurEnabled') return localSettingState.uiBackdropBlurEnabled;
-            return null;
-        }) as typeof import('@/sync/domains/state/storage')['useLocalSetting'],
-    };
+    const { createPartialStorageModuleMock, createUseLocalSettingMock } = await import('@/dev/testkit/mocks/storage');
+    return createPartialStorageModuleMock(importOriginal, {
+        useLocalSetting: createUseLocalSettingMock({ values: localSettingState }),
+    });
 });
 
 const INITIAL_POSITIONING_TICKS = 3;
@@ -38,17 +35,8 @@ async function flushInitialPositioning() {
     await flushHookEffects({ cycles: 2, turns: INITIAL_POSITIONING_TICKS, frames: 1 });
 }
 
-vi.mock('@/components/ui/popover', () => ({
-    usePopoverBoundaryRef: () => null,
-    PopoverScope: ({ children }: any) => React.createElement(React.Fragment, null, children),
-}));
-
-vi.mock('expo-blur', () => {
-    const React = require('react');
-    return {
-        BlurView: (props: any) => React.createElement('BlurView', props, props.children),
-    };
-});
+const restoreExpoBlur = installExpoBlurRequireStub();
+afterAll(restoreExpoBlur);
 
 installPopoverCommonModuleMocks({
     reactNative: async () => {
@@ -765,6 +753,34 @@ describe('Popover (native portal)', () => {
         expect(hostEffects.length).toBe(4);
     });
 
+    it('spotlights a rect anchor the same way it spotlights a view anchor', async () => {
+        const { OverlayPortalHost, OverlayPortalProvider } = await import('./OverlayPortal');
+        const { Popover } = await import('./Popover');
+
+        let tree: ReturnType<typeof renderer.create> | undefined;
+        tree = (await renderScreen(React.createElement(
+                    OverlayPortalProvider,
+                    null,
+                    React.createElement(Popover, {
+                        open: true,
+                        anchor: { kind: 'rect', rect: { left: 100, top: 100, width: 20, height: 20 } },
+                        placement: 'bottom',
+                        portal: { native: true },
+                        onRequestClose: () => {},
+                        backdrop: { effect: 'blur', spotlight: true },
+                        children: () => React.createElement(PopoverChild),
+                    } as any),
+                    React.createElement(OverlayPortalHost),
+                ))).tree;
+
+        await act(async () => {
+            await flushInitialPositioning();
+        });
+
+        const hostEffects = tree ? findHostNodesByTestId(tree, 'popover-backdrop-effect') : [];
+        expect(hostEffects.length).toBe(4);
+    });
+
     it('can render an anchor overlay above the blur backdrop (keeps the trigger crisp without cutout seams)', async () => {
         const { OverlayPortalHost, OverlayPortalProvider } = await import('./OverlayPortal');
         const { Popover } = await import('./Popover');
@@ -784,6 +800,41 @@ describe('Popover (native portal)', () => {
                     React.createElement(Popover, {
                         open: true,
                         anchorRef,
+                        placement: 'bottom',
+                        portal: { native: true },
+                        onRequestClose: () => {},
+                        backdrop: { effect: 'blur', anchorOverlay: () => React.createElement('AnchorOverlay') },
+                        children: () => React.createElement(PopoverChild),
+                    } as any),
+                    React.createElement(OverlayPortalHost),
+                ))).tree;
+
+        await act(async () => {
+            await flushInitialPositioning();
+        });
+
+        const hostOverlays = tree ? findHostNodesByTestId(tree, 'popover-anchor-overlay') : [];
+        expect(hostOverlays.length).toBe(1);
+
+        const overlayStyle = flattenTestStyle(hostOverlays[0]?.props?.style);
+        expect(overlayStyle.position).toBe('absolute');
+        expect(overlayStyle.left).toBe(140);
+        expect(overlayStyle.top).toBe(120);
+        expect(overlayStyle.width).toBe(28);
+        expect(overlayStyle.height).toBe(28);
+    });
+
+    it('renders the anchor overlay at a rect anchor\'s rect', async () => {
+        const { OverlayPortalHost, OverlayPortalProvider } = await import('./OverlayPortal');
+        const { Popover } = await import('./Popover');
+
+        let tree: ReturnType<typeof renderer.create> | undefined;
+        tree = (await renderScreen(React.createElement(
+                    OverlayPortalProvider,
+                    null,
+                    React.createElement(Popover, {
+                        open: true,
+                        anchor: { kind: 'rect', rect: { left: 140, top: 120, width: 28, height: 28 } },
                         placement: 'bottom',
                         portal: { native: true },
                         onRequestClose: () => {},

@@ -23,7 +23,9 @@ import { readSessionTurns } from './registerSessionTurnMutationRoute';
 export function registerSessionReadBatchRoute(app: Fastify) {
     app.post('/v2/sessions/read-batch', {
         preHandler: app.authenticate,
-        config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, 'session.detail') },
+        config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, 'session.detail'),
+            restrictedCredentialBinding: { scope: 'session_managed_subtree', session: 'body.underSessionId' },
+        },
         schema: { body: SessionReadBatchRequestV1Schema, response: { 200: SessionReadBatchResponseV1Schema } },
     }, async (request, reply) => {
         const authentication = readSessionAccessAuthenticationFromRequest(request);
@@ -42,7 +44,7 @@ export function registerSessionReadBatchRoute(app: Fastify) {
             const result: SessionReadBatchResultV1 = { sessionId };
             if (request.body.includeSnapshot) {
                 result.detail = await readComponent(async () => {
-                    const detail = await readSessionDetail({ ...input, accessProjectionVersion: request.body.accessProjectionVersion, storedContentCompatibility });
+                    const detail = await readSessionDetail({ ...input, accessProjectionVersion: request.body.accessProjectionVersion, storedContentCompatibility, underSessionId: request.body.underSessionId });
                     return SessionReadBatchDetailV1Schema.parse({ ...detail,
                         body: projectSessionTurnWaitingCompatibility(detail.body, storedContentCompatibility) });
                 });

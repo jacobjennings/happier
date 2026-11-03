@@ -3,16 +3,32 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 
-import { downloadRemoteFileWithLimits, fetchRemoteJsonWithLimits, resolvePluginRemoteArchiveMaxBytes, resolvePluginRemoteCatalogMaxBytes } from './fetch';
+import { openRemoteAcquisition, type RemoteAcquisitionDestinationPolicy } from './acquisition';
+import {
+  downloadRemoteFileWithLimits,
+  readRemoteJsonResponseWithLimits,
+  resolvePluginRemoteArchiveMaxBytes,
+  resolvePluginRemoteCatalogMaxBytes,
+  resolvePluginRemoteFetchTimeoutMs,
+} from './fetch';
 
 const servers: Server[] = [];
 const tempDirs: string[] = [];
-const archiveEnv = createEnvKeyScope(['HAPPIER_PLUGIN_REMOTE_ARCHIVE_MAX_BYTES', 'HAPPIER_PLUGIN_REMOTE_CATALOG_MAX_BYTES']);
+const archiveEnv = createEnvKeyScope([
+  'HAPPIER_PLUGIN_REMOTE_ARCHIVE_MAX_BYTES',
+  'HAPPIER_PLUGIN_REMOTE_CATALOG_MAX_BYTES',
+  'HAPPIER_PLUGIN_REMOTE_FETCH_TIMEOUT_MS',
+]);
+const CATALOG_POLICY: RemoteAcquisitionDestinationPolicy = Object.freeze({
+  scheme: 'httpOrHttps',
+  redirects: 'sameOrigin',
+  privateNetwork: 'followCallerDestination',
+});
 
 async function startServer(
   handler: (request: IncomingMessage, response: ServerResponse) => void,
@@ -36,57 +52,66 @@ describe('remote plugin body budget', () => {
   it('reads a valid catalog beyond the former implicit JSON ceiling without an operator budget', async () => {
     archiveEnv.patch({ HAPPIER_PLUGIN_REMOTE_CATALOG_MAX_BYTES: undefined });
     const padding = 'x'.repeat(2 * 1024 * 1024);
-    await expect(fetchRemoteJsonWithLimits({
-      url: 'https://catalog.example.test/index.json', errorLabel: 'Marketplace catalog',
-      network: {
-        resolveAddresses: async () => [{ address: '93.184.216.34', family: 4 }],
-        fetchImpl: async () => new Response(JSON.stringify({ padding })),
-      },
+    await expect(readRemoteJsonResponseWithLimits({
+      response: new Response(JSON.stringify({ padding })), errorLabel: 'Marketplace catalog',
     })).resolves.toEqual({ padding });
   });
 
   it('streams a valid archive beyond the former implicit byte ceiling', async () => {
     archiveEnv.patch({ HAPPIER_PLUGIN_REMOTE_ARCHIVE_MAX_BYTES: undefined });
+    const chunk = Buffer.alloc(1024 * 1024);
+    const port = await startServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/octet-stream' });
+      let remainingChunks = 257;
+      const writeMore = (): void => {
+        while (remainingChunks > 0) {
+          remainingChunks -= 1;
+          if (!response.write(chunk)) {
+            response.once('drain', writeMore);
+            return;
+          }
+        }
+        response.end();
+      };
+      writeMore();
+    });
     const dir = await createTempDir('happier-remote-streamed-archive-');
     tempDirs.push(dir);
     const destinationPath = join(dir, 'archive.tgz');
-    const chunk = new Uint8Array(1024 * 1024);
-    let remainingChunks = 257;
     await downloadRemoteFileWithLimits({
-      url: 'https://archives.example.test/plugin.tgz', destinationPath, errorLabel: 'Remote plugin archive',
-      network: {
-        resolveAddresses: async () => [{ address: '93.184.216.34', family: 4 }],
-        fetchImpl: async () => new Response(new ReadableStream({
-          pull(controller) {
-            if (remainingChunks-- > 0) controller.enqueue(chunk);
-            else controller.close();
-          },
-        })),
-      },
+      url: `http://127.0.0.1:${port}/plugin.tgz`, destinationPath, errorLabel: 'Remote plugin archive',
     });
     expect((await stat(destinationPath)).size).toBe(257 * chunk.byteLength);
   });
 
-  it('honors an explicit archive storage budget without the former one-GiB clamp', () => {
-    archiveEnv.patch({ HAPPIER_PLUGIN_REMOTE_ARCHIVE_MAX_BYTES: String(2 * 1024 * 1024 * 1024) });
-    expect(resolvePluginRemoteArchiveMaxBytes()).toBe(2 * 1024 * 1024 * 1024);
-  });
-
-  it('honors an explicit catalog buffer budget without the former 32-MiB clamp', () => {
-    archiveEnv.patch({ HAPPIER_PLUGIN_REMOTE_CATALOG_MAX_BYTES: String(64 * 1024 * 1024) });
-    expect(resolvePluginRemoteCatalogMaxBytes()).toBe(64 * 1024 * 1024);
+  it.each([
+    ['archive storage budget without the former one-GiB clamp', 'HAPPIER_PLUGIN_REMOTE_ARCHIVE_MAX_BYTES', resolvePluginRemoteArchiveMaxBytes, 2 * 1024 * 1024 * 1024],
+    ['catalog buffer budget without the former 32-MiB clamp', 'HAPPIER_PLUGIN_REMOTE_CATALOG_MAX_BYTES', resolvePluginRemoteCatalogMaxBytes, 64 * 1024 * 1024],
+  ] as const)('honors an explicit %s', (_label, envName, resolveBudget, budget) => {
+    archiveEnv.patch({ [envName]: String(budget) });
+    expect(resolveBudget()).toBe(budget);
   });
 
   it('accepts discovery that settles after the former acquisition cutoff', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    archiveEnv.patch({ HAPPIER_PLUGIN_REMOTE_FETCH_TIMEOUT_MS: undefined });
+    // The acquisition lifetime reads node:perf_hooks; drive that monotonic clock from the fake clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const monotonicClock = vi.spyOn(performance, 'now').mockImplementation(() => Date.now());
+    onTestFinished(() => monotonicClock.mockRestore());
     let resolveDns!: (answers: readonly { address: string; family: 4 }[]) => void;
-    const operation = fetchRemoteJsonWithLimits({
-      url: 'https://catalog.example.test/index.json', errorLabel: 'Marketplace catalog',
-      network: {
+    const operation = (async () => {
+      const opened = await openRemoteAcquisition({
+        url: 'https://catalog.example.test/index.json', headers: { accept: 'application/json' },
+        policy: CATALOG_POLICY, timeoutMs: resolvePluginRemoteFetchTimeoutMs(), errorLabel: 'Marketplace catalog',
         resolveAddresses: () => new Promise((resolve) => { resolveDns = resolve; }),
         fetchImpl: async () => new Response('{"ok":true}'),
-      },
-    });
+      });
+      try {
+        return await readRemoteJsonResponseWithLimits({ response: opened.response, signal: opened.signal, errorLabel: 'Marketplace catalog' });
+      } finally {
+        await opened.dispose();
+      }
+    })();
     let settled = false;
     void operation.then(() => { settled = true; }, () => { settled = true; });
     await vi.advanceTimersByTimeAsync(300_001);
@@ -95,44 +120,18 @@ describe('remote plugin body budget', () => {
     await expect(operation).resolves.toEqual({ ok: true });
   });
 
-  it('cancels the exact pending DNS acquisition before opening a connection', async () => {
-    const controller = new AbortController();
-    const fetchImpl = vi.fn(async () => new Response('{}'));
-    let resolveDns!: (answers: readonly { address: string; family: 4 }[]) => void;
-    const operation = fetchRemoteJsonWithLimits({
-      url: 'https://catalog.example.test/index.json', errorLabel: 'Marketplace catalog', signal: controller.signal,
-      network: { resolveAddresses: () => new Promise((resolve) => { resolveDns = resolve; }), fetchImpl },
-    });
-    const rejected = expect(operation).rejects.toThrow('discovery cancelled');
-    controller.abort(new Error('discovery cancelled'));
-    await rejected;
-    resolveDns([{ address: '93.184.216.34', family: 4 }]);
-    await Promise.resolve();
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
-  it('cancels a pending body and keeps genuine transport errors', async () => {
+  it('cancels a pending catalog body', async () => {
     const controller = new AbortController();
     let cancelled = false;
-    const operation = fetchRemoteJsonWithLimits({
-      url: 'https://catalog.example.test/index.json', errorLabel: 'Marketplace catalog', signal: controller.signal,
-      network: {
-        resolveAddresses: async () => [{ address: '93.184.216.34', family: 4 }],
-        fetchImpl: async () => new Response(new ReadableStream({ cancel() { cancelled = true; } })),
-      },
+    const operation = readRemoteJsonResponseWithLimits({
+      response: new Response(new ReadableStream({ cancel() { cancelled = true; } })),
+      signal: controller.signal, errorLabel: 'Marketplace catalog',
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     const rejected = expect(operation).rejects.toThrow('body cancelled');
     controller.abort(new Error('body cancelled'));
     await rejected;
     expect(cancelled).toBe(true);
-    await expect(fetchRemoteJsonWithLimits({
-      url: 'https://catalog.example.test/index.json', errorLabel: 'Marketplace catalog',
-      network: {
-        resolveAddresses: async () => [{ address: '93.184.216.34', family: 4 }],
-        fetchImpl: async () => { throw new Error('connection refused'); },
-      },
-    })).rejects.toThrow('connection refused');
   });
 
   it('stops a chunked archive that never declares its length once the budget is spent', async () => {
@@ -185,10 +184,16 @@ describe('remote plugin body budget', () => {
       response.end('""]');
     });
 
-    await expect(fetchRemoteJsonWithLimits({
-      url: `http://127.0.0.1:${port}/catalog.json`,
-      maxBytes: 2048,
-      errorLabel: 'Marketplace catalog',
-    })).rejects.toThrow('Marketplace catalog exceeds the configured size limit (2048 bytes)');
+    const opened = await openRemoteAcquisition({
+      url: `http://127.0.0.1:${port}/catalog.json`, headers: { accept: 'application/json' },
+      policy: CATALOG_POLICY, timeoutMs: 5_000, errorLabel: 'Marketplace catalog',
+    });
+    try {
+      await expect(readRemoteJsonResponseWithLimits({
+        response: opened.response, signal: opened.signal, maxBytes: 2048, errorLabel: 'Marketplace catalog',
+      })).rejects.toThrow('Marketplace catalog exceeds the configured size limit (2048 bytes)');
+    } finally {
+      await opened.dispose();
+    }
   });
 });

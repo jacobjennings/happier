@@ -10,6 +10,7 @@ import { readRunScopedExecutionPermissionRequestIdentity } from '@happier-dev/pr
 
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { normalizeStrictJsonValue, sameStrictJsonValue } from '@happier-dev/protocol/json/strictJsonValue';
 import { z } from 'zod/mini';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc/methods';
 import { ACCOUNT_STORED_CONTENT_SESSION_TURN_WAITING_PROTOCOL_VERSION } from '@happier-dev/protocol/clientCompatibility/accountStoredContentCompatibilityV1';
@@ -778,8 +779,23 @@ export abstract class BasePermissionHandler {
         if (!context || !pending?.coordinatorManaged || !this.isApprovalReviewerEnabled() || context.source === HAPPIER_ACTION_REQUEST_SOURCE
             || context.kind === 'user_action' || resolveAgentRequestKind(context.toolName) !== 'permission'
             || currentDecision?.decision === 'denied' || currentDecision?.decision === 'abort') return 'escalate';
-        // Compare against the reviewed value, not a provider-owned mutable argument reference.
-        const reviewedInput: unknown = structuredClone(context.toolInput);
+        // Public permission sources may carry non-JSON records. Admit a strict,
+        // immutable snapshot before disclosure or JSON-value comparison.
+        let reviewedInput: ReturnType<typeof normalizeStrictJsonValue>;
+        try {
+            reviewedInput = normalizeStrictJsonValue(context.toolInput);
+        } catch {
+            return 'escalate';
+        }
+        const matchesReviewedInput = (candidate: unknown): boolean => {
+            try {
+                // Mutable sources can leave the JSON domain across any await,
+                // including the durable claim write. Never omit invalid members.
+                return sameStrictJsonValue(normalizeStrictJsonValue(candidate), reviewedInput);
+            } catch {
+                return false;
+            }
+        };
         const metadata = this.session.getMetadataSnapshot();
         if (!await isApprovalReviewerModelEligible(context.toolName, reviewedInput, metadata?.path ?? '')) return 'escalate';
         const backend = resolveBackendTargetFromSessionMetadata(metadata);
@@ -822,11 +838,11 @@ export abstract class BasePermissionHandler {
                 const decision = this.pendingRequests.get(requestId)?.resolveCurrentPermissionDecision?.()
                     ?? (current ? this.resolveCurrentPermissionDecisionForOutstandingRequest(current) : null);
                 return this.pendingRequests.get(requestId) === pending
-                    && isDeepStrictEqual(pending.input, reviewedInput)
+                    && matchesReviewedInput(pending.input)
                     && this.isApprovalReviewerEnabled() && decision?.decision !== 'denied' && decision?.decision !== 'abort';
             };
             if (!current || this.pendingRequests.get(requestId) !== pending || !eligible() || current.turnId !== context.turnId
-                || current.toolName !== context.toolName || !isDeepStrictEqual(current.toolInput, reviewedInput)) return 'escalate';
+                || current.toolName !== context.toolName || !matchesReviewedInput(current.toolInput)) return 'escalate';
             const claim: PermissionResponseClaim = { version: 1, origin: 'approvalReviewer',
                 ...(current.turnId ? { turnId: current.turnId } : {}), decision: 'approved', scope: 'request' };
             const acquired = await this.requestCoordinator.acquireResponseClaim({ requestId, claim });

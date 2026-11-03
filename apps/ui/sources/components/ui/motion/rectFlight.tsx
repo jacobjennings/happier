@@ -18,7 +18,7 @@ import { motionTokens } from './motionTokens';
 import { reanimatedMotionTokens } from './reanimatedMotionTokens';
 import { interpolateRectFlip, rectFlipFrame, rectFlipLegProgress, rectFlipTransform, type RectFlipFrame, type RectFlipOrigin, type WindowFlightRect } from './rectFlipGeometry';
 
-export { coverRectFlipOrigin, interpolateRectFlip } from './rectFlipGeometry';
+export { coverRectFlipOrigin } from './rectFlipGeometry';
 export type { RectFlipFrame, RectFlipOrigin, WindowFlightRect } from './rectFlipGeometry';
 
 /** Capture includes an in-flight browser transform, so the next flight can retarget from it. */

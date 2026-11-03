@@ -2,10 +2,10 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createActionExecutor } from '@happier-dev/protocol/actions/actionExecutor';
 import { createCliActionDeps } from '@/session/actions/createCliActionDeps';
-import { ProjectDefinitionInspectOutputSchema } from '@happier-dev/protocol/actions/projectDefinitionActionFamily';
+import { ProjectDefinitionInspectOutputSchema, ProjectSetupReadinessV1Schema } from '@happier-dev/protocol/actions/projectDefinitionActionFamily';
 import type { RpcHandlerContext } from '@/api/rpc/types';
 import type { ProjectNativeCommandIo } from '@/workspaces/projectSetup/projectNativeResolution';
 import { inspectProjectSetup, reviewProjectSetupEffect, type ProjectSetupPreparationInput } from '@/workspaces/projectSetup/projectSetupPreparation';
@@ -16,6 +16,7 @@ import { reloadConfiguration } from '@/configuration';
 import { updateSettings } from '@/persistence';
 import { HomeConnectionDescriptorV1Schema } from '@happier-dev/protocol/auth/accountDirectory';
 import { assertActionOutputContract } from '@/testkit/actionOutputContract';
+import { logger } from '@/ui/logger';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -103,6 +104,29 @@ describe('project definition Actions through registered Machine RPC', () => {
     expect(await handlers.get('daemon.projects.inspect.v1')!({ workspace })).toMatchObject({
       setupReadiness: { kind: 'unknown', code: 'project_setup_requester_review_unavailable' },
     });
+  });
+  it.each([['missing', 'ENOENT'], ['malformed', 'project_setup_inspection_failed']] as const)(
+    'preserves a failed filesystem review reason (%s) and logs it without disclosing the error payload', async (kind, code) => {
+    const { root, workspace } = await setup();
+    const file = join(root, 'private-review-unavailable');
+    if (kind === 'malformed') await writeFile(file, '{private-content');
+    const diagnostic = vi.spyOn(logger, 'debug');
+    try {
+      const action = createProjectDefinitionAction({ serverId: workspace.serverId, machineId: workspace.machineId,
+        workingDirectory: root, accessPolicy: { kind: 'restrictedRoots', roots: [root] },
+        // The private review adapter's filesystem is the failing system boundary.
+        inspectSetup: async () => ({ setupReadiness: ProjectSetupReadinessV1Schema.parse(JSON.parse(await readFile(file, 'utf8'))) }) });
+      const executor = createActionExecutor({ ...createCliActionDeps({ token: 'fixture-token', mode: 'plain', ctx: null,
+        sessionId: 'project-definition-fixture', serverId: workspace.serverId, serverHttpBaseUrl: 'https://project-definition.example' }), projectDefinitionAction: action });
+      const handlers = new Map<string, (input: unknown) => Promise<unknown>>();
+      registerProjectDefinitionHandlers({ machineId: workspace.machineId, actionExecutor: executor,
+        rpcHandlerManager: { registerHandler: (method, handler) => { handlers.set(method, handler); } } });
+      const result = ProjectDefinitionInspectOutputSchema.parse(await handlers.get('daemon.projects.inspect.v1')!({ workspace }));
+      expect(result.setupReadiness).toEqual({ kind: 'unknown', code });
+      expect(diagnostic.mock.calls).toContainEqual(['[ProjectSetup] inspection failed', { code }]);
+      expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('private-review-unavailable');
+      expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('private-content');
+    } finally { diagnostic.mockRestore(); }
   });
   it('projects reviewed target-local completion through inspect without evaluating setup or disclosing its basis', async () => {
     const reviewInput = (root: string): ProjectSetupPreparationInput => {

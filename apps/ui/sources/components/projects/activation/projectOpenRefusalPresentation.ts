@@ -2,6 +2,8 @@ import { t } from '@/text';
 
 /** The refusal in the person's terms; the exact code stays behind Details. */
 export function projectOpenRefusalPresentation(code: string, gitRef: string | null): Readonly<{ title: string; description?: string }> {
+    if (code === 'FEATURE_UNSUPPORTED') return { title: t('projects.open.cloneUnsupported') };
+    if (code === 'BACKEND_UNAVAILABLE') return { title: t('projects.open.hostingProviderUnavailable') };
     if (code === 'target_mismatch') return {
         title: t('projects.open.targetMismatch'), description: t('projects.open.targetMismatchHint'),
     };

@@ -221,16 +221,11 @@ describe('ResizableDockedPaneVertical (web pointer drag)', () => {
         if (!webHandle) {
             throw new Error('expected resizable docked pane vertical handle');
         }
-        const grip = webHandle.findByType('View');
-
+        // The row handle shows the shared grip indicator; the docked column handle does not.
+        expect(webHandle.findAllByType('View').length).toBeGreaterThan(0);
         expect(flattenStyle(webHandle.props.style)).toEqual(expect.objectContaining({
             height: 18,
             cursor: 'row-resize',
-        }));
-        expect(grip.props.style).toEqual(expect.objectContaining({
-            width: 56,
-            height: 5,
-            borderRadius: 999,
         }));
     });
 });

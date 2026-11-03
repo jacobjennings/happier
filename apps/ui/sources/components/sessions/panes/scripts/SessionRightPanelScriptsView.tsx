@@ -57,7 +57,7 @@ export const SessionRightPanelScriptsView = React.memo(
     return (
       <ProjectScriptsBody
         workspace={props.checkout}
-        presentation="widget"
+        presentation="rail"
         outputScopeId={props.outputScopeId}
         testID="session-rightpanel-scripts"
       />

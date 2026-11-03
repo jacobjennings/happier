@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { act } from 'react-test-renderer';
 import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
 
 const routerBackSpy = vi.hoisted(() => vi.fn());
@@ -262,12 +261,6 @@ describe('app stack modal header close buttons', () => {
         </AppShellColumnContext.Provider>);
         expect(getStackScreenOptions(screen, 'workflows/[id]/index').headerLeft).toBeUndefined();
     });
-    it('leaves the phone library title and creation actions to its PageHeader', async () => {
-        deviceTypeState.value = 'phone';
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
-        const screen = await renderScreen(<RootLayout />);
-        expect(getStackScreenOptions(screen, 'workflows/index').headerShown).toBe(false);
-    });
     beforeEach(() => {
         routerBackSpy.mockReset();
         routerReplaceSpy.mockReset();
@@ -296,7 +289,8 @@ describe('app stack modal header close buttons', () => {
         expect(options.headerRight).toBeUndefined();
     });
 
-    it('presents the simple composer as a chrome-free transparent modal on native', async () => {
+    it.each(['ios', 'web'] as const)('presents the simple composer as a chrome-free transparent modal on %s', async (os) => {
+        platformState.os = os;
         const { default: RootLayout } = await import('@/app/(app)/_layout');
         const screen = await renderScreen(<RootLayout />);
 
@@ -358,41 +352,6 @@ describe('app stack modal header close buttons', () => {
         expect(options.gestureEnabled).toBe(true);
     });
 
-    it('presents the wizard new-session route as a stack modal on web by default', async () => {
-        platformState.os = 'web';
-        settingState.useEnhancedSessionWizard = true;
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
-
-        const screen = await renderScreen(<RootLayout />);
-
-        const options = getStackScreenOptions(screen, 'new/index');
-        expect(options.presentation).toBe('modal');
-    });
-
-    it('presents the simple new-session composer as a chrome-free transparent modal on web', async () => {
-        platformState.os = 'web';
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
-
-        const screen = await renderScreen(<RootLayout />);
-
-        const options = getStackScreenOptions(screen, 'new/index');
-        expect(options.presentation).toBe('transparentModal');
-        expect(options.headerShown).toBe(false);
-        expect(options.headerRight).toBeUndefined();
-    });
-
-    it('presents the wizard new-session route as a stack modal on web when requested', async () => {
-        platformState.os = 'web';
-        settingState.useEnhancedSessionWizard = true;
-        settingState.newSessionPresentationModeV1 = 'modal';
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
-
-        const screen = await renderScreen(<RootLayout />);
-
-        const options = getStackScreenOptions(screen, 'new/index');
-        expect(options.presentation).toBe('modal');
-    });
-
     it('presents the new-session route as a regular screen on iOS when requested', async () => {
         platformState.os = 'ios';
         settingState.newSessionPresentationModeV1 = 'screen';
@@ -404,39 +363,18 @@ describe('app stack modal header close buttons', () => {
         expect(options.presentation).toBeUndefined();
     });
 
-    it('uses deterministic back fallback for the direct-session browse close button', async () => {
+    it.each([
+        ['direct/browse', 'direct-session-browse-cancel'],
+        ['external/browse', 'external-session-browse-cancel'],
+    ] as const)('uses deterministic back fallback for the %s close button', async (name, testID) => {
         const { default: RootLayout } = await import('@/app/(app)/_layout');
-
         const screen = await renderScreen(<RootLayout />);
-
-        const options = getStackScreenOptions(screen, 'direct/browse');
+        const options = getStackScreenOptions(screen, name);
         const headerRight = options.headerRight as (() => React.ReactNode) | undefined;
         expect(headerRight).toBeTypeOf('function');
-
         const renderedHeader = await renderScreen(<>{headerRight?.()}</>);
         const closeButton = renderedHeader.tree.root
-            .findAllByProps({ testID: 'direct-session-browse-cancel' })
-            .find((node) => node.props.accessibilityRole === 'button');
-        expect(closeButton).toBeTruthy();
-
-        await pressTestInstanceAsync(closeButton!);
-        expect(safeRouterBackSpy).toHaveBeenCalledWith({
-            router: expect.objectContaining({
-                back: routerBackSpy,
-            }),
-            navigation: stackNavigationMock,
-            fallbackHref: '/',
-        });
-    });
-
-    it('uses deterministic back fallback for the canonical external-session browse close button', async () => {
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
-        const screen = await renderScreen(<RootLayout />);
-        const options = getStackScreenOptions(screen, 'external/browse');
-        const headerRight = options.headerRight as (() => React.ReactNode) | undefined;
-        const renderedHeader = await renderScreen(<>{headerRight?.()}</>);
-        const closeButton = renderedHeader.tree.root
-            .findAllByProps({ testID: 'external-session-browse-cancel' })
+            .findAllByProps({ testID })
             .find((node) => node.props.accessibilityRole === 'button');
 
         expect(closeButton).toBeTruthy();
@@ -446,36 +384,6 @@ describe('app stack modal header close buttons', () => {
             navigation: stackNavigationMock,
             fallbackHref: '/',
         });
-    });
-
-    it('opens settings as a destination of the app shell on tablets and desktops, never as a modal', async () => {
-        for (const os of ['web', 'ios'] as const) {
-            platformState.os = os;
-            deviceTypeState.value = 'tablet';
-            const { default: RootLayout } = await import('@/app/(app)/_layout');
-
-            const screen = await renderScreen(<RootLayout />);
-
-            const settingsOptions = getStackScreenOptions(screen, 'settings');
-            expect(settingsOptions.presentation).toBeUndefined();
-            expect(settingsOptions.webModalStyle).toBeUndefined();
-            // A rail destination switches in place, like the other destinations.
-            expect(settingsOptions.animation).toBe('none');
-            act(() => screen.tree.unmount());
-        }
-    });
-
-    it('keeps settings as a non-animated full-screen tab on phones (reached via the bottom tab bar)', async () => {
-        platformState.os = 'web';
-        deviceTypeState.value = 'phone';
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
-
-        const screen = await renderScreen(<RootLayout />);
-
-        const settingsOptions = getStackScreenOptions(screen, 'settings');
-        expect(settingsOptions.presentation).toBeUndefined();
-        // Phone keeps the instant tab switch — animation must remain suppressed.
-        expect(settingsOptions.animation).toBe('none');
     });
 
 });

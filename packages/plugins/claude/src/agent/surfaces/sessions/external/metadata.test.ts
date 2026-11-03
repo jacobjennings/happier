@@ -1,8 +1,17 @@
-import { appendFile, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, rm, stat, writeFile, type FileHandle } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { runWithSessionInputPromptUserTextReader } from '@happier-dev/plugin-sdk/sessions/external';
+
+const openMock = vi.hoisted(() => vi.fn<typeof import('node:fs/promises').open>());
+
+// Observe real filesystem work without replacing the JSONL scanner or title reducer.
+vi.mock('node:fs/promises', async () => {
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    return { ...actual, open: (...args: Parameters<typeof actual.open>) => openMock(...args) };
+});
 
 import {
     applyClaudeTitleRecord,
@@ -19,6 +28,107 @@ function jsonlLine(value: unknown): string {
 }
 
 describe('Claude external-session metadata', () => {
+    beforeEach(async () => {
+        const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+        openMock.mockReset();
+        openMock.mockImplementation(actual.open);
+    });
+
+    it('reads concurrent title scans once while retaining per-invocation prompt interpretation', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-claude-title-concurrent-'));
+        try {
+            const filePath = join(root, 'session-one.jsonl');
+            const transcript = [
+                jsonlLine({ type: 'user', message: { content: 'Native user body' } }),
+                ...Array.from({ length: 2_500 }, () => jsonlLine({ type: 'progress', data: 'x'.repeat(1_024) })),
+            ].join('');
+            await writeFile(filePath, transcript);
+            const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+            const handles: FileHandle[] = [];
+            openMock.mockImplementation(async (...args) => {
+                const handle = await actual.open(...args);
+                if (String(args[0]) === filePath) {
+                    vi.spyOn(handle, 'read');
+                    handles.push(handle);
+                }
+                return handle;
+            });
+            const bytesRead = async () => {
+                let total = 0;
+                for (const handle of handles) {
+                    for (const result of vi.mocked(handle.read).mock.results) {
+                        if (result.type === 'return') total += (await result.value).bytesRead;
+                    }
+                }
+                return total;
+            };
+            const request = { filePath, remoteSessionId: 'session-one' };
+            const single = await readClaudeJsonlSessionTitleWithIndex(request);
+            const singleBytes = await bytesRead();
+            expect(singleBytes).toBeGreaterThanOrEqual(Buffer.byteLength(transcript));
+            const concurrent = await Promise.all(['Context A title', 'Context B title'].map(title => (
+                runWithSessionInputPromptUserTextReader(() => title, () => readClaudeJsonlSessionTitleWithIndex(request))
+            )));
+            expect(concurrent.map(result => result.title)).toEqual(['Context A title', 'Context B title']);
+            const concurrentBytes = (await bytesRead()) - singleBytes;
+            expect(concurrentBytes).toBeLessThanOrEqual(singleBytes);
+
+            const beforeWarm = await bytesRead();
+            await expect(readClaudeJsonlSessionTitleWithIndex({ ...request, previousState: single.indexState }))
+                .resolves.toMatchObject({ title: 'Native user body' });
+            expect(await bytesRead()).toBe(beforeWarm);
+            await appendFile(filePath, jsonlLine({ type: 'custom-title', sessionId: 'session-one', customTitle: 'Appended title' }));
+            await expect(readClaudeJsonlSessionTitleWithIndex(request)).resolves.toMatchObject({ title: 'Appended title' });
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    it('keeps explicit filesystem sources separate for the same transcript path', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-claude-title-filesystems-'));
+        try {
+            const filePath = join(root, 'session-one.jsonl');
+            const first = Buffer.from(jsonlLine({ type: 'user', message: { content: 'First source' } }));
+            const second = Buffer.from(jsonlLine({ type: 'user', message: { content: 'Other source' } }));
+            await writeFile(filePath, first);
+            const boundary = (contents: Buffer) => ({
+                stat: async () => ({ size: contents.length, mtimeMs: 0 }),
+                read: async (_path: string, position: number, length: number) => contents.subarray(position, position + length),
+            });
+            const request = { filePath, remoteSessionId: 'session-one' };
+            const results = await Promise.all([
+                readClaudeJsonlSessionTitleWithIndex({ ...request, fileSystem: boundary(first) }),
+                readClaudeJsonlSessionTitleWithIndex({ ...request, fileSystem: boundary(second) }),
+            ]);
+            expect(results.map(result => result.title)).toEqual(['First source', 'Other source']);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    it('retries a title scan after a shared filesystem read fails', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-claude-title-read-recovery-'));
+        try {
+            const filePath = join(root, 'session-one.jsonl');
+            await writeFile(filePath, jsonlLine({ type: 'user', message: { content: 'Recovered title' } }));
+            const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+            openMock.mockImplementation(async (...args) => {
+                if (String(args[0]) === filePath) throw new Error('Filesystem read unavailable');
+                return actual.open(...args);
+            });
+            const request = { filePath, remoteSessionId: 'session-one' };
+            const failed = await Promise.allSettled([
+                readClaudeJsonlSessionTitleWithIndex(request),
+                readClaudeJsonlSessionTitleWithIndex(request),
+            ]);
+            expect(failed.map(result => result.status)).toEqual(['rejected', 'rejected']);
+            openMock.mockImplementation(actual.open);
+            await expect(readClaudeJsonlSessionTitleWithIndex(request)).resolves.toMatchObject({ title: 'Recovered title' });
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
     it('retains optional working-directory fallback when a native row exceeds the read allowance', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-claude-large-cwd-'));
         try {

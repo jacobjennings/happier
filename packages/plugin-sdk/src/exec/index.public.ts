@@ -1,3 +1,4 @@
+export { resolveGhNativeToken } from '../exec.js';
 export type { PluginAgentCliReadinessRequest as AgentCliReadinessRequest } from '../services/io.js';
 export type { PluginAgentCliReadinessResult as AgentCliReadinessResult } from '../services/io.js';
 export type { AgentCliReadinessService } from '../exec.js';
@@ -15,3 +16,7 @@ export type { SystemToolContribution } from '../exec.js';
 export type { SystemToolDiagnostic } from '../exec.js';
 export type { SystemToolResolveRequest } from '../exec.js';
 export type { SystemToolsService } from '../exec.js';
+
+
+
+export type { DeploymentExecEnvAttachmentV1, DeploymentExecEnvPortV1 } from '../services/io.js';

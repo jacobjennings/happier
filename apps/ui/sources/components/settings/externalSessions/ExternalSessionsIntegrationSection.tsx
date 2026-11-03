@@ -8,8 +8,8 @@ import { resolveHappierFocusRingVisible } from '@happier-dev/plugin-ui/presentat
 import { focusRingStyle } from '@/components/ui/interactions/interactionFeedback';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { useListPresentation, usePageNoticeActive } from '@/components/ui/lists/listPresentation';
-import { VirtualizedList } from '@/components/ui/lists/virtualized';
+import { usePageNoticeActive } from '@/components/ui/lists/listPresentation';
+import { VirtualizedItemList } from '@/components/ui/lists/VirtualizedItemList';
 import { PluginDiagnosticsSection } from '@/components/settings/plugins/diagnostics/PluginDiagnosticsSection';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -208,7 +208,6 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
     }>,
 ) {
     const { theme } = useUnistyles();
-    const listPresentation = useListPresentation();
     const pageNoticeActive = usePageNoticeActive();
     const showMachinePrivacy = props.machineId !== null;
     const integrations = React.useMemo(
@@ -795,17 +794,11 @@ export const ExternalSessionsIntegrationSection = React.memo(function ExternalSe
                     onBlur: () => setSectionFallbackFocused(false),
                 } : {})}
             >
-                <VirtualizedList
+                <VirtualizedItemList
                     testID="settings-external-sessions-virtualized-list"
                     data={virtualizedRows}
                     keyExtractor={(item) => item.key}
                     renderItem={renderVirtualizedRow}
-                    style={{
-                        flex: 1,
-                        backgroundColor: listPresentation === 'page' ? theme.colors.surface.base : theme.colors.background.canvas,
-                        ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
-                    }}
-                    contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
                     ListHeaderComponent={(
                         <>
                             {props.virtualizedHeader}

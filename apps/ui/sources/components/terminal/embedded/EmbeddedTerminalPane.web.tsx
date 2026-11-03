@@ -2,7 +2,7 @@ import * as React from 'react';
 import { View } from 'react-native';
 import { useTerminalFind } from './useTerminalFind';
 
-import { resolveCodeEditorFontMetrics } from '@/components/ui/code/editor/codeEditorFontMetrics';
+import { resolveTerminalFontMetrics } from './terminalFontMetrics';
 import { useLocalSetting } from '@/sync/domains/state/storage';
 import type { XtermTerminalHandle } from '@/components/terminal/xterm/XtermTerminalView.web';
 import { SessionPaneLazyLoader } from '@/components/sessions/panes/SessionPaneLazyLoader';
@@ -42,7 +42,7 @@ export type EmbeddedTerminalPaneProps = Readonly<{
 
 export const EmbeddedTerminalPane = React.memo(function EmbeddedTerminalPaneWeb(props: EmbeddedTerminalPaneProps) {
     const uiFontScale = useLocalSetting('uiFontScale');
-    const fontMetrics = React.useMemo(() => resolveCodeEditorFontMetrics({ uiFontScale }), [uiFontScale]);
+    const fontMetrics = React.useMemo(() => resolveTerminalFontMetrics({ uiFontScale }), [uiFontScale]);
     const xtermRef = props.terminalRef as React.MutableRefObject<XtermTerminalHandle | null>;
     // A phone (including a phone-width browser) gets the key rail and the arrow pad (terminal lab P1).
     const deviceType = useDeviceType();

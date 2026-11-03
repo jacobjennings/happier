@@ -26,7 +26,7 @@ import { createStablePluginConnectedAccountsHost } from '@/plugins/runtime/invoc
 import { createStablePluginHttpHost } from '@/plugins/runtime/fetch/service';
 import { resolveHomeTargetFromDescriptor } from '@happier-dev/cli-common/homeTarget';
 import { createHostActionOperationRuntime } from '@/daemon/actionOperations/createHostActionOperationRuntime';
-import { createActionExecutor, type ActionExecutorDeps } from '@happier-dev/protocol/actions/actionExecutor';
+import { createActionExecutor, type ActionExecutorDeps, type ActionExecutorContext } from '@happier-dev/protocol/actions/actionExecutor';
 import { PluginConnectedAccountAuthenticationV2Schema, type JsonValue } from '@happier-dev/protocol';
 import type { PluginServices, PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import { ManagedBootstrapCredentialCreateV1Schema, ManagedControllerCurrentInputV1Schema, ManagedControllerReportV1Schema } from '@happier-dev/protocol/machines/managed/actionsV1';
@@ -137,13 +137,19 @@ describe('creation environment stage', () => {
         let installing = false;
         let nowMs = Date.now();
         const startedAt = nowMs;
+        const pairingExpiresAtMs = startedAt + 15 * 60_000;
+        let operationRuntime: ReturnType<typeof createHostActionOperationRuntime> | undefined;
+        let work: Promise<unknown> | undefined;
         const server = createServer((request, response) => {
             response.setHeader('Content-Type', 'application/json');
             if (request.url?.endsWith('/controller/current')
                 && (scenario.startsWith('install-') ? installing && (scenario === 'install-expire' || unavailableReads === 0) : retained.enrolledMachineId
                     && (scenario === 'expire' || scenario === 'recover' && unavailableReads === 0))) {
                 unavailableReads++;
-                if ((scenario === 'expire' || scenario === 'install-expire') && unavailableReads === 2) nowMs = startedAt + 10 * 60_000 + 1;
+                if (unavailableReads === 2) {
+                    if (scenario === 'expire') nowMs = pairingExpiresAtMs + 1;
+                    if (scenario === 'install-expire') nowMs = startedAt + 10 * 60_000 + 1;
+                }
                 response.writeHead(503);
                 response.end(JSON.stringify({ error: 'database_connection_unavailable' }));
                 return;
@@ -192,7 +198,7 @@ describe('creation environment stage', () => {
             reloadConfiguration();
             const pairing = { kind: 'remote_home_enrollment_pairing_request', protocolVersion: 1,
                 publicKey: Buffer.alloc(32, 3).toString('base64'), homeServerIdentityId: homeId,
-                pairing: { secretB64Url: Buffer.alloc(32, 4).toString('base64url'), createdAtMs: nowMs, expiresAtMs: nowMs + 15 * 60_000 },
+                pairing: { secretB64Url: Buffer.alloc(32, 4).toString('base64url'), createdAtMs: startedAt, expiresAtMs: pairingExpiresAtMs },
                 supportsTokenOnly: true, pairingRequirement: 'v3', remoteProfileId: homeId };
             const completion = { kind: 'remote_home_enrollment_result', protocolVersion: 1, success: true,
                 homeServerIdentityId: homeId, machineId: 'enrolled-guest', encryptionType: 'tokenOnly', pairingAuthentication: 'v3', remoteProfileId: homeId };
@@ -233,13 +239,12 @@ describe('creation environment stage', () => {
             vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
             const acquisition = createManagedMachineAcquisitionDriver({ token: 'token', serverUrl, homeId, controller,
                 ...accountInputs, runtimeRegistry: native.runtimeRegistry, homeTarget });
-            const operations = createHostActionOperationRuntime({ machineId: controller.machineId, resolveAccountId: async () => 'owner',
+            const operations = operationRuntime = createHostActionOperationRuntime({ machineId: controller.machineId, resolveAccountId: async () => 'owner',
                 generateOperationId: () => `controller-home-${scenario}` });
             const actionInput = { ...input, selection: { ...input.selection, homeId } };
-            let work: Promise<unknown> | undefined;
             const executor = createActionExecutor({ managedMachineAction: async ({ actionId, input, context }) =>
                 await acquisition.execute(actionId, input, { requestId: 'creation', signal: context.signal,
-                    context: { ...context, operationOwnerUpdate: { update(value) {
+                    context: { ...context, operationOwnerUpdate: { update(value: Parameters<NonNullable<ActionExecutorContext['operationOwnerUpdate']>['update']>[0]) {
                         if (value.progress?.phase === 'ssh.installCli') installing = true;
                         context.operationOwnerUpdate?.update(value);
                     } } } }) } as ActionExecutorDeps);
@@ -287,6 +292,9 @@ describe('creation environment stage', () => {
                 expect(deliveries.length).toBeGreaterThan(1);
             }
         } finally {
+            // Join the real retry/task lifetime before restoring shared boundaries.
+            await operationRuntime?.handlers.cancel({ operationId: `controller-home-${scenario}` });
+            if (work) await Promise.allSettled([work]);
             vi.restoreAllMocks();
             vi.unstubAllEnvs();
             if (oldHome === undefined) delete process.env.HAPPIER_HOME_DIR;
@@ -1336,6 +1344,7 @@ describe('managed acquisition durable custody', () => {
         const startedAt = Date.now();
         let nowMs = startedAt;
         const clock = vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
+        const warning = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
         // Real HTTP producer, installer/task runner and operation store. Only
         // the unavailable native process boundary comes from nativeFixture.
         const server = createServer((request, response) => {
@@ -1369,7 +1378,7 @@ describe('managed acquisition durable custody', () => {
         const retry = { homeId, managedId: retained.id, expectedIntentRevision: retained.intentRevision };
         const executor = createActionExecutor({ managedMachineAction: async ({ actionId, input, context }) => {
             return await recovery.execute(actionId, input, { requestId: 'fresh-retry', signal: context.signal,
-                context: { ...context, operationOwnerUpdate: { update(value) {
+                context: { ...context, operationOwnerUpdate: { update(value: Parameters<NonNullable<ActionExecutorContext['operationOwnerUpdate']>['update']>[0]) {
                     if (value.progress?.phase === 'ssh.installCli') installing = true;
                     context.operationOwnerUpdate?.update(value);
                 } } } });
@@ -1387,6 +1396,14 @@ describe('managed acquisition durable custody', () => {
                     ...(category === 'status' ? { status: 500, code: 'P2024' } : category === 'schema' ? { status: 200 } : { code: 'ECONNRESET' }) },
             } } });
             expect(JSON.stringify(result)).not.toMatch(/private-|database diagnostic/);
+            expect(warning).toHaveBeenCalledWith('[MANAGED MACHINE] Controller request failed', {
+                managedId: retained.id,
+                operationId: `typed-currentness-${category}`,
+                path: '/v1/machines/managed/controller/current',
+                category,
+                httpStatus: category === 'transport' ? null : category === 'status' ? 500 : 200,
+            });
+            expect(JSON.stringify(warning.mock.calls)).not.toMatch(/private-|database diagnostic/);
             const legacy = await operations.handlers.get({ operationId: `typed-currentness-${category}` });
             if (result.kind !== 'found' || legacy.kind !== 'found') throw new Error('Operation read did not retain its terminal failure');
             expect(legacy.operation.error).toEqual({ errorCode: result.operation.error!.errorCode, error: result.operation.error!.error });
@@ -1529,7 +1546,7 @@ describe('managed acquisition durable custody', () => {
         const native = nativeFixture({ privateNative: true });
         const probeDriver = createManagedMachineAcquisitionDriver({ token: 'token', serverUrl: 'https://home.example',
             homeId: 'home', controller, ...accountInputs,
-            runtimeRegistry: { ...native.runtimeRegistry, readPluginOccurrenceId: undefined } });
+            runtimeRegistry: { ...native.runtimeRegistry, readPluginOccurrenceId: () => null } });
         await expect(probeDriver.execute('machines.provisioners.list', { homeId: 'home' }, { requestId: 'discovery' }))
             .resolves.toEqual({ controller, provisioners: [] });
         await expect(probeDriver.execute('machines.provisioners.check', { homeId: 'home', controller,
@@ -1611,10 +1628,13 @@ describe('managed acquisition durable custody', () => {
             if (path.endsWith('/verify')) return { status: 200, data: { ok: true } };
             if (path.endsWith('/actions/get')) return { status: 200, data: retained };
             if (path.endsWith('/report')) {
-                events.push('report');
+                const report = ManagedControllerReportV1Schema.parse(body);
+                // This sequence measures native identity settlement; bootstrap observations are separate row facts.
+                if (!report.observation?.reason?.startsWith('bootstrap.')) events.push('report');
                 reports.push(body);
                 expect(body).toMatchObject({ requestId: 'creation', expectedIntentRevision: 0, result: { kind: 'bound', resource } });
-                retained = ManagedMachineV1Schema.parse({ ...retained, allocation: 'bound', resource });
+                retained = ManagedMachineV1Schema.parse({ ...retained, allocation: 'bound', resource,
+                    ...(report.observation ? { observation: report.observation } : {}) });
             }
             return { status: 200, data: path.endsWith('/context') ? { machine: retained, requestId: 'creation' } : { machine: retained } };
         });
@@ -1646,9 +1666,9 @@ describe('managed acquisition durable custody', () => {
         else if (passive) await expect(work).rejects.toMatchObject({ code: 'admission_unavailable' });
         else if (withdrawn) await expect(work).rejects.toMatchObject({ code: 'admission_unavailable' });
         else await expect(work).rejects.toBeInstanceOf(Error);
-        expect(events).toEqual(passive ? withdrawn ? ['reconcile'] : ['reconcile', 'report', 'report']
+        expect(events).toEqual(passive ? withdrawn ? ['reconcile'] : ['reconcile', 'report']
             : withdrawn ? ['reconcile', 'report'] : ['reconcile', 'report', 'bootstrap']);
-        if (passive && !withdrawn) expect(reports[1]).toMatchObject({ observation: expect.any(Object) });
+        if (passive && !withdrawn) expect(reports[0]).toMatchObject({ observation: expect.any(Object) });
         if (passive && withdrawn) {
             // Passive recovery requires current origin authority. A withdrawn
             // reader retains the paid handle for a later authorized inspection,
@@ -1694,9 +1714,13 @@ describe('managed acquisition durable custody', () => {
             if (path.endsWith('/actions/get')) return { status: 200, data: retained };
             if (path.endsWith('/submit')) retained = ManagedMachineV1Schema.parse({ ...retained, allocation: 'may-exist' });
             if (path.endsWith('/report')) {
-                events.push('report');
-                expect(body).toMatchObject({ result: { kind: 'bound', resource } });
+                const report = ManagedControllerReportV1Schema.parse(body);
+                const bootstrapDiagnostic = report.observation?.availability === 'unavailable'
+                    && report.observation.reason?.startsWith('bootstrap.');
+                if (!bootstrapDiagnostic) events.push('report');
+                expect(report).toMatchObject({ result: { kind: 'bound', resource } });
                 retained = ManagedMachineV1Schema.parse({ ...retained, allocation: 'bound', resource,
+                    ...(report.observation ? { observation: report.observation } : {}),
                     ...(scenario === 'withdrawn' ? { creationState: 'canceled', desired: 'delete', intentRevision: 1 } : {}),
                 });
             }
@@ -1722,12 +1746,12 @@ describe('managed acquisition durable custody', () => {
             } });
             if (scenario === 'unknown') await expect(work).rejects.toMatchObject({ code: 'native_acquisition_unconfirmed' });
             else if (scenario === 'mismatch') await expect(work).rejects.toMatchObject({ code: 'resource_mismatch' });
-            else if (scenario === 'withdrawn') await expect(work).rejects.toMatchObject({ code: 'intent_changed' });
+            else if (scenario === 'withdrawn') await expect(work).rejects.toMatchObject({ code: 'plugin_action_execution_failed' });
             else await expect(work).rejects.toBeInstanceOf(Error);
             await operations.handlers.getV2({ operationId: 'acquisition-continuation', waitForTerminal: true });
         }
-        expect(events).toEqual(scenario === 'inspect' ? ['reconcile', 'report', 'report']
-            : scenario === 'withdrawn' ? ['reconcile', 'report']
+        expect(events).toEqual(scenario === 'inspect' ? ['reconcile', 'report']
+            : scenario === 'withdrawn' ? ['reconcile', 'report', 'acquire', 'bootstrap']
             : scenario === 'fresh' ? ['acquire', 'report', 'bootstrap']
             : scenario === 'bound' ? ['acquire', 'bootstrap']
             : scenario === 'unknown' || scenario === 'mismatch' ? ['reconcile', 'report', 'acquire'] : ['reconcile', 'report', 'acquire', 'bootstrap']);
@@ -1804,8 +1828,10 @@ describe('managed acquisition durable custody', () => {
                     expect(verifyExternalActionMachineRequestV1({ ...signedRequest, requestId: actionRequestId })).toBe(true);
                     expect(verifyExternalActionMachineRequestV1({ ...signedRequest, requestId: 'creation' })).toBe(false);
                 }
-                reports.push(body);
+                const report = ManagedControllerReportV1Schema.parse(body);
+                if (!report.observation?.reason?.startsWith('bootstrap.')) reports.push(body);
                 retained = ManagedMachineV1Schema.parse({ ...retained,
+                    ...(report.observation ? { observation: report.observation } : {}),
                     ...(resultKind === 'bound' ? { allocation: 'bound', resource } : { allocation: 'may-exist', nativeOperationRef }),
                     ...(retirement === 'operation-cancel' ? { cleanup: { disposition: 'pending', reason: 'creation_canceled' } } : {}),
                 });
@@ -1839,9 +1865,10 @@ describe('managed acquisition durable custody', () => {
         await expect(work).rejects.toMatchObject({ code: resultKind === 'pending' ? 'native_acquisition_unconfirmed'
             : retirement === 'operation-cancel' ? 'intent_changed' : 'admission_unavailable' });
         if (retirement === 'operation-cancel') expect(cancellation).toEqual({ kind: 'requested' });
-        expect(reports).toEqual([{ homeId: nativeHomeId, managedId: retained.id, expectedIntentRevision: 0,
+        expect(reports).toHaveLength(1);
+        expect(reports[0]).toMatchObject({ homeId: nativeHomeId, managedId: retained.id, expectedIntentRevision: 0,
             requestId: 'creation', controller, result: nativeResult,
-        }]);
+        });
         expect(retained).toMatchObject({ creationState: retirement === 'operation-cancel' ? 'canceled' : 'active',
             ...(resultKind === 'bound' ? { allocation: 'bound', resource } : { allocation: 'may-exist', nativeOperationRef }) });
         if (retirement === 'operation-cancel') expect(retained.cleanup).toMatchObject({ disposition: 'pending' });
@@ -1869,12 +1896,16 @@ describe('managed acquisition durable custody', () => {
             // installer task emits its first observed setup step.
             if (role === 'exec' && failure === 'exception') throw new Error('Guest process unavailable');
         } });
-        const retained = ManagedMachineV1Schema.parse({ ...machine, homeId: nativeHomeId, allocation: 'bound', resource: {
+        let retained = ManagedMachineV1Schema.parse({ ...machine, homeId: nativeHomeId, allocation: 'bound', resource: {
             contributionRef: input.selection.launch.provider, schemaVersion: 1, value: {},
         } });
-        vi.spyOn(axios, 'post').mockImplementation(async (url) => ({ status: 200,
-            data: String(url).endsWith('/admit') ? { machine: retained, replayed: false } : { machine: retained },
-        }));
+        vi.spyOn(axios, 'post').mockImplementation(async (url, body) => {
+            if (String(url).endsWith('/report')) {
+                const report = ManagedControllerReportV1Schema.parse(body);
+                retained = ManagedMachineV1Schema.parse({ ...retained, observation: report.observation ?? retained.observation });
+            }
+            return { status: 200, data: String(url).endsWith('/admit') ? { machine: retained, replayed: false } : { machine: retained } };
+        });
         const homeTarget = resolveHomeTargetFromDescriptor({ descriptor: { v: 1, homeServerIdentityId: nativeHomeId,
             canonicalServerUrl: 'https://home.example', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.example' }] }, authority: 'current_connection' });
         const nativeDriver = createManagedMachineAcquisitionDriver({ token: 'token', serverUrl: 'https://home.example', homeId: nativeHomeId,
@@ -1908,6 +1939,9 @@ describe('managed acquisition durable custody', () => {
             expect(task).toMatchObject({ result: { error: { code: 'provider_unavailable', message: expect.stringContaining(fact) } } });
             expect(JSON.stringify({ result, task })).not.toMatch(/PRIVATE_NATIVE_|PRIVATE_SIGNAL/);
         }
+        expect(retained.observation).toMatchObject({ availability: 'unavailable',
+            reason: failure === 'exception' ? 'bootstrap.plugin_action_execution_failed' : 'bootstrap.provider_unavailable' });
+        expect(JSON.stringify(retained.observation)).not.toMatch(/PRIVATE_NATIVE_|PRIVATE_SIGNAL/);
         expect(nativeCalls).toEqual(['bootstrap', 'exec']);
         expect(retained).toMatchObject({ allocation: 'bound', resource: { value: {} } });
     });
@@ -2157,7 +2191,8 @@ describe('managed acquisition durable custody', () => {
             }
             if (path.endsWith('/report')) {
                 const report = ManagedControllerReportV1Schema.parse(body);
-                reports.push(report.result);
+                if (!report.observation?.reason?.startsWith('bootstrap.')) reports.push(report.result);
+                if (report.observation) retained = ManagedMachineV1Schema.parse({ ...retained, observation: report.observation });
                 if (report.result.kind === 'bound') retained = ManagedMachineV1Schema.parse({ ...retained, allocation: 'bound', resource: report.result.resource });
             }
             return { status: 200, data: path.endsWith('/admit') ? { machine: retained, replayed: false }

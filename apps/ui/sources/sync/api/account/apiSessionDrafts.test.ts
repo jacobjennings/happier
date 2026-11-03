@@ -56,7 +56,7 @@ describe('apiSessionDrafts', () => {
             method: 'POST',
             body: JSON.stringify({ address }),
             headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
-        }));
+        }), { recoveryRead: 'unbounded' });
     });
 
     it('rejects malformed successful responses instead of materializing unvalidated bytes', async () => {

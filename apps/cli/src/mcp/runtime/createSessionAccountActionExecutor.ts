@@ -7,6 +7,7 @@ import { WaitActionInputV1Schema } from '@happier-dev/protocol/actions/specs/wai
 import type { ActionExecuteResult, ActionExecutorContext, ActionId } from '@happier-dev/protocol';
 import type { HappyMcpSessionClient } from '@/mcp/startHappyServer';
 import { configuration } from '@/configuration';
+import { isServerProfileHomeIdentity } from '@/server/serverProfiles';
 import { HAPPIER_AGENT_RUNTIME_DAEMON_SERVICE_AUTHORITY_FILE_ENV_KEY,
   readCurrentRunnerAgentRuntimeDaemonServiceAuthority } from '@/daemon/agentRuntime/sessionBridgeAuthorization';
 import { dispatchCurrentAgentRuntimeDaemonServiceRequest,
@@ -111,6 +112,10 @@ export function createSessionAccountActionExecutor(params: Readonly<{
         && (actionId === 'action.options.resolve' || actionId === 'agents.backends.list'
           || actionId === 'agents.models.list' || actionId === 'agents.config_options.list'
           || actionId === 'agents.session_modes.list');
+      // Project work and its retained operations/output use the credentialed
+      // exact-Machine owner. A restricted runner has only Session transport.
+      const projectMachineAction = !params.hasAccountAuthority && executionPlacement === 'machine'
+        && (actionId.startsWith('projects.') || ACTION_ID_FAMILIES_V1.operation_output.some(id => id === actionId));
       // Origin-required RPCs use the existing source-daemon custody channel,
       // including cross-Session question answers. Own questions stay with the
       // bound request store and its same canonical host-witness origin.
@@ -118,7 +123,7 @@ export function createSessionAccountActionExecutor(params: Readonly<{
         && !(actionId === 'session.needs_you.raise' && requestedSessionId === params.client.sessionId);
       if (!builtIn.success || (executionPlacement !== 'account'
         && executionPlacement !== 'client'
-        && !sessionRead && !persistedRead && !sessionLifecycle && !nativeInventoryRead && !sessionOriginRpc && !needsSessionTargetTransport
+        && !sessionRead && !persistedRead && !sessionLifecycle && !nativeInventoryRead && !projectMachineAction && !sessionOriginRpc && !needsSessionTargetTransport
         && builtIn.data !== 'session.spawn_new'
         // Admission inspects the executing Machine's workspace and plugin
         // runtime before sealing Account storage; a Session runner has neither.
@@ -136,6 +141,15 @@ export function createSessionAccountActionExecutor(params: Readonly<{
       if (actionId === 'wait' && context?.onWaitSnapshot) {
         const request = WaitActionInputV1Schema.safeParse(input);
         if (!request.success) return { ok: false, errorCode: 'invalid_action_input', error: 'invalid_action_input' };
+        const target = request.data.target;
+        // The live host already owns its Session/Run observation transport.
+        // Keep that passive sink in-process; the one-result daemon Action
+        // channel cannot carry it. Other targets retain their refusal below.
+        if ((target.kind === 'session' || target.kind === 'execution_run')
+          && target.sessionId === params.client.sessionId
+          && await isServerProfileHomeIdentity(params.client.getServerBinding().serverId, target.serverId)) {
+          return await params.base.execute(actionId, input, context);
+        }
         return { ok: true, result: { target: request.data.target, condition: request.data.condition,
           disposition: 'unsupported_condition' } };
       }

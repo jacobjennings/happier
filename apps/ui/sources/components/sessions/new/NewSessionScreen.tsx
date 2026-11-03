@@ -7,12 +7,12 @@ import { StoredPluginUiNewSessionSeedOriginV1Schema } from '@happier-dev/protoco
 import { ProjectSetupDraftFootnote, ProjectSetupDraftHeader } from '@/components/projects/projectSetup/ProjectSetupReturn';
 import type { SessionDirectoryIntentV1 } from '@happier-dev/protocol';
 
-import { SessionGettingStartedGuidance } from '@/components/sessions/guidance/SessionGettingStartedGuidance';
+import { NewSessionBlockingGuidance } from '@/components/sessions/new/components/NewSessionBlockingGuidance';
 import { useShouldBlockNewSessionWithGettingStartedGuidance } from '@/components/sessions/guidance/useShouldBlockNewSessionWithGettingStartedGuidance';
 import { NewSessionSimplePanel } from '@/components/sessions/new/components/NewSessionSimplePanel';
 import { NewSessionComposerCard } from '@/components/sessions/new/components/NewSessionComposerCard';
 import { NewSessionWizard } from '@/components/sessions/new/components/NewSessionWizard';
-import { NewSessionWizardWebDismissal } from '@/components/sessions/new/components/NewSessionWizardWebDismissal';
+import { NewSessionWebDismissal } from '@/components/sessions/new/components/NewSessionWebDismissal';
 import { NewBotDraftHeader } from '@/components/sessions/bots/NewBotDraftHeader';
 import type { NewSessionBotCreationModel } from '@/components/sessions/new/hooks/newSessionScreenModelTypes';
 import { NewSessionLaunchSurface } from '@/components/sessions/new/components/NewSessionLaunchSurface';
@@ -124,7 +124,7 @@ function NewSessionScreenInner(props: Readonly<{
     // The web route card has no header, so the wizard brings its own way out (a Home embed never shows the wizard).
     const wizardWithDismissal = (wizard: React.ReactElement) => (
         Platform.OS === 'web' && props.presentation === 'screen'
-            ? <NewSessionWizardWebDismissal>{wizard}</NewSessionWizardWebDismissal>
+            ? <NewSessionWebDismissal>{wizard}</NewSessionWebDismissal>
             : wizard
     );
 
@@ -221,7 +221,7 @@ function NewSessionContent(props: Readonly<{
     ) : props.statusTrailingActions;
 
     if (props.allowBlockingGuidance && shouldBlock) {
-        return <SessionGettingStartedGuidance variant="newSessionBlocking" />;
+        return <NewSessionBlockingGuidance presentation={props.presentation} />;
     }
 
     return (
@@ -315,6 +315,7 @@ export function NewSessionScreen(props: NewSessionScreenProps) {
         admissionRequest.assignedDraftId = draftId;
     }, [admissionRequest]);
     return <SessionDraftHydrationBoundary addresses={admissionRequest.addresses} lifetime={lifetime}
+        localScope={creationProfile?.draftHydration === 'local' ? draftScope : undefined}
         fallback={props.presentation === 'embedded' ? (
             <GlassSurface testID="new-session-draft-loading" finishRole="composer">
                 <ItemLoadStateRows state={{ kind: 'loading' }} rows={2} lines={1} accessibilityLabel={t('common.loading')} />

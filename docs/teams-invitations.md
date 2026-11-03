@@ -317,7 +317,7 @@ a capable cached feature projection cannot override its refusal.
 - **Bounded explicit-Home carrier.** `resolveTeamJoinLinkTarget` now reads the authenticated
   `HomeConnectionDescriptorV1` publication and emits a descriptor-form `HomeTargetInput` as
   JSON in `?target=`. The Team link builder binds that opaque value to the invitation bearer,
-  and the join route verifies the binding before `resolveTeamJoinTarget` parses it through
+  and the join route verifies the binding before `resolvePortableHomeLinkTarget` parses it through
   `parseHomeTargetInput`, resolves a saved identity when one exists, and otherwise lets the
   join surface adopt the descriptor before it sends the bearer. Failure to publish a
   descriptor fails link rendering closed.

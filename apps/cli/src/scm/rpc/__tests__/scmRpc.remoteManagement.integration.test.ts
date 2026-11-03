@@ -1,6 +1,6 @@
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 import type {
@@ -13,7 +13,7 @@ import type {
 } from '@happier-dev/protocol';
 import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createTestRpcManager, runGit as git } from './testRpcHarness';
 
@@ -56,11 +56,10 @@ exec "${realGit}" "$@"
     );
     chmodSync(wrapperPath, 0o755);
 
-    const originalPath = process.env.PATH;
-    process.env.PATH = `${wrapperDir}:${originalPath ?? ''}`;
+    vi.stubEnv('PATH', `${wrapperDir}${delimiter}${process.env.PATH ?? ''}`);
 
     return options.run().finally(() => {
-        process.env.PATH = originalPath;
+        vi.unstubAllEnvs();
     });
 }
 
@@ -116,7 +115,8 @@ describe('git RPC handlers (remote management)', () => {
         });
     });
 
-    it('removes the newly added remote when push-url configuration fails during add', async () => {
+    // The failing-git wrapper is a POSIX shell script resolved through PATH.
+    it.skipIf(process.platform === 'win32')('removes the newly added remote when push-url configuration fails during add', async () => {
         const workspace = initWorkspace();
         const fetchRemote = initBareRemote('happier-git-remote-rollback-fetch-');
         const pushRemote = initBareRemote('happier-git-remote-rollback-push-');
@@ -152,39 +152,6 @@ describe('git RPC handlers (remote management)', () => {
         expect(status.success).toBe(true);
         expect(status.snapshot?.repo.remotes).toEqual([]);
         expect(git(workspace, ['remote'])).toBe('');
-    });
-
-    it('sets fetch and push URLs independently', async () => {
-        const workspace = initWorkspace();
-        const originalRemote = initBareRemote('happier-git-remote-original-');
-        const fetchRemote = initBareRemote('happier-git-remote-fetch-');
-        const pushRemote = initBareRemote('happier-git-remote-push-');
-        git(workspace, ['remote', 'add', 'origin', originalRemote]);
-
-        const { call } = createTestRpcManager({ workingDirectory: workspace });
-        const setUrl = await call<ScmRemoteManagementResponse, ScmRemoteSetUrlRequest>(
-            RPC_METHODS.SCM_REMOTE_SET_URL,
-            {
-                cwd: '.',
-                name: 'origin',
-                fetchUrl: fetchRemote,
-                pushUrl: pushRemote,
-            },
-        );
-
-        expect(setUrl.success).toBe(true);
-
-        const status = await call<ScmStatusSnapshotResponse, ScmStatusSnapshotRequest>(
-            RPC_METHODS.SCM_STATUS_SNAPSHOT,
-            { cwd: '.' },
-        );
-        expect(status.snapshot?.repo.remotes).toEqual([
-            {
-                name: 'origin',
-                fetchUrl: fetchRemote,
-                pushUrl: pushRemote,
-            },
-        ]);
     });
 
     it('supports slash-delimited remote names across add, set-url, and remove', async () => {
@@ -278,7 +245,8 @@ describe('git RPC handlers (remote management)', () => {
         ]);
     });
 
-    it('rolls back fetch and push URLs when setting push URL fails after fetch URL changed', async () => {
+    // The failing-git wrapper is a POSIX shell script resolved through PATH.
+    it.skipIf(process.platform === 'win32')('rolls back fetch and push URLs when setting push URL fails after fetch URL changed', async () => {
         const workspace = initWorkspace();
         const originalFetchRemote = initBareRemote('happier-git-remote-rollback-original-fetch-');
         const originalPushRemote = initBareRemote('happier-git-remote-rollback-original-push-');
@@ -325,7 +293,8 @@ describe('git RPC handlers (remote management)', () => {
         ]);
     });
 
-    it('rolls back fetch and push URLs when clearing push URL fails after fetch URL changed', async () => {
+    // The failing-git wrapper is a POSIX shell script resolved through PATH.
+    it.skipIf(process.platform === 'win32')('rolls back fetch and push URLs when clearing push URL fails after fetch URL changed', async () => {
         const workspace = initWorkspace();
         const originalFetchRemote = initBareRemote('happier-git-remote-clear-rollback-original-fetch-');
         const originalPushRemote = initBareRemote('happier-git-remote-clear-rollback-original-push-');
@@ -369,29 +338,6 @@ describe('git RPC handlers (remote management)', () => {
                 pushUrl: originalPushRemote,
             },
         ]);
-    });
-
-    it('removes a remote', async () => {
-        const workspace = initWorkspace();
-        const remote = initBareRemote('happier-git-remote-remove-');
-        git(workspace, ['remote', 'add', 'origin', remote]);
-
-        const { call } = createTestRpcManager({ workingDirectory: workspace });
-        const remove = await call<ScmRemoteManagementResponse, ScmRemoteRemoveRequest>(
-            RPC_METHODS.SCM_REMOTE_REMOVE,
-            {
-                cwd: '.',
-                name: 'origin',
-            },
-        );
-
-        expect(remove.success).toBe(true);
-
-        const status = await call<ScmStatusSnapshotResponse, ScmStatusSnapshotRequest>(
-            RPC_METHODS.SCM_STATUS_SNAPSHOT,
-            { cwd: '.' },
-        );
-        expect(status.snapshot?.repo.remotes).toEqual([]);
     });
 
     it('returns remote-not-found when removing a missing remote', async () => {

@@ -65,6 +65,7 @@ import { DISCUSSION_AGENT_POST_EVENT_V1, DiscussionMachinePublicationV2Schema, D
 import { postPreparedDiscussionMessageInTx, prepareDiscussionPostMutationAccounts } from '@/app/discussions/mutations';
 import { isSessionInputSourceCurrentInTx } from '@/app/session/messages/sessionMessageReply';
 import { isServerFeatureEnabledForHome } from '@/app/features/catalog/serverFeatureGate';
+import { ExecutionRunMachineActivityV1Schema } from '@happier-dev/protocol/execution/runs/activityV1';
 
 async function acquireMachinePublicationLocksInTx(tx: Tx, machineId: string): Promise<string[]> {
     // SQLite already admits one writer. PostgreSQL/MySQL use the same ordered
@@ -464,11 +465,16 @@ export function machineUpdateHandler(
     ) => {
         const parsed = MachineSessionTerminalCaptureRequestV1Schema.safeParse(request);
         const machineId = readAuthenticatedMachineId(socket);
+        const installationId = readVerifiedMachineSocketInstallationIdFromSocketData(socket.data);
         if (!parsed.success) {
             callback?.({ v: 1, status: "rejected", reason: "invalid_request" });
             return;
         }
         try {
+            if (installationId && !await hasCurrentSocketCredential(userId, socket)) {
+                callback?.({ v: 1, status: "rejected", sessionId: parsed.data.sessionId, reason: "unauthorized" });
+                return;
+            }
             if (!machineId || !(await isMachineAvailableForSocket(userId, machineId))) {
                 if (machineId) activityCache.invalidateMachine(machineId);
                 callback?.({
@@ -494,6 +500,7 @@ export function machineUpdateHandler(
                     machineId,
                     sessionId: parsed.data.sessionId,
                 },
+                ...(installationId ? { installedMachineCustody: { installationId } } : {}),
             });
             callback?.(result.status === "captured"
                 ? {
@@ -578,6 +585,7 @@ export function machineUpdateHandler(
     ) => {
         const parsed = MachineSessionTerminalFinalizeRequestV1Schema.safeParse(request);
         const machineId = readAuthenticatedMachineId(socket);
+        const installationId = readVerifiedMachineSocketInstallationIdFromSocketData(socket.data);
         if (!parsed.success) {
             callback?.({ v: 1, status: "rejected", reason: "invalid_request" });
             return;
@@ -601,7 +609,12 @@ export function machineUpdateHandler(
             return;
         }
         try {
+            if (installationId && !await hasCurrentSocketCredential(userId, socket)) {
+                callback?.({ v: 1, status: "rejected", sessionId: parsed.data.sessionId, reason: "unauthorized" });
+                return;
+            }
             const result = await options.sessionPublisherPresence.finalizeMachineSessionTerminal({
+                ...(installationId ? { installedMachineCustody: { installationId } } : {}),
                 target: {
                     binding: {
                         accountId: userId,
@@ -819,6 +832,29 @@ export function machineUpdateHandler(
                 },
                 'Machine alive handling failed.',
             );
+        }
+    });
+
+    socket.on('execution-run-updated', async (data: unknown) => {
+        try {
+            websocketEventsCounter.inc({ event_type: 'execution-run-updated' });
+            const parsed = ExecutionRunMachineActivityV1Schema.safeParse(data);
+            const machineId = parsed.success ? resolveMachineScopedPayloadMachineId(socket, parsed.data.machineId) : null;
+            if (!parsed.success || !machineId || !await hasCurrentSocketCredential(userId, socket)) return;
+            const admitted = await inReadSnapshot(async tx => {
+                const admission = await resolveMachineAdmissionInTx(tx, { actorAccountId: userId, machineId });
+                return admission.kind === 'admitted' && admission.custodianAccountId === userId
+                    && admission.installationId === parsed.data.installationId
+                    && hasCurrentMachineSocketInstallation(socket, admission.installationId);
+            });
+            if (!admitted) return;
+            // This is a private source invalidation, not Session roster state or
+            // a publication to every person who can access this Machine.
+            eventRouter.emitEphemeral({ userId, payload: { type: 'execution-run-updated', machineId,
+                runId: parsed.data.runId }, recipientFilter: { type: 'user-scoped-only' } });
+        } catch {
+            log({ module: 'websocket', level: 'error', event: 'execution-run-updated', errorCode: 'internal_error' },
+                'Machine Run activity handling failed.');
         }
     });
 

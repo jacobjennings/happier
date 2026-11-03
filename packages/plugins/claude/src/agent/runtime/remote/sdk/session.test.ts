@@ -36,7 +36,16 @@ import {
   computeClaudeSubscriptionAccessTokenFingerprint,
 } from '../../../auth/services/cloud/refreshBridge.js';
 import { createSessionProviderInputOutcomeNormalizer } from '../../../../../../../../apps/cli/src/agent/runtime/session/input/providerInputOutcome.js';
+import { createDeferred } from '../../../../../../../../apps/cli/src/testkit/async/deferred.js';
 import { projectClaudeJsonlLineToDirectMessages } from '../../../transcripts/projection.js';
+import {
+  CLAUDE_HANDBACK_REPORT,
+  claudeAsyncAgentLaunchAck,
+  claudeHandbackPointerNotification,
+  claudeHandbackUserRow,
+} from '../../../transcripts/peerMessage.testkit.js';
+import { mergeProviderCatalogV1 } from '@happier-dev/protocol/providers/catalog/merge';
+import { resolveClaudeEffortForModel, resolveClaudeEffortLevelsForProviderModel } from '../../reasoningEffort.js';
 
 type SessionParamsWithCredentials =
   Parameters<typeof bindClaudeAgentSdkFallbackSession>[0]['sessionParams'] & Readonly<{
@@ -277,6 +286,155 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
     }
   });
 
+  it('preserves a locally typed terminal conversation when the first SDK turn takes over', async () => {
+    const exec = createSdkExecFixture();
+    const sessionHooks = createSessionHooksFixture();
+    const follows: TranscriptFileFollowInputV1[] = [];
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, {
+      exec: exec.service,
+      sessionHooks: sessionHooks.service,
+      transcripts: {
+        append: vi.fn(async () => undefined),
+        defineSource: vi.fn(async () => ({ id: 'local-terminal-proof', dispose: vi.fn(async () => undefined) })),
+        fileFollow: { follow: vi.fn(async (input: TranscriptFileFollowInputV1) => {
+          follows.push(input);
+          return { id: 'local-terminal-proof-follow', drainNow: async () => {}, close: async () => {} };
+        }) },
+      },
+    });
+    const operations = createClaudeAgentSdkTurnOperations({
+      nativeOperationsOnly: true, ctx, directory: '/tmp/claude-project', launchEnv: {},
+      permissionMode: 'default', happierSessionId: 'local-terminal-session', enableSessionResumability: true,
+    });
+    try {
+      const presentation = await operations.prepareTerminalPresentation();
+      await operations.observeTerminalExecution({ kind: 'started', plan: presentation.plan });
+      const hook = sessionHooks.service.startServer.mock.calls[0]?.[0].onSessionHook;
+      if (!hook) throw new Error('native session hook server did not start');
+      await hook('local-terminal-native', {
+        hook_event_name: 'SessionStart', session_id: 'local-terminal-native', source: 'startup',
+        transcript_path: '/tmp/claude-project/local-terminal-native.jsonl',
+      });
+      // This person typed into Claude's terminal; Happier did not inject a host prompt.
+      await hook('local-terminal-native', {
+        hook_event_name: 'UserPromptSubmit', session_id: 'local-terminal-native', prompt: 'Remember the local context',
+      });
+      const follow = follows[0];
+      if (!follow) throw new Error('missing local terminal transcript follow');
+      await follow.onLine({
+        line: JSON.stringify({ type: 'user', sessionId: 'local-terminal-native', timestamp: new Date().toISOString(),
+          message: { role: 'user', content: 'Remember the local context' } }),
+        sourcePath: follow.path, sequence: 1,
+      });
+      await operations.observeTerminalExecution({ kind: 'provider_stopped', plan: presentation.plan, exitCode: 0, signal: null });
+      await operations.sendTurnPrompt('Continue from the app');
+      const launchArgs = exec.spawnClient.mock.calls[0]?.[0].launch.args;
+      const resumeIndex = launchArgs?.indexOf('--resume') ?? -1;
+      expect(resumeIndex).toBeGreaterThanOrEqual(0);
+      expect(launchArgs?.[resumeIndex + 1]).toBe('local-terminal-native');
+    } finally { await operations.resetOrDisposeRuntime(); }
+  });
+
+  it.each(['acquire', 'onError', 'drain'] as const)('refuses SDK takeover after a local transcript proof %s failure', async failurePhase => {
+    const exec = createSdkExecFixture();
+    const sessionHooks = createSessionHooksFixture();
+    const follows: TranscriptFileFollowInputV1[] = [];
+    const denied = Object.assign(new Error('Transcript proof access denied'), { code: 'EACCES' });
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, {
+      exec: exec.service, sessionHooks: sessionHooks.service,
+      transcripts: {
+        append: vi.fn(async () => undefined),
+        defineSource: vi.fn(async () => ({ id: 'local-proof-denied', dispose: vi.fn(async () => undefined) })),
+        fileFollow: { follow: vi.fn(async (input: TranscriptFileFollowInputV1) => {
+          follows.push(input);
+          if (failurePhase === 'acquire') throw denied;
+          return { id: 'local-proof-denied-follow', close: async () => {}, drainNow: async () => {
+            if (failurePhase === 'drain') throw denied;
+          } };
+        }) },
+      },
+    });
+    const operations = createClaudeAgentSdkTurnOperations({
+      nativeOperationsOnly: true, ctx, directory: '/tmp/claude-project', launchEnv: {},
+      permissionMode: 'default', happierSessionId: 'local-proof-denied-session', enableSessionResumability: true,
+    });
+    try {
+      const presentation = await operations.prepareTerminalPresentation();
+      await operations.observeTerminalExecution({ kind: 'started', plan: presentation.plan });
+      const hook = sessionHooks.service.startServer.mock.calls[0]?.[0].onSessionHook;
+      if (!hook) throw new Error('native session hook server did not start');
+      await hook('local-proof-denied-native', { hook_event_name: 'SessionStart', session_id: 'local-proof-denied-native',
+        source: 'startup', transcript_path: '/tmp/claude-project/local-proof-denied-native.jsonl' });
+      await hook('local-proof-denied-native', { hook_event_name: 'UserPromptSubmit',
+        session_id: 'local-proof-denied-native', prompt: 'Keep my local conversation' });
+      if (failurePhase === 'onError') await follows[0]?.onError?.(denied);
+      await operations.observeTerminalExecution({ kind: 'provider_stopped', plan: presentation.plan, exitCode: 0, signal: null });
+      await expect(operations.sendTurnPrompt('Continue from the app')).resolves.toMatchObject({
+        kind: 'rejected_before_effect', reason: expect.stringContaining('Transcript proof access denied'),
+      });
+      expect(exec.spawnClient).not.toHaveBeenCalled();
+      expect(operations.readSessionIdentity()).toEqual({ sessionId: 'local-proof-denied-native' });
+      await expect(operations.prepareTerminalPresentation()).rejects.toMatchObject({ code: 'EACCES' });
+      expect(ctx.logger.warn).toHaveBeenCalledWith('[ClaudeAgentSdk] transcript identity proof read failed', { error: denied });
+      if (failurePhase !== 'acquire') {
+        const follow = follows[0];
+        if (!follow) throw new Error('Missing transcript follow');
+        await follow.onLine({ line: JSON.stringify({ type: 'user', sessionId: 'local-proof-denied-native',
+          timestamp: new Date().toISOString(), message: { role: 'user', content: 'Keep my local conversation' } }),
+          sourcePath: follow.path, sequence: 1 });
+        await expect(operations.sendTurnPrompt('Continue after proof recovery')).resolves.toMatchObject({ kind: 'accepted' });
+        const args = exec.spawnClient.mock.calls[0]?.[0].launch.args;
+        expect(args?.[args.indexOf('--resume') + 1]).toBe('local-proof-denied-native');
+      }
+    } finally { await operations.resetOrDisposeRuntime(); }
+  });
+
+  it.each(['sdk', 'terminal'] as const)('checks the current transcript candidate before %s takeover when identity changes during settlement', async target => {
+    const exec = createSdkExecFixture();
+    const sessionHooks = createSessionHooksFixture();
+    const denied = Object.assign(new Error('Current transcript proof access denied'), { code: 'EACCES' });
+    const pendingDrain = createDeferred();
+    const drainEntered = createDeferred();
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, {
+      exec: exec.service, sessionHooks: sessionHooks.service,
+      transcripts: {
+        append: vi.fn(async () => undefined),
+        defineSource: vi.fn(async () => ({ id: 'candidate-change-proof', dispose: vi.fn(async () => undefined) })),
+        fileFollow: { follow: vi.fn(async (input: TranscriptFileFollowInputV1) => {
+          if (input.path.endsWith('/current.jsonl')) throw denied;
+          return { id: 'previous-proof-follow', close: async () => {}, drainNow: async () => {
+            drainEntered.resolve();
+            await pendingDrain.promise;
+          } };
+        }) },
+      },
+    });
+    const operations = createClaudeAgentSdkTurnOperations({
+      nativeOperationsOnly: true, ctx, directory: '/tmp/claude-project', launchEnv: {},
+      permissionMode: 'default', happierSessionId: 'candidate-change-session', enableSessionResumability: true,
+    });
+    try {
+      const presentation = await operations.prepareTerminalPresentation();
+      await operations.observeTerminalExecution({ kind: 'started', plan: presentation.plan });
+      const hook = sessionHooks.service.startServer.mock.calls[0]?.[0].onSessionHook;
+      if (!hook) throw new Error('native session hook server did not start');
+      await hook('previous', { hook_event_name: 'SessionStart', session_id: 'previous',
+        source: 'startup', transcript_path: '/tmp/previous.jsonl' });
+      const takeover = target === 'sdk' ? operations.sendTurnPrompt('Continue from the app') : operations.prepareTerminalPresentation();
+      const result = target === 'sdk'
+        ? expect(takeover).resolves.toMatchObject({ kind: 'rejected_before_effect', reason: expect.stringContaining('Current transcript proof access denied') })
+        : expect(takeover).rejects.toMatchObject({ code: 'EACCES' });
+      await drainEntered.promise;
+      await hook('current', { hook_event_name: 'SessionStart', session_id: 'current',
+        source: 'startup', transcript_path: '/tmp/current.jsonl' });
+      await hook('current', { hook_event_name: 'UserPromptSubmit', session_id: 'current', prompt: 'Preserve this conversation' });
+      pendingDrain.resolve();
+      await result;
+      expect(exec.spawnClient).not.toHaveBeenCalled();
+      expect(operations.readSessionIdentity()).toEqual({ sessionId: 'current' });
+    } finally { pendingDrain.resolve(); await operations.resetOrDisposeRuntime(); }
+  });
+
   it.each([undefined, 0])('witnesses native MCP inventory and deduplicated calls through successful SDK completion (queued count %s)', async queuedTurnCount => {
     const exec = createSdkExecFixture();
     const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, { exec: exec.service });
@@ -381,13 +539,115 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       await exec.emit({ type: 'user', uuid: 'native-peer-delivery', session_id: 'native-peer-recipient',
         origin: { kind: 'peer', from: 'uds:/tmp/sender.sock', name: 'Sender' }, message: { role: 'user', content } });
       await vi.waitFor(() => expect(events).toEqual(expect.arrayContaining([
-        expect.objectContaining({ kind: 'transcript-message-committed', role: 'assistant', text: 'From Sender:\n\nDelivered' }),
+        expect.objectContaining({ kind: 'transcript-message-committed', role: 'assistant', text: 'Delivered',
+          peer: { name: 'Sender', handback: false } }),
       ])));
       await exec.emit({ type: 'result', subtype: 'success', is_error: false, result: 'Recipient response',
         uuid: 'peer-turn-result', session_id: 'native-peer-recipient', queued_turn_count: 0, usage: {}, modelUsage: {} });
       await vi.waitFor(() => expect(events).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'transcript-message-committed', role: 'assistant', text: 'Recipient response' }),
       ])));
+    } finally { subscription.dispose(); await session.dispose(); }
+  });
+
+  it.each(['completed', 'failed', 'stopped'] as const)('settles a background Agent only on its %s notification and keeps later hand-backs standalone', async (status) => {
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, { exec: exec.service });
+    const operations = createClaudeAgentSdkProviderOperations({ ctx, directory: '/tmp/claude-project', launchEnv: {},
+      happierSessionId: 'sdk-handback', permissionMode: 'default', publishTranscriptMessages: true });
+    const context = { session: { services: { activeInput: { bind: () => ({ dispose() {} }) }, models: { bind: () => ({ dispose() {} }) } } } } as unknown as AgentSessionRuntimeContext;
+    const session = createClaudeNativeSessionRuntimeFromOperations(operations, { kind: 'create', sessionId: 'sdk-handback', cwd: '/tmp/claude-project' }, context);
+    const events: AgentSessionRuntimeEvent[] = [];
+    const subscription = session.watch(event => events.push(event));
+    const sessionId = 'native-handback';
+    try {
+      await operations.sendProviderTurnPrompt('delegate in the background');
+      await vi.waitFor(() => expect(exec.spawnClient).toHaveBeenCalledOnce());
+      await exec.emit({ type: 'system', subtype: 'init', session_id: sessionId });
+      await exec.emit({ type: 'assistant', uuid: 'launch', session_id: sessionId, message: { role: 'assistant',
+        content: [{ type: 'tool_use', id: 'toolu_a1', name: 'Agent', input: { description: 'Diagnose', run_in_background: true } }] } });
+      await exec.emit({ ...claudeAsyncAgentLaunchAck({ toolUseId: 'toolu_a1' }), session_id: sessionId });
+      await exec.emit(claudeHandbackUserRow({ withReportText: true, sessionId }));
+      await vi.waitFor(() => expect(events.filter(event => event.kind === 'tool-result' && event.toolCallId === 'toolu_a1')).toHaveLength(1));
+      expect(events.filter(event => event.kind === 'transcript-message-committed' && event.peer)).toHaveLength(0);
+      const notification = claudeHandbackPointerNotification({ toolUseId: 'toolu_a1' });
+      notification.attachment.prompt = notification.attachment.prompt.replace('completed', status);
+      // Claude 2.1.310 emits a native terminal edge, then forwards the queued
+      // XML pointer as a distinct replay-user-message for the same task/tool.
+      await exec.emit({ type: 'system', subtype: 'task_notification', task_id: 'a1', tool_use_id: 'toolu_a1',
+        status, summary: 'Native terminal summary', uuid: 'terminal-edge', session_id: sessionId });
+      await exec.emit({ type: 'user', uuid: 'terminal-pointer-user', session_id: sessionId, isReplay: true,
+        origin: { kind: 'task-notification', producer: 'session-task' },
+        message: { role: 'user', content: notification.attachment.prompt } });
+      await exec.emit(claudeHandbackUserRow({ withReportText: false, taskId: 'unlinked', uuid: 'handback-unlinked', sessionId }));
+      await vi.waitFor(() => expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'transcript-message-committed', role: 'assistant', text: CLAUDE_HANDBACK_REPORT,
+          peer: { name: 'general-purpose', handback: true } }),
+      ])));
+      const agentResults = events.filter(event => event.kind === 'tool-result' && event.toolCallId === 'toolu_a1');
+      expect(agentResults.at(-1)).toMatchObject({ output: status === 'completed' ? CLAUDE_HANDBACK_REPORT
+        : expect.objectContaining({ tool_use_result: { status: status === 'stopped' ? 'cancelled' : 'failed', result: CLAUDE_HANDBACK_REPORT } }) });
+      expect(agentResults.at(-1)?.isError === true).toBe(status !== 'completed');
+      expect(agentResults.some(event => JSON.stringify(event).includes('report was delivered'))).toBe(false);
+      expect(events.filter(event => event.kind === 'transcript-message-committed' && event.peer)).toHaveLength(1);
+      await exec.emit(claudeHandbackUserRow({ withReportText: true, uuid: 'late-report', sessionId }));
+      await vi.waitFor(() => expect(events.filter(event => event.kind === 'transcript-message-committed' && event.peer)).toHaveLength(2));
+      expect(events.filter(event => event.kind === 'tool-result' && event.toolCallId === 'toolu_a1')).toHaveLength(2);
+    } finally { subscription.dispose(); await session.dispose(); }
+  });
+
+  it('projects ordered SDK initial replay task reports and unlinked hand-backs without replaying ordinary tool results', async () => {
+    const exec = createSdkExecFixture();
+    const hooks = createSessionHooksFixture();
+    let replayBaseline: (() => Promise<void>) | undefined;
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, {
+      exec: exec.service, sessionHooks: hooks.service,
+    });
+    vi.mocked(ctx.agentRuntime.transcripts.followSource).mockImplementation(async () => {
+      await replayBaseline?.();
+      return { dispose: vi.fn(async () => undefined) };
+    });
+    const operations = createClaudeAgentSdkProviderOperations({ ctx, directory: '/tmp/claude-project', launchEnv: {},
+      happierSessionId: 'sdk-replay-handback', permissionMode: 'default', publishTranscriptMessages: true, enableSessionWorkState: true });
+    const context = { session: { services: { activeInput: { bind: () => ({ dispose() {} }) }, models: { bind: () => ({ dispose() {} }) } } } } as unknown as AgentSessionRuntimeContext;
+    const session = createClaudeNativeSessionRuntimeFromOperations(operations, { kind: 'create', sessionId: 'sdk-replay-handback', cwd: '/tmp/claude-project' }, context);
+    const events: AgentSessionRuntimeEvent[] = [];
+    const subscription = session.watch(event => events.push(event));
+    const providerSessionId = 'native-replay-handback';
+    replayBaseline = async () => {
+      if (!session.observeSourceTranscript) throw new Error('missing source observer');
+      const rows = [
+        claudeAsyncAgentLaunchAck({ toolUseId: 'toolu_a1' }),
+        claudeHandbackUserRow({ withReportText: true }),
+        claudeHandbackPointerNotification({ toolUseId: 'toolu_a1' }),
+        claudeHandbackUserRow({ withReportText: true, taskId: 'unlinked', uuid: 'unlinked' }),
+        { type: 'system', subtype: 'task_notification', task_id: 'early', status: 'completed',
+          summary: 'Early findings', uuid: 'early-terminal', timestamp: '2026-09-30T00:00:00.000Z' },
+        { ...claudeAsyncAgentLaunchAck({ taskId: 'early', toolUseId: 'early-tool', uuid: 'late-ack' }),
+          timestamp: '2026-10-02T00:00:00.000Z' },
+      ];
+      for (const [index, row] of rows.entries()) {
+        await session.observeSourceTranscript({ providerSessionId, sourceId: `history:${index}`, phase: 'initial_replay',
+          row: { session_id: providerSessionId, timestamp: '2026-10-01T00:00:00.000Z', ...row } });
+        if (index === 1) expect(events.filter(event => event.kind === 'tool-result' || event.kind === 'transcript-message-committed')).toEqual([]);
+      }
+    };
+    try {
+      await operations.sendProviderTurnPrompt('resume');
+      await vi.waitFor(() => expect(exec.spawnClient).toHaveBeenCalledOnce());
+      const hook = hooks.service.startServer.mock.calls[0]?.[0].onSessionHook;
+      if (!hook) throw new Error('missing session hook');
+      await hook(providerSessionId, { hook_event_name: 'SessionStart', session_id: providerSessionId,
+        source: 'resume', transcript_path: '/tmp/native-replay-handback.jsonl' });
+      expect(ctx.agentRuntime.transcripts.followSource).toHaveBeenCalled();
+      expect(events.filter(event => event.kind === 'tool-result')).toEqual([
+        expect.objectContaining({ toolCallId: 'toolu_a1', output: CLAUDE_HANDBACK_REPORT, emittedAtMs: Date.parse('2026-10-01T00:00:00.000Z') }),
+        expect.objectContaining({ toolCallId: 'early-tool', output: 'Early findings', emittedAtMs: Date.parse('2026-09-30T00:00:00.000Z') }),
+      ]);
+      expect(events.filter(event => event.kind === 'transcript-message-committed')).toEqual([
+        expect.objectContaining({ role: 'assistant', text: CLAUDE_HANDBACK_REPORT, peer: { name: 'general-purpose', handback: true } }),
+      ]);
+      expect(events.find(event => event.kind === 'tool-result')).not.toHaveProperty('turnId', expect.any(String));
     } finally { subscription.dispose(); await session.dispose(); }
   });
 
@@ -609,7 +869,7 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
   it.each([
     { requestedModel: 'sonnet', runtimeModel: 'claude-sonnet-4-6' },
     { requestedModel: 'sonnet[1m]', runtimeModel: 'claude-sonnet-4-6[1m]' },
-  ])('publishes actual SDK launch effort only after init without echoing pending configuration ($requestedModel)', async ({ requestedModel, runtimeModel }) => {
+  ])('publishes captured SDK launch effort after main assistant evidence without echoing pending configuration ($requestedModel)', async ({ requestedModel, runtimeModel }) => {
     const exec = createSdkExecFixture();
     const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, {
       exec: exec.service,
@@ -643,11 +903,16 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       expect(readBaseModel()?.modelOptions?.find(option => option.id === 'reasoning_effort')?.currentValue).toBe('high');
       await operations.updateProviderConfiguration({ configOption: { id: 'reasoning_effort', value: 'medium' } });
       await exec.emit({ type: 'system', subtype: 'init', model: runtimeModel, session_id: 'sdk-effort-native' });
-      await vi.waitFor(() => expect(readEffort()).toBe('low'));
+      expect(modelSource?.read().currentModelId).toBeNull();
+      expect(readBaseModel()?.modelOptions?.find(option => option.id === 'reasoning_effort')?.currentValue).toBe('high');
+      await exec.emit({ type: 'assistant', uuid: 'replayed-model', isReplay: true, message: {
+        role: 'assistant', model: 'old-model', content: [{ type: 'text', text: 'historical' }],
+      } });
+      expect(modelSource?.read().currentModelId).toBeNull();
       await exec.emit({ type: 'assistant', uuid: 'observed-model-only', message: {
         role: 'assistant', model: runtimeModel, content: [{ type: 'text', text: 'ready' }],
       } });
-      expect(readEffort()).toBe('low');
+      await vi.waitFor(() => expect(readEffort()).toBe('low'));
       expect(readBaseModel()?.contextWindowTokens).toBe(baseContextWindow);
       expect(modelSource?.read().observedAt).toBe(0);
       // A different model-only observation retires the active effort witness. Returning without
@@ -659,6 +924,51 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       }
       await vi.waitFor(() => expect(readEffort()).toBe('high'));
     } finally { await session.dispose(); }
+  });
+
+  it('publishes captured SDK launch effort after interruption before the first main assistant', async () => {
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, { exec: exec.service });
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx, directory: '/tmp/claude-project', launchEnv: {},
+      initialModelId: 'sonnet', initialEffort: 'low',
+    });
+    const observedModels: unknown[] = [];
+    operations.subscribeEffectiveModel(evidence => observedModels.push(evidence));
+    try {
+      await operations.sendProviderTurnPrompt('interrupted before answering');
+      await exec.emit({ type: 'system', subtype: 'init', model: 'claude-sonnet-4-6', session_id: 'effort-interrupted-native' });
+      expect(observedModels).toEqual([]);
+      await operations.cancelProviderTurn();
+      await exec.emit({ type: 'result', subtype: 'error_during_execution', is_error: true,
+        session_id: 'effort-interrupted-native', errors: ['Interrupted'] });
+      await operations.sendProviderTurnPrompt('continue');
+      await exec.emit({ type: 'assistant', uuid: 'first-main-after-interruption', message: {
+        role: 'assistant', model: 'claude-sonnet-4-6', content: [{ type: 'text', text: 'ready' }],
+      } });
+      expect(exec.spawnClient).toHaveBeenCalledOnce();
+      expect(observedModels).toEqual([{ modelId: 'claude-sonnet-4-6', reasoningEffort: 'low' }]);
+    } finally { await operations.disposeProviderSession(); }
+  });
+
+  it('does not publish a refused init model even when the query has captured launch effort', async () => {
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, { exec: exec.service });
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx, directory: '/tmp/claude-project', launchEnv: {},
+      initialModelId: 'refused-model', initialEffort: 'low',
+    });
+    const observedModels: unknown[] = [];
+    operations.subscribeEffectiveModel(evidence => observedModels.push(evidence));
+    try {
+      await operations.sendProviderTurnPrompt('prompt under refused settings');
+      await exec.emit({ type: 'system', subtype: 'init', model: 'refused-model', session_id: 'refused-init-native' });
+      const completion = expect(operations.waitForProviderTurnCompletion()).rejects.toThrow();
+      await exec.emit({ type: 'result', subtype: 'error_during_execution', is_error: true,
+        session_id: 'refused-init-native', errors: ['Model unavailable'] });
+      await completion;
+      expect(observedModels).toEqual([]);
+    } finally { await operations.disposeProviderSession(); }
   });
 
   it('maps native startup instructions on SDK resume with prompt snapshots disabled', async () => {
@@ -885,7 +1195,7 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
     }
   });
 
-  it('reuses the Agent SDK query after an exact user-requested interruption result', async () => {
+  it('reuses the Agent SDK query after an exact interruption and unchanged or unsupported configuration', async () => {
     const terminalHost = createTerminalHostFixture();
     const events = createEventsFixture();
     const exec = createSdkExecFixture();
@@ -901,6 +1211,8 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       launchEnv: {},
       permissionMode: 'default',
       happierSessionId: 'happy-interrupted-query-reuse',
+      initialModelId: 'claude-opus-4-8',
+      supportsEffort: false,
     });
 
     try {
@@ -925,6 +1237,13 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       });
       await expect(interruptedCompletion).resolves.toBeUndefined();
 
+      await expect(operations.updateProviderConfiguration({ modelId: 'claude-opus-4-8' })).resolves.toEqual({
+        status: 'applied', timing: 'before_next_prompt',
+      });
+      await expect(operations.updateProviderConfiguration({
+        configOption: { id: 'reasoning_effort', value: 'medium' },
+      })).resolves.toMatchObject({ status: 'unsupported' });
+
       operations.beginProviderTurn();
       await expect(operations.sendProviderTurnPrompt('continue after interruption')).resolves.toEqual({
         kind: 'accepted',
@@ -943,6 +1262,193 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
     } finally {
       await operations.disposeProviderSession();
     }
+  });
+
+  it.each([
+    { name: 'model', update: { modelId: 'claude-sonnet-4-6' }, expectedArgs: ['--model', 'claude-sonnet-4-6'], lateResult: false },
+    { name: 'fallback', update: { fallbackModel: 'claude-sonnet-4-6' }, expectedArgs: ['--fallback-model', 'claude-sonnet-4-6'], lateResult: false },
+    { name: 'effort', update: { configOption: { id: 'reasoning_effort', value: 'medium' } }, expectedArgs: ['--effort', 'medium'], lateResult: false },
+    { name: 'ultracode', update: { configOption: { id: 'ultracode', value: true } }, expectedArgs: [], lateResult: false },
+    { name: 'model before a late interruption result', update: { modelId: 'claude-sonnet-4-6' }, expectedArgs: ['--model', 'claude-sonnet-4-6'], lateResult: true },
+    { name: 'default model', update: { modelId: ' default ' }, expectedArgs: [], lateResult: false },
+    { name: 'default fallback', update: { fallbackModel: ' default ' }, expectedArgs: [], lateResult: false },
+  ])('starts a fresh SDK query after changing $name instead of continuing the interrupted process', async ({ name, update, expectedArgs, lateResult }) => {
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, { exec: exec.service });
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx, directory: '/tmp/claude-project', launchEnv: {}, permissionMode: 'default',
+      initialModelId: 'claude-opus-4-8', initialEffort: 'high',
+    });
+    try {
+      if (name === 'default fallback') {
+        await operations.updateProviderConfiguration({ fallbackModel: 'claude-sonnet-4-6' });
+      }
+      await operations.sendProviderTurnPrompt('initial prompt');
+      const originalHandle = await exec.spawnClient.mock.results[0].value;
+      const disposeOriginal = vi.spyOn(originalHandle, 'dispose');
+      await exec.emit({ type: 'system', subtype: 'init', session_id: 'native-configured-continuation' });
+      await operations.cancelProviderTurn();
+      const result = { type: 'result', subtype: 'error_during_execution', is_error: true,
+        session_id: 'native-configured-continuation', errors: ['Interrupted'] };
+      if (!lateResult) await exec.emit(result);
+      const outcome = await operations.updateProviderConfiguration(update);
+      if (lateResult) await exec.emit(result);
+      await expect(operations.sendProviderTurnPrompt('continue with changed settings')).resolves.toEqual({ kind: 'accepted' });
+
+      expect(exec.spawnClient).toHaveBeenCalledTimes(2);
+      expect(exec.processes[0].written.filter(record => Reflect.get(record as object, 'type') === 'user')).toHaveLength(1);
+      const args = exec.spawnClient.mock.calls[1]?.[0].launch.args ?? [];
+      expect(args).toEqual(expect.arrayContaining(['--resume', 'native-configured-continuation', ...expectedArgs]));
+      if (name === 'ultracode') {
+        expect(JSON.parse(args[args.indexOf('--settings') + 1] ?? '{}')).toMatchObject({ ultracode: true });
+      }
+      if (name === 'default model') expect(args).not.toContain('--model');
+      if (name === 'default fallback') expect(args).not.toContain('--fallback-model');
+      await vi.waitFor(() => expect(disposeOriginal).toHaveBeenCalled());
+      expect(outcome).toEqual({ status: 'applied', timing: 'before_next_prompt' });
+      expect(await operations.updateProviderConfiguration(update)).toEqual({ status: 'applied', timing: 'before_next_prompt' });
+    } finally { await operations.disposeProviderSession(); }
+  });
+
+  it.each([
+    { phase: 'initial', modelId: 'default', fallbackModel: 'gateway-fallback' },
+    { phase: 'after interruption', modelId: 'default', fallbackModel: 'gateway-fallback' },
+    { phase: 'after interruption', modelId: 'gateway-selected', fallbackModel: 'default' },
+  ])('preserves an opaque Provider default selector at query launch ($phase, $modelId, $fallbackModel)', async ({ phase, modelId, fallbackModel }) => {
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, { exec: exec.service });
+    const binding = {
+      connectionId: ProviderConnectionIdSchema.parse('pc_opaque_default'),
+      model: { id: phase === 'initial' ? modelId : 'gateway-previous', name: 'Gateway model' },
+      materialization: { v: 1 as const, kind: 'spawnEnv' as const },
+    };
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx, directory: '/tmp/claude-project', launchEnv: {}, initialModelId: binding.model.id, providerModel: binding.model,
+    });
+    try {
+      if (phase === 'after interruption') {
+        await operations.sendProviderTurnPrompt('initial gateway prompt');
+        await exec.emit({ type: 'system', subtype: 'init', session_id: 'provider-default-native' });
+        await operations.cancelProviderTurn();
+        await exec.emit({ type: 'result', subtype: 'error_during_execution', is_error: true,
+          session_id: 'provider-default-native', errors: ['Interrupted'] });
+        await expect(operations.updateProviderConfiguration({ modelId,
+          providerBinding: { ...binding, model: { id: modelId, name: 'Opaque default' } },
+        })).resolves.toMatchObject({ status: 'applied', timing: 'before_next_prompt' });
+      }
+      await operations.updateProviderConfiguration({ fallbackModel });
+      await operations.sendProviderTurnPrompt('use the concrete Provider model');
+      await vi.waitFor(() => expect(exec.spawnClient).toHaveBeenCalledTimes(phase === 'initial' ? 1 : 2));
+      const args = exec.spawnClient.mock.calls.at(-1)?.[0].launch.args ?? [];
+      expect(args).toEqual(expect.arrayContaining(['--model', modelId, '--fallback-model', fallbackModel]));
+      if (phase === 'after interruption') {
+        expect(exec.spawnClient).toHaveBeenCalledTimes(2);
+        expect(exec.processes[0].written.filter(record => Reflect.get(record as object, 'type') === 'user')).toHaveLength(1);
+      }
+    } finally { await operations.disposeProviderSession(); }
+  });
+
+  it('does not continue an interrupted process with obsolete skill launch roots', async () => {
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, { exec: exec.service });
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx, directory: '/tmp/claude-project', launchEnv: {},
+      skills: { pluginRoot: '/skills-before', skillsRoot: '/skills-before/skills', items: [], nativeDisables: [] },
+    });
+    try {
+      await operations.sendProviderTurnPrompt('initial prompt');
+      await exec.emit({ type: 'system', subtype: 'init', session_id: 'native-skill-continuation' });
+      await operations.cancelProviderTurn();
+      await exec.emit({ type: 'result', subtype: 'error_during_execution', is_error: true,
+        session_id: 'native-skill-continuation', errors: ['Interrupted'] });
+      const spawn = exec.spawnClient.getMockImplementation()!;
+      exec.spawnClient.mockImplementationOnce(async () => {
+        const handle = await spawn();
+        return { ...handle, client: { ...handle.client, async writeRecord(record: unknown) {
+          const outcome = await handle.client.writeRecord(record);
+          if (record && typeof record === 'object' && Reflect.get(record, 'request')?.subtype === 'reload_skills') {
+            queueMicrotask(() => { void exec.emit({ type: 'control_response', response: {
+              subtype: 'success', request_id: Reflect.get(record, 'request_id'), response: {},
+            } }).then(() => exec.emit({ type: 'system', subtype: 'commands_changed' })); });
+          }
+          return outcome;
+        } } };
+      });
+      await expect(operations.refreshSkills({ skills: {
+        pluginRoot: '/skills-after', skillsRoot: '/skills-after/skills', items: [], nativeDisables: [],
+      } })).resolves.toEqual({ kind: 'applied' });
+      expect(exec.spawnClient).toHaveBeenCalledTimes(1);
+      await expect(operations.sendProviderTurnPrompt('use refreshed skills')).resolves.toEqual({ kind: 'accepted' });
+      expect(exec.spawnClient).toHaveBeenCalledTimes(2);
+      expect(exec.spawnClient.mock.calls[1]?.[0].launch.args).toEqual(expect.arrayContaining(['--plugin-dir', '/skills-after']));
+      expect(exec.processes[0].written.filter(record => Reflect.get(record as object, 'type') === 'user')).toHaveLength(1);
+    } finally { await operations.disposeProviderSession(); }
+  });
+
+  it('reloads skills through a retained interrupted query before reusing it', async () => {
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, { exec: exec.service });
+    const skills = { pluginRoot: '/skills', skillsRoot: '/skills/skills', items: [], nativeDisables: [] };
+    const operations = createClaudeAgentSdkProviderOperations({ ctx, directory: '/tmp/claude-project', launchEnv: {}, skills });
+    try {
+      await operations.sendProviderTurnPrompt('initial prompt');
+      await exec.emit({ type: 'system', subtype: 'init', session_id: 'native-retained-skills' });
+      await operations.cancelProviderTurn();
+      await exec.emit({ type: 'result', subtype: 'error_during_execution', is_error: true,
+        session_id: 'native-retained-skills', errors: ['Interrupted'] });
+      const refresh = operations.refreshSkills({ skills });
+      const reload = () => exec.written.find(record => record && typeof record === 'object'
+        && Reflect.get(record, 'request')?.subtype === 'reload_skills');
+      await vi.waitFor(() => expect(reload()).toBeDefined());
+      await exec.emit({ type: 'control_response', response: {
+        subtype: 'success', request_id: Reflect.get(reload() as object, 'request_id'), response: {},
+      } });
+      await exec.emit({ type: 'system', subtype: 'commands_changed' });
+      await expect(refresh).resolves.toEqual({ kind: 'applied' });
+      await expect(operations.sendProviderTurnPrompt('use refreshed skills')).resolves.toEqual({ kind: 'accepted' });
+      expect(exec.spawnClient).toHaveBeenCalledTimes(1);
+      expect(exec.processes[0].written.filter(record => Reflect.get(record as object, 'type') === 'user')).toHaveLength(2);
+    } finally { await operations.disposeProviderSession(); }
+  });
+
+  it('keeps the previous query draining background tasks when next-query settings change', async () => {
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, { exec: exec.service });
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx, directory: '/tmp/claude-project', launchEnv: {}, initialModelId: 'claude-opus-4-8',
+    });
+    const effectiveModels: string[] = [];
+    operations.subscribeEffectiveModel(evidence => effectiveModels.push(evidence.modelId));
+    try {
+      await operations.sendProviderTurnPrompt('start background work');
+      const originalHandle = await exec.spawnClient.mock.results[0].value;
+      const disposeOriginal = vi.spyOn(originalHandle, 'dispose');
+      await exec.processes[0].emit({ type: 'system', subtype: 'init', session_id: 'native-background-continuation' });
+      await exec.processes[0].emit({ type: 'system', subtype: 'task_started', task_id: 'running-worker',
+        session_id: 'native-background-continuation', task_type: 'local_agent', is_backgrounded: true });
+      await exec.processes[0].emit({ type: 'result', subtype: 'success', is_error: false,
+        session_id: 'native-background-continuation', result: 'Foreground complete', queued_turn_count: 0 });
+      await operations.waitForProviderTurnCompletion();
+      await operations.updateProviderConfiguration({ modelId: 'claude-sonnet-4-6' });
+      expect(disposeOriginal).not.toHaveBeenCalled();
+      await operations.sendProviderTurnPrompt('new work with changed settings');
+      expect(exec.spawnClient).toHaveBeenCalledTimes(2);
+      expect(disposeOriginal).not.toHaveBeenCalled();
+      await exec.processes[1].emit({ type: 'assistant', message: {
+        role: 'assistant', model: 'claude-sonnet-4-6', content: [],
+      } });
+      await exec.processes[0].emit({ type: 'assistant', message: {
+        role: 'assistant', model: 'claude-opus-4-8', content: [],
+      } });
+      await exec.processes[0].emit({ type: 'result', subtype: 'success', is_error: false,
+        session_id: 'native-background-continuation', result: 'Worker checkpoint', queued_turn_count: 0,
+        modelUsage: { 'claude-opus-4-8': { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+      });
+      expect(effectiveModels.at(-1)).toBe('claude-sonnet-4-6');
+      await exec.processes[0].emit({ type: 'system', subtype: 'task_notification', task_id: 'running-worker',
+        session_id: 'native-background-continuation', status: 'completed', output_file: '/tmp/worker-output', summary: 'Done' });
+      await vi.waitFor(() => expect(disposeOriginal).toHaveBeenCalled());
+    } finally { await operations.disposeProviderSession(); }
   });
 
   it('updates the retained native query while its resumed prompt transport is pending', async () => {
@@ -2612,6 +3118,32 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       requestId: 'perm-1',
       approved: true,
     });
+  });
+
+  it.each(['single', 'batch'] as const)('completes the submitted SDK turn from an attributed result despite other queued sends (%s)', async attribution => {
+    const exec = createSdkExecFixture({ providerExitOwnership: 'direct', acknowledgePrompts: false });
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, { exec: exec.service });
+    const operations = createClaudeAgentSdkProviderOperations({ ctx, directory: '/tmp/claude-project', launchEnv: {},
+      permissionMode: 'default', happierSessionId: 'attributed-queued-result', publishTranscriptMessages: true });
+    const observed: unknown[] = [];
+    operations.subscribeProviderEvents(event => observed.push(event));
+    let acceptance: unknown;
+    try {
+      operations.beginProviderTurn('attributed-turn');
+      const submission = operations.sendProviderTurnPrompt('Answer this input');
+      void submission.then(value => { acceptance = value; });
+      await vi.waitFor(() => expect(exec.written).toContainEqual(expect.objectContaining({ type: 'user' })));
+      const submitted = exec.written.find(record => typeof record === 'object' && record !== null && Reflect.get(record, 'type') === 'user');
+      const uuid = Reflect.get(submitted as object, 'uuid');
+      await exec.emit({ type: 'result', subtype: 'success', is_error: false, session_id: 'native-attributed',
+        uuid: 'attributed-result', result: 'Answered input', queued_turn_count: 1,
+        ...(attribution === 'single' ? { user_message_uuid: uuid } : { user_message_uuids: [uuid] }),
+        num_turns: 1, duration_ms: 1, duration_api_ms: 1, total_cost_usd: 0 });
+      await vi.waitFor(() => expect(observed).toContainEqual(expect.objectContaining({ kind: 'turn-complete', turnId: 'attributed-turn' })));
+      expect(acceptance).toEqual({ kind: 'accepted' });
+      expect(observed).toContainEqual(expect.objectContaining({ localId: 'claude-sdk-result-attributed-result' }));
+      await operations.waitForProviderTurnCompletion();
+    } finally { await operations.disposeProviderSession(); }
   });
 
   it.each(['complete', 'exit', 'queued-error'] as const)('keeps the submitted SDK turn open while result queued_turn_count is positive (%s)', async (ending) => {
@@ -4728,6 +5260,37 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       ]));
     } finally {
       await runtime.resetOrDisposeRuntime().catch(() => undefined);
+    }
+  });
+
+  it.each([true, false])('launches a custom Provider model with effort only when manually declared (%s)', async declared => {
+    const model = mergeProviderCatalogV1({
+      staticModels: [],
+      manualModels: declared
+        ? [{ id: 'custom-model', addedAt: 1, reasoningEffortLevels: ['low', 'high'] }]
+        : [{ id: 'custom-model', addedAt: 1 }],
+      probeState: { snapshot: null, staleProbeModels: [] },
+    }).rows[0]!.descriptor;
+    expect(resolveClaudeEffortLevelsForProviderModel(model)).toEqual(declared ? ['low', 'high'] : []);
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, {
+      exec: exec.service,
+    });
+    // Native Session and execution-run openers resolve persisted intent before
+    // creating SDK operations; retain that real resolver in this composition.
+    const effort = resolveClaudeEffortForModel({ modelId: model.id, providerModel: model, effort: 'low' });
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx, directory: '/tmp/claude-project', launchEnv: {}, permissionMode: 'default',
+      initialModelId: model.id, providerModel: model, initialEffort: effort, supportsEffort: true,
+    });
+    try {
+      await operations.sendProviderTurnPrompt('first prompt');
+      await vi.waitFor(() => expect(exec.spawnClient).toHaveBeenCalledOnce());
+      const args = exec.spawnClient.mock.calls[0]![0].launch.args;
+      if (declared) expect(args).toEqual(expect.arrayContaining(['--effort', 'low']));
+      else expect(args).not.toContain('--effort');
+    } finally {
+      await operations.disposeProviderSession('test_complete');
     }
   });
 

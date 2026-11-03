@@ -214,6 +214,9 @@ export type AutomationListItem = Readonly<{
     accountId: string;
     workflowDefinitionId: string | null;
     scopeSessionId: string | null;
+    managedTargetHomeId?: string | null;
+    managedTargetManagedId?: string | null;
+    managedTargetIndexed?: boolean;
     name: string;
     description: string | null;
     enabled: boolean;

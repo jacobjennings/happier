@@ -95,6 +95,7 @@ async function fixture(status: 'completed' | 'failed' | 'cancelled' | 'running' 
   app.get('/v1/account/encryption/currentness', async () => createAccountEncryptionCurrentnessFixture(
     review?.keyState ? witness : { mode: 'plain' }));
   const reviewRun = WorkflowRunSummaryV1Schema.parse({ sourceArtifactId: null, visibleTeamId: null,
+    attentionRequired: false, failureUnseen: false, invocationAttentionRequired: false, attentionSeenFailureAt: null, finishedAt: null,
     id: 'review-run', ownerAccountId: 'worker-account', machineId: 'worker-machine',
     origin: { kind: 'automation', automationId: 'review-trigger', originSessionId: workerId,
       cause: { kind: 'trigger', triggerId: 'review-trigger', triggerRevision: 0, triggerKind: 'sessionLifecycle',
@@ -338,7 +339,7 @@ describe('session WorkerUpdate producer through Follow', () => {
     // typed lifecycle alone carries this needs-you fact to the manager.
     const waiting = await f.reconcile({ signal: new AbortController().signal, deliveryIntent: 'wake' });
     expect(waiting?.workerUpdates).toEqual([expect.objectContaining({
-      workerId, ownerState: 'needs_input', wake: 'needs_you',
+      workerId, ownerState: 'needs_input', wake: 'needs_you', headline: 'Needs you',
     })]);
     expect(waiting?.wakeEventLocalId).toBeTruthy();
     expect(await waiting!.recheckAdmission(new AbortController().signal)).toBe(true);

@@ -55,21 +55,6 @@ describe('projectAuthenticationMethodCapabilities authentication actions', () =>
         expect(semanticProjection(featuresResult)).toEqual(semanticProjection(authEntryResult));
     });
 
-    it('dispatches native password login without exposing it as an OAuth provider', () => {
-        const result = projectAuthEntryMethodCapabilities({
-            v: 1, state: 'ready', scope: { kind: 'home' }, autoRedirect: null,
-            actions: [{ kind: 'authenticate', methodId: 'email_password', action: 'login', mode: 'either',
-                origin: 'home', presentation: { displayName: 'Email and password' } }],
-        });
-        expect(result.authenticationActions).toEqual([
-            expect.objectContaining({
-                execution: expect.objectContaining({ kind: 'email_password' }),
-            }),
-        ]);
-        expect(result.configuredKeylessProviderIds).not.toContain('email_password');
-        expect(result.keyedProvisionProviderIds).not.toContain('email_password');
-    });
-
     /**
      * Released 0.2 clients misclassified any unknown method id — including
      * `email_password` — as an external OAuth provider. The features

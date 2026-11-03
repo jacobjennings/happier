@@ -1,3 +1,21 @@
+/** The same finite-operation budget for tasks arriving progressively from a transport. */
+export function createTaskLimiter(limit: number) {
+    const maxConcurrency = Math.max(1, Math.trunc(limit));
+    let running = 0;
+    const waiting: Array<() => void> = [];
+    return <T>(task: () => Promise<T>): Promise<T> => new Promise<T>((resolve, reject) => {
+        const start = () => {
+            running++;
+            void Promise.resolve().then(task).then(resolve, reject).finally(() => {
+                running--;
+                waiting.shift()?.();
+            });
+        };
+        if (running < maxConcurrency) start();
+        else waiting.push(start);
+    });
+}
+
 export async function runTasksWithLimit<T>(
     tasks: Array<() => Promise<T>>,
     limit: number

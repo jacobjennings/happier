@@ -327,19 +327,29 @@ export async function prepareDevTargetCommandSync({ stackBaseDir, sourceDir, tar
   const config = JSON.parse(await readFile(join(stackBaseDir, 'dev-targets.json'), 'utf8'));
   const { renderMutagenProject, isEquivalentMutagenProject } = await import('./mutagen_project.mjs');
   const state = await defaultReadPreparationState({ stackBaseDir, env });
-  const unchanged = desired && isEquivalentMutagenProject(desired, renderMutagenProject({ sourceDir, targets, config }));
-  if (unchanged && targets.every(target => state?.targets?.[target.name]?.state === 'ready')) return;
   // Unreachable replicas remain unavailable to ordinary AUTO selection; they
   // must not prevent a healthy sibling worker from becoming usable.
-  await defaultEnsureReplicaRoots({ targets, stackBaseDir, env }).catch(error => {
-    process.stderr.write(`[dev-targets] command replica directory preflight: ${errorMessage(error)}\n`);
-  });
+  const roots = await Promise.allSettled(targets.map(target => defaultEnsureReplicaRoots({ targets: [target], stackBaseDir, env })));
+  // A worker whose replica root cannot be prepared (SSH refused, disk full)
+  // cannot be proven a safe one-way destination now. Omit it from this
+  // project and record it failed; a later dispatch re-adds it once reachable.
+  for (const root of roots) {
+    if (root.status === 'rejected') process.stderr.write(`[dev-targets] command replica directory preflight: ${errorMessage(root.reason)}\n`);
+  }
+  const reachable = targets.filter((_, index) => roots[index].status === 'fulfilled');
+  if (reachable.length === 0) throw roots[0].reason;
+  const unchanged = desired && isEquivalentMutagenProject(desired, renderMutagenProject({ sourceDir, targets: reachable, config }));
+  if (unchanged && reachable.length === targets.length
+    && targets.every(target => state?.targets?.[target.name]?.state === 'ready')) return;
   const project = await ensureDevTargetSyncProject({
-    stackBaseDir, sourceDir, targets, ownerId: INDEPENDENT_DEV_TARGET_SYNC_OWNER,
+    stackBaseDir, sourceDir, targets: reachable, ownerId: INDEPENDENT_DEV_TARGET_SYNC_OWNER,
     allowIndependentBorrow: false, env,
   });
-  const pending = targets.filter(target => !unchanged || state?.targets?.[target.name]?.state !== 'ready');
+  const pending = targets.filter((target, index) => !unchanged || state?.targets?.[target.name]?.state !== 'ready'
+    || roots[index].status === 'rejected');
   const results = await Promise.allSettled(pending.map(async target => {
+    const root = roots[targets.indexOf(target)];
+    if (root.status === 'rejected') throw root.reason;
     await resumeDevTargetSync({ target, env: project.env });
     await flushDevTargetSync({ target, env: project.env });
   }));

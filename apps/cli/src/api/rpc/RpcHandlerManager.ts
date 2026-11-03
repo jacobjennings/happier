@@ -779,6 +779,15 @@ export class RpcHandlerManager {
                 || !('sessionId' in decryptedParams) || decryptedParams.sessionId !== requesterApprovalDecision.sessionId)) {
                 return await deny('session_decision_target');
             }
+            if (requesterApprovalDecision && decryptedParams && typeof decryptedParams === 'object'
+                && 'decisionSource' in decryptedParams) {
+                // Display modality belongs to this authenticated requester packet,
+                // never the public Action input or the receiving transport surface.
+                const { decisionSource, ...actionInput } = decryptedParams;
+                if (decisionSource !== 'voice') return await deny('session_decision_source');
+                requesterApprovalDecision = { ...requesterApprovalDecision, decisionSource };
+                decryptedParams = actionInput;
+            }
 
             if (parsedTransferRouting?.success) {
                 const routing = parsedTransferRouting.data;

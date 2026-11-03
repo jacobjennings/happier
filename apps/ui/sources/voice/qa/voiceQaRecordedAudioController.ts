@@ -54,7 +54,7 @@ export function resolveRecordedAudioQaTranscriptionMode(params: Readonly<{
         : 'configured_runtime';
 }
 
-export function createRecordedAudioQaDaemonMachineResolver(params: Readonly<{
+function createRecordedAudioQaDaemonMachineResolver(params: Readonly<{
     machineId: string;
 }>): Readonly<{
     resolveVoiceHomeDaemonMachineId: () => string;

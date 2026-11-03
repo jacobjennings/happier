@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { NotificationChannelCatalogSnapshotV1 } from '@happier-dev/protocol/account/settings/notificationChannelRecordV1';
+import { TranscriptRawRecordV1Schema } from '@happier-dev/protocol/sessions/messages/transcriptRawRecordV1';
+import { readSessionStopTranscriptRecordV1 } from '@happier-dev/protocol/machines/guard/sessionGuardStateV1';
+import { normalizeRawMessage } from '@happier-dev/session-core/raw';
 import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
 import type { Metadata } from '@/api/types';
 import type { RpcHandler } from '@/api/rpc/types';
@@ -107,12 +110,21 @@ describe('runner guard notice receipt', () => {
     } finally { debug.mockRestore(); }
   });
 
-  it('records requested intent without claiming exit or freed memory before a signal', async () => {
+  it.each(['idle_sessions', 'memory_guard', 'ceiling'] as const)('keeps %s requested intent readable from the stored transcript without claiming exit before a signal', async (rule) => {
     const owner = setup();
-    await expect(owner.notice({ kind: 'stopped', at: 300_000, rule: 'memory_guard', freedBytes: 1024 })).resolves.toEqual({ ok: true });
+    await expect(owner.notice({ kind: 'stopped', at: 300_000, rule, freedBytes: 1024 })).resolves.toEqual({ ok: true });
     expect(owner.records).toMatchObject([{ content: { v: { status: 'requested' } } }]);
     expect(owner.metadata()).toHaveProperty('sessionGuardStateV1.kind', 'requested');
-    expect(owner.transcript).toMatchObject([{ data: { sessionStopV1: { status: 'requested' } } }]);
+    // Read the actual producer output through the persisted-record boundary
+    // used by transcript normalization, rather than inspecting the enqueue stub.
+    const stored = TranscriptRawRecordV1Schema.parse({ role: 'agent', content: owner.transcript[0] });
+    if (stored.role !== 'agent' || stored.content.type !== 'event') throw new Error('Expected Guard transcript event');
+    expect(stored.content.id).toBe('activity:session_stop:v1:300000');
+    const normalized = normalizeRawMessage('guard-message', stored.content.id, 300_000, stored);
+    if (normalized?.role !== 'event') throw new Error('Expected normalized Guard event');
+    expect(readSessionStopTranscriptRecordV1(normalized.content)).toEqual({
+      v: 1, at: 300_000, rule, freedBytes: 1024, status: 'requested',
+    });
   });
   it('delivers Session-custodied terminal warnings through the requester without replacing Session metadata', async () => {
     const owner = setup();

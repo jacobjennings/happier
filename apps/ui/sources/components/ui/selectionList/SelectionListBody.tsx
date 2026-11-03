@@ -80,20 +80,6 @@ import type {
     SelectionListVirtualizedOptionSource,
 } from './_types';
 
-// FR4-W2-BODY — re-export the public API so existing import paths
-// (`from './SelectionListBody'`) remain stable. The implementations now live
-// in the focused sub-modules listed above.
-export {
-    planHasVirtualizedSection,
-    planRequiresFlatVirtualizedList,
-    resolveVirtualizedSectionIds,
-    resetSelectionListMultiVirtualizationWarningCache,
-} from './selectionListVirtualizationPolicy';
-export {
-    flattenRenderPlanForVirtualizedList,
-    type SelectionListBodyVirtualizedItem,
-} from './SelectionListVirtualizedBody';
-
 const stylesheet = StyleSheet.create(() => ({
     body: {
         flexDirection: 'column',

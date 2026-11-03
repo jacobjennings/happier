@@ -1,9 +1,7 @@
 import { ConnectedAccountHttpHeadersRequestSchema } from '@happier-dev/protocol/connect/connected-account-purposes';
 import { ScmHostingProviderRefSchema } from '@happier-dev/protocol/scm/pullRequests';
 import { sameQualifiedConnectedAccountRef } from '@happier-dev/protocol/connect/qualified-connected-account-persistence';
-import type { ManagedExecutableRef } from '@happier-dev/protocol';
 import type {
-    HostingProviderRuntimeCommandResult as ScmHostingProviderRuntimeCommandResult,
     HostingProviderRuntimeServices as ScmHostingProviderRuntimeServices,
 } from '@happier-dev/plugin-sdk/scm/hosting';
 import { z } from 'zod/mini';
@@ -51,17 +49,6 @@ type ScmHostingProviderRuntimeRegistryInput = Readonly<{
         // is exactly what an absent projection should mean.
         & Partial<Pick<StablePluginConnectedAccountsOwner, 'getBinding' | 'listAccounts'>>
     ) | null;
-    executeCommand?: (
-        input: Readonly<{
-            executable: ManagedExecutableRef;
-            args: readonly string[];
-            timeoutMs: number;
-            env?: Readonly<Record<string, string>>;
-            maxStdoutBytes?: number;
-            maxStderrBytes?: number;
-        }>,
-        options?: Readonly<{ signal?: AbortSignal }>,
-    ) => Promise<ScmHostingProviderRuntimeCommandResult>;
 }>;
 
 type ScmHostingProviderRuntimeTokenMaterializationRequest = Parameters<
@@ -311,7 +298,7 @@ async function resolveScmHostingConfiguredDeployments(
     return deploymentsByProviderId;
 }
 
-export function createHostScmHostingProviderRegistry(
+function createHostScmHostingProviderRegistry(
     input: ScmHostingProviderRuntimeRegistryInput,
     configuredDeploymentsByProviderId?: ReadonlyMap<string, ScmHostingProviderConfiguredDeployments>,
 ): ResolvedScmHostingProviderRegistry {
@@ -500,6 +487,7 @@ export function createHostScmHostingProviderRuntimeServices(
             return {
                 kind: 'available',
                 token,
+                ...(target.kind === 'account' ? { account: target.account } : {}),
             };
         },
         async resolveScmHostingBasicAuthMaterialization(
@@ -567,11 +555,10 @@ export function createHostScmHostingProviderRuntimeServices(
                 if (options?.signal?.aborted) {
                     throw new Error('SCM hosting command execution was aborted');
                 }
-                if (input.executeCommand) return await input.executeCommand(request, options);
                 const signal = options?.signal ?? new AbortController().signal;
                 const service = createStablePluginExecService({
-                    allowedExecutables: [request.executable],
-                    allowedEnvKeys: [...(input.envAllowedNamesByPluginId?.get(authority.pluginId) ?? [])],
+
+
                     signal,
                     isOccurrenceCurrent: () => {
                         const latest = input.scmHostingProvidersById.get(qualifiedId);

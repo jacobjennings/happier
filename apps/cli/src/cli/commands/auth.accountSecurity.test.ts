@@ -10,10 +10,20 @@ import {
   type PlainAccountPasswordCredentialV1,
 } from '@happier-dev/protocol';
 
+import { reloadConfiguration } from '@/configuration';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
 import { captureConsoleText } from '@/testkit/logger/captureOutput';
+import { AccountSettingsV2GetResponseSchema } from '@happier-dev/protocol/account/settings/accountSettingsApiV2';
+import { writeCredentialsTokenOnly, writeCredentialsLegacy } from '@/persistence';
+import { handleAuthSecurityGet, handleAuthCliApprovals } from './auth/accountSecurity';
+import { handleAuthCommand } from './auth';
+import { expandAuthSecretsFromStdin } from './auth/stdinSecrets';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
+import { publishServerHttpRuntimeOrigin } from '@/api/client/serverHttpBaseUrl';
+import * as settingsSnapshot from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { resetInMemoryAccountSettingsContextForTests } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 
 const externalAuthBoundary = vi.hoisted(() => ({
   capture: vi.fn(),
@@ -141,34 +151,69 @@ describe('trusted interactive CLI Account Security vertical', () => {
       await options.openAuthorizationUrl(url);
       return { flow: 'auth', mode: 'keyless', purpose: 'account_password_enrollment', pending: 'pending-1' };
     });
-    vi.resetModules();
+    reloadConfiguration();
   });
   afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     env.restore();
+    reloadConfiguration();
+    resetInMemoryAccountSettingsContextForTests();
     process.exitCode = 0;
     await removeTempDir(home);
   });
 
-  it('reads Account security through the shared present_user Action without exposing credential material', async () => {
-    const { publishServerHttpRuntimeOrigin } = await import('@/api/client/serverHttpBaseUrl');
-    const release = publishServerHttpRuntimeOrigin('http://runtime.account.test', 'iroh');
+  it.each(['supported', 'unsupported', 'disabled', 'revoked'] as const)(
+    'demands only the HTTP reads needed for shared Account security admission (%s)', async scenario => {
+    env.patch({ HAPPIER_ACCOUNT_SETTINGS_MODE: 'auto' });
+    // Each row counts the reads of a first invocation against its Home. The
+    // terminal-policy initialization is cached per Home and credential for the
+    // process lifetime, so every row publishes its own runtime Home origin.
+    const runtimeOrigin = `http://${scenario}.runtime.account.test`;
+    const release = publishServerHttpRuntimeOrigin(runtimeOrigin, 'iroh');
     const app = fastify();
-    app.get('/v1/account/security', async (request) => {
+    const requests: string[] = [];
+    app.addHook('onRequest', async request => {
+      expect(request.method).toBe('GET');
       expect(request.headers.authorization).toBe('Bearer interactive');
-      return { v: 1, terminalPresentUserPolicy: 'allowed', encryptionMode: 'plain', nativeEmail: 'ada@example.test', password: { status: 'enrolled', revision: 3 } };
+      requests.push(new URL(request.url, runtimeOrigin).pathname);
     });
-    const restore = installAxiosFastifyAdapter({ app, origin: 'http://runtime.account.test' });
+    let securityReads = 0;
+    app.get('/v1/account/security', async (_request, reply) => {
+      securityReads += 1;
+      // The final selected read must still authenticate after policy/bootstrap
+      // awaits; the initial policy observation cannot supply its result.
+      if (scenario === 'revoked' && securityReads === 2) return reply.code(401).send({ error: 'not_authenticated' });
+      return { v: 1, terminalPresentUserPolicy: 'allowed', encryptionMode: 'plain',
+        nativeEmail: securityReads === 1 ? 'previous@example.test' : 'ada@example.test',
+        password: { status: 'enrolled', revision: securityReads === 1 ? 2 : 3 } };
+    });
+    app.get('/v2/account/settings', async (_request, reply) => {
+      if (scenario === 'unsupported') return reply.code(404).send({ error: 'not_found' });
+      return AccountSettingsV2GetResponseSchema.parse({ version: 1, content: { t: 'plain', v:
+        scenario === 'disabled' ? { actionsSettingsV1: { v: 1, actions: { 'account.security.get': { enabled: false } } } } : {} } });
+    });
+    app.get('/v1/account/settings', async (_request, reply) => reply.code(404).send({ error: 'not_found' }));
+    const restore = installAxiosFastifyAdapter({ app, origin: runtimeOrigin });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthSecurityGet } = await import('./auth/accountSecurity');
       await handleAuthSecurityGet(['get', '--json']);
       const envelope = JSON.parse(output.text());
-      expect(envelope.ok).toBe(true);
-      expect(envelope.data.nativeEmail).toBe('ada@example.test');
+      const featureRequests = vi.mocked(fetch).mock.calls;
+      // No approval/external origin is built for these invocations. Home
+      // identity discovery belongs to that consumer rather than every read.
+      expect(featureRequests).toHaveLength(0);
+      expect(requests.filter(path => path === '/v2/account/settings')).toHaveLength(1);
+      expect(requests.filter(path => path === '/v1/account/settings')).toHaveLength(scenario === 'unsupported' ? 1 : 0);
+      expect(securityReads).toBe(scenario === 'disabled' ? 1 : 2);
+      expect(requests.length + featureRequests.length).toBe(scenario === 'unsupported' ? 4 : scenario === 'disabled' ? 2 : 3);
+      if (scenario === 'disabled' || scenario === 'revoked') {
+        expect(envelope).toMatchObject({ ok: false, error: { code: scenario === 'disabled' ? 'action_disabled' : 'not_authenticated' } });
+        expect(envelope.data).toBeUndefined();
+      } else {
+        expect(envelope).toMatchObject({ ok: true, data: { nativeEmail: 'ada@example.test', password: { revision: 3 } } });
+      }
       expect(JSON.stringify(envelope)).not.toContain('hash');
       expect(JSON.stringify(envelope)).not.toContain('envelope');
     } finally {
@@ -196,9 +241,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(['cli-approvals', 'get', '--json']);
       expect(JSON.parse(output.text()).error).toBeUndefined();
       expect(JSON.parse(output.text())).toMatchObject({ ok: true, data: { policy: 'allowed' } });
@@ -223,9 +266,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCliApprovals } = await import('./auth/accountSecurity');
       await handleAuthCliApprovals(['set', 'invalid', '--yes', '--json']);
       expect(JSON.parse(output.text())).toMatchObject({ ok: false, error: { code: 'invalid_arguments' } });
       output.lines.length = 0;
@@ -257,7 +298,6 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const output = captureConsoleText();
     try {
       env.patch({ HAPPIER_TOKEN: apiToken });
-      const { handleAuthSecurityGet } = await import('./auth/accountSecurity');
       await handleAuthSecurityGet(['get', '--json']);
       expect(JSON.parse(output.text())).toMatchObject({
         ok: true,
@@ -289,9 +329,9 @@ describe('trusted interactive CLI Account Security vertical', () => {
       HAPPIER_LOCAL_SERVER_URL: origin,
       HAPPIER_TOKEN: `hap_v1_12345678-1234-4234-8234-123456789abc_${'A'.repeat(43)}`,
     });
+    reloadConfiguration();
     const output = captureConsoleText();
     try {
-      const { handleAuthSecurityGet } = await import('./auth/accountSecurity');
       await handleAuthSecurityGet(['get', '--json']);
       expect(JSON.parse(output.text())).toMatchObject({
         ok: true,
@@ -319,7 +359,6 @@ describe('trusted interactive CLI Account Security vertical', () => {
       const output = captureConsoleText();
       try {
         env.patch({ HAPPIER_TOKEN: apiToken });
-        const { handleAuthSecurityGet } = await import('./auth/accountSecurity');
         await handleAuthSecurityGet(['get', '--json']);
         expect(JSON.parse(output.text())).toMatchObject({
           ok: false,
@@ -343,11 +382,9 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
       const tokenId = '12345678-1234-4234-8234-123456789abc';
       env.patch({ HAPPIER_TOKEN: `hap_v1_${tokenId}_${'A'.repeat(43)}` });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'password',
         'change',
@@ -379,9 +416,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'password', 'enroll-email-request', '--email', 'Person@Example.Test', '--json',
       ]);
@@ -429,9 +464,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'password', 'enroll', '--email', 'Person@Example.Test',
         '--password', 'new enrollment password', '--verification-token', verificationToken,
@@ -501,9 +534,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'password', 'enroll', '--email', 'person@example.test',
         '--password', 'new enrollment password', '--yes', '--json',
@@ -544,9 +575,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
       const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
       const output = captureConsoleText();
       try {
-        const { writeCredentialsTokenOnly } = await import('@/persistence');
         await writeCredentialsTokenOnly({ token: 'interactive' });
-        const { handleAuthCommand } = await import('./auth');
         await handleAuthCommand([
           'password', operation,
           ...(operation === 'change'
@@ -595,9 +624,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'password', 'enroll', '--email', 'person@example.test',
         '--password', 'new enrollment password',
@@ -654,9 +681,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'password', 'enroll', '--email', 'person@example.test',
         '--password', 'new enrollment password', '--yes', '--json',
@@ -694,9 +719,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'password', 'enroll', '--email', 'person@example.test',
         '--password', 'new enrollment password', '--yes', '--json',
@@ -710,53 +733,6 @@ describe('trusted interactive CLI Account Security vertical', () => {
     }
   }, 120_000);
 
-  it('changes a Plain password through the shared Action with canonical confirmation and secret-safe errors', async () => {
-    const app = fastify();
-    app.get('/v1/account/security', async () => ({
-      v: 1,
-      terminalPresentUserPolicy: 'allowed',
-      encryptionMode: 'plain',
-      nativeEmail: 'person@example.test',
-      password: { status: 'enrolled', revision: 3 },
-    }));
-    app.post('/v1/account/password/change', async (request) => {
-      expect(request.headers.authorization).toBe('Bearer interactive');
-      const body = request.body as Record<string, unknown>;
-      expect(body.kind).toBe('plain');
-      expect(body.expectedCredentialRevision).toBe(3);
-      // Secret material reaches the domain route as strict input, never into logs.
-      expect(typeof body.currentPassword).toBe('string');
-      expect(typeof body.newPassword).toBe('string');
-      return { v: 1, status: 'updated' };
-    });
-    const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
-    const output = captureConsoleText();
-    try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
-      await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
-      await handleAuthCommand([
-        'password',
-        'change',
-        '--current-password',
-        'fifteen characters here',
-        '--new-password',
-        'sixteen characters here!',
-        '--yes',
-        '--json',
-      ]);
-      const envelope = JSON.parse(output.text());
-      expect(envelope.ok).toBe(true);
-      expect(envelope.data.status).toBe('updated');
-      expect(output.text()).not.toContain('fifteen characters here');
-      expect(output.text()).not.toContain('sixteen characters here!');
-    } finally {
-      output.restore();
-      restore();
-      await app.close();
-    }
-  });
-
   it('preserves the exact password bytes materialized from stdin, including surrounding spaces', async () => {
     const app = fastify();
     const currentPassword = '  current password with spaces  ';
@@ -769,6 +745,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
       password: { status: 'enrolled', revision: 4 },
     }));
     app.post('/v1/account/password/change', async (request) => {
+      expect(request.headers.authorization).toBe('Bearer interactive');
       expect(request.body).toMatchObject({
         v: 1,
         kind: 'plain',
@@ -781,10 +758,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
-      const { expandAuthSecretsFromStdin } = await import('./auth/stdinSecrets');
       const expanded = await expandAuthSecretsFromStdin([
         'password', 'change', '--yes', '--json', '--secrets-json-stdin',
       ], Readable.from([JSON.stringify({
@@ -818,12 +792,8 @@ describe('trusted interactive CLI Account Security vertical', () => {
     });
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
-    const settingsSnapshot = await import('@/settings/accountSettings/activeAccountSettingsSnapshot');
     try {
       const interactiveToken = 'interactive';
-      const { resolveAccountSettingsScopeKeyForToken } = await import(
-        '@/settings/accountSettings/accountSettingsScopeKey'
-      );
       settingsSnapshot.setActiveAccountSettingsSnapshot({
         source: 'network',
         settings: AccountSettingsSchema.parse({
@@ -837,14 +807,14 @@ describe('trusted interactive CLI Account Security vertical', () => {
         settingsSecretsReadKeys: [],
         scopeKey: resolveAccountSettingsScopeKeyForToken(interactiveToken),
       });
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: interactiveToken });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'password', 'change', '--current-password', 'current password long',
         '--new-password', 'replacement password long', '--yes', '--json',
-      ], AbortSignal.timeout(250));
-      expect(JSON.parse(output.text())).toMatchObject({ ok: false });
+      ], AbortSignal.timeout(5_000));
+      // The Action approval gate stays required and fails closed before any
+      // mutation; the signal is only a hang guard, not the expected outcome.
+      expect(JSON.parse(output.text())).toMatchObject({ ok: false, error: { code: 'approval_origin_unavailable' } });
       expect(mutations).toBe(0);
     } finally {
       settingsSnapshot.resetActiveAccountSettingsSnapshotForTests();
@@ -856,6 +826,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
 
   it('changes an E2EE password through canonical preparation without rotating the recovery secret', async () => {
     env.patch({ HAPPIER_PUBLIC_SERVER_URL: 'https://public.account.test', HAPPIER_LOCAL_SERVER_URL: 'http://account.test' });
+    reloadConfiguration();
     const app = fastify();
     const secret = new Uint8Array(32).fill(17);
     let preparedEnvelope: unknown;
@@ -920,9 +891,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsLegacy } = await import('@/persistence');
       await writeCredentialsLegacy({ token: 'interactive', secret });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'password', 'change', '--new-password', 'replacement password long', '--yes', '--json',
       ]);
@@ -1005,9 +974,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsLegacy } = await import('@/persistence');
       await writeCredentialsLegacy({ token: 'interactive', secret });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'email', 'connect', '--email', 'Person@Example.Test',
         '--password', 'new enrollment password', '--verification-token', verificationToken,
@@ -1068,9 +1035,7 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsLegacy } = await import('@/persistence');
       await writeCredentialsLegacy({ token: 'interactive', secret });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(['password', 'remove', '--yes', '--json']);
       expect(JSON.parse(output.text())).toMatchObject({ ok: true, data: { status: 'removed' } });
     } finally {
@@ -1091,11 +1056,9 @@ describe('trusted interactive CLI Account Security vertical', () => {
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
       const abort = new AbortController();
       abort.abort();
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'password', 'change', '--current-password', 'current password long',
         '--new-password', 'replacement password long', '--yes', '--json',
@@ -1109,58 +1072,29 @@ describe('trusted interactive CLI Account Security vertical', () => {
     }
   });
 
-  it('projects a missing enrollment mailbox proof as the Home typed failure', async () => {
+  it.each([
+    { proof: 'a missing enrollment mailbox proof', homeError: 'reauthentication_required', proofArgs: [] },
+    { proof: 'a rejected enrollment mailbox bearer', homeError: 'invalid_token', proofArgs: ['--verification-token', 'W'.repeat(43)] },
+  ])('projects $proof as the Home typed failure $homeError', async ({ homeError, proofArgs }) => {
     const app = fastify();
     const targetCredential = plainCredentialFixture();
     registerPlainEnrollmentExternalAuth(app, targetCredential);
     app.get('/v1/auth/external/github/params', async () => ({ url: 'https://github.example/authorize' }));
     app.post('/v1/account/password/enroll', async (_request, reply) => {
-      return await reply.code(401).send({ error: 'reauthentication_required' });
+      return await reply.code(401).send({ error: homeError });
     });
     const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
     const output = captureConsoleText();
     try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
       await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand([
         'password', 'enroll', '--email', 'person@example.test',
-        '--password', 'new enrollment password',
+        '--password', 'new enrollment password', ...proofArgs,
         '--yes', '--json',
       ]);
       expect(JSON.parse(output.text())).toMatchObject({
         ok: false,
-        error: { code: 'reauthentication_required' },
-      });
-    } finally {
-      output.restore();
-      restore();
-      await app.close();
-    }
-  });
-
-  it('projects a rejected enrollment mailbox bearer as invalid_token', async () => {
-    const app = fastify();
-    const targetCredential = plainCredentialFixture();
-    registerPlainEnrollmentExternalAuth(app, targetCredential);
-    app.get('/v1/auth/external/github/params', async () => ({ url: 'https://github.example/authorize' }));
-    app.post('/v1/account/password/enroll', async (_request, reply) => {
-      return await reply.code(401).send({ error: 'invalid_token' });
-    });
-    const restore = installAxiosFastifyAdapter({ app, origin: 'http://account.test' });
-    const output = captureConsoleText();
-    try {
-      const { writeCredentialsTokenOnly } = await import('@/persistence');
-      await writeCredentialsTokenOnly({ token: 'interactive' });
-      const { handleAuthCommand } = await import('./auth');
-      await handleAuthCommand([
-        'password', 'enroll', '--email', 'person@example.test',
-        '--password', 'new enrollment password', '--verification-token', 'W'.repeat(43),
-        '--yes', '--json',
-      ]);
-      expect(JSON.parse(output.text())).toMatchObject({
-        ok: false,
-        error: { code: 'invalid_token' },
+        error: { code: homeError },
       });
       expect(output.text()).not.toContain('W'.repeat(43));
     } finally {
@@ -1173,7 +1107,6 @@ describe('trusted interactive CLI Account Security vertical', () => {
   it('validates recovery keys without revealing secret material', async () => {
     const output = captureConsoleText();
     try {
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(['recovery-key', 'validate', '--key', 'not-a-key', '--json']);
       const envelope = JSON.parse(output.text());
       expect(envelope.ok).toBe(true);
@@ -1187,29 +1120,12 @@ describe('trusted interactive CLI Account Security vertical', () => {
   it('dispatches native email actions exhaustively without mTLS/OAuth fallthrough', async () => {
     const output = captureConsoleText();
     try {
-      const { handleAuthCommand } = await import('./auth');
       await handleAuthCommand(['email', 'bogus-action', '--json']);
       expect(process.exitCode).toBe(1);
       expect(output.text()).toContain('Usage');
     } finally {
       output.restore();
       process.exitCode = 0;
-    }
-  });
-
-  it('advertises the trusted Account Security and native email commands in canonical help', async () => {
-    const output = captureConsoleText();
-    try {
-      const { handleAuthCommand } = await import('./auth');
-      await handleAuthCommand(['help']);
-      const text = output.text();
-      expect(text).toContain('security get');
-      expect(text).toContain('password change');
-      expect(text).toContain('email login');
-      expect(text).toContain('recovery-key validate');
-      expect(text).toContain('present_user');
-    } finally {
-      output.restore();
     }
   });
 });

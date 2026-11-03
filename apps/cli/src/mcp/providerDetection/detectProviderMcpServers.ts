@@ -14,8 +14,7 @@ import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/
 
 export type PluginMcpEndpointDiscoveryResult = ResolvedMcpEndpointDiscoveryResult;
 
-export type PluginMcpDiscoverySourceEntry = Readonly<{
-  pluginId: string;
+type PluginMcpDiscoverySourceEntry = Readonly<{
   /**
    * The Agent that owns this discovery source. Detection never derives it from
    * the contribution's local id: identity comes from the declaration, so an
@@ -23,16 +22,12 @@ export type PluginMcpDiscoverySourceEntry = Readonly<{
    */
   provider: McpDetectedProviderV1;
   loadedInHappierSessions: boolean;
-  registration: Readonly<{
-    id: string;
-    discover(
-      input: PluginMcpDiscoveryRequest,
-    ): Promise<PluginMcpEndpointDiscoveryResult> | PluginMcpEndpointDiscoveryResult;
-  }>;
-  discover?: (
+  /** The declaring contribution's local id, used as the detected source path. */
+  sourceId: string;
+  discover(
     input: PluginMcpDiscoveryRequest,
     signal: AbortSignal,
-  ) => Promise<PluginMcpEndpointDiscoveryResult>;
+  ): Promise<PluginMcpEndpointDiscoveryResult>;
 }>;
 
 export type DetectProviderMcpServersResult = Readonly<{
@@ -97,7 +92,6 @@ function toDetectionInput(directory: string | null): PluginMcpDiscoveryRequest {
 }
 
 async function acquireDiscoverySources(
-  entries: readonly PluginMcpDiscoverySourceEntry[] | undefined,
   providers: ReadonlySet<McpDetectedProviderV1> | null,
   runtimeRegistry?: ResolvedExecutablePluginRuntimeRegistry,
 ): Promise<Readonly<{
@@ -105,13 +99,6 @@ async function acquireDiscoverySources(
   warnings: readonly DaemonMcpServersDetectWarningV1[];
   release: () => Promise<void>;
 }>> {
-  if (entries) {
-    return Object.freeze({
-      entries,
-      warnings: Object.freeze([]),
-      release: async () => {},
-    });
-  }
   const lease = runtimeRegistry ? { registry: runtimeRegistry, release: async () => {} } : await acquireAuthoritativePluginRuntimeRegistryLease();
   const contributions = (lease.registry.contributes.mcpDiscoverySources ?? [])
     .map((contribution) => ({
@@ -138,13 +125,9 @@ async function acquireDiscoverySources(
         const pluginId = contribution.pluginId;
         return pluginId
           ? [Object.freeze({
-              pluginId,
               provider,
               loadedInHappierSessions: contribution.definition.loadedInHappierSessions,
-              registration: Object.freeze({
-                id: contribution.definition.id,
-                discover: async () => Object.freeze({ endpoints: Object.freeze([]) }),
-              }),
+              sourceId: contribution.definition.id,
               discover: async (input: PluginMcpDiscoveryRequest, signal: AbortSignal) => (
                 await stableDiscover({
                   pluginId,
@@ -196,14 +179,8 @@ function clampDiscoveryTimeoutMs(input: number): number {
   return Math.min(MCP_DISCOVERY_PROVIDER_TIMEOUT_MAX_MS, Math.max(1, Math.floor(input)));
 }
 
-function resolveDiscoveryTimeoutMs(params: Readonly<{
-  env?: ProcessEnvInput;
-  discoveryTimeoutMs?: number;
-}>): number {
-  const explicit = readPositiveFiniteInteger(params.discoveryTimeoutMs);
-  if (explicit !== null) return clampDiscoveryTimeoutMs(explicit);
-
-  const fromEnv = readPositiveFiniteInteger(params.env?.[MCP_DISCOVERY_PROVIDER_TIMEOUT_ENV]);
+function resolveDiscoveryTimeoutMs(env: ProcessEnvInput | undefined): number {
+  const fromEnv = readPositiveFiniteInteger(env?.[MCP_DISCOVERY_PROVIDER_TIMEOUT_ENV]);
   if (fromEnv !== null) return clampDiscoveryTimeoutMs(fromEnv);
 
   return DEFAULT_MCP_DISCOVERY_PROVIDER_TIMEOUT_MS;
@@ -221,9 +198,7 @@ async function discoverWithTimeout(
   let timeout: ReturnType<typeof setTimeout> | null = null;
   const controller = new AbortController();
   try {
-    const discovery = Promise.resolve(
-      entry.discover?.(input, controller.signal) ?? entry.registration.discover(input),
-    )
+    const discovery = entry.discover(input, controller.signal)
       .then((value) => ({ type: 'resolved' as const, value }))
       .catch((error: unknown) => ({ type: 'rejected' as const, error }));
     const timeoutResult = new Promise<Readonly<{ type: 'timeout' }>>((resolve) => {
@@ -333,27 +308,21 @@ export async function detectProviderMcpServers(params: Readonly<{
   directory: string | null;
   providers: unknown;
   env?: ProcessEnvInput;
-  discoveryTimeoutMs?: number;
-  mcpDiscoverySources?: readonly PluginMcpDiscoverySourceEntry[];
   runtimeRegistry?: ResolvedExecutablePluginRuntimeRegistry;
 }>): Promise<DetectProviderMcpServersResult> {
   const providersFilter = normalizeProvidersFilter(params.providers);
   const providers = providersFilter.providers;
   const directory = readDirectory(params.directory);
   const detectionInput = toDetectionInput(directory);
-  const discoveryTimeoutMs = resolveDiscoveryTimeoutMs({
-    env: params.env,
-    discoveryTimeoutMs: params.discoveryTimeoutMs,
-  });
+  const discoveryTimeoutMs = resolveDiscoveryTimeoutMs(params.env);
   const servers: DetectedMcpServerV1[] = [];
   const warnings: DaemonMcpServersDetectWarningV1[] = [...providersFilter.warnings];
-  const discoverySources = await acquireDiscoverySources(params.mcpDiscoverySources, providers, params.runtimeRegistry);
+  const discoverySources = await acquireDiscoverySources(providers, params.runtimeRegistry);
   warnings.push(...discoverySources.warnings);
 
   try {
     for (const entry of discoverySources.entries) {
       const provider = entry.provider;
-      if (providers && !providers.has(provider)) continue;
 
       try {
         const outcome = await discoverWithTimeout(entry, detectionInput, discoveryTimeoutMs);
@@ -374,7 +343,7 @@ export async function detectProviderMcpServers(params: Readonly<{
         for (const native of outcome.value.detectedServers ?? []) {
           const server = normalizeDetectedMcpServerV1({ ...native, provider, loadedInHappierSessions: entry.loadedInHappierSessions });
           if (server) servers.push(server);
-          else warnings.push(Object.freeze({ provider, code: 'unsupported' as const, path: `plugin:${entry.registration.id}` }));
+          else warnings.push(Object.freeze({ provider, code: 'unsupported' as const, path: `plugin:${entry.sourceId}` }));
         }
         for (const endpoint of discovered.endpoints) {
           try {
@@ -383,14 +352,14 @@ export async function detectProviderMcpServers(params: Readonly<{
             warnings.push(Object.freeze({
               provider,
               code: 'unsupported',
-              path: `plugin:${entry.registration.id}`,
+              path: `plugin:${entry.sourceId}`,
             }));
             continue;
           }
           servers.push(normalizeDiscoveredEndpoint({
             provider,
             loadedInHappierSessions: entry.loadedInHappierSessions,
-            registrationId: entry.registration.id,
+            registrationId: entry.sourceId,
             directory,
             endpoint,
           }));

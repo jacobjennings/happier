@@ -5,7 +5,7 @@ import { isBundledAgentId } from '@/agents/catalog/catalog';
 import { resolveAgentCatalogTitle } from '@/agents/backendCatalog/agentCatalogProjection';
 import { t } from '@/text';
 import type { VoiceSettings } from '@/sync/domains/settings/voiceSettings';
-import { parseLocalVoiceSttSettings, parseLocalVoiceTtsSettings, resolveLocalVoiceAdapterSettings } from '@/voice/local/localVoiceSettings';
+import { parseLocalVoiceSttSettings, parseLocalVoiceTtsSettings, resolveLocalVoiceAdapterSettingsFromVoice } from '@/voice/local/localVoiceSettings';
 import { createDefaultVoiceProviderRegistry } from '@/voice/registry/defaultRegistry';
 import type { VoiceProviderRegistry } from '@/voice/registry/providerRegistry';
 import { projectVoiceProviderRequirements, type VoiceRoleReadiness } from '@/voice/registry/readiness';
@@ -72,16 +72,17 @@ export function buildLocalVoiceConversationSteps(
     speechReadiness?: LocalVoiceSpeechReadiness | null,
     thinkReadiness?: VoiceRoleReadiness | null,
 ): VoiceSettingsPipelineStep[] {
-    const { config: cfg } = resolveLocalVoiceAdapterSettings({ voice });
+    const adapter = resolveLocalVoiceAdapterSettingsFromVoice(voice);
+    const cfg = adapter.config;
     const stt = parseLocalVoiceSttSettings(cfg.stt);
     const tts = parseLocalVoiceTtsSettings(cfg.tts);
     const sttSpec = getLocalSttProviderSpec(stt.provider);
     const ttsSpec = getLocalTtsProviderSpec(tts.provider);
-    const think: VoiceSettingsPipelineStep = cfg.conversationMode === 'agent'
+    const think: VoiceSettingsPipelineStep = adapter.adapterId === 'local_conversation' && adapter.config.conversationMode === 'agent'
         ? {
             roles: ['think'],
-            engine: cfg.agent.agentSource === 'agent'
-                ? { kind: 'agent', agentId: cfg.agent.agentId, title: agentTitle(cfg.agent.agentId) }
+            engine: adapter.config.agent.agentSource === 'agent'
+                ? { kind: 'agent', agentId: adapter.config.agent.agentId, title: agentTitle(adapter.config.agent.agentId) }
                 : { kind: 'agent', title: t('settingsVoice.pages.pipeline.voiceAgentFollowsSession') },
             placement: onMachine(machine),
             readiness: thinkReadiness ?? null,

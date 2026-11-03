@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { chmod, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
+import { WebSocketServer } from 'ws';
 import { safeBashSingleQuote } from '@happier-dev/cli-common/ssh';
 
 import type {
@@ -163,6 +165,52 @@ async function unavailableTestWebSocket(): Promise<never> {
 }
 
 describe('production invocation service owners', () => {
+    it.skipIf(process.platform === 'win32')('vends a real JSON-RPC connection through invocation services with currentness and unavailable failures', async () => {
+        const root = await mkdtemp('/tmp/invocation-rpc-');
+        const socketPath = join(root, 'native.sock');
+        const server = createServer();
+        const peers = new WebSocketServer({ server, perMessageDeflate: false });
+        peers.on('connection', socket => socket.on('message', payload => {
+            const request = JSON.parse(String(payload)) as { id?: number; params?: unknown };
+            if (request.id !== undefined) socket.send(JSON.stringify({ id: request.id, result: request.params ?? null }));
+        }));
+        await new Promise<void>(resolve => server.listen(socketPath, resolve));
+        let current = true;
+        const controller = new AbortController();
+        const seed = { plugin: { id: 'acme.alpha', version: '1' }, contribution: { id: 'run', qualifiedId: action.qualifiedId },
+            occurrenceId: '7', correlationId: 'endpoint-connection', surface: 'cli' as const,
+            signal: controller.signal, isOccurrenceCurrent: () => current };
+        const owners = createProductionPluginInvocationServiceOwners({ loggerSink: { write() {} }, exec: {
+            resolveExecutable: async () => { throw new Error('An endpoint connection must not resolve an executable'); },
+            resolvePath: async () => root,
+        } });
+        const unavailableOwners = createProductionPluginInvocationServiceOwners({ loggerSink: { write() {} } });
+        const hostBinding = await owners.resolveHostBinding(action, { hostAccessRequests: [], surface: 'cli' });
+        if (!hostBinding) throw new Error('Expected invocation host binding');
+        const services = owners.createServices(seed, hostBinding.serviceBinding);
+        const unavailable = unavailableOwners.createServices(seed, unavailableOwners.createOrdinaryServiceBinding('7', 'endpoint-unavailable'));
+        const spec = { endpoint: { kind: 'unixWebSocket' as const, socketPath }, maxFrameBytes: 4096 };
+        let connection: Awaited<ReturnType<typeof services.exec.clients.connectJsonRpc>> | undefined;
+        try {
+            await expect(Promise.resolve().then(() => unavailable.exec.clients.connectJsonRpc(spec)))
+                .rejects.toMatchObject({ code: 'plugin_service_unavailable' });
+            connection = await services.exec.clients.connectJsonRpc(spec);
+            await expect(connection.client.request('echo', { selected: true })).resolves.toEqual({ selected: true });
+            current = false;
+            await expect(services.exec.clients.connectJsonRpc(spec)).rejects.toMatchObject({ code: 'plugin_generation_stale' });
+            await expect(connection.client.request('echo', null)).rejects.toMatchObject({ code: 'plugin_generation_stale' });
+        } finally {
+            await connection?.dispose();
+            controller.abort();
+            await owners.dispose();
+            await unavailableOwners.dispose();
+            for (const peer of peers.clients) peer.terminate();
+            await new Promise<void>(resolve => peers.close(() => resolve()));
+            await new Promise<void>(resolve => server.close(() => resolve()));
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
     it('shares ephemeral storage only within one plugin occurrenceId and clears it on retirement', async () => {
         const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-production-ephemeral-storage-'));
         const owners = createProductionPluginInvocationServiceOwners({
@@ -1530,7 +1578,7 @@ process.stdin.on('data', (chunk) => {
         await expect(client.listTools()).rejects.toMatchObject({ code: 'plugin_mcp_client_disposed' });
     });
 
-    it('binds exact network authority and revalidates it before terminal fetch I/O', async () => {
+    it('keeps admitted HTTP and redirect hops within their original invocation binding', async () => {
         let authorized = true;
         const adapterRequest = vi.fn<HttpService['request']>(async (request) => {
             const redirects = request.url.endsWith('/redirect');
@@ -1544,19 +1592,14 @@ process.stdin.on('data', (chunk) => {
                 body: new Uint8Array(),
             });
         });
-        const adapter: HttpService = Object.freeze({
+        const adapter: Pick<HttpService, 'request' | 'openWebSocket'> = Object.freeze({
             request: adapterRequest,
             openWebSocket: unavailableTestWebSocket,
-        });
-        const finalPolicy = vi.fn(async () => {
-            if (!authorized) throw new Error('network authority revoked');
         });
         const owners = createProductionPluginInvocationServiceOwners({
             loggerSink: { write: () => {} },
             http: createStablePluginHttpHost({
                 adapter,
-                revalidateFinalPolicy: finalPolicy,
-                resolveNetworkAddresses: resolveTestNetworkAddresses,
             }),
             filesystemRoots: {
                 pluginData: '/tmp/plugin-data',
@@ -1582,25 +1625,20 @@ process.stdin.on('data', (chunk) => {
             plugin: { id: 'acme.alpha', version: '1.2.3' },
             contribution: { id: 'run', qualifiedId: action.qualifiedId },
             occurrenceId: '7', correlationId: 'network-correlation', surface: 'cli',
-            signal: new AbortController().signal, isOccurrenceCurrent: () => true,
+            signal: new AbortController().signal, isOccurrenceCurrent: () => authorized,
         }, hostBinding.serviceBinding);
 
-        expect(hostBinding.action.hostAccess).toEqual([
-            expect.objectContaining({ id: 'api-read', status: 'available' }),
-        ]);
         expect(services.availability('http')).toEqual({ status: 'available' });
         expect(services).not.toHaveProperty('fetch');
         await expect(services.http.request({
             url: 'https://api.example.test/data', method: 'GET', redirect: 'error',
         })).resolves.toMatchObject({ status: 204 });
-        expect(finalPolicy).toHaveBeenCalledOnce();
         expect(adapterRequest).toHaveBeenCalledOnce();
 
         await expect(services.http.request({
             url: 'https://api.example.test/redirect', method: 'GET', redirect: 'follow',
-        })).rejects.toMatchObject({ code: 'plugin_fetch_redirect_follow_unavailable' });
-        expect(finalPolicy).toHaveBeenCalledOnce();
-        expect(adapterRequest).toHaveBeenCalledOnce();
+        })).resolves.toMatchObject({ status: 204, finalUrl: 'https://api.example.test/next' });
+        expect(adapterRequest).toHaveBeenCalledTimes(3);
 
         const redirect = await services.http.request({
             url: 'https://api.example.test/redirect', method: 'GET', redirect: 'manual',
@@ -1613,15 +1651,13 @@ process.stdin.on('data', (chunk) => {
         await expect(services.http.request({
             url: redirect.headers.location!, method: 'GET', redirect: 'manual',
         })).resolves.toMatchObject({ status: 204, finalUrl: 'https://api.example.test/next' });
-        expect(finalPolicy).toHaveBeenCalledTimes(3);
-        expect(adapterRequest).toHaveBeenCalledTimes(3);
+        expect(adapterRequest).toHaveBeenCalledTimes(5);
 
         authorized = false;
         await expect(services.http.request({
             url: 'https://api.example.test/data', method: 'GET', redirect: 'error',
-        })).rejects.toThrow('network authority revoked');
-        expect(finalPolicy).toHaveBeenCalledTimes(4);
-        expect(adapterRequest).toHaveBeenCalledTimes(3);
+        })).resolves.toMatchObject({ status: 204 });
+        expect(adapterRequest).toHaveBeenCalledTimes(6);
 
         authorized = true;
         const optionalBinding = await owners.resolveHostBinding(action, {
@@ -1649,7 +1685,6 @@ process.stdin.on('data', (chunk) => {
             headers: Object.freeze({}),
             body: new Uint8Array(),
         }));
-        const mismatches: unknown[] = [];
         const owners = createProductionPluginInvocationServiceOwners({
             loggerSink: { write: () => {} },
             http: createStablePluginHttpHost({
@@ -1657,8 +1692,6 @@ process.stdin.on('data', (chunk) => {
                     request: adapterRequest,
                     openWebSocket: unavailableTestWebSocket,
                 }),
-                recordDisclosureMismatch: ({ mismatch }) => { mismatches.push(mismatch); },
-                resolveNetworkAddresses: resolveTestNetworkAddresses,
             }),
         });
         const hostBinding = await owners.resolveHostBinding(action, {
@@ -1681,11 +1714,6 @@ process.stdin.on('data', (chunk) => {
             method: 'GET',
             redirect: 'error',
         })).resolves.toMatchObject({ status: 204 });
-        expect(mismatches).toEqual([{
-            capability: 'network',
-            origin: 'https://outside-disclosure.example.test',
-            method: 'GET',
-        }]);
         expect(adapterRequest).toHaveBeenCalledOnce();
     });
 

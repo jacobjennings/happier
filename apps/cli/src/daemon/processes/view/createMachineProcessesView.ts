@@ -20,7 +20,7 @@ import { projectMachineProcesses, resolveMachineProcessesUnavailableReason, type
 export type MachineProcessesViewOptions = Readonly<{
     processOwnershipRuntime: ReturnType<typeof createProcessOwnershipRuntime>;
     leftBehind: Pick<ReturnType<typeof createLeftBehindPass>, 'observe' | 'confirmed'>;
-    machineVitals: Pick<MachineVitalsSampler, 'demand' | 'subscribe' | 'latest'>;
+    machineVitals: Pick<MachineVitalsSampler, 'demand' | 'subscribe' | 'latest' | 'host'>;
     platform: 'linux' | 'darwin' | 'win32'; selfPid?: number; bootTimeMs?: number;
     allProcessesVisible(): boolean;
     requesterForOwner(owner: ProcessOwnerRef, roots: readonly HappierProcessRoot[]): ProcessRequesterIdentity | null;
@@ -85,13 +85,13 @@ export function createMachineProcessesView(options: MachineProcessesViewOptions)
             return await ownershipCapture;
         } finally { captureDemands.delete(demanded); }
     };
-    const project = (read: ProcessOwnershipRead, request: ProcessesProjectionInput, requester: ProcessRequester, watched = false,
+    const project = (read: ProcessOwnershipRead, request: ProcessesProjectionInput & Readonly<{ historySince?: number }>, requester: ProcessRequester, watched = false,
         facts: Readonly<{ ports?: NormalizedLocalServiceInventorySnapshot; identities?: typeof requesterIdentities }> = {}) =>
         projectMachineProcesses(read, request, requester, { ...options, allProcessesVisible: options.allProcessesVisible(),
             confirmed: options.leftBehind.confirmed(), ports: facts.ports ?? ports, bootTimeMs, requesterIdentities: facts.identities ?? requesterIdentities,
             ...(watched ? { metrics: read === latestRead ? currentMetrics
                 : new Map([...currentMetrics].filter(([, metric]) => !metric.identityUnavailable)),
-                history: metrics.history(), capturedAtMs: latestMetricAtMs } : {}) });
+                ...(request.view === 'tree' ? { history: (ref: string) => metrics.history(request.historySince, [ref])[ref] } : {}), capturedAtMs: latestMetricAtMs } : {}) });
     let currentMetrics: ReadonlyMap<number, import('./processMetrics').ProcessMetrics> = new Map();
     const notify = () => { for (const listener of listeners) listener(); };
     const discover = () => {
@@ -151,7 +151,7 @@ export function createMachineProcessesView(options: MachineProcessesViewOptions)
                             !sampled.has(row.pid) || partial.has(row.pid)
                             || !!observed.get(row.pid) && equalProcessStart(row.start, observed.get(row.pid)!.start);
                         const rows = ownership.rows.filter(retained);
-                        if (rows.length !== ownership.rows.length) latestRead = { ...ownership, rows,
+                        if (latestRead === ownership && rows.length !== ownership.rows.length) latestRead = { ...ownership, rows,
                             snapshot: { ...ownership.snapshot, rows: ownership.snapshot.rows.filter(retained) } };
                         const owners = new Map<string, Map<number, string>>();
                         for (const row of rows) if (row.owner && row.level !== 'left_behind' && row.level !== 'not_happier') {
@@ -172,7 +172,7 @@ export function createMachineProcessesView(options: MachineProcessesViewOptions)
                             if (!partial.has(row.pid) && !principalUncertain) continue;
                             identityUnavailable.set(row.pid, processRef(row.pid, row.start));
                         }
-                        currentMetrics = metrics.observe(snapshot, sample.intervalMs, owners, identityUnavailable);
+                        currentMetrics = metrics.observe(snapshot, sample.intervalMs, owners, identityUnavailable, options.machineVitals.host()?.effectiveCores);
                         latestMetricAtMs = snapshot.capturedAtMs;
                         // A cold or expired CPU baseline needs two observations in
                         // this active watch. Returning after the first would let
@@ -181,7 +181,7 @@ export function createMachineProcessesView(options: MachineProcessesViewOptions)
                             && ![...currentMetrics.values()].some(metric => metric.cpuPercent !== undefined);
                         if (needsCpuBaseline) return;
                     }
-                    else { metrics.reset(); currentMetrics = new Map(); }
+                    else clearMetrics();
                     firstMetricObservation = false;
                     notify();
                 })().finally(() => { ticking = undefined; discover(); });

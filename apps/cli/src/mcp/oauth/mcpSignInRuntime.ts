@@ -1,7 +1,6 @@
 import { z } from 'zod/mini';
 import type { AuthorizationServerMetadata, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { InvalidClientError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import { canonicalMcpOAuthResourceUrlV1 } from '@happier-dev/protocol/mcp/oauth/mcpOAuthResourceV1';
 import { PluginConnectedAccountDescriptorContributionV2Schema } from '@happier-dev/protocol/connect/plugin-connected-account-authentication-v2';
 import { ConnectedAccountRequestAuthMaterializationV1Schema } from '@happier-dev/protocol/connect/connected-account-request-auth';
@@ -87,6 +86,13 @@ function metadata(issuer: string, registration: Registration): AuthorizationServ
         token_endpoint_auth_methods_supported: registration.tokenEndpointAuthMethods };
 }
 function diagnostic(code: string) { return { code, severity: 'error' as const }; }
+
+// The SDK error module loads on demand like the SDK client: daemon startup
+// registers this runtime and must not evaluate the MCP SDK before an operation.
+async function isInvalidClientError(cause: unknown): Promise<boolean> {
+    const { InvalidClientError } = await import('@modelcontextprotocol/sdk/server/auth/errors.js');
+    return cause instanceof InvalidClientError;
+}
 class McpOAuthEndpointRequiresHttpsError extends Error {}
 function requireHttpsEndpoint(input: Parameters<FetchLike>[0]): URL {
     const endpoint = input instanceof URL ? input : new URL(input);
@@ -122,9 +128,7 @@ async function saveTokens(store: HostConnectedAccountAuthenticationContext['atte
     return scopes;
 }
 
-export function createMcpSignInRuntime(params: Readonly<{ fetchFn?: FetchLike; now?: () => number }> = {}): HostConnectedAccountRuntime {
-    const fetchFn = params.fetchFn ?? fetch;
-    const now = params.now ?? Date.now;
+export function createMcpSignInRuntime(): HostConnectedAccountRuntime {
     function transport(signal: AbortSignal) {
         let lastStatus: number | undefined;
         let issRequired = false;
@@ -135,7 +139,7 @@ export function createMcpSignInRuntime(params: Readonly<{ fetchFn?: FetchLike; n
             requireHttpsEndpoint(url);
             // Prevent a 307/308 from forwarding authorization codes, verifiers,
             // refresh tokens or DCR secrets to another endpoint.
-            const response = await fetchFn(url, { ...init, signal, redirect: 'error' });
+            const response = await fetch(url, { ...init, signal, redirect: 'error' });
             lastStatus = response.status;
             if (readMetadata && response.ok && (!init?.method || init.method === 'GET')) {
                 const raw: unknown = await response.clone().json().catch(() => null);
@@ -252,7 +256,7 @@ export function createMcpSignInRuntime(params: Readonly<{ fetchFn?: FetchLike; n
                 } catch (cause) {
                     context.signal.throwIfAborted();
                     return { status: 'rejected', diagnostic: diagnostic(cause instanceof McpOAuthEndpointRequiresHttpsError
-                        ? 'mcp_oauth_endpoints_require_https' : cause instanceof InvalidClientError ? 'invalid_client' : 'mcp_oauth_discovery_failed') };
+                        ? 'mcp_oauth_endpoints_require_https' : await isInvalidClientError(cause) ? 'invalid_client' : 'mcp_oauth_discovery_failed') };
                 }
             },
             async complete(input, context) {
@@ -267,12 +271,12 @@ export function createMcpSignInRuntime(params: Readonly<{ fetchFn?: FetchLike; n
                     const tokens = await exchangeAuthorization(sealed.issuer, { metadata: metadata(sealed.issuer, sealed.registration),
                         clientInformation: client(sealed.registration, sealed.clientSecret), authorizationCode: input.code,
                         codeVerifier: input.pkceVerifier, redirectUri: input.callbackUrl, resource: resourceUrl(sealed.resource), fetchFn: network.send });
-                    const scopes = await saveTokens(context.attemptCredentials, tokens, now(), sealed.scopes);
+                    const scopes = await saveTokens(context.attemptCredentials, tokens, Date.now(), sealed.scopes);
                     await context.attemptCredentials.delete(completionKey);
                     return { status: 'connected', accountId: sealed.serverId, displayName: sealed.serverId, scopes };
                 } catch (cause) {
                     context.signal.throwIfAborted();
-                    return cause instanceof InvalidClientError
+                    return await isInvalidClientError(cause)
                         ? { status: 'rejected', diagnostic: diagnostic('invalid_client') }
                         : cause instanceof McpOAuthEndpointRequiresHttpsError
                         ? { status: 'rejected', diagnostic: diagnostic('mcp_oauth_endpoints_require_https') }
@@ -291,7 +295,7 @@ export function createMcpSignInRuntime(params: Readonly<{ fetchFn?: FetchLike; n
                 const tokens = await refreshAuthorization(issuer, { metadata: metadata(issuer, registration),
                     clientInformation: client(registration, clientSecret), refreshToken, resource: resourceUrl(configuration.resource), fetchFn: network.send });
                 const previousScopes = await context.credentials.get('scopes');
-                const scopes = await saveTokens(context.stagedCredentials, tokens, now(), previousScopes ? z.array(z.string()).parse(JSON.parse(previousScopes)) : []);
+                const scopes = await saveTokens(context.stagedCredentials, tokens, Date.now(), previousScopes ? z.array(z.string()).parse(JSON.parse(previousScopes)) : []);
                 return { status: 'connected', scopes };
             } catch (cause) {
                 context.signal.throwIfAborted();
@@ -326,7 +330,7 @@ export function createMcpSignInRuntime(params: Readonly<{ fetchFn?: FetchLike; n
             const accessToken = await context.credentials.get('accessToken');
             const expiresAt = await context.credentials.get('expiresAtMs');
             if (!accessToken) return { status: 'reconnectRequired' };
-            if (expiresAt !== null && Number(expiresAt) <= now()) {
+            if (expiresAt !== null && Number(expiresAt) <= Date.now()) {
                 return { status: await context.credentials.get('refreshToken') ? 'expired' : 'reconnectRequired' };
             }
             return { status: 'connected' };

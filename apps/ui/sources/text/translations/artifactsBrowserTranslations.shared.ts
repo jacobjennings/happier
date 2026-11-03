@@ -83,6 +83,9 @@ export type ArtifactsBrowserTranslations = Readonly<{
     loadFailedTitle: string;
     loadFailedBody: string;
     retainedBody: string;
+    loadingBody: string;
+    countSoFar: (params: Readonly<{ count: number }>) => string;
+    noMatchSoFar: (params: Readonly<{ query: string }>) => string;
     quota: Readonly<{
         accountTitle: string;
         documentTitle: string;
@@ -164,6 +167,7 @@ export type ArtifactsBrowserTranslations = Readonly<{
     }>;
     proposal: Readonly<{
         title: string;
+        titleBy: (params: Readonly<{ who: string }>) => string;
         basedOn: (params: Readonly<{ n: number }>) => string;
         current: (params: Readonly<{ n: number }>) => string;
         before: string;
@@ -274,6 +278,9 @@ export const artifactsBrowserTranslationsEnglish = { en: {
         loadFailedTitle: 'Couldn’t load your artifacts',
         loadFailedBody: 'Check your connection, then try again. Nothing was lost.',
         retainedBody: "Couldn’t refresh. Showing the last loaded artifacts.",
+        loadingBody: 'Still loading the rest.',
+        countSoFar: ({ count }) => `${count} loaded so far`,
+        noMatchSoFar: ({ query }) => `Nothing matches “${query}” yet`,
         quota: {
             accountTitle: 'Artifact storage is full',
             documentTitle: 'Too large to save',
@@ -357,6 +364,7 @@ export const artifactsBrowserTranslationsEnglish = { en: {
         },
         proposal: {
             title: 'Suggested edit',
+            titleBy: ({ who }) => `${who} suggests an edit`,
             basedOn: ({ n }) => `Based on version ${n}`,
             current: ({ n }) => `Version ${n} · current`,
             before: 'Before',

@@ -1,5 +1,5 @@
 import { AgentEvent } from "../raw/index.js";
-import type { MessageStructuredPresentationV1, SessionPermissionDecisionActorV1 } from '@happier-dev/protocol';
+import type { MessageStructuredPresentationV1, SessionPermissionDecisionActorV1, TranscriptPeerSenderV1 } from '@happier-dev/protocol';
 import { MessageMeta } from "./messageMetaTypes.js";
 import type { TranscriptObservationMetadata } from "./transcriptObservationProvenance.js";
 import type { TranscriptAccountActorMetadata } from "./transcriptAccountActor.js";
@@ -89,6 +89,8 @@ export type AgentTextMessage = {
     createdAt: number;
     text: string;
     isThinking?: boolean;
+    /** Text another agent delivered into this Agent's conversation (teammate, cross-session, subagent hand-back). */
+    peer?: TranscriptPeerSenderV1;
     meta?: MessageMeta;
     structuredPresentation?: MessageStructuredPresentationV1;
 } & TranscriptObservationMetadata & TranscriptAccountActorMetadata;

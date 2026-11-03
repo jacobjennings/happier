@@ -31,6 +31,10 @@ installDisconnectedServerSocketBoundary((socket) => {
     });
 });
 
+// Prepare the real Sync graph after transport boundaries, outside timed test setup.
+const { loadSyncSingletonForTests } = await import('@/dev/testkit/harness/syncSingletonLoader');
+await loadSyncSingletonForTests();
+
 type StoreState = ReturnType<ReturnType<typeof import('@/sync/domains/state/storage').getStorage>['getState']>;
 let initialState: StoreState;
 let webLocks: ReturnType<typeof installWebLockManagerMock>;
@@ -88,7 +92,6 @@ describe('machineUpdateMetadata', () => {
         // afterEach restores the native credential boundary; each real Action
         // capture must read this test's Home rather than the unseeded device store.
         installHomeGovernanceBoundaries(homes);
-        const { loadSyncSingletonForTests } = await import('@/dev/testkit/harness/syncSingletonLoader');
         await loadSyncSingletonForTests();
         const { getStorage } = await import('@/sync/domains/state/storage');
         initialState = getStorage().getState();

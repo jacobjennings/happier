@@ -1,4 +1,5 @@
 import { providerDeclarationContext } from '@/providers/catalog/accountProviderDeclarations';
+import { resolveSessionAutoResumeAdmissionV1 } from '@happier-dev/protocol/sessions/metadata/sessionExplicitStopV1';
 import { readRuntimeDescriptorV1FromMetadata } from "@happier-dev/protocol/sessions/metadata/runtime-descriptor-compat";
 import type { CliAuthStatusData } from "@/sync/api/capabilities/capabilitiesProtocol";
 import { createStoredReadSchema } from "@happier-dev/protocol/json/storedReadSchema";
@@ -44,6 +45,7 @@ import { useExistingSessionCapabilitiesChip } from "@/components/sessions/capabi
 import { executeSessionLifecycleAction } from "@/components/sessions/actions/sessionActionExecution";
 import { type SessionConnectedServiceAuthSwitchResult, setSessionConnectedServiceAuthBinding } from "@/sync/ops/connectedServices/sessionAuthSwitch";
 import { resolveResumeFailurePresentation } from "@/sync/domains/session/resume/resolveResumeFailurePresentation";
+import { buildPluginDetailRoute, storeMachineRouteParams } from "@/components/settings/plugins/model/pluginsSurfaceRoutes";
 import { resolvePortableServerIdentityForRoutingId } from "@/sync/domains/server/resolvePortableServerIdentityForRoutingId";
 import { alertActionFailure } from "@/utils/errors/alertActionFailure";
 import { readRpcErrorCode } from "@happier-dev/protocol/rpcErrors";
@@ -109,7 +111,7 @@ import { buildRolesRailPickerOption } from "@/components/roles/rail/buildRolesRa
 import { useSessionRolesRailParams } from "@/components/roles/session/sessionRole";
 import { useDaemonMergedProjectionInputs } from "@/agents/backendCatalog/useDaemonMergedProjectionInputs";
 import { readCurrentProjectedAgentCapabilities, supportsAgentLifecycleCapability } from "@/agents/backendCatalog/currentAgentCapabilities";
-import { parsePermissionIntentAlias, readExternalSessionOperationState, resolveAgentIdFromSessionMetadata } from "@happier-dev/agents";
+import { evaluateAgentSessionCompactionCapability, parsePermissionIntentAlias, readExternalSessionOperationState, resolveAgentIdFromSessionMetadata } from "@happier-dev/agents";
 import { useInSessionAgentPickerControls } from "@/components/sessions/agentPicker/useInSessionAgentPickerControls";
 import { isAskHappierStatusOfferState } from "@/components/sessions/bots/askHappierEntry";
 import { useAskHappierOpener } from "@/components/sessions/bots/useAskHappierOffer";
@@ -1503,6 +1505,8 @@ export function useSessionComposerController({
             machineInventoryState: managedWakeInventoryStatus === 'loading' ? 'loading' : 'read',
         })
         : null, [managedPendingMachine, managedPendingObservation.kind, managedWakeInventoryStatus, managedWakeAuthorization, pendingMessages, pendingMessagesLoaded, pendingReadState, sessionRuntimeStatusSource.resumingAt]);
+    const autoResumeAdmission = resolveSessionAutoResumeAdmissionV1({ metadata: ownerMetadata,
+        archivedAt: session.archivedAt, machineAvailable: isMachineReachable, authorityAvailable: ownerMetadata !== null });
     const pendingActivationPresentation = React.useMemo(() => {
         // A Pending row can synchronize before an in-flight Agent transition
         // answers. The composer already owns that live submission and shows its
@@ -1520,8 +1524,9 @@ export function useSessionComposerController({
             resumingAt: sessionRuntimeStatusSource.resumingAt,
             pendingMessages,
             managedWakeProjection,
+            autoResumeAdmission,
         });
-    }, [hasWriteAccess, isComposerSending, isMachineReachable, machineReachability, managedWakeProjection, pendingMessages, session.active, session.activeAt, session.pendingActivationAuthorization, sessionRuntimeStatusSource.resumingAt]);
+    }, [autoResumeAdmission, hasWriteAccess, isComposerSending, isMachineReachable, machineReachability, managedWakeProjection, pendingMessages, session.active, session.activeAt, session.pendingActivationAuthorization, sessionRuntimeStatusSource.resumingAt]);
     const [pendingActivationActionBusy, setPendingActivationActionBusy] = React.useState(false);
     const goalControlMachineId = controlMachineTarget?.machineId ?? machineId;
     const goalControlMachineRecord = useMachine(typeof goalControlMachineId === 'string' ? goalControlMachineId : '');
@@ -4617,9 +4622,22 @@ export function useSessionComposerController({
             });
 
             if (!result.ok) {
-                const presentation = resolveResumeFailurePresentation({ errorCode: result.errorCode, errorMessage: result.error }, t('session.resumeFailed'));
+                const presentation = resolveResumeFailurePresentation({ errorCode: result.errorCode, errorMessage: result.error },
+                    t('session.resumeFailed'), resolveSessionActionDefaultTarget(sessionActionDefaultBackend));
                 if (presentation.kind === 'directory_missing') {
                     setDirectoryRecovery({ scopeKey: sessionAccountScopeKey, busy: false });
+                } else if (presentation.kind === 'plugin_disabled' && presentation.pluginId) {
+                    const pluginId = presentation.pluginId;
+                    if (!silent) alertActionFailure({ reason: presentation.message, code: presentation.errorCode,
+                        context: { phase: 'session.open', targetHome },
+                        recovery: { label: t('settingsPlugins.managePlugin'),
+                            onPress: () => {
+                                const route = buildPluginDetailRoute('settings', pluginId);
+                                router.push({ ...route, params: { ...route.params, ...storeMachineRouteParams(
+                                    resumeMachineId ? { serverId: sessionRouteServerId, machineId: resumeMachineId } : null,
+                                ) } });
+                            } },
+                    });
                 } else {
                     maybeAlert(presentation.message, presentation.errorCode ?? null);
                 }
@@ -5130,20 +5148,6 @@ export function useSessionComposerController({
             isComposerMutationEditable,
             removeComposerAttachment,
         ]);
-        const sessionAttachmentRowItems = React.useMemo(() => (
-            projectAgentInputAttachmentRowItems({
-                items: [
-                    ...(pendingComposerDocument ? [] : sessionExtraActionPresentation.attachmentRowItems),
-                    ...composerAttachmentRowItems,
-                ],
-                transferAttachments: !pendingComposerDocument ? agentInputAttachments : undefined,
-            })
-        ), [
-            agentInputAttachments,
-            composerAttachmentRowItems,
-            pendingComposerDocument,
-            sessionExtraActionPresentation.attachmentRowItems,
-        ]);
         const openComposerPluginAction = React.useCallback((action: PluginContributedActionDescriptor) => {
             return openSessionComposerContributedAction({
                 controller: composerPluginActionController,
@@ -5162,6 +5166,22 @@ export function useSessionComposerController({
             recipientState,
             sessionTalk,
         });
+        const sessionAttachmentRowItems = React.useMemo(() => (
+            projectAgentInputAttachmentRowItems({
+                items: [
+                    ...(pendingComposerDocument ? [] : routingControls.attachmentRowItems),
+                    ...(pendingComposerDocument ? [] : sessionExtraActionPresentation.attachmentRowItems),
+                    ...composerAttachmentRowItems,
+                ],
+                transferAttachments: !pendingComposerDocument ? agentInputAttachments : undefined,
+            })
+        ), [
+            agentInputAttachments,
+            composerAttachmentRowItems,
+            pendingComposerDocument,
+            routingControls.attachmentRowItems,
+            sessionExtraActionPresentation.attachmentRowItems,
+        ]);
         const isRuntimeFreshActiveTurn =
             sessionStatus.state === 'thinking'
             || sessionStatus.state === 'permission_required'
@@ -5461,11 +5481,11 @@ export function useSessionComposerController({
         // The machine's guard is about to stop this Session, stopped it, or the next message is waking it.
         const guardPresentationKey = JSON.stringify(ownerMetadata?.sessionGuardStateV1 ?? null);
         const guardComposerState = React.useMemo(() => resolveSessionGuardComposerState({
-            guard: readSessionListGuardState(JSON.parse(guardPresentationKey)),
+            guard: autoResumeAdmission === 'held_by_person' ? null : readSessionListGuardState(JSON.parse(guardPresentationKey)),
             sessionActive: session.active === true,
             resuming: sessionStatusResuming,
             nowMs: Date.now(),
-        }), [guardPresentationKey, session.active, sessionStatusResuming]);
+        }), [autoResumeAdmission, guardPresentationKey, session.active, sessionStatusResuming]);
         const guardMachineId = controlMachineTarget?.machineId ?? null;
         const keepGuardedSessionRunning = React.useCallback(() => {
             if (!guardMachineId) return;
@@ -5930,12 +5950,19 @@ export function useSessionComposerController({
         serverId: sessionRouteServerId,
     });
 
+    const publishedRuntimeCapabilities = ownerMetadata?.agentRuntimeCapabilitiesV1;
+    const sessionCompactionCapability = React.useMemo(() => lifecycleAgentId ? evaluateAgentSessionCompactionCapability({
+        agentId: lifecycleAgentId,
+        metadata: { agentRuntimeCapabilitiesV1: publishedRuntimeCapabilities },
+        declaredCapability: null,
+    }) : null, [lifecycleAgentId, publishedRuntimeCapabilities]);
     const getAutocompleteSuggestions = useSessionComposerSuggestions({
         sessionId,
         kinds: SESSION_COMPOSER_SUGGESTION_KINDS,
         composerReferenceHost,
         actionController: composerPluginActionController,
         skillSource: sessionComposerSkillSource,
+        compaction: sessionCompactionCapability,
     });
 
     // Stable identities for the memoized AgentInput (R1 churn fix). SessionView

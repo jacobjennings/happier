@@ -43,7 +43,6 @@ describe("session list projection fallback", () => {
                 reader: { session: { findMany } } as never,
                 baseWhere: { accountId: "u1" },
                 accessMode: "effective_access_v1",
-                allowProjectionFallback: false,
             },
         })).rejects.toBe(missingCurrentProjection);
         expect(findMany).toHaveBeenCalledTimes(1);

@@ -2,79 +2,43 @@ import { describe, expect, it } from 'vitest';
 
 import { resolvePreferredPublicReleaseRingIdForApp, resolvePreferredPublicReleaseRingLabelForApp } from './resolvePublicReleaseRing';
 
-describe('resolvePreferredPublicReleaseRingIdForApp', () => {
-    it('uses the public dev identity ring when the baked logical variant is preview', () => {
-        expect(resolvePreferredPublicReleaseRingIdForApp({
-            identityVariant: 'publicdev',
-            variant: 'preview',
-            envAppEnv: 'preview',
-            envExpoPublicAppEnv: 'preview',
-        })).toBe('publicdev');
-    });
-
-    it('maps the publicdev variant to the publicdev ring', () => {
-        expect(resolvePreferredPublicReleaseRingIdForApp({
-            variant: 'publicdev',
-            envAppEnv: 'development',
-            envExpoPublicAppEnv: 'development',
-        })).toBe('publicdev');
-    });
-
-    it('maps the preview variant to the preview ring', () => {
-        expect(resolvePreferredPublicReleaseRingIdForApp({
-            variant: 'preview',
-            envAppEnv: 'development',
-            envExpoPublicAppEnv: 'development',
-        })).toBe('preview');
-    });
-
-    it('falls back to stable in production-like app variants', () => {
-        expect(resolvePreferredPublicReleaseRingIdForApp({
-            variant: null,
-            envAppEnv: 'production',
-            envExpoPublicAppEnv: 'production',
-        })).toBe('stable');
-    });
-
-    it('prefers env APP_ENV release ring ids when variant is missing', () => {
-        expect(resolvePreferredPublicReleaseRingIdForApp({
-            variant: null,
-            envAppEnv: 'publicdev',
-            envExpoPublicAppEnv: 'publicdev',
-        })).toBe('publicdev');
-    });
-
-    it('falls back to preview in non-production app variants', () => {
-        expect(resolvePreferredPublicReleaseRingIdForApp({
-            variant: null,
-            envAppEnv: 'development',
-            envExpoPublicAppEnv: 'development',
-        })).toBe('preview');
-    });
-});
-
-describe('resolvePreferredPublicReleaseRingLabelForApp', () => {
-    it('maps the publicdev variant to the dev label', () => {
-        expect(resolvePreferredPublicReleaseRingLabelForApp({
-            variant: 'publicdev',
-            envAppEnv: 'development',
-            envExpoPublicAppEnv: 'development',
-        })).toBe('dev');
-    });
-
-    it('maps the preview variant to the preview label', () => {
-        expect(resolvePreferredPublicReleaseRingLabelForApp({
-            variant: 'preview',
-            envAppEnv: 'development',
-            envExpoPublicAppEnv: 'development',
-        })).toBe('preview');
-    });
-
-    it('falls back to stable label in production-like app variants', () => {
-        expect(resolvePreferredPublicReleaseRingLabelForApp({
-            variant: null,
-            envAppEnv: 'production',
-            envExpoPublicAppEnv: 'production',
-        })).toBe('stable');
+describe('public release ring resolution', () => {
+    it.each([
+        {
+            name: 'uses the public dev identity ring when the baked logical variant is preview',
+            input: { identityVariant: 'publicdev', variant: 'preview', envAppEnv: 'preview', envExpoPublicAppEnv: 'preview' },
+            id: 'publicdev',
+        },
+        {
+            name: 'maps the publicdev variant to the publicdev ring and dev label',
+            input: { variant: 'publicdev', envAppEnv: 'development', envExpoPublicAppEnv: 'development' },
+            id: 'publicdev',
+            label: 'dev',
+        },
+        {
+            name: 'maps the preview variant to the preview ring and label',
+            input: { variant: 'preview', envAppEnv: 'development', envExpoPublicAppEnv: 'development' },
+            id: 'preview',
+            label: 'preview',
+        },
+        {
+            name: 'falls back to stable (ring and label) in production-like app variants',
+            input: { variant: null, envAppEnv: 'production', envExpoPublicAppEnv: 'production' },
+            id: 'stable',
+            label: 'stable',
+        },
+        {
+            name: 'prefers env APP_ENV release ring ids when variant is missing',
+            input: { variant: null, envAppEnv: 'publicdev', envExpoPublicAppEnv: 'publicdev' },
+            id: 'publicdev',
+        },
+        {
+            name: 'falls back to preview in non-production app variants',
+            input: { variant: null, envAppEnv: 'development', envExpoPublicAppEnv: 'development' },
+            id: 'preview',
+        },
+    ] as const)('$name', ({ input, id, ...rest }) => {
+        expect(resolvePreferredPublicReleaseRingIdForApp(input)).toBe(id);
+        if ('label' in rest) expect(resolvePreferredPublicReleaseRingLabelForApp(input)).toBe(rest.label);
     });
 });

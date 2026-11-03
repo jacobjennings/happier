@@ -1,0 +1,50 @@
+{
+  "provenance": {
+    "sourceCommit": "a2c45c86804b24e60ac0b76146a3ef36dfcaa15b",
+    "kind": "constructed with immutable historical producers; not deployment captures",
+    "producer": "apps/cli/src/api/encryption.ts#encrypt",
+    "serializer": "packages/protocol/src/crypto/serializedJsonValue.ts",
+    "metadataProjection": "packages/protocol/src/sessionMetadata/terminalMetadata.ts#projectSessionMetadataForWire",
+    "storedFields": "apps/cli/src/api/api.ts:460-481",
+    "metadataInput": "apps/cli/src/api/api.test.ts:71-79",
+    "agentStateInput": "apps/ui/sources/sync/encryption/encryptionTelemetry.test.ts:515",
+    "randomness": "deterministic OS-random boundary bytes 1..N, reset per encrypt call",
+    "recipientEnvelope": "packages/protocol/src/crypto/cryptoGoldenVectors.ts#encryptedDataKeyEnvelopeV1.directSecretKey"
+  },
+  "metadata": {
+    "path": "/tmp",
+    "host": "localhost",
+    "homeDir": "/home/user",
+    "happyHomeDir": "/home/user/.happy",
+    "happyLibDir": "/home/user/.happy/lib",
+    "happyToolsDir": "/home/user/.happy/tools"
+  },
+  "agentState": { "controlledByUser": true },
+  "recipientSecretKeyHex": "0909090909090909090909090909090909090909090909090909090909090909",
+  "recipientPublicKeyHex": "57db4b359f23ae5e146e4e2512056704722506348c150c14753d0c933d04d421",
+  "vectors": [
+    {
+      "variant": "legacy",
+      "encryptionMode": "e2ee",
+      "keyHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "metadata": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY8CtWP9GvZ3dfsBU5dmXBj9CqAkV7PBp/PYuQ5F4DsKWzD7fZIiBOawUBpuVjJlc0Eu4KUsAji3RyB/LOQzlqm/V77+BPHs3YI1mCNFY7pQoYK9ux5y+3IXmJ2A3eGxCr8Ea1RyBwo1iM6f7k10iV7l9vkgpMy+ivSiDPxYc2+PedsnTO2zG4fKTBI8oi4TlDQpv5aXlA3I3VX0dhZwiDr2/2P4sa4P1Re0c7o60G9jMIcABeWicl6aifxRMiEjufOnhd5loRCw6kkvMPUaz3GpGNh6iRYBv7qi3xvDeygWDLzZUOCLbY/VjFO/kb7WBtVdGh4iXdvBVr9A==",
+      "agentState": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYltnI7ceYCRnrWEnSF97fANCqAkV7PBp/PYuQ5F4DsKWzD7fZIiBOawUBpuVjJlc0Eu4KUsAji3RyB/LOQzlqm/V77+BPHs3YI1mCNFY7pRkWMcfhsmH0MHC7g3SPFg36vhD9EClivQ==",
+      "dataEncryptionKey": null
+    },
+    {
+      "variant": "dataKey",
+      "encryptionMode": "e2ee",
+      "keyHex": "0404040404040404040404040404040404040404040404040404040404040404",
+      "metadata": "AAECAwQFBgcICQoLDLx1bF7X4t5QyP+G/Q6Baox7hoFpB6S52O38yLl+I0VW6xQAMZK/9Rn1iKsLXKhFVTlS1j5OEjsv/fxy5VIDcM1m9tpiPfF21X9fP+UvkIKbRMwVyz4hgSDrMPwUE/cUz6xd8MDJMdGq4Zl2kFeyE7LyEcExnZ8MYLjpzyPLridKcT6kz14nY5d4fcl2y33CcIQIFl2slFeHx2++uOUbbWMYmuRV4f4x4Cn9NMfCgGKOlQ5WGru/cUbe0uL2pttNBWWRUKotcxcoE1qYx5rYgaYgLSdgYAEoF5RYGNTEuwLWe9eiWBvbTjdVsyEkhRzAIqJMiAka1885bis=",
+      "agentState": "AAECAwQFBgcICQoLDLx1bF7X4t5QyP+G/Q6Baox7hoFpB6S52O38yLl+I0VW6xQAMZK/9Rn1iKsLXKhFVTlS1j5OEjsv/fxy5VIDcN5o7MYyaL81xHZtZJx+nZ/KCppdnDczn/9E7ukMuaJoo5oxrk2Endw=",
+      "dataEncryptionKey": "AAejfLwUIJPIt1XcGxDobLQmN0rRaqhT7QvfwLK4bRx8ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4fAjI+F2yS+Q4/wvmWo+VmewVcaddf2/3wa7PuMoDJAQ6be1pA3Iku3MU6UUDChFw"
+    },
+    {
+      "variant": "plain",
+      "encryptionMode": "plain",
+      "metadata": "{\"path\":\"/tmp\",\"host\":\"localhost\",\"homeDir\":\"/home/user\",\"happyHomeDir\":\"/home/user/.happy\",\"happyLibDir\":\"/home/user/.happy/lib\",\"happyToolsDir\":\"/home/user/.happy/tools\"}",
+      "agentState": "{\"controlledByUser\":true}",
+      "dataEncryptionKey": null
+    }
+  ]
+}

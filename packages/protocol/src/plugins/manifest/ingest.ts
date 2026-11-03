@@ -24,9 +24,11 @@ import {
 import { createPluginEventAutomationSetupResultV1JsonSchema } from '../../automations/automationEventSetupResultV1.js';
 import { normalizeStrictJsonValue } from '../../json/strictJsonValue.js';
 import type { core } from 'zod/mini';
+import { skipInvalidPluginContributions } from './contributionAdmission.js';
 
 export type PluginManifestIngestionDiagnostic = Readonly<{
   code:
+    | 'plugin_contribution_skipped'
     | 'plugin_manifest_invalid_json'
     | 'plugin_manifest_invalid'
     | 'plugin_manifest_duplicate_contribution_id'
@@ -37,10 +39,13 @@ export type PluginManifestIngestionDiagnostic = Readonly<{
     | 'plugin_manifest_wrong_scope_agent_setting_reference';
   path?: readonly (string | number)[];
   message: string;
+  pluginId?: string;
+  contributionId?: string;
+  reason?: PluginManifestIngestionDiagnostic['code'];
 }>;
 
 export type PluginManifestIngestionResult =
-  | Readonly<{ ok: true; manifest: ParsedPluginManifestV2 }>
+  | Readonly<{ ok: true; manifest: ParsedPluginManifestV2; diagnostics?: readonly PluginManifestIngestionDiagnostic[] }>
   | Readonly<{ ok: false; diagnostics: readonly PluginManifestIngestionDiagnostic[] }>;
 
 /**
@@ -51,21 +56,21 @@ export type PluginManifestIngestionResult =
  * reading `message` alone.
  */
 export function formatPluginManifestIngestionDiagnostic(
-  diagnostic: PluginManifestIngestionDiagnostic,
+  diagnostic: Omit<PluginManifestIngestionDiagnostic, 'code'> & Readonly<{ code: string }>,
 ): string {
   const path = diagnostic.path && diagnostic.path.length > 0 ? `${diagnostic.path.join('.')}: ` : '';
   return `${path}${diagnostic.message}`;
 }
 
 export function formatPluginManifestIngestionDiagnostics(
-  diagnostics: readonly PluginManifestIngestionDiagnostic[],
+  diagnostics: readonly (Omit<PluginManifestIngestionDiagnostic, 'code'> & Readonly<{ code: string }>)[],
 ): string {
   return diagnostics.map(formatPluginManifestIngestionDiagnostic).join('; ');
 }
 
 export type PluginManifestSetReferenceResolutionResult =
   | Readonly<{ ok: true }>
-  | Readonly<{ ok: false; diagnostics: readonly PluginManifestIngestionDiagnostic[] }>;
+  | Readonly<{ ok: false; diagnostics: readonly (PluginManifestIngestionDiagnostic & Readonly<{ pluginId: string }>)[] }>;
 
 // Private parser-recursion fail-safe, not an author-visible manifest quota.
 const PLUGIN_MANIFEST_SCHEMA_STACK_SAFETY_DEPTH = 1_024;
@@ -436,21 +441,21 @@ function readHostAccessReferenceCandidates(manifest: ParsedPluginManifestV2): re
 
 function readReferenceDiagnostics(manifest: ParsedPluginManifestV2): PluginManifestIngestionDiagnostic[] {
   const contributes = manifest.contributes as Readonly<Record<string, unknown>>;
-  const idsByFamily = new Map<string, Set<string>>();
+  const idsByFamily = new Map<string, Map<string, Readonly<Record<string, unknown>>>>();
   const allLocalIds = new Set<string>();
-  idsByFamily.set('manifest.hostAccess', new Set([
+  idsByFamily.set('manifest.hostAccess', new Map([
     ...manifest.hostAccess.required.map((request) => request.id),
     ...manifest.hostAccess.optional.map((request) => request.id),
-  ]));
+  ].map(id => [id, {}])));
   for (const catalogEntry of PLUGIN_CONTRIBUTION_CATALOG_V2) {
     const family = catalogEntry.manifestKey;
     const value = catalogEntry.readEntries(contributes);
-    const ids = new Set<string>();
+    const ids = new Map<string, Readonly<Record<string, unknown>>>();
     for (const entry of value) {
       if (entry && typeof entry === 'object' && catalogEntry.identityField !== null
         && typeof (entry as Readonly<Record<string, unknown>>)[catalogEntry.identityField] === 'string') {
         const id = (entry as Readonly<Record<string, string>>)[catalogEntry.identityField];
-        ids.add(id);
+        ids.set(id, entry as Readonly<Record<string, unknown>>);
         allLocalIds.add(id);
       }
     }
@@ -480,11 +485,13 @@ function readReferenceDiagnostics(manifest: ParsedPluginManifestV2): PluginManif
           if (structured.pluginId !== manifest.id) continue;
           if (candidate.allowQualifiedSamePlugin === true) {
             const localId = structured.localId;
-            if (typeof localId === 'string' && targetFamilies.some((family) => idsByFamily.get(family)?.has(localId))) {
+            if (typeof localId === 'string' && targetFamilies.some((family) => idsByFamily.get(family)?.has(localId)
+              && (candidate.revision === undefined || idsByFamily.get(family)?.get(localId)?.revision === candidate.revision))) {
               continue;
             }
             diagnostics.push({
               code: typeof localId === 'string' && allLocalIds.has(localId)
+                && !targetFamilies.some(family => idsByFamily.get(family)?.has(localId))
                 ? 'plugin_manifest_wrong_family_reference'
                 : 'plugin_manifest_dangling_reference',
               path: ['contributes', ...catalogEntry.manifestKey.split('.'), index, ...candidate.path],
@@ -1021,10 +1028,21 @@ function readVoiceModelPackOriginDiagnostics(manifest: ParsedPluginManifestV2): 
   return diagnostics;
 }
 
-export function ingestPluginManifestV2(input: unknown): PluginManifestIngestionResult {
+type PluginManifestIngestionOptions = Readonly<{
+  /** Authoring stays strict. Host load withdraws failed contributions as units. */
+  mode?: 'author' | 'load';
+  referenceManifests?: readonly ParsedPluginManifestV2[];
+}>;
+
+export function ingestPluginManifestV2(input: unknown, options: PluginManifestIngestionOptions = {}): PluginManifestIngestionResult {
   const decoded = readJsonInput(input);
   if (!decoded.ok) return decoded.result;
-  if (!isSafeForPluginManifestSchemaValidation(decoded.value)) {
+  return admitDecodedPluginManifestV2(decoded.value, options);
+}
+
+/** Shared schema/semantic owner after transport decoding, preserving admitted schema leaves. */
+export function admitDecodedPluginManifestV2(input: unknown, options: PluginManifestIngestionOptions = {}): PluginManifestIngestionResult {
+  if (!isSafeForPluginManifestSchemaValidation(input)) {
     return {
       ok: false,
       diagnostics: [{
@@ -1033,7 +1051,19 @@ export function ingestPluginManifestV2(input: unknown): PluginManifestIngestionR
       }],
     };
   }
-  const parsed = PluginManifestV2Schema.safeParse(decoded.value);
+  const skipped: PluginManifestIngestionDiagnostic[] = [];
+  let candidate = input;
+  // Each retry removes at least one declaration. Settle dependency chains
+  // iteratively rather than growing the JavaScript call stack with the graph.
+  while (true) {
+  let parsed = PluginManifestV2Schema.safeParse(candidate);
+  while (!parsed.success && options.mode === 'load') {
+    const withdrawn = skipInvalidPluginContributions(candidate, readSchemaDiagnostics(parsed.error.issues));
+    if (!withdrawn) break;
+    skipped.push(...withdrawn.diagnostics);
+    candidate = withdrawn.input;
+    parsed = PluginManifestV2Schema.safeParse(candidate);
+  }
   if (!parsed.success) {
     return {
       ok: false,
@@ -1041,10 +1071,10 @@ export function ingestPluginManifestV2(input: unknown): PluginManifestIngestionR
     };
   }
   let manifest = parsed.data;
-  const decodedMetadata = decoded.value !== null
-    && typeof decoded.value === 'object'
-    && Object.hasOwn(decoded.value, 'metadata')
-    ? Reflect.get(decoded.value, 'metadata')
+  const decodedMetadata = input !== null
+    && typeof input === 'object'
+    && Object.hasOwn(input, 'metadata')
+    ? Reflect.get(input, 'metadata')
     : undefined;
   if (
     decodedMetadata !== null
@@ -1078,36 +1108,55 @@ export function ingestPluginManifestV2(input: unknown): PluginManifestIngestionR
     ...readRightSidebarCountResourceDiagnostics(manifest),
     ...readBrandIconDiagnostics(manifest),
     ...readVoiceModelPackOriginDiagnostics(manifest),
+    ...(options.referenceManifests ? (() => {
+      const resolution = resolvePluginManifestSetReferencesV2([
+        ...options.referenceManifests.filter(reference => reference.id !== manifest.id), manifest,
+      ], new Set([manifest.id]));
+      return resolution.ok ? [] : resolution.diagnostics.filter(diagnostic => diagnostic.pluginId === manifest.id);
+    })() : []),
   ];
+  if (semanticDiagnostics.length > 0 && options.mode === 'load') {
+    const withdrawn = skipInvalidPluginContributions(manifest, semanticDiagnostics);
+    if (withdrawn) {
+      skipped.push(...withdrawn.diagnostics);
+      candidate = withdrawn.input;
+      continue;
+    }
+  }
   return semanticDiagnostics.length > 0
     ? { ok: false, diagnostics: semanticDiagnostics }
-    : { ok: true, manifest };
+    : { ok: true, manifest, ...(skipped.length ? { diagnostics: skipped } : {}) };
+  }
 }
 
 export function resolvePluginManifestSetReferencesV2(
   manifests: readonly ParsedPluginManifestV2[],
+  affectedPluginIds?: ReadonlySet<string>,
 ): PluginManifestSetReferenceResolutionResult {
-  const index = new Map<string, Map<string, Set<string>>>();
+  const index = new Map<string, Map<string, Map<string, Readonly<Record<string, unknown>>>>>();
   for (const manifest of manifests) {
-    const families = new Map<string, Set<string>>();
+    const families = new Map<string, Map<string, Readonly<Record<string, unknown>>>>();
     for (const entry of PLUGIN_CONTRIBUTION_CATALOG_V2) {
-      const ids = new Set<string>();
+      const ids = new Map<string, Readonly<Record<string, unknown>>>();
       for (const value of entry.readEntries(manifest.contributes as Readonly<Record<string, unknown>>)) {
         if (!value || typeof value !== 'object' || entry.identityField === null) continue;
         const id = (value as Readonly<Record<string, unknown>>)[entry.identityField];
-        if (typeof id === 'string') ids.add(id);
+        if (typeof id === 'string') ids.set(id, value as Readonly<Record<string, unknown>>);
       }
       families.set(entry.manifestKey, ids);
     }
     index.set(manifest.id, families);
   }
 
-  const diagnostics: PluginManifestIngestionDiagnostic[] = manifests.flatMap(
-    readOpenableContentViewerDestinationDiagnostics,
+  const affectedManifests = affectedPluginIds ? manifests.filter(manifest => affectedPluginIds.has(manifest.id)) : manifests;
+  const diagnostics: (PluginManifestIngestionDiagnostic & Readonly<{ pluginId: string }>)[] = affectedManifests.flatMap(
+    manifest => [
+      ...readOpenableContentViewerDestinationDiagnostics(manifest),
+      ...readAgentInlineSurfaceDiagnostics(manifest),
+      ...readEventAutomationSetupActionDiagnostics(manifest),
+      ...readEventAutomationHistoryGapResetActionDiagnostics(manifest),
+    ].map(diagnostic => ({ ...diagnostic, pluginId: manifest.id })),
   );
-  diagnostics.push(...manifests.flatMap(readAgentInlineSurfaceDiagnostics));
-  diagnostics.push(...manifests.flatMap(readEventAutomationSetupActionDiagnostics));
-  diagnostics.push(...manifests.flatMap(readEventAutomationHistoryGapResetActionDiagnostics));
   for (const manifest of manifests) {
     for (const entry of PLUGIN_CONTRIBUTION_CATALOG_V2) {
       entry.readEntries(manifest.contributes as Readonly<Record<string, unknown>>).forEach((value, contributionIndex) => {
@@ -1118,8 +1167,10 @@ export function resolvePluginManifestSetReferencesV2(
           if (typeof reference.pluginId !== 'string' || typeof reference.localId !== 'string') continue;
           const targetPluginId = reference.pluginId;
           const targetLocalId = reference.localId;
+          if (affectedPluginIds && !affectedPluginIds.has(manifest.id) && !affectedPluginIds.has(targetPluginId)) continue;
           if (candidate.allowQualifiedCrossPlugin === false && targetPluginId !== manifest.id) {
             diagnostics.push({
+              pluginId: manifest.id,
               code: 'plugin_manifest_dangling_reference',
               path: ['contributes', ...entry.manifestKey.split('.'), contributionIndex, ...candidate.path],
               message: 'This declarative Action reference must use a same-plugin local id string.',
@@ -1130,13 +1181,17 @@ export function resolvePluginManifestSetReferencesV2(
           const targetFamilies = candidate.targetFamilies ?? [candidate.targetFamily];
           const foundInTarget = targetFamilies.some((targetFamily) => (
             targetFamilyIndex?.get(targetFamily)?.has(targetLocalId) === true
+              && (candidate.revision === undefined || targetFamilyIndex?.get(targetFamily)?.get(targetLocalId)?.revision === candidate.revision)
+
           ));
           if (foundInTarget) continue;
           const foundElsewhere = targetFamilyIndex
             ? [...targetFamilyIndex.values()].some((ids) => ids.has(targetLocalId))
             : false;
           diagnostics.push({
-            code: foundElsewhere ? 'plugin_manifest_wrong_family_reference' : 'plugin_manifest_dangling_reference',
+            pluginId: manifest.id,
+            code: foundElsewhere && !targetFamilies.some(family => targetFamilyIndex?.get(family)?.has(targetLocalId))
+              ? 'plugin_manifest_wrong_family_reference' : 'plugin_manifest_dangling_reference',
             path: ['contributes', ...entry.manifestKey.split('.'), contributionIndex, ...candidate.path],
             message: `${manifest.id} references missing ${targetFamilies.join(' or ')} contribution ${targetPluginId}/${targetLocalId}.`,
           });
@@ -1149,6 +1204,7 @@ export function resolvePluginManifestSetReferencesV2(
       if (typeof reference.pluginId !== 'string' || typeof reference.localId !== 'string') continue;
       const targetPluginId = reference.pluginId;
       const targetLocalId = reference.localId;
+      if (affectedPluginIds && !affectedPluginIds.has(manifest.id) && !affectedPluginIds.has(targetPluginId)) continue;
       const targetFamilies = index.get(targetPluginId);
       const foundInTarget = targetFamilies?.get(candidate.targetFamily)?.has(targetLocalId) === true;
       if (foundInTarget) continue;
@@ -1156,6 +1212,7 @@ export function resolvePluginManifestSetReferencesV2(
         ? [...targetFamilies.values()].some((ids) => ids.has(targetLocalId))
         : false;
       diagnostics.push({
+        pluginId: manifest.id,
         code: foundElsewhere ? 'plugin_manifest_wrong_family_reference' : 'plugin_manifest_dangling_reference',
         path: candidate.path,
         message: `${manifest.id} references missing ${candidate.targetFamily} contribution ${targetPluginId}/${targetLocalId}.`,

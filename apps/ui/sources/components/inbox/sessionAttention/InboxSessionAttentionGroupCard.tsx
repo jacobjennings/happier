@@ -4,7 +4,8 @@ import { StyleSheet } from 'react-native-unistyles';
 import { happierPageRowDividerWidth, useHappierPageSection, HAPPIER_WORK_PAGE_ROW_METRICS } from '@happier-dev/plugin-ui/presentation';
 import { useRouter } from 'expo-router';
 
-import type { Session } from '@/sync/domains/state/storageTypes';
+import { readSessionPresentationControl, type SessionPresentationRecord,
+    type SessionListPresentationSource } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import type { PendingPermissionRequest } from '@/utils/sessions/sessionUtils';
 
 import { useMachine, useServerScopedMachine } from '@/sync/domains/state/storage';
@@ -34,7 +35,8 @@ import type { SessionListIdentityDisplay } from '@/components/sessions/shell/Ses
 import { AppSessionTranscriptSourceProvider } from '@/components/sessions/transcript/source/appSessionTranscriptSource';
 
 export const InboxSessionAttentionGroupCard = React.memo(function InboxSessionAttentionGroupCard(props: Readonly<{
-    session: Session;
+    session: SessionPresentationRecord;
+    presentationSource?: SessionListPresentationSource;
     serverId: string | null;
     identityDisplay: SessionListIdentityDisplay;
     connected: boolean;
@@ -46,17 +48,21 @@ export const InboxSessionAttentionGroupCard = React.memo(function InboxSessionAt
     /** State, age and menu of the row this card draws; the same ones the session row beside it shows. */
     row?: React.ComponentProps<typeof InboxSessionAttentionHeader>['row'];
 }>) {
+    // A displayed request card is a full control demand; overview/closed rows never enter here.
+    const session = readSessionPresentationControl({ record: props.session,
+        serverId: props.serverId ?? props.presentationSource?.serverId,
+        baseSession: props.presentationSource?.baseSession });
     const router = useRouter();
     const resumeAbort = React.useRef<AbortController | null>(null);
-    React.useEffect(() => () => resumeAbort.current?.abort(), [props.serverId, props.session.id]);
+    React.useEffect(() => () => resumeAbort.current?.abort(), [props.serverId, session.id]);
     // On the Inbox page the card is one of the sheet's rows: it draws the sheet's own full-width hairline.
     const pageSection = useHappierPageSection();
-    const statusOnly = isInboxSessionStatusOnly(props.session);
-    const ownerMetadata = statusOnly ? null : readSessionOwnerMetadataView(props.session);
+    const statusOnly = isInboxSessionStatusOnly(session);
+    const ownerMetadata = statusOnly ? null : readSessionOwnerMetadataView(session);
     const machineId = statusOnly ? '' : readDisplayMachineIdForSession({
         // Qualified cards already carry their exact Home metadata. A bare-id store lookup
         // could substitute the active Home's same-id Session.
-        sessionId: props.serverId ? null : props.session.id,
+        sessionId: props.serverId ? null : session.id,
         metadata: ownerMetadata,
     });
     const legacyMachine = useMachine(props.serverId ? '' : machineId);
@@ -64,15 +70,15 @@ export const InboxSessionAttentionGroupCard = React.memo(function InboxSessionAt
     const machine = props.serverId ? scopedMachine : legacyMachine;
     const transcriptInteraction = React.useMemo(() => {
         return deriveTranscriptInteractionFromSession({
-            access: props.session.access,
-            active: props.session.active,
-            presence: props.session.presence,
+            access: session.access,
+            active: session.active,
+            presence: session.presence,
         });
-    }, [props.session.access, props.session.active, props.session.presence]);
+    }, [session.access, session.active, session.presence]);
     const openSession = React.useCallback(() => {
         props.onBeforeNavigate?.();
-        router.push(createActivitySurfaceSessionRoute(props.session.id, props.serverId));
-    }, [props.onBeforeNavigate, props.serverId, props.session.id, router]);
+        router.push(createActivitySurfaceSessionRoute(session.id, props.serverId));
+    }, [props.onBeforeNavigate, props.serverId, session.id, router]);
     const stoppedWithPendingRequests = !statusOnly && transcriptInteraction.permissionDisabledReason === 'inactive'
         && (props.permissionRequests.length > 0 || props.userActionRequests.length > 0);
     const [resumeFailed, setResumeFailed] = React.useState(false);
@@ -92,7 +98,7 @@ export const InboxSessionAttentionGroupCard = React.memo(function InboxSessionAt
         try {
             const state = storage.getState();
             const target = readMachineControlTargetForSession(
-                props.serverId ? { serverId: props.serverId, sessionId: props.session.id } : props.session.id,
+                props.serverId ? { serverId: props.serverId, sessionId: session.id } : session.id,
             );
             if (!target) throw new Error('resume_target_unavailable');
             const agentId = resolveAgentIdFromSessionMetadata(ownerMetadata);
@@ -108,8 +114,8 @@ export const InboxSessionAttentionGroupCard = React.memo(function InboxSessionAt
             if (abort.signal.aborted) return;
             if (lifetime && !lifetime.isCurrent()) throw new Error('account_changed');
             const options = getPendingQueueWakeResumeOptions({
-                sessionId: props.session.id,
-                session: props.session,
+                sessionId: session.id,
+                session: session,
                 resumeCapabilityOptions: buildResumeCapabilityOptionsFromUiState({
                     settings: state.settings,
                     pluginSettings,
@@ -129,17 +135,17 @@ export const InboxSessionAttentionGroupCard = React.memo(function InboxSessionAt
         } catch {
             if (!abort.signal.aborted) setResumeFailed(true);
         }
-    }, [openSession, ownerMetadata, props.serverId, props.session]);
+    }, [openSession, ownerMetadata, props.serverId, session]);
 
     return (
-        <AppSessionTranscriptSourceProvider sessionId={props.session.id} serverId={props.serverId} interaction={transcriptInteraction}>
-        <View testID={`inbox.session_attention.${props.session.id}`}>
+        <AppSessionTranscriptSourceProvider sessionId={session.id} serverId={props.serverId} interaction={transcriptInteraction}>
+        <View testID={`inbox.session_attention.${session.id}`}>
             <InboxSessionAttentionHeader
-                session={props.session}
+                session={session}
                 serverId={props.serverId}
                 identityDisplay={props.identityDisplay}
                 connected={props.connected}
-                sessionTitle={readInboxSessionTitle(props.session, props.serverId)}
+                sessionTitle={readInboxSessionTitle(session, props.serverId)}
                 machineLabel={statusOnly ? null : getMachineDisplayName(machine)}
                 pathLabel={props.contextLine ?? null}
                 onOpenSession={openSession}
@@ -169,7 +175,7 @@ export const InboxSessionAttentionGroupCard = React.memo(function InboxSessionAt
                         key={request.id}
                         request={request}
                         location={null}
-                        sessionId={props.session.id}
+                        sessionId={session.id}
                         serverId={props.serverId ?? undefined}
                         metadata={ownerMetadata}
                         canApprovePermissions={transcriptInteraction.canApprovePermissions}
@@ -181,11 +187,11 @@ export const InboxSessionAttentionGroupCard = React.memo(function InboxSessionAt
 
                 {(statusOnly || stoppedWithPendingRequests ? [] : props.userActionRequests).map((request) => (
                     <UserActionPromptCard
-                        session={props.session}
+                        session={session}
                         key={request.id}
                         request={request}
                         location={null}
-                        sessionId={props.session.id}
+                        sessionId={session.id}
                         serverId={props.serverId ?? undefined}
                         metadata={ownerMetadata}
                         canApprovePermissions={transcriptInteraction.canApprovePermissions}

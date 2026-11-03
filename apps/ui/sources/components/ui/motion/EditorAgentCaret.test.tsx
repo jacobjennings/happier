@@ -89,7 +89,7 @@ describe('EditorAgentCaret', () => {
         testID="caret"
       />,
     );
-    expect(screen.findByTestId('caret')?.props.accessibilityLabel).toBeTruthy();
+    expect(screen.findByTestId('caret')?.props.accessibilityLabel).toContain('Claude');
     await screen.unmount();
     standardCleanup();
   });

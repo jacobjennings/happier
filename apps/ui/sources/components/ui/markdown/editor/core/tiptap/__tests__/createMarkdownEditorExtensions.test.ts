@@ -1,10 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { getSchema, type AnyExtension } from '@tiptap/core';
 
-import {
-    MARKDOWN_EDITOR_HEADING_LEVELS,
-    createMarkdownEditorExtensions,
-} from '../createMarkdownEditorExtensions';
+import { createMarkdownEditorExtensions } from '../createMarkdownEditorExtensions';
 
 /**
  * F3 / Lane F: the Phase-1 extension set must expose exactly the nodes/marks the
@@ -21,8 +18,10 @@ function extensionByName(extensions: readonly AnyExtension[], name: string): Any
 }
 
 describe('createMarkdownEditorExtensions', () => {
-    it('offers only H1-H3 heading levels', () => {
-        expect(MARKDOWN_EDITOR_HEADING_LEVELS).toEqual([1, 2, 3]);
+    it('configures the editor heading node for H1-H3 only', () => {
+        const starterKit = extensionByName(createMarkdownEditorExtensions(), 'starterKit');
+        const headingOptions = (starterKit?.options as { heading?: { levels?: unknown } }).heading;
+        expect(headingOptions?.levels).toEqual([1, 2, 3]);
     });
 
     it('resolves a schema containing the Phase-1 block nodes', () => {

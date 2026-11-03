@@ -6,7 +6,8 @@ import { useSetting } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
-import { readSessionRowPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
+import { readSessionPresentationAgentId, readSessionRowPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
+import { readSessionListPresentationDisplay, readSessionListPresentationOwnerMetadataField, type SessionListPresentationSource } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import { getSessionAvatarId } from '@/utils/sessions/sessionUtils';
 
 import { SessionAgentCatalogIdentityIcon } from '../presentation/SessionAgentCatalogIdentityIcon';
@@ -28,6 +29,7 @@ export function useSessionListIdentityDisplay(): SessionListIdentityDisplay {
  */
 export const SessionListIdentity = React.memo(function SessionListIdentity(props: Readonly<{
     session: Session | SessionListRenderableSession;
+    presentationSource?: SessionListPresentationSource;
     display: SessionListIdentityDisplay;
     serverId: string | null;
     color: string;
@@ -38,16 +40,19 @@ export const SessionListIdentity = React.memo(function SessionListIdentity(props
 }>) {
     const { theme } = useUnistyles();
     if (props.display === 'none') return null;
-    const notLive = props.session.active !== true || !props.connected;
+    const source = props.presentationSource;
+    const display = source ? readSessionListPresentationDisplay(source) : props.session;
+    const notLive = (source?.lifecycle.active ?? props.session.active) !== true || !props.connected;
     const metadata = 'agentState' in props.session
         ? readSessionOwnerMetadataView(props.session)
         : props.session.metadata;
-    const agentId = readSessionRowPresentationAgentId(props.session);
+    const agentId = source ? readSessionPresentationAgentId(display) : readSessionRowPresentationAgentId(props.session);
+    const machineId = source ? readSessionListPresentationOwnerMetadataField(source, 'machineId') : metadata?.machineId;
 
     if (props.display === 'avatar') {
         return (
             <Avatar
-                id={getSessionAvatarId(props.session, props.serverId)}
+                id={getSessionAvatarId(display, props.serverId)}
                 size={props.avatarSize}
                 monochrome={notLive}
                 flavor={agentId}
@@ -59,7 +64,7 @@ export const SessionListIdentity = React.memo(function SessionListIdentity(props
     return (
         <SessionAgentCatalogIdentityIcon
             agentId={agentId ?? ''}
-            machineId={metadata?.machineId ?? null}
+            machineId={machineId ?? null}
             serverId={props.serverId}
             // A logo is already a single tint, so the avatar's greyscale has no effect here:
             // a session that is not live takes the dimmer ink instead.

@@ -14,7 +14,7 @@ import type { PluginUiProjectionCurrentness } from '@/sync/domains/plugins/ui/us
 import type { WidgetPresentation } from '@/sync/domains/plugins/ui/widgetContract';
 import { useConfiguredWidgetTarget } from '@/sync/domains/widgets/useConfiguredWidgetTarget';
 import type { WidgetInputRepairOutcome } from '@/sync/domains/widgets/widgetBinding';
-import { useWidgetDefinition } from '@/sync/domains/widgets/useWidgetDefinition';
+import { useWidgetDefinition, type MountedWidgetDefinitionV1 } from '@/sync/domains/widgets/useWidgetDefinition';
 import { useWidgetInstanceDescriptor } from './useWidgetInstanceDescriptor';
 import { storage, useActiveServerAccountScopeLifetime } from '@/sync/domains/state/storage';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
@@ -49,6 +49,8 @@ export type WidgetSurfaceProps = Readonly<{
     onRepairInputs?: (outcome: WidgetInputRepairOutcome) => void;
     onManagePlugin?: () => void;
     onIntrinsicHeightChange?: (height: number) => void;
+    /** The frame observes this body's exact definition read; it never starts another read for its title. */
+    onDefinitionRead?: (state: MountedWidgetDefinitionV1['state']) => void;
     testID: string;
 }>;
 
@@ -138,9 +140,12 @@ function AuthoredHtmlBody(props: WidgetSurfaceProps & Readonly<{
 
 function AuthoredInstanceBody(props: WidgetSurfaceProps): React.ReactElement {
     const opened = useWidgetDefinition(props.scope, props.instance.definition, props.enabled !== false, props.admittedViewer);
+    React.useEffect(() => {
+        props.onDefinitionRead?.(opened.state);
+    }, [props.onDefinitionRead, opened.state]);
     const definition = opened.definition;
     const reference = props.instance.definition;
-    if (!definition || (reference.kind !== 'artifact' && reference.kind !== 'inline')) return <UnavailableInstalledWidget
+    if (!definition || (reference.kind !== 'artifact' && reference.kind !== 'inline')) return <UnavailableInstalledWidget reasonKind="widget"
         unresolved={{ state: opened.state === 'loading' ? 'loading' : 'unavailable', reasonCode: opened.reasonCode ?? 'widget_type_unavailable' }} testID={props.testID} />;
     const installed = definition.body.kind === 'installed' ? readWidgetDescriptor(props.appRuntime.pluginUiProjection, definition.body) : null;
     const descriptor = describeAuthoredWidgetDefinitionV1(definition, reference, installed);

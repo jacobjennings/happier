@@ -19,13 +19,18 @@ vi.mock('react-native', async () => {
     );
 });
 
-vi.mock('./ScrollEdgeFades', async () => ({
-    ScrollEdgeFades: (props: Record<string, unknown>) => React.createElement('ScrollEdgeFades', props),
-}));
+function flattenStyle(style: unknown): Record<string, unknown> {
+    if (Array.isArray(style)) return Object.assign({}, ...style.map(flattenStyle));
+    return style && typeof style === 'object' ? style as Record<string, unknown> : {};
+}
 
-vi.mock('./ScrollEdgeIndicators', () => ({
-    ScrollEdgeIndicators: () => null,
-}));
+function findRightEdgeFades(screen: Awaited<ReturnType<typeof renderScreen>>) {
+    return screen.findAll((node) => {
+        if ((node.type as string) !== 'View') return false;
+        const style = flattenStyle(node.props.style);
+        return style.position === 'absolute' && style.right === 0 && style.width === 24 && style.zIndex === 10;
+    });
+}
 
 describe('HorizontalScrollableRow', () => {
     it('applies row layout to the native scroll content container', async () => {
@@ -85,7 +90,7 @@ describe('HorizontalScrollableRow', () => {
                 },
             });
         });
-        expect(screen.findByType('ScrollEdgeFades' as any)?.props.edges.right).toBe(true);
+        expect(findRightEdgeFades(screen)).toHaveLength(1);
 
         act(() => {
             scrollView?.props.onScroll({
@@ -98,6 +103,6 @@ describe('HorizontalScrollableRow', () => {
                 },
             });
         });
-        expect(screen.findByType('ScrollEdgeFades' as any)?.props.edges.right).toBe(false);
+        expect(findRightEdgeFades(screen)).toHaveLength(0);
     });
 });

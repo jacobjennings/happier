@@ -5,6 +5,7 @@ import { ProviderBoundModelRefSchema } from '../providers/selection/v1.js';
 import { ConnectedServiceBindingsV2Schema } from '../connect/connectedServiceBindings.js';
 import { SESSION_INPUT_ADMISSION_REJECTION_CODES_V1 } from '../sessions/messages/sessionInputAdmissionRejectionV1.js';
 import { ScmCommitPlanApplicationSchema } from './diffSummaryCommitPlan.js';
+import { ScmReviewedMarksResetInputSchema } from './reviewedMarks.js';
 import {
   ScmDiffSummaryGenerateOutputSchema, ScmDiffSummaryOutputKindSchema,
   ScmDiffSummaryWalkthroughSchema, ScmDiffSummaryCommitPlanSchema, ScmDiffSummarySummarySchema,
@@ -35,6 +36,8 @@ export const ScmResultUpdateNoticeSchema = lazyZodSchema(() => z.strictObject({
 /** Transcript presentation beside the exact saved output in meta.happier; never mutation authority. */
 export const ScmDiffSummaryPublicationReceiptSchema = lazyZodSchema(() => z.strictObject({
   status: z.literal('published'), canUndo: z.boolean(),
+  updateNotice: z.optional(ScmResultUpdateNoticeSchema),
+  titleEditKept: z.optional(z.boolean()),
   outputs: z.array(z.strictObject({ kind: ScmDiffSummaryOutputKindSchema, change: z.enum(['created', 'updated']) }))
     .check(z.minLength(1), z.refine(outputs => new Set(outputs.map(output => output.kind)).size === outputs.length, 'Published output kinds must be unique')),
 }));
@@ -48,6 +51,22 @@ export const ScmDiffSummaryResultSchema = lazyZodSchema(() => z.strictObject({
   updateNotice: z.optional(ScmResultUpdateNoticeSchema),
 }).check(z.refine((result) => result.output.resultId === result.resultId && result.output.revision === result.revision, 'Result projection must identify its current revision')));
 export type ScmDiffSummaryResult = z.infer<typeof ScmDiffSummaryResultSchema>;
+
+/** A content-free persisted revision hint. The authorized result reader owns the actual state. */
+export const SCM_DIFF_SUMMARY_RESULT_UPDATED_EVENT = 'scm-diff-summary-result-updated';
+export const ScmDiffSummaryResultRevisionHintSchema = lazyZodSchema(() => z.strictObject({
+  resultId: z.string().check(z.minLength(1)), revision: z.number().check(z.int(), z.nonnegative()),
+}));
+export type ScmDiffSummaryResultRevisionHint = z.infer<typeof ScmDiffSummaryResultRevisionHintSchema>;
+export const ScmDiffSummaryMachineResultUpdateSchema = lazyZodSchema(() => z.strictObject({
+  ...ScmDiffSummaryResultRevisionHintSchema.shape,
+  machineId: z.string().check(z.minLength(1)), installationId: z.string().check(z.minLength(1)),
+}));
+export const ScmDiffSummaryResultUpdateEphemeralSchema = lazyZodSchema(() => z.strictObject({
+  type: z.literal(SCM_DIFF_SUMMARY_RESULT_UPDATED_EVENT), machineId: z.string().check(z.minLength(1)),
+  ...ScmDiffSummaryResultRevisionHintSchema.shape,
+}));
+export type ScmDiffSummaryResultUpdateEphemeral = z.infer<typeof ScmDiffSummaryResultUpdateEphemeralSchema>;
 
 export const ScmDiffSummaryResultReadInputSchema = lazyZodSchema(() => z.strictObject({ cwd: z.string().check(z.minLength(1)), resultId: z.string().check(z.minLength(1)) }));
 export type ScmDiffSummaryResultReadInput = z.infer<typeof ScmDiffSummaryResultReadInputSchema>;
@@ -148,11 +167,21 @@ export const ScmDiffSummarySevenDayCostSchema = lazyZodSchema(() => z.strictObje
   sinceMs: z.number().check(z.int(), z.nonnegative()), untilMs: z.number().check(z.int(), z.nonnegative()),
 }));
 export type ScmDiffSummarySevenDayCost = z.infer<typeof ScmDiffSummarySevenDayCostSchema>;
-export const ScmDiffSummaryResultListInputSchema = lazyZodSchema(() => z.strictObject({}));
+export const ScmDiffSummaryResultListInputSchema = lazyZodSchema(() => z.strictObject({
+  query: z.optional(z.strictObject({ cwd: z.string().check(z.minLength(1)),
+    // Null explicitly requests repository-owned results; omission leaves Session selection to ACLs.
+    sessionId: z.optional(z.nullable(z.string().check(z.minLength(1)))),
+    comparisons: z.optional(z.array(z.strictObject({ source: ScmDiffSummarySourceSchema,
+      comparisonId: z.optional(z.string().check(z.minLength(1))), outputs: z.array(ScmDiffSummaryOutputKindSchema).check(z.minLength(1)),
+    }))),
+  })),
+  includeUsage: z.optional(z.boolean()),
+}));
+export type ScmDiffSummaryResultListInput = z.infer<typeof ScmDiffSummaryResultListInputSchema>;
 export const ScmDiffSummaryResultListResponseSchema = lazyZodSchema(() => z.discriminatedUnion('success', [
   z.strictObject({ success: z.literal(true), results: z.array(ScmDiffSummarySavedResultItemSchema),
     count: z.number().check(z.int(), z.nonnegative()), bytes: z.number().check(z.int(), z.nonnegative()),
-    sevenDayCost: ScmDiffSummarySevenDayCostSchema,
+    sevenDayCost: z.optional(ScmDiffSummarySevenDayCostSchema),
   }), ScmDiffSummaryResultFailureSchema,
 ]));
 export type ScmDiffSummaryResultListResponse = z.infer<typeof ScmDiffSummaryResultListResponseSchema>;
@@ -160,10 +189,19 @@ export const ScmDiffSummaryResultClearInputSchema = lazyZodSchema(() => z.strict
   results: z.array(ScmDiffSummarySavedResultReferenceSchema).check(z.refine((values) => new Set(values.map(value => value.resultId)).size === values.length, 'Saved result identities must be unique')),
 }));
 export type ScmDiffSummaryResultClearInput = z.infer<typeof ScmDiffSummaryResultClearInputSchema>;
+export const ScmDiffSummaryMarksCleanupFailureSchema = lazyZodSchema(() => z.strictObject({
+  success: z.literal(false), errorCode: z.literal('reviewed_marks_cleanup_failed'), error: z.string().check(z.minLength(1)),
+  resultId: z.string().check(z.minLength(1)), comparisonId: z.string().check(z.minLength(1)), resultDeleted: z.literal(true),
+  retry: z.strictObject({ actionId: z.literal('scm.diffSummary.reviewed.unmark'), input: ScmReviewedMarksResetInputSchema }),
+}));
+export type ScmDiffSummaryMarksCleanupFailure = z.infer<typeof ScmDiffSummaryMarksCleanupFailureSchema>;
 export const ScmDiffSummaryResultClearResponseSchema = lazyZodSchema(() => z.discriminatedUnion('success', [
   z.strictObject({ success: z.literal(true),
     deleted: z.array(ScmDiffSummaryResultDeleteResponseSchema._zod.def.options[0]),
-    failures: z.array(z.strictObject({ resultId: z.string().check(z.minLength(1)), ...ScmDiffSummaryResultFailureSchema.shape })),
+    failures: z.array(z.union([
+      z.strictObject({ resultId: z.string().check(z.minLength(1)), ...ScmDiffSummaryResultFailureSchema.shape }),
+      ScmDiffSummaryMarksCleanupFailureSchema,
+    ])),
   }), ScmDiffSummaryResultFailureSchema,
 ]));
 export type ScmDiffSummaryResultClearResponse = z.infer<typeof ScmDiffSummaryResultClearResponseSchema>;

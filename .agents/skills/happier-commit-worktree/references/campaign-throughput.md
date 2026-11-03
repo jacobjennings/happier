@@ -140,7 +140,7 @@ Do not serialize checks that can safely run together, and do not repeat identica
 
 Validation batching never permits claiming an unrun check passed or hiding a packet-caused failure.
 
-When the user explicitly selects WIP commit-only mode, do not launch tests, builds, formatters, generators, or mutating aggregate checks. Keep the commit pipeline moving with the mandatory static transaction checks and preserve the waiver in the campaign anchor. A new session does not silently restore expensive validation or start a publisher merely because it would ordinarily be useful.
+When the user explicitly selects WIP commit-only mode, do not launch tests, builds, formatters, generators, or mutating aggregate checks. Keep the commit pipeline moving with the mandatory static transaction checks, including the type-resolution check, and preserve the waiver in the campaign anchor. A new session does not silently restore expensive validation or start a publisher merely because it would ordinarily be useful.
 
 ## 8. Moving-worktree refresh
 

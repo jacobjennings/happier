@@ -189,7 +189,7 @@ describe('Voice author source contract', () => {
     expect(activationSource).not.toMatch(/\bPluginVoice[A-Z]\w*/u);
     expect(clientSource).not.toContain("from '../activation.js'");
     expect(clientSource).not.toContain("from '@happier-dev/protocol/actions'");
-    expect(clientSource).toContain("import type { ActionSpec } from '../actions/service.js';");
+    expect(clientSource).toContain("import type { ActionSpec } from '../actions/actionTypeMap.generated.js';");
     expect(clientSource).toMatch(
       /import type \{[^}]*VoiceRealtimeJsonValue[^}]*\} from '@happier-dev\/protocol\/voice\/realtime';/u,
     );

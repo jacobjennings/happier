@@ -12,6 +12,8 @@ import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent
 import type { BundledAgentId } from '@/agents/catalog/catalog';
 import { AcpBackendDefinitionV1Schema, type AcpCatalogSettingsV1 } from '@happier-dev/protocol/acp/catalog/settingsV1';
 import { isProfileCompatibleWithBackendTarget } from '@/sync/domains/profiles/profileCompatibility';
+import { getResolvedAgentCatalogEntries, resolveAgentCatalogProjection } from './agentCatalogProjection';
+import { getAgentCore } from '@/agents/catalog/catalog';
 
 type BackendCatalogParams = Parameters<typeof readBackendCatalog>[0] & { acpCatalogSettingsV1?: AcpCatalogSettingsV1 };
 // Existing definition vectors are fixture inputs, not Account Settings authority.
@@ -43,6 +45,45 @@ function configuredAgentTargetKey(definitionId: string) {
 }
 
 describe('getResolvedBackendCatalogEntries', () => {
+    it('uses the admitted daemon Agent set instead of restoring an omitted bundled Agent', () => {
+        const enabledAgentIds = ['claude', 'codex'];
+        const mergedProviderProjectionById = { claude: {
+            agentId: 'claude', identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.claude, isBuiltIn: true,
+        } };
+        expect(getResolvedBackendCatalogEntries({ enabledAgentIds, mergedProviderProjectionById })
+            .map(entry => entry.backendTarget)).toEqual([bundledAgentTarget('claude')]);
+        expect(resolveAgentCatalogProjection('codex', { enabledAgentIds, mergedProviderProjectionById }).enabled).toBe(false);
+        expect(getResolvedBackendCatalogEntries({ enabledAgentIds, mergedProviderProjectionById: {} })).toEqual([]);
+        // No admitted answer yet: preserve the existing bundled discovery fallback.
+        expect(getResolvedBackendCatalogEntries({ enabledAgentIds, mergedProviderProjectionById: null })
+            .map(entry => entry.backendTarget)).toEqual([bundledAgentTarget('claude'), bundledAgentTarget('codex')]);
+        expect(getResolvedBackendCatalogEntries({ enabledAgentIds: ['codex'], mergedProviderProjectionById: {
+            codex: { agentId: 'codex', identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.codex, isBuiltIn: true },
+        } }).map(entry => entry.backendTarget)).toEqual([bundledAgentTarget('codex')]);
+    });
+    it('keeps Agent catalog order deterministic when declaration insertion order changes, including equal titles', () => {
+        const declared = ['zeta', 'alpha', 'beta'].map(agentId => [agentId, {
+            agentId, title: agentId === 'zeta' ? 'Zeta' : 'Review',
+            identity: { pluginId: 'acme.agents', localId: agentId }, isBuiltIn: false,
+        }] as const);
+        const project = (rows: typeof declared) => getResolvedAgentCatalogEntries({
+            enabledAgentIds: [], mergedProviderProjectionById: Object.fromEntries(rows),
+        }).map(entry => entry.backendTargetKey);
+        expect(project(declared)).toEqual(project([...declared].reverse()));
+    });
+
+    it('carries the declared Agent description into home shelf summaries instead of a routing id', () => {
+        for (const agentId of ['antigravity', 'opencode', 'gemini'] as const) {
+            const entry = resolveAgentCatalogProjection(agentId, { enabledAgentIds: [] });
+            expect(entry.subtitle).toBe(`t:${getAgentCore(agentId)!.subtitleKey}`);
+            expect(entry.subtitle).not.toBe(agentId);
+        }
+        const projected = resolveAgentCatalogProjection('acme.review', { enabledAgentIds: [],
+            mergedProviderProjectionById: { 'acme.review': { agentId: 'acme.review', title: 'Review agent',
+                subtitle: 'Reviews local changes', isBuiltIn: false } } });
+        expect(projected).toMatchObject({ title: 'Review agent', subtitle: 'Reviews local changes' });
+        expect(resolveAgentCatalogProjection('acme.unknown', { enabledAgentIds: [] }).subtitle).toBeNull();
+    });
     it('keeps opted-in display rows during revalidation while a fresh catalog replaces the retained record', () => {
         const definition = AcpBackendDefinitionV1Schema.parse({ id: 'retained-review', name: 'retained-review', title: 'Review',
             launch: { kind: 'command', command: 'review', args: [] }, createdAt: 1, updatedAt: 1 });
@@ -130,6 +171,7 @@ describe('getResolvedBackendCatalogEntries', () => {
             enabledAgentIds: ['claude'],
             acpCatalogSettingsV1: { v: 2, backends: [] },
             mergedProviderProjectionById: {
+                claude: { agentId: 'claude', identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.claude, isBuiltIn: true },
                 'acme.review': {
                     agentId: 'acme.review',
                     identity: { pluginId: 'acme.review', localId: 'review' },
@@ -850,6 +892,7 @@ describe('getResolvedBackendCatalogEntries', () => {
             backendEnabledByTargetKey: { 'agent:acme.review/review': false },
             mergedBackendProjectionById: {},
             mergedProviderProjectionById: {
+                claude: { agentId: 'claude', identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.claude, isBuiltIn: true },
                 'acme.review': {
                     agentId: 'acme.review',
                     identity: { pluginId: 'acme.review', localId: 'review' },

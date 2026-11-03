@@ -6,6 +6,9 @@ import { eventRouter } from "./eventRouter";
 import type { SessionAccessProjectionRow } from "@/app/session/access/sessionAccess";
 import type { ClientConnection } from "./eventPayloadTypes";
 import type { LocalSocketRoomEmitter, SocketRoomEmitter } from "./socketRoomEmitter";
+import { buildNewMessageUpdate } from "./eventPayloadBuilders";
+import { registerSessionConsumptionSocketEvent, readSessionSocketConsumption } from "@/app/api/socket/sessionConsumption";
+import { SessionConsumptionReplaceAckV1Schema } from "@happier-dev/protocol";
 
 const { findSession, transactionBoundary } = vi.hoisted(() => ({
     findSession: vi.fn(),
@@ -81,6 +84,110 @@ describe("eventRouter (rooms)", () => {
         eventRouter.clearIo();
         restoreEnv(envSnapshot);
         vi.restoreAllMocks();
+    });
+
+    it("admits socket-local replacements with the exact credential, fresh access and final connection admission", async () => {
+        const row = {
+            id: "session", primaryTeamId: null, accountId: "owner", account: { status: "active" }, seq: 1,
+            currentStorageState: "hosted", acceptedThroughServerSeq: null, materializationPublicationId: null,
+            materializedThroughSourceAt: null, publishedThroughServerSeq: null,
+            shares: [], teamGrants: [], groupGrants: [],
+        } satisfies SessionAccessProjectionRow;
+        findSession.mockImplementation(async ({ where }) => where.id === "session" ? row : null);
+        let replace!: (input: unknown, acknowledge: unknown) => void;
+        let finishAdmission!: (allowed: boolean) => void;
+        const admission = new Promise<boolean>(resolve => { finishAdmission = resolve; });
+        const socket = {
+            connected: true,
+            data: { userId: "owner", clientType: "user-scoped", clientPurpose: "sync", authAuthority: "present_user" },
+            on: (event: string, handler: typeof replace) => { if (event === "session-consumption-replace") replace = handler; },
+        };
+        registerSessionConsumptionSocketEvent(socket as unknown as ClientConnection["socket"], admission);
+        const acknowledge = vi.fn();
+        replace({ v: 1, liveSessionIds: ["session", "denied", "missing"], durableSessionIds: ["session"] }, acknowledge);
+        await Promise.resolve();
+        expect(acknowledge).not.toHaveBeenCalled();
+        expect(readSessionSocketConsumption(socket.data, "session")).toEqual({ durableBodies: false, liveSegments: false });
+        finishAdmission(true);
+        await vi.waitFor(() => expect(acknowledge).toHaveBeenCalled());
+        expect(SessionConsumptionReplaceAckV1Schema.parse(acknowledge.mock.calls[0][0])).toEqual({
+            ok: true, v: 1, liveSessionIds: ["session"], durableSessionIds: ["session"],
+        });
+        expect(readSessionSocketConsumption(socket.data, "session")).toEqual({ durableBodies: true, liveSegments: true });
+        const request = (input: unknown) => new Promise<unknown>(resolve => { replace(input, resolve); });
+        expect(await request({ v: 1, liveSessionIds: [], durableSessionIds: ["session"], accountId: "owner" }))
+            .toEqual({ ok: false, error: "invalid_request" });
+        expect(await request({ v: 1, liveSessionIds: [], durableSessionIds: ["session"] }))
+            .toEqual({ ok: true, v: 1, liveSessionIds: [], durableSessionIds: ["session"] });
+        expect(readSessionSocketConsumption(socket.data, "session")).toEqual({ durableBodies: true, liveSegments: false });
+        socket.data.clientPurpose = "concurrent-server-cache";
+        expect(await request({ v: 1, liveSessionIds: ["session"], durableSessionIds: [] }))
+            .toEqual({ ok: true, v: 1, liveSessionIds: ["session"], durableSessionIds: [] });
+        findSession.mockImplementation(async ({ where }) => where.id === "session" ? { ...row, account: { status: "disabled" } } : null);
+        expect(await request({ v: 1, liveSessionIds: ["session"], durableSessionIds: [] }))
+            .toEqual({ ok: true, v: 1, liveSessionIds: [], durableSessionIds: [] });
+        socket.data.clientPurpose = "cli";
+        expect(await request({ v: 1, liveSessionIds: ["session"], durableSessionIds: [] }))
+            .toEqual({ ok: false, error: "not_allowed" });
+        socket.connected = false;
+        socket.data.clientPurpose = "sync";
+        expect(await request({ v: 1, liveSessionIds: ["session"], durableSessionIds: [] }))
+            .toEqual({ ok: false, error: "not_allowed" });
+    });
+
+    it.each(["local", "receiving-node"] as const)("delivers bodies only to consuming UI sockets on %s", async mode => {
+        findSession.mockResolvedValue({
+            id: "session", primaryTeamId: null, accountId: "owner", account: { status: "active" }, seq: 1,
+            currentStorageState: "hosted", acceptedThroughServerSeq: null, materializationPublicationId: null,
+            materializedThroughSourceAt: null, publishedThroughServerSeq: null,
+            shares: [], teamGrants: [], groupGrants: [],
+        } satisfies SessionAccessProjectionRow);
+        const received = new Map<string, unknown[]>();
+        const sockets = ["hidden", "live", "durable", "concurrent", "scoped-rpc", "runtime"].map(id => ({
+            id,
+            data: {
+                userId: "owner", authAuthority: "present_user", clientType: "user-scoped",
+                clientPurpose: id === "concurrent" ? "concurrent-server-cache" : id === "runtime" ? "cli" : id === "scoped-rpc" ? "scoped-rpc" : "sync",
+                sessionConsumption: {
+                    liveSessionIds: new Set(id === "live" ? ["session"] : []),
+                    durableSessionIds: new Set(id === "durable" ? ["session"] : []),
+                },
+            },
+            emit: (_event: string, payload: unknown) => { received.set(id, [...received.get(id) ?? [], payload]); },
+        }));
+        const io: LocalSocketRoomEmitter = {
+            in: () => ({ fetchSockets: async () => sockets }),
+            to: id => ({ emit: (event, payload) => { sockets.find(socket => socket.id === id)?.emit(event, payload); }, disconnectSockets: () => {} }),
+        };
+        const connections: ClientConnection[] = sockets.map(socket => ({
+            connectionType: "user-scoped", userId: "owner", socket: socket as unknown as ClientConnection["socket"],
+        }));
+        if (mode === "local") for (const connection of connections) eventRouter.addConnection("owner", connection);
+        const payload = buildNewMessageUpdate({ id: "message", seq: 1, localId: null,
+            content: { t: "plain", v: { text: "private transcript" } }, createdAt: new Date(1), updatedAt: new Date(2) }, "session", 1, "event");
+        const deliver = async (eventName: "update" | "ephemeral", body: unknown) => {
+            if (mode === "receiving-node") await eventRouter.receiveCredentialQualifiedSessionDelivery(io, {
+                v: 1, accountId: "owner", sessionId: "session", eventName, payload: body,
+            });
+            else if (eventName === "update") await eventRouter.emitUpdate({ userId: "owner", payload,
+                recipientFilter: { type: "all-interested-in-session", sessionId: "session" } });
+            else await eventRouter.emitEphemeral({ userId: "owner", payload: body as Parameters<typeof eventRouter.emitEphemeral>[0]["payload"],
+                recipientFilter: { type: "all-interested-in-session", sessionId: "session" } });
+        };
+        try {
+            await deliver("update", payload);
+            for (const id of ["hidden", "concurrent", "scoped-rpc"]) expect(received.get(id)).toEqual([expect.objectContaining({
+                body: expect.objectContaining({ delivery: "hint", message: expect.not.objectContaining({ content: expect.anything() }) }),
+            })]);
+            for (const id of ["live", "durable", "runtime"]) expect(received.get(id)).toEqual([expect.objectContaining({
+                body: expect.objectContaining({ delivery: "full", message: expect.objectContaining({ content: { t: "plain", v: { text: "private transcript" } } }) }),
+            })]);
+            received.clear();
+            await deliver("ephemeral", { type: "transcript-stream-segment-delta", sessionId: "session", segmentId: "segment", tick: 1 });
+            expect([...received.keys()]).toEqual(["live", "runtime"]);
+        } finally {
+            if (mode === "local") for (const connection of connections) eventRouter.removeConnection("owner", connection);
+        }
     });
 
     it("disconnects only the Account terminal room after a policy change", () => {

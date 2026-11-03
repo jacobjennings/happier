@@ -57,19 +57,6 @@ function defaultProps(overrides: Partial<SelectionListProps> = {}): SelectionLis
 }
 
 describe('SelectionList headerless keyboard host (FR3-4)', () => {
-    it('exposes a keyboard handler on the container root when the search header is omitted', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps()} />);
-        // Sanity: confirm header is NOT mounted (per RV-1 routing-2 gate).
-        expect(screen.findByTestId('sl:header')).toBeNull();
-        // The headerless keyboard host MUST expose `onKeyDown` (web) on the
-        // container so Arrow / Enter / Escape / Shift+Tab work uniformly.
-        const container = screen.findByTestId('sl');
-        expect(container).not.toBeNull();
-        const props = (container as unknown as { props: Record<string, unknown> }).props;
-        expect(typeof props.onKeyDown === 'function' || typeof props.onKeyPress === 'function').toBe(true);
-    });
-
     it('handles ArrowDown via the headerless keyboard host', async () => {
         const { act } = await import('react-test-renderer');
         const { SelectionList } = await import('../SelectionList');

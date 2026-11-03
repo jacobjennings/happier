@@ -7,6 +7,11 @@ import {
     sealEncryptedDataKeyEnvelopeV1,
     openEncryptedDataKeyEnvelopeV1,
     signAccountContentKeyBindingV1,
+    projectSessionDisplayV1,
+    sealSessionSharedDisplayEnvelopeV1,
+    sealSessionOwnerDisplayEnvelopeV1,
+    sealSessionOwnerMetadataEnvelopeV1,
+    sealSessionDataKeyBundleV0,
 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
@@ -387,8 +392,32 @@ describe("Session data-key envelope collection (SQLite)", () => {
         const { owner, session } = await managedSession();
         const recipient = await e2eeAccount();
         await shareWith(session.id, owner.id, recipient.id, "view");
-        const first = encodeBase64(envelopeFor(recipient.binding.contentPublicKey));
-        const second = encodeBase64(envelopeFor(recipient.binding.contentPublicKey));
+        const dataKey = tweetnacl.randomBytes(32);
+        const wrap = (recipientPublicKey: Uint8Array) => new Uint8Array(sealEncryptedDataKeyEnvelopeV1({
+            dataKey, recipientPublicKey, randomBytes: length => tweetnacl.randomBytes(length),
+        }));
+        await db.sessionDataKeyEnvelope.update({ where: {
+            sessionId_recipientAccountId: { sessionId: session.id, recipientAccountId: owner.id },
+        }, data: { encryptedDataKey: Buffer.from(wrap(owner.binding.contentPublicKey)) } });
+        const sharedMetadata = { v: 1 as const, summary: { text: 'Same-DEK shared display', updatedAt: 0 } };
+        const ownerMetadata = { v: 1 as const, workspace: { name: 'Account-private display' } };
+        const display = projectSessionDisplayV1({ sharedMetadata, ownerMetadata });
+        const material = { type: 'dataKey' as const, machineKey: owner.binding.contentSecretKey };
+        const randomBytes = (length: number) => tweetnacl.randomBytes(length);
+        const shared = await sealSessionSharedDisplayEnvelopeV1({ sessionMode: 'e2ee', display: display.shared,
+            encryptPayload: async payload => encodeBase64(await sealSessionDataKeyBundleV0(payload, dataKey)) });
+        const privateDisplay = sealSessionOwnerDisplayEnvelopeV1({ accountMode: 'e2ee', display: display.owner!, material, randomBytes });
+        if (!shared.ok || !privateDisplay.ok) throw new Error('Canonical same-DEK display producer failed');
+        const displayProjectionV1 = JSON.stringify({ v: 1, metadataLayoutVersion: 1, sourceMetadataVersion: session.metadataVersion,
+            shared: shared.envelope, owner: privateDisplay.envelope });
+        await db.session.update({ where: { id: session.id }, data: {
+            metadataLayoutVersion: 1, metadata: encodeBase64(await sealSessionDataKeyBundleV0(sharedMetadata, dataKey)),
+            ownerMetadata: JSON.stringify(sealSessionOwnerMetadataEnvelopeV1({ ownerMetadata, material, randomBytes })),
+            displayProjectionV1,
+        } });
+        const before = await db.session.findUniqueOrThrow({ where: { id: session.id } });
+        const first = encodeBase64(wrap(recipient.binding.contentPublicKey));
+        const second = encodeBase64(wrap(recipient.binding.contentPublicKey));
         expect(second).not.toBe(first);
 
         await applySessionDataKeyEnvelopes({
@@ -407,6 +436,14 @@ describe("Session data-key envelope collection (SQLite)", () => {
             sessionId_recipientAccountId: { sessionId: session.id, recipientAccountId: recipient.id },
         } });
         expect(encodeBase64(new Uint8Array(stored!.encryptedDataKey))).toBe(second);
+        expect(openEncryptedDataKeyEnvelopeV1({ envelope: new Uint8Array(stored!.encryptedDataKey),
+            recipientSecretKeyOrSeed: recipient.binding.contentSecretKey })).toEqual(dataKey);
+        const after = await db.session.findUniqueOrThrow({ where: { id: session.id } });
+        expect(after.displayProjectionV1).toBe(displayProjectionV1);
+        expect(after.metadata).toBe(before.metadata);
+        expect(after.ownerMetadata).toBe(before.ownerMetadata);
+        expect(after.metadataVersion).toBe(before.metadataVersion);
+        expect(after.agentStateVersion).toBe(before.agentStateVersion);
     });
 
     it("writes nothing when any single entry in the bounded page is malformed", async () => {

@@ -1,3 +1,7 @@
+import type { DeploymentTargetContributionV1 } from './deploymentTargets.js';
+import type { HealthCheckKindContributionV1 } from './healthCheckKinds.js';
+import type { MachineRecipeV1, MachineSetupPresetContributionV1 } from './machineSetup.js';
+import type { PluginManifestIngestionDiagnostic } from '@happier-dev/protocol/plugins/manifest/ingest';
 // Portable declarative grammar is projected by the single Action DTO producer.
 import type { PluginDeclarativeToneV2 as DtoPluginDeclarativeToneV2, PluginDeclarativeControlV2 as DtoPluginDeclarativeControlV2, PluginDeclarativeActionNodeV2 as DtoPluginDeclarativeActionNodeV2, PluginContributionReference as DtoPluginContributionReference, PluginDeclarativeComposerApplyEffectV1 as DtoPluginDeclarativeComposerApplyEffectV1, PluginDeclarativeActionVariantV2 as DtoPluginDeclarativeActionVariantV2, PluginDeclarativeListNodeV2 as DtoPluginDeclarativeListNodeV2, PluginDeclarativeSectionNodeV2 as DtoPluginDeclarativeSectionNodeV2, PluginDeclarativeRowNodeV2 as DtoPluginDeclarativeRowNodeV2, PluginDeclarativeItemNodeV2 as DtoPluginDeclarativeItemNodeV2, PluginDeclarativeStateNodeV2 as DtoPluginDeclarativeStateNodeV2, PluginDeclarativeStateV2 as DtoPluginDeclarativeStateV2, PluginDeclarativeTargetedSurfaceNodeV2 as DtoPluginDeclarativeTargetedSurfaceNodeV2, PluginDeclarativeTargetedSurfaceReferenceV1 as DtoPluginDeclarativeTargetedSurfaceReferenceV1, PluginDeclarativeMetadataNodeV2 as DtoPluginDeclarativeMetadataNodeV2, PluginDeclarativeMetadataEntryV2 as DtoPluginDeclarativeMetadataEntryV2, PluginDeclarativeActionPanelNodeV2 as DtoPluginDeclarativeActionPanelNodeV2, PluginDeclarativeCollectionListNodeV2 as DtoPluginDeclarativeCollectionListNodeV2, PluginCollectionProjectedScalarFieldRefV1 as DtoPluginCollectionProjectedScalarFieldRefV1, PluginCollectionRowCommandV1 as DtoPluginCollectionRowCommandV1 } from './actions/dtos/actionDeclarativeNodeDto.generated.js';
 import type { PluginDeclarativeNodeV2, PluginLocalizedStringV2 } from './actions/dtos/pluginActionDtoSupport.generated.js';
@@ -25,6 +29,7 @@ import type {
 import type { WorkflowsActionResultById } from './actions/dtos/workflowsActionDtos.generated.js';
 import type { PluginDragSourceContributionV1, PluginDropTargetContributionV1 } from '@happier-dev/protocol';
 import type { MachineProvisionerContributionV1 } from './machineProvisioners.js';
+import type { AccessProviderContributionV1 } from './accessProviders.js';
 import type { PluginProjectNativeAdapterContributionV1 } from '@happier-dev/protocol/plugins/contributions/projectNativeAdapters';
 import type { PluginWorkItemsContributionV1 } from '@happier-dev/protocol/plugins/contributions/workItems';
 export type { PluginDragSourceContributionV1, PluginDropTargetContributionV1 } from '@happier-dev/protocol';
@@ -234,10 +239,11 @@ export type AgentUiBehaviorDeclarationV1 = {
     };
     /** A setting-backed session configuration option contributed on create. */
     sessionExtras?: {
-      outputKey: string;
+      outputKey?: string;
       values: string[];
       settingKey?: AgentUiSettingReferenceV1;
       aliases?: Record<string, string>;
+      booleanValues?: { true: string; false: string };
       defaultValue?: string;
     };
     environmentVariables?: {
@@ -524,7 +530,13 @@ export interface PluginManifest {
   readonly brand?: Readonly<{ iconResourceId: string; monochrome?: boolean }>;
   /** Run-on defaults to automatic placement; false asks when several Machines are eligible. */
   readonly executionTarget?: Readonly<{ default?: 'installation'; autoPick?: boolean }>;
-  readonly activation?: Readonly<{ events?: readonly Readonly<{ kind: 'startup' }>[] }>;
+  readonly activation?: Readonly<{
+    events?: readonly Readonly<{ kind: 'startup' }>[];
+    configuration?: Readonly<{
+      accountCollections?: readonly Readonly<{ pluginId: string; collectionId: string }>[];
+      automationEventSources?: true;
+    }>;
+  }>;
   readonly hostAccess?: Readonly<{
     required?: readonly Readonly<{
       id: string;
@@ -579,6 +591,11 @@ export interface PluginManifest {
     }>[];
   } & {
     machineProvisioners?: readonly MachineProvisionerContributionV1[];
+    accessProviders?: readonly AccessProviderContributionV1[];
+    deploymentTargets?: readonly DeploymentTargetContributionV1[];
+    healthCheckKinds?: readonly HealthCheckKindContributionV1[];
+    machineRecipes?: readonly MachineRecipeV1[];
+    machineSetupPresets?: readonly MachineSetupPresetContributionV1[];
     projectNativeAdapters?: readonly Readonly<PluginProjectNativeAdapterContributionV1>[];
     /**
      * Agent contributions. `ui` is typed by the ONE public Agent UI grammar, so
@@ -720,6 +737,11 @@ export interface PluginManifest {
 /** Canonical readonly contribution collection returned by public structural parsing. */
 export type PluginContributes = Readonly<{
   machineProvisioners: readonly MachineProvisionerContributionV1[];
+  accessProviders: readonly AccessProviderContributionV1[];
+  deploymentTargets: readonly DeploymentTargetContributionV1[];
+  healthCheckKinds: readonly HealthCheckKindContributionV1[];
+  machineRecipes: readonly MachineRecipeV1[];
+  machineSetupPresets: readonly MachineSetupPresetContributionV1[];
   projectNativeAdapters: NonNullable<NonNullable<PluginManifest['contributes']>['projectNativeAdapters']>;
   agents: NonNullable<NonNullable<PluginManifest['contributes']>['agents']>;
   providers: NonNullable<NonNullable<PluginManifest['contributes']>['providers']>;
@@ -838,19 +860,7 @@ export type PluginTestkitManifest =
   }>);
 
 /** Structured portable-validation diagnostic suitable for author tooling. */
-export type PluginManifestDiagnostic = Readonly<{
-  code:
-    | 'plugin_manifest_invalid_json'
-    | 'plugin_manifest_invalid'
-    | 'plugin_manifest_duplicate_contribution_id'
-    | 'plugin_manifest_invalid_contribution_id'
-    | 'plugin_manifest_dangling_reference'
-    | 'plugin_manifest_wrong_family_reference'
-    | 'plugin_manifest_missing_agent_setting_reference'
-    | 'plugin_manifest_wrong_scope_agent_setting_reference';
-  path?: readonly (string | number)[];
-  message: string;
-}>;
+export type PluginManifestDiagnostic = PluginManifestIngestionDiagnostic;
 /** Portable structural parse result; host compatibility and installation checks are separate. */
 export type PluginManifestParseResult =
   | Readonly<{ ok: true; manifest: ParsedPluginManifest }>

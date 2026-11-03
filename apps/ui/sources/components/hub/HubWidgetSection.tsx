@@ -3,7 +3,7 @@ import { View, type LayoutChangeEvent } from 'react-native';
 import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
 
 import { useAppShellPluginUiProjection } from '@/components/appShell/plugins/AppShellPluginUiProjection';
-import { WidgetSurface } from '@/components/widgets/surface/WidgetSurface';
+import { WidgetSurface, type WidgetSurfaceProps } from '@/components/widgets/surface/WidgetSurface';
 import { getWidgetSizeFootprintV1, resolveWidgetRowOwnerSizeV1, type WidgetInputBindingsV1, type WidgetSizeV1, type WidgetInstanceV1, type WidgetSurfaceRefV1 } from '@happier-dev/protocol/widgets';
 import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
@@ -76,7 +76,7 @@ export const HubWidgetSection = React.memo(function HubWidgetSection(props: Read
     const descriptor = props.widget ?? null;
     const appRuntime = useAppShellPluginUiProjection();
     const pluginName = readWidgetSourcePluginName(appRuntime.pluginUiProjection, descriptor) ?? t('sessionBoard.item.pluginUnavailable.title');
-    const frameTitle = useWidgetFrameTitle(props.instance, descriptor);
+    const { title: frameTitle, onDefinitionRead } = useWidgetFrameTitle(props.instance, descriptor);
     // Copies are named by what they are bound to, in the source slot (lab dbind H, N1).
     const bindingLabel = useWidgetInstanceBindingLabel(props.instance, descriptor);
     // The body may name what it shows ("Tokens by agent · last 7 days"), as it does in every area.
@@ -159,7 +159,7 @@ export const HubWidgetSection = React.memo(function HubWidgetSection(props: Read
             <View testID={`${props.testID}.body`} onLayout={onBodyLayout} style={{ flexGrow: 1 }}>
                 <WidgetFrameBodyCaptionContext.Provider value={setBodyCaption}>
                 <WidgetFrameBodyMetaContext.Provider value={setBodyMeta}>
-                    <HubWidgetBody widget={descriptor ?? undefined} instance={props.instance} groupBindings={props.groupBindings} size={size} onRepairInputs={props.onRepairInputs} testID={`${props.testID}.widget`} />
+                    <HubWidgetBody widget={descriptor ?? undefined} instance={props.instance} groupBindings={props.groupBindings} size={size} onRepairInputs={props.onRepairInputs} onDefinitionRead={onDefinitionRead} testID={`${props.testID}.widget`} />
                 </WidgetFrameBodyMetaContext.Provider>
                 </WidgetFrameBodyCaptionContext.Provider>
             </View>
@@ -167,7 +167,7 @@ export const HubWidgetSection = React.memo(function HubWidgetSection(props: Read
             // The body's last height, so leaving and returning never moves the page.
             <View testID={`${props.testID}.deferred`} style={{ minHeight: bodyHeight }} />
         ),
-    }), [active, bodyHeight, onBodyLayout, props.testID, descriptor, props.instance, props.onRepairInputs, size]);
+    }), [active, bodyHeight, onBodyLayout, onDefinitionRead, props.testID, descriptor, props.instance, props.onRepairInputs, size]);
 
     const settledMatch = React.useMemo<EntityDropSettledMatch>(() => ({
         item: item => item.kind === 'home-section' && item.sectionId === props.instance.id,
@@ -203,7 +203,7 @@ export const HubWidgetSection = React.memo(function HubWidgetSection(props: Read
 });
 
 /** The mounted body: the one installed-widget arm, against the app shell's plugin projection. */
-function HubWidgetBody(props: Readonly<{ widget?: WidgetCandidate; instance: WidgetInstanceV1; groupBindings?: WidgetInputBindingsV1; size: WidgetSizeV1; onRepairInputs?: (() => void) | undefined; testID: string }>) {
+function HubWidgetBody(props: Readonly<{ widget?: WidgetCandidate; instance: WidgetInstanceV1; groupBindings?: WidgetInputBindingsV1; size: WidgetSizeV1; onRepairInputs?: (() => void) | undefined; onDefinitionRead?: WidgetSurfaceProps['onDefinitionRead']; testID: string }>) {
     const runtime = useAppShellPluginUiProjection();
     const accountScope = useActiveServerAccountScope();
     const scope = React.useMemo<WidgetSurfaceRefV1 | null>(() => accountScope
@@ -220,6 +220,7 @@ function HubWidgetBody(props: Readonly<{ widget?: WidgetCandidate; instance: Wid
             presentation="content"
             size={props.size}
             appRuntime={runtime}
+            onDefinitionRead={props.onDefinitionRead}
             {...(props.onRepairInputs ? { onRepairInputs: props.onRepairInputs } : {})}
             testID={props.testID}
         />

@@ -327,14 +327,20 @@ describe('authQRWait explicit-target enrollment', () => {
         expect(endpointFetchMock).toHaveBeenCalledTimes(1);
     });
 
-    it('never falls back from V2 to V1 or accepts plaintext token response', async () => {
+    it.each([
+        // An authorized answer carrying a plaintext token is not the bound v3 envelope.
+        { label: 'a plaintext authorized token', status: 200, reason: 'malformed_response' },
+        { label: 'an expired request', status: 404, reason: 'expired' },
+        { label: 'a request bound to another target', status: 403, reason: 'wrong_target' },
+    ])('never falls back from V2 to V1 or accepts plaintext token response ($label)', async ({ status, reason }) => {
         vi.useFakeTimers();
         const keypair = generateAuthKeyPair();
         const context = createV2Context();
-        endpointFetchMock.mockResolvedValueOnce(json(404, { state: 'authorized', token: 'plaintext' }));
+        endpointFetchMock.mockResolvedValueOnce(json(status, { state: 'authorized', token: 'plaintext' }));
 
-        await expect(settle(authQRWait(keypair, HOME_B_TARGET, { v2Context: context })))
-            .resolves.toEqual({ ok: false, reason: 'expired' });
+        const result = await settle(authQRWait(keypair, HOME_B_TARGET, { v2Context: context }));
+        expect(result).toEqual({ ok: false, reason });
+        expect(JSON.stringify(result)).not.toContain('plaintext');
         expect(endpointFetchMock.mock.calls.map((call) => call[0])).toEqual(['/v2/auth/account/request']);
     });
 

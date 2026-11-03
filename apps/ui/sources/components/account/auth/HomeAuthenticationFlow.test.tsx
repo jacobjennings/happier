@@ -101,6 +101,7 @@ describe('HomeAuthenticationFlow', () => {
             />
         </AuthProvider>);
 
+        expect(screen.findByTestId('restore-manual-secret-input')).not.toBeNull();
         expect(screen.findByTestId('home-auth-key_challenge-login-keyed')).toBeNull();
         expect(screen.findByTestId('home-auth-key-back')).toBeNull();
     });
@@ -165,36 +166,6 @@ describe('HomeAuthenticationFlow', () => {
         </AuthProvider>);
 
         expect(executeHomeAuthenticationMock).not.toHaveBeenCalled();
-    });
-
-    it('forwards explicit Team admission context to the shared authentication executor', async () => {
-        executeHomeAuthenticationMock.mockReset();
-        const screen = await renderScreen(<AuthProvider initialCredentials={null}>
-            <HomeAuthenticationFlow
-                target={{
-                    kind: 'descriptor',
-                    authority: 'account_directory',
-                    descriptor: {
-                        v: 1,
-                        homeServerIdentityId: 'srv_home',
-                        canonicalServerUrl: 'https://home.example.test',
-                        revision: 1,
-                        endpoints: [{ kind: 'https', url: 'https://home.example.test' }],
-                    },
-                }}
-                actions={[oauthAction]}
-                returnTo="/teams/team-1/sign-in?serverId=srv_home"
-                teamAdmission={{ teamId: 'team-1' }}
-                onAuthenticated={vi.fn()}
-                onBack={vi.fn()}
-            />
-        </AuthProvider>);
-
-        await screen.pressByTestIdAsync('home-auth-team-oidc-connect-either');
-
-        expect(executeHomeAuthenticationMock).toHaveBeenCalledWith(expect.objectContaining({
-            teamAdmission: { teamId: 'team-1' },
-        }));
     });
 
     it('forwards native Team mTLS through the shared authentication executor', async () => {

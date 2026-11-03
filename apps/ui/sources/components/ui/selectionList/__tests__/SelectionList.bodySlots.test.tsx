@@ -44,21 +44,37 @@ describe('SelectionList body slots', () => {
         expect(count('sl:root:option:a')).toBeGreaterThan(0);
     });
 
-    it('keeps the body header and footer when the list has no rows', async () => {
-        const screen = await renderScreen(
+    it('keeps the same body header and footer mounted when a search empties the list', async () => {
+        const mounts = { header: 0, footer: 0 };
+        function SlotProbe({ slot }: Readonly<{ slot: 'header' | 'footer' }>): React.ReactElement {
+            React.useEffect(() => {
+                mounts[slot] += 1;
+            }, [slot]);
+            return <View testID={`slot-${slot}`} />;
+        }
+        const list = (inputValue: string) => (
             <SelectionList
-                rootStep={step([])}
-                bodyHeader={<View testID="slot-header" />}
-                bodyFooter={<View testID="slot-footer" />}
+                rootStep={step([{ id: 'a', label: 'Alpha' }, { id: 'b', label: 'Bravo' }])}
+                inputValue={inputValue}
+                onChangeInputValue={vi.fn()}
+                bodyHeader={<SlotProbe slot="header" />}
+                bodyFooter={<SlotProbe slot="footer" />}
                 onSelect={vi.fn()}
                 onRequestClose={vi.fn()}
                 disableTransitions
                 testID="sl"
-            />,
+            />
         );
+        const screen = await renderScreen(list(''));
+        expect(screen.findByTestId('sl:root:option:a')).toBeTruthy();
 
+        // The keystroke that filters every row away must not swap the body
+        // subtree: a remounted slot loses whatever its inputs held.
+        await screen.update(list('zzz'));
+        expect(screen.findByTestId('sl:root:option:a')).toBeNull();
+        expect(screen.findByTestId('sl:empty')).toBeTruthy();
         expect(screen.findByTestId('slot-header')).toBeTruthy();
         expect(screen.findByTestId('slot-footer')).toBeTruthy();
-        expect(screen.findByTestId('sl:empty')).toBeTruthy();
+        expect(mounts).toEqual({ header: 1, footer: 1 });
     });
 });

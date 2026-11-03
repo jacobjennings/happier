@@ -1,60 +1,7 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { fetchSessionFolderAssignmentsForSessions } from '@/sync/api/session/sessionOrganizationApi';
-import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organization';
+import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope/activeServerAccountScope';
 import { getStorage } from '@/sync/domains/state/storageStore';
-
-type SessionFolderAssignmentFetchPolicy = 'all' | 'missing';
-
-const missingAssignmentFetchesBySessionKey = new Map<string, Promise<unknown>>();
-
-function getSessionAssignmentKey(serverId: string, sessionId: string): string {
-    return buildSessionOrganizationSessionKey(serverId, sessionId);
-}
-
-function filterInFlightAssignmentSessionIds(params: Readonly<{
-    serverId: string;
-    sessionIds: readonly string[];
-}>): string[] {
-    return params.sessionIds.filter((sessionId) => (
-        !missingAssignmentFetchesBySessionKey.has(getSessionAssignmentKey(params.serverId, sessionId))
-    ));
-}
-
-function registerInFlightAssignmentFetch(params: Readonly<{
-    serverId: string;
-    sessionIds: readonly string[];
-    promise: Promise<unknown>;
-}>): void {
-    for (const sessionId of params.sessionIds) {
-        missingAssignmentFetchesBySessionKey.set(getSessionAssignmentKey(params.serverId, sessionId), params.promise);
-    }
-}
-
-function unregisterInFlightAssignmentFetch(params: Readonly<{
-    serverId: string;
-    sessionIds: readonly string[];
-    promise: Promise<unknown>;
-}>): void {
-    for (const sessionId of params.sessionIds) {
-        const key = getSessionAssignmentKey(params.serverId, sessionId);
-        if (missingAssignmentFetchesBySessionKey.get(key) === params.promise) {
-            missingAssignmentFetchesBySessionKey.delete(key);
-        }
-    }
-}
-
-function filterMissingAssignmentSessionIds(params: Readonly<{
-    assignmentsBySessionKey: Readonly<Record<string, unknown>>;
-    serverId: string;
-    sessionIds: readonly string[];
-}>): string[] {
-    return params.sessionIds.filter((sessionId) => (
-        !Object.prototype.hasOwnProperty.call(
-            params.assignmentsBySessionKey,
-            buildSessionOrganizationSessionKey(params.serverId, sessionId),
-        )
-    ));
-}
 
 function resolveFetchedAssignments(params: Readonly<{
     requestedSessionIds: readonly string[];
@@ -74,27 +21,13 @@ export async function fetchAndApplySessionFolderAssignments(params: Readonly<{
     serverId: string;
     serverUrl?: string;
     sessionIds: readonly string[];
-    fetchPolicy?: SessionFolderAssignmentFetchPolicy;
     shouldContinue?: () => boolean;
 }>): Promise<void> {
+    const activation = captureActiveServerAccountScopeCurrentness();
     const store = getStorage().getState();
-    const sessionIdsMissingFromCache = params.fetchPolicy === 'missing'
-        ? filterMissingAssignmentSessionIds({
-            assignmentsBySessionKey: store.sessionOrganizationFolderAssignmentsBySessionKey,
-            serverId: params.serverId,
-            sessionIds: params.sessionIds,
-        })
-        : params.sessionIds;
-    const sessionIds = params.fetchPolicy === 'missing'
-        ? filterInFlightAssignmentSessionIds({
-            serverId: params.serverId,
-            sessionIds: sessionIdsMissingFromCache,
-        })
-        : sessionIdsMissingFromCache;
+    const sessionIds = params.sessionIds;
     if (sessionIds.length === 0) {
-        if (sessionIdsMissingFromCache.length === 0) {
-            store.setSessionFolderAssignmentsLoading(params.serverId, false);
-        }
+        store.setSessionFolderAssignmentsLoading(params.serverId, false);
         return;
     }
     store.setSessionFolderAssignmentsLoading(params.serverId, true);
@@ -103,37 +36,17 @@ export async function fetchAndApplySessionFolderAssignments(params: Readonly<{
         serverUrl: params.serverUrl,
         sessionIds,
     });
-    if (params.fetchPolicy === 'missing') {
-        registerInFlightAssignmentFetch({
-            serverId: params.serverId,
-            sessionIds,
-            promise: fetchPromise,
-        });
-    }
     try {
         const response = await fetchPromise;
+        if (!activation.isCurrent()) return;
         if (params.shouldContinue && !params.shouldContinue()) return;
         const currentStore = getStorage().getState();
-        const applySessionIds = params.fetchPolicy === 'missing'
-            ? filterMissingAssignmentSessionIds({
-                assignmentsBySessionKey: currentStore.sessionOrganizationFolderAssignmentsBySessionKey,
-                serverId: params.serverId,
-                sessionIds,
-            })
-            : sessionIds;
         currentStore.applySessionFolderAssignments(params.serverId, resolveFetchedAssignments({
-            requestedSessionIds: applySessionIds,
+            requestedSessionIds: sessionIds,
             assignments: response.assignments,
         }));
     } finally {
-        if (params.fetchPolicy === 'missing') {
-            unregisterInFlightAssignmentFetch({
-                serverId: params.serverId,
-                sessionIds,
-                promise: fetchPromise,
-            });
-        }
-        if (!params.shouldContinue || params.shouldContinue()) {
+        if (activation.isCurrent() && (!params.shouldContinue || params.shouldContinue())) {
             getStorage().getState().setSessionFolderAssignmentsLoading(params.serverId, false);
         }
     }

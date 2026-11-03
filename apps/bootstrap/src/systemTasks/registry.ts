@@ -91,7 +91,7 @@ type RemoteSshBootstrapDeps = systemTasks.RemoteSshBootstrapMachineDeps;
 type RelayAccessDeps = Readonly<{
   readConfig: (params: Readonly<{ target: systemTasks.RelayAccessTaskTarget }>) => Promise<relayAccess.RelayAccessConfig | null>;
   writeConfig: (params: Readonly<{ target: systemTasks.RelayAccessTaskTarget; config: relayAccess.RelayAccessConfig | null }>) => Promise<void>;
-  getProvider: (providerId: relayAccess.RelayAccessProviderId) => relayAccess.RelayAccessProvider;
+  getProvider: (provider: relayAccess.RelayAccessConfig['provider']) => relayAccess.RelayAccessProvider;
   createExecutionContext: (params: Readonly<{ target: systemTasks.RelayAccessTaskTarget; upstreamUrl: string | null }>) => relayAccess.RelayAccessExecutionContext;
 }>;
 
@@ -532,6 +532,7 @@ function createRelayAccessDeps(overrides?: Partial<RelayAccessDeps>): RelayAcces
       const ssh = params.target.ssh;
       return {
         ...base,
+        env: { NODE_ENV: process.env.NODE_ENV },
         resolveCommandOnPath: (command: string) => command,
         runCommand: async ({ command, args, env, timeoutMs }: RunCommandParams): Promise<RunCommandResult> => {
           const remoteCommand = [command, ...args].map(shellQuote).join(' ');

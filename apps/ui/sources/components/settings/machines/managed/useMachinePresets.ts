@@ -60,8 +60,13 @@ export function useMachinePresetQuery<T>(input: Readonly<{
         callbacks.current.onAccessLost?.(code);
     }, [queryKey]);
     React.useEffect(() => {
-        if (state.queryKey !== queryKey) withdraw('action_account_scope_changed');
-    }, [queryKey, state.queryKey, withdraw]);
+        if (state.queryKey === queryKey) return;
+        // Only a retained row or failure can be left behind by another scope; a read that has shown nothing yet
+        // (the Account or Home was still resolving) simply starts again under the resolved scope.
+        if (state.value || state.error) { withdraw('action_account_scope_changed'); return; }
+        pendingRead.current?.abort();
+        setState({ queryKey, value: null, loading: !!presetId, error: null });
+    }, [queryKey, state.queryKey, state.value, state.error, presetId, withdraw]);
     React.useEffect(() => {
         if (!binding?.isCurrent() || !read || !presetId) return;
         const controller = new AbortController();

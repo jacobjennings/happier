@@ -19,15 +19,6 @@ const scanRouteModuleState = vi.hoisted(() => ({
     },
 }));
 
-export function resetScanRouteTestState() {
-    scanRouteModuleState.options = {
-        reactNative: undefined,
-        router: undefined,
-        text: undefined,
-        modal: undefined,
-    };
-}
-
 export function installScanRouteCommonModuleMocks(
     options: InstallScanRouteCommonModuleMocksOptions = {},
 ) {
@@ -39,13 +30,13 @@ export function installScanRouteCommonModuleMocks(
     };
 
     vi.mock('react-native', async () => {
-    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-    return createReactNativeWebMock(
-        {
-                            View: 'View',
-                        }
-    );
-});
+        if (scanRouteModuleState.options.reactNative) {
+            return await scanRouteModuleState.options.reactNative();
+        }
+
+        const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+        return createReactNativeWebMock({ View: 'View' });
+    });
 
     vi.mock('react-native-unistyles', async () => {
         const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');

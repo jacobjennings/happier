@@ -1,11 +1,10 @@
 import * as React from 'react';
-import { Platform, View } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { CompactSearchField } from '@/components/ui/forms/CompactSearchField';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
 import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
 import { PageHeaderMenu, type PageHeaderMenuAction } from '@/components/ui/layout/PageHeaderEntityParts';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
@@ -20,11 +19,11 @@ import {
     type SelectionListOption,
     type SelectionListSection,
 } from '@/components/ui/selectionList';
-import { VirtualizedList, type VirtualizedListRef } from '@/components/ui/lists/virtualized';
+import { type VirtualizedListRef } from '@/components/ui/lists/virtualized';
+import { VirtualizedItemList } from '@/components/ui/lists/VirtualizedItemList';
 import { Text } from '@/components/ui/text/Text';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import type { ProviderModelManagerSection } from './ProviderModelManager';
-import { useSessionCockpitBottomChromeHeight } from '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry';
 import { t } from '@/text';
 
 /**
@@ -71,7 +70,6 @@ export function ProviderModelManagerPage(props: Readonly<{
     onResetVisibility?: () => void;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
-    const bottomChromeHeight = useSessionCockpitBottomChromeHeight();
     const listRef = React.useRef<VirtualizedListRef>(null);
     const [query, setQuery] = React.useState('');
     const { host } = props;
@@ -311,29 +309,20 @@ export function ProviderModelManagerPage(props: Readonly<{
     const renderRow = React.useCallback(({ item }: Readonly<{ item: PageRow }>) => item.render(), []);
 
     return (
-        <ListPresentationProvider value="page">
-            <VirtualizedList
-                ref={listRef}
-                testID={host.testID}
-                data={rows}
-                keyExtractor={(item) => item.key}
-                renderItem={renderRow}
-                ListHeaderComponent={host.header}
-                ListFooterComponent={host.footer ?? null}
-                // A plain object: the web recycler assigns this style directly to its scroll element.
-                style={{
-                    flex: 1,
-                    backgroundColor: theme.colors.surface.base,
-                    ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
-                }}
-                contentContainerStyle={{ paddingBottom: BASE_CONTENT_PADDING_BOTTOM + bottomChromeHeight }}
-                keyboardShouldPersistTaps="handled"
-                initialNumToRender={4}
-                maxToRenderPerBatch={4}
-                windowSize={7}
-                estimatedItemSize={MODEL_ROWS_PER_SEGMENT * 48}
-            />
-        </ListPresentationProvider>
+        <VirtualizedItemList
+            ref={listRef}
+            testID={host.testID}
+            data={rows}
+            keyExtractor={(item) => item.key}
+            renderItem={renderRow}
+            ListHeaderComponent={host.header}
+            ListFooterComponent={host.footer ?? null}
+            keyboardShouldPersistTaps="handled"
+            initialNumToRender={4}
+            maxToRenderPerBatch={4}
+            windowSize={7}
+            estimatedItemSize={MODEL_ROWS_PER_SEGMENT * 48}
+        />
     );
 }
 
@@ -368,9 +357,6 @@ function ProviderModelLegend(): React.ReactElement {
         </View>
     );
 }
-
-/** Matches the page list's bottom padding (`ItemList`). */
-const BASE_CONTENT_PADDING_BOTTOM = Platform.select({ ios: 34, default: 16 }) ?? 16;
 
 /** One model as a page row: its name, what distinguishes it, and its visibility switch. */
 const ProviderModelPageRow = React.memo(function ProviderModelPageRow(props: Readonly<{

@@ -30,10 +30,11 @@ export const ProjectCommandOutputPane = React.memo(
       title: string;
       height?: number;
       /**
-       * `page`: the output is a page's own body. The page's status line states how the run ended, so the
-       * terminal leaves its own exit line out, and it hugs its output up to `height` instead of filling it.
+       * `page`: the output is a page's own body: it hugs its output up to `height` instead of filling it.
        */
       presentation?: 'inline' | 'page';
+      /** Opt in only when the caller already renders the run's exit outcome. */
+      ownerStatesExit?: boolean;
       onOpenDetail?: () => void;
       /** Opens this output as its host's bottom terminal tab (desktop); preferred over the detail. */
       onOpenInTerminal?: () => void;
@@ -136,7 +137,8 @@ export const ProjectCommandOutputPane = React.memo(
           terminalKey={`project-command:${attachment.terminalId}`}
           title={joinHappierFacts(props.title, machineName)}
           closeOnUnmount={false}
-          {...(page ? { ownerStatesExit: true, sizing: hugsOutput ? 'content' as const : 'fill' as const } : {})}
+          ownerStatesExit={props.ownerStatesExit}
+          {...(page ? { sizing: hugsOutput ? 'content' as const : 'fill' as const } : {})}
           toolbarActionsStart={
             <>
             {attachment.kind === 'projectCommand' ? (

@@ -403,7 +403,7 @@ export async function verifySparseSessionListing(provider: "sqlite" | "postgres"
         });
         return await findV2SessionListRows({
             userId: viewer.id,
-            source: { kind: "effective", reader: countingReader, baseWhere, accessMode: "effective_access_v1", allowProjectionFallback: false },
+            source: { kind: "effective", reader: countingReader, baseWhere, accessMode: "effective_access_v1" },
             where: attention.candidateWhere,
             orderBy: V2_SESSION_LIST_ORDER_BY,
             take: 3,

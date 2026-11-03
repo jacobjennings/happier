@@ -35,10 +35,6 @@ vi.mock('@/hooks/session/useHydrateSessionForRoute', () => ({
             : { kind: 'loading', sessionId: '', reason: 'store-miss' },
 }));
 
-vi.mock('@/components/sessions/shell/SessionInvalidLinkFallback', () => ({
-    SessionInvalidLinkFallback: () => React.createElement('SessionInvalidLinkFallback', { testID: 'session-invalid-link' }),
-}));
-
 describe('/session/[id]/usage', () => {
     let Screen: React.ComponentType<any>;
 

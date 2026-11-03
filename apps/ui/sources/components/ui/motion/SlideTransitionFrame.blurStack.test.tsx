@@ -1,14 +1,14 @@
 /**
  * Web blur z-stack invariant.
  *
- * On web, `SlideTransitionBlurLayer` uses CSS `filter: blur(...)` to blur its own
- * descendants — the layer therefore must wrap the slide content (so blurring the
- * layer blurs the content), not be a sibling above an empty container.
+ * On web, `SlideTransitionBlurLayer` is an overlay that uses CSS
+ * `backdrop-filter: blur(...)`, which blurs whatever is painted beneath it. The
+ * overlay therefore must sit inside the same layer as the slide content, so the
+ * content is what it reads.
  *
  * Structurally: each `SlideTransitionLayer` mounts the children + a blur overlay
- * inside the same Animated.View. We verify here that the blur layer mounts AS a
- * child of the same container that holds the slide content (so on web, `filter:
- * blur(...)` actually blurs the rendered content underneath).
+ * inside the same Animated.View. We verify here that the blur overlay and the
+ * slide content share that layer container.
  */
 
 import * as React from 'react';

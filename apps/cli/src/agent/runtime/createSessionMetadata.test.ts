@@ -45,7 +45,7 @@ describe('createSessionMetadata', () => {
             .toMatchObject({ projectGroupV1 });
         const owner = createSessionOwnerMetadataV1({ metadata });
         expect(owner.ok).toBe(true);
-        if (!owner.ok) throw new Error(owner.error);
+        if (!owner.ok) throw new Error(owner.unsupportedFields.join(','));
         expect(owner.ownerMetadata.workspace).toMatchObject({ projectGroupV1 });
         const shared = projectSessionSharedMetadataV1({ metadata });
         expect(shared).not.toHaveProperty('projectGroupV1');
@@ -58,6 +58,19 @@ describe('createSessionMetadata', () => {
         }
     });
 
+    it('commits private authoring origin at birth beside resolved worker context', () => {
+        const authoringOrigin = { kind: 'project' as const, accountId: 'original-account',
+            workspace: { serverId: 'original-home', workspaceId: 'original-workspace', machineId: 'original-machine', rootPath: '/private/original' }, page: 'scripts' as const };
+        const initialSessionRolesV1 = { roleId: 'builder', overrides: {}, sessionRoles: {}, notes: '' };
+        const options = { directory: '/execution/repo', authoringOrigin, initialSessionRolesV1 };
+        const metadata = buildCommittedLaunchMetadata({ options, directory: options.directory });
+        const owner = createSessionOwnerMetadataV1({ metadata });
+        if (!owner.ok) throw new Error(owner.unsupportedFields.join(','));
+        expect(owner.ownerMetadata.work).toMatchObject({ authoringOriginV1: authoringOrigin, sessionRolesV1: initialSessionRolesV1 });
+        expect(JSON.stringify(projectSessionSharedMetadataV1({ metadata }))).not.toContain('/private/original');
+        expect(applyInitialSessionCreationFactsToMetadata(createTestMetadata({ work: { memoryEnabled: true } }), options).work)
+            .toMatchObject({ authoringOriginV1: authoringOrigin });
+    });
     it('keeps actual checkout branch private at birth and preserves detached observations on attach', () => {
         for (const branchName of ['feature/actual', null]) {
             const correspondence = buildSessionCreationCorrespondence({
@@ -67,23 +80,47 @@ describe('createSessionMetadata', () => {
                     agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
                     checkout: { kind: 'git_worktree', finalDirectory: '/checkout', baseRef: 'main', branchMode: 'new', branchName } },
             });
-            const metadata = buildCommittedLaunchMetadata({ options: { directory: '/checkout', machineId: 'machine-1', sessionCreationCorrespondence: correspondence }, directory: '/checkout' });
+            const metadata = buildCommittedLaunchMetadata({ options: { directory: '/checkout', sessionCreationCorrespondence: correspondence }, directory: '/checkout' });
+            expect(metadata.machineId).toBe('machine-1');
             expect(metadata).toHaveProperty('branch', branchName);
             const owner = createSessionOwnerMetadataV1({ metadata });
             expect(owner.ok).toBe(true);
-            if (!owner.ok) throw new Error(owner.error);
+            if (!owner.ok) throw new Error(owner.unsupportedFields.join(', '));
             expect(owner.ownerMetadata.workspace).toHaveProperty('branch', branchName);
             const shared = projectSessionSharedMetadataV1({ metadata });
             expect(shared).not.toHaveProperty('branch');
             const opened = projectSessionOwnerCompatibilityViewV1({ sharedMetadata: shared, ownerMetadata: owner.ownerMetadata });
             expect(opened).toHaveProperty('branch', branchName);
-            expect(mergeSessionMetadataForStartup({ current: { ...createTestMetadata(), ...opened },
+            // Runtime Metadata carries the reopened checkout placement and branch observation.
+            const openedRuntime = { path: opened.path, branch: opened.branch,
+                ...(typeof opened.machineId === 'string' ? { machineId: opened.machineId } : {}) };
+            expect(mergeSessionMetadataForStartup({ current: { ...createTestMetadata(), ...openedRuntime },
                 next: { ...createTestMetadata(), branch: 'process-default' }, mode: 'attach', nowMs: 1 })).toHaveProperty('branch', branchName);
-            expect(mergeSessionMetadataForStartup({ current: { ...createTestMetadata(), ...opened },
+            expect(mergeSessionMetadataForStartup({ current: { ...createTestMetadata(), ...openedRuntime },
+                next: { ...createTestMetadata(), ...openedRuntime, branch: 'process-default' }, mode: 'attach', nowMs: 1,
+                attachMetadataIdentityPolicy: 'replace_with_runtime_identity' })).toHaveProperty('branch', branchName);
+            expect(mergeSessionMetadataForStartup({ current: { ...createTestMetadata(), ...openedRuntime },
                 next: { ...createTestMetadata(), path: '/replacement-checkout' }, mode: 'attach', nowMs: 1,
                 attachMetadataIdentityPolicy: 'replace_with_runtime_identity' })).not.toHaveProperty('branch');
         }
         expect(buildCommittedLaunchMetadata({ options: { directory: '/ordinary' }, directory: '/ordinary' })).not.toHaveProperty('branch');
+    });
+    it('preserves the observation through equivalent Windows and sandbox paths, not another physical checkout', () => {
+        const current = createTestMetadata({ machineId: 'machine-1', path: '~\\repo', homeDir: 'C:\\Users\\Alice', branch: 'feature/actual' });
+        expect(mergeSessionMetadataForStartup({ current,
+            next: { ...current, path: 'c:/users/alice/repo/', branch: 'process-default' }, mode: 'attach', nowMs: 1,
+            attachMetadataIdentityPolicy: 'replace_with_runtime_identity' })).toHaveProperty('branch', 'feature/actual');
+        const sandbox = { ...current, path: '/container/source', sessionWorkspaceLocationV1: {
+            v: 1 as const, machineId: 'machine-1', agentPath: '/container/source', machinePath: 'C:\\Repo',
+        } };
+        const next = { ...sandbox, path: '/container/target', sessionWorkspaceLocationV1: {
+            v: 1 as const, machineId: 'machine-1', agentPath: '/container/target', machinePath: 'c:/repo',
+        } };
+        expect(mergeSessionMetadataForStartup({ current: sandbox, next, mode: 'attach', nowMs: 1,
+            attachMetadataIdentityPolicy: 'replace_with_runtime_identity' })).toHaveProperty('branch', 'feature/actual');
+        expect(mergeSessionMetadataForStartup({ current: sandbox,
+            next: { ...next, sessionWorkspaceLocationV1: { ...next.sessionWorkspaceLocationV1, machinePath: 'C:/Repo2' } },
+            mode: 'attach', nowMs: 1, attachMetadataIdentityPolicy: 'replace_with_runtime_identity' })).not.toHaveProperty('branch');
     });
     it('publishes the initialized Machine on attach when a retained birth has no placement and the launch environment is empty', () => {
         const plan = createDeferredStartupMetadataPlan({

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { CHECKPOINT_ROLLBACK_RECEIPT_IDS, planCheckpointCodeRollback } from './plan';
+import { planCheckpointCodeRollback } from './plan';
 
 const baseRequest = {
     v: 1,
@@ -61,14 +61,5 @@ describe('planCheckpointCodeRollback', () => {
         expect(plan.requiresCodeRollback).toBe(true);
         expect(plan.requiresBackupCheckpoint).toBe(true);
         expect(plan.requiresGitStash).toBe(false);
-    });
-
-    it('declares only the packet-owned rollback receipt ids', () => {
-        expect(CHECKPOINT_ROLLBACK_RECEIPT_IDS).toEqual({
-            backupCaptured: 'checkpoint.rollback_backup_captured',
-            applied: 'checkpoint.rollback_applied',
-            conflict: 'checkpoint.rollback_conflict',
-            aborted: 'checkpoint.rollback_aborted',
-        });
     });
 });

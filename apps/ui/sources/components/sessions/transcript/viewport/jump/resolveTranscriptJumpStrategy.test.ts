@@ -32,17 +32,20 @@ describe('resolveTranscriptJumpStrategy', () => {
         });
     });
 
-    it('pages toward a near older target instead of rendering a replacement window', () => {
+    it.each([
+        { direction: 'older', targetSeq: 2350, nearestIndex: 0 },
+        { direction: 'newer', targetSeq: 2460, nearestIndex: 2 },
+    ] as const)('pages toward a near $direction target instead of rendering a replacement window', ({ direction, targetSeq, nearestIndex }) => {
         const targetIndex: TranscriptJumpTargetIndexResult = {
             status: 'unresolved',
-            direction: 'older',
-            targetSeq: 2350,
-            nearestIndex: 0,
+            direction,
+            targetSeq,
+            nearestIndex,
             nearestSeq: 2400,
         };
 
         const strategy = resolveTranscriptJumpStrategy({
-            target: { kind: 'seq', seq: 2350 },
+            target: { kind: 'seq', seq: targetSeq },
             scope: mainScope,
             targetIndex,
             mode: 'mounted-list',
@@ -52,34 +55,8 @@ describe('resolveTranscriptJumpStrategy', () => {
 
         expect(strategy).toMatchObject({
             status: 'page-nearby',
-            direction: 'older',
-            targetSeq: 2350,
-            nearestSeq: 2400,
-        });
-    });
-
-    it('pages toward a near newer target when newer pages may contain it', () => {
-        const targetIndex: TranscriptJumpTargetIndexResult = {
-            status: 'unresolved',
-            direction: 'newer',
-            targetSeq: 2460,
-            nearestIndex: 2,
-            nearestSeq: 2400,
-        };
-
-        const strategy = resolveTranscriptJumpStrategy({
-            target: { kind: 'seq', seq: 2460 },
-            scope: mainScope,
-            targetIndex,
-            mode: 'mounted-list',
-            nearbySeqThreshold: 80,
-            canRenderTargetWindow: true,
-        });
-
-        expect(strategy).toMatchObject({
-            status: 'page-nearby',
-            direction: 'newer',
-            targetSeq: 2460,
+            direction,
+            targetSeq,
             nearestSeq: 2400,
         });
     });

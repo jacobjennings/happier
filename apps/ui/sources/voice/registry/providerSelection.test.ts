@@ -253,5 +253,15 @@ describe('voice registry provider selection', () => {
     });
     const disabled = createDefaultVoiceProviderRegistry({ enabledPluginIds: new Set(['happier.voice.google']) });
     expect(resolveSelectedVoiceProviderTitleKey(settings, disabled)).toBeNull();
+
+    const enabled = createDefaultVoiceProviderRegistry();
+    const defaults = enabled.get(ELEVENLABS_PROVIDER_ID)?.providerSettings?.defaultConfig;
+    if (!defaults) throw new Error('expected ElevenLabs provider defaults');
+    const withConfig = (billingMode: string) => voiceSettingsParse({
+      providerId: ELEVENLABS_PROVIDER_ID,
+      providers: { [ELEVENLABS_PROVIDER_ID]: { schemaVersion: 2, config: { ...defaults, billingMode } } },
+    });
+    expect(resolveSelectedVoiceProviderTitleKey(withConfig('happier'), enabled)).toBe('settingsVoice.mode.happier');
+    expect(resolveSelectedVoiceProviderTitleKey(withConfig('unsupported'), enabled)).toBeNull();
   });
 });

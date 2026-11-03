@@ -19,7 +19,8 @@ describe('serverReachabilitySupervisorPool (background gating)', () => {
     });
 
     afterEach(async () => {
-        process.env.EXPO_PUBLIC_HAPPIER_SERVER_REACHABILITY_BACKGROUND_RETRY_MS = previousRetryMs;
+        if (previousRetryMs === undefined) delete process.env.EXPO_PUBLIC_HAPPIER_SERVER_REACHABILITY_BACKGROUND_RETRY_MS;
+        else process.env.EXPO_PUBLIC_HAPPIER_SERVER_REACHABILITY_BACKGROUND_RETRY_MS = previousRetryMs;
         setServerReachabilityNetworkAllowed(true);
         resetRuntimeFetch();
         await resetServerReachabilitySupervisors();

@@ -26,7 +26,7 @@ import {
 } from './utils/stack/startup.mjs';
 import {
   captureStackRuntimeStopSnapshot,
-  finalizeStackRuntimeStop,
+  finalizeStackRuntimeOwnerShutdown,
   readStackRuntimeStateFile,
   recordStackRuntimeServerActivation,
   recordStackRuntimeServerPids,
@@ -34,8 +34,9 @@ import {
 } from './utils/stack/runtime_state.mjs';
 import { STACK_RUNTIME_DAEMON_MEMBERSHIP_INTERVAL_MS, syncStackRuntimeDaemonPidFromDaemonState } from './utils/stack/runtime_daemon_state.mjs';
 import { startOwnerDaemonLifecycleReconciler } from './utils/dev/daemonLifecycleReconciler.mjs';
+import { formatDaemonReadinessLine } from './utils/dev_targets/daemon_readiness.mjs';
 import { resolveStackContext } from './utils/stack/context.mjs';
-import { getPublicServerUrlEnvOverride, resolveServerUrls } from './utils/server/urls.mjs';
+import { getPublicServerUrlEnvOverride, resolveServerUrls, resolveStackCanonicalServerUrl } from './utils/server/urls.mjs';
 import { preferStackLocalhostUrl } from './utils/paths/localhost_host.mjs';
 import { openUrlInBrowser } from './utils/ui/browser.mjs';
 import { ensureDevExpoServer, resolveExpoTailscaleEnabled } from './utils/dev/expo_dev.mjs';
@@ -297,14 +298,15 @@ async function main() {
     const sourceRoot = join(autostart.baseDir, 'source-runtime');
     await mkdir(sourceRoot, { recursive: true });
     const repoDir = getRepoDir(rootDir);
+    const requireCoherentSelection = serverRequested && localDaemonRequested;
     if (serverRequested) {
-      const built = await buildSourceRuntimeBundle({ repoDir, stackBaseDir:autostart.baseDir, component: 'server', serverComponent: serverComponentName, dbProvider, env: process.env, preparation: pendingSourceStart, signal:pendingSourceStart?.signal, reuseSelected: reuseSourceRuntime });
+      const built = await buildSourceRuntimeBundle({ repoDir, stackBaseDir:autostart.baseDir, component: 'server', serverComponent: serverComponentName, dbProvider, env: process.env, preparation: pendingSourceStart, signal:pendingSourceStart?.signal, reuseSelected: reuseSourceRuntime, requireCoherentSelection });
       serverLaunchSpec = resolveServerRuntimeLaunchSpec({ sourceRuntimeLaunch: built,
         migrationsEnabled: resolveServerMigrationsEnabled(process.env) });
       sourceRuntimeIdentities.server = { selected: built.identity, loaded: null };
     }
     if (localDaemonRequested) {
-      const built = await buildSourceRuntimeBundle({ repoDir, stackBaseDir:autostart.baseDir, component: 'daemon', env: process.env, preparation: pendingSourceStart, signal:pendingSourceStart?.signal, reuseSelected: reuseSourceRuntime });
+      const built = await buildSourceRuntimeBundle({ repoDir, stackBaseDir:autostart.baseDir, component: 'daemon', env: process.env, preparation: pendingSourceStart, signal:pendingSourceStart?.signal, reuseSelected: reuseSourceRuntime, requireCoherentSelection });
       cliLaunchSpec = resolveCliRuntimeLaunchSpec({ sourceRuntimeLaunch: built });
       sourceRuntimeEnv = applyCliRuntimeLaunchProvenanceEnv({ cliLaunchSpec });
       sourceRuntimeIdentities.daemon = { selected: built.identity, loaded: null };
@@ -594,7 +596,13 @@ async function main() {
     (baseEnv.HAPPIER_STACK_TAILSCALE_SERVE ?? '0').toString().trim() === '1';
   const resolvedUrls = serverRequested
     ? await resolveServerUrls({ env: baseEnv, serverPort, allowEnable: allowEnableTailscale })
-    : { defaultPublicUrl: serverConnection.publicServerUrl, publicServerUrl: serverConnection.publicServerUrl, canonicalServerUrl: serverConnection.publicServerUrl };
+    : {
+      defaultPublicUrl: serverConnection.publicServerUrl,
+      publicServerUrl: serverConnection.publicServerUrl,
+      canonicalServerUrl: await resolveStackCanonicalServerUrl({
+        env: baseEnv, serverPort, stackName, envPublicUrl: serverConnection.publicServerUrl,
+      }),
+    };
   defaultPublicUrl = resolvedUrls.defaultPublicUrl;
   publicServerUrl = resolvedUrls.publicServerUrl;
   canonicalServerUrl = resolvedUrls.canonicalServerUrl;
@@ -932,11 +940,15 @@ async function main() {
       isShuttingDown: () => shuttingDown,
       forceRestart,
       preserveExistingRunning,
+      allowSignInRequired: true,
       env: daemonScopeEnv,
               stackName,
               cliIdentity: 'default',
               ...cliRuntimeProvenance,
     });
+    if (startResult?.ok === false && startResult.reason === 'sign-in-required') {
+      process.stdout.write(formatDaemonReadinessLine({ state: 'sign-in-required' }));
+    }
     const daemonEnvForState = getDaemonEnv({
       baseEnv: daemonScopeEnv,
       cliHomeDir,
@@ -1222,11 +1234,9 @@ async function main() {
 
     if (!sourceRemoteController?.isSuperseded) await maybeResetTailscaleServe();
     if (runtimeStatePath && expectedStopState) {
-      await finalizeStackRuntimeStop(runtimeStatePath, {
-        expected: expectedStopState,
+      await finalizeStackRuntimeOwnerShutdown(runtimeStatePath, expectedStopState, {
         preserveDaemon: preserveDaemonOnShutdown,
         cleanupResults,
-        requireNoStopRequest: true,
       }).catch(() => {});
     }
   };
@@ -1409,14 +1419,16 @@ async function runControlledRemoteStack({ rootDir, flags, json, autostart, runti
     process.off('SIGTERM', onSignal);
     const shutdownRequest = controller?.isSuperseded ? null : (await readStackRuntimeStateFile(context.runtimeStatePath))?.stopRequest;
     const preserveDaemonOnShutdown = controller?.isSuperseded || shutdownRequest?.preserveDaemon === true;
+    const expected = controller?.isSuperseded ? null : await captureStackRuntimeStopSnapshot(context.runtimeStatePath);
     try {
       if (localCli && !preserveDaemonOnShutdown) await stopLocalDaemon({ cliBin: join(localCli.cliDir, 'bin/happier.mjs'),
         cliNodeEntrypoint: localCli.nodeEntrypoint, cliCommand: localCli.command, cliCommandArgs: localCli.args,
         cliHomeDir, internalServerUrl, runtimeStatePath: context.runtimeStatePath, env,
         stackName: context.stackName, cliIdentity: 'default' });
     } finally { await controller?.close({ preserveDaemon: preserveDaemonOnShutdown }); }
-    const expected = controller?.isSuperseded ? null : await captureStackRuntimeStopSnapshot(context.runtimeStatePath);
-    if (expected) await finalizeStackRuntimeStop(context.runtimeStatePath, { expected, preserveDaemon: preserveDaemonOnShutdown, cleanupResults: [] });
+    if (expected) await finalizeStackRuntimeOwnerShutdown(context.runtimeStatePath, expected, {
+      preserveDaemon: preserveDaemonOnShutdown, cleanupResults: [],
+    });
   }
 }
 

@@ -13,7 +13,9 @@ export function resolveWorkflowRunParentSessionId(summary: WorkflowRunSummaryV1 
 /** One parent-work tree: a report displays under its lead's group; workflow steps belong only to their Run. */
 export function nestSessionListReports(
     items: SessionListIndexItem[],
-    resolveSessionRow: (serverId: string | null, sessionId: string) => SessionListRenderableSession | null,
+    resolveSessionRow: (serverId: string | null, sessionId: string) => Readonly<Pick<SessionListRenderableSession, 'manager' | 'origin'> & {
+        metadata?: Pick<NonNullable<SessionListRenderableSession['metadata']>, 'bot' | 'machineId' | 'workspaceId'> | null;
+    }> | null,
     resolveRunOriginSession?: (serverId: string, runId: string) => string | null,
 ): SessionListIndexItem[] {
     const byKey = new Map<string, WorkItem>();

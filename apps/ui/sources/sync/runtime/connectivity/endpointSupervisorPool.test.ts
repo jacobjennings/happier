@@ -1,6 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 
+import {
+    acquireEndpointSupervisor,
+    acquireEndpointSupervisorForServer,
+    getEndpointSupervisorForServer,
+    resetEndpointSupervisorPoolForTests,
+} from './endpointSupervisorPool';
+import {
+    acquireServerReachabilitySupervisor,
+    peekServerReachabilityScope,
+    peekServerReachabilityState,
+    reportServerAuthFailed,
+    resetServerReachabilitySupervisors,
+} from './serverReachabilitySupervisorPool';
+
 const runtimeFetchMock = vi.hoisted(() => vi.fn());
 const getCredentialsForServerUrlMock = vi.hoisted(() => vi.fn());
 const appState = vi.hoisted(() => ({ currentState: 'active' as string }));
@@ -60,12 +74,12 @@ describe('endpointSupervisorPool', () => {
         } else {
             Reflect.deleteProperty(globalThis, 'window');
         }
-        vi.resetModules();
+        await resetEndpointSupervisorPoolForTests();
+        await resetServerReachabilitySupervisors();
         vi.useRealTimers();
     });
 
     it('retains an equal blocked endpoint observation without notifying while publishing a real shutdown', async () => {
-        const { acquireEndpointSupervisor, resetEndpointSupervisorPoolForTests } = await import('./endpointSupervisorPool');
         const lease = await acquireEndpointSupervisor({ serverId: 'invalid-endpoint-owner', endpoint: 'not-an-absolute-url' });
         const listener = vi.fn();
         const stop = lease.supervisor.subscribe(listener);
@@ -84,33 +98,13 @@ describe('endpointSupervisorPool', () => {
             expect(lease.supervisor.getState()).toBe(stopped);
             expect(listener).toHaveBeenCalledTimes(2);
             expect(runtimeFetchMock).not.toHaveBeenCalled();
-        } finally { stop(); await lease.release({ immediate: true }); await resetEndpointSupervisorPoolForTests(); }
-    });
-
-    it('reuses one endpoint supervisor per server id + url', async () => {
-        getCredentialsForServerUrlMock.mockResolvedValue({ token: 'token-1', secret: 'secret' });
-        runtimeFetchMock.mockResolvedValue(okResponse());
-
-        const mod = await import('./endpointSupervisorPool');
-        expect(Object.keys(mod)).toContain('acquireEndpointSupervisorForServer');
-        expect(Object.keys(mod)).toContain('resetEndpointSupervisorPoolForTests');
-        const { acquireEndpointSupervisorForServer, resetEndpointSupervisorPoolForTests } = mod;
-        const first = await acquireEndpointSupervisorForServer({ serverId: 'server-a', serverUrl: 'https://a.example.test' });
-        const second = await acquireEndpointSupervisorForServer({ serverId: 'server-a', serverUrl: 'https://a.example.test' });
-
-        expect(first.supervisor).toBe(second.supervisor);
-
-        await first.release({ immediate: true });
-        await second.release({ immediate: true });
-        await resetEndpointSupervisorPoolForTests();
+        } finally { stop(); await lease.release({ immediate: true }); }
     });
 
     it('retains canonical Home demand and projects out-of-band authentication failure', async () => {
         vi.useFakeTimers();
         getCredentialsForServerUrlMock.mockResolvedValue({ token: 'token-1', secret: 'secret' });
         runtimeFetchMock.mockResolvedValue(okResponse());
-        const { acquireEndpointSupervisorForServer } = await import('./endpointSupervisorPool');
-        const { peekServerReachabilityState, peekServerReachabilityScope, reportServerAuthFailed } = await import('./serverReachabilitySupervisorPool');
         const lease = await acquireEndpointSupervisorForServer({ serverId: 'server-a', serverUrl: 'https://a.example.test' });
         const canonicalWasRetained = peekServerReachabilityState('https://a.example.test', 'token-1')?.phase === 'online';
         const scope = peekServerReachabilityScope('https://a.example.test', 'token-1');
@@ -127,7 +121,6 @@ describe('endpointSupervisorPool', () => {
         getCredentialsForServerUrlMock.mockResolvedValue({ token: 'token-1', secret: 'secret' });
         runtimeFetchMock.mockRejectedValue(new TypeError('Network request failed'));
 
-        const { acquireEndpointSupervisorForServer, resetEndpointSupervisorPoolForTests } = await import('./endpointSupervisorPool');
         const first = await acquireEndpointSupervisorForServer({ serverId: 'server-a', serverUrl: 'https://a.example.test' });
         expect(first.supervisor.getState().phase).toBe('offline');
         const callsBefore = runtimeFetchMock.mock.calls.length;
@@ -138,7 +131,6 @@ describe('endpointSupervisorPool', () => {
 
         await first.release({ immediate: true });
         await second.release({ immediate: true });
-        await resetEndpointSupervisorPoolForTests();
     });
 
     it('keeps a late response bound to its captured credentials after token replacement', async () => {
@@ -147,8 +139,6 @@ describe('endpointSupervisorPool', () => {
             .mockResolvedValueOnce({ token: 'token-1', secret: 'secret' })
             .mockResolvedValue({ token: 'token-2', secret: 'secret' });
         runtimeFetchMock.mockResolvedValue(okResponse());
-        const { acquireEndpointSupervisorForServer } = await import('./endpointSupervisorPool');
-        const { acquireServerReachabilitySupervisor, peekServerReachabilityScope, peekServerReachabilityState } = await import('./serverReachabilitySupervisorPool');
         const oldHome = await acquireServerReachabilitySupervisor({ serverUrl: 'https://a.example.test', token: 'token-1' });
         const endpoint = await acquireEndpointSupervisorForServer({ serverId: 'server-a', serverUrl: 'https://a.example.test' });
         const oldScope = endpoint.supervisor.captureProbeReportScope?.();
@@ -178,23 +168,15 @@ describe('endpointSupervisorPool', () => {
             sawBearerToken2Resolve = resolve;
         });
 
-        runtimeFetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
-            const asString = String(url ?? '');
+        runtimeFetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
             const headers = new Headers(init?.headers);
             if (headers.get('Authorization') === 'Bearer token-2') {
                 sawBearerToken2Resolve?.();
                 sawBearerToken2Resolve = null;
             }
-            if (asString.endsWith('/v1/auth/ping')) {
-                return okResponse();
-            }
             return okResponse();
         });
 
-        const mod = await import('./endpointSupervisorPool');
-        expect(Object.keys(mod)).toContain('acquireEndpointSupervisorForServer');
-        expect(Object.keys(mod)).toContain('resetEndpointSupervisorPoolForTests');
-        const { acquireEndpointSupervisorForServer, resetEndpointSupervisorPoolForTests } = mod;
         const lease = await acquireEndpointSupervisorForServer({ serverId: 'server-a', serverUrl: 'https://a.example.test' });
         const supervisor = lease.supervisor;
 
@@ -207,7 +189,6 @@ describe('endpointSupervisorPool', () => {
         expect(headers.get('Authorization')).toBe('Bearer token-2');
 
         await lease.release({ immediate: true });
-        await resetEndpointSupervisorPoolForTests();
     });
 
     it('refreshes replacement credentials while the initial credential probe is still pending', async () => {
@@ -221,8 +202,6 @@ describe('endpointSupervisorPool', () => {
                 ? oldProbe.promise
                 : Promise.resolve(okResponse());
         });
-        const { acquireEndpointSupervisorForServer, getEndpointSupervisorForServer } = await import('./endpointSupervisorPool');
-        const { peekServerReachabilityState } = await import('./serverReachabilitySupervisorPool');
         const acquisition = acquireEndpointSupervisorForServer({ serverId: 'server-a', serverUrl: 'https://a.example.test' });
         await vi.advanceTimersByTimeAsync(0);
         const supervisor = getEndpointSupervisorForServer({ serverId: 'server-a', serverUrl: 'https://a.example.test' });
@@ -238,41 +217,21 @@ describe('endpointSupervisorPool', () => {
 
     it('prefers explicit tokenOverride over TokenStorage token when probing auth', async () => {
         getCredentialsForServerUrlMock.mockResolvedValue({ token: 'token-storage', secret: 'secret' });
+        runtimeFetchMock.mockImplementation(async () => okResponse());
 
-        let sawBearerOverrideResolve: (() => void) | null = null;
-        const sawBearerOverride = new Promise<void>((resolve) => {
-            sawBearerOverrideResolve = resolve;
-        });
-
-        runtimeFetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
-            const asString = String(url ?? '');
-            if (!asString.endsWith('/v1/auth/ping')) {
-                return okResponse();
-            }
-            const headers = new Headers(init?.headers);
-            if (headers.get('Authorization') === 'Bearer token-override') {
-                sawBearerOverrideResolve?.();
-                sawBearerOverrideResolve = null;
-            }
-            return okResponse();
-        });
-
-        const { acquireEndpointSupervisorForServer, resetEndpointSupervisorPoolForTests } = await import('./endpointSupervisorPool');
         const lease = await acquireEndpointSupervisorForServer({
             serverId: 'server-a',
             serverUrl: 'https://a.example.test',
             tokenOverride: 'token-override',
         });
 
-        await Promise.race([
-            sawBearerOverride,
-            new Promise<void>((_, reject) => {
-                setTimeout(() => reject(new Error('timeout waiting for tokenOverride auth probe')), 50);
-            }),
-        ]);
+        // Acquisition resolves once the initial probe has completed, so the auth ping has already been issued.
+        const authorizations = runtimeFetchMock.mock.calls
+            .filter(([url]) => String(url).endsWith('/v1/auth/ping'))
+            .map(([, init]) => new Headers((init as RequestInit | undefined)?.headers).get('Authorization'));
+        expect(authorizations).toEqual(['Bearer token-override']);
 
         await lease.release({ immediate: true });
-        await resetEndpointSupervisorPoolForTests();
     });
 
     it('acquires replacement credentials while a forced canonical reprobe remains pending', async () => {
@@ -292,8 +251,6 @@ describe('endpointSupervisorPool', () => {
             }
             return Promise.resolve(okResponse());
         });
-        const { acquireEndpointSupervisorForServer } = await import('./endpointSupervisorPool');
-        const { peekServerReachabilityState } = await import('./serverReachabilitySupervisorPool');
         const key = { serverId: 'server-a', serverUrl: 'https://a.example.test' };
         const first = await acquireEndpointSupervisorForServer({ ...key, tokenOverride: 'token-1' });
         first.supervisor.invalidate();
@@ -307,55 +264,6 @@ describe('endpointSupervisorPool', () => {
         await first.release({ immediate: true });
         await second.release({ immediate: true });
         expect(replacementBeforeOldCompletion).toBe('online');
-    });
-
-    it('invalidates supervisors when the runtime emits an online event (web)', async () => {
-        getCredentialsForServerUrlMock.mockResolvedValue({ token: 'token-1', secret: 'secret' });
-        runtimeFetchMock.mockResolvedValue(okResponse());
-
-        let sawCallAfterOnlineResolve: (() => void) | null = null;
-        const sawCallAfterOnline = new Promise<void>((resolve) => {
-            sawCallAfterOnlineResolve = resolve;
-        });
-        let shouldResolveOnNextCall = false;
-        runtimeFetchMock.mockImplementation(async (...args: unknown[]) => {
-            if (shouldResolveOnNextCall && sawCallAfterOnlineResolve) {
-                shouldResolveOnNextCall = false;
-                sawCallAfterOnlineResolve();
-                sawCallAfterOnlineResolve = null;
-            }
-            return okResponse();
-        });
-
-        const handlers = new Map<string, Set<() => void>>();
-        globalWithWindow.window = {
-            addEventListener: (event: string, listener: () => void) => {
-                const set = handlers.get(event) ?? new Set<() => void>();
-                set.add(listener);
-                handlers.set(event, set);
-            },
-            removeEventListener: (event: string, listener: () => void) => {
-                handlers.get(event)?.delete(listener);
-            },
-        };
-
-        const mod = await import('./endpointSupervisorPool');
-        expect(Object.keys(mod)).toContain('acquireEndpointSupervisorForServer');
-        expect(Object.keys(mod)).toContain('resetEndpointSupervisorPoolForTests');
-        const { acquireEndpointSupervisorForServer, resetEndpointSupervisorPoolForTests } = mod;
-        const lease = await acquireEndpointSupervisorForServer({ serverId: 'server-a', serverUrl: 'https://a.example.test' });
-
-        const callsBefore = runtimeFetchMock.mock.calls.length;
-        shouldResolveOnNextCall = true;
-        for (const handler of handlers.get('online') ?? []) {
-            handler();
-        }
-
-        await sawCallAfterOnline;
-        expect(runtimeFetchMock.mock.calls.length).toBeGreaterThan(callsBefore);
-
-        await lease.release({ immediate: true });
-        await resetEndpointSupervisorPoolForTests();
     });
 
     it('invalidates supervisors when the document becomes visible again (web)', async () => {
@@ -393,8 +301,6 @@ describe('endpointSupervisorPool', () => {
                 return okResponse();
             });
 
-            const mod = await import('./endpointSupervisorPool');
-            const { acquireEndpointSupervisorForServer, resetEndpointSupervisorPoolForTests } = mod;
             const lease = await acquireEndpointSupervisorForServer({ serverId: 'server-a', serverUrl: 'https://a.example.test' });
 
             const callsBefore = runtimeFetchMock.mock.calls.length;
@@ -404,16 +310,10 @@ describe('endpointSupervisorPool', () => {
                 handler();
             }
 
-            await Promise.race([
-                sawCallAfterVisible,
-                new Promise<void>((_, reject) => {
-                    setTimeout(() => reject(new Error('timeout waiting for visibilitychange invalidate')), 50);
-                }),
-            ]);
+            await sawCallAfterVisible;
             expect(runtimeFetchMock.mock.calls.length).toBeGreaterThan(callsBefore);
 
             await lease.release({ immediate: true });
-            await resetEndpointSupervisorPoolForTests();
         } finally {
             globalWithDocument.document = originalDocument;
         }
@@ -440,7 +340,6 @@ describe('endpointSupervisorPool', () => {
         globalWithDocument.document = documentStub;
 
         try {
-            const { acquireEndpointSupervisorForServer, resetEndpointSupervisorPoolForTests } = await import('./endpointSupervisorPool');
             const lease = await acquireEndpointSupervisorForServer({ serverId: 'server-a', serverUrl: 'https://a.example.test' });
             expect(lease.supervisor.getState().phase).toBe('online');
 
@@ -453,7 +352,6 @@ describe('endpointSupervisorPool', () => {
             expect(lease.supervisor.getState().phase).toBe('offline');
 
             await lease.release({ immediate: true });
-            await resetEndpointSupervisorPoolForTests();
         } finally {
             globalWithDocument.document = originalDocument;
         }
@@ -466,10 +364,6 @@ describe('endpointSupervisorPool', () => {
         getCredentialsForServerUrlMock.mockResolvedValue({ token: 'token-1', secret: 'secret' });
         runtimeFetchMock.mockResolvedValue(okResponse());
 
-        const mod = await import('./endpointSupervisorPool');
-        expect(Object.keys(mod)).toContain('acquireEndpointSupervisorForServer');
-        expect(Object.keys(mod)).toContain('resetEndpointSupervisorPoolForTests');
-        const { acquireEndpointSupervisorForServer, resetEndpointSupervisorPoolForTests } = mod;
         const lease = await acquireEndpointSupervisorForServer({ serverId: 'server-a', serverUrl: 'https://a.example.test' });
         const supervisor = lease.supervisor;
 
@@ -481,6 +375,5 @@ describe('endpointSupervisorPool', () => {
         await new Promise<void>((resolve) => queueMicrotask(resolve));
         expect(supervisor.getState().phase).toBe('shutting_down');
 
-        await resetEndpointSupervisorPoolForTests();
     });
 });

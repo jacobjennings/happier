@@ -12,6 +12,7 @@ const ProjectSetupReviewPresentationSchema = z.object({
     file: z.literal('.happier/project.json'), kind: z.enum(['repository', 'nonRepository', 'unavailable']),
     headCommit: z.optional(z.string()), branch: z.optional(z.string()),
     fileState: z.enum(['modified', 'untracked', 'unknown', 'absent']),
+    committed: z.optional(z.object({ commit: z.string() })),
   }),
 });
 

@@ -26,11 +26,6 @@ vi.mock('@/components/account/restore/RestoreQrView', () => ({
     }),
 }));
 
-vi.mock('@/components/onboarding', () => ({
-    WizardModalShell: (props: { children?: React.ReactNode }) =>
-        React.createElement('WizardModalShell', { testID: 'restore-show-qr-wizard' }, props.children),
-}));
-
 vi.mock('@/components/onboarding/unauthShell', async () => {
     const React = await import('react');
     return {
@@ -57,6 +52,8 @@ vi.mock('@/components/onboarding/unauthShell', async () => {
     };
 });
 
+const { default: Screen } = await import('@/app/(app)/restore/show-qr');
+
 afterEach(() => {
     routeState.params = {};
     vi.restoreAllMocks();
@@ -65,8 +62,6 @@ afterEach(() => {
 
 describe('/restore/show-qr', () => {
     it('does not mount reverse QR without an explicit target profile', async () => {
-        vi.resetModules();
-        const { default: Screen } = await import('@/app/(app)/restore/show-qr');
         const screen = await renderScreen(<Screen />);
 
         expect(screen.findByTestId('restore-show-qr-view')).toBeNull();
@@ -74,8 +69,6 @@ describe('/restore/show-qr', () => {
 
     it('renders reverse QR for the exact requested profile inside the unauthenticated split shell', async () => {
         routeState.params = { serverId: 'home-b-profile', entryIntent: 'add_home' };
-        vi.resetModules();
-        const { default: Screen } = await import('@/app/(app)/restore/show-qr');
         const screen = await renderScreen(<Screen />);
 
         const shell = screen.findByTestId('unauth-shell-route-restore-show-qr');

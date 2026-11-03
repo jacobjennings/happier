@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildAddedFileUnifiedDiff, countTextLines } from './fallbackUnifiedDiff';
+import { buildAddedFileUnifiedDiff } from './fallbackUnifiedDiff';
 
 describe('fallbackUnifiedDiff', () => {
     it('builds a unified diff for an added file', () => {
@@ -15,13 +15,5 @@ describe('fallbackUnifiedDiff', () => {
         expect(diff).toContain('+++ b/src/new-file.txt');
         expect(diff).toContain('+hello');
         expect(diff).toContain('+world');
-    });
-
-    it('counts text lines in a stable way', () => {
-        expect(countTextLines('')).toBe(0);
-        expect(countTextLines('a')).toBe(1);
-        expect(countTextLines('a\n')).toBe(1);
-        expect(countTextLines('a\nb')).toBe(2);
-        expect(countTextLines('a\r\nb\r\n')).toBe(2);
     });
 });

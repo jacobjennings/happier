@@ -193,42 +193,37 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
         expect(screen.getTextContent()).toContain('FILES · No matches');
     });
 
-    it('announces a provider emptyHint instead of the generic no-matches message', async () => {
-        const { act } = await import('react-test-renderer');
-        const root = makeStep({
-            id: 'dyn',
+    it.each([
+        {
+            hint: 'emptyHint instead of the generic no-matches message',
             title: 'MESSAGES',
-            debounceMs: 0,
-            resolve: async () => ({ options: [], emptyHint: 'Still indexing messages…' }),
-        });
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps(root)} inputValue="query" />);
-
-        await act(async () => {
-            vi.advanceTimersByTime(1);
-            await Promise.resolve();
-            await Promise.resolve();
-        });
-
-        expect(statusText(screen)).toBe('MESSAGES · Still indexing messages…');
-    });
-
-    it('announces a provider notFoundHint through the shared status region', async () => {
+            result: { options: [], emptyHint: 'Still indexing messages…' },
+            expected: 'MESSAGES · Still indexing messages…',
+        },
+        {
+            hint: 'notFoundHint through the shared status region',
+            title: 'FILES',
+            result: { options: [], notFound: true, notFoundHint: 'Folder not found.' },
+            expected: 'FILES · Folder not found.',
+        },
+    ])('announces a provider $hint', async ({ title, result, expected }) => {
         const { act } = await import('react-test-renderer');
         const root = makeStep({
             id: 'dyn',
-            title: 'FILES',
+            title,
             debounceMs: 0,
-            resolve: async () => ({ options: [], notFound: true, notFoundHint: 'Folder not found.' }),
+            resolve: async () => result,
         });
         const { SelectionList } = await import('../SelectionList');
         const screen = await renderScreen(<SelectionList {...defaultProps(root)} inputValue="query" />);
+
         await act(async () => {
             vi.advanceTimersByTime(1);
             await Promise.resolve();
             await Promise.resolve();
         });
-        expect(statusText(screen)).toBe('FILES · Folder not found.');
+
+        expect(statusText(screen)).toBe(expected);
     });
 
     it('announces a static resultHint through the shared status region', async () => {
@@ -303,10 +298,12 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
         await act(async () => {
             vi.advanceTimersByTime(1);
         });
-        // Skeleton rows must surface a dedicated marker; the dynamic section is
-        // expected to render either skeleton testIDs or visible placeholder rows.
-        const loadingMarker = screen.findByTestId('sl:section:dyn:loading');
-        expect(loadingMarker).not.toBeNull();
+        // The section draws exactly the requested number of skeleton rows.
+        expect(screen.findByTestId('sl:section:dyn:loading')).not.toBeNull();
+        for (let row = 0; row < 4; row += 1) {
+            expect(screen.findByTestId(`sl:section:dyn:loading:row-${row}`)).not.toBeNull();
+        }
+        expect(screen.findByTestId('sl:section:dyn:loading:row-4')).toBeNull();
     });
 
     it('says it is still looking in one quiet line, instead of skeleton bars, when the section names its loading state', async () => {
@@ -332,6 +329,7 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
 
     it('renders a localized inline error without exposing the resolver message', async () => {
         const { act } = await import('react-test-renderer');
+        const { t } = await import('@/text');
         const root = makeStep({
             id: 'dyn',
             title: 'DYN',
@@ -348,7 +346,7 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
         const errorRow = screen.findByTestId('sl:section:dyn:error');
         expect(errorRow).not.toBeNull();
         const text = screen.getTextContent();
-        expect(text).toContain('Something went wrong');
+        expect(text).toContain(t('selectionList.dynamicSectionError'));
         expect(text).not.toContain('boom');
     });
 

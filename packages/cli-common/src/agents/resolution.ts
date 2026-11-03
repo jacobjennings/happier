@@ -1,5 +1,5 @@
 import { accessSync, closeSync, constants as fsConstants, existsSync, openSync, readSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 
 import {
   BUNDLED_AGENT_CONTRIBUTION_IDENTITIES,
@@ -17,12 +17,12 @@ import { buildBackendTargetKey } from '@happier-dev/protocol/backends/targets/ba
 import { buildBackendTargetKeyV2 } from '@happier-dev/protocol/backends/targets/backendTargetRefV2';
 
 import { expandHomeDirPath, resolveHomeDirFromEnvironment } from '../path/expandHomeDirPath.js';
-import { resolveWindowsCommandOnPath, resolveWindowsCommandPath } from '../process/index.js';
+import { resolveExecutableCommand, resolveWindowsCommandOnPath, resolveWindowsCommandPath } from '../process/index.js';
 import {
   resolveExplicitJavaScriptRuntimeCommand,
   resolveJavaScriptRuntimeCommand,
 } from './managedJavaScriptRuntime.js';
-import { resolveHappyHomeDirFromEnvironment } from './resolveHappyHomeDir.js';
+import { resolveManagedToolsRoot } from './managedToolsRoot.js';
 import { resolveManagedPackageBin } from './managedPackageBin.js';
 
 export type AgentCliResolutionSource = 'override' | 'system' | 'managed';
@@ -216,11 +216,11 @@ export function resolveAgentCliManagedInstallRootForRuntime(
   opts: Readonly<{ happyHomeDir?: string | null; processEnv?: NodeJS.ProcessEnv }> = {},
 ): string {
   const processEnv = opts.processEnv ?? process.env;
-  const happyHomeDir = typeof opts.happyHomeDir === 'string' && opts.happyHomeDir.trim().length > 0
-    ? opts.happyHomeDir.trim()
-    : resolveHappyHomeDirFromEnvironment(processEnv);
+  const env = typeof opts.happyHomeDir === 'string' && opts.happyHomeDir.trim().length > 0
+    ? { ...processEnv, HAPPIER_HOME_DIR: opts.happyHomeDir.trim() }
+    : processEnv;
   // On-disk layout contract: tools/providers/<agentId> is where existing managed installs live (kept in R.16).
-  return join(happyHomeDir, 'tools', 'providers', runtimeSpec.id);
+  return join(resolveManagedToolsRoot(env), 'providers', runtimeSpec.id);
 }
 
 export function resolveAgentCliManagedCommandPathForRuntime(
@@ -241,30 +241,6 @@ export function resolveAgentCliManagedCommandPath(
   opts: Readonly<{ happyHomeDir?: string | null; processEnv?: NodeJS.ProcessEnv }> = {},
 ): string {
   return resolveAgentCliManagedCommandPathForRuntime(getAgentCliRuntimeSpecForLookupId(agentId), opts);
-}
-
-function resolveCommandOnPath(command: string, processEnv: NodeJS.ProcessEnv): string | null {
-  if (process.platform === 'win32') {
-    return resolveWindowsCommandOnPath(command, processEnv) ?? null;
-  }
-
-  const pathDirs = String(processEnv.PATH ?? '')
-    .split(delimiter)
-    .map((value) => value.trim())
-    .filter(Boolean);
-  for (const dir of pathDirs) {
-    const candidate = join(dir, command);
-    if (!existsSync(candidate)) continue;
-    // On Unix, verify the file is executable
-    try {
-      accessSync(candidate, fsConstants.X_OK);
-      return candidate;
-    } catch {
-      // File exists but is not executable; continue searching
-      continue;
-    }
-  }
-  return null;
 }
 
 function readFileHeader(candidatePath: string): string | null {
@@ -393,7 +369,7 @@ function resolveBunRuntimeCommand(
     currentDir = dirname(currentDir);
   }
 
-  return resolveCommandOnPath('bun', processEnv);
+  return resolveExecutableCommand('bun', { env: processEnv });
 }
 
 export function resolveAgentCliJavaScriptRuntimeCommand(
@@ -453,7 +429,7 @@ function resolveAgentCliSystemCommand(
   const binaryNames = [runtimeSpec.binaryName, ...(runtimeSpec.alternativeBinaryNames ?? [])];
   const candidates = binaryNames.map((binaryName) => ({
     knownUserCommand: resolveCommandInKnownUserDirs(runtimeSpec, binaryName, processEnv),
-    pathCommand: resolveCommandOnPath(binaryName, processEnv),
+    pathCommand: resolveExecutableCommand(binaryName, { env: processEnv }),
   }));
   if (runtimeSpec.systemCommandResolutionStrategy !== 'known-user-first-runnable') {
     for (const candidate of candidates) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createActionExecutor } from './actionExecutor.js';
 import { getActionSpec } from './actionSpecs.js';
-import { MachineAccessActionIdSchema } from './specs/machineAccess.js';
+import { MachineAccessActionIdSchema } from './specs/machine/access.js';
 
 describe('safe Machine work summary Action', () => {
     it('reaches its dedicated Machine read port on eligible surfaces without joining the HTTP access family', async () => {

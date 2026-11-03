@@ -47,11 +47,13 @@ import { settleReceivedSessionMessages } from '@/sync/engine/sessions/sessionMes
 import { isDemoModeActive } from '@/demoMode/runtime/enterExitDemoMode';
 import { ParticipantExecutionRunRecipientRoutingIdentityV1Schema, normalizeParticipantRecipientRoutingIdentityV1, withParticipantRecipientV1, readParticipantRecipientRoutingIdentityV1, type ParticipantRecipientV1 } from '@happier-dev/protocol/messages/structured/participantMessageV1';
 import { SessionExecutionRunPendingEnqueueRequestV1Schema } from '@happier-dev/protocol/sessions/messages/sessionPendingExecutionRunMachineAdmissionV2';
-import { normalizePendingDeliveryStatusV1, parsePendingDeliveryStatusV1, shouldExposePendingDeliveryInDiscardedHistoryV1, type PendingDeliveryStatusV1 } from '@happier-dev/protocol/sessions/messages/pendingDeliveryStatusV1';
+import { normalizePendingDeliveryStatusV1, parsePendingDeliveryStatusV1, shouldExposePendingDeliveryInDiscardedHistoryV1, PendingDeliveryRecoveryV1Schema, type PendingDeliveryStatusV1 } from '@happier-dev/protocol/sessions/messages/pendingDeliveryStatusV1';
 import { readPendingLocalId } from '@happier-dev/protocol/sessions/pending/pendingLocalId';
 import { normalizePendingDeliveryBlockedReason, type PendingDeliveryBlockedReason } from '@happier-dev/protocol/sessions/messages/pendingDeliveryBlockedReason';
 import { PendingRequestedActionV1Schema, PendingRequestedActionV1StoredSchema, PendingResetStartSetResultV1Schema, DEFAULT_PENDING_REQUESTED_ACTION_V1, type PendingRequestedActionV1, type PendingResetStartSetResultV1 } from '@happier-dev/protocol/sessions/pending/pendingRequestedActionV1';
 import { AutonomousExchangeRootV1Schema } from '@happier-dev/protocol/sessions/messages/autonomousExchangeV1';
+import { SessionFollowReceiptDeliveryV1Schema } from '@happier-dev/protocol/sessions/follow/sessionFollowInputV1';
+import { createStoredReadSchema } from '@happier-dev/protocol/json/storedReadSchema';
 import { HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1, SessionPendingMessageComposerAdmissionAcceptedRequestV1Schema, type SessionPendingMessageComposerAdmissionAcceptedRequestV1, type SessionPendingMessageComposerAdmissionPrepareResponseV1 } from '@happier-dev/protocol/sessions/userMessageRpc';
 import { hasRawComposerAttachmentSelectionV1, HappierStructuredInputV1Schema, HappierStructuredInputV1StoredSchema, RawIngressStructuredInputV1Schema, RawIngressStructuredInputV1StoredSchema, readIngressComposerAttachmentSelectionV1, type RawIngressStructuredInputV1, type HappierStructuredInputV1 } from '@happier-dev/protocol/runtime/input/structuredInputV1';
 import { PendingMessageMutationFingerprintV1Schema } from '@happier-dev/protocol/sessions/pending/pendingMessageMutationFingerprintV1';
@@ -163,6 +165,8 @@ function buildPreparedPendingComposerRecord<T extends RawRecord>(
 
 type PendingRow = {
     automated?: boolean;
+    hostFollowInput?: PendingMessage['pendingHostFollowInput'];
+    recovery?: PendingMessage['pendingRecovery'];
     autonomousExchangeRoot?: PendingMessage['pendingAutonomousExchangeRoot'];
     activationHoldReason?: PendingActivationHoldReasonV1;
     recipient?: PendingMessage['recipient'];
@@ -949,7 +953,11 @@ function parsePendingRows(raw: unknown, serverId: string): PendingRow[] | null {
 
         const activationHoldReason = PendingActivationHoldReasonV1Schema.safeParse(item.activationHoldReason);
         const autonomousExchangeRoot = AutonomousExchangeRootV1Schema.safeParse(item.autonomousExchangeRoot);
+        const recovery = PendingDeliveryRecoveryV1Schema.safeParse(item.recovery);
+        const hostFollowInput = SessionFollowReceiptDeliveryV1Schema.safeParse(item.hostFollowInput);
         out.push({
+            ...(hostFollowInput.success ? { hostFollowInput: hostFollowInput.data } : {}),
+            ...(recovery.success ? { recovery: recovery.data } : {}),
             ...(effectiveDeliveryStatus.status === 'blocked' && effectiveDeliveryStatus.reason === 'autonomous_check_in'
                 && autonomousExchangeRoot.success ? { autonomousExchangeRoot: autonomousExchangeRoot.data } : {}),
             ...(activationHoldReason.success ? { activationHoldReason: activationHoldReason.data } : {}),
@@ -1022,12 +1030,15 @@ function withPendingDeliveryState<T extends PendingMessage>(row: PendingRow, mes
             : null;
     return {
         ...message,
+        // An absent/malformed newer projection withdraws old identity, even when content is reused.
+        pendingHostFollowInput: row.hostFollowInput,
         ...(row.recipient ? { recipient: row.recipient } : {}),
         ...(row.activationHoldReason ? { pendingActivationHoldReason: row.activationHoldReason } : {}),
         ...(row.autonomousExchangeRoot ? { pendingAutonomousExchangeRoot: row.autonomousExchangeRoot } : {}),
         messageRole: row.messageRole,
         ...(row.automated === true ? { automated: true } : {}),
         pendingDeliveryStatus,
+        pendingRecovery: row.recovery,
         ...(row.deliveryStatus.status === 'delivering' && row.deliveryStatus.detail
             ? { pendingDeliveryDetail: row.deliveryStatus.detail }
             : {}),
@@ -1047,7 +1058,9 @@ function coerceDiscardReason(value: string | null): DiscardedPendingMessage['dis
 }
 
 function coercePendingUserTextRecord(decrypted: unknown): { rawRecord: RawRecord; text: string; displayText?: string } | null {
-    const parsed = OutgoingUserTextRecordSchema.safeParse(decrypted);
+    // Admit the cached stored reader on demand: the outgoing writer imports
+    // Storage, whose initialization can itself reach this Pending module.
+    const parsed = createStoredReadSchema(OutgoingUserTextRecordSchema).safeParse(decrypted);
     if (!parsed.success) return null;
     const record = parsed.data;
     if (record.role !== 'user') return null;

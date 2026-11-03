@@ -11,6 +11,29 @@ function input(): ConnectedMetadataLoadInputV1 {
 }
 
 describe('connected metadata catalog destination authority', () => {
+    it('does not enumerate transfer inventory when the current Settings source has no connected metadata roots', async () => {
+        let inventoryReads = 0;
+        let raw: Record<string, unknown> = { unrelatedPreference: true };
+        const load = () => loadConnectedMetadataCatalogV1({ ...input(), transfer: {
+            readSourceSnapshot: async () => ({ raw, version: 12 }),
+            readInventory: async () => { inventoryReads++; return { entities: [subject], agents: [] }; },
+            initializePresentation: async () => { throw new Error('Present authority must not be reseeded'); },
+            initializeAcknowledgements: async () => { throw new Error('Deleted authority must not be reseeded'); },
+            replaceSource: async value => { raw = { ...value.raw }; return { status: 'applied', settingsVersion: 13 }; },
+            normalizeHistory: async () => ({ status: 'complete' }),
+        } });
+        const initial = await load();
+        expect(initial.presentation).toMatchObject({ status: 'ready', revision: 4 });
+        expect(inventoryReads).toBe(0);
+        raw = { ...raw, connectedServicesProfileLabelByKey: { 'openai-codex/default': 'Retained legacy label' } };
+        const maintained = await load();
+        expect(inventoryReads).toBe(1);
+        expect(maintained.presentation).toEqual(initial.presentation);
+        expect(raw).toEqual({ unrelatedPreference: true });
+        await load();
+        expect(inventoryReads).toBe(1);
+    });
+
     it('preserves sensitive row denial separately from transient transport failure and independent acknowledgement authority', async () => {
         for (const code of ['unauthorized', 'forbidden'] as const) {
             const catalog = await loadConnectedMetadataCatalogV1({ ...input(), readPresentationRow: async () => { throw { code }; } });

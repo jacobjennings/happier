@@ -25,6 +25,13 @@ it('keeps Home, message and child identity when consuming a genuine Root link', 
     expect(new URL(result.cleaned, 'https://app.example.test').searchParams.get('id')).toBeNull();
 });
 
+it('keeps Home and child identity on a Session link without a message', () => {
+    const home = 'srv_niq7wbpMyJviL4EtO5YlTEd0Us0Ou0nN';
+    const result = consume(`https://app.example.test/?id=session-123&serverId=${home}&jumpChildId=child-2`);
+    expect(result.consumed).toBe(true);
+    expect(result.destination).toBe(`/session/session-123?serverId=${home}&jumpChildId=child-2`);
+});
+
 it('keeps an unqualified historical link unqualified', () => {
     expect(consume('https://app.example.test/?id=session-123')).toEqual({
         consumed: true, destination: '/session/session-123', cleaned: '/',

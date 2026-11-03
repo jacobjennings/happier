@@ -1,6 +1,9 @@
 import React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// The static storage graph reaches the Socket.IO transport; register its external boundary before any import.
+vi.mock('socket.io-client', async (importOriginal) =>
+    (await import('@/dev/testkit/harness/serverAccountConnectionHarness')).createSocketIoClientBoundary(importOriginal));
 
 import { renderScreen } from '@/dev/testkit';
 import { storage } from '@/sync/domains/state/storageStore';
@@ -137,20 +140,15 @@ function savedProfiles() {
 }
 
 describe('ProfileEditScreen (header buttons)', () => {
-    it('renders a pristine close action through the real keyboard-aware form', async () => {
+    it('keeps a pristine form unsaveable and closes it without a prompt through the real keyboard-aware form', async () => {
         const screen = await renderProfileEditor();
         const { KeyboardAwareScreen } = await import('@/components/ui/keyboardAvoidance');
         expect(screen.findAllByType(KeyboardAwareScreen)).toHaveLength(1);
+        expect(stackOptionsCapture.getResolved()?.headerRight?.()?.props.disabled).toBe(true);
         expect(typeof stackOptionsCapture.getResolved()?.headerLeft).toBe('function');
         await closeAndFlush();
         expect(alertSpy).not.toHaveBeenCalled();
         expect(navigationMock.goBack).toHaveBeenCalledOnce();
-    });
-
-    it('disables the actual header save action while the form is pristine', async () => {
-        await renderProfileEditor();
-        expect(typeof stackOptionsCapture.getResolved()?.headerRight).toBe('function');
-        expect(stackOptionsCapture.getResolved()?.headerRight?.()?.props.disabled).toBe(true);
     });
 
     it('explains a same-Home stale row refusal through the actual save header but stays silent after leaving Home', async () => {

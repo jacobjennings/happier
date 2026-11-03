@@ -6,6 +6,7 @@ import { createReducer } from '@happier-dev/session-core/reducer';
 
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { buildSessionActivityAttention } from '@/activity/attention/buildSessionActivityAttention';
+import type { SessionActivityAttention } from '@/activity/attention/activityAttentionTypes';
 import { buildActivityOverviewFromCandidates } from '@/activity/attention/buildActivityOverviewSnapshot';
 import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 import { storage } from '@/sync/domains/state/storageStore';
@@ -72,7 +73,7 @@ describe('buildInboxSessionPresentation', () => {
             expect(buildInboxItems(input, rows)).toBe(rows);
 
             const revisedDelivery = { ...onceDelivery, agentStateVersion: 5 };
-            const revise = (value: typeof current) => ({ ...value, session: { ...value.session,
+            const revise = (value: SessionActivityAttention) => ({ ...value, session: { ...value.session,
                 viewer: { ...value.session.viewer!, follow: { ...value.session.viewer!.follow, onceDelivery: revisedDelivery } } } });
             const revised = buildInboxItems({ ...input,
                 sessionPresentation: { ...sessionPresentation, readySessions: sessionPresentation.readySessions.map(revise) },
@@ -146,6 +147,13 @@ describe('buildInboxSessionPresentation', () => {
         const result = buildInboxSessionPresentation({ overview: buildActivityOverviewFromCandidates([permission]) });
         expect(result.sessionsNeedingAttention[0]?.pendingPermissions).toMatchObject([{ id: 'request', tool: 'Bash' }]);
         expect(result.pendingRequestHydrationTargets).toEqual([]);
+    });
+
+    it('acquires absent request state before using a retained inactive row to decide answer entitlement', () => {
+        const retained = candidate('worker', ['user_action_required'], 'home-a', { active: false, agentState: null });
+        const result = buildInboxSessionPresentation({ overview: buildActivityOverviewFromCandidates([retained]) });
+        expect(result.sessionsNeedingAttention[0]?.pendingUserActions).toEqual([]);
+        expect(result.pendingRequestHydrationTargets).toEqual([{ serverId: 'home-a', sessionId: 'worker' }]);
     });
 
     it('reads transcript-only decisions for readable content with status-only notifications', () => {

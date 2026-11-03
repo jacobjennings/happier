@@ -32,9 +32,16 @@ import { createPlainProjectAccountRowListFixture, createProjectAccountRowsFixtur
 import { createWorkBoardArtifactBoundary } from '@/dev/testkit/harness/workBoardArtifactBoundary';
 import { createWorkBoardArtifactPortV1 } from '@happier-dev/protocol/boards/workBoardArtifactV1';
 import type { WorkspaceRefV1 } from '@happier-dev/protocol/workspaces/workspaceRefV1';
+import type { PluginUiWidgetAreaPresentation } from '@happier-dev/plugin-ui/advanced';
+import { buildQualifiedPluginContributionKey } from '@happier-dev/protocol/plugins/contribution-identity';
 
 // The viewer accepts the real Action confirmation at its presentation boundary.
 vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal')).createModalModuleMock({ confirmResult: true }).module);
+// Native overlay placement is outside this composed Action journey; render its real contents.
+vi.mock('@/components/ui/popover', async importOriginal =>
+    (await import('@/dev/testkit/mocks/popover')).createInlinePopoverModuleMock(importOriginal, {
+        maxHeight: 624, maxWidth: 960, placement: 'bottom',
+    }));
 
 installDisconnectedServerSocketBoundary();
 // Install the external socket before any consumer can capture its transport.
@@ -951,7 +958,7 @@ it('admits and refreshes a B-only stored widget using current B inputs and Resou
             { path: 'mode', title: 'Mode', widget: 'select' as const, required: true, options: [{ value: choice, label: choice }] },
         ] } });
         const installed = { [surface.pluginId]: { ...widgetInstalledPackage(surface.pluginId, 'Binding'), occurrenceId: 'binding-occurrence', source: { kind: 'local', locator: `/plugins/${surface.pluginId}` } } };
-        const resources = (choice: string) => ({ state: { id: `${choice}-state`, pluginId: surface.pluginId, resourceKind: 'config' as const,
+        const resources = (choice: string) => ({ [buildQualifiedPluginContributionKey({ pluginId: surface.pluginId, localId: `${choice}-state` })]: { id: `${choice}-state`, pluginId: surface.pluginId, resourceKind: 'config' as const,
             contentType: 'application/json', scope: 'session' as const } });
         const projection = (choice?: string) => PluginProjectionV2Schema.parse({ v: 2, generation: 1, installedPackagesById: installed, actionsById: {},
             resourcesById: choice ? resources(choice) : {},
@@ -1011,14 +1018,75 @@ it('admits and refreshes a B-only stored widget using current B inputs and Resou
             resource: { pluginId: surface.pluginId, localId: 'current-b-state' }, context: { kind: 'session', sessionId: b.id },
             expectedCallerOccurrenceId: 'binding-occurrence',
         })]);
+        let pageCurrent = true;
         const areaPort = createPluginWidgetAreaHostPortV1({ scope, pluginId: surface.pluginId, pageId: 'overview',
             declarations: [{ name: 'pinned', contextSchema: { type: 'object', properties: { session: inputSchema.properties.session },
-                required: ['session'], additionalProperties: false } }], isCurrent: account.accountLifetime!.isCurrent,
+                required: ['session'], additionalProperties: false } }], isCurrent: () => pageCurrent && account.accountLifetime!.isCurrent(),
             execute: (id, input, areaContext) => executor.execute(id, input, { ...context, ...areaContext, bypassApprovals: true }) });
         const areaInstance = { ...instance, bindings: { ...instance.bindings, session: { kind: 'context' as const, slot: 'session' } } };
         const pageContext = { session: { serverId: scope.serverId, sessionId: b.id } };
         const added = await areaPort.execute({ area: 'pinned', context: pageContext, operation: { actionId: 'widgets.item.add', instance: areaInstance } });
         expect(added, JSON.stringify(added)).toMatchObject({ ok: true });
+        // Exercise the ungrouped follow binding: the group below pins B and would
+        // conceal reverse Refresh losing the mounted page's Session context.
+        const { PluginPageWidgetArea } = await import('@/components/widgets/area/PluginPageWidgetArea');
+        const { useWidgetDefinitionFlows } = await import('@/components/widgets/definitions/useWidgetDefinitionFlows');
+        const { WidgetAboutPanel } = await import('@/components/widgets/definitions/WidgetAboutPanel');
+        const { resolveMountedWidgetAreaLayoutSelectionOwner } = await import('@/components/widgets/area/widgetAreaLayoutSelection');
+        const pagePort: PluginUiWidgetAreaPresentation['port'] = { execute: (operation, context, options) =>
+            areaPort.execute({ area: 'pinned', context, operation, layoutId: options?.layoutId }, options?.signal) };
+        let about: ReturnType<typeof useWidgetDefinitionFlows> | undefined;
+        function FollowedArea({ duplicate = false }: { duplicate?: boolean }) {
+            const flows = useWidgetDefinitionFlows({ scope: areaSurface, instance: areaInstance,
+                anchorRef: React.useRef(null), providedContext: { session: [pageContext.session] }, testID: 'followed' });
+            about = flows;
+            return <>
+                <PluginPageWidgetArea area="pinned" context={pageContext} port={pagePort} surfaceName="Binding" />
+                {duplicate ? <PluginPageWidgetArea area="pinned" context={pageContext} port={pagePort} surfaceName="Binding" /> : null}
+                {flows.panel}
+            </>;
+        }
+        const mountedPage = (content: React.ReactNode) => <AppShellPluginUiProjectionValueProvider value={{ ...projected,
+            pluginBrowserProjection: null, platform: 'web', accountLifetime: account.accountLifetime!, clientExecutableActivation: { status: 'ready' },
+            reloadClientExecutables() {}, reloadConnectedAccountProjection() {} }}>{content}</AppShellPluginUiProjectionValueProvider>;
+        const areaRef = { surface: areaSurface, instanceId: areaInstance.id };
+        const areaWrites = areaHttp.writes.length;
+        try {
+            await act(async () => { tree!.update(mountedPage(<FollowedArea />)); });
+            await vi.waitFor(() => expect(resolveMountedWidgetAreaLayoutSelectionOwner(areaSurface)).not.toHaveProperty('ok'));
+            await act(async () => { about!.about!(); });
+            const refreshAbout = tree!.root.findByType(WidgetAboutPanel).props.onRefresh;
+            daemon.resourceRead.mockClear();
+            await act(async () => { expect(await refreshAbout()).toBe(true); });
+            expect(daemon.resourceRead).toHaveBeenCalledTimes(1);
+            expect(daemon.resourceRead.mock.calls[0]?.slice(0, 2)).toEqual(['machine-b', expect.objectContaining({
+                resource: { pluginId: surface.pluginId, localId: 'current-b-state' }, context: { kind: 'session', sessionId: b.id },
+                expectedCallerOccurrenceId: 'binding-occurrence',
+            })]);
+            daemon.resourceRead.mockClear();
+            expect(await remote.execute('widgets.item.refresh', { ref: areaRef }, { ...context, surface: 'cli', authority: 'present_user' }))
+                .toEqual({ ok: true, result: { ref: areaRef, status: 'refreshed' } });
+            expect(daemon.resourceRead).toHaveBeenCalledTimes(1);
+            // A mounted address does not outlive its actual host port's admission.
+            pageCurrent = false;
+            daemon.resourceRead.mockClear();
+            expect(await remote.execute('widgets.item.refresh', { ref: areaRef }, { ...context, surface: 'cli', authority: 'present_user' }))
+                .toMatchObject({ ok: false, errorCode: 'widget_area_scope_retired' });
+            expect(daemon.resourceRead).not.toHaveBeenCalled();
+            pageCurrent = true;
+            await act(async () => { tree!.update(mountedPage(<FollowedArea duplicate />)); });
+            await vi.waitFor(() => expect(resolveMountedWidgetAreaLayoutSelectionOwner(areaSurface))
+                .toMatchObject({ ok: false, errorCode: 'widget_area_layout_owner_ambiguous' }));
+            daemon.resourceRead.mockClear();
+            expect(await remote.execute('widgets.item.refresh', { ref: areaRef }, { ...context, surface: 'cli', authority: 'present_user' }))
+                .toMatchObject({ ok: false, errorCode: 'widget_area_layout_owner_ambiguous' });
+            expect(daemon.resourceRead).not.toHaveBeenCalled();
+        } finally { pageCurrent = true; await act(async () => { tree!.update(mountedPage(null)); }); }
+        daemon.resourceRead.mockClear();
+        expect(await remote.execute('widgets.item.refresh', { ref: areaRef }, { ...context, surface: 'cli', authority: 'present_user' }))
+            .toMatchObject({ ok: false, errorCode: 'widget_area_layout_owner_unavailable' });
+        expect(daemon.resourceRead).not.toHaveBeenCalled();
+        expect(areaHttp.writes).toHaveLength(areaWrites);
         expect(await executor.execute('widgets.group.create', { surface: areaSurface, groupId: 'group-b', instanceIds: [instance.id],
             context: { session: { kind: 'value', value: pageContext.session } } }, { ...context, bypassApprovals: true }))
             .toMatchObject({ ok: true });

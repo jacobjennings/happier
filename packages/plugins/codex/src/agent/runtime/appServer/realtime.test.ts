@@ -7,6 +7,7 @@ import { AgentSessionRealtimeStartRequestV1Schema } from '@happier-dev/protocol'
 import { describe, expect, it, vi } from 'vitest';
 
 import type { DisposableCodexAppServerClient } from './client.js';
+import { createCodexNativeEventFixture } from './client.test-support.js';
 import { createCodexAppServerRealtimeConversation } from './realtime.js';
 
 type RequestImplementation = (
@@ -96,7 +97,9 @@ function createClientFixture(options?: Readonly<{
     }
     return {};
   }));
+  const nativeReceipts = createCodexNativeEventFixture();
   const client: DisposableCodexAppServerClient = {
+    onNativeEvent: nativeReceipts.onNativeEvent,
     launchFeatures: {
       realtimeConversationAdvertised: options?.advertised ?? true,
     },
@@ -127,6 +130,7 @@ function createClientFixture(options?: Readonly<{
     client,
     request,
     publish(method: string, params: unknown) {
+      nativeReceipts.publish(method, params);
       for (const handler of [...(handlers.get(method) ?? [])]) handler(params);
     },
     exit(result = { exitCode: 17, signal: null }) {
@@ -673,6 +677,12 @@ describe('Codex app-server realtime V3 adapter', () => {
     expect(request).not.toHaveProperty('initialItems');
     expect(request).not.toHaveProperty('model');
     expect(request).not.toHaveProperty('voice');
+    expect(fixture.request).toHaveBeenCalledWith('thread/realtime/appendText', {
+      threadId: 'thread-1',
+      role: 'developer',
+      text: expect.stringContaining('cannot approve or deny requests in native Codex Realtime'),
+    });
+    expect(fixture.request.mock.calls.filter(([method]) => method === 'thread/realtime/appendText')).toHaveLength(1);
   });
 
   it('delivers current prepared instructions additively before each reused-thread realtime attempt', async () => {
@@ -691,8 +701,13 @@ describe('Codex app-server realtime V3 adapter', () => {
       const startIndex = calls.map(([method]) => method).lastIndexOf('thread/realtime/start');
       expect(calls[startIndex - 1]?.[0]).toBe('thread/realtime/appendText');
       expect(calls[startIndex - 1]?.[1]).toEqual({
-        threadId: 'thread-1', role: 'developer', text: `${instructions}\n\nCurrent conversational notes`,
+        threadId: 'thread-1', role: 'developer',
+        text: expect.stringContaining(`${instructions}\n\nCurrent conversational notes`),
       });
+      expect(calls[startIndex - 1]?.[1]).toMatchObject({
+        text: expect.stringContaining('cannot approve or deny requests in native Codex Realtime'),
+      });
+      expect(calls.filter(([method]) => method === 'thread/realtime/appendText')).toHaveLength(1);
       const start = calls[startIndex]?.[1];
       for (const field of ['prompt', 'initialItems', 'model', 'voice']) expect(start).not.toHaveProperty(field);
       const stopPromise = started.handle.stop();

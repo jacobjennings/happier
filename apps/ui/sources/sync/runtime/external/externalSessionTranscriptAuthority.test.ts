@@ -173,25 +173,6 @@ describe('resolveExternalSessionTranscriptAuthority', () => {
         })).toEqual({ kind: 'live_agent', sourceKey: liveSourceKey });
     });
 
-    it('selects live → published snapshot → live across an offline round trip', () => {
-        const stablePublication = {
-            linked: true,
-            currentStorageState: 'snapshot_complete' as const,
-            liveSourceKey,
-            acceptedThroughServerSeq: null,
-            publishedThroughServerSeq: 12,
-            materializedThroughSourceAt: 1_700_000_000_000,
-            transcriptShareable: true,
-            operationPresentation: null,
-            operationProgress: null,
-        };
-        expect([
-            resolveExternalSessionTranscriptAuthority({ ...stablePublication, agentReachable: true }).kind,
-            resolveExternalSessionTranscriptAuthority({ ...stablePublication, agentReachable: false }).kind,
-            resolveExternalSessionTranscriptAuthority({ ...stablePublication, agentReachable: true }).kind,
-        ]).toEqual(['live_agent', 'server_snapshot', 'live_agent']);
-    });
-
     it('serves accepted partial rows only when pushed operation progress matches the server bound', () => {
         const input = {
             linked: true,

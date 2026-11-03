@@ -19,7 +19,7 @@ import type {
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 import { createAutomationRunFixture, createWorkflowDefinitionFixture, createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
 
-import { createAutomationsDomain, createWorkflowTriggerChangeSelector, createWorkflowTriggerSetSelector } from './automations';
+import { applyWorkflowTriggerSnapshotReceipt, createAutomationsDomain, createWorkflowTriggerChangeSelector, createWorkflowTriggerSetSelector } from './automations';
 import type { WorkflowTriggerSetV1 } from '@happier-dev/protocol';
 import {
     createWorkflowRunsDomain,
@@ -227,6 +227,27 @@ describe('shared workflow trigger observations', () => {
         h.get().upsertWorkflowTriggerSet({ queryKey: 'account_inline', set: { ...original, revision: 1 } });
         expect(h.get().workflowTriggerSetsById[original.automationId]?.revision).toBe(1);
     });
+    it('invalidates a managed target for its Session-scoped rule and unknown rows only', () => {
+        const h = createHarness();
+        const target = { homeId: 'home-one', managedId: 'managed-one' };
+        const select = createWorkflowTriggerChangeSelector(null, null, false, target);
+        const before = select(h.get());
+        h.get().upsertAutomation(createAutomationDefinitionSummary(AutomationDefinitionListItemSchema.parse({
+            ...eventDefinitionSummary, id: 'unrelated', managedTarget: null,
+        })));
+        expect(select(h.get())).toBe(before);
+        const relevant = createAutomationDefinitionSummary(AutomationDefinitionListItemSchema.parse({
+            ...eventDefinitionSummary, id: 'managed', scopeSessionId: 'source-session', managedTarget: target,
+        }));
+        h.get().upsertAutomation(relevant);
+        expect(select(h.get())).not.toBe(before);
+        const current = select(h.get());
+        h.get().upsertAutomation(createAutomationDefinitionSummary(AutomationDefinitionListItemSchema.parse({
+            ...eventDefinitionSummary, id: 'unknown', scopeSessionId: 'other-session',
+        })));
+        expect(select(h.get())).not.toBe(current);
+    });
+
     it('invalidates only the requested workflow rather than Account inline triggers', () => {
         const h = createHarness();
         const workflowDefinitionId = '00000000-0000-4000-8000-000000000001';
@@ -275,6 +296,34 @@ describe('shared workflow trigger observations', () => {
                 document: { text: 'Manual prompt', references: [], attachments: [] }, input: [], result: { kind: 'text' } }] } } };
         h.get().upsertWorkflowTriggerSet({ queryKey: 'account_inline', set: converted });
         expect(select(h.get()).map((set) => set.automationId)).toEqual(['legacy']);
+    });
+
+    it('updates managed-target memberships and addressed receipts through the shared trigger owner', () => {
+        const store = createStore<State>((set, get) => ({ profileScope,
+            ...createWorkflowRunsDomain<State>({ get, set }), ...createAutomationsDomain<State>({ get, set }) }));
+        const key = 'managed:["home-one","managed-one"]';
+        const otherKey = 'managed:["home-one","managed-two"]';
+        const managedSet = (managedId: string, revision: number): WorkflowTriggerSetV1 => ({
+            automationId: 'managed-rule', revision, enabled: true, health: 'available', triggers: [],
+            target: { kind: 'inline', definition: createWorkflowDefinitionFixture({ blocks: [{ kind: 'action', id: 'stop',
+                actionId: 'machines.managed.power.set', input: { homeId: { kind: 'literal', value: 'home-one' },
+                    managedId: { kind: 'literal', value: managedId }, when: { kind: 'literal', value: 'after-idle' },
+                    intent: { kind: 'literal', value: 'stop' } } }] }) },
+        });
+        store.getState().applyWorkflowTriggerSetPage({ queryKey: key, sets: [] });
+        store.getState().applyWorkflowTriggerSetPage({ queryKey: otherKey, sets: [] });
+        const first = managedSet('managed-one', 1);
+        store.getState().upsertWorkflowTriggerSet({ queryKey: 'account_inline', set: first });
+        expect(store.getState().workflowTriggerSetIdsByQuery[key]).toEqual([first.automationId]);
+        expect(store.getState().workflowTriggerSetIdsByQuery[otherKey]).toEqual([]);
+        const moved = managedSet('managed-two', 2);
+        expect(applyWorkflowTriggerSnapshotReceipt([first], key, moved)).toEqual([]);
+        expect(applyWorkflowTriggerSnapshotReceipt([], key, moved)).toBeNull();
+        store.getState().upsertWorkflowTriggerSet({ queryKey: 'account_inline', set: moved });
+        expect(store.getState().workflowTriggerSetIdsByQuery[key]).toEqual([]);
+        expect(store.getState().workflowTriggerSetIdsByQuery[otherKey]).toEqual([moved.automationId]);
+        const unavailable: WorkflowTriggerSetV1 = { automationId: 'unknown', revision: 3, enabled: true, health: 'source_unavailable', triggers: [] };
+        expect(applyWorkflowTriggerSnapshotReceipt([], key, unavailable)).toBeNull();
     });
 
     it('suppresses unchanged observations and retires previous target membership on current reads', () => {

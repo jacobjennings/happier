@@ -19,15 +19,3 @@ function canRunIntentWithSnapshot(
 export function canRevertFromSnapshot(snapshot: ScmWorkingSnapshot | null | undefined): boolean {
     return canRunIntentWithSnapshot(snapshot, 'revert');
 }
-
-export function canCreateCommitFromSnapshot(snapshot: ScmWorkingSnapshot | null | undefined): boolean {
-    return canRunIntentWithSnapshot(snapshot, 'commit');
-}
-
-export function canPullFromSnapshot(snapshot: ScmWorkingSnapshot | null | undefined): boolean {
-    return canRunIntentWithSnapshot(snapshot, 'pull');
-}
-
-export function canPushFromSnapshot(snapshot: ScmWorkingSnapshot | null | undefined): boolean {
-    return canRunIntentWithSnapshot(snapshot, 'push');
-}

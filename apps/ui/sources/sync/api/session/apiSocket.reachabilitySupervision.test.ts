@@ -50,14 +50,16 @@ describe('apiSocket reachability supervision', () => {
             pool.reportServerRestarting('https://recovery.example.test', 1_000, 'recovery-token');
             await vi.advanceTimersByTimeAsync(0);
             expect(boundary.socket.connected).toBe(false);
-            // Socket.IO is the network boundary. A refused recovery dial must
-            // return to the existing Home revalidation path, not remain stranded.
+            // A refused recovery dial retains demand at the managed socket
+            // backoff owner while HTTP readiness can stay online.
             boundary.socket.connect.mockImplementationOnce(() => {
                 boundary.socket.active = false;
                 boundary.trigger('connect_error', new Error('Recovery dial refused'));
             });
             await vi.advanceTimersByTimeAsync(1_000);
             expect(pool.peekServerReachabilityState('https://recovery.example.test', 'recovery-token')?.phase).toBe('online');
+            expect(boundary.socket.active).toBe(false);
+            await vi.advanceTimersByTimeAsync(250);
             expect(boundary.socket.active).toBe(true);
             boundary.trigger('connect');
             expect(boundary.socket.connected).toBe(true);

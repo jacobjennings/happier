@@ -47,6 +47,12 @@ function documentViewLabel(artifactId: string, kind: DocumentShareKind): string 
         : t('shareSheet.documents.levels.canUse');
 }
 
+/** One recipient-level vocabulary for the sheet and compact document summaries. */
+export function documentShareAccessLabel(artifactId: string, kind: DocumentShareKind, access: ShareAccessLevel): string {
+    return access === 'view' ? documentViewLabel(artifactId, kind)
+        : access === 'edit' ? t('shareSheet.documents.levels.canEdit') : t('shareSheet.documents.levels.admin');
+}
+
 /**
  * The kind's sharing rules. A workflow shared with a Team shows that Team every run; anyone else's
  * runs and triggers stay their own. A profile never carries a secret value.
@@ -90,9 +96,9 @@ export function createDocumentShareAdapter(input: Readonly<{
         namespace: 'document-share',
         title: t('shareSheet.documents.title'),
         levels: {
-            view: { label: documentViewLabel(input.artifactId, input.kind), help: documentUseHelp(input.artifactId, input.kind) },
-            edit: { label: t('shareSheet.documents.levels.canEdit'), help: t('shareSheet.documents.help.editForEveryone') },
-            admin: { label: t('shareSheet.documents.levels.admin'), help: t('shareSheet.documents.help.adminOwnerShares') },
+            view: { label: documentShareAccessLabel(input.artifactId, input.kind, 'view'), help: documentUseHelp(input.artifactId, input.kind) },
+            edit: { label: documentShareAccessLabel(input.artifactId, input.kind, 'edit'), help: t('shareSheet.documents.help.editForEveryone') },
+            admin: { label: documentShareAccessLabel(input.artifactId, input.kind, 'admin'), help: t('shareSheet.documents.help.adminOwnerShares') },
         },
         notes: documentShareNotes(input.kind, input.grants),
         ...(input.linkPath && input.kind !== 'widget-area-layout.v1' ? { linkPath: input.linkPath } : {}),

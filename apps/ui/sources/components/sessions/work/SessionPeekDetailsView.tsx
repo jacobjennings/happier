@@ -13,7 +13,7 @@ import { Typography } from '@/constants/Typography';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { useSessionViewShellSession } from '@/components/sessions/shell/sessionViewStableSession';
 import { t } from '@/text';
-import { getSessionName } from '@/utils/sessions/sessionUtils';
+import { sessionDisplayTitle } from '@/utils/sessions/sessionDisplayTitle';
 
 import { describeSessionLineage, useSessionLineage } from './sessionLineage';
 import { SessionFollowHeaderChip } from '@/components/sessions/follow/SessionFollowHeaderChip';
@@ -91,7 +91,7 @@ const SessionPeekHeader = React.memo(function SessionPeekHeader(
   props: Readonly<{ sessionId: string; serverId: string | null; openControl: boolean }>,
 ) {
   const session = useSessionViewShellSession(props.sessionId, props.serverId);
-  const title = session ? getSessionName(session) : null;
+  const title = sessionDisplayTitle(session ?? null, props.serverId);
   const agentId = session ? readSessionPresentationAgentId(session) : null;
   const lineage = useSessionLineage(props.sessionId, props.serverId);
   const lineageDescription = describeSessionLineage(lineage);

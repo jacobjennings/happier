@@ -9,12 +9,6 @@ vi.mock('react-native', async () => {
 });
 
 describe('StatusPill', () => {
-    it('renders the label text', async () => {
-        const { StatusPill } = await import('../../accessories/StatusPill');
-        const screen = await renderScreen(<StatusPill variant="clean" label="clean" testID="pill-clean" />);
-        expect(screen.getTextContent()).toContain('clean');
-    });
-
     it('renders the count and label with their accessible name', async () => {
         const { StatusPill } = await import('../../accessories/StatusPill');
         const screen = await renderScreen(

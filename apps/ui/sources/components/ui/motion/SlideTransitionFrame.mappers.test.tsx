@@ -117,7 +117,7 @@ describe('mounted slide mapper inputs', () => {
         expect(mapperLifecycle.stops).toBeGreaterThan(initial.stops);
     });
 
-    it('mounts a reorder list and observes scroll metrics without scanning the row children', async () => {
+    it('mounts a reorder list with scroll metrics without admitting its row children into a mapper', async () => {
         const { EntityFlatReorderList } = await loadWorkletModule<typeof import('../treeDragDrop/ui/EntityFlatReorder')>(
             resolve(import.meta.dirname, '../treeDragDrop/ui/EntityFlatReorder.tsx'),
             new Map<string, unknown>([['react-native-reanimated', Reanimated], ['react-native', Native]]),

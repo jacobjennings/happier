@@ -66,6 +66,14 @@ function projectSharedSavedSecretObservationInput(id: string, input: unknown): u
 
 export const SHARED_SAVED_SECRET_ACTION_SPECS: readonly PreNormalizedActionSpec[] = Object.freeze(
   SHARED_SAVED_SECRET_ACTION_IDS_V1.map((id): PreNormalizedActionSpec => {
+    if (id === 'secrets.shared.reveal') return {
+      id, title: 'Reveal shared Saved Secret', description: 'Display an exact managed Saved Secret only to the person in the app.',
+      safety: 'danger', sideEffectClass: 'write', requiredAuthority: 'present_user', executionPlacement: 'client',
+      approval: { result: 'none' }, approvalPolicy: { uiConfirmation: 'direct' }, placements: [],
+      surfaces: { ui: true, cli: false, agent: false, mcp: false, rpc: false, voice: false },
+      inputSchema: SHARED_SAVED_SECRET_ACTION_INPUT_SCHEMAS_V1[id], outputSchema: SHARED_SAVED_SECRET_ACTION_OUTPUT_SCHEMAS_V1[id],
+      inputHints: { fields: [] },
+    };
     const row = homeDomainActionRow({
       id, approval: READ_ACTIONS.has(id) ? { result: 'required' } : { result: 'required', flow: 'deferred' },
       ...(id === 'secrets.shared.delete' ? { confirmVerb: { key: 'common.delete', fallback: 'Delete' }, irreversible: true as const } : {}),

@@ -112,12 +112,13 @@ type LegacyOwnerSnapshot<M, A> =
     SessionMetadataLegacyOwnerTupleMutationSnapshotV1<M, A>;
 
 /**
- * A semantic owner-metadata change, or the owner's explicit request to split a
- * layout-0 tuple into layout 1 without changing any value (PA-L2).
+ * A semantic metadata change, or owner maintenance of the same captured tuple:
+ * the layout-0 privacy split or a missing/unavailable display projection.
  */
 export type SessionMetadataUpdateRequest<M> =
-    | ((base: M) => M)
-    | 'ownerMigration';
+    | ((base: M, metadataRevision?: number) => M)
+    | 'ownerMigration'
+    | 'ensureDisplayProjection';
 
 /**
  * UI adapter for the one shared Session metadata mutation/currentness owner.
@@ -145,6 +146,8 @@ export async function updateSessionMetadataWithRetry<M, A = unknown>(
             next: SessionMetadataSnapshot<M>,
         ) => void;
         acquireTupleSnapshot: () => Promise<TupleSnapshot<M, A>>;
+        /** Exact, authorized full tuple already opened by this operation. */
+        initialSnapshot?: TupleSnapshot<M, A>;
         tupleCrypto: SessionMetadataTupleMutationCryptoV1;
         getOwnerMigrationCurrentness?: () =>
             SessionMetadataOwnerMigrationCurrentnessV1 | undefined;
@@ -195,7 +198,7 @@ export async function updateSessionMetadataWithRetry<M, A = unknown>(
     const acquireTupleSnapshot = params.acquireTupleSnapshot;
     const tupleCrypto = params.tupleCrypto;
     const applyTupleSnapshot = params.applyTupleSnapshot;
-    const exactInitial = await acquireTupleSnapshot();
+    const exactInitial = params.initialSnapshot ?? await acquireTupleSnapshot();
     if (params.teamCredentialBinding && exactInitial.mode !== 'owner') {
         throw createMetadataPrivacyUpgradeRequiredError('Team credential binding requires Session owner metadata layout v1');
     }
@@ -351,6 +354,8 @@ export async function updateSessionMetadataWithRetry<M, A = unknown>(
             initialSnapshot: exactInitial,
             mutation: updater === 'ownerMigration'
                 ? { kind: 'ownerMigration' }
+                : updater === 'ensureDisplayProjection'
+                ? { kind: 'ensureDisplayProjection' }
                 : { kind: 'metadata', update: updater, ...(params.expectedMetadataRevision !== undefined
                     ? { expectedMetadataRevision: params.expectedMetadataRevision } : {}) },
             crypto: tupleCrypto,

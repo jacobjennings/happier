@@ -142,30 +142,6 @@ export function resolveGenericScrollObservationAnchorCaptureCancellationEffects(
     }];
 }
 
-export function resolveGenericScrollObservationViewportStateApplyEffects(params: Readonly<{
-    effects: readonly Readonly<{ sessionId?: string; type: string }>[];
-    sessionId: string;
-}>): readonly GenericScrollObservationViewportStateEffect[] {
-    return params.effects.filter((
-        effect,
-    ): effect is GenericScrollObservationViewportStateEffect => (
-        effect.sessionId === params.sessionId &&
-        effect.type === 'apply-generic-observed-viewport-state'
-    ));
-}
-
-export function resolveGenericScrollObservationAnchorCaptureCancellationApplyEffects(params: Readonly<{
-    effects: readonly Readonly<{ sessionId?: string; type: string }>[];
-    sessionId: string;
-}>): readonly GenericScrollObservationAnchorCaptureCancellationEffect[] {
-    return params.effects.filter((
-        effect,
-    ): effect is GenericScrollObservationAnchorCaptureCancellationEffect => (
-        effect.sessionId === params.sessionId &&
-        effect.type === 'cancel-scheduled-viewport-anchor-capture'
-    ));
-}
-
 export function resolveGenericScrollObservationReadOnlyVisibleBottomState(
     params: GenericScrollObservationReadOnlyVisibleBottomParams,
 ): GenericScrollObservationReadOnlyVisibleBottomState {
@@ -193,18 +169,6 @@ export function resolveGenericScrollObservationReadOnlyVisibleBottomEffects(
     ];
 }
 
-export function resolveGenericScrollObservationReadOnlyVisibleBottomStateEffects(params: Readonly<{
-    effects: readonly Readonly<{ sessionId?: string; type: string }>[];
-    sessionId: string;
-}>): readonly GenericScrollObservationReadOnlyVisibleBottomEffect[] {
-    return params.effects.filter((
-        effect,
-    ): effect is GenericScrollObservationReadOnlyVisibleBottomEffect => (
-        effect.sessionId === params.sessionId &&
-        effect.type === 'apply-generic-read-only-visible-bottom-state'
-    ));
-}
-
 export function resolveGenericScrollObservationSuppressionEffects(params: Readonly<{
     reason: GenericScrollObservationSuppressionReason;
     sessionId: string;
@@ -214,16 +178,4 @@ export function resolveGenericScrollObservationSuppressionEffects(params: Readon
         sessionId: params.sessionId,
         type: 'suppress-generic-scroll-observation',
     }];
-}
-
-export function resolveGenericScrollObservationSuppressionApplyEffects(params: Readonly<{
-    effects: readonly Readonly<{ sessionId?: string; type: string }>[];
-    sessionId: string;
-}>): readonly GenericScrollObservationSuppressionEffect[] {
-    return params.effects.filter((
-        effect,
-    ): effect is GenericScrollObservationSuppressionEffect => (
-        effect.sessionId === params.sessionId &&
-        effect.type === 'suppress-generic-scroll-observation'
-    ));
 }

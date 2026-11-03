@@ -1,3 +1,6 @@
+export * from './ui/collectionFilters.js';
+export * from './ui/widgetSizes.js';
+export * from './ui/declarativeData.js';
 import { PLUGIN_UI_ICON_TOKENS_V1 as canonicalPluginUiIconTokensV1 } from '@happier-dev/protocol/plugins/contributions/ui/tokens';
 import { projectProtocolValue } from './protocol/projectProtocolValue.js';
 import { PluginRightSidebarCountV1Schema as canonicalPluginRightSidebarCountV1Schema } from '@happier-dev/protocol/plugins/contributions/ui/v2';
@@ -19,6 +22,7 @@ import type {
 } from './ui/publicContract.js';
 
 export type {
+    InboxItemAttentionTypeV1,
     PluginRightSidebarDefaultPlacement,
     PluginRightSidebarCountV1,
     PluginDefaultPlacement,

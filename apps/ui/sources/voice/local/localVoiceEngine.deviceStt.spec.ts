@@ -501,41 +501,6 @@ describe('local voice engine device STT (experimental)', () => {
         await engine.stopLocalVoiceSession();
     });
 
-    it('supports provider-based device STT settings', async () => {
-        const storage = await getStorage();
-        storage.__setState({
-            settings: {
-                ...storage.getState().settings,
-                voice: {
-                    ...storage.getState().settings.voice,
-                    providerId: 'local_direct',
-                    providers: {
-                        ...storage.getState().settings.voice.providers,
-                        local_direct: { schemaVersion: 1, config: {
-                            ...readLocalDirectVoiceSettings(storage.getState().settings.voice),
-                            stt: {
-                                ...readLocalDirectVoiceSettings(storage.getState().settings.voice).stt,
-                                provider: 'device',
-                            },
-                            tts: {
-                                ...readLocalDirectVoiceSettings(storage.getState().settings.voice).tts,
-                                autoSpeakReplies: false,
-                            },
-                        } },
-                    },
-                },
-            },
-        });
-
-        const { resolveLocalSttProvider } = await import('./localVoiceSettings');
-        expect(resolveLocalSttProvider(storage.getState().settings)).toBe('device');
-
-        const { toggleLocalVoiceTurn, getLocalVoiceState } = await loadLocalVoiceEngineWithCompatState();
-        await toggleLocalVoiceTurn('s1');
-        expect(getLocalVoiceState().status).toBe('recording');
-        expect(speechRecStart).toHaveBeenCalled();
-    });
-
     it('projects a spontaneous device end-only termination as a recoverable runtime failure', async () => {
         setPlatformOs('web');
         const storage = await getStorage();

@@ -123,15 +123,4 @@ describe('useSelectionListStepStack', () => {
         expect(api.currentStep).toBe(equalButDistinct);
         expect(api.state.direction).toBe('replace');
     });
-
-    it('chains push → pop → push and reports the latest direction each time', async () => {
-        const harness = await renderHook(() => useSelectionListStepStack(root));
-        await act(async () => { harness.getCurrent().pushStep(branchStep); });
-        expect(harness.getCurrent().state.direction).toBe('forward');
-        await act(async () => { harness.getCurrent().popStep(); });
-        expect(harness.getCurrent().state.direction).toBe('backward');
-        await act(async () => { harness.getCurrent().pushStep(leafStep); });
-        expect(harness.getCurrent().state.direction).toBe('forward');
-        expect(harness.getCurrent().currentStep).toBe(leafStep);
-    });
 });

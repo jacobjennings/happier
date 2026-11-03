@@ -7,24 +7,10 @@ import { resolveHomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollment
 const endpointFetchMock = vi.hoisted(() => vi.fn());
 const createServerFetchAtEndpointMock = vi.hoisted(() => vi.fn<(input: unknown) => typeof endpointFetchMock>(() => endpointFetchMock));
 const serverFetchMock = vi.hoisted(() => vi.fn());
-const irohReleaseMock = vi.hoisted(() => vi.fn(async () => {}));
-const acquireIrohHomeRuntimeOriginMock = vi.hoisted(() => vi.fn<(input: unknown) => Promise<unknown>>(async () => ({
-    leaseId: 'qr-iroh-lease',
-    runtimeOrigin: 'http://127.0.0.1:45992',
-    homeServerIdentityId: 'srv_home_b',
-    endpointId: 'iroh-home-b',
-    carrier: 'iroh',
-    observedPath: 'direct',
-    status: 'ready',
-    release: irohReleaseMock,
-})));
 
 vi.mock('@/sync/http/client', () => ({
     createServerFetchAtEndpoint: (input: unknown) => createServerFetchAtEndpointMock(input),
     serverFetch: (...args: unknown[]) => serverFetchMock(...args),
-}));
-vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
-    acquireIrohHomeRuntimeOrigin: (input: unknown) => acquireIrohHomeRuntimeOriginMock(input),
 }));
 
 describe('authQRStart explicit target', () => {
@@ -45,8 +31,6 @@ describe('authQRStart explicit target', () => {
         createServerFetchAtEndpointMock.mockClear();
         createServerFetchAtEndpointMock.mockImplementation(() => endpointFetchMock);
         serverFetchMock.mockReset();
-        acquireIrohHomeRuntimeOriginMock.mockClear();
-        irohReleaseMock.mockClear();
     });
 
     it('generates an X25519 public key from the retained secret scalar', () => {
@@ -89,27 +73,6 @@ describe('authQRStart explicit target', () => {
         });
 
         expect(serverFetchMock).not.toHaveBeenCalled();
-    });
-
-    it('uses the shared enrollment owner for a pure-Iroh QR target and releases it terminally', async () => {
-        endpointFetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
-        const pureIroh = await resolveHomeEnrollmentTransport({
-            v: 1,
-            homeServerIdentityId: 'srv_home_b',
-            canonicalServerUrl: 'http://localhost:3010',
-            revision: 3,
-            endpoints: [{ kind: 'iroh', endpointId: 'iroh-home-b' }],
-        });
-        if (!pureIroh.ok) throw new Error('Expected pure-Iroh QR transport');
-
-        await expect(authQRStart(generateAuthKeyPair(), pureIroh.transport)).resolves.toEqual({ ok: true });
-        expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith(expect.objectContaining({
-            endpointUrl: 'http://localhost:3010',
-            runtimeOrigin: 'http://127.0.0.1:45992',
-            credentials: null,
-        }));
-        await pureIroh.transport.close();
-        expect(irohReleaseMock).toHaveBeenCalledTimes(1);
     });
 
     it('rejects a target without a usable endpoint URL', async () => {

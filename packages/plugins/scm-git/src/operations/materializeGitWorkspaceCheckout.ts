@@ -14,7 +14,7 @@ import {
     type ScmTransportIdentityV1,
 } from '@happier-dev/plugin-sdk/scm';
 
-import { normalizeCommitRef, runScmCommand } from '../runtime.js';
+import { getScmCommandIndeterminateErrorCode, normalizeCommitRef, runScmCommand } from '../runtime.js';
 import { inspectGitCheckoutIdentity, isGitLinkedWorktreeIdentity } from '../checkoutIdentity.js';
 import { buildScmNonInteractiveEnv } from '../providers/shared/nonInteractiveEnv.js';
 import { parseGitWorktreeListPorcelain } from '../worktreeListParser.js';
@@ -108,9 +108,45 @@ async function runGitOrThrow(input: Readonly<{
     });
     throwIfAborted(input.signal);
     if (!result.success) {
-        throw new Error(result.stderr || result.stdout || SCM_OPERATION_ERROR_CODES.COMMAND_FAILED);
+        throw Object.assign(new Error(result.stderr || result.stdout || SCM_OPERATION_ERROR_CODES.COMMAND_FAILED), {
+            exitCode: getScmCommandIndeterminateErrorCode(result) ? undefined : result.exitCode,
+        });
     }
     return result.stdout.trim();
+}
+
+/** Only a definite missing ref result is absence; interrupted reads still throw. */
+async function readGitOrNull(input: Parameters<typeof runGitOrThrow>[0]): Promise<string | null> {
+    try {
+        return await runGitOrThrow(input);
+    } catch (error) {
+        if (error && typeof error === 'object' && 'exitCode' in error && error.exitCode === 1) return null;
+        throw error;
+    }
+}
+
+async function hasGitWorktreeBranch(repoRoot: string, branchName: string): Promise<boolean> {
+    if (await readGitOrNull({ cwd: repoRoot,
+        args: ['rev-parse', '--verify', '--quiet', '--end-of-options', `refs/heads/${branchName}^{commit}`],
+    }) !== null) return true;
+    // Without a local branch Git would resolve this name to the tag and detach HEAD.
+    if (await readGitOrNull({ cwd: repoRoot,
+        args: ['rev-parse', '--verify', '--quiet', '--end-of-options', `refs/tags/${branchName}`],
+    }) !== null) return false;
+    // Refuse only definite absence. Git owns remote disambiguation and checkout semantics.
+    if ((await runGitOrThrow({ cwd: repoRoot,
+        args: ['for-each-ref', '--count=1', '--format=%(refname)', `refs/remotes/*/${branchName}`],
+    })) !== '') return true;
+    const fetchConfig = await readGitOrNull({ cwd: repoRoot,
+        args: ['config', '--get-regexp', '^remote\\..*\\.fetch$'],
+    });
+    // A custom destination makes the conventional-namespace miss inconclusive.
+    // Do not interpret refspec matching or remote preference; defer those to Git.
+    return (fetchConfig ?? '').split(/\r?\n/).some((entry) => {
+        const refspec = entry.slice(entry.indexOf(' ') + 1);
+        const destination = refspec.split(':')[1];
+        return Boolean(destination && !destination.startsWith('refs/remotes/'));
+    });
 }
 
 export async function readGitRevision(input: Readonly<{
@@ -580,6 +616,15 @@ export async function materializeGitWorkspaceCheckoutAtPath(input: Readonly<{
     const normalizedBaseRef = input.branchMode === 'existing'
         ? null
         : resolveNormalizedBaseRef(input.baseRef);
+    // Admit the exact ref before mkdir, temporary-directory replacement or
+    // worktree add. This code is a known no-effect refusal for host callers;
+    // failures after this read remain potentially effectful.
+    const refAvailable = input.branchMode === 'existing'
+        ? await hasGitWorktreeBranch(input.repoRoot, branchName)
+        : await readGitOrNull({ cwd: input.repoRoot,
+            args: ['rev-parse', '--verify', '--quiet', '--end-of-options', `${normalizedBaseRef ?? 'HEAD'}^{commit}`],
+        }) !== null;
+    if (!refAvailable) throw Object.assign(new Error('The selected Git ref is unavailable'), { code: 'ref_unavailable' });
     if (!await isDirectoryEmpty(input.targetPath)) {
         return {
             targetPath: await materializeGitWorktreeIntoExistingDirectory({

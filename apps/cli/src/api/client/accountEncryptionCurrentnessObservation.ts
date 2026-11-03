@@ -1,6 +1,13 @@
+
+
+import { readDeploymentAccountChangeV1 } from '@happier-dev/protocol/deployments/deploymentActionsV1';
+import { readAccountIdentitiesChangeV1 } from '@happier-dev/protocol/changes';
+import { PROJECT_SOURCES_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol/projects/sources/projectSourceV1';
+import { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol/changes';
+import { HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol/changes';
 import { createAccountEncryptionCurrentnessObservation, projectAccountEncryptionIdentity, sameAccountEncryptionIdentity,
     waitForAccountEncryptionObservation, type AccountEncryptionIdentity } from '@happier-dev/sync-client';
-import { UpdateContainerSchema } from '@happier-dev/protocol/updates';
+import { EphemeralUpdateSchema, UpdateContainerSchema } from '@happier-dev/protocol/updates';
 import { createManagedConnectionSupervisor, DEFAULT_MANAGED_CONNECTION_POLICY, type ManagedConnectionSupervisor, type ManagedConnectionTransport } from '@happier-dev/connection-supervisor';
 import { fetchAccountEncryptionCurrentnessFromServer, AccountEncryptionCurrentnessUnavailableError } from './accountEncryptionCurrentness';
 import { normalizeServerHttpBaseUrl, resolveServerHttpBaseUrl, runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
@@ -8,9 +15,14 @@ import { classifyTransportErrorToProbeResult } from '@/api/connection/classifyTr
 import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 import { logger } from '@/ui/logger';
 import { DEFAULT_ACCOUNT_CHANGES_PAGE_LIMIT, fetchChanges } from '@/api/changes';
-import { readSessionFollowChangeHintV1 } from '@happier-dev/protocol/sessions/follow/changes';
-import { readProviderAccountUsageRefreshRecordIdV1 } from '@happier-dev/protocol/changes';
+import { readSessionFollowChangeHintV1, readSessionFollowReceiverChangeV1 } from '@happier-dev/protocol/sessions/follow/changes';
+import { readConnectedServicesAccountChangeV1, readProviderAccountUsageRefreshRecordIdV1, readSessionFollowSourceChangedV1, readSessionFollowReceiverAvailabilityChangedV1 } from '@happier-dev/protocol/changes';
 import { parseConnectedAccountCatalogPhysicalKeyV1 } from '@happier-dev/protocol/connect/connectedAccountConfigurationRowsV1';
+import type { RunFollowOriginalV1 } from '@happier-dev/protocol/sessions/follow/sessionFollowInputV1';
+
+export type RunFollowAvailability = Extract<RunFollowOriginalV1['source'], { kind: 'execution_run' }>
+    | Readonly<{ kind: 'reconnected' }> | Readonly<{ kind: 'machine'; machineId: string }>;
+export type RequesterSessionFollowRuleInvalidation = Readonly<{ full: true; continuityReset?: true }>;
 
 type Scope = Readonly<{ accountId: string; token: string; serverBaseUrl: string; signal?: AbortSignal }>;
 export type RequesterAccountSettingsObservation = Readonly<
@@ -19,16 +31,26 @@ export type RequesterAccountSettingsObservation = Readonly<
 >;
 export type RequesterConnectedAccountObservation = Readonly<{
     quotaRefreshRecordIds?: readonly string[];
+    quotaRefreshOnly?: boolean;
+    services?: readonly import('@happier-dev/protocol').QualifiedConnectedAccountRef['service'][];
     resetQuotaSchedule?: boolean;
 }>;
+/** Private invalidations over the existing Account cursor, never Session access authority. */
+export type RequesterSessionInventoryObservation =
+    | Readonly<{ kind: 'changes'; sessionIds: readonly string[]; reset: boolean }>
+    | Readonly<{ kind: 'connected' | 'disconnected' | 'currentness' | 'unavailable' }>
+    | Readonly<{ kind: 'activity'; id: string; active: boolean; activeAt: number }>;
 type Observation = Readonly<{
-    read(signal?: AbortSignal): Promise<AccountEncryptionIdentity>;
+    read(signal?: AbortSignal, options?: Readonly<{ requireLiveObservation?: true }>): Promise<AccountEncryptionIdentity>;
     isCurrent(expected: AccountEncryptionIdentity): boolean;
     subscribeAccountSettings(listener: (event: RequesterAccountSettingsObservation) => void): () => void;
-    subscribeSessionFollowRules(listener: () => void): () => void;
+    subscribeSessionFollowRules(listener: (change?: RequesterSessionFollowRuleInvalidation) => void): () => void;
+    subscribeRunFollowAvailability(listener: (change: RunFollowAvailability) => void): () => void;
     subscribeConnectedAccounts(listener: (event: RequesterConnectedAccountObservation) => void): () => void;
     /** Exact Session invalidation; null rebuilds demanded ranges after a gap/reconnect. */
-    subscribeSessionFollowSources(listener: (sourceSessionId: string | null) => void): () => void;
+    subscribeSessionFollowSources(listener: (sourceSessionId: string | null, receiver?: true, availabilityChanged?: boolean, sourceChanged?: false) => void): () => void;
+    subscribeSessionInventory(listener: (event: RequesterSessionInventoryObservation) => void): () => void;
+    subscribeEnvironmentAccess(listener: (event: RequesterEnvironmentAccessObservation) => void): () => void;
     dispose(): Promise<void>;
 }>;
 type SharedObservation = Observation & {
@@ -120,8 +142,8 @@ export function acquireRequesterAccountEncryptionCurrentness(scope: Scope): Obse
     let released = false;
     const subscriptions = new Set<() => void>();
     return {
-        read: signal => released ? Promise.reject(new AccountEncryptionCurrentnessUnavailableError())
-            : owned.read(signal ? AbortSignal.any([signal, retirement.signal]) : retirement.signal),
+        read: (signal, options) => released ? Promise.reject(new AccountEncryptionCurrentnessUnavailableError())
+            : owned.read(signal ? AbortSignal.any([signal, retirement.signal]) : retirement.signal, options),
         isCurrent: expected => !released && owned.isCurrent(expected),
         subscribeAccountSettings(listener) {
             if (released) throw new AccountEncryptionCurrentnessUnavailableError();
@@ -135,9 +157,21 @@ export function acquireRequesterAccountEncryptionCurrentness(scope: Scope): Obse
             subscriptions.add(release);
             return () => { subscriptions.delete(release); release(); };
         },
+        subscribeRunFollowAvailability(listener) {
+            if (released) throw new AccountEncryptionCurrentnessUnavailableError();
+            const release = owned.subscribeRunFollowAvailability(listener);
+            subscriptions.add(release);
+            return () => { subscriptions.delete(release); release(); };
+        },
         subscribeSessionFollowSources(listener) {
             if (released) throw new AccountEncryptionCurrentnessUnavailableError();
             const release = owned.subscribeSessionFollowSources(listener);
+            subscriptions.add(release);
+            return () => { subscriptions.delete(release); release(); };
+        },
+        subscribeSessionInventory(listener) {
+            if (released) throw new AccountEncryptionCurrentnessUnavailableError();
+            const release = owned.subscribeSessionInventory(listener);
             subscriptions.add(release);
             return () => { subscriptions.delete(release); release(); };
         },
@@ -146,6 +180,13 @@ export function acquireRequesterAccountEncryptionCurrentness(scope: Scope): Obse
             const release = owned.subscribeConnectedAccounts(listener);
             subscriptions.add(release);
             return () => { subscriptions.delete(release); release(); };
+        },
+        subscribeEnvironmentAccess(listener) {
+            if (released) throw new AccountEncryptionCurrentnessUnavailableError();
+            const release = owned.subscribeEnvironmentAccess(listener);
+            const retire = () => { listener({ kind: 'retired' }); release(); };
+            subscriptions.add(retire);
+            return () => { subscriptions.delete(retire); release(); };
         },
         async dispose() {
             if (released) return;
@@ -173,8 +214,14 @@ function createObservation(scope: Scope): SharedObservation {
     let lifetime = new AbortController();
     const retirement = new AbortController();
     let connected = false;
+    let hasConnected = false;
     let disposed = false;
     let unsupported = false;
+    // This computer's custody for the observed bearer: read from creation
+    // (fail closed until then) and again beside every fresh HTTP read.
+
+
+
     const currentness = createAccountEncryptionCurrentnessObservation({
         accountId: scope.accountId,
         readFresh: signal => fetchAccountEncryptionCurrentnessFromServer({ token: activeToken,
@@ -184,27 +231,53 @@ function createObservation(scope: Scope): SharedObservation {
     let supervisor: ManagedConnectionSupervisor | undefined;
     const settingsListeners = new Set<(event: RequesterAccountSettingsObservation) => void>();
     let settingsEvent: RequesterAccountSettingsObservation | null = null;
-    const followListeners = new Set<() => void>();
-    const sourceListeners = new Set<(sourceSessionId: string | null) => void>();
+    const followListeners = new Set<(change?: RequesterSessionFollowRuleInvalidation) => void>();
+    const runAvailabilityListeners = new Set<(change: RunFollowAvailability) => void>();
+    const publishRunAvailability = (change: RunFollowAvailability) => {
+        for (const listener of runAvailabilityListeners) listener(change);
+    };
+    const sourceListeners = new Set<(sourceSessionId: string | null, receiver?: true, availabilityChanged?: boolean, sourceChanged?: false) => void>();
     const connectedAccountListeners = new Set<(event: RequesterConnectedAccountObservation) => void>();
+    const inventoryListeners = new Set<(event: RequesterSessionInventoryObservation) => void>();
+    const environmentAccessListeners = new Set<(event: RequesterEnvironmentAccessObservation) => void>();
+    const publishEnvironmentAccess = (event: RequesterEnvironmentAccessObservation) => {
+        for (const listener of environmentAccessListeners) listener(event);
+    };
+    const publishInventory = (event: RequesterSessionInventoryObservation) => {
+        for (const listener of inventoryListeners) listener(event);
+    };
     let followCursor = 0;
+    let followCursorAcknowledged = false;
     let followSyncRequested = false;
+    let followRequestedCursor: number | undefined;
     let followSyncPending: Promise<void> | null = null;
-    const publishFollow = () => { for (const listener of followListeners) listener(); };
-    const publishSource = (sourceSessionId: string | null) => { for (const listener of sourceListeners) listener(sourceSessionId); };
+    const publishFollow = (continuityReset?: true) => {
+        for (const listener of followListeners) listener({ full: true, ...(continuityReset ? { continuityReset } : {}) });
+    };
+    const publishSource = (sourceSessionId: string | null, receiver?: true, availabilityChanged?: boolean, sourceChanged?: false) => {
+        for (const listener of sourceListeners) listener(sourceSessionId, receiver, availabilityChanged, sourceChanged);
+    };
     const publishConnectedAccounts = (event: RequesterConnectedAccountObservation) => {
         for (const listener of connectedAccountListeners) listener(event);
     };
-    const hasFollowDemand = () => followListeners.size > 0 || sourceListeners.size > 0 || connectedAccountListeners.size > 0;
+    const hasFollowDemand = () => followListeners.size > 0 || sourceListeners.size > 0 || connectedAccountListeners.size > 0
+        || inventoryListeners.size > 0 || environmentAccessListeners.size > 0;
     const publishSettings = (event: RequesterAccountSettingsObservation) => {
         settingsEvent = event;
         for (const listener of settingsListeners) listener(event);
     };
-    const invalidate = () => { lifetime.abort(); lifetime = new AbortController(); currentness.invalidate(); };
+    const invalidate = () => { lifetime.abort(); lifetime = new AbortController(); followCursorAcknowledged = false; currentness.invalidate(); };
     // Classify the incumbent Account feed before invalidating private rules:
     // ordinary Session updates must not reload the rule corpus per occurrence.
-    const syncFollowChanges = () => {
+    const syncFollowChanges = (requestedCursor?: number) => {
         if (disposed || !connected || !hasFollowDemand()) return;
+        // The wake seq is the durable Account cursor, as in the Machine feed.
+        // Unknown/lower cursors retain a full catch-up (including Home restores).
+        const cursor = requestedCursor !== undefined && requestedCursor >= followCursor ? requestedCursor : undefined;
+        if (followCursorAcknowledged && cursor === followCursor) return;
+        followRequestedCursor = !followSyncRequested ? cursor
+            : followRequestedCursor !== undefined && cursor !== undefined
+                ? Math.max(followRequestedCursor, cursor) : undefined;
         followSyncRequested = true;
         if (followSyncPending) return;
         const captured = lifetime;
@@ -213,9 +286,24 @@ function createObservation(scope: Scope): SharedObservation {
             && references.has(token) && hasFollowDemand();
         const work = (async () => {
             while (followSyncRequested && current()) {
+                // The in-flight response may have consumed every queued wake.
+                // Keep the existing cursor as acknowledgment, not another read/cache.
+                if (followCursorAcknowledged && followRequestedCursor !== undefined && followRequestedCursor <= followCursor) {
+                    followSyncRequested = false;
+                    followRequestedCursor = undefined;
+                    break;
+                }
                 followSyncRequested = false;
+                followRequestedCursor = undefined;
+                const sessionIds = inventoryListeners.size ? new Set<string>() : null;
+                const environmentIds = new Set<string>();
+                let resetEnvironmentAccess = false;
+                let environmentAccessRetired = false;
+                let resetInventory = false;
+                let inventoryUnavailable = false;
                 let more = false;
                 do {
+                    followCursorAcknowledged = false;
                     const result = await runWithServerHttpBaseUrl(scope.serverBaseUrl, () => fetchChanges({
                         token, after: followCursor, signal: captured.signal,
                     }));
@@ -223,37 +311,92 @@ function createObservation(scope: Scope): SharedObservation {
                     if (result.status === 'ok') {
                         if (result.response.changes.some(change => change.kind === 'account'
                             && readSessionFollowChangeHintV1(change.hint) !== null)) publishFollow();
-                        for (const change of result.response.changes) if (change.kind === 'session') publishSource(change.entityId);
+                        for (const change of result.response.changes) {
+                            if (environmentAccessListeners.size > 0) {
+                                const deployment = readDeploymentAccountChangeV1(change);
+                                if (deployment && deployment.deploymentId === undefined) environmentIds.add(deployment.environmentId);
+                                if (readAccountIdentitiesChangeV1(change) || change.kind === 'account'
+                                    && (change.entityId === PROJECT_SOURCES_ACCOUNT_CHANGE_ENTITY_ID_V1
+                                        || change.entityId === TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1
+                                        || change.entityId === HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1)) {
+                                    resetEnvironmentAccess = true;
+                                }
+                            }
+                            const receiver = readSessionFollowReceiverChangeV1(change);
+                            if (receiver !== null) publishSource(receiver, true);
+                            if (change.kind === 'session') {
+                                const availabilityChanged = readSessionFollowReceiverAvailabilityChangedV1(change, followCursor);
+                                const sourceChanged = readSessionFollowSourceChangedV1(change, followCursor);
+                                // An older server can classify a metadata write as
+                                // non-source without qualifying receiver availability.
+                                // Preserve that distinction for bounded own-receiver recovery.
+                                if (availabilityChanged !== false || sourceChanged) {
+                                    publishSource(change.entityId, undefined, availabilityChanged, sourceChanged ? undefined : false);
+                                }
+                                sessionIds?.add(change.entityId);
+                            }
+                        }
+                        resetInventory ||= inventoryListeners.size > 0 && result.response.changes.some(change => change.kind === 'share'
+                            || change.kind === 'account' && change.entityId === 'teams');
                         const quotaRefreshRecordIds = result.response.changes.flatMap(change => {
                             const recordId = readProviderAccountUsageRefreshRecordIdV1(change);
                             return recordId ? [recordId] : [];
                         });
-                        if (quotaRefreshRecordIds.length || result.response.changes.some(change => change.kind === 'account'
-                            && (parseConnectedAccountCatalogPhysicalKeyV1(change.entityId) !== null
-                                || change.entityId === 'self' && typeof change.hint === 'object' && change.hint !== null
-                                    && 'connectedServices' in change.hint && change.hint.connectedServices === true))) {
-                            publishConnectedAccounts(quotaRefreshRecordIds.length ? { quotaRefreshRecordIds } : {});
+                        const serviceChanges = result.response.changes.flatMap(change => {
+                            const scope = readConnectedServicesAccountChangeV1(change);
+                            return scope ? [scope] : [];
+                        });
+                        const hasCatalogChange = result.response.changes.some(change => change.kind === 'account'
+                            && parseConnectedAccountCatalogPhysicalKeyV1(change.entityId) !== null);
+                        const hasConnectedAccountChange = hasCatalogChange || serviceChanges.length > 0;
+                        const services = !hasCatalogChange && serviceChanges.length > 0 && serviceChanges.every(change => change.scope === 'service')
+                            ? serviceChanges.flatMap(change => change.scope === 'service' ? [change.ref] : [])
+                            : undefined;
+                        if (quotaRefreshRecordIds.length || hasConnectedAccountChange) {
+                            publishConnectedAccounts({
+                                ...(quotaRefreshRecordIds.length ? { quotaRefreshRecordIds } : {}),
+                                ...(!hasConnectedAccountChange ? { quotaRefreshOnly: true } : {}),
+                                ...(services ? { services } : {}),
+                            });
                         }
                         followCursor = result.response.nextCursor;
+                        followCursorAcknowledged = true;
                         more = result.response.changes.length === DEFAULT_ACCOUNT_CHANGES_PAGE_LIMIT;
                     } else {
                         // A gap/failed classification cannot preserve a trusted cached rule set.
-                        publishFollow();
+                        publishFollow(true);
                         publishSource(null);
                         publishConnectedAccounts({ resetQuotaSchedule: true });
-                        if (result.status === 'cursor-gone') followCursor = result.currentCursor;
-                        else logger.warn('Requester Follow Account changes unavailable.');
+                        if (result.status === 'cursor-gone') {
+                            followCursor = result.currentCursor;
+                            resetInventory = true;
+                            resetEnvironmentAccess = true;
+                        } else {
+                            inventoryUnavailable = true;
+                            environmentAccessRetired = true;
+                            logger.warn('Requester Follow Account changes unavailable.');
+                        }
                         more = false;
                     }
                 } while (more && current());
+                if (current() && environmentAccessListeners.size) {
+                    if (environmentAccessRetired) publishEnvironmentAccess({ kind: 'retired' });
+                    else if (resetEnvironmentAccess) publishEnvironmentAccess({ kind: 'reset' });
+                    else if (environmentIds.size) publishEnvironmentAccess({ kind: 'changes', environmentIds: [...environmentIds] });
+                }
+                if (current() && inventoryListeners.size) publishInventory(inventoryUnavailable ? { kind: 'unavailable' }
+                    : { kind: 'changes', sessionIds: sessionIds ? [...sessionIds] : [], reset: resetInventory });
             }
         })().finally(() => {
             if (followSyncPending === work) followSyncPending = null;
-            if (followSyncRequested && !disposed && connected && hasFollowDemand()) syncFollowChanges();
+            if (followSyncRequested && !disposed && connected && hasFollowDemand()) syncFollowChanges(followRequestedCursor);
         });
         followSyncPending = work;
         // Transport failures are normalized by fetchChanges; keep listener failures observed, too.
-        void work.catch(() => { if (current()) logger.warn('Requester Follow invalidation unavailable.'); });
+        void work.catch(() => { if (current()) {
+            publishEnvironmentAccess({ kind: 'retired' });
+            logger.warn('Requester Follow invalidation unavailable.');
+        } });
     };
     // Stop settles the socket adapter's in-flight connect; never queue retirement
     // behind a connect or HTTP read that may still be waiting on the network.
@@ -290,7 +433,9 @@ function createObservation(scope: Scope): SharedObservation {
                 const body = raw && typeof raw === 'object' && 'body' in raw ? raw.body : null;
                 if (body && typeof body === 'object' && 't' in body) {
                     if (body.t === 'account-change') {
-                        if (UpdateContainerSchema.safeParse(raw).success) syncFollowChanges();
+                        const parsed = UpdateContainerSchema.safeParse(raw);
+                        if (parsed.success) syncFollowChanges(Number.isSafeInteger(parsed.data.seq) && parsed.data.seq >= 0
+                            ? parsed.data.seq : undefined);
                     } else if (body.t === 'update-account' && 'id' in body && body.id === scope.accountId && 'settingsV2' in body) {
                         publishSettings({ kind: 'settings', update: UpdateContainerSchema.safeParse(raw).success ? body.settingsV2 : undefined });
                     } else if (body.t === 'account-settings-changed') {
@@ -300,20 +445,66 @@ function createObservation(scope: Scope): SharedObservation {
                 if (currentness.update(raw)) {
                     lifetime.abort();
                     lifetime = new AbortController();
+                    followCursorAcknowledged = false;
+                    publishEnvironmentAccess({ kind: 'retired' });
+                    publishInventory({ kind: 'currentness' });
+                    if (inventoryListeners.size) syncFollowChanges();
                 }
             });
-            transport.onConnected(() => { if (isActive()) { connected = true; invalidate(); currentness.connected(); publishSettings({ kind: 'reconnected' }); publishFollow(); publishSource(null); publishConnectedAccounts({ resetQuotaSchedule: true }); syncFollowChanges(); } });
-            transport.onDisconnected(() => { if (isActive()) { connected = false; invalidate(); currentness.disconnected(); publishSettings({ kind: 'disconnected' }); publishFollow(); publishSource(null); } });
+            socket.on('ephemeral', (raw: unknown) => {
+                if (!isActive() || !connected || !transport.isConnected()) return;
+                if (runAvailabilityListeners.size && raw && typeof raw === 'object' && 'type' in raw
+                    && (raw.type === 'execution-run-updated' || raw.type === 'machine-activity')) {
+                    const parsed = EphemeralUpdateSchema.safeParse(raw);
+                    if (parsed.success && parsed.data.type === 'execution-run-updated') {
+                        const update = parsed.data;
+                        if ('sessionId' in update && typeof update.sessionId === 'string' && update.run && typeof update.run === 'object'
+                            && 'runId' in update.run && typeof update.run.runId === 'string') {
+                            publishRunAvailability({ kind: 'execution_run', sessionId: update.sessionId, runId: update.run.runId });
+                        } else if (typeof update.machineId === 'string' && typeof update.runId === 'string') {
+                            publishRunAvailability({ kind: 'execution_run', machineId: update.machineId, runId: update.runId });
+                        }
+                    } else if (parsed.success && parsed.data.type === 'machine-activity'
+                        && parsed.data.active && parsed.data.reconnected === true) {
+                        publishRunAvailability({ kind: 'machine', machineId: parsed.data.id });
+                    }
+                }
+                if (inventoryListeners.size === 0) return;
+                if (!raw || typeof raw !== 'object' || !('type' in raw) || raw.type !== 'activity') return;
+                const parsed = EphemeralUpdateSchema.safeParse(raw);
+                if (parsed.success && parsed.data.type === 'activity') {
+                    const { id, active, activeAt } = parsed.data;
+                    publishInventory({ kind: 'activity', id, active, activeAt });
+                }
+            });
+            transport.onConnected(() => { if (isActive()) {
+                const reconnected = hasConnected;
+                hasConnected = true;
+                connected = true; invalidate(); currentness.connected(); publishInventory({ kind: 'connected' });
+                publishEnvironmentAccess({ kind: 'reset' });
+                publishSettings({ kind: 'reconnected' }); publishFollow(true); publishSource(null);
+                // Initial attachment already has its caller's cold demand.
+                if (reconnected) publishRunAvailability({ kind: 'reconnected' });
+                publishConnectedAccounts({ resetQuotaSchedule: true }); syncFollowChanges();
+            } });
+            transport.onDisconnected(() => { if (isActive()) { connected = false; invalidate(); currentness.disconnected(); publishEnvironmentAccess({ kind: 'retired' }); publishInventory({ kind: 'disconnected' }); publishSettings({ kind: 'disconnected' }); publishFollow(true); publishSource(null); } });
             return transport;
         };
         supervisor = createManagedConnectionSupervisor({ ...DEFAULT_MANAGED_CONNECTION_POLICY,
             createTransport,
             probeReadiness: async () => ({ status: 'ready' }), classifyTransportErrorToProbeResult,
-            onAuthFailed: () => { connected = false; invalidate(); currentness.disconnected(); },
+            onAuthFailed: () => {
+                connected = false; invalidate(); currentness.disconnected();
+                publishEnvironmentAccess({ kind: 'retired' });
+                publishInventory({ kind: 'disconnected' });
+                publishInventory({ kind: 'unavailable' });
+            },
         });
         // A runtime without this transport keeps the incumbent fresh HTTP path.
         // Once a channel exists, connection failure is unknown, never fallback.
         try { await startConnection(); } catch (error) {
+            publishEnvironmentAccess({ kind: 'retired' });
+            publishInventory({ kind: 'unavailable' });
             if (createdTransport) throw error;
             logger.warn('Account encryption observation transport unavailable; using fresh HTTP reads.');
             unsupported = true;
@@ -333,6 +524,10 @@ function createObservation(scope: Scope): SharedObservation {
             if (!alreadyDemanded) syncFollowChanges();
             return () => { followListeners.delete(listener); };
         },
+        subscribeRunFollowAvailability(listener) {
+            runAvailabilityListeners.add(listener);
+            return () => { runAvailabilityListeners.delete(listener); };
+        },
         subscribeSessionFollowSources(listener) {
             const alreadyDemanded = hasFollowDemand();
             sourceListeners.add(listener);
@@ -346,6 +541,20 @@ function createObservation(scope: Scope): SharedObservation {
             if (!alreadyDemanded) syncFollowChanges();
             return () => { connectedAccountListeners.delete(listener); };
         },
+        subscribeSessionInventory(listener) {
+            inventoryListeners.add(listener);
+            listener({ kind: connected ? 'connected' : 'disconnected' });
+            // Join an in-flight catch-up, or establish this new demand's cursor baseline.
+            syncFollowChanges();
+            return () => { inventoryListeners.delete(listener); };
+        },
+        subscribeEnvironmentAccess(listener) {
+            const alreadyDemanded = hasFollowDemand();
+            environmentAccessListeners.add(listener);
+            listener({ kind: connected ? 'reset' : 'retired' });
+            if (!alreadyDemanded) syncFollowChanges();
+            return () => { environmentAccessListeners.delete(listener); };
+        },
         async releaseCredential(token) {
             if (disposed || token !== activeToken || references.has(token)) return;
             const nextToken = references.keys().next().value;
@@ -355,9 +564,11 @@ function createObservation(scope: Scope): SharedObservation {
             connected = false;
             invalidate();
             currentness.disconnected();
+            publishEnvironmentAccess({ kind: 'retired' });
+            publishInventory({ kind: 'disconnected' });
             // Settings holders lose the retired credential's channel like any disconnect.
             publishSettings({ kind: 'disconnected' });
-            publishFollow();
+            publishFollow(true);
             publishSource(null);
             // Before the async import completes, its first factory uses the new token.
             if (!supervisor || unsupported) return;
@@ -370,12 +581,15 @@ function createObservation(scope: Scope): SharedObservation {
             });
         },
         isCurrent: expected => !disposed && (unsupported || connected && currentness.isCurrent(expected)),
-        async read(signal) {
+        async read(signal, options) {
             signal?.throwIfAborted();
             const readerSignal = signal ? AbortSignal.any([signal, retirement.signal]) : retirement.signal;
             await waitForObservation(initial, readerSignal);
             if (disposed) throw new AccountEncryptionCurrentnessUnavailableError();
             if (unsupported) {
+                // Retained private snapshots require push continuity. Other
+                // readers retain their incumbent fresh-HTTP fallback.
+                if (options?.requireLiveObservation) throw new AccountEncryptionCurrentnessUnavailableError();
                 const fallbackSignal = AbortSignal.any([readerSignal, lifetime.signal]);
                 return projectAccountEncryptionIdentity(await waitForObservation(fetchAccountEncryptionCurrentnessFromServer({ token: activeToken,
                     serverBaseUrl: scope.serverBaseUrl, signal: fallbackSignal }), fallbackSignal));
@@ -394,11 +608,16 @@ function createObservation(scope: Scope): SharedObservation {
         async dispose() {
             disposed = true; activeTransport = undefined; connected = false; retirement.abort(); invalidate();
             currentness.dispose();
+            publishEnvironmentAccess({ kind: 'retired' });
+            publishInventory({ kind: 'disconnected' });
             publishSettings({ kind: 'disconnected' });
             settingsListeners.clear();
             followListeners.clear();
+            runAvailabilityListeners.clear();
             sourceListeners.clear();
             connectedAccountListeners.clear();
+            inventoryListeners.clear();
+            environmentAccessListeners.clear();
             settingsEvent = null;
             await stopConnection();
             await initial;
@@ -410,3 +629,8 @@ function createObservation(scope: Scope): SharedObservation {
 export function waitForObservation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
     return waitForAccountEncryptionObservation(operation, signal);
 }
+
+export type RequesterEnvironmentAccessObservation =
+    | Readonly<{ kind: 'changes'; environmentIds: readonly string[] }>
+    | Readonly<{ kind: 'reset' }>
+    | Readonly<{ kind: 'retired' }>;

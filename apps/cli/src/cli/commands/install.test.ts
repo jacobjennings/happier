@@ -1,14 +1,7 @@
-import { readdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CommandContext } from '@/cli/commandRegistry';
-import { configuration, reloadConfiguration } from '@/configuration';
-import { createPluginStateStore } from '@/plugins/store/state.testkit';
-import { inspectPluginSource } from '@/plugins/store/install/source';
-import { createEnvKeyScope } from '@/testkit/env/envScope';
-import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureStdout } from '@/testkit/logger/captureOutput';
 
 import { runInstallCliCommand } from './install';
@@ -279,6 +272,36 @@ describe('runInstallCliCommand', () => {
     expect(stdout.text()).not.toContain('Installing');
   });
 
+  it('plans an external Agent through the normalized CLI descriptor without installing it', async () => {
+    const invokeAgentCliInstall = vi.fn().mockResolvedValue({
+      ok: true,
+      alreadyInstalled: false,
+      logPath: null,
+      plan: {
+        agentId: 'acme-agent',
+        title: 'Acme Agent CLI',
+        binaries: ['acme-agent'],
+        platform: 'linux',
+        docsUrl: null,
+        commands: [],
+        requiresAdmin: false,
+        installMode: 'managed_package',
+        managedInstall: { kind: 'managed_package', packageName: '@acme/agent-cli', binaryName: 'acme-agent' },
+      },
+    });
+
+    await runInstallCliCommand(
+      makeContext(['install', 'provider', 'acme-agent', '--dry-run']),
+      makeDeps({ invokeAgentCliInstall }),
+    );
+
+    expect(invokeAgentCliInstall).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'acme-agent',
+      runtimeSpec: expect.objectContaining({ id: 'acme-agent', title: 'Acme Agent CLI' }),
+      params: { dryRun: true, skipIfInstalled: true },
+    }));
+  });
+
   it('rejects unknown provider ids with a non-zero exit', async () => {
     const error = vi.fn();
     const exit = vi.fn();
@@ -295,34 +318,4 @@ describe('runInstallCliCommand', () => {
     expect(exit).toHaveBeenCalledWith(1);
   });
 
-  it('cleans up archive staging directories when extraction fails', async () => {
-    const home = await createTempDir('happier-plugin-install-');
-    const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'PATH']);
-    envScope.patch({ HAPPIER_HOME_DIR: home, PATH: process.env.PATH ?? '' });
-    reloadConfiguration();
-
-    const corruptArchivePath = join(home, 'corrupt-plugin.tar.gz');
-    await writeFile(corruptArchivePath, 'not a real archive', 'utf8');
-
-    try {
-      const result = await inspectPluginSource({
-        happyHomeDir: home,
-        locator: corruptArchivePath,
-        sourceKind: 'archive',
-        skipIfInstalled: true,
-      });
-
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.errorCode).toBe('plugin_install_failed');
-
-      const store = createPluginStateStore({ happyHomeDir: home });
-      const cacheEntries = await readdir(store.paths.cacheDir);
-      expect(cacheEntries.filter((entry) => entry.startsWith('plugin-install-'))).toHaveLength(0);
-    } finally {
-      envScope.restore();
-      reloadConfiguration();
-      await removeTempDir(home);
-    }
-  });
 });

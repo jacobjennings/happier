@@ -16,7 +16,7 @@ import type { MachineRpcReadAdmission } from './machineRpcReadAdmission';
  */
 export const DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS = 30_000;
 
-export type ServerScopedMachineRpcParams<A> = Readonly<{
+export type ServerScopedMachineRpcParams<A, R = unknown> = Readonly<{
     machineId: string;
     method: string;
     payload: A;
@@ -44,6 +44,8 @@ export type ServerScopedMachineRpcParams<A> = Readonly<{
     onDispatched?: () => void;
     /** Read-only consumers may join acquisition only after per-borrower admission. */
     readAdmission?: MachineRpcReadAdmission;
+    /** Stable pure decoder, applied once inside the admitted physical read. */
+    decodeResult?: (raw: unknown) => R;
 }>;
 
 export type ActiveServerRpcContext = Readonly<{
@@ -159,6 +161,8 @@ export type ScopedSocketConnectParams = Readonly<{
 export type ScopedSocketClient = Readonly<{
     /** Current physical transport readiness, not the logical holder's retention. */
     connected?: boolean;
+    /** Additional physical-entry use owned by the shared RPC issuer's native ACK. */
+    retain?: () => () => void;
     emitWithAck?: (event: string, payload: any) => Promise<unknown>;
     timeout: (ms: number) => { emitWithAck: (event: string, payload: any) => Promise<unknown> };
     emit: (event: string, payload: any) => void;

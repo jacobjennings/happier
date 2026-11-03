@@ -1,11 +1,9 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import {
     installRestoreRouteCommonModuleMocks,
 } from './restoreRouteTestHelpers';
-import { encodeBase64 } from '@/encryption/base64';
 
 type ReactActEnvironmentGlobal = typeof globalThis & {
     IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -55,18 +53,6 @@ vi.mock('@/utils/platform/platform', () => ({
     isRunningOnMac: () => false,
 }));
 
-vi.mock('@/utils/platform/responsive', () => ({
-    useDeviceType: () => 'phone',
-}));
-
-vi.mock('@/hooks/server/useFeatureDecision', () => ({
-    useFeatureDecision: () => ({ state: 'enabled' }),
-}));
-
-vi.mock('@/auth/context/AuthContext', () => ({
-    useAuth: () => ({ login: vi.fn(async () => undefined) }),
-}));
-
 vi.mock('@/utils/platform/qrScannerSupport', () => ({
     isWebQrScannerSupported: () => true,
     canUseCurrentDeviceQrScanner: () => true,
@@ -83,7 +69,24 @@ vi.mock('@/components/account/restore/RestoreScanComputerQrView', () => ({
     },
 }));
 
+// Everything below that reaches react-native must load after the options above are installed.
+const { installTokenStorageWebPlatformMocks } = await import('@/auth/storage/tokenStorage.testHelpers');
+installTokenStorageWebPlatformMocks();
+const { flushHookEffects, renderScreen } = await import('@/dev/testkit');
+const { encodeBase64 } = await import('@/encryption/base64');
+const { buildHomeQrInviteDeepLink, buildHomeQrInviteRestoreRoutePath } = await import('@/auth/pairing/pairingUrl');
+const { installLocalStorageMock } = await import('@/auth/storage/tokenStorage.web.testHelpers');
+const { initializeAuthRouteRuntimeForTests } = await import('@/dev/testkit/harness/authRouteRuntimeHarness');
+const { createDirectoryHttpFixture } = await import('@/sync/ops/accountDirectory/accountDirectoryTestFixtures');
+const { adoptHomeProfile, resetServerProfilesRuntimeForTests } = await import('@/sync/domains/server/serverProfiles');
+await initializeAuthRouteRuntimeForTests();
+const { default: Screen } = await import('@/app/(app)/restore/index');
+
+let localStorage: ReturnType<typeof installLocalStorageMock> | undefined;
 afterEach(() => {
+    resetServerProfilesRuntimeForTests();
+    localStorage?.restore();
+    localStorage = undefined;
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     restoreRouteIngressState.params = {};
@@ -92,23 +95,33 @@ afterEach(() => {
 });
 
 describe('/restore (web phone)', () => {
-    it('defaults to the scan-desktop restore flow on phone-sized web', async () => {
-        vi.stubGlobal('navigator', { maxTouchPoints: 5, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)' } as any);
-
-        vi.resetModules();
-        const { default: Screen } = await import('@/app/(app)/restore/index');
+    it('selects the scan-desktop restore flow on phone-sized web even with one saved Home to display a QR for', async () => {
+        localStorage = installLocalStorageMock();
+        resetServerProfilesRuntimeForTests();
+        // One established saved Home makes the QR-first branch reachable, so only the phone heuristic can pick the scanner.
+        vi.stubGlobal('navigator', {
+            ...globalThis.navigator,
+            locks: globalThis.navigator.locks,
+            maxTouchPoints: 5,
+            userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)',
+        } as any);
+        // The viewport is a platform fact: report the phone window through the Dimensions authority useWindowDimensions reads.
+        const { Dimensions } = await import('react-native');
+        vi.spyOn(Dimensions, 'get').mockReturnValue({ width: 360, height: 800, scale: 2, fontScale: 1 });
+        await adoptHomeProfile({
+            descriptor: createDirectoryHttpFixture().home.connectionDescriptor,
+            source: 'account-directory', descriptorAuthority: 'current_connection_observation',
+        });
 
         const screen = await renderScreen(<Screen />);
         await flushHookEffects();
-        const scanner = screen.findAllByProps({ 'data-testid': 'RestoreScanComputerQrView' });
-        expect(scanner).toHaveLength(1);
+        expect(screen.findAllByProps({ 'data-testid': 'RestoreScanComputerQrView' })).toHaveLength(1);
+        expect(screen.findAllByProps({ 'data-testid': 'RestoreQrView' })).toHaveLength(0);
         expect(restoreRouteIngressState.scannerProps?.entryIntent).toBe('enter_home');
     });
 
     it('consumes a routed V2 handoff once and passes the link to the embedded restore owner', async () => {
-        vi.resetModules();
-        const pairing = await import('@/auth/pairing/pairingUrl');
-        const pairingLink = pairing.buildHomeQrInviteDeepLink({
+        const pairingLink = buildHomeQrInviteDeepLink({
             invite: {
                 v: 2,
                 intent: 'home_device',
@@ -126,11 +139,10 @@ describe('/restore (web phone)', () => {
                 expiresAtMs: Date.now() + 60_000,
             },
         });
-        const restorePath = pairing.buildHomeQrInviteRestoreRoutePath(pairingLink, 'add_home');
+        const restorePath = buildHomeQrInviteRestoreRoutePath(pairingLink, 'add_home');
         expect(restorePath).not.toContain(pairingLink);
         const routeUrl = new URL(restorePath!, 'https://app.example.test');
         restoreRouteIngressState.params = Object.fromEntries(routeUrl.searchParams.entries());
-        const { default: Screen } = await import('@/app/(app)/restore/index');
 
         await renderScreen(<Screen />);
 
@@ -141,9 +153,7 @@ describe('/restore (web phone)', () => {
     });
 
     it('frames a routed reverse-direction invite as approving the new device, not adding a Home', async () => {
-        vi.resetModules();
-        const pairing = await import('@/auth/pairing/pairingUrl');
-        const pairingLink = pairing.buildHomeQrInviteDeepLink({
+        const pairingLink = buildHomeQrInviteDeepLink({
             invite: {
                 v: 2,
                 intent: 'home_device',
@@ -162,10 +172,9 @@ describe('/restore (web phone)', () => {
                 expiresAtMs: Date.now() + 60_000,
             },
         });
-        const restorePath = pairing.buildHomeQrInviteRestoreRoutePath(pairingLink, 'add_home');
+        const restorePath = buildHomeQrInviteRestoreRoutePath(pairingLink, 'add_home');
         const routeUrl = new URL(restorePath!, 'https://app.example.test');
         restoreRouteIngressState.params = Object.fromEntries(routeUrl.searchParams.entries());
-        const { default: Screen } = await import('@/app/(app)/restore/index');
 
         const screen = await renderScreen(<Screen />);
 
@@ -183,8 +192,6 @@ describe('/restore (web phone)', () => {
     it('follows the invite direction the embedded scanner reports for an in-place scan', async () => {
         vi.stubGlobal('navigator', { maxTouchPoints: 5, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)' } as any);
         restoreRouteIngressState.params = { entryIntent: 'add_home' };
-        vi.resetModules();
-        const { default: Screen } = await import('@/app/(app)/restore/index');
 
         const screen = await renderScreen(<Screen />);
         expect(screen.getTextContent()).toContain('setupOnboarding.addHomeTitle');
@@ -207,27 +214,47 @@ describe('/restore (web phone)', () => {
     });
 
     it.each(['missing', 'malformed'] as const)(
-        'refuses to consume a routed V2 link whose entry intent is %s',
+        'refuses to consume a registered routed V2 link whose entry intent is %s',
         async (intentCase) => {
-            restoreRouteIngressState.params = intentCase === 'missing'
-                ? { pairingHandoff: 'home-qr-missing' }
-                : { pairingHandoff: 'home-qr-malformed', entryIntent: 'focus_home' };
-            vi.resetModules();
-            const { default: Screen } = await import('@/app/(app)/restore/index');
+            const pairingLink = buildHomeQrInviteDeepLink({
+                invite: {
+                    v: 2,
+                    intent: 'home_device',
+                    direction: 'trusted_home_displays',
+                    pairId: `pair-route-${intentCase}`,
+                    home: {
+                        v: 1,
+                        homeServerIdentityId: 'srv_route_intent',
+                        canonicalServerUrl: 'https://route-intent.test',
+                        revision: 1,
+                        endpoints: [{ kind: 'https', url: 'https://route-intent.test' }],
+                    },
+                    qrSecretBase64Url: encodeBase64(new Uint8Array(32).fill(6), 'base64url'),
+                    issuedAtMs: Date.now(),
+                    expiresAtMs: Date.now() + 60_000,
+                },
+            });
+            const routeUrl = new URL(buildHomeQrInviteRestoreRoutePath(pairingLink, 'add_home')!, 'https://app.example.test');
+            // The handoff is registered for real; only the closed entry intent is missing or garbled.
+            const params = Object.fromEntries(routeUrl.searchParams.entries());
+            if (intentCase === 'missing') delete params.entryIntent;
+            else params.entryIntent = 'focus_home';
+            restoreRouteIngressState.params = params;
 
             const screen = await renderScreen(<Screen />);
 
             expect(restoreRouteIngressState.scannerProps?.initialPairingLink).toBeNull();
             expect(restoreRouteIngressState.scannerProps?.entryIntent).toBe('enter_home');
             expect(screen.findAllByProps({ 'data-testid': 'RestoreQrView' })).toHaveLength(0);
+            expect(screen.getTextContent()).toContain('setupOnboarding.authRestoreTitle');
+            expect(screen.getTextContent()).toContain('setupOnboarding.authRestoreSubtitle');
+            expect(screen.getTextContent()).not.toContain('setupOnboarding.addHomeTitle');
         },
     );
 
     it('passes the closed add-home intent to the scanner and presents truthful navigation', async () => {
         vi.stubGlobal('navigator', { maxTouchPoints: 5, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)' } as any);
         restoreRouteIngressState.params = { entryIntent: 'add_home' };
-        vi.resetModules();
-        const { default: Screen } = await import('@/app/(app)/restore/index');
 
         const screen = await renderScreen(<Screen />);
 
@@ -239,23 +266,8 @@ describe('/restore (web phone)', () => {
         expect(restoreRouteIngressState.replaceSpy).toHaveBeenCalledWith('/settings/account');
     });
 
-    it('fails a malformed intent safely to the explicit welcome flow', async () => {
-        vi.stubGlobal('navigator', { maxTouchPoints: 5, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)' } as any);
-        restoreRouteIngressState.params = { entryIntent: 'focus_home' };
-        vi.resetModules();
-        const { default: Screen } = await import('@/app/(app)/restore/index');
-
-        const screen = await renderScreen(<Screen />);
-
-        expect(restoreRouteIngressState.scannerProps?.entryIntent).toBe('enter_home');
-        expect(screen.getTextContent()).toContain('setupOnboarding.authRestoreTitle');
-        expect(screen.getTextContent()).toContain('setupOnboarding.authRestoreSubtitle');
-    });
-
     it('disables the wizard Back action while the joining enrollment is past its commit boundary', async () => {
         vi.stubGlobal('navigator', { maxTouchPoints: 5, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)' } as any);
-        vi.resetModules();
-        const { default: Screen } = await import('@/app/(app)/restore/index');
 
         const screen = await renderScreen(<Screen />);
         await act(async () => {

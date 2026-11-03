@@ -22,6 +22,8 @@ export type SocketRpcSocket = SocketRpcAckScope & Readonly<{
   connected?: boolean;
   emit(event: string, ...args: unknown[]): unknown;
   timeout?(timeoutMs: number): SocketRpcAckScope;
+  /** Retain a pooled transport independently of its logical caller until native ACK settlement. */
+  retain?(): () => void;
 }>;
 
 /** Local native observation, distinct from identically worded remote error ACKs. */
@@ -87,15 +89,25 @@ export async function emitWithAckCancellable<T>(params: Readonly<{
       waitForResultOnCancel: params.waitForResultOnCancel,
       emitCancel: (requestId) => { params.socket.emit(SOCKET_RPC_EVENTS.CANCEL, { requestId }); },
       issue: () => {
-        const result = emitWithAck
-          ? emitWithAck.call(emission, params.event, params.payload)
-          : new Promise<unknown>((resolve, reject) => {
-              emit!.call(emission, params.event, params.payload, (...args: unknown[]) => {
-                if (nativeTimeout !== undefined && params.socket.timeout) {
-                  if (args[0]) reject(args[0]); else resolve(args[1]);
-                } else resolve(args[0]);
+        const release = params.socket.retain?.();
+        let result: Promise<unknown>;
+        try {
+          result = emitWithAck
+            ? emitWithAck.call(emission, params.event, params.payload)
+            : new Promise<unknown>((resolve, reject) => {
+                emit!.call(emission, params.event, params.payload, (...args: unknown[]) => {
+                  if (nativeTimeout !== undefined && params.socket.timeout) {
+                    if (args[0]) reject(args[0]); else resolve(args[1]);
+                  } else resolve(args[0]);
+                });
               });
-            });
+        } catch (error) {
+          release?.();
+          throw error;
+        }
+        // Local cancellation or a portable deadline may settle the caller first.
+        // Keep the entry alive until the native ACK itself resolves or rejects.
+        if (release) result = result.finally(release);
         if (rejectBuffered(params.event, params.payload)) {
           // Its native ACK was rejected during cleanup. Consume that promise;
           // this synchronous refusal must never acquire issued/cancel custody.
@@ -220,10 +232,9 @@ export async function callSocketRpc<R>(params: Readonly<{
     // acknowledgement remains authoritative even if cancellation arrives later.
     return result as R;
   } catch (error) {
-    // The ACK owner observed this namespace close, not a relay refusal or a
-    // decoding failure after an ACK. Reads have no effect to reconcile: retire
-    // their in-flight wait so the existing reconnect owner can revalidate.
-    // Keep issued disposition; transport unavailability is not proof of notSent.
+    // A local socket loss interrupts a declared read, not a potentially applied
+    // mutation. Preserve issued disposition; unavailable never means notSent.
+    // A relay's uncertain ACK or a post-ACK decoding error is not this fact.
     if (!acknowledged && error instanceof SocketRpcDisconnectedError && isReadOnlyMachineRpcMethod(params.method)) {
       throw markRpcRequestDisposition(Object.assign(createRpcCallError({
         error: 'Socket disconnected before the read completed', errorCode: RPC_ERROR_CODES.TRANSPORT_UNAVAILABLE,

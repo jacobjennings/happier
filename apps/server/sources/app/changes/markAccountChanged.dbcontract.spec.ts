@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { buildConnectedServicesAccountChangeV1 } from '@happier-dev/protocol/changes';
 
 import { db, initDbMysql, initDbPostgres } from "@/storage/db";
 import { sourceKeyForSessionFollowSourceV1 } from '@/app/session/follow/sessionFollowSourceIdentity';
@@ -8,6 +9,7 @@ import { inTx, transactionResult } from "@/storage/inTx";
 import { eventRouter } from "@/app/events/connectionEventRouter";
 import { markAccountChanged, markAccountsChanged, markSessionAccountsChanged } from "./markAccountChanged";
 import { acquireSessionAccountCursorLocksInTx } from "@/app/session/changeTracking/acquireSessionAccountCursorLocksInTx";
+import { recordConnectedServiceAccountProfileChange } from '@/app/api/routes/connect/connectedServicesAccountProfileChange';
 
 function resolveContractProvider(): "postgres" | "mysql" {
     const raw = String(
@@ -49,6 +51,81 @@ describe("AccountChange coalescing database contract", () => {
 
     afterAll(async () => {
         if (dbConnected) await db.$disconnect();
+    });
+
+    it(`publishes Team source changes only for the changed service on ${provider}`, async () => {
+        const account = await db.account.create({ data: { publicKey: `${publicKeyPrefix}${randomUUID()}` } });
+        const team = await db.team.create({ data: { name: 'Service publication scope' } });
+        const shared = { pluginId: 'test.connected', localId: 'shared' };
+        const unrelated = { ...shared, localId: 'unshared' };
+        try {
+            await db.teamMembership.create({ data: { teamId: team.id, accountId: account.id, role: 'owner' } });
+            const resource = await db.teamCredentialResource.create({ data: {
+                teamId: team.id, custodianAccountId: account.id, displayName: 'Source scope',
+                disclosureCeiling: 'direct_allowed', sessionUsePolicy: 'personal_allowed',
+                sourceBindingJson: JSON.stringify({ v: 1, kind: 'connected_account',
+                    target: { kind: 'account', account: { service: shared, accountId: 'source-account' } },
+                    credentialIncarnation: 'source-incarnation' }),
+            } });
+            let checkpoint = 0;
+            const teamPublications = async (service?: typeof shared) => {
+                await inTx(tx => recordConnectedServiceAccountProfileChange({ tx, accountId: account.id,
+                    ...(service ? { service } : {}) }));
+                const rows = await db.accountChange.findMany({ where: { accountId: account.id,
+                    kind: 'account', entityId: 'teams', cursor: { gt: checkpoint } } });
+                checkpoint = (await db.account.findUniqueOrThrow({ where: { id: account.id }, select: { seq: true } })).seq;
+                return rows.length;
+            };
+            expect(await teamPublications(unrelated)).toBe(0);
+            expect(await teamPublications(shared)).toBe(1);
+            await db.teamCredentialResource.update({ where: { id: resource.id }, data: {
+                sourceBindingJson: JSON.stringify({ v: 1, kind: 'connected_pool',
+                    target: { kind: 'group', service: shared, groupId: 'source-pool' }, poolIncarnation: 'source-pool-incarnation' }),
+            } });
+            expect(await teamPublications(unrelated)).toBe(0);
+            expect(await teamPublications(shared)).toBe(1);
+            expect(await teamPublications()).toBe(1);
+            await db.teamCredentialResource.update({ where: { id: resource.id }, data: { sourceBindingJson: '{}' } });
+            // An unreadable binding cannot prove a service irrelevant; retain
+            // the broad wake so current admission can withdraw stale material.
+            expect(await teamPublications(unrelated)).toBe(1);
+        } finally { await db.team.delete({ where: { id: team.id } }); }
+    });
+
+    it(`keeps connected service entities cursor-relative and independent of self changes on ${provider}`, async () => {
+        const account = await db.account.create({ data: { publicKey: `${publicKeyPrefix}${randomUUID()}` } });
+        const first = { pluginId: 'test.connected', localId: 'first' };
+        const second = { pluginId: 'test.connected', localId: 'second' };
+        const firstChange = buildConnectedServicesAccountChangeV1(first);
+        const secondChange = buildConnectedServicesAccountChangeV1(second);
+        const broadChange = buildConnectedServicesAccountChangeV1();
+        const readChanges = (after = 0) => db.accountChange.findMany({
+            where: { accountId: account.id, cursor: { gt: after } }, orderBy: { cursor: 'asc' },
+            select: { kind: true, entityId: true, hint: true },
+        });
+        await inTx(async tx => {
+            // Retained predecessor self flags are replaced by ordinary self facts.
+            await markAccountChanged(tx, { accountId: account.id, kind: 'account', entityId: 'self',
+                hint: { connectedServices: true } });
+            await recordConnectedServiceAccountProfileChange({ tx, accountId: account.id, service: first });
+            await recordConnectedServiceAccountProfileChange({ tx, accountId: account.id, service: second });
+            await markAccountChanged(tx, { accountId: account.id, kind: 'account', entityId: 'self',
+                hint: { settingsVersion: 7 } });
+        });
+        expect(await readChanges()).toEqual([
+            firstChange, secondChange, { kind: 'account', entityId: 'self', hint: { settingsVersion: 7 } },
+        ]);
+        await inTx(tx => markAccountChanged(tx, { accountId: account.id, kind: 'account', entityId: 'self',
+            hint: { username: true } }));
+        expect((await readChanges()).at(-1)).toEqual({ kind: 'account', entityId: 'self', hint: { username: true } });
+        await inTx(tx => markAccountsChanged(tx, { accountIds: [account.id], kind: 'account', entityId: 'self' }));
+        expect((await readChanges()).at(-1)?.hint).toBeNull();
+        await inTx(tx => recordConnectedServiceAccountProfileChange({ tx, accountId: account.id }));
+        expect(await readChanges()).toHaveLength(4);
+        expect((await readChanges()).at(-1)).toEqual(broadChange);
+        const checkpoint = (await db.account.findUniqueOrThrow({ where: { id: account.id }, select: { seq: true } })).seq;
+        await inTx(tx => recordConnectedServiceAccountProfileChange({ tx, accountId: account.id, service: first }));
+        expect(await readChanges(checkpoint)).toEqual([firstChange]);
     });
 
     it(`retains queued Session and Machine removal changes after domain work deletes their rows on ${provider}`, async () => {

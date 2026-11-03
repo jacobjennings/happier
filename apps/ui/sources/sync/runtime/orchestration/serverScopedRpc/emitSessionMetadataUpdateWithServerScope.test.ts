@@ -113,6 +113,35 @@ function jsonResponse(body: unknown, status: number): Response {
 }
 
 describe('emitSessionMetadataUpdateWithServerScope', () => {
+    it.each([
+        { name: 'unchanged owner AgentState', patch: ownerPatch, agentStateVersion: 5, accepted: true },
+        { name: 'advanced owner AgentState', patch: ownerPatch, agentStateVersion: 6, accepted: true },
+        { name: 'skipped owner AgentState version', patch: ownerPatch, agentStateVersion: 7, accepted: false },
+        { name: 'unchanged migration AgentState', patch: migrationPatch, agentStateVersion: 5, accepted: false },
+        { name: 'unexpected shared-editor AgentState', patch: sharedEditorPatch, agentStateVersion: 5, accepted: false },
+    ])('matches the committed HTTP receipt for $name', async ({ patch, agentStateVersion, accepted }) => {
+        const { emitSessionMetadataUpdateWithServerScope } = await import('./emitSessionMetadataUpdateWithServerScope');
+        // Inject only the HTTP boundary; receipt parsing and version matching remain real.
+        const result = await emitSessionMetadataUpdateWithServerScope({
+            sessionId: 'session-1', patch,
+            authority: {
+                scope: { serverId: 'server-a', accountId: 'account-a' },
+                context: { scope: 'scoped', timeoutMs: 4000, targetServerId: 'server-a',
+                    targetServerUrl: 'https://home.example', targetAccountId: 'account-a', token: 'token', encryption: null },
+                request: async () => jsonResponse({
+                    success: true, metadataLayoutVersion: 1,
+                    sharedMetadata: { version: 4 }, agentState: { version: agentStateVersion },
+                }, 200),
+                release: async () => {},
+            },
+        });
+        expect(result).toEqual(accepted ? {
+            result: 'success', metadataLayoutVersion: 1, version: 4, agentStateVersion,
+        } : {
+            result: 'error', message: 'Invalid Session metadata tuple response',
+        });
+    });
+
     afterEach(() => {
         vi.useRealTimers();
         emitWithAckSpy.mockReset();

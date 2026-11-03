@@ -1,7 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from 'zod/mini';
 import { TeamCredentialBrokerPlacementV1Schema, TeamCredentialRequestPolicySupportOutputV1Schema, type TeamCredentialBrokerPlacementV1, type TeamCredentialRequestPolicyModelSupportV1, type TeamCredentialRequestPolicyV1, type TeamCredentialRequestPolicySupportOutputV1 } from '@happier-dev/protocol/teams/credentials/resourceV1';
-import { TeamCredentialSourceBindingV1Schema, type TeamCredentialSourceBindingV1 } from '@happier-dev/protocol/teams/credentials/sourceBindingV1';
+import { type TeamCredentialSourceBindingV1 } from '@happier-dev/protocol/teams/credentials/sourceBindingV1';
+import { readTeamCredentialSourceBinding } from './sourceBindingRead';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc/methods';
 import { DaemonProviderTeamCredentialRequestPolicySupportResponseV1Schema } from '@happier-dev/protocol/rpc/providers';
 
@@ -147,13 +148,7 @@ export async function prepareTeamCredentialRequestPolicySupportInTx(
             },
         });
         if (!resource) return { ok: false, error: "resource_not_found" };
-        const parsedSource = (() => {
-            try {
-                return TeamCredentialSourceBindingV1Schema.safeParse(JSON.parse(resource.sourceBindingJson));
-            } catch {
-                return TeamCredentialSourceBindingV1Schema.safeParse(null);
-            }
-        })();
+        const parsedSource = readTeamCredentialSourceBinding(resource.sourceBindingJson);
         const parsedPlacement = z.nullable(TeamCredentialBrokerPlacementV1Schema).safeParse(
             resource.brokerMachineId !== null && resource.brokerPoolId === null
                 ? { kind: "machine", machineId: resource.brokerMachineId }
@@ -224,6 +219,18 @@ export async function prepareTeamCredentialRequestPolicySupportInTx(
         brokerPlacement,
         sourceCurrentness: currentSource.requestPolicyCurrentness,
     };
+}
+
+/**
+ * The one interpreter of daemon broker refusals: a refusal is reported only
+ * when every candidate observation agrees on the same reason.
+ */
+export function readTeamCredentialBrokerRefusalReason(reasons: readonly (string | null)[]) {
+    const first = reasons[0];
+    return (first === 'application_unavailable' || first === 'model_unavailable' || first === 'response_invalid')
+        && reasons.every(reason => reason === first)
+        ? first
+        : null;
 }
 
 /**
@@ -304,20 +311,22 @@ export async function resolveTeamCredentialRequestPolicySupport(
             models: [...byModelAndApplication.values()],
         });
     }
-    const parsedResponses = projections.flatMap(({ response }) => {
+    const parsedResponses = projections.map(({ response }) => {
         const parsed = DaemonProviderTeamCredentialRequestPolicySupportResponseV1Schema.safeParse(response);
-        return parsed.success ? [parsed.data] : [];
+        return parsed.success ? parsed.data : null;
     });
-    const unavailableReasons = new Set(parsedResponses.flatMap(response => (
-        response.status === "unavailable" ? [response.reason] : []
+    // A refusal is a Pool-wide fact only when every observed candidate agrees;
+    // mixed, missing or malformed observations stay `broker_unavailable`.
+    const refusal = readTeamCredentialBrokerRefusalReason(parsedResponses.map(response => (
+        response?.status === "unavailable" ? response.reason : null
     )));
-    const reason = parsedResponses.some(response => response.status === "success")
+    const reason = parsedResponses.some(response => response?.status === "success")
         ? "update_required"
-        : unavailableReasons.has("application_unavailable")
+        : refusal === "application_unavailable"
             ? "unsupported_application"
-            : unavailableReasons.has("model_unavailable")
+            : refusal === "model_unavailable"
                 ? "model_catalog_unavailable"
-                : unavailableReasons.has("source_unavailable")
+                : parsedResponses.some(response => response?.status === "unavailable" && response.reason === "source_unavailable")
                     ? "source_unavailable"
                     : "broker_unavailable";
     return TeamCredentialRequestPolicySupportOutputV1Schema.parse({ status: "unavailable", reason });

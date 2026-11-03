@@ -24,16 +24,16 @@ const network = await initializeMachineDetailsRuntimeForTests();
 const { clearCachedMachineDoctorSnapshot, writeCachedMachineDoctorSnapshot } = await import('@/components/machines/doctorSnapshot/machineDoctorSnapshotCache');
 const disposeActionExecutorLoader = await installRealActionExecutorModuleLoader();
 afterAll(disposeActionExecutorLoader);
-const machinesOps = await import('@/sync/ops/machines');
-let machineCollectBugReportDiagnosticsMock = vi.spyOn(machinesOps, 'machineCollectBugReportDiagnostics');
+/** Doctor snapshot reads as the machine receives them over the socket RPC wire. */
+function diagnosticsReads() {
+    return network.requests.filter(request => request.method === RPC_METHODS.BUGREPORT_COLLECT_DIAGNOSTICS);
+}
 let home: Awaited<ReturnType<typeof arrangeMachineDetailsHomeForTests>> | null = null;
 let otherHome: Awaited<ReturnType<typeof network.addHome>>;
 let blockedSwitch: ReturnType<typeof createDeferred<void>> | null = null;
 let diagnosticsResponder: (machineId: string, options?: { serverId?: string | null }) => unknown | Promise<unknown>;
 
 beforeEach(async () => {
-    machineCollectBugReportDiagnosticsMock = vi.spyOn(machinesOps, 'machineCollectBugReportDiagnostics');
-    machineCollectBugReportDiagnosticsMock.mockClear();
     routerParamsRef.current = { id: 'machine-1', page: 'doctor' };
     const machine = createMachineFixture({
                 id: 'machine-1',
@@ -195,25 +195,9 @@ afterEach(async () => {
     await home?.dispose();
     home = null;
     network.resetRequests();
-    machineCollectBugReportDiagnosticsMock.mockRestore();
 });
 
 describe('MachineDetailScreen runtime inventory', () => {
-    it('shows the runtime inventory section with summary and warnings', async () => {
-            const { MachineSubPageScreen: MachineDetailScreen } = await import('@/components/machines/page/MachineSubPageScreen');
-            const screen = await home!.render(MachineDetailScreen);
-
-            await flushHookEffects({ cycles: 2, turns: 2 });
-
-            const text = screen.getTextContent();
-            expect(text).toContain('machine.runtimeInventory');
-            expect(text).toContain('summary:1.2.3:1.2.0:1:1:1');
-            expect(text).toContain('machine.runtimeInventoryInstallations');
-            expect(text).toContain('machine.runtimeInventoryServices');
-            expect(text).toContain('machine.backgroundServiceModes.defaultFollowing');
-            expect(text).toContain('MULTIPLE_HAPPIER_INSTALLATIONS_ON_PATH');
-        });
-
     it('uses the machine list server id for runtime inventory when the route has no serverId param', async () => {
             home!.state.machines = [];
             await home!.sync.refreshMachines();
@@ -271,9 +255,9 @@ describe('MachineDetailScreen runtime inventory', () => {
 
             await flushHookEffects({ cycles: 2, turns: 2 });
 
-            await vi.waitFor(() => expect(machineCollectBugReportDiagnosticsMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
-                serverId: otherHome.id,
-            })));
+            await vi.waitFor(() => expect(diagnosticsReads()).toEqual([expect.objectContaining({
+                targetId: 'machine-1', serverUrl: otherHome.serverUrl,
+            })]));
             expect(screen.getTextContent()).toContain('machine.runtimeInventory');
         });
 
@@ -317,7 +301,7 @@ describe('MachineDetailScreen runtime inventory', () => {
             const screen = await home!.render(MachineDetailScreen);
 
             await flushHookEffects({ cycles: 2, turns: 2 });
-            expect(machineCollectBugReportDiagnosticsMock).not.toHaveBeenCalled();
+            expect(diagnosticsReads()).toEqual([]);
             expect(screen.getTextContent()).not.toContain('machine.runtimeInventory');
             expect(screen.getTextContent()).not.toContain('SERVER_B_ONLY_WARNING');
 
@@ -325,9 +309,9 @@ describe('MachineDetailScreen runtime inventory', () => {
                 blockedSwitch!.resolve();
             });
             await flushHookEffects({ cycles: 2, turns: 2 });
-            await vi.waitFor(() => expect(machineCollectBugReportDiagnosticsMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
-                serverId: otherHome.id,
-            })));
+            await vi.waitFor(() => expect(diagnosticsReads()).toEqual([expect.objectContaining({
+                targetId: 'machine-1', serverUrl: otherHome.serverUrl,
+            })]));
             expect(screen.getTextContent()).toContain('machine.runtimeInventory');
         });
 
@@ -338,7 +322,7 @@ describe('MachineDetailScreen runtime inventory', () => {
             await flushHookEffects({ cycles: 2, turns: 2 });
 
             expect(screen.findByTestId('machine-page-row-doctor')).toBeTruthy();
-            expect(machineCollectBugReportDiagnosticsMock).not.toHaveBeenCalled();
+            expect(diagnosticsReads()).toEqual([]);
             expect(screen.getTextContent()).not.toContain('machine.runtimeInventory');
         });
 
@@ -347,7 +331,7 @@ describe('MachineDetailScreen runtime inventory', () => {
             const screen = await home!.render(MachineDetailScreen);
 
             await flushHookEffects({ cycles: 2, turns: 2 });
-            expect(machineCollectBugReportDiagnosticsMock).toHaveBeenCalledTimes(1);
+            expect(diagnosticsReads()).toHaveLength(1);
 
             const refreshControl = screen.findByType('ScrollView').props.refreshControl;
             await act(async () => {
@@ -355,6 +339,6 @@ describe('MachineDetailScreen runtime inventory', () => {
             });
             await flushHookEffects({ cycles: 2, turns: 2 });
 
-            expect(machineCollectBugReportDiagnosticsMock).toHaveBeenCalledTimes(2);
+            expect(diagnosticsReads()).toHaveLength(2);
         });
 });

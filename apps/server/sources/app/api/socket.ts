@@ -1,12 +1,13 @@
 import { onShutdown } from "@/utils/process/shutdown";
 import { registerUiFocusSocketEvent } from '@/app/api/socket/registerUiFocusSocketEvent';
+import { registerSessionConsumptionSocketEvent } from '@/app/api/socket/sessionConsumption';
 import { registerSocketRoomDiscovery } from '@/app/api/socket/socketRoomDiscovery';
 import { Fastify } from "./types";
 import { buildMachineActivityEphemeral, buildSessionActivityEphemeral, buildUpdateSessionUpdate, ClientConnection, eventRouter } from "@/app/events/eventRouter";
 import { CREDENTIAL_QUALIFIED_SESSION_DELIVERY_EVENT } from "@/app/events/socketRoomEmitter";
 import { buildMachineOwnerConflictSocketPayload, readMachineDaemonOwnershipMetadataFromSocketAuth } from '@happier-dev/protocol/machines/ownership/daemonOwnership';
 import { Server, Socket } from "socket.io";
-import { log } from "@/utils/logging/log";
+import { log, warn } from "@/utils/logging/log";
 import { auth } from "@/app/auth/auth";
 import { narrowCredentialAuthority } from "@/app/auth/effectiveCredentialAuthority";
 import { admitApiTokenSessionOperation, isRestrictedAuthTokenKind } from "@/app/api/utils/apiTokenRouteAdmission";
@@ -111,6 +112,7 @@ import {
 
 import { resolveSocketMaxHttpBufferSizeFromEnv } from './socket/transportBudget';
 import { destroyUnclaimedHttpUpgrades } from './utils/httpUpgradeOwnership';
+import { registerEngineHeartbeatDiagnostics } from './socket/engineHeartbeatDiagnostics';
 export { DEFAULT_SOCKET_MAX_HTTP_BUFFER_SIZE, resolveSocketMaxHttpBufferSizeFromEnv } from './socket/transportBudget';
 // Socket.IO adds its event name, acknowledgement id, and packet framing around the
 // serialized command. Keep that reserve beside the one live transport ceiling.
@@ -291,6 +293,10 @@ export function startSocket(app: Fastify) {
         serveClient: false // Don't serve the client files
     });
 
+    registerEngineHeartbeatDiagnostics(io, process.env, diagnostic => {
+        // Opt-in only; emit at warn so the flag works under the default warn log level.
+        warn({ module: 'socket-heartbeat-diagnostic', ...diagnostic }, 'Engine.IO heartbeat diagnostic');
+    });
     destroyUnclaimedHttpUpgrades(app.server, SOCKET_IO_PATH);
     registerSocketRoomDiscovery(io);
     app.machineDaemonPresence = io;
@@ -814,6 +820,7 @@ export function startSocket(app: Fastify) {
 
         if (clientType === 'user-scoped') {
             registerUiFocusSocketEvent(socket, packetAdmission);
+            registerSessionConsumptionSocketEvent(socket, packetAdmission);
         }
 
         // Socket.IO adds this socket to the namespace before this callback. Join

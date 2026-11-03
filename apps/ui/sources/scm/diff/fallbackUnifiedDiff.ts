@@ -5,16 +5,6 @@ export function decodeUtf8Base64(base64: string): string {
     return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 }
 
-export function countTextLines(text: string): number {
-    if (!text) return 0;
-    // Normalize trailing newline so "a\n" counts as 1 line.
-    const normalized = text.endsWith('\n') || text.endsWith('\r')
-        ? text.replace(/(\r\n|\r|\n)+$/, '')
-        : text;
-    if (!normalized) return 0;
-    return normalized.split(/\r\n|\r|\n/).length;
-}
-
 export function buildAddedFileUnifiedDiff(input: Readonly<{ filePath: string; newText: string }>): string {
     const path = input.filePath;
     const newLines = input.newText ? input.newText.split(/\r\n|\r|\n/) : [];

@@ -3,6 +3,10 @@ import { lazyZodSchema } from '../../lazyZodSchema.js';
 import { z } from 'zod/mini';
 import { SessionIdentityAdditionsV1Schema } from '../../sessions/identity/sessionBotV1.js';
 import { SessionPromptStackV1Schema } from '../../sessions/context/sessionContextV1.js';
+import { AgentExecutionTargetV1Schema } from '../../agents/executionTargetV1.js';
+import { ActionSessionAddressV1Schema } from '../../actions/sessionTargetV1.js';
+import { SessionIdSchema } from '../../sessions/idsV1.js';
+import { PendingLocalIdSchema } from '../../sessions/pending/pendingLocalId.js';
 
 import {
   PluginContributionIdentityV1Schema,
@@ -67,6 +71,9 @@ import {
 } from '../../sessions/awareness/projectionV1.js';
 import { ProjectKeyV1Schema } from '../../workspaces/workspaceRefV1.js';
 import { PluginUiNewSessionSeedOriginV1Schema } from './newSessionSeedOrigin.js';
+import { VoiceTrackedSessionAddressV1Schema } from '../../sessions/follow/voiceTrackedTargetsCompatibilityV1.js';
+import { InboxItemAttentionTypeV1Schema } from '../../sessions/follow/sessionFollowPolicyV1.js';
+import { PluginUiIconTokenV1Schema } from '../contributions/ui/tokens.js';
 export { PluginUiNewSessionSeedOriginV1Schema, StoredPluginUiNewSessionSeedOriginV1Schema,
   type PluginUiNewSessionSeedOriginV1 } from './newSessionSeedOrigin.js';
 
@@ -284,9 +291,12 @@ export const PluginUiSessionStateV1Schema = lazyZodSchema(() => z.strictObject({
   runtime: SessionAwarenessRuntimeV1Schema,
   operational: SessionAwarenessOperationalPrimaryV1Schema,
   workStatus: z.strictObject({
+    state: z.string(),
     bucket: z.enum(['needs_you', 'working', 'finished', 'idle', 'offline']),
     tone: z.enum(['neutral', 'attention', 'danger']),
+    attentionType: z.nullable(InboxItemAttentionTypeV1Schema),
     word: z.string(),
+    glyph: z.optional(PluginUiIconTokenV1Schema),
   }),
   workspace: zMini.optional(SessionAwarenessWorkspaceV1Schema),
   pendingPermissions: z.array(PluginUiSessionPendingPermissionV1Schema),
@@ -683,6 +693,7 @@ export const PluginUiNewSessionSeedV1Schema = lazyZodSchema(() => z.strictObject
     { message: 'Current-screen context must fit the Composer attachment value contract.' },
   ))),
   profileId: z.optional(z.string().check(z.trim(), z.minLength(1))),
+  agentTarget: z.optional(AgentExecutionTargetV1Schema),
   origin: zMini.optional(PluginUiNewSessionSeedOriginV1Schema),
   /**
    * A resolved checkout question, not a concrete checkout draft. The New
@@ -734,9 +745,10 @@ export const SessionNewSessionSeedOutcomeSchema = lazyZodSchema(() => z.union([
 ]));
 export type SessionNewSessionSeedOutcome = z.infer<typeof SessionNewSessionSeedOutcomeSchema>;
 
-export const SessionAuthoringOpenV1Schema = lazyZodSchema(() => z.strictObject({
-  seed: PluginUiNewSessionSeedV1Schema,
-}));
+export const SessionAuthoringOpenV1Schema = lazyZodSchema(() => z.union([
+  z.strictObject({ seed: PluginUiNewSessionSeedV1Schema }),
+  z.strictObject({ sourceSession: VoiceTrackedSessionAddressV1Schema }),
+]));
 export type SessionAuthoringOpenV1 = z.infer<typeof SessionAuthoringOpenV1Schema>;
 
 /** The Action acknowledges an editable page draft, never a Session or a writable copy. */

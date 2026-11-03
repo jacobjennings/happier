@@ -26,10 +26,12 @@ describe('createJsThreadLagTelemetry', () => {
         expect(lagTelemetry.start()).toBe(true);
         expect(lagTelemetry.start()).toBe(false);
         expect(lagTelemetry.isRunning()).toBe(true);
+        expect(vi.getTimerCount()).toBeGreaterThan(0);
 
         lagTelemetry.stop();
         lagTelemetry.stop();
         expect(lagTelemetry.isRunning()).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
     });
 
     it('records threshold counts with fake timers', async () => {

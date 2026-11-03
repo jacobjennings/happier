@@ -122,6 +122,15 @@ describe('createMessageRouter', () => {
         expect(emitted).toEqual([copied]);
         emitted.length = 0;
         router.emitSessionMessage({
+            ...copied, uuid: 'out-of-scope-notification', isSidechain: true,
+            origin: { kind: 'task-notification' },
+        }, true);
+        expect(emitted).toEqual([]);
+        const ordinarySidechain = { ...copied, uuid: 'ordinary-sidechain-input', isSidechain: true };
+        router.emitSessionMessage(ordinarySidechain, true);
+        expect(emitted).toEqual([ordinarySidechain]);
+        emitted.length = 0;
+        router.emitSessionMessage({
             ...copied, uuid: 'task-notification', origin: { kind: 'task-notification' },
         }, true);
 

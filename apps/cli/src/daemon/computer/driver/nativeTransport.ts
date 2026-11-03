@@ -12,6 +12,8 @@ const resultSchema = z.object({
 export type NativeToolResult = z.infer<typeof resultSchema>;
 
 export function nativeRefusalCode(result: NativeToolResult): string {
+  const refusal = z.object({ code: z.string().check(z.minLength(1)) }).safeParse(result.structuredContent?.refusal);
+  if (refusal.success) return refusal.data.code;
   const error = z.object({ code: z.string().check(z.minLength(1)) }).safeParse(result.structuredContent?.error);
   if (error.success) return error.data.code;
   const code = result.structuredContent?.code;
@@ -19,7 +21,8 @@ export function nativeRefusalCode(result: NativeToolResult): string {
 }
 
 /** Private pinned MCP codec; host Actions retain all approval and target authority. */
-export async function openNativeComputerTransport(executablePath: string, displayId: string, context?: Readonly<{ signal?: AbortSignal }>) {
+export async function openNativeComputerTransport(executablePath: string, displayId: string, context?: Readonly<{ signal?: AbortSignal;
+  environment?: Readonly<Record<string, string>> }>) {
   if (context?.signal?.aborted) throw new ComputerDriverError('driver_unavailable');
   const { getDefaultEnvironment, StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
   if (context?.signal?.aborted) throw new ComputerDriverError('driver_unavailable');
@@ -41,7 +44,7 @@ export async function openNativeComputerTransport(executablePath: string, displa
   }
   const transport = new StdioClientTransport({ command: executablePath,
     args: ['mcp', '--direct', '--embedded', '--no-overlay'],
-    env: { ...getDefaultEnvironment(), ...desktopEnvironment, CUA_DRIVER_RS_TELEMETRY_ENABLED: 'false' }, stderr: 'ignore' });
+    env: { ...getDefaultEnvironment(), ...desktopEnvironment, ...context?.environment, CUA_DRIVER_RS_TELEMETRY_ENABLED: 'false' }, stderr: 'ignore' });
   let nextId = 0;
   let unavailable = false;
   let startRequested = false;

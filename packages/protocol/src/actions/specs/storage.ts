@@ -1,3 +1,6 @@
+import { STORAGE_OPERATION_INPUT_FIELDS } from './storageInputHints.js';
+import { MACHINE_STORAGE_ACTION_IDS } from './storageActionIdsV1.js';
+export { MACHINE_STORAGE_ACTION_IDS } from './storageActionIdsV1.js';
 import { z } from 'zod/mini';
 import { lazyZodSchema } from '../../lazyZodSchema.js';
 import {
@@ -16,15 +19,6 @@ import { MachineResourcesPolicyMutationResultV1Schema } from '../../machines/res
 import { subsetNarrowing } from '../../approvals/approvalNarrowing.js';
 import { RPC_METHODS } from '../../rpc/methods.js';
 import type { PreNormalizedActionSpec } from '../actionSpecs.js';
-
-export const MACHINE_STORAGE_ACTION_IDS = [
-  'machines.storage.summary.get', 'machines.storage.category.list', 'machines.storage.size.refresh',
-  'machines.storage.pile.get', 'machines.storage.pile.set', 'machines.storage.items.check',
-  'machines.storage.trash.move', 'machines.storage.deleteNow', 'machines.storage.trash.empty', 'machines.storage.trash.restore',
-  'machines.storage.worktrees.list', 'machines.storage.suggestions.list', 'machines.storage.suggestions.decline',
-  'machines.storage.scan.start', 'machines.storage.scan.get', 'machines.storage.scan.cancel', 'machines.storage.scan.skip',
-  'machines.storage.protected.add', 'machines.storage.protected.remove',
-] as const;
 export type MachineStorageActionId = typeof MACHINE_STORAGE_ACTION_IDS[number];
 export const MachineStorageActionIdSchema = lazyZodSchema(() => z.enum(MACHINE_STORAGE_ACTION_IDS));
 export const MACHINE_STORAGE_ACTION_INPUT_SCHEMAS = {
@@ -109,7 +103,7 @@ function cleanupSpec<const Id extends MachineStorageActionId>([id, title, descri
         return !parsed.success || parsed.data.emptyAfter === true;
       },
     } } : {}),
-    ...(id === 'machines.storage.protected.remove' ? { approvalPolicy: { agentDefault: 'authority' as const } } : {}),
+    ...(id === 'machines.storage.protected.remove' ? { approvalPolicy: { agentDefault: 'authority' as const, requiredSurfaces: ['mcp', 'plugin'] as const } } : {}),
     toolExposure: { agent: id === 'machines.storage.suggestions.list' ? 'direct' as const : 'discoverable_only' as const },
     prompting: { agentGuidance: `${storageReferenceGuidance} ${sideEffectClass === 'read'
       ? 'Read current storage facts before proposing cleanup. Suggestions omit Keep and Forbidden items and respect declined items. Use machines.storage.scan.get with the find view for requests such as finding 2 GB .mov files; Large and Old are views of the same scan, and since facts describe growth only when reported.'
@@ -120,7 +114,7 @@ function cleanupSpec<const Id extends MachineStorageActionId>([id, title, descri
     bindings: { rpcMethod, mcpToolName: id.replaceAll('.', '_') },
     inputSchema: MACHINE_STORAGE_ACTION_INPUT_SCHEMAS[id], outputSchema: MACHINE_STORAGE_ACTION_OUTPUT_SCHEMAS[id],
     cli: { acceptsServerId: true as const, commands: [{ path: id === 'machines.storage.deleteNow' ? ['machines', 'storage', 'delete-now'] : id.split('.'), visibility: 'canonical' as const }] },
-    inputHints: { fields: [...fields] },
+    inputHints: { fields: [...fields, ...STORAGE_OPERATION_INPUT_FIELDS[id]] },
     ...(voiceArgs ? { examples: { voice: { argsExample: JSON.stringify(voiceArgs) } } } : {}),
     ...(id === 'machines.storage.trash.move' ? { approvalNarrowing: subsetNarrowing({ path: 'items',
       key: item => storageRefKey(item.ref),

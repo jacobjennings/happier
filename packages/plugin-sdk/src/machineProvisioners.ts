@@ -8,6 +8,7 @@ import type { PluginProcessResult } from './services/io.js';
 import type { PluginLocalizedStringV2 } from './manifest.js';
 import type { InputPredicate } from './actions/dtos/pluginActionDtoSupport.generated.js';
 import type { PluginContributionRef } from './identity.js';
+import type { ManagedBootstrapCarrierV1 } from '@happier-dev/protocol/machines/managed/providerFactsV1';
 
 export type MachineProvisionerContributionV1 = Readonly<{
   id: string;
@@ -23,7 +24,7 @@ export type MachineProvisionerContributionV1 = Readonly<{
   platforms: readonly ('darwin' | 'linux' | 'win32')[];
   prerequisites: readonly Readonly<{ kind: 'managedDependency' | 'systemTool'; id: string | PluginContributionRef }>[];
   billing: Readonly<{ location: 'local' | 'cloud' | 'unknown'; stoppedBilling: 'billed' | 'not-billed' | 'unknown'; storageCharges?: readonly MachineProvisionerPriceV1[] }>;
-  retention: Readonly<{ supportedIntents: readonly MachineProvisionerNativeIntentV1[]; finiteOnly?: boolean; nativeExpiry?: Readonly<{ kind: 'unused'; afterMs: number }> | Readonly<{ kind: 'deadline'; at: number }> }>;
+  retention: Readonly<{ supportedIntents: readonly MachineProvisionerNativeIntentV1[]; guestLocalStop?: canonical.MachineProvisionerContributionV1['retention']['guestLocalStop']; finiteOnly?: boolean; nativeExpiry?: Readonly<{ kind: 'unused'; afterMs: number }> | Readonly<{ kind: 'deadline'; at: number }> }>;
   actions: Readonly<{ check: string; options?: string; acquire: string; bootstrap: string; inspect: string; power?: string; destroy: string; rebuild?: string }>;
   /** Existing options Action field and its raw native input unit; not actual expiry. */
   nativeDurationInput?: Readonly<{ path: string; unit: 'milliseconds' | 'seconds' }>;
@@ -39,11 +40,14 @@ export type MachineProvisionerNativeIntentV1 = 'start' | 'stop' | 'suspend' | 'r
 export type MachineProvisionerPriceV1 = Readonly<{ label?: PluginLocalizedStringV2; amount: string; currency: string; unit: string; source: string; observedAt: number }>;
 export type MachineProvisionerAuthorDefinitionV1 = Omit<MachineProvisionerContributionV1, 'id'>;
 
+export type MachineProvisionerNativeCauseV1 = canonical.MachineProvisionerNativeCauseV1;
+
 export type MachineProvisionerCheckResultV1 = Readonly<{ available: boolean; code?: string; status?: PluginLocalizedStringV2; prerequisites?: readonly Readonly<{ requirement: MachineProvisionerContributionV1['prerequisites'][number]; status: 'available' | 'unavailable' | 'unknown'; reason?: string; repairAction?: Readonly<{ action: PluginContributionRef; input: ProtocolJsonValue }> }>[]; localResources?: Readonly<{ observedAt: number; availableCpuCores?: number; availableMemoryBytes?: number; availableDiskBytes?: number }> }>;
 export type MachineProvisionerNativeOptionFactsV1 = Readonly<{
   size?: Readonly<{ id: string; title: PluginLocalizedStringV2; cpuCores?: number; memoryBytes?: number; diskBytes?: number }>;
   image?: Readonly<{ id: string; title: PluginLocalizedStringV2 }>;
   location?: Readonly<{ id: string; title: PluginLocalizedStringV2 }>;
+  network?: Readonly<{ id: string; title: PluginLocalizedStringV2 }>;
   duration?: Readonly<{ id: string; title: PluginLocalizedStringV2; afterMs: number }>;
   monthlyCapStatus?: 'none' | 'unknown';
 }>;
@@ -56,8 +60,32 @@ export type DevcontainerEffectReviewV1 = Readonly<{
 }>;
 /** A named output keeps inferred author Action contracts portable during declaration emission. */
 export type MachineProvisionerOptionsResultV1 = Readonly<{
-  readonly choices: readonly Readonly<{ id: string; title: PluginLocalizedStringV2; launch?: ProtocolJsonValue; available?: boolean; prices?: readonly MachineProvisionerPriceV1[]; retention?: MachineProvisionerContributionV1['retention']; nativeFacts?: MachineProvisionerNativeOptionFactsV1; effectReview?: DevcontainerEffectReviewV1 }>[];
+  code?: 'provider_unavailable'; nativeCause?: MachineProvisionerNativeCauseV1;
+  base?: Readonly<{ launch: ProtocolJsonValue; available?: boolean; prices?: readonly MachineProvisionerConditionalPriceV1[];
+    retention?: MachineProvisionerContributionV1['retention']; nativeFacts?: MachineProvisionerNativeOptionFactsV1; effectReview?: DevcontainerEffectReviewV1 }>;
+  dimensions: Readonly<Record<MachineProvisionerDimensionV1, readonly MachineProvisionerDimensionOptionV1[]>>;
+  constraints?: readonly MachineProvisionerOptionConstraintV1[];
 }>;
+export type MachineProvisionerDimensionV1 = 'size' | 'image' | 'location' | 'network' | 'duration';
+export type MachineProvisionerSelectionV1 = Readonly<Partial<Record<MachineProvisionerDimensionV1, string>>>;
+export type MachineProvisionerOptionSelectorV1 = Readonly<{ dimension: MachineProvisionerDimensionV1; optionIds: readonly string[] }>;
+export type MachineProvisionerConditionalPriceV1 = MachineProvisionerPriceV1 & Readonly<{ when?: readonly MachineProvisionerOptionSelectorV1[] }>;
+export type MachineProvisionerOptionConstraintV1 = Readonly<{ when: MachineProvisionerOptionSelectorV1; requires: MachineProvisionerOptionSelectorV1 }>;
+export type MachineProvisionerDimensionOptionV1 = Readonly<{
+  id: string; title: PluginLocalizedStringV2;
+  assignments: readonly Readonly<{ path: string; value: ProtocolJsonValue }>[];
+  available?: boolean; prices?: readonly MachineProvisionerConditionalPriceV1[];
+  retention?: MachineProvisionerContributionV1['retention']; nativeFacts?: MachineProvisionerNativeOptionFactsV1;
+}>;
+export type MachineProvisionerSelectionProjectionV1 = Readonly<{
+  prices: readonly MachineProvisionerPriceV1[]; nativeFacts: MachineProvisionerNativeOptionFactsV1;
+  retention?: MachineProvisionerContributionV1['retention']; effectReview?: DevcontainerEffectReviewV1;
+}> & (Readonly<{ kind: 'ready'; launch: ProtocolJsonValue }>
+  | Readonly<{ kind: 'incomplete' | 'unavailable' | 'invalid'; code: string }>);
+export const MACHINE_PROVISIONER_DIMENSIONS_V1: readonly MachineProvisionerDimensionV1[] = /* @__PURE__ */ projectProtocolValue(canonical.MACHINE_PROVISIONER_DIMENSIONS_V1);
+export const projectMachineProvisionerSelectionV1: (input: Readonly<{
+  options: MachineProvisionerOptionsResultV1; selection: MachineProvisionerSelectionV1; launchSchema: PluginJsonSchema;
+}>) => MachineProvisionerSelectionProjectionV1 = /* @__PURE__ */ projectProtocolValue(canonical.projectMachineProvisionerSelectionV1);
 export type DevcontainerNativeObservationV1 = Readonly<{
   nativeResourceId: string; user: string; workspaceFolder: string;
   storage: Readonly<{ kind: 'bind'; hostPath: string; childPath: string }> | Readonly<{ kind: 'child'; childPath: string }>;
@@ -66,8 +94,7 @@ export type MachineProvisionerResourceV1<TValue = ProtocolJsonValue> = Readonly<
   devcontainerObservation?: DevcontainerNativeObservationV1 }>;
 export type MachineProvisionerRefusalCodeV1 = 'invalid_request' | 'permission_denied' | 'admission_unavailable' | 'acquisition_disabled' | 'controller_unavailable' | 'controller_retired' | 'credential_unavailable' | 'provider_unavailable' | 'request_conflict' | 'intent_changed' | 'managed_not_found' | 'enrollment_retired' | 'resource_mismatch' | 'preset_not_found' | 'preset_archived' | 'preset_limit_reached';
 export type MachineProvisionerAcquireResultV1<TResource = ProtocolJsonValue, TNativeOperation = ProtocolJsonValue> = Readonly<{ kind: 'bound'; resource: MachineProvisionerResourceV1<TResource> }> | Readonly<{ kind: 'pending'; nativeOperationRef: MachineProvisionerResourceV1<TNativeOperation> }> | Readonly<{ kind: 'unknown'; recovery: Readonly<{ reference: string; reason: string; consoleUrl?: string }> }> | Readonly<{ kind: 'rejected'; code: MachineProvisionerRefusalCodeV1 }>;
-export type MachineProvisionerBootstrapCarrierV1 = Readonly<{ kind: 'native'; transport: Readonly<{ contributionRef: PluginContributionRef; schemaVersion: number }>;
-  guestHome?: Readonly<{ homeDir: string; happyHomeDir: string; daemonStartup: 'native-process' }> }> | Readonly<{ kind: 'ssh'; address: string; user: string; port?: number; hostKeyEvidence: Readonly<{ hostKey: string; fingerprint: string }>; credentialRef: Readonly<{ kind: 'shared_resource'; resourceId: string }> }>;
+export type MachineProvisionerBootstrapCarrierV1 = ManagedBootstrapCarrierV1;
 export type MachineProvisionerObservationV1 = Readonly<{ observedAt: number; availability: 'present' | 'absent' | 'unavailable'; power?: 'running' | 'stopped' | 'suspended' | 'unknown'; storage?: 'retained' | 'lost' | 'unknown'; daemon?: 'connected' | 'disconnected' | 'unknown'; billing?: MachineProvisionerContributionV1['billing']; prices?: readonly MachineProvisionerPriceV1[]; nativeExpiry?: number; reason?: string }>;
 export type MachineProvisionerPowerResultV1 = Readonly<{ kind: 'confirmed' }> | Readonly<{ kind: 'unknown'; code?: string }> | Readonly<{ kind: 'refused'; code: string }>;
 export type MachineProvisionerDestroyResultV1<TNativeOperation = ProtocolJsonValue> = MachineProvisionerPowerResultV1

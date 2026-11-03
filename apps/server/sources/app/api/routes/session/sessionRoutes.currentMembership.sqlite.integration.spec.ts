@@ -11,6 +11,9 @@ import { inspectSessionAccessGrants } from "@/app/session/access/sessionAccessGr
 import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import { readmitSessionRowsWithAdmissionInTx } from "@/app/session/access/sessionReadAdmission";
 import { SessionMetadataPrivacyUpgradeRequiredError } from "@/app/session/metadata/sessionMetadataRecipientProjection";
+import { V2SessionListResponseSchema, V2SessionRecordSchema, projectSessionDisplayV1,
+    sealSessionSharedDisplayEnvelopeV1Sync, sealSessionOwnerDisplayEnvelopeV1 } from '@happier-dev/protocol';
+import { sealSessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataEnvelopesV1';
 
 type Deferred = Readonly<{
     promise: Promise<void>;
@@ -635,6 +638,64 @@ describe("sessionRoutes current shared-participant reads (integration)", () => {
                 release.resolve(); await response;
                 Object.defineProperty(delegate, 'findUnique', { configurable: true, writable: true, value: original });
             }
+        });
+    });
+
+    it.each([['plain', 'e2ee'], ['e2ee', 'plain']] as const)(
+        'withdraws captured %s owner display when the fresh Account mode is %s', async (fromMode, toMode) => {
+        const fixture = await createSharedSessionFixture();
+        await db.account.update({ where: { id: fixture.ownerId }, data: {
+            ...createSignedAccountContentBinding(), encryptionMode: fromMode,
+        } });
+        const ownerMetadata = { v: 1 as const, workspace: { name: 'Mode-bound private display' } };
+        const sharedMetadata = { v: 1 as const, summary: { text: 'Mode-neutral shared display', updatedAt: 0 } };
+        const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(7) };
+        const randomBytes = (length: number) => new Uint8Array(length).fill(4);
+        const encryptedOwner = sealSessionOwnerMetadataEnvelopeV1({ ownerMetadata, material, randomBytes });
+        const plainOwner = { t: 'plain' as const, v: ownerMetadata };
+        const semantic = projectSessionDisplayV1({ sharedMetadata, ownerMetadata });
+        const shared = sealSessionSharedDisplayEnvelopeV1Sync({
+            sessionMode: 'plain', display: semantic.shared });
+        const owner = sealSessionOwnerDisplayEnvelopeV1({
+            accountMode: fromMode, display: semantic.owner!, material, randomBytes });
+        if (!shared.ok || !owner.ok) throw new Error('Canonical mode-bound display producer failed');
+        const displayProjectionV1 = { v: 1 as const, sourceMetadataVersion: 0, metadataLayoutVersion: 1 as const,
+            shared: shared.envelope, owner: owner.envelope };
+        await db.session.update({ where: { id: fixture.sessionId }, data: {
+            metadataLayoutVersion: 1, metadata: JSON.stringify(sharedMetadata),
+            ownerMetadata: JSON.stringify(fromMode === 'plain' ? plainOwner : encryptedOwner),
+            displayProjectionV1: JSON.stringify(displayProjectionV1),
+        } });
+        await withAuthenticatedTestApp(app => sessionRoutes(app), async app => {
+            const headers = { 'x-test-user-id': fixture.ownerId, 'x-happier-account-stored-content-protocol': '4' };
+            const list = await app.inject({ method: 'GET', url: '/v2/sessions?limit=50', headers });
+            expect(list.statusCode, list.body).toBe(200);
+            const captured = V2SessionListResponseSchema.parse(list.json()).sessions.find(row => row.id === fixture.sessionId);
+            if (!captured) throw new Error('Expected captured compact owner row');
+            expect(captured.displayProjectionV1).toEqual(displayProjectionV1);
+            const detail = await app.inject({ method: 'GET', url: `/v2/sessions/${fixture.sessionId}?accessProjectionVersion=1`, headers });
+            expect(detail.statusCode, detail.body).toBe(200);
+            const full = V2SessionRecordSchema.parse(detail.json().session);
+            // Persist the valid atomic post-transition state at the database
+            // boundary; the existing fresh-admission owner must check both captures.
+            const { owner: _owner, ...sharedOnly } = displayProjectionV1;
+            await db.$transaction([
+                db.account.update({ where: { id: fixture.ownerId }, data: { encryptionMode: toMode } }),
+                db.session.update({ where: { id: fixture.sessionId }, data: {
+                    ownerMetadata: JSON.stringify(toMode === 'plain' ? plainOwner : encryptedOwner),
+                    displayProjectionV1: JSON.stringify(sharedOnly),
+                } }),
+            ]);
+            const admission = { accountId: fixture.ownerId, accessMode: 'effective_access_v1' as const,
+                authentication: createPresentUserSessionAccessAuthentication() };
+            await expect(withSqliteReadSnapshot(tx => readmitSessionRowsWithAdmissionInTx(tx, admission, [full])))
+                .rejects.toBeInstanceOf(SessionMetadataPrivacyUpgradeRequiredError);
+            const readmitted = (await withSqliteReadSnapshot(tx => readmitSessionRowsWithAdmissionInTx(tx, admission, [captured])))
+                .get(fixture.sessionId);
+            expect(readmitted?.status).toBe('allowed');
+            if (readmitted?.status !== 'allowed') throw new Error('Expected compact row with compatible shared display');
+            expect(readmitted.row.displayProjectionV1).toEqual(sharedOnly);
+            expect(JSON.stringify(readmitted.row)).not.toContain('Mode-bound private display');
         });
     });
 

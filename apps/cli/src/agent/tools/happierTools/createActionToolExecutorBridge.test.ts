@@ -38,6 +38,7 @@ import { createCliActionDeps } from '@/session/actions/createCliActionDeps';
 import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCatalog';
 
+import { createUnavailableActionTransportDeps } from '@/testkit/actionTransportDeps';
 import { createActionToolExecutorBridge } from './createActionToolExecutorBridge';
 import { getActionSpec } from '@happier-dev/protocol/actions/actionSpecs';
 import { dispatchBuiltInHappierTool } from './dispatchBuiltInHappierTool';
@@ -47,6 +48,7 @@ describe('createActionToolExecutorBridge', () => {
     const queries: unknown[] = [];
     const approvals: unknown[] = [];
     const executor = createActionExecutor({
+      ...createUnavailableActionTransportDeps(),
       // Machine RPC and approval Artifact persistence are system boundaries.
       languageIntelligenceQuery: async args => { queries.push(args); return { status: 'loading' }; },
       languageIntelligenceRestart: async args => { queries.push(args); return { status: 'unavailable', reason: 'session_unavailable' }; },
@@ -114,6 +116,7 @@ describe('createActionToolExecutorBridge', () => {
     const requests: unknown[] = [];
     let approval: unknown;
     const executor = createActionExecutor({
+      ...createUnavailableActionTransportDeps(),
       workspaceFilesSearch: async input => { requests.push(input); return { ok: true, files: [], hasMore: false, coverage: 'complete' }; },
       workspaceFilesReplacePreview: async input => { requests.push(input); return { ok: true, files: [], skipped: { notText: 0 }, hasMore: false, coverage: 'complete' }; },
       machineProcessesAction: async ({ input }) => { requests.push(input); return { row: null }; },
@@ -545,6 +548,9 @@ describe('createActionToolExecutorBridge', () => {
     const contexts: unknown[] = [];
     const bridge = createActionToolExecutorBridge({
       surface: 'mcp',
+      actionsSettings: ActionsSettingsV1Schema.parse({ v: 1, actions: {
+        'session.list': { toolExposureModes: { mcp: 'direct' } },
+      } }),
       resolveSessionListAccess: (sessionId) => (
         sessionId === 'sess-bound' ? 'current_session' : undefined
       ),
@@ -797,8 +803,12 @@ describe('createActionToolExecutorBridge', () => {
 
   it('uses the default session id as the fallback direct action tool input sessionId', async () => {
     const calls: unknown[] = [];
+    const actionsSettings = ActionsSettingsV1Schema.parse({ v: 1, actions: {
+      'session.terminalComposer.clear': { toolExposureModes: { mcp: 'direct' } },
+    } });
     const bridge = createActionToolExecutorBridge({
       surface: 'mcp',
+      actionsSettings,
       executor: {
         execute: async (actionId, input, ctx) => {
           calls.push({ actionId, input, ctx });
@@ -825,7 +835,7 @@ describe('createActionToolExecutorBridge', () => {
         ctx: expect.objectContaining({
           defaultSessionId: 'sess-1',
           surface: 'mcp',
-          actionsSettings: null,
+          actionsSettings,
         }),
       }),
     ]);
@@ -905,8 +915,12 @@ describe('createActionToolExecutorBridge', () => {
 
   it('preserves explicit direct action tool session ids on external mcp', async () => {
     const calls: unknown[] = [];
+    const actionsSettings = ActionsSettingsV1Schema.parse({ v: 1, actions: {
+      'session.terminalComposer.clear': { toolExposureModes: { mcp: 'direct' } },
+    } });
     const bridge = createActionToolExecutorBridge({
       surface: 'mcp',
+      actionsSettings,
       executor: {
         execute: async (actionId, input, ctx) => {
           calls.push({ actionId, input, ctx });
@@ -935,7 +949,7 @@ describe('createActionToolExecutorBridge', () => {
         ctx: expect.objectContaining({
           defaultSessionId: 'sess-1',
           surface: 'mcp',
-          actionsSettings: null,
+          actionsSettings,
         }),
       }),
     ]);

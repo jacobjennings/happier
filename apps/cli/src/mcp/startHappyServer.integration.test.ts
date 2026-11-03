@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { request as httpRequest } from 'node:http';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -24,7 +24,6 @@ import {
 } from '@/mcp/startHappyServer';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
 import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
-import { runGit } from '@/scm/rpc/__tests__/testRpcHarness';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
 
@@ -160,7 +159,6 @@ describe('startHappyServer (MCP integration)', () => {
   });
 
   beforeEach(() => {
-    vi.resetModules();
     process.env = { ...env };
     delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
     delete process.env.HAPPIER_MCP_SSE_KEEPALIVE_INTERVAL_MS;
@@ -333,20 +331,6 @@ describe('startHappyServer (MCP integration)', () => {
   });
 
   it('executes discoverable-only execution-run actions through action_execute over HTTP transport', async () => {
-    const remote = await mkdtemp(join(tmpdir(), 'happier-coderabbit-review-remote-'));
-    const workspace = await mkdtemp(join(tmpdir(), 'happier-coderabbit-review-workspace-'));
-    runGit(remote, ['init', '--bare', '--initial-branch=main']);
-    runGit(workspace, ['init', '--initial-branch=main']);
-    await writeFile(join(workspace, 'a.txt'), 'base\n', 'utf8');
-    runGit(workspace, ['config', 'user.email', 'test@example.com']);
-    runGit(workspace, ['config', 'user.name', 'Test User']);
-    runGit(workspace, ['add', 'a.txt']);
-    runGit(workspace, ['commit', '-m', 'base']);
-    runGit(workspace, ['remote', 'add', 'origin', remote]);
-    runGit(workspace, ['push', '-u', 'origin', 'main']);
-    await writeFile(join(workspace, 'a.txt'), 'base\nfeature\n', 'utf8');
-    runGit(workspace, ['add', 'a.txt']);
-    runGit(workspace, ['commit', '-m', 'feature']);
     const sent: Array<{ body: ACPMessageData; meta?: Record<string, unknown> }> = [];
 
     const rpcHandlerManager = new RpcHandlerManager({

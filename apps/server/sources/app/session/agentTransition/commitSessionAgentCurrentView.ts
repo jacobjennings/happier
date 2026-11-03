@@ -15,6 +15,7 @@ import type {
 import {
     clearSessionRuntimeActivityProjectionInTx,
     clearSessionSourceRuntimeRequestProjectionsInTx,
+    doesStoredSessionDisplayMatchTupleWrite,
     loadSessionOwnerMutationContextInTx,
     patchSessionInTx,
     updateSessionMetadataEnvelopeTupleInTx,
@@ -128,6 +129,7 @@ type StoredCurrentViewRow = Readonly<{
     metadataVersion: number;
     metadata: string | null;
     ownerMetadata: string | null;
+    displayProjectionV1: string | null;
     agentStateVersion: number;
     agentState: string | null;
 }>;
@@ -179,6 +181,7 @@ function isExactCommittedTargetCurrentView(
     const matches = current.metadataLayoutVersion === SESSION_METADATA_LAYOUT_VERSION_V1
         && current.metadata === patch.sharedMetadata.ciphertext
         && current.ownerMetadata === encodeSessionOwnerMetadataEnvelopeV1(patch.ownerMetadata)
+        && doesStoredSessionDisplayMatchTupleWrite(current.displayProjectionV1, patch.displayProjectionV1, false)
         && current.agentState === patch.agentState.ciphertext
         && current.metadataVersion > patch.sharedMetadata.expectedVersion
         && current.agentStateVersion >= patch.agentState.expectedVersion;
@@ -227,6 +230,7 @@ export async function commitSessionAgentCurrentViewInTx(
             metadataVersion: true,
             metadata: true,
             ownerMetadata: true,
+            displayProjectionV1: true,
             agentStateVersion: true,
             agentState: true,
         },

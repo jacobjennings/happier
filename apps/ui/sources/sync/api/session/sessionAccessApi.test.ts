@@ -27,7 +27,10 @@ async function setup(options?: Readonly<{ accountEncryption?: 'plain' | 'e2ee' }
     const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
     const { upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
     const active = await upsertAndActivateServer({ serverUrl: 'https://active.example', name: 'Active' });
-    const target = await upsertServerProfile({ serverUrl: 'https://target.example', name: 'Target' });
+    // Each case is its own Home: the per-Home Account encryption owner (3b75c5855f) is shared by every reader of
+    // one Home credential, so a reused Home would carry earlier cases' opened Session readers into this one.
+    const targetUrl = `https://target-${crypto.randomUUID()}.example`;
+    const target = await upsertServerProfile({ serverUrl: targetUrl, name: 'Target' });
     const { storage } = await import('@/sync/domains/state/storageStore');
     storage.getState().activateProfileScope({ serverId: active.id, accountId: 'active-account' });
     storage.setState({ settingsScope: { serverId: target.id, accountId: 'target-account' } });
@@ -36,7 +39,7 @@ async function setup(options?: Readonly<{ accountEncryption?: 'plain' | 'e2ee' }
     const { encodeBase64 } = await import('@/encryption/base64');
     // Persistent credentials and the network are the only replaced boundaries.
     const credentials = vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockImplementation(async (url) => ({
-        token: token(url === 'https://target.example' ? 'target-account' : 'active-account'),
+        token: token(url === targetUrl ? 'target-account' : 'active-account'),
         ...(options?.accountEncryption === 'e2ee' ? {
             encryption: {
                 publicKey: encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'),
@@ -73,7 +76,7 @@ async function setup(options?: Readonly<{ accountEncryption?: 'plain' | 'e2ee' }
     const [encryptedShared] = options?.accountEncryption === 'e2ee'
         ? await new AES256Encryption(new Uint8Array(32).fill(11)).encrypt([{ v: 1 }]) : [];
     const sharedMetadata = encryptedShared ? encodeBase64(encryptedShared, 'base64') : currentSession.metadata;
-    return { target, request, credentials, token, storage, active, TokenStorage, ownerMetadata, sharedMetadata };
+    return { target, targetUrl, request, credentials, token, storage, active, TokenStorage, ownerMetadata, sharedMetadata };
 }
 
 describe('Session access exact Account transport', () => {
@@ -229,7 +232,7 @@ describe('Session access exact Account transport', () => {
             input: { sessionId: 'same/id', primaryTeamId: 'team-1' },
         })).resolves.toEqual(result);
         const call = env.request.mock.calls.find(([url]) => url.includes('/access-context/'));
-        expect(call?.[0]).toBe('https://target.example/v2/sessions/access-context/set');
+        expect(call?.[0]).toBe(`${env.targetUrl}/v2/sessions/access-context/set`);
         expect(JSON.parse(String(call?.[1]?.body))).toEqual({ sessionId: 'same/id', primaryTeamId: 'team-1' });
     });
 
@@ -258,7 +261,7 @@ describe('Session access exact Account transport', () => {
             input: { sessionId: 'same/id', ...grant },
         })).resolves.toEqual({ changed: true, grant });
         const call = env.request.mock.calls.find(([url]) => url.includes('/access-grants/'));
-        expect(call?.[0]).toBe('https://target.example/v2/sessions/access-grants/set');
+        expect(call?.[0]).toBe(`${env.targetUrl}/v2/sessions/access-grants/set`);
         expect(JSON.parse(String(call?.[1]?.body))).toEqual({ sessionId: 'same/id', ...grant });
         expect(new Headers(call?.[1]?.headers).get('Authorization')).toBe(`Bearer ${env.token('target-account')}`);
         expect(env.request.mock.calls.map(([url]) => new URL(url).pathname)).not.toContain('/v1/account/encryption');
@@ -340,6 +343,57 @@ describe('Session access exact Account transport', () => {
         })).toEqual(sessionDataKey);
     });
 
+    it.each([
+        ['metadata it cannot open', async () => ({ v: 1 }), new Uint8Array(32).fill(1)],
+        ['its own non-Session content', async () => ({ host: 'alice', platform: 'linux' }), null],
+    ] as const)('seals no key to a direct recipient when the Home serves another resource key with %s', async (_case, content, sealingKey) => {
+        const env = await setup({ accountEncryption: 'e2ee' });
+        const { createSessionAccessClient } = await import('./sessionAccessApi');
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const { encodeHex } = await import('@/encryption/hex');
+        const { encryptDataKeyForRecipientV0 } = await import('@/sync/encryption/directShareEncryption');
+        const { signAccountContentKeyBindingV1 } = await import('@happier-dev/protocol/crypto/accountContentKeyBindingV1');
+        // A Saved Secret, Workflow or Machine key this Account can open, named as the Session's.
+        const foreignResourceKey = new Uint8Array(32).fill(0x5a);
+        const [servedMetadata] = await new AES256Encryption(sealingKey ?? foreignResourceKey).encrypt([await content()]);
+        const callerEnvelope = encryptDataKeyForRecipientV0(foreignResourceKey, encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'));
+        const recipient = { content: tweetnacl.box.keyPair(), signing: tweetnacl.sign.keyPair() };
+        let physicalBody: Record<string, unknown> | null = null;
+        env.request.mockImplementation(async (url, init) => {
+            const path = new URL(url).pathname;
+            if (path === '/v1/account/encryption') return Response.json({ mode: 'e2ee', updatedAt: 1 });
+            if (path === '/v2/sessions/same') return Response.json({ session: {
+                id: 'same', createdAt: 1, updatedAt: 2, seq: 3, active: true, activeAt: 2,
+                encryptionMode: 'e2ee', dataEncryptionKey: callerEnvelope,
+                metadataLayoutVersion: 1, metadataVersion: 1, metadata: encodeBase64(servedMetadata!, 'base64'),
+                ownerMetadata: env.ownerMetadata, agentStateVersion: 1, agentState: null, share: null,
+            } });
+            if (path.endsWith('/turns')) return Response.json({ error: 'not_found' }, { status: 404 });
+            if (path === '/v1/user/recipient') return Response.json({ user: {
+                id: 'recipient', firstName: 'Recipient', lastName: null, avatar: null,
+                username: 'recipient', bio: null, badges: [], status: 'friend',
+                recipientEnvelopeReadiness: { status: 'available' },
+                publicKey: encodeHex(recipient.signing.publicKey),
+                contentPublicKey: encodeBase64(recipient.content.publicKey, 'base64'),
+                contentPublicKeySig: encodeBase64(signAccountContentKeyBindingV1({
+                    accountSigningSecretKey: recipient.signing.secretKey, contentPublicKey: recipient.content.publicKey,
+                }), 'base64'),
+            } });
+            if (path === '/v2/sessions/access-grants/set') {
+                physicalBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+                return Response.json({ changed: true, grant: {
+                    subject: { kind: 'account', accountId: 'recipient' }, accessLevel: 'edit', canApprovePermissions: false,
+                } });
+            }
+            throw new Error(`Unexpected path ${path}`);
+        });
+        await createSessionAccessClient({ scope: { serverId: env.target.id, accountId: 'target-account' }, sessionId: 'same',
+            availability: 'available' }).set({ subject: { kind: 'account', accountId: 'recipient' }, accessLevel: 'edit', canApprovePermissions: false })
+            .catch(() => undefined);
+        // Content that opens but is not Session metadata is refused at hydration, before any grant.
+        expect(physicalBody ?? {}).not.toHaveProperty('accountEnvelopeInput');
+    });
+
     it('does not submit a direct-recipient envelope after the Account encryption generation changes while opening the Session DEK', async () => {
         const env = await setup({ accountEncryption: 'e2ee' });
         const { Encryption } = await import('@/sync/encryption/encryption');
@@ -410,6 +464,54 @@ describe('Session access exact Account transport', () => {
         })).rejects.toMatchObject({ code: 'session_access_stale_scope' });
         expect(mutationCalls).toBe(0);
     });
+
+    it.each([
+        ['session.access.grant.set', { subject: { kind: 'team', teamId: 'team-1' }, accessLevel: 'view', canApprovePermissions: false },
+            { changed: true, grant: { subject: { kind: 'team', teamId: 'team-1' }, accessLevel: 'view', canApprovePermissions: false, requiredByTeamPolicy: false } }],
+        ['session.access.context.set', { primaryTeamId: 'team-1' }, { changed: true, primaryTeamId: 'team-1' }],
+    ] as const)('seals the Team share statement with the Session key before %s reaches the Home', async (actionId, input, result) => {
+        // The app entry registers this runtime; the tuple owner under it stays real.
+        await import('@/sync/syncEngine');
+        const env = await setup({ accountEncryption: 'e2ee' });
+        const { executeSessionAccessHttpAction } = await import('./sessionAccessApi');
+        const { encodeBase64, decodeBase64 } = await import('@/encryption/base64');
+        const { encryptDataKeyForRecipientV0 } = await import('@/sync/encryption/directShareEncryption');
+        const sessionDataKey = new Uint8Array(32).fill(14);
+        const cipher = new AES256Encryption(sessionDataKey);
+        const metadata = encodeBase64((await cipher.encrypt([{ v: 1 }]))[0]!, 'base64');
+        const requests: string[] = [];
+        const sealedShared: string[] = [];
+        env.request.mockImplementation(async (url, init) => {
+            const path = new URL(url).pathname;
+            const method = init?.method ?? 'GET';
+            if (method !== 'GET') requests.push(`${method} ${path}`);
+            if (path === '/v1/account/encryption') return Response.json({ mode: 'e2ee', updatedAt: 1 });
+            if (path === '/v2/sessions/same' && method === 'PATCH') {
+                sealedShared.push((JSON.parse(String(init?.body)) as { sharedMetadata: { ciphertext: string } }).sharedMetadata.ciphertext);
+                return Response.json({ success: true, metadataLayoutVersion: 1, sharedMetadata: { version: 2 }, agentState: { version: 1 } });
+            }
+            if (path === '/v2/sessions/same') return Response.json({ session: {
+                id: 'same', createdAt: 1, updatedAt: 2, seq: 3, active: true, activeAt: 2,
+                encryptionMode: 'e2ee', dataEncryptionKey: encryptDataKeyForRecipientV0(sessionDataKey, encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64')),
+                metadataLayoutVersion: 1, metadataVersion: 1, metadata, ownerMetadata: env.ownerMetadata,
+                agentStateVersion: 1, agentState: null, share: null,
+            } });
+            if (path.endsWith('/turns')) return Response.json({ error: 'not_found' }, { status: 404 });
+            if (path === '/v2/sessions/access-grants/set' || path === '/v2/sessions/access-context/set') return Response.json(result);
+            requests.push(`UNEXPECTED ${method} ${path}`);
+            throw new Error(`Unexpected path ${path}`);
+        });
+        await executeSessionAccessHttpAction({
+            scope: { serverId: env.target.id, accountId: 'target-account' },
+            availability: 'available', actionId, input: { sessionId: 'same', ...input },
+        });
+        // Every metadata write lands first, so a member's wake finds the statement.
+        expect(requests.at(-1)).toBe(`POST ${actionId === 'session.access.grant.set' ? '/v2/sessions/access-grants/set' : '/v2/sessions/access-context/set'}`);
+        expect(requests.slice(0, -1).every(request => request === 'PATCH /v2/sessions/same')).toBe(true);
+        const opened = await cipher.decrypt(sealedShared.map(sealed => decodeBase64(sealed, 'base64')));
+        expect(opened.filter(metadata => metadata?.teamShareStatementV1)).toEqual([expect.objectContaining({
+            teamShareStatementV1: { v: 1, teamIds: ['team-1'] } })]);
+    }, 180_000);
 
     it('does not bless a Session snapshot fetched across an Account encryption generation change', async () => {
         const env = await setup({ accountEncryption: 'e2ee' });
@@ -492,7 +594,7 @@ describe('Session access exact Account transport', () => {
         const { encodeBase64 } = await import('@/encryption/base64');
         const { encodeHex } = await import('@/encryption/hex');
         const { signAccountContentKeyBindingV1 } = await import('@happier-dev/protocol');
-        const sessionDataKey = new Uint8Array(32).fill(21);
+        const sessionDataKey = new Uint8Array(32).fill(11); // opens the fixture's shared metadata
         const callerEnvelope = directShare.encryptDataKeyForRecipientV0(
             sessionDataKey,
             encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'),
@@ -641,10 +743,10 @@ describe('Session access exact Account transport', () => {
             { sessionId: 'same', ...grant },
             { sessionId: 'same', ...grant },
         ]);
-        expect(new Set(requestOrigins)).toEqual(new Set(['https://target.example']));
+        expect(new Set(requestOrigins)).toEqual(new Set([env.targetUrl]));
         expect(env.request.mock.calls
             .filter(([url]) => new URL(url).pathname === '/v2/sessions/access-grants/set')
-            .every(([url]) => new URL(url).origin === 'https://target.example')).toBe(true);
+            .every(([url]) => new URL(url).origin === env.targetUrl)).toBe(true);
     });
 
     it('trusts Plain, setup-pending, and inconsistent recipient readiness for an E2EE direct grant', async () => {
@@ -821,7 +923,7 @@ describe('Session access exact Account transport', () => {
         expect(bodies[0]).not.toHaveProperty('token');
         expect(bodies[0]).not.toHaveProperty('encryptedDataKey');
         expect(bodies[0]).not.toHaveProperty('networkOff');
-        expect(env.request.mock.calls.every(([url]) => new URL(url).origin === 'https://target.example')).toBe(true);
+        expect(env.request.mock.calls.every(([url]) => new URL(url).origin === env.targetUrl)).toBe(true);
         // A loose older writer may accept and discard the new setting. Its 2xx
         // response must not claim that the requested privacy policy was applied.
         await expect(client.createPublicLink({ maxUses: 4, isConsentRequired: true, networkOff: true }))
@@ -971,7 +1073,7 @@ describe('Session access exact Account transport', () => {
         env.request.mockImplementation(async () => new Response(JSON.stringify({ changed: true, subject: args.input.subject, encryptedDataKey: 'private' })));
         await expect(executeSessionAccessHttpAction(args)).rejects.toThrow();
         env.request.mockImplementation(async () => {
-            await env.TokenStorage.setCredentialsForServerUrl('https://target.example', { serverId: env.target.id }, { token: env.token('next-account') });
+            await env.TokenStorage.setCredentialsForServerUrl(env.targetUrl, { serverId: env.target.id }, { token: env.token('next-account') });
             return new Response(JSON.stringify({ changed: true, subject: args.input.subject }));
         });
         await expect(executeSessionAccessHttpAction(args)).rejects.toMatchObject({ code: 'session_access_stale_scope' });

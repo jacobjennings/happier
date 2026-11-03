@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,8 +12,6 @@ let assignedLegendRef: any = null;
 // The mounted list's at-end facts and their listeners (Legend's own state store is the platform boundary).
 const legendEndState = { isAtEnd: true, isNearEnd: true, isWithinMaintainScrollAtEndThreshold: true };
 const legendEndListeners = new Set<() => void>();
-
-const SIDECHAIN_JUMP_TO_MESSAGE = readFileSync(new URL('./sidechainJumpToMessage.ts', import.meta.url), 'utf8');
 
 vi.mock('@legendapp/list/react-native', () => ({
     LegendList: React.forwardRef((props: any, ref: any) => {
@@ -82,7 +78,7 @@ describe('TranscriptListShell', () => {
         const screen = await renderScreen(
             <TranscriptListShell<{ id: string }>
                 ref={listRef}
-                data={[{ id: 'row-1' }]}
+                data={[{ id: 'newest' }, { id: 'oldest' }]}
                 dataKey="session-test"
                 webDomObservation={createWebDomScrollObservation()}
                 extraData={5}
@@ -102,7 +98,8 @@ describe('TranscriptListShell', () => {
         expect(assignedLegendRef).toBeTruthy();
         expect(listRef.current).toBeTruthy();
         expect(capturedLegendListProps).toMatchObject({
-            data: [{ id: 'row-1' }],
+            // Native shell data is newest-first; Legend receives it chronologically.
+            data: [{ id: 'oldest' }, { id: 'newest' }],
             extraData: 5,
             initialScrollAtEnd: true,
             keyboardDismissMode: 'none',
@@ -115,26 +112,31 @@ describe('TranscriptListShell', () => {
         expect(screen.findByType('CatchUpOverlay' as any)).toBeTruthy();
     });
 
-    it('owns the layout commit observer wrapper while preserving the host callback', async () => {
+    it('owns the layout commit observer wrapper while preserving the host callback once per commit', async () => {
         const onCommitLayoutEffect = vi.fn();
-
-        await renderScreen(
-            <TranscriptListShell<{ id: string }>
-                data={[{ id: 'row-1' }]}
-                dataKey="session-test"
-                webDomObservation={createWebDomScrollObservation()}
-                keyExtractor={(item: { id: string }) => item.id}
-                renderItem={({ item }: { item: { id: string } }) => React.createElement('Row', { id: item.id })}
-                frame={resolveMainTranscriptListShellFrame({ platformOS: 'ios' })}
-                onCommitLayoutEffect={onCommitLayoutEffect}
-            />,
+        let commits = 0;
+        const render = (revision: number) => (
+            <React.Profiler id="shell" onRender={() => { commits += 1; }}>
+                <TranscriptListShell<{ id: string }>
+                    data={[{ id: 'row-1' }]}
+                    dataKey="session-test"
+                    webDomObservation={createWebDomScrollObservation()}
+                    extraData={revision}
+                    keyExtractor={(item: { id: string }) => item.id}
+                    renderItem={({ item }: { item: { id: string } }) => React.createElement('Row', { id: item.id })}
+                    frame={resolveMainTranscriptListShellFrame({ platformOS: 'ios' })}
+                    onCommitLayoutEffect={onCommitLayoutEffect}
+                />
+            </React.Profiler>
         );
 
-        expect(onCommitLayoutEffect).toHaveBeenCalled();
-    });
+        const screen = await renderScreen(render(1));
+        expect(commits).toBeGreaterThan(0);
+        expect(onCommitLayoutEffect).toHaveBeenCalledTimes(commits);
+        const mountCommits = commits;
 
-    it('keeps sidechain shell helpers out of raw list command execution', () => {
-        expect(SIDECHAIN_JUMP_TO_MESSAGE).not.toMatch(/\.scrollTo(?:Index|Offset)\s*\(/);
-        expect(SIDECHAIN_JUMP_TO_MESSAGE).not.toMatch(/scrollTo(?:Index|Offset)\?:/);
+        await screen.update(render(2));
+        expect(commits).toBeGreaterThan(mountCommits);
+        expect(onCommitLayoutEffect).toHaveBeenCalledTimes(commits);
     });
 });

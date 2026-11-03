@@ -143,7 +143,7 @@ it('keeps the presented Ask launch model quiet across unrelated resource publica
     // Keep the actual store writers and passive subscriptions beneath the transport boundary.
     const accountId = captureActiveServerAccountScopeLifetime()!.scope.accountId;
     const storageKey = { serverId, machineId: machine.id, expectedAccountId: accountId };
-    const processKey = { serverId, machineId: machine.id, accountId, scope: 'happier' as const, view: 'tree' as const };
+    const processKey = { serverId, machineId: machine.id, accountId, scope: 'happier' as const, view: 'owners' as const };
     await machineResourceStore.read({ ...storageKey, view: 'summary' });
     await machineStorageStore.read(storageKey);
     await machineProcessesStore.read(processKey);
@@ -347,7 +347,7 @@ it('uses warmed Storage and Processes facts without extra reads and suppresses u
     rpc.mockImplementation(async ({ method }: { method: string }) => method === RPC_METHODS.DAEMON_STORAGE_SUMMARY_GET
         ? storageReport : method === RPC_METHODS.MACHINES_PROCESSES_LIST ? processReport : undefined);
     await machineStorageStore.read({ serverId, machineId: machine.id, expectedAccountId: accountId });
-    await machineProcessesStore.read({ serverId, machineId: machine.id, accountId, scope: 'happier', view: 'tree' });
+    await machineProcessesStore.read({ serverId, machineId: machine.id, accountId, scope: 'happier', view: 'owners' });
     rpc.mockClear();
     const resourceMethods = new Set([RPC_METHODS.DAEMON_STORAGE_SUMMARY_GET, RPC_METHODS.DAEMON_STORAGE_WATCH,
         RPC_METHODS.MACHINES_PROCESSES_LIST, RPC_METHODS.DAEMON_PROCESSES_WATCH]);

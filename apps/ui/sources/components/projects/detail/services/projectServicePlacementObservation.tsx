@@ -12,7 +12,10 @@ import { actionOperationStore } from '@/sync/domains/actionOperations/actionOper
 import { actionOperationSelectors, compareProjectServiceActionOperations } from '@/sync/domains/actionOperations/actionOperationSelectors';
 import { useActionOperationStopControl } from '@/components/inbox/actionOperations/useActionOperationStopControl';
 import { useServerCredentialAccountScopeBinding, type ServerCredentialAccountScopeBinding } from '@/sync/domains/scope/useServerCredentialAccountScopes';
-import { useActiveServerAccountScope, useArtifacts, useServerScopedMachine } from '@/sync/store/hooks';
+import { useActiveServerAccountScope, useServerScopedMachine } from '@/sync/store/hooks';
+import { storage } from '@/sync/domains/state/storage';
+import { useShallow } from 'zustand/react/shallow';
+import { createProjectServiceStartApprovalArtifactIdsSelector } from '@/sync/domains/artifacts/approvalArtifacts';
 import { getMachineDisplayName } from '@/utils/sessions/machineDisplayNames';
 import { t } from '@/text';
 import { useActionApprovalContinuation } from '@/components/approvals/useActionApprovalContinuation';
@@ -176,7 +179,6 @@ function ScopedObservationProvider(props: Readonly<{
   children: React.ReactNode;
 }>) {
   const [retainedEntries, setEntries] = React.useState<ReadonlyMap<string, Entry>>(() => new Map());
-  const artifacts = useArtifacts();
   const activeScope = useActiveServerAccountScope();
   const [approvalObservations, setApprovalObservations] = React.useState<ReadonlyMap<string, ApprovedStart>>(() => new Map());
   const publishApproval = React.useCallback((artifactId: string, start: ApprovedStart | null) => setApprovalObservations(current => {
@@ -187,11 +189,12 @@ function ScopedObservationProvider(props: Readonly<{
     if (start) next.set(artifactId, start); else next.delete(artifactId);
     return next;
   }), []);
-  const approvalIds = React.useMemo(() => props.binding?.isCurrent() && activeScope?.accountId === props.binding.accountId
+  const selectApprovalIds = React.useMemo(() => createProjectServiceStartApprovalArtifactIdsSelector(props.source),
+    [props.source.serverId, props.source.machineId, props.source.refId]);
+  const approvalIds = storage(useShallow(state => props.binding?.isCurrent() && activeScope?.accountId === props.binding.accountId
     && areServerProfileIdentifiersEquivalent(activeScope.serverId, props.source.serverId)
-    ? artifacts.filter(artifact => artifact.header?.actionId === 'localServices.launcher.start'
-      && (artifact.header.approvalStatus === 'approved' || artifact.header.approvalStatus === 'executing')).map(artifact => artifact.id)
-    : [], [activeScope, artifacts, props.binding, props.source.serverId]);
+    ? selectApprovalIds(state.artifacts)
+    : []));
   const previousApprovedStarts = React.useRef<ReadonlyMap<string, ApprovedStart>>(new Map());
   const approvedStarts = React.useMemo(() => {
     const result = new Map<string, ApprovedStart>();
@@ -497,7 +500,9 @@ export function useProjectServicePlacementObservation(serviceName: string, manag
   const destinationMachine = useServerScopedMachine(context?.source.serverId ?? '', destinationMachineId ?? '');
   const destinationName = (destinationMachine ? getMachineDisplayName(destinationMachine) : null) ?? t('projectServices.otherMachine');
   const progressText = awaitingBinding ? `${t('common.loading')} · ${t('localServices.row.onMachine', { machine: destinationName })}`
-    : startPending ? t('localServices.row.startingOn', { machine: destinationName })
+    : startPending ? destinationMachineId
+      ? t('localServices.row.startingOn', { machine: destinationName })
+      : t('localServices.rowStatus.starting')
     : !active ? null : unknown ? t(starting ? 'localServices.actions.failure.outcomeUnknown' : 'projectServices.moveUnknown')
     : phase === 'stopping' ? t('localServices.rowStatus.stopping')
     : phase === 'stopped' ? t('localServices.rowStatus.stopped')

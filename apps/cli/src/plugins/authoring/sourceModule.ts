@@ -12,6 +12,7 @@ import {
   normalizePluginDaemonDatabaseRuntimeProjection,
 } from '@happier-dev/plugin-sdk/host/registration';
 import { serializeCanonicalPluginManifest } from '@/plugins/manifest/serialize';
+import { assertPluginManifestSettingsValid } from '@/plugins/settings/manifestSettings';
 import {
   createPluginTypeScriptCandidateScope,
   createPluginTypeScriptGenerationScope,
@@ -23,7 +24,7 @@ import {
 } from '@/plugins/runtime/loadPluginModule';
 import type { PluginRelativeModuleResolution } from '@/plugins/runtime/activationSources';
 import type { DevelopmentPluginSourceCustody, PluginRuntimeSourceAuthority } from '@/plugins/runtime/sourceAuthority';
-import { preparePluginSingleFileDevelopmentLoad, readPackageJsonRecord } from './hostSdkResolution';
+import { preparePluginSingleFileDevelopmentLoad, readPackageJsonRecord, resolvePluginAuthorWorkspaceAliases } from './hostSdkResolution';
 import {
   type PreparedPluginActivationGraph,
 } from '@/plugins/runtime/types';
@@ -271,6 +272,7 @@ export function projectPluginAuthorModule(
     );
   }
   let daemonDatabases: PluginDaemonDatabaseRuntimeProjection;
+  assertPluginManifestSettingsValid(manifestResult.manifest);
   try {
     daemonDatabases = normalizePluginDaemonDatabaseRuntimeProjection(
       namespace.daemonDatabases,
@@ -318,12 +320,12 @@ export async function evaluatePluginAuthorSource(input: Readonly<{
   const namespace = input.loadModule
     ? await input.loadModule(entry.entryPath)
     : await loadPluginAuthorSourceModule(entry.entryPath, {
-      aliases: {
+      aliases: await resolvePluginAuthorWorkspaceAliases(entry.packageRoot, {
         ...typeScriptConfig.aliases,
         ...(entry.kind === 'singleFile'
           ? await preparePluginSingleFileDevelopmentLoad(entry.entryPath)
           : {}),
-      },
+      }),
     });
   return Object.freeze({
     entry,
@@ -351,7 +353,7 @@ export async function evaluatePluginDevelopmentCandidate(input: Readonly<{
   const candidateScope = await createPluginTypeScriptCandidateScope({
     rootPath: entry.packageRoot,
     // Trusted-root tsconfig aliases never override the host SDK alias contract.
-    aliases: { ...typeScriptConfig.aliases, ...singleFileAliases },
+    aliases: await resolvePluginAuthorWorkspaceAliases(entry.packageRoot, { ...typeScriptConfig.aliases, ...singleFileAliases }),
   });
   const namespace = await loadVerifiedPluginModule({
     entryPath: entry.entryPath,
@@ -411,7 +413,7 @@ export async function evaluateManifestPluginDevelopmentCandidate(input: Readonly
   });
   const candidateScope = await createPluginTypeScriptCandidateScope({
     rootPath: packageRoot,
-    aliases: typeScriptConfig.aliases,
+    aliases: await resolvePluginAuthorWorkspaceAliases(packageRoot, typeScriptConfig.aliases),
   });
   const namespace = await loadVerifiedPluginModule({
     entryPath,
@@ -452,7 +454,7 @@ export async function evaluatePluginAuthorStagingSource(input: Readonly<{
   let loadModule = input.loadModule;
   if (!loadModule) {
     const generationScope = createPluginTypeScriptGenerationScope({
-      aliases: typeScriptConfig.aliases,
+      aliases: await resolvePluginAuthorWorkspaceAliases(entry.packageRoot, typeScriptConfig.aliases),
     });
     loadModule = entryPath => loadVerifiedPluginModule({
       entryPath,

@@ -263,7 +263,7 @@ describe('happier attach', () => {
     }));
   });
 
-  it('dispatches provider-native attach through the generic backend execution surface when no custom runner is supplied', async () => {
+  it.each([0, 7])('dispatches provider-native attach through the generic backend execution surface when no custom runner is supplied (surface exit code %i)', async (surfaceExitCode) => {
     const credentials: Credentials = {
       token: 'token-1',
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
@@ -282,17 +282,39 @@ describe('happier attach', () => {
         opencodeServerBaseUrlExplicit: true,
       }),
     });
-    resolveBackendExecutionSurfaces.mockImplementation(createMockBackendExecutionSurfaces);
+    const surfaceAttach = vi.fn<AttachSurfaceV1['attach']>(async () => ({ ok: true, value: { exitCode: surfaceExitCode } }));
+    resolveBackendExecutionSurfaces.mockImplementation((backendId) => {
+      const surfaces = createMockBackendExecutionSurfaces(backendId);
+      return backendId === 'opencode' && surfaces.attach
+        ? { ...surfaces, attach: { ...surfaces.attach, attach: surfaceAttach } }
+        : surfaces;
+    });
 
-    await (handleAttachCommand as any)(['sid_opencode_generic_attach_1'], {
+    const attachRun = (handleAttachCommand as any)(['sid_opencode_generic_attach_1'], {
       readCredentialsFn: async () => credentials,
       readSettingsFn: async () => localSettings,
       fetchSessionByIdFn: async () => rawSession,
       readTerminalAttachmentInfoFn: async () => null,
       runTmuxAttachFn: vi.fn(async () => 0),
     });
+    if (surfaceExitCode === 0) {
+      await expect(attachRun).resolves.toBeUndefined();
+    } else {
+      await expect(attachRun).rejects.toThrow(`process.exit(${surfaceExitCode})`);
+    }
 
     expect(resolveBackendExecutionSurfaces).toHaveBeenCalledWith('opencode');
+    expect(surfaceAttach).toHaveBeenCalledOnce();
+    expect(surfaceAttach).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'sid_opencode_generic_attach_1',
+      metadata: expect.objectContaining({
+        path: '/tmp/opencode-workspace',
+        runtimeDescriptorV1: expect.objectContaining({
+          agentId: 'opencode',
+          agent: expect.objectContaining({ providerSessionId: 'vendor-session-1' }),
+        }),
+      }),
+    }));
   });
 
   it('passes the resolved attach backend id to direct provider attach when configured backend ownership differs from the agent id', async () => {

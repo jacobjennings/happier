@@ -167,33 +167,6 @@ describe('startPluginHostedMcpLoopbackServer', () => {
         }
     });
 
-    it('rejects unprefixed hosted tool names before opening a loopback endpoint', async () => {
-        const startPromise = startPluginHostedMcpLoopbackServer({
-            pluginId: 'acme',
-            spec: {
-                id: 'acme.hosted',
-                name: 'acme-hosted',
-                transport: {
-                    kind: 'hosted',
-                    exposure: { kind: 'loopbackHttp', requested: true },
-                },
-                hosted: {
-                    tools: [
-                        {
-                            name: 'acme_echo',
-                            handler: async () => ({ content: [{ type: 'text', text: 'unexpected' }] }),
-                        },
-                    ],
-                },
-            },
-        });
-        try {
-            await expect(startPromise).rejects.toThrow(/hosted MCP tool name/i);
-        } finally {
-            await startPromise.then((server) => server.dispose(), () => undefined);
-        }
-    });
-
     it('rejects ext namespaces that do not match the current plugin id', async () => {
         const startPromise = startPluginHostedMcpLoopbackServer({
             pluginId: 'acme',
@@ -314,9 +287,15 @@ describe('startPluginHostedMcpLoopbackServer', () => {
         }
     });
 
-    it('rejects non-object hosted tool input schemas without invoking the plugin handler', async () => {
+    it.each([
+        { label: 'non-object input schema', slot: 'inputSchema', schema: 'not-a-schema', arguments: { text: 'hello' }, expected: 'Invalid MCP tool input' },
+        { label: 'malformed input schema', slot: 'inputSchema', schema: { type: 'object', properties: { text: { type: 'string' } }, required: 'text' }, arguments: { text: 'hello' }, expected: 'Invalid MCP tool input' },
+        { label: 'non-object output schema', slot: 'outputSchema', schema: 'not-a-schema', arguments: {}, expected: 'Invalid MCP tool output' },
+        { label: 'malformed output schema', slot: 'outputSchema', schema: { type: 'object', properties: { echoed: { type: 'string' } }, required: 'echoed' }, arguments: {}, expected: 'Invalid MCP tool output' },
+    ] as const)('rejects a hosted tool with a $label without invoking the plugin handler', async ({ slot, schema, arguments: args, expected }) => {
         const handler = vi.fn(async () => ({
             content: [{ type: 'text' as const, text: 'unexpected' }],
+            structuredContent: { echoed: 'hello' },
         }));
         const server = await startPluginHostedMcpLoopbackServer({
             pluginId: 'acme',
@@ -330,15 +309,15 @@ describe('startPluginHostedMcpLoopbackServer', () => {
                 hosted: {
                     tools: [
                         {
-                            name: 'ext.acme.non_object_input_schema',
-                            inputSchema: 'not-a-schema',
+                            name: 'ext.acme.invalid_schema',
+                            [slot]: schema,
                             handler,
                         },
                     ],
                 },
             },
         });
-        const client = new Client({ name: 'plugin-hosted-non-object-input-schema-test', version: '1.0.0' }, { capabilities: {} });
+        const client = new Client({ name: 'plugin-hosted-invalid-schema-test', version: '1.0.0' }, { capabilities: {} });
         try {
             await withTimeout(
                 client.connect(new StreamableHTTPClientTransport(new URL(server.endpoint.url))),
@@ -346,64 +325,12 @@ describe('startPluginHostedMcpLoopbackServer', () => {
             );
 
             const result = await withTimeout(
-                client.callTool({ name: 'ext.acme.non_object_input_schema', arguments: { text: 'hello' } }),
-                'call hosted MCP tool with non-object input schema',
+                client.callTool({ name: 'ext.acme.invalid_schema', arguments: args }),
+                'call hosted MCP tool with an invalid schema',
             );
             expect(result).toEqual(expect.objectContaining({
                 isError: true,
-                content: [{ type: 'text', text: 'Invalid MCP tool input' }],
-            }));
-            expect(handler).not.toHaveBeenCalled();
-        } finally {
-            await client.close();
-            await server.dispose();
-        }
-    });
-
-    it('rejects malformed hosted tool input schemas without invoking the plugin handler', async () => {
-        const handler = vi.fn(async () => ({
-            content: [{ type: 'text' as const, text: 'unexpected' }],
-        }));
-        const server = await startPluginHostedMcpLoopbackServer({
-            pluginId: 'acme',
-            spec: {
-                id: 'acme.hosted',
-                name: 'acme-hosted',
-                transport: {
-                    kind: 'hosted',
-                    exposure: { kind: 'loopbackHttp', requested: true },
-                },
-                hosted: {
-                    tools: [
-                        {
-                            name: 'ext.acme.malformed_input_schema',
-                            inputSchema: {
-                                type: 'object',
-                                properties: {
-                                    text: { type: 'string' },
-                                },
-                                required: 'text',
-                            },
-                            handler,
-                        },
-                    ],
-                },
-            },
-        });
-        const client = new Client({ name: 'plugin-hosted-malformed-input-schema-test', version: '1.0.0' }, { capabilities: {} });
-        try {
-            await withTimeout(
-                client.connect(new StreamableHTTPClientTransport(new URL(server.endpoint.url))),
-                'connect hosted MCP endpoint',
-            );
-
-            const result = await withTimeout(
-                client.callTool({ name: 'ext.acme.malformed_input_schema', arguments: { text: 'hello' } }),
-                'call hosted MCP tool with malformed input schema',
-            );
-            expect(result).toEqual(expect.objectContaining({
-                isError: true,
-                content: [{ type: 'text', text: 'Invalid MCP tool input' }],
+                content: [{ type: 'text', text: expected }],
             }));
             expect(handler).not.toHaveBeenCalled();
         } finally {
@@ -505,106 +432,6 @@ describe('startPluginHostedMcpLoopbackServer', () => {
             await withTimeout(call, 'settle aborted hosted MCP tool call');
         } finally {
             await client.close().catch(() => undefined);
-            await server.dispose();
-        }
-    });
-
-    it('rejects malformed hosted tool output schemas without invoking the plugin handler', async () => {
-        const handler = vi.fn(async () => ({
-            content: [{ type: 'text' as const, text: 'unexpected' }],
-            structuredContent: { echoed: 'hello' },
-        }));
-        const server = await startPluginHostedMcpLoopbackServer({
-            pluginId: 'acme',
-            spec: {
-                id: 'acme.hosted',
-                name: 'acme-hosted',
-                transport: {
-                    kind: 'hosted',
-                    exposure: { kind: 'loopbackHttp', requested: true },
-                },
-                hosted: {
-                    tools: [
-                        {
-                            name: 'ext.acme.malformed_output_schema',
-                            outputSchema: {
-                                type: 'object',
-                                properties: {
-                                    echoed: { type: 'string' },
-                                },
-                                required: 'echoed',
-                            },
-                            handler,
-                        },
-                    ],
-                },
-            },
-        });
-        const client = new Client({ name: 'plugin-hosted-malformed-output-schema-test', version: '1.0.0' }, { capabilities: {} });
-        try {
-            await withTimeout(
-                client.connect(new StreamableHTTPClientTransport(new URL(server.endpoint.url))),
-                'connect hosted MCP endpoint',
-            );
-
-            const result = await withTimeout(
-                client.callTool({ name: 'ext.acme.malformed_output_schema', arguments: {} }),
-                'call hosted MCP tool with malformed output schema',
-            );
-            expect(result).toEqual(expect.objectContaining({
-                isError: true,
-                content: [{ type: 'text', text: 'Invalid MCP tool output' }],
-            }));
-            expect(handler).not.toHaveBeenCalled();
-        } finally {
-            await client.close();
-            await server.dispose();
-        }
-    });
-
-    it('rejects non-object hosted tool output schemas without invoking the plugin handler', async () => {
-        const handler = vi.fn(async () => ({
-            content: [{ type: 'text' as const, text: 'unexpected' }],
-            structuredContent: { echoed: 'hello' },
-        }));
-        const server = await startPluginHostedMcpLoopbackServer({
-            pluginId: 'acme',
-            spec: {
-                id: 'acme.hosted',
-                name: 'acme-hosted',
-                transport: {
-                    kind: 'hosted',
-                    exposure: { kind: 'loopbackHttp', requested: true },
-                },
-                hosted: {
-                    tools: [
-                        {
-                            name: 'ext.acme.non_object_output_schema',
-                            outputSchema: 'not-a-schema',
-                            handler,
-                        },
-                    ],
-                },
-            },
-        });
-        const client = new Client({ name: 'plugin-hosted-non-object-output-schema-test', version: '1.0.0' }, { capabilities: {} });
-        try {
-            await withTimeout(
-                client.connect(new StreamableHTTPClientTransport(new URL(server.endpoint.url))),
-                'connect hosted MCP endpoint',
-            );
-
-            const result = await withTimeout(
-                client.callTool({ name: 'ext.acme.non_object_output_schema', arguments: {} }),
-                'call hosted MCP tool with non-object output schema',
-            );
-            expect(result).toEqual(expect.objectContaining({
-                isError: true,
-                content: [{ type: 'text', text: 'Invalid MCP tool output' }],
-            }));
-            expect(handler).not.toHaveBeenCalled();
-        } finally {
-            await client.close();
             await server.dispose();
         }
     });

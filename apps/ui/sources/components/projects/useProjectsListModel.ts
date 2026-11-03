@@ -1,7 +1,7 @@
 import * as React from 'react';
 
 import { t } from '@/text';
-import { useActiveServerAccountScope, useWorkspaceRefs, usePinnedWorkspaceRefIds, useAllMachines, useProjectOrganizations, useProjectAccountRows, useIsDataReady } from '@/sync/domains/state/storage';
+import { useActiveServerAccountScope, useWorkspaceRefs, usePinnedWorkspaceRefIds, useAllMachines, useMachineDisplayById, useProjectOrganizations, useProjectAccountRows, useIsDataReady } from '@/sync/domains/state/storage';
 import { isProjectAccountRowsCensusComplete } from '@/sync/store/domains/projectAccountRows';
 import type { WorkspaceRefUnconfirmed } from './detail/useWorkspaceRefById';
 import { projectWorkspaceRefV1, workspaceAddressFromRefV1, type QualifiedProjectKeyV1, type WorkspaceAddressV1 } from '@happier-dev/protocol/workspaces';
@@ -26,12 +26,9 @@ import { ProjectVisibilitySetOutputV1Schema } from '@happier-dev/protocol/projec
 import { createFrontDoorActionExecute } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { useProjectsSourcesComposition } from './useProjectsSourcesComposition';
-import { useProjectsTreeCheckoutFacts } from './useProjectsTreeCheckoutFacts';
-import { buildProjectsTreeHiddenItems, buildProjectsTreeProjects, projectsTreeCheckoutKey } from './projectsTreeRows';
-import { resolveMachineReachability } from '@/sync/domains/machines/reachability/machineReachability';
-import { resolveMachineDisplayNames } from '@/utils/sessions/machineDisplayNames';
-import { useMachinePresenceNowMs } from '@/hooks/machine/useMachinePresenceNowMs';
-import { useMachineReachabilityRevision } from '@/sync/domains/machines/reachability/useMachineReachabilityRevision';
+import { buildProjectsTreeHiddenItems, buildProjectsTreeProjects, type ProjectsTreeProject } from './projectsTreeRows';
+import { isMachineDisplayHydrating, resolveMachineDisplayNames } from '@/utils/sessions/machineDisplayNames';
+import { useMachinePresenceSummaries } from '@/sync/domains/machines/reachability/useMachinePresenceSummary';
 import { resolveWorkspaceRefByAddress } from '@/sync/domains/workspaces/workspaceRefs';
 import { ActionApprovalRequestCreatedResultSchema, type ActionApprovalRequestCreatedResult,
     type ActionExecuteResult } from '@happier-dev/protocol/actions/actionExecutionResult';
@@ -53,10 +50,11 @@ export function useProjectsListModel() {
     const accountScope = selectActiveServerAccountScopeForServer(activeScope, activeServer.serverId);
     // The Machine inventory has arrived (or the account is synced and genuinely has none).
     const machinesReady = useIsDataReady() || allMachines.length > 0;
-    const presenceNowMs = useMachinePresenceNowMs(allMachines);
-    const reachabilityRevision = useMachineReachabilityRevision();
-    const addFirstMachines = React.useMemo(() => resolveMachineActionCandidates(accountScope, allMachines, { nowMs: presenceNowMs }),
-        [accountScope, allMachines, presenceNowMs, reachabilityRevision]);
+    // Subscribe to this Home's actual Machine facts, not the request revision of
+    // every Home. The presence owner also keeps grace expiry and recovery live.
+    const machinePresence = useMachinePresenceSummaries(activeServer.serverId, allMachines.map(machine => machine.id));
+    const addFirstMachines = React.useMemo(() => resolveMachineActionCandidates(accountScope, allMachines),
+        [accountScope, allMachines, machinePresence]);
 
     const workspaceRefsV1 = useWorkspaceRefs();
     const pinnedWorkspaceRefIdsV1 = usePinnedWorkspaceRefIds();
@@ -106,31 +104,41 @@ export function useProjectsListModel() {
         .flatMap(group => group.items), [groups.projectGroups, groups.hiddenProjectGroups]);
     const openedSourceIds = React.useMemo(() => new Set(treeRefs.flatMap(ref => ref.source ? [ref.source.sourceId] : [])), [treeRefs]);
     const composition = useProjectsSourcesComposition(openedSourceIds);
-    const checkoutFacts = useProjectsTreeCheckoutFacts(treeRefs);
+    // Display metadata can already be known while the full Machine content is
+    // still opening. Use that canonical projection rather than waiting for it.
+    const machineDisplays = useMachineDisplayById(displays => allMachines.map(machine =>
+        isMachineDisplayHydrating(machine) ? displays[machine.id] ?? machine : machine));
     // One naming owner for every Machine the tree shows: listed Machines with the same name get the
     // suffix the pickers use, and a checkout on a Machine this Home no longer lists says so.
     const machineNames = React.useMemo(() => resolveMachineDisplayNames([
-        ...allMachines,
+        ...machineDisplays,
         ...[...new Set(treeRefs.map(ref => ref.machineId))].filter(id => !machinesById.has(id)).map(id => ({ id, absence: 'unlisted' as const })),
-    ]), [allMachines, machinesById, treeRefs]);
+    ]), [machineDisplays, machinesById, treeRefs]);
+    const previousTreeProjects = React.useRef<{ visible: ProjectsTreeProject[]; hidden: ProjectsTreeProject[] }>({ visible: [], hidden: [] });
     const treeProjection = React.useMemo(() => {
-        const project = (projectGroups: typeof groups.projectGroups) => buildProjectsTreeProjects({
+        const presenceById = new Map(allMachines.map((machine, index) => [machine.id, machinePresence[index]] as const));
+        const project = (projectGroups: typeof groups.projectGroups, previousProjects: ProjectsTreeProject[]) => buildProjectsTreeProjects({
+            previousProjects,
             groups: projectGroups, projectName: resolveWorkspaceRefDisplayName,
             machine: machineId => {
                 const machine = machinesById.get(machineId);
-                const reachability = machine ? resolveMachineReachability(accountScope, machine, presenceNowMs) : 'unknown';
+                const reachability = accountScope ? presenceById.get(machineId)?.reachability ?? 'unknown' : 'unknown';
                 return { name: machineNames.get(machineId) ?? t('machine.unlistedMachine'), homeDir: machine?.metadata?.homeDir ?? null,
                     online: reachability === 'unknown' ? null : reachability === 'reachable' };
             },
             sources: composition.sources, teamName: composition.teamName,
-            checkoutFacts: ref => checkoutFacts.get(projectsTreeCheckoutKey({ refId: ref.id, workspaceAddress: workspaceAddressFromRefV1(ref) })) ?? null,
         });
         // Rows are named after their Machines: until the Machine inventory has loaded, any Machine would read as
         // "unlisted" and every path as absolute, so the tree waits (the column shows its quiet rows) instead of guessing.
-        if (!machinesReady) return { treeProjects: [], hiddenTreeProjects: [], hiddenItems: [] };
-        const hiddenTreeProjects = project(groups.hiddenProjectGroups);
-        return { treeProjects: project(groups.projectGroups), hiddenTreeProjects, hiddenItems: buildProjectsTreeHiddenItems(hiddenTreeProjects) };
-    }, [checkoutFacts, composition.sources, composition.teamName, groups.hiddenProjectGroups, groups.projectGroups, machineNames, machinesById, machinesReady, presenceNowMs, accountScope, reachabilityRevision]);
+        if (!machinesReady) {
+            previousTreeProjects.current = { visible: [], hidden: [] };
+            return { treeProjects: [], hiddenTreeProjects: [], hiddenItems: [] };
+        }
+        const hiddenTreeProjects = project(groups.hiddenProjectGroups, previousTreeProjects.current.hidden);
+        const treeProjects = project(groups.projectGroups, previousTreeProjects.current.visible);
+        previousTreeProjects.current = { visible: treeProjects, hidden: hiddenTreeProjects };
+        return { treeProjects, hiddenTreeProjects, hiddenItems: buildProjectsTreeHiddenItems(hiddenTreeProjects) };
+    }, [composition.sources, composition.teamName, groups.hiddenProjectGroups, groups.projectGroups, machineNames, machinesById, machinesReady, allMachines, machinePresence, accountScope]);
     const newSessionHere = React.useCallback(async (ref: WorkspaceRefV1): Promise<ActionExecuteResult> => {
         const lifetime = captureActiveServerAccountScopeLifetime();
         const retired = { ok: false as const, errorCode: 'action_account_scope_changed', error: 'action_account_scope_changed' };
@@ -359,6 +367,12 @@ export function useProjectsListModel() {
             // Known rows still wait for the Machines that name them (quiet rows, never "unlisted").
             : hasAnyProjects && !machinesReady ? { kind: 'unconfirmed', status: 'loading' } : null
     ), [censusComplete, censusStatus, hasAnyProjects, machinesReady]);
+    // A refresh that failed over rows already held: they stay, labeled as of the last success, with Retry. (With none
+    // held, or Machines still loading, `rowsUnconfirmed` already says so.) Rows are never authorization to mutate.
+    const lastReadyAtMs = census?.lastReadyAtMs ?? null;
+    const staleRows = React.useMemo((): Readonly<{ asOf: number | null }> | null => (
+        hasAnyProjects && !rowsUnconfirmed && censusStatus === 'error' ? { asOf: lastReadyAtMs } : null
+    ), [censusStatus, hasAnyProjects, lastReadyAtMs, rowsUnconfirmed]);
     const projectCount = groups.projectGroups.length;
 
     return {
@@ -367,6 +381,8 @@ export function useProjectsListModel() {
         // Source would look unopened, so the group waits with the tree.
         saved: censusComplete && machinesReady ? composition.saved : null,
         ...treeProjection,
+        /** The refs behind `treeProjects`: what a reader of live checkout facts subscribes for. */
+        checkoutRefs: treeRefs,
         newSessionHere,
         saveAsSource,
         projectOpenResolution: openProject.resolution,
@@ -376,6 +392,7 @@ export function useProjectsListModel() {
         groups,
         hasAnyProjects,
         rowsUnconfirmed,
+        staleRows,
         projectCount,
         allMachines,
         addFirstMachines,

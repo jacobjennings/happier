@@ -107,8 +107,7 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
         vi.useRealTimers();
     });
 
-    it('preserves hidden queued segments beyond the native timer frontier until explicit flush', async () => {
-        vi.useRealTimers();
+    it('drops hidden checkpoints without a timer or deferred hydration when consumption begins', async () => {
         const sessionId = 'long-hidden-window';
         let visible = false;
         const applied: NormalizedMessage[] = [];
@@ -117,16 +116,15 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
             applyBatch: (_sessionId, messages) => applied.push(...messages),
         });
         const controller = createTranscriptStreamSegmentSocketQueueController({
-            getConfig: () => ({ enabled: true, windowMs: 2_147_483_648, maxBatchSize: 200 }),
             isSessionVisible: () => visible,
             messageCoalescer: coalescer,
         });
         try {
             await controller.handle(buildPlainEntry(sessionId, 'long-segment'));
-            await new Promise((resolve) => setTimeout(resolve, 25));
+            expect(vi.getTimerCount()).toBe(0);
             visible = true;
             await controller.flush(sessionId);
-            expect(applied).toHaveLength(1);
+            expect(applied).toHaveLength(0);
         } finally {
             controller.drop(sessionId);
         }
@@ -154,7 +152,6 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
             },
         });
         const controller = createTranscriptStreamSegmentSocketQueueController({
-            getConfig: () => ({ enabled: true, windowMs: 50, maxBatchSize: 1_000 }),
             isSessionVisible: () => false,
             messageCoalescer: coalescer,
         });
@@ -176,7 +173,7 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
         expect(applied).toEqual([]);
     });
 
-    it('flushes queued hidden work before applying the next visible segment', async () => {
+    it('applies only newly consumed checkpoints after a hidden checkpoint was skipped', async () => {
         const sessionId = 'visible-promotion-session';
         let visible = false;
         const decryptPayloads = vi.fn(async (payloads: Uint8Array[]) => payloads.map((payload) => {
@@ -203,7 +200,6 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
             },
         });
         const controller = createTranscriptStreamSegmentSocketQueueController({
-            getConfig: () => ({ enabled: true, windowMs: 50, maxBatchSize: 1_000 }),
             isSessionVisible: () => visible,
             messageCoalescer: coalescer,
         });
@@ -228,16 +224,14 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
             getSession: () => buildSession(sessionId, 'e2ee'),
         }));
 
-        expect(decryptPayloads).toHaveBeenCalledTimes(2);
+        expect(decryptPayloads).toHaveBeenCalledTimes(1);
         expect(applied.map((messages) => messages.map((message) => message.localId))).toEqual([
-            ['segment-hidden'],
             ['segment-visible'],
         ]);
 
         await vi.runAllTimersAsync();
 
         expect(applied.map((messages) => messages.map((message) => message.localId))).toEqual([
-            ['segment-hidden'],
             ['segment-visible'],
         ]);
     });
@@ -257,7 +251,6 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
             },
         });
         const controller = createTranscriptStreamSegmentSocketQueueController({
-            getConfig: () => ({ enabled: true, windowMs: 50, maxBatchSize: 1_000 }),
             isSessionVisible: () => false,
             messageCoalescer: coalescer,
             handleTranscriptStreamSegment: async ({ update, applyMessages }) => {
@@ -298,7 +291,6 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
             applyBatch: () => {},
         });
         const controller = createTranscriptStreamSegmentSocketQueueController({
-            getConfig: () => ({ enabled: false, windowMs: 0, maxBatchSize: 1_000 }),
             isSessionVisible: visibilityChecks,
             messageCoalescer: coalescer,
             handleTranscriptStreamSegment,
@@ -314,23 +306,22 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
 
     it('skips hidden immediate entries before preparing global apply handlers', async () => {
         const sessionId = 'hidden-immediate-session';
-        const prepareApplyEntry = vi.fn();
+        const createApplyCallbacks = vi.fn();
         const handleTranscriptStreamSegment = vi.fn();
         const coalescer = createSessionMessageApplyCoalescer({
             getConfig: () => ({ enabled: false, windowMs: 0, maxBatchSize: 1_000 }),
             applyBatch: () => {},
         });
         const controller = createTranscriptStreamSegmentSocketQueueController({
-            getConfig: () => ({ enabled: false, windowMs: 0, maxBatchSize: 1_000 }),
             isSessionVisible: () => false,
             messageCoalescer: coalescer,
-            prepareApplyEntry,
+            createApplyCallbacks,
             handleTranscriptStreamSegment,
         });
 
         await controller.handle(buildPlainEntry(sessionId, 'segment-hidden-immediate'));
 
-        expect(prepareApplyEntry).not.toHaveBeenCalled();
+        expect(createApplyCallbacks).not.toHaveBeenCalled();
         expect(handleTranscriptStreamSegment).not.toHaveBeenCalled();
     });
 
@@ -360,7 +351,6 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
             applyBatch: applyMessages,
         });
         const controller = createTranscriptStreamSegmentSocketQueueController({
-            getConfig: () => ({ enabled: true, windowMs: 50, maxBatchSize: 1_000 }),
             isSessionVisible: (sessionId) => visibleSessions.has(sessionId),
             messageCoalescer: coalescer,
             handleTranscriptStreamSegment,
@@ -459,7 +449,6 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
                 },
             });
             const controller = createTranscriptStreamSegmentSocketQueueController({
-                getConfig: () => ({ enabled: true, windowMs: 50, maxBatchSize: 1_000 }),
                 isSessionVisible: () => false,
                 messageCoalescer: coalescer,
                 onDeferredRawDroppedHidden: droppedHidden,
@@ -477,7 +466,7 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
             expect(applied).toEqual([]);
         });
 
-        it('flushes deferred snapshots before applying a visible delta so reconstruction stays ordered', async () => {
+        it('drops a delta without a consumed base after opening and resumes from the next existing checkpoint', async () => {
             const sessionId = 'visible-delta-session';
             let visible = false;
             const applied: NormalizedMessage[][] = [];
@@ -488,7 +477,6 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
                 },
             });
             const controller = createTranscriptStreamSegmentSocketQueueController({
-                getConfig: () => ({ enabled: true, windowMs: 50, maxBatchSize: 1_000 }),
                 isSessionVisible: () => visible,
                 messageCoalescer: coalescer,
             });
@@ -499,7 +487,11 @@ describe('createTranscriptStreamSegmentSocketQueueController', () => {
             visible = true;
             await controller.handle(buildPlainDeltaEntry(sessionId, ' world', { tick: 2, baseLength: 5 }));
 
-            expect(extractAppliedTexts(applied)).toEqual(['Hello', 'Hello world']);
+            expect(extractAppliedTexts(applied)).toEqual([]);
+            await controller.handle(buildPlainSnapshotEntry(sessionId, 'Hello world', { tick: 3 }));
+            await controller.handle(buildPlainDeltaEntry(sessionId, '!', { tick: 4, baseLength: 11 }));
+            coalescer.flush(sessionId);
+            expect(extractAppliedTexts(applied)).toEqual(['Hello world', 'Hello world!']);
         });
     });
 });

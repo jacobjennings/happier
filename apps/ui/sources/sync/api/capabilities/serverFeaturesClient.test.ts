@@ -1403,6 +1403,10 @@ describe('serverFeaturesClient', () => {
         }
         expect(httpsResult.serverIdentityId).toBe('srv_expected_home');
         expect(irohResult.serverIdentityId).toBe('srv_wrong_home');
+        // An explicit endpoint observation never adopts its identity or moves focus.
+        expect(setServerProfileIdentityForUrlMock).not.toHaveBeenCalled();
+        expect(reconcileServerProfileHomeConnectionDescriptorMock).not.toHaveBeenCalled();
+        expect(activeServerSnapshot).toEqual({ serverId: 'server-a', serverUrl: 'https://active.example.test', generation: 1 });
         expect(featuresFetchMock).toHaveBeenCalledTimes(2);
         expect(featuresFetchMock.mock.calls.map((call) => String(call[0]))).toEqual(
             expect.arrayContaining([

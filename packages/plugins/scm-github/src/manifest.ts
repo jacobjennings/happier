@@ -1452,6 +1452,22 @@ function createGithubPlugin() {
               schema: { type: 'string', minLength: 1 },
               secret: true,
             }],
+          }, {
+            id: 'native-import',
+            kind: 'manual',
+            credentialOrigin: 'native_import',
+            directExport: { contractVersion: CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 },
+            title: 'Import GitHub CLI login',
+            outcomeReconciliation: 'none',
+            fields: [{
+              id: 'source',
+              title: 'Source',
+              description: 'Save this machine’s GitHub CLI login as a connected GitHub account in Happier.',
+              schema: { type: 'string', enum: ['native'] },
+              secret: false,
+              default: 'native',
+              presentation: { control: 'select', options: [{ value: 'native', title: 'GitHub CLI login' }] },
+            }],
           }],
         },
         capabilities: ['scmHostingToken'],
@@ -1487,6 +1503,7 @@ function createGithubPlugin() {
     [CHANNELS_PLUGIN_ID]: {
       [CONVERSATION_PROVIDERS_CONTRIBUTION_POINT_ID_V1]: {
         [GITHUB_CHANNEL_PROVIDER_CONTRIBUTION_ID]: providers.contribute({
+          descriptor: { v: 1, displayName: 'GitHub' },
           operations: {
             setup: providers.operations.setup.bind(GITHUB_CHANNEL_ACTION_IDS.setup),
             connectionTest: providers.operations.connectionTest.bind(GITHUB_CHANNEL_ACTION_IDS.connectionTest),

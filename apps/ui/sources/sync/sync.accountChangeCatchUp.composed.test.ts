@@ -1,3 +1,4 @@
+import { SessionReadBatchRequestV1Schema } from '@happier-dev/protocol/sessions/read/sessionReadBatchV1';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import React from 'react';
@@ -480,6 +481,9 @@ describe('sync AccountChange catch-up projection', () => {
             vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
             publicationTimersFrozen = true;
             responses.resolve();
+            // Settle real HTTP/currentness admission with publication timers
+            // frozen. A timer-owned publication could not complete these reads.
+            await Promise.all(reads);
             await new Promise<void>(resolve => setImmediate(resolve));
             expect(publications).toBe(1);
             await vi.runAllTimersAsync();
@@ -705,6 +709,139 @@ describe('sync AccountChange catch-up projection', () => {
             responseGate.resolve();
             await runtime.resumeInFlight;
             await hook.unmount(); resetPromptLibraryCatalogEngineForTests(); resetPromptLibraryCatalogSnapshotsForTests();
+        }
+    });
+
+    it('does not reread Teams or Home for already published rows across ten held-cursor wakes', async () => {
+        await restoreTestAccount();
+        const { getActiveServerAccountScope } = await import('./domains/scope/activeServerAccountScope');
+        const { observeTeamsDirectory, resetTeamsDirectoryEngineForTests } = await import('./engine/teams/teamsDirectoryEngine');
+        const { getTeamsDirectorySnapshot, resetTeamsSnapshotsForTests } = await import('./store/teams/teamsSnapshots');
+        const { observeHomeGovernance, resetHomeGovernanceEngineForTests } = await import('./engine/home/governance/homeGovernanceEngine');
+        const { getHomeGovernanceSnapshot, resetHomeGovernanceSnapshotsForTests } = await import('./store/home/governance/homeGovernanceSnapshots');
+        const { NO_HOME_CAPABILITIES_V1 } = await import('@happier-dev/protocol/home/governance');
+        const { teamDirectoryQueryKeyV1 } = await import('@happier-dev/protocol/teams');
+        const { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1, HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1 } = await import('@happier-dev/protocol/changes');
+        const scope = getActiveServerAccountScope();
+        if (!scope) throw new Error('Expected restored Account scope');
+        const reads: string[] = [];
+        let sessionAvailable = false;
+        domainHttp.mockImplementation(async ({ url }) => {
+            const path = new URL(url).pathname;
+            if (path === '/v1/teams/list') {
+                reads.push(path);
+                return jsonResponse({ items: [], nextCursor: null });
+            }
+            if (path === '/v1/home/governance/get') {
+                reads.push(path);
+                return jsonResponse({
+                    viewer: { accountId: ACCOUNT_ID, homeRole: 'owner', status: 'active' },
+                    capabilities: { ...NO_HOME_CAPABILITIES_V1, viewAdministration: true },
+                    policy: { revision: 3, teamCreationPolicy: 'managed_only', authentication: { status: 'inherited' } },
+                    authenticationOptions: { methods: [], permittedAccountModes: ['plain'], recommendedProvisioningMode: 'plain',
+                        signInService: { deploymentMode: null, canDisable: false } },
+                    setupState: 'owned', activeOwnerCount: 1, teamsEnabled: true,
+                });
+            }
+            if (path === '/v2/sessions/held-session') return sessionAvailable
+                ? jsonResponse({ session: createPlainSessionCurrentProjectionRecordFixture({ id: 'held-session' }) })
+                : Response.json({ error: 'temporarily_unavailable' }, { status: 503 });
+            return Response.json({}, { status: 404 });
+        });
+        const input = { v: 1, scope: 'member', archived: 'active' } as const;
+        const stopTeams = observeTeamsDirectory(scope, input);
+        const stopHome = observeHomeGovernance(scope);
+        const runtime = syncRuntime as unknown as SyncAccountChangeCatchUpHarness;
+        let teamCursor = 2;
+        changesResponse.mockImplementation(async ({ url }) => {
+            const after = Number(new URL(url).searchParams.get('after'));
+            const changes = [
+                { cursor: 1, changedAt: 1, kind: 'share', entityId: 'held-session' },
+                { cursor: teamCursor, changedAt: teamCursor, kind: 'account', entityId: TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 },
+                { cursor: 3, changedAt: 3, kind: 'account', entityId: HOME_GOVERNANCE_ACCOUNT_CHANGE_ENTITY_ID_V1 },
+            ].filter(change => change.cursor > after).sort((a, b) => a.cursor - b.cursor);
+            return { changes, nextCursor: Math.max(after, teamCursor, 3) };
+        });
+        try {
+            await waitForHomeGovernance(() => {
+                expect(getTeamsDirectorySnapshot(scope, teamDirectoryQueryKeyV1(input))?.status).toBe('ready');
+                expect(getHomeGovernanceSnapshot(scope)?.status).toBe('ready');
+            });
+            await runtime.resumeViaChanges({ accountId: ACCOUNT_ID });
+            await waitForHomeGovernance(() => expect(reads).toHaveLength(4));
+            const heldCursor = runtime.changesCursor;
+            reads.length = 0;
+            for (let wake = 0; wake < 10; wake++) await runtime.resumeViaChanges({ accountId: ACCOUNT_ID });
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(runtime.changesCursor).toBe(heldCursor);
+            expect(reads).toEqual([]);
+
+            // A newer change for the same family must still reach its mounted reader.
+            teamCursor = 4;
+            await runtime.resumeViaChanges({ accountId: ACCOUNT_ID });
+            await waitForHomeGovernance(() => expect(reads).toEqual(['/v1/teams/list']));
+            expect(runtime.changesCursor).toBe(heldCursor);
+            sessionAvailable = true;
+            await runtime.resumeViaChanges({ accountId: ACCOUNT_ID });
+            expect(runtime.changesCursor).toBe('4');
+        } finally {
+            stopTeams(); stopHome();
+            resetTeamsDirectoryEngineForTests(); resetTeamsSnapshotsForTests();
+            resetHomeGovernanceEngineForTests(); resetHomeGovernanceSnapshotsForTests();
+        }
+    });
+
+    it('revalidates mounted Home projections once on a genuine focused reconnect, not empty catch-up wakes', async () => {
+        const runtime = await prepareAccountChangeWakeSchedulingHarness();
+        const { getActiveServerAccountScope } = await import('./domains/scope/activeServerAccountScope');
+        const { observeHomeGovernance, resetHomeGovernanceEngineForTests } = await import('./engine/home/governance/homeGovernanceEngine');
+        const { getHomeGovernanceSnapshot, resetHomeGovernanceSnapshotsForTests } = await import('./store/home/governance/homeGovernanceSnapshots');
+        const { NO_HOME_CAPABILITIES_V1 } = await import('@happier-dev/protocol/home/governance');
+        const scope = getActiveServerAccountScope();
+        if (!scope) throw new Error('Expected restored Account scope');
+        const socket = sockets.at(-1);
+        if (!socket) throw new Error('Expected focused Account transport');
+        const { subscribeHomeAccountChange } = await import('./runtime/orchestration/homeAccountChange');
+        const wakes: Array<{ serverId: string; source?: string }> = [];
+        const unsubscribe = subscribeHomeAccountChange(event => wakes.push(event));
+        // Deliver genuine SDK transport-boundary events, retaining ApiSocket and Sync.
+        socket.connected = true;
+        for (const listener of socket.listeners('connect')) listener();
+        let revision = 1;
+        let reads = 0;
+        domainHttp.mockImplementation(async ({ url }) => {
+            if (new URL(url).pathname !== '/v1/home/governance/get') return Response.json({}, { status: 404 });
+            reads++;
+            return jsonResponse({
+                viewer: { accountId: ACCOUNT_ID, homeRole: 'owner', status: 'active' },
+                capabilities: { ...NO_HOME_CAPABILITIES_V1, viewAdministration: true },
+                policy: { revision, teamCreationPolicy: 'managed_only', authentication: { status: 'inherited' } },
+                authenticationOptions: { methods: [], permittedAccountModes: ['plain'], recommendedProvisioningMode: 'plain',
+                    signInService: { deploymentMode: null, canDisable: false } },
+                setupState: 'owned', activeOwnerCount: 1, teamsEnabled: true,
+            });
+        });
+        const release = observeHomeGovernance(scope);
+        try {
+            await waitForHomeGovernance(() => expect(getHomeGovernanceSnapshot(scope)?.data?.policy.revision).toBe(1));
+            for (let wake = 0; wake < 10; wake++) await runtime.resumeViaChanges({ accountId: ACCOUNT_ID });
+            expect(reads).toBe(1);
+            expect(wakes.filter(event => event.source === 'connected')).toEqual([]);
+            revision = 2;
+            socket.connected = false;
+            for (const listener of socket.listeners('disconnect')) listener('transport close');
+            socket.connected = true;
+            for (const listener of socket.listeners('connect')) listener();
+            expect(wakes.filter(event => event.source === 'connected')).toEqual([
+                expect.objectContaining({ serverId: scope.serverId, source: 'connected' }),
+            ]);
+            await waitForHomeGovernance(() => expect(getHomeGovernanceSnapshot(scope)?.data?.policy.revision).toBe(2));
+            expect(reads).toBe(2);
+        } finally {
+            unsubscribe();
+            release();
+            resetHomeGovernanceEngineForTests();
+            resetHomeGovernanceSnapshotsForTests();
         }
     });
 
@@ -1634,6 +1771,440 @@ describe('sync AccountChange catch-up projection', () => {
             expect(loadChangesCursor(scope)).toBe(cursorBefore);
         } finally {
             releaseChanges.resolve();
+        }
+    });
+
+    it.each([false, true])('repairs a missing embed cursor with a fresh detail acquisition (retired: %s)', async (retired) => {
+        vi.stubGlobal('window', { location: { pathname: '/embed/session/embed' }, localStorage: globalThis.localStorage,
+            addEventListener: vi.fn(), removeEventListener: vi.fn() });
+        await loadTestSync();
+        const { sync } = await import('./syncEngine');
+        const owner = sync as unknown as SyncAccountChangeCatchUpHarness;
+        const oldDetailStarted = createDeferred<void>();
+        const cursorCaptured = createDeferred<void>();
+        const oldDetail = createDeferred<void>();
+        const freshDetail = createDeferred<void>();
+        let detailReads = 0;
+        let cursorReads = 0;
+        vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+            const url = new URL(String(input));
+            if (url.pathname === '/v1/features') return currentAccountStoredContentCompatibilityFeaturesResponse();
+            if (url.pathname === '/v2/cursor') {
+                if (++cursorReads === 1) return new Response(null, { status: 503 });
+                cursorCaptured.resolve();
+                return jsonResponse({ cursor: 9, changesFloor: 0 });
+            }
+            if (url.pathname === '/v2/changes') return jsonResponse({ changes: [], nextCursor: 9 });
+            if (url.pathname === '/v2/sessions/embed') {
+                const read = ++detailReads;
+                const level = read === 1 ? 'view' : 'edit';
+                const response = jsonResponse({ session: {
+                    id: 'embed', createdAt: 1, updatedAt: read, seq: 0, active: false, activeAt: 0,
+                    encryptionMode: 'plain', dataEncryptionKey: null, metadataLayoutVersion: 0,
+                    metadataVersion: read, metadata: JSON.stringify({ path: '/hidden', host: 'hidden', name: 'Embedded' }),
+                    agentStateVersion: 0, agentState: null, share: null,
+                    responsibleAccountId: null, responsibleAccount: null,
+                    effectiveAccess: { v: 1, level, sources: [],
+                        capabilities: projectLegacySessionAccessCapabilitiesV1({ level }) },
+                } });
+                if (read === 1) oldDetailStarted.resolve();
+                await (read === 1 ? oldDetail.promise : freshDetail.promise);
+                return response;
+            }
+            if (url.pathname === '/v1/sessions/embed/turns') return jsonResponse({ v: 1, sessionId: 'embed', updatedAt: 1, turns: [] });
+            if (url.pathname === '/v1/sessions/embed/messages') return jsonResponse({ messages: [], nextAfterSeq: null });
+            if (url.pathname === '/v2/sessions/embed/pending') return jsonResponse({ pending: [], pendingVersion: 0 });
+            throw new Error(`Account request escaped embed: ${url.pathname}`);
+        }));
+        const bootstrap = sync.create({ token: 'hap_v1_child' }, null, undefined, {
+            scope: { kind: 'embedSession', sessionId: 'embed' }, accountId: ACCOUNT_ID,
+            endpointUrl: 'http://localhost:53288', accountMode: 'plain', approvalGranted: false,
+            isCurrent: () => true, onCredentialRejected: () => {},
+        });
+        void bootstrap.catch(() => {});
+        let resumed: Promise<void> | undefined;
+        try {
+            await oldDetailStarted.promise;
+            resumed = sync.resumeSync('socket-reconnect');
+            void resumed.catch(() => {});
+            await cursorCaptured.promise;
+            // Let the repair reach the hydration owner while the old detail remains held.
+            await new Promise<void>(resolve => setTimeout(resolve, 0));
+            if (retired) sync.disposeEmbedSession({ preserveSessionState: true });
+            oldDetail.resolve();
+            if (retired) {
+                await Promise.allSettled([bootstrap, resumed]);
+                expect(detailReads).toBe(1);
+                expect(owner.changesCursor).toBeNull();
+            } else {
+                await bootstrap;
+                await vi.waitFor(() => expect(detailReads).toBe(2));
+                expect(owner.changesCursor).toBeNull();
+                freshDetail.resolve();
+                await resumed;
+                const { storage } = await import('./domains/state/storage');
+                expect(storage.getState().sessions.embed?.access?.capabilities.submitAgentInput).toBe(true);
+                expect(owner.changesCursor).toBe('9');
+            }
+        } finally {
+            oldDetail.resolve(); freshDetail.resolve();
+            await Promise.allSettled([bootstrap, resumed]);
+        }
+    });
+
+    it('discovers metadata upgrades for cursor recovery and authority changes, not unrelated list or hinted changes', async () => {
+        let discoveryReads = 0;
+        let listReads = 0;
+        let metadataVersion = 1;
+        const catchUpRequests: string[] = [];
+        let initialCursorUnavailable = true;
+        await restoreTestAccount({ physicalRequest: url => initialCursorUnavailable && new URL(url).pathname === '/v2/cursor'
+            ? Promise.resolve(Response.json({}, { status: 503 })) : undefined, runtimeRequest: (path, init) => {
+            if (path === '/v2/cursor' || path === '/v2/changes' || path === '/v2/sessions/metadata-upgrades') {
+                catchUpRequests.push(path);
+            }
+            if (path === '/v2/sessions') listReads++;
+            if (path === '/v2/sessions/metadata-upgrades') {
+                discoveryReads++;
+                return jsonResponse({ sessionIds: [] });
+            }
+            if (path === '/v2/sessions/unrelated-message-session' || path === '/v2/sessions/unknown-legacy-session') {
+                return jsonResponse({ session: createPlainSessionCurrentProjectionRecordFixture({
+                    id: path.split('/').at(-1)!, metadataVersion,
+                }) });
+            }
+            // Missing-cursor recovery refreshes the independent Account readers
+            // too; acknowledge their real empty protocols so the snapshot settles.
+            return createEmptyAccountBootstrapHttpResponse(path, init) ?? undefined;
+        } });
+        initialCursorUnavailable = false;
+        const { sync } = await import('./syncEngine');
+        const { storage } = await import('./domains/state/storage');
+        const queue = sync as unknown as { sessionsSync: Pick<InvalidateSync, 'awaitQueue'> };
+        for (let arrival = 0; arrival < 3; arrival++) {
+            sync.invalidateSessionListSnapshot(account!.serverId);
+            await queue.sessionsSync.awaitQueue();
+        }
+        expect(discoveryReads).toBe(0);
+        const onUpdate = sockets.at(-1)?.listenersAny()[0];
+        expect(onUpdate).toBeDefined();
+        for (let arrival = 1; arrival <= 3; arrival++) {
+            const previousListReads = listReads;
+            onUpdate?.('update', { id: `agent-state-${arrival}`, seq: arrival, createdAt: arrival,
+                body: { t: 'update-session', id: 'unrelated-agent-state',
+                    metadataLayoutVersion: 0, agentState: { version: arrival, value: '{}' } } });
+            await vi.waitFor(() => expect(listReads).toBeGreaterThan(previousListReads));
+            await queue.sessionsSync.awaitQueue();
+        }
+        expect(discoveryReads).toBe(0);
+        await sync.refreshSessions({ awaitSessionListHydration: true });
+        expect(discoveryReads).toBe(1);
+
+        const catchUp = sync as unknown as SyncAccountChangeCatchUpHarness;
+        expect(catchUp.changesCursor).toBeNull();
+        catchUpRequests.length = 0;
+        changesResponse.mockResolvedValue({ changes: [{ cursor: 1, kind: 'session', entityId: 'unrelated-message-session',
+            changedAt: 1, hint: { lastMessageSeq: 1, lastMessageId: 'message-1' } }], nextCursor: 1 });
+        // A missing cursor repairs the Account snapshot before reading the hinted
+        // page. That recovery must rediscover metadata even after a manual refresh.
+        await expect(catchUp.resumeViaChanges({ accountId: ACCOUNT_ID })).resolves.toMatchObject({
+            status: 'ok', refreshedByCatchUp: { sessions: true, machines: true },
+        });
+        expect(catchUpRequests).toEqual(['/v2/cursor', '/v2/sessions/metadata-upgrades', '/v2/changes']);
+        expect(discoveryReads).toBe(2);
+        expect(catchUp.changesCursor).toBe('1');
+        expect(storage.getState().sessionListRowsByServerId[account!.serverId]?.['unrelated-message-session']?.metadataVersion).toBe(1);
+
+        // With cursor coverage established, the next message hint advances its
+        // checkpoint without another snapshot-base read or metadata census.
+        catchUpRequests.length = 0;
+        metadataVersion = 2;
+        changesResponse.mockResolvedValue({ changes: [{ cursor: 2, kind: 'session', entityId: 'unrelated-message-session',
+            changedAt: 2, hint: { lastMessageSeq: 2, lastMessageId: 'message-2' } }], nextCursor: 2 });
+        await expect(catchUp.resumeViaChanges({ accountId: ACCOUNT_ID })).resolves.toMatchObject({
+            status: 'ok', refreshedByCatchUp: { machines: false },
+        });
+        expect(catchUpRequests).toEqual(['/v2/changes']);
+        expect(discoveryReads).toBe(2);
+        expect(catchUp.changesCursor).toBe('2');
+        expect(storage.getState().sessionListRowsByServerId[account!.serverId]?.['unrelated-message-session']?.metadataVersion).toBe(2);
+
+        changesResponse.mockResolvedValue({ changes: [{ cursor: 3, kind: 'session', entityId: 'unknown-legacy-session',
+            changedAt: 3, hint: null }], nextCursor: 3 });
+        await catchUp.resumeViaChanges({ accountId: ACCOUNT_ID });
+        expect(discoveryReads).toBe(3);
+        const { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } = await import('@happier-dev/protocol/changes');
+        changesResponse.mockResolvedValue({ changes: [{ cursor: 4, kind: 'account', entityId: TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1,
+            changedAt: 4, hint: null }], nextCursor: 4 });
+        await catchUp.resumeViaChanges({ accountId: ACCOUNT_ID });
+        expect(discoveryReads).toBe(4);
+    });
+
+    it.each([404, 503])('joins concurrent metadata discovery and retains failed demand for the next sync (%s)', async status => {
+        const discovery = createDeferred<void>();
+        const retryDiscovery = createDeferred<void>();
+        let serving = false;
+        let discoveryReads = 0;
+        let listReads = 0;
+        await restoreTestAccount({ physicalRequest: (url) => {
+            if (!serving) return undefined;
+            const path = new URL(url).pathname;
+            if (path === '/v2/sessions') listReads++;
+            if (path !== '/v2/sessions/metadata-upgrades') return undefined;
+            const attempt = ++discoveryReads;
+            return (attempt === 2 ? retryDiscovery.promise : discovery.promise).then(() => attempt === 1
+                ? new Response(null, { status })
+                : jsonResponse({ sessionIds: [] }));
+        } });
+        const { sync } = await import('./syncEngine');
+        serving = true;
+        const first = sync.refreshSessions({ awaitSessionListHydration: true });
+        await vi.waitFor(() => expect(discoveryReads).toBe(1));
+        const second = sync.refreshSessions();
+        try {
+            await vi.waitFor(() => expect(listReads).toBe(2));
+            discovery.resolve();
+            await Promise.all([first, second]);
+            expect(discoveryReads).toBe(1);
+            sync.invalidateSessionListSnapshot(account!.serverId);
+            await vi.waitFor(() => expect(discoveryReads).toBe(2));
+            const onUpdate = sockets.at(-1)?.listenersAny()[0];
+            expect(onUpdate).toBeDefined();
+            onUpdate?.('update', { id: 'share-during-discovery', seq: 1, createdAt: 1,
+                body: { t: 'public-share-created', sessionId: 'new-share-candidate' } });
+            retryDiscovery.resolve();
+            await (sync as unknown as { sessionsSync: Pick<InvalidateSync, 'awaitQueue'> }).sessionsSync.awaitQueue();
+            expect(discoveryReads).toBe(3);
+            sync.invalidateSessionListSnapshot(account!.serverId);
+            await (sync as unknown as { sessionsSync: Pick<InvalidateSync, 'awaitQueue'> }).sessionsSync.awaitQueue();
+            expect(discoveryReads).toBe(3);
+        } finally {
+            discovery.resolve();
+            retryDiscovery.resolve();
+            await Promise.all([first, second]);
+        }
+    });
+
+    it('does not open discovered metadata after the Account lifetime retires', async () => {
+        const discovery = createDeferred<void>();
+        let serving = false;
+        let discoveryReads = 0;
+        const candidateReads: string[] = [];
+        await restoreTestAccount({ physicalRequest: (url) => {
+            if (!serving) return undefined;
+            const path = new URL(url).pathname;
+            if (path === '/v2/sessions/metadata-upgrades') {
+                discoveryReads++;
+                return discovery.promise.then(() => jsonResponse({ sessionIds: ['retired-candidate'] }));
+            }
+            if (path === '/v2/sessions/read-batch' || path === '/v2/sessions/retired-candidate') candidateReads.push(path);
+            return undefined;
+        } });
+        const { sync } = await import('./syncEngine');
+        serving = true;
+        const refresh = sync.refreshSessions({ awaitSessionListHydration: true });
+        try {
+            await vi.waitFor(() => expect(discoveryReads).toBe(1));
+            sync.disconnectServer();
+            discovery.resolve();
+            await refresh;
+            expect(candidateReads).toEqual([]);
+        } finally {
+            discovery.resolve();
+            await refresh;
+        }
+    });
+
+    it('migrates discovered archived and offscreen owner metadata without UI hydration demand', async () => {
+        const { Encryption } = await import('@/sync/encryption/encryption');
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const { createLegacyAccountEncryptionCurrentnessFixture } = await import('@/dev/testkit/fixtures/accountEncryptionCurrentness');
+        const { createCompactSessionListFetchBoundary } = await import('@/dev/testkit/harness/sessionReadBatchHttpBoundary');
+        const { createSessionMetadataHttpBoundary } = await import('@/dev/testkit/harness/sessionMetadataHttpBoundary');
+        const { SessionCurrentProjectionRecordV1Schema } = await import('@happier-dev/protocol/sessions/listing/response');
+        const { SessionMetadataTuplePatchV1Schema, SessionSharedMetadataV1Schema } = await import('@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1');
+        const { openSessionOwnerMetadataEnvelopeV1 } = await import('@happier-dev/protocol/sessions/metadata/sessionMetadataEnvelopesV1');
+        const { SessionDisplayProjectionV1Schema, projectSessionDisplayV1 } = await import('@happier-dev/protocol');
+        const { openAccountScopedBlobCiphertext } = await import('@happier-dev/protocol/crypto/accountScopedCipher');
+        const secret = new Uint8Array(32).fill(61);
+        const credentials = { token: ACCOUNT_TOKEN, secret: encodeBase64(secret) };
+        const currentness = createLegacyAccountEncryptionCurrentnessFixture({ secret });
+        const writer = await Encryption.create(secret);
+        const ids = ['retained-archived-owner', 'retained-offscreen-owner', 'later-shared-owner'];
+        await writer.initializeSessions(new Map(ids.map((id, index) => [id, new Uint8Array(32).fill(index + 71)])));
+        const sources = await Promise.all(ids.map(async (id, index) => {
+            const metadata = { name: `Retained owner ${index}`, path: `/private/retained-${index}`, host: 'retained-host',
+                summary: { text: `Historical shared work ${index}`, updatedAt: 42 } };
+            const agentState = { controlledByUser: false, requests: {
+                retained: { tool: 'Bash', arguments: { command: 'git status' }, createdAt: 3 },
+            } };
+            const cipher = writer.getSessionEncryption(id)!;
+            const { ownerMetadata: _owner, metadataLayoutVersion: _layout, ...base } = createPlainSessionCurrentProjectionRecordFixture({ id });
+            const record = SessionCurrentProjectionRecordV1Schema.parse({ ...base,
+                active: false, archivedAt: index === 0 ? 7 : null, encryptionMode: 'e2ee', metadataLayoutVersion: 0,
+                metadataVersion: 5, metadata: await cipher.encryptRaw(metadata),
+                agentStateVersion: 3, agentState: await cipher.encryptRaw(agentState),
+                dataEncryptionKey: encodeBase64(await writer.encryptEncryptionKey(new Uint8Array(32).fill(index + 71))),
+            });
+            return { id, record, metadata, agentState };
+        }));
+        const http = createSessionMetadataHttpBoundary(() => ({}));
+        for (const source of sources) {
+            // One discovered candidate is temporarily unavailable at the real
+            // detail boundary; the next routine sync must recover it.
+            if (source !== sources[1]) http.replaceSession(source.id, source.record);
+        }
+        const initialSources = sources.slice(0, 2);
+        const pending = new Set(initialSources.map(source => source.id));
+        const discovery = createDeferred<void>();
+        const patches: Array<{ sessionId: string; patch: ReturnType<typeof SessionMetadataTuplePatchV1Schema.parse> }> = [];
+        const batches: Array<ReturnType<typeof SessionReadBatchRequestV1Schema.parse>> = [];
+        const physicalDetailGets: string[] = [];
+        const boundaryFailures: unknown[] = [];
+        let serving = false;
+        let discoveryReads = 0;
+        let listReads = 0;
+        const request = createCompactSessionListFetchBoundary(async (url, init) => {
+            const path = new URL(url, 'http://localhost:53288').pathname;
+            if (path === '/v2/sessions/metadata-upgrades') {
+                discoveryReads++;
+                await discovery.promise;
+                return jsonResponse({ sessionIds: [...pending] });
+            }
+            if (path === '/v2/sessions' || path === '/v2/sessions/active') {
+                listReads++;
+                return jsonResponse({ sessions: [], nextCursor: null, hasNext: false });
+            }
+            if (path === '/v2/sessions/read-batch') {
+                batches.push(SessionReadBatchRequestV1Schema.parse(JSON.parse(String(init.body))));
+                return undefined;
+            }
+            const detail = /^\/v2\/sessions\/([^/]+)$/.exec(path);
+            if (detail && init.method === 'PATCH') {
+                patches.push({ sessionId: decodeURIComponent(detail[1]!),
+                    patch: SessionMetadataTuplePatchV1Schema.parse(JSON.parse(String(init.body))) });
+            }
+            let response: Response | null;
+            try { response = http.handle(new URL(url, 'http://localhost:53288'), init); }
+            catch (error) { boundaryFailures.push(error); throw error; }
+            if (detail && init.method === 'PATCH' && response?.ok) pending.delete(decodeURIComponent(detail[1]!));
+            return response ?? undefined;
+        });
+        await restoreTestAccount({ accountMode: 'e2ee', credentials,
+            physicalRequest: (url, init) => {
+                const path = new URL(url).pathname;
+                const detail = /^\/v2\/sessions\/([^/]+)$/.exec(path);
+                if (serving && detail && ids.includes(detail[1]!) && (init?.method ?? 'GET') === 'GET') {
+                    physicalDetailGets.push(detail[1]!);
+                }
+                if (path === '/v1/account/encryption/currentness') return Promise.resolve(jsonResponse(currentness));
+                if (serving && (path.startsWith('/v2/sessions') || path.startsWith('/v1/sessions/') || path === '/v2/session-organization')) {
+                    return request(url, init);
+                }
+                return undefined;
+            },
+        });
+        const { storage } = await import('./domains/state/storage');
+        const { sync } = await import('./sync');
+        const serverId = account!.serverId;
+        const paints: string[] = [];
+        const unsubscribe = storage.subscribe((state, previous) => {
+            const observation = state.concurrentSessionListCacheByServerId[serverId]?.listObservation;
+            if (observation !== previous.concurrentSessionListCacheByServerId[serverId]?.listObservation
+                && observation?.phase && listReads > 0) paints.push(observation.phase);
+        });
+        serving = true;
+        const refresh = sync.refreshSessions({ awaitSessionListHydration: true });
+        try {
+            await vi.waitFor(() => expect(paints).toContain('ready'));
+            await vi.waitFor(() => expect(discoveryReads).toBe(1));
+            expect(http.writes).toEqual([]);
+            expect(initialSources.map(source => storage.getState().sessions[source.id])).toEqual([undefined, undefined]);
+            discovery.resolve();
+            await refresh;
+            expect(boundaryFailures).toEqual([]);
+            expect(discoveryReads).toBe(1);
+            expect(http.writes).toEqual([sources[0]!.id]);
+            // Measure ordinary migration before later retry and deliberate
+            // route hydration. Batch-synthesized component reads are not HTTP.
+            expect(physicalDetailGets).toEqual([]);
+            expect(batches).toHaveLength(1);
+            expect(batches[0]!.sessionIds.toSorted()).toEqual(initialSources.map(source => source.id).toSorted());
+            http.replaceSession(sources[1]!.id, sources[1]!.record);
+            const engine = (await import('./syncEngine')).sync;
+            engine.invalidateSessionListSnapshot(serverId);
+            await (engine as unknown as { sessionsSync: Pick<InvalidateSync, 'awaitQueue'> }).sessionsSync.awaitQueue();
+            expect(discoveryReads).toBe(2);
+            expect(http.writes.toSorted()).toEqual(initialSources.map(source => source.id).toSorted());
+            for (const source of initialSources) {
+                const mutation = patches.find(value => value.sessionId === source.id)?.patch;
+                expect(mutation).toMatchObject({ mode: 'owner_migration', source: { metadataLayoutVersion: 0,
+                    metadata: { version: 5, ciphertext: source.record.metadata }, ownerMetadata: null,
+                    agentState: { version: 3, ciphertext: source.record.agentState } } });
+                const response = http.handle(`http://localhost:53288/v2/sessions/${source.id}`);
+                if (!response) throw new Error('Missing committed retained Session');
+                const committed = SessionCurrentProjectionRecordV1Schema.parse((await response.json()).session);
+                expect(committed).toMatchObject({ metadataLayoutVersion: 1, metadataVersion: 6, agentStateVersion: 4,
+                    archivedAt: source.record.archivedAt });
+                const owner = openSessionOwnerMetadataEnvelopeV1({ accountMode: 'e2ee', material: { type: 'legacy', secret }, envelope: committed.ownerMetadata });
+                expect(owner).toMatchObject({ ok: true, ownerMetadata: { workspace: {
+                    name: source.metadata.name, path: source.metadata.path, host: source.metadata.host,
+                } } });
+                if (!owner.ok) throw new Error('Committed owner metadata did not open');
+                const cipher = writer.getSessionEncryption(source.id)!;
+                const sharedMetadata = SessionSharedMetadataV1Schema.parse(await cipher.decryptRaw(committed.metadata));
+                expect(sharedMetadata).toMatchObject({ v: 1, summary: source.metadata.summary });
+                const expectedDisplay = projectSessionDisplayV1({ sharedMetadata, ownerMetadata: owner.ownerMetadata });
+                expect(await cipher.decryptAgentStateResult(4, committed.agentState)).toEqual({ status: 'available', value: source.agentState });
+                const display = SessionDisplayProjectionV1Schema.parse(committed.displayProjectionV1);
+                expect(display).toMatchObject({ sourceMetadataVersion: 6, metadataLayoutVersion: 1 });
+                if (display.owner?.t !== 'encrypted') throw new Error('Missing Account-encrypted owner display');
+                const ownerDisplay = openAccountScopedBlobCiphertext({ kind: 'session_owner_display', material: { type: 'legacy', secret }, ciphertext: display.owner.c })?.value;
+                expect(ownerDisplay).toMatchObject({ audience: 'owner', purpose: 'session_owner_display', display: {
+                    name: source.metadata.name, path: source.metadata.path, host: source.metadata.host,
+                } });
+                expect(ownerDisplay).toMatchObject({ display: expectedDisplay.owner });
+                expect(ownerDisplay).not.toHaveProperty('sessionId');
+                expect(JSON.stringify(ownerDisplay)).not.toContain('git status');
+                if (display.shared.t !== 'encrypted') throw new Error('Missing Session-encrypted shared display');
+                const sharedDisplay = await cipher.decryptRaw(display.shared.c);
+                expect(sharedDisplay).toMatchObject({ audience: 'shared', display: expectedDisplay.shared });
+                expect(JSON.stringify(sharedDisplay)).not.toContain(source.metadata.path);
+                expect(JSON.stringify(sharedDisplay)).not.toContain('git status');
+                expect(sharedDisplay).not.toHaveProperty('sessionId');
+                expect(storage.getState().sessions[source.id]).toBeUndefined();
+                await expect(sync.ensureSessionVisibleForMessageRoute(source.id, {
+                    serverId, hydrateMessages: false, forceRefresh: true,
+                })).resolves.toMatchObject({ kind: 'available' });
+                expect(storage.getState().sessions[source.id]?.ownerMetadataView).toMatchObject(source.metadata);
+            }
+            const later = sources[2]!;
+            pending.add(later.id);
+            changesResponse.mockResolvedValue({ changes: [{ cursor: 1, kind: 'share', entityId: later.id,
+                changedAt: 1, hint: null }], nextCursor: 1 });
+            const catchUp = sync as unknown as SyncAccountChangeCatchUpHarness;
+            await catchUp.resumeViaChanges({ accountId: ACCOUNT_ID });
+            expect(discoveryReads).toBe(3);
+            await vi.waitFor(() => {
+                expect(http.writes.toSorted()).toEqual(ids.toSorted());
+            });
+            expect(storage.getState().sessions[later.id]).toBeUndefined();
+            await expect(sync.ensureSessionVisibleForMessageRoute(later.id, {
+                serverId, hydrateMessages: false, forceRefresh: true,
+            })).resolves.toMatchObject({ kind: 'available' });
+            expect(storage.getState().sessions[later.id]?.ownerMetadataView).toMatchObject(later.metadata);
+            expect(storage.getState().sessions[later.id]?.metadataLayoutVersion).toBe(1);
+            changesResponse.mockResolvedValue({ changes: [{ cursor: 2, kind: 'share', entityId: later.id,
+                changedAt: 2, hint: null }], nextCursor: 2 });
+            await catchUp.resumeViaChanges({ accountId: ACCOUNT_ID });
+            expect(discoveryReads).toBe(4);
+            expect(http.writes).toHaveLength(3);
+            expect([...new Set(batches.flatMap(batch => batch.sessionIds))].toSorted()).toEqual(ids.toSorted());
+            expect(batches.every(batch => batch.includeTurns === false && batch.includeMessages === false)).toBe(true);
+        } finally {
+            discovery.resolve();
+            await refresh;
+            unsubscribe();
         }
     });
 });

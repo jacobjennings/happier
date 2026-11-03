@@ -8,7 +8,7 @@ import { StoredJsonContentEnvelopeSchema, isStoredJsonContentEnvelopeModeCompati
 import { QualifiedConnectedAccountConfigurationTargetV4Schema, QualifiedConnectedAccountCredentialMetadataV4Schema, QualifiedConnectedAccountServiceRefSchema, QualifiedConnectedAccountProfileV4Schema } from '@happier-dev/protocol/connect/qualified-connected-account-projections';
 import { QualifiedConnectedAccountRefSchema, type QualifiedConnectedAccountRef } from '@happier-dev/protocol/connect/qualified-connected-account-persistence';
 import { PluginContributionLocalIdSchema } from '@happier-dev/protocol/plugins/contribution-identity';
-import { type QualifiedConnectedAccountConfigurationSnapshotV4, type QualifiedConnectedAccountConfigurationTargetV4, type QualifiedConnectedAccountCredentialMetadataV4, type QualifiedConnectedAccountServiceRef, type QualifiedConnectedAccountProfileV4 } from '@happier-dev/protocol/connect/qualifiedConnectedAccountsV4';
+import { type QualifiedConnectedAccountConfigurationSnapshotV4, type QualifiedConnectedAccountConfigurationTargetV4, type QualifiedConnectedAccountCredentialMetadataV4, type QualifiedConnectedAccountCredentialSnapshotV4, type QualifiedConnectedAccountServiceRef, type QualifiedConnectedAccountProfileV4 } from '@happier-dev/protocol/connect/qualifiedConnectedAccountsV4';
 import { acceptsManagedResourceDispositions, readManagedResourceDependenciesInTx } from '@/app/machines/managed/managedRead';
 import { sameStrictJsonValue } from '@happier-dev/protocol/json/strictJsonValue';
 
@@ -1271,6 +1271,8 @@ export async function settlePreparedQualifiedConnectedServiceCredentialCreate(
                 await recordConnectedServiceAccountProfileChange({
                     tx,
                     accountId: prepared.params.accountId,
+                    service: prepared.params.ref.service,
+                    reason: 'credential-create',
                 });
             }
             return result;
@@ -1343,6 +1345,8 @@ export async function mutateQualifiedConnectedServiceCredential(
             await recordConnectedServiceAccountProfileChange({
                 tx,
                 accountId: canonicalParams.accountId,
+                service: canonicalParams.ref.service,
+                reason: 'credential-replace',
             });
         }
         return result;
@@ -1590,6 +1594,8 @@ export async function mutateQualifiedConnectedAccountConfiguration(
             await recordConnectedServiceAccountProfileChange({
                 tx,
                 accountId: params.accountId,
+                service: canonicalParams.target.ref.service,
+                reason: 'configuration',
             });
         }
         return result;
@@ -2018,6 +2024,7 @@ async function readQualifiedCredentialHealthMutationInTx(
     current: NonNullable<Awaited<ReturnType<typeof readCurrentByQualifiedRef>>>;
     metadata: Prisma.InputJsonValue;
     credentialRevision: string;
+    previousHealth: ConnectedServiceCredentialHealthV1 | null | undefined;
 }>> {
     const accountModeResult =
         await readEffectiveAccountEncryptionMode(
@@ -2103,7 +2110,25 @@ async function readQualifiedCredentialHealthMutationInTx(
             configurationRevision: current.configurationRevision,
         };
     }
-    return { status: "change_required", current, metadata, credentialRevision: projection.credentialRevision };
+    return { status: "change_required", current, metadata, credentialRevision: projection.credentialRevision,
+        previousHealth: projection.health };
+}
+
+const CREDENTIAL_HEALTH_CLOCK_FIELDS = new Set<keyof ConnectedServiceCredentialHealthV1>([
+    'lastRefreshAttemptAt', 'lastRefreshSuccessAt', 'lastRefreshFailureAt', 'lastRuntimeAuthFailureAt',
+]);
+
+function isSamePresentedCredentialHealth(
+    previous: ConnectedServiceCredentialHealthV1 | null | undefined,
+    next: ConnectedServiceCredentialHealthV1,
+): boolean {
+    if (!previous) return false;
+    const keys = new Set([...Object.keys(previous), ...Object.keys(next)] as (keyof ConnectedServiceCredentialHealthV1)[]);
+    for (const key of keys) {
+        if (CREDENTIAL_HEALTH_CLOCK_FIELDS.has(key)) continue;
+        if (previous[key] !== next[key]) return false;
+    }
+    return true;
 }
 
 export async function mutateQualifiedConnectedServiceCredentialHealth(
@@ -2162,10 +2187,16 @@ export async function mutateQualifiedConnectedServiceCredentialHealth(
             };
         }
         await recheckAdmission();
-        await recordConnectedServiceAccountProfileChange({
-            tx,
-            accountId: canonical.accountId,
-        });
+        // Refresh clocks are persisted for the next read; only a change in presented health
+        // (status, reconnect, failure kind, provider error) is worth waking every client.
+        if (!isSamePresentedCredentialHealth(admitted.previousHealth, canonical.health)) {
+            await recordConnectedServiceAccountProfileChange({
+                tx,
+                accountId: canonical.accountId,
+                service: canonical.ref.service,
+                reason: 'credential-health',
+            });
+        }
         return {
             status: "written",
             credentialRevision: admitted.credentialRevision,
@@ -2178,7 +2209,8 @@ type QualifiedConnectedServiceCredentialSnapshotBase = Readonly<{
     authenticationModeId: string | null;
     configurationRevision: string | null;
     content: StoredJsonContentEnvelope;
-    metadata: QualifiedConnectedAccountCredentialMetadataV4;
+    metadata: QualifiedConnectedAccountCredentialSnapshotV4['metadata'];
+    health?: ConnectedServiceCredentialHealthV1;
 }>;
 
 type QualifiedConnectedServiceCredentialSnapshot =
@@ -2321,11 +2353,8 @@ async function readQualifiedConnectedServiceCredentialInTx(
         configurationRevision: row.configurationRevision,
         content,
         expiresAt: row.expiresAt?.getTime() ?? null,
-        metadata: isV4
-            ? parseQualifiedConnectedServiceCredentialStoredMetadataV4(
-                row.metadata,
-            ).values
-            : projection.presentation,
+        metadata: projection.presentation,
+        ...(projection.health ? { health: projection.health } : {}),
     };
     const revision =
         projectQualifiedConnectedAccountCredentialRevisionSemantics(
@@ -2479,6 +2508,7 @@ export async function readQualifiedConnectedServiceCredential(params: Readonly<{
                 configurationRevision: credential.configurationRevision,
                 content: credential.content,
                 metadata: credential.metadata,
+                ...(credential.health ? { health: credential.health } : {}),
             },
         }
         : {
@@ -2490,6 +2520,7 @@ export async function readQualifiedConnectedServiceCredential(params: Readonly<{
                 configurationRevision: credential.configurationRevision,
                 content: credential.content,
                 metadata: credential.metadata,
+                ...(credential.health ? { health: credential.health } : {}),
             },
         };
 }
@@ -2793,6 +2824,8 @@ export async function deleteQualifiedConnectedServiceCredential(
             await recordConnectedServiceAccountProfileChange({
                 tx,
                 accountId: params.accountId,
+                service: ref.service,
+                reason: 'credential-delete',
             });
             return { status: "deleted" };
         }, { transactionClass: "connected-account-credential-delete" });

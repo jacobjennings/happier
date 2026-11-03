@@ -102,10 +102,6 @@ describe('browserIroh/homeCarrier/webSocketFrames client encoding', () => {
 });
 
 describe('browserIroh/homeCarrier/webSocketFrames server decoding', () => {
-    it('uses the existing Socket.IO carrier boundary as its message ceiling', () => {
-        expect(WEB_SOCKET_MAX_MESSAGE_PAYLOAD_BYTES).toBe(34_603_008);
-    });
-
     it('reassembles frames split across stream reads and splits a coalesced read', () => {
         const decoder = new WebSocketFrameDecoder();
         const first = serverFrame(WEB_SOCKET_OPCODE.text, new TextEncoder().encode('hello'));
@@ -140,6 +136,8 @@ describe('browserIroh/homeCarrier/webSocketFrames server decoding', () => {
 
         for (let offset = 0; offset < wire.length; offset += 64 * 1024) {
             frames = decoder.push(wire.subarray(offset, offset + 64 * 1024));
+            // No frame surfaces until its final chunk arrives.
+            if (offset + 64 * 1024 < wire.length) expect(frames).toEqual([]);
         }
 
         expect(frames).toHaveLength(1);

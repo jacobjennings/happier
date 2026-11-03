@@ -5,6 +5,8 @@ export type DaemonSpeechStreamTransportKind =
     | 'json_rpc_compat'
     | 'json_rpc_compat_forbidden';
 
+export type DaemonSpeechStreamStartStep = 'create_sender' | 'sender_start' | 'capture_start';
+
 export type DaemonSpeechStreamTransportSelection = Readonly<{
     sessionId: string;
     machineId: string;
@@ -70,6 +72,8 @@ export type DaemonSpeechStreamDiagnosticsSnapshot = Readonly<{
     lastStartFailure: Readonly<{
         code: string | null;
         message: string;
+        step?: DaemonSpeechStreamStartStep;
+        errorClass?: string;
     }> | null;
 }>;
 
@@ -84,7 +88,12 @@ const RETAINED_START_FAILURE_CODES = new Set([
 
 const RETAINED_START_FAILURE_MESSAGES = new Set([
     'daemon_voice_inference_stream_transport_unavailable',
+    'daemon_voice_inference_invalid_response',
     'voice_conversation_spawn_target_missing',
+]);
+
+const RETAINED_START_FAILURE_ERROR_CLASSES = new Set([
+    'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'AbortError', 'DOMException', 'HappyError',
 ]);
 
 function readAllowlistedFailureValue(value: unknown, allowlist: ReadonlySet<string>): string | null {
@@ -93,7 +102,7 @@ function readAllowlistedFailureValue(value: unknown, allowlist: ReadonlySet<stri
     return allowlist.has(normalized) ? normalized : null;
 }
 
-function readStartFailure(error: unknown): NonNullable<DaemonSpeechStreamDiagnosticsSnapshot['lastStartFailure']> {
+function readStartFailure(error: unknown, context?: Readonly<{ step: DaemonSpeechStreamStartStep }>): NonNullable<DaemonSpeechStreamDiagnosticsSnapshot['lastStartFailure']> {
     const record = error && typeof error === 'object' ? error as Record<string, unknown> : null;
     const message = readAllowlistedFailureValue(record?.message, RETAINED_START_FAILURE_MESSAGES)
         ?? readAllowlistedFailureValue(error, RETAINED_START_FAILURE_MESSAGES)
@@ -101,6 +110,10 @@ function readStartFailure(error: unknown): NonNullable<DaemonSpeechStreamDiagnos
     return Object.freeze({
         code: readAllowlistedFailureValue(record?.code, RETAINED_START_FAILURE_CODES),
         message,
+        ...(context ? {
+            step: context.step,
+            errorClass: readAllowlistedFailureValue(record?.name, RETAINED_START_FAILURE_ERROR_CLASSES) ?? 'unknown',
+        } : {}),
     });
 }
 
@@ -258,9 +271,10 @@ export function createDaemonSpeechStreamDiagnostics(options?: Readonly<{
                 ? '[daemonVoiceInference] JSON/RPC streaming STT compatibility transport blocked by policy'
                 : '[daemonVoiceInference] streaming STT using explicit JSON/RPC compatibility transport');
         },
-        recordStartFailure: (error: unknown): void => {
-            lastStartFailure = readStartFailure(error);
+        recordStartFailure: (error: unknown, context?: Readonly<{ step: DaemonSpeechStreamStartStep }>): void => {
+            lastStartFailure = readStartFailure(error, context);
             publish();
+            warn('[daemonVoiceInference] streaming STT start failed ' + JSON.stringify(lastStartFailure));
         },
         snapshot: (): DaemonSpeechStreamDiagnosticsSnapshot => currentSnapshot,
         subscribe: (listener: () => void): (() => void) => {

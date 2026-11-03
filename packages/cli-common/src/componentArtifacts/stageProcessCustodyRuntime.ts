@@ -1,4 +1,7 @@
-import { chmod, cp, mkdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
+import { chmod, copyFile, cp, mkdir, mkdtemp, rename, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ensureFileExists, type RunCommand } from './commands.js';
@@ -36,7 +39,36 @@ export async function stageProcessCustodyRuntime({
   await mkdir(toolsDir, { recursive: true });
   if (prebuiltExecutablePath) {
     await ensureFileExists(prebuiltExecutablePath);
-    await cp(prebuiltExecutablePath, executablePath);
+    // A previous test can still be executing the published helper. Copying
+    // over that inode fails with ETXTBSY on Linux; publish a complete replacement.
+    // Metro watches source payloads: removing a transient directory there can
+    // race its directory watcher. Keep build scratch outside the checkout.
+    const stagingDir = await mkdtemp(join(tmpdir(), '.process-custody-'));
+    const stagedExecutable = join(stagingDir, resolveProcessCustodyRuntimeExecutableName(target));
+    try {
+      await cp(prebuiltExecutablePath, stagedExecutable);
+      if (target.os !== 'windows') await chmod(stagedExecutable, 0o755);
+      try {
+        await rename(stagedExecutable, executablePath);
+      } catch (error) {
+        if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'EXDEV') throw error;
+        // OS temp may be on another volume. A sibling file guarantees the final
+        // rename stays on the destination filesystem without overwriting a live
+        // inode. Metro's existing .tmp.* publication exclusion covers this file
+        // even when the payload lives in watched source; no directory is added.
+        const replacement = join(toolsDir, `.tmp.process-custody-${randomUUID()}`);
+        // copyFile removes a partial destination on failure. EXCL ensures this
+        // invocation owns the file before the rename/cleanup below.
+        await copyFile(stagedExecutable, replacement, constants.COPYFILE_EXCL);
+        try {
+          await rename(replacement, executablePath);
+        } finally {
+          await rm(replacement, { force: true });
+        }
+      }
+    } finally {
+      await rm(stagingDir, { recursive: true, force: true });
+    }
   } else {
     const goArch = target.arch === 'x64' ? 'amd64' : target.arch;
     await runCommand('go', [
@@ -56,7 +88,7 @@ export async function stageProcessCustodyRuntime({
       },
     });
   }
-  if (target.os !== 'windows') {
+  if (target.os !== 'windows' && !prebuiltExecutablePath) {
     await chmod(executablePath, 0o755);
   }
   await ensureFileExists(executablePath);

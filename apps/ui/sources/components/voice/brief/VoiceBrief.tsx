@@ -102,9 +102,8 @@ function VoiceBriefContent(props: Readonly<{ onClose: () => void }>) {
 
     return (
         <View testID="voice-brief" style={styles.root}>
-            {/* The head and its notes read in Home's column, on the same edge as the sheet below (lab B1). */}
-            <ItemGroup surface="none">
-                <View style={styles.root}>
+            <VoiceBriefList brief={brief} onOpen={open} head={(
+                <>
                     <View style={styles.head}>
                         {voice.live ? <VoiceStatusLine voice={voice} size="island" /> : <View style={styles.grow} />}
                         <View style={styles.grow} />
@@ -126,7 +125,7 @@ function VoiceBriefContent(props: Readonly<{ onClose: () => void }>) {
                     {delivery === 'refused' && !waitingUnavailable ? <Text style={styles.note}>{t('voiceMoments.briefNotSpoken')}</Text> : null}
                     {waitingUnavailable ? (
                         <View testID="voice-brief.unavailable" style={styles.unavailable}>
-                            <Text style={styles.note}>{t('voiceMoments.briefNotSpoken')}</Text>
+                            <Text style={styles.noteText}>{t('voiceMoments.briefNotSpoken')}</Text>
                             {voice.recoveryAvailable || setupAction ? (
                                 <RoundButton
                                     testID="voice-brief.recover"
@@ -143,9 +142,8 @@ function VoiceBriefContent(props: Readonly<{ onClose: () => void }>) {
                             ) : null}
                         </View>
                     ) : null}
-                </View>
-            </ItemGroup>
-            <VoiceBriefList brief={brief} onOpen={open} />
+                </>
+            )} />
         </View>
     );
 }
@@ -153,11 +151,13 @@ function VoiceBriefContent(props: Readonly<{ onClose: () => void }>) {
 /**
  * The brief's list as drawn: Needs you → Failed → Ready, each row one known item with its exact
  * destination; the source's own incomplete / caught-up facts above it. Pure presentation of a
- * `buildVoiceBrief` result (the dev fixture draws it at lab data).
+ * `buildVoiceBrief` result (the dev fixture draws it at lab data). `head` (the live Brief's status,
+ * close and recovery) reads in one block with those facts, so the notes never float apart from it.
  */
 export const VoiceBriefList = React.memo(function VoiceBriefList(props: Readonly<{
     brief: Pick<VoiceBrief, 'items' | 'incomplete' | 'caughtUp'>;
     onOpen: (item: VoiceBriefItem) => void;
+    head?: React.ReactNode;
 }>) {
     const styles = stylesheet;
     const { brief } = props;
@@ -172,10 +172,14 @@ export const VoiceBriefList = React.memo(function VoiceBriefList(props: Readonly
     })).filter((group) => group.items.length > 0), [brief.items]);
     return (
         <>
-            {brief.incomplete || brief.caughtUp ? (
+            {/* The head and its notes read in Home's column, on the same edge as the sheet below (lab B1). */}
+            {props.head || brief.incomplete || brief.caughtUp ? (
                 <ItemGroup surface="none">
-                    {brief.incomplete ? <Text style={styles.note}>{t('voiceMoments.briefIncomplete')}</Text> : null}
-                    {brief.caughtUp ? <Text style={styles.note}>{t('voiceMoments.briefCaughtUp')}</Text> : null}
+                    <View style={styles.root}>
+                        {props.head}
+                        {brief.incomplete ? <Text style={styles.note}>{t('voiceMoments.briefIncomplete')}</Text> : null}
+                        {brief.caughtUp ? <Text style={styles.note}>{t('voiceMoments.briefCaughtUp')}</Text> : null}
+                    </View>
                 </ItemGroup>
             ) : null}
             {groups.length > 0 ? (
@@ -242,6 +246,7 @@ const stylesheet = StyleSheet.create((theme) => ({
     unavailable: {
         gap: theme.space.s8,
         alignItems: 'flex-start',
+        paddingHorizontal: theme.space.s4,
     },
     head: {
         flexDirection: 'row',
@@ -251,6 +256,10 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     grow: {
         flexGrow: 1,
+    },
+    noteText: {
+        ...Typography.variant('body'),
+        color: theme.colors.text.secondary,
     },
     note: {
         ...Typography.variant('body'),

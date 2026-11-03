@@ -80,15 +80,29 @@ it('asks only for the address when creation must prove the mailbox first', async
     expect(provision.account).not.toHaveBeenCalled();
 });
 
-it('collects the password once the mailbox is already proven', async () => {
+it('collects the password once the mailbox is already proven and creates the Account with the chosen protection', async () => {
     provision.account.mockResolvedValue({ credentials: { token: 'created' }, accountId: 'account-a' });
-    screen = await renderPanel({
-        action: 'provision',
-        admission: { kind: 'native_email_verification', token: 'C'.repeat(43) },
-    });
+    const admission = { kind: 'native_email_verification', token: 'C'.repeat(43) } as const;
+    screen = await renderPanel({ action: 'provision', admission, recommendedProvisionMode: 'e2ee' });
 
     expect(screen.findByTestId('email-password-password')).not.toBeNull();
     expect(screen.findByTestId('email-password-confirm')).not.toBeNull();
+    // The Home's recommendation is the starting choice; the person's choice is what is created.
+    expect(screen.findByTestId('email-password-protection-e2ee')?.props.accessibilityState).toMatchObject({ checked: true });
+    await screen.pressByTestIdAsync('email-password-protection-plain');
+    await act(async () => {
+        screen!.findByTestId('email-password-email')!.props.onChangeText('person@example.test');
+        screen!.findByTestId('email-password-password')!.props.onChangeText('a sufficiently long password');
+        screen!.findByTestId('email-password-confirm')!.props.onChangeText('a sufficiently long password');
+    });
+    await screen.pressByTestIdAsync('email-password-create');
+
+    expect(provision.account).toHaveBeenCalledWith(expect.objectContaining({
+        target: TARGET,
+        password: 'a sufficiently long password',
+        accountMode: 'plain',
+        admission,
+    }));
 });
 
 it('marks its own actions busy while the key derivation runs, in every host', async () => {

@@ -23,14 +23,12 @@ function factSource(state: {
 }
 
 describe('createNativeStandardListFactSource', () => {
-    it('standard: raw max offset is visual bottom and reads as distance 0', () => {
-        expect(factSource({ offset: 1500, contentHeight: 2000, layoutHeight: 500 })
-            .getDistanceFromLiveTail()).toBe(0);
-    });
-
-    it('standard: raw offset 0 is the oldest edge and reads as full distance from bottom', () => {
-        expect(factSource({ offset: 0, contentHeight: 2000, layoutHeight: 500 })
-            .getDistanceFromLiveTail()).toBe(1500);
+    it.each([
+        { edge: 'raw max offset is the visual bottom', offset: 1500, distance: 0 },
+        { edge: 'raw offset 0 is the oldest edge', offset: 0, distance: 1500 },
+    ])('standard: $edge and reads as distance $distance from the live tail', ({ offset, distance }) => {
+        expect(factSource({ offset, contentHeight: 2000, layoutHeight: 500 })
+            .getDistanceFromLiveTail()).toBe(distance);
     });
 
     it('normalizes standard raw observations without inverted mirroring', () => {

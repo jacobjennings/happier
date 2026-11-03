@@ -15,8 +15,10 @@ export function resolveWorkspaceRelativePath(params: Readonly<{
   const absoluteCandidate = isAbsolute(params.candidatePath)
     ? resolve(params.candidatePath)
     : resolve(root, params.candidatePath);
-  const traits = detectWorkspacePathTraits(relative(root, absoluteCandidate));
-  if (traits.isAbsolute || traits.hasParentTraversal) {
+  // On Windows a candidate on another drive yields an absolute relative path.
+  const nativeRelativePath = relative(root, absoluteCandidate);
+  const traits = detectWorkspacePathTraits(nativeRelativePath);
+  if (isAbsolute(nativeRelativePath) || traits.isAbsolute || traits.hasParentTraversal) {
     return { ok: false, errorCode: 'workspace_path_outside_root' };
   }
   return { ok: true, relativePath: traits.normalizedPath };

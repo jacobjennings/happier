@@ -1,6 +1,7 @@
 import * as z from 'zod/mini';
 import { isSessionEncryptionModeAllowedByStoragePolicy, resolveEffectiveDefaultAccountEncryptionMode } from '@happier-dev/protocol/encryption/storagePolicyDecisions';
 import { SessionSharedMetadataV1Schema, validateSessionOwnerMetadataEnvelopeForAccountModeV1, type SessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
+import type { SessionDisplayProjectionV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import { type SessionInitialAccessMaterializedV1 } from '@happier-dev/protocol/sessions/access/sessionInitialAccessDraftV1';
 import { SessionCreateOriginFieldsV1Schema, type SessionCreateOriginFieldsV1 } from '@happier-dev/protocol/sessions/creation/sessionCreateOriginV1';
 import { SessionManagerV1Schema, type SessionManagerV1, type SessionManagerSetResultV1 } from '@happier-dev/protocol/sessions/follow/sessionManagerV1';
@@ -70,6 +71,7 @@ export type Layout1SessionCreateRequest = Readonly<SessionCreateOriginFieldsV1 &
     /** Shared metadata as stored: canonical JSON for plain, ciphertext for E2EE. */
     metadata: string;
     ownerMetadata: SessionOwnerMetadataEnvelopeV1;
+    displayProjectionV1?: SessionDisplayProjectionV1 | null;
     agentState: string | null;
     /** Base64 Session data key; only an E2EE Session may carry one. */
     dataEncryptionKey: string | null;
@@ -91,6 +93,7 @@ export type PreparedLayout1SessionCreate = Readonly<SessionCreateOriginFieldsV1 
     tag: string;
     metadata: string;
     ownerMetadata: SessionOwnerMetadataEnvelopeV1;
+    displayProjectionV1?: SessionDisplayProjectionV1 | null;
     agentState: string | null;
     dataEncryptionKey: Uint8Array<ArrayBuffer> | null;
     /** Resolved from the Account row observed before the fence; the transaction re-resolves it. */
@@ -255,6 +258,7 @@ export function prepareLayout1SessionCreate(
             tag: request.tag,
             metadata: request.metadata,
             ownerMetadata: request.ownerMetadata,
+            displayProjectionV1: request.displayProjectionV1,
             agentState: request.agentState ?? null,
             dataEncryptionKey: request.dataEncryptionKey
                 ? new Uint8Array(Buffer.from(request.dataEncryptionKey, "base64"))

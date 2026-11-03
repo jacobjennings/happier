@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 import { encodeBase64 } from "@happier-dev/protocol";
+import { createPluginInstallationManifestPublisherSigningInputV1 } from "@happier-dev/protocol/plugins/installations/manifests";
 import tweetnacl from "tweetnacl";
 
 import { signPluginInstallationPublisherHeader } from "./publisherProof";
@@ -27,7 +30,13 @@ describe("machine-installation publisher proof", () => {
       path: "/v3/automations/worker/assignments",
       machineId: "machine-1",
       installationId: "installation-1",
-      signatureBase64Url: expect.any(String),
+      bodySha256Base64Url: createHash("sha256").update("null").digest("base64url"),
     });
+    const { signatureBase64Url, ...signedProof } = decoded.proof;
+    expect(tweetnacl.sign.detached.verify(
+      createPluginInstallationManifestPublisherSigningInputV1({ proof: signedProof }),
+      Buffer.from(signatureBase64Url, "base64url"),
+      keyPair.publicKey,
+    )).toBe(true);
   });
 });

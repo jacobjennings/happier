@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-    getDefaultChangedFilesViewMode,
     getPreferredChangedFilesViewMode,
     getSelectableChangedFilesViewModes,
     isChangedFilesViewModeAvailable,
     resolveChangedFilesViewMode,
     resolveChangedFilesEmptyStateTranslationKey,
+    type ChangedFilesViewMode,
     partitionRepositoryChangesBySession,
     type SessionAttributedFile,
 } from './scmAttribution';
@@ -19,9 +19,6 @@ describe('changed files view mode availability', () => {
         expect(resolveChangedFilesEmptyStateTranslationKey('turn_checkpoint')).toBe('files.noCheckpointTurnChanges');
         expect(resolveChangedFilesEmptyStateTranslationKey('session')).toBe('files.noSessionAttributedChanges');
         expect(resolveChangedFilesEmptyStateTranslationKey('repository')).toBe('files.noChanges');
-    });
-    it('uses repository view as the default changed-files mode', () => {
-        expect(getDefaultChangedFilesViewMode()).toBe('repository');
     });
     it('offers selected-for-commit as an explicit scope only when files are selected', () => {
         expect(getSelectableChangedFilesViewModes({
@@ -105,24 +102,39 @@ describe('changed files view mode availability', () => {
         })).toBe('turn');
     });
 
-    it('resolves and offers the same modes so a resolved scope is always selectable', () => {
-        const availability = {
-            showTurnViewToggle: true,
-            showTurnAgentReportedViewToggle: true,
-            showTurnCheckpointViewToggle: true,
-            showSessionViewToggle: true,
-            showSelectedViewToggle: true,
-        };
-        const selectable = getSelectableChangedFilesViewModes(availability);
-
-        for (const mode of ['repository', 'selected', 'turn', 'turn_agent_reported', 'turn_checkpoint', 'session'] as const) {
-            expect({ mode, selectable: selectable.includes(mode) }).toEqual({
-                mode,
-                selectable: isChangedFilesViewModeAvailable({ ...availability, mode }),
-            });
-            expect(resolveChangedFilesViewMode({ ...availability, mode })).toBe(
-                selectable.includes(mode) ? mode : getPreferredChangedFilesViewMode(availability)
-            );
+    it.each([
+        {
+            title: 'turn evidence only',
+            availability: { showTurnViewToggle: true, showSessionViewToggle: false },
+            selectable: ['repository', 'turn'],
+            resolved: { repository: 'repository', turn: 'turn', session: 'turn', selected: 'turn', turn_checkpoint: 'turn' },
+        },
+        {
+            title: 'session evidence only',
+            availability: { showTurnViewToggle: false, showSessionViewToggle: true },
+            selectable: ['repository', 'session'],
+            resolved: { repository: 'repository', session: 'session', turn: 'session', turn_agent_reported: 'session' },
+        },
+        {
+            title: 'agent-reported turn evidence only',
+            availability: { showTurnViewToggle: false, showSessionViewToggle: false, showTurnAgentReportedViewToggle: true },
+            selectable: ['repository', 'turn_agent_reported'],
+            resolved: { turn_agent_reported: 'turn_agent_reported', turn_checkpoint: 'repository', session: 'repository' },
+        },
+        {
+            title: 'no attributed evidence',
+            availability: { showTurnViewToggle: false, showSessionViewToggle: false },
+            selectable: [],
+            resolved: { repository: 'repository', selected: 'repository', turn: 'repository' },
+        },
+    ] as const)('resolves a scope the evidence cannot back to the preferred one and offers only backed scopes: $title', ({
+        availability,
+        selectable,
+        resolved,
+    }) => {
+        expect(getSelectableChangedFilesViewModes(availability)).toEqual(selectable);
+        for (const [mode, expected] of Object.entries(resolved)) {
+            expect(resolveChangedFilesViewMode({ ...availability, mode: mode as ChangedFilesViewMode })).toBe(expected);
         }
     });
 });

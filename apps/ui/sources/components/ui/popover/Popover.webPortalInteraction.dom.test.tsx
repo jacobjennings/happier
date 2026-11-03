@@ -347,6 +347,8 @@ describe('Popover web portal interaction readiness', () => {
             expect(close).toHaveBeenCalledTimes(1);
             await act(async () => {
                 outside.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+                // Click-through: the close waits for the outside press to finish.
+                expect(close).toHaveBeenCalledTimes(1);
                 await new Promise((resolve) => setTimeout(resolve, 0));
             });
             expect(outsidePress).toHaveBeenCalledTimes(1);

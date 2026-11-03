@@ -1,3 +1,6 @@
+import type { PreNormalizedActionSurfaces } from './definition.js';
+import { SessionTargetV1Schema } from '../sessionTargetV1.js';
+import { type ActionInputHints } from '../metadata.js';
 import { lazyZodSchema } from '../../lazyZodSchema.js';
 import { z } from 'zod/mini';
 
@@ -35,3 +38,30 @@ export function refineKindSchema(
     path: [field],
   }));
 }
+
+
+export const DAEMON_ADMIN_RPC_SURFACES = Object.freeze({
+  ui: false,
+  voice: false,
+  agent: false,
+  mcp: false,
+  cli: false,
+  rpc: true,
+} satisfies PreNormalizedActionSurfaces);
+
+export const DAEMON_ADMIN_INPUT_HINTS = Object.freeze({
+  fields: [],
+} satisfies ActionInputHints);
+
+export const EmptyObjectSchema = lazyZodSchema(() => z.strictObject({}));
+export const OptionalSessionIdInputSchema = lazyZodSchema(() => z.looseObject({
+  sessionId: z.optional(z.string().check(z.minLength(1))),
+}));
+
+export const SessionIdRequiredInputSchema = lazyZodSchema(() => z.looseObject({
+  sessionId: z.string().check(z.minLength(1)),
+}));
+
+export const SessionTargetRequiredInputSchema = lazyZodSchema(() => z.looseObject({
+  sessionId: SessionTargetV1Schema,
+}));

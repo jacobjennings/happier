@@ -110,6 +110,54 @@ test('decoded HTTP totals include only completed in-window responses and preserv
   assert.equal(summarizeNetwork([]).decodedBytes, 0);
 });
 
+test('transfer comparisons expose route demand, body availability and per-type delivery frame sizes', () => {
+  const requests = [
+    { endpoint: '/v2/sessions/query', method: 'POST', startMs: 1, endMs: 2,
+      requestBodyBytes: 12, decodedBytes: 400, encodedBodyBytes: 40, encodedBytes: 90 },
+    { endpoint: '/v2/sessions/read-batch', method: 'POST', startMs: 1, endMs: 2,
+      requestBodyBytes: null, decodedBytes: null, encodedBodyBytes: null, encodedBytes: 0 },
+  ];
+  const network = summarizeNetwork(requests);
+  assert.equal(network.routeClasses['session-list'], 1);
+  assert.equal(network.routeClasses['session-read-batch'], 1);
+  assert.equal(network.endpoints[0].requestBodyBytes, 12);
+  assert.equal(network.endpoints[0].decodedBodyBytes, 400);
+  assert.equal(network.endpoints[0].encodedBodyBytes, 40);
+  assert.equal(network.endpoints[1].requestBodyBytes, null);
+  const frame = (payload, opcode = 1) => ({ ...analysis.socketFrameClassification(payload, opcode),
+    direction: 'received', bytes: Buffer.byteLength(payload) });
+  const hint = '42["update",{"body":{"t":"new-message","delivery":"hint","message":{"id":"private"}}}]';
+  const full = '42["update",{"body":{"t":"new-message","delivery":"full","message":{"content":"private"}}}]';
+  const update = '42/admin,17["update",{"body":{"t":"update-session","metadata":"private"}}]';
+  const frames = [frame(hint), frame(full), frame(update), frame('2'), frame('3'), frame('42["private",{}]')];
+  const counts = analysis.transferCounts(network, frames);
+  assert.equal(counts['transfer.http.POST.session-list.requests'], 1);
+  assert.equal(counts['transfer.http.POST.session-list.requestBodyBytes'], 12);
+  assert.equal(counts['transfer.http.POST.session-read-batch.requestBodyBytes'], null);
+  assert.equal(counts['transfer.socket.received.update.new-message.hint.payloadBytes'], Buffer.byteLength(hint));
+  assert.equal(counts['transfer.socket.received.update.new-message.full.payloadBytes'], Buffer.byteLength(full));
+  assert.equal(counts['transfer.socket.received.update.update-session.unspecified.payloadBytes'], Buffer.byteLength(update));
+  assert.equal(counts['transfer.socket.received.engine.ping.unspecified.frames'], 1);
+  assert.equal(counts['transfer.socket.received.engine.pong.unspecified.frames'], 1);
+  assert.equal(counts['transfer.socket.received.unknown.unknown.unspecified.frames'], 1);
+  assert.ok(!JSON.stringify(counts).includes('private'));
+  const run = counts => ({ journey: 'J13', cache: 'warm', uiMode: 'dev', counts });
+  const comparison = compareRuns([run(counts)], [run(analysis.transferCounts(summarizeNetwork([]), []))])[0];
+  assert.equal(comparison.counts['transfer.socket.received.update.new-message.full.payloadBytes'].after, 0);
+  assert.equal(comparison.counts['transfer.http.POST.session-read-batch.requestBodyBytes'].delta, null);
+  assert.equal(compareRuns([run({})], [run(counts)])[0].counts['transfer.http.POST.session-list.requests'].before, null);
+});
+
+test('frame classification projects fixed vocabulary across namespaces, ACKs, binary headers and unknown types', () => {
+  assert.deepEqual(analysis.socketFrameClassification('42/ns,1["update",{"body":{"t":"private","delivery":"private"}}]', 1),
+    { kind: 'event', event: 'update', type: 'unknown', delivery: 'unspecified' });
+  assert.equal(analysis.socketFrameClassification('451-/ns,1["update",{"body":{"t":"message-updated","delivery":"hint"}}]', 1).type, 'message-updated');
+  assert.equal(analysis.socketFrameClassification('43/ns,12["private"]', 1).kind, 'ack');
+  assert.equal(analysis.socketFrameClassification('42[broken', 1).event, 'unknown');
+  assert.equal(analysis.socketFrameClassification('private', 2).event, 'binary');
+  assert.equal(analysis.socketFrameClassification('', 9).type, 'ping');
+});
+
 test('network aggregation brackets starts and distinguishes failed, canceled, late and unfinished requests', () => {
   const request = (startMs, extra = {}) => ({ endpoint: 'https://qa.test/v2/sessions/active', method: 'GET', startMs, ...extra });
   const result = summarizeNetwork([

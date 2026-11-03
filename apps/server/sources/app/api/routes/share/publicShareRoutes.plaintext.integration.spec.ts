@@ -5,6 +5,11 @@ import {
     CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
     PUBLIC_SHARE_ENCRYPTED_DATA_KEY_CURRENT_V0_BYTES,
     buildAccountStoredContentCompatibilityHttpHeadersV1,
+    projectSessionDisplayV1,
+    sealSessionOwnerDisplayEnvelopeV1,
+    sealSessionOwnerMetadataEnvelopeV1,
+    sealSessionSharedDisplayEnvelopeV1Sync,
+    SessionDisplayProjectionV1Schema,
 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
@@ -188,6 +193,91 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
             expect(response.body).not.toContain(
                 OWNER_METADATA_CIPHERTEXT_V1,
             );
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("keeps public display shared-only with the owner credential and preserves full content when display purpose is invalid", async () => {
+        const owner = await createCurrentE2eeAccount();
+        const sessionId = crypto.randomUUID();
+        const material = { type: "dataKey" as const, machineKey: new Uint8Array(32).fill(7) };
+        const randomBytes = (length: number) => new Uint8Array(length).fill(4);
+        const sharedMetadata = { v: 1 as const, summary: { text: "Public display summary", updatedAt: 1 } };
+        const ownerMetadata = { v: 1 as const, workspace: {
+            name: "owner-private-display-name", path: "/owner/private/display-path", machineId: "owner-private-machine",
+        } };
+        const semantic = projectSessionDisplayV1({ sharedMetadata, ownerMetadata });
+        if (!semantic.owner) throw new Error("Expected owner display fixture");
+        const sharedDisplay = sealSessionSharedDisplayEnvelopeV1Sync({
+            sessionMode: "plain", display: semantic.shared,
+        });
+        const ownerDisplay = sealSessionOwnerDisplayEnvelopeV1({
+            accountMode: "e2ee", display: semantic.owner, material, randomBytes,
+        });
+        if (!sharedDisplay.ok || sharedDisplay.envelope.t !== "plain" || !ownerDisplay.ok || ownerDisplay.envelope.t !== "encrypted") {
+            throw new Error("Expected mode-correct public display fixture");
+        }
+        const displayProjectionV1 = SessionDisplayProjectionV1Schema.parse({
+            v: 1, metadataLayoutVersion: 1, sourceMetadataVersion: 0,
+            shared: sharedDisplay.envelope, owner: ownerDisplay.envelope,
+        });
+        await db.session.create({ data: {
+            id: sessionId, accountId: owner.id, tag: crypto.randomUUID(), encryptionMode: "plain",
+            metadata: JSON.stringify(sharedMetadata), metadataVersion: 0, metadataLayoutVersion: 1,
+            ownerMetadata: JSON.stringify(sealSessionOwnerMetadataEnvelopeV1({ ownerMetadata, material, randomBytes })),
+            agentState: "owner-private-agent-state", agentStateVersion: 9,
+            displayProjectionV1: JSON.stringify(displayProjectionV1),
+        } });
+        const token = crypto.randomUUID();
+        const share = await db.publicSessionShare.create({ data: {
+            sessionId, createdByUserId: owner.id, keyDerivation: "legacy_token_v1",
+            tokenHash: createHash("sha256").update(token, "utf8").digest(),
+            encryptedDataKey: null, isConsentRequired: false,
+        } });
+        await auth.init();
+        const ownerToken = await auth.createToken(owner.id, undefined, { kind: "account", authority: "present_user" });
+        const app = createCurrentClientTestApp({ authentication: "real" });
+        publicShareRoutes(app);
+        await app.ready();
+        try {
+            const request = { method: "GET" as const, url: `/v1/public-share/${encodeURIComponent(token)}`,
+                headers: { authorization: `Bearer ${ownerToken}` } };
+            const response = await app.inject(request);
+            expect(response.statusCode, response.body).toBe(200);
+            expect(response.json().session).toMatchObject({
+                id: sessionId, metadata: JSON.stringify(sharedMetadata), metadataVersion: 0,
+                metadataLayoutVersion: 1, agentState: null, agentStateVersion: 9,
+            });
+            expect.soft(response.json().session.displayProjectionV1).toEqual({
+                v: 1, metadataLayoutVersion: 1, sourceMetadataVersion: 0, shared: sharedDisplay.envelope,
+            });
+            expect(response.json().session).not.toHaveProperty("ownerMetadata");
+            for (const privateValue of [ownerDisplay.envelope.c, ownerMetadata.workspace.name,
+                ownerMetadata.workspace.path, ownerMetadata.workspace.machineId, "owner-private-agent-state"]) {
+                expect(response.body).not.toContain(privateValue);
+            }
+            await expect(db.publicShareAccessLog.findFirst({ where: { publicShareId: share.id }, select: { userId: true } }))
+                .resolves.toEqual({ userId: owner.id });
+
+            await db.session.update({ where: { id: sessionId }, data: {
+                displayProjectionV1: JSON.stringify({
+                    ...displayProjectionV1,
+                    shared: {
+                        ...sharedDisplay.envelope,
+                        v: { ...sharedDisplay.envelope.v, purpose: "session_owner_display" },
+                    },
+                }),
+            } });
+            const fallback = await app.inject(request);
+            expect(fallback.statusCode, fallback.body).toBe(200);
+            expect(fallback.json().session).toMatchObject({
+                id: sessionId, metadata: JSON.stringify(sharedMetadata), metadataVersion: 0,
+                metadataLayoutVersion: 1, agentState: null, agentStateVersion: 9,
+            });
+            expect(fallback.json().session).not.toHaveProperty("displayProjectionV1");
+            expect(fallback.json().session).not.toHaveProperty("ownerMetadata");
+            expect(fallback.body).not.toContain(ownerDisplay.envelope.c);
         } finally {
             await app.close();
         }

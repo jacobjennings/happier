@@ -375,7 +375,7 @@ function TopConsumersBody(
         machineName={facts.name}
         items={items}
         titles={titles}
-        logicalCores={null}
+        cpuCapacityCores={null}
         table={wideTable}
         onOpen={openProcesses}
         accessory={accessory}
@@ -619,6 +619,7 @@ const GROUP_OF: Readonly<
   session: 'sessions',
   browser_sidecar: 'browser',
   service: 'services',
+  container: 'services',
   terminal: 'services',
   run: 'other',
   workspace_sync: 'other',

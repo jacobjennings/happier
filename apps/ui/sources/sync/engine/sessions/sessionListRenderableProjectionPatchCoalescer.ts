@@ -1,8 +1,5 @@
-import {
-    applySessionListRenderablePatch,
-    areSessionListRenderablesEqual,
-    type SessionListRenderableSession,
-} from '@/sync/domains/session/listing/sessionListRenderable';
+import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import type { SessionListRowPatchOperation } from '@/sync/store/domains/sessions';
 import {
     normalizeSessionAddress,
     sessionAddressKey,
@@ -12,7 +9,7 @@ import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetr
 
 type SessionListRenderablePatch = Readonly<{
     address: SessionAddress;
-    patch: Readonly<Partial<Omit<SessionListRenderableSession, 'id'>>>;
+    patch: SessionListRowPatchOperation;
 }>;
 
 export type SessionListRenderableProjectionPatchCoalescerConfig = Readonly<{
@@ -52,7 +49,6 @@ function countBatchEntries<Payload>(batch: QueuedProjectionPatchBatch<Payload>):
 
 export function createSessionListRenderableProjectionPatchCoalescer<Payload>(params: Readonly<{
     getConfig: () => SessionListRenderableProjectionPatchCoalescerConfig;
-    readRenderable: (address: SessionAddress) => SessionListRenderableSession | undefined;
     buildPatch: (input: Readonly<{
         address: SessionAddress;
         renderable: SessionListRenderableSession;
@@ -87,32 +83,18 @@ export function createSessionListRenderableProjectionPatchCoalescer<Payload>(par
 
         const patches: SessionListRenderablePatch[] = [];
         for (const { address, entries } of batch) {
-            const renderable = params.readRenderable(address);
-            if (!renderable) continue;
-
-            let simulatedRenderable = renderable;
-            let hasPatch = false;
             for (const entry of entries) {
-                if (!entry.shouldContinue()) continue;
-                const patch = params.buildPatch({
-                    address,
-                    renderable: simulatedRenderable,
-                    payload: entry.payload,
-                });
-                hasPatch = true;
-                simulatedRenderable = applySessionListRenderablePatch(simulatedRenderable, patch);
-            }
-
-            if (hasPatch && !areSessionListRenderablesEqual(renderable, simulatedRenderable)) {
-                const { id: _id, ...patch } = simulatedRenderable;
-                patches.push({ address, patch });
+                patches.push({ address, patch: (renderable) => {
+                    if (!entry.shouldContinue()) return null;
+                    return params.buildPatch({ address, renderable, payload: entry.payload });
+                } });
             }
         }
 
         if (patches.length === 0) return;
         syncPerformanceTelemetry.measure(
             eventName,
-            { sessions: patches.length, entries: countBatchEntries(batch) },
+            { sessions: batch.length, entries: countBatchEntries(batch) },
             () => params.applyPatches(patches),
         );
     }

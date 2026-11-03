@@ -9,7 +9,7 @@ import {
   createSessionTurnMutationAppliedSocketAck,
 } from '@/testkit/backends/apiSessionSocketHarness';
 import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
-import type { SessionTurnMutationV1 } from '@happier-dev/protocol';
+import { FeaturesResponseSchema, type SessionTurnMutationV1 } from '@happier-dev/protocol';
 
 type Ack = { ok: true; id: string; seq: number; localId: string };
 
@@ -147,13 +147,17 @@ describe('ApiSessionClient message commit queue', () => {
 
     const { ApiSessionClient } = await import('./sessionClient');
 
-    const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
+    // A committed user echo is admitted only once the Session's Home identity is known.
+    const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }), {
+      getServerFeaturesSnapshot: () => ({ status: 'ready', features: FeaturesResponseSchema.parse({ features: {},
+        capabilities: { serverIdentity: { serverIdentityId: 'srv_commit_queue_home' } } }) }),
+    }));
 
     sessionSocketStub.trigger('update', {
       id: 'update-1',
       createdAt: Date.now(),
       body: {
-        t: 'new-message',
+        t: 'new-message', delivery: 'full' as const,
         sid: 's1',
         message: {
           id: 'msg-echo-1',

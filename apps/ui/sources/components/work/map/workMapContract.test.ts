@@ -2,13 +2,9 @@ import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { WorkflowDefinitionV1 } from '@happier-dev/protocol/workflows/workflowV1';
-import type { SessionWorkflowRunSnapshotV1 } from '@happier-dev/protocol';
 
 import { renderScreen } from '@/dev/testkit';
-import {
-    projectObservedWorkflowFlow,
-    projectWorkflowFlow,
-} from '@/components/workflows/flow/workflowFlowProjection';
+import { projectWorkflowFlow } from '@/components/workflows/flow/workflowFlowProjection';
 
 import {
     buildHappierWorkMap,
@@ -143,23 +139,5 @@ describe('work map neutral contract', () => {
 
         screen.pressByTestId('map-node-review');
         expect(opened.map((node) => node.open)).toEqual([{ kind: 'workflow-step', nodeId: 'review' }]);
-    });
-
-    it('keeps unknown relationships unlinked: unplaced observed agents stay roots', async () => {
-        const snapshot = {
-            phases: [{ id: 'p1', title: 'Explore', order: 0, agentIds: ['a'] }],
-            agents: [
-                { id: 'a', title: 'Agent A', status: 'running' },
-                { id: 'b', title: 'Agent B', status: 'running' },
-                { id: 'c', title: 'Agent C', status: 'completed' },
-            ],
-        } as unknown as SessionWorkflowRunSnapshotV1;
-        const projection = projectObservedWorkflowFlow(snapshot);
-        const screen = await renderMap(projection, () => undefined);
-
-        expect(projection.relationships).toBe('unknown');
-        expect(projection.rootNodeIds).toEqual(['phase:p1', 'agent:b', 'agent:c']);
-        expect(itemIdsInside(screen, 'map-group-phase:p1')).toEqual(['agent:a']);
-        expect(screen.findByTestId('map-group-agent:b')).toBeNull();
     });
 });

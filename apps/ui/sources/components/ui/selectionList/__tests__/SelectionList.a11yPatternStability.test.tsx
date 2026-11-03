@@ -22,8 +22,9 @@
  * popup rather than mounting a fresh one, because mounting fresh is exactly
  * what hid these defects.
  *
- * The last block is the identity guard: everything else in the app declares
- * neither capability, and that markup must stay what it has always been.
+ * The SHAPE each pattern emits — including the byte-for-byte listbox every
+ * consumer that declares neither capability reads — is owned by
+ * `SelectionList.inlineControlsGridA11y.test.tsx`.
  */
 
 import * as React from 'react';
@@ -296,98 +297,5 @@ describe('SelectionList — the grid describes the columns it actually paints', 
                 .findAll((node) => hasHostRole(node, 'gridcell'))
                 .map((cell) => cell.props['aria-colindex'])),
         ).toEqual([[1, 2], [1, 2]]);
-    });
-
-    it('declares one column, and one cell per row, for a single-column grid', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(
-            <SelectionList
-                {...defaultProps({
-                    rootStep: makeStep(sectionsForSelection('m-1')),
-                    selectedOptionId: 'm-1',
-                    optionsHostInlineControls: true,
-                })}
-            />,
-        );
-
-        const body = screen.findByTestId('sl:body');
-        expect(body?.props.role).toBe('grid');
-        // Stated, not left to be inferred. While it was omitted, assistive
-        // technology read the widest row — the selected one, whose open panel
-        // used to be a second cell — and announced "column 1 of 2" for every
-        // row that had no second column.
-        expect(body?.props['aria-colcount']).toBe(1);
-        // The section header row plus one row per option.
-        expect(body?.props['aria-rowcount']).toBe(4);
-        expect(bodyRows(screen).map((row) => row.props['aria-rowindex'])).toEqual([1, 2, 3, 4]);
-
-        const rows = optionRows(screen);
-        expect(rows).toHaveLength(3);
-        expect(rows.map((row) => row.findAll((node) => hasHostRole(node, 'gridcell')).length))
-            .toEqual([1, 1, 1]);
-
-        // The selected row's expanded panel lives INSIDE that one cell, which is
-        // also what the user sees: the controls open within the option, not in a
-        // column beside it.
-        const selectedCell = screen.findByTestId('sl:root:option-wrapper:m-1')
-            ?.findAll((node) => hasHostRole(node, 'gridcell'))[0];
-        expect(selectedCell?.props['aria-colindex']).toBe(1);
-        expect(selectedCell === undefined
-            ? []
-            : findAllHostTestInstances(selectedCell, (node) => node.props?.testID === EXPANDED_TEST_ID))
-            .toHaveLength(1);
-    });
-});
-
-describe('SelectionList — identity guard for the single-column listbox', () => {
-    /**
-     * Byte-for-byte the markup every other consumer reads. If this block moves,
-     * the change reached far past declared columns and declared row controls.
-     */
-    async function renderPlainList(props: Partial<SelectionListProps> = {}): Promise<Screen> {
-        const { SelectionList } = await import('../SelectionList');
-        return renderScreen(
-            <SelectionList
-                {...defaultProps({
-                    rootStep: makeStep([
-                        { id: 'm-0', label: 'Alpha' },
-                        { id: 'm-1', label: 'Bravo' },
-                    ]),
-                    ...props,
-                })}
-            />,
-        );
-    }
-
-    function expectExactlyTheListboxSet(screen: Screen): void {
-        const body = screen.findByTestId('sl:body');
-        expect(body?.props.role).toBe('listbox');
-        expect(body?.props['aria-rowcount']).toBeUndefined();
-        expect(body?.props['aria-colcount']).toBeUndefined();
-        expect(countRole(screen, 'grid')).toBe(0);
-        expect(countRole(screen, 'row')).toBe(0);
-        expect(countRole(screen, 'gridcell')).toBe(0);
-        expect(screen.findByTestId('sl:header:input')?.props['aria-haspopup']).toBe('listbox');
-    }
-
-    it('emits exactly the listbox role set with neither capability declared', async () => {
-        const screen = await renderPlainList();
-        expectExactlyTheListboxSet(screen);
-
-        const option = screen.findByTestId('sl:root:option:m-0');
-        expect(option?.props.role).toBe('option');
-        expect(option?.props['aria-posinset']).toBe(1);
-        expect(option?.props['aria-setsize']).toBe(2);
-        expect(screen.findByTestId('sl:root:option-wrapper:m-0')?.props.role).toBeUndefined();
-        expect(screen.findByTestId('sl:root:option-wrapper:m-0')?.props['aria-colindex'])
-            .toBeUndefined();
-    });
-
-    it('stays a listbox while the list is filtered', async () => {
-        const screen = await renderPlainList();
-        await act(async () => {
-            screen.changeTextByTestId('sl:header:input', 'Alpha');
-        });
-        expectExactlyTheListboxSet(screen);
     });
 });

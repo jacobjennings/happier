@@ -4,19 +4,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Dimensions } from 'react-native';
 import { installApprovalCommonModuleMocks } from '@/components/approvals/approvalsTestHelpers';
 import { createHomeGovernanceHarness, installHomeGovernanceBoundaries, waitForHomeGovernance } from '@/dev/testkit/harness/homeGovernanceHarness';
-import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { createMachineFixture, createPlainMachineRowFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { renderScreen, standardCleanup, flushHookEffects, pressTestInstanceAsync, reportPopoverContentLayout, withPopoverWebGlobals } from '@/dev/testkit';
 import { buildQualifiedPluginContributionKey } from '@happier-dev/protocol/plugins/contribution-identity';
 import { ExternalActionRequestEnvelopeV1Schema } from '@happier-dev/protocol/actions/externalActionApi';
 import { MachineProvisionersListResultV1Schema } from '@happier-dev/protocol/plugins/contributions/machineProvisioners';
 import { PluginProjectedActionV2Schema, QualifiedConnectedAccountProfileV4Schema } from '@happier-dev/protocol';
-import { DaemonContributionRegistryProjectionDescribeResponseSchema } from '@happier-dev/protocol/daemon/contributionRegistryProjection';
+import { DaemonContributionRegistryProjectionDescribeResponseSchema, buildDeferredDaemonProjectionSections } from '@happier-dev/protocol/daemon/contributionRegistryProjection';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE } from '@/dev/testkit/fixtures/pluginProviderDaemonProjection';
 import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
 
 const route = vi.hoisted(() => ({ replace: vi.fn() }));
 const nativeBoundary = vi.hoisted(() => ({ rpc: vi.fn() }));
+let projectionReply: ReturnType<typeof DaemonContributionRegistryProjectionDescribeResponseSchema.parse>;
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', async () => {
     const { createServerScopedMachineRpcBoundaryMock } = await import('@/dev/testkit/mocks/serverScopedRpc');
     return createServerScopedMachineRpcBoundaryMock(nativeBoundary.rpc);
@@ -29,6 +30,9 @@ installHomeGovernanceBoundaries(harness);
 const { resetScopedHomeActionExecutorsForTests } = await import('@/sync/ops/actions/scopedHomeActionExecutor');
 const { clearDaemonMergedProjectionCacheForTests } = await import('@/agents/backendCatalog/loadDaemonMergedProjectionInputs');
 const { resetMachineProjectionReadsForTests } = await import('@/sync/ops/machineContributionRegistryProjection');
+// Compile the real singleton graph after its network boundaries are installed,
+// outside a per-test lifecycle deadline on a cold executor.
+await loadSyncSingletonForTests();
 let restoreViewport: (() => void) | undefined;
 let restorePopover: (() => void) | undefined;
 const controller = { machineId: 'host', installationId: 'installation' };
@@ -77,6 +81,7 @@ beforeEach(async () => {
                 fields: [{ id: 'token', title: 'Token', schema: { type: 'string' }, secret: true }] }] },
         }])) } },
     } });
+    projectionReply = projection;
     nativeBoundary.rpc.mockImplementation(async (request: { method: string }) => request.method === RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE
         ? projection : request.method === RPC_METHODS.DAEMON_PLUGIN_ACTION_SCHEMAS_READ ? { ok: true,
             inputSchema: { type: 'object', properties: { cpu: { type: 'integer', minimum: 1 } }, additionalProperties: false } } : { ok: false, code: 'unsupported' });
@@ -113,6 +118,9 @@ async function setupHome() {
     harness.answer(serverId, '/v1/machines', { body: [controller, otherController].map(target => ({ id: target.machineId, kind: 'persistent',
         installationId: target.installationId, active: true, revokedAt: null, replacedByMachineId: null, dataEncryptionKey: null,
         access: { custodian: { accountId: 'owner', displayName: 'Owner' }, role: 'manage', resourceMode: 'plain', accessState: 'ready' } })) });
+    // Controller rows are read through the batched Machine reader (one exact Machine per id).
+    for (const [index, target] of [controller, otherController].entries()) harness.answer(serverId, `/v1/machines/${target.machineId}`, { body: {
+        machine: { ...createPlainMachineRowFixture({ id: target.machineId, accountId: 'owner', machine: machines[index] }), installationId: target.installationId } } });
     for (const [actionId, result] of [
         ['machines.provisioners.list', { controller, provisioners: [provisioner] }],
         ['machines.provisioners.check', { available: true }],
@@ -174,6 +182,45 @@ async function renderAccountScreen(content: React.ReactElement) {
 }
 
 describe('managed provisioner credential purposes', () => {
+    it.each(['setup', 'configurator'] as const)('settles a cold Connect handoff through %s without unrelated projection sections', async surface => {
+        const serverId = await setupHome();
+        // The real daemon framing producer keeps unrequested families absent. Legacy full
+        // projection fixtures concealed this failure behind the configurator's warm read.
+        const framed = buildDeferredDaemonProjectionSections({ ...projectionReply, projectionDigest: 'a'.repeat(64) });
+        const sectionReads: string[] = [];
+        nativeBoundary.rpc.mockImplementation(async (request: { method: string; payload: unknown }) => {
+            if (request.method !== RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE) return { ok: false, code: 'unsupported' };
+            const payload = (await import('@happier-dev/protocol/daemon/contributionRegistryProjection'))
+                .DaemonContributionRegistryProjectionDescribeRequestSchema.parse(request.payload);
+            if (!('sectionRead' in payload) || !payload.sectionRead) return framed.manifest;
+            const { sectionRead, sectionFrameVersion } = payload;
+            sectionReads.push(sectionRead.digest);
+            return framed.read(sectionRead.digest, sectionRead.offset, sectionRead.includeDigests, sectionFrameVersion);
+        });
+        const { ConnectedServiceSetupPage } = await import('../../connectedServices/setup/ConnectedServiceSetupPage');
+        const { resolveServerProfileScopeIdForIdentifier } = await import('@/sync/domains/server/serverProfiles');
+        const { ManagedMachineConfigurationView } = await import('./ManagedMachineConfigurationView');
+        const page = surface === 'setup' ? <ConnectedServiceSetupPage purposeRequest={{ scope: { serverId: resolveServerProfileScopeIdForIdentifier(serverId), accountId: 'owner' },
+            machineId: controller.machineId, purpose: cloudPurpose }} onSelected={() => {}} onClose={() => {}} />
+            : <ManagedMachineConfigurationView serverId={serverId} provisioner={buildQualifiedPluginContributionKey(contribution)}
+                initialController={controller} initialConnectPurpose={cloudPurpose.purpose} />;
+        const screen = await renderAccountScreen(page);
+        const chooser = `connected-account-purpose:${buildQualifiedPluginContributionKey(cloud.service)}`;
+        await waitForHomeGovernance(() => expect(sectionReads).toContain(framed.manifest.sections.resourcesById));
+        await flushHookEffects();
+        expect(screen.findByTestId(chooser)).not.toBeNull();
+        expect(screen.findByTestId('connected-account-purpose-unavailable')).toBeNull();
+        expect(sectionReads.filter(digest => digest === framed.manifest.sections['familiesById.machineProvisioners'])).toHaveLength(1);
+        expect(sectionReads).not.toContain(framed.manifest.sections.toolsById);
+        expect(sectionReads).not.toContain(framed.manifest.sections.agentsById);
+        const settledReads = nativeBoundary.rpc.mock.calls.length;
+        const { storage } = await import('@/sync/domains/state/storage');
+        await act(async () => storage.setState({ isDataReady: true }));
+        await flushHookEffects();
+        expect(nativeBoundary.rpc.mock.calls).toHaveLength(settledReads);
+        expect(harness.requestsFor('/v1/actions/machines.managed.acquire')).toHaveLength(0);
+        await screen.unmount();
+    });
     it('connects a declared provisioner purpose through setup and returns the explicit selection to the same draft', async () => {
         const serverId = await setupHome();
         let catalogReads = 0;
@@ -209,6 +256,39 @@ describe('managed provisioner credential purposes', () => {
         })));
         expect(harness.requestsFor('/v1/actions/connectedServices.purposes.default.set')).toHaveLength(0);
         expect(actionInputs('machines.managed.acquire')).toHaveLength(0);
+        await screen.unmount();
+    });
+    it('leads a purpose with no connected account with one Connect row named for its service, not a field or an error', async () => {
+        const serverId = await setupHome();
+        harness.answer(serverId, '/v1/actions/machines.provisioners.list', { select: value => {
+            const request = ExternalActionRequestEnvelopeV1Schema.parse(value);
+            const noCloud = { ...provisioner, credentialPurposes: provisioner.credentialPurposes!.map(entry =>
+                entry.purpose.purpose === cloudPurpose.purpose ? { ...entry, options: [] } : entry) };
+            return { body: { v: 1, actionId: 'machines.provisioners.list', requestId: request.requestId,
+                execution: { ok: true, result: { controller, provisioners: [noCloud] } } } };
+        } });
+        // The provider declares a launch field: it has nothing to fill from until an account is connected.
+        const describeProjection = nativeBoundary.rpc.getMockImplementation()!;
+        nativeBoundary.rpc.mockImplementation(async (request: { method: string }) => {
+            const result = await describeProjection(request);
+            if (request.method === RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE) {
+                const action = result.projection.actionsById[buildQualifiedPluginContributionKey({ pluginId: contribution.pluginId, localId: 'options' })];
+                action.inputHints = { fields: [{ path: 'cpu', title: 'CPU cores', widget: 'integer', required: true }] };
+            }
+            return result;
+        });
+        const { ManagedMachineConfigurationView } = await import('./ManagedMachineConfigurationView');
+        const screen = await renderAccountScreen(<ManagedMachineConfigurationView serverId={serverId}
+            provisioner={buildQualifiedPluginContributionKey(contribution)} initialController={controller} />);
+        const connect = () => screen.tree.findAll(node => node.props.testID === 'managed-config.connect:cloud-account' && typeof node.props.onPress === 'function')[0];
+        await waitForHomeGovernance(() => expect(connect()).toBeDefined());
+        // The purpose id is plumbing: the row names the account by its service's title.
+        expect(connect()!.props.subtitle).toBe('Cloud');
+        expect(screen.tree.findAll(node => String(node.props.controlTestID ?? '') === 'managed-config.credential:cloud-account')).toHaveLength(0);
+        expect(screen.tree.findAll(node => node.props.description === 'Connect an account to see what you can create.').length).toBeGreaterThan(0);
+        // Nothing failed: there is no read to retry until an account is connected.
+        expect(screen.findByTestId('managed-config.error')).toBeNull();
+        expect(screen.findByTestId('managed-config.field:cpu')).toBeNull();
         await screen.unmount();
     });
     it('returns from Cancel unchanged and offers the exact revoked account for Reconnect without selecting it', async () => {

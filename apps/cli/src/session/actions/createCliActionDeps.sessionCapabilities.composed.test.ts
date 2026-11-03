@@ -23,7 +23,7 @@ import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import { configuration, reloadConfiguration } from '@/configuration';
-import { PROJECT_ACCOUNT_ROWS_ROUTE_V1, ProjectAccountRowListResponseV1Schema } from '@happier-dev/protocol/projects/projectAccountRowsV1';
+import { PROJECT_ACCOUNT_ROWS_ROUTE_V1, ProjectAccountRowListResponseV1Schema, ProjectAccountRowReadRequestV1Schema, ProjectAccountRowReadResponseV1Schema } from '@happier-dev/protocol/projects/projectAccountRowsV1';
 import { createCliActionDeps } from './createCliActionDeps';
 import { createAdmittedPluginRuntimeFixture } from '@/plugins/testkit/admittedRuntime';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
@@ -46,6 +46,7 @@ describe('Session capabilities composed Account and Machine seam', () => {
       const sessionId = 'c111111111111111111111111';
       const machineId = 'capabilities-machine';
       const metadata = writeCapabilitySelectionApplyV1(createTestMetadata({ path: home, host: 'fixture', machineId, flavor: 'codex',
+        workspaceId: 'project-checkout', projectId: 'account-project',
         agentRuntimeCapabilitiesV1: { capabilitySelection: { vendorResume: 'supported', skillsLiveReload: 'supported' } },
       }), {
         skills: { source: 'rules', reason: 'restart_to_apply', restartBy: 'user' },
@@ -73,6 +74,8 @@ describe('Session capabilities composed Account and Machine seam', () => {
       let machineOnline = true;
       let sessionActive = false;
       let accountSessionReadable = true;
+      let acceptedCheckoutReadable = true;
+      let projectStatusReads = 0;
       let acknowledgeNextRead = false;
       let relayMethodNotFound = false;
       let relayRequestTimeout = false;
@@ -92,12 +95,18 @@ describe('Session capabilities composed Account and Machine seam', () => {
           signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 0 };
         else if (path === '/v1/account/encryption') result = { mode: 'plain', updatedAt: 0 };
         else if (path === '/v2/account/settings') result = { version: 1, content: { t: 'plain', v: {} } };
-        else if (path === `${PROJECT_ACCOUNT_ROWS_ROUTE_V1}/list`) {
+        else if (path === `${PROJECT_ACCOUNT_ROWS_ROUTE_V1}/list` || path === `${PROJECT_ACCOUNT_ROWS_ROUTE_V1}/read`) {
+          projectStatusReads++;
           const serverId = configuration.activeServerId;
           const key = { kind: 'workspace-ref', serverId, id: 'project-checkout' };
-          result = ProjectAccountRowListResponseV1Schema.parse({ status: 'listed', coverage: 'complete', rows: [{ key, revision: 1,
+          const rows = ProjectAccountRowListResponseV1Schema.parse({ status: 'listed', coverage: 'complete', rows: !acceptedCheckoutReadable ? [] : [{ key, revision: 1,
             content: { t: 'plain', v: { key, value: { id: key.id, serverId, machineId, rootPath: home,
-              projectKey: 'account-project', createdAtMs: 1 } } } }] });
+              projectKey: 'account-project', repositoryIdentity: { kind: 'github', deployment: 'https://github.com', repository: 'acme/project' }, createdAtMs: 1 } } } }] });
+          if (rows.status !== 'listed') throw new Error('Invalid checkout fixture');
+          if (path.endsWith('/read')) {
+            expect(ProjectAccountRowReadRequestV1Schema.parse(JSON.parse(text))).toEqual({ key });
+            result = ProjectAccountRowReadResponseV1Schema.parse(rows.rows[0] ? { status: 'present', row: rows.rows[0] } : { status: 'absent' });
+          } else result = rows;
         }
         else if (path === '/v1/account/entity-rows/mcp') result = { status: 'present', revision: catalogRevision, content: { t: 'plain', v: catalog } };
         else if (path === PluginAvailabilityActionHttpPathsV1['account.plugins.availability.materializations.read']) {
@@ -179,6 +188,23 @@ describe('Session capabilities composed Account and Machine seam', () => {
         const deps = createCliActionDeps({ credentials, token: credentials.token, sessionId: 'cli-global', mode: 'plain', ctx: null });
         const executor = createActionExecutor(deps);
         const context = { surface: 'ui', authority: 'present_user' } as const;
+        const readsBeforeStatus = projectStatusReads;
+        const ordinaryStatus = await executor.execute('session.status.get', { sessionId }, context);
+        expect(ordinaryStatus).toMatchObject({ ok: true, result: { session: { id: sessionId },
+          agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } } } });
+        expect(ordinaryStatus).not.toHaveProperty('result.acceptedWorkspace');
+        expect(projectStatusReads).toBe(readsBeforeStatus);
+        const acceptedStatus = await executor.execute('session.status.get', { sessionId: 'self', includeAcceptedWorkspace: true },
+          { ...context, serverId: configuration.activeServerId, defaultSessionId: sessionId });
+        expect(acceptedStatus, JSON.stringify(failures)).toMatchObject({ ok: true, result: { session: { id: sessionId },
+          acceptedWorkspace: { checkout: { serverId: configuration.activeServerId, workspaceId: 'project-checkout', machineId, rootPath: home },
+            repository: { kind: 'github', deployment: 'https://github.com', repository: 'acme/project' } } } });
+        expect(projectStatusReads).toBe(readsBeforeStatus + 1);
+        acceptedCheckoutReadable = false;
+        const unavailableStatus = await executor.execute('session.status.get', { sessionId, includeAcceptedWorkspace: true }, context);
+        expect(unavailableStatus).toMatchObject({ ok: true, result: { session: { id: sessionId } } });
+        expect(unavailableStatus).not.toHaveProperty('result.acceptedWorkspace');
+        acceptedCheckoutReadable = true;
         const preview = await executor.execute('sessions.spawn.capabilities.preview', { machineId, agentId: 'codex' }, context);
         expect(preview, JSON.stringify(failures.map(error => error instanceof Error ? error.message : error))).toMatchObject({ ok: true, result: { ok: true,
           mcp: { items: [{ id: 'mcp-linear', selected: false, reason: 'rule_off' }] } } });

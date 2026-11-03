@@ -1,4 +1,4 @@
-import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createSessionAccessFixture, createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { describe, expect, it, vi } from 'vitest';
 
 import { storage } from '@/sync/domains/state/storage';
@@ -65,20 +65,22 @@ describe('executeSessionAction', () => {
     });
     it('forwards the exact completed host confirmation to Delete only', async () => {
         const deleteSession = vi.fn(async () => ({ success: true as const }));
-
-        await executeSessionAction({
-            actionId: SESSION_ACTION_DELETE_ID,
-            target: createTarget({ archivedAt: 42 }),
-            context: {
-                presentUserConfirmation: { actionId: 'session.delete' },
-                operations: { deleteSession },
-            },
-        });
-
-        expect(deleteSession).toHaveBeenCalledWith('session_1', {
-            serverId: 'server_1',
-            presentUserConfirmation: { actionId: 'session.delete' },
-        });
+        const previousState = storage.getState();
+        const session = createSessionFixture({ id: 'session_1', serverId: 'server_1', archivedAt: 42,
+            active: false, activeAt: 0, presence: 0 });
+        storage.setState({ sessions: { ...previousState.sessions, [session.id]: session } });
+        try {
+            await executeSessionAction({
+                actionId: SESSION_ACTION_DELETE_ID,
+                target: createSessionActionTarget({ session, serverId: 'server_1', isConnected: false }),
+                context: { confirmed: true, operations: { deleteSession } },
+            });
+            expect(deleteSession).toHaveBeenCalledWith('session_1', {
+                serverId: 'server_1', confirmed: true,
+            });
+        } finally {
+            storage.setState(previousState, true);
+        }
     });
 
     it.each([true, false] as const)('announces Stop success only after a confirmed outcome (%s)', async confirmed => {

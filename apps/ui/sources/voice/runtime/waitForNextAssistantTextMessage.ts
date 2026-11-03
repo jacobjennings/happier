@@ -57,7 +57,8 @@ export function collectAssistantTextMessageEntriesSinceBaseline(
 }
 
 function readAssistantTextMessageEntry(message: Message, baselineIds: Set<string>): AssistantTextMessageEntry | null {
-  if (message.kind !== 'agent-text' || message.isThinking === true) return null;
+  // A delivered peer report is input to the agent, not its answer.
+  if (message.kind !== 'agent-text' || message.isThinking === true || message.peer) return null;
   const segment = readStreamSegmentMetaV1(message.meta);
   if (segment?.segmentKind === 'thinking'
     || segment?.segmentState === 'streaming'

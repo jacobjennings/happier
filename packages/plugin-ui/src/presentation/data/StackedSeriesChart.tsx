@@ -6,8 +6,10 @@ import type { HappierUiTheme } from '../../environment/types.js';
 import { useOptionalHappierUiAccessibility, useOptionalHappierUiLocalization } from '../../environment/context.js';
 import { useHappierNativeMinimumInteractiveTargetSize } from '../../environment/interactiveTarget.js';
 import { HappierPressable } from '../interaction/Pressable.js';
+import type { HappierHitReach } from '../../environment/interactiveTarget.js';
 import { HAPPIER_MOTION_V1 } from '../interaction/motion.js';
 import type { HappierFocusable, HappierLayoutChangeEvent, HappierPortableStyle } from '../portableTypes.js';
+import { readHappierVisibleLayoutWidth } from '../layout/pageMetrics.js';
 import { HappierText } from '../text/Text.js';
 import { HAPPIER_DATA_METRICS, useHappierDataTextStyles } from './dataText.js';
 import { HappierDataTable } from './DataRows.js';
@@ -101,6 +103,11 @@ export type StackedSeriesChartProps = Readonly<{
   /** Callers supply localized unavailable wording. */
   unknownLabel?: string;
   valueFormatter?: (value: number) => string;
+  /**
+   * Say each value in an accessible name as `valueFormatter` reads it (unit and display precision) instead of with every
+   * meaningful digit. A host chart whose values are measurements ("74 %") opts in; the default keeps the exact value.
+   */
+  formattedReadings?: boolean;
   /** The caller's reading of a numeric x (a time bucket as its date) for exact values and Details. */
   coordinateFormatter?: (x: number) => string;
   onSelect?: (bucketId: string) => void;
@@ -326,7 +333,7 @@ export function StackedSeriesChart(props: StackedSeriesChartProps) {
   const unknown = props.unknownLabel ?? '—';
   const magnitude = (value: number) => props.mirrored ? Math.abs(value) : value;
   const format = (value: number) => props.valueFormatter ? props.valueFormatter(magnitude(value)) : formatHappierDataValue(magnitude(value), text.locale);
-  const reading = { formatCoordinate: props.coordinateFormatter, locale: text.locale };
+  const reading = { formatCoordinate: props.coordinateFormatter, ...(props.formattedReadings && props.valueFormatter ? { formatValue: props.valueFormatter } : {}), locale: text.locale };
   const describe = (bucket: HappierSeriesBucket) => describeHappierSeriesBucket(props.mirrored
     ? { ...bucket, values: bucket.values.map((entry) => ({ ...entry, value: entry.value === null ? null : magnitude(entry.value) })) } : bucket, unknown, reading);
   const selected = geometry.buckets.find((bucket) => bucket.id === selectedId) ?? null;
@@ -337,10 +344,30 @@ export function StackedSeriesChart(props: StackedSeriesChartProps) {
   const seriesAccent = props.theme.colors.dataAccent ?? props.theme.colors.accent;
   const color = (index: number) => props.series[index]?.color
     ?? resolveHappierSeriesRampColor(seriesAccent, props.theme.colors.surface, resolveHappierSeriesRampStep(index, props.series.length));
-  // A live chart's image announces its latest sample, not its entire retained history.
-  // Bucket controls and the exact-values table still expose every point.
-  const exact = (props.liveMotion ? geometry.buckets.slice(-1)
-    : denseLine && !nativeInline ? [selected ?? geometry.buckets[0]!] : geometry.buckets).map(describe).join('; ');
+  // A live or dense history is one image (plan 20 §6.7): it names its range, its newest reading in the caller's
+  // units ("As of 7:35 AM: Mean 12%", past any trailing gap) and, below, its threshold. The plot control, the bucket
+  // controls and the exact-values table keep every exact point; a short chart still names each of its buckets.
+  const summarised = (props.liveMotion !== undefined || (denseLine && !nativeInline)) && geometry.buckets.length > 0;
+  let latest: HappierSeriesBucket | null = null;
+  if (summarised) {
+    let index = geometry.buckets.length - 1;
+    while (index > 0 && geometry.buckets[index]!.values.every(entry => entry.value === null)) index -= 1;
+    latest = geometry.buckets[index]!;
+  }
+  const asOf = (time: string) => (localization?.translate('happier.plugin-ui.state.asOf', 'As of {time}') ?? 'As of {time}').replace('{time}', time);
+  const imageName = (bucket: HappierSeriesBucket) => {
+    const first = geometry.buckets[0]!;
+    const last = geometry.buckets[geometry.buckets.length - 1]!;
+    // The range reads as the plot's own two ends when the caller labels them ("24 h ago – now"): a clock reading can drop
+    // the date of an end that is today and then names a day-long range as a few hours. Otherwise the buckets' own readings.
+    const ends = props.axisTicks ? resolveAxisTicks(props.axisTicks, geometry.buckets, false) : [];
+    const named = ends.length > 1 && ends[0]!.bucket === 0 && ends[ends.length - 1]!.bucket === geometry.buckets.length - 1
+      ? `${ends[0]!.label} – ${ends[ends.length - 1]!.label}` : null;
+    const range = first === last ? '' : `, ${named ?? `${describeHappierSeriesCoordinate(first, reading)} – ${describeHappierSeriesCoordinate(last, reading)}`}`;
+    const values = bucket.values.map(entry => `${entry.label} ${entry.value === null ? unknown : format(entry.value)}`).join(', ');
+    return `${range}; ${asOf(describeHappierSeriesCoordinate(bucket, reading))}${bucket.annotation ? ` · ${bucket.annotation}` : ''}: ${values}`;
+  };
+  const exact = latest ? '' : geometry.buckets.map(describe).join('; ');
   const reference = props.reference && Number.isFinite(props.reference.value) ? props.reference : null;
   const shading = new Map((props.bucketShading ?? []).map(entry => [entry.bucketId, entry]));
   const barRanges = props.variant === 'bar' ? (props.barRanges ?? []).filter(range => Number.isFinite(range.lower)
@@ -367,7 +394,10 @@ export function StackedSeriesChart(props: StackedSeriesChartProps) {
     select(id);
     return id;
   };
-  const bucketControl = (bucket: HappierSeriesBucket, index: number, visual: ReactNode, style?: HappierPortableStyle, key: string | number = bucket.id) => <HappierPressable key={key}
+  // A bucket's hit area never reaches a neighbouring bucket: bar columns split their gap, stacked
+  // exact-value rows stay on their own row.
+  const bucketControl = (bucket: HappierSeriesBucket, index: number, visual: ReactNode, style: HappierPortableStyle | undefined, hitReach: HappierHitReach, key: string | number = bucket.id) => <HappierPressable key={key}
+    hitReach={hitReach}
     testID={props.testID ? `${props.testID}-bucket-${bucket.id}` : undefined}
     controlRef={(control) => { if (control) controls.current.set(bucket.id, control); else controls.current.delete(bucket.id); }}
     accessibilityLabel={describe(bucket)} selected={selectedId === bucket.id}
@@ -518,7 +548,7 @@ export function StackedSeriesChart(props: StackedSeriesChartProps) {
   </Svg> : null;
   const liveEndpoints = props.liveMotion && props.liveMotion.active !== false && geometry.buckets.length ? <Svg width={plotWidth} height={height}
     style={{ position: 'absolute', left: 0, top: 0 }}>
-    {geometry.buckets.at(-1)!.values.map((entry, index) => entry.value === null ? null : <Circle key={entry.seriesId}
+    {geometry.buckets[geometry.buckets.length - 1]!.values.map((entry, index) => entry.value === null ? null : <Circle key={entry.seriesId}
       testID={props.testID ? `${props.testID}-endpoint-${index}` : undefined}
       cx={geometry.xAt(geometry.buckets.length - 1)} cy={inset + geometry.yAt(entry.upper)} r={HAPPIER_DATA_METRICS.lineStrokePx}
       fill={threshold && inset + geometry.yAt(entry.upper) < thresholdY ? thresholdColor : entry.color ?? color(index)}
@@ -586,7 +616,7 @@ export function StackedSeriesChart(props: StackedSeriesChartProps) {
             tabularNumbers>{format(peakTotal)}</HappierText> : null;
         if (props.renderBucket) return <View key={columnKey} style={columnStyle}>{peakLabel}{props.renderBucket(bucket, visual, () => select(bucket.id))}</View>;
         if (nativeInline || nativeDense) return <View key={columnKey} style={columnStyle} aria-hidden importantForAccessibility="no-hide-descendants">{peakLabel}{visual}</View>;
-        return bucketControl(bucket, index, <>{peakLabel}{visual}</>, columnStyle, columnKey);
+        return bucketControl(bucket, index, <>{peakLabel}{visual}</>, columnStyle, { left: barGap / 2, right: barGap / 2 }, columnKey);
       })}
     </View>
     {props.renderPlotOverlay && plotWidth > 0 && geometry.buckets.length ? <View pointerEvents="box-none" style={{ position: 'absolute', left: 0, top: 0, width: plotWidth, height }}>
@@ -631,9 +661,12 @@ export function StackedSeriesChart(props: StackedSeriesChartProps) {
     {showAxis && geometry.buckets.length ? axis : null}
   </View>;
   return <View testID={props.testID} accessible={nativeInline ? true : undefined}
-    accessibilityRole={threshold || props.mirrored || props.liveMotion ? 'image' : undefined}
-    accessibilityLabel={`${props.label}${exact ? `: ${exact}` : ''}${threshold ? `; ${threshold.label} ${format(threshold.value)}` : ''}${reference ? `; ${reference.label} ${reference.value}` : ''}${barRanges.map(range => `; ${range.label} ${range.lower}–${range.upper}`).join('')}`}
-    onLayout={(event: HappierLayoutChangeEvent) => setWidth(event.nativeEvent.layout.width)} style={props.width ? { width: props.width } : undefined}>
+    accessibilityRole={threshold || props.mirrored || summarised ? 'image' : undefined}
+    accessibilityLabel={`${props.label}${latest ? imageName(latest) : exact ? `: ${exact}` : ''}${threshold ? `; ${threshold.label} ${format(threshold.value)}` : ''}${reference ? `; ${reference.label} ${reference.value}` : ''}${barRanges.map(range => `; ${range.label} ${range.lower}–${range.upper}`).join('')}`}
+    onLayout={(event: HappierLayoutChangeEvent) => {
+      const visibleWidth = readHappierVisibleLayoutWidth(event.nativeEvent.layout.width);
+      if (visibleWidth !== null) setWidth(visibleWidth);
+    }} style={props.width ? { width: props.width } : undefined}>
     {props.showAnnotations ? geometry.buckets.filter((bucket) => bucket.annotation).map((bucket) => <HappierText key={bucket.id} style={{ ...text.caption, marginBottom: 6 }}>{bucket.label}{` · ${bucket.annotation}`}</HappierText>) : null}
     <View style={{ position: 'relative' }}>
       {showGrid ? <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: props.scaleGutter ?? 0, top: peakInset, height }}>
@@ -687,7 +720,8 @@ export function StackedSeriesChart(props: StackedSeriesChartProps) {
     {props.summary ? <HappierText style={text.caption} tabularNumbers>{props.summary}</HappierText> : null}
     {valuesLabel && !toggleInLegend ? valuesToggle : null}
     {nativeDense && (valuesExpanded || (!valuesLabel && !historyCanInteract)) ? <View testID={props.testID ? `${props.testID}-values` : undefined}>
-      {geometry.buckets.map((bucket, index) => bucketControl(bucket, index, <HappierText style={text.caption} tabularNumbers>{describe(bucket)}</HappierText>, { justifyContent: 'center' }))}
+      {geometry.buckets.map((bucket, index) => bucketControl(bucket, index, <HappierText style={text.caption} tabularNumbers>{describe(bucket)}</HappierText>,
+        { justifyContent: 'center', paddingVertical: HAPPIER_DATA_METRICS.cellPaddingVerticalPx }, { top: 0, bottom: 0 }))}
     </View> : valuesExpanded ? <View style={{ marginTop: HAPPIER_DATA_METRICS.blockGapPx }}><HappierDataTable theme={props.theme} label={props.label}
       columns={[{ label: props.label }, ...props.series.map((entry) => ({ label: entry.label }))]}
       // Details keeps every meaningful digit (a display formatter may abbreviate); coordinates read in the caller's words.

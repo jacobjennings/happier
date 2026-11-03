@@ -12,6 +12,7 @@ import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 import { sameStrictJsonValue } from '@happier-dev/protocol/json/strictJsonValue';
 import type { WorkflowTriggerSetV1 } from '@happier-dev/protocol/workflows/triggers/workflowTriggerActionsV1';
 import { isWorkflowTriggerSetAttachedToSession } from '@/sync/domains/workflows/workflowTriggerSession';
+import { matchesWorkflowTriggerQuery } from '@/sync/domains/workflows/workflowTriggerQuery';
 
 import type { StoreGet, StoreSet } from './_shared';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
@@ -59,11 +60,7 @@ function mergeTriggerSets(previous: AutomationsDomain['workflowTriggerSetsById']
 }
 
 function matchesTriggerTargetQuery(queryKey: string, set: WorkflowTriggerSetV1 | undefined) {
-    // Session and Account-census membership is independent of the target.
-    if (queryKey !== 'account_inline' && !queryKey.startsWith('workflow:')) return true;
-    // An unavailable source supplies no new target authority.
-    const target = set?.target;
-    return !target || queryKey === (target.kind === 'workflow' ? `workflow:${target.ref}` : 'account_inline');
+    return matchesWorkflowTriggerQuery(queryKey, set) !== false;
 }
 
 function isNewerTriggerReceipt(known: WorkflowTriggerSetV1 | undefined, written: WorkflowTriggerSetV1) {
@@ -77,6 +74,7 @@ export function applyWorkflowTriggerSnapshotReceipt(
     const index = previous.findIndex(set => set.automationId === written.automationId);
     const known = index < 0 ? undefined : previous[index];
     if (known && written.revision < known.revision) return null;
+    if (queryKey.startsWith('managed:') && index < 0 && matchesWorkflowTriggerQuery(queryKey, written) === undefined) return null;
     if (!matchesTriggerTargetQuery(queryKey, written)) return index < 0 ? null
         : previous.filter(set => set.automationId !== written.automationId);
     if (!isNewerTriggerReceipt(known, written)) return previous;
@@ -90,7 +88,7 @@ function reconcileTriggerTargetMemberships(
 ) {
     let next = windows;
     for (const [queryKey, ids] of Object.entries(windows)) {
-        if (queryKey !== 'account_inline' && !queryKey.startsWith('workflow:')) continue;
+        if (queryKey !== 'account_inline' && !queryKey.startsWith('workflow:') && !queryKey.startsWith('managed:')) continue;
         const retained = ids.filter(id => !observedIds.has(id) || matchesTriggerTargetQuery(queryKey, facts[id]));
         if (retained.length !== ids.length) next = { ...next, [queryKey]: retained };
     }
@@ -128,14 +126,17 @@ export function createWorkflowTriggerSetSelector(queryKey: string, includeEmpty 
 }
 
 /** Automation sync is the invalidation signal, not a second opened-content owner. */
-export function createWorkflowTriggerChangeSelector(sessionId: string | null, workflow: string | null = null, all = false) {
+export function createWorkflowTriggerChangeSelector(sessionId: string | null, workflow: string | null = null, all = false,
+    managedTarget?: Readonly<{ homeId: string; managedId: string }>) {
     let previous: AutomationsDomain['automations'] | null = null;
     let signal = '';
     return (state: Pick<AutomationsDomain, 'automations'>) => {
         if (previous === state.automations) return signal;
         previous = state.automations;
         signal = Object.values(state.automations)
-            .filter((automation) => all || (sessionId === null
+            .filter((automation) => managedTarget ? automation.managedTarget === undefined
+                || (automation.managedTarget?.homeId === managedTarget.homeId && automation.managedTarget.managedId === managedTarget.managedId)
+                : all || (sessionId === null
                 ? !automation.scopeSessionId && (workflow === null ? !automation.workflowDefinitionId : automation.workflowDefinitionId === workflow)
                 : automation.scopeSessionId === sessionId))
             .map((automation) => `${automation.id}:${automation.updatedAt}:${automation.lastRunAt}`).join('|');
@@ -477,6 +478,12 @@ export function createAutomationsDomain<S extends AutomationsDomain & Automation
                 // remains shared, so Session Habits and Scheduled work see the same ACK.
                 if (windows.account_all && !windows.account_all.includes(written.automationId)) {
                     windows = { ...windows, account_all: [...windows.account_all, written.automationId] };
+                }
+                for (const [managedQuery, ids] of Object.entries(windows)) {
+                    if (managedQuery.startsWith('managed:') && !ids.includes(written.automationId)
+                        && matchesWorkflowTriggerQuery(managedQuery, written) === true) {
+                        windows = { ...windows, [managedQuery]: [...ids, written.automationId] };
+                    }
                 }
                 windows = reconcileTriggerTargetMemberships(windows, facts, new Set([written.automationId]));
                 if (facts === state.workflowTriggerSetsById && windows === state.workflowTriggerSetIdsByQuery) return state;

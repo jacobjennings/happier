@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 import { readdir } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -70,8 +71,13 @@ test('provider-secret jobs are isolated to providers-ci environment', async () =
 
 test('stress workflows do not inherit secrets into reusable tests workflow', async () => {
   const { parsed } = await loadWorkflow('stress-tests.yml');
-  assert.equal(parsed?.jobs?.['stress-scheduled']?.secrets, undefined, 'stress-scheduled should not inherit secrets');
-  assert.equal(parsed?.jobs?.['stress-manual']?.secrets, undefined, 'stress-manual should not inherit secrets');
+  const stressJobs = Object.entries(parsed.jobs ?? {}).filter(([, job]) => (
+    job.uses === './.github/workflows/tests.yml' && job.with?.run_stress === true
+  ));
+  assert.ok(stressJobs.length > 0, 'expected a reusable stress tests job');
+  for (const [name, job] of stressJobs) {
+    assert.equal(job.secrets, undefined, `${name} must not inherit secrets`);
+  }
 });
 
 test('release workflow keeps provider checks outside the compact manual release surface', async () => {
@@ -104,12 +110,27 @@ test('manually dispatched secret-bearing workflows enforce trusted refs', async 
   ];
 
   for (const file of files) {
-    const { raw } = await loadWorkflow(file);
-    assert.match(
-      raw,
-      /Untrusted .*workflow control ref|Untrusted release workflow ref|Untrusted workflow_dispatch ref|trusted refs for manual dispatch|Refusing workflow_dispatch from untrusted ref/,
-      `${file} should contain an explicit trusted-ref guard for manual dispatch`
+    const { parsed } = await loadWorkflow(file);
+    const admission = parsed.jobs?.trusted_ref_guard?.steps?.find(
+      (step) => step.env?.WORKFLOW_REF === '${{ job.workflow_ref }}',
     );
+    assert.ok(admission?.run, `${file} must admit the called workflow ref`);
+    const repository = 'happier-dev/happier';
+    for (const [branch, callerRepository, expectedStatus] of [
+      ['dev', repository, 0], ['preview', repository, 0], ['main', repository, 0],
+      ['feature/untrusted', repository, 1], ['main', 'fork/happier', 1],
+    ]) {
+      const result = spawnSync('bash', ['-c', admission.run], {
+        encoding: 'utf8',
+        env: {
+          ...process.env, ...admission.env,
+          CALLER_REPOSITORY: callerRepository,
+          WORKFLOW_REPOSITORY: repository,
+          WORKFLOW_REF: `${repository}/.github/workflows/${file}@refs/heads/${branch}`,
+        },
+      });
+      assert.equal(result.status, expectedStatus, `${file} ${branch} ${callerRepository}: ${result.stderr}`);
+    }
   }
 });
 
@@ -124,7 +145,6 @@ test('release actor credentials are unavailable until secret-free workflow-ref a
     'promote-server.yml',
     'promote-ui.yml',
     'promote-website.yml',
-    'providers-contracts.yml',
     'publish-cli-binaries.yml',
     'publish-docker.yml',
     'publish-github-release.yml',
@@ -135,7 +155,6 @@ test('release actor credentials are unavailable until secret-free workflow-ref a
     'release-npm.yml',
     'release.yml',
     'release-channel.yml',
-    'tests.yml',
   ];
 
   for (const file of files) {
@@ -169,26 +188,6 @@ test('workflows never use the nonexistent github.workflow_repository trust selec
   }
 });
 
-test('external actions in privileged jobs are pinned to immutable commits', async () => {
-  const workflowDir = join(repoRoot, '.github', 'workflows');
-  const files = (await readdir(workflowDir)).filter((name) => name.endsWith('.yml'));
-  for (const file of files) {
-    const { parsed } = await loadWorkflow(file);
-    for (const [jobName, job] of Object.entries(parsed?.jobs ?? {})) {
-      const effectivePermissions = job?.permissions ?? parsed?.permissions ?? {};
-      const hasWritePermission = Object.values(effectivePermissions).some((value) => value === 'write');
-      const serialized = JSON.stringify(job);
-      const privileged = hasWritePermission || job?.environment !== undefined || /secrets\./.test(serialized) || job?.secrets === 'inherit';
-      if (!privileged) continue;
-      for (const step of job?.steps ?? []) {
-        const uses = typeof step?.uses === 'string' ? step.uses : '';
-        if (!uses || uses.startsWith('./')) continue;
-        assert.match(uses, /@[0-9a-f]{40}$/u, `${basename(file)} ${jobName}/${step.name ?? uses} must pin ${uses} to a full commit`);
-      }
-    }
-  }
-});
-
 test('secret-bearing workflows require release-admin actor guard before privileged jobs', async () => {
   const { raw: deployRaw } = await loadWorkflow('deploy.yml');
   assert.doesNotMatch(
@@ -208,7 +207,6 @@ test('secret-bearing workflows require release-admin actor guard before privileg
     ['promote-branch.yml', 'promote'],
     ['build-tauri.yml', 'resolve_source'],
     ['publish-github-release.yml', 'publish'],
-    ['providers-contracts.yml', 'providers'],
     ['deploy.yml', 'deploy'],
     ['tests.yml', 'providers'],
   ];

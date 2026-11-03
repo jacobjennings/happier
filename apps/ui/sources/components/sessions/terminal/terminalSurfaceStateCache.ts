@@ -5,7 +5,7 @@ import {
     createEmptyTerminalPreviewState,
     TERMINAL_PREVIEW_MAX_OUTPUT_CHARS,
 } from '@/sync/domains/terminal/stream/replay';
-import type { TerminalStreamCursor } from '@/sync/domains/terminal/stream/model';
+import type { TerminalStreamCursor, TerminalOutputRetention } from '@/sync/domains/terminal/stream/model';
 import type { TerminalFindSnapshot } from '@/components/terminal/embedded/embeddedTerminalRendererHandle';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 
@@ -15,6 +15,7 @@ export type TerminalSurfaceState = Readonly<{
     cursorMode: TerminalStreamCursor['mode'];
     output: string;
     detectedUrl: DaemonTerminalStreamEventUrl | null;
+    outputRetention?: TerminalOutputRetention;
     /** Observed native termination, retained with this process's output across view remounts. */
     exit?: Readonly<{ exitCode: number | null; signal: number | null; scope: ServerAccountScope | null }>;
     /** Ephemeral same-surface renderer handoff; matching/counts belong to the new renderer. */

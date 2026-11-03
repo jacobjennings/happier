@@ -12,6 +12,7 @@ import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScop
 import { t } from '@/text';
 import type { HunkReviewActionTarget } from './useHunkReviewController';
 import { readPresentationNotice, subscribePresentationNotices } from '@/components/sessions/presentation/presentationNotices';
+import { fileBaseOfReviewSource } from '../reviewSource';
 
 function decodeUtf8(base64: string): string {
   return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
@@ -63,8 +64,8 @@ export function useHunkDiscard(
     [scope.machineId, scope.rootPath, scope.serverId],
   );
   const readCurrentTextFor = React.useCallback(
-    (path: string) => async () => {
-      const read = await workspaceReadFile(target, path);
+    (path: string, fileTarget = target) => async () => {
+      const read = await workspaceReadFile(fileTarget, path);
       if (!read.success) throw new Error(read.error);
       return decodeUtf8(read.content);
     },
@@ -147,8 +148,13 @@ export function useHunkDiscard(
             }
           : { source: { kind: 'workingTree' as const } };
       const range = describeDiffHunkRange(rangeOfReviewUnit(hunkTarget));
+      const fileTarget = {
+        ...target,
+        rootPath: fileBaseOfReviewSource(hunkTarget.source.kind === 'captured' ? hunkTarget.source.comparison : null,
+          hunkTarget.source.kind === 'live' ? hunkTarget.source.root : target.rootPath),
+      };
       const result = await discardChange({
-        target,
+        target: fileTarget,
         entry: {
           kind: 'comparison',
           path: hunkTarget.path,
@@ -162,7 +168,7 @@ export function useHunkDiscard(
           ...messagesFor(hunkTarget.path),
           discarded: t('hunkReview.noticeDiscardedAt', { range }),
         },
-        readCurrentText: readCurrentTextFor(hunkTarget.path),
+        readCurrentText: readCurrentTextFor(hunkTarget.path, fileTarget),
         refresh,
         sessionTarget,
       });

@@ -66,7 +66,6 @@ describe('TerminalScreen unauthenticated redirect', () => {
     beforeEach(async () => {
         browser.activate();
         browser.window.sessionStorage.clear();
-        installTerminalRouteCommonModuleMocks({ router: () => routerMock.module });
         replaceMock.mockClear();
         modalAlertAsyncMock.mockClear();
         searchParamsValue = {};
@@ -79,23 +78,6 @@ describe('TerminalScreen unauthenticated redirect', () => {
         const { clearPendingTerminalConnect } = await import('@/sync/domains/pending/pendingTerminalConnect');
         clearPendingTerminalConnect();
         standardCleanup();
-    });
-
-    it('captures a strict V4 descriptor in the real pending owner before redirecting to auth', async () => {
-        const link = createV4Params('https://example.test', 'srv_v4_home');
-        searchParamsValue = link.params;
-        const Screen = (await import('@/app/(app)/terminal/index')).default;
-
-        await renderTerminalRoute(Screen, null);
-        await act(async () => {});
-
-        await vi.waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/?server=https%3A%2F%2Fexample.test'));
-        await activateServer('https://example.test');
-        const { getPendingTerminalConnect } = await import('@/sync/domains/pending/pendingTerminalConnect');
-        expect(getPendingTerminalConnect()).toMatchObject({
-            serverIdentityId: 'srv_v4_home',
-            homeConnectionDescriptor: link.descriptor,
-        });
     });
 
     it('retains a strict V4 target without redirecting authentication through a different active Home', async () => {

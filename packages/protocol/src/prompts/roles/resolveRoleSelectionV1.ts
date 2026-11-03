@@ -53,7 +53,8 @@ export function readSessionWorkspaceWritesV1(
   return role.ok ? role.selection.workspaceWrites : 'deny';
 }
 
-export function resolveRoleSelectionV1(input: ResolveRoleSelectionV1Input): ResolveRoleSelectionV1Result {
+/** Resolve the strict declaration, including disabled Roles that remain editable. */
+export function resolveRoleDefinitionV1(input: Omit<ResolveRoleSelectionV1Input, 'availableProfileIds'>): ResolveRoleSelectionV1Result {
   const builtIn = Object.hasOwn(BUILT_IN_ROLES_V1, input.roleId)
     ? BUILT_IN_ROLES_V1[input.roleId as keyof typeof BUILT_IN_ROLES_V1]
     : undefined;
@@ -110,10 +111,20 @@ export function resolveRoleSelectionV1(input: ResolveRoleSelectionV1Input): Reso
     ...(selection.engine === undefined && defaultEngine ? { engine: defaultEngine } : {}),
     ...(changedAt ? { changedAt } : {}),
   });
-  if (!parsed.success || !parsed.data.enabled) {
+  if (!parsed.success) {
     return { ok: false, refusal: { code: 'role_target_unavailable', roleId: input.roleId } };
   }
-  const role = parsed.data;
+  return { ok: true, selection: parsed.data };
+}
+
+/** Execution admission keeps disabled definitions and unavailable targets out of live selections. */
+export function resolveRoleSelectionV1(input: ResolveRoleSelectionV1Input): ResolveRoleSelectionV1Result {
+  const resolved = resolveRoleDefinitionV1(input);
+  if (!resolved.ok) return resolved;
+  const role = resolved.selection;
+  if (!role.enabled) {
+    return { ok: false, refusal: { code: 'role_target_unavailable', roleId: input.roleId } };
+  }
   if (input.availableAgentTargetKeys && (!role.engine || !input.availableAgentTargetKeys.includes(role.engine.agentTargetKey))) {
     return { ok: false, refusal: { code: 'target_unavailable', reason: 'engine_unavailable', roleId: input.roleId, ...(role.engine ? { agentTargetKey: role.engine.agentTargetKey } : {}) } };
   }

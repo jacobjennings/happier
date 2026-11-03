@@ -2384,6 +2384,8 @@ describe('rewriteInlineMockFamilies', () => {
                 target: 'react-native',
             },
         ]);
+        expect(result.text).toContain("const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');");
+        expect(result.text).toContain('return createReactNativeWebMock(');
         expect(result.text).toContain('get OS() {');
         expect(result.text).toContain('return platformOS;');
         expect(result.text).toContain('Dimensions: {');
@@ -2418,6 +2420,8 @@ describe('rewriteInlineMockFamilies', () => {
                 target: 'react-native',
             },
         ]);
+        expect(result.text).toContain("const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');");
+        expect(result.text).toContain('return createReactNativeWebMock(');
         expect(result.text).toContain('get OS() {');
         expect(result.text).toContain('return mockedPlatformOS;');
         expect(result.text).toContain('set OS(value: string) {');
@@ -2467,64 +2471,6 @@ describe('rewriteInlineMockFamilies', () => {
         expect(result.text).toContain('return mockPlatformOS;');
         expect(result.text).not.toContain('...actual.Platform');
         expect(result.text).not.toContain('...actual.Dimensions');
-    });
-
-    it('rewrites legacy transcript harness helper wrappers to the shared chat list harness path', () => {
-        const input = [
-            "import { vi } from 'vitest';",
-            "vi.mock('react-native', async () => (",
-            "    (await import('./ChatList.legacyListTestHarness')).createLegacyChatListReactNativeMock({",
-            "        platformOs: 'ios',",
-            '    })',
-            '));',
-            "vi.mock('@/sync/domains/state/storage', async (importOriginal) => (",
-            "    (await import('./ChatList.legacyListTestHarness')).createLegacyChatListStorageMock(importOriginal)",
-            '));',
-        ].join('\n');
-
-        const result = rewriteInlineMockFamilies(input, {
-            filePath: 'ChatList.autoFollowWhenPinned.test.tsx',
-            families: ['reactNative', 'storage'],
-        });
-
-        expect(result.rewrites).toEqual([
-            {
-                family: 'reactNative',
-                target: 'react-native',
-            },
-            {
-                family: 'storage',
-                target: '@/sync/domains/state/storage',
-            },
-        ]);
-        expect(result.text).toContain("await import('@/dev/testkit/harness/chatListHarness')).createLegacyChatListReactNativeMock({");
-        expect(result.text).toContain("await import('@/dev/testkit/harness/chatListHarness')).createLegacyChatListStorageMock(importOriginal)");
-        expect(result.text).not.toContain("./ChatList.legacyListTestHarness')).createLegacyChatListReactNativeMock");
-        expect(result.text).not.toContain("./ChatList.legacyListTestHarness')).createLegacyChatListStorageMock");
-    });
-
-    it('rewrites flash-list transcript harness helper wrappers to the shared chat list harness path', () => {
-        const input = [
-            "import { vi } from 'vitest';",
-            "vi.mock('react-native', async () => (",
-            "    (await import('@/dev/testkit/harness/chatListHarness')).createFlashListChatListReactNativeMock({",
-            "        platformOs: 'ios',",
-            '    })',
-            '));',
-        ].join('\n');
-
-        const result = rewriteInlineMockFamilies(input, {
-            filePath: 'ChatList.flashListV2.pinOnContentChange.test.tsx',
-            families: ['reactNative'],
-        });
-
-        expect(result.rewrites).toEqual([
-            {
-                family: 'reactNative',
-                target: 'react-native',
-            },
-        ]);
-        expect(result.text).toContain("await import('@/dev/testkit/harness/chatListHarness')).createFlashListChatListReactNativeMock({");
     });
 
     it('leaves unsupported inline mocks untouched', () => {

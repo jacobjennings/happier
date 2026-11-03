@@ -5,9 +5,10 @@ import { decodeSvgPreviewBytes } from './decodeSvgPreviewBytes';
 import { useSvgPreviewText } from './useSvgPreviewText';
 
 const fileReads = vi.hoisted(() => new Map<string, Promise<string>>());
+const constructedUris = vi.hoisted((): string[] => []);
 // Local cache-file I/O is the system boundary; source selection and lifecycle stay real.
 vi.mock('expo-file-system', () => ({ File: class {
-    constructor(private uri: string) {}
+    constructor(private uri: string) { constructedUris.push(uri); }
     text() { return fileReads.get(this.uri) ?? Promise.reject(new Error('cache file unavailable')); }
 } }));
 
@@ -16,6 +17,7 @@ describe('SVG preview text', () => {
         const xml = '<svg><path/></svg>';
         const hook = await renderHook(() => useSvgPreviewText({ xml, bytes: new Uint8Array([0]), uri: 'file:///unused' }));
         expect(hook.getCurrent()).toMatchObject({ status: 'loaded', text: xml, error: null });
+        expect(constructedUris).toEqual([]);
         expect(decodeSvgPreviewBytes(new TextEncoder().encode(xml))).toBe(xml);
         expect(() => decodeSvgPreviewBytes(new TextEncoder().encode('not an SVG'))).toThrow();
         expect(() => decodeSvgPreviewBytes(new Uint8Array([0xff]))).toThrow();

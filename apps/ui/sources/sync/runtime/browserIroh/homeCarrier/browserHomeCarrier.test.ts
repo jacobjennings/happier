@@ -285,20 +285,6 @@ describe('browser Iroh Home carrier acquisition', () => {
         });
     });
 
-    it('sends zero application bytes when the proven EndpointId is not the selected one', async () => {
-        const fake = createFakeEndpointClient({ remoteEndpointId: OTHER_ENDPOINT_ID });
-        const owner = createBrowserIrohHomeCarrierOwner({ resolveEndpointClient: () => fake.client, hostDecision: () => ({ eligible: true }) });
-        const carrier = await owner.acquire(request());
-
-        await expect(carrier.request(`${CANONICAL_URL}/v1/auth/ping`, {
-            method: 'GET',
-            headers: { Authorization: 'Bearer home-token' },
-        })).rejects.toThrow(/EndpointId/iu);
-
-        expect(fake.allWrittenText()).toBe('');
-        expect(fake.cancelledStreams).toEqual(['stream-1']);
-    });
-
     it('binds the WebSocket facility to the same proven endpoint and relay set', async () => {
         const fake = createFakeEndpointClient();
         const owner = createBrowserIrohHomeCarrierOwner({ resolveEndpointClient: () => fake.client, hostDecision: () => ({ eligible: true }) });

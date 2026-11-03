@@ -74,24 +74,14 @@ describe('useCommandMenuKeyboard', () => {
             },
         );
 
-        it('Home returns false (parity; no new shortcuts)', async () => {
-            const cbs = makeCallbacks();
-            const { getCurrent } = await renderHook(() => useCommandMenuKeyboard({ open: true, ...cbs }));
-            expect(getCurrent().handleKey(key('Home'))).toBe(false);
-        });
-
-        it('End returns false (parity; no new shortcuts)', async () => {
-            const cbs = makeCallbacks();
-            const { getCurrent } = await renderHook(() => useCommandMenuKeyboard({ open: true, ...cbs }));
-            expect(getCurrent().handleKey(key('End'))).toBe(false);
-        });
-
         it('any other key returns false', async () => {
             const cbs = makeCallbacks();
             const { getCurrent } = await renderHook(() => useCommandMenuKeyboard({ open: true, ...cbs }));
             expect(getCurrent().handleKey(key('a'))).toBe(false);
             expect(getCurrent().handleKey(key('Space'))).toBe(false);
             expect(getCurrent().handleKey(key('Backspace'))).toBe(false);
+            expect(getCurrent().handleKey(key('Home'))).toBe(false);
+            expect(getCurrent().handleKey(key('End'))).toBe(false);
         });
     });
 

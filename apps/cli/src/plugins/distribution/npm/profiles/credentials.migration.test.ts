@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const migrationFaults = vi.hoisted(() => ({
-  failBeforeReseal: false,
+  failDestinationRewrite: false,
+  destinationRewriteFailures: 0,
   failLegacyKeyRetirement: false,
 }));
 
@@ -13,6 +14,17 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
     ...actual,
+    async rename(
+      oldPath: Parameters<typeof actual.rename>[0],
+      newPath: Parameters<typeof actual.rename>[1],
+    ): Promise<void> {
+      // The reseal commits by atomically renaming the rewritten namespace file into place.
+      if (migrationFaults.failDestinationRewrite && String(newPath).endsWith('secrets.v1.json')) {
+        migrationFaults.destinationRewriteFailures += 1;
+        throw new Error('injected destination rewrite failure');
+      }
+      await actual.rename(oldPath, newPath);
+    },
     async unlink(path: Parameters<typeof actual.unlink>[0]): Promise<void> {
       if (
         migrationFaults.failLegacyKeyRetirement
@@ -25,21 +37,6 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 
-vi.mock('@/plugins/runtime/context/secrets', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/plugins/runtime/context/secrets')>();
-  return {
-    ...actual,
-    async resealPurposeKeyedPluginSecretStore(
-      ...args: Parameters<typeof actual.resealPurposeKeyedPluginSecretStore>
-    ): Promise<void> {
-      if (migrationFaults.failBeforeReseal) {
-        throw new Error('injected pre-reseal failure');
-      }
-      await actual.resealPurposeKeyedPluginSecretStore(...args);
-    },
-  };
-});
-
 import { createNpmRegistryCredentialStore } from './credentials';
 import { createPluginSecretStore } from '@/plugins/runtime/context/secrets';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
@@ -48,7 +45,8 @@ describe('NPM registry credential legacy migration recovery', () => {
   const roots: string[] = [];
 
   afterEach(async () => {
-    migrationFaults.failBeforeReseal = false;
+    migrationFaults.failDestinationRewrite = false;
+    migrationFaults.destinationRewriteFailures = 0;
     migrationFaults.failLegacyKeyRetirement = false;
     await Promise.all(roots.splice(0).map(async (root) => await rm(root, { recursive: true, force: true })));
   });
@@ -81,11 +79,12 @@ describe('NPM registry credential legacy migration recovery', () => {
     const { happyHomeDir, legacyKeyPath } = await createLegacyCredentialStore();
     const key = JSON.parse(await readFile(legacyKeyPath, 'utf8'));
     await writeFile(legacyKeyPath, JSON.stringify({ ...key, retired: true }));
-    migrationFaults.failBeforeReseal = true;
+    migrationFaults.failDestinationRewrite = true;
 
     const credentials = createNpmRegistryCredentialStore({ happyHomeDir });
 
     await expect(credentials.get('legacy-npm-credential')).resolves.toBe('Bearer migration-secret');
+    expect(migrationFaults.destinationRewriteFailures).toBeGreaterThan(0);
     await expect(access(legacyKeyPath)).resolves.toBeUndefined();
   });
 
@@ -101,6 +100,7 @@ describe('NPM registry credential legacy migration recovery', () => {
 
     const credentials = createNpmRegistryCredentialStore({ happyHomeDir });
 
+    await expect(credentials.listRefs()).resolves.toEqual(['legacy-npm-credential']);
     await expect(credentials.get('legacy-npm-credential')).resolves.toBe('Bearer migration-secret');
     await expect(access(legacyKeyPath)).resolves.toBeUndefined();
     await expect(unrelatedLegacyStore.get('unrelated-secret')).resolves.toBe('must-remain-readable');

@@ -541,6 +541,41 @@ describe('createDaemonStreamingSttController with actual capture and daemon clie
     expect(browser.micSession.getStream()).toBeNull();
   });
 
+  it('records the failing sender-start sub-step without exposing a daemon internal-error message', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    rpc.mockImplementation(async request => request.method === methods.start
+      ? DaemonVoiceInferenceSttStreamStartResponseSchema.parse({ ok: false, errorCode: 'internal_error',
+        error: 'private transcript token=secret', retryable: false })
+      : respond(request));
+    try {
+      const params = startParams();
+      await controller().start(params);
+      expect(params.sink.onError).toHaveBeenCalledWith(expect.objectContaining({ reason: 'daemon_streaming_stt_internal_error' }));
+      const safe = { code: 'internal_error', message: 'redacted_start_failure', step: 'sender_start', errorClass: 'Error' };
+      expect(daemonSpeechStreamDiagnostics.snapshot().lastStartFailure).toEqual(safe);
+      expect(warn).toHaveBeenCalledWith('[daemonVoiceInference] streaming STT start failed ' + JSON.stringify(safe));
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('secret');
+      expect(requests('start')).toHaveLength(1);
+      expect(requests('chunk')).toHaveLength(0);
+      expect(context.createMediaStreamSource).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it('distinguishes a malformed daemon start response with its known closed discriminator', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    rpc.mockImplementation(async request => request.method === methods.start ? { private: 'token-secret' } : respond(request));
+    try {
+      const params = startParams();
+      await controller().start(params);
+      expect(params.sink.onError).toHaveBeenCalledWith(expect.objectContaining({ reason: 'daemon_streaming_stt_internal_error' }));
+      expect(daemonSpeechStreamDiagnostics.snapshot().lastStartFailure).toEqual({
+        code: 'internal_error', message: 'daemon_voice_inference_invalid_response', step: 'sender_start', errorClass: 'Error',
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('secret');
+      expect(requests('start')).toHaveLength(1);
+    } finally { warn.mockRestore(); }
+  });
+
   it('cancels the active daemon stream when PCM chunk delivery fails during capture', async () => {
     rpc.mockImplementation(async request => request.method === methods.chunk
       ? DaemonVoiceInferenceSttStreamChunkResponseSchema.parse({ ok: false, errorCode: 'request_timeout', error: 'daemon_voice_inference_substream_response_timeout', retryable: true })

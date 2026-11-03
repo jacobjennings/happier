@@ -79,7 +79,6 @@ describe('workspaceSyncStatusStore', () => {
             await vi.waitFor(() => expect(watchBoundary.parkedCount()).toBe(1));
             machineRpcCalls.mockClear();
             await vi.advanceTimersByTimeAsync(600_000);
-            expect(machineRpcCalls.mock.calls.length).toBeLessThanOrEqual(600_000 / MACHINE_WATCH_WINDOW_MS);
             expect(machineRpcCalls.mock.calls.length).toBe(600_000 / MACHINE_WATCH_WINDOW_MS);
             expect(listWorkspaceSyncStatuses).not.toHaveBeenCalled();
         } finally {

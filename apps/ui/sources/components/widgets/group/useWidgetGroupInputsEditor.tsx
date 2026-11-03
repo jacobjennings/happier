@@ -7,6 +7,7 @@ import type {
   WidgetLayoutGroupV1,
   WidgetSurfaceRefV1,
 } from '@happier-dev/protocol/widgets';
+import { isSameWidgetDefinitionV1, widgetCandidateDefinitionV1 } from '@happier-dev/protocol/widgets';
 
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { Text } from '@/components/ui/text/Text';
@@ -19,7 +20,7 @@ import {
   widgetDefinitionOfCandidate,
   type WidgetSurfaceContext,
 } from '@/components/widgets/surface/widgetSurfaceSetup';
-import type { WidgetCandidate } from '@/components/widgets/widgetCatalog';
+import { resolveWidgetInstanceTitle, type WidgetCandidate } from '@/components/widgets/widgetCatalog';
 import { useWidgetBindingValueLabels, type WidgetBindingValueLabels } from '@/components/widgets/surface/useWidgetBindingValueLabels';
 import { t } from '@/text';
 
@@ -111,6 +112,7 @@ export function useWidgetGroupInputsEditor(
       renderPreview: () => (
         <WidgetGroupFollowers
           group={group}
+          candidates={input.candidates}
           childTitle={childTitle}
           testID={`${testID}.groupInputs.followers`}
         />
@@ -147,6 +149,7 @@ export function useWidgetGroupInputsEditor(
 function WidgetGroupFollowers(
   props: Readonly<{
     group: WidgetLayoutGroupV1;
+    candidates: readonly (WidgetCandidate | null)[];
     childTitle?: ((instanceId: string) => string) | undefined;
     testID: string;
   }>,
@@ -161,8 +164,8 @@ function WidgetGroupFollowers(
       id: child.instance.id,
       title:
         props.childTitle?.(child.instance.id) ??
-        child.instance.displayName ??
-        child.instance.id,
+        resolveWidgetInstanceTitle(child.instance, props.candidates.find(candidate => candidate
+          && isSameWidgetDefinitionV1(widgetCandidateDefinitionV1(candidate), child.instance.definition))),
       follows,
     };
   });

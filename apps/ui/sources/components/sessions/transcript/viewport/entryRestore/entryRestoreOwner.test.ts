@@ -93,14 +93,17 @@ describe('entry restore owner', () => {
             .toContain('close-entry-ownership');
     });
 
-    it('materializes a settled short distance-only entry without inventing an anchor target', () => {
+    it.each([
+        { name: 'short web', platform: 'web' as const, contentHeight: 200, offsetY: 120 },
+        { name: 'filled native beyond its scrollable range', platform: 'native' as const, contentHeight: 2400, offsetY: 3000 },
+    ])('materializes a settled $name distance-only entry without inventing an anchor target', ({ platform, contentHeight, offsetY }) => {
         const owner = createEntryRestoreOwner();
         const pending = {
             ...baseAttempt,
-            platform: 'web' as const,
-            contentHeight: 200,
+            platform,
+            contentHeight,
             canMaterializeOlder: true,
-            restoredViewport: { ...baseAttempt.restoredViewport, anchor: null },
+            restoredViewport: { ...baseAttempt.restoredViewport, anchor: null, offsetY },
         };
         expect(owner.attempt(pending)).toContainEqual({ type: 'request-bounded-materialization', targetSeq: null });
         expect(effectTypes(owner.attempt({ ...pending, userScrollObserved: true }))).toContain('close-entry-ownership');
@@ -219,20 +222,21 @@ describe('entry restore owner', () => {
             },
         });
 
-        const first = owner.observeNative({
-            contentHeight: 2500,
+        // Issued: distance 120 from bottom of 2400/600 content (offset 1680). The renderer
+        // reports the viewport at the live tail of grown content — conclusively misaligned.
+        const nativeFactsAtTail = (contentHeight: number, nowMs: number) => ({
+            contentHeight,
+            distanceFromBottom: 0,
             layoutHeight: 600,
-            nowMs: 1050,
-            observation: { status: 'misaligned' },
+            mountSettleStable: true,
+            nowMs,
+            observedOffsetY: contentHeight - 600,
+            resolveAnchorObservation: () => null,
             sessionId: 'session-a',
+            tolerancePx: 32,
         });
-        const second = owner.observeNative({
-            contentHeight: 2600,
-            layoutHeight: 600,
-            nowMs: 1180,
-            observation: { status: 'misaligned' },
-            sessionId: 'session-a',
-        });
+        const first = owner.observeNativeHostFacts(nativeFactsAtTail(2500, 1050));
+        const second = owner.observeNativeHostFacts(nativeFactsAtTail(2600, 1180));
 
         expect(executeEffects(first)).toEqual([
             {
@@ -314,27 +318,6 @@ describe('entry restore owner', () => {
         expect(owner.attempt(outsideProjectionAttempt)).toEqual([]);
     });
 
-    it('keeps distance-only growth targetless even when bounded materialization is available', () => {
-        const owner = createEntryRestoreOwner();
-
-        const effects = owner.attempt({
-            ...baseAttempt,
-            canMaterializeOlder: true,
-            exactAnchorIndex: null,
-            nearestAnchorIndex: null,
-            restoredViewport: {
-                ...baseAttempt.restoredViewport,
-                anchor: null,
-                offsetY: 3000,
-            },
-        });
-
-        expect(effects).toContainEqual({
-            targetSeq: null,
-            type: 'request-bounded-materialization',
-        });
-    });
-
     it('disposeForExit telemeters the transaction session and does not schedule current-session paint effects', () => {
         const owner = createEntryRestoreOwner();
         owner.attempt(baseAttempt);
@@ -360,13 +343,17 @@ describe('entry restore owner', () => {
     it('resetForSession clears closed-session suppression so the same session can restore again', () => {
         const owner = createEntryRestoreOwner();
         owner.attempt(baseAttempt);
-        owner.observeNative({
+        owner.observeNativeHostFacts({
             contentHeight: 2400,
+            distanceFromBottom: 120,
             layoutHeight: 600,
             nowMs: 1100,
-            observation: { status: 'aligned' },
+            observedOffsetY: 1680,
+            resolveAnchorObservation: () => ({ status: 'aligned' }),
             sessionId: 'session-a',
+            tolerancePx: 32,
         });
+        expect(owner.telemetryState('session-a')).toBe('closed');
 
         owner.resetForSession({ sessionId: 'session-a' });
         const effects = owner.attempt({

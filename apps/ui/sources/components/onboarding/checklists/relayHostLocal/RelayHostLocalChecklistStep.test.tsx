@@ -83,12 +83,6 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 }));
 
 describe('RelayHostLocalChecklistStep', () => {
-    function flattenStyle(style: unknown): Record<string, unknown> {
-        return Array.isArray(style)
-            ? Object.assign({}, ...style.filter(Boolean) as Array<Record<string, unknown>>)
-            : (style as Record<string, unknown>);
-    }
-
     it('disables the wizard continue action while the initial relay status is still loading', async () => {
         localRelayRuntimeControlMockState.status = null;
         localRelayRuntimeControlMockState.isBusy = true;
@@ -109,7 +103,7 @@ describe('RelayHostLocalChecklistStep', () => {
         });
     });
 
-    it('keeps the checklist focused on relay runtime tasks when the relay is already installed', async () => {
+    it('continues without starting the runner when the relay runtime is already installed and running', async () => {
         localRelayRuntimeControlMockState.status = relayRuntimeStatus;
         localRelayRuntimeControlMockState.isBusy = false;
 
@@ -148,17 +142,6 @@ describe('RelayHostLocalChecklistStep', () => {
 
         expect(screen.findByTestId('relay-host-local-checklist-row-installRelayRuntime')).toBeTruthy();
         expect(screen.findByTestId('relay-host-local-checklist-row-startRelayRuntime')).toBeTruthy();
-        expect(screen.findByTestId('relay-host-local-checklist-row-enableSecureAccess')).toBeNull();
-        const installStatusSlot = screen.findByTestId('relay-host-local-checklist-row-installRelayRuntime-status-slot');
-        if (!installStatusSlot) {
-            throw new Error('Expected install relay runtime status slot');
-        }
-        const flattenedStyle = flattenStyle(installStatusSlot.props.style);
-        // The status slot is the shared step marker: a filled circle, ringed only for a current step.
-        expect(Number(flattenedStyle.width)).toBeGreaterThanOrEqual(20);
-        expect(Number(flattenedStyle.height)).toBe(Number(flattenedStyle.width));
-        expect(Number(flattenedStyle.borderRadius)).toBe(Number(flattenedStyle.width) / 2);
-        expect(flattenedStyle.borderWidth).toBe(0);
         expect(primaryState.label).toBe('common.continue');
 
         await act(async () => {

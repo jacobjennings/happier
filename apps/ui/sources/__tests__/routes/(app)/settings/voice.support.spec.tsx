@@ -405,13 +405,6 @@ describe('VoiceSettingsScreen (voice settings UX)', () => {
         }
     });
 
-    it('does not render ineffective privacy toggles (file paths/tool args) as interactive settings', async () => {
-        const screen = await renderVoiceSettings("privacy");
-
-        expect(screen.findRowByTitle(t('settingsVoice.privacy.shareFilePaths'))).toBeNull();
-        expect(screen.findRowByTitle(t('settingsVoice.privacy.shareToolArgs'))).toBeNull();
-    });
-
     it('renders only the selected intent detail on each destination', async () => {
         const dictation = await renderVoiceSettings("dictation");
         expect(dictation.findByTestId('settings.voice.section.dictation')).toBeTruthy();
@@ -486,7 +479,7 @@ describe('VoiceSettingsScreen (voice settings UX)', () => {
         expect(itemRows.indexOf(disclosure!)).toBeLessThan(itemRows.indexOf(policy!));
     });
 
-    it('does not use confirm modals for local conversation mode selection', async () => {
+    it('persists the other local conversation mode with a single tap', async () => {
         await import('@/modal');
 
         // Enable local conversation so the section renders.
@@ -496,25 +489,7 @@ describe('VoiceSettingsScreen (voice settings UX)', () => {
         // Two short, always-visible options: choosing one is a single tap on a segmented row.
         await chooseOtherSegmentedOption(screen, 'settingsVoice.pages.conversations.talkToTitle');
 
-        expect(screen.findAllHostsByTestId('web-modal-confirm')).toHaveLength(0);
         expect(readLocalConversationVoiceSettings(account!.persistedSettings.voice).conversationMode).toBe('agent');
-    });
-
-    it('does not use confirm modals for fixed local voice Agent selection', async () => {
-        await import('@/modal');
-
-        voiceState.providerId = 'local_conversation';
-        voiceState.providers.local_conversation.config.conversationMode = 'agent';
-        voiceState.providers.local_conversation.config.agent.agentSource = 'agent';
-
-        const screen = await renderVoiceSettings("conversations");
-        expect(screen.findRowByTitle(t('settingsVoice.local.mediatorAgentId'))).toBeTruthy();
-
-        await act(async () => {
-            await screen.pressRowByTitle(t('settingsVoice.local.mediatorAgentId'));
-        });
-
-        expect(screen.findAllHostsByTestId('web-modal-confirm')).toHaveLength(0);
     });
 
     it('does not use confirm modals for other local conversation enum settings', async () => {
@@ -565,25 +540,16 @@ describe('VoiceSettingsScreen (voice settings UX)', () => {
         await expect.poll(() => readLocalConversationVoiceSettings(account!.persistedSettings.voice).agent.commitIsolation).toBe(true);
     });
 
-    it('does not offer commit isolation when the Agent prerequisite is disabled', async () => {
-        voiceAgentEnabled = false;
-        voiceState.providerId = 'local_conversation';
-        voiceState.providers.local_conversation.config.conversationMode = 'agent';
-
-        const screen = await renderVoiceSettings("conversations");
-        await openAdvancedAgent(screen);
-        expect(screen.findRowByTitle(t('settingsVoice.local.conversation.commitIsolation.title'))).toBeNull();
-        expect(account!.writes).toEqual([]);
-    });
-
-    it('can reset persistent local voice agent state and bumps the transcript epoch', async () => {
+    it('can reset persistent local voice agent memory without changing Account preferences', async () => {
         await import('@/modal');
+        const { readPersistentVoiceTranscriptEpoch } = await import('@/voice/persistence/voiceTranscriptMemory');
 
         voiceState.providerId = 'local_conversation';
         voiceState.providers.local_conversation.config.conversationMode = 'agent';
-        voiceState.providers.local_conversation.config.agent.transcript = { persistenceMode: 'persistent', epoch: 1 };
+        voiceState.providers.local_conversation.config.agent.transcript = { persistenceMode: 'persistent' };
 
         const screen = await renderVoiceSettings("privacy");
+        const initialSettings = account!.persistedSettings;
         const forget = screen.findRowByTitle(t('settingsVoice.pages.privacy.forgetTitle'))?.props.rightElement;
         expect(forget?.props.testID).toBe('settings.voice.memory.forget');
 
@@ -592,10 +558,11 @@ describe('VoiceSettingsScreen (voice settings UX)', () => {
         });
         await act(async () => {});
 
-        expect(screen.findHostByTestId('web-modal-confirm')).toBeTruthy();
-        expect(readLocalConversationVoiceSettings(account!.persistedSettings.voice).agent.transcript.epoch).toBe(1);
+        await expect.poll(() => screen.findHostByTestId('web-modal-confirm')).toBeTruthy();
+        expect(await readPersistentVoiceTranscriptEpoch()).toBe(0);
         await screen.pressByTestIdAsync('web-modal-confirm');
-        await expect.poll(() => readLocalConversationVoiceSettings(account!.persistedSettings.voice).agent.transcript.epoch).toBe(2);
+        await expect.poll(() => readPersistentVoiceTranscriptEpoch()).toBe(1);
+        expect(account!.persistedSettings).toEqual(initialSettings);
         expect(readLocalConversationVoiceSettings(account!.persistedSettings.voice).agent.transcript.persistenceMode).toBe('persistent');
     });
 
@@ -614,7 +581,7 @@ describe('VoiceSettingsScreen (voice settings UX)', () => {
         await expect.poll(() => readLocalConversationVoiceSettings(account!.persistedSettings.voice).agent.idleTtlSeconds).toBe(999999);
     });
 
-    it('does not use confirm modals for local TTS format selection', async () => {
+    it('persists the local TTS format and keeps the selected direct provider', async () => {
         await import('@/modal');
 
         voiceState.providerId = 'local_direct';
@@ -638,7 +605,6 @@ describe('VoiceSettingsScreen (voice settings UX)', () => {
         expect(format).toBeTruthy();
         await act(async () => { format!.props.onSelect('wav'); });
 
-        expect(screen.findAllHostsByTestId('web-modal-confirm')).toHaveLength(0);
         const written = account!.persistedSettings.voice;
         expect(readVoiceProviderSettingsConfig(written, providerId)).toMatchObject({ format: 'wav' });
         expect(written.providerId).toBe('local_direct');

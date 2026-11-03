@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installLocalStorageMock } from './tokenStorage.web.testHelpers';
-import { installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
+import { installTokenStorageTestIsolation, installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
 
 installTokenStorageWebPlatformMocks();
+installTokenStorageTestIsolation('token_storage_recovery_reminder');
+
+const { TokenStorage } = await import('./tokenStorage');
 
 describe('TokenStorage recovery key reminder dismissed (web)', () => {
     let restoreLocalStorage: (() => void) | null = null;
 
     beforeEach(() => {
-        vi.resetModules();
         restoreLocalStorage = installLocalStorageMock().restore;
         vi.spyOn(console, 'error').mockImplementation(() => {});
     });
@@ -20,8 +22,6 @@ describe('TokenStorage recovery key reminder dismissed (web)', () => {
     });
 
     it('round-trips dismissed state', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
-
         await expect(TokenStorage.getRecoveryKeyReminderDismissed()).resolves.toBe(false);
 
         await expect(TokenStorage.setRecoveryKeyReminderDismissed(true)).resolves.toBe(true);
@@ -32,8 +32,6 @@ describe('TokenStorage recovery key reminder dismissed (web)', () => {
     });
 
     it('exposes the dismissed state through the synchronous cache path on web', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
-
         expect(TokenStorage.getCachedRecoveryKeyReminderDismissed()).toBe(false);
 
         await expect(TokenStorage.setRecoveryKeyReminderDismissed(true)).resolves.toBe(true);
@@ -44,7 +42,6 @@ describe('TokenStorage recovery key reminder dismissed (web)', () => {
     });
 
     it('updates the captured Home reminder without mutating the active Home scope', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
         const homeA = { serverUrl: 'https://home-a.example.test', serverId: 'home-a' };
         const homeB = { serverUrl: 'https://home-b.example.test', serverId: 'home-b' };
 
@@ -58,7 +55,6 @@ describe('TokenStorage recovery key reminder dismissed (web)', () => {
     });
 
     it('keeps an account service reminder apart from every Home reminder, and pending only when recorded', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
         // A dual-role server: the account service and the Home share one server identity.
         const home = { serverUrl: 'https://accounts.example.test', serverId: 'srv_same' };
         const service = { kind: 'account_service' as const, serverIdentityId: 'srv_same' };

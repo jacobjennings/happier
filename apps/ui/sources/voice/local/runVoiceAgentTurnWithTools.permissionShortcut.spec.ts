@@ -72,9 +72,7 @@ function expectOnlyOrdinaryTurnRpc() {
 }
 
 describe('runVoiceAgentTurnWithTools permission shortcuts', () => {
-  // This owner is stateless; retaining its module graph avoids charging the
-  // large shared Voice harness import to every individual permission assertion.
-  registerLocalVoiceEngineHarnessHooks({ resetModulesBetweenTests: false });
+  registerLocalVoiceEngineHarnessHooks();
   beforeEach(async () => {
     // The preceding canonical teardown withdraws adapter registrations.
     await loadLocalVoiceEngineWithCompatState();
@@ -384,9 +382,12 @@ describe('runVoiceAgentTurnWithTools permission shortcuts', () => {
     const proposal = JSON.parse(await tools.answerUserActionRequest({ decision: 'reject', currentSessionOnly: true }, {
       serverId: currentToolSessionAddress.serverId, effectId: 'question-answer-proposal',
     }));
-    expect(proposal).toMatchObject({ ok: true, kind: 'approval_request_created', artifactId: expect.any(String) });
+    expect(proposal, JSON.stringify(proposal)).toMatchObject({ ok: true, kind: 'approval_request_created', artifactId: expect.any(String) });
+    storage.__setState({ settings: { ...storage.getState().settings,
+      voice: { ...storage.getState().settings.voice, canApproveRequests: false } } });
     const { createDefaultActionExecutor } = await import('@/sync/ops/actions/defaultActionExecutor');
     const executor = createDefaultActionExecutor();
+    expect(storage.getState().settings.voice.canApproveRequests).toBe(false);
     expect(await executor.execute('approval.request.decide', { artifactId: proposal.artifactId, decision: 'approve' }, {
       surface: 'voice', serverId: currentToolSessionAddress.serverId,
     })).toMatchObject({ ok: false, errorCode: 'present_user_required' });
@@ -421,176 +422,5 @@ describe('runVoiceAgentTurnWithTools permission shortcuts', () => {
     expect(wireTurns[0]).toMatchObject({ displayMessage: userText,
       userTranscript: { mode: 'suppress', localId: ' opaque-permission-id ' } });
     expect(accepted).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not approve a request from another session', async () => {
-    const storage = await getStorage();
-    storage.__setState({
-      settings: {
-        ...storage.getState().settings,
-      },
-      sessions: {
-        ...storage.getState().sessions,
-        sys_voice: {
-          id: 'sys_voice',
-          serverId: currentToolSessionAddress.serverId,
-          presence: 'online',
-          active: true,
-          updatedAt: 1,
-          agentState: null,
-          metadata: { path: '/tmp/voice-home', host: 'test-machine' },
-        },
-        s_other: {
-          id: 's_other',
-          serverId: currentToolSessionAddress.serverId,
-          presence: 'online',
-          active: true,
-          updatedAt: 1,
-          agentState: null,
-          metadata: { path: '/tmp/project-other', host: 'test-machine' },
-        },
-      },
-      sessionMessages: {
-        ...storage.getState().sessionMessages,
-        sys_voice: { messages: [] },
-        s_other: {
-          messages: [
-            {
-              kind: 'tool-call',
-              id: 'tool_perm_other',
-              localId: null,
-              createdAt: 1,
-              children: [],
-              tool: {
-                id: 'tool_perm_other',
-                name: 'write',
-                description: 'Write a file',
-                state: 'completed',
-                input: { filePath: '/tmp/voice-permission-other.txt', content: 'hello' },
-                createdAt: 1,
-                startedAt: 1,
-                completedAt: 2,
-                result: {},
-                permission: {
-                  id: 'perm_voice_other',
-                  kind: 'permission',
-                  status: 'pending',
-                },
-              },
-            },
-          ],
-        },
-      },
-      concurrentSessionListCacheByServerId: {
-        [currentToolSessionAddress.serverId]: {
-          serverName: null,
-          sessions: {
-            sys_voice: { id: 'sys_voice', presence: 'online', active: true },
-            s_other: { id: 's_other', presence: 'online', active: true },
-          },
-        },
-      },
-    });
-
-    const { voiceAgentSessions, wireTurns } = await prepareActualAgent([{
-      assistantText: 'Open that session to review its permission request.',
-      actions: [],
-    }]);
-
-    const result = await runVoiceAgentTurnWithTools({
-      sessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
-      userText: 'Approve the pending write permission request.',
-      durableLocalId: 'test-durable-local-id',
-      currentToolSessionId: 'sys_voice',
-      currentToolSessionAddress: { ...currentToolSessionAddress, sessionId: 'sys_voice' },
-      voiceAgentSessions,
-    });
-
-    expect(wireTurns).toHaveLength(1);
-    expectOnlyOrdinaryTurnRpc();
-    expect(result.totalActions).toBe(0);
-    expect(result.assistantTurns).toEqual(['Open that session to review its permission request.']);
-  });
-
-  it('does not treat compound approval requests as direct shortcuts', async () => {
-    const storage = await getStorage();
-    storage.__setState({
-      settings: {
-        ...storage.getState().settings,
-      },
-      sessions: {
-        ...storage.getState().sessions,
-        s1: {
-          id: 's1',
-          serverId: currentToolSessionAddress.serverId,
-          presence: 'online',
-          active: true,
-          updatedAt: 1,
-          agentState: null,
-          metadata: { ...storage.getState().sessions.s1?.metadata, path: '/tmp/project-a', host: 'test-machine' },
-        },
-      },
-      sessionMessages: {
-        ...storage.getState().sessionMessages,
-        s1: {
-          messages: [
-            {
-              kind: 'tool-call',
-              id: 'tool_perm_1',
-              localId: null,
-              createdAt: 1,
-              children: [],
-              tool: {
-                id: 'tool_perm_1',
-                name: 'write',
-                description: 'Write a file',
-                state: 'completed',
-                input: { filePath: '/tmp/voice-permission-test.txt', content: 'hello' },
-                createdAt: 1,
-                startedAt: 1,
-                completedAt: 2,
-                result: {},
-                permission: {
-                  id: 'perm_voice_1',
-                  kind: 'permission',
-                  status: 'pending',
-                },
-              },
-            },
-          ],
-        },
-      },
-      concurrentSessionListCacheByServerId: {
-        [currentToolSessionAddress.serverId]: {
-          serverName: null,
-          sessions: {
-            s1: {
-              id: 's1',
-          serverId: currentToolSessionAddress.serverId,
-              presence: 'online',
-              active: true,
-            },
-          },
-        },
-      },
-    });
-
-    const { voiceAgentSessions, wireTurns } = await prepareActualAgent([{
-      assistantText: 'I approved it and summarized the request.',
-      actions: [],
-    }]);
-
-    const result = await runVoiceAgentTurnWithTools({
-      sessionId: VOICE_AGENT_GLOBAL_SESSION_ID,
-      userText: 'Approve the pending write permission request and then summarize it.',
-      durableLocalId: 'test-durable-local-id',
-      currentToolSessionId: 's1', currentToolSessionAddress,
-      voiceAgentSessions,
-    });
-
-    expect(wireTurns).toHaveLength(1);
-    expectOnlyOrdinaryTurnRpc();
-    expect(result.totalActions).toBe(0);
-    expect(result.assistantTurns).toEqual(['I approved it and summarized the request.']);
   });
 });

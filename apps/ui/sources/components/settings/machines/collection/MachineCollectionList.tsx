@@ -209,6 +209,7 @@ export const MachineCollectionList = React.memo(function MachineCollectionList(p
         groups: viewModel.visibleMachineGroups,
         groupedByHome: viewModel.showMachinesGroupedByServer,
         managedByServerId: viewModel.managedByServerId,
+        managedFirstAnswerPending: viewModel.managedFirstAnswerPending,
         presetsByServerId: viewModel.presetsByServerId,
     });
     const total = unfiltered.count;
@@ -233,6 +234,7 @@ export const MachineCollectionList = React.memo(function MachineCollectionList(p
         awaitingConsent,
         groups: viewModel.visibleMachineGroups,
         groupedByHome: viewModel.showMachinesGroupedByServer,
+        managedFirstAnswerPending: viewModel.managedFirstAnswerPending,
         query: searchable ? query : '',
         managedByServerId: viewModel.managedByServerId,
         presetsByServerId: viewModel.presetsByServerId,
@@ -358,9 +360,8 @@ export const MachineCollectionList = React.memo(function MachineCollectionList(p
         />
     );
 
-    // The first load holds until the list can be read whole: every listed machine has its name and the created
-    // machines have answered once. Otherwise rows land as "Loading…" and groups and counts jump as each read arrives.
-    const loading = (viewModel.isLoadingMachines && total === 0) || collection.namesPending || viewModel.managedFirstAnswerPending;
+    // The collection owns whether names and managed membership have answered.
+    const loading = (viewModel.isLoadingMachines && total === 0) || collection.firstAnswerPending;
     const empty = !loading && total === 0;
     // The header counts machines, the same rows its groups count; recipes and retired creations are not machines.
     const machineCount = unfiltered.machineCount;
@@ -723,12 +724,12 @@ const MachineDraftRow = React.memo(function MachineDraftRow(props: Readonly<{ se
     const router = useRouter();
     const row = useMachineAddDraftRow();
     if (!row && !props.selected) return null;
-    const tone = row?.tone ?? 'waiting';
+    const tone = row?.tone ?? 'draft';
     return (
         <Item
             testID="settings.machines.rail.draft"
             title={row?.title ?? t('machineAdd.newMachine')}
-            subtitle={row?.status ?? t('common.draft')}
+            subtitle={row?.status ?? undefined}
             subtitleLeading={row ? (
                 <StatusDot
                     color={tone === 'failed' ? theme.colors.status.error : tone === 'arrived' ? theme.colors.status.connected : theme.colors.status.connecting}

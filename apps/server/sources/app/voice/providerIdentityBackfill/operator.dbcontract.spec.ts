@@ -6,13 +6,16 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { db, initDbPglite, shutdownDbPglite } from "@/storage/db";
+import { resolvePnpmCommandInvocation } from "../../../../../../scripts/workspaces/execPnpmCommand.mjs";
 
-function runYarn(args: readonly string[], env: NodeJS.ProcessEnv) {
-    return spawnSync(process.platform === "win32" ? "yarn.cmd" : "yarn", args, {
+function runPackageScript(script: string, args: readonly string[], env: NodeJS.ProcessEnv) {
+    const invocation = resolvePnpmCommandInvocation(["--silent", "run", script, ...args]);
+    return spawnSync(invocation.command, invocation.args, {
         cwd: process.cwd(),
-        env: env as Record<string, string>,
+        env,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
+        ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     });
 }
 
@@ -43,7 +46,7 @@ describe("voice provider identity backfill operator (pglite db contract)", () =>
             HAPPY_SERVER_LIGHT_DATA_DIR: dataDir,
         };
         try {
-            const migration = runYarn(["-s", "migrate:light:deploy"], env);
+            const migration = runPackageScript("migrate:light:deploy", [], env);
             expect(migration.status, `${migration.stdout}\n${migration.stderr}`).toBe(0);
 
             Object.assign(process.env, env);
@@ -81,18 +84,14 @@ describe("voice provider identity backfill operator (pglite db contract)", () =>
             await shutdownDbPglite();
             initialized = false;
 
-            const verifyBeforeRun = runYarn([
-                "-s",
-                "voice:identity-backfill:verify",
+            const verifyBeforeRun = runPackageScript("voice:identity-backfill:verify", [
                 "--stability-ms=1000",
             ], env);
             expect(verifyBeforeRun.status, `${verifyBeforeRun.stdout}\n${verifyBeforeRun.stderr}`).toBe(2);
             expect(verifyBeforeRun.stdout).toContain('"outcome":"nonzero"');
             expect(verifyBeforeRun.stdout).toContain('"phaseBReady":false');
 
-            const run = runYarn([
-                "-s",
-                "voice:identity-backfill",
+            const run = runPackageScript("voice:identity-backfill", [
                 "--batch-size=1",
                 "--time-budget-ms=5000",
                 "--batch-delay-ms=0",
@@ -100,9 +99,7 @@ describe("voice provider identity backfill operator (pglite db contract)", () =>
             expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0);
             expect(run.stdout).toContain('"outcome":"completed"');
 
-            const verify = runYarn([
-                "-s",
-                "voice:identity-backfill:verify",
+            const verify = runPackageScript("voice:identity-backfill:verify", [
                 "--stability-ms=1000",
             ], env);
             expect(verify.status, `${verify.stdout}\n${verify.stderr}`).toBe(0);

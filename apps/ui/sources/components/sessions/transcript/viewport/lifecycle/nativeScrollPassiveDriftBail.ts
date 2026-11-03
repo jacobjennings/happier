@@ -8,7 +8,6 @@ export type NativeScrollPassiveDriftBailDecision =
     | Readonly<{ type: 'suppress-generic-observation' }>
     | Readonly<{
         reason:
-            | 'not-native'
             | 'trusted-observation'
             | 'not-following'
             | 'not-wants-live-tail'
@@ -20,10 +19,8 @@ export function resolveNativeScrollPassiveDriftBailDecision(params: Readonly<{
     bottomFollowMode: TranscriptBottomFollowMode;
     followIntentIsPinned: boolean;
     followIntentWantsPinned: boolean;
-    isNative: boolean;
     isTrusted: boolean;
 }>): NativeScrollPassiveDriftBailDecision {
-    if (!params.isNative) return { reason: 'not-native', type: 'continue' };
     if (params.isTrusted) return { reason: 'trusted-observation', type: 'continue' };
     if (params.bottomFollowMode !== 'following') return { reason: 'not-following', type: 'continue' };
     if (!params.followIntentWantsPinned) return { reason: 'not-wants-live-tail', type: 'continue' };

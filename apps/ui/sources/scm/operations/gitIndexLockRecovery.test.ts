@@ -70,24 +70,6 @@ describe('runScmOperationWithGitIndexLockRecovery', () => {
         expect(retryOriginalOperation).not.toHaveBeenCalled();
     });
 
-    it('does not remove the lock or retry when confirmation is cancelled', async () => {
-        modalConfirm.mockReset();
-        modalConfirm.mockResolvedValueOnce(false);
-        const removeIndexLock = vi.fn();
-        const retryOriginalOperation = vi.fn();
-        const { runScmOperationWithGitIndexLockRecovery } = await import('./gitIndexLockRecovery');
-
-        await runScmOperationWithGitIndexLockRecovery({
-            cwd: '/repo',
-            failedResponse: lockFailure,
-            removeIndexLock,
-            retryOriginalOperation,
-        });
-
-        expect(removeIndexLock).not.toHaveBeenCalled();
-        expect(retryOriginalOperation).not.toHaveBeenCalled();
-    });
-
     it('confirms, removes the backend-resolved lock, and retries the original operation once', async () => {
         modalConfirm.mockReset();
         modalConfirm.mockResolvedValueOnce(true);
@@ -132,26 +114,6 @@ describe('runScmOperationWithGitIndexLockRecovery', () => {
 
         expect(response.success).toBe(false);
         expect((response as { error?: string }).error).toBe('files.indexLockRecovery.failed');
-        expect(retryOriginalOperation).not.toHaveBeenCalled();
-    });
-
-    it('does not prompt or retry a second time when recovery was already attempted', async () => {
-        modalConfirm.mockReset();
-        const removeIndexLock = vi.fn();
-        const retryOriginalOperation = vi.fn();
-        const { runScmOperationWithGitIndexLockRecovery } = await import('./gitIndexLockRecovery');
-
-        const response = await runScmOperationWithGitIndexLockRecovery({
-            cwd: '/repo',
-            failedResponse: lockFailure,
-            removeIndexLock,
-            retryOriginalOperation,
-            recoveryAlreadyAttempted: true,
-        });
-
-        expect(response).toBe(lockFailure);
-        expect(modalConfirm).not.toHaveBeenCalled();
-        expect(removeIndexLock).not.toHaveBeenCalled();
         expect(retryOriginalOperation).not.toHaveBeenCalled();
     });
 

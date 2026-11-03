@@ -30,8 +30,6 @@ import { t } from '@/text';
 import { ManagedScopeRuleRow } from './ManagedMachineDetailSections';
 import { formatRetentionDuration } from './managedRetentionPresentation';
 
-const ACCOUNT_TRIGGERS = { scope: 'account_all' } as const;
-
 /**
  * D23: a machine created for one session (or task) shows that scope and the rule chosen when it was
  * created, read from FIN's own trigger through the creation-scope owner. The row is a summary; it
@@ -48,7 +46,9 @@ export function ManagedCreationScopeRuleSection(
 function ScopeRuleReader(
   props: Readonly<{ machine: ManagedMachineV1; serverId: string; accountId: string; binding: ServerCredentialAccountScopeBinding }>,
 ) {
-  const { sets, status } = useWorkflowTriggerSets(ACCOUNT_TRIGGERS, props.binding);
+  const request = React.useMemo(() => ({ managedTarget: { homeId: props.machine.homeId, managedId: props.machine.id } }),
+    [props.machine.homeId, props.machine.id]);
+  const { sets, status } = useWorkflowTriggerSets(request, props.binding);
   const sourceSessionId = getStorage()(React.useCallback(state => {
     if (state.sessionLocalStateScope?.accountId !== props.accountId
       || !areServerProfileIdentifiersEquivalent(state.sessionLocalStateScope.serverId, props.serverId)) return null;

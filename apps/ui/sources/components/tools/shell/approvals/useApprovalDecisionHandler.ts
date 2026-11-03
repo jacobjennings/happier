@@ -23,6 +23,7 @@ import { t } from '@/text';
 import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 import { ProviderErrorCodeV1Schema } from '@happier-dev/protocol/providers/errors';
 import { presentProviderError } from '@/providers/connection/errorPresentation';
+import { resolveActionExecutionErrorMessage } from '@/sync/ops/actions/resolveActionExecutionFailureMessage';
 
 export { resolveApprovalReplayRoute };
 
@@ -76,7 +77,8 @@ export function presentApprovalFailure(
         : /^[a-z][a-z0-9_]*(?::[a-z0-9_]+)*$/.test(fallbackMessage.trim())
             ? neutralReason : fallbackMessage;
     // Retain the typed code, never opaque transport prose or private details.
-    return { reason, code: typeof code === 'string' && /^[a-z][a-z0-9_]*$/.test(code) ? code : null };
+    return { reason: resolveActionExecutionErrorMessage({ code }, reason),
+        code: typeof code === 'string' && /^[a-z][a-z0-9_]*$/.test(code) ? code : null };
 }
 
 /**
@@ -308,8 +310,10 @@ export function useApprovalDecisionHandler(
             account.assertCurrent();
             const live = typeof outcome === 'object' && outcome !== null && 'liveExecution' in outcome
                 ? outcome.liveExecution : null;
+            // A retained invocation owns its private result. Its successful
+            // decision still counts as handled when this app has no reveal.
             if (typeof live !== 'object' || live === null || !('ok' in live) || live.ok !== true
-                || !('result' in live)) return false;
+                || !('result' in live)) return true;
             const captured = account;
             const parsed = builtInApproval?.actionId === 'teams.invitations.create'
                 ? TeamInvitationCreateResultV1Schema.safeParse(live.result)

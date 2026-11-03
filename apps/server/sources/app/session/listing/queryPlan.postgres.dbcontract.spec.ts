@@ -122,7 +122,7 @@ describe.skipIf(getDbProviderFromEnv(process.env, "postgres") !== "postgres")("S
                         userId: accountId, orderBy: V2_SESSION_LIST_ORDER_BY, take: pageSize,
                         source: { kind: "effective", reader, baseWhere: { accountId },
                             accessMode: kind === "legacy" ? "legacy_owner_or_direct" : "effective_access_v1",
-                            qualifiedTeamIds: access.qualifiedTeamIds, allowProjectionFallback: false,
+                            qualifiedTeamIds: access.qualifiedTeamIds,
                             ...(kind === "baseline" ? {} : { collectiveAccessSnapshot: access.collectiveAccessSnapshot }) },
                     });
                     return { kind, rows, elapsedMs: performance.now() - started, queries: queries.splice(0) };
@@ -135,6 +135,13 @@ describe.skipIf(getDbProviderFromEnv(process.env, "postgres") !== "postgres")("S
             const captured = measured.flatMap(result => result.queries
                 .filter(query => query.query.startsWith("SELECT") && !query.query.includes("pg_"))
                 .map((query, i) => ({ ...query, label: `${result.kind}-${i}` })));
+            // A list question must never read full Session documents, including
+            // through one of its relation/subquery projections.
+            expect(captured.length).toBeGreaterThan(0);
+            expect(captured.some(query => query.query.includes('."displayProjectionV1"'))).toBe(true);
+            for (const query of captured) {
+                expect(query.query).not.toMatch(/\."(?:metadata|ownerMetadata|agentState)"(?:\s|,|\))/);
+            }
             const logDetails = process.env.HAPPIER_TEST_SESSION_QUERY_PLAN_LOG === "1";
             if (logDetails) console.info("DBPERF_QUERY", JSON.stringify({ queries: captured.map(query => ({
                 label: query.label, query: query.query, params: JSON.parse(query.params), actorId: accountId,
@@ -194,7 +201,7 @@ describe.skipIf(getDbProviderFromEnv(process.env, "postgres") !== "postgres")("S
                 const rows = await findV2SessionListRows({ userId: accountId, orderBy: { id: "asc" },
                     where: { id: sharedId }, source: { kind: "effective", reader, baseWhere: access.where,
                         accessMode: "effective_access_v1", qualifiedTeamIds: access.qualifiedTeamIds,
-                        allowProjectionFallback: false, ...{ collectiveAccessSnapshot: access.collectiveAccessSnapshot } },
+                        ...{ collectiveAccessSnapshot: access.collectiveAccessSnapshot } },
                 });
                 const ownerAccountModes = await readSessionMetadataOwnerAccountModes(reader, rows.map(row => row.accountId));
                 return mapV2SessionListRows({ rows, userId: accountId, qualifiedTeamIds: access.qualifiedTeamIds, ownerAccountModes }).sessions;

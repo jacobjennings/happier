@@ -31,7 +31,7 @@ import {
   runDevTargetCommand,
   syncDevTarget,
 } from './utils/dev_targets/executor.mjs';
-import { renderAdmissionOwnerProgress } from './utils/proc/service_memory.mjs';
+import { describeDevTargetSyncRecovery } from './utils/dev_targets/mutagen_runtime.mjs';
 import {
   inspectDevTargetSyncService,
   startDevTargetSyncService,
@@ -126,8 +126,9 @@ function requireTarget(targets, rawName, command) {
 
 function formatSyncStatus(target, status) {
   const detail = status.lastError || status.error;
+  const recovery = describeDevTargetSyncRecovery(status, target.name);
   return `[dev-targets] ${target.name}\t${status.state}${detail ? `\t${detail}` : ''}`
-    + (status.recovery === 'rescan' ? '\twill rescan at the next dispatch barrier' : '');
+    + (recovery ? `\t${recovery}` : '');
 }
 
 function exitCodeForCommandResult(result) {
@@ -576,7 +577,7 @@ async function main() {
       },
       text: [
         formatSyncStatus(target, status),
-        `[dev-targets] ${target.name} admission\t${admission.state}${admission.state === 'observed' ? '\t' + (renderAdmissionOwnerProgress(admission) || 'no live owners') : admission.error ? '\t' + admission.error : ''}`,
+        `[dev-targets] ${target.name} admission\t${admission.state}${admission.state === 'observed' ? '\t' + `${admission.activeCount} active, ${admission.waitingCount} waiting; ${admission.unreservedMemoryKiB} KiB unreserved` : admission.error ? '\t' + admission.error : ''}`,
         ...(admission.disk ? [`[dev-targets] ${target.name} disk\t${admission.disk.state}\t${admission.disk.state === 'observed' ? `${admission.disk.reason}; ${admission.disk.commandClass}; ${admission.disk.filesystems.map(fs => `free=${fs.availableBytes}/${fs.totalBytes}`).join('; ')}` : admission.disk.error}`] : []),
         ...powerPolicy.results.map(result => `[dev-targets] ${target.name} ${result.role} power\t${result.ok ? 'ok' : 'failed'}${result.detail ? '\t' + result.detail : ''}`),
         ...(managedRuntime

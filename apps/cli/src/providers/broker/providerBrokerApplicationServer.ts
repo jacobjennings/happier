@@ -18,7 +18,11 @@ import { PROVIDER_BROKER_APPLICATION_ERROR_CODE_HEADER, PROVIDER_BROKER_PRIVATE_
     PROVIDER_BROKER_CLOSE_REQUEST_ID_HEADER } from './providerBrokerPrivateProtocol';
 import { logger } from '@/ui/logger';
 import { ProviderBrokerApplicationPhaseError } from './providerBrokerApplicationFailureContext';
-import { providerBrokerApplicationFailureBody, type ProviderBrokerApplicationFailure } from './providerBrokerApplicationFailure';
+import { ProviderBrokerApplicationFailureError, providerBrokerApplicationFailureBody, type ProviderBrokerApplicationFailure } from './providerBrokerApplicationFailure';
+import { PROVIDER_BROKER_APPLICATION_LIMIT_METRIC_HEADER, PROVIDER_BROKER_APPLICATION_LIMIT_REMAINING_HEADER,
+    PROVIDER_BROKER_APPLICATION_LIMIT_RESETS_AT_HEADER } from '@happier-dev/protocol/providers/brokerRouteGrantV1';
+export { PROVIDER_BROKER_APPLICATION_LIMIT_METRIC_HEADER, PROVIDER_BROKER_APPLICATION_LIMIT_REMAINING_HEADER,
+    PROVIDER_BROKER_APPLICATION_LIMIT_RESETS_AT_HEADER } from '@happier-dev/protocol/providers/brokerRouteGrantV1';
 export { PROVIDER_BROKER_APPLICATION_ERROR_CODE_HEADER } from './providerBrokerPrivateProtocol';
 
 export type ProviderBrokerApplicationStreamTarget = Readonly<{
@@ -56,12 +60,6 @@ const APPLICATION_ERROR_NAMES = new Set([
     'URIError', 'EvalError', 'AggregateError', 'AbortError', 'TimeoutError',
     'AxiosError', 'CanceledError', 'ZodError', '$ZodError', 'FastifyError',
 ]);
-export const PROVIDER_BROKER_APPLICATION_LIMIT_METRIC_HEADER =
-    'x-happier-provider-broker-limit-metric' as const;
-export const PROVIDER_BROKER_APPLICATION_LIMIT_REMAINING_HEADER =
-    'x-happier-provider-broker-limit-remaining' as const;
-export const PROVIDER_BROKER_APPLICATION_LIMIT_RESETS_AT_HEADER =
-    'x-happier-provider-broker-limit-resets-at' as const;
 
 type ProviderBrokerApplicationFailureReply = Readonly<{
     header(name: string, value: string): unknown;
@@ -82,7 +80,10 @@ export function writeProviderBrokerApplicationFailure(
         reply.header(PROVIDER_BROKER_APPLICATION_LIMIT_RESETS_AT_HEADER, response.usageLimit.resetsAtUtc);
     }
     reply.header('content-type', 'application/json');
-    return reply.code(403).send(providerBrokerApplicationFailureBody(response, resourceId));
+    // `broker_unavailable` is the one retryable failure (an unexpected broker
+    // fault); every other typed reason is an authority or policy refusal.
+    return reply.code(response.reasonCode === 'broker_unavailable' ? 503 : 403)
+        .send(providerBrokerApplicationFailureBody(response, resourceId));
 }
 
 function loopbackPort(app: FastifyInstance): number {
@@ -119,17 +120,6 @@ export async function startProviderBrokerApplicationServer(input: Readonly<{
             consumerId: consumer.kind === 'session' ? consumer.sessionId : consumer.executionRunId,
             ...(grantId.success ? { grantId: grantId.data } : {}) };
     };
-    app.addHook('onRequest', async request => {
-        try {
-            logger.infoFile('[provider-broker-application]', { stage: 'received', ...requestDiagnostic(request) });
-        } catch { /* File diagnostics cannot affect admission. */ }
-    });
-    app.addHook('onResponse', async (request, reply) => {
-        try {
-            logger.infoFile('[provider-broker-application]', { stage: 'response_completed',
-                ...requestDiagnostic(request), httpStatus: reply.statusCode });
-        } catch { /* File diagnostics cannot affect response settlement. */ }
-    });
     app.addHook('onError', async (request, _reply, error) => {
         const failure = error instanceof ProviderBrokerApplicationPhaseError ? error : null;
         const original = failure?.cause instanceof Error ? failure.cause : error;
@@ -149,6 +139,8 @@ export async function startProviderBrokerApplicationServer(input: Readonly<{
         });
     });
     app.setErrorHandler((error: FastifyError, _request, reply) => {
+        const original = error instanceof ProviderBrokerApplicationPhaseError ? error.cause : error;
+        if (original instanceof ProviderBrokerApplicationFailureError) return writeProviderBrokerApplicationFailure(reply, original.failure);
         // Preserve Fastify's parser/size refusals. Unexpected application
         // failures use the same closed refusal as other broker unavailability,
         // so neither its default 500 body nor Provider exception text escapes.
@@ -163,6 +155,13 @@ export async function startProviderBrokerApplicationServer(input: Readonly<{
         applicationRequestId: string,
         context?: ProviderBrokerAuthenticatedStreamContext,
     ) => {
+        if (response.ok && response.response.status >= 400) {
+            const reasonCode = response.response.headers[PROVIDER_BROKER_APPLICATION_ERROR_CODE_HEADER];
+            if (reasonCode === 'broker_unavailable' || reasonCode === 'source_unavailable') {
+                await response.response.body?.cancel().catch(() => undefined);
+                response = { ok: false, reasonCode };
+            }
+        }
         if (!response.ok) {
             logger.warnLocalFile('[provider-broker-application]', { stage: 'application_response', applicationRequestId, code: response.reasonCode,
                 ...(response.sourceOpenFailureReason ? { sourceOpenFailureReason: response.sourceOpenFailureReason } : {}) });
@@ -174,15 +173,22 @@ export async function startProviderBrokerApplicationServer(input: Readonly<{
                 context && context.kind !== 'external' && context.kind !== 'account_connection' ? context.expected.resourceId : undefined,
             );
         }
-        try {
-            logger.infoFile('[provider-broker-application]', { stage: 'upstream_response',
-                applicationRequestId, httpStatus: response.response.status });
-        } catch { /* File diagnostics cannot affect forwarding. */ }
+        const recordResponseFailure = (outcome: 'failed' | 'cancelled', responseBytes: number): void => {
+            try {
+                logger.warnLocalFile('[provider-broker-application]', {
+                    stage: 'response_body', applicationRequestId, httpStatus: response.response.status,
+                    outcome, responseBytes,
+                });
+            } catch { /* File diagnostics cannot affect forwarding or cleanup. */ }
+        };
         for (const [name, value] of Object.entries(response.response.headers)) {
             if (!RESPONSE_HOP_BY_HOP_HEADERS.has(name.toLowerCase())) reply.header(name, value);
         }
         reply.code(response.response.status);
-        if (!response.response.body) return reply.send();
+        if (!response.response.body) {
+            if (response.response.status >= 400) recordResponseFailure('failed', 0);
+            return reply.send();
+        }
         const responseBody = response.response.body;
         const reader = responseBody.getReader();
         let cancellationRequested = false;
@@ -207,13 +213,9 @@ export async function startProviderBrokerApplicationServer(input: Readonly<{
                     yield Buffer.from(next.value);
                 }
             } finally {
-                try {
-                    logger.infoFile('[provider-broker-application]', {
-                        stage: 'response_body', applicationRequestId,
-                        outcome: cancellationRequested ? 'cancelled' : completed ? 'completed' : 'failed',
-                        responseBytes,
-                    });
-                } catch { /* File diagnostics cannot affect streaming or cleanup. */ }
+                if (cancellationRequested || !completed || response.response.status >= 400) {
+                    recordResponseFailure(cancellationRequested ? 'cancelled' : 'failed', responseBytes);
+                }
                 reply.raw.off('close', cancelBody);
                 requestSignal.removeEventListener('abort', cancelBody);
                 if (!completed) await reader.cancel().catch(() => undefined);
@@ -234,7 +236,6 @@ export async function startProviderBrokerApplicationServer(input: Readonly<{
         request.raw.once('aborted', () => controller.abort());
         reply.raw.once('close', () => controller.abort());
         const result = await input.handler({
-            applicationRequestId: request.id,
             context,
             carrierRequest: parsed.data,
             request: {
@@ -321,7 +322,7 @@ export async function startProviderBrokerApplicationServer(input: Readonly<{
                 recordClose('received');
                 const result = localConsumer
                     ? await localConsumer.request(forwardedRequest)
-                    : await input.handler({ context, request: forwardedRequest, applicationRequestId: request.id });
+                    : await input.handler({ context, request: forwardedRequest });
                 // The canonical handler returns 204 only after retirement.
                 if (result.ok && result.response.status === 204) recordClose('retirement_completed');
                 return await sendResponse(reply, result, controller.signal, request.id, context);

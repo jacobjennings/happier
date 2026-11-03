@@ -9,8 +9,33 @@ import {
   SELECTOR_JOBS,
 } from './ciSummaryCollector.mjs';
 
+test('provider-only reusable calls do not inherit unrelated default lanes', () => {
+  const workflow = YAML.parse(readFileSync(new URL('../../.github/workflows/tests.yml', import.meta.url), 'utf8'));
+  const defaults = Object.fromEntries(Object.entries(workflow.on.workflow_call.inputs)
+    .map(([key, definition]) => [key, definition.default]));
+  const required = jobsForSelectedInputs({
+    inputs: { ...defaults, select_jobs_explicitly: true, run_providers: true },
+  });
+  assert.deepEqual([...required].sort(), ['providers', 'release_actor_guard', 'trusted_ref_guard']);
+});
+
+test('explicit CLI selection owns the managed runtime without spilling into other callers', () => {
+  for (const [selector, jobs] of [
+    ['run_cli', ['cli', 'cliproxyapi-managed-runtime']],
+    ['run_server', ['server']],
+    ['run_stress', ['stress']],
+    ['run_mobile_e2e_android', ['mobile-e2e-android']],
+  ]) {
+    assert.deepEqual([...jobsForSelectedInputs({ inputs: { select_jobs_explicitly: true, [selector]: true } })].sort(),
+      [...jobs, 'trusted_ref_guard'].sort());
+  }
+  assert.deepEqual([...jobsForSelectedInputs({ inputs: { select_jobs_explicitly: true } })], ['trusted_ref_guard']);
+});
+
 test('every run selector resolves to its complete job set', () => {
-  assert.deepEqual(SELECTOR_JOBS.run_ui, ['ui-unit', 'ui-integration', 'ui', 'shared-packages-unit']);
+  assert.deepEqual(SELECTOR_JOBS.run_ui, ['ui-unit', 'ui-integration', 'ui', 'action-map-drift']);
+  assert.deepEqual(SELECTOR_JOBS.run_shared_packages, ['shared-packages-unit']);
+  assert.deepEqual(SELECTOR_JOBS.run_build_smoke, ['build-smoke']);
   assert.deepEqual(SELECTOR_JOBS.run_installers_smoke, [
     'installers-smoke-linux',
     'installers-smoke-macos',
@@ -45,8 +70,7 @@ test('explicit selection requires every selected job while leaving unrelated ski
     eventName: 'workflow_call',
   });
   assert.deepEqual([...required].sort(), [
-    'cliproxyapi-managed-runtime',
-    'shared-packages-unit',
+    'action-map-drift',
     'trusted_ref_guard',
     'ui',
     'ui-integration',
@@ -58,7 +82,9 @@ test('explicit selection requires every selected job while leaving unrelated ski
       ui: { result: 'skipped' },
       'ui-unit': { result: 'success' },
       'ui-integration': { result: 'success' },
-      'shared-packages-unit': { result: 'success' },
+      'action-map-drift': { result: 'success', outputs: { command_executed: 'true' } },
+      // run_shared_packages owns this job; a UI-only selection skips it.
+      'shared-packages-unit': { result: 'skipped' },
       'workspace-sync-real': { result: 'skipped' },
       trusted_ref_guard: { result: 'success' },
       'cliproxyapi-managed-runtime': { result: 'success' },
@@ -117,13 +143,15 @@ test('every path-filtered job publishes whether its guarded command actually exe
   const workflow = YAML.parse(readFileSync(new URL('../../.github/workflows/tests.yml', import.meta.url), 'utf8'));
   const pathFilteredJobs = Object.entries(workflow?.jobs ?? {})
     .filter(([, job]) => (job?.steps ?? []).some((step) => String(step?.uses ?? '').includes('dorny/paths-filter')));
-  assert.deepEqual(pathFilteredJobs.map(([id]) => id).sort(), ['ui-e2e', 'workspace-sync-real']);
+  assert.deepEqual(pathFilteredJobs.map(([id]) => id).sort(), ['action-map-drift', 'ui-e2e', 'workspace-sync-real']);
+  const ordinary = jobsForSelectedInputs({ inputs: {}, eventName: 'push' });
   for (const [id, job] of pathFilteredJobs) {
     assert.match(
       String(job?.outputs?.command_executed ?? ''),
       /steps\.changes\.outputs\./u,
       `${id} must expose command execution to the generic summary collector`,
     );
+    assert.equal(ordinary.has(id), false, `${id} path-filters in ordinary CI, so an irrelevant-path success is valid`);
   }
 });
 
@@ -132,6 +160,14 @@ test('ordinary CI requires non-filtered default lanes but leaves path-filtered d
   assert.equal(required.has('cli'), true);
   assert.equal(required.has('ui-e2e'), false);
   assert.equal(required.has('workspace-sync-real'), false);
+  assert.equal(required.has('action-map-drift'), false);
+  assert.equal(required.has('shared-packages-unit'), true);
+  assert.equal(required.has('build-smoke'), true);
+  // A non-explicit reusable call carries the workflow_call defaults (run_ui: true)
+  // but still path-filters, so its path-filtered jobs stay outcome-driven.
+  const ordinaryCall = jobsForSelectedInputs({ inputs: { select_jobs_explicitly: false, run_ui: true }, eventName: 'workflow_call' });
+  assert.equal(ordinaryCall.has('ui'), true);
+  assert.equal(ordinaryCall.has('action-map-drift'), false);
   assert.equal(required.has('mobile-e2e-android'), false);
   assert.equal(required.has('stress'), false);
 });

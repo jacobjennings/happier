@@ -393,21 +393,31 @@ const clientState = vi.hoisted(() => {
   };
 });
 
-vi.mock('./client.js', () => ({
-  createCodexAppServerClient: vi.fn(async () => ({
+vi.mock('./client.js', async () => {
+  const { createCodexNativeEventFixture } = await import('./client.test-support.js');
+  return {
+  createCodexAppServerClient: vi.fn(async () => {
+    const nativeReceipts = createCodexNativeEventFixture();
+    return {
+    onNativeEvent: nativeReceipts.onNativeEvent,
     launchFeatures: {
       realtimeConversationAdvertised: true,
     },
     request: clientState.request,
     notify: clientState.notify,
     registerRequestHandler: clientState.registerRequestHandler,
-    registerNotificationHandler: clientState.registerNotificationHandler,
+    registerNotificationHandler(method: string, handler: (params: unknown) => void | Promise<void>) {
+      return clientState.registerNotificationHandler(method, (params) => {
+        nativeReceipts.publish(method, params);
+        return handler(params);
+      });
+    },
     onExit: clientState.onExit,
     dispose: vi.fn(async () => undefined),
-  })),
+  }; }),
   isCodexAppServerOversizedJsonFrameError: vi.fn(() => false),
   resolveCodexHome: (env: Readonly<Record<string, string | undefined>>) => env.CODEX_HOME ?? '/home/test/.codex',
-}));
+}; });
 
 import {
   buildCodexAppServerSafeErrorIdentity,
@@ -1069,7 +1079,7 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     expect(publishGeneratedMedia).toHaveBeenCalledTimes(1);
   });
 
-  it('attributes only actual request auth and drops combined evidence after an in-turn account switch', async () => {
+  it('attributes only actual request auth and reports unknown native attribution after an in-turn account switch', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'happier-codex-request-attribution-'));
     const service = { pluginId: 'happier.agent.codex', localId: 'openai-codex' };
     const runtime = createRuntime({ processEnv: { CODEX_HOME: codexHome }, connectedAccountService: service });
@@ -1088,10 +1098,14 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         v: 1, turnId: 'host-first', source: { kind: 'native', connectedAccount: { service, accountId: 'account-a' } } } });
       expect(await apply('account-b')).toMatchObject({ ok: true });
       usage('turn-1');
-      expect(events.filter(event => event.kind === 'usage-observed').at(-1)).not.toHaveProperty('attribution');
+      // A contradicted response identity publishes an explicit unknown native witness, never a launch-credential fallback.
+      expect(events.filter(event => event.kind === 'usage-observed').at(-1)).toMatchObject({ attribution: {
+        v: 1, turnId: 'host-first', source: { kind: 'native', connectedAccount: null } } });
       expect(await apply('account-a')).toMatchObject({ ok: true });
       usage('turn-1');
-      expect(events.filter(event => event.kind === 'usage-observed').at(-1)).not.toHaveProperty('attribution');
+      // A contradicted response identity publishes an explicit unknown native witness, never a launch-credential fallback.
+      expect(events.filter(event => event.kind === 'usage-observed').at(-1)).toMatchObject({ attribution: {
+        v: 1, turnId: 'host-first', source: { kind: 'native', connectedAccount: null } } });
       const completion = waitForCodexAppServerRuntimeTurnCompletion(runtime);
       emitNotification('turn/completed', completedTurn('turn-1'));
       await completion;

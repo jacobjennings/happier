@@ -3,26 +3,25 @@ import * as React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import { pressTestInstance, renderScreen as renderPanelScreen } from '@/dev/testkit';
-import { storage } from '@/sync/domains/state/storageStore';
 import { installSessionPaneRuntimeTestHarness } from '@/components/sessions/panes/sessionPaneRuntimeTestHarness';
 import { installSessionDetailsPanelNonRnModuleMocks } from '@/components/sessions/panes/sessionDetailsPanelNonRnModuleMocks';
-import { AppShellPluginUiProjectionValueProvider } from '@/components/appShell/plugins/AppShellPluginUiProjection';
 
 const state = vi.hoisted(() => ({ windowWidthPx: 1200, hookReadWidths: [] as number[] }));
 installSessionDetailsPanelNonRnModuleMocks();
 // Collection-time SDK registration supplies stable functions to already-imported consumers.
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-    const dimensions = () => ({ width: state.windowWidthPx, height: 800, scale: 1, fontScale: 1 });
+    // The testkit routes `Dimensions.get` (the presentation geometry authority) through this read.
     return createReactNativeWebMock({
-        Dimensions: { get: dimensions },
         useWindowDimensions: () => {
             state.hookReadWidths.push(state.windowWidthPx);
-            return dimensions();
+            return { width: state.windowWidthPx, height: 800, scale: 1, fontScale: 1 };
         },
     });
 });
 const runtime = installSessionPaneRuntimeTestHarness({ scopeId: 'app' });
+const { storage } = await import('@/sync/domains/state/storageStore');
+const { AppShellPluginUiProjectionValueProvider } = await import('@/components/appShell/plugins/AppShellPluginUiProjection');
 // Collection-time consumers bind the same real store as the runtime harness.
 vi.doUnmock('@/sync/domains/state/storage');
 // Load the real graph once after platform/transport registration, outside the

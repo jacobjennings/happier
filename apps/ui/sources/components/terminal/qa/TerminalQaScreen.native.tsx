@@ -308,8 +308,6 @@ export function createTerminalQaNativeRendererOptions(
             platform,
             availability,
             accessibilityAccepted: true,
-            packageProofAccepted: availability.available,
-            crashFallbackAvailable: true,
         };
     }
     if (platform === 'android') {
@@ -318,8 +316,6 @@ export function createTerminalQaNativeRendererOptions(
             platform,
             availability,
             accessibilityAccepted: true,
-            packageProofAccepted: availability.available,
-            crashFallbackAvailable: true,
         };
     }
     return undefined;

@@ -1,9 +1,12 @@
 import { HappyError } from '@/utils/errors/errors';
 import { storage } from '@/sync/domains/state/storage';
+import type { Machine } from '@/sync/domains/state/storageTypes';
 import { t } from '@/text';
 import type { SessionStopRecovery } from '@/sync/ops/sessionStopContract';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { readSessionArchivePending, type SessionArchiveOperation } from '@/sync/domains/session/listing/sessionArchiveState';
+import { resolveServerScopedMachineInventory } from '@/sync/domains/machines/resolveServerScopedMachines';
+import { resolveDisplayMachineIdForSessionFromState } from '@/sync/domains/session/resolveMachineTargetForSessionFromState';
 
 type SessionMutationResult = Readonly<{
     success: boolean;
@@ -63,6 +66,20 @@ export function isSessionArchivePending(address: SessionAddress): boolean {
     return readSessionArchivePending(storage.getState(), address);
 }
 
+function canAttemptArchiveAfterMachineAccessLoss(address: SessionAddress, result: SessionMutationResult): boolean {
+    if (result.code !== 'session_stop_control_unavailable') return false;
+    const state = storage.getState();
+    const machineId = resolveDisplayMachineIdForSessionFromState({ state, ...address });
+    if (!machineId) return false;
+    const inventory = resolveServerScopedMachineInventory<Machine>({
+        serverId: address.serverId, activeServerId: '', activeMachines: [],
+        machineListByServerId: state.machineListByServerId,
+        machineListStatusByServerId: state.machineListStatusByServerId,
+    });
+    return inventory.status === 'idle' && inventory.machines !== null
+        && !inventory.machines.some(machine => machine.id === machineId);
+}
+
 /** Call after confirmation; every archive entry point shares synchronous admission. */
 export async function archiveSessionWithPendingState<T>(
     address: SessionAddress,
@@ -80,10 +97,12 @@ export async function archiveSessionWithPendingState<T>(
 export async function stopSessionAndMaybeArchive(params: StopSessionAndMaybeArchiveParams): Promise<void | false> {
     const run = async (operation?: SessionArchiveOperation) => {
         const stopResult = await params.stopSession();
-        // A missing runner permits one authoritative Archive attempt. Accepted
-        // Stop or disconnect alone does not establish process termination.
+        // A missing runner or withdrawn Machine access permits one authoritative
+        // Archive attempt. Access-loss custody owns retirement; the Home still
+        // rejects active Sessions, so unavailable controls never prove termination.
         const canAttemptArchiveWithoutRuntime = params.archiveAfterStop === 'always'
-            && stopResult.code === 'session_stop_not_found';
+            && (stopResult.code === 'session_stop_not_found'
+                || canAttemptArchiveAfterMachineAccessLoss(params.address, stopResult));
         if (!stopResult.success && !isAcceptedPendingSessionStop(stopResult) && !canAttemptArchiveWithoutRuntime) {
             throw new HappyError(resolveSessionStopFailureMessage(stopResult, params.stopErrorMessage), false, {
                 code: stopResult.code,

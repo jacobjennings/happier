@@ -360,8 +360,9 @@ function projectInstalledPluginRows(
     /** `sectionNamesSource`: the group header already says where these plugins come from. */
     const project = (entry: InstalledPluginEntry, group: InstalledPluginRow['group']): InstalledPluginRow => {
         const capabilities = projectInstalledPluginLifecycleCapabilities(entry);
-        const toggleAction = entry.enabled ? 'disable' as const : 'enable' as const;
-        const canToggle = entry.enabled ? capabilities.canDisable : capabilities.canEnable;
+        const machineEnabled = entry.machineEnabled ?? entry.enabled;
+        const toggleAction = machineEnabled ? 'disable' as const : 'enable' as const;
+        const canToggle = machineEnabled ? capabilities.canDisable : capabilities.canEnable;
         const busy = props.isPluginActionInFlight(entry.pluginId);
         const presentation = projectInstalledPluginPresentation(entry);
         const observedOnly = entry.accountInstallations !== undefined;
@@ -375,6 +376,9 @@ function projectInstalledPluginRows(
             ? null
             : offline
             ? t('settingsPlugins.surfaces.lastKnown', { status: presentation.status.label })
+            // The switch is this machine's; when the Account keeps the plugin off, that is the reason to name.
+            : !needsDecision && entry.accountEnabled === false
+                ? t('settingsPlugins.rowStatus.offInAccount')
             : presentation.status.id === 'enabled' && props.presentation === 'list'
                 ? null : presentation.attentionLabel ?? presentation.status.label;
         // A healthy, enabled plugin says where it runs; anything else keeps its own status.
@@ -400,15 +404,15 @@ function projectInstalledPluginRows(
         ) : (
             <Switch
                 testID={`settings.plugins.marketplace.installed.${entry.pluginId}.action.${toggleAction}`}
-                value={entry.enabled}
+                value={machineEnabled}
                 disabled={offline || !canToggle || !props.canRunActions || busy}
                 onValueChange={() => props.onRunAction(toggleAction, entry.pluginId)}
-                accessibilityLabel={buildActionRowAccessibilityLabel([t('common.enabled'), entry.title])}
+                accessibilityLabel={buildActionRowAccessibilityLabel([
+                    entry.machineEnabled === undefined ? t('common.enabled') : t('settingsPlugins.enablement.machine'), entry.title,
+                ])}
             />
         );
-        // A plugin that ships with Happier and cannot be switched off says so quietly instead of
-        // showing a switch that does nothing.
-        const locked = !showReview && !canToggle && isPluginIncludedWithHappier({ installed: entry });
+        const includedWithHappier = isPluginIncludedWithHappier({ installed: entry });
         const kindShelf = group === 'included'
             ? resolvePluginKindShelf(props.projectionByPluginId?.[entry.pluginId]?.contributionKinds)?.key ?? null
             : null;
@@ -416,11 +420,10 @@ function projectInstalledPluginRows(
             entry,
             group,
             shelf: group === 'added' ? 'added' : kindShelf ?? 'included',
-            // An included plugin that cannot be switched off has no control to label: while it is healthy it
-            // says nothing, rather than "Enabled" on every card.
-            statusLabel: coverage ?? (locked && !observedOnly && entry.enabled && !needsDecision && !offline ? null : statusLabel),
+            // Healthy included plugins stay quiet; their switch conveys the Machine setting.
+            statusLabel: coverage ?? (includedWithHappier && !observedOnly && entry.enabled && !needsDecision && !offline ? null : statusLabel),
             statusTone,
-            control: locked || observedOnly ? null : control,
+            control: observedOnly ? null : control,
             byline: group === 'included' ? null : presentation.sourceLabel,
         };
     };
@@ -447,7 +450,9 @@ function useInstalledPluginAnatomy(projectionByPluginId: PluginProjectionFactsBy
         reason: (row) => (row.statusLabel
             ? <PluginCardStatus label={row.statusLabel} tone={row.statusTone} />
             : null),
-        action: (row) => row.control,
+        // A card's control sits in its footer; a list row's is its row action (`useInstalledPluginRowActions`),
+        // which the Collection draws in every list geometry, so the list does not draw it a second time.
+        ...(presentation === 'grid' ? { action: (row: InstalledPluginRow) => row.control } : {}),
         accessibilityLabel: (row) => buildActionRowAccessibilityLabel([row.entry.title, t('common.details')]) ?? row.entry.title,
         testID: (row) => `settings.plugins.marketplace.installed.${row.entry.pluginId}`,
         columnTitles: { title: t('settingsPlugins.surfaces.navigationTitle') },
@@ -591,15 +596,18 @@ export function PluginRoutineOperationSettlementRow(props: Readonly<{
             accessibilityLiveRegion="polite"
             aria-live="polite"
         >
-            <Item
-                testID={`settings.plugins.${props.scope}.operationSettlement.row`}
-                title={props.settlement.message}
-                subtitle={props.settlement.detail}
-                subtitleLines={0}
-                icon={<Icon name="check-circle" size={29} color={theme.colors.state.success.foreground} />}
-                showChevron={false}
-                mode="info"
-            />
+            {/* A group, so the outcome sits on the page column with the sections it follows. */}
+            <ItemGroup>
+                <Item
+                    testID={`settings.plugins.${props.scope}.operationSettlement.row`}
+                    title={props.settlement.message}
+                    subtitle={props.settlement.detail}
+                    subtitleLines={0}
+                    icon={<Icon name="check-circle" size={29} color={theme.colors.state.success.foreground} />}
+                    showChevron={false}
+                    mode="info"
+                />
+            </ItemGroup>
         </View>
     );
 }
@@ -949,7 +957,9 @@ export function DiscoverStatusSummary(props: Readonly<{
     // With no retained rows, the source notices own the cause and recovery.
     const sourceFailureWithoutResults = issues.length > 0 && props.entryCount === 0
         && props.nonInstallable.length === 0 && !props.loading;
-    const noMatch = searched && !props.loading && props.error === null && !props.noTarget
+    // Browse reads the Account's sources without a Machine, so an answered query that matched nothing is a
+    // no-match whether or not a Machine is chosen yet (`searched` is the query the results answer).
+    const noMatch = searched && !props.loading && props.error === null
         && props.entryCount === 0 && props.nonInstallable.length === 0 && !sourceFailureWithoutResults;
     const message = props.noTarget && props.entryCount === 0 && !props.loading
         ? t('settingsPlugins.surfaces.chooseMachineBrowse')
@@ -1150,7 +1160,7 @@ export function DiscoverListingsSection(props: Readonly<{
         openKey: props.selectedListing ? `${props.selectedListing.sourceId}:${props.selectedListing.pluginId}` : null,
         onOpenChange,
     });
-    const anatomy = useDiscoverListingAnatomy(props);
+    const anatomy = useDiscoverListingAnatomy(props, presentation);
     const controls = React.useMemo(() => new Map(items.map((item) => [
         readDiscoverListingKey(item),
         discoverListingControl(item.entry, props),
@@ -1181,7 +1191,6 @@ export function DiscoverListingsSection(props: Readonly<{
                             testIDPrefix="settings.plugins.marketplace.category"
                             accessibilityLabel={t('settingsPlugins.surfaces.categoriesLabel')}
                             segmentSizing="content"
-                            targetSize="platform"
                         />
                     </ScrollView>
                 </View>
@@ -1273,7 +1282,7 @@ function discoverListingControl(entry: PluginMarketplaceCatalogEntry, props: Dis
 /** One anatomy for the grid's cards and the list's rows. A withdrawal outranks "Installed". */
 function useDiscoverListingAnatomy(props: DiscoverListingActionInputs & Readonly<{
     projectionByPluginId?: PluginProjectionFactsById;
-}>): CollectionAnatomy<DiscoverListingItem> {
+}>, presentation: PluginsCollectionPresentation): CollectionAnatomy<DiscoverListingItem> {
     const host = resolvePluginsSurfaceHost(usePathname());
     const { installedPluginById, projectionByPluginId } = props;
     return React.useMemo(() => ({
@@ -1305,12 +1314,14 @@ function useDiscoverListingAnatomy(props: DiscoverListingActionInputs & Readonly
                 tone={entry.warning === 'withdrawn' ? 'warning' : 'quiet'}
             />
         )),
-        action: (item) => discoverListingControl(item.entry, props),
+        // A card's control sits in its footer; a list row's is its row action (`useDiscoverListingRowActions`),
+        // which the Collection draws in every list geometry, so the list does not draw it a second time.
+        ...(presentation === 'grid' ? { action: (item: DiscoverListingItem) => discoverListingControl(item.entry, props) } : {}),
         accessibilityLabel: ({ entry }) => buildActionRowAccessibilityLabel([entry.title, t('common.details'), entry.sourceTitle]) ?? entry.title,
         testID: ({ entry }) => `settings.plugins.marketplace.entry.${entry.sourceId}.${entry.id}`,
         columnTitles: { title: t('settingsPlugins.surfaces.navigationTitle') },
     // `props` carries the action inputs `discoverListingControl` reads; its identity is the render's.
-    }), [host, installedPluginById, projectionByPluginId, props]);
+    }), [host, installedPluginById, presentation, projectionByPluginId, props]);
 }
 
 const sectionStylesheet = StyleSheet.create((theme) => ({

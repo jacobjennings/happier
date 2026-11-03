@@ -136,6 +136,7 @@ export function followSession(params: FollowSessionParams): Readonly<{ lastSeq()
       const body = parsed.data.body;
       if (body.t === 'new-message' || body.t === 'message-updated') {
         if (body.sid !== params.sessionId) return;
+        if (body.delivery !== 'full') { fail(new Error('Session follower requires full message delivery')); return; }
         if (body.message.seq > lastSeq && !messages.has(body.message.seq)) messages.set(body.message.seq, body.message);
         if (body.t === 'message-updated') revisions.push(body.message);
       } else if (body.t === 'update-session' && body.id === params.sessionId) otherEvents.push({ kind: 'session', update: body });

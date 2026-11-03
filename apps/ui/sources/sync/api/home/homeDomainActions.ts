@@ -2,6 +2,7 @@ import { bindHomeDomainActionHttpRequestV1, bindPublicProfilePreparedHttpRequest
 import { getActionSpec } from '@happier-dev/protocol/actions/actionSpecs';
 import type { ActionId } from '@happier-dev/protocol/actions/actionIds';
 import type { ActionExecuteFailure } from '@happier-dev/protocol/actions/actionExecutionResult';
+import { ApprovalStaleFailureDetailsSchema } from '@happier-dev/protocol/approvals/approvalExecutionFailure';
 import type { ActionExecutorDeps } from '@happier-dev/protocol/actions/executor/types';
 import { ExternalActionHttpErrorSchema } from '@happier-dev/protocol/actions/externalActionApi';
 import { SavedSecretResourceActionErrorV1Schema } from '@happier-dev/protocol/account/settings/savedSecretResourceActionsV1';
@@ -94,6 +95,16 @@ export function homeDomainFailureFromActionFailure(
     actionId?: ActionId,
 ): HomeDomainFailure<string> {
     const code = failure.errorCode ?? '';
+    // Consent ended before dispatch. Preserve its exact Action disposition as
+    // a refusal rather than describing it as an unknown Home/network failure.
+    if (code === 'approval_rejected' || code === 'approval_canceled') {
+        return Object.freeze({ kind: 'forbidden' as const, retryable: false, code });
+    }
+    if (code === 'approval_stale') {
+        const details = ApprovalStaleFailureDetailsSchema.safeParse(failure.details);
+        return Object.freeze({ kind: 'forbidden' as const, retryable: false, code,
+            ...(details.success ? { details: details.data } : {}) });
+    }
     // The shared Action executor emits this only after its mutation dependency
     // was dispatched and the result could not be confirmed. Preserve that
     // uncertainty: presenting it as a definite offline refusal invites a

@@ -26,13 +26,16 @@ describe('happier mcp --help', () => {
     }
   });
 
-  it('prints usage for `servers --help` without requiring authentication', async () => {
+  it.each([
+    ['servers --help', ['servers', '--help']],
+    ['servers without a subcommand', ['servers']],
+  ])('prints servers usage for %s without requiring authentication', async (_label, argv) => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const readStoredCredentials = vi.fn(async () => null);
 
     try {
-      await handleMcpCommand(['servers', '--help'], { readStoredCredentials } satisfies Partial<McpCommandDeps>);
+      await handleMcpCommand(argv, { readStoredCredentials } satisfies Partial<McpCommandDeps>);
 
       expect(readStoredCredentials).not.toHaveBeenCalled();
       const output = logSpy.mock.calls.flat().join('\n');
@@ -41,24 +44,6 @@ describe('happier mcp --help', () => {
       expect(output).toContain('happier mcp servers test');
       expect(output).toContain('happier mcp servers tools');
       expect(output).toContain('happier mcp servers add');
-    } finally {
-      logSpy.mockRestore();
-      errorSpy.mockRestore();
-    }
-  });
-
-  it('prints usage when `servers` subcommand is missing', async () => {
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const readStoredCredentials = vi.fn(async () => null);
-
-    try {
-      await handleMcpCommand(['servers'], { readStoredCredentials } satisfies Partial<McpCommandDeps>);
-
-      expect(readStoredCredentials).not.toHaveBeenCalled();
-      const output = logSpy.mock.calls.flat().join('\n');
-      expect(output).toContain('happier mcp servers');
-      expect(output).toContain('happier mcp servers list');
     } finally {
       logSpy.mockRestore();
       errorSpy.mockRestore();

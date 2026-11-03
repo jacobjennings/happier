@@ -23,6 +23,7 @@ import type {
 import { createProviderLaunchResourceScope } from '@/providers/lifecycle/resourceScope';
 import { providerManagedPurposeBindingError } from '@/providers/managed/resolvePurposeBindingSnapshot';
 import { logger } from '@/ui/logger';
+import type { ProviderBrokerRetainedCurrentnessInvalidation } from '@/providers/broker/brokerRetainedCurrentnessInvalidation';
 
 import type { ProviderConnectionServiceDeps } from './service/types';
 
@@ -37,7 +38,7 @@ export type ManagedProviderExplicitStartCustodyRequest =
       ManagedProviderRuntimeOperationClaim,
       { kind: 'providerBroker' }
     >;
-    revalidateRetainedCurrentness?(signal?: AbortSignal): Promise<boolean>;
+    revalidateRetainedCurrentness?(signal?: AbortSignal, invalidation?: ProviderBrokerRetainedCurrentnessInvalidation): Promise<boolean>;
     signal: AbortSignal;
   }>;
 
@@ -55,7 +56,11 @@ export type ManagedProviderExplicitStartCustody = Readonly<{
     externalApiKeyId: string;
     operationId: string;
   }>): Promise<boolean>;
-  revalidateRetainedClaims(signal?: AbortSignal): Promise<number>;
+  revalidateRetainedClaims(
+    signal?: AbortSignal,
+    selector?: Parameters<ManagedProviderExplicitStartCustody['retire']>[0],
+    invalidation?: ProviderBrokerRetainedCurrentnessInvalidation,
+  ): Promise<number>;
   retireAll(): Promise<number>;
 }>;
 
@@ -94,7 +99,7 @@ function createManagedProviderExplicitStartOperation(input: Readonly<{
   controller?: PluginReloadController;
   operationClaim?: ManagedProviderExplicitStartCustodyRequest['operationClaim'];
   retirementGroup?: ManagedProviderExplicitStartCustodyRequest['retirementGroup'];
-  revalidateRetainedCurrentness?: (signal?: AbortSignal) => Promise<boolean>;
+  revalidateRetainedCurrentness?: ManagedProviderExplicitStartCustodyRequest['revalidateRetainedCurrentness'];
   resolveSharedGateway?: ResolveSharedManagedProviderGatewayBinding;
   signal?: AbortSignal;
 }>): (request: Parameters<PublicManagedProviderRuntimeStartOperation>[0]) =>
@@ -410,9 +415,13 @@ export function createManagedProviderExplicitStartCustody(input: Readonly<{
         false,
       );
     },
-    async revalidateRetainedClaims(signal) {
+    async revalidateRetainedClaims(signal, selector, invalidation) {
       return await withRegistryRequired(
-        async (registry) => await registry.revalidateManagedProviderExplicitStarts?.(signal) ?? 0,
+        async (registry) => await registry.revalidateManagedProviderExplicitStarts?.(
+          signal,
+          selector ? { ...selector, machineId: input.machineId } : undefined,
+          invalidation,
+        ) ?? 0,
       );
     },
     async retireAll() {

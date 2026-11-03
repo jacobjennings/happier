@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import * as nativeCrypto from 'rn-encryption';
 import tweetnacl from 'tweetnacl';
-import { sealEncryptedDataKeyEnvelopeV1, type AccountEncryptionCurrentnessResponse } from '@happier-dev/protocol';
+import { sealEncryptedDataKeyEnvelopeV1, projectLegacySessionAccessCapabilitiesV1, type AccountEncryptionCurrentnessResponse } from '@happier-dev/protocol';
 
 import { createDeferred, createSessionFixture, createSessionAccessFixture } from '@/dev/testkit';
 import { encodeBase64 } from '@/encryption/base64';
@@ -11,7 +11,10 @@ import { buildSessionListRenderableFromSession, type SessionListRenderableSessio
 import { isUserFacingSession } from '@/sync/domains/session/listing/isUserFacingSession';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { fetchAndApplySessionById, type SessionListRowPublication } from './sessionById';
-import { fetchAndApplySessions } from './sessionSnapshot';
+import { fetchAndApplySessions as fetchAndApplySessionsSource } from './sessionSnapshot';
+import { isHydratedSessionCurrentForListState } from '@/sync/domains/session/hasAuthoritativeSessionRouteData';
+import { createCompactSessionListFetchBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
+import { buildUpdatedSessionProjectionFromSocketUpdate } from './syncSessions';
 import { parseDecryptedSessionMetadata } from './parsePlainSessionPayload';
 import { flushActivityUpdates, handleUpdateContainer } from '../socket/socket';
 import { registerSessionRealtimeTranscriptConsumer } from '@/sync/runtime/sessionRealtimeTranscriptConsumers';
@@ -20,6 +23,7 @@ import { createOperationAccountCurrentnessSource, getScopedSessionByIdEncryption
 import { createCapturedServerReadTransport } from '@/sync/runtime/orchestration/serverScopedRpc/capturedServerReadTransport';
 import { invalidateAccountEncryptionModeCache } from '@/sync/api/account/apiAccountEncryptionMode';
 import type { ServerFetchOptions, ServerResponseRequest } from '@/sync/http/client';
+import { captureSessionFullPublicationBaseline, sessionRuntimeObservations } from '@/sync/domains/session/sessionRuntimeObservation';
 
 const currentness = {
     mode: 'e2ee', version: 1, updatedAt: 1,
@@ -30,6 +34,14 @@ const sharedMetadata = { v: 1, summary: { text: 'Known shared title', updatedAt:
 const sessionId = 'hydration-publication';
 const serverId = 'home-publication';
 const initialStorageState = storage.getInitialState();
+
+function fetchAndApplySessions(params: Parameters<typeof fetchAndApplySessionsSource>[0]) {
+    const request = params.request;
+    return fetchAndApplySessionsSource({ ...params,
+        ...(request ? { request: createCompactSessionListFetchBoundary(async (path, init) => path === '/v2/sessions/read-batch'
+            ? undefined : request(path, init)) } : {}),
+    });
+}
 
 function jsonResponse(body: unknown): Response {
     return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -67,6 +79,9 @@ async function createHydrationContext() {
         metadataLayoutVersion: 1, metadataVersion: 4, metadata,
         agentStateVersion: 5, agentState: null,
         share: { accessLevel: 'view', canApprovePermissions: false },
+        effectiveAccess: { v: 1 as const, level: 'view' as const,
+            sources: [{ kind: 'direct' as const, shareId: 'publication-share' }],
+            capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view' }) },
     };
     const session = createSessionFixture({
         ...row, encryptionMode: 'e2ee', serverId,
@@ -88,10 +103,77 @@ async function createHydrationContext() {
 
 afterEach(() => {
     vi.restoreAllMocks();
+    sessionRuntimeObservations.clear();
     storage.setState(initialStorageState, true);
 });
 
 describe('Session hydration publication', () => {
+    it('orders delayed hydration against the full-publication witness without promoting its own response', () => {
+        const current = createSessionFixture({ id: sessionId, serverId, updatedAt: 100, activeAt: 100 });
+        const row = buildSessionListRenderableFromSession(current);
+        const address = { serverId, sessionId };
+        sessionRuntimeObservations.observe(address, { active: true, activeAt: 100 });
+        sessionRuntimeObservations.recordFullPublication(address, 300);
+
+        expect(isHydratedSessionCurrentForListState({ ...current, updatedAt: 200 }, () => row)).toBe(false);
+        expect(isHydratedSessionCurrentForListState({ ...current, updatedAt: 400 }, () => row)).toBe(true);
+        expect(isHydratedSessionCurrentForListState(current, () => row, 300)).toBe(true);
+        expect(current.updatedAt).toBe(100);
+    });
+
+    it('does not synthesize missing optional projection facts and preserves explicit null and own undefined', () => {
+        const authority = Symbol('owner-fact');
+        const session = { ...createSessionFixture({ pendingRequestObservedAt: undefined }),
+            futureFact: undefined, [authority]: { admitted: true } };
+        const next = buildUpdatedSessionProjectionFromSocketUpdate({ session,
+            updateBody: { t: 'update-session', id: session.id, active: true, activeAt: 2,
+                archivedAt: null, projectKey: null, lastRuntimeIssue: null, pendingPermissionRequestCount: 0 },
+            updateSeq: 2, updateCreatedAt: 2,
+        });
+        expect(Object.hasOwn(next, 'lastViewedSessionSeq')).toBe(false);
+        expect(Object.hasOwn(next, 'pendingUserActionRequestCount')).toBe(false);
+        expect(Object.hasOwn(next, 'pendingRequestObservedAt')).toBe(true);
+        expect(next.pendingRequestObservedAt).toBeUndefined();
+        expect(Object.hasOwn(next, 'futureFact')).toBe(true);
+        expect(Reflect.get(next, authority)).toBe(session[authority]);
+        expect(next).toMatchObject({ archivedAt: null, projectKey: null, lastRuntimeIssue: null, pendingPermissionRequestCount: 0 });
+    });
+    it.each(['inventory', 'inventory with newer ephemeral', 'newer tuple'] as const)('preserves currentness across a later pure heartbeat: %s', async (path) => {
+        sessionRuntimeObservations.clear();
+        const { row, params } = await createHydrationContext();
+        params.applySessions([{ ...storage.getState().sessions[sessionId], hasOtherNamedCollaborator: true }]);
+        const retained = storage.getState().sessions[sessionId];
+        const baseline = storage.getState().sessionListRowsByServerId[serverId];
+        const fullPublicationBaseline = captureSessionFullPublicationBaseline(serverId, Object.keys(baseline));
+        const response = createDeferred<Response>();
+        const requested = createDeferred<void>();
+        const inventory = path.startsWith('inventory');
+        const delayed = inventory
+            ? response.promise.then(() => storage.getState().reconcileSessionListRowsForServerScope(serverId,
+                [{ ...baseline[sessionId], updatedAt: 3, activeAt: 3, hasOtherNamedCollaborator: false }], baseline, fullPublicationBaseline))
+            : fetchAndApplySessionById({ ...params, sessionId, includeTurnsProjection: false,
+                request: async () => { requested.resolve(); return await response.promise; } });
+        if (!inventory) await requested.promise;
+        if (path === 'inventory with newer ephemeral') {
+            sessionRuntimeObservations.observe({ serverId, sessionId }, { active: true, activeAt: 5, presence: 'online' });
+        }
+        params.applySessions([{ ...retained, updatedAt: 4, activeAt: 4 }]);
+        response.resolve(jsonResponse({ session: { ...row, updatedAt: 3, activeAt: 3,
+            hasOtherNamedCollaborator: false,
+            ...(path === 'newer tuple' ? { metadataVersion: row.metadataVersion + 1 } : {}),
+        } }));
+        await delayed;
+        if (path === 'newer tuple') {
+            expect(storage.getState().sessions[sessionId].metadataVersion).toBe(row.metadataVersion + 1);
+            expect(sessionRuntimeObservations.read({ serverId, sessionId })?.activeAt).toBe(4);
+        } else {
+            const current = inventory
+                ? storage.getState().sessionListRowsByServerId[serverId][sessionId]
+                : storage.getState().sessions[sessionId];
+            expect(current.hasOtherNamedCollaborator).toBe(true);
+        }
+    });
+
     it('publishes one physical plain Session batch without a publication timer', async () => {
         storage.setState({ sessions: {}, sessionListRowsByServerId: {} });
         vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -576,6 +658,8 @@ describe('Session hydration publication', () => {
             ...params, sessionId, includeTurnsProjection: false,
             request: async () => jsonResponse({ session: lockedRow }),
         });
+        expect(getSessionName(storage.getState().sessions[sessionId])).toBe(sharedMetadata.summary.text);
+        expect(getSessionName(storage.getState().sessionListRowsByServerId[serverId]![sessionId]!)).toBe(sharedMetadata.summary.text);
         const published: SessionListRenderableSession[] = [];
         await fetchAndApplySessions({
             ...params, awaitSessionListHydration: true, requiredHydrationSessionIds: [sessionId],
@@ -583,9 +667,11 @@ describe('Session hydration publication', () => {
             getCurrentSessionListRenderable: (id) => storage.getState().sessionListRowsByServerId[serverId]?.[id],
             applySessionListRenderables: (rows) => published.push(...rows),
         });
-        expect(published).toHaveLength(1);
-        expect(getSessionName(published[0])).toBe(sharedMetadata.summary.text);
-        expect(published[0].metadata).toBeNull();
-        expect(published[0].lockedDisplayTitle).toBe(sharedMetadata.summary.text);
+        expect(published.length).toBeGreaterThan(0);
+        for (const [publicationIndex, row] of published.entries()) {
+            expect({ publicationIndex, title: getSessionName(row) }).toEqual({ publicationIndex, title: sharedMetadata.summary.text });
+            expect(row.metadata).toBeNull();
+            expect(row.lockedDisplayTitle).toBe(sharedMetadata.summary.text);
+        }
     });
 });

@@ -32,6 +32,7 @@ import { profileDefaults, type Profile } from '@/sync/domains/profiles/profile';
 import { AccountProfileSchema } from '@happier-dev/protocol/account/profile';
 import { createMachineFixture, createPlainMachineRowFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
+import { observeMachinePresenceForTest } from '@/dev/testkit/harness/machinePresence';
 import { captureActiveServerAccountScopeLifetime, retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { createVoiceSettingsAccountTestHarness, withVoiceSettingsCredentialResource } from './voiceSettingsAccountTestHarness';
 import { ModalProvider } from '@/modal/ModalProvider';
@@ -64,7 +65,7 @@ let accountFixture: Awaited<ReturnType<typeof createVoiceSettingsAccountTestHarn
 const storageBoundary = {
     get settings(): Settings { return storage.getState().settings; },
     set settings(settings: Settings | null) {
-        accountFixture.replaceSettings(settings ?? settingsDefaults);
+        accountFixture.replaceSettings(settings ?? settingsDefaults, { version: (storage.getState().settingsVersion ?? 0) + 1 });
     },
 };
 async function renderScreen(...input: Parameters<typeof renderTestScreen>) {
@@ -142,6 +143,8 @@ const passiveSetupBoundary = {
             })),
             ...(descriptorAvailable ? [createMachineFixture({ id: 'descriptor-machine', active: true, activeAt: Date.now() })] : []),
         ], true, { sourceServerId: accountFixture.scope.serverId });
+        observeMachinePresenceForTest(accountFixture.scope,
+            ['machine-1', 'machine-2', 'machine-online', ...(descriptorAvailable ? ['descriptor-machine'] : [])]);
     },
     get state() { return capabilityState; },
     set state(next: MachineCapabilitiesCacheState) {
@@ -241,6 +244,11 @@ afterEach(() => {
 vi.mock('react-native', async () => (await import('@/dev/testkit/mocks/reactNative')).createReactNativeWebMock());
 vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock());
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
+// Node's host renderer cannot mount Radix DOM effects; keep Happier's real
+// popover, picker and Action owners above the third-party SDK boundary.
+vi.mock('@/utils/web/radixCjs', async () => (
+    await import('@/dev/testkit/mocks/radixCjs')
+).createRadixCjsModuleMock());
 
 
 vi.mock('expo-clipboard', () => ({
@@ -405,6 +413,7 @@ describe('VoiceProviderSection', () => {
         }, { ...defaults, stt: { ...defaults.stt, provider: 'local_neural',
             localNeural: { ...defaults.stt.localNeural, execution: 'daemon' } } }));
         const voice = accountFixture.settings.voice;
+        expect(voice.executionMachine).toEqual({ mode: 'fixed', machineId: 'machine-1' });
         const setVoice = vi.fn();
         const navigate = vi.fn();
         let selectionKind = '';
@@ -445,7 +454,8 @@ describe('VoiceProviderSection', () => {
             return request(url, init);
         });
         await act(async () => { withdrawMachinePresenceForScope(accountFixture.scope); });
-        expect(selectionKind).toBe('selected_unknown');
+        expect(selectionKind, JSON.stringify({ current: storage.getState().settings.voice.executionMachine,
+            persisted: accountFixture.persistedSettings.voice.executionMachine, initial: voice.executionMachine })).toBe('selected_unknown');
         expect(screen.getTextContent()).toContain(tLoose('voice.readiness.execution_machine_unknown'));
         expect(screen.getTextContent()).toContain(t('common.retry'));
         const retry = findAllHostTestInstances(screen.tree.root, node => typeof node.props.testID === 'string'
@@ -607,10 +617,22 @@ describe('VoiceProviderSection', () => {
         await screen.update(React.createElement(SettingsConsumers));
         await waitForTestEvent(screen.subscribe, currentAccount, accountId => accountId === 'account-navigation-other-home');
         expect(currentAccount()).toBe('account-navigation-other-home');
+        // Remounting re-observes catalogs after a gap; their owners withdraw
+        // mutation authority and revalidate before the consumers become idle.
+        const { getSavedSecretCatalogSnapshot } = await import('@/sync/store/settings/savedSecretCatalogSnapshot');
+        const { getConnectedAccountCatalogValue } = await import('@/sync/store/settings/connectedAccountCatalogSnapshot');
+        await waitForTestEvent(screen.subscribe, () => {
+            const scope = storage.getState().settingsScope;
+            if (!scope) return false;
+            const savedSecrets = getSavedSecretCatalogSnapshot(scope);
+            const purposes = getConnectedAccountCatalogValue(scope, 'purposes');
+            return savedSecrets?.status === 'ready' && !savedSecrets.stale
+                && purposes.status === 'ready' && !purposes.stale;
+        }, settled => settled);
         const settledRenders = observedAccounts.length;
         await act(async () => {});
         await act(async () => {});
-        expect(observedAccounts).toHaveLength(settledRenders);
+        expect(observedAccounts.slice(settledRenders).every(accountId => accountId === 'account-navigation-other-home')).toBe(true);
         expect(screen.root.findByType('CredentialNavigationProbe').props.signInAvailable).toBe(machineId !== null);
     });
 
@@ -727,7 +749,19 @@ describe('VoiceProviderSection', () => {
         expect(cold?.daemonVersion).toBe(7);
         expect(warm?.daemonVersion).toBe(7);
         expect(warm?.scope).toEqual(accountFixture.scope);
-        expect(warm?.key).toBe(cold?.key);
+        // Reachability admits the probe; unrelated credential catalogs do not.
+        expect(warm?.key).not.toBe(cold?.key);
+
+        // The daemon probes this Connected Service binding, not the unrelated
+        // saved-secret or purpose catalogs. Their refresh must issue no probe.
+        const checksBeforeCatalogRefresh = passiveSetupBoundary.invoke.mock.calls.length;
+        await act(async () => {
+            await Promise.all([
+                refreshSavedSecretCatalog(accountFixture.scope),
+                accountFixture.purposes.hydrate(accountFixture.scope),
+            ]);
+        });
+        expect(passiveSetupBoundary.invoke).toHaveBeenCalledTimes(checksBeforeCatalogRefresh);
 
         // Always-on card readiness: no "Check setup" button; the passive check ran because the page opened.
         expect(screen.findHostByTestId('settings.voice.provider.checkSetup')).toBeNull();
@@ -2050,6 +2084,44 @@ describe('VoiceProviderSection', () => {
         expect(readiness?.props.announcement).not.toContain(tLoose('voice.readiness.credential_missing'));
     }, 120_000);
 
+    it('uses the pipeline readiness for the selected Service row, including unobserved Local prerequisites', async () => {
+        const { VoiceProviderSection } = await import('./VoiceProviderSection');
+        const { VoicePipelineCard } = await import('@/voice/settings/pipeline/VoicePipelineCard');
+        const { readLocalConversationVoiceSettings, writeLocalConversationVoiceSettings } = await import('@/sync/domains/settings/voiceSettings');
+        const defaults = readLocalConversationVoiceSettings(accountFixture.settings.voice);
+        const voice = writeLocalConversationVoiceSettings({ ...accountFixture.settings.voice, providerId: 'local_conversation' }, {
+            ...defaults, conversationMode: 'direct_session',
+            stt: { ...defaults.stt, provider: 'device' }, tts: { ...defaults.tts, provider: 'device' },
+        });
+        accountFixture.replaceVoice(voice);
+        passiveSetupBoundary.machineTarget = { daemonStateVersion: 0, isOnline: true };
+        const { observeMachinePresenceForTest } = await import('@/dev/testkit/harness/machinePresence');
+        observeMachinePresenceForTest(accountFixture.scope, ['machine-1']);
+        const props = { voice, setVoice: vi.fn(), happierVoiceSupported: true, platformOs: 'web',
+            executionMachineId: 'machine-1', executionMachineSelectedId: 'machine-1', executionMachineSelectionKind: 'resolved',
+            localAvailability: { browserSpeech: { support: 'unknown', onDevice: 'unsupported' }, daemon: {
+                featureEnabled: true, route: 'direct', modelState: 'ready', runtimeState: 'available', pcmCapture: 'available',
+            }, nativeDevice: { requested: false } },
+        } satisfies React.ComponentProps<typeof VoiceProviderSection>;
+        const screen = await renderScreen(<VoiceProviderSection {...props} />);
+        try {
+            await act(async () => {});
+            const gallery = screen.tree.findAllByType(VoiceServiceGallery)[0]!;
+            const selected = (gallery.props.tiles as readonly VoiceServiceTile[]).find(tile => tile.selected)!;
+            const card = screen.tree.findAllByType(VoicePipelineCard)[0]!;
+            expect(card.props.status.text).toBe(t('settingsVoice.pages.pipeline.notChecked'));
+            expect(selected.status?.text).toBe(card.props.status.text);
+            expect(selected.status?.tone).toBe(card.props.status.tone);
+            await screen.update(<VoiceProviderSection {...props} localAvailability={{ ...props.localAvailability,
+                browserSpeech: { support: 'cloud_only', onDevice: 'unsupported' } }} />);
+            const readyCard = screen.tree.findAllByType(VoicePipelineCard)[0]!;
+            const readyGallery = screen.tree.findAllByType(VoiceServiceGallery)[0]!;
+            const readyService = (readyGallery.props.tiles as readonly VoiceServiceTile[]).find(tile => tile.selected)!;
+            expect(readyCard.props.status.text).toBe(t('settingsVoice.pages.pipeline.ready'));
+            expect(readyService.status).toMatchObject({ text: readyCard.props.status.text, tone: readyCard.props.status.tone });
+        } finally { await screen.unmount(); }
+    });
+
     it('offers every provider as one choice in the gallery with exactly one selected', async () => {
         const { VoiceProviderSection } = await import('./VoiceProviderSection');
         const screen = await renderScreen(React.createElement(VoiceProviderSection, {
@@ -2072,6 +2144,7 @@ describe('VoiceProviderSection', () => {
 
     it('keeps gallery tiles and Pay with to what each choice needs or means; the card owns the recovery action', async () => {
         const { VoiceProviderSection } = await import('./VoiceProviderSection');
+        const { VoicePipelineCard } = await import('@/voice/settings/pipeline/VoicePipelineCard');
         const screen = await renderScreen(React.createElement(VoiceProviderSection, {
             voice: settingsParse({ voice: { providerId: ELEVENLABS_PROVIDER_ID, providers: {
                 [ELEVENLABS_PROVIDER_ID]: { schemaVersion: 2, config: elevenLabsByoConfig() },
@@ -2086,7 +2159,8 @@ describe('VoiceProviderSection', () => {
         const needing = (gallery.props.tiles as readonly VoiceServiceTile[]).filter((tile) => tile.status?.tone === 'needs_you' && !tile.disabled);
         expect(needing.length).toBeGreaterThan(0);
         for (const tile of needing) {
-            expect(['needsSetup', 'needsKey', 'needsApproval', 'offOnServer', 'needsComputer', 'needsAddress',
+            if (tile.selected) expect(tile.status!.text).toBe(tree.findAllByType(VoicePipelineCard)[0]!.props.status.text);
+            else expect(['needsSetup', 'needsKey', 'needsApproval', 'offOnServer', 'needsComputer', 'needsAddress',
                 'needsModel', 'installing', 'notInstalled', 'unavailableHere', 'needsUpdate', 'cantCheck']
                 .map(key => tLoose(`voice.readiness.short.${key}`))).toContain(tile.status!.text);
             const rendered = findAllHostTestInstances(tree.root, node => node.props.testID === tile.testID)[0];
@@ -3039,9 +3113,24 @@ describe('VoiceProviderSection', () => {
         const render = (voice: typeof settings.voice) => React.createElement(VoiceProviderSection, sectionProps(voice));
         const screen = await renderScreen(render(settings.voice));
         await act(async () => {});
+        expect(storage.getState().settings.voice.providerId, JSON.stringify({
+            voiceProvider: storage.getState().settings.voice.providerId,
+            executionMachine: storage.getState().settings.voice.executionMachine,
+            persistedProvider: accountFixture.persistedSettings.voice.providerId,
+            settingsScope: storage.getState().settingsScope,
+        })).toBe('local_conversation');
         const checkedContributions = () => rawCredentialReadiness.mock.calls
             .map((call) => (call as unknown as [{ localId: string }])[0].localId);
-        expect(checkedContributions()).toEqual(['google-cloud-tts']);
+        await waitForTestEvent(subscribeRawReadiness, checkedContributions, checked => checked.includes('google-cloud-tts'));
+        await waitForTestEvent(screen.subscribe, () => checkedReadinessRow(screen.tree)?.props.announcement,
+            announcement => typeof announcement === 'string' && announcement !== tLoose('settings.updates.checking'));
+        // The hub's observer-free interval requires fresh catalog authority.
+        // Each readiness invalidation may recheck speech; an unchanged render
+        // after those real transitions must share the established result.
+        expect(new Set(checkedContributions())).toEqual(new Set(['google-cloud-tts']));
+        const checksAfterMount = rawCredentialReadiness.mock.calls.length;
+        await screen.update(render(settings.voice));
+        expect(rawCredentialReadiness).toHaveBeenCalledTimes(checksAfterMount);
 
         accountFixture.replaceVoice(withHear('happier.voice.google/gemini-stt'));
         const geminiHear = storage.getState().settings;
@@ -3640,16 +3729,21 @@ describe('VoiceProviderSection', () => {
             },
         };
         const setVoice = vi.fn();
-        const screen = await renderScreen(React.createElement(VoiceProviderSection, {
-            voice: settingsParse({ voice: {
-                providerId,
-                providers: {
-                    [providerId]: {
-                        schemaVersion: 2,
-                        config: { globalConnectedServices: null },
-                    },
+        accountFixture.replaceVoice(settingsParse({ voice: {
+            providerId,
+            providers: {
+                [providerId]: {
+                    schemaVersion: 2,
+                    config: { globalConnectedServices: null },
                 },
-            } }).voice,
+            },
+        } }).voice);
+        passiveSetupBoundary.profile = { connectedServicesV2: [
+            { serviceId: 'anthropic', profiles: [{ profileId: 'anthropic-account-a', status: 'connected', kind: 'token' }] },
+            { serviceId: 'openai-codex', profiles: [{ profileId: 'codex-account-a', status: 'connected', kind: 'oauth' }] },
+        ] };
+        const screen = await renderScreen(React.createElement(VoiceProviderSection, {
+            voice: accountFixture.settings.voice,
             setVoice,
             happierVoiceSupported: true,
             platformOs: 'web',
@@ -3664,16 +3758,19 @@ describe('VoiceProviderSection', () => {
             localId: 'claude',
         });
         expect(field?.props.serviceIds).toEqual(['anthropic', 'openai-codex']);
-        await act(async () => field?.props.onChange(binding));
-        expect(setVoice).toHaveBeenCalledWith(expect.objectContaining({
+        const version = storage.getState().settingsVersion;
+        expect(version).not.toBeNull();
+        await act(async () => field?.props.onChange(binding, version));
+        await waitForTestEvent(screen.subscribe, () => expect(accountFixture.persistedSettings.voice).toMatchObject({
             providerId,
-            providers: expect.objectContaining({
+            providers: {
                 [providerId]: {
                     schemaVersion: 2,
                     config: { globalConnectedServices: binding },
                 },
-            }),
+            },
         }));
+        expect(setVoice).not.toHaveBeenCalled();
     });
 
     it('renders bundled Codex through the same exact qualified public Connected Services declaration', async () => {
@@ -3689,16 +3786,19 @@ describe('VoiceProviderSection', () => {
             },
         };
         const setVoice = vi.fn();
-        const screen = await renderScreen(React.createElement(VoiceProviderSection, {
-            voice: settingsParse({ voice: {
-                providerId: CODEX_PROVIDER_ID,
-                providers: {
-                    [CODEX_PROVIDER_ID]: {
-                        schemaVersion: 2,
-                        config: { globalConnectedServices: null },
-                    },
+        accountFixture.replaceVoice(settingsParse({ voice: {
+            providerId: CODEX_PROVIDER_ID,
+            providers: {
+                [CODEX_PROVIDER_ID]: {
+                    schemaVersion: 2,
+                    config: { globalConnectedServices: null },
                 },
-            } }).voice,
+            },
+        } }).voice);
+        passiveSetupBoundary.profile = { connectedServicesV2: [{ serviceId: 'openai-codex',
+            profiles: [{ profileId: 'codex-account-b', status: 'connected', kind: 'oauth' }] }] };
+        const screen = await renderScreen(React.createElement(VoiceProviderSection, {
+            voice: accountFixture.settings.voice,
             setVoice,
             happierVoiceSupported: true,
             platformOs: 'web',
@@ -3710,15 +3810,18 @@ describe('VoiceProviderSection', () => {
                 && candidate.props.agentId?.pluginId === 'happier.agent.codex'
                 && candidate.props.agentId?.localId === 'codex');
         expect(fields).toHaveLength(1);
-        await act(async () => fields[0]?.props.onChange(binding));
-        expect(setVoice).toHaveBeenCalledWith(expect.objectContaining({
+        const version = storage.getState().settingsVersion;
+        expect(version).not.toBeNull();
+        await act(async () => fields[0]?.props.onChange(binding, version));
+        await waitForTestEvent(screen.subscribe, () => expect(accountFixture.persistedSettings.voice).toMatchObject({
             providerId: CODEX_PROVIDER_ID,
-            providers: expect.objectContaining({
+            providers: {
                 [CODEX_PROVIDER_ID]: {
                     schemaVersion: 2,
                     config: { globalConnectedServices: binding },
                 },
-            }),
+            },
         }));
+        expect(setVoice).not.toHaveBeenCalled();
     });
 });

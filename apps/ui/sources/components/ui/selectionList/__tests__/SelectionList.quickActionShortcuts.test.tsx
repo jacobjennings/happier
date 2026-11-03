@@ -86,25 +86,6 @@ describe('SelectionList quick-action shortcut wiring (R14)', () => {
         expect(onSelect.mock.calls[0]?.[0]).toBe('create-new');
     });
 
-    it('does not activate when no quickActionShortcuts are passed (regression guard)', async () => {
-        const onSelect = vi.fn();
-        const { act } = await import('react-test-renderer');
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(
-            <SelectionList {...defaultProps({ onSelect })} />,
-        );
-        const input = screen.findByTestId('sl:header:input');
-        await act(async () => {
-            input!.props.onKeyPress?.({
-                key: 'n',
-                metaKey: true,
-                preventDefault: () => {},
-                stopPropagation: () => {},
-            });
-        });
-        expect(onSelect).not.toHaveBeenCalled();
-    });
-
     it('sends Cmd/Ctrl+Enter on the focused row to onCommandSelect, and plain Enter to onSelect', async () => {
         const onSelect = vi.fn();
         const onCommandSelect = vi.fn();

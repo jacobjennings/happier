@@ -65,26 +65,25 @@ describe('resolveDetectedMcpPreviewEntries', () => {
     }
   });
 
-  it('uses the higher-precedence project config when multiple detected entries share a name', () => {
-    const entries = resolveDetectedMcpPreviewEntries({
-      agentId: 'claude',
-      servers: [
-        createDetected({
-          provider: 'claude',
-          name: 'playwright',
-          source: { kind: 'user', path: '/Users/test/.claude/settings.json' },
-          enabled: true,
-        }),
-        createDetected({
-          provider: 'claude',
-          name: 'playwright',
-          source: { kind: 'project', path: '/repo/.claude/settings.local.json' },
-          enabled: false,
-        }),
-      ],
+  it('lets the later detected entry of a shared name win, so a later disabled entry hides the name', () => {
+    // Detection emits sources in precedence order; the preview never re-sorts by source kind.
+    const user = createDetected({
+      provider: 'claude',
+      name: 'playwright',
+      source: { kind: 'user', path: '/Users/test/.claude/settings.json' },
+      enabled: true,
+    });
+    const project = createDetected({
+      provider: 'claude',
+      name: 'playwright',
+      source: { kind: 'project', path: '/repo/.claude/settings.local.json' },
+      enabled: false,
     });
 
-    expect(entries).toEqual([]);
+    expect(resolveDetectedMcpPreviewEntries({ agentId: 'claude', servers: [user, project] })).toEqual([]);
+    expect(resolveDetectedMcpPreviewEntries({ agentId: 'claude', servers: [project, user] })).toEqual([
+      expect.objectContaining({ name: 'playwright', sourcePath: '/Users/test/.claude/settings.json' }),
+    ]);
   });
   it('does not let an unloaded source shadow the same-name server from a loaded source', () => {
     const entries = resolveDetectedMcpPreviewEntries({

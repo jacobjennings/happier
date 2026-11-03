@@ -453,7 +453,7 @@ describe('Project setup through ordinary authoring', () => {
         const source = { kind: 'native' as const, tool: 'package_script' as const, file: 'package.json', target: 'test' };
         const manifest = { version: 1 as const, scripts: {
             local: { source }, portable: { source, execution: 'portable' as const },
-        } };
+        }, services: { web: { source, port: 5173 }, server: { source } } };
         const inspection = ProjectDefinitionInspectOutputSchema.parse({
             definition: { basis: { kind: 'present', hash: 'a'.repeat(64) },
                 document: { status: 'valid', bytes: JSON.stringify(manifest), original: manifest, manifest, diagnostics: [] } },
@@ -501,6 +501,7 @@ describe('Project setup through ordinary authoring', () => {
             expect(observed).toMatchObject({ kind: 'ready', guidance: { advisory: true, sourceWorkspace: workspace,
                 workerPreferences: { status: 'ready', preference },
                 scripts: [{ name: 'local', execution: 'primary' }, { name: 'portable', execution: 'portable' }],
+                services: [{ name: 'web', source, port: 5173 }, { name: 'server', source }],
                 destination: { configured: preference.destination, observation },
                 adHoc: { resolution: { status: 'refused', reason: 'ad_hoc_disabled' }, approval: 'configured_action_policy' },
             } });
@@ -525,6 +526,10 @@ describe('Project setup through ordinary authoring', () => {
         if (!draft) throw new Error('Draft missing');
         // Detailed advisory facts remain at the real read owner; the composer receives prose only.
         const facts = await currentGuidance(workspace);
+        expect(facts).toMatchObject({ services: [{ name: 'web', source, port: 5173 }, { name: 'server', source }] });
+        const { describeProjectAgentGuidance } = await import('../workers/ProjectAgentGuidanceDisclosure');
+        const guide = describeProjectAgentGuidance(facts, 'repo');
+        expect(guide).toContain('web, server');
         expect(draft.input).not.toContain('{');
         expect(draft.input).toContain('package.json');
         expect(draft.input).not.toContain('protoc');

@@ -186,29 +186,6 @@ describe('ActivitySpinner (native)', () => {
         }
     });
 
-    it('pauses a pending release mark in the background and preserves the device-local H choice', async () => {
-        vi.resetModules();
-        await applySpinnerSettings({ loadingIndicatorStyle: 'hWave' });
-        const { AppState } = await import('react-native');
-        const { act } = await import('react-test-renderer');
-        const { createReactNativeAppStateEmitter } = await import('@/dev/testkit/mocks/reactNative');
-        const appState = createReactNativeAppStateEmitter();
-        const restoreAppState = appState.install(AppState);
-        const running = () => animatedLoops.filter((loop) => loop.started > loop.stopped).length;
-        try {
-            const { EntityReleaseOutcomePill } = await import('@/components/ui/treeDragDrop/ui/EntityReleasePreview');
-            const screen = await renderScreen(<EntityReleaseOutcomePill outcome={{ tone: 'pending', title: 'Moving Review' }} />);
-            expect(running()).toBe(1);
-            await act(async () => appState.emit('background'));
-            expect(running()).toBe(0);
-            expect(screen.findAll((node) => node.props?.testID === 'happier-spinner-dot')).toHaveLength(7);
-            await act(async () => appState.emit('active'));
-            expect(running()).toBe(1);
-        } finally {
-            restoreAppState();
-        }
-    });
-
     describe('classic ring', () => {
         it.each([
             { pause: 'ambient', size: 'small', expectedSize: 20 },

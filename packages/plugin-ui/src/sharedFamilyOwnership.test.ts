@@ -54,7 +54,7 @@ const APPROVED_CATALOG_VOCABULARY = [
   'CountedDisclosureItem', 'TechnicalDetailsDisclosure',
   'List.SelectionActionBar', 'ListSelectionActionBar',
   'ListMultiSelectionProvider', 'createListMultiSelectionStore',
-  'Form', 'Field', 'TextField', 'Toggle', 'Select', 'ValidationMessage',
+  'Form', 'Field', 'TextField', 'Toggle', 'Checkbox', 'Select', 'ValidationMessage',
   'Form.Field', 'Form.TextField', 'Form.Toggle', 'Form.Select', 'Form.ValidationMessage', 'Form.Actions',
   'Popover', 'Dropdown', 'Menu', 'SheetMenu', 'ContextMenu',
   'Tabs', 'Tabs.Item',
@@ -96,7 +96,7 @@ const APPROVED_CATALOG_VOCABULARY = [
   // Widgets platform: declared areas delegate to the incumbent mounted host.
   'WidgetSurface',
   // Public setup and Voice author adapters documented by docs/plugin-platform.md.
-  'SetupSteps', 'SetupBlockTile', 'SetupBlockGrid', 'VoiceMarkArt', 'StatusCell', 'DictationButton',
+  'SetupSteps', 'SetupBlockTile', 'SetupBlockGrid', 'VoiceMarkArt', 'VoicePresence', 'VoiceMark', 'VoiceStatusLine', 'VoiceTransport', 'StatusCell', 'DictationButton',
   // Lane 12 Machines: the typed-or-picked local date and time (a provisioner's lease or expiry input).
   'LocalDateTimeField',
   // Lane 12 Projects: the widget-body glance row and the lines-added/removed readout, one owner each.
@@ -1240,6 +1240,23 @@ const GRADUATED_FAMILIES: readonly GraduatedFamily[] = [
     declarative: { kind: 'not-applicable', reason: 'The hosted drag chooser anchors a native dialog; MenuRows delegates choices to the existing Menu interaction owner.' },
   },
   {
+    publicName: 'Checkbox',
+    propTypeName: 'CheckboxProps',
+    family: 'Checkbox',
+    disposition: 'required',
+    proofTier: 'behavior-owning',
+    phase: 'in-progress',
+    publiclyExported: true,
+    sharedModule: 'presentation/interaction/Pressable.tsx',
+    sharedSymbol: 'HappierPressable',
+    pluginOwner: { module: 'components/Checkbox.tsx', symbol: 'Checkbox' },
+    coreConsumers: [],
+    devMountSymbols: [],
+    // The real host lends SelectionCheckGlyph through renderCheckboxMark;
+    // a public external-author vertical has not yet qualified graduation.
+    declarative: { kind: 'not-applicable', reason: 'Checkbox is an author-controlled selection control; declarative field booleans use Toggle.' },
+  },
+  {
     publicName: 'Form',
     propTypeName: 'FormProps',
     family: 'Form root',
@@ -2352,6 +2369,14 @@ const GRADUATED_FAMILIES: readonly GraduatedFamily[] = [
       hostModule: 'components/ui/setupBlocks/SetupBlockGrid.tsx', hostSymbol: 'SetupBlockGrid' },
     { publicName: 'VoiceMarkArt', module: 'components/Voice.tsx', callback: 'renderVoiceMarkArt',
       hostModule: 'components/voice/presence/VoiceMark.tsx', hostSymbol: 'VoiceMarkArt' },
+    { publicName: 'VoicePresence', module: 'components/Voice.tsx', callback: 'renderVoicePresence',
+      hostModule: 'components/plugins/surfaces/PluginVoicePresence.tsx', hostSymbol: 'PluginVoicePresence' },
+    { publicName: 'VoiceMark', module: 'components/Voice.tsx', callback: 'renderVoiceMark',
+      hostModule: 'components/plugins/surfaces/PluginVoicePresence.tsx', hostSymbol: 'PluginVoiceMark' },
+    { publicName: 'VoiceStatusLine', module: 'components/Voice.tsx', callback: 'renderVoiceStatusLine',
+      hostModule: 'components/plugins/surfaces/PluginVoicePresence.tsx', hostSymbol: 'PluginVoiceStatusLine' },
+    { publicName: 'VoiceTransport', module: 'components/Voice.tsx', callback: 'renderVoiceTransport',
+      hostModule: 'components/plugins/surfaces/PluginVoicePresence.tsx', hostSymbol: 'PluginVoiceTransport' },
     { publicName: 'StatusCell', module: 'components/Voice.tsx', callback: 'renderStatusCell',
       hostModule: 'components/voice/presence/VoiceStatusCell.tsx', hostSymbol: 'VoiceStatusCell' },
     { publicName: 'DictationButton', module: 'components/Voice.tsx', callback: 'renderDictationButton',
@@ -3079,6 +3104,7 @@ describe('graduated shared presentation families (§8.2)', () => {
       'StoredImage',
       'DiffViewer',
       'HostedAnchoredMenu',
+      'Checkbox',
       'WidgetSurface',
       'TargetedSurface',
       'SessionProvider',
@@ -3119,7 +3145,7 @@ describe('graduated shared presentation families (§8.2)', () => {
       'NavigationList.Row',
       'DragSource', 'DropTarget',
       'DetailsPane', 'DetailsPaneFooter', 'PaneHeaderContent', 'Avatar', 'AgentCursor', 'PresenceCapsule', 'StatusCapsule',
-      'SetupSteps', 'LocalDateTimeField', 'WidgetGlanceRow', 'DiffStat', 'ThreadMessage', 'ReplyQuote', 'ReturnedAnswerQuote', 'MemoryDuplicateChoice', 'capabilityCollectionAnatomy', 'DocEditProposal', 'ExecutableParticipantPicker', 'SetupBlockTile', 'SetupBlockGrid', 'VoiceMarkArt', 'StatusCell', 'DictationButton',
+      'SetupSteps', 'LocalDateTimeField', 'WidgetGlanceRow', 'DiffStat', 'ThreadMessage', 'ReplyQuote', 'ReturnedAnswerQuote', 'MemoryDuplicateChoice', 'capabilityCollectionAnatomy', 'DocEditProposal', 'ExecutableParticipantPicker', 'SetupBlockTile', 'SetupBlockGrid', 'VoiceMarkArt', 'VoicePresence', 'VoiceMark', 'VoiceStatusLine', 'VoiceTransport', 'StatusCell', 'DictationButton',
     ]);
   });
 

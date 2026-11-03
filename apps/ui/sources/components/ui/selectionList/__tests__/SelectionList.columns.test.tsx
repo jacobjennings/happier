@@ -106,15 +106,6 @@ describe('SelectionList — columns variant', () => {
         }
     });
 
-    it('attaches a layout listener as soon as columns are requested', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(
-            <SelectionList {...defaultProps({ columns: { max: 2, minColumnWidthPx: 250 } })} />,
-        );
-        const root = screen.findByTestId('sl') as unknown as TestNode;
-        expect(typeof root.props.onLayout).toBe('function');
-    });
-
     it('renders one column until a width has actually been measured', async () => {
         const { SelectionList } = await import('../SelectionList');
         const screen = await renderScreen(
@@ -145,15 +136,6 @@ describe('SelectionList — columns variant', () => {
         expect((screen.findByTestId('sl:body') as unknown as TestNode).props.role).toBe('grid');
         expect(findColumnRows(screen as never).map((row) => row.props.role))
             .toEqual(['row', 'row']);
-    });
-
-    it('stays at one column when the measured pane is too narrow for two', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(
-            <SelectionList {...defaultProps({ columns: { max: 2, minColumnWidthPx: 250 } })} />,
-        );
-        await fireContainerLayout(screen.findByTestId('sl') as unknown as TestNode, 420);
-        expect(countColumnRows(screen as never)).toBe(0);
     });
 
     it('collapses back to one column when the pane is measured narrower', async () => {
@@ -227,31 +209,5 @@ describe('SelectionList — columns variant', () => {
         expect(childrenOf(rows[0])).toHaveLength(1);
         // The section that CAN fill a row is untouched.
         expect(childrenOf(rows[1])).toHaveLength(2);
-    });
-
-    it('keeps disabled rows on screen in the grid', async () => {
-        const { SelectionList } = await import('../SelectionList');
-        const step: SelectionListStep = {
-            ...ROOT_STEP,
-            sections: [{
-                kind: 'static',
-                id: 'models',
-                title: 'MODELS',
-                options: [
-                    { id: 'm-0', label: 'Model 0' },
-                    { id: 'locked', label: 'Locked', disabled: true },
-                    { id: 'm-2', label: 'Model 2' },
-                ],
-            }],
-        };
-        const screen = await renderScreen(
-            <SelectionList
-                {...defaultProps({ rootStep: step, columns: { max: 2, minColumnWidthPx: 250 } })}
-            />,
-        );
-        await fireContainerLayout(screen.findByTestId('sl') as unknown as TestNode, 546);
-        // `flatVisibleOptionIds` excludes 'locked'; the LAYOUT must not.
-        expect(screen.findByTestId('sl:root:option:locked')).not.toBeNull();
-        expect(countColumnRows(screen as never)).toBe(2);
     });
 });

@@ -96,10 +96,12 @@ export function useSessionAgentLauncher(params: Readonly<{
         [executionRunsBackends],
     );
 
-    const pushRunRoute = React.useCallback((intent?: ExecutionRunIntent, roleId?: string) => {
+    const pushRunRoute = React.useCallback((intent?: ExecutionRunIntent, roleId?: string, title?: string) => {
         const query = {
             ...(intent ? { intent } : {}),
             ...(roleId ? { roleId } : {}),
+            // What the start is called (Second opinion): the screen's title and its heading say the same name.
+            ...(roleId && title ? { title } : {}),
         };
         const route = buildScopedSessionRouteHref({
             sessionId,
@@ -130,7 +132,7 @@ export function useSessionAgentLauncher(params: Readonly<{
 
     const openRun = React.useCallback((intent?: ExecutionRunIntent, preset?: ExecutionRunStartPreset) => {
         if (phone) {
-            pushRunRoute(intent ?? 'review', preset?.roleId);
+            pushRunRoute(intent ?? 'review', preset?.roleId, preset?.title);
             return;
         }
         pane.openDetailsTab(createExecutionRunLauncherDetailsTab(intent, preset), { intent: 'preview' });
@@ -143,7 +145,7 @@ export function useSessionAgentLauncher(params: Readonly<{
             // The same draft the wide pane keeps, found by its Discussion correlation (the Run page's
             // existing handoff); the selected text stays out of route history.
             router.push(publishInteractiveExecutionRunDraftNavigationIntent({ address, ...target.discussion }).href as Href);
-        } else if (target) pushRunRoute(target.intent ?? undefined, target.roleId ?? undefined);
+        } else if (target) pushRunRoute(target.intent ?? undefined, target.roleId ?? undefined, tab.title);
         else openDetails(tab);
     }, [openDetails, phone, pushRunRoute, router, serverId, sessionId]);
 

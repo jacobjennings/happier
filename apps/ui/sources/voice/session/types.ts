@@ -1,5 +1,6 @@
 import type { PendingDeliveryBlockedReason } from '@happier-dev/protocol';
 import { readRpcErrorCode } from '@/sync/runtime/rpcErrors';
+import { readConnectedServiceUxDiagnosticFromError, type ConnectedServiceUxDiagnosticV1 } from '@happier-dev/protocol/connect/connectedServiceUxDiagnostics';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import type { VoiceConversationInUseVoice } from '@happier-dev/protocol/actions/voiceConversationActionFamily';
 import type {
@@ -59,6 +60,14 @@ export type VoiceAdapterConversationBinding = Readonly<{
   targetSessionAddress: SessionAddress | null;
 }>;
 
+/** Non-secret preparation facts retained with an attempt, including its terminal recovery. */
+export type VoiceAttemptRecoveryTarget = Readonly<{
+  serverId: string;
+  machineId: string;
+  machineLabel: string | null;
+  agentRuntime: VoiceAdapterSurfaceCapabilities['agentRuntime'] | null;
+}>;
+
 export type VoiceSessionSnapshot = Readonly<{
   adapterId: VoiceAdapterId | null;
   sessionId: string | null;
@@ -70,6 +79,7 @@ export type VoiceSessionSnapshot = Readonly<{
   micMuted?: boolean;
   errorCode?: string;
   errorMessage?: string;
+  errorConnectedServiceDiagnostic?: ConnectedServiceUxDiagnosticV1;
   errorRecoveryAction?: import('@/voice/runtime/machine/voiceConversationRuntimeTypes').VoiceMachineRecoveryAction;
   errorPresentation?: import('@/voice/runtime/machine/voiceConversationRuntimeTypes').VoiceMachineErrorPresentation;
   presentationState?: VoiceSessionPresentationState;
@@ -77,6 +87,9 @@ export type VoiceSessionSnapshot = Readonly<{
   reconnectRetryAvailable?: boolean;
   /** The current connected adapter's accepted application snapshot. Unknown is omitted. */
   inUseVoice?: VoiceConversationInUseVoice;
+  /** Exact Session instructions accepted by this attempt's supported carrier; unknown is omitted. */
+  preparedInstructionsFor?: SessionAddress;
+  recoveryTarget?: VoiceAttemptRecoveryTarget | null;
 }>;
 
 export type VoiceAdapterController = Readonly<{
@@ -178,11 +191,13 @@ export function createVoiceTextTurnRejectedBeforeEffectError(
   );
   if (error instanceof Error) rejection.name = error.name;
   const rpcErrorCode = readRpcErrorCode(error);
+  const uxDiagnostic = readConnectedServiceUxDiagnosticFromError(error);
   return Object.assign(rejection, {
     code: VOICE_TEXT_TURN_REJECTED_BEFORE_EFFECT,
     pendingDeliveryBlockedReason,
     cause: error,
     ...(rpcErrorCode ? { rpcErrorCode } : {}),
+    ...(uxDiagnostic ? { uxDiagnostic } : {}),
   });
 }
 

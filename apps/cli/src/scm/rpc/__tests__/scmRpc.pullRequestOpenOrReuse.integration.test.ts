@@ -36,9 +36,11 @@ describe('git RPC handlers (pull request open or reuse)', () => {
             },
         );
 
+        // The default-branch policy gate, not provider resolution or another request check.
         expect(response).toMatchObject({
             success: false,
             errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST,
+            error: 'Create a feature branch before opening a pull request from the default branch',
         });
     });
 });

@@ -2,11 +2,6 @@ import type { TranscriptViewportTelemetryObservationReason } from '@/components/
 
 import type { TranscriptLifecycleHostScrollObservationPlan } from './lifecycleHost';
 
-export type TranscriptLifecycleScrollObservationPlanContinuationInput = Readonly<{
-    hasNativeMountSettlePassiveDriftRepinObservation: boolean;
-    recentUserIntent: boolean;
-}>;
-
 export type TranscriptLifecycleScrollObservationPlanApplierEffects = Readonly<{
     applyGenericScrollObservationAnchorCaptureCancellationEffects(
         effects: TranscriptLifecycleHostScrollObservationPlan['genericEffects'],
@@ -47,19 +42,10 @@ export type TranscriptLifecycleScrollObservationPlanApplierEffects = Readonly<{
     commitBottomFollowModeState(
         state: TranscriptLifecycleHostScrollObservationPlan['state']['bottomFollowState'],
     ): void;
-    continueAfterEarlyEffects(input: TranscriptLifecycleScrollObservationPlanContinuationInput): void;
+    continueAfterEarlyEffects(): void;
     markNativeInitialViewportApplied(): void;
     recordNativeScrollObservation(reason: TranscriptViewportTelemetryObservationReason): void;
 }>;
-
-export function transcriptLifecycleScrollObservationPlanRequestsNativePassiveDriftRepin(
-    plan: TranscriptLifecycleHostScrollObservationPlan,
-): boolean {
-    return plan.steps.some((step) =>
-        step.type === 'native-passive-drift-bail' ||
-        step.type === 'generic-fallback'
-    );
-}
 
 export function applyTranscriptLifecycleScrollObservationPlan(
     plan: TranscriptLifecycleHostScrollObservationPlan,
@@ -82,11 +68,7 @@ export function applyTranscriptLifecycleScrollObservationPlan(
         return true;
     }
 
-    effects.continueAfterEarlyEffects({
-        hasNativeMountSettlePassiveDriftRepinObservation:
-            transcriptLifecycleScrollObservationPlanRequestsNativePassiveDriftRepin(plan),
-        recentUserIntent: plan.recentUserIntent,
-    });
+    effects.continueAfterEarlyEffects();
 
     effects.commitBottomFollowModeState(plan.state.bottomFollowState);
     effects.applyWebUserScrollTakeoverLifecycleEffects(plan.lifecycleEffects);

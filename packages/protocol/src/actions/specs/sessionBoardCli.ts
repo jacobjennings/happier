@@ -2,8 +2,8 @@ import { lazyZodSchema } from '../../lazyZodSchema.js';
 import { z } from 'zod/mini';
 
 import { SessionSurfaceItemIdSchema } from '../../sessions/board/ids.js';
-import { SessionSurfaceItemV1Schema, SessionSurfaceItemDestinationV1Schema } from '../../sessions/board/item.js';
-import { SessionBoardItemUpsertInputV1Schema, SessionVisualCopySourceV1Schema } from '../../sessions/board/actions.js';
+import { SessionSurfaceItemDestinationV1Schema } from '../../sessions/board/item.js';
+import { SessionBoardAuthoredItemUpsertInputV1Schema, SessionBoardItemUpsertInputV1Schema, SessionVisualCopySourceV1Schema } from '../../sessions/board/actions.js';
 import {
   SessionBoardItemPlacementV1Schema,
   SessionBoardLayoutOperationV1Schema,
@@ -48,7 +48,7 @@ export const SessionBoardItemUpsertCliInputSchema = lazyZodSchema(() => z.strict
   itemId: SessionSurfaceItemIdSchema,
   expectedItemRevision: z.optional(SessionSystemRecordRevisionSchema),
   destination: z.optional(SessionSurfaceItemDestinationV1Schema),
-  item: z.optional(z.lazy(() => SessionSurfaceItemV1Schema)),
+  item: z.optional(z.lazy(() => SessionBoardAuthoredItemUpsertInputV1Schema.shape.item)),
   copySource: z.optional(SessionVisualCopySourceV1Schema),
   placement: z.optional(SessionBoardItemPlacementV1Schema),
 }).check(z.superRefine((input, context) => {

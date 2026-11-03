@@ -16,7 +16,7 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('native Codex request scope → host → ingest', () => {
     it('retains the dispatch plan through exact native Usage without certifying cumulative history', async () => {
-        const service = { pluginId: 'happier.agent.codex', localId: 'openai-codex' };
+        const service = { pluginId: 'happier.agent.codex', localId: 'openai-codex' } as const;
         vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ features: {}, capabilities: { server: {
             usageAnalytics: { version: 1, eventsIngest: { path: '/v2/usage-events' }, query: { path: '/v2/usage/query' },
                 legacy: { usageReportsPath: '/v2/usage-reports', usageQueryPath: '/v1/usage/query' } },
@@ -47,7 +47,7 @@ describe('native Codex request scope → host → ingest', () => {
                 context: {} as AgentSessionRuntimeContext, cwd: '/private/repository',
                 connectedAccounts: [{ purpose: 'agent', usageAccountScope: 'personal', account: { service, accountId: 'account-A' } }],
                 capabilities: { open: ['create'], delivery: ['newTurn'], cancel: false },
-                cancellation: { declared: false }, configuration: { declared: false }, manualCompaction: { declared: false },
+                cancellation: { declared: false }, configuration: { declared: false }, compaction: { capability: null },
             });
             const unsubscribe = bridge.subscribeRuntimeEvents(() => undefined);
             try {

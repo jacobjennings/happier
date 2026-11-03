@@ -102,6 +102,9 @@ it.each(['deadline', 'cancelled'] as const)('settles Gateway binding status duri
             credentials: { token: 'binding-fixture-token', encryption: null }, featureGate: { isEnabled: () => true },
             runtimeSummary: services.summary }),
           ...createLegacyProfileMigrationRpcServices({ credentials: { token: 'binding-fixture-token', encryption: null } }),
+          // The machine runtime projects its manual-refresh probe onto the RPC adapter.
+          probe: (input, waiterLifetime) => services.probe(input, 'manual_refresh', waiterLifetime),
+          probeDraft: (input, waiterLifetime) => services.probeDraft(input, waiterLifetime),
         } });
       const controller = new AbortController();
       const request = { machineId: fixture.machineId, agentTargetKey: fixture.agentTargetKey, selection,
@@ -708,6 +711,8 @@ it('composes G1 Gateway setup, hub and peer tool turns, isolation, outage, Pendi
         sourceConnectionId: ProviderConnectionIdSchema.parse('run-gateway'), mode: 'management' }, {
         getAccountSettingsSnapshot: () => ownedSnapshot,
         resolveManagedPurposeBindingIntent: fixture.gateway.purposeBindingOwner.resolveBindingIntent,
+        accountReadScope: { serverUrl: 'https://account-owner.test', readCredentials: async () => credentials,
+          readAccountSettingsSnapshot: async () => ownedSnapshot, isCurrent: () => true },
         signal: new AbortController().signal, isCurrent: () => true,
       })).toMatchObject({ status: 'success', groups: [{ connectionId: 'run-gateway', authorization: { authorized: true } }] });
     } finally { await upstream.close(); await fixture.cleanup(); }

@@ -73,7 +73,7 @@ test('signUpdaterArtifacts signs every updater artifact and replaces only its pa
     assert.deepEqual(call.args.slice(0, 6), [
       'exec', 'tauri', 'signer', 'sign', '--private-key-path', path.join(fixture.root, 'tauri.signing.key'),
     ]);
-    assert.deepEqual(call.args.slice(7, 9), ['--password', 'opaque-password']);
+    assert.deepEqual(call.args.slice(6, 8), ['--password', 'opaque-password']);
     assert.equal(call.options.cwd, fixture.root);
   }
   assert.equal(env.TAURI_SIGNING_PRIVATE_KEY, 'opaque-key');

@@ -42,6 +42,9 @@ import { buildSessionActionFieldOptionsResolver } from '@/components/sessions/ac
 import { useInputFieldOptions } from '@/components/sessions/actions/useInputFieldOptions';
 import { resolveEffectiveActionInputFields } from '@happier-dev/protocol/actions/actionInputHintsRuntime';
 import { resolvePluginProjectedActionPresentation } from '@/sync/domains/plugins/ui/actionPresentation';
+import { readDeclaredConnectedAccountPurposeV1 } from '@happier-dev/protocol/connect/connectedAccountPurposeSelectionV1';
+import { useProjectedConnectedServicesRegistry, useProjectedPluginLocalizedTextResolver } from '@/components/appShell/plugins/AppShellPluginUiProjection';
+import { resolveQualifiedConnectedServiceRegistryDisplayName } from '@/components/settings/connectedServices/model/resolveConnectedServiceDisplayName';
 import { createMachinePresetCollectionClient } from './machinePresetCollectionClient';
 import type { MachinePresetCollectionOptions, MachinePresetCollectionSettledResult } from './machinePresetCollectionClient';
 import { useMachinePresetQuery, isMachinePresetAccessLost } from './useMachinePresets';
@@ -54,13 +57,13 @@ import { MachineEnvironmentSection } from './MachineEnvironmentSection';
 import { ManagedFieldRow, managedPresetLimitRow } from './MachinePresetDetail';
 import { useQualifiedConnectedAccountTargetPresentations } from '@/hooks/server/connectedServices/useQualifiedConnectedAccountTargetPresentations';
 import type { ManagedReceiptModel } from './MachineConfigurationReceipt';
-import { createManagedConfiguratorDraft, refreshManagedConfiguratorOptions, selectManagedConfiguratorChoice,
-    managedConfiguratorFacts, managedConfiguratorAcquireInput, managedConfiguratorOptionsSelectors, setManagedConfiguratorOptionsSelectors, setManagedConfiguratorCredentials, managedConfiguratorCredentialSelections, managedConfiguratorRetentionCapabilities,
+import { createManagedConfiguratorDraft, refreshManagedConfiguratorOptions,
+    managedConfiguratorFacts, managedConfiguratorProjection, managedConfiguratorAcquireInput, managedConfiguratorOptionsSelectors, setManagedConfiguratorOptionsSelectors, setManagedConfiguratorCredentials, managedConfiguratorCredentialSelections, managedConfiguratorRetentionCapabilities,
     type ManagedConfiguratorDraft } from './managedConfiguratorModel';
 import { describeRetentionConsequence, retentionCategoryTitle } from './managedRetentionPresentation';
 import { countryName, formatProviderAmount, formatPriceUnit } from './managedMachineDisplay';
 import { ManagedImagePreview, useManagedImagePreviews } from './useManagedImagePreviews';
-import { ManagedSizeTable, ManagedImageTiles, ManagedLocationGroup } from './ManagedChoiceSections';
+import { ManagedSizeTable, ManagedImageTiles, ManagedLocationGroup, ManagedNetworkGroup } from './ManagedChoiceSections';
 import { formatHappierDataBytes } from '@happier-dev/plugin-ui/presentation';
 import { managedConfiguratorDimensionChoices, managedConfiguratorDimensionSelection, selectManagedConfiguratorDimension } from './managedConfiguratorModel';
 import { createManagedMachineSelectionDraft, type ManagedMachineSelectionDraft } from '@/sync/domains/state/newSessionManagedMachineDraft';
@@ -159,16 +162,25 @@ function ManagedMachineConfigurationViewBody(props: ManagedMachineConfigurationV
     const credentialsReady = credentialPurposes !== undefined && credentialSelections.length === credentialPurposes.length && credentialsCurrent;
     const credentialInput = React.useMemo(() => Object.fromEntries((credentialPurposes ?? []).map(({ purpose }, index) => [String(index),
         credentialSelections.find(credential => qualifiedPurposeKey(credential.purpose) === qualifiedPurposeKey(purpose))?.account])), [credentialPurposes, credentialSelections]);
-    const credentialFields = React.useMemo(() => resolveEffectiveActionInputFields({ inputHints: { fields: (credentialPurposes ?? []).map(({ purpose, options }, index) => ({
-        path: String(index), title: `${t('connectedServices.title')} · ${purpose.purpose}`, widget: 'select' as const, required: true, options,
-    })) } }, credentialInput), [credentialPurposes, credentialInput]);
-    const credentialFieldOptions = React.useMemo(() => buildSessionActionFieldOptionsResolver({}), []);
     // A retained draft describes what was reviewed; only the current catalog admits new reads or mutations.
     const provisioner = catalogProvisioner ?? draft?.provisioner;
     const controller = requestedController;
     const presentation = useManagedProvisionerPresentation({ serverId: props.serverId, controller: catalogController, provisioner, refreshKey: readRevision });
     const optionsInput = useManagedProvisionerOptionsInput({ binding: catalog.binding, controller: catalogController, provisioner: catalogProvisioner,
         projection: presentation.projection, projectionReady: presentation.projectionReady, projectionFailed: presentation.projectionFailed, refreshKey: readRevision });
+    // The account a purpose draws on is named by its service, never by the purpose id.
+    const connectedServices = useProjectedConnectedServicesRegistry();
+    const localizeServiceText = useProjectedPluginLocalizedTextResolver();
+    const purposeAccountTitle = React.useCallback((purpose: string) => {
+        const service = provisioner && readDeclaredConnectedAccountPurposeV1({ purpose: { consumer: provisioner.contribution, purpose },
+            projection: presentation.projection, machineProvisionersById: presentation.projection.machineProvisionersById })?.serviceRefs[0];
+        return service ? resolveQualifiedConnectedServiceRegistryDisplayName(connectedServices, service, t, localizeServiceText) : undefined;
+    }, [provisioner, presentation.projection, connectedServices, localizeServiceText]);
+    // An account to choose from is a field; with none connected yet the Connect row below is the one way forward.
+    const credentialFields = React.useMemo(() => resolveEffectiveActionInputFields({ inputHints: { fields: (credentialPurposes ?? []).flatMap(({ purpose, options }, index) => options.length === 0 ? [] : [{
+        path: String(index), title: purposeAccountTitle(purpose.purpose) ?? t('managedMachines.receipt.account'), widget: 'select' as const, required: true, options,
+    }]) } }, credentialInput), [credentialPurposes, credentialInput, purposeAccountTitle]);
+    const credentialFieldOptions = React.useMemo(() => buildSessionActionFieldOptionsResolver({}), []);
     const optionHints = React.useMemo(() => optionsInput.kind === 'ready'
         ? resolvePluginProjectedActionPresentation({ pluginId: optionsInput.action.pluginId,
             presentation: optionsInput.action, projection: presentation.projection }).inputHints ?? undefined : undefined,
@@ -328,7 +340,7 @@ function ManagedMachineConfigurationViewBody(props: ManagedMachineConfigurationV
                 if (!current) return current;
                 let next: ManagedConfiguratorDraft = { ...current, check: check.kind === 'succeeded' ? check.value : undefined };
                 if (options?.kind === 'succeeded') {
-                    next = refreshManagedConfiguratorOptions(next, options.value);
+                    next = refreshManagedConfiguratorOptions(next, options.value, readSelectors ?? undefined);
                 } else next = { ...next, optionStatus: optionsInput.kind === 'loading' ? 'loading' : 'unavailable' };
                 return next;
             });
@@ -341,7 +353,8 @@ function ManagedMachineConfigurationViewBody(props: ManagedMachineConfigurationV
 
     const effectiveDraft = React.useMemo(() => presetQuery.sameScope && draft && accountSettings.settings
         ? { ...draft, categoryPreferences: accountSettings.settings.machineRetentionDefaultsV1 } : null, [presetQuery.sameScope, draft, accountSettings.settings]);
-    const facts = React.useMemo(() => effectiveDraft ? managedConfiguratorFacts(effectiveDraft) : null, [effectiveDraft]);
+    const projection = React.useMemo(() => effectiveDraft ? managedConfiguratorProjection(effectiveDraft) : null, [effectiveDraft]);
+    const facts = React.useMemo(() => effectiveDraft ? managedConfiguratorFacts(effectiveDraft, projection) : null, [effectiveDraft, projection]);
     React.useEffect(() => { if (facts) reviewed.current = facts; }, [facts]);
     // A settings refresh may withdraw mutation authority, not what the person already reviewed.
     // A changed draft never borrows the old choice's facts, and only fresh `facts` can be submitted.
@@ -562,11 +575,7 @@ function ManagedMachineConfigurationViewBody(props: ManagedMachineConfigurationV
             </ItemGroup>
         </ItemList>;
     }
-    // Choices the provider returned without a native size, image, place or duration (those have their own sections).
-    const otherChoices = draft ? draft.choices.filter(choice => !choice.nativeFacts?.size && !choice.nativeFacts?.image
-        && !choice.nativeFacts?.location && !choice.nativeFacts?.duration) : [];
-    const retainedChoice = draft?.selected && !draft.choices.some(choice => choice.id === draft.selected?.id && pluginJsonValuesEqual(choice.launch, draft.selected?.launch))
-        ? draft.selected : undefined;
+    const retainedChoice = facts?.optionStatus === 'unavailable' ? draft?.selected : undefined;
     const repairs = draft?.check?.prerequisites?.filter(prerequisite => prerequisite.status !== 'available' && prerequisite.repairAction) ?? [];
     // Nothing to choose from yet is not "no choices" while the recipe still waits on a required field: the field says what it needs.
     const awaitsRequiredInput = recipeFields.some(field => field.required && isBlankInput(readInputPath(fieldInput, field.path)));
@@ -580,7 +589,7 @@ function ManagedMachineConfigurationViewBody(props: ManagedMachineConfigurationV
             reason={draft.check.status ? localized(provisioner.contribution.pluginId, draft.check.status) : undefined} />
         : facts?.optionStatus === 'unavailable' ? <SurfaceStateCard kind="warning" size="line" title={t('managedMachines.options.unavailable')} />
         : draft.optionStatus === 'loading' ? <SurfaceStateCard kind="loading" size="line" title={t('managedMachines.options.loading', { provider: title })} />
-        : draft.optionStatus === 'current' && draft.choices.length === 0 ? (awaitsRequiredInput ? null : <SurfaceStateCard kind="empty" size="line" title={t('managedMachines.options.empty', { provider: title })} />)
+        : draft.optionStatus === 'current' && !draft.options?.base && !Object.values(draft.options?.dimensions ?? {}).some(rows => rows.length) ? (awaitsRequiredInput ? null : <SurfaceStateCard kind="empty" size="line" title={t('managedMachines.options.empty', { provider: title })} />)
         : null;
     const kindTitle = presentation.kindTitle;
     const pageTitle = props.presetOnly || !kindTitle ? title : t('managedMachines.config.newKind', { provider: title, kind: kindTitle });
@@ -599,8 +608,9 @@ function ManagedMachineConfigurationViewBody(props: ManagedMachineConfigurationV
                 diagnosticCode={error === 'conflict' ? undefined : error} testID="managed-config.error"
                 action={{ label: t(error === 'conflict' ? 'managedMachines.actions.review' : 'managedMachines.actions.tryAgain'), onPress: retry }} />
         </ItemGroup> : null}
-        {draft && credentialFields.length ? <ItemGroup title={t('managedMachines.receipt.account')}>
-            <ActionInputFields fields={credentialFields} input={credentialInput}
+        {draft && credentialPurposes?.length ? <ItemGroup title={t('managedMachines.receipt.account')}
+            description={credentialsReady ? undefined : t(credentialPurposes.some(({ options }) => options.length === 0) ? 'managedMachines.credential.required' : 'managedMachines.credential.choose')}>
+            {credentialFields.length ? <ActionInputFields fields={credentialFields} input={credentialInput}
                 editable={!!catalogProvisioner && !!catalogController && !busy && (!preset || props.presetOnly === true)} busy={busy}
                 resolveFieldOptions={credentialFieldOptions} resolveFieldTestID={field => `managed-config.credential:${credentialPurposes?.[Number(field.path)]?.purpose.purpose}`}
                 onPatch={patch => {
@@ -612,26 +622,21 @@ function ManagedMachineConfigurationViewBody(props: ManagedMachineConfigurationV
                     });
                     setDraft(current => current ? setManagedConfiguratorCredentials(current,
                         managedConfiguratorCredentialSelections({ credentials: selections }, catalogProvisioner)) : current);
-                }} />
+                }} /> : null}
             {credentialPurposes?.map(({ purpose }) => <Item key={qualifiedPurposeKey(purpose)}
                 testID={`managed-config.connect:${purpose.purpose}`} title={t(credentialSelections.some(entry =>
                     qualifiedPurposeKey(entry.purpose) === qualifiedPurposeKey(purpose)) ? 'connectedServices.detail.actions.reconnect' : 'managedMachines.add.action.connect')}
-                subtitle={`${t('connectedServices.title')} · ${purpose.purpose}`}
+                subtitle={purposeAccountTitle(purpose.purpose)}
                 disabled={!catalogController || !catalogProvisioner || busy || !!preset && !props.presetOnly}
                 onPress={() => openAccountSetup(purpose.purpose)} />)}
         </ItemGroup> : null}
-        {draft && !credentialsReady ? <SurfaceStateCard kind="warning" size="line" title={t('managedMachines.credential.required')}
-            testID="managed-config.credential-required" /> : null}
         {draft && showRecipeFields ? <ItemGroup title={t('managedMachines.detail.recipeTitle')}>
             <ActionInputFields fields={recipeFields} input={fieldInput} editable={!!catalogProvisioner && !!catalogController && !busy && (!preset || props.presetOnly === true)}
                 busy={busy} resolveFieldOptions={fieldOptions.resolveOptions} resolveFieldTestID={field => `managed-config.field:${field.path}`}
                 onPatch={patch => setDraft(current => current ? setManagedConfiguratorOptionsSelectors(current, { ...fieldInput, ...patch }) : current)} />
             {selectors === null ? <SurfaceStateCard kind="warning" size="line" title={t('managedMachines.options.unavailable')} diagnosticCode="invalid_parameters" /> : null}
         </ItemGroup> : null}
-        {draft && (otherChoices.length || retainedChoice || choiceState || repairs.length) ? <ItemGroup title={otherChoices.length || retainedChoice ? t('managedMachines.config.otherChoices') : undefined}>
-            {otherChoices.map(choice => <Item key={choice.id} testID={`managed-config.choice:${choice.id}`} title={localized(provisioner.contribution.pluginId, choice.title)}
-                selected={choice.id === draft.selected?.id && pluginJsonValuesEqual(choice.launch, draft.selected?.launch)} showChevron={false} disabled={!catalogProvisioner || !catalogController || busy || choice.available === false || !!preset && !props.presetOnly}
-                onPress={() => setDraft(current => current ? selectManagedConfiguratorChoice(current, choice.id) : current)} />)}
+        {draft && (retainedChoice || choiceState || repairs.length) ? <ItemGroup title={retainedChoice ? t('managedMachines.config.otherChoices') : undefined}>
             {retainedChoice ? <Item testID="managed-config.retained-choice" mode="info" title={localized(provisioner.contribution.pluginId, retainedChoice.title)}
                 subtitle={t('managedMachines.options.unavailable')} selected showChevron={false} /> : null}
             {choiceState}
@@ -676,7 +681,7 @@ function ManagedConfiguratorNativeChoices(props: Readonly<{
     compact: boolean; disabled: boolean;
     /** The computer a local VM shares, named in its size section. */
     computer: string;
-    onChange: (dimension: 'size' | 'image' | 'location', id: string) => void;
+    onChange: (dimension: 'size' | 'image' | 'location' | 'network', id: string) => void;
 }>) {
     const { draft } = props;
     const pluginId = draft.provisioner.contribution.pluginId;
@@ -695,7 +700,7 @@ function ManagedConfiguratorNativeChoices(props: Readonly<{
         if (!size) return [];
         const hourly = choice.prices?.find(price => price.unit === 'hour');
         const monthly = choice.prices?.find(price => price.unit === 'month');
-        return [{ id: size.id, name: props.localized(pluginId, size.title), cpu: size.cpuCores === undefined ? '' : String(size.cpuCores),
+        return [{ id: choice.id, name: props.localized(pluginId, choice.title), cpu: size.cpuCores === undefined ? '' : String(size.cpuCores),
             memory: size.memoryBytes === undefined ? '' : formatHappierDataBytes(size.memoryBytes, { kind: 'memory' }), disk: size.diskBytes === undefined ? '' : formatHappierDataBytes(size.diskBytes, { kind: 'storage' }),
             spec: props.localized(pluginId, size.title), ...(hourly ? { hourly: formatProviderAmount(hourly) } : {}),
             ...(monthly ? { monthly: formatProviderAmount(monthly) } : {}),
@@ -712,7 +717,7 @@ function ManagedConfiguratorNativeChoices(props: Readonly<{
     const images = imageChoices.flatMap(({ choice, available, selectable }) => {
         const image = choice.nativeFacts?.image;
         const preview = image ? previews.get(image.id) : undefined;
-        return image ? [{ id: image.id, name: props.localized(pluginId, image.title),
+        return image ? [{ id: choice.id, name: props.localized(pluginId, choice.title),
             ...(preview ? { preview: <ManagedImagePreview source={preview}
                 accessibilityLabel={image.preview?.accessibilityLabel ? props.localized(pluginId, image.preview.accessibilityLabel) : undefined} /> } : {}),
             description: unavailable(available, selectable) ?? (image.description ? props.localized(pluginId, image.description) : ''), unavailableReason: unavailable(available, selectable),
@@ -721,8 +726,13 @@ function ManagedConfiguratorNativeChoices(props: Readonly<{
     const locations = managedConfiguratorDimensionChoices(draft, 'location').flatMap(({ choice, available, selectable }) => {
         const location = choice.nativeFacts?.location;
         // The country comes only from the provider's own ISO code, named in the reader's language.
-        return location ? [{ id: location.id, city: props.localized(pluginId, location.title), countryCode: location.countryCode,
+        return location ? [{ id: choice.id, city: props.localized(pluginId, choice.title), countryCode: location.countryCode,
             country: countryName(location.countryCode, getPreferredLanguage()), unavailableReason: unavailable(available, selectable), selectable: selectable && !props.disabled }] : [];
+    });
+    const networks = managedConfiguratorDimensionChoices(draft, 'network').flatMap(({ choice, available, selectable }) => {
+        const network = choice.nativeFacts?.network;
+        return network ? [{ id: choice.id, name: props.localized(pluginId, choice.title),
+            unavailableReason: unavailable(available, selectable), selectable: selectable && !props.disabled }] : [];
     });
     const firstPrice = managedConfiguratorDimensionChoices(draft, 'size').flatMap(({ choice }) => choice.prices ?? [])[0];
     const billing = draft.provisioner.descriptor.billing;
@@ -747,6 +757,9 @@ function ManagedConfiguratorNativeChoices(props: Readonly<{
         {locations.length ? <ManagedLocationGroup locations={locations} value={selected.location ?? null} title={t('managedMachines.config.location')}
             description={local ? t('managedMachines.config.localLocationDescription', { computer: props.computer }) : t('managedMachines.config.locationDescription')}
             onChange={id => props.onChange('location', id)} testID="managed-config.locations" /> : null}
+        {networks.length ? <ManagedNetworkGroup networks={networks} value={selected.network ?? null} title={t('managedMachines.config.network')}
+            description={t('managedMachines.config.networkDescription')}
+            onChange={id => props.onChange('network', id)} testID="managed-config.networks" /> : null}
     </>;
 }
 

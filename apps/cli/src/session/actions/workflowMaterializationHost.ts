@@ -30,11 +30,13 @@ type RoleSelection = NonNullable<Materialization['roleSelection']>;
 type MachineTarget = Readonly<{ machineId: string; directory: string; signal?: AbortSignal; roleSelection?: RoleSelection }>;
 
 /** Origin selection is a contextual fallback; Role and explicit engine overrides remain Protocol-owned. */
-export function projectWorkflowConversationRoleSelection(origin: WorkflowSessionConversation): RoleSelection {
+export function projectWorkflowConversationRoleSelection(origin: WorkflowSessionConversation, machineId: string): RoleSelection {
   const modelId = origin.runtimeSnapshot?.modelSelection?.value?.modelId;
   return {
     sessionRoles: origin.sessionRoles,
-    defaultConnectedServices: origin.runtimeSelection?.connectedServices,
+    ...(origin.machineId === machineId && typeof origin.runtimeSelection?.profileId === 'string'
+      ? { defaultProfileId: origin.runtimeSelection.profileId } : {}),
+    defaultConnectedServices: origin.machineId === machineId ? origin.runtimeSelection?.connectedServices : undefined,
     ...(origin.agentTarget ? { defaultEngine: { agentTargetKey: buildBackendTargetKeyV2(origin.agentTarget),
       ...(modelId ? { modelId } : {}) } } : {}),
   };

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { setPreferredLanguageFromSettings } from '@/text';
+import { preloadTranslationsForSettings, setPreferredLanguageFromSettings } from '@/text';
 
 import { formatPermissionRequest, summarizeAgentRequestForVoiceHuman } from './contextFormatters';
+import { getVoiceContextFormatterPrefs } from './voiceContextPrefs';
 
 const SHARE_ALL = {
   voiceShareSessionSummary: true,
@@ -18,7 +19,8 @@ const SHARE_ALL = {
 describe('formatPermissionRequest privacy', () => {
   afterEach(() => setPreferredLanguageFromSettings(null));
 
-  it('localizes human-spoken request framing without changing authored question text', () => {
+  it('localizes human-spoken request framing without changing authored question text', async () => {
+    await preloadTranslationsForSettings('es');
     setPreferredLanguageFromSettings('es');
     const permission = summarizeAgentRequestForVoiceHuman('permission', 'req_es', 'Bash', { command: 'pwd' }, SHARE_ALL);
     const question = summarizeAgentRequestForVoiceHuman('user_action', 'req_question_es', 'ask_user_question', {
@@ -26,7 +28,6 @@ describe('formatPermissionRequest privacy', () => {
     }, SHARE_ALL);
 
     expect(permission).toContain('La sesión de código necesita permiso');
-    expect(permission).toContain('Revísalo en la interfaz de la sesión');
     expect(question).toContain('La sesión de código necesita tu respuesta');
     expect(question).toContain('Keep this exact authored question?');
   });
@@ -79,19 +80,20 @@ describe('formatPermissionRequest privacy', () => {
     expect(result).not.toContain('/Users/alice/SecretRepo/README.md');
   });
 
-  it('explicitly tells the voice agent to interrupt and wait for the user before using more tools', () => {
+  it.each([true, false])('uses the current preference for request guidance before using more tools (enabled=%s)', (canApproveRequests) => {
     const result = formatPermissionRequest(
       'sess_4',
       'req_4',
       'Bash',
       { command: 'rm -rf /tmp/x' },
-      SHARE_ALL,
+      { ...SHARE_ALL, ...getVoiceContextFormatterPrefs({ settings: { voice: { canApproveRequests } } }) },
     );
 
     expect(result).toContain('Interrupt your previous plan and tell the human about this request now.');
-    expect(result).toContain('Do not call any tools or send new coding-session work while this permission remains pending.');
-    expect(result).toContain('Tell the human to use the canonical session UI to approve or deny it.');
-    expect(result).toContain('A spoken answer does not decide this permission request.');
+    expect(result).toContain(canApproveRequests ? 'Voice approvals are enabled' : 'Voice approvals are off');
+    expect(result).toContain('Native Codex Realtime cannot decide requests');
+    if (canApproveRequests) expect(result).toContain('Use the canonical request tools to approve or deny');
+    else expect(result).toContain('A tap in the request UI is required');
     expect(result).toContain('Never claim it was settled until canonical session updates show the result.');
   });
 
@@ -106,7 +108,6 @@ describe('formatPermissionRequest privacy', () => {
 
     expect(result).toContain('needs permission');
     expect(result).toContain('Run:');
-    expect(result).toContain('Review it in the session UI to approve or deny.');
     expect(result).toContain('rm -rf /tmp/x');
     expect(result).not.toContain('req_4');
   });

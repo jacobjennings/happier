@@ -1,4 +1,5 @@
 import { listVoiceActionBlockSpecs, listVoiceSdkSafeToolActionSpecs, listVoiceToolActionSpecs } from '@happier-dev/protocol/actions/actionSpecs';
+import { isActionDirectToolExposedOn } from '@happier-dev/protocol/actions/actionToolExposure';
 import { buildMemoryRecallGuidanceBlockV1 } from '@happier-dev/protocol/prompts/memoryRecallGuidanceV1';
 import { buildPromptPlanV1, renderPromptPlanV1 } from '@happier-dev/protocol/prompts/promptPlanV1';
 import { VOICE_ACTIONS_TAG } from '@happier-dev/protocol/voice/actions';
@@ -17,7 +18,7 @@ export const DEFAULT_VOICE_ASSISTANT_NAME = 'Happier Voice';
 
 export const GLOBAL_VOICE_AGENT_STARTUP_INSTRUCTIONS_ID =
   'happier.global_voice_agent';
-export const GLOBAL_VOICE_AGENT_STARTUP_INSTRUCTIONS_REVISION = 2;
+export const GLOBAL_VOICE_AGENT_STARTUP_INSTRUCTIONS_REVISION = 4;
 
 const VOICE_AGENT_DIRECT_IDENTITY_RULE =
   'Speak as the coding assistant directly, not as a coordinator or wrapper.';
@@ -49,10 +50,11 @@ export function buildGlobalVoiceAgentStartupInstructionsPlanV1() {
         id: 'voice.global_agent.custody',
         scope: 'session',
         text: [
-          'Normal permission and approval custody applies through the canonical session UI.',
-          'Never auto-approve a permission or user-action request.',
-          'A spoken approval, denial, "yes," or equivalent does not decide a permission request.',
-          'Only report the permission as approved, denied, or settled after canonical session state shows that outcome.',
+          'Normal permission and approval custody applies through the canonical request tools and session UI.',
+          'Voice agent can approve requests is enabled by default: you may approve or deny pending requests on the person\'s behalf through canonical tools.',
+          'Read the specific request aloud within the sharing policy, ask the person, and follow their answer before deciding.',
+          'When Voice agent can approve requests is off, tell the person a tap in the request UI is required; do not bypass a present_user_required refusal.',
+          'Only report the permission as approved, denied, or settled after canonical request state shows that outcome.',
           'Never semantically retry a mutation. If an outcome is unknown, report that uncertainty and wait for canonical evidence.',
           VOICE_AGENT_IRREVERSIBLE_ACTION_RULE,
         ].join('\n'),
@@ -105,7 +107,7 @@ function buildVoiceAgentBaseText(params?: Readonly<{
     '- For codebase questions or actions, use tools first before answering when inspection is needed.',
     '- Ask one clarifying question if the user request is ambiguous.',
     ...(hasTool('sendSessionMessage')
-      ? ['- If the user wants the coding assistant to inspect, edit, run, review, or answer something in a session, use sendSessionMessage instead of saying you do not know or asking the user to repeat it to the coding assistant.']
+      ? ['- Use sendSessionMessage when the user asks the coding assistant to inspect, edit, run, review, or answer something in that coding session. Use the available Happier Actions directly for app settings and approval requests.']
       : ['- Use only the available tools for codebase questions or actions; if none can perform the requested mutation, explain that limitation plainly.']),
     `- ${VOICE_AGENT_IRREVERSIBLE_ACTION_RULE}`,
     '- Do not describe yourself as a coordinator, wrapper, messenger, or separate voice layer.',
@@ -132,7 +134,7 @@ function buildVoiceAgentBaseText(params?: Readonly<{
       '- Do not add greeting filler like "Hi there" or restart your answer unless the human explicitly greeted you first.',
     ]),
     '- Do not repeatedly narrate that you are waiting for the coding assistant. After you forward work, acknowledge it in one short sentence and then wait for the next real update.',
-    '- Do not claim a permission request exists unless a real pending permission or user-action request is present in the current session updates.',
+    '- Establish pending requests from canonical request tools or current session updates. Missing session updates do not establish that the Account Inbox has no approval requests.',
     '- If you have forwarded work but have not yet received a real request or result update, say only that you are waiting for the coding assistant update.',
     ...(params?.memoryRecallGuidanceEnabled === true ? ['', buildMemoryRecallGuidanceBlockV1('voice')] : []),
     '',
@@ -142,13 +144,14 @@ function buildVoiceAgentBaseText(params?: Readonly<{
     '- If the active coding session asks a follow-up question or presents options, answer that question first before sending more coding work.',
     '',
     'Permissions:',
-    '- If a permission request arrives, explain what it is in plain language and tell the user to use the canonical session UI to approve or deny it.',
-    '- A spoken approval, denial, "yes," or equivalent does not decide a permission request.',
-    '- Only report the permission as approved, denied, or settled after canonical session state shows that outcome.',
+    '- Voice agent can approve requests is enabled by default: you may approve or deny pending requests on the person\'s behalf through canonical tools.',
+    '- Read the specific request aloud within the sharing policy, ask the person, and follow their answer before deciding.',
+    '- When Voice agent can approve requests is off, tell the person a tap in the request UI is required; do not bypass a present_user_required refusal.',
+    '- Only report the permission as approved, denied, or settled after canonical request state shows that outcome.',
     ...(hasTool('answerUserActionRequest')
       ? ['- If a user-action request arrives with options or questions, briefly present the choices, ask the human to answer, and then use answerUserActionRequest with structured answers.']
       : ['- If a user-action request arrives with options or questions, briefly present the choices and ask the human to answer.']),
-    '- Do not call discovery tools or send new coding work while a permission or user-action request is pending; wait for canonical session state to settle it.',
+    '- While a permission or user-action request is pending, use only tools needed to present or answer that request; do not send new coding work. Wait for canonical session state to settle it.',
   ].join('\n');
 }
 
@@ -280,7 +283,7 @@ export function buildVoiceClientToolAgentPrompt(params?: Readonly<{
               : '- The catalog below is the complete set of tools available for this conversation.',
             ...(admittedNames?.has('action_execute') ? [
               '- For built-in Actions without a direct tool, use searchActionSpecs, then getActionSpec, then action_execute with {actionId, input}. Use the discovered input schema; never guess Action ids.',
-              '- action_execute returns {ok:true,result} or {ok:false,errorCode,error}. An approval_request_created result is pending human approval, not an executed effect.',
+              '- action_execute returns {ok:true,result} or {ok:false,errorCode,error}. An approval_request_created result is pending approval, not an executed effect.',
               '- Contributed plugin Actions still use invokeAction; action_execute does not replace that dispatcher.',
             ] : []),
             ...toolLines,
@@ -331,19 +334,23 @@ export function buildLocalVoiceAgentSystemPrompt(params?: Readonly<{
 }>): string {
   const tag = params?.actionsTag?.trim() || VOICE_ACTIONS_TAG;
   const sessionId = params?.sessionId?.trim() || '';
-  const discoveryLines = buildVoiceDiscoveryChecklistLines(listVoiceActionBlockSpecs(), {
+  const actionSpecs = listVoiceActionBlockSpecs();
+  const discoveryLines = buildVoiceDiscoveryChecklistLines(actionSpecs, {
     disabledActionIds: params?.disabledActionIds,
   });
-  const actionLines = buildVoiceToolDocumentationLines(listVoiceActionBlockSpecs(), {
+  // The native Agent and its action-block instructions share direct-exposure
+  // policy. A hot-path-only prompt otherwise hides tools the Agent receives.
+  const actionLines = buildVoiceToolDocumentationLines(actionSpecs, {
     disabledActionIds: params?.disabledActionIds,
     invocationLabel: 'Args:',
+    requiredDirectActionIds: actionSpecs.filter(spec => isActionDirectToolExposedOn(spec, 'agent')).map(spec => spec.id),
   });
 
   return renderPromptPlanV1(buildPromptPlanV1({
     modality: 'voice',
     blocks: buildVoiceBlocks({
       idPrefix: 'voice.local',
-      base: params ?? {},
+      base: { ...(params ?? {}), actionSpecs },
       extraSystemAppendBlocks: params?.extraSystemAppendBlocks,
       bodyBlocks: [
         {
@@ -359,6 +366,7 @@ export function buildLocalVoiceAgentSystemPrompt(params?: Readonly<{
             '- If you have no actions to trigger, omit the block entirely.',
             `- After actions run, you may receive a follow-up user message that starts with "${VOICE_TOOL_RESULTS_JSON_PREFIX}". Parse the JSON after that prefix (next line) as { toolResults: [...] } and use it to confirm success or explain errors.`,
             '- Always include sessionId internally when the action accepts it.',
+            '- These actions run through the Happier Voice host. Use this action channel for app settings and request discovery or decisions; native coding tools retain their own authority and do not gain Voice delegation.',
             '- The action list below is only the hot path. For anything else, use searchActionSpecs first instead of guessing.',
             '',
             ...(discoveryLines.length > 0 ? ['Discovery checklist:', ...discoveryLines, ''] : []),

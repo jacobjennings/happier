@@ -12,6 +12,7 @@ import { presentSharePrincipal } from '../sharePrincipalPresentation';
 import { useShareViewerProfile } from '../useShareViewerProfile';
 import { createFrontDoorActionExecute } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
 import { t } from '@/text';
+import { resolveWidgetInstanceTitle } from '@/components/widgets/widgetCatalog';
 import { getConnectedServiceRegistrySnapshot } from '@/sync/domains/connectedServices/connectedServiceRegistry';
 import { resolveQualifiedConnectedServiceRegistryDisplayName } from '@/components/settings/connectedServices/model/resolveConnectedServiceDisplayName';
 import type { DocumentPrivateChoice, DocumentShareKind } from './documentShareAdapter';
@@ -34,6 +35,7 @@ type State = Readonly<{
     response: ArtifactAccessGrantsListResponseV1 | null;
     issue?: ShareUiError;
     operations: Readonly<Record<string, ShareOperationModel>>;
+    confirmingRemoval: string | null;
 }>;
 
 const IDLE: ShareOperationModel = { kind: 'idle' };
@@ -96,7 +98,7 @@ export function useDocumentShareController(input: Readonly<{ artifactId: string;
     const dashboard = input.kind === 'widget-area-layout.v1';
     const identity = `${scope.serverId}:${scope.accountId}:${artifactId}`;
     const [execute] = React.useState(() => createFrontDoorActionExecute());
-    const [state, setState] = React.useState<State>({ phase: 'initial', response: null, operations: {} });
+    const [state, setState] = React.useState<State>({ phase: 'initial', response: null, operations: {}, confirmingRemoval: null });
     const [query, setQuery] = React.useState('');
     const [notice, setNotice] = React.useState<ShareUiReason | undefined>();
     const [revision, setRevision] = React.useState(0);
@@ -156,8 +158,7 @@ export function useDocumentShareController(input: Readonly<{ artifactId: string;
             const descriptor = issues.some(issue => issue.inputPath)
                 ? await import('@/sync/ops/actions/widgetInputActionDeps').then(owner => owner.readWidgetShareInputDescriptorV1({ ref, instance, scope })).catch(() => null)
                 : null;
-            const widget = instance.displayName ?? descriptor?.title
-                ?? (instance.definition.kind === 'inline' ? instance.definition.definition.name : instance.id);
+            const widget = resolveWidgetInstanceTitle(instance, descriptor);
             return issues.map(issue => {
                 const declared = issue.inputPath && descriptor ? readWidgetConnectedAccountPurposeV1({
                     descriptor, resources: descriptor.resourceDeclarations ?? [], path: issue.inputPath,
@@ -200,7 +201,7 @@ export function useDocumentShareController(input: Readonly<{ artifactId: string;
     const mutate = React.useCallback(async (mutation: Mutation) => {
         const key = sessionAccessSubjectKey(mutation.principal);
         lastMutation.current.set(key, mutation);
-        setState((previous) => ({ ...previous, operations: { ...previous.operations,
+        setState((previous) => ({ ...previous, confirmingRemoval: null, operations: { ...previous.operations,
             [key]: { kind: mutation.actionId === 'artifact.access.grants.remove' ? 'removing' : 'saving' } } }));
         const payload = mutation.actionId === 'artifact.access.grants.set'
             ? { artifactId, principal: mutation.principal, accessLevel: mutation.accessLevel }
@@ -216,7 +217,7 @@ export function useDocumentShareController(input: Readonly<{ artifactId: string;
                 const { changed: _changed, access, ...response } = parsed.data;
                 if (access === null) {
                     lastMutation.current.clear();
-                    return { phase: 'ready', response: null, operations: {},
+                    return { phase: 'ready', response: null, operations: {}, confirmingRemoval: null,
                         issue: presentDocumentShareFailure('artifact_access_revoked') };
                 }
                 lastMutation.current.delete(key);
@@ -275,10 +276,11 @@ export function useDocumentShareController(input: Readonly<{ artifactId: string;
             grant: row.principal,
             principal,
             level: { kind: 'editable', value: row.accessLevel, options: isOwner ? ['view', 'edit', 'admin'] : ['view', 'edit'] },
-            removal: { kind: 'allowed' },
+            removal: state.confirmingRemoval === principal.key
+                ? { kind: 'confirming', consequences: [] } : { kind: 'allowed' },
             operation,
         };
-    }), [grants, isOwner, state.operations, scope.accountId, viewerProfile]);
+    }), [grants, isOwner, state.operations, state.confirmingRemoval, scope.accountId, viewerProfile]);
     const owner = response && response.ownerAccountId === scope.accountId ? { principal: presentSharePrincipal({
         ref: { kind: 'account', accountId: response.ownerAccountId },
         profile: viewerProfile, viewerAccountId: scope.accountId,
@@ -303,11 +305,23 @@ export function useDocumentShareController(input: Readonly<{ artifactId: string;
             if (mutation) void mutate(mutation);
         },
         setAccessLevel: (grant, accessLevel) => { void mutate({ actionId: 'artifact.access.grants.set', principal: grant, accessLevel }); },
-        requestRemove: (grant) => { void mutate({ actionId: 'artifact.access.grants.remove', principal: grant }); },
-        confirmRemove: (grant) => { void mutate({ actionId: 'artifact.access.grants.remove', principal: grant }); },
-        cancelRemove: () => {},
+        requestRemove: (grant) => {
+            const key = sessionAccessSubjectKey(grant);
+            if (editable && grants.some(row => sessionAccessSubjectKey(row.principal) === key)) {
+                setState(previous => ({ ...previous, confirmingRemoval: key }));
+            }
+        },
+        confirmRemove: (grant) => {
+            if (editable && state.confirmingRemoval === sessionAccessSubjectKey(grant)) {
+                void mutate({ actionId: 'artifact.access.grants.remove', principal: grant });
+            }
+        },
+        cancelRemove: (grant) => {
+            setState(previous => previous.confirmingRemoval === sessionAccessSubjectKey(grant)
+                ? { ...previous, confirmingRemoval: null } : previous);
+        },
         explain: setNotice,
-    }), [directory.loadMore, directory.retry, mutate]);
+    }), [directory.loadMore, directory.retry, editable, grants, mutate, state.confirmingRemoval]);
 
     return {
         model: {

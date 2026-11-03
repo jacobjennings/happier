@@ -1,9 +1,17 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { seedPersistedHomeProfilesForTests } from '@/dev/testkit/fixtures/persistedHomeProfiles';
+import {
+    homeProfileForTests,
+    installTokenStorageTestIsolation,
+    installTokenStorageWebPlatformMocks,
+} from './tokenStorage.testHelpers';
 import { installLocalStorageMock } from './tokenStorage.web.testHelpers';
-import { encodeBase64 } from '@/encryption/base64';
 
 installTokenStorageWebPlatformMocks();
+installTokenStorageTestIsolation('token_storage_pending_seed');
+
+const { TokenStorage } = await import('./tokenStorage');
+const { encodeBase64 } = await import('@/encryption/base64');
 
 const HOME_URL_A = 'http://127.0.0.1:3005';
 const HOME_URL_B = 'http://127.0.0.1:43110';
@@ -24,10 +32,6 @@ function storedPendingSeedRecords(store: Map<string, string>): Array<Record<stri
 describe('TokenStorage pending Personal Home bootstrap seed custody', () => {
     let restoreLocalStorage: (() => void) | null = null;
 
-    beforeEach(() => {
-        vi.resetModules();
-    });
-
     afterEach(() => {
         vi.restoreAllMocks();
         restoreLocalStorage?.();
@@ -37,8 +41,6 @@ describe('TokenStorage pending Personal Home bootstrap seed custody', () => {
     it('persists a versioned base64url record and reads back the exact 32 seed bytes', async () => {
         const storage = installLocalStorageMock();
         restoreLocalStorage = storage.restore;
-        const { TokenStorage } = await import('./tokenStorage');
-
         await expect(TokenStorage.getPendingPersonalHomeBootstrapSeed(HOME_URL_A)).resolves.toBeNull();
 
         const seed = seed32(7);
@@ -64,8 +66,6 @@ describe('TokenStorage pending Personal Home bootstrap seed custody', () => {
     it('rejects seeds that are not exactly 32 bytes without writing custody', async () => {
         const storage = installLocalStorageMock();
         restoreLocalStorage = storage.restore;
-        const { TokenStorage } = await import('./tokenStorage');
-
         for (const length of [0, 31, 33, 64]) {
             await expect(
                 TokenStorage.setPendingPersonalHomeBootstrapSeed(HOME_URL_A, {}, new Uint8Array(length).fill(1)),
@@ -78,7 +78,11 @@ describe('TokenStorage pending Personal Home bootstrap seed custody', () => {
     it('reads corrupted or foreign custody records as absent instead of consuming them', async () => {
         const storage = installLocalStorageMock();
         restoreLocalStorage = storage.restore;
-        const { TokenStorage } = await import('./tokenStorage');
+        // Seed corrupt bytes at the exact custody key the getter reads, discovered from a valid write.
+        await expect(TokenStorage.setPendingPersonalHomeBootstrapSeed(HOME_URL_A, {}, seed32(3))).resolves.toBe(true);
+        const [custodyKey] = [...storage.store.keys()].filter((key) => key.includes(PENDING_SEED_KEY_PREFIX));
+        expect(custodyKey).toBeTruthy();
+        await expect(TokenStorage.getPendingPersonalHomeBootstrapSeed(HOME_URL_A)).resolves.toEqual(seed32(3));
 
         const validRecord = { v: 1, seedBase64Url: encodeBase64(seed32(3), 'base64url') };
         const corruptedRecords = [
@@ -90,19 +94,16 @@ describe('TokenStorage pending Personal Home bootstrap seed custody', () => {
             'not json at all',
         ];
 
-        for (const [index, corrupted] of corruptedRecords.entries()) {
-            storage.store.clear();
-            const key = `${PENDING_SEED_KEY_PREFIX}__srv_corrupted_${index}`;
-            storage.store.set(key, corrupted);
+        for (const corrupted of corruptedRecords) {
+            storage.store.set(custodyKey!, corrupted);
             await expect(TokenStorage.getPendingPersonalHomeBootstrapSeed(HOME_URL_A)).resolves.toBeNull();
+            expect(storage.store.get(custodyKey!)).toBe(corrupted);
         }
     });
 
     it('never overwrites an unreadable existing custody record with a newly generated seed', async () => {
         const storage = installLocalStorageMock();
         restoreLocalStorage = storage.restore;
-        const { TokenStorage } = await import('./tokenStorage');
-
         await expect(
             TokenStorage.setPendingPersonalHomeBootstrapSeed(HOME_URL_A, {}, seed32(3)),
         ).resolves.toBe(true);
@@ -120,8 +121,6 @@ describe('TokenStorage pending Personal Home bootstrap seed custody', () => {
     it('isolates pending seeds by explicit canonical Home origin', async () => {
         const storage = installLocalStorageMock();
         restoreLocalStorage = storage.restore;
-        const { TokenStorage } = await import('./tokenStorage');
-
         const seedA = seed32(1);
         const seedB = seed32(2);
         await expect(
@@ -144,17 +143,13 @@ describe('TokenStorage pending Personal Home bootstrap seed custody', () => {
         const storage = installLocalStorageMock();
         restoreLocalStorage = storage.restore;
 
-        vi.doMock('@/sync/domains/server/serverProfiles', () => ({
-            areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left) === String(right),
-            getActiveServerId: () => null,
-            getActiveServerUrl: () => '',
-            listServerProfiles: () => [
-                { id: 'profile-a', serverUrl: HOME_URL_A, serverIdentityId: HOME_IDENTITY_A, legacyServerIds: [] },
-                { id: 'profile-b', serverUrl: HOME_URL_A, serverIdentityId: HOME_IDENTITY_B, legacyServerIds: [] },
-            ],
-        }));
+        // Two Homes share one canonical origin and are told apart by their stable identities
+        // (canonical Home URLs keep the profile owner from folding them into one legacy row).
+        const both = { canonicalServerUrl: HOME_URL_A };
+        const profileA = homeProfileForTests('profile-a', HOME_URL_A, { ...both, serverIdentityId: HOME_IDENTITY_A });
+        const profileB = homeProfileForTests('profile-b', HOME_URL_A, { ...both, serverIdentityId: HOME_IDENTITY_B });
+        await seedPersistedHomeProfilesForTests({ profiles: [profileA, profileB], activeServerId: profileA.id });
 
-        const { TokenStorage } = await import('./tokenStorage');
         const seedA = seed32(5);
         const seedB = seed32(6);
         await expect(

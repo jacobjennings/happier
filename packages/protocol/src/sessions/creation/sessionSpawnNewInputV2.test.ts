@@ -7,6 +7,7 @@ import {
 import * as sessionSpawnInput from './sessionSpawnNewInputV2.js';
 import { SessionRequesterBootstrapRpcRequestV1Schema } from './sessionRequesterBootstrapV1.js';
 import { SessionPromptStackV1Schema } from '../context/sessionContextV1.js';
+import { SessionSpawnNewInputV2Schema as preObservationInputSchema } from './testFixtures/sessionSpawnInputBeforeCommitObservation.js';
 
 const { SessionSpawnNewInputV2Schema } = sessionSpawnInput;
 
@@ -24,6 +25,35 @@ describe('SessionSpawnNewInputV2Schema', () => {
     const projectGroupV1 = { v: 1, path: '/project', label: 'Project' };
     expect(SessionSpawnNewInputV2Schema.parse({ ...input, projectGroupV1 })).toMatchObject({ ...input, projectGroupV1 });
     expect(SessionSpawnNewInputV2Schema.safeParse({ ...input, projectGroupV1: { v: 1, path: 'relative' } }).success).toBe(false);
+  });
+  it('carries negotiated commit observation through ordinary Action and requester transports without changing creation fields', () => {
+    const observed = { ...input, creationKey: 'same-creation', observeSessionCommit: true };
+    expect(SessionSpawnNewInputV2Schema.parse(observed)).toEqual(observed);
+    const action = sessionSpawnInput.SessionSpawnNewActionInputV2Schema.parse(observed);
+    expect(sessionSpawnInput.admitSessionSpawnNewActionInputV2(action)).toEqual(observed);
+    expect(SessionRequesterBootstrapRpcRequestV1Schema.parse({ kind: 'requester_session_bootstrap_v1', input: observed,
+      requesterBootstrap: { v: 1, disposition: 'ordinary_requester', credentials: { token: 'requester-token' } },
+    }).input).toEqual(observed);
+    expect(SessionSpawnNewInputV2Schema.safeParse({ ...observed, observeSessionCommit: false }).success).toBe(false);
+    expect(preObservationInputSchema.parse(input)).toEqual(input);
+    expect(preObservationInputSchema.safeParse(observed).success).toBe(false);
+    // Server-start drafts describe birth, never the transport observer's preference.
+    expect(sessionSpawnInput.SessionServerStartSpawnDraftV1Schema.safeParse(observed).success).toBe(false);
+  });
+  it('keeps transport observation out of both Agent authoring contracts', () => {
+    expect(sessionSpawnInput.SessionSpawnNewAgentAuthoringInputV2Schema.safeParse(input).success).toBe(true);
+    expect(sessionSpawnInput.SessionSpawnNewActionAgentAuthoringInputV2Schema.safeParse(input).success).toBe(true);
+    expect(sessionSpawnInput.SessionSpawnNewAgentAuthoringInputV2Schema.safeParse({ ...input, observeSessionCommit: true }).success).toBe(false);
+    expect(sessionSpawnInput.SessionSpawnNewActionAgentAuthoringInputV2Schema.safeParse({ ...input, observeSessionCommit: true }).success).toBe(false);
+  });
+  it('admits private authoring provenance for negotiated spawn while excluding server-visible drafts', () => {
+    const authoringOrigin = { kind: 'project', accountId: 'original-account',
+      workspace: { serverId: 'original-home', workspaceId: 'original-workspace', machineId: 'original-machine', rootPath: '/private/original' }, page: 'scripts' };
+    expect(SessionSpawnNewInputV2Schema.parse({ ...input, authoringOrigin })).toMatchObject({ authoringOrigin });
+    expect(sessionSpawnInput.SessionSpawnNewActionInputV2Schema.safeParse({ ...input, authoringOrigin }).success).toBe(true);
+    expect(sessionSpawnInput.SessionServerStartSpawnDraftV1Schema.safeParse({ ...input, authoringOrigin }).success).toBe(false);
+    expect(SessionSpawnNewInputV2Schema.safeParse({ ...input, authoringOrigin: { ...authoringOrigin, extra: true } }).success).toBe(false);
+    expect(SessionSpawnNewInputV2Schema.parse(input)).not.toHaveProperty('authoringOrigin');
   });
   it('reserves a Discussion participant without admitting a prompt, trigger or source continuation', () => {
     const selected = { ...input, discussionParticipant: { discussionId: 'discussion-1', participantSlotId: 'slot-1' } };

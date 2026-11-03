@@ -145,6 +145,11 @@ function definitionCommon(
         id: item.id, name: item.name, description: item.description, enabled: item.enabled,
         targetType: targetTypeV3(item.targetType), existingSessionId: readExistingSessionId(item),
         workflowDefinitionId: item.workflowDefinitionId, scopeSessionId: item.scopeSessionId,
+        ...(item.managedTargetIndexed === true ? {
+            managedTarget: item.managedTargetHomeId != null && item.managedTargetManagedId != null
+                ? { homeId: item.managedTargetHomeId, managedId: item.managedTargetManagedId }
+                : null,
+        } : {}),
         templateVersion: item.templateVersion, lastRunAt: item.lastRunAt?.getTime() ?? null,
         createdAt: item.createdAt.getTime(), updatedAt: item.updatedAt.getTime(),
         assignments: item.assignments.map((assignment) => ({

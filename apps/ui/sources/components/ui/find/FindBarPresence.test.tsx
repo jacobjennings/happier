@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { describe, expect, it, vi } from 'vitest';
 import { Text, TextInput } from 'react-native';
 
+import { resolveOverlayMotionPreset } from '@/components/ui/overlays/motion/overlayMotion';
 import { setReducedMotionPreferenceOverride } from '@/hooks/ui/useReducedMotionPreference';
 import { FindBarPlacement, useFindBarPresence } from './FindBarPlacement';
 import { FindComposerSlotHost, FindComposerSlotProvider } from './FindComposerSlot';
@@ -76,9 +77,17 @@ describe('Find bar presence', () => {
         setReducedMotionPreferenceOverride(true);
         const view = await mount(1440, (open) => <Surface open={open} query={open ? 'remount' : ''} />);
         try {
+            // The bar's own preset (FindBarPlacement's inline popover motion). The reduced cross-fade is the owner's
+            // fade, not the popover exit, so between the two the leaving frame is still fading under reduced motion
+            // while an ignored preference would already have removed it.
+            const { reducedMotionFadeMs, exitMs } = resolveOverlayMotionPreset({ kind: 'popover', direction: 'bottom' });
+            expect(exitMs).toBeLessThan(reducedMotionFadeMs);
+            vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
             await view.close();
-            await wait(400);
+            await act(async () => { vi.advanceTimersByTime((exitMs + reducedMotionFadeMs) / 2); });
+            expect(leavingText(view.container)).toBe('inline:remount');
+            await act(async () => { vi.advanceTimersByTime(reducedMotionFadeMs); });
             expect(view.container.textContent).toBe('');
-        } finally { await view.cleanup(); setReducedMotionPreferenceOverride(null); }
+        } finally { vi.useRealTimers(); await view.cleanup(); setReducedMotionPreferenceOverride(null); }
     });
 });

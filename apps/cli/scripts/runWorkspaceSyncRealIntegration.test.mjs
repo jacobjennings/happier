@@ -151,72 +151,13 @@ test('builds once and runs all real specs with source binaries and one stable re
   });
 
   assert.equal(calls.length, 10);
-  assert.deepEqual(calls[0].args, ['--silent', 'run', 'build:native:test-relay']);
-  assert.deepEqual(calls[1].args, [
-    '--silent',
-    'run',
-    'test:local',
-    'src/actions/actionExecutor.workspaceSyncConflict.test.ts',
-    'src/actions/actionExecutor.sessionHandoff.test.ts',
-  ]);
-  assert.deepEqual(calls[2].args, [
-    '--silent',
-    'run',
-    'vitest:local',
-    'run',
-    '-c',
-    'vitest.config.ts',
-    'src/workspaces/sync/workspaceSyncLegacySurface.architecture.test.ts',
-  ]);
-  assert.deepEqual(calls[3].args, [
-    '--silent',
-    'run',
-    'vitest:local',
-    'run',
-    '--isolate',
-    '-c',
-    'vitest.integration.config.ts',
-    'src/daemon/startDaemon.handoff.integration.test.ts',
-    '-t',
-    'enters session.handoff through the loaded daemon and reaches relationship and target authorities',
-  ]);
-  assert.deepEqual(calls[4].args, [
-    '--silent',
-    'run',
-    'vitest:local',
-    'run',
-    '--isolate',
-    '-c',
-    'vitest.config.ts',
-    'src/workspaces/sync/workspaceSyncTargetBootstrap.test.ts',
-    '-t',
-    'returns approval_stale without mutation when the approved root object was replaced|rolls back durable replacement custody when restart finds no final READY|treats exact READY plus receipt as committed cleanup pending on restart|does not trust mismatched READY to commit a retained rollback receipt',
-  ]);
-  assert.deepEqual(calls[5].args, [
-    '--silent',
-    'run',
-    'vitest:local',
-    'run',
-    '--isolate',
-    '-c',
-    'vitest.config.ts',
-    'src/workspaces/sync/workspaceSyncNativeConfinedFileSystem.test.ts',
-    '-t',
-    'uses the staged native helper for read, abort preservation, and committed deletion',
-  ]);
-  assert.deepEqual(calls[6].args, [
-    '--silent',
-    'run',
-    'vitest:local',
-    'run',
-    '--isolate',
-    '-c',
-    'vitest.integration.config.ts',
-    'src/workspaces/sync/transport/workspaceSyncBroker.go.real.integration.test.ts',
-  ]);
-  assert.match(calls[7].args.at(-1), /createDaemonWorkspaceSyncRuntime\.real\.integration\.test\.ts/u);
-  assert.match(calls[8].args.at(-1), /workspaceMachineCarrierMutagen\.real\.integration\.test\.ts/u);
-  assert.match(calls[9].args.at(-1), /createDaemonWorkspaceSyncRuntime\.real\.integration\.test\.ts/u);
+  // The literal per-spec argv is the plan's contract (asserted above); execution
+  // must run the relay build first, then every planned spec in plan order.
+  const plan = createWorkspaceSyncRealIntegrationPlan({ env: { ...binaries, EXISTING_VALUE: 'preserved' } });
+  assert.deepEqual(
+    calls.map((call) => ({ args: call.args, cwd: call.options.cwd })),
+    [plan.build, ...plan.tests.map(({ args, cwd }) => ({ args, cwd }))],
+  );
   assert.equal(calls[3].options.env.EXISTING_VALUE, 'preserved');
   assert.equal(calls[3].options.env.HAPPIER_RUN_MUTAGEN_REAL_INTEGRATION, '1');
   assert.equal(

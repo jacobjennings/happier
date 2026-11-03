@@ -29,15 +29,18 @@ describe('bindEndpointConnectivityStateToRealtimeStore', () => {
         });
 
         const pause = new PauseController();
+        const onEndpointOnline = vi.fn();
         const detach = bindEndpointConnectivityStateToRealtimeStore({
             subscribe: (listener) => supervisor.subscribe(listener),
             pause,
+            onEndpointOnline,
         });
         await supervisor.start();
 
         expect(storage.getState().endpointStatus).toBe('offline');
         expect(storage.getState().endpointLastErrorMessage).toBe('nope');
         expect(pause.isPaused()).toBe(true);
+        expect(onEndpointOnline).toHaveBeenCalledTimes(0);
 
         probeResult = { status: 'ready' };
         supervisor.invalidate();
@@ -46,6 +49,7 @@ describe('bindEndpointConnectivityStateToRealtimeStore', () => {
 
         expect(storage.getState().endpointStatus).toBe('online');
         expect(pause.isPaused()).toBe(false);
+        expect(onEndpointOnline).toHaveBeenCalledTimes(1);
 
         supervisor.reportFailure({ errorMessage: 'Network request failed' });
         expect(storage.getState().endpointStatus).toBe('offline');
@@ -75,19 +79,17 @@ describe('bindEndpointConnectivityStateToRealtimeStore', () => {
         await supervisor.stop();
     });
 
-    it('sanitizes endpoint error messages before storing them', async () => {
-        let probeResult: ReadinessProbeResult = {
-            status: 'server_unreachable',
-            errorMessage:
-                'request failed: https://admin:secret@custom.example.test:9443/path/?token=abc#frag (Authorization: Bearer hdr.eyJzdWIiOiJ0ZXN0In0.sig)',
-        };
-
+    it('stores a sanitized endpoint error message instead of the raw one', async () => {
+        // Redaction detail is owned by sanitizeEndpointErrorMessage.test.ts; this proves the binder applies it.
         const supervisor = createManagedEndpointSupervisor({
             ...DEFAULT_MANAGED_CONNECTION_POLICY,
             initialFastRetryDelayMs: 10,
             backoffMinMs: 10,
             backoffMaxMs: 50,
-            probeReadiness: async () => probeResult,
+            probeReadiness: async () => ({
+                status: 'server_unreachable',
+                errorMessage: 'request failed: https://admin:secret@custom.example.test:9443/path/ (Authorization: Bearer hdr.eyJzdWIiOiJ0ZXN0In0.sig)',
+            }),
         });
 
         const detach = bindEndpointConnectivityStateToRealtimeStore({ subscribe: (listener) => supervisor.subscribe(listener) });
@@ -96,56 +98,10 @@ describe('bindEndpointConnectivityStateToRealtimeStore', () => {
         expect(storage.getState().endpointStatus).toBe('offline');
         expect(storage.getState().endpointLastErrorMessage).toContain('https://custom.example.test:9443/path');
         expect(storage.getState().endpointLastErrorMessage).not.toContain('admin:secret@');
-        expect(storage.getState().endpointLastErrorMessage).not.toContain('token=abc');
-        expect(storage.getState().endpointLastErrorMessage).toContain('Bearer [REDACTED]');
         expect(storage.getState().endpointLastErrorMessage).not.toContain('hdr.eyJ');
-
-        probeResult = { status: 'ready' };
-        supervisor.invalidate();
-        await new Promise<void>((resolve) => queueMicrotask(resolve));
-        await new Promise<void>((resolve) => queueMicrotask(resolve));
-
-        supervisor.reportFailure({
-            errorMessage: 'https://admin:secret@custom.example.test:9443/path/?token=abc#frag',
-        });
-        expect(storage.getState().endpointLastErrorMessage).toBe('https://custom.example.test:9443/path');
 
         detach();
         await supervisor.stop();
-    });
-
-    it('invokes onEndpointOnline when transitioning from offline to online', async () => {
-        vi.useFakeTimers();
-        try {
-            let probeResult: ReadinessProbeResult = { status: 'server_unreachable', errorMessage: 'nope' };
-
-            const supervisor = createManagedEndpointSupervisor({
-                ...DEFAULT_MANAGED_CONNECTION_POLICY,
-                initialFastRetryDelayMs: 10,
-                backoffMinMs: 10,
-                backoffMaxMs: 50,
-                probeReadiness: async () => probeResult,
-            });
-
-            const onEndpointOnline = vi.fn();
-            const detach = bindEndpointConnectivityStateToRealtimeStore({ subscribe: (listener) => supervisor.subscribe(listener), onEndpointOnline });
-            await supervisor.start();
-
-            expect(storage.getState().endpointStatus).toBe('offline');
-            expect(onEndpointOnline).toHaveBeenCalledTimes(0);
-
-            probeResult = { status: 'ready' };
-            supervisor.invalidate();
-            await vi.runAllTimersAsync();
-
-            expect(storage.getState().endpointStatus).toBe('online');
-            expect(onEndpointOnline).toHaveBeenCalledTimes(1);
-
-            detach();
-            await supervisor.stop();
-        } finally {
-            vi.useRealTimers();
-        }
     });
 
     describe('teardown (shutting_down) is not a claim about the server', () => {

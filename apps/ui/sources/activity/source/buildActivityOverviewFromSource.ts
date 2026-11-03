@@ -17,7 +17,12 @@ import { readSessionListRowForServerId } from '@/sync/domains/session/listing/se
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { isUserFacingSession } from '@/sync/domains/session/listing/isUserFacingSession';
 import {
-    buildSessionFromListRenderable,
+    createSessionListPresentationSource,
+    readSessionListPresentationOwnerMetadata,
+    readSessionListPresentationOwnerMetadataField,
+    readSessionListRenderableOwnerMetadataView,
+    type SessionPresentationRecord,
+    type SessionListPresentationSource,
     isSessionListRenderableNewerThanSession,
 } from '@/sync/domains/session/listing/sessionListRenderableSessionProjection';
 import {
@@ -72,28 +77,39 @@ export const DEFAULT_ACTIVITY_SURFACE_TIMING: ActivitySurfaceTimingBySurface = {
     },
 };
 
-function isHydratedSessionInActivityCustody(session: Session): boolean {
+function readSourceOwnerMetadata(session: SessionPresentationRecord, source?: SessionListPresentationSource) {
+    return source ? readSessionListPresentationOwnerMetadata(source) : 'agentState' in session
+        ? readSessionOwnerMetadataView(session) : readSessionListRenderableOwnerMetadataView(session);
+}
+
+function readSourceCustodyMetadata(session: SessionPresentationRecord, source?: SessionListPresentationSource) {
+    const metadata = readSourceOwnerMetadata(session, source);
+    return source && metadata ? { hiddenSystemSession: metadata.hiddenSystemSession,
+        systemSessionV1: readSessionListPresentationOwnerMetadataField(source, 'systemSessionV1') } : metadata;
+}
+
+function isHydratedSessionInActivityCustody(session: SessionPresentationRecord, source?: SessionListPresentationSource): boolean {
     if (session.viewer?.attention.presentation === 'status_only' && session.viewer.attention.needsAttention) return true;
-    const ownerMetadata = readSessionOwnerMetadataView(session);
-    if (session.metadataLayoutVersion === 1 && ownerMetadata == null) {
+    const ownerMetadata = readSourceOwnerMetadata(session, source);
+    if ((source?.metadataLayoutVersion ?? session.metadataLayoutVersion) === 1 && ownerMetadata == null) {
         return false;
     }
     return (
         isUserFacingSession({
-            metadata: ownerMetadata,
+            metadata: readSourceCustodyMetadata(session, source),
         })
-        || isVoiceConversationCustodySessionMetadata(ownerMetadata)
+        || isVoiceConversationCustodySessionMetadata(readSourceCustodyMetadata(session, source))
     );
 }
 
-function isHydratedSessionUserFacing(session: Session): boolean {
+function isHydratedSessionUserFacing(session: SessionPresentationRecord, source?: SessionListPresentationSource): boolean {
     if (session.viewer?.attention.presentation === 'status_only' && session.viewer.attention.needsAttention) return true;
-    const ownerMetadata = readSessionOwnerMetadataView(session);
-    if (session.metadataLayoutVersion === 1 && ownerMetadata == null) {
+    const ownerMetadata = readSourceOwnerMetadata(session, source);
+    if ((source?.metadataLayoutVersion ?? session.metadataLayoutVersion) === 1 && ownerMetadata == null) {
         return false;
     }
     return isUserFacingSession({
-        metadata: ownerMetadata,
+        metadata: readSourceCustodyMetadata(session, source),
     });
 }
 
@@ -130,7 +146,8 @@ function buildLookupState(source: ActivityAttentionSource): SessionServerLookupS
 
 export type ActivitySourceSessionEntry = Readonly<{
     address: SessionAddress;
-    session: Session;
+    session: SessionPresentationRecord;
+    presentationSource?: SessionListPresentationSource;
     hasHydratedMessages: boolean;
 }>;
 
@@ -202,30 +219,25 @@ export function collectSourceSessions(
             // agent-state copy or an ambient same-ID transcript from another Home.
             const summaryProjectionUsesMatchingRow = summaryProjectionMatchesHydrated
                 && source.sessionMessagesById === undefined;
-            let projectedSession = (summaryProjectionIsNewer || summaryProjectionUsesMatchingRow) && renderable
-                ? buildSessionFromListRenderable(renderable, { serverId: address.serverId })
+            const presentationSource = (summaryProjectionIsNewer || summaryProjectionUsesMatchingRow) && renderable
+                ? createSessionListPresentationSource(renderable, { serverId: address.serverId,
+                    ...(summaryProjectionUsesMatchingRow ? { readyEvent: { latestReadyEventSeq:
+                        renderable.latestReadyEventSeq === undefined ? session.latestReadyEventSeq : renderable.latestReadyEventSeq } } : {}),
+                })
                 : renderable
                 && renderable.metadataUnavailable !== true
                 && isSessionListRenderableNewerThanSession(renderable, session)
-                ? buildSessionFromListRenderable(renderable, {
+                ? createSessionListPresentationSource(renderable, {
                     baseSession: session,
                     serverId: address.serverId,
                 })
-                : session;
-            if (summaryProjectionUsesMatchingRow && renderable) {
-                // A matching row's unread bit is not new ready-event evidence.
-                // Keep the explicit ready fact while consuming its pending counts.
-                projectedSession = {
-                    ...projectedSession,
-                    latestReadyEventSeq: renderable.latestReadyEventSeq === undefined
-                        ? session.latestReadyEventSeq
-                        : renderable.latestReadyEventSeq,
-                };
-            }
-            if (isHydratedSessionInActivityCustody(projectedSession)) {
+                : undefined;
+            const projectedSession = presentationSource?.row ?? session;
+            if (isHydratedSessionInActivityCustody(projectedSession, presentationSource)) {
                 sessions.push({
                     address,
                     session: projectedSession,
+                    presentationSource,
                     hasHydratedMessages: !(summaryProjectionMatchesHydrated || summaryProjectionIsNewer),
                 });
             }
@@ -242,7 +254,8 @@ export function collectSourceSessions(
         ) {
             sessions.push({
                 address,
-                session: buildSessionFromListRenderable(renderable, { serverId: address.serverId }),
+                session: renderable,
+                presentationSource: createSessionListPresentationSource(renderable, { serverId: address.serverId }),
                 hasHydratedMessages: false,
             });
         }
@@ -314,7 +327,7 @@ function enrichCandidateWithSourceFacts(params: Readonly<{
                 : !isActiveLocal
                     ? 'server_not_active'
                     : 'allowed';
-    const ownerMetadata = readSessionOwnerMetadataView(params.candidate.session);
+    const ownerMetadata = readSourceOwnerMetadata(params.candidate.session, params.candidate.presentationSource);
     const workspaceLabel = ownerMetadata && params.candidate.awareness.workspace
         ? resolveSessionWorkspaceDisplayPresentation({
             serverId,
@@ -394,7 +407,7 @@ export function buildActivityOverviewFromSource(params: Readonly<{
     const resolveSessionOptions = params.resolveSessionOptionsForServerId;
     const candidates = collectSourceSessions(params.source, params.includeWarmSourceWhenNotReady === true)
         .flatMap((entry) => {
-            const followRulePolicies = readActivitySessionRulePolicies(params.source, entry.address, entry.session, params.nowMs);
+            const followRulePolicies = readActivitySessionRulePolicies(params.source, entry.address, entry.session, params.nowMs, entry.presentationSource);
             if (!isSessionAdmittedToPersonalActivity(entry.session, followRulePolicies)) return [];
             const sessionOptions = resolveSessionOptions
                 ? resolveSessionOptions(entry.address.serverId)
@@ -404,6 +417,7 @@ export function buildActivityOverviewFromSource(params: Readonly<{
                 entry,
                 candidate: buildSessionActivityAttention({
                     session: entry.session,
+                    presentationSource: entry.presentationSource,
                     sessionMessages: entry.hasHydratedMessages
                         ? readSourceSessionMessages(params.source, entry.address.sessionId)
                         : undefined,
@@ -414,9 +428,9 @@ export function buildActivityOverviewFromSource(params: Readonly<{
             }];
         })
         .filter(({ candidate }) => (
-            isHydratedSessionUserFacing(candidate.session)
+            isHydratedSessionUserFacing(candidate.session, candidate.presentationSource)
             || (
-                isVoiceConversationCustodySessionMetadata(readSessionOwnerMetadataView(candidate.session))
+                isVoiceConversationCustodySessionMetadata(readSourceCustodyMetadata(candidate.session, candidate.presentationSource))
                 && candidate.hasAttention
             )
         ))
@@ -467,7 +481,7 @@ export function forEachActivitySummaryCandidate(params: Readonly<{
         params.includeHydratedMessages !== true,
         params.addresses,
     )) {
-        const followRulePolicies = readActivitySessionRulePolicies(params.source, entry.address, entry.session, params.nowMs);
+        const followRulePolicies = readActivitySessionRulePolicies(params.source, entry.address, entry.session, params.nowMs, entry.presentationSource);
         if (!isSessionAdmittedToPersonalActivity(entry.session, followRulePolicies)) continue;
         const sessionOptions = params.resolveSessionOptionsForServerId
             ? params.resolveSessionOptionsForServerId(entry.address.serverId)
@@ -478,6 +492,7 @@ export function forEachActivitySummaryCandidate(params: Readonly<{
             : NO_SOURCE_ATTENTION_MESSAGES;
         const candidate = buildSessionActivityAttention({
             session: entry.session,
+            presentationSource: entry.presentationSource,
             sessionMessages: messages,
             sessionOptions,
             nowMs: params.nowMs,
@@ -485,9 +500,9 @@ export function forEachActivitySummaryCandidate(params: Readonly<{
             followRulePolicies,
         });
         if (
-            !isHydratedSessionUserFacing(candidate.session)
+            !isHydratedSessionUserFacing(candidate.session, candidate.presentationSource)
             && !(
-                isVoiceConversationCustodySessionMetadata(readSessionOwnerMetadataView(candidate.session))
+                isVoiceConversationCustodySessionMetadata(readSourceCustodyMetadata(candidate.session, candidate.presentationSource))
                 && candidate.hasAttention
             )
         ) {
@@ -531,6 +546,7 @@ export function buildActivityOverviewSummaryFromSource(params: Readonly<{
             entry.session,
             params.nowMs,
             messages,
+            entry.presentationSource,
         )) {
             if (expiresAtMs <= params.nowMs) continue;
             if (nextAttentionBoundaryMs === null || expiresAtMs < nextAttentionBoundaryMs) {

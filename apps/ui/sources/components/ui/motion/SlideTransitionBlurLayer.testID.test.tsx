@@ -15,32 +15,6 @@ vi.mock('react-native', async () => {
     return createReactNativeWebMock({ Platform: { get OS() { return platform.OS; } } });
 });
 
-vi.mock('react-native-reanimated', async () => {
-    const ReactModule = await import('react');
-    type SharedValue<T> = { value: T };
-    const useSharedValue = <T,>(initial: T): SharedValue<T> => {
-        const ref = ReactModule.useRef<SharedValue<T> | null>(null);
-        if (!ref.current) ref.current = { value: initial };
-        return ref.current;
-    };
-    const useAnimatedStyle = <T,>(factory: () => T): T => factory();
-    const useAnimatedProps = <T,>(factory: () => T): T => factory();
-    const Animated = {
-        View: 'Animated.View',
-        ScrollView: 'Animated.ScrollView',
-        Text: 'Animated.Text',
-        createAnimatedComponent: (component: unknown) => component,
-    };
-    return {
-        __esModule: true,
-        default: Animated,
-        ...Animated,
-        useAnimatedProps,
-        useAnimatedStyle,
-        useSharedValue,
-    };
-});
-
 describe('SlideTransitionBlurLayer testID forwarding', () => {
     it('forwards testID to the native AnimatedBlurView so visual QA harnesses can target the rendered blur element', async () => {
         const Reanimated = await import('react-native-reanimated');

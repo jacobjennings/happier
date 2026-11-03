@@ -1,8 +1,7 @@
 import React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
-import { installMediaCommonModuleMocks } from './mediaTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -16,29 +15,44 @@ vi.mock('@/components/ui/code/blocks/CodeBlockView', () => ({
     },
 }));
 
-const useSettingSpy = vi.fn((key: string): number | null => {
+function defaultSetting(key: string): number | null {
     if (key === 'filesCodeViewJsonInferenceMaxBytes') return 50_000;
     return null;
-});
+}
+
+const useSettingSpy = vi.fn(defaultSetting);
 
 // CodeView reads its setting through the leaf settings read hooks, not the aggregate storage module.
 vi.mock('@/sync/store/settingsReadHooks', () => ({
     useSetting: (key: string) => useSettingSpy(key),
 }));
 
-installMediaCommonModuleMocks();
+vi.mock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeWebMock();
+});
+
+vi.mock('react-native-unistyles', async () => {
+    const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
+    return createUnistylesMock();
+});
 
 describe('CodeView', () => {
-    it('renders CodeBlockView with the provided code and language', async () => {
+    afterEach(() => {
+        useSettingSpy.mockImplementation(defaultSetting);
+    });
+
+    it('renders CodeBlockView with the provided code and an explicit language that overrides inference', async () => {
         codeBlockSpy.mockClear();
         const { CodeView } = await import('./CodeView');
 
-        await renderScreen(React.createElement(CodeView, { code: '{"ok":true}', language: 'json' }));
+        // JSON-looking code would infer `json`; the explicit language must win.
+        await renderScreen(React.createElement(CodeView, { code: '{"ok":true}', language: 'typescript' }));
 
         expect(codeBlockSpy).toHaveBeenCalledWith(
             expect.objectContaining({
                 code: '{"ok":true}',
-                language: 'json',
+                language: 'typescript',
             }),
         );
     });
@@ -64,23 +78,24 @@ describe('CodeView', () => {
             return null;
         });
 
+        const { CodeView } = await import('./CodeView');
+        const bigJsonLike = `{${'a'.repeat(100)}}`;
+
         const parseSpy = vi.spyOn(JSON, 'parse');
         parseSpy.mockImplementation(() => {
             throw new Error('should_not_parse');
         });
+        try {
+            await renderScreen(React.createElement(CodeView, { code: bigJsonLike }));
 
-        const { CodeView } = await import('./CodeView');
-        const bigJsonLike = `{${'a'.repeat(100)}}`;
-
-        await renderScreen(React.createElement(CodeView, { code: bigJsonLike }));
-
-        expect(parseSpy).toHaveBeenCalledTimes(0);
+            expect(parseSpy).toHaveBeenCalledTimes(0);
+        } finally {
+            parseSpy.mockRestore();
+        }
         expect(codeBlockSpy).toHaveBeenCalledWith(
             expect.objectContaining({
                 language: null,
             }),
         );
-
-        parseSpy.mockRestore();
     });
 });

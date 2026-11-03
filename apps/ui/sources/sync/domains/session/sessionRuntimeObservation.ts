@@ -1,6 +1,9 @@
 import { activityInstanceKey, normalizeSessionAddress, type ActivityInstanceAddress } from './sessionAddress';
 import { projectSessionAwarenessRuntimeV1 } from '@happier-dev/protocol/sessions/awareness/runtime';
 
+/** A copied Session shell does not establish a new full-document publication. */
+export type SessionPublicationSource = 'full' | 'projection';
+
 export type SessionRuntimeObservation = Readonly<{
     active: boolean;
     thinking?: boolean;
@@ -14,18 +17,26 @@ export function createSessionRuntimeObservationSource() {
     const key = (address: ActivityInstanceAddress) => activityInstanceKey(address, 'ephemeral_activity_update');
     return {
         read: (address: ActivityInstanceAddress) => observations.get(key(address)),
-        recordFullPublication: (address: ActivityInstanceAddress, updatedAt: number): void => {
+        recordFullPublication: (address: ActivityInstanceAddress, updatedAt: number,
+            baseline?: Pick<SessionRuntimeObservation, 'active' | 'activeAt' | 'thinking'>): void => {
             const previous = observations.get(key(address));
-            if (!previous || updatedAt <= (previous.fullPublicationUpdatedAt ?? 0)) return;
+            const runtime = previous ?? baseline;
+            if (!runtime || updatedAt <= (previous?.fullPublicationUpdatedAt ?? 0)) return;
             // Content currentness is independent of runtime sample ordering: a
-            // newer ephemeral may already have supplied a later activeAt.
-            observations.set(key(address), { ...previous, fullPublicationUpdatedAt: updatedAt });
+            // newer ephemeral may already have supplied a later activeAt. Seed
+            // only compact incumbent facts, never content or inferred presence.
+            observations.set(key(address), { active: runtime.active, activeAt: runtime.activeAt,
+                thinking: runtime.thinking, presence: previous?.presence, fullPublicationUpdatedAt: updatedAt });
         },
         forget: (address: ActivityInstanceAddress): void => { observations.delete(key(address)); },
         observe: (address: ActivityInstanceAddress, observation: SessionRuntimeObservation): boolean => {
             const previous = observations.get(key(address));
             if (previous && observation.activeAt < previous.activeAt) return false;
             const thinking = observation.thinking ?? previous?.thinking;
+            // A content receipt can be newer than the retained content row.
+            // Reject replayed work before it reaches any awareness reader.
+            if (previous?.thinking === false && thinking === true && observation.active
+                && observation.activeAt <= (previous.fullPublicationUpdatedAt ?? 0)) return false;
             if (previous && observation.activeAt === previous.activeAt && (
                 (!previous.active && observation.active)
                 || (previous.thinking === false && thinking === true)
@@ -50,6 +61,19 @@ export type SessionRuntimeObservationSource = ReturnType<typeof createSessionRun
 
 // The sole production Sync injects this source and owns its existing reset boundaries.
 export const sessionRuntimeObservations = createSessionRuntimeObservationSource();
+
+/** Raw ordering/receipt witness; demand-scoped recency may read it without promoting content time. */
+export function readSessionFullPublicationUpdatedAt(input: Readonly<{
+    id?: string | null;
+    serverId?: string | null;
+    updatedAt?: number | null;
+}>): number {
+    const contentUpdatedAt = typeof input.updatedAt === 'number' && Number.isFinite(input.updatedAt) ? input.updatedAt : 0;
+    const address = normalizeSessionAddress(input.serverId, input.id);
+    const observedAt = address ? sessionRuntimeObservations.read(address)?.fullPublicationUpdatedAt : undefined;
+    return typeof observedAt === 'number' && Number.isFinite(observedAt)
+        ? Math.max(contentUpdatedAt, observedAt) : contentUpdatedAt;
+}
 
 /** Finite request-local companion to inventory's captured immutable row baseline. */
 export function captureSessionFullPublicationBaseline(serverId: string, sessionIds: readonly string[]): Readonly<Record<string, number | undefined>> {

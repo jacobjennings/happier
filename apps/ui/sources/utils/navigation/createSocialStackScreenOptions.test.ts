@@ -8,18 +8,13 @@ import {
 describe('createSocialStackScreenOptions', () => {
     const translate = (key: string) => key;
 
-    it('uses the friends tab label for the friends stack header', () => {
-        expect(createFriendsStackScreenOptions(translate)).toEqual({
+    it.each([
+        ['friends', createFriendsStackScreenOptions, 'tabs.friends'],
+        ['inbox', createInboxStackScreenOptions, 'tabs.inbox'],
+    ] as const)('uses the %s tab label for its stack header', (_name, create, headerTitle) => {
+        expect(create(translate)).toEqual({
             headerShown: false,
-            headerTitle: 'tabs.friends',
-            headerBackTitle: 'common.home',
-        });
-    });
-
-    it('uses the inbox tab label for the inbox stack header', () => {
-        expect(createInboxStackScreenOptions(translate)).toEqual({
-            headerShown: false,
-            headerTitle: 'tabs.inbox',
+            headerTitle,
             headerBackTitle: 'common.home',
         });
     });

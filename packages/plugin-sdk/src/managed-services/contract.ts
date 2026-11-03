@@ -1,3 +1,4 @@
+import type { PluginProjectNativeFailureV1 } from '../projectNativeAdapters.js';
 /** @moduleRealm daemon */
 import { ManagedServiceLocalIdSchema as canonicalManagedServiceLocalIdSchema } from '@happier-dev/protocol/plugins/contribution-identity';
 import type { ManagedServiceLocalId, PluginContributionLocalId } from '@happier-dev/protocol/plugins/manifest';
@@ -140,10 +141,12 @@ export type ManagedServiceRequest = Readonly<{
     method?: HttpMethod;
     headers?: Readonly<Record<string, string>>;
     body?: Uint8Array;
+    /** Open-ended access closes with the owning scope; omitted for finite requests. */
+    interactive?: true;
     /**
      * Bounds request establishment through validated response headers. After
-     * headers arrive, the caller signal and exact handle lifecycle own a
-     * streaming response body.
+     * headers arrive, caller cancellation owns a finite response body.
+     * Explicitly interactive bodies also close with the owning scope.
      * Omission leaves establishment under that same caller/handle lifetime;
      * an ordinary native prompt has no implicit managed HTTP deadline.
      */
@@ -156,7 +159,18 @@ export type ManagedServiceResponse = Readonly<{
     status: number;
     statusText: string;
     headers: Readonly<Record<string, string>>;
-    body: ReadableStream<Uint8Array> | null;
+    /** Portable reader subset of a native byte stream; no DOM globals required. */
+    body: Readonly<{
+        cancel(reason?: unknown): Promise<void>;
+        getReader(): Readonly<{
+            read(): Promise<
+                | Readonly<{ done: false; value: Uint8Array }>
+                | Readonly<{ done: true; value?: Uint8Array }>
+            >;
+            cancel(reason?: unknown): Promise<void>;
+            releaseLock(): void;
+        }>;
+    }> | null;
 }>;
 
 export type ManagedServiceMaterializationInjection =
@@ -313,13 +327,63 @@ export type ManagedServiceNativeObservationV1 = Readonly<{
     endpoint: string | null;
 }>;
 
+export type { ManagedServiceNativeLogCursorV1, ManagedServiceNativeLogPageV1, ManagedServiceNativeLogReadV1,
+    ManagedServiceNativeLogResultV1, ManagedServiceUnavailableReasonV1 } from '@happier-dev/protocol';
+
+/** Native push owned by one visible host demand; dispose joins native settlement. */
+export type ManagedServiceNativeLogWatchV1 = Readonly<{
+    kind: 'watch';
+    maxBytes: number;
+    cursor?: import('@happier-dev/protocol').ManagedServiceNativeLogCursorV1;
+    signal?: AbortSignal;
+    emit(result: import('@happier-dev/protocol').ManagedServiceNativeLogResultV1): void;
+}>;
+
 export interface ManagedServiceNativeLifecycleV1 {
+    /** Passive, demand-owned discovery on this exact Machine; no Project root is implied. */
+    discover?(machine: Readonly<{ serverId: string; machineId: string }>, options?: PluginCancellationOptions,
+        context?: PluginInvocationContext): Promise<Readonly<{
+        kind: 'ready' | 'partial';
+        candidates: readonly Readonly<{
+            instance: ManagedServiceNativeInstanceV1;
+            name: string;
+            observation: ManagedServiceNativeObservationV1;
+        }>[];
+        failures: readonly PluginProjectNativeFailureV1[];
+    }> | PluginProjectNativeFailureV1>;
     /** Project-native hosts supply admitted services as the additive third argument.
      * Existing resource-only adapters may ignore it; it is never serialized or plugin-supplied.
      */
     inspect(instance: ManagedServiceNativeInstanceV1, options?: PluginCancellationOptions, context?: PluginInvocationContext): Promise<ManagedServiceNativeObservationV1>;
+    /** Controls the existing admitted resource; never recreates it or runs a Project launcher. */
+    start?(instance: ManagedServiceNativeInstanceV1, options?: PluginCancellationOptions,
+        context?: PluginInvocationContext): Promise<ManagedServiceNativeObservationV1 | PluginProjectNativeFailureV1>;
+    restart?(instance: ManagedServiceNativeInstanceV1, options?: PluginCancellationOptions,
+        context?: PluginInvocationContext): Promise<ManagedServiceNativeObservationV1 | PluginProjectNativeFailureV1>;
+    /** One requested batch, not a sampler. Unknown native facts remain null. */
+    accounting?(instances: readonly ManagedServiceNativeInstanceV1[], options?: PluginCancellationOptions,
+        context?: PluginInvocationContext): Promise<Readonly<{
+        kind: 'sample';
+        samples: readonly Readonly<{
+            instance: ManagedServiceNativeInstanceV1;
+            cpuPercent: number | null;
+            memoryBytes: number | null;
+        }>[];
+    }> | PluginProjectNativeFailureV1>;
+    /** Bounded on-demand output for this admitted generation. Healthy/unchanged
+     * inspection never reads logs. Omission leaves native lifecycle intact.
+     * Caller cancellation/final release cancels the watch; disposal joins native settlement.
+     */
+    logs?: {
+        (instance: ManagedServiceNativeInstanceV1, request: import('@happier-dev/protocol').ManagedServiceNativeLogReadV1,
+            context?: PluginInvocationContext): Promise<import('@happier-dev/protocol').ManagedServiceNativeLogResultV1>;
+        (instance: ManagedServiceNativeInstanceV1, request: ManagedServiceNativeLogWatchV1,
+            context?: PluginInvocationContext): Promise<Disposable>;
+    };
     stop(instance: ManagedServiceNativeInstanceV1, options?: PluginCancellationOptions, context?: PluginInvocationContext): Promise<Readonly<{
-        status: 'stopped' | 'accepted' | 'unsupported' | 'termination_incomplete';
+        status: 'accepted';
+    }> | Readonly<{
+        status: 'stopped' | 'unsupported' | 'termination_incomplete';
     }>>;
 }
 
@@ -361,7 +425,7 @@ export interface ManagedServiceHandle extends Disposable {
     request(request: ManagedServiceRequest): Promise<ManagedServiceResponse>;
     stop(
         options?: PluginCancellationOptions,
-    ): Promise<Readonly<{ status: 'stopped' | 'detached' }>>;
+    ): Promise<Awaited<ReturnType<ManagedServiceNativeLifecycleV1['stop']>> | Readonly<{ status: 'detached' }>>;
     dispose(): Promise<void>;
 }
 

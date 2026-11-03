@@ -52,11 +52,13 @@ gate; a direct link cannot bypass it. Dictation remains independent. See
 Voice's development Action tools use the same Session messaging schemas and
 approval rules as the CLI and app. Send shares information; Ask can select inline
 waiting on that same send operation. Asking to get back later requests person
-approval before sending; screen confirmation admits the return to the session
+approval before sending; that decision admits the return to the session
 bound to that Voice conversation. Switching the visible session does not change
-that destination. The Voice tool cannot approve its own request, and a saved
-approval waiver does not grant person authority. Spoken confirmation through a
-generic tool call is not a substitute for that decision. A timeout stops observing
+that destination. In 0.3 development, **Voice agent can approve requests** delegates
+approval and denial to the Voice agent by default in Local Voice and realtime modes
+that expose host approval tools. Turning it off requires a tap
+in the request UI. A generic tool call or a saved approval waiver does not grant
+that delegation to other automated callers. A timeout stops observing
 accepted work without stopping it, and a returned answer requests no acknowledgment.
 
 Names must resolve unambiguously before sending. Group selection and its reviewed
@@ -150,8 +152,11 @@ service that does not use a computer does not require one for this check.
 
 Home's **Brief me** uses the work and attention already shown in Inbox: items that
 need you, failed work and ready work. It reports incomplete information and follows
-your Voice sharing settings when speaking. Review any permission request with a
-tap in the ordinary request UI.
+your Voice sharing settings when speaking. In 0.3 development, Local Voice and
+realtime modes with host approval tools can approve or deny the requests they
+present on your behalf, unless you turn off
+**Voice agent can approve requests**. The ordinary request UI remains available.
+Native Codex Realtime is excluded; tap its requests or switch to Local Voice.
 
 To continue on another device, open the same synced conversation and start Voice
 there. After the new attempt connects, a continuation note is synchronized. The
@@ -597,7 +602,26 @@ Common voice actions include:
 
 This is why voice is more reliable than a plain free-form speech interface: it can call typed actions instead of guessing.
 
-Answering a user-action request and approving a permission are not the same thing. Voice can answer a session's user-action requests, but it cannot approve a coding-session permission from spoken language such as “yes,” “approve,” or “allow.” The session's own permission UI stays authoritative for approve-once, approve-session, deny, and cancel. Ending voice does not settle or remove a pending permission.
+In **0.3 development**, **Settings → Voice → Voice conversations → Voice agent can
+approve requests** is on by default for Local Voice and realtime modes that expose
+host approval tools. This lets the Voice agent approve or deny any pending request
+on your behalf through Happier's existing approval system. Its
+instructions are to read the request aloud within your sharing settings, ask you,
+and follow your answer. The decision is attributed to the Voice agent acting for you.
+
+Turn the setting off if you want every approval decision to require a tap in the
+request UI. This also stops Voice decisions that have not yet been issued; it
+does not undo an already-issued decision or effect. Companion, Inbox, and the
+session keep pending requests reachable, and
+ending Voice neither approves nor denies them. The agent should confirm an outcome
+only after the request's state shows it. These development changes are not a claim
+of availability in a released build.
+
+**Codex Realtime Voice** is excluded from this setting's approval capability. Its
+agent should read the request within your sharing settings and explain that it
+cannot approve or deny it there. Tap the request in the app, or switch to **Local
+voice** to decide through the Voice agent. The setting does not add approval tools
+or authority to the native Codex agent.
 
 ## Practical setup recipes
 

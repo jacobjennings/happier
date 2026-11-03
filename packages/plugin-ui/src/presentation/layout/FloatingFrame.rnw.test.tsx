@@ -217,7 +217,7 @@ describe('FloatingFrame', () => {
     view.unmount();
   });
 
-  it('moves 1:1 by its picture while watching and settles into the nearest corner on release', () => {
+  it('moves 1:1 by its picture while watching and keeps the released placement', () => {
     const { view, byId, onRectChange } = mount();
     drag(byId('picture'), -400, -300);
 
@@ -227,7 +227,7 @@ describe('FloatingFrame', () => {
     expect(moves.at(-1)).toMatchObject({ x: START.x - 400, y: START.y - 300 });
     const [settled, change] = onRectChange.mock.calls.at(-1)!;
     expect(change).toEqual({ kind: 'settle' });
-    expect(settled).toEqual({ ...START, x: AVAILABLE.x, y: AVAILABLE.y });
+    expect(settled).toEqual({ ...START, x: START.x - 400, y: START.y - 300 });
     view.unmount();
   });
 
@@ -322,26 +322,23 @@ describe('FloatingFrame', () => {
     view.unmount();
   });
 
-  it('settles beside obstacles, and asks to dock when no floating placement fits', () => {
-    const orb: FrameRect = {
-      x: AVAILABLE.x + AVAILABLE.width - 60,
-      y: AVAILABLE.y + AVAILABLE.height - 60,
-      width: 60,
-      height: 60,
-    };
-    const first = mount({ avoidRects: [orb] });
-    key(first.byId('frame'), 'ArrowDown');
-    const [settled] = first.onRectChange.mock.calls.at(-1)!;
-    expect(
-      settled.x + settled.width <= orb.x || settled.y + settled.height <= orb.y,
-    ).toBe(true);
-    first.view.unmount();
+  it('floats over whatever is behind it: a corner snap is a pure clamp and never asks to dock', () => {
+    const { view, byId, onRectChange, onModeChange } = mount();
+    key(byId('frame'), 'ArrowLeft');
+    expect(onRectChange.mock.calls.at(-1)).toEqual([{ ...START, x: AVAILABLE.x }, { kind: 'settle' }]);
+    view.unmount();
 
-    const crowded = mount({ avoidRects: [AVAILABLE] });
-    key(crowded.byId('frame'), 'ArrowLeft');
-    expect(crowded.onModeChange).toHaveBeenCalledWith('docked');
-    expect(crowded.onRectChange).not.toHaveBeenCalled();
-    crowded.view.unmount();
+    // A viewport smaller than the frame shrinks it to fit, keeping the picture's shape.
+    const tiny: FrameRect = { x: 16, y: 16, width: 300, height: 120 };
+    const small = mount({ availableRect: tiny });
+    key(small.byId('frame'), 'ArrowLeft');
+    const [fitted] = small.onRectChange.mock.calls.at(-1)!;
+    expect(fitted.x).toBe(tiny.x);
+    expect(fitted.y + fitted.height).toBeLessThanOrEqual(tiny.y + tiny.height);
+    expect(fitted.width).toBeLessThan(WIDTH);
+    expect(small.onModeChange).not.toHaveBeenCalled();
+    expect(onModeChange).not.toHaveBeenCalled();
+    small.view.unmount();
   });
 
   it('keeps the same outcome under reduced motion, without travel', () => {

@@ -15,31 +15,10 @@ import type {
 } from './protocol/protocolFacade.js';
 import type { TargetedContributionPointRef } from './services/targetedContributions.js';
 import type { PluginUiIconTokenV1 } from './ui/publicContract.js';
+import type { PluginLocalizedStringV2 } from './manifest.js';
 
-export type PluginTargetedContributionSourceCustodyV1 =
-    | Readonly<{
-        kind: 'managed';
-        immutableGenerationId: string;
-        installSource: 'npm' | 'archive' | 'localPath';
-    }>
-    | Readonly<{
-        kind: 'bundled_first_party';
-        packagedRuntime: Readonly<
-            | { kind: 'cli_version_root'; versionRootId: string }
-            | { kind: 'pinned_runner_snapshot'; snapshotId: string }
-            | { kind: 'source_declaration'; packageName: string }
-        >;
-    }>
-    | Readonly<{
-        kind: 'development';
-        registeredRootId: string;
-    }>
-    | Readonly<{
-        kind: 'account_release';
-        pluginId: string;
-        version: string;
-        archiveDigestSha256: string;
-    }>;
+import type { PluginTargetedContributionSourceCustodyV1 } from '@happier-dev/cli-common/plugins/registration/contracts';
+export type { PluginTargetedContributionSourceCustodyV1 } from '@happier-dev/cli-common/plugins/registration/contracts';
 
 /**
  * Portable selection fact shared with the Protocol UI contract. The SDK owns
@@ -205,10 +184,7 @@ export type ContributionSurfacePresentation =
     | 'fill';
 
 /** Public plain-data wording accepted by the symbolic fallback state. */
-export type ContributionSurfaceLocalizedString = string | Readonly<{
-    key: string;
-    fallback: string;
-}>;
+export type ContributionSurfaceLocalizedString = PluginLocalizedStringV2;
 
 /** Public icon vocabulary accepted by the symbolic fallback state. */
 export type ContributionSurfaceIcon = PluginUiIconTokenV1;
@@ -698,24 +674,6 @@ function requireExecutableProtocolSchema<TInput extends JsonValue = JsonValue, T
     return schema;
 }
 
-function projectOperation(operation: ContributionOperationDefinition): ProjectedContributionOperation {
-    const input = operation.input.kind === 'protocolDefined'
-        ? Object.freeze({
-            kind: 'protocolDefined' as const,
-            schema: requireExecutableProtocolSchema(operation.input.schema, 'Operation input schema').jsonSchema,
-        })
-        : Object.freeze({ kind: 'contributorDefined' as const });
-    return Object.freeze({
-        required: operation.required,
-        input,
-        resultSchema: requireExecutableProtocolSchema(operation.resultSchema, 'Operation result schema').jsonSchema,
-        action: Object.freeze({
-            surfaces: Object.freeze([...operation.action.surfaces]),
-            dangerLevel: operation.action.dangerLevel,
-        }),
-    });
-}
-
 function projectSurface(surface: ContributionSurfaceDefinition): ProjectedContributionSurface {
     return Object.freeze({
         required: surface.required,
@@ -910,7 +868,7 @@ function readStructuralContributionProtocol(
 function createDefinedTargetedContributionPointRef(
     targetPluginId: string,
     pointId: string,
-    protocol: ContributionProtocolManifest,
+    protocol: Readonly<{ id: string; version: number }>,
 ): TargetedContributionPointRef {
     return Object.freeze({
         targetPluginId,
@@ -919,16 +877,36 @@ function createDefinedTargetedContributionPointRef(
     });
 }
 
+type ContributionProtocolProjection = Readonly<{
+    identity: Readonly<{ id: string; version: number }>;
+    read(): ContributionProtocolManifest;
+}>;
+
+// The authoring owner retains immutable executable definitions separately from
+// their plain transport projection. Identity-only refs never demand documents.
+const contributionProtocolProjections = new WeakMap<object, ContributionProtocolProjection>();
+const contributionPointProjections = new WeakMap<object, readonly ContributionProtocolProjection[]>();
+
+/** @internal The SDK capture owner may retain these already captured declarations. */
+export function isOwnedContributionPointDefinition(value: unknown): boolean {
+    return value !== null && typeof value === 'object' && contributionPointProjections.has(value);
+}
+
 function createContributionPointDefinition<TProtocols extends readonly unknown[]>(
-    protocols: readonly ContributionProtocolManifest[],
+    protocols: readonly ContributionProtocolProjection[],
     options: ContributionPointOptions,
 ): ContributionPointAuthorDefinition<TProtocols> {
-    return Object.freeze({
+    let projected: readonly ContributionProtocolManifest[] | undefined;
+    const point = Object.freeze({
         ...(options.maxContributionsPerContributor === undefined
             ? {}
             : { maxContributionsPerContributor: options.maxContributionsPerContributor }),
-        protocols: Object.freeze(protocols.map((protocol) => Object.freeze({ ...protocol }))),
+        get protocols() {
+            return projected ??= Object.freeze(protocols.map(protocol => Object.freeze({ ...protocol.read() })));
+        },
     }) as ContributionPointAuthorDefinition<TProtocols>;
+    contributionPointProjections.set(point, Object.freeze([...protocols]));
+    return point;
 }
 
 function assertContributionOperationRoles(operations: Readonly<Record<string, unknown>>): void {
@@ -970,14 +948,19 @@ export function defineContributionPoint<
     }
     const identities = new Set<string>();
     const manifestProtocols = protocols.map((protocol) => {
-        const manifest = readStructuralContributionProtocol(protocol);
-        if (!manifest) throw new TypeError('Contribution protocol contract is invalid');
-        const identity = JSON.stringify([manifest.id, manifest.version]);
+        let projection = contributionProtocolProjections.get(protocol);
+        if (!projection) {
+            // Structural/cross-copy author input retains full boundary admission.
+            const manifest = readStructuralContributionProtocol(protocol);
+            if (!manifest) throw new TypeError('Contribution protocol contract is invalid');
+            projection = { identity: { id: manifest.id, version: manifest.version }, read: () => manifest };
+        }
+        const identity = JSON.stringify([projection.identity.id, projection.identity.version]);
         if (identities.has(identity)) {
             throw new TypeError('Duplicate contribution protocol identity');
         }
         identities.add(identity);
-        return manifest;
+        return projection;
     });
     return createContributionPointDefinition<TProtocols>(manifestProtocols, options);
 }
@@ -995,7 +978,9 @@ export function projectDefinedTargetedContributionPoints<
     points: TPoints | undefined,
 ): DefinedContributionPoints<TPluginId, DefinedContributionPointProtocolMap<TPoints>> {
     const entries = Object.entries(points ?? {}).map(([pointId, point]) => {
-        const protocolRefs = point.protocols.map((protocol) => (
+        const identities = contributionPointProjections.get(point)?.map(projection => projection.identity)
+            ?? point.protocols;
+        const protocolRefs = identities.map((protocol) => (
             createDefinedTargetedContributionPointRef(_pluginId, pointId, protocol)
         ));
         if (protocolRefs.length === 0) {
@@ -1035,21 +1020,7 @@ export function defineContributionProtocol<
     const id = PluginContributionProtocolIdV1Schema.parse(definition.id);
     assertContributionOperationRoles(definition.operations);
     assertContributionSurfaceRoles(definition.surfaces ?? {});
-    const projectedOperations = Object.freeze(Object.fromEntries(
-        Object.entries(definition.operations).map(([role, operation]) => [
-            role,
-            projectOperation(operation),
-        ]),
-    )) as Readonly<Record<string, ProjectedContributionOperation>>;
-    // Validate the changed operation carrier at its canonical parser without
-    // broadening this cut into unrelated protocol-level authoring semantics.
-    PluginContributionPointProtocolV1Schema.shape.operations.parse(projectedOperations);
-    const projectedSurfaces = definition.surfaces === undefined
-        ? undefined
-        : Object.freeze(Object.fromEntries(Object.entries(definition.surfaces).map(([role, surface]) => [
-            role,
-            projectSurface(surface),
-        ]))) as Readonly<Record<string, ProjectedContributionSurface>>;
+    const hasSurfaces = definition.surfaces !== undefined;
     const descriptorSchema = definition.descriptor === undefined
         ? undefined
         : requireExecutableProtocolSchema(definition.descriptor, 'Descriptor schema');
@@ -1109,13 +1080,29 @@ export function defineContributionProtocol<
         TProtocolVersion
     >['surfaces'];
     const protocol = Object.freeze({ id, version: definition.version });
-    const projectedProtocol: ContributionProtocolManifest = Object.freeze({
-        ...protocol,
-        ...(descriptorSchema === undefined ? {} : { descriptor: descriptorSchema.jsonSchema }),
-        operations: projectedOperations,
-        ...(projectedSurfaces === undefined ? {} : { surfaces: projectedSurfaces }),
-    });
-    return Object.freeze({
+    let projectedProtocol: ContributionProtocolManifest | undefined;
+    const projection: ContributionProtocolProjection = {
+        identity: protocol,
+        read() {
+            if (projectedProtocol) return projectedProtocol;
+            const projectedOperations = Object.freeze(Object.fromEntries(Object.entries(operations).map(([role, operation]) => {
+                const projected = readStructuralContributionOperation(operation);
+                if (!projected) throw new TypeError(`Contribution operation '${role}' is invalid`);
+                return [role, projected];
+            })));
+            PluginContributionPointProtocolV1Schema.shape.operations.parse(projectedOperations);
+            projectedProtocol = Object.freeze({
+                ...protocol,
+                ...(descriptorSchema === undefined ? {} : { descriptor: descriptorSchema.jsonSchema }),
+                operations: projectedOperations,
+                ...(!hasSurfaces ? {} : { surfaces: Object.freeze(Object.fromEntries(
+                    Object.entries(surfaces).map(([role, surface]) => [role, projectSurface(surface)]),
+                )) }),
+            });
+            return projectedProtocol;
+        },
+    };
+    const result = Object.freeze({
         ...protocol,
         ...(descriptorSchema === undefined ? {} : { descriptor: descriptorSchema }),
         operations,
@@ -1129,7 +1116,7 @@ export function defineContributionProtocol<
                     TProtocolId,
                     TProtocolVersion
                 >]
-            >([projectedProtocol], options);
+            >([projection], options);
         },
         contribute<TActionLocalId extends string, TRendererLocalId extends string>(
             input: ContributionContributeInput<
@@ -1182,4 +1169,6 @@ export function defineContributionProtocol<
         TProtocolId,
         TProtocolVersion
     >;
+    contributionProtocolProjections.set(result, projection);
+    return result;
 }

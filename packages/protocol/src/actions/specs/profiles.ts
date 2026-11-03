@@ -1,3 +1,4 @@
+import { LaunchProfilePublishInputV1Schema, LaunchProfilePublishOutputV1Schema } from '../../launchProfiles/publishLaunchProfile.js';
 import {
   PROFILE_ACTION_INPUT_SCHEMAS_V1 as inputs, PROFILE_ACTION_OUTPUT_SCHEMAS_V1 as outputs,
   type ProfileActionIdV1,
@@ -99,3 +100,19 @@ export const PROFILE_ACTION_SPECS_V1 = [
   profileSpec('launch_profiles.draft.discard', 'Discard launch profile draft',
     'Throw away unsaved changes to a launch profile.', { placement: 'client' }),
 ] as const satisfies readonly PreNormalizedActionSpec[];
+
+
+export const PROFILE_PUBLICATION_ACTION_SPECS = Object.freeze([
+  {
+    id: 'launch_profiles.publish', executionPlacement: 'account', approval: {result: 'required'}, title: 'Publish launch profile', safety: 'danger',
+    placements: [], bindings: { rpcMethod: 'launch_profiles.publish', mcpToolName: 'launch_profiles_publish' },
+    requiredAuthority: 'account_automation', sideEffectClass: 'write',
+    surfaces: { ui: true, cli: true, agent: true, mcp: true, voice: false, rpc: true },
+    inputSchema: LaunchProfilePublishInputV1Schema, outputSchema: LaunchProfilePublishOutputV1Schema,
+    inputHints: { description: 'Make a launch profile ready to share with a Team. Its secrets stay with you.', title: 'Publish launch profile', fields: [
+      { path: 'profileId', title: 'Launch profile id', widget: 'text', required: true },
+    ] },
+    cli: { acceptsServerId: true, commands: [{ path: ['launch_profiles', 'publish'], visibility: 'canonical' }] },
+  } satisfies PreNormalizedActionSpec,
+] as const);
+

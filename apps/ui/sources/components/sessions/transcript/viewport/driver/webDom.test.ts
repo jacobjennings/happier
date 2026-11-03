@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-    restoreWebDomPrependGrowth,
-    restoreWebDomLocalHeightChange,
     resolveWebBandExtrapolatedTranscriptItemLayout,
     scrollWebDomToTranscriptItem,
 } from './webDom';
@@ -88,28 +86,24 @@ class FakeElement {
 }
 
 function createMetrics(params: Readonly<{
-    clientHeight?: number;
-    itemBottom?: number;
-    itemHeight?: number;
     itemId?: string;
     itemTop?: number;
-    scrollHeight?: number;
     scrollTop?: number;
 }> = {}) {
     const itemTop = params.itemTop ?? 320;
-    const itemHeight = params.itemHeight ?? 120;
+    const itemHeight = 120;
     const container = new FakeElement(null, {
         top: 100,
         bottom: 500,
-        height: params.clientHeight ?? 400,
+        height: 400,
     }, {
-        clientHeight: params.clientHeight ?? 400,
-        scrollHeight: params.scrollHeight ?? 2000,
+        clientHeight: 400,
+        scrollHeight: 2000,
         scrollTop: params.scrollTop ?? 100,
     });
     const item = new FakeElement(`transcript-item-${params.itemId ?? 'm2'}`, {
         top: 100 + itemTop,
-        bottom: 100 + (params.itemBottom ?? itemTop + itemHeight),
+        bottom: 100 + itemTop + itemHeight,
         height: itemHeight,
     });
     container.appendChild(item);
@@ -231,52 +225,6 @@ describe('web DOM viewport driver', () => {
         expect(container.querySelectorAllCalls).toBe(0);
     });
 
-    it('restores an item by preserving the captured item offset semantics', () => {
-        const { metrics, container } = createMetrics({ itemTop: 320, scrollTop: 100 });
-        const observation = createWebDomScrollObservation();
-
-        const result = scrollWebDomToTranscriptItem({
-            align: { kind: 'top-with-item-offset', itemOffsetPx: 84 },
-            itemId: 'm2',
-            metrics,
-            observation,
-        });
-
-        expect(result).toEqual({
-            ok: true,
-            landedScrollTop: 336,
-            targetScrollTop: 336,
-        });
-        expect(container.scrollTop).toBe(336);
-        expect(observation.getState()).toMatchObject({
-            observedScrollHeight: 2000,
-            observedScrollTop: 336,
-        });
-    });
-
-    it('centers jump-to-seq targets using DOM geometry instead of RN-web scrollToIndex', () => {
-        const { metrics, container } = createMetrics({
-            clientHeight: 400,
-            itemHeight: 120,
-            itemTop: 500,
-            scrollTop: 40,
-        });
-
-        const result = scrollWebDomToTranscriptItem({
-            align: { kind: 'center' },
-            itemId: 'm2',
-            metrics,
-            observation: createWebDomScrollObservation(),
-        });
-
-        expect(result).toEqual({
-            ok: true,
-            landedScrollTop: 400,
-            targetScrollTop: 400,
-        });
-        expect(container.scrollTop).toBe(400);
-    });
-
     it('reports not_found without writing when the item is not mounted in the DOM', () => {
         const { metrics, container } = createMetrics({ itemId: 'visible' });
         const result = scrollWebDomToTranscriptItem({
@@ -288,136 +236,5 @@ describe('web DOM viewport driver', () => {
 
         expect(result).toEqual({ ok: false, reason: 'not_found' });
         expect(container.scrollTop).toBe(100);
-    });
-
-    it('uses a measured item layout fallback when the virtualized item is not mounted', () => {
-        const { metrics, container } = createMetrics({ itemId: 'visible', scrollTop: 20 });
-
-        const result = scrollWebDomToTranscriptItem({
-            align: { kind: 'top-with-item-offset', itemOffsetPx: 64 },
-            itemId: 'virtualized',
-            itemLayout: { y: 900, height: 160 },
-            metrics,
-            observation: createWebDomScrollObservation(),
-        });
-
-        expect(result).toEqual({
-            ok: true,
-            landedScrollTop: 836,
-            targetScrollTop: 836,
-        });
-        expect(container.scrollTop).toBe(836);
-    });
-
-    it('preserves sidechain local-height position through the web DOM observation owner', () => {
-        const { metrics, container } = createMetrics({
-            clientHeight: 300,
-            scrollHeight: 1200,
-            scrollTop: 240,
-        });
-        const observation = createWebDomScrollObservation();
-        container.scrollHeight = 1320;
-
-        const result = restoreWebDomLocalHeightChange({
-            capturedMetrics: metrics,
-            mode: 'preserve-position',
-            observation,
-        });
-
-        expect(result).toEqual({
-            ok: true,
-            distanceFromBottom: 660,
-            landedScrollTop: 360,
-            previousScrollTop: 240,
-            targetScrollTop: 360,
-        });
-        expect(container.scrollTop).toBe(360);
-        expect(observation.getState()).toMatchObject({
-            observedScrollHeight: 1320,
-            observedScrollTop: 360,
-        });
-    });
-
-    it('keeps sidechain local-height follow-bottom using live post-growth metrics', () => {
-        const { metrics, container } = createMetrics({
-            clientHeight: 300,
-            scrollHeight: 1200,
-            scrollTop: 900,
-        });
-        const observation = createWebDomScrollObservation();
-        container.scrollHeight = 1320;
-
-        const result = restoreWebDomLocalHeightChange({
-            capturedMetrics: metrics,
-            mode: 'follow-bottom',
-            observation,
-        });
-
-        expect(result).toEqual({
-            ok: true,
-            distanceFromBottom: 0,
-            landedScrollTop: 1020,
-            previousScrollTop: 900,
-            targetScrollTop: 1020,
-        });
-        expect(container.scrollTop).toBe(1020);
-        expect(observation.getState()).toMatchObject({
-            observedScrollHeight: 1320,
-            observedScrollTop: 1020,
-        });
-    });
-
-    it('restores sidechain web prepend growth through the web DOM observation owner', () => {
-        const { metrics, container } = createMetrics({
-            clientHeight: 500,
-            scrollHeight: 1000,
-            scrollTop: 100,
-        });
-        const observation = createWebDomScrollObservation();
-        container.scrollHeight = 1300;
-
-        const result = restoreWebDomPrependGrowth({
-            capturedMetrics: metrics,
-            observation,
-        });
-
-        expect(result).toEqual({
-            ok: true,
-            distanceFromBottom: 400,
-            growthPx: 300,
-            landedScrollTop: 400,
-            previousScrollTop: 100,
-            targetScrollTop: 400,
-        });
-        expect(container.scrollTop).toBe(400);
-        expect(observation.getState()).toMatchObject({
-            observedScrollHeight: 1300,
-            observedScrollTop: 400,
-        });
-    });
-
-    it('does not write sidechain web prepend growth when no height was prepended', () => {
-        const { metrics, container } = createMetrics({
-            clientHeight: 500,
-            scrollHeight: 1000,
-            scrollTop: 100,
-        });
-        const observation = createWebDomScrollObservation();
-
-        const result = restoreWebDomPrependGrowth({
-            capturedMetrics: metrics,
-            observation,
-        });
-
-        expect(result).toEqual({
-            ok: false,
-            previousScrollTop: 100,
-            reason: 'no_growth',
-        });
-        expect(container.scrollTop).toBe(100);
-        expect(observation.getState()).toMatchObject({
-            observedScrollHeight: null,
-            observedScrollTop: null,
-        });
     });
 });

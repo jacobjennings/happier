@@ -3,6 +3,7 @@ import { lstat, stat } from 'node:fs/promises';
 import { posix, win32 } from 'node:path';
 import { resolveCanonicalAbsolutePath } from '@/utils/path/expandHomeDirPath';
 import { physicalStoragePathWithoutFollowingLeaf as physicalPathWithoutFollowingLeaf,
+  physicalStoragePathsWithoutFollowingLeaf,
   realStoragePathWithAbsentSuffix as realpathWithAbsentSuffix, storageAbsolutePath, storagePathToFs,
   storagePathDirname, storagePathLeaf } from '../storagePath';
 import { createStoragePathComparator, type StoragePathComparator } from '../storagePath';
@@ -18,8 +19,10 @@ export type StorageProtectionFacts = Readonly<{
   personalFolders?: readonly string[];
   mainCheckouts?: readonly string[];
   inUsePaths?: readonly string[];
+  /** Any process's cwd protects the held folder/ancestors, without claiming its whole subtree. */
+  inUseCwds?: readonly string[];
   /** Session bindings projected from the canonical process ownership roots. */
-  inUseSessions?: readonly Readonly<{ path: string; sessionId: string }>[];
+  inUseSessions?: readonly Readonly<{ path: string; sessionId: string; tree?: boolean }>[];
   agentHomes?: readonly string[];
   browserProfileRoots?: readonly string[];
   userProtectedFolders?: readonly string[];
@@ -87,15 +90,20 @@ export function storageProtectionRules(facts: StorageProtectionFacts): readonly 
   // finished rules still repeats every physical-path comparison for descendants.
   const seenHolders = new Set<string>();
   const holders = (facts.inUseSessions ?? []).filter(holder => {
-    const key = JSON.stringify([holder.path, holder.sessionId]);
+    const key = JSON.stringify([holder.path, holder.sessionId, holder.tree !== false]);
     if (seenHolders.has(key)) return false;
     seenHolders.add(key); return true;
   });
   const comparator = createStoragePathComparator(platform);
   for (const path of new Set(facts.inUsePaths ?? [])) {
-    const sessions = holders.filter(holder => comparator.equal(holder.path, path));
+    const sessions = holders.filter(holder => holder.tree !== false && comparator.equal(holder.path, path));
     if (sessions.length) for (const holder of sessions) rules.push({ path, tier: 'keep', code: 'in_use', tree: true, sessionId: holder.sessionId });
     else add([path], 'keep', 'in_use');
+  }
+  for (const path of new Set(facts.inUseCwds ?? [])) {
+    const sessions = holders.filter(holder => holder.tree === false && comparator.equal(holder.path, path));
+    if (sessions.length) for (const holder of sessions) rules.push({ path, tier: 'keep', code: 'in_use', tree: false, sessionId: holder.sessionId });
+    else add([path], 'keep', 'in_use', false);
   }
   add(facts.agentHomes ?? [], 'keep', 'agent_home');
   add(facts.browserProfileRoots ?? [], 'keep', 'credentials', false);
@@ -219,29 +227,34 @@ export async function classifyPaths(candidates: readonly Readonly<{ path: string
     dataHomes: await timeWebLatencyPhase('storage.classification.data-homes', () => Promise.all((facts.dataHomes ?? []).map(path => realpathWithAbsentSuffix(expand(path))))) };
   const readKey = physicalComparisonKeys(platform);
   const comparison = createStoragePathComparator(platform);
-  return timeWebLatencyPhase('storage.classification.candidates', () => Promise.all(candidates.map(async (candidate): Promise<StoragePathClassification> => {
-    const physical = await timeWebLatencyPhase('storage.classification.candidate-path', () => physicalPathWithoutFollowingLeaf(expand(candidate.path)));
-    const managedItemPath = candidate.managedItemPath ?? facts.managedItemPath;
-    const candidateFacts = { ...resolved, managedItemPath: managedItemPath
-      ? await timeWebLatencyPhase('storage.classification.managed-path', () => physicalPathWithoutFollowingLeaf(expand(managedItemPath))) : undefined };
-    const direct = classifyAgainstRules(physical, candidateFacts, physicalRules, readKey, comparison);
-    if (direct.tier === 'forbidden' || direct.tier === 'keep') return direct;
-    // Directory identity catches alternate Unicode/case spellings on APFS/NTFS.
-    for (const protectedPath of facts.userProtectedFolders ?? []) {
-      let protectedStat; try { protectedStat = await timeWebLatencyPhase('storage.classification.protected-identity', () => stat(storagePathToFs(expand(protectedPath)), { bigint: true })); } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error;
+  return timeWebLatencyPhase('storage.classification.candidates', async () => {
+    const expanded = candidates.map(candidate => ({ path: expand(candidate.path),
+      managedItemPath: candidate.managedItemPath ?? facts.managedItemPath }));
+    const paths = await physicalStoragePathsWithoutFollowingLeaf(expanded.flatMap(candidate => [candidate.path,
+      ...(candidate.managedItemPath ? [expand(candidate.managedItemPath)] : [])]));
+    return Promise.all(expanded.map(async (candidate): Promise<StoragePathClassification> => {
+      const physical = paths.get(candidate.path)!;
+      const candidateFacts = { ...resolved, managedItemPath: candidate.managedItemPath
+        ? paths.get(expand(candidate.managedItemPath)) : undefined };
+      const direct = classifyAgainstRules(physical, candidateFacts, physicalRules, readKey, comparison);
+      if (direct.tier === 'forbidden' || direct.tier === 'keep') return direct;
+      // Directory identity catches alternate Unicode/case spellings on APFS/NTFS.
+      for (const protectedPath of facts.userProtectedFolders ?? []) {
+        let protectedStat; try { protectedStat = await stat(storagePathToFs(expand(protectedPath)), { bigint: true }); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error;
+        }
+        let ancestor = physical;
+        while (true) {
+          try {
+            const entry = await lstat(storagePathToFs(ancestor), { bigint: true });
+            if (!entry.isSymbolicLink() && entry.dev === protectedStat.dev && entry.ino === protectedStat.ino)
+              return { tier: 'keep', reason: { code: 'user_protected', detail: { path: protectedPath } }, loses: [{ code: 'user_protected', detail: { path: protectedPath } }] };
+          } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+          const parent = ancestor.startsWith('bytes:') ? storagePathDirname(ancestor) : (platform === 'win32' ? win32 : posix).dirname(ancestor);
+          if (parent === ancestor) break; ancestor = parent;
+        }
       }
-      let ancestor = physical;
-      while (true) {
-        try {
-          const entry = await timeWebLatencyPhase('storage.classification.ancestor-identity', () => lstat(storagePathToFs(ancestor), { bigint: true }));
-          if (!entry.isSymbolicLink() && entry.dev === protectedStat.dev && entry.ino === protectedStat.ino)
-            return { tier: 'keep', reason: { code: 'user_protected', detail: { path: protectedPath } }, loses: [{ code: 'user_protected', detail: { path: protectedPath } }] };
-        } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-        const parent = ancestor.startsWith('bytes:') ? storagePathDirname(ancestor) : (platform === 'win32' ? win32 : posix).dirname(ancestor);
-        if (parent === ancestor) break; ancestor = parent;
-      }
-    }
-    return direct;
-  })));
+      return direct;
+    }));
+  });
 }

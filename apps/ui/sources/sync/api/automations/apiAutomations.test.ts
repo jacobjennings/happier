@@ -30,6 +30,27 @@ vi.mock('@/sync/domains/server/serverRuntime', async (importOriginal) => ({
 
 const credentials: AuthCredentials = { token: 'token-1', secret: 'secret-1' };
 
+it.each([
+    { managedTarget: { homeId: 'home-one', managedId: 'managed-one' }, includeUnindexedManagedTargets: true as const },
+    { managedTargetUnindexed: true as const },
+])('sends a managed relationship select as a structured query', async query => {
+    const request = vi.fn(async (_path: string, _init?: RequestInit) => new Response(JSON.stringify({ automations: [], nextCursor: null })));
+    await listAutomationDefinitions(credentials, query, { serverId: 'test', request });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls[0]?.[0]).toBe('/v3/automations/query');
+    const init = request.mock.calls[0]?.[1];
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(String(init?.body))).toMatchObject(query);
+});
+
+it('refuses an unsupported selected read without falling back to an Account census', async () => {
+    const request = vi.fn(async (_path: string) => new Response(JSON.stringify({ error: 'Not found' }), { status: 404 }));
+    await expect(listAutomationDefinitions(credentials, { workflowDefinitionIds: ['builtin:review'] },
+        { serverId: 'test', request })).rejects.toMatchObject({ status: 404 });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls[0]?.[0]).toBe('/v3/automations/query');
+});
+
 describe('Automation write receipt certainty', () => {
     it.each(['lost', 'invalid', 'server'] as const)('keeps a %s mutation receipt unresolved', async kind => {
         const request = vi.fn(async () => {

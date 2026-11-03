@@ -9,6 +9,7 @@ function spec<K extends UsageSourceActionId>(id: K, title: string, summary: stri
   const dismiss = id === 'usage.sources.dismiss';
   return {
     id, approval: { result: 'required' }, title, description: summary,
+    ...(id === 'usage.sources.history.delete' ? { irreversible: true as const } : {}),
     safety: read || dismiss ? 'safe' : 'danger', sideEffectClass: read ? 'read' : 'write',
     ...(id === 'usage.sources.stop' || id === 'usage.sources.root.set'
       ? { approvalPolicy: { uiConfirmation: 'direct' as const } } : {}),
@@ -28,9 +29,12 @@ function spec<K extends UsageSourceActionId>(id: K, title: string, summary: stri
     inputSchema: inputs[id], outputSchema: outputs[id],
     projectObservationInput: value => {
       const parsed = inputs[id].safeParse(value);
-      if (!parsed.success) return {};
-      return { serverId: parsed.data.serverId, machineId: parsed.data.machineId,
-        ...('sourceId' in parsed.data ? { sourceId: parsed.data.sourceId } : {}) };
+      // Live-only approval records already contain this projection, without
+      // root/consent operands. Public reads must preserve its safe target ids.
+      const observed = parsed.success ? parsed : inputs['usage.sources.get'].safeParse(value);
+      if (!observed.success) return {};
+      return { serverId: observed.data.serverId, machineId: observed.data.machineId,
+        ...('sourceId' in observed.data ? { sourceId: observed.data.sourceId } : {}) };
     },
     projectObservationOutput: () => ({}),
     inputHints: { fields: [] }, cli: { acceptsServerId: true, commands: [] },

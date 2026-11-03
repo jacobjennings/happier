@@ -1,11 +1,13 @@
+export { projectWidgetGroupCellContent, resolveWidgetGroupCells, resolveWidgetGroupColumns, packWidgetGroupBands } from '../data/widgetGroupLayout.js';
 export * from './Action.js';
 export * from './UsageCharts.js';
 export type { PublicUsageOriginalLabels, PublicUsageMetricId } from '../presentation/account/PublicProfileUsage.js';
-export { HappierPublicProfile, type HappierPublicProfileLabels, type HappierPublicProfileProps,
-  type HappierPublicProfileUsageHost, type HappierPublicProfileUsageLabels } from '../presentation/account/PublicProfile.js';
+export { HappierPublicProfile, HappierPublicProfileWidget, type HappierPublicProfileLabels, type HappierPublicProfileProps,
+  type HappierPublicProfileUsageHost, type HappierPublicProfileUsageLabels } from './PublicProfile.js';
 export { projectPublicUsageChartModels, projectPublicUsageRecords, type PublicUsageChartModels,
-  type PublicUsageRecordKind } from '../presentation/usage/charts/publicUsageChartModels.js';
-export { projectUsageCalendarArtModel } from '../presentation/usage/charts/publicUsageChartModels.js';
+  type PublicUsageRecordKind } from '../data/publicUsageChartModels.js';
+export { projectUsageCalendarArtModel } from '../data/publicUsageChartModels.js';
+export { countUsageChartCalendarDates, projectUsageRiverWeekRange } from '../data/usageChartCalendar.js';
 export type { UsageCalendarArtModel, UsageNinetyPlanetsModel, UsageStreakThreadModel, UsageDaysOnSurfaceModel,
   UsageRingedStreaksModel, UsageAroundPeriodModel, UsageWeeksSkylineModel, UsageMoonsModel, UsageMachinesModel,
   UsageProjectsModel, UsageAtmosphereModel, UsageGalaxyModel } from '../presentation/usage/charts/publicUsageChartModels.js';
@@ -20,6 +22,17 @@ export {
   type CollectionSavedViewsControlProps,
 } from './CollectionSavedViews.js';
 export * from './CollectionFilter.js';
+export { CollectionConditionEditor, type CollectionConditionEditorProps } from './CollectionConditionEditor.js';
+export {
+  HAPPIER_COLLECTION_CONDITION_EDITOR_METRICS,
+  HappierCollectionConditionEditor,
+  type HappierCollectionConditionEditorHost,
+  type HappierCollectionConditionEditorLabels,
+  type HappierCollectionConditionEditorProps,
+  type HappierCollectionConditionIcon,
+  type HappierCollectionConditionTextRole,
+  type HappierCollectionConditionValuePicker,
+} from '../presentation/collection/CollectionConditionEditor.js';
 export { CollectionToolbar, type CollectionToolbarFreshness, type CollectionToolbarProps } from './CollectionToolbar.js';
 export type { CollectionVirtualizer, CollectionVirtualizerHandle, CollectionVirtualizerRequest } from '../presentation/collection/collectionVirtualizer.js';
 export * from './Content.js';
@@ -42,13 +55,18 @@ export {
 } from './Copresence.js';
 export { Avatar, type AvatarProps } from './Avatar.js';
 export { DetailsPane, DetailsPaneFooter, type DetailsPaneProps } from './DetailsPane.js';
+export { DetailsPaneOpenAsPageButton, type DetailsPaneOpenAsPageButtonProps } from './DetailsPaneOpenAsPageButton.js';
 export { DiffStat, type DiffStatProps } from './DiffStat.js';
+export { InlineCode, type InlineCodeProps } from './InlineCode.js';
 export { TaskStatusGlyph, type TaskStatusCategory, type TaskStatusGlyphProps } from './TaskStatusGlyph.js';
+export { CheckStatusGlyph, type CheckStatusGlyphProps, type CheckStatusKind } from './CheckStatusGlyph.js';
+export { AnsiText, type AnsiTextProps } from './AnsiText.js';
 export { PaneHeaderContent, type PaneHeaderContentProps, type PaneHeaderContentLineSegment } from './PaneHeaderContent.js';
 export {
   type PluginUiFocusTarget,
   usePluginUiFocusTarget,
 } from './Focus.js';
+export { ComposerStatusBadge, type ComposerStatusBadgeEmphasis, type ComposerStatusBadgeProps, type ComposerStatusBadgeTone } from './ComposerStatusBadge.js';
 export * from './Foundation.js';
 export * from './Form.js';
 export {
@@ -180,6 +198,7 @@ export { DragSource, DropTarget, type DragSourceProps, type DropTargetProps } fr
 export {
   WidgetPresentationProvider,
   useWidgetPresentation,
+  widgetFootprintBodyRows,
   type WidgetPresentation,
   type WidgetPresentationProviderProps,
 } from './WidgetPresentation.js';
@@ -466,6 +485,12 @@ export {
   type HappierDiffStatProps,
   type HappierDiffStatTextProps,
 } from '../presentation/content/DiffStat.js';
+export {
+  HAPPIER_INLINE_CODE_METRICS,
+  HappierInlineCode,
+  type HappierInlineCodeProps,
+  type HappierInlineCodeTextProps,
+} from '../presentation/text/InlineCode.js';
 export {
   resolveHappierDiffViewerRequest,
   type HappierDiffViewerRequest,
@@ -1517,6 +1542,7 @@ export {
   resolveHappierWorkStatusGlyphColor,
   resolveHappierWorkStatusSurfaceStyle,
   resolveHappierWorkStatusWordColor,
+  type CollectionGroupRollup,
   type HappierWorkStateColors,
   type HappierWorkStatusBucket,
   type HappierWorkStatusColors,
@@ -1580,3 +1606,15 @@ export {
 } from './CapabilityAddBody.js';
 /** The most blocking capability status that speaks at a placement; null when none does (healthy is quiet). */
 export { pickMostBlockingHappierCapabilityStatus as pickMostBlockingCapabilityStatus } from '../presentation/capabilities/capabilityStatus.js';
+export {
+  HAPPIER_COLLECTION_ROW_METRICS,
+  HappierCollectionRowContent,
+  resolveHappierCollectionRowHeight,
+  resolveHappierCollectionRowIdentityMetrics,
+  resolveHappierCollectionRowLineMetrics,
+  resolveHappierCollectionRowTitleMetrics,
+  type HappierCollectionRowContentProps,
+  type HappierCollectionRowDensity,
+  type HappierCollectionRowTextMetrics,
+} from '../presentation/collection/CollectionRowContent.js';
+export { Checkbox, type CheckboxProps, type CheckboxSize } from './Checkbox.js';

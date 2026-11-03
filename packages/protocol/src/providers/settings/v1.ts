@@ -13,14 +13,29 @@ import { QualifiedConnectedAccountPurposeBindingTargetV1Schema } from '../../con
 import { canonicalizeFingerprintValue } from '../fingerprints.js';
 import { computeCanonicalDomainSeparatedDigest } from '../../crypto/canonicalDigest.js';
 import { ProviderModelConfirmationSourceKeyV1Schema } from '../compatibility/sourceFacts.js';
+import { ProviderReasoningEffortLevelsV1Schema } from '../catalog/reasoningEffort.js';
+export { PROVIDER_REASONING_EFFORT_LEVELS_V1, ProviderReasoningEffortLevelV1Schema, ProviderReasoningEffortLevelsV1Schema,
+  type ProviderReasoningEffortLevelV1 } from '../catalog/reasoningEffort.js';
 export { PROVIDER_SETTINGS_LIMITS_V1 } from './limits.js';
 
 export const ProviderManualModelV1Schema = lazyZodSchema(() => z.strictObject({
   id: ProviderModelIdSchema,
   name: z.optional(z.string().check(z.trim(), z.minLength(1), z.maxLength(256))),
+  reasoningEffortLevels: z.optional(ProviderReasoningEffortLevelsV1Schema),
   addedAt: z.number().check(z.nonnegative()),
 }));
 export type ProviderManualModelV1 = z.infer<typeof ProviderManualModelV1Schema>;
+export const ProviderManualModelInputV1Schema = lazyZodSchema(() => z.omit(ProviderManualModelV1Schema, { addedAt: true }));
+export type ProviderManualModelInputV1 = z.infer<typeof ProviderManualModelInputV1Schema>;
+
+/** Import and conflict review compare declared model facts, not provenance timestamps. */
+export function readProviderManualModelFactsV1(model: ProviderManualModelV1): Readonly<{
+  id: string;
+  name: string | null;
+  reasoningEffortLevels: ProviderManualModelV1['reasoningEffortLevels'] | null;
+}> {
+  return { id: model.id, name: model.name ?? null, reasoningEffortLevels: model.reasoningEffortLevels ?? null };
+}
 
 /** Migration addresses an existing retained identity, never a newly authored Profile. */
 export const ProviderMigrationSourceProfileIdSchema = ProfileRecordIdV1Schema;
@@ -138,6 +153,14 @@ export function getProviderExperimentalConfirmationSourceKeyV1(source: Pick<
   z.infer<typeof ProviderExperimentalBindingConfirmationV1Schema>, 'connectionId' | 'connectedAccountTarget' | 'catalogSourceKey'
 >): string {
   return JSON.stringify([source.connectionId, source.catalogSourceKey ?? getProviderExperimentalConfirmationCatalogSourceKeyV1(source)]);
+}
+
+/** Exact personal confirmation identity. */
+export function getProviderExperimentalConfirmationKeyV1(confirmation: Omit<
+  z.infer<typeof ProviderExperimentalBindingConfirmationV1Schema>, 'v' | 'confirmedAt'
+>): string {
+  return JSON.stringify([getProviderExperimentalConfirmationSourceKeyV1(confirmation),
+    confirmation.agentTargetKey, confirmation.modelId, confirmation.compatibilityFingerprint]);
 }
 
 export function getProviderExperimentalConfirmationCatalogSourceKeyV1(source: Pick<
@@ -284,7 +307,7 @@ export function refineProviderSettingsV1(value: z.infer<typeof ProviderSettingsV
     } else if (confirmation.connectedAccountTarget && connectionIds.has(confirmation.connectionId)) {
       ctx.addIssue({ code: 'custom', path: ['experimentalBindingConfirmations', index, 'connectionId'], message: 'Source confirmation cannot reference a saved connection' });
     }
-    const key = `${getProviderExperimentalConfirmationSourceKeyV1(confirmation)}\0${confirmation.agentTargetKey}\0${confirmation.modelId ?? ''}\0${confirmation.compatibilityFingerprint}`;
+    const key = getProviderExperimentalConfirmationKeyV1(confirmation);
     if (confirmations.has(key)) ctx.addIssue({ code: 'custom', path: ['experimentalBindingConfirmations', index], message: 'Duplicate experimental confirmation' });
     confirmations.add(key);
   });

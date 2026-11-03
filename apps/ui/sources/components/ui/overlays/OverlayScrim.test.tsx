@@ -2,7 +2,7 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import Color from 'color';
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { flattenTestStyle, renderScreen, standardCleanup } from '@/dev/testkit';
 
 // Platform gradient, mask and animation adapters are renderer/OS boundaries.
 vi.mock('react-native', async () => {
@@ -53,6 +53,11 @@ describe('floating composer scrim material', () => {
         expect(Color(colors[0]!).alpha()).toBeCloseTo(opacity, 6);
         expect(colors.every(color => Color(color).alpha() <= opacity)).toBe(true);
         expect(Color(colors.at(-1)!).alpha()).toBe(0);
+        // The solid tier behind the surface itself seats it at the same requested strength.
+        const underlays = screen.findAll(node => typeof node.type === 'string'
+            && typeof flattenTestStyle(node.props.style)?.backgroundColor === 'string');
+        expect(underlays).toHaveLength(1);
+        expect(Color(flattenTestStyle(underlays[0]!.props.style)!.backgroundColor as string).alpha()).toBeCloseTo(opacity, 6);
     });
 });
 

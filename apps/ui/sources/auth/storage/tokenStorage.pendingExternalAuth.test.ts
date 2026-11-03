@@ -4,17 +4,105 @@ import {
     createPasswordCredentialTargetDigestV1,
     encodePasswordCredentialFieldV1,
 } from '@happier-dev/protocol';
+import { seedPersistedHomeProfilesForTests } from '@/dev/testkit/fixtures/persistedHomeProfiles';
+import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
 import { installLocalStorageMock, type LocalStorageMockHandle } from './tokenStorage.web.testHelpers';
-import { installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
+import {
+    homeProfileForTests,
+    installTokenStorageTestIsolation,
+    installTokenStorageWebPlatformMocks,
+} from './tokenStorage.testHelpers';
 
 installTokenStorageWebPlatformMocks();
+installTokenStorageTestIsolation('token_storage_pending_external_auth');
+
+const { TokenStorage } = await import('./tokenStorage');
+
+const HOME_A = homeProfileForTests('server-a', 'https://a.example.test', { name: 'Server A' });
+const HOME_B = homeProfileForTests('server-b', 'https://b.example.test', { name: 'Server B' });
+const SHARED_URL = 'https://shared.example.test';
+// The profile owner folds identity-less profiles at one URL; distinct Homes there carry distinct identities.
+const SHARED_A = homeProfileForTests('server-a', SHARED_URL, { name: 'Server A', serverIdentityId: 'srv_shared_a', canonicalServerUrl: SHARED_URL });
+const SHARED_B = homeProfileForTests('server-b', SHARED_URL, { name: 'Server B', serverIdentityId: 'srv_shared_b', canonicalServerUrl: SHARED_URL });
+const TEAM_HOME = homeProfileForTests('home-team', 'https://home.example.test');
+
+async function focus(profiles: readonly ServerProfile[], activeServerId: string): Promise<void> {
+    await seedPersistedHomeProfilesForTests({ profiles, activeServerId });
+}
+
+/** A device without a saved Home: the real profile owner reports no active server id or URL. */
+async function focusNoHome(): Promise<void> {
+    await focus([], '');
+}
+
+function createFirstKeyContinuation() {
+    const createdAt = Date.now();
+    return {
+        accountId: 'account-1',
+        requestDigest: `aemrb1_${'A'.repeat(43)}`,
+        requestJson: '{"toMode":"e2ee"}',
+        createdAt,
+        expiresAt: createdAt + 10 * 60 * 1000,
+    };
+}
+
+/** Native secure storage whose next generic scoped pending write can be held until released. */
+function createGatedNativeSecureStore() {
+    const store = new Map<string, string>();
+    let blockGenericScopedWrite = false;
+    let releaseGenericScopedWrite: (() => void) | null = null;
+    let genericScopedWriteReached: (() => void) | null = null;
+    return {
+        store,
+        blockNextGenericScopedWrite() {
+            blockGenericScopedWrite = true;
+            return {
+                reached: new Promise<void>((resolve) => {
+                    genericScopedWriteReached = resolve;
+                }),
+                release() {
+                    releaseGenericScopedWrite?.();
+                },
+            };
+        },
+        module: {
+            async getItemAsync(key: string) {
+                return store.get(key) ?? null;
+            },
+            async setItemAsync(key: string, value: string) {
+                const parsed = JSON.parse(value) as { proof?: string };
+                if (
+                    blockGenericScopedWrite
+                    && parsed.proof === 'generic-proof'
+                    && key.includes('pending_external_auth__srv_')
+                ) {
+                    blockGenericScopedWrite = false;
+                    genericScopedWriteReached?.();
+                    await new Promise<void>((resolve) => {
+                        releaseGenericScopedWrite = resolve;
+                    });
+                }
+                store.set(key, value);
+            },
+            async deleteItemAsync(key: string) {
+                store.delete(key);
+            },
+        },
+    };
+}
 
 describe('TokenStorage pending external auth (web)', () => {
     let restoreLocalStorage: (() => void) | null = null;
     let localStorageHandle: LocalStorageMockHandle | null = null;
 
+    function requireStorage(): LocalStorageMockHandle {
+        if (!localStorageHandle) {
+            throw new Error('Expected localStorage mock handle');
+        }
+        return localStorageHandle;
+    }
+
     beforeEach(() => {
-        vi.resetModules();
         localStorageHandle = installLocalStorageMock();
         restoreLocalStorage = localStorageHandle.restore;
         vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -28,19 +116,8 @@ describe('TokenStorage pending external auth (web)', () => {
     });
 
     it('round-trips pending external auth state', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerUrl: () => 'https://relay.example.test',
-            };
-        });
-
-        const { TokenStorage } = await import('./tokenStorage');
-
-        expect(typeof TokenStorage.setPendingExternalAuth).toBe('function');
-        expect(typeof TokenStorage.getPendingExternalAuth).toBe('function');
-        expect(typeof TokenStorage.clearPendingExternalAuth).toBe('function');
+        const relay = homeProfileForTests('relay', 'https://relay.example.test');
+        await focus([relay], relay.id);
 
         await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
 
@@ -51,16 +128,17 @@ describe('TokenStorage pending external auth (web)', () => {
         });
         expect(ok).toBe(true);
 
-        await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual({
+        // The write records the exact focused Home for its URL.
+        const stored = {
             provider: 'github',
             proof: 'p',
+            serverId: 'relay',
             serverUrl: 'https://relay.example.test',
-        });
+        };
+        await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual(stored);
 
-        if (!localStorageHandle) {
-            throw new Error('Expected localStorage mock handle');
-        }
-        const pendingKeys = [...localStorageHandle.store.keys()].filter((k) => k.includes('pending_external_auth'));
+        const storage = requireStorage();
+        const pendingKeys = [...storage.store.keys()].filter((k) => k.includes('pending_external_auth'));
         expect(pendingKeys.length).toBe(2);
         expect(pendingKeys.some((k) => k.includes('__srv_'))).toBe(true);
         expect(pendingKeys.some((k) => k.includes('__global'))).toBe(true);
@@ -69,32 +147,19 @@ describe('TokenStorage pending external auth (web)', () => {
         // TokenStorage should still recover the pending state from the global fallback.
         for (const key of pendingKeys) {
             if (key.includes('__srv_')) {
-                localStorageHandle.store.delete(key);
+                storage.store.delete(key);
             }
         }
-        await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual({
-            provider: 'github',
-            proof: 'p',
-            serverUrl: 'https://relay.example.test',
-        });
+        await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual(stored);
 
         const cleared = await TokenStorage.clearPendingExternalAuth();
         expect(cleared).toBe(true);
         await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('rejects password-enrollment custody without writing its verifier, proof, or digest to browser storage', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => 'home-a',
-                getActiveServerUrl: () => 'https://home-a.example.test',
-                listServerProfiles: () => [{ id: 'home-a', serverUrl: 'https://home-a.example.test' }],
-            };
-        });
-        const { TokenStorage } = await import('./tokenStorage');
+        const homeA = homeProfileForTests('home-a', 'https://home-a.example.test');
+        await focus([homeA], homeA.id);
         const createdAt = Date.now();
         const targetCredential = {
             v: 1 as const,
@@ -137,27 +202,16 @@ describe('TokenStorage pending external auth (web)', () => {
         await expect(TokenStorage.setPendingExternalAuth(pending)).resolves.toBe(false);
         await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
 
-        if (!localStorageHandle) {
-            throw new Error('Expected localStorage mock handle');
-        }
-        const storedBytes = [...localStorageHandle.store.values()].join('\n');
+        const storedBytes = [...requireStorage().store.values()].join('\n');
         expect(storedBytes).not.toContain('local-proof');
         expect(storedBytes).not.toContain(targetCredential.hash.salt);
         expect(storedBytes).not.toContain(targetCredential.hash.digest);
         expect(storedBytes).not.toContain(requestDigest);
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('rejects global fallback pending external auth when the active server changed', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerUrl: () => 'https://relay-b.example.test',
-            };
-        });
-
-        const { TokenStorage } = await import('./tokenStorage');
+        const relayB = homeProfileForTests('relay-b', 'https://relay-b.example.test');
+        await focus([relayB], relayB.id);
 
         const ok = await TokenStorage.setPendingExternalAuth({
             provider: 'github',
@@ -166,246 +220,126 @@ describe('TokenStorage pending external auth (web)', () => {
         });
         expect(ok).toBe(true);
 
-        if (!localStorageHandle) {
-            throw new Error('Expected localStorage mock handle');
-        }
-        for (const key of [...localStorageHandle.store.keys()]) {
+        const storage = requireStorage();
+        for (const key of [...storage.store.keys()]) {
             if (key.includes('pending_external_auth') && key.includes('__srv_')) {
-                localStorageHandle.store.delete(key);
+                storage.store.delete(key);
             }
         }
 
         await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('reports a server mismatch for global fallback pending external auth when the active same-origin server profile changed', async () => {
-        const state = {
-            activeServerId: 'server-a',
-            activeServerUrl: 'https://shared.example.test',
-            profiles: [
-                { id: 'server-a', serverUrl: 'https://shared.example.test', name: 'Server A' },
-                { id: 'server-b', serverUrl: 'https://shared.example.test', name: 'Server B' },
-            ],
-        };
-
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => state.activeServerId,
-                getActiveServerUrl: () => state.activeServerUrl,
-                listServerProfiles: () => state.profiles,
-            };
-        });
-
-        const { TokenStorage } = await import('./tokenStorage');
+        await focus([SHARED_A, SHARED_B], SHARED_A.id);
 
         const ok = await TokenStorage.setPendingExternalAuth({
             provider: 'github',
             proof: 'p',
-            serverUrl: state.activeServerUrl,
+            serverUrl: SHARED_URL,
         });
         expect(ok).toBe(true);
 
-        if (!localStorageHandle) {
-            throw new Error('Expected localStorage mock handle');
-        }
-        for (const key of [...localStorageHandle.store.keys()]) {
+        const storage = requireStorage();
+        for (const key of [...storage.store.keys()]) {
             if (key.includes('pending_external_auth') && key.includes('__srv_')) {
-                localStorageHandle.store.delete(key);
+                storage.store.delete(key);
             }
         }
 
-        state.activeServerId = 'server-b';
+        await focus([SHARED_A, SHARED_B], SHARED_B.id);
 
         await expect(TokenStorage.readPendingExternalAuthState()).resolves.toEqual({
             value: {
                 provider: 'github',
                 proof: 'p',
-                serverId: 'server-a',
-                serverUrl: state.activeServerUrl,
+                serverId: 'srv_shared_a',
+                serverUrl: SHARED_URL,
             },
             serverMismatch: true,
         });
         await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('clears the original scoped pending external auth key even after the active server changes', async () => {
-        const state = {
-            activeServerId: 'server-a',
-            activeServerUrl: 'https://shared.example.test',
-            profiles: [
-                { id: 'server-a', serverUrl: 'https://shared.example.test', name: 'Server A' },
-                { id: 'server-b', serverUrl: 'https://shared.example.test', name: 'Server B' },
-            ],
-        };
-
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => state.activeServerId,
-                getActiveServerUrl: () => state.activeServerUrl,
-                listServerProfiles: () => state.profiles,
-            };
-        });
-
-        const { TokenStorage } = await import('./tokenStorage');
+        await focus([SHARED_A, SHARED_B], SHARED_A.id);
 
         const ok = await TokenStorage.setPendingExternalAuth({
             provider: 'github',
             proof: 'p',
-            serverUrl: state.activeServerUrl,
+            serverUrl: SHARED_URL,
         });
         expect(ok).toBe(true);
 
-        state.activeServerId = 'server-b';
+        await focus([SHARED_A, SHARED_B], SHARED_B.id);
 
         await expect(TokenStorage.clearPendingExternalAuth()).resolves.toBe(true);
 
-        if (!localStorageHandle) {
-            throw new Error('Expected localStorage mock handle');
-        }
-        const remainingScopedKeys = [...localStorageHandle.store.keys()].filter(
+        const remainingScopedKeys = [...requireStorage().store.keys()].filter(
             (key) => key.includes('pending_external_auth') && key.includes('__srv_'),
         );
         expect(remainingScopedKeys).toEqual([]);
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('rejects scoped pending external auth records that lack explicit server context', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => 'server-a',
-                getActiveServerUrl: () => 'https://relay.example.test',
-                listServerProfiles: () => [{ id: 'server-a', serverUrl: 'https://relay.example.test', name: 'Server A' }],
-            };
-        });
-
-        const { TokenStorage } = await import('./tokenStorage');
+        const relay = homeProfileForTests('server-a', 'https://relay.example.test', { name: 'Server A' });
+        await focus([relay], relay.id);
 
         await expect(
             TokenStorage.setPendingExternalAuth({ provider: 'github', proof: 'p' }),
         ).resolves.toBe(true);
 
-        if (!localStorageHandle) {
-            throw new Error('Expected localStorage mock handle');
-        }
-
-        for (const key of [...localStorageHandle.store.keys()]) {
+        const storage = requireStorage();
+        for (const key of [...storage.store.keys()]) {
             if (key.includes('pending_external_auth') && key.includes('__srv_')) {
-                localStorageHandle.store.set(key, JSON.stringify({ provider: 'github', proof: 'p' }));
+                storage.store.set(key, JSON.stringify({ provider: 'github', proof: 'p' }));
             }
             if (key.includes('pending_external_auth') && key.includes('__global')) {
-                localStorageHandle.store.delete(key);
+                storage.store.delete(key);
             }
         }
 
         await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
-    it('round-trips pending external auth state with both proof and secret', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => null,
-                getActiveServerUrl: () => '',
-                listServerProfiles: () => [],
-            };
-        });
+    it.each([
+        {
+            name: 'both proof and secret',
+            pending: { provider: 'github', proof: 'p', secret: 's', intent: 'reset' as const },
+        },
+        {
+            name: 'the bounded first-key migration continuation',
+            pending: {
+                provider: 'github',
+                proof: 'proof',
+                secret: 'secret',
+                returnTo: '/settings/account',
+                accountEncryptionFirstKey: createFirstKeyContinuation(),
+            },
+        },
+    ])('round-trips pending external auth state with $name', async ({ pending }) => {
+        await focusNoHome();
 
-        const { TokenStorage } = await import('./tokenStorage');
-
-        const ok = await TokenStorage.setPendingExternalAuth({ provider: 'github', proof: 'p', secret: 's', intent: 'reset' });
-        expect(ok).toBe(true);
-
-        await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual({ provider: 'github', proof: 'p', secret: 's', intent: 'reset' });
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
+        await expect(TokenStorage.setPendingExternalAuth(pending)).resolves.toBe(true);
+        await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual(pending);
     });
 
-    it('round-trips pending external auth returnTo when it is an internal path', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => null,
-                getActiveServerUrl: () => '',
-                listServerProfiles: () => [],
-            };
-        });
+    it.each([
+        { returnTo: '/settings/account', readable: true },
+        { returnTo: 'https://attacker.example.test/settings/account', readable: false },
+        { returnTo: '//attacker.example.test/settings/account', readable: false },
+    ])('reads back pending external auth returnTo $returnTo only when it is an internal path', async ({ returnTo, readable }) => {
+        await focusNoHome();
+        const pending = { provider: 'github', proof: 'p', returnTo };
 
-        const { TokenStorage } = await import('./tokenStorage');
+        await TokenStorage.setPendingExternalAuth(pending);
 
-        const ok = await TokenStorage.setPendingExternalAuth({ provider: 'github', proof: 'p', returnTo: '/settings/account' });
-        expect(ok).toBe(true);
-        await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual({
-            provider: 'github',
-            proof: 'p',
-            returnTo: '/settings/account',
-        });
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
-    });
-
-    it('round-trips the bounded first-key migration continuation', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => null,
-                getActiveServerUrl: () => '',
-                listServerProfiles: () => [],
-            };
-        });
-
-        const { TokenStorage } = await import('./tokenStorage');
-        const createdAt = Date.now();
-        const continuation = {
-            accountId: 'account-1',
-            requestDigest: `aemrb1_${'A'.repeat(43)}`,
-            requestJson: '{"toMode":"e2ee"}',
-            createdAt,
-            expiresAt: createdAt + 10 * 60 * 1000,
-        };
-
-        await expect(TokenStorage.setPendingExternalAuth({
-            provider: 'github',
-            proof: 'proof',
-            secret: 'secret',
-            returnTo: '/settings/account',
-            accountEncryptionFirstKey: continuation,
-        })).resolves.toBe(true);
-        await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual({
-            provider: 'github',
-            proof: 'proof',
-            secret: 'secret',
-            returnTo: '/settings/account',
-            accountEncryptionFirstKey: continuation,
-        });
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
+        await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual(readable ? pending : null);
     });
 
     it('round-trips an mTLS first-key continuation in the active server scope', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => 'api.happier.dev',
-                getActiveServerUrl: () => 'https://api.happier.dev',
-                listServerProfiles: () => [{
-                    id: 'api.happier.dev',
-                    serverUrl: 'https://api.happier.dev',
-                    name: 'Happier',
-                }],
-            };
-        });
-
-        const { TokenStorage } = await import('./tokenStorage');
+        const happier = homeProfileForTests('api.happier.dev', 'https://api.happier.dev', { name: 'Happier' });
+        await focus([happier], happier.id);
         const createdAt = Date.now();
         const pending = {
             provider: 'mtls',
@@ -434,36 +368,10 @@ describe('TokenStorage pending external auth (web)', () => {
             value: pending,
             serverMismatch: false,
         });
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('preserves server A marked custody when server B clears and starts an unmarked flow', async () => {
-        const state = {
-            activeServerId: 'server-a',
-            activeServerUrl: 'https://a.example.test',
-            profiles: [
-                {
-                    id: 'server-a',
-                    serverUrl: 'https://a.example.test',
-                    name: 'Server A',
-                },
-                {
-                    id: 'server-b',
-                    serverUrl: 'https://b.example.test',
-                    name: 'Server B',
-                },
-            ],
-        };
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => state.activeServerId,
-                getActiveServerUrl: () => state.activeServerUrl,
-                listServerProfiles: () => state.profiles,
-            };
-        });
-        const { TokenStorage } = await import('./tokenStorage');
+        await focus([HOME_A, HOME_B], HOME_A.id);
         const createdAt = Date.now();
         const markedServerA = {
             provider: 'github',
@@ -486,8 +394,7 @@ describe('TokenStorage pending external auth (web)', () => {
             TokenStorage.setPendingExternalAuth(markedServerA),
         ).resolves.toBe(true);
 
-        state.activeServerId = 'server-b';
-        state.activeServerUrl = 'https://b.example.test';
+        await focus([HOME_A, HOME_B], HOME_B.id);
         await TokenStorage.clearPendingExternalAuth();
         await expect(
             TokenStorage.setPendingExternalAuth({
@@ -499,54 +406,18 @@ describe('TokenStorage pending external auth (web)', () => {
             }),
         ).resolves.toBe(true);
 
-        state.activeServerId = 'server-a';
-        state.activeServerUrl = 'https://a.example.test';
+        await focus([HOME_A, HOME_B], HOME_A.id);
         await expect(
             TokenStorage.readPendingExternalAuthState(),
         ).resolves.toEqual({
             value: markedServerA,
             serverMismatch: false,
         });
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('reads retained marked custody from an active legacy profile scope before another server global pointer', async () => {
-        const state = {
-            activeServerId: 'server-a-old',
-            activeServerUrl: 'https://a.example.test',
-            profiles: [{
-                id: 'server-a-old',
-                serverUrl: 'https://a.example.test',
-                name: 'Server A',
-            }] as Array<{
-                id: string;
-                serverUrl: string;
-                name: string;
-                legacyServerIds?: string[];
-            }>,
-        };
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => state.activeServerId,
-                getActiveServerUrl: () => state.activeServerUrl,
-                listServerProfiles: () => state.profiles,
-                areServerProfileIdentifiersEquivalent:
-                    (
-                        left: string | null | undefined,
-                        right: string | null | undefined,
-                    ) => {
-                        if (left === right) return true;
-                        return [left, right].every(
-                            (id) =>
-                                id === 'server-a-old'
-                                || id === 'server-a-new',
-                        );
-                    },
-            };
-        });
-        const { TokenStorage } = await import('./tokenStorage');
+        const serverAOld = homeProfileForTests('server-a-old', 'https://a.example.test', { name: 'Server A' });
+        await focus([serverAOld], serverAOld.id);
         const createdAt = Date.now();
         const markedServerA = {
             provider: 'github',
@@ -566,21 +437,12 @@ describe('TokenStorage pending external auth (web)', () => {
         } as const;
         await TokenStorage.setPendingExternalAuth(markedServerA);
 
-        state.profiles = [
-            {
-                id: 'server-a-new',
-                serverUrl: 'https://a.example.test',
-                name: 'Server A',
-                legacyServerIds: ['server-a-old'],
-            },
-            {
-                id: 'server-b',
-                serverUrl: 'https://b.example.test',
-                name: 'Server B',
-            },
-        ];
-        state.activeServerId = 'server-b';
-        state.activeServerUrl = 'https://b.example.test';
+        // The Home is re-registered under a new profile id that retains its old id as a legacy alias.
+        const serverANew = homeProfileForTests('server-a-new', 'https://a.example.test', {
+            name: 'Server A',
+            legacyServerIds: ['server-a-old'],
+        });
+        await focus([serverANew, HOME_B], HOME_B.id);
         await TokenStorage.setPendingExternalAuth({
             provider: 'github',
             proof: 'proof-b',
@@ -589,32 +451,17 @@ describe('TokenStorage pending external auth (web)', () => {
             serverUrl: 'https://b.example.test',
         });
 
-        state.activeServerId = 'server-a-new';
-        state.activeServerUrl = 'https://a.example.test';
+        await focus([serverANew, HOME_B], serverANew.id);
         await expect(
             TokenStorage.readPendingExternalAuthState(),
         ).resolves.toEqual({
             value: markedServerA,
             serverMismatch: false,
         });
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('rejects an unrelated same-server write that would replace marked custody', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => 'server-a',
-                getActiveServerUrl: () => 'https://a.example.test',
-                listServerProfiles: () => [{
-                    id: 'server-a',
-                    serverUrl: 'https://a.example.test',
-                    name: 'Server A',
-                }],
-            };
-        });
-        const { TokenStorage } = await import('./tokenStorage');
+        await focus([HOME_A], HOME_A.id);
         const createdAt = Date.now();
         const marked = {
             provider: 'github',
@@ -649,36 +496,10 @@ describe('TokenStorage pending external auth (web)', () => {
             value: marked,
             serverMismatch: false,
         });
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('removes only the exactly authorized marked continuation when two servers have marked custody', async () => {
-        const state = {
-            activeServerId: 'server-a',
-            activeServerUrl: 'https://a.example.test',
-            profiles: [
-                {
-                    id: 'server-a',
-                    serverUrl: 'https://a.example.test',
-                    name: 'Server A',
-                },
-                {
-                    id: 'server-b',
-                    serverUrl: 'https://b.example.test',
-                    name: 'Server B',
-                },
-            ],
-        };
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => state.activeServerId,
-                getActiveServerUrl: () => state.activeServerUrl,
-                listServerProfiles: () => state.profiles,
-            };
-        });
-        const { TokenStorage } = await import('./tokenStorage');
+        await focus([HOME_A, HOME_B], HOME_A.id);
         const createdAt = Date.now();
         const markedServerA = {
             provider: 'github',
@@ -715,13 +536,11 @@ describe('TokenStorage pending external auth (web)', () => {
         } as const;
 
         await TokenStorage.setPendingExternalAuth(markedServerA);
-        state.activeServerId = 'server-b';
-        state.activeServerUrl = 'https://b.example.test';
+        await focus([HOME_A, HOME_B], HOME_B.id);
         await expect(
             TokenStorage.setPendingExternalAuth(markedServerB),
         ).resolves.toBe(true);
-        state.activeServerId = 'server-a';
-        state.activeServerUrl = 'https://a.example.test';
+        await focus([HOME_A, HOME_B], HOME_A.id);
 
         await expect(
             TokenStorage.clearPendingExternalAuth({
@@ -744,44 +563,17 @@ describe('TokenStorage pending external auth (web)', () => {
             }),
         ).resolves.toBe(true);
 
-        state.activeServerId = 'server-b';
-        state.activeServerUrl = 'https://b.example.test';
+        await focus([HOME_A, HOME_B], HOME_B.id);
         await expect(
             TokenStorage.readPendingExternalAuthState(),
         ).resolves.toEqual({
             value: markedServerB,
             serverMismatch: false,
         });
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('retains expired post-submission custody for every server until exact recovery or abandonment', async () => {
-        const state = {
-            activeServerId: 'server-a',
-            activeServerUrl: 'https://a.example.test',
-            profiles: [
-                {
-                    id: 'server-a',
-                    serverUrl: 'https://a.example.test',
-                    name: 'Server A',
-                },
-                {
-                    id: 'server-b',
-                    serverUrl: 'https://b.example.test',
-                    name: 'Server B',
-                },
-            ],
-        };
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => state.activeServerId,
-                getActiveServerUrl: () => state.activeServerUrl,
-                listServerProfiles: () => state.profiles,
-            };
-        });
-        const { TokenStorage } = await import('./tokenStorage');
+        await focus([HOME_A, HOME_B], HOME_A.id);
         const now = Date.now();
         const markedServerA = {
             provider: 'github',
@@ -819,14 +611,12 @@ describe('TokenStorage pending external auth (web)', () => {
                 migrationSubmissionAttempted: true,
             },
         } as const;
-        state.activeServerId = 'server-b';
-        state.activeServerUrl = 'https://b.example.test';
+        await focus([HOME_A, HOME_B], HOME_B.id);
         await expect(
             TokenStorage.setPendingExternalAuth(markedServerB),
         ).resolves.toBe(true);
 
-        state.activeServerId = 'server-a';
-        state.activeServerUrl = 'https://a.example.test';
+        await focus([HOME_A, HOME_B], HOME_A.id);
         await expect(
             TokenStorage.readPendingExternalAuthState(),
         ).resolves.toEqual({
@@ -834,28 +624,17 @@ describe('TokenStorage pending external auth (web)', () => {
             serverMismatch: false,
         });
 
-        state.activeServerId = 'server-b';
-        state.activeServerUrl = 'https://b.example.test';
+        await focus([HOME_A, HOME_B], HOME_B.id);
         await expect(
             TokenStorage.readPendingExternalAuthState(),
         ).resolves.toEqual({
             value: markedServerB,
             serverMismatch: false,
         });
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('rejects a false first-key migration-submission marker', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => null,
-                getActiveServerUrl: () => '',
-                listServerProfiles: () => [],
-            };
-        });
-        const { TokenStorage } = await import('./tokenStorage');
+        await focusNoHome();
         const createdAt = Date.now();
 
         await TokenStorage.setPendingExternalAuth({
@@ -879,20 +658,10 @@ describe('TokenStorage pending external auth (web)', () => {
             value: null,
             serverMismatch: false,
         });
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('rejects a migration-submission marker without a pending handle', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => null,
-                getActiveServerUrl: () => '',
-                listServerProfiles: () => [],
-            };
-        });
-        const { TokenStorage } = await import('./tokenStorage');
+        await focusNoHome();
         const createdAt = Date.now();
 
         await TokenStorage.setPendingExternalAuth({
@@ -915,20 +684,10 @@ describe('TokenStorage pending external auth (web)', () => {
             value: null,
             serverMismatch: false,
         });
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('clears an expired first-key continuation and its only pending seed', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => null,
-                getActiveServerUrl: () => '',
-                listServerProfiles: () => [],
-            };
-        });
-        const { TokenStorage } = await import('./tokenStorage');
+        await focusNoHome();
         const expiresAt = Date.now() - 1;
 
         await TokenStorage.setPendingExternalAuth({
@@ -950,48 +709,15 @@ describe('TokenStorage pending external auth (web)', () => {
             value: null,
             serverMismatch: false,
         });
-        if (!localStorageHandle) {
-            throw new Error('Expected localStorage mock handle');
-        }
         expect(
-            [...localStorageHandle.store.keys()].filter(
+            [...requireStorage().store.keys()].filter(
                 (key) => key.includes('pending_external_auth'),
             ),
         ).toEqual([]);
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
-    });
-
-    it('rejects a malformed first-key migration continuation', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
-
-        if (!localStorageHandle) {
-            throw new Error('Expected localStorage mock handle');
-        }
-        localStorageHandle.getItemMock.mockReturnValueOnce(JSON.stringify({
-            provider: 'github',
-            proof: 'proof',
-            secret: 'secret',
-            accountEncryptionFirstKey: {
-                accountId: '',
-                requestDigest: 'not-a-binding-digest',
-                requestJson: '',
-            },
-        }));
-
-        await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
     });
 
     it('rejects a noncanonical first-key request digest with invalid final base64url bits', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => null,
-                getActiveServerUrl: () => '',
-                listServerProfiles: () => [],
-            };
-        });
-        const { TokenStorage } = await import('./tokenStorage');
+        await focusNoHome();
 
         await TokenStorage.setPendingExternalAuth({
             provider: 'github',
@@ -1008,31 +734,42 @@ describe('TokenStorage pending external auth (web)', () => {
         });
 
         await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
-    it('returns null for malformed pending external auth payloads', async () => {
-        const { TokenStorage } = await import('./tokenStorage');
-
-        if (!localStorageHandle) {
-            throw new Error('Expected localStorage mock handle');
+    const storedPending = { provider: 'github', proof: 'proof', secret: 'secret' };
+    it.each([
+        { name: 'a valid record', payload: storedPending, expected: storedPending },
+        {
+            name: 'a malformed first-key migration continuation',
+            payload: {
+                ...storedPending,
+                accountEncryptionFirstKey: {
+                    accountId: '',
+                    requestDigest: 'not-a-binding-digest',
+                    requestJson: '',
+                },
+            },
+            expected: null,
+        },
+        { name: 'malformed pending external auth fields', payload: { provider: 123, secret: true }, expected: null },
+    ])('reads $name stored at the exact pending external auth key', async ({ payload, expected }) => {
+        await focusNoHome();
+        await expect(TokenStorage.setPendingExternalAuth(storedPending)).resolves.toBe(true);
+        const storage = requireStorage();
+        const pendingKeys = [...storage.store.keys()].filter((key) => key.includes('pending_external_auth'));
+        const scopedKey = pendingKeys.find((key) => key.includes('__srv_'));
+        if (!scopedKey) throw new Error('Expected the scoped pending external auth key');
+        // Leave only the exact scoped record, so the read cannot fall back to the global copy.
+        for (const key of pendingKeys) {
+            if (key !== scopedKey) storage.store.delete(key);
         }
-        localStorageHandle.getItemMock.mockReturnValueOnce(JSON.stringify({ provider: 123, secret: true }));
+        storage.store.set(scopedKey, JSON.stringify(payload));
 
-        await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
+        await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual(expected);
     });
 
     it('retains only the strict Team-purpose continuation without a generic return destination', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => 'home-team',
-                getActiveServerUrl: () => 'https://home.example.test',
-                listServerProfiles: () => [{ id: 'home-team', serverUrl: 'https://home.example.test' }],
-            };
-        });
-        const { TokenStorage } = await import('./tokenStorage');
+        await focus([TEAM_HOME], TEAM_HOME.id);
         const pending = {
             provider: 'github',
             proof: 'proof',
@@ -1050,20 +787,10 @@ describe('TokenStorage pending external auth (web)', () => {
 
         await expect(TokenStorage.setPendingExternalAuth(pending)).resolves.toBe(true);
         await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual(pending);
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it('round-trips native mTLS Team custody without an OAuth proof or secret', async () => {
-        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-            return {
-                ...actual,
-                getActiveServerId: () => 'home-team',
-                getActiveServerUrl: () => 'https://home.example.test',
-                listServerProfiles: () => [{ id: 'home-team', serverUrl: 'https://home.example.test' }],
-            };
-        });
-        const { TokenStorage } = await import('./tokenStorage');
+        await focus([TEAM_HOME], TEAM_HOME.id);
         const pending = {
             provider: 'mtls',
             serverId: 'home-team',
@@ -1080,20 +807,20 @@ describe('TokenStorage pending external auth (web)', () => {
 
         await expect(TokenStorage.setPendingExternalAuth(pending)).resolves.toBe(true);
         await expect(TokenStorage.getPendingExternalAuth()).resolves.toEqual(pending);
-        vi.doUnmock('@/sync/domains/server/serverProfiles');
     });
 
     it.each([
-        { name: 'missing exact server identity', change: { serverId: undefined } },
-        { name: 'missing exact server URL', change: { serverUrl: undefined } },
-        { name: 'no safe continuation', change: { teamContinuation: undefined } },
+        { name: 'complete exact custody', change: {}, written: true },
+        { name: 'missing exact server identity', change: { serverId: undefined }, written: false },
+        { name: 'missing exact server URL', change: { serverUrl: undefined }, written: false },
+        { name: 'no safe continuation', change: { teamContinuation: undefined }, written: false },
         { name: 'mismatched Team destination', change: { teamContinuation: {
             v: 1, purpose: 'team_admission', admissionReference: 'mtls-admission-1', teamId: 'team-1',
             homeServerIdentityId: 'home-team', destination: { kind: 'team_sign_in', teamId: 'team-other' },
-        } } },
-    ])('rejects native mTLS custody with $name', async ({ change }) => {
-        const { TokenStorage } = await import('./tokenStorage');
-        const written = await TokenStorage.setPendingExternalAuth({
+        } }, written: false },
+    ])('writes native mTLS custody with $name only when it is complete', async ({ change, written }) => {
+        await focus([TEAM_HOME], TEAM_HOME.id);
+        await expect(TokenStorage.setPendingExternalAuth({
             provider: 'mtls',
             serverId: 'home-team',
             serverUrl: 'https://home.example.test',
@@ -1106,9 +833,7 @@ describe('TokenStorage pending external auth (web)', () => {
                 destination: { kind: 'team_sign_in', teamId: 'team-1' },
             },
             ...change,
-        } as never);
-
-        expect(written).toBe(false);
+        } as never)).resolves.toBe(written);
     });
 
     it.each([
@@ -1122,8 +847,9 @@ describe('TokenStorage pending external auth (web)', () => {
             homeServerIdentityId: 'home-team', destination: { kind: 'team_sign_in', teamId: 'team-1', token: 'secret' },
         } } },
     ])('rejects a Team continuation with a $name', async ({ change }) => {
-        const { TokenStorage } = await import('./tokenStorage');
-        await TokenStorage.setPendingExternalAuth({
+        // Same focused Home as the strict Team continuation above, which this record differs from only by `change`.
+        await focus([TEAM_HOME], TEAM_HOME.id);
+        await expect(TokenStorage.setPendingExternalAuth({
             provider: 'github',
             proof: 'proof',
             serverId: 'home-team',
@@ -1137,8 +863,73 @@ describe('TokenStorage pending external auth (web)', () => {
                 destination: { kind: 'team_sign_in', teamId: 'team-1' },
             },
             ...change,
-        } as never);
+        } as never)).resolves.toBe(false);
 
         await expect(TokenStorage.getPendingExternalAuth()).resolves.toBeNull();
+    });
+
+    it('does not let a stale generic write overwrite admitted first-key custody in native secure storage', async () => {
+        // Native secure-store writes are asynchronous, so a write can still be in storage when a
+        // later mutation is issued; this needs a second TokenStorage instance on a native platform.
+        await focus([HOME_A], HOME_A.id);
+        const secureStore = createGatedNativeSecureStore();
+        // Mocked module results survive vi.resetModules(); doMock replaces them for later imports.
+        // Fresh imports after this point would also be native, so this test stays last in the file.
+        vi.doMock('react-native', () => ({ Platform: { OS: 'ios' } }));
+        vi.doMock('expo-secure-store', () => secureStore.module);
+        vi.resetModules();
+        const { TokenStorage: NativeTokenStorage } = await import('./tokenStorage');
+        const createdAt = Date.now();
+        await NativeTokenStorage.setPendingExternalAuth({
+            provider: 'github',
+            proof: 'initial-proof',
+            secret: 'initial-secret',
+            serverId: 'server-a',
+            serverUrl: 'https://a.example.test',
+        });
+        expect([...secureStore.store.keys()].some((key) => key.includes('pending_external_auth__srv_'))).toBe(true);
+        const gate = secureStore.blockNextGenericScopedWrite();
+        const genericWrite =
+            NativeTokenStorage.setPendingExternalAuth({
+                provider: 'github',
+                proof: 'generic-proof',
+                secret: 'generic-secret',
+                serverId: 'server-a',
+                serverUrl: 'https://a.example.test',
+            });
+        await gate.reached;
+
+        const marked = {
+            provider: 'github',
+            proof: 'first-key-proof',
+            secret: 'first-key-secret',
+            serverId: 'server-a',
+            serverUrl: 'https://a.example.test',
+            accountEncryptionFirstKey: {
+                accountId: 'account-a',
+                requestDigest: `aemrb1_${'A'.repeat(43)}`,
+                requestJson: '{"toMode":"e2ee"}',
+                createdAt,
+                expiresAt: createdAt + 10 * 60 * 1000,
+                pending: 'pending-a',
+                migrationSubmissionAttempted: true,
+            },
+        } as const;
+        const markerWrite =
+            NativeTokenStorage.setPendingExternalAuth(marked);
+        await new Promise<void>((resolve) => {
+            setTimeout(resolve, 0);
+        });
+        gate.release();
+        await expect(
+            Promise.all([genericWrite, markerWrite]),
+        ).resolves.toEqual([true, true]);
+
+        await expect(
+            NativeTokenStorage.readPendingExternalAuthState(),
+        ).resolves.toEqual({
+            value: marked,
+            serverMismatch: false,
+        });
     });
 });

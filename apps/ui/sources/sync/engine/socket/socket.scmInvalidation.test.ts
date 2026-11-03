@@ -113,6 +113,7 @@ describe('socket scm invalidation', () => {
       createdAt: 10,
       body: {
         t: 'new-message',
+        delivery: 'full' as const,
         sid: sessionId,
         message: {
           id: 'm1',

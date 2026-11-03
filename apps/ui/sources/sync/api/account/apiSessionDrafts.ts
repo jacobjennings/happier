@@ -5,12 +5,13 @@ import type { SessionDraftRepositoryTransport } from '@/sync/ops/sessionDrafts/s
 import { SessionDraftEpochUnavailableError, isSessionDraftEpochUnavailableError } from '@/sync/ops/sessionDrafts/sessionDraftEpochError';
 import { HappyError } from '@/utils/errors/errors';
 import { isTransientConnectivityError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
+import type { ServerFetch } from '@/sync/http/client';
 
 /** Statuses a Home without the V2 draft epoch returns for these exact paths. */
 const EPOCH_UNAVAILABLE_STATUSES = new Set([404, 405, 501]);
 
 async function postJson(params: Readonly<{
-    request: (path: string, init?: RequestInit) => Promise<Response>;
+    request: ServerFetch;
     path: string;
     body: unknown;
     epoch: 'v1' | 'v2';
@@ -23,6 +24,12 @@ async function postJson(params: Readonly<{
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify(params.body),
+        }, {
+            // Both epochs' read/list operations are idempotent POSTs. Their
+            // unpaged content can be large: native gets cancellation, not a total deadline.
+            recoveryRead: params.path === SESSION_DRAFT_ROUTE_READ
+                || params.path === SESSION_DRAFT_V2_ROUTE_READ
+                || params.path === SESSION_DRAFT_V2_ROUTE_LIST ? 'unbounded' : false,
         });
     } catch (error) {
         if (error instanceof TypeError && isTransientConnectivityError(error)) {
@@ -67,7 +74,7 @@ async function postJson(params: Readonly<{
  */
 export function createApiSessionDraftsTransport(params: Readonly<{
     /** Exact Home/Account request captured by the canonical scoped-request owner. */
-    request: (path: string, init?: RequestInit) => Promise<Response>;
+    request: ServerFetch;
 }>): SessionDraftRepositoryTransport {
     const epochOf = (address: SessionDraftAddressV2): 'v1' | 'v2' => (
         isSessionDraftAddressV1(address) ? 'v1' : 'v2'

@@ -13,6 +13,7 @@ import type { AppPaneScopeApi } from '@/components/appShell/panes/hooks/useAppPa
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const routerPush = vi.hoisted(() => vi.fn());
+const routeParams = vi.hoisted(() => ({ current: {} as Record<string, string> }));
 
 installSessionSubagentCommonModuleMocks({
     storage: () => vi.importActual<typeof import('@/sync/domains/state/storage')>('@/sync/domains/state/storage'),
@@ -27,7 +28,7 @@ installSessionSubagentCommonModuleMocks({
 });
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
-    return createExpoRouterMock({ pathname: () => '/session/lead', router: { push: routerPush } }).module;
+    return createExpoRouterMock({ pathname: () => '/session/lead', params: () => routeParams.current, router: { push: routerPush } }).module;
 });
 installDisconnectedServerSocketBoundary();
 
@@ -91,7 +92,10 @@ function WorkHost(props: Readonly<{ serverId: string; onPane?: (pane: AppPaneSco
     </SessionWorkSourcesProvider>;
 }
 
-afterEach(standardCleanup);
+afterEach(async () => {
+    routeParams.current = {};
+    await standardCleanup();
+});
 
 describe('phone Work List → Map', () => {
     it('reopens a retained start draft on a phone through the Run page that already shows its draft', async () => {
@@ -147,17 +151,48 @@ describe('phone Work List → Map', () => {
             expect(screen.findByTestId(`session-work-start-draft:${discussion.key}`)?.props.accessibilityLabel).toContain('First Discussion draft');
             expect(screen.findByTestId(`session-work-start-draft:${otherDiscussion.key}`)?.props.accessibilityLabel).toContain('Second Discussion draft');
             const scope = `serverId=${encodeURIComponent(serverId)}`;
+            const { SessionNewRunScreen } = await import('@/app/(app)/session/[id]/runs/new');
+            const { SessionAgentsLaunchMenu } = await import('@/components/sessions/agents/launch/SessionAgentsLaunchMenu');
+            const pushedHref = () => {
+                const href: unknown = routerPush.mock.calls[0]?.[0];
+                if (typeof href !== 'string') throw new Error('Expected a produced Run URL');
+                return href;
+            };
+            const decodedRoute = (href: string) => {
+                const route = new URL(href, 'https://phone-route.test');
+                return { pathname: route.pathname, params: Object.fromEntries(route.searchParams) };
+            };
+            const assertRouteHeading = async (href: string) => {
+                routeParams.current = { id: 'lead', ...decodedRoute(href).params };
+                const route = await renderScreen(<SessionNewRunScreen />, {
+                    wrapper: ({ children }) => <InjectedAuthProvider credentials={connection.credentials}>{children}</InjectedAuthProvider>,
+                });
+                try {
+                    await vi.waitFor(() => expect(route.getTextContent()).toContain(secondOpinion.title));
+                    expect(route.getTextContent()).not.toContain('runPage.launcher.titles.review');
+                } finally { await route.unmount(); }
+            };
+            // The initial preset and the retained tab must reach the same real route and draft heading.
+            routerPush.mockClear();
+            await act(async () => screen.tree.findByType(SessionAgentsLaunchMenu).props.launcher.openRun('review', {
+                roleId: 'second_opinion', title: secondOpinion.title,
+            }));
+            const presetHref = `/session/lead/runs/new?${scope}&intent=review&roleId=second_opinion&title=Second%20opinion`;
+            expect(routerPush).toHaveBeenCalledTimes(1);
+            expect(decodedRoute(pushedHref())).toEqual(decodedRoute(presetHref));
+            await assertRouteHeading(pushedHref());
             for (const [tab, href] of [
                 [conversation, `/session/lead/runs/new?${scope}`],
                 [plan, `/session/lead/runs/new?${scope}&intent=plan`],
-                [secondOpinion, `/session/lead/runs/new?${scope}&intent=review&roleId=second_opinion`],
+                [secondOpinion, `/session/lead/runs/new?${scope}&intent=review&roleId=second_opinion&title=Second%20opinion`],
                 [discussion, `/session/lead/runs/new?${scope}&draftCorrelationId=selection_1`],
                 [otherDiscussion, `/session/lead/runs/new?${scope}&draftCorrelationId=selection_2`],
             ] as const) {
                 routerPush.mockClear();
                 await screen.pressByTestIdAsync(`session-work-start-draft:${tab.key}`);
                 expect(routerPush).toHaveBeenCalledTimes(1);
-                expect(routerPush).toHaveBeenCalledWith(href);
+                expect(decodedRoute(pushedHref())).toEqual(decodedRoute(href));
+                if (tab === secondOpinion) await assertRouteHeading(pushedHref());
             }
             // The Run page finds that exact draft through the existing handoff, not the plain conversation draft.
             expect(readInteractiveExecutionRunDraftNavigationIntent({ address: { serverId, sessionId: 'lead' }, correlationId: 'selection_1' }))

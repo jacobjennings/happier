@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useState, type ComponentType, type ReactElement, type ReactNode } from 'react';
+import { createContext, memo, useCallback, useContext, useRef, useState, type ComponentType, type ReactElement, type ReactNode, type RefObject } from 'react';
 import { Platform, View, type ViewStyle } from 'react-native';
 
 import { useHappierPageSection } from '../layout/PageSection.js';
@@ -7,6 +7,7 @@ import { HAPPIER_MENU_ROW_METRICS } from '../interaction/Menu.js';
 import { HappierPressable } from '../interaction/Pressable.js';
 import { hasHappierPrecisePointer } from '../interaction/precisePointer.js';
 import { HappierDisclosureChevron } from './DisclosureChevron.js';
+import { resolveHappierCollectionTitleAccessoryFits } from './collectionTitleRoom.js';
 import { HAPPIER_RADIUS_V1 } from '../../environment/radius.js';
 import type { HappierPageTextStep } from '../layout/pageText.js';
 import { resolveHappierTypeScale, type HappierTypeEmphasis, type HappierTypeRole } from '../text/typeScale.js';
@@ -28,6 +29,8 @@ import {
  */
 export type HappierCollectionListTextRole = 'title' | 'count' | 'subtitle' | 'groupTitle' | 'groupHeading' | 'groupCount';
 
+export type HappierCollectionRowRole = 'catalogRow' | 'item' | 'menu';
+
 export type HappierCollectionListHost = Readonly<{
   /** One line of text in an anatomy role. */
   Text: ComponentType<Readonly<{
@@ -45,8 +48,19 @@ export type HappierCollectionListHost = Readonly<{
     onChangeText: (text: string) => void;
     placeholder: string;
     testID?: string;
+    /** A control inside the field's well, after the input (the list's filter button). */
+    trailing?: ReactNode;
+    /** Resolves to the field's drawn frame, the anchor of what opens under it (the filter editor). */
+    anchorRef?: RefObject<View | null>;
+    /** Focus on mount: only a field the person just opened from its magnifier. */
+    autoFocus?: boolean;
     style: HappierStyleProp;
   }>>;
+  /**
+   * The host's magnifier for a collapsible search (the Sessions header's Search icon). A host without
+   * one always shows the field.
+   */
+  SearchToggle?: ComponentType<Readonly<{ open: boolean; onPress: () => void; accessibilityLabel: string; testID?: string }>>;
   /** The list's own ground (theme-bound). */
   surfaceStyle: HappierStyleProp;
   /**
@@ -61,6 +75,15 @@ export type HappierCollectionListSearch = Readonly<{
   onChangeText: (text: string) => void;
   placeholder: string;
   testID?: string;
+  /** The list's filter button, inside the field's well where the list has a search field (lab `sfcols:mcpFilter`). */
+  trailing?: ReactNode;
+  /** The field's frame, for the filter editor to open under the field's left edge. */
+  anchorRef?: RefObject<View | null>;
+  /**
+   * A titled column keeps its field behind a magnifier in the title row until it is opened (the Sessions
+   * header), so the header is one row. A query keeps it open; closing it clears the query.
+   */
+  collapsible?: boolean;
 }>;
 
 export type HappierCollectionListFilters = Readonly<{
@@ -77,8 +100,19 @@ export type HappierCollectionListProps = Readonly<{
    * it: the surface already names it, and its search starts at the header's place.
    */
   title?: string;
+  /**
+   * The title as a control (a saved-space list's "My work ⌄", which opens its spaces and filter). It takes
+   * the title's place on the same row and edge; `title` then only names the list for assistive tech.
+   */
+  titleControl?: ReactNode;
   /** Quiet, tabular count beside the title; omitted while unknown. */
   count?: number | null;
+  /**
+   * A compact control in the title row, before the header action (a view switch: Definitions | Runs).
+   * The title keeps its floor ({@link HAPPIER_COLLECTION_LIST_METRICS.titleFloor}): where the row is
+   * too narrow for both, the control yields to the band under the title.
+   */
+  titleAccessory?: ReactNode;
   /** The add control ("+", or a menu when there is more than one way to add). */
   headerAction?: ReactNode;
   /**
@@ -86,6 +120,11 @@ export type HappierCollectionListProps = Readonly<{
    * "Acme · Only people you invite"), led by an optional 14px glyph.
    */
   subtitle?: Readonly<{ text: string; leading?: ReactNode; testID?: string }> | null;
+  /**
+   * The band under the header: a saved-space list's spaces strip and the conditions it carries beyond
+   * its space. Every list that has spaces puts them here, between the title and search.
+   */
+  strip?: ReactNode;
   /** Present only when the list is long enough to need it. */
   search?: HappierCollectionListSearch | null;
   filters?: HappierCollectionListFilters | null;
@@ -123,15 +162,29 @@ export const HAPPIER_COLLECTION_LIST_METRICS = Object.freeze({
   rowRadius: HAPPIER_RADIUS_V1.md,
   /**
    * A navigation row: one line on the compact list step, its glyph in a fixed leading column so
-   * titles align whatever the glyph's shape. These are core's compact `Item` values (36 tall on pointer
-   * platforms, the dense row of the spacing rhythm; glyph box 20 on the web, 18 on iOS; 10 to the
-   * title), which core navigation rows draw with.
+   * titles align whatever the glyph's shape. These are core's compact `Item` values (32 tall on pointer
+   * platforms, the lab's dense pointer row (`clflat`, P4 §4.5); glyph box 20 on the web, 18 on iOS; 10 to
+   * the title), which core navigation rows draw with. Touch platforms keep their own floor.
    */
-  rowMinHeight: 36,
+  rowMinHeight: 32,
+  /**
+   * A described row: the navigation row with one quiet context line under its title (a pool's service and
+   * active account, a skill's description). One shape for every column, never a per-column height.
+   */
+  describedRowMinHeight: 44,
+  /**
+   * A disclosure tree in a column (a service and its accounts): the caret's box and its gap to the parent's
+   * mark. A disclosed child carries no mark and starts on the parent's title edge
+   * ({@link resolveHappierCollectionTreeChildIndentPx}).
+   */
+  treeCaretBox: 12,
+  treeCaretGap: 4,
   rowGlyphBox: Platform.OS === 'ios' ? 18 : 20,
   rowGlyphGap: 10,
   /** The header's title row (title, count, the header action's 30px icon buttons). */
   titleRowHeight: 36,
+  /** The narrowest a column's title gets before a control beside it yields: "My work" and its chevron. */
+  titleFloor: 88,
   /** From the column's top edge to the title row. */
   headerPaddingTop: 12,
   /** Header → search field, and the field → the first row. */
@@ -174,7 +227,8 @@ export const HAPPIER_COLLECTION_LIST_TEXT: Readonly<Record<HappierCollectionList
   count: collectionTextStep('body'),
   // The line under the title (whose list, who sees it): the quiet body step.
   subtitle: collectionTextStep('body'),
-  groupTitle: collectionTextStep('meta', 'semiBold'),
+  // A navigation column's group label is quiet (lab `clflat` `.ls-h`): medium, so the rows under it lead.
+  groupTitle: collectionTextStep('meta', 'medium'),
   // A group label inside a page section's sheet is a sub-heading between the section title and its
   // rows (the event a set of triggers answers): a step above the rows' description, in the text tone,
   // so it reads as a heading rather than a quiet column label.
@@ -199,6 +253,15 @@ export const COLLECTION_RAIL_MIN_WIDTH_PX = Math.ceil(
       + HAPPIER_COLLECTION_LIST_METRICS.rowGlyphBox,
   ),
 );
+
+/**
+ * How far a disclosed child row is indented so its title starts on its parent's title edge: the parent's
+ * caret, the caret's gap, the mark's box and the mark's gap to the title.
+ */
+export function resolveHappierCollectionTreeChildIndentPx(): number {
+  const M = HAPPIER_COLLECTION_LIST_METRICS;
+  return M.treeCaretBox + M.treeCaretGap + M.rowGlyphBox + M.rowGlyphGap;
+}
 
 /** A row's content inset (its own horizontal padding inside the gutter), plus a disclosure indent. */
 export function resolveHappierCollectionListRowPadding(indentPx = 0): Readonly<{ paddingLeft: number; paddingRight: number }> {
@@ -274,9 +337,6 @@ export const HappierCardSelectionRingContext = createContext(false);
  */
 export const HappierCardActionsCornerContext = createContext<Readonly<{ top: number; end: number; height: number }> | null>(null);
 
-/** The open row's leading edge in a Collection's table or list (lab `.br.on::before`). */
-export const HAPPIER_COLLECTION_SELECTED_EDGE_WIDTH = 2.5;
-
 const railStyle: ViewStyle = { flex: 1, minHeight: 0 };
 const M = HAPPIER_COLLECTION_LIST_METRICS;
 const headerStyle: ViewStyle = {
@@ -290,7 +350,13 @@ const headerStyle: ViewStyle = {
   paddingRight: M.rowInset,
   marginBottom: M.headerGap,
 };
+// Several actions (a filter and a "+") sit together at the row's end; the header's space-between would spread them.
+const headerActionStyle: ViewStyle = { flexDirection: 'row', alignItems: 'center' };
 const headingStyle: ViewStyle = { flexDirection: 'row', alignItems: 'baseline', gap: 8, flexShrink: 1 };
+// With a control beside it the heading takes the row's free width, so its measured width is the title's room.
+const headingWithAccessoryStyle: ViewStyle = { flexGrow: 1, flexBasis: 0, minWidth: 0 };
+const titleAccessoryStyle: ViewStyle = { marginLeft: 8 };
+const TITLE_ACCESSORY_GAP = 8;
 // The subtitle shares the title's text edge and closes the header's own gap, so search and the first group
 // keep their distance from the header block, not from the title row.
 const headerWithSubtitleStyle: ViewStyle = { marginBottom: 0 };
@@ -305,6 +371,10 @@ const subtitleStyle: ViewStyle = {
 const searchStyle: HappierPortableStyle = { marginHorizontal: M.rowInset, marginBottom: M.headerGap };
 const untitledSearchStyle: HappierPortableStyle = { ...searchStyle, marginTop: M.headerPaddingTop };
 const filtersStyle: ViewStyle = { marginHorizontal: M.rowInset, marginBottom: M.headerGap };
+// The strip starts on the title's text edge (its first tab under the title's first letter), like Sessions.
+const stripStyle: ViewStyle = { paddingLeft: M.contentInset, paddingRight: M.rowInset, marginBottom: M.headerGap };
+const stripWithAccessoryStyle: ViewStyle = { flexDirection: 'row', alignItems: 'center', gap: TITLE_ACCESSORY_GAP };
+const stripLeadStyle: ViewStyle = { flex: 1, minWidth: 0 };
 const scrollerStyle: HappierPortableStyle = { paddingTop: 0 };
 const footerStyle: ViewStyle = { height: 16 };
 const groupLabelRowStyle: ViewStyle = {
@@ -334,6 +404,7 @@ const groupLabelMarkStyle: ViewStyle = { width: 16, height: 16, alignItems: 'cen
 const groupLabelDisclosureStyle: HappierPortableStyle = { ...groupLabelLeadStyle, gap: 4, alignSelf: 'stretch' };
 const groupLabelDisclosureMarkStyle: ViewStyle = { ...groupLabelMarkStyle, marginRight: 4 };
 const groupLabelSpacerStyle: ViewStyle = { flex: 1, minWidth: 8 };
+const groupLabelEndCountStyle: ViewStyle = { marginRight: M.contentInset - M.rowInset };
 const groupLabelActionsStyle: ViewStyle = { flexDirection: 'row', alignItems: 'center', gap: 2 };
 const groupLabelActionsHiddenStyle: ViewStyle = { opacity: 0 };
 const groupLabelChevronStyle: HappierPortableStyle = { width: 16, height: 16, alignItems: 'center', justifyContent: 'center' };
@@ -355,19 +426,54 @@ function HappierCollectionListImpl(props: HappierCollectionListProps): ReactElem
   const { host } = props;
   const { Text, Scroller, SearchField } = host;
   const showFilters = props.filters != null && props.filters.targetCount > 0;
-  const showHeader = props.title !== undefined || props.count != null || props.headerAction != null;
+  const showHeader = props.title !== undefined || props.titleControl != null || props.count != null || props.headerAction != null;
+  const hasAccessory = props.titleAccessory != null;
+  // The title keeps its floor; the control beside it yields to the band below when the row cannot hold both.
+  const [accessoryFits, setAccessoryFits] = useState(true);
+  const accessoryWidthRef = useRef<number | null>(null);
+  const onHeadingLayout = useCallback((event: Readonly<{ nativeEvent: Readonly<{ layout: Readonly<{ width: number }> }> }>) => {
+    const titleWidth = event.nativeEvent.layout.width;
+    setAccessoryFits((shown) => resolveHappierCollectionTitleAccessoryFits({
+      shown, titleWidth, accessoryWidth: accessoryWidthRef.current, titleFloor: M.titleFloor, gap: TITLE_ACCESSORY_GAP,
+    }));
+  }, []);
+  const onAccessoryLayout = useCallback((event: Readonly<{ nativeEvent: Readonly<{ layout: Readonly<{ width: number }> }> }>) => {
+    accessoryWidthRef.current = event.nativeEvent.layout.width;
+  }, []);
+  const accessoryInRow = hasAccessory && showHeader && accessoryFits;
+  const [searchOpened, setSearchOpened] = useState(false);
+  const search = props.search ?? null;
+  const searchCollapses = search !== null && search.collapsible === true && showHeader && host.SearchToggle !== undefined;
+  const searchOpen = !searchCollapses || searchOpened || (search?.value.length ?? 0) > 0;
+  const onSearchChange = search?.onChangeText;
+  const onToggleSearch = useCallback(() => {
+    if (searchOpen) {
+      onSearchChange?.('');
+      setSearchOpened(false);
+    } else {
+      setSearchOpened(true);
+    }
+  }, [onSearchChange, searchOpen]);
+  const SearchToggle = host.SearchToggle;
   return (
     <HappierCollectionListRowContext.Provider value>
     <View testID={props.testID} style={[railStyle, host.surfaceStyle]}>
       {showHeader ? (
         <View style={props.subtitle ? [headerStyle, headerWithSubtitleStyle] : headerStyle}>
-          <View style={headingStyle}>
-            {props.title !== undefined ? <Text role="title" accessibilityRole="header">{props.title}</Text> : null}
+          <View style={hasAccessory ? [headingStyle, headingWithAccessoryStyle] : headingStyle}
+            {...(hasAccessory ? { onLayout: onHeadingLayout } : {})}>
+            {props.titleControl != null ? props.titleControl
+              : props.title !== undefined ? <Text role="title" accessibilityRole="header">{props.title}</Text> : null}
             {props.count !== undefined && props.count !== null ? (
               <Text role="count">{props.count}</Text>
             ) : null}
           </View>
-          {props.headerAction}
+          {accessoryInRow ? <View style={titleAccessoryStyle} onLayout={onAccessoryLayout}>{props.titleAccessory}</View> : null}
+          {searchCollapses && SearchToggle && search ? (
+            <SearchToggle open={searchOpen} onPress={onToggleSearch} accessibilityLabel={search.placeholder}
+              {...(search.testID === undefined ? {} : { testID: `${search.testID}:toggle` })} />
+          ) : null}
+          {props.headerAction != null ? <View style={headerActionStyle}>{props.headerAction}</View> : null}
         </View>
       ) : null}
       {showHeader && props.subtitle ? (
@@ -376,13 +482,27 @@ function HappierCollectionListImpl(props: HappierCollectionListProps): ReactElem
           <Text role="subtitle" numberOfLines={1}>{props.subtitle.text}</Text>
         </View>
       ) : null}
-      {props.search ? (
+      {/* A control that yielded the title row ends the strip's row, or takes a row of its own without one. */}
+      {props.strip != null ? (
+        hasAccessory && !accessoryInRow ? (
+          <View style={[stripStyle, stripWithAccessoryStyle]}>
+            <View style={stripLeadStyle}>{props.strip}</View>
+            <View onLayout={onAccessoryLayout}>{props.titleAccessory}</View>
+          </View>
+        ) : <View style={stripStyle}>{props.strip}</View>
+      ) : hasAccessory && !accessoryInRow ? (
+        <View style={[stripStyle, stripWithAccessoryStyle]}><View onLayout={onAccessoryLayout}>{props.titleAccessory}</View></View>
+      ) : null}
+      {props.search && searchOpen ? (
         <SearchField
           value={props.search.value}
           onChangeText={props.search.onChangeText}
           placeholder={props.search.placeholder}
           style={showHeader ? searchStyle : untitledSearchStyle}
+          {...(props.search.trailing == null ? {} : { trailing: props.search.trailing })}
+          {...(props.search.anchorRef === undefined ? {} : { anchorRef: props.search.anchorRef })}
           {...(props.search.testID === undefined ? {} : { testID: props.search.testID })}
+          {...(searchCollapses && searchOpened ? { autoFocus: true } : {})}
         />
       ) : null}
       {showFilters ? <View style={filtersStyle}>{props.filters!.content}</View> : null}
@@ -513,6 +633,8 @@ export function HappierCollectionListGroupLabel(props: Readonly<{
             expanded={disclosure.expanded}
             onPress={disclosure.onToggle}
             hitSlop={6}
+            // It abuts the lead (no gap between the two targets): a finger's hit area never reaches back into it.
+            hitReach={{ left: 0 }}
             style={groupLabelChevronStyle}
             {...(props.testID === undefined ? {} : { testID: `${props.testID}:fold` })}
           >
@@ -538,7 +660,13 @@ export function HappierCollectionListGroupLabel(props: Readonly<{
         {/* With a trailing state the count stays with its title ("Skills 6 … Loaded when used"); alone it is the end column. */}
         {props.count !== undefined && (props.trailing != null || props.countPlacement === 'title') ? <Text role="groupCount" {...(props.countTestID === undefined ? {} : { testID: props.countTestID })}>{props.count}</Text> : null}
       </View>
-      {props.count !== undefined && props.trailing == null && props.countPlacement !== 'title' ? <Text role="groupCount" {...(props.countTestID === undefined ? {} : { testID: props.countTestID })}>{props.count}</Text> : null}
+      {props.count !== undefined && props.trailing == null && props.countPlacement !== 'title' ? (
+        // The end column is the rows' trailing text edge, where their counts end; the label's own padding stops
+        // at the gutter for its hover actions.
+        <View style={pageSection || props.presentation === 'menu' ? null : groupLabelEndCountStyle}>
+          <Text role="groupCount" {...(props.countTestID === undefined ? {} : { testID: props.countTestID })}>{props.count}</Text>
+        </View>
+      ) : null}
       {props.trailing ?? null}
     </View>
   );

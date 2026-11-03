@@ -111,6 +111,21 @@ function uuid(value: number): string {
 }
 
 describe('sessionDraftRepository', () => {
+    it('prepares a frame-local New Session draft without reading the Account transport', async () => {
+        const storage = createMemoryStorage();
+        const draftId = uuid(955);
+        const address = { kind: 'newSession' as const, draftId };
+        const writer = createSessionDraftRepository({ storage, cipher: plainCipher(), syncEnabled: false });
+        writer.writeNewSessionDraft({ scope, draftId, patch: { text: 'Frame-owned draft' }, materializationIntent: 'userEdit' });
+        const remote = createRemote(undefined, address);
+        const reader = createSessionDraftRepository({ storage, cipher: plainCipher(), transport: remote.transport, syncEnabled: true });
+
+        await reader.prepareLocalSessionDraftScope(scope);
+
+        expect(remote.transport.read).not.toHaveBeenCalled();
+        expect(reader.getSessionComposerDraftSnapshot(scope, address)?.composer.text.value).toBe('Frame-owned draft');
+    });
+
     it('seals the qualified Doc passage in the existing Account draft payload and restores it on another repository', async () => {
         const address = { kind: 'newDiscussion' } as const;
         const passage = { ref: { kind: 'doc' as const, artifactId: 'notes', serverId: scope.serverId },
@@ -178,6 +193,39 @@ describe('sessionDraftRepository', () => {
         expect(readSessionMessagingFromDraft(repository.getSessionDraftSnapshot(scope, sessionAddress)?.document))
             .toEqual({ kind: 'ask', target: { selector: 'workers' } });
         expect(repository.readSessionMessagingDraftMutationAttempt({ scope: targetScope, sessionId: sessionAddress.sessionId })).toEqual(otherHome);
+    });
+    it('restores frozen message targets and admitted receipts only from the device-local attempt', () => {
+        const storage = createMemoryStorage();
+        const repository = createSessionDraftRepository({ storage, cipher: plainCipher(), syncEnabled: false });
+        repository.writeExistingSessionDraft({ scope, sessionId: sessionAddress.sessionId, patch: { text: 'Question' } });
+        const intent = { kind: 'ask', target: { selector: 'workers' }, reply: 'return' } as const;
+        const attempt = repository.getOrCreateSessionMessagingDraftMutationAttempt({ scope, sessionId: sessionAddress.sessionId,
+            currentness: repository.captureSessionDraftCurrentness({ scope, address: sessionAddress }), intent });
+        if (!attempt) throw new Error('Expected an exact draft attempt');
+        const targets = { actionId: 'session.message.send', field: 'sessionId', selector: true,
+            targets: [{ serverId: scope.serverId, sessionId: 'accepted-worker' }, { serverId: scope.serverId, sessionId: 'refused-worker' }] };
+        const results = targets.targets.map((target, index) => ({ target, result: index === 0
+            ? { ok: true as const, result: { status: 'accepted' as const, localId: attempt.localId } }
+            : { ok: false as const, errorCode: 'permission_denied', error: 'Unavailable' } }));
+        repository.writeSessionDraftLocalSupplement({ scope, address: sessionAddress, patch: {
+            sessionMessagingMutationAttempt: { ...attempt, custody: { targets, results } },
+        } });
+        const restored = createSessionDraftRepository({ storage, cipher: plainCipher(), syncEnabled: false });
+        expect(restored.getOrCreateSessionMessagingDraftMutationAttempt({ scope, sessionId: sessionAddress.sessionId,
+            currentness: repository.captureSessionDraftCurrentness({ scope, address: sessionAddress }), intent }))
+            .toEqual({ ...attempt, custody: { targets, results } });
+        expect(restored.retainSessionMessagingDraftCustody({ scope, sessionId: sessionAddress.sessionId, localId: 'another-attempt',
+            custody: { targets, results } })).toBe(false);
+        expect(() => restored.retainSessionMessagingDraftCustody({ scope, sessionId: sessionAddress.sessionId, localId: attempt.localId,
+            custody: { targets: { ...targets, targets: [{ serverId: scope.serverId, sessionId: 'new-worker' }] }, results: [] } }))
+            .toThrow('already frozen');
+        expect(JSON.stringify(repository.getSessionDraftSnapshot(scope, sessionAddress)?.document)).not.toContain('accepted-worker');
+        repository.writeExistingSessionDraft({ scope, sessionId: sessionAddress.sessionId, patch: { text: 'New question' } });
+        expect(repository.retainSessionMessagingDraftCustody({ scope, sessionId: sessionAddress.sessionId, localId: attempt.localId,
+            custody: { targets, results } })).toBe(false);
+        expect(repository.getOrCreateSessionMessagingDraftMutationAttempt({ scope, sessionId: sessionAddress.sessionId,
+            currentness: repository.captureSessionDraftCurrentness({ scope, address: sessionAddress }), intent }))
+            .not.toHaveProperty('custody');
     });
     it('keeps retired Session-addressed Discussion replicas unread and unchanged while writing independent drafts', () => {
         const storage = createMemoryStorage();
@@ -1337,6 +1385,52 @@ describe('sessionDraftRepository', () => {
         expect(launch).toEqual(submitted);
         restored.clearSessionDraftCurrentnessLocal({ scope, address, currentness: launch! });
         expect(requireComposerDraftDocument(restored.getSessionDraftSnapshot(scope, address)?.document)?.composer.text?.value).toBe('newer edit during preparation');
+    });
+
+    it.each(['clean', 'pending'] as const)('retains Project setup origin added during a synchronized read of a %s draft', async (state) => {
+        const address = { kind: 'newSession', draftId: uuid(1012) } as const;
+        const storage = createMemoryStorage();
+        const cipher = createSessionDraftCipher({ accountMode: 'plain', accountCryptoMaterial: null,
+            getSessionContext: () => null, randomBytes: length => new Uint8Array(length) });
+        const remote = createRemote(undefined, address);
+        const options = { storage, cipher, transport: remote.transport, syncEnabled: true };
+        const repository = createSessionDraftRepository(options);
+        repository.writeNewSessionDraft({ scope, draftId: address.draftId,
+            patch: { text: 'Seeded setup prompt', authoring: { directory: '/original' } }, materializationIntent: 'seeded' });
+        await repository.flushSessionDraft({ scope, address });
+        const otherDevice = createSessionDraftRepository({ ...options, storage: createMemoryStorage() });
+        await otherDevice.materializeExact(scope, address);
+        otherDevice.writeNewSessionDraft({ scope, draftId: address.draftId,
+            patch: { authoring: { directory: '/synced' } }, materializationIntent: 'userEdit' });
+        await otherDevice.flushSessionDraft({ scope, address });
+
+        const entered = createDeferred<void>();
+        const release = createDeferred<void>();
+        const read = vi.mocked(remote.transport.read).getMockImplementation();
+        if (!read) throw new Error('Missing transport read boundary');
+        vi.mocked(remote.transport.read).mockImplementationOnce(async (...args) => {
+            const response = await read(...args);
+            entered.resolve();
+            await release.promise;
+            return response;
+        });
+        const hydration = repository.materializeExact(scope, address);
+        await entered.promise;
+        const origin = { kind: 'project', accountId: scope.accountId, page: 'scripts',
+            workspace: { serverId: scope.serverId, workspaceId: 'project', machineId: 'machine', rootPath: '/original' } } as const;
+        try {
+            if (state === 'pending') repository.writeNewSessionDraft({ scope, draftId: address.draftId,
+                patch: { text: 'Replacement setup prompt' }, materializationIntent: 'userEdit' });
+            repository.writeSessionDraftLocalSupplement({ scope, address,
+                patch: { newSessionLocalState: { selectedSecretId: null, authoringOrigin: origin } } });
+        } finally { release.resolve(); }
+        await hydration;
+        const reopened = createSessionDraftRepository(options).getSessionDraftSnapshot(scope, address);
+        expect(reopened?.localSupplement.newSessionLocalState?.authoringOrigin).toEqual(origin);
+        expect(requireComposerDraftDocument(reopened?.document)?.composer.text.value)
+            .toBe(state === 'pending' ? 'Replacement setup prompt' : 'Seeded setup prompt');
+        expect(getSessionDraftDocumentField(reopened?.document ?? null, { kind: 'authoring', fieldId: 'directory' })?.value).toBe('/synced');
+        expect(JSON.stringify(remote.readCurrent()?.content)).not.toContain('authoringOrigin');
     });
 
     it('persists launch currentness and device-local New Session state only in the local supplement', () => {

@@ -641,7 +641,8 @@ describe('sync/runtime/browserIroh/homeTunnelHttp', () => {
         // The held read now answers. It must not resurrect a response.
         fake.push('HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n');
         fake.end();
-        await Promise.resolve();
+        // Flush a macrotask so a cleanup that fires a tick late is still caught.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
         expect(fake.countOf('cancel')).toBe(1);
         expect(fake.countOf('close')).toBe(1);
     });

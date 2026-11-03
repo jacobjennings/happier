@@ -177,6 +177,7 @@ describe('current Project setup effect and preparation admission', () => {
         const clean = await reviewed(provenanceInput);
         expect(clean.reviewedEffect).toMatchObject({ presentation: { provenance: {
             headCommit: runScmExecutable(repository.rootPath, 'git', ['rev-parse', 'HEAD']), fileState: 'unknown',
+            committed: { commit: runScmExecutable(repository.rootPath, 'git', ['rev-parse', 'HEAD']) },
         } } });
         expect(clean.reviewedEffectDigest).toBe(untracked.reviewedEffectDigest);
         await writeFile(join(repository.rootPath, '.happier/project.json'), JSON.stringify({ ...manifest, futureMetadata: 'display only' }));
@@ -205,6 +206,16 @@ describe('current Project setup effect and preparation admission', () => {
             file: '.happier/project.json', kind: 'unavailable', fileState: 'unknown',
         } } });
         expect(JSON.stringify(unavailable.reviewedEffect)).not.toContain(repository.headCommit);
+        // Ignored bytes also disappear from status, but have no committed provenance.
+        await mkdir(join(repository.rootPath, 'ignored/.happier'), { recursive: true });
+        await writeFile(join(repository.rootPath, '.gitignore'), 'ignored/\n');
+        await writeFile(join(repository.rootPath, 'ignored/.happier/project.json'), JSON.stringify(manifest));
+        const ignoredWorkspace = { ...workspace, rootPath: join(repository.rootPath, 'ignored') };
+        const ignored = await reviewed({ ...provenanceInput, workspace: ignoredWorkspace,
+            projectAssociation: { ...input.projectAssociation, workspace: ignoredWorkspace } });
+        expect(ignored.reviewedEffect.presentation.provenance).toMatchObject({ fileState: 'unknown' });
+        expect(ignored.reviewedEffect.presentation.provenance).not.toHaveProperty('committed');
+        expect(modified.reviewedEffect.presentation.provenance).not.toHaveProperty('committed');
     });
 
     it('reviews ordered real native/literal commands across accepted Machines without running anything or hashing unrelated metadata', async () => {
@@ -360,6 +371,10 @@ describe('current Project setup effect and preparation admission', () => {
         expect(await prepareProjectSetup({ ...native.input, skipForInvocation: true, nativeIo: { resolveTool: async () => null } })).toMatchObject({ kind: 'refused', code: 'native_tool_unavailable' });
         const env = await fixture({ version: 1, environment: { kind: 'toolchain', tool: 'mise', configPath: 'missing.toml' } });
         expect(await prepareProjectSetup({ ...env.input, skipForInvocation: true })).toMatchObject({ kind: 'refused', code: 'native_configuration_missing' });
+        const partial = await fixture({ version: 1, environment: { kind: 'toolchain', tool: 'devbox', configPath: 'devbox.json' } },
+            { 'devbox.json': JSON.stringify({ packages: [], include: ['unresolved.json'] }) });
+        expect(await prepareProjectSetup({ ...partial.input, skipForInvocation: true }))
+            .toMatchObject({ kind: 'refused', code: 'native_environment_dynamic_unsupported' });
         const secret = await fixture({ version: 1, environmentVariables: [{ name: 'TOKEN', kind: 'secret', required: true }] });
         expect(await prepareProjectSetup({ ...secret.input, skipForInvocation: true })).toMatchObject({ kind: 'refused', code: 'project_environment_binding_unavailable' });
         const contained = await fixture({ version: 1, workspace: { setup: [{ kind: 'command', command: 'echo setup' }], setupInputs: ['escape.bin'] } });

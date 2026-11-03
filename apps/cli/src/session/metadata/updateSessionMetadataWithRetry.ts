@@ -9,9 +9,13 @@ import {
   type SessionMetadataSharedEditorTupleMutationSnapshotV1,
   type SessionMetadataTupleMutationSnapshotV1,
   type SessionMetadataTupleMutationV1,
+  type SessionMetadataTupleMutationCryptoV1,
 } from '@happier-dev/cli-common/sessionMetadata';
 import { createPlainSessionOwnerMetadataEnvelopeV1, projectSessionMetadataAgentVocabularyWriteCompatibilityV1, projectSessionOwnerCompatibilityViewV1, SESSION_METADATA_LAYOUT_VERSION_V1, StoredSessionOwnerMetadataEnvelopeV1Schema, StoredSessionSharedMetadataV1Schema } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import { openSessionOwnerMetadataEnvelopeV1, sealSessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataEnvelopesV1';
+import { SessionDisplayProjectionV1Schema, sealSessionSharedDisplayEnvelopeV1Sync, sealSessionOwnerDisplayEnvelopeV1,
+  openSessionSharedDisplayEnvelopeV1Sync, openSessionOwnerDisplayEnvelopeV1, type SessionOwnerDisplayV1 } from '@happier-dev/protocol';
+import { readSessionAccessProjectionRoleV1 } from '@happier-dev/protocol/sessions/access/sessionEffectiveAccessV1';
 import { createAccountScopedCryptoMaterialSnapshotV1 } from '@happier-dev/protocol/crypto/accountScopedCipher';
 import { convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1 } from '@happier-dev/protocol/account/encryptionKeyFingerprintV1';
 import { projectSessionMetadataForWire, normalizeSessionMetadataForRead } from '@happier-dev/protocol/sessions/metadata/terminalMetadata';
@@ -191,7 +195,14 @@ type LayoutAwareRawSession = Readonly<{
   agentStateVersion?: unknown;
   encryptionMode?: unknown;
   dataEncryptionKey?: unknown;
+  displayProjectionV1?: unknown;
 }>;
+
+function readDisplayProjectionField(rawSession: LayoutAwareRawSession) {
+  const parsed = SessionDisplayProjectionV1Schema.safeParse(rawSession.displayProjectionV1);
+  // A malformed or absent display never invalidates the authoritative full tuple.
+  return parsed.success ? { displayProjectionV1: parsed.data } : {};
+}
 
 function resolveStoredSessionCryptoContext(params: Readonly<{
   credentials: StoredCredentials;
@@ -274,6 +285,41 @@ function encodeSessionOwnerMetadataEnvelope(params: Readonly<{
     ownerMetadata: params.ownerMetadata,
     randomBytes: (length) => nodeRandomBytes(length),
   });
+}
+
+/** Only crypto and captured authority live here; semantic projection belongs to cli-common. */
+function createSessionMetadataTupleCrypto(params: Readonly<{
+  cryptoContext: SessionStoredContentCryptoContext;
+  readOwnerAuthority?: () => Readonly<{
+    credentials: StoredCredentials;
+    accountEncryptionMode: AccountEncryptionCurrentnessResponse['mode'];
+  }> | null;
+}>): SessionMetadataTupleMutationCryptoV1 {
+  const requireOwnerAuthority = () => {
+    const owner = params.readOwnerAuthority?.();
+    if (!owner) throw createMetadataUpdateError('Owner Session metadata material is unavailable', 'metadata_privacy_upgrade_required');
+    return owner;
+  };
+  return {
+    encryptPayload: async payload => encryptStoredSessionPayload({ ...params.cryptoContext, payload }),
+    encodeOwnerMetadata: ownerMetadata => encodeSessionOwnerMetadataEnvelope({ ...requireOwnerAuthority(), ownerMetadata }),
+    encodeSharedDisplay: display => {
+      const sealed = sealSessionSharedDisplayEnvelopeV1Sync({
+        sessionMode: params.cryptoContext.mode, display,
+        encryptPayload: payload => encryptStoredSessionPayload({ ...params.cryptoContext, payload }) });
+      if (!sealed.ok) throw createMetadataUpdateError(`Session display encryption unavailable: ${sealed.reason}`, 'metadata_privacy_upgrade_required');
+      return sealed.envelope;
+    },
+    ...(params.readOwnerAuthority ? { encodeOwnerDisplay: (display: SessionOwnerDisplayV1) => {
+      const owner = requireOwnerAuthority();
+      const sealed = sealSessionOwnerDisplayEnvelopeV1({
+        accountMode: owner.accountEncryptionMode, display,
+        ...(owner.accountEncryptionMode === 'e2ee' ? { material: resolveAccountEncryptionMaterial(owner.credentials) } : {}),
+        randomBytes: length => nodeRandomBytes(length) });
+      if (!sealed.ok) throw createMetadataUpdateError(`Owner display encryption unavailable: ${sealed.reason}`, 'metadata_privacy_upgrade_required');
+      return sealed.envelope;
+    } } : {}),
+  };
 }
 
 function readLayout0WriterSnapshot(params: Readonly<{
@@ -432,6 +478,7 @@ function readLayout1TupleSnapshot(params: Readonly<{
     metadataVersion,
     sharedMetadataCiphertext:
       String(params.rawSession.metadata ?? '').trim(),
+    ...readDisplayProjectionField(params.rawSession),
     ownerMetadataEnvelope: ownerMetadataEnvelope.data,
     agentStateVersion,
     agentStateCiphertext: rawAgentState || null,
@@ -516,6 +563,7 @@ export function readSessionMetadataSharedEditorTupleSnapshot(
     metadataLayoutVersion: SESSION_METADATA_LAYOUT_VERSION_V1,
     metadataVersion,
     sharedMetadataCiphertext,
+    ...readDisplayProjectionField(params.rawSession),
     value: {
       metadata: sharedMetadata.data as unknown as Metadata,
       sharedMetadata: sharedMetadata.data,
@@ -564,6 +612,68 @@ export function readSessionMetadataTupleWriterSnapshot(params: Readonly<{
   );
 }
 
+/** Read-local availability only; the caller must separately prove current owner material. */
+function attachDisplayProjectionAvailability(params: Readonly<{
+  snapshot: SessionMetadataTupleWriterSnapshot;
+  credentials: StoredCredentials;
+  accountEncryptionCurrentness: AccountEncryptionCurrentnessResponse;
+  cryptoContext: SessionStoredContentCryptoContext;
+}>): SessionMetadataTupleWriterSnapshot {
+  const snapshot = params.snapshot;
+  if (snapshot.mode === 'legacy_owner') return snapshot;
+  const projection = snapshot.displayProjectionV1;
+  const linked = projection?.metadataLayoutVersion === snapshot.metadataLayoutVersion
+    && projection.sourceMetadataVersion === snapshot.metadataVersion;
+  const shared = linked && openSessionSharedDisplayEnvelopeV1Sync({
+    sessionMode: params.cryptoContext.mode, envelope: projection.shared,
+    decryptPayload: value => decryptStoredSessionPayload({ ...params.cryptoContext, value }),
+  }).ok;
+  const owner = linked && openSessionOwnerDisplayEnvelopeV1({
+    accountMode: params.accountEncryptionCurrentness.mode, envelope: projection.owner,
+    ...(params.accountEncryptionCurrentness.mode === 'e2ee'
+      ? { material: resolveAccountEncryptionMaterial(params.credentials) } : {}),
+  }).ok;
+  return { ...snapshot, displayProjectionV1Availability: { shared, owner } };
+}
+
+/**
+ * Best-effort maintenance after a direct Account-owner full read. It consumes
+ * that exact snapshot, never refetches it before CAS, and records no completion
+ * state on refusal: the full read remains usable and a later read can retry.
+ */
+export async function ensureSessionDisplayProjectionAfterOwnerRead(params: Readonly<{
+  credentials: StoredCredentials;
+  sessionId: string;
+  accountEncryptionCurrentness: AccountEncryptionCurrentnessResponse;
+  rawSession: LayoutAwareRawSession & Readonly<{ effectiveAccess?: unknown; share?: unknown }>;
+  signal?: AbortSignal;
+}>): Promise<void> {
+  if (readSessionAccessProjectionRoleV1(params.rawSession) !== 'owner') return;
+  try {
+    params.signal?.throwIfAborted();
+    // Opening an old envelope is not proof that these credentials match the
+    // Account's captured current content key, even when the full fallback opens.
+    resolveOwnerMigrationCurrentness(params);
+    const cryptoContext = resolveStoredSessionCryptoContext({ ...params,
+      mode: resolveSessionStoredContentEncryptionMode(params.rawSession) });
+    const initialSnapshot = attachDisplayProjectionAvailability({ ...params, cryptoContext,
+      snapshot: readSessionMetadataTupleWriterSnapshot(params) });
+    await updateSessionMetadataEnvelopeTupleWithRetry({
+      token: params.credentials.token, sessionId: params.sessionId,
+      authority: { kind: 'owner', credentials: params.credentials,
+        accountEncryptionCurrentness: params.accountEncryptionCurrentness },
+      initialSnapshot, mutation: { kind: 'ensureDisplayProjection' }, ...cryptoContext,
+      ...(params.signal ? { currentness: { signal: params.signal } } : {}),
+    });
+  } catch (error) {
+    params.signal?.throwIfAborted();
+    logger.infoFile('[API] session_display_projection_ensure_unavailable', {
+      sessionId: params.sessionId,
+      classification: classifyServerEndpointError(error),
+    });
+  }
+}
+
 export async function prepareSessionMetadataTuplePatchForTransaction(
   params: Readonly<{
     credentials: StoredCredentials;
@@ -598,19 +708,8 @@ export async function prepareSessionMetadataTuplePatchForTransaction(
       update: async (metadata) =>
         await params.updater(metadata as Record<string, unknown>) as Metadata,
     },
-    crypto: {
-      encryptPayload: async (payload) =>
-        encryptStoredSessionPayload({
-          ...cryptoContext,
-          payload,
-        }),
-      encodeOwnerMetadata: (ownerMetadata) =>
-        encodeSessionOwnerMetadataEnvelope({
-          credentials: params.credentials,
-          accountEncryptionMode: params.accountEncryptionCurrentness.mode,
-          ownerMetadata,
-        }),
-    },
+    crypto: createSessionMetadataTupleCrypto({ cryptoContext,
+      readOwnerAuthority: () => ({ credentials: params.credentials, accountEncryptionMode: params.accountEncryptionCurrentness.mode }) }),
   });
   if (!patch) {
     throw createMetadataUpdateError(
@@ -847,26 +946,9 @@ export async function updateSessionMetadataEnvelopeTupleWithRetry(
       initialSnapshot: toSharedTupleSnapshot(params.initialSnapshot),
       mutation: mutationWithSummary,
       ...(params.projectKey !== undefined ? { projectKey: params.projectKey } : {}),
-      crypto: {
-        encryptPayload: async (payload) =>
-          encryptStoredSessionPayload({
-            ...cryptoContext,
-            payload,
-          }),
-        encodeOwnerMetadata: (ownerMetadata) => {
-          if (!owner || !accountEncryptionCurrentness) {
-            throw createMetadataUpdateError(
-              'Owner Session metadata material is unavailable to a shared editor',
-              'metadata_privacy_upgrade_required',
-            );
-          }
-          return encodeSessionOwnerMetadataEnvelope({
-            credentials: owner.credentials,
-            accountEncryptionMode: accountEncryptionCurrentness.mode,
-            ownerMetadata,
-          });
-        },
-      },
+      crypto: createSessionMetadataTupleCrypto({ cryptoContext,
+        ...(owner ? { readOwnerAuthority: () => accountEncryptionCurrentness
+          ? { credentials: owner.credentials, accountEncryptionMode: accountEncryptionCurrentness.mode } : null } : {}) }),
       commit: async (patch) => {
         assertSessionMetadataMutationCurrentness(params.currentness);
         let transportPatch:
@@ -1059,20 +1141,31 @@ export async function updateSessionMetadataEnvelopeTupleWithRetry(
             && authoritativeContext.ctx.encryptionVariant
               !== params.ctx.encryptionVariant
           );
-        if (contextChanged) {
+        const ensureKeyChanged = params.mutation.kind === 'ensureDisplayProjection'
+          && authoritativeContext.mode === 'e2ee' && params.mode === 'e2ee'
+          && !Buffer.from(authoritativeContext.ctx.encryptionKey).equals(Buffer.from(params.ctx.encryptionKey));
+        if (contextChanged || ensureKeyChanged) {
           throw createMetadataUpdateError(
             'Session encryption context changed during tuple mutation',
             'metadata_privacy_upgrade_required',
           );
         }
-        const authoritativeSnapshot = toSharedTupleSnapshot(
-          readSessionMetadataTupleWriterSnapshot({
+        if (params.mutation.kind === 'ensureDisplayProjection') {
+          if (readSessionAccessProjectionRoleV1(authoritativeRaw) !== 'owner') {
+            throw createMetadataUpdateError('Session owner authority changed during display maintenance', 'metadata_privacy_upgrade_required');
+          }
+          resolveOwnerMigrationCurrentness({ credentials: owner.credentials,
+            accountEncryptionCurrentness: refreshedAccountCurrentness });
+        }
+        const authoritativeSnapshot = readSessionMetadataTupleWriterSnapshot({
             credentials: owner.credentials,
             accountEncryptionCurrentness: refreshedAccountCurrentness,
             rawSession: authoritativeRaw,
-          }),
-        );
-        return authoritativeSnapshot;
+          });
+        return toSharedTupleSnapshot(params.mutation.kind === 'ensureDisplayProjection'
+          ? attachDisplayProjectionAvailability({ snapshot: authoritativeSnapshot,
+            credentials: owner.credentials, accountEncryptionCurrentness: refreshedAccountCurrentness,
+            cryptoContext: authoritativeContext }) : authoritativeSnapshot);
       },
       waitBeforeRetry: async ({ attempt }) => {
         await waitForSessionMetadataRetry({

@@ -4,18 +4,21 @@ import { buildVoiceBrief, type VoiceBriefSource } from './buildVoiceBrief';
 import { registerVoiceAdapters, resetVoiceAdapterRegistryForTests } from '@/voice/session/voiceAdapterRegistry';
 import { setVoiceSessionSnapshot } from '@/voice/session/voiceSessionStore';
 import type { VoiceAdapterController, VoiceHostAuthoredContextScope } from '@/voice/session/types';
+import { storage } from '@/sync/domains/state/storage';
 
 const attention: VoiceBriefSource['workflowAttention'] = { serverId: null, available: false, phase: 'idle', runIds: [], refreshFailed: false,
     knownAt: null, hasMore: false, loadingMore: false, loadMoreFailed: false, retry: async () => {}, loadMore: async () => {} };
 const inbox: VoiceBriefSource = { source: { isDataReady: true, personalSessionListCoverageComplete: true },
     sessionPresentation: { sessionsNeedingAttention: [], readySessions: [], markAllReadTargets: [], pendingRequestHydrationTargets: [] }, workGroups: [], automationAttentionItems: [],
     workflowAttention: attention, automationAttention: attention, isLoading: false, showCaughtUp: true };
-const brief = buildVoiceBrief({ inbox, settings: {} });
+const originalSettings = storage.getState().settings;
 
-afterEach(() => { resetVoiceAdapterRegistryForTests(); setVoiceSessionSnapshot({ adapterId: null, sessionId: null, status: 'disconnected', mode: 'idle', canStop: false }); });
+afterEach(() => { storage.setState({ settings: originalSettings }); resetVoiceAdapterRegistryForTests(); setVoiceSessionSnapshot({ adapterId: null, sessionId: null, status: 'disconnected', mode: 'idle', canStop: false }); });
 
 describe('explicit Voice Brief delivery', () => {
-    it('uses the real context owner and refuses an Agent-owned context or a stale control', () => {
+    it.each([true, false])('uses current approval guidance and refuses an Agent-owned context or a stale control (enabled=%s)', (canApproveRequests) => {
+        storage.setState(state => ({ settings: { ...state.settings, voice: { ...state.settings.voice, canApproveRequests } } }));
+        const brief = buildVoiceBrief({ inbox, settings: storage.getState().settings });
         const delivered: string[] = [];
         const text: string[] = [];
         let scope: VoiceHostAuthoredContextScope = 'current_ui_only';
@@ -35,5 +38,7 @@ describe('explicit Voice Brief delivery', () => {
         expect(delivered).toHaveLength(0);
         expect(text).toHaveLength(1);
         expect(text[0]).toContain(brief.context);
+        expect(text[0]).toContain(canApproveRequests ? 'Voice approvals are enabled' : 'Voice approvals are off');
+        expect(text[0]).not.toContain('Approvals are tap-only in the canonical UI; do not approve or deny a request.');
     });
 });

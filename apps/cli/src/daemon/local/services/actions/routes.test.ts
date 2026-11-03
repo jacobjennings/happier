@@ -4,10 +4,12 @@ import { createLocalServiceActionConfirmationNonceV1 } from '@happier-dev/protoc
 import { createLocalServiceActionRoutes } from './routes';
 import { createLocalServiceInventoryRegistry } from '../inventory/registry';
 import type { NormalizedLocalServiceInventorySnapshot } from '../inventory/scanner';
-import { createManagedServicesOwner, type ProjectManagedServiceSupervisionInput } from '@/plugins/runtime/invocation/services/managedServicesOwner';
+import { createManagedServicesOwner, type WorkspaceProjectManagedServiceSupervisionInput } from '@/plugins/runtime/invocation/services/managedServicesOwner';
 import { createManagedServiceProcessSupervisorHost } from '@/plugins/runtime/invocation/services/managedProcessSupervisor';
 import { authorizeResolvedProjectExecLaunchForHost, createProjectNativeEnvironmentIoForHost } from '@/plugins/runtime/invocation/services/exec';
 import { assertActionOutputContract } from '@/testkit/actionOutputContract';
+import { createProjectNativeToolchainIoForHost } from '@/plugins/runtime/invocation/services/exec';
+
 
 const inventorySnapshot: NormalizedLocalServiceInventorySnapshot = {
     v: 1,
@@ -65,7 +67,8 @@ describe('createLocalServiceActionRoutes', () => {
             };
             let stoppable = false;
             let nativeStopped = false;
-            const supervision: ProjectManagedServiceSupervisionInput = {
+            const supervision: WorkspaceProjectManagedServiceSupervisionInput = {
+                kind: 'workspace',
                 workspace, declaration, cwd: workspace.rootPath,
                 requester: {
                     serverId: workspace.serverId, accountId: 'requester-one',
@@ -80,7 +83,7 @@ describe('createLocalServiceActionRoutes', () => {
                         status: 'ready', reviewedEffectDigest,
                         environment: {
                             selection: { kind: 'host' }, root: workspace.rootPath, platform: process.platform,
-                            io: createProjectNativeEnvironmentIoForHost({ resolveTool: async () => null }),
+                            io: createProjectNativeToolchainIoForHost({ resolveTool: async () => null }),
                         },
                     },
                     launch: {

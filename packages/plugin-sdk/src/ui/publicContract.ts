@@ -1,4 +1,4 @@
-import type { PluginUiToneV1 as DtoPluginUiToneV1, PluginUiAttachmentToneV1 as DtoPluginUiAttachmentToneV1, PluginUiIconTokenV1 as DtoPluginUiIconTokenV1 } from '../actions/dtos/actionDeclarativeNodeDto.generated.js';
+import type { InboxItemAttentionTypeV1 as DtoInboxItemAttentionTypeV1, PluginUiToneV1 as DtoPluginUiToneV1, PluginUiAttachmentToneV1 as DtoPluginUiAttachmentToneV1, PluginUiIconTokenV1 as DtoPluginUiIconTokenV1 } from '../actions/dtos/actionDeclarativeNodeDto.generated.js';
 import type { QualifiedConnectedAccountRef } from '@happier-dev/protocol/connect/qualified-connected-account-persistence';
 import type { ProjectKeyV1, SessionServerStartSpawnDraftV1 } from '../sessions/authoring.js';
 import type { JsonValue } from '../identity.js';
@@ -145,6 +145,9 @@ export type PluginUiAttachmentToneV1 = DtoPluginUiAttachmentToneV1;
 
 export type PluginUiIconTokenV1 = DtoPluginUiIconTokenV1;
 
+/** C1 owns attention classification; presentation consumes its admitted result. */
+export type InboxItemAttentionTypeV1 = DtoInboxItemAttentionTypeV1;
+
 /** Protocol's sole producer-backed Host API vocabulary; never copied here. */
 export type PluginUiHostMethodV1 = ProtocolPluginUiHostMethodV1;
 
@@ -241,6 +244,15 @@ export type PluginUiHostApiSurfaceThemeV1 = {
     };
     /** Text on tinted status surfaces; marker/icon colours remain in `colors`. Older snapshots omit it. */
     statusText?: {
+        success: string;
+        warning: string;
+        attention: string;
+        danger: string;
+        info: string;
+        neutral: string;
+    };
+    /** Faint tints behind status words (a composer status item's capsule). Older snapshots omit it. */
+    statusTint?: {
         success: string;
         warning: string;
         attention: string;

@@ -19,7 +19,8 @@ describe('hosted comparison unified evidence', () => {
         locator: { providerId: 'github', repository: 'upstream/repo', number: 17 }, totalFileCount: 4,
         enumeratedFileCount: 4, freshness: 'current', inventory: 'complete', content: 'complete', reasons: [] } };
     const captured = await readPullRequestComparison({ source, readPage: async () => page });
-    expect(captured).toMatchObject({ state: 'complete', before: 'c'.repeat(40), after: 'b'.repeat(40) });
+    expect(captured).toMatchObject({ state: 'complete', before: 'c'.repeat(40), after: 'b'.repeat(40),
+      pullRequest: { baseOid: 'a'.repeat(40) } });
     expect(captured.files.map(file => file.path)).toEqual(rows.map(row => row.path));
     // The source Action transport is the trust boundary. Reject a stale fork's
     // repository or either pinned endpoint before admitting its unrelated files.
@@ -33,24 +34,6 @@ describe('hosted comparison unified evidence', () => {
       expect(refused.files).toEqual([]);
     }
   });
-  it('uses the attested merge base as before while retaining the selected base-tip freshness witness', async () => {
-    const comparison = await readPullRequestComparison({
-      source: { kind: 'pullRequest', locator: { providerId: 'github', repository: 'owner/repo', number: 17,
-        baseOid: 'a'.repeat(40), headOid: 'b'.repeat(40),
-        sourceAction: { action: { pluginId: 'happier.scm.forge.github', localId: 'triage/list-github-changed-files' }, input: {} } } },
-      readPage: async () => ({ kind: 'changedFiles', omittedRowCount: 0, projectionTruncated: false,
-        rows: [{ path: 'file.ts', status: 'modified', diffAvailable: true,
-          evidence: { state: 'available', patch: '@@ -1 +1 @@\n-old\n+new\n' } }],
-        comparison: { beforeOid: 'c'.repeat(40), baseOid: 'a'.repeat(40), headOid: 'b'.repeat(40),
-          locator: { providerId: 'github', repository: 'owner/repo', number: 17 },
-          totalFileCount: 1, enumeratedFileCount: 1, freshness: 'current', inventory: 'complete', content: 'complete', reasons: [] },
-      }),
-    });
-    expect(comparison).toMatchObject({ before: 'c'.repeat(40), after: 'b'.repeat(40), state: 'complete',
-      pullRequest: { baseOid: 'a'.repeat(40) } });
-    expect(comparison.files[0]?.unifiedDiff).toContain('-old\n+new\n');
-  });
-
   it('frames renamed provider fragments with lossless Git paths', async () => {
     const path = 'new\tname\n"quoted"\\file.ts';
     const previousPath = 'old\tname\n"quoted"\\file.ts';

@@ -58,7 +58,7 @@ For Codex, set `fork_turns` explicitly and default to `fork_turns="none"`; inher
 - dirty-state warning and instruction to preserve compatible work;
 - concrete completion and negative criteria;
 - required RED/GREEN plus the risk-applicable broader and live validation tiers; when composed QA is owned by a later integrated boundary, name that boundary and keep the lane `IMPLEMENTED_NOT_VERIFIED` until its required evidence lands;
-- authorized scope, expected write corridor without exclusive reservations, output/evidence, and stop/fallback conditions.
+- authorized scope, expected write corridor without exclusive reservations, output/evidence, and stop/fallback conditions; pair each prohibition with its safe procedure and state the blast radius, following `.claude/CLAUDE.md` "Delegation shape".
 
 A lane owns its analysis, implementation, focused tests, relevant validation, compact self-review, and concise result. Tell it that it is not alone in the checkout. Do not paste bulky logs, diffs, or generic doctrine into briefs.
 
@@ -66,7 +66,7 @@ A lane owns its analysis, implementation, focused tests, relevant validation, co
 
 Apply `.agents/skills/happier-implement` to each execution unit, using the approved requirements as its outcome and evidence contract. Validate at the earliest tier that consumes the changed behavior, batching shared package/runtime setup under root **Validation** without dropping a material obligation.
 
-The plan remains authoritative. Use best judgment only for details it intentionally leaves open. Do not reduce required integration, migration, removals, compatibility, UX, platform support, testing, or validation.
+The plan remains authoritative. Use best judgment only for details it intentionally leaves open. `AMENDMENT_REQUIRED` applies only when an approved outcome would change; ordinary choices within the approved intent stay with the implementer. Do not reduce required integration, migration, removals, compatibility, UX, platform support, testing, or validation.
 
 Lane outcomes are `VERIFIED_COMPLETE`, `IMPLEMENTED_NOT_VERIFIED`, `PARTIAL`, `BLOCKED`, or `AMENDMENT_REQUIRED`. A worker's `DONE` report is a claim, not final status.
 
@@ -84,7 +84,9 @@ Follow root **Efficient execution and uncertainty resolution** for notification/
 
 As lanes finish, inspect their diffs and deciding evidence sufficiently for integration, update material state, and dispatch newly ready work. Reuse the same lane for context-local corrections when practical. Steer or reassign only for evidence of stall, wrong scope, missing context, repeated failure without new information, or an actual collision.
 
-QA design, environment checks, fixtures, and advisory inspection may run alongside implementation. Record PASS/FAIL only after the relevant consumed vertical is runnable. Formal independent review is normally batched at the plan's substantial integrated boundaries, explicit user-requested points, high-risk triggers that cannot safely wait, user-visible ship gates, and final plan completeness—not every unit or microchange.
+QA design, environment checks, fixtures, and advisory inspection may run alongside implementation. Record PASS/FAIL only after the relevant consumed vertical is runnable. Formal independent review is normally batched at the plan's substantial integrated boundaries, explicit user-requested points, high-risk triggers that cannot safely wait, user-visible ship gates, and final plan completeness—not every unit or microchange. A QA-driven fix wave is a substantial boundary once it has landed about 10–15 fixes or run two days of active waves without an independent finding-delta review.
+
+When the same user-visible symptom returns after a fix by a different owner, stop routing it owner by owner. Start one joint diagnosis lane that traces the whole path, from its entry point through every owner to the output, before the next fix.
 
 ## 8. Triage findings without surrendering plan authority
 
@@ -110,6 +112,7 @@ Evidence and review findings can challenge the plan but cannot supersede it. Con
 Before declaring plan completion:
 
 - map every material requirement/invariant to `VERIFIED_COMPLETE`, approved supersession, or defensible `NOT_APPLICABLE`;
+- for each UI/feature lane, include a checklist of every plan row and lab element for its surface, marked built, ruled out (with authority), or owed; owed items keep the lane short of `DONE`;
 - verify canonical ownership, reachable wiring, required removals, RED/GREEN proof, broader validation, and material live QA;
 - preserve `IMPLEMENTED_NOT_VERIFIED` only where an executor-runnable check exists and has not been run; evidence that only release automation or human QA can produce (devices, tenants, mail, signing, packaging, production-like infrastructure) is recorded once as a named release check, not as `IMPLEMENTED_NOT_VERIFIED`, and a plan whose only open items are release checks is implementation-complete;
 - do not add gates, ledgers, evidence matrices, certification sections, or review rounds in order to reach completion; if the remaining work is release checks, declare implementation-complete and list them;

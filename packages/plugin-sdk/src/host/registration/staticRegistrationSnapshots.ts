@@ -857,6 +857,8 @@ export function snapshotStaticRegistrationValue<
             const receiver = requireObject(value, 'Drop target runtime');
             return Object.freeze({ resolve: captureStaticRegistrationMethod(receiver, 'resolve', 'Drop target runtime.resolve', true) }) as PluginRegistrationValueByFamily[TFamily];
         }
+        case 'secretSources':
+            return snapshotRequiredMethodGroup(value, ['acquire'], 'Secret source runtime') as PluginRegistrationValueByFamily[TFamily];
         case 'captureSources': {
             const receiver = requireObject(value, 'Capture source runtime');
             return Object.freeze({ start: captureStaticRegistrationMethod(receiver, 'start', 'Capture source runtime.start', true) }) as PluginCaptureSourceRuntime as PluginRegistrationValueByFamily[TFamily];
@@ -871,9 +873,11 @@ export function snapshotStaticRegistrationValue<
             const serviceLifecycle = Reflect.get(receiver, 'nativeServiceLifecycle');
             if (serviceLifecycle !== undefined) {
                 const lifecycle = requireObject(serviceLifecycle, 'Native service lifecycle');
+                const logs = captureStaticRegistrationMethod<NonNullable<ManagedServiceNativeLifecycleV1['logs']>>(lifecycle, 'logs', 'Native service lifecycle.logs', false);
                 runtime.nativeServiceLifecycle = Object.freeze({
                     inspect: captureStaticRegistrationMethod<ManagedServiceNativeLifecycleV1['inspect']>(lifecycle, 'inspect', 'Native service lifecycle.inspect', true)!,
                     stop: captureStaticRegistrationMethod<ManagedServiceNativeLifecycleV1['stop']>(lifecycle, 'stop', 'Native service lifecycle.stop', true)!,
+                    ...(logs ? { logs } : {}),
                 });
             }
             return Object.freeze(runtime) as PluginRegistrationValueByFamily[TFamily];

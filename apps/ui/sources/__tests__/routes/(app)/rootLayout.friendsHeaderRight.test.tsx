@@ -68,14 +68,6 @@ function getScreenNames(screen: Awaited<ReturnType<typeof renderScreen>>): strin
         .filter((name): name is string => typeof name === 'string');
 }
 
-function getRegisteredScreen(
-    screen: Awaited<ReturnType<typeof renderScreen>>,
-    name: string,
-) {
-    return (screen.findAllByType(Stack.Screen) ?? [])
-        .find((node) => node.props?.name === name);
-}
-
 await initializeRootLayoutRuntimeForTests();
 
 afterEach(() => {
@@ -100,61 +92,51 @@ describe('RootLayout', () => {
         }
     });
 
-    it('registers the session navigator for tool and execution-run sub-pages', async () => {
+    it.each([
+        { label: 'the session navigator for tool and execution-run sub-pages', names: ['session/[id]'], absentPrefix: 'session/[id]/' },
+        { label: 'settings as a nested navigator', names: ['settings'] },
+        {
+            label: 'project list and project detail source-control routes',
+            names: [
+                'projects/index',
+                'projects/[workspaceRefId]/index',
+                'projects/[workspaceRefId]/code',
+                'projects/[workspaceRefId]/changes',
+                'projects/[workspaceRefId]/overview',
+                'projects/[workspaceRefId]/terminal',
+            ],
+        },
+    ] as { label: string; names: string[]; absentPrefix?: string }[])('registers $label', async ({ names, absentPrefix }) => {
         await stubRootLayoutFeaturesFetch();
 
         const tree = await renderRootLayout();
         try {
             const screenNames = getScreenNames(tree);
 
-            expect(screenNames).toContain('session/[id]');
-            expect(screenNames.filter(name => name.startsWith('session/[id]/'))).toEqual([]);
+            expect(screenNames).toEqual(expect.arrayContaining(names));
+            if (absentPrefix) {
+                expect(screenNames.filter(name => name.startsWith(absentPrefix))).toEqual([]);
+            }
         } finally {
             await tree?.unmount();
         }
     });
 
-    it('registers settings as a nested navigator', async () => {
+    it('registers each centrally titled route with its shared root options entry', async () => {
         await stubRootLayoutFeaturesFetch();
-
         const tree = await renderRootLayout();
         try {
-            const screenNames = getScreenNames(tree);
-
-            expect(screenNames).toContain('settings');
-        } finally {
-            await tree?.unmount();
-        }
-    });
-
-    it('registers project list and project detail source-control routes', async () => {
-        await stubRootLayoutFeaturesFetch();
-
-        const tree = await renderRootLayout();
-        try {
-            const screenNames = getScreenNames(tree);
-
-            expect(screenNames).toContain('projects/index');
-            expect(screenNames).toContain('projects/[workspaceRefId]/index');
-            expect(screenNames).toContain('projects/[workspaceRefId]/code');
-            expect(screenNames).toContain('projects/[workspaceRefId]/changes');
-            expect(screenNames).toContain('projects/[workspaceRefId]/overview');
-            expect(screenNames).toContain('projects/[workspaceRefId]/terminal');
-        } finally {
-            await tree?.unmount();
-        }
-    });
-
-    it('renders terminal connect without the shell header on web', async () => {
-        await stubRootLayoutFeaturesFetch();
-
-        const tree = await renderRootLayout();
-        try {
-            const terminalConnect = getRegisteredScreen(tree, 'terminal/connect');
-            expect(terminalConnect).toBeTruthy();
-            expect(terminalConnect?.props?.options).toMatchObject({
-                headerShown: false,
-            });
+            const { createRootStackRouteOptions } = await import('@/components/navigation/root/rootStackRouteOptions');
+            const table = createRootStackRouteOptions('auto');
+            const screens = tree.findAllByType(Stack.Screen) ?? [];
+            for (const name of [
+                'automations/index', 'automations/[id]', 'automations/edit', 'automations/settings',
+                'terminal/connect', 'settings', 'workflows/index',
+            ] as const) {
+                const registered = screens.find((node) => node.props?.name === name);
+                expect(registered, name).toBeTruthy();
+                expect(registered?.props?.options, name).toEqual(table[name]);
+            }
         } finally {
             await tree?.unmount();
         }

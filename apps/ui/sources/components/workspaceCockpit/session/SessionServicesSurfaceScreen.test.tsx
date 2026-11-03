@@ -89,8 +89,10 @@ function buildPublicPreviewLauncherState() {
         sessionId: 'session-a',
         updatedAt: 3_000,
         targets: [{
-            id: 'preview:mobile-feed',
-            source: 'registered_preview',
+            // A row reads running only from observed liveness; preview access rides an observed Service.
+            id: 'inventory:mobile-feed',
+            source: 'inventory_entry',
+            sourceClass: { kind: 'inventory_entry', inventoryEntryId: 'mobile-feed' },
             machineId: 'machine-a',
             sessionId: 'session-a',
             title: 'Mobile feed preview',
@@ -149,13 +151,6 @@ describe('SessionServicesSurfaceScreen', () => {
     });
     afterEach(() => { publicPreviewEnabled = true; });
 
-    it('passes supplied local service launcher state into the mobile Services pane', async () => {
-        const screen = await renderScreen(<SessionServicesSurfaceScreen
-            inventoryState={buildLocalServiceInventoryState({ rows: [] })} launcherState={buildLauncherState()} />,
-        { wrapper: runtime.Wrapper });
-        expect(screen.findByTestId('session-mobile-services-row:managed:mobile-feed')).toBeTruthy();
-    });
-
     it('does not poll public preview status when public previews are disabled', async () => {
         publicPreviewEnabled = false;
         primeServerFeaturesSnapshot({ serverId: runtime.serverId, snapshot: { status: 'ready', features: features() } });
@@ -192,8 +187,8 @@ describe('SessionServicesSurfaceScreen', () => {
         const screen = await renderScreen(<SessionServicesSurfaceScreen sessionId="session-a" serverId={runtime.serverId} machineId="machine-a"
             inventoryState={buildLocalServiceInventoryState({ rows: [] })} launcherState={buildPublicPreviewLauncherState()}
             publicPreviewState={buildPublicPreviewState()} />, { wrapper: runtime.Wrapper });
-        await screen.pressByTestIdAsync('session-mobile-services-row:preview:mobile-feed-item');
-        await screen.pressByTestIdAsync('session-mobile-services-row:preview:mobile-feed-share');
+        await screen.pressByTestIdAsync('session-mobile-services-row:inventory:mobile-feed-item');
+        await screen.pressByTestIdAsync('session-mobile-services-row:inventory:mobile-feed-share');
         await vi.waitFor(() => expect(callsFor(RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_CREATE)).toEqual([{
             method: RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_CREATE, machineId: 'machine-a',
             input: { machineId: 'machine-a', sessionId: 'session-a', previewId: 'preview-mobile',

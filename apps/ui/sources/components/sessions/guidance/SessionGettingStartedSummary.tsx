@@ -2,10 +2,9 @@ import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { Typography } from '@/constants/Typography';
 import { EmptyState } from '@/components/ui/empty/EmptyState';
 import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
-import { Text } from '@/components/ui/text/Text';
+import { InlineCode } from '@/components/ui/text/InlineCode';
 import { useLocalSetting } from '@/sync/domains/state/storage';
 import { resolveCliInvokerNameForCurrentApp } from '@/sync/runtime/resolvePublicReleaseRing';
 import { t } from '@/text';
@@ -40,15 +39,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         alignItems: 'center',
         paddingHorizontal: theme.space.s12,
     },
-    inlineCode: {
-        ...Typography.mono(),
-        fontSize: 13,
-        color: theme.colors.text.primary,
-        backgroundColor: theme.colors.surface.elevated,
-        borderRadius: 4,
-        paddingHorizontal: theme.space.s4,
-        paddingVertical: 1,
-    },
 }));
 
 export const SessionGettingStartedSummary = React.memo((props: SessionGettingStartedSummaryProps) => {
@@ -68,7 +58,7 @@ export const SessionGettingStartedSummary = React.memo((props: SessionGettingSta
         ? (
             <>
                 {t('sessionsList.emptyState.descriptionPrefix')}
-                <Text style={styles.inlineCode}>{cliInvoker}</Text>
+                <InlineCode>{cliInvoker}</InlineCode>
                 {t('sessionsList.emptyState.descriptionSuffix')}
             </>
         )

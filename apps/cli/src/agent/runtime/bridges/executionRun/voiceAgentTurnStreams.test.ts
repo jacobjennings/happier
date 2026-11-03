@@ -130,7 +130,7 @@ async function createTurnStreamFixture(options: Readonly<{
         const content = SessionStoredMessageContentSchema.parse(payload.message);
         const messageSeq = ++seq;
         currentSocket.trigger('update', { id: `echo-${messageSeq}`, createdAt: Date.now(), body: {
-          t: 'new-message', sid: sessionId, message: { id: `message-${messageSeq}`, seq: messageSeq,
+          t: 'new-message', delivery: 'full' as const, sid: sessionId, message: { id: `message-${messageSeq}`, seq: messageSeq,
             localId: payload.localId, content, ...('messageRole' in payload ? { messageRole: payload.messageRole } : {}),
           },
         } });
@@ -145,7 +145,7 @@ async function createTurnStreamFixture(options: Readonly<{
         observations.push(observation);
         const messageSeq = ++seq;
         if (observation.messageRole === 'user') {
-          currentSocket.trigger('update', { id: `echo-${messageSeq}`, createdAt: Date.now(), body: { t: 'new-message', sid: sessionId, message: {
+          currentSocket.trigger('update', { id: `echo-${messageSeq}`, createdAt: Date.now(), body: { t: 'new-message', delivery: 'full' as const, sid: sessionId, message: {
             id: `message-${messageSeq}`, seq: messageSeq, localId: observation.localId,
             messageRole: 'user', content: observation.content,
           } } });

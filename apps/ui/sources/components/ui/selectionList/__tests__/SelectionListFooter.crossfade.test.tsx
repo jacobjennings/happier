@@ -16,35 +16,18 @@ vi.mock('react-native', async () => {
  * Implementation contract:
  *  - The hints row is wrapped in an animated container exposed under a stable
  *    testID `<footer>:hints-animator` carrying an opacity style entry.
- *  - When the hints array identity changes, the animator's opacity value is
- *    re-driven via `withTiming` (mocked here to pass-through the target
- *    value) — covered indirectly by asserting the wrapper exists and exposes
- *    an opacity style.
+ *  - When the hints set changes, the animator's opacity value is re-driven via
+ *    `withTiming` (mocked here to pass-through the target value); once the
+ *    swap finishes the animator is back at full opacity.
  */
-describe('SelectionListFooter hint cross-fade (R6 Fix 4)', () => {
-    it('renders the hints inside an animated container with an opacity style', async () => {
-        const { SelectionListFooter } = await import('../SelectionListFooter');
-        const screen = await renderScreen(
-            <SelectionListFooter
-                hints={[
-                    { id: 'navigate', label: '↑↓', description: 'navigate' },
-                    { id: 'enter', label: '↵', description: 'select' },
-                ]}
-                hardwareKeyboardAvailable
-                testID="footer"
-            />,
-        );
-        const animator = screen.findByTestId('footer:hints-animator');
-        expect(animator).not.toBeNull();
-        const styles = Array.isArray(animator!.props.style)
-            ? animator!.props.style.flat(Infinity)
-            : [animator!.props.style];
-        const merged = Object.assign({}, ...styles.filter(Boolean));
-        expect(typeof merged.opacity).toBe('number');
-        // Steady-state opacity at rest is 1.
-        expect(merged.opacity).toBeCloseTo(1, 5);
-    });
 
+function animatorOpacity(animator: { props: { style?: unknown } } | null): unknown {
+    const style = animator?.props.style;
+    const styles = (Array.isArray(style) ? style.flat(Infinity) : [style]).filter(Boolean);
+    return Object.assign({}, ...styles).opacity;
+}
+
+describe('SelectionListFooter hint cross-fade (R6 Fix 4)', () => {
     it('keeps the animator wrapper mounted across a hints identity swap (no remount flicker)', async () => {
         const { SelectionListFooter } = await import('../SelectionListFooter');
         const screen = await renderScreen(
@@ -71,7 +54,7 @@ describe('SelectionListFooter hint cross-fade (R6 Fix 4)', () => {
         // The animator wrapper persists across the swap so opacity can animate
         // rather than React mounting/unmounting hint subtrees instantly.
         const after = screen.findByTestId('footer:hints-animator');
-        expect(after).not.toBeNull();
+        expect(after).toBe(before);
     });
 
     it('finishes the swap when the same hints arrive again with a new identity mid-fade', async () => {
@@ -88,6 +71,8 @@ describe('SelectionListFooter hint cross-fade (R6 Fix 4)', () => {
             await vi.advanceTimersByTimeAsync(2000);
             expect(screen.getTextContent()).toContain('Open at the line');
             expect(screen.getTextContent()).not.toContain('Move');
+            // The fade finished: the footer is not left faded out on the new set.
+            expect(animatorOpacity(screen.findByTestId('footer:hints-animator'))).toBe(1);
         } finally {
             vi.useRealTimers();
         }

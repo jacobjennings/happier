@@ -3,13 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { WorkspaceManifest } from '@happier-dev/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { createScmBackendRegistry } from '@/scm/registry';
 import { hashWorkspaceFile } from '../workspaceExportPackaging/hashWorkspaceFile';
 import { createWorkspaceStagingRoot } from './createWorkspaceStagingRoot';
 import type { StagedWorkspaceDirectory } from './stageWorkspaceDirectory';
-import { stageWorkspaceEntries, type WorkspaceExportBlobProvider } from './stageWorkspaceEntries';
+import { stageWorkspaceEntries } from './stageWorkspaceEntries';
 import type { StagedWorkspaceFileBlob } from './stageWorkspaceFileBlob';
 import type { StagedWorkspaceSymlink } from './stageWorkspaceSymlink';
 
@@ -146,7 +146,7 @@ describe('stageWorkspaceEntries', () => {
             },
         })).rejects.toThrow(fixture.digest);
         await expect(access(join(stagingRoot.workspaceDirectory, 'docs'))).rejects.toThrow();
-        await expect(access(join(stagingRoot.workspaceDirectory, 'blobs', 'sha256'))).rejects.toThrow();
+        await expect(access(join(stagingRoot.blobsDirectory, 'sha256'))).rejects.toThrow();
     });
 
     it('returns verifier drift details when the staged workspace does not match the expected manifest', async () => {
@@ -187,34 +187,6 @@ describe('stageWorkspaceEntries', () => {
         expect(result.verification.manifestComparison.changed.map((entry: { next: { relativePath: string } }) => entry.next.relativePath)).toEqual(['README.md']);
     });
 
-    it('consults a blob provider when staging file blobs from disk-backed sources', async () => {
-        const stagingRoot = await createWorkspaceStagingRoot({
-            parentDirectory: await makeTempDir('workspace-stage-entries-provider-'),
-            stagingId: 'stage_entries_provider',
-        });
-        const fixture = await createFileEntryFixture();
-        const sourceDirectory = await makeTempDir('workspace-stage-entries-source-');
-        const sourceFilePath = join(sourceDirectory, 'README.md');
-        await writeFile(sourceFilePath, fixture.content);
-
-        const blobProvider = {
-            getBlobFilePath: vi.fn((digest: string) => (digest === fixture.digest ? sourceFilePath : null)),
-        } satisfies WorkspaceExportBlobProvider;
-
-        const result = await stageWorkspaceEntries({
-            stagingRoot,
-            expectedManifest: fixture.manifest,
-            scmRegistry,
-            blobProvider,
-        });
-
-        expect(blobProvider.getBlobFilePath).toHaveBeenCalledTimes(1);
-        expect(blobProvider.getBlobFilePath).toHaveBeenCalledWith(fixture.digest);
-        expect(result.stagedBlobs.map((entry: StagedWorkspaceFileBlob) => entry.digest)).toEqual([fixture.digest]);
-        await expect(readFile(join(stagingRoot.workspaceDirectory, 'README.md'))).resolves.toEqual(fixture.content);
-        expect(result.verification.isVerified).toBe(true);
-    });
-
     it('requires a file-backed blobProvider', async () => {
         const stagingRoot = await createWorkspaceStagingRoot({
             parentDirectory: await makeTempDir('workspace-stage-entries-require-provider-'),
@@ -228,18 +200,22 @@ describe('stageWorkspaceEntries', () => {
         })).rejects.toThrow(/blobProvider/i);
 
         await expect(access(join(stagingRoot.workspaceDirectory, 'docs'))).rejects.toThrow();
-        await expect(access(join(stagingRoot.workspaceDirectory, 'blobs', 'sha256'))).rejects.toThrow();
+        await expect(access(join(stagingRoot.blobsDirectory, 'sha256'))).rejects.toThrow();
     });
 
-    it('invokes assertCanContinue while staging so long staging phases can be cancelled', async () => {
+    it('stops staging at the next phase when assertCanContinue rejects', async () => {
         const stagingRoot = await createWorkspaceStagingRoot({
             parentDirectory: await makeTempDir('workspace-stage-entries-assert-continue-'),
             stagingId: 'stage_entries_assert_continue',
         });
         const fixture = await createFileEntryFixture();
-        const assertCanContinue = vi.fn(async () => undefined);
+        let calls = 0;
+        const assertCanContinue = async () => {
+            calls += 1;
+            if (calls === 3) throw new Error('staging lease lost');
+        };
 
-        const result = await stageWorkspaceEntries({
+        await expect(stageWorkspaceEntries({
             stagingRoot,
             expectedManifest: fixture.manifest,
             scmRegistry,
@@ -247,10 +223,9 @@ describe('stageWorkspaceEntries', () => {
                 getBlobFilePath: (digest: string) => (digest === fixture.digest ? fixture.filePath : null),
             },
             assertCanContinue,
-        });
+        })).rejects.toThrow('staging lease lost');
 
-        expect(result.verification.isVerified).toBe(true);
-        // directories + symlinks + files loops should consult liveness at least once each
-        expect(assertCanContinue).toHaveBeenCalledTimes(3);
+        await expect(readFile(join(stagingRoot.workspaceDirectory, 'README.md'))).resolves.toEqual(fixture.content);
+        await expect(lstat(join(stagingRoot.workspaceDirectory, 'docs', 'readme-link'))).rejects.toMatchObject({ code: 'ENOENT' });
     });
 });

@@ -26,8 +26,15 @@ function createRef<T>(current: T): { current: T } {
 }
 
 function createMembers() {
-    return {
-        cancelScheduledViewportAnchorCapture: vi.fn(),
+    const members = {
+        // The consumer (ChatListInternal) supplies this cancel: it clears the shared scheduled
+        // capture and its timer. A no-op default would leave cancelled captures armed.
+        cancelScheduledViewportAnchorCapture: vi.fn((): void => {
+            const scheduled = members.scheduledViewportAnchorCaptureRef.current;
+            if (!scheduled) return;
+            members.scheduledViewportAnchorCaptureRef.current = null;
+            clearTimeout(scheduled.timeoutId);
+        }),
         currentSessionIdRef: createRef('s1'),
         rendererDataKey: '["home-a","s1"]',
         emitViewportChange: vi.fn(),
@@ -39,11 +46,12 @@ function createMembers() {
         readCurrentNativeDistanceFromBottom: vi.fn<() => number | null>(() => null),
         recordViewportTelemetryEvent: vi.fn(),
         resolveWebScrollMetrics: vi.fn(() => null),
-        scheduledViewportAnchorCaptureRef: createRef(null),
+        scheduledViewportAnchorCaptureRef: createRef<AnchorCaptureHostDeps['scheduledViewportAnchorCaptureRef']['current']>(null),
         shouldSuppressGenericViewportStateForProtectedJumpSeq: vi.fn(() => false),
         viewportAnchorCaptureGenerationRef: createRef(0),
         wantsPinnedRef: createRef(false),
     };
+    return members;
 }
 
 function buildDeps(members: ReturnType<typeof createMembers>): AnchorCaptureHostDeps {
@@ -653,13 +661,6 @@ describe('useTranscriptViewportAnchorCaptureHost deferral', () => {
             members.isEntryViewportCommandActive = vi.fn(
                 () => controller.activeOwner() === 'entry',
             );
-            members.cancelScheduledViewportAnchorCapture.mockImplementation(() => {
-                const scheduled = members.scheduledViewportAnchorCaptureRef.current as
-                    AnchorCaptureHostDeps['scheduledViewportAnchorCaptureRef']['current'];
-                if (!scheduled) return;
-                members.scheduledViewportAnchorCaptureRef.current = null;
-                clearTimeout(scheduled.timeoutId);
-            });
             members.listLayoutHeightRef.current = 600;
             members.readCurrentNativeDistanceFromBottom.mockReturnValue(800);
             members.listDataRef.current = [
@@ -725,7 +726,6 @@ describe('useTranscriptViewportAnchorCaptureHost deferral', () => {
             vi.advanceTimersByTime(1_000);
 
             expect(controller.activeOwner()).toBe('entry');
-            expect(members.cancelScheduledViewportAnchorCapture).toHaveBeenCalled();
             expect(members.emitViewportChange).not.toHaveBeenCalled();
             expect(persistedViewport).toBe(durableViewport);
 
@@ -968,8 +968,11 @@ describe('useTranscriptViewportAnchorCaptureHost deferral', () => {
         }));
         const emitted = members.emitViewportChange.mock.calls[0][0] as Record<string, unknown>;
         expect('anchor' in emitted).toBe(false);
-        // The capture genuinely re-read geometry on each retry.
-        expect(getAbsoluteLastScrollOffset.mock.calls.length).toBeGreaterThanOrEqual(2);
+        // One fire plus exactly EMPTY_CAPTURE_RETRY_LIMIT (3) retries, each re-reading geometry.
+        expect(getAbsoluteLastScrollOffset).toHaveBeenCalledTimes(4);
+        vi.advanceTimersByTime(1_000);
+        expect(getAbsoluteLastScrollOffset).toHaveBeenCalledTimes(4);
+        expect(members.emitViewportChange).toHaveBeenCalledTimes(1);
 
         await hook.unmount();
     });
@@ -1105,10 +1108,14 @@ describe('useTranscriptViewportAnchorCaptureHost deferral', () => {
                 { initialProps: buildDeps(members) },
             );
 
+            // A capture scheduled before exit must not later persist the teardown DOM either.
+            hook.getCurrent().schedule({ isPinned: false, offsetY: 777, shouldRestoreViewport: true });
             expect(hook.getCurrent().captureAtExit({ deferEmit: false })).toBeNull();
-            expect(members.cancelScheduledViewportAnchorCapture).toHaveBeenCalled();
             expect(members.resolveWebScrollMetrics).not.toHaveBeenCalled();
             expect(members.emitViewportChange).not.toHaveBeenCalled();
+            vi.advanceTimersByTime(2_000);
+            expect(members.emitViewportChange).not.toHaveBeenCalled();
+            expect(vi.getTimerCount()).toBe(0);
 
             await hook.unmount();
         } finally {
@@ -1349,8 +1356,11 @@ describe('useTranscriptViewportAnchorCaptureHost deferral', () => {
         const host = hook.getCurrent();
         host.schedule({ isPinned: false, offsetY: 777, shouldRestoreViewport: true });
         host.captureAtExit({ deferEmit: false });
-        expect(members.cancelScheduledViewportAnchorCapture).toHaveBeenCalled();
         expect(members.emitViewportChange).not.toHaveBeenCalled();
+        // The pending capture is cancelled, not merely outrun: its debounce never writes later.
+        vi.advanceTimersByTime(2_000);
+        expect(members.emitViewportChange).not.toHaveBeenCalled();
+        expect(vi.getTimerCount()).toBe(0);
 
         await hook.unmount();
     });
@@ -1368,7 +1378,6 @@ describe('useTranscriptViewportAnchorCaptureHost deferral', () => {
 
             hook.getCurrent().captureAtExit({ deferEmit: false });
 
-            expect(members.cancelScheduledViewportAnchorCapture).toHaveBeenCalledTimes(1);
             expect(members.emitViewportChange).not.toHaveBeenCalled();
             await hook.unmount();
         } finally {

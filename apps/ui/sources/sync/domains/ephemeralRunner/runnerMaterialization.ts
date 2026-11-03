@@ -1,4 +1,4 @@
-import { createStoredReadSchema } from '@happier-dev/protocol';
+import { createStoredReadSchema, projectSessionDisplayV1, type SessionDisplayProjectionV1 } from '@happier-dev/protocol';
 import {
     RunnerActivationBindingV1Schema,
     type RunnerActivationBindingV1,
@@ -65,6 +65,7 @@ import {
 } from './runnerActivationKeyCustody';
 import { retainRunnerCreatorMachineContentKeyTrust } from './runnerCreatorMachineContentKeyTrust';
 import type { Encryption } from '@/sync/encryption/encryption';
+import { createSessionDisplayCrypto } from '@/sync/encryption/sessionDisplayCrypto';
 import type { MachineMetadata } from '@/sync/domains/state/storageTypes';
 import { MetadataSchema, type Metadata, type AgentState } from '@happier-dev/session-core/state';
 import type { RunnerActivationClient } from '@/sync/api/ephemeralRunner/runnerActivationClient';
@@ -506,6 +507,24 @@ export async function buildRunnerMaterializationRequestV1(input: Readonly<{
             randomBytes: getRandomBytes,
         }), 'base64');
     }
+    const semanticDisplay = projectSessionDisplayV1({
+        sharedMetadata: shared,
+        ownerMetadata: owner.ownerMetadata,
+    });
+    if (!semanticDisplay.owner) throw new RunnerMaterializationPreparationError('runner_session_metadata_unsupported');
+    const displayCrypto = createSessionDisplayCrypto({
+        sessionMode: mode,
+        accountMode: mode,
+        credentials: input.credentials,
+        sessionEncryption: input.encryption?.getSessionEncryption(binding.sessionId),
+    });
+    const displayProjectionV1 = {
+        v: 1,
+        sourceMetadataVersion: 0,
+        metadataLayoutVersion: 1,
+        shared: await displayCrypto.encodeSharedDisplay(semanticDisplay.shared),
+        owner: displayCrypto.encodeOwnerDisplay(semanticDisplay.owner),
+    } satisfies SessionDisplayProjectionV1;
     const bootstrap = RunnerRuntimeBootstrapV1Schema.parse(mode === 'plain' ? {
         v: 1, purpose: 'happier.ephemeral-session-runner.runtime',
         homeServerIdentityId: binding.homeServerIdentityId, activationId: binding.activationId,
@@ -534,7 +553,7 @@ export async function buildRunnerMaterializationRequestV1(input: Readonly<{
         launchManifestCommitment: projection.review.launchManifestCommitment,
         consent: projection.consent, readiness: projection.readiness, sealedBootstrap,
         session: {
-            tag: input.tag, metadata, ownerMetadata, agentState,
+            tag: input.tag, metadata, ownerMetadata, agentState, displayProjectionV1,
             dataEncryptionKey: sessionDataEncryptionKey, requestedEncryptionMode: mode,
             requestedStorageState: 'machine_only',
             ...(preparedAuthoring.authoring.organizationPlacement ? { organizationPlacement: preparedAuthoring.authoring.organizationPlacement } : {}),

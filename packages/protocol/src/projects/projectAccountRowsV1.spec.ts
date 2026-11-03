@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
     ProjectAccountRowPayloadV1Schema,
+    ProjectAccountRowReadRequestV1Schema,
+    ProjectAccountRowReadResponseV1Schema,
+    ProjectAccountRowAuthoringSessionRequestV1Schema,
+    ProjectAccountRowContentV1Schema,
     StoredProjectAccountRowPayloadV1Schema,
     assertProjectAccountRowPayloadBindingV1,
     buildProjectAccountRowPhysicalKeyV1,
@@ -11,6 +15,20 @@ const key = { kind: 'workspace-ref', serverId: 'home/a', id: 'ref/a' } as const;
 const value = { id: key.id, serverId: key.serverId, machineId: 'machine-a', rootPath: '/repo/a', label: 'a', createdAtMs: 1 };
 
 describe('Project Account row persistence admission', () => {
+    it('admits optional id-only authoring provenance without widening private content', () => {
+        const authoringSession = { serverId: 'session-home', sessionId: 'session-a' };
+        expect(ProjectAccountRowReadRequestV1Schema.safeParse({ key, includeAuthoringSession: true }).success).toBe(true);
+        expect(ProjectAccountRowReadResponseV1Schema.safeParse({ status: 'present', row: {
+            key, revision: 1, content: { t: 'plain', v: { key, value } }, authoringSession,
+        } }).success).toBe(true);
+        expect(ProjectAccountRowReadResponseV1Schema.safeParse({ status: 'present', row: {
+            key, revision: 1, content: { t: 'plain', v: { key, value } }, authoringSession: { ...authoringSession, title: 'private' },
+        } }).success).toBe(false);
+        expect(ProjectAccountRowAuthoringSessionRequestV1Schema.parse({ key, session: authoringSession })).toEqual({ key, session: authoringSession });
+        expect(ProjectAccountRowAuthoringSessionRequestV1Schema.safeParse({ key: { kind: 'relationship-graph' }, session: authoringSession }).success).toBe(false);
+        expect(ProjectAccountRowAuthoringSessionRequestV1Schema.safeParse({ key, session: { ...authoringSession, sessionId: ' session ' } }).success).toBe(false);
+        expect(ProjectAccountRowContentV1Schema.safeParse({ t: 'plain', v: { key, value }, authoringSession }).success).toBe(false);
+    });
     it('keeps navigation recency out of strict structural writes and canonical stored projections', () => {
         const historical = { key, value: { ...value, lastOpenedAtMs: 123 } };
         expect(ProjectAccountRowPayloadV1Schema.safeParse(historical).success).toBe(false);

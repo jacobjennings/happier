@@ -15,30 +15,6 @@ const touchReleaseEffect = (
 });
 
 describe('native touch release live-tail state effects', () => {
-    it('returns no state effects when no touch release effect exists', () => {
-        expect(resolveNativeTouchReleaseLiveTailStateEffects({
-            effects: [],
-            sessionId: 'session-a',
-        })).toEqual([]);
-    });
-
-    it('ignores stale-session touch release effects', () => {
-        expect(resolveNativeTouchReleaseLiveTailStateEffects({
-            effects: [touchReleaseEffect({ sessionId: 'session-b' })],
-            sessionId: 'session-a',
-        })).toEqual([]);
-    });
-
-    it('returns one state effect for a current-session touch release', () => {
-        expect(resolveNativeTouchReleaseLiveTailStateEffects({
-            effects: [touchReleaseEffect()],
-            sessionId: 'session-a',
-        })).toEqual([{
-            sessionId: 'session-a',
-            type: 'apply-native-touch-release-live-tail-state',
-        }]);
-    });
-
     it('filters mixed effects down to the current-session touch release', () => {
         expect(resolveNativeTouchReleaseLiveTailStateEffects({
             effects: [

@@ -3,6 +3,7 @@ import { resolveVoiceSourceDisclosureV1 } from '@happier-dev/protocol/voice/sour
 import { readVoicePrivacySettings } from '@/sync/domains/settings/readVoicePrivacySettings';
 import type { ResolvedVoiceContextFormatterPrefs } from '@/voice/context/contextFormatters';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
+import { CanonicalVoiceSettingsSchema, readVoiceSettingsInput, voiceSettingsDefaults } from '@/sync/domains/settings/voiceSettings';
 
 function resolveVoicePrivacySettings(settings: unknown) {
   const privacy = readVoicePrivacySettings(settings);
@@ -26,10 +27,18 @@ export function getVoiceContextFormatterPrefs(params: Readonly<{
   isCurrentAttemptTarget?: boolean;
 }>): ResolvedVoiceContextFormatterPrefs {
   const privacy = resolveVoicePrivacySettings(params.settings);
+  const voice = readVoiceSettingsInput(params.settings);
+  const approvalPreference = CanonicalVoiceSettingsSchema.shape.canApproveRequests.safeParse(
+    voice && typeof voice === 'object' && !Array.isArray(voice)
+      ? (voice as Record<string, unknown>).canApproveRequests
+      : undefined,
+  );
+  const voiceCanApproveRequests = approvalPreference.success ? approvalPreference.data : voiceSettingsDefaults.canApproveRequests;
   const sessionId = typeof params.sessionId === 'string' ? params.sessionId.trim() : '';
 
   if (!sessionId) {
     return {
+      voiceCanApproveRequests,
       voiceShareSessionSummary: privacy.shareSessionSummary,
       voiceShareRecentMessages: privacy.shareRecentMessages,
       voiceRecentMessagesCount: privacy.recentMessagesCount,
@@ -50,6 +59,7 @@ export function getVoiceContextFormatterPrefs(params: Readonly<{
   });
 
   return {
+    voiceCanApproveRequests,
     voiceShareSessionSummary: disclosure.shareSessionSummary,
     voiceShareRecentMessages: disclosure.shareRecentMessages,
     voiceRecentMessagesCount: privacy.recentMessagesCount,

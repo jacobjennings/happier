@@ -90,16 +90,22 @@ export function parseProjectAccountRowPhysicalKeyV1(physicalKey: string): Projec
     const parsed = ProjectAccountRowKeyV1Schema.safeParse(input);
     return parsed.success && buildProjectAccountRowPhysicalKeyV1(parsed.data) === physicalKey ? parsed.data : null;
 }
-export const ProjectAccountRowV1Schema = lazyDefinition(() => z.strictObject({ key: ProjectAccountRowKeyV1Schema, revision: RevisionSchema, content: z.nullable(ProjectAccountRowContentV1Schema) }));
+/** Server-visible display relationship only; titles and other Session content stay private. */
+export const ProjectAccountAuthoringSessionV1Schema = lazyDefinition(() => z.strictObject({ serverId: IdSchema, sessionId: IdSchema }));
+export type ProjectAccountAuthoringSessionV1 = z.infer<typeof ProjectAccountAuthoringSessionV1Schema>;
+export const ProjectAccountRowV1Schema = lazyDefinition(() => z.strictObject({ key: ProjectAccountRowKeyV1Schema, revision: RevisionSchema,
+    content: z.nullable(ProjectAccountRowContentV1Schema), authoringSession: z.optional(ProjectAccountAuthoringSessionV1Schema) }));
 export type ProjectAccountRowV1 = z.infer<typeof ProjectAccountRowV1Schema>;
 /** Retained payloads project through their stored owner; transport identity and envelopes stay closed. */
 const ProjectAccountRowStoredReadV1Schema = lazyDefinition(() => z.strictObject({
     ...ProjectAccountRowV1Schema.shape,
     content: z.nullable(createProjectAccountRowContentSchema(StoredProjectAccountRowPayloadV1Schema)),
 }));
-export const ProjectAccountRowReadRequestV1Schema = lazyDefinition(() => z.strictObject({ key: ProjectAccountRowKeyV1Schema }));
+export const ProjectAccountRowReadRequestV1Schema = lazyDefinition(() => z.strictObject({ key: ProjectAccountRowKeyV1Schema,
+    includeAuthoringSession: z.optional(z.literal(true)) }));
 export const ProjectAccountRowListRequestV1Schema = lazyDefinition(() => z.strictObject({
     kinds: z.optional(z.array(z.enum(['workspace-ref', 'relationship-graph', 'project-organization']))), serverId: z.optional(IdSchema),
+    includeAuthoringSession: z.optional(z.literal(true)),
 }));
 export type ProjectAccountRowListRequestV1 = z.infer<typeof ProjectAccountRowListRequestV1Schema>;
 export const ProjectAccountRowMutationRequestV1Schema = lazyDefinition(() => z.strictObject({
@@ -114,6 +120,15 @@ export const ProjectAccountRowFailureV1Schema = lazyDefinition(() => z.union([
     z.strictObject({ status: z.literal('conflict'), key: ProjectAccountRowKeyV1Schema, revision: z.int().check(z.minimum(-1), z.maximum(Number.MAX_SAFE_INTEGER)) }),
 ]));
 export type ProjectAccountRowFailureV1 = z.infer<typeof ProjectAccountRowFailureV1Schema>;
+export const ProjectAccountRowAuthoringSessionRequestV1Schema = lazyDefinition(() => z.strictObject({
+    key: ProjectAccountWorkspaceRefKeyV1Schema, session: ProjectAccountAuthoringSessionV1Schema,
+}));
+export type ProjectAccountRowAuthoringSessionRequestV1 = z.infer<typeof ProjectAccountRowAuthoringSessionRequestV1Schema>;
+export const ProjectAccountRowAuthoringSessionResponseV1Schema = lazyDefinition(() => z.union([
+    z.strictObject({ status: z.literal('recorded'), row: ProjectAccountRowV1Schema }),
+    z.strictObject({ status: z.literal('absent') }), ProjectAccountRowFailureV1Schema,
+]));
+export type ProjectAccountRowAuthoringSessionResponseV1 = z.infer<typeof ProjectAccountRowAuthoringSessionResponseV1Schema>;
 export const ProjectAccountRowReadResponseV1Schema = lazyDefinition(() => z.union([
     z.strictObject({ status: z.literal('present'), row: ProjectAccountRowStoredReadV1Schema }),
     z.strictObject({ status: z.literal('absent') }),

@@ -8,10 +8,62 @@ import { getSessionName, getSessionStatus } from '@/utils/sessions/sessionUtils'
 import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
 
 import { applySessionListRenderablePatch, areSessionListRenderablesEqual, buildSessionListRenderableFromSession } from './sessionListRenderable';
-import { buildSessionFromListRenderable } from './sessionListRenderableSessionProjection';
+import { buildSessionFromListRenderable, createSessionListPresentationSource, readSessionListPresentationPendingFlags } from './sessionListRenderableSessionProjection';
+import { sessionRuntimeObservations } from '../sessionRuntimeObservation';
+import type { Message } from '@happier-dev/session-core/messages';
+import { buildSessionActivityAttention } from '@/activity/attention/buildSessionActivityAttention';
 import { buildSessionListRowFilterFacts } from './sessionListWorkFilter';
 import { matchSessionListFilterV1, normalizeSessionListFilterV1 } from '@happier-dev/protocol/sessions/listFilter/sessionListFilterV1';
 import { areStoredSessionsEqual } from '@/sync/store/domains/areStoredSessionsEqual';
+import { SESSION_LIST_DOCUMENT_ADMISSION } from '../sessionDocumentAdmission';
+import { hasAuthoritativeSessionRouteData } from '../hasAuthoritativeSessionRouteData';
+
+it('does not relabel held full metadata when a display-only row advances its revision', () => {
+    const admission = { scope: 'home/account', encryptionMode: 'plain' as const, metadataLayoutVersion: 0,
+        metadataAudience: 'owner' as const, dataEncryptionKey: null };
+    const base = createSessionFixture({ serverId: 'home', encryptionMode: 'plain', metadataVersion: 1, agentStateVersion: 1,
+        metadata: { name: 'Held full document', path: '/held', host: 'host', work: { memoryEnabled: true } },
+        [SESSION_LIST_DOCUMENT_ADMISSION]: { ...admission, openedMetadataVersion: 1, openedAgentStateVersion: 1,
+            observedMetadataVersion: 2, observedAgentStateVersion: 1 } });
+    const row = buildSessionListRenderableFromSession({ ...base, metadataVersion: 2, agentStateVersion: 2,
+        metadata: { name: 'Fresh display title', path: '/display', host: 'host' },
+        [SESSION_LIST_DOCUMENT_ADMISSION]: { ...admission, openedMetadataVersion: 2,
+            observedMetadataVersion: 2, observedAgentStateVersion: 2 } });
+    const control = buildSessionFromListRenderable(row, { baseSession: base });
+    expect(control.metadata).toBe(base.metadata);
+    expect(control.metadataVersion).toBe(1);
+    expect(control.agentState).toBe(base.agentState);
+    expect(control.agentStateVersion).toBe(1);
+    expect(hasAuthoritativeSessionRouteData(control)).toBe(false);
+    expect(createSessionListPresentationSource(row, { baseSession: base }).metadata?.name).toBe('Fresh display title');
+});
+
+it.each(['readable', 'blocked'] as const)('does not grant full route readiness by reconstructing an admitted display with no held Session (%s)', state => {
+    const readable = buildSessionListRenderableFromSession(createSessionFixture({ encryptionMode: 'plain',
+        metadataLayoutVersion: 0, metadataVersion: 2, agentStateVersion: 1,
+        [SESSION_LIST_DOCUMENT_ADMISSION]: { scope: 'home/account', encryptionMode: 'plain', metadataLayoutVersion: 0,
+            metadataAudience: 'owner', dataEncryptionKey: null, openedMetadataVersion: 2, openedAgentStateVersion: 1,
+            observedMetadataVersion: 2, observedAgentStateVersion: 1 } }));
+    const row = state === 'readable' ? readable : { ...readable, metadata: null,
+        encryptedContentAvailability: 'encrypted_content_unavailable' as const };
+    const reconstructed = buildSessionFromListRenderable(row);
+    expect(reconstructed.agentState).toBeNull();
+    expect(hasAuthoritativeSessionRouteData(reconstructed)).toBe(false);
+});
+
+it('does not overlay a foreign full base onto an admitted display', () => {
+    const admission = { scope: 'home/account', encryptionMode: 'plain' as const, metadataLayoutVersion: 0,
+        metadataAudience: 'owner' as const, dataEncryptionKey: null };
+    const base = createSessionFixture({ metadataLayoutVersion: 0, encryptionMode: 'plain',
+        metadata: { path: '/foreign-private', host: 'foreign', work: { memoryEnabled: true } },
+        [SESSION_LIST_DOCUMENT_ADMISSION]: { ...admission, scope: 'other-home/account', openedMetadataVersion: 1, openedAgentStateVersion: 1 } });
+    const row = buildSessionListRenderableFromSession(createSessionFixture({ metadataLayoutVersion: 0, encryptionMode: 'plain',
+        metadata: { path: '/admitted', host: 'admitted' },
+        [SESSION_LIST_DOCUMENT_ADMISSION]: { ...admission, openedMetadataVersion: 1 } }));
+    const control = buildSessionFromListRenderable(row, { baseSession: base });
+    expect(control.metadata?.work).toBeUndefined();
+    expect(createSessionListPresentationSource(row, { baseSession: base }).metadataFallback).toBeUndefined();
+});
 
 describe('locked shared title projection', () => {
     const title = 'Previously authorized shared title';
@@ -92,25 +144,74 @@ describe('locked shared title projection', () => {
 });
 
 describe('buildSessionFromListRenderable', () => {
-    it('carries rule membership through cold row projection, filter facts and reconstruction without guessing missing counts', () => {
-        const session = createSessionFixture({ ownerAccountId: 'owner', origin: { kind: 'none' },
-            managedSessions: { total: 0, working: 0, needsYou: 0, stalled: 0, finished: 0, attentionPrimary: null }, receivedRuleCount: 1 });
-        const row = buildSessionListRenderableFromSession(session);
-        expect(row.receivedRuleCount).toBe(1);
-        expect(buildSessionFromListRenderable(row).receivedRuleCount).toBe(1);
-        const facts = buildSessionListRowFilterFacts(row, 'home', { nowMs: 1, viewerAccountId: 'owner' });
-        expect(facts).toMatchObject({ receivedRuleCount: 1, managedSessions: { total: 0 } });
-        const filter = normalizeSessionListFilterV1({ homeServerIds: ['home'], scope: 'all_accessible', coordinator: 'coordinator' });
-        const match = (candidate: typeof row) => matchSessionListFilterV1(filter,
-            buildSessionListRowFilterFacts(candidate, 'home', { nowMs: 1, viewerAccountId: 'owner' }));
-        expect(match(row)).toBe('match');
-        const noRules = buildSessionListRenderableFromSession({ ...session, receivedRuleCount: 0 }, row);
-        expect(areSessionListRenderablesEqual(row, noRules)).toBe(false);
-        expect(areStoredSessionsEqual(session, { ...session, receivedRuleCount: 0 })).toBe(false);
-        expect(match(noRules)).toBe('miss');
-        const unknown = buildSessionListRenderableFromSession({ ...session, receivedRuleCount: undefined }, row);
-        expect(buildSessionFromListRenderable(unknown, { baseSession: session }).receivedRuleCount).toBeUndefined();
-        expect(match(unknown)).toBe('unavailable');
+    it('keeps held lead counts when a warm row omits them', async () => {
+        const { readSessionWorkStatusFacts } = await import('@/components/work/status/sessionWorkStatusFacts');
+        const { readPutUnderCandidatePresentation } = await import('@/components/sessions/work/putUnderPresentation');
+        const base = createSessionFixture({ id: 'warm-lead', serverId: 'home', updatedAt: 900,
+            active: true, activeAt: 1_000, presence: 'online', latestTurnStatus: 'completed',
+            managedSessions: { total: 2, working: 1, needsYou: 0, stalled: 0, finished: 1, attentionPrimary: null } });
+        const row = { ...buildSessionListRenderableFromSession(base), updatedAt: 100, managedSessions: undefined };
+        const source = createSessionListPresentationSource(row, { baseSession: base, serverId: 'home' });
+        expect(buildSessionFromListRenderable(row, { baseSession: base }).managedSessions)
+            .toBe(base.managedSessions);
+        expect(readSessionWorkStatusFacts(row, 1_000, source).settled).toBe(false);
+        expect(readPutUnderCandidatePresentation({ record: row, baseSession: base, serverId: 'home' }))
+            .toMatchObject({ leadsCount: 2, workingCount: 1, updatedAt: 900 });
+    });
+    it.each([undefined, 1_200])('keeps projected pending fallback ordered by the exact Home full-publication witness (%s)', observedAt => {
+        const base = createSessionFixture({ id: 'row-pending-witness', serverId: 'row-witness-home', active: true,
+            updatedAt: 1_000, agentState: null, pendingPermissionRequestCount: 1, pendingUserActionRequestCount: 0 });
+        const row = { ...buildSessionListRenderableFromSession(base), pendingRequestObservedAt: observedAt };
+        const messages: Message[] = [{ id: 'terminal-permission', kind: 'tool-call', localId: null, createdAt: 1_500,
+            tool: { id: 'terminal-tool', name: 'Bash', state: 'completed', input: {}, createdAt: 1_500,
+                startedAt: 1_500, completedAt: 1_600, description: null,
+                permission: { id: 'terminal-permission', status: 'approved' } }, children: [] }];
+        const address = { serverId: 'row-witness-home', sessionId: row.id };
+        sessionRuntimeObservations.recordFullPublication(address, 2_000, base);
+        try {
+            const read = (serverId: string) => readSessionListPresentationPendingFlags(
+                createSessionListPresentationSource(row, { baseSession: base, serverId }), messages).hasPendingPermissionRequests;
+            expect(read('row-witness-home')).toBe(observedAt === undefined);
+            expect(read('different-home')).toBe(false);
+            expect(base.updatedAt).toBe(1_000);
+        } finally { sessionRuntimeObservations.forget(address); }
+    });
+    it('does not copy unrelated held metadata while projecting mixed admitted rows', () => {
+        const nowMs = 1_000_000;
+        const base = createSessionFixture({ serverId: 'home', active: true, activeAt: nowMs,
+            metadata: { path: '/held', host: 'machine', work: { statusReason: 'Held private explanation' } } });
+        const row = buildSessionListRenderableFromSession({ ...base, seq: base.seq + 1,
+            metadata: { path: '/current', host: 'machine', name: 'Current title' } });
+        let unrelatedReads = 0;
+        // A real data getter detects whole-Metadata enumeration; no domain logic is replaced.
+        Object.defineProperty(base.metadata, 'unconsumedProjectionPayload', { enumerable: true,
+            get: () => { unrelatedReads++; return 'unrelated held content'; } });
+        for (let pass = 0; pass < 2; pass++) for (let index = 0; index < 1_001; index++) {
+            const source = createSessionListPresentationSource(row, { baseSession: base, serverId: 'home' });
+            const attention = buildSessionActivityAttention({ session: row, presentationSource: source, nowMs });
+            expect(attention.title).toBe('Current title');
+            expect(attention.awareness.statusReason).toBe('Held private explanation');
+        }
+        expect(unrelatedReads).toBe(0);
+    });
+    it('presents mixed tuples and held request bodies without reconstructing a Session', () => {
+        const nowMs = 1_000_000;
+        const base = createSessionFixture({ id: 'mixed', serverId: 'home', active: true, activeAt: nowMs,
+            metadataVersion: 3, metadata: { path: '/new', host: 'machine', name: 'Current title' },
+            latestTurnStatus: 'completed', latestTurnStatusObservedAt: nowMs,
+            agentState: { requests: { r: { kind: 'permission', tool: 'Bash', arguments: {}, createdAt: nowMs } } },
+            pendingPermissionRequestCount: 1, pendingUserActionRequestCount: 0 });
+        const row = buildSessionListRenderableFromSession({ ...base, seq: base.seq + 1, metadataVersion: 2,
+            metadata: { path: '/old', host: 'old', name: 'Old title' }, latestTurnStatus: 'in_progress',
+            latestTurnStatusObservedAt: nowMs - 1 });
+        const expected = buildSessionActivityAttention({ session: buildSessionFromListRenderable(row, { baseSession: base, serverId: 'home' }), nowMs });
+        const actual = buildSessionActivityAttention({ session: row,
+            presentationSource: createSessionListPresentationSource(row, { baseSession: base, serverId: 'home' }), nowMs });
+        expect(actual.session).toBe(row);
+        expect(actual.awareness).toEqual(expected.awareness);
+        expect(actual.personalAttention).toEqual(expected.personalAttention);
+        expect(actual.workStatus).toEqual(expected.workStatus);
+        expect([actual.title, actual.subtitle]).toEqual([expected.title, expected.subtitle]);
     });
     it('retains the protected owner Account and invalidates stale starter projections', () => {
         const session = createSessionFixture({ ownerAccountId: 'owner', origin: { kind: 'none' } });
@@ -133,6 +234,8 @@ describe('buildSessionFromListRenderable', () => {
         expect(getSessionStatus(current, 1_000_000).awareness.currentWork)
             .toEqual(getSessionStatus(row, 1_000_000).awareness.currentWork);
         expect(current.metadata?.work).toEqual(base.metadata?.work);
+        expect(current.metadata?.sessionWorkStateV1).toEqual(base.metadata?.sessionWorkStateV1);
+        expect(current.workDisplay).toEqual(row.workDisplay);
         expect(current.metadataVersion).toBe(2);
         const newerBase = { ...base, metadataVersion: 3, metadata: metadata('Newest work') };
         const retained = buildSessionFromListRenderable(row, { baseSession: newerBase });
@@ -169,6 +272,8 @@ describe('buildSessionFromListRenderable', () => {
         const report = buildSessionFromListRenderable(row);
         expect(getSessionStatus(row, nowMs).awareness.currentWork).toBeDefined();
         expect(getSessionStatus(report, nowMs).awareness.currentWork).toEqual(getSessionStatus(row, nowMs).awareness.currentWork);
+        expect(report.workDisplay).toEqual(row.workDisplay);
+        expect(readSessionOwnerMetadataView(report)?.sessionWorkStateV1).toBeUndefined();
     });
     it('keeps the declared public Agent identity when an unopened layout-v1 report is reconstructed', () => {
         const source = createSessionFixture({ metadataLayoutVersion: 1,

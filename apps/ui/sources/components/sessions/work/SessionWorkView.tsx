@@ -171,7 +171,7 @@ export const SessionWorkView = React.memo((props: Readonly<{
     // FIN 04's Goal control is the composer's; "+" › Keep going until done… opens it there.
     const goalControlEntry = useSessionGoalControlEntry({ sessionId: props.sessionId, serverId: sessionServerId });
     const machineName = useSessionMachineName(props.sessionId, sessionServerId);
-    const { machineReachable, machineLastSeenAt } = useSessionMachineReachability(props.sessionId, sessionServerId);
+    const { machineReachability, machineLastSeenAt } = useSessionMachineReachability(props.sessionId, sessionServerId);
     const originLabelById = useSessionAgentRowOriginLabels({
         sessionId: props.sessionId,
         serverId: sessionServerId,
@@ -358,7 +358,7 @@ export const SessionWorkView = React.memo((props: Readonly<{
         retryManagedRuns?.();
     }, [retryManagedRuns]);
     const managedStale = sources?.managedRuns.phase === 'loaded' && sources.managedRuns.refreshFailed;
-    const machineNotices = resolveWorkMachineNotices({ machineReachable, nothingYet, unavailableReason: launcher.unavailableReason, managedUnavailable, managedStale });
+    const machineNotices = resolveWorkMachineNotices({ machineReachability, nothingYet, unavailableReason: launcher.unavailableReason, managedUnavailable, managedStale });
     // One list by state on every surface (INT r0.4 §6 I4, lab `convo-W1/W8full`, `phone-P5`).
     const previousStateGroups = React.useRef<Readonly<{ sessionId: string; serverId: string | null;
         groups: ReturnType<typeof groupWorkByState> }> | null>(null);
@@ -470,7 +470,7 @@ export const SessionWorkView = React.memo((props: Readonly<{
                             />
                         ) : null}
                         {/* FIN 04's slot: the Goal row opens the one Goal control, the composer's. */}
-                        <SessionGoalValueRow sessionId={props.sessionId} entry={goalControlEntry} testID="session-work-goal" />
+                        <SessionGoalValueRow sessionId={props.sessionId} serverId={sessionServerId} entry={goalControlEntry} testID="session-work-goal" />
                         <SessionWorkPlanRow sessionId={props.sessionId} serverId={sessionServerId} />
                     </WorkFlatSheet>
                     <SessionAgentStartDraftRows sessionId={props.sessionId} serverId={sessionServerId} drafts={startDrafts} onOpen={openStartDraft} />

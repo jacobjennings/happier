@@ -7,6 +7,8 @@ describe('useChromeSafeAreaInsets helpers', () => {
         standardCleanup();
         vi.doUnmock('react-native');
         vi.doUnmock('react-native-safe-area-context');
+        vi.doUnmock('@/utils/platform/desktopHost');
+        vi.unstubAllGlobals();
         vi.resetModules();
     });
 
@@ -204,9 +206,11 @@ describe('useChromeSafeAreaInsets helpers', () => {
             useSafeAreaInsets: () => ({ top: 14, bottom: 10, left: 24, right: 24 }),
         }));
 
-        vi.doMock('@/activity/adapters/desktop/runtime/isDesktopActivityOverlayWindowContext', () => ({
-            isDesktopActivityOverlayWindowContext: () => true,
+        vi.doMock('@/utils/platform/desktopHost', async (importOriginal) => ({
+            ...(await importOriginal<typeof import('@/utils/platform/desktopHost')>()),
+            isDesktopHost: () => true,
         }));
+        vi.stubGlobal('window', { location: { href: 'https://happier.test/desktop/activity-overlay' } });
 
         const { useChromeSafeAreaInsets } = await import('./useChromeSafeAreaInsets');
         const hook = await renderHook(() => useChromeSafeAreaInsets());

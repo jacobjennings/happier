@@ -232,10 +232,6 @@ vi.mock('@/auth/context/AuthContext', () => ({
     }),
 }));
 
-vi.mock('@/auth/flows/getToken', () => ({
-    authGetToken: vi.fn(async () => 'account-token'),
-}));
-
 vi.mock('@/auth/providers/registry', () => ({
     getAuthProvider: () => null,
 }));

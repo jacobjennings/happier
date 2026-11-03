@@ -166,6 +166,7 @@ export function registerStoredContentPublicShareRoutes(app: Fastify): void {
                 if (artifact.currentBlobId) artifactBlob = { actorAccountId: artifact.accountId, artifactId: artifact.id, blobId: artifact.currentBlobId };
             } else if (share.sessionId && !share.artifactId) {
                 const session = await tx.session.findUnique({ where: { id: share.sessionId }, select: {
+                    displayProjectionV1: true,
                     encryptionMode: true, metadata: true, metadataVersion: true, metadataLayoutVersion: true, ownerMetadata: true, agentState: true, agentStateVersion: true, ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
                 } });
                 if (!session || !isSessionTranscriptShareable(session) || (session.encryptionMode !== "plain" && session.encryptionMode !== "e2ee")) return { type: "missing" as const };

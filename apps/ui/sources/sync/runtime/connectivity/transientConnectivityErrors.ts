@@ -11,6 +11,23 @@ export class RetryableServerResponseError extends Error {
     }
 }
 
+/** A server answer to a request that must not be re-sent: it may already have taken effect. */
+export class NonRetryableServerResponseError extends Error {
+    readonly status: number;
+    readonly retryable = false;
+
+    constructor(status: number, message: string) {
+        super(message);
+        this.name = 'NonRetryableServerResponseError';
+        this.status = status;
+    }
+}
+
+/** Manual recovery is control flow, not a failed network attempt. */
+export function isServerFetchReadSupersededError(error: unknown): boolean {
+    return error instanceof Error && error.name === 'ServerFetchReadSupersededError';
+}
+
 export function isTransientConnectivityError(error: unknown): boolean {
     if (isTerminalAuthError(error)) {
         return false;
@@ -27,6 +44,7 @@ export function isTransientConnectivityError(error: unknown): boolean {
     if (
         error.name === 'ServerFetchAbortedForServerSwitchError'
         || error.name === 'ServerFetchWriteTimeoutError'
+        || error.name === 'ServerFetchReadTimeoutError'
         || error.name === 'DirectTransferRequestTimeoutError'
     ) {
         return true;
@@ -45,6 +63,7 @@ export function isExplicitlyRetryableError(error: unknown): boolean {
 }
 
 export function shouldRetryError(error: unknown): boolean {
+    if (isServerFetchReadSupersededError(error)) return false;
     if (isTerminalAuthError(error)) return false;
     if (error && typeof error === 'object') {
         const candidate = error as { code?: unknown; retryable?: unknown; canTryAgain?: unknown };

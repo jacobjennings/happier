@@ -73,6 +73,7 @@ import { useReplaceUndoOnClose } from './replace/useReplaceUndoOnClose';
 import { buildReplaceReviewSections, REPLACE_OPTION_PREFIX, ReplaceField, ReplaceFooterAction, ReplaceResultSummary } from './replace/replaceReview';
 import { boundedReplyHints } from './searchBoundedReplyHints';
 import { parseSearchFileTarget } from '@/utils/url/sessionFileDeepLink';
+import { resolveMachineAbsolutePath } from '@/sync/domains/fileSystem/resolveMachineAbsolutePath';
 import { isAbsoluteLocalPath, resolvePathRelativeToRoot } from '@/utils/path/resolvePathRelativeToRoot';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
@@ -710,7 +711,9 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
             resolve: async (value, signal) => {
                 const parsedTarget = parseSearchFileTarget(value);
                 if (parsedTarget && ((parsedTarget.serverId && !areServerProfileIdentifiersEquivalent(parsedTarget.serverId, workspaceScope.serverId)) || (parsedTarget.sessionId && parsedTarget.sessionId !== activeSession?.id) || (parsedTarget.workspaceRefId && parsedTarget.workspaceRefId !== workspaceRef?.id))) return { results: [], emptyHint: t('universalSearch.content.unavailable') };
-                const path = parsedTarget?.path ?? value;
+                const path = parsedTarget?.rootPath
+                    ? resolveMachineAbsolutePath({ rootPath: parsedTarget.rootPath, requestPath: parsedTarget.path, pathKind: 'workspace_entry' })
+                    : parsedTarget?.path ?? value;
                 const absolute = isAbsoluteLocalPath(path.replace(/\\/g, '/'));
                 const parsedPath = absolute ? resolvePathRelativeToRoot({ path, root: workspaceScope.rootPath }) : parsedTarget ? path.replace(/\\/g, '/') : null;
                 if ((parsedTarget || absolute) && parsedPath === null) return { results: [], emptyHint: t('universalSearch.content.unavailable') };
@@ -721,7 +724,7 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
                     // Nothing recent or changed to fall back on: the line says only that the machine isn't answering.
                     if (candidates.length === 0) return { results: [], emptyHint: workspaceUnavailableHint };
                     const literalFile = candidates.find(file => file.fullPath === value);
-                    const matches = rankFileSearchResults(createWorkspaceFileSearchIndex(candidates).search(normalizeFileSearchText(searchQuery)).map(result => result.item), searchQuery);
+                    const matches = rankFileSearchResults(createWorkspaceFileSearchIndex(candidates).search(normalizeFileSearchText(searchQuery)), searchQuery);
                     const matchingRecent = new Set(matchWorkspaceFileNames(quickOpenSources.recent, searchQuery).map(file => file.fullPath));
                     const recent = quickOpenSources.recent.filter(file => matchingRecent.has(file.fullPath));
                     const ordered = [...recent, ...matches.filter(file => !matchingRecent.has(file.fullPath))];

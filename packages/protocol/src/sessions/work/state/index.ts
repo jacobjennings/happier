@@ -29,8 +29,13 @@ export {
 export { boundSessionWorkStateItemsV1 } from './sessionWorkStateBounds.js';
 export { mergeSessionWorkStateMetadataV1, mergeSessionWorkStateV1 } from './sessionWorkStateMerge.js';
 export {
+  projectSessionWorkDisplayV1,
   resolveSessionWorkStatePrimaryItemId,
+  SessionWorkDisplayItemV1Schema,
+  SessionWorkDisplayV1Schema,
   type ResolveSessionWorkStatePrimaryOptions,
+  type SessionWorkDisplayItemV1,
+  type SessionWorkDisplayV1,
 } from './sessionWorkStatePrimary.js';
 export {
   ConnectedServiceQuotaRecoveryCreditConsumeRequestV1Schema,

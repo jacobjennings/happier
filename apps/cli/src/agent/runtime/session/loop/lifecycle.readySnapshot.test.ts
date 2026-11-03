@@ -39,7 +39,7 @@ import { sendReadyWithPushNotification } from '@/agent/runtime/notifications/sen
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
 import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
-import { getResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { getResolvedContributionRegistry } from '@/plugins/projection/registry/builtIn/snapshot';
 
 import { HOST_SESSION_RUNTIME_PLAN_KIND, runSessionLoopLifecycle, type SessionLoopLifecycleParams } from './lifecycle';
 
@@ -182,7 +182,7 @@ describe('host ready after a provider successor starts', () => {
     const runtime = createNativeAgentSessionOperations(provider, sessionId, undefined, undefined, undefined, undefined, undefined, {
       context: {} as AgentSessionRuntimeContext, cwd: '/tmp/ready-handoff', connectedAccounts: [],
       capabilities: { open: ['create'], delivery: ['newTurn'], cancel: false },
-      cancellation: { declared: false }, configuration: { declared: false }, manualCompaction: { declared: false },
+      cancellation: { declared: false }, configuration: { declared: false }, compaction: { capability: null },
     });
     const metadata = createTestMetadata({ path: checkpointRoot ?? '/tmp/ready-handoff', permissionMode: 'default' });
     const snapshots = createTurnAssistantTextSnapshotStore();

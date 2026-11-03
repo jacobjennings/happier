@@ -661,7 +661,7 @@ describe('daemon plugin development root ownership', () => {
     await owner.stop();
   });
 
-  it('coalesces source observations and retains active status after a failed candidate', async () => {
+  it('advances the observed revision and retains the incumbent occurrence after a failed candidate', async () => {
     const happyHomeDir = await createDirectory('happier-daemon-dev-coalesce-home-');
     const sourceRoot = await createDirectory('happier-daemon-dev-source-');
     await writeFile(join(sourceRoot, 'plugin.ts'), 'export function activate() {}\n', 'utf8');

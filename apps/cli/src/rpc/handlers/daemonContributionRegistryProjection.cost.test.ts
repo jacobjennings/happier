@@ -8,12 +8,13 @@ import { computePluginUiArtifactFileSetSha256DigestV1, computePluginUiArtifactSh
     verifyPluginUiArtifactFileSetIntegrityV1 } from '@happier-dev/protocol/plugins/ui/artifactIntegrity';
 import { PluginUiArtifactsManifestEntryV2Schema } from '@happier-dev/protocol/plugins/ui/uiArtifactsManifest';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import type { ScmStatusSnapshotResponse } from '@happier-dev/protocol/scm';
 import { readDeclaredConnectedAccountPurposeV1 } from '@happier-dev/protocol/connect/connectedAccountPurposeSelectionV1';
 import { FeaturesResponseSchema } from '@happier-dev/protocol';
 import { definePlugin } from '@happier-dev/plugin-sdk';
 import type { RpcHandler } from '@/api/rpc/types';
 import { reloadConfiguration } from '@/configuration';
-import { getResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { getResolvedContributionRegistry } from '@/plugins/projection/registry/builtIn/snapshot';
 import { createAuthoredAdmittedPluginRuntimeFixture } from '@/plugins/testkit/admittedRuntime';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 import { resolveDefaultScmBackendRegistry } from '@/scm/scmBackendCatalog';
@@ -61,7 +62,7 @@ describe('bundled daemon contribution describe cost', () => {
             files: { 'daemon.mjs': "export function activate() { throw new Error('authored SCM activation failed'); }" },
         }] });
         const runtime = fixture.registry;
-        const retained: { invokeStatus?: () => Promise<unknown> } = {};
+        const retained: { invokeStatus?: () => Promise<ScmStatusSnapshotResponse> } = {};
         try {
             expect(runtime.activatedPluginIds.has(pluginId)).toBe(false);
             expect(runtime.activatedPluginIds.has(failedPluginId)).toBe(false);
@@ -95,7 +96,7 @@ describe('bundled daemon contribution describe cost', () => {
                 request: { cwd: fixture.happyHomeDir, backendPreference: { kind: 'prefer', backendId } },
                 workingDirectory: fixture.happyHomeDir,
                 registry,
-                onNonRepository: () => ({ success: false }),
+                onNonRepository: (): ScmStatusSnapshotResponse => ({ success: false }),
                 runWithBackend: async ({ context, selection }) => {
                     if (!selection.backend.statusSnapshot) throw new Error('Expected the authored status operation');
                     retained.invokeStatus = () => selection.backend.statusSnapshot!({ context, request: { cwd: fixture.happyHomeDir } });

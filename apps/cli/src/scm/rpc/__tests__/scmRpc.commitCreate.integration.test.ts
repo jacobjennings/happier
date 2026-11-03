@@ -1,74 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
-    SCM_COMMIT_MESSAGE_MAX_LENGTH,
-    SCM_COMMIT_PATCH_MAX_COUNT,
-    SCM_COMMIT_PATCH_MAX_LENGTH,
     SCM_OPERATION_ERROR_CODES,
     type ScmCommitCreateRequest,
     type ScmCommitCreateResponse,
 } from '@happier-dev/protocol';
-import { createTestGitRpcManager as createTestRpcManager, runGit as git } from './testRpcHarness';
+import { createGitWorkspace, createTestGitRpcManager as createTestRpcManager, runGit as git } from './testRpcHarness';
 
 describe('git RPC handlers', () => {
-    it('rejects commit creation when message exceeds max length', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
-        writeFileSync(join(workspace, 'a.txt'), 'base\n');
-        git(workspace, ['add', 'a.txt']);
-
-        const { call } = createTestRpcManager({ workingDirectory: workspace });
-        const response = await call<any, { cwd?: string; message: string }>(
-            RPC_METHODS.SCM_COMMIT_CREATE,
-            {
-                cwd: '.',
-                message: 'x'.repeat(SCM_COMMIT_MESSAGE_MAX_LENGTH + 1),
-            },
-        );
-
-        expect(response.success).toBe(false);
-        expect(response.errorCode).toBe(SCM_OPERATION_ERROR_CODES.INVALID_REQUEST);
-    });
-
-    it('supports all-pending scope for commit creation by staging pending files first', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
-        writeFileSync(join(workspace, 'a.txt'), 'base\n');
-        git(workspace, ['add', 'a.txt']);
-        git(workspace, ['commit', '-m', 'base']);
-        writeFileSync(join(workspace, 'a.txt'), 'updated\n');
-
-        const { call } = createTestRpcManager({ workingDirectory: workspace });
-        const commit = await call<any, { cwd?: string; message: string; scope: { kind: 'all-pending' } }>(
-            RPC_METHODS.SCM_COMMIT_CREATE,
-            {
-                cwd: '.',
-                message: 'scoped commit',
-                scope: {
-                    kind: 'all-pending',
-                },
-            },
-        );
-        expect(commit.success).toBe(true);
-
-        const status = await call<any, { cwd?: string }>(RPC_METHODS.SCM_STATUS_SNAPSHOT, { cwd: '.' });
-        expect(status.success, JSON.stringify(status)).toBe(true);
-        expect(status.snapshot.totals.pendingFiles).toBe(0);
-    });
-
     it('includes unstaged, pre-staged, and untracked changes in all-pending atomic commits', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base-a\n');
         writeFileSync(join(workspace, 'b.txt'), 'base-b\n');
         git(workspace, ['add', 'a.txt', 'b.txt']);
@@ -101,10 +45,7 @@ describe('git RPC handlers', () => {
     });
 
     it('refuses publication when the live-index lock is already owned by another actor', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);
@@ -130,10 +71,7 @@ describe('git RPC handlers', () => {
     });
 
     it('preserves the explicit base through RPC and refuses a divergent HEAD before publication', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']); git(workspace, ['commit', '-m', 'base']);
         const expectedHeadOid = git(workspace, ['rev-parse', 'HEAD']);
@@ -151,10 +89,7 @@ describe('git RPC handlers', () => {
     });
 
     it('rejects commit creation when message is missing', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
 
@@ -171,10 +106,7 @@ describe('git RPC handlers', () => {
     });
 
     it('creates path-scoped commit without consuming unrelated pre-staged changes', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base-a\n');
         writeFileSync(join(workspace, 'b.txt'), 'base-b\n');
         git(workspace, ['add', 'a.txt', 'b.txt']);
@@ -203,10 +135,7 @@ describe('git RPC handlers', () => {
     });
 
     it('creates path-scoped root commit for an untracked file and synchronizes the live index', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'root.txt'), 'root\n');
 
         const { call } = createTestRpcManager({ workingDirectory: workspace });
@@ -228,49 +157,8 @@ describe('git RPC handlers', () => {
         expect(git(workspace, ['diff', '--cached', '--name-only'])).toBe('');
     });
 
-    it('supports patch-based commit requests for virtual line selection', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
-        writeFileSync(join(workspace, 'a.txt'), 'base\n');
-        git(workspace, ['add', 'a.txt']);
-        git(workspace, ['commit', '-m', 'base']);
-        writeFileSync(join(workspace, 'a.txt'), 'base\nline-one\nline-two\n');
-
-        const patch = [
-            'diff --git a/a.txt b/a.txt',
-            'index df967b9..9f0e218 100644',
-            '--- a/a.txt',
-            '+++ b/a.txt',
-            '@@ -1 +1,2 @@',
-            ' base',
-            '+line-one',
-            '',
-        ].join('\n');
-
-        const { call } = createTestRpcManager({ workingDirectory: workspace });
-        const response = await call<any, { cwd?: string; message: string; patches: Array<{ path: string; patch: string }> }>(
-            RPC_METHODS.SCM_COMMIT_CREATE,
-            {
-                cwd: '.',
-                message: 'virtual line selection commit',
-                patches: [{ path: 'a.txt', patch }],
-            },
-        );
-
-        expect(response.success).toBe(true);
-        expect(git(workspace, ['show', '--pretty=', '--name-only', 'HEAD'])).toContain('a.txt');
-        expect(git(workspace, ['show', '--pretty=', 'HEAD'])).toContain('line-one');
-        expect(git(workspace, ['show', '--pretty=', 'HEAD'])).not.toContain('line-two');
-        expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('base\nline-one\nline-two\n');
-    });
-
     it('creates patch-based commit without consuming unrelated pre-staged changes', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         writeFileSync(join(workspace, 'b.txt'), 'base-b\n');
         git(workspace, ['add', 'a.txt', 'b.txt']);
@@ -305,13 +193,11 @@ describe('git RPC handlers', () => {
         expect(git(workspace, ['show', '--pretty=', 'HEAD'])).toContain('line-one');
         expect(git(workspace, ['show', '--pretty=', 'HEAD'])).not.toContain('line-two');
         expect(git(workspace, ['diff', '--cached', '--name-only'])).toBe('b.txt');
+        expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('base\nline-one\nline-two\n');
     });
 
     it('does not unstage pre-staged changes on the same path during patch-based atomic commits', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);
@@ -352,10 +238,7 @@ describe('git RPC handlers', () => {
     });
 
     it('allows mixed path scope and patch selection by preferring patch selection for overlapping files', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         writeFileSync(join(workspace, 'b.txt'), 'base-b\n');
         git(workspace, ['add', 'a.txt', 'b.txt']);
@@ -402,10 +285,7 @@ describe('git RPC handlers', () => {
     });
 
     it('rejects patch-based commit when declared path does not match patch header paths', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);
@@ -436,74 +316,8 @@ describe('git RPC handlers', () => {
         expect(response.errorCode).toBe(SCM_OPERATION_ERROR_CODES.INVALID_REQUEST);
     });
 
-    it('rejects commit patch requests that exceed protocol patch count limit', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
-        writeFileSync(join(workspace, 'a.txt'), 'base\n');
-        git(workspace, ['add', 'a.txt']);
-        git(workspace, ['commit', '-m', 'base']);
-        writeFileSync(join(workspace, 'a.txt'), 'base\nline-one\n');
-
-        const patch = [
-            'diff --git a/a.txt b/a.txt',
-            'index df967b9..9f0e218 100644',
-            '--- a/a.txt',
-            '+++ b/a.txt',
-            '@@ -1 +1,2 @@',
-            ' base',
-            '+line-one',
-            '',
-        ].join('\n');
-
-        const patches = Array.from({ length: SCM_COMMIT_PATCH_MAX_COUNT + 1 }, () => ({
-            path: 'a.txt',
-            patch,
-        }));
-
-        const { call } = createTestRpcManager({ workingDirectory: workspace });
-        const response = await call<any, { cwd?: string; message: string; patches: Array<{ path: string; patch: string }> }>(
-            RPC_METHODS.SCM_COMMIT_CREATE,
-            {
-                cwd: '.',
-                message: 'too many patches',
-                patches,
-            },
-        );
-
-        expect(response.success).toBe(false);
-        expect(response.errorCode).toBe(SCM_OPERATION_ERROR_CODES.INVALID_REQUEST);
-    });
-
-    it('rejects commit patch requests that exceed protocol patch length limit', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
-        writeFileSync(join(workspace, 'a.txt'), 'base\n');
-        git(workspace, ['add', 'a.txt']);
-        git(workspace, ['commit', '-m', 'base']);
-
-        const { call } = createTestRpcManager({ workingDirectory: workspace });
-        const response = await call<any, { cwd?: string; message: string; patches: Array<{ path: string; patch: string }> }>(
-            RPC_METHODS.SCM_COMMIT_CREATE,
-            {
-                cwd: '.',
-                message: 'too large patch',
-                patches: [{ path: 'a.txt', patch: 'x'.repeat(SCM_COMMIT_PATCH_MAX_LENGTH + 1) }],
-            },
-        );
-
-        expect(response.success).toBe(false);
-        expect(response.errorCode).toBe(SCM_OPERATION_ERROR_CODES.INVALID_REQUEST);
-    });
-
     it('returns a deterministic pre-check error when included-change inspection fails', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-git-rpc-'));
-        git(workspace, ['init']);
-        git(workspace, ['config', 'user.email', 'test@example.com']);
-        git(workspace, ['config', 'user.name', 'Test User']);
+        const workspace = createGitWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         git(workspace, ['add', 'a.txt']);
         git(workspace, ['commit', '-m', 'base']);

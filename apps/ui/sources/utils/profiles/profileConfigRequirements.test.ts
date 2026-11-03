@@ -33,7 +33,7 @@ describe('getMissingRequiredConfigEnvVarNames', () => {
         expect(getMissingRequiredConfigEnvVarNames(profile, { AZURE_OPENAI_ENDPOINT: false })).toEqual(['AZURE_OPENAI_ENDPOINT']);
     });
 
-    it('treats true as configured and ignores null/undefined', () => {
+    it('treats true as configured and null or absent values as missing', () => {
         const profile = makeProfile([{ name: 'CFG', kind: 'config', required: true }]);
         expect(getMissingRequiredConfigEnvVarNames(profile, { CFG: true })).toEqual([]);
         expect(getMissingRequiredConfigEnvVarNames(profile, { CFG: null })).toEqual(['CFG']);

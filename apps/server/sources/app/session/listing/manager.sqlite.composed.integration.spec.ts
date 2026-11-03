@@ -134,7 +134,7 @@ describe("Manager listing (SQLite)", () => {
         Object.defineProperty(delegate, 'findMany', { configurable: true, writable: true,
             value: async (...args: Parameters<typeof original>) => {
                 const rows = await original(...args);
-                if (args[0]?.select?.runtimeActivityState && !args[0]?.select?.metadata && ++reportReads === 2) {
+                if (args[0]?.select?.runtimeActivityState && !args[0]?.select?.metadataVersion && ++reportReads === 2) {
                     enter(); await release;
                 }
                 return rows;
@@ -169,7 +169,7 @@ describe("Manager listing (SQLite)", () => {
         Object.defineProperty(delegate, 'findMany', { configurable: true, writable: true,
             value: async (...args: Parameters<typeof original>) => {
                 const rows = await original(...args);
-                if (!paused && args[0]?.select?.metadata) { paused = true; enter(); await release; }
+                if (!paused && args[0]?.select?.metadataVersion) { paused = true; enter(); await release; }
                 return rows;
             } });
         const response = list(viewer.id, lead.id);
@@ -214,7 +214,7 @@ describe("Manager listing (SQLite)", () => {
             Object.defineProperty(delegate, 'findMany', { configurable: true, writable: true,
                 value: async (...args: Parameters<typeof original>) => {
                     const rows = await original(...args);
-                    if (!paused && args[0]?.select?.runtimeActivityState && !args[0]?.select?.metadata) {
+                    if (!paused && args[0]?.select?.runtimeActivityState && !args[0]?.select?.metadataVersion) {
                         paused = true; enter(); await release;
                     }
                     return rows;

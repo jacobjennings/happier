@@ -10,20 +10,13 @@ import { FeaturesResponseSchema } from '@happier-dev/protocol';
 import { adoptHomeProfile, getActiveServerId, setActiveServerId } from '@/sync/domains/server/serverProfiles';
 import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { AuthProvider, getCurrentAuth } from '@/auth/context/AuthContext';
+import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { SecretKeyLoginForm } from './SecretKeyLoginForm';
 import { t } from '@/text';
 
 installTokenStorageWebPlatformMocks();
-const boundary = vi.hoisted(() => ({ request: vi.fn(), targets: [] as Array<{ endpointUrl: string; credentials?: AuthCredentials | null }> }));
-vi.mock('@/sync/http/client', () => ({
-    createServerFetchAtEndpoint: (target: { endpointUrl: string; credentials?: AuthCredentials | null; signal?: AbortSignal }) => {
-        boundary.targets.push(target);
-        return (path: string, init?: RequestInit) => boundary.request(target.endpointUrl, path, {
-            ...init, signal: init?.signal ?? target.signal,
-        });
-    },
-    serverFetch: (path: string, init?: RequestInit) => boundary.request('ambient', path, init),
-}));
+// The network boundary: every request the real HTTP client issues, keyed by observed origin and path.
+const boundary = { request: vi.fn() };
 vi.mock('expo-router', async () => (await import('@/dev/testkit/mocks/router')).createExpoRouterMock().module);
 vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock());
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
@@ -31,8 +24,15 @@ vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal')).creat
 
 let restore: () => void;
 let screen: Awaited<ReturnType<typeof renderScreen>> | undefined;
-beforeEach(() => { restore = installLocalStorageMock().restore; boundary.targets.length = 0; boundary.request.mockReset(); });
-afterEach(async () => { await screen?.unmount(); screen = undefined; vi.unstubAllEnvs(); restore(); });
+beforeEach(() => {
+    restore = installLocalStorageMock().restore;
+    boundary.request.mockReset();
+    setRuntimeFetch(async (input, init) => {
+        const url = new URL(String(input));
+        return boundary.request(url.origin, url.pathname, init);
+    });
+});
+afterEach(async () => { await screen?.unmount(); screen = undefined; vi.unstubAllEnvs(); resetRuntimeFetch(); restore(); });
 
 it.each(['focused-unmount', 'exact-unmount', 'exact-retarget'] as const)(
     'retires %s authentication transport and never commits its late credential', async (retirement) => {
@@ -160,7 +160,8 @@ it.each(['plain', 'e2ee'] as const)('commits exact Home B %s credentials before 
     expect(getActiveServerId()).toBe(activeHomeA);
     expect(getCurrentAuth()?.credentials).toEqual(credentialsA);
     expect(await TokenStorage.getCredentialsForServerUrl(homeA.serverUrl, { serverId: 'srv_home_a' })).toEqual(credentialsA);
-    expect(boundary.targets.every((target) => target.endpointUrl === homeB.serverUrl)).toBe(true);
+    expect(boundary.request.mock.calls.length).toBeGreaterThan(0);
+    expect(boundary.request.mock.calls.every(([origin]) => origin === new URL(homeB.serverUrl).origin)).toBe(true);
 });
 
 it.each([
@@ -196,6 +197,7 @@ it.each([
     const previous = await TokenStorage.getCredentialsForServerUrl(home.serverUrl, { serverId: fixture.home.homeServerIdentityId });
     await act(async () => { screen!.findByTestId('restore-manual-secret-input')!.props.onChangeText('A'.repeat(43)); });
     await screen.pressByTestIdAsync('restore-manual-submit');
+    await vi.waitFor(() => expect(screen!.findByTestId('restore-manual-secret-error')?.props.children).toBeTruthy());
     expect(boundary.request.mock.calls.some(([, path]) => path === '/v1/auth'), JSON.stringify(boundary.request.mock.calls.map(([endpoint, path]) => ({ endpoint, path })))).toBe(true);
     expect(screen.findByTestId('restore-manual-secret-error')?.props.children).toBe(message === 'errors.accountDisabled'
         ? t('errors.accountDisabled', { home: home.serverUrl })

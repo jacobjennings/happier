@@ -11,6 +11,13 @@ import { getSocketRooms } from "@/app/api/socketRooms";
 
 import { RedisStreamsRoomEmitter } from "./createRedisStreamsRoomEmitter";
 import { eventRouter } from "./eventRouter";
+import { buildNewMessageUpdate } from "./eventPayloadBuilders";
+import { CREDENTIAL_QUALIFIED_SESSION_DELIVERY_EVENT } from "./socketRoomEmitter";
+import { registerSessionConsumptionSocketEvent } from "@/app/api/socket/sessionConsumption";
+import { db } from "@/storage/db";
+import { createLightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { UpdateContainerSchema } from "@happier-dev/protocol/updates";
+import { pingHandler } from "@/app/api/socket/pingHandler";
 
 const SOCKET_PATH = "/v1/updates";
 
@@ -26,6 +33,7 @@ type StartedCluster = Readonly<{
     redisMemory: RedisMemoryInstance;
     portA: number;
     portB: number;
+    receivingDeliveries: Promise<void>[];
     close: () => Promise<void>;
 }>;
 
@@ -69,7 +77,11 @@ async function startCluster(): Promise<StartedCluster> {
         adapter: createAdapter(redisB),
     });
 
+    const receivingDeliveries: Promise<void>[] = [];
     const attachConnectionHandler = (io: Server) => {
+        io.on(CREDENTIAL_QUALIFIED_SESSION_DELIVERY_EVENT, delivery => {
+            receivingDeliveries.push(eventRouter.receiveCredentialQualifiedSessionDelivery(io.local, delivery));
+        });
         io.on("connection", (socket) => {
             const userId = socket.handshake.auth.userId as string | undefined;
             const clientType = socket.handshake.auth.clientType as "user-scoped" | "machine-scoped" | "session-scoped" | undefined;
@@ -77,6 +89,13 @@ async function startCluster(): Promise<StartedCluster> {
                 socket.disconnect();
                 return;
             }
+
+            // Authentication is this transport fixture's boundary; access, local
+            // demand admission and both receiving-node projectors remain real.
+            Object.assign(socket.data, { userId, clientType, authAuthority: "present_user",
+                clientPurpose: socket.handshake.auth.clientPurpose, sessionId: socket.handshake.auth.sessionId });
+            registerSessionConsumptionSocketEvent(socket, Promise.resolve(true));
+            pingHandler(socket);
 
             socket.join(getSocketRooms({
                 userId,
@@ -107,6 +126,7 @@ async function startCluster(): Promise<StartedCluster> {
         redisMemory,
         portA,
         portB,
+        receivingDeliveries,
         close: async () => {
             await ioA.close();
             await ioB.close();
@@ -126,7 +146,7 @@ async function connectClient(
     port: number,
     clientType: "user-scoped" | "machine-scoped" | "session-scoped" = "user-scoped",
     userId = "user-1",
-    binding: Readonly<{ sessionId?: string; machineId?: string }> = {},
+    binding: Readonly<{ sessionId?: string; machineId?: string; clientPurpose?: string }> = {},
 ): Promise<ClientSocket> {
     const socket = createClient(`http://127.0.0.1:${port}`, {
         path: SOCKET_PATH,
@@ -135,6 +155,7 @@ async function connectClient(
         auth: {
             userId,
             clientType,
+            ...(binding.clientPurpose ? { clientPurpose: binding.clientPurpose } : {}),
             ...(clientType === "session-scoped"
                 ? { sessionId: binding.sessionId ?? "session-1" }
                 : {}),
@@ -174,6 +195,53 @@ describe("eventRouter redis streams emitter integration", () => {
             await startedClusters.pop()?.close();
         }
     });
+
+    it("classifies protected worker forwarding on each receiving node using only that node's socket demand", async () => {
+        const harness = await createLightSqliteHarness({ tempDirPrefix: "happier-consumption-redis-" });
+        try {
+            const owner = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+            const session = await db.session.create({ data: {
+                accountId: owner.id, tag: crypto.randomUUID(), metadata: "{}", encryptionMode: "plain",
+            } });
+            const cluster = await startCluster();
+            startedClusters.push(cluster);
+            const activeA = await connectClient(cluster.portA, "user-scoped", owner.id, { clientPurpose: "sync" });
+            const hiddenB = await connectClient(cluster.portB, "user-scoped", owner.id, { clientPurpose: "sync" });
+            const durableB = await connectClient(cluster.portB, "user-scoped", owner.id, { clientPurpose: "concurrent-server-cache" });
+            startedClients.push(activeA, hiddenB, durableB);
+            const received = new Map(startedClients.map(client => [client, [] as unknown[]]));
+            for (const client of startedClients) client.on("update", value => received.get(client)!.push(UpdateContainerSchema.parse(value)));
+            expect(await activeA.timeout(5_000).emitWithAck("session-consumption-replace", {
+                v: 1, liveSessionIds: [session.id], durableSessionIds: [],
+            })).toEqual({ ok: true, v: 1, liveSessionIds: [session.id], durableSessionIds: [] });
+            expect(await durableB.timeout(5_000).emitWithAck("session-consumption-replace", {
+                v: 1, liveSessionIds: [], durableSessionIds: [session.id],
+            })).toEqual({ ok: true, v: 1, liveSessionIds: [], durableSessionIds: [session.id] });
+            eventRouter.setIo(cluster.emitter);
+            const payload = buildNewMessageUpdate({ id: "redis-message", seq: 1, localId: null,
+                content: { t: "encrypted", c: "private-redis-content" }, createdAt: new Date(1), updatedAt: new Date(2) },
+                session.id, 1, "redis-update");
+            const arrived = Promise.all([activeA, hiddenB, durableB].map(client => new Promise<void>(resolve => client.once("update", () => resolve()))));
+            await eventRouter.emitUpdate({ userId: owner.id, payload,
+                recipientFilter: { type: "all-interested-in-session", sessionId: session.id } });
+            await arrived;
+            expect(received.get(activeA)).toEqual([payload]);
+            expect(received.get(durableB)).toEqual([payload]);
+            expect(received.get(hiddenB)).toEqual([expect.objectContaining({ body: expect.objectContaining({
+                delivery: "hint", message: expect.not.objectContaining({ content: expect.anything() }),
+            }) })]);
+
+            await db.account.update({ where: { id: owner.id }, data: { status: "suspended" } });
+            await eventRouter.emitUpdate({ userId: owner.id, payload: { ...payload, id: "revoked-update" },
+                recipientFilter: { type: "all-interested-in-session", sessionId: session.id } });
+            // Observe transport arrival, then await the real receiving-node
+            // admission on both nodes before the client-side delivery barrier.
+            await expect.poll(() => cluster.receivingDeliveries.length).toBe(4);
+            await Promise.all(cluster.receivingDeliveries);
+            await Promise.all(startedClients.map(client => client.timeout(5_000).emitWithAck("ping")));
+            for (const client of startedClients) expect(received.get(client)).toHaveLength(1);
+        } finally { await harness.close(); }
+    }, 120_000);
 
     it("disconnects user and machine rooms on both replicas from the worker emitter without touching another Account", async () => {
         const cluster = await startCluster();

@@ -7,6 +7,7 @@ import {
 } from '../realtime/index.js';
 import { z } from 'zod/mini';
 import { createStoredReadSchema } from '../../json/storedReadSchema.js';
+import { StrictJsonValueSchema } from '../../json/strictJsonValue.js';
 import {
   LEGACY_BUILT_IN_VOICE_ADAPTER_IDS,
   readLegacyVoiceSettingsMigrationSource,
@@ -138,6 +139,7 @@ export {
 function createCanonicalVoiceSettingsSchema(createDefaultProviderEnvelopes: () => Record<string, VoiceProviderSettingsEnvelopeV1>) {
   return z.object({
   providerId: z._default(z.nullable(VoiceProviderIdSchema), null),
+  canApproveRequests: z._default(z.boolean(), true),
   assistantLanguage: z._default(z.nullable(z.string()), null),
   dictation: z.prefault(VoiceDictationSettingsSchema, {}),
   welcome: z.prefault(VoiceWelcomeSchema, {}),
@@ -172,48 +174,6 @@ function createDefaultProviderEnvelopes(): Record<string, VoiceProviderSettingsE
 
 const CanonicalVoiceSettingsSchema = createCanonicalVoiceSettingsSchema(createDefaultProviderEnvelopes);
 
-function utf8ByteLength(value: string): number {
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code < 0x80) bytes += 1;
-    else if (code < 0x800) bytes += 2;
-    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
-      const next = value.charCodeAt(index + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        bytes += 4;
-        index += 1;
-      } else bytes += 3;
-    } else bytes += 3;
-  }
-  return bytes;
-}
-
-function isBoundedJsonValue(value: unknown): boolean {
-  const seen = new Set<object>();
-  let entries = 0;
-  const visit = (candidate: unknown, depth: number): boolean => {
-    if (candidate === null || typeof candidate === 'string' || typeof candidate === 'boolean') return true;
-    if (typeof candidate === 'number') return Number.isFinite(candidate);
-    if (typeof candidate !== 'object' || depth > 32 || seen.has(candidate)) return false;
-    seen.add(candidate);
-    if (Array.isArray(candidate)) {
-      entries += candidate.length;
-      return entries <= 4096 && candidate.every((entry) => visit(entry, depth + 1));
-    }
-    const record = candidate as Record<string, unknown>;
-    const keys = Object.keys(record);
-    entries += keys.length;
-    return entries <= 4096 && keys.every((key) => visit(record[key], depth + 1));
-  };
-  if (!visit(value, 0)) return false;
-  try {
-    return utf8ByteLength(JSON.stringify(value)) <= 65_536;
-  } catch {
-    return false;
-  }
-}
-
 const OBJECT_PROTOTYPE_KEYS = new Set(Object.getOwnPropertyNames(Object.prototype));
 
 function isReservedVoiceSettingsRootKey(key: string): boolean {
@@ -223,7 +183,7 @@ function isReservedVoiceSettingsRootKey(key: string): boolean {
     || key === 'adapters';
 }
 
-function preserveBoundedUnknownVoiceFields(
+function preserveUnknownVoiceFields(
   target: VoiceSettings,
   raw: Readonly<Record<string, unknown>>,
 ): VoiceSettings {
@@ -231,10 +191,11 @@ function preserveBoundedUnknownVoiceFields(
   const preserved: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(raw)) {
     if (isReservedVoiceSettingsRootKey(key) || Object.prototype.hasOwnProperty.call(known, key)) continue;
-    if (!isBoundedJsonValue(value)) continue;
-    const candidate = { ...preserved, [key]: value };
-    if (!isBoundedJsonValue(candidate)) continue;
-    preserved[key] = JSON.parse(JSON.stringify(value)) as unknown;
+    // Account Settings owns write budgets; retained reads preserve strict JSON
+    // without imposing a second Voice-specific size or cardinality policy.
+    const parsed = StrictJsonValueSchema.safeParse(value);
+    if (!parsed.success) continue;
+    preserved[key] = JSON.parse(JSON.stringify(parsed.data)) as unknown;
   }
   return Object.assign(target, preserved);
 }
@@ -265,7 +226,7 @@ function preserveMalformedLegacyCredentialFields(
     }
     if (current == null
       || (!options?.preserveValidSecrets && SecretStringV1Schema.safeParse(current).success)
-      || !isBoundedJsonValue(current)) continue;
+      || !StrictJsonValueSchema.safeParse(current).success) continue;
     const preservedCredential = JSON.parse(JSON.stringify(current)) as unknown;
     const candidate = JSON.parse(JSON.stringify(preserved)) as Record<string, unknown>;
     let target = candidate;
@@ -277,7 +238,7 @@ function preserveMalformedLegacyCredentialFields(
         target = target[segment] as Record<string, unknown>;
       }
     });
-    if (isBoundedJsonValue(candidate)) preserved = candidate;
+    preserved = candidate;
   }
   return Object.keys(preserved).length > 0 ? preserved : null;
 }
@@ -293,7 +254,7 @@ function parseProviderEnvelopes(raw: unknown): Record<string, VoiceProviderSetti
     const providerId = VoiceProviderIdSchema.safeParse(canonicalProviderId);
     if (!providerId.success) continue;
     const envelope = createStoredReadSchema(VoiceProviderSettingsEnvelopeV1Schema).safeParse(candidate);
-    if (!envelope.success || !isBoundedJsonValue(envelope.data.config)) {
+    if (!envelope.success) {
       delete result[providerId.data];
       continue;
     }
@@ -352,7 +313,7 @@ function migrateLegacyProviderEnvelopes(
     if (!ownsCanonical(owner.providerId)) {
       rootMigrations.set(owner.providerId, migrated.root);
       const preserved = owner.preserveLegacyEnvelope?.(adapters[owner.providerId] ?? {}) ?? null;
-      providers[owner.providerId] = preserved && isBoundedJsonValue(preserved.config)
+      providers[owner.providerId] = preserved && StrictJsonValueSchema.safeParse(preserved.config).success
         ? {
             schemaVersion: preserved.schemaVersion,
             config: preserved.config as VoiceProviderSettingsJsonValueV1,
@@ -366,7 +327,7 @@ function migrateLegacyProviderEnvelopes(
   for (const [rawProviderId, config] of Object.entries(adapters)) {
     if (ownsCanonical(rawProviderId) || providerSettingsCatalog.get(rawProviderId)) continue;
     const providerId = VoiceProviderIdSchema.safeParse(rawProviderId);
-    if (!providerId.success || !isBoundedJsonValue(config)) continue;
+    if (!providerId.success || !StrictJsonValueSchema.safeParse(config).success) continue;
     providers[providerId.data] = {
       schemaVersion: 1,
       config: JSON.parse(JSON.stringify(config)) as VoiceProviderSettingsJsonValueV1,
@@ -385,9 +346,9 @@ function reclaimLegacyProviderEnvelopes(
     // Only an older schema is a migration input owned by the restored provider.
     if (!envelope || envelope.schemaVersion >= owner.currentSchemaVersion) continue;
     const migrated = owner.migrateLegacy(envelope.config);
-    if (!migrated || !isBoundedJsonValue(migrated.config)) continue;
+    if (!migrated || !StrictJsonValueSchema.safeParse(migrated.config).success) continue;
     const preserved = owner.preserveLegacyEnvelope?.(envelope.config) ?? null;
-    providers[owner.providerId] = preserved && isBoundedJsonValue(preserved.config)
+    providers[owner.providerId] = preserved && StrictJsonValueSchema.safeParse(preserved.config).success
       ? {
           schemaVersion: preserved.schemaVersion,
           config: preserved.config as VoiceProviderSettingsJsonValueV1,
@@ -658,6 +619,9 @@ function voiceSettingsParse(
     if (providerId.success) base.providerId = providerId.data;
   }
 
+  const canApproveRequests = CanonicalVoiceSettingsSchema.shape.canApproveRequests.safeParse(raw.canApproveRequests);
+  if (canApproveRequests.success) base.canApproveRequests = canApproveRequests.data;
+
   const canonicalAssistantLanguage = z.nullable(z.string()).safeParse(raw.assistantLanguage);
   if (canonicalAssistantLanguage.success) base.assistantLanguage = canonicalAssistantLanguage.data;
 
@@ -783,7 +747,7 @@ function voiceSettingsParse(
   base.privacy.shareFilePaths = false;
   base.privacy.shareToolArgs = false;
 
-  const result = preserveBoundedUnknownVoiceFields(base, raw);
+  const result = preserveUnknownVoiceFields(base, raw);
   const malformedLegacyCredentials = preserveMalformedLegacyCredentialFields(raw.adapters, {
     preserveValidSecrets: recoveryCarrier,
   });

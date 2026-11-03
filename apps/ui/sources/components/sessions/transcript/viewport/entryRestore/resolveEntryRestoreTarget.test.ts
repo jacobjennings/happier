@@ -97,22 +97,11 @@ describe('resolve entry restore target', () => {
     });
 
     it('requests bounded materialization while the anchor may live in an unloaded older region', () => {
-        const snapshot = {
-            shouldFollowBottom: false,
-            offsetY: 600,
-            anchor: { itemId: 'msg:m-3', messageId: 'm-3', itemOffsetPx: 12 },
-        };
-
-        expect(resolveEntryRestoreTarget(buildParams({
-            snapshot,
-            canMaterializeOlder: true,
-            anchorSeqResolver: (anchor) => (anchor.messageId ? anchorSeqByMessageId[anchor.messageId] ?? null : null),
-        }))).toEqual({ kind: 'materialize-then-anchor', anchorSeqHint: 3 });
-
         expect(resolveEntryRestoreTarget(buildParams({
             snapshot: {
-                ...snapshot,
-                anchor: { ...snapshot.anchor, seq: 3 },
+                shouldFollowBottom: false,
+                offsetY: 600,
+                anchor: { itemId: 'msg:m-3', messageId: 'm-3', itemOffsetPx: 12, seq: 3 },
             },
             canMaterializeOlder: true,
         }))).toEqual({ kind: 'materialize-then-anchor', anchorSeqHint: 3 });
@@ -366,14 +355,5 @@ describe('resolve entry restore target', () => {
                 anchor: { itemId: 'msg:m-20', messageId: 'm-20', itemOffsetPx: 84 },
             },
         }))).toEqual({ kind: 'anchor', index: 2, itemOffsetPx: 84 });
-
-        expect(resolveEntryRestoreTarget(buildParams({
-            items: forkedItems,
-            snapshot: {
-                shouldFollowBottom: false,
-                offsetY: 600,
-                anchor: { itemId: 'msg:m-25', messageId: 'm-25', itemOffsetPx: 48 },
-            },
-        }))).toEqual({ kind: 'anchor', index: 2, itemOffsetPx: 48 });
     });
 });

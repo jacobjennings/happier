@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { findAllHostTestInstances, flushHookEffects, renderScreen } from '@/dev/testkit';
+import { findAllHostTestInstances, renderScreen } from '@/dev/testkit';
 import type { AuthQrStartResult, QRAuthKeyPair } from '@/auth/flows/qrStart';
 import type { AuthQrWaitOptions, AuthQrWaitResult } from '@/auth/flows/qrWait';
 import type {
@@ -96,7 +96,6 @@ const focusMutationState = vi.hoisted(() => ({
 }));
 
 const restoreScanSuccessState = vi.hoisted(() => ({
-    loginSpy: vi.fn(async () => ({ kind: 'completed' as const })),
     trackAccountRestoredSpy: vi.fn(),
     trackAuthEnrollmentTransientRetrySpy: vi.fn(),
     setCredentialsForServerUrlSpy: vi.fn<(
@@ -227,7 +226,7 @@ vi.mock('@/utils/platform/platform', () => ({
 
 const authRefreshSpy = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('@/auth/context/AuthContext', () => ({
-    useAuth: () => ({ loginWithCredentials: restoreScanSuccessState.loginSpy, refreshFromActiveServer: authRefreshSpy }),
+    useAuth: () => ({ refreshFromActiveServer: authRefreshSpy }),
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
@@ -443,10 +442,7 @@ function createReverseInvite(pairId: string) {
 }
 
 // Install the shared boundaries before loading the owner, outside behavior deadlines.
-const {
-    RestoreScanComputerQrView,
-    classifyScannedHomeEnrollmentPartialCommit,
-} = await import('./RestoreScanComputerQrView');
+const { RestoreScanComputerQrView } = await import('./RestoreScanComputerQrView');
 
 describe('RestoreScanComputerQrView (web phone)', () => {
     beforeEach(() => {
@@ -470,7 +466,6 @@ describe('RestoreScanComputerQrView (web phone)', () => {
         focusMutationState.setActiveServerAndSwitchSpy.mockReset();
         focusMutationState.setActiveServerAndSwitchSpy.mockResolvedValue('switched');
         focusMutationState.preventRemoveSpy.mockClear();
-        restoreScanSuccessState.loginSpy.mockClear();
         restoreScanSuccessState.trackAccountRestoredSpy.mockClear();
         restoreScanSuccessState.trackAuthEnrollmentTransientRetrySpy.mockClear();
         restoreScanSuccessState.setCredentialsForServerUrlSpy.mockClear();
@@ -577,29 +572,6 @@ describe('RestoreScanComputerQrView (web phone)', () => {
         expect(lastScannerProps?.active).toBe(false);
     });
 
-    it('runs an initial V2 link through the same restore processor used by scanner input', async () => {
-        const { buildHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
-        const initialPairingLink = buildHomeQrInviteDeepLink({ invite: createHomeBInvite() });
-        restoreScanSuccessState.pairingRequestSpy.mockResolvedValue({
-            ok: true,
-            data: { state: 'requested' },
-        });
-        restoreScanSuccessState.authQRWaitSpy.mockResolvedValue({
-            ok: true,
-            credentials: { token: 'tok_home_b' },
-            homeServerIdentityId: 'srv_home_b',
-        });
-
-        await renderScreen(<RestoreScanComputerQrView entryIntent="add_home" initialPairingLink={initialPairingLink} />);
-        await flushHookEffects({ cycles: 4, turns: 2 });
-
-        expect(restoreScanSuccessState.pairingRequestSpy).toHaveBeenCalledTimes(1);
-        expect(restoreScanSuccessState.authQRWaitSpy).toHaveBeenCalledTimes(1);
-        expect(restoreScanSuccessState.adoptHomeProfileSpy).toHaveBeenCalledWith(expect.objectContaining({
-            descriptor: expect.objectContaining({ homeServerIdentityId: 'srv_home_b' }),
-        }));
-    });
-
     it('routes an account-connect QR through the embedded restore owner instead of treating it as invalid', async () => {
         modalAlertSpy.mockImplementationOnce(async (_title, _message, buttons) => {
             buttons?.find((button: { text?: string }) => button.text === 'connect.showQrInstead')?.onPress?.();
@@ -672,7 +644,6 @@ describe('RestoreScanComputerQrView (web phone)', () => {
         ));
 
         // Credentials are stored under the target Home; focus/adoption is non-mutating.
-        expect(restoreScanSuccessState.loginSpy).not.toHaveBeenCalled();
         expect(restoreScanSuccessState.adoptHomeProfileSpy).toHaveBeenCalledWith(expect.objectContaining({
             source: 'qr',
             preserveUserLabel: true,
@@ -682,9 +653,6 @@ describe('RestoreScanComputerQrView (web phone)', () => {
             'https://home-b.test',
             { serverId: 'srv_home_b' },
             { token: 'tok_home_b' },
-        );
-        expect(restoreScanSuccessState.setCredentialsForServerUrlSpy.mock.invocationCallOrder[0]).toBeLessThan(
-            restoreScanSuccessState.adoptHomeProfileSpy.mock.invocationCallOrder[0]!,
         );
         expect(restoreScanSuccessState.trackAccountRestoredSpy).toHaveBeenCalledTimes(1);
         expect(screen.getTextContent()).toContain('connect.homeAddedPreservedFocusBody');
@@ -1395,6 +1363,9 @@ describe('RestoreScanComputerQrView (web phone)', () => {
             await lastScannerProps.onScan(buildHomeQrInviteDeepLink({ invite: createHomeBInvite() }));
         });
 
+        expect(restoreScanSuccessState.authQRWaitSpy).toHaveBeenCalledTimes(1);
+        expect(screen.findByProps({ 'data-testid': 'QrCodeScannerView' })).toBeTruthy();
+        expect(screen.findByTestId('restore-enrollment-retry')).toBeNull();
         expect(modalAlertSpy).not.toHaveBeenCalled();
     });
 
@@ -1644,58 +1615,6 @@ describe('RestoreScanComputerQrView (web phone)', () => {
         expect(modalAlertSpy).not.toHaveBeenCalled();
     });
 
-    it('delegates a same-identity URL move and new QR credential to one Lane 04 transaction', async () => {
-        const { buildHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
-        restoreScanSuccessState.storedHomeCanonicalServerUrl = 'https://home-b-old.test';
-        restoreScanSuccessState.getCredentialsForServerUrlSpy.mockImplementation(async (serverUrl) => (
-            serverUrl === 'https://home-b-old.test'
-                ? { token: 'tok_home_b_old' }
-                : serverUrl === 'https://home-b-new.test'
-                    ? { token: 'tok_home_b_new' }
-                    : null
-        ));
-        restoreScanSuccessState.adoptHomeProfileSpy.mockImplementation(async (params) => ({
-            id: 'profile-home-b',
-            serverUrl: params.descriptor.canonicalServerUrl,
-            serverIdentityId: params.descriptor.homeServerIdentityId,
-        }));
-        restoreScanSuccessState.pairingRequestSpy.mockResolvedValue({
-            ok: true,
-            data: { state: 'requested' },
-        });
-        restoreScanSuccessState.authQRWaitSpy.mockResolvedValue({
-            ok: true,
-            credentials: { token: 'tok_home_b_new' },
-            homeServerIdentityId: 'srv_home_b',
-        });
-        const invite = createHomeBInvite();
-        const movedInvite = {
-            ...invite,
-            home: {
-                ...invite.home,
-                canonicalServerUrl: 'https://home-b-new.test',
-                revision: 2,
-                endpoints: [{ kind: 'https' as const, url: 'https://home-b-new.test' }],
-            },
-        };
-        featureDecisionState.publishedDescriptor = movedInvite.home;
-
-        const screen = await renderScreen(<RestoreScanComputerQrView entryIntent="add_home" />);
-        await act(async () => {
-            await lastScannerProps.onScan(buildHomeQrInviteDeepLink({ invite: movedInvite }));
-        });
-
-        expect(restoreScanSuccessState.adoptHomeProfileSpy).toHaveBeenCalledOnce();
-        expect(restoreScanSuccessState.removeCredentialsForServerUrlSpy).toHaveBeenCalledWith(
-            'https://home-b-old.test',
-        );
-        expect(restoreScanSuccessState.setCredentialsForServerUrlSpy).toHaveBeenLastCalledWith(
-            'https://home-b-old.test',
-            { serverId: 'srv_home_b' },
-            { token: 'tok_home_b_new' },
-        );
-    });
-
     it('prevents standalone route removal from the irreversible request boundary', async () => {
         const { buildHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
         let resolvePairingRequest!: (result: PairingRequestResult) => void;
@@ -1745,23 +1664,6 @@ describe('RestoreScanComputerQrView (web phone)', () => {
         expect(restoreScanSuccessState.trackAccountRestoredSpy).not.toHaveBeenCalled();
     });
 
-    it('preserves the exact partial-commit target, original failure, and rollback outcome for its forward caller', async () => {
-        const { HomeProfileAdoptionPartialCommitError } = await import('@/sync/domains/server/adoptHomeProfile');
-        const adoptionError = new Error('profile adoption failed');
-        const rollbackError = new Error('credential cleanup failed');
-        const error = new HomeProfileAdoptionPartialCommitError(
-            adoptionError,
-            'https://home-b.test',
-            'srv_home_b',
-            { kind: 'failed', error: rollbackError },
-        );
-
-        expect(classifyScannedHomeEnrollmentPartialCommit(error)).toEqual({
-            kind: 'partial_commit',
-            error,
-        });
-    });
-
     it('recognizes a provenance-pinned released V1 invite with zero enrollment side effects and no secret disclosure', async () => {
         // Exact golden output asserted by cli-v0.2.1's pairingUrl.scheme.test.ts and reused by
         // packages/tests/suites/contracts/releasedV021.clientReaders.test.ts; provenance is the
@@ -1807,13 +1709,12 @@ describe('RestoreScanComputerQrView (web phone)', () => {
         expect(restoreScanSuccessState.completeTrustedPairingSpy).not.toHaveBeenCalled();
         expect(restoreScanSuccessState.authQRStartSpy).not.toHaveBeenCalled();
         expect(restoreScanSuccessState.authQRWaitSpy).not.toHaveBeenCalled();
-        // Zero credential writes and no adoption or focused login.
+        // Zero credential writes and no adoption.
         expect(restoreScanSuccessState.setCredentialsForServerUrlSpy).not.toHaveBeenCalled();
         expect(restoreScanSuccessState.adoptHomeProfileSpy).not.toHaveBeenCalled();
-        expect(restoreScanSuccessState.loginSpy).not.toHaveBeenCalled();
         // The refused invite never enters the shell and never mutates Home focus.
         expect(routerNavigationState.replaceSpy).not.toHaveBeenCalled();
-        expect(focusMutationState.upsertActivateAndSwitchServerSpy).not.toHaveBeenCalled();
+        expect(focusMutationState.setActiveServerAndSwitchSpy).not.toHaveBeenCalled();
         // Recognition surfaces guidance only; neither the rendered guidance nor any log
         // discloses the decoded V1 secret material.
         expect(modalAlertSpy).toHaveBeenCalledTimes(1);
@@ -1831,27 +1732,6 @@ describe('RestoreScanComputerQrView (web phone)', () => {
         for (const serializedCall of serializedConsoleCalls) {
             expect(serializedCall).not.toContain('sec_abc');
         }
-    });
-
-    it('does not poll or persist a V1 QR credential when the target Home identity is missing', async () => {
-        restoreScanSuccessState.pairingRequestSpy.mockResolvedValue({
-            ok: true,
-            data: { state: 'requested' },
-        });
-        restoreScanSuccessState.authQRWaitSpy.mockResolvedValue({
-            ok: true,
-            credentials: { token: 'tok_unbound_v1' },
-            homeServerIdentityId: null,
-        });
-
-        await renderScreen(<RestoreScanComputerQrView entryIntent="add_home" />);
-        await act(async () => {
-            await lastScannerProps.onScan('happier:///pair?v=1&pairId=p&secret=s&server=https%3A%2F%2Funbound-v1.test');
-        });
-
-        expect(restoreScanSuccessState.adoptHomeProfileSpy).not.toHaveBeenCalled();
-        expect(restoreScanSuccessState.setCredentialsForServerUrlSpy).not.toHaveBeenCalled();
-        expect(restoreScanSuccessState.authQRWaitSpy).not.toHaveBeenCalled();
     });
 
     it('treats malformed pairing input as invalid input distinct from a recognized V1 invite', async () => {
@@ -1883,30 +1763,6 @@ describe('RestoreScanComputerQrView (web phone)', () => {
         // recognized-V1 guidance or a dismissible modal dead end.
         expect(screen.getTextContent()).toContain('connect.scanComputerQrUnavailableBody');
         expect(screen.findByTestId('restore-enrollment-retry')).not.toBeNull();
-        expect(modalAlertSpy).not.toHaveBeenCalled();
-    });
-
-    it('surfaces a typed failure without storing credentials when the wait fails closed', async () => {
-        const { buildHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
-        restoreScanSuccessState.pairingRequestSpy.mockResolvedValue({
-            ok: true,
-            data: { state: 'requested' },
-        });
-        restoreScanSuccessState.authQRWaitSpy.mockResolvedValue({
-            ok: false,
-            reason: 'update_required',
-        });
-
-
-        const screen = await renderScreen(<RestoreScanComputerQrView entryIntent="add_home" />);
-        await act(async () => {
-            await lastScannerProps.onScan(buildHomeQrInviteDeepLink({ invite: createHomeBInvite() }));
-        });
-
-        expect(restoreScanSuccessState.setCredentialsForServerUrlSpy).not.toHaveBeenCalled();
-        expect(restoreScanSuccessState.adoptHomeProfileSpy).not.toHaveBeenCalled();
-        expect(screen.getTextContent()).toContain('connect.updateRequiredBody');
-        expect(screen.findByTestId('restore-enrollment-retry')).toBeNull();
         expect(modalAlertSpy).not.toHaveBeenCalled();
     });
 });

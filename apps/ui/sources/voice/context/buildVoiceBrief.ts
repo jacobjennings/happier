@@ -4,7 +4,7 @@ import { normalizeSessionAddress, sessionAddressKey } from '@/sync/domains/sessi
 import { areSessionAddressesEqual } from '@/sync/domains/session/sessionAddress';
 import { readVoicePrivacySettings } from '@/sync/domains/settings/readVoicePrivacySettings';
 import { getVoiceContextFormatterPrefs } from './voiceContextPrefs';
-import { summarizeAgentRequestForVoiceHuman } from './contextFormatters';
+import { formatVoiceApprovalGuidance, summarizeAgentRequestForVoiceHuman } from './contextFormatters';
 import { redactVoicePathLikeString } from '@/voice/shared/redactVoicePathLikeData';
 import { createWorkflowRunRoute } from '@/sync/domains/workflows/workflowRunRoute';
 import { resolveWorkflowRunDisplayName } from '@/components/workflows/presentation/workflowRunDisplayName';
@@ -114,8 +114,9 @@ export function buildVoiceBrief(input: Readonly<{ inbox: VoiceBriefSource; setti
     const freshness = { sessionHomes: inbox.source.sessionListHomeObservationByServerId ?? {}, workflow: freshnessFacts(inbox.workflowAttention), automation: freshnessFacts(inbox.automationAttention) };
     const caughtUp = inbox.showCaughtUp && !incomplete && items.length === 0;
     // Provider context is not the navigation model: never serialize route/identity,
-    // callbacks or private records from Inbox. Approvals remain canonical UI-only.
-    const context = JSON.stringify({ incomplete, caughtUp, items: items.map((item) => ({ category: item.category, ...speechByKey.get(item.key) })), approval: 'tap_only' });
+    // callbacks or private records from Inbox. Decisions stay with canonical request tools/UI.
+    const approval = formatVoiceApprovalGuidance(getVoiceContextFormatterPrefs({ settings: input.settings }).voiceCanApproveRequests);
+    const context = JSON.stringify({ incomplete, caughtUp, items: items.map((item) => ({ category: item.category, ...speechByKey.get(item.key) })), approval });
     return { items, freshness, incomplete, caughtUp, context };
 }
 

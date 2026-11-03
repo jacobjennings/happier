@@ -13,13 +13,13 @@ import { LocalDirectSection } from '@/voice/settings/panels/LocalDirectSection';
 import { VoiceExecutionMachineSection } from '@/voice/settings/panels/VoiceExecutionMachineSection';
 import { VoiceConversationLanguageSection } from '@/voice/settings/panels/VoiceConversationLanguageSection';
 import { DaemonVoiceModelCatalogProvider } from '@/voice/settings/panels/modelCatalog/DaemonVoiceModelCatalogContext';
-import { VoiceProviderSection } from '@/voice/settings/panels/VoiceProviderSection';
+import { VoiceAgentApprovalsSection, VoiceProviderSection } from '@/voice/settings/panels/VoiceProviderSection';
 import {
   resolveVoiceSettingsRecoveryFocus,
   resolveVoiceSettingsRouteFocus,
 } from '@/voice/settings/voiceSettingsRouteFocus';
 import { useVoiceSettingsMutable } from '@/voice/settings/useVoiceSettingsMutable';
-import { useVoiceConversationsReadinessInputs } from '@/voice/settings/useVoiceConversationsReadinessInputs';
+import { useVoiceSettingsReadinessInputs } from '@/voice/settings/useVoiceSettingsReadinessInputs';
 
 export function VoiceConversationsSettingsScreen() {
   const routeParams = useLocalSearchParams<{ focus?: string | string[] }>();
@@ -54,7 +54,7 @@ export function VoiceConversationsSettingsScreen() {
     daemonModelCatalog,
     localAvailability,
     daemonRouteDiagnosticReason,
-  } = useVoiceConversationsReadinessInputs(voice, { probeMachine: true });
+  } = useVoiceSettingsReadinessInputs(voice, { purpose: 'conversation', probeMachine: true });
   const popoverBoundaryRef = React.useRef<any>(null);
 
   return (
@@ -121,6 +121,7 @@ export function VoiceConversationsSettingsScreen() {
               daemonRouteDiagnosticReason={daemonRouteDiagnosticReason}
             />
           </View>
+          <VoiceAgentApprovalsSection voice={voice} setVoice={setVoice} />
         </ItemList>
       </DaemonVoiceModelCatalogProvider>
     </View>

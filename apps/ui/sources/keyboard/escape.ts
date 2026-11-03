@@ -35,11 +35,14 @@ export const ESCAPE_KEY_BLOCKER_PRIORITIES = {
     bottomPane: ESCAPE_LAYER_PRIORITIES.overlay,
 } as const;
 
+/** Native widgets keep the DOM event, while lower app layers must leave this key alone. */
+type EscapeLayerResult = boolean | void | 'defer-to-target';
+
 type EscapeLayerEntry = Readonly<{
     id: number;
     priority: number;
     allowEditableTarget: boolean;
-    onEscape: (event: unknown) => boolean | void;
+    onEscape: (event: unknown) => EscapeLayerResult;
     scope?: EscapeLayerScope;
 }>;
 
@@ -62,7 +65,7 @@ export type EscapeLayerOptions = Readonly<{
     allowEditableTarget?: boolean;
     focusReturnRef?: FocusReturnRef;
     focusFallbackRef?: FocusReturnRef;
-    onEscape: (event: unknown) => boolean | void;
+    onEscape: (event: unknown) => EscapeLayerResult;
     scope?: EscapeLayerScope;
 }>;
 
@@ -70,7 +73,7 @@ let nextEscapeEntryId = 1;
 let escapeLayers: ReadonlyArray<EscapeLayerEntry> = [];
 let escapeKeyBlockers: ReadonlyArray<EscapeKeyBlockerEntry> = [];
 
-export function markEscapeEventHandled(event: unknown): void {
+function markEscapeEventHandled(event: unknown): void {
     if (!event || typeof event !== 'object') return;
     try {
         (event as Record<string, unknown>)[ESCAPE_EVENT_HANDLED_KEY] = true;
@@ -152,7 +155,7 @@ export function registerEscapeLayer(options: EscapeLayerOptions): () => void {
         scope: options.scope,
         onEscape: (event) => {
             const handled = options.onEscape(event);
-            if (handled !== false && options.focusReturnRef) {
+            if (handled !== false && handled !== 'defer-to-target' && options.focusReturnRef) {
                 restoreFocusToBestTarget(options.focusReturnRef, options.focusFallbackRef);
             }
             return handled;
@@ -199,7 +202,9 @@ export function dispatchEscapeToLayerStack(event: unknown): boolean {
         const handled = layer.onEscape(event);
         if (handled === false) continue;
         markEscapeEventHandled(event);
-        stopEscapeEvent(event);
+        // A native editor widget handles this same key at its target. Claim it against
+        // other app layers without preventing Monaco's own keybinding/focus behavior.
+        if (handled !== 'defer-to-target') stopEscapeEvent(event);
         return true;
     }
 

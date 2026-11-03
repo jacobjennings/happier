@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { accountSettingsParse, BUILT_IN_ROLES_V1, resolveRoleSelectionV1, ProviderBoundModelRefSchema } from '@happier-dev/protocol';
 import { tmpdir } from 'node:os';
 import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -22,7 +23,6 @@ import type { ExecutionRunState } from './executionRunTypes';
 import type { ExecutionRunStructuredMeta } from '@/agent/executionRuns/profiles/ExecutionRunIntentProfile';
 import { VoiceAgentManager } from '@/agent/voice/agent/VoiceAgentManager';
 import { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
-import { accountSettingsParse, BUILT_IN_ROLES_V1, resolveRoleSelectionV1, ProviderBoundModelRefSchema } from '@happier-dev/protocol';
 import { TaskProfile } from '@/agent/executionRuns/profiles/task/TaskProfile';
 import { projectRetainedExecutionRunState, projectExecutionRunHostLoss } from './retainedState';
 import { projectExecutionRunPublicState } from './publicState';
@@ -38,7 +38,9 @@ import { reloadConfiguration } from '@/configuration';
 import { listExecutionRunMarkers } from '@/daemon/executionRunRegistry';
 import { finishExecutionRun } from './finishExecutionRun';
 import axios from 'axios';
+import { artifactReadResponse, artifactKindListResponse } from '@/testkit/http/artifactHome';
 import { ARTIFACT_PLAIN_DATA_KEY_MARKER, encodePlainArtifactStoredContent } from '@happier-dev/protocol/storage/artifactStoredContent';
+import { ArtifactReadHeadersBatchInputV1Schema, ArtifactReadHeadersBatchResponseV1Schema } from '@happier-dev/protocol/artifacts/artifactAccessV1';
 import { registerExecutionRunRpcHandlers } from '@/rpc/handlers/executionRuns/registerExecutionRunRpcHandlers';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc/methods';
 import { ExecutionRunErrorSchema, ExecutionRunStartResponseSchema } from '@happier-dev/protocol/execution/runs/responseSchemas';
@@ -310,6 +312,8 @@ describe('startExecutionRun', () => {
       dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
     // Only Account HTTP and native Agent execution are synthetic; catalog admission,
     // Profile/Artifact opening, prompt composition and Voice preparation remain real.
+    const readHeader = vi.spyOn(axios, 'post').mockImplementation(async (_url, body) =>
+      artifactReadResponse(body, artifactId => artifactId === document.id ? document : null));
     const read = vi.spyOn(axios, 'get').mockImplementation(async input => {
       const path = new URL(String(input)).pathname;
       if (path.endsWith('/account/encryption')) return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
@@ -321,7 +325,7 @@ describe('startExecutionRun', () => {
       if (path.endsWith('/reference-guard')) return { status: 200, data: { status: 'ready', revision: 1 } };
       if (path.endsWith('/transfer')) return { status: 200, data: { status: 'absent' } };
       if (path === '/v2/account/settings') return { status: 200, data: { version: 1, content: { t: 'plain', v: {} } } };
-      if (path === '/v1/artifacts') return { status: 200, data: [{ ...document, body: null }] };
+      if (path === '/v1/artifacts') return { status: 200, data: artifactKindListResponse([]) };
       if (path === '/v1/artifacts/persona-doc') return { status: 200, data: document };
       throw new Error(`Unexpected Launch Profile read: ${path}`);
     });
@@ -349,7 +353,7 @@ describe('startExecutionRun', () => {
         expect(nativePrompts.join('\n')).toContain('PERSONA_RUN_TASK');
       }
     } finally {
-      read.mockRestore();
+      read.mockRestore(); readHeader.mockRestore();
       if (previousSnapshot) setActiveAccountSettingsSnapshot(previousSnapshot);
       else clearActiveAccountSettingsSnapshot();
       await Promise.all([...controllers.values()].flatMap(controller => controller.kind === 'backend' ? [controller.backend.dispose()] : []));
@@ -363,12 +367,18 @@ describe('startExecutionRun', () => {
     const voiceAgentManager = new VoiceAgentManager({ createRuntime });
     const selection = roleId ? resolveRoleSelectionV1({ roleId, defaultEngine: { agentTargetKey: 'agent:happier.agent.codex/codex' } }) : null;
     if (selection && !selection.ok) throw new Error('Fixture role must resolve');
+    const readHeader = vi.spyOn(axios, 'post').mockImplementation(async (url, body) => {
+      expect(new URL(String(url)).pathname).toBe('/v1/artifacts/read');
+      expect(ArtifactReadHeadersBatchInputV1Schema.parse(body)).toEqual({ artifactIds: ['lead-memory'], projection: 'headers' });
+      return { status: 200, data: ArtifactReadHeadersBatchResponseV1Schema.parse({ projection: 'headers', items: [{
+        artifactId: 'lead-memory', ok: true, artifact: { id: 'lead-memory', ownerAccountId: 'context-owner', access: 'owner',
+          encryptionMode: 'plain', header: encodePlainArtifactStoredContent({ v: 1, kind: 'memory_doc.v1', title: 'Memory' }),
+          publicAudience: 'none', dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+          headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 },
+      }] }) };
+    });
     const read = vi.spyOn(axios, 'get').mockImplementation(async url => {
       if (String(url).endsWith('/v1/account/encryption')) return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
-      if (new URL(String(url)).pathname === '/v1/artifacts') return { status: 200, data: [
-        ['lead-memory', 'memory_doc.v1'], ['lead-instructions', 'prompt_doc.v2'],
-      ].map(([id, kind]) => ({ id, ownerAccountId: 'context-owner', access: 'owner', encryptionMode: 'plain', header: encodePlainArtifactStoredContent({ v: 1, kind, title: id }), body: null,
-        dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 })) };
       if (String(url).endsWith('/v1/artifacts/lead-memory')) return { status: 200, data: {
         id: 'lead-memory', ownerAccountId: 'context-owner', access: 'owner', encryptionMode: 'plain', header: encodePlainArtifactStoredContent({ v: 1, kind: 'memory_doc.v1', title: 'Memory' }),
         body: encodePlainArtifactStoredContent({ body: JSON.stringify({ v: 1, index: [{ id: 'fact', text: 'Use the canonical Context owner.', createdAtMs: 1, sourceSessionRef: null }], topics: [] }) }),
@@ -397,7 +407,7 @@ describe('startExecutionRun', () => {
       expect(runs.get(started.runId)?.instructions).toContain('Use the canonical Context owner.');
       expect(runs.get(started.runId)?.instructions).not.toContain('lead-instructions');
     } finally {
-      read.mockRestore();
+      read.mockRestore(); readHeader.mockRestore();
       await Promise.all([...controllers.values()].flatMap(controller => controller.kind === 'backend' ? [controller.backend.dispose()] : []));
       await voiceAgentManager.dispose();
     }
@@ -432,17 +442,26 @@ describe('startExecutionRun', () => {
         if (path !== '/execution-run/admission') throw new Error(`Unexpected daemon effect: ${path}`);
         return { admitted: true };
       });
+      const document = (id: string, kind: string, body: string | null) => ({ id, ownerAccountId: 'context-owner', access: 'owner',
+        encryptionMode: 'plain', header: encodePlainArtifactStoredContent({ v: 1, kind, title: id }), body,
+        publicAudience: 'none', dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+        headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 });
+      const readHeader = vi.spyOn(axios, 'post').mockImplementation(async (url, body, options) => {
+        const address = new URL(String(url));
+        expect(address.origin).toBe(new URL(ownerUrl).origin);
+        expect(address.pathname).toBe('/v1/artifacts/read');
+        expect(options?.headers?.Authorization).toBe(`Bearer ${ownerToken}`);
+        expect(ArtifactReadHeadersBatchInputV1Schema.parse(body)).toEqual({ artifactIds: ['lead-memory'], projection: 'headers' });
+        const { body: _body, ...header } = document('lead-memory', 'memory_doc.v1', null);
+        return { status: 200, data: ArtifactReadHeadersBatchResponseV1Schema.parse({
+          projection: 'headers', items: [{ artifactId: header.id, ok: true, artifact: header }],
+        }) };
+      });
       const read = vi.spyOn(axios, 'get').mockImplementation(async (url, options) => {
         const address = new URL(String(url));
         expect(address.origin).toBe(new URL(ownerUrl).origin);
         expect(options?.headers?.Authorization).toBe(`Bearer ${ownerToken}`);
-        const document = (id: string, kind: string, body: string | null) => ({ id, ownerAccountId: 'context-owner', access: 'owner',
-          encryptionMode: 'plain', header: encodePlainArtifactStoredContent({ v: 1, kind, title: id }), body,
-          dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 });
         if (address.pathname === '/v1/account/encryption') return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
-        if (address.pathname === '/v1/artifacts') return { status: 200, data: [
-          document('lead-memory', 'memory_doc.v1', null), document('lead-instructions', 'prompt_doc.v2', null),
-        ] };
         if (address.pathname === '/v1/artifacts/lead-memory') return { status: 200, data: document('lead-memory', 'memory_doc.v1',
           encodePlainArtifactStoredContent({ body: JSON.stringify({ v: 1, index: [
             { id: 'fact', text: 'Use the canonical Context owner.', createdAtMs: 1, sourceSessionRef: null },
@@ -474,6 +493,7 @@ describe('startExecutionRun', () => {
           { signal: new AbortController().signal, callerAuthority: 'present_user' });
         if (ownerUnavailable) {
           expect(read.mock.calls).toEqual([]);
+          expect(readHeader.mock.calls).toEqual([]);
           expect(response).toMatchObject({ ok: false, error: 'context_source_unavailable', details: { executionRunStart: { runCreation: 'noRunCreated' } } });
           expect(captured.manager.listPublic()).toEqual([]);
           await expect(prepareSessionMemoryInheritance({ metadata })).rejects.toMatchObject({ code: 'context_source_unavailable' });
@@ -493,12 +513,38 @@ describe('startExecutionRun', () => {
           .resolves.toEqual({ memoryEnabled: false, promptStack: [] });
       } finally {
         await captured.manager?.dispose();
-        read.mockRestore(); admission.mockRestore();
+        read.mockRestore(); readHeader.mockRestore(); admission.mockRestore();
         vi.unstubAllEnvs(); reloadConfiguration();
         await removeTempDir(taskHome);
       }
     },
   );
+  it('keeps the connected account action-required reason across the Voice Run runtime factory', async () => {
+    const { ConnectedServiceSpawnProfileActionRequiredError } = await import('@/daemon/connectedServices/resolveConnectedServiceAuthForSpawn');
+    const runs = new Map<string, ExecutionRunState>();
+    const controllers = new Map<string, ExecutionRunController>();
+    const createRuntime = () => { throw new ConnectedServiceSpawnProfileActionRequiredError({
+      serviceId: 'happier.agent.codex/openai-codex', profileId: 'work', status: 'needs_reauth',
+    }); };
+    const voiceAgentManager = new VoiceAgentManager({ createRuntime });
+    const selection = { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'voice-chat' };
+    let terminalError: ExecutionRunState['error'];
+    try {
+      await startExecutionRun({
+        params: { sessionId: 'parent_session_1', intent: 'voice_agent', backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+          modelSelection: selection, connectedServices: null, intentInput: { commitModelSelection: selection },
+          permissionMode: 'read_only', retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'streaming', bootstrapMode: 'none' },
+        parentProvider: 'codex', sendAcp: async () => {}, streamedTranscriptSession: null, createRuntime,
+        getNowMs: () => 1, budgetRegistry: null, runs, controllers, enqueueMarkerWrite: async () => {},
+        writeActivityMarker: async () => {}, finishRun: async (_id, patch) => { terminalError = patch.error; },
+        executeBoundedRun: async () => {}, send: async () => ({ ok: true }), voiceAgentManager,
+      }).catch(() => undefined);
+      await vi.waitFor(() => expect(terminalError).toMatchObject({ code: 'connected_service_credential_reconnect_required', uxDiagnostic: {
+        serviceId: 'happier.agent.codex/openai-codex', profileId: 'work', retryable: false,
+      } }));
+    } finally { await voiceAgentManager.dispose(); }
+  });
+
   it.each([true, false])('joins parent startup only for an omitted Voice role (explicit commit: %s)', async explicitCommit => {
     const runs = new Map<string, ExecutionRunState>();
     const controllers = new Map<string, ExecutionRunController>();
@@ -721,8 +767,10 @@ describe('startExecutionRun', () => {
       expect(projectExecutionRunPublicState(terminal.state)).not.toHaveProperty('workflowScope');
     } finally { await voiceAgentManager.dispose(); }
   });
-  it('refuses a role start without Account role-override authority before creating a run', async () => {
+  it.each(['unavailable', 'ready'] as const)('refuses a role start without an admitted snapshot before creating a run (Account %s)', async accountAuthority => {
+    const previous = getActiveAccountSettingsSnapshot();
     clearActiveAccountSettingsSnapshot();
+    if (accountAuthority === 'ready') publishEmptyAccountRoleOverrides();
     const runs = new Map<string, ExecutionRunState>();
     const voiceAgentManager = new VoiceAgentManager({ createRuntime: () => { throw new Error('unused'); } });
     try {
@@ -735,9 +783,15 @@ describe('startExecutionRun', () => {
         getNowMs: () => 1, budgetRegistry: null, runs, controllers: new Map(),
         enqueueMarkerWrite: async () => {}, writeActivityMarker: async () => {}, finishRun: async () => {},
         executeBoundedRun: async () => {}, send: async () => ({ ok: true }), voiceAgentManager,
-      })).rejects.toMatchObject({ code: 'account_role_overrides_unavailable' });
+      })).rejects.toMatchObject({ code: accountAuthority === 'ready' ? 'target_unavailable' : 'account_role_overrides_unavailable',
+        details: { executionRunStart: { runCreation: 'noRunCreated', ...(accountAuthority === 'ready' ? { refusal: {
+          code: 'agent_start_context_unavailable', phase: 'agent_start_context',
+        } } : {}) } } });
       expect(runs.size).toBe(0);
-    } finally { await voiceAgentManager.dispose(); }
+    } finally {
+      await voiceAgentManager.dispose();
+      if (previous) setActiveAccountSettingsSnapshot(previous); else clearActiveAccountSettingsSnapshot();
+    }
   });
 
   it('starts Second opinion with its canonical role plan, read-only ceiling and strict verdict contract', async () => {
@@ -1490,6 +1544,12 @@ describe('startExecutionRun', () => {
           runClass: 'bounded',
           ioMode: 'streaming',
         },
+        finalizeStartParamsForRuntime: async params => {
+          const patch = await ScmDiffSummaryProfile.finalizeStartParams?.({ sessionId: params.sessionId,
+            request: params as unknown as Parameters<NonNullable<typeof ScmDiffSummaryProfile.finalizeStartParams>>[0]['request'],
+            cwd: tmpdir() });
+          return { ...params, ...patch };
+        },
         parentProvider: TEST_BACKEND_ID,
         sendAcp: async () => {},
         streamedTranscriptSession: null,
@@ -1513,6 +1573,7 @@ describe('startExecutionRun', () => {
         startSettled = true;
       });
       await vi.waitFor(() => {
+        expect(createRuntime).not.toHaveBeenCalled();
         expect(finishRun).toHaveBeenCalledOnce();
       });
       expect(startSettled).toBe(false);

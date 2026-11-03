@@ -4,8 +4,8 @@
  *
  * Some session sub-routes (e.g. the message/tool detail route and the execution-run detail route on
  * mobile) display transcript-derived content for a session but are separate navigation screens that
- * do not mark the session surface visible. When realtime projection routing is enabled, hidden
- * durable messages are deferred (projection-only) and these panes would show stale transcript content
+ * do not mark the session surface visible. Hidden durable messages are deferred (projection-only),
+ * so these panes would show stale transcript content
  * while the session is streaming. Registering them here marks the session as an explicit full-content
  * transcript consumer so durable realtime routing keeps materializing transcript content.
  *
@@ -13,9 +13,8 @@
  * `registerSessionTranscriptRetentionConsumer`): surfaces that render a transcript anywhere in the
  * navigation stack keep the materialized transcript resident without widening realtime routing.
  *
- * This mirrors `sessionRealtimeScmConsumers.ts` (refcount-style registry) but is keyed purely by
- * session id because the consumer simply needs the session's own transcript, not project-scope
- * mutation transcripts.
+ * This mirrors `sessionRealtimeScmConsumers.ts` (refcount-style registry), with an exact Home and
+ * session identity because the consumer needs its own transcript, not project-scope mutation transcripts.
  */
 
 import { resolveServerIdForSessionIdFromLocalCache } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionIdFromLocalCache';
@@ -47,6 +46,11 @@ type TranscriptConsumerReleaseListener = (sessionId: string) => void;
 // generation's `Sync` and, transitively, its whole module graph. Keeping the set module-scoped keeps
 // the registry's lifetime identical to `mountedTranscriptConsumerIdentitiesByConsumerId` above.
 var transcriptConsumerReleaseListeners: Set<TranscriptConsumerReleaseListener> | undefined;
+var transcriptConsumerChangeListeners: Set<() => void> | undefined;
+
+function notifyTranscriptConsumersChanged(): void {
+    for (const listener of transcriptConsumerChangeListeners ?? []) listener();
+}
 
 function getTranscriptConsumerReleaseListeners(): Set<TranscriptConsumerReleaseListener> {
     transcriptConsumerReleaseListeners ??= new Set<TranscriptConsumerReleaseListener>();
@@ -108,9 +112,11 @@ function registerMountedTranscriptConsumer(
         serverId: resolveRegisteredServerId(normalizedSessionId, serverId),
         retentionOnly,
     });
+    if (!retentionOnly) notifyTranscriptConsumersChanged();
     return () => {
         if (mountedTranscriptConsumerIdentitiesByConsumerId.delete(consumerId)) {
             notifyTranscriptConsumerReleased(normalizedSessionId);
+            if (!retentionOnly) notifyTranscriptConsumersChanged();
         }
     };
 }
@@ -176,5 +182,13 @@ export function subscribeSessionTranscriptConsumerReleases(listener: TranscriptC
 }
 
 export function clearMountedSessionRealtimeTranscriptConsumers(): void {
+    const hadRealtimeConsumers = [...mountedTranscriptConsumerIdentitiesByConsumerId.values()].some(entry => !entry.retentionOnly);
     mountedTranscriptConsumerIdentitiesByConsumerId.clear();
+    if (hadRealtimeConsumers) notifyTranscriptConsumersChanged();
+}
+
+export function subscribeSessionRealtimeTranscriptConsumers(listener: () => void): () => void {
+    transcriptConsumerChangeListeners ??= new Set();
+    transcriptConsumerChangeListeners.add(listener);
+    return () => { transcriptConsumerChangeListeners?.delete(listener); };
 }

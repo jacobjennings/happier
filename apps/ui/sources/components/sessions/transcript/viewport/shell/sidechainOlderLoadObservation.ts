@@ -300,7 +300,7 @@ export function resolveSidechainOlderLoadObservation(params: Readonly<{
     };
 }
 
-export function buildSidechainOlderLoadScrollObservedTelemetryEvent(params: Readonly<{
+function buildSidechainOlderLoadScrollObservedTelemetryEvent(params: Readonly<{
     listContentHeightPx: number;
     listLayoutHeightPx: number;
     paginationSnapshot: TranscriptOlderPaginationSnapshot;

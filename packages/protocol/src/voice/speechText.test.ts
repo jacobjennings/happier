@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { batchSpeechTextForSynthesis, segmentSentencesForSynthesis, resolveVoiceSpeechSegmentLength, toSpeechText } from './speechText.js';
+import { batchSpeechTextForSynthesis, isHardTerminatorDot, segmentSentencesForSynthesis, resolveVoiceSpeechSegmentLength, toSpeechText } from './speechText.js';
 import { isVoiceSpeechSynthesisInputWithinLimits, resolveVoiceSpeechSynthesisInputLimits } from './speech.js';
 
 describe('shared speech text policy', () => {
@@ -72,6 +72,37 @@ describe('shared speech text policy', () => {
     for (const inputCap of [0, 101, 1.5, '5', null]) {
       expect(() => resolveVoiceSpeechSynthesisInputLimits({ contribution, settings: { inputCap } }))
         .toThrowError(expect.objectContaining({ code: 'provider_settings_invalid' }));
+    }
+  });
+});
+
+describe('isHardTerminatorDot', () => {
+  const dotIndex = (text: string) => text.indexOf('.');
+
+  it('treats a sentence-ending period as a hard terminator', () => {
+    expect(isHardTerminatorDot('Done. Next', dotIndex('Done. Next'))).toBe(true);
+  });
+
+  it('does not split inside a decimal number', () => {
+    expect(isHardTerminatorDot('3.14', dotIndex('3.14'))).toBe(false);
+  });
+
+  it('does not split on a known abbreviation', () => {
+    for (const token of ['e.g', 'i.e', 'Dr', 'Mr', 'etc']) {
+      const sample = `${token}. rest`;
+      expect(isHardTerminatorDot(sample, sample.indexOf(`${token}.`) + token.length)).toBe(false);
+    }
+  });
+
+  it('does not split on a single-letter initial', () => {
+    expect(isHardTerminatorDot('U. S. A', dotIndex('U. S. A'))).toBe(false);
+  });
+
+  it('keeps files, domains and URL query punctuation inside their token', () => {
+    for (const text of ['index.ts', 'example.com', 'https://example.com/a?b=yes!']) {
+      for (let index = 0; index < text.length; index += 1) {
+        if (text[index] === '.') expect(isHardTerminatorDot(text, index)).toBe(false);
+      }
     }
   });
 });

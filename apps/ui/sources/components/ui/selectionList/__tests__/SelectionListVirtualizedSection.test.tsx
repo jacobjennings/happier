@@ -70,7 +70,6 @@ describe('SelectionListVirtualizedSection', () => {
                 selectedOptionIds={new Set<string>()}
                 onSelect={() => {}}
                 onPushStep={() => {}}
-                virtualization="force"
             />,
         );
 
@@ -78,7 +77,7 @@ describe('SelectionListVirtualizedSection', () => {
         expect(constructVisual).toHaveBeenCalledTimes(60);
     });
 
-    it('renders FlashList path when row count exceeds the threshold (auto mode)', async () => {
+    it('renders the section through the virtualized list with every option as data', async () => {
         legendListState.reset();
         const { VirtualizedList } = await import('@/components/ui/lists/virtualized/VirtualizedList');
         const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
@@ -103,43 +102,6 @@ describe('SelectionListVirtualizedSection', () => {
         expect(typeof legendListState.props.keyExtractor).toBe('function');
     });
 
-    it('renders plain mapped rows when row count is at or below the threshold (auto mode)', async () => {
-        legendListState.reset();
-        const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
-        const section = makeSection(50);
-        await renderScreen(
-            <SelectionListVirtualizedSection
-                section={section}
-                stepId="root"
-                rootTestID="sl"
-                selectedOptionIds={new Set<string>()}
-                onSelect={() => {}}
-                onPushStep={() => {}}
-            />,
-        );
-        // FlashList must NOT be mounted in auto mode at exactly threshold.
-        expect(legendListState.props).toBeNull();
-    });
-
-    it('renders FlashList when virtualization is forced regardless of count', async () => {
-        legendListState.reset();
-        const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
-        const section = { ...makeSection(3), id: 'force' };
-        await renderScreen(
-            <SelectionListVirtualizedSection
-                section={section}
-                stepId="root"
-                rootTestID="sl"
-                selectedOptionIds={new Set<string>()}
-                onSelect={() => {}}
-                onPushStep={() => {}}
-                virtualization="force"
-            />,
-        );
-        expect(legendListState.props).not.toBeNull();
-        expect(legendListState.props.data.length).toBe(3);
-    });
-
     it('uses a shrinkable preferred height instead of a fixed minimum for short parent regions', async () => {
         legendListState.reset();
         const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
@@ -151,7 +113,6 @@ describe('SelectionListVirtualizedSection', () => {
                 selectedOptionIds={new Set<string>()}
                 onSelect={() => {}}
                 onPushStep={() => {}}
-                virtualization="force"
             />,
         );
 
@@ -253,26 +214,6 @@ describe('SelectionListVirtualizedSection', () => {
         }
     });
 
-    it('never renders FlashList when virtualization is never, even with large counts', async () => {
-        legendListState.reset();
-        const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
-        const section = { ...makeSection(500), id: 'never' };
-        const screen = await renderScreen(
-            <SelectionListVirtualizedSection
-                section={section}
-                stepId="root"
-                rootTestID="sl"
-                selectedOptionIds={new Set<string>()}
-                onSelect={() => {}}
-                onPushStep={() => {}}
-                virtualization="never"
-            />,
-        );
-        expect(legendListState.props).toBeNull();
-        // The first row should still render via plain mapping.
-        expect(screen.findByTestId('sl:root:option:opt-0')).not.toBeNull();
-    });
-
     it('passes a stable keyExtractor that produces option ids', async () => {
         legendListState.reset();
         const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
@@ -291,47 +232,5 @@ describe('SelectionListVirtualizedSection', () => {
         const ke = legendListState.props.keyExtractor as (option: SelectionListOption, i: number) => string;
         expect(ke(section.options[0], 0)).toBe(section.options[0].id);
         expect(ke(section.options[5], 5)).toBe(section.options[5].id);
-    });
-
-    it('passes a sensible estimatedItemSize to FlashList', async () => {
-        legendListState.reset();
-        const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
-        const section = makeSection(60);
-        await renderScreen(
-            <SelectionListVirtualizedSection
-                section={section}
-                stepId="root"
-                rootTestID="sl"
-                selectedOptionIds={new Set<string>()}
-                onSelect={() => {}}
-                onPushStep={() => {}}
-            />,
-        );
-        expect(legendListState.props).not.toBeNull();
-        expect(typeof legendListState.props.estimatedItemSize).toBe('number');
-        expect(legendListState.props.estimatedItemSize).toBeGreaterThan(0);
-    });
-
-    it('handles 500-row synthetic dataset without errors and exposes all option ids via data prop', async () => {
-        legendListState.reset();
-        const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
-        const options = makeOptions(500);
-        const section: SelectionListSection = {
-            id: 'huge',
-            title: 'HUGE',
-            options,
-        };
-        await renderScreen(
-            <SelectionListVirtualizedSection
-                section={section}
-                stepId="root"
-                rootTestID="sl"
-                selectedOptionIds={new Set<string>()}
-                onSelect={() => {}}
-                onPushStep={() => {}}
-            />,
-        );
-        expect(legendListState.props).not.toBeNull();
-        expect(legendListState.props.data.length).toBe(500);
     });
 });

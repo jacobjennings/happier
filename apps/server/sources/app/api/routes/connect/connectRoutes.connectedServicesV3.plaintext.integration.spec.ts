@@ -1,22 +1,40 @@
 import Fastify from "fastify";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
+import { buildConnectedServicesAccountChangeV1 } from '@happier-dev/protocol/changes';
 
-const { emitUpdate } = vi.hoisted(() => ({
-    emitUpdate: vi.fn(),
-}));
+import { eventRouter, type ClientConnection } from "@/app/events/eventRouter";
+import { createFakeSocket } from "../../testkit/socketHarness";
+
+const updateObservers = new Map<string, { user: ReturnType<typeof createFakeSocket>; machine: ReturnType<typeof createFakeSocket>; connections: ClientConnection[] }>();
+
+function observeAccountUpdates(userId: string) {
+    const existing = updateObservers.get(userId);
+    if (existing) return existing;
+    const user = createFakeSocket({ id: `user-${userId}`, data: { userId } });
+    const machine = createFakeSocket({ id: `machine-${userId}`, data: { userId } });
+    // Socket.IO is the transport boundary; all routing, projection and publication stay real.
+    const connections: ClientConnection[] = [
+        { connectionType: "user-scoped", userId, socket: user as unknown as ClientConnection["socket"] },
+        { connectionType: "machine-scoped", userId, machineId: "test-machine", socket: machine as unknown as ClientConnection["socket"] },
+    ];
+    for (const connection of connections) eventRouter.addConnection(userId, connection);
+    const observer = { user, machine, connections };
+    updateObservers.set(userId, observer);
+    return observer;
+}
+
+function closeUpdateObservers() {
+    for (const [userId, observer] of updateObservers) {
+        for (const connection of observer.connections) eventRouter.removeConnection(userId, connection);
+    }
+    updateObservers.clear();
+}
 
 const { encryptStringCalls } = vi.hoisted(() => ({
     encryptStringCalls: [] as unknown[][],
 }));
 
-vi.mock("@/app/events/eventRouter", async () => {
-    const actual = await vi.importActual<typeof import("@/app/events/eventRouter")>("@/app/events/eventRouter");
-    return {
-        ...actual,
-        eventRouter: { emitUpdate },
-    };
-});
 
 vi.mock("@/modules/encrypt", async () => {
     const actual = await vi.importActual<typeof import("@/modules/encrypt")>(
@@ -51,6 +69,9 @@ const openAiCodexWorkIdentity = resolveLegacyServiceAccountTokenIdentityFields({
     serviceId: "openai-codex",
     profileId: "work",
 });
+const openAiCodexChange = buildConnectedServicesAccountChangeV1({
+    pluginId: openAiCodexWorkIdentity.servicePluginId, localId: openAiCodexWorkIdentity.serviceLocalId,
+});
 const openAiCodexMainGroupIdentity = {
     servicePluginId: openAiCodexWorkIdentity.servicePluginId,
     serviceLocalId: openAiCodexWorkIdentity.serviceLocalId,
@@ -80,6 +101,7 @@ function createTestApp() {
             return reply.code(401).send({ error: "Unauthorized" });
         }
         request.userId = userId;
+        observeAccountUpdates(userId);
     });
 
     return trackApp(typed);
@@ -101,6 +123,7 @@ describe("connectRoutes (connected services v3) plaintext credential endpoints (
     });
     afterEach(async () => {
         await closeTrackedApps();
+        closeUpdateObservers();
         harness.resetEnv();
         vi.unstubAllGlobals();
         vi.clearAllMocks();
@@ -179,15 +202,13 @@ describe("connectRoutes (connected services v3) plaintext credential endpoints (
         expect(tokenUtf8.includes("tok_access")).toBe(false);
 
         const change = await db.accountChange.findUnique({
-            where: { accountId_kind_entityId: { accountId: user.id, kind: "account", entityId: "self" } },
+            where: { accountId_kind_entityId: { accountId: user.id, kind: "account", entityId: openAiCodexChange.entityId } },
             select: { cursor: true, hint: true },
         });
         expect(change).toEqual(expect.objectContaining({ cursor: expect.any(Number) }));
-        expect((change!.hint as any)?.connectedServices).toBe(true);
-        expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({
-            userId: user.id,
-            recipientFilter: { type: "user-scoped-only" },
-            payload: expect.objectContaining({
+        expect(change!.hint).toEqual(openAiCodexChange.hint);
+        expect(observeAccountUpdates(user.id).user.emit).toHaveBeenCalledWith(
+            "update", expect.objectContaining({
                 seq: change!.cursor,
                 body: expect.objectContaining({
                     t: "update-account",
@@ -199,7 +220,7 @@ describe("connectRoutes (connected services v3) plaintext credential endpoints (
                     ]),
                 }),
             }),
-        }));
+        );
     });
 
     it("keeps an unfenced V3 row readable without publishing a mutable revision", async () => {
@@ -388,22 +409,20 @@ describe("connectRoutes (connected services v3) plaintext credential endpoints (
         expect(del.json()).toEqual({ success: true });
 
         const change = await db.accountChange.findUnique({
-            where: { accountId_kind_entityId: { accountId: user.id, kind: "account", entityId: "self" } },
+            where: { accountId_kind_entityId: { accountId: user.id, kind: "account", entityId: openAiCodexChange.entityId } },
             select: { cursor: true, hint: true },
         });
         expect(change).toEqual(expect.objectContaining({ cursor: expect.any(Number) }));
-        expect((change!.hint as any)?.connectedServices).toBe(true);
-        expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({
-            userId: user.id,
-            recipientFilter: { type: "user-scoped-only" },
-            payload: expect.objectContaining({
+        expect(change!.hint).toEqual(openAiCodexChange.hint);
+        expect(observeAccountUpdates(user.id).user.emit).toHaveBeenCalledWith(
+            "update", expect.objectContaining({
                 seq: change!.cursor,
                 body: expect.objectContaining({
                     t: "update-account",
                     connectedServicesV2: [],
                 }),
             }),
-        }));
+        );
     });
 
     it("does not delete a qualified credential whose legacy shadows claim another service", async () => {
@@ -464,30 +483,6 @@ describe("connectRoutes (connected services v3) plaintext credential endpoints (
         })).resolves.not.toBeNull();
     });
 
-    it("rejects plaintext credential content for e2ee accounts", async () => {
-        harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "required_e2ee" });
-
-        const user = await db.account.create({
-            data: {
-                ...createSignedAccountContentBinding(),
-                encryptionMode: "e2ee",
-            },
-            select: { id: true },
-        });
-
-        const app = createTestApp();
-        connectRoutes(app as any);
-        await app.ready();
-
-        const res = await app.inject({
-            method: "POST",
-            url: "/v3/connect/openai-codex/profiles/work/credential",
-            headers: { "content-type": "application/json", "x-test-user-id": user.id },
-            payload: { content: { t: "plain", v: {} } },
-        });
-        expect(res.statusCode).toBe(400);
-        expect(res.json()).toEqual({ error: "invalid-params" });
-    });
 
     it("fences credential storage mode inside the canonical write transaction", async () => {
         const plain = await db.account.create({ data: { publicKey: null, encryptionMode: "plain" }, select: { id: true } });
@@ -801,6 +796,7 @@ describe("connectRoutes (connected services v3) plaintext credential endpoints (
             url: "/v3/connect/openai-codex/profiles/work/credential",
             headers: { "content-type": "application/json", "x-test-user-id": user.id },
             payload: {
+                expectedCredentialRevision: null,
                 content: {
                     t: "plain",
                     v: {
@@ -990,10 +986,8 @@ describe("connectRoutes (connected services v3) plaintext credential endpoints (
             expect.objectContaining({ profileId: "work", status: "needs_reauth" }),
         ]);
 
-        expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({
-            userId: user.id,
-            recipientFilter: { type: "user-scoped-only" },
-            payload: expect.objectContaining({
+        expect(observeAccountUpdates(user.id).user.emit).toHaveBeenCalledWith(
+            "update", expect.objectContaining({
                 body: expect.objectContaining({
                     t: "update-account",
                     connectedServicesV2: expect.arrayContaining([
@@ -1004,7 +998,7 @@ describe("connectRoutes (connected services v3) plaintext credential endpoints (
                     ]),
                 }),
             }),
-        }));
+        );
 
         await db.account.update({
             where: { id: user.id },

@@ -8,16 +8,9 @@ const MAX_SAFE_NODE_TIMEOUT_MS = 2_147_000_000;
 const EXECUTION_RUN_START_TOOL_NAME = 'execution_run_start';
 const EXECUTION_RUN_WAIT_TOOL_NAME = 'execution_run_wait';
 
-export { DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS } from '@/configuration';
-
-export type McpToolCallRequestOptions = Readonly<{
-  timeout: number;
-  signal?: AbortSignal;
-}>;
-
 type McpCallToolClient = Pick<Client, 'callTool'>;
 
-export function normalizeMcpToolArguments(args: unknown): Record<string, unknown> | undefined {
+function normalizeMcpToolArguments(args: unknown): Record<string, unknown> | undefined {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return undefined;
   return args as Record<string, unknown>;
 }
@@ -57,11 +50,11 @@ function readExecutionRunStartWaitTimeoutSeconds(args: unknown): number | null {
   return timeoutSeconds;
 }
 
-export function resolveMcpToolCallDefaultTimeoutMs(): number {
+function resolveMcpToolCallDefaultTimeoutMs(): number {
   return configuration.mcpToolCallTimeoutMs;
 }
 
-export function resolveExecutionRunWaitMcpTimeoutGraceMs(): number {
+function resolveExecutionRunWaitMcpTimeoutGraceMs(): number {
   return configuration.mcpExecutionRunWaitTimeoutGraceMs;
 }
 
@@ -84,13 +77,6 @@ export function resolveMcpToolCallRequestTimeoutMs(params: Readonly<{
   return resolveMcpToolCallDefaultTimeoutMs();
 }
 
-export function resolveMcpToolCallRequestOptions(params: Readonly<{
-  toolName: string;
-  args: unknown;
-}>): McpToolCallRequestOptions {
-  return { timeout: resolveMcpToolCallRequestTimeoutMs(params) };
-}
-
 export async function callMcpToolWithResolvedTimeout(params: Readonly<{
   client: McpCallToolClient;
   toolName: string;
@@ -99,10 +85,6 @@ export async function callMcpToolWithResolvedTimeout(params: Readonly<{
   requestMetadata?: RequestMeta;
   onprogress?: RequestOptions['onprogress'];
 }>): ReturnType<Client['callTool']> {
-  const requestOptions = resolveMcpToolCallRequestOptions({
-    toolName: params.toolName,
-    args: params.args,
-  });
   return await params.client.callTool(
     {
       name: params.toolName,
@@ -111,7 +93,7 @@ export async function callMcpToolWithResolvedTimeout(params: Readonly<{
     },
     undefined,
     {
-      ...requestOptions,
+      timeout: resolveMcpToolCallRequestTimeoutMs({ toolName: params.toolName, args: params.args }),
       ...(params.signal === undefined ? {} : { signal: params.signal }),
       ...(params.onprogress === undefined ? {} : {
         onprogress: params.onprogress,

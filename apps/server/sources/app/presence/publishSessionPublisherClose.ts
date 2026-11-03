@@ -53,7 +53,7 @@ export async function publishSessionPublisherClose(params: Readonly<{
         });
     }));
     eventRouter.emitEphemeral({
-        userId: params.publisherAccountId,
+        userId: session?.accountId ?? params.publisherAccountId,
         payload: buildSessionActivityEphemeral(
             params.sessionId,
             false,

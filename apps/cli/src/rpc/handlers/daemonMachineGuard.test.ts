@@ -24,7 +24,7 @@ import { ApiTokenGrantV1Schema } from '@happier-dev/protocol/auth/apiTokenGrant'
 import type { ExternalActionIngressOwner } from './externalAction';
 import type { RpcActionExecutorContext } from './_actionDispatchAdapter';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc/methods';
-import type { MachineGuardActivityEntryV1 } from '@happier-dev/protocol/machines/guard/activityV1';
+import { MachineGuardActivityListV1Schema, type MachineGuardActivityEntryV1 } from '@happier-dev/protocol/machines/guard/activityV1';
 import { createActivityLog } from '@/daemon/guard/activityLog';
 import { createGuardRuntime } from '@/daemon/guard/guardRuntime';
 import type { GuardOwnership } from '@/daemon/guard/guardPlanner';
@@ -49,6 +49,9 @@ import { reloadConfiguration } from '@/configuration';
 import { addServerProfile, adoptServerProfileHomeConnectionDescriptor } from '@/server/serverProfiles';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
+import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
+import { authorizeMachineRpcRequest } from '@/api/machine/machineRpcAuthorization';
+import { SocketRpcMachineAdmissionContextV1Schema } from '@happier-dev/protocol/socketRpc';
 
 const identity = { serverId: 'home', machineId: 'machine', installationId: 'install', custodianAccountId: 'owner' };
 const now = Date.UTC(2026, 9, 10, 12);
@@ -77,13 +80,18 @@ async function setup(useDefaultApiOwner = false, withCeilingOwner = false,
   await sampler.start(); cleanup.push(() => sampler.stop());
   const summary = createMachineResourceSummary({ sampler, readNearlyFull: () => null, nowMs: () => now, onError: error => { throw error; } });
   cleanup.push(() => summary.stop());
-  const activity = await createActivityLog({ activeServerDir: directory, resourceSummary: summary, nowMs: () => now });
+  let activityNow = now;
+  const activity = await createActivityLog({ activeServerDir: directory, resourceSummary: summary, nowMs: () => activityNow });
   const policy = createMachineResourcesPolicyRuntime({ port: { read: async () => ({ status: 'ready', metadata: {}, metadataVersion: 1 }),
     compareAndSwap: async () => ({ status: 'unavailable' }) } });
   await policy.reload(); cleanup.push(() => policy.stop());
   const inventory = createManagedActivityInventory({ now: () => now, producers: [] }); cleanup.push(() => inventory.dispose());
+  let beforeNativeRead: (() => void) | undefined;
+  const procfs = localServiceProcfsFixture([]);
   const ownership = createProcessOwnershipRuntime({ daemonScopeKey: '123456789abc', platform: 'linux', listRoots: () => [],
-    censusDependencies: { platform: 'linux', linuxBoundary: localServiceProcfsFixture([]) } });
+    censusDependencies: { platform: 'linux', linuxBoundary: { ...procfs, readdir: async path => {
+      beforeNativeRead?.(); return procfs.readdir(path);
+    } } } });
   const readFacts = async (owners?: GuardOwnership) => ({ ownership: owners ?? await ownership.readOwners({ freshness: 'fresh' }), inventory: await inventory.read(), targets: [] });
   const readPolicy = () => { const read = policy.read(); if (read.status !== 'ready') throw new Error('Policy unavailable'); return read.policy.guard; };
   const runtime = createGuardRuntime({ vitals: sampler, readPolicy, subscribePolicy: policy.subscribe, subscribe: inventory.subscribe,
@@ -132,7 +140,7 @@ async function setup(useDefaultApiOwner = false, withCeilingOwner = false,
     isActionEnabled: (id, ctx) => isActionEnabledByActionsSettings(id, settings, ctx),
     isActionApprovalRequired: (id, ctx) => isApprovalRequiredByActionsSettings(id, settings, ctx),
   });
-  let routes: DaemonMachineGuardRoutes = { target: () => currentTarget, guard, activity, nowMs: () => now,
+  let routes: DaemonMachineGuardRoutes = { target: () => currentTarget, guard, activity, nowMs: () => activityNow,
     keepRunning: async input => ({ status: await runtime.keepRunning(input.sessionId ?? '') }),
     dispatchUndoAction: (input, ctx) => dispatchActionFromRpc({ ...ctx, actionId: 'machines.guard.activity.undo', input, executor,
       serverId: currentTarget.serverId, externalActionTarget: { kind: 'machine', machineId: currentTarget.machineId },
@@ -188,12 +196,136 @@ async function setup(useDefaultApiOwner = false, withCeilingOwner = false,
       localActionContext: { surface: args.context.surface, authority: args.context.authority } }),
   }) });
   return { activity, routes, handlers, opened, client, executor, settings, ceilingWrites, setOutput: (value: unknown) => { output = value; },
+    setActivityNow: (value: number) => { activityNow = value; },
+    beforeNativeRead: (read: () => void) => { beforeNativeRead = read; },
     setCredentialCurrent: (value: boolean) => { credentialCurrent = value; },
     setBrowserFailed: (value: boolean) => { browserFailed = value; }, setClockFailed: (value: boolean) => { clockFailed = value; },
     setTarget: (target: typeof identity) => { currentTarget = target; } };
 }
 
 describe('Machine guard current admission and original Action restoration', () => {
+  it('parks Activity-only reads on durable appends without Guard census work', async () => {
+    const f = await setup(true);
+    let censuses = 0;
+    f.beforeNativeRead(() => { censuses++; });
+    const watch = f.handlers.get('daemon.guard.activity.watch');
+    expect(watch).toBeTypeOf('function');
+    const input = { machineId: identity.machineId, range: '7d', filter: 'stopped' };
+    const first = await watch!(input, context()) as { changed: true; since: number; list: unknown };
+    expect(first.changed).toBe(true);
+    expect(MachineGuardActivityListV1Schema.parse(first.list).entries).toEqual([]);
+    const controller = new AbortController();
+    const pending = watch!({ ...input, since: first.since }, { ...context(), signal: controller.signal });
+    await f.activity.append(entry('backdated', { at: now - 86_400_000 }));
+    const changed = await pending as typeof first;
+    expect(changed.since).not.toBe(first.since);
+    expect(MachineGuardActivityListV1Schema.parse(changed.list).entries).toMatchObject([{ id: 'backdated' }]);
+    const duplicate = watch!({ ...input, since: changed.since }, context());
+    await f.activity.markUndone({ id: 'undo', ref: 'backdated', at: now,
+      attribution: entry('backdated').attribution });
+    expect(MachineGuardActivityListV1Schema.parse((await duplicate as typeof changed).list).entries)
+      .toMatchObject([{ id: 'backdated', undoneAt: now }]);
+    // Equal timestamps and deterministic repeated receipt IDs are still append edges.
+    const afterUndo = (await duplicate as typeof changed).since;
+    const repeatedId = watch!({ ...input, since: afterUndo }, context());
+    await f.activity.append(entry('backdated', { at: now - 86_400_000 }));
+    expect((await repeatedId as typeof changed).since).not.toBe(afterUndo);
+    const abort = new AbortController();
+    const parked = watch!({ ...input, since: (await repeatedId as typeof changed).since }, { ...context(), signal: abort.signal });
+    abort.abort();
+    await expect(parked).rejects.toMatchObject({ rpcErrorCode: 'RPC_FORBIDDEN' });
+    expect(censuses).toBe(0);
+  });
+
+  it('filters parked Activity answers for recipients and refuses revoked disclosure', async () => {
+    const f = await setup();
+    const watch = f.handlers.get(RPC_METHODS.DAEMON_GUARD_ACTIVITY_WATCH)!;
+    const input = { machineId: identity.machineId, range: '7d' };
+    const guest = context('guest', 'use');
+    const initial = await watch(input, guest) as { since: number };
+    const pending = watch({ ...input, since: initial.since }, guest);
+    await f.activity.append(entry('private-owner'));
+    const answer = await pending as { since: number; list: unknown };
+    expect(MachineGuardActivityListV1Schema.parse(answer.list)).toMatchObject({ entries: [], counts: { others: 1 } });
+    const own = watch({ ...input, since: answer.since }, guest);
+    await f.activity.append(entry('own', { attribution: { serverId: identity.serverId, machineId: identity.machineId,
+      installationId: identity.installationId, accountId: 'guest' } }));
+    const ownAnswer = await own as typeof answer;
+    expect(MachineGuardActivityListV1Schema.parse(ownAnswer.list).entries).toMatchObject([{ id: 'own' }]);
+    let current = true;
+    const revoked = watch({ ...input, since: ownAnswer.since }, { ...guest, verifyMachineAdmissionCurrent: async () => current });
+    current = false;
+    await f.activity.append(entry('revoked'));
+    await expect(revoked).rejects.toMatchObject({ rpcErrorCode: 'RPC_FORBIDDEN' });
+  });
+
+  it('refreshes Activity at UTC midnight, sliding expiry and future-record visibility without appends or census demand', async () => {
+    const f = await setup();
+    let censuses = 0;
+    f.beforeNativeRead(() => { censuses++; });
+    const watch = f.handlers.get(RPC_METHODS.DAEMON_GUARD_ACTIVITY_WATCH)!;
+    await f.activity.append(entry('expiring', { at: now - 7 * 86_400_000 + 500 }));
+    await f.activity.append(entry('future', { at: now + 1000 }));
+    const request = { machineId: identity.machineId, range: '7d' };
+    type Answer = { changed: true; since: number; list: unknown };
+    const initial = await watch(request, context()) as Answer;
+    expect(MachineGuardActivityListV1Schema.parse(initial.list).entries).toMatchObject([{ id: 'expiring' }]);
+    f.setActivityNow(now + 500);
+    expect((await f.activity.list({ range: '7d' })).entries).toMatchObject([{ id: 'expiring' }]);
+    f.setActivityNow(now + 501);
+    expect((await f.activity.list({ range: '7d' })).entries).toEqual([]);
+    const expired = await watch({ ...request, since: initial.since }, context()) as Answer;
+    expect(expired.since).not.toBe(initial.since);
+    expect(MachineGuardActivityListV1Schema.parse(expired.list).entries).toEqual([]);
+    f.setActivityNow(now + 1000);
+    const visible = await watch({ ...request, since: expired.since }, context()) as Answer;
+    expect(MachineGuardActivityListV1Schema.parse(visible.list).entries).toMatchObject([{ id: 'future' }]);
+    const today = await watch({ ...request, range: 'today' }, context()) as Answer;
+    f.setActivityNow(Date.UTC(2026, 9, 11));
+    const nextDay = await watch({ ...request, range: 'today', since: today.since }, context()) as Answer;
+    expect(nextDay.since).not.toBe(today.since);
+    expect(MachineGuardActivityListV1Schema.parse(nextDay.list).entries).toEqual([]);
+    expect(censuses).toBe(0);
+  });
+
+  it('verifies passive reads at dispatch and disclosure, refusing revocation during real native observation', async () => {
+    const f = await setup();
+    let current = true;
+    let verifications = 0;
+    const manager = new RpcHandlerManager({ scopePrefix: identity.machineId, localMachineId: identity.machineId,
+      encryptionMode: 'plain', logger: () => {},
+      authorizeRequest: request => authorizeMachineRpcRequest(request, {
+        machineId: identity.machineId, resolveCustodianAccountId: async () => identity.custodianAccountId,
+        resolveInstallationId: () => identity.installationId,
+        // Home verification is the network boundary; Guard, Activity and dispatcher remain real.
+        verifyMachineAdmission: async () => { verifications++; return current; },
+      }) });
+    registerDaemonMachineGuardRpcHandlers(manager, f.routes);
+    const request = (method: string, params = {}) => ({ method: `${identity.machineId}:${method}`,
+      params: { machineId: identity.machineId, ...params }, callerAuthority: 'present_user' as const,
+      machineAdmission: SocketRpcMachineAdmissionContextV1Schema.parse({ machineId: identity.machineId,
+        installationId: identity.installationId, custodianAccountId: identity.custodianAccountId,
+        actorAccountId: 'owner', role: 'manage', encryptionMode: 'plain' }) });
+    f.beforeNativeRead(() => { current = false; });
+    expect(await manager.handleRequest(request(RPC_METHODS.MACHINES_GUARD_GET))).toMatchObject({ errorCode: 'RPC_FORBIDDEN' });
+    expect(verifications).toBe(2);
+    const beforeDenied = verifications;
+    expect(await manager.handleRequest(request(RPC_METHODS.MACHINES_GUARD_GET))).toMatchObject({ errorCode: 'RPC_FORBIDDEN' });
+    expect(verifications - beforeDenied).toBe(1);
+    current = true;
+    f.beforeNativeRead(() => {});
+    for (const [method, params, expected] of [
+      [RPC_METHODS.MACHINES_GUARD_GET, {}, { policyRevision: 1, idle: [] }],
+      [RPC_METHODS.DAEMON_GUARD_WATCH, {}, { changed: true, view: { policyRevision: 1, idle: [] } }],
+      [RPC_METHODS.MACHINES_GUARD_ACTIVITY_LIST, { range: 'today' }, { entries: [] }],
+      [RPC_METHODS.DAEMON_GUARD_ACTIVITY_WATCH, { range: 'today' }, { changed: true, list: { entries: [] } }],
+    ] as const) {
+      const before = verifications;
+      const response = await manager.handleRequest(request(method, params));
+      expect(response).toMatchObject(expected);
+      expect(verifications - before).toBe(2);
+    }
+  });
   it('reads the paired-owner Guard through a caller-local Home label with current admission', async () => {
     const env = createEnvKeyScope(['HAPPIER_HOME_DIR']);
     try {
@@ -448,9 +580,8 @@ describe('Machine guard current admission and original Action restoration', () =
     cache.attachApiMachineForSessions(replacement as never);
     const get = f.handlers.get(RPC_METHODS.MACHINES_GUARD_GET)!;
     expect(await get({ machineId: 'machine' }, context())).toMatchObject({ recentActivity: [{ id: 'retained' }] });
-    let verified = false;
     const changing = { ...context(), verifyMachineAdmissionCurrent: async () => {
-      if (verified) f.setTarget({ ...identity, installationId: 'replacement' }); verified = true; return true;
+      f.setTarget({ ...identity, installationId: 'replacement' }); return true;
     } };
     await expect(get({ machineId: 'machine' }, changing)).rejects.toMatchObject({ rpcErrorCode: 'RPC_FORBIDDEN' });
   });

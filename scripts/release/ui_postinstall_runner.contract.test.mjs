@@ -119,7 +119,7 @@ test('ui postinstall invokes the Skia setup CLI without a package-manager shim',
   );
   assert.match(
     postinstallSource,
-    /@shopify['"],\s*['"]react-native-skia['"],\s*['"]scripts['"],\s*['"]setup-canvaskit\.js['"]/,
+    /installedPackageDirs\(['"]@shopify\/react-native-skia['"]\)[\s\S]{0,200}?['"]scripts['"],\s*['"]setup-canvaskit\.js['"]/,
     'postinstall should resolve the Skia-owned CLI script from the installed package',
   );
   assert.match(

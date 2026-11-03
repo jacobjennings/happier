@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -11,11 +11,69 @@ import { describe, expect, it } from 'vitest';
 import { createWorkspaceSourceResolver, readCliSourceEntries, readWorkspacePackages, resolveWorkspaceSource, workspaceSourceCompilerPaths } from '../sourceRuntimeEntries.mjs';
 
 describe('CLI source entry ownership', () => {
-  it('retains importer dependencies and import/require conditions in lazy shared chunks', async () => {
+  it('links source-only SDK exports before tsx can select stale UI declaration paths', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'happier-source-ui-declarations-'));
+    const repoDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+    try {
+      const common = join(fixture, 'packages/cli-common');
+      const ui = join(fixture, 'apps/ui');
+      await mkdir(common, { recursive: true });
+      await mkdir(ui, { recursive: true });
+      for (const name of ['registerSourceRuntime.mjs', 'sourceRuntimeEntries.mjs', 'cliRuntimeSidecars.mjs']) {
+        await cp(join(repoDir, 'packages/cli-common', name), join(common, name));
+      }
+      await symlink(join(repoDir, 'node_modules'), join(fixture, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+      await writeFile(join(ui, 'tsconfig.json'), JSON.stringify({ compilerOptions: { paths: {
+        '@happier-dev/plugin-sdk/*': ['../../packages/plugin-sdk/dist/*/index.d.ts'],
+      } } }));
+      const stale = 'export const stale = true;';
+      const sources = [
+        ['plugin-sdk', 'sessions', 'SessionInputForgeEvidenceV1Schema'],
+        ['plugin-sdk', 'protocol', 'ScmHostingRepositoryIdentityV1ProtocolSchema'],
+        ['protocol', 'evidence', 'sourceProtocolEvidence'],
+      ];
+      for (const directory of ['plugin-sdk', 'protocol']) {
+        const root = join(fixture, 'packages', directory);
+        const exports = {};
+        for (const [, subpath, name] of sources.filter(([owner]) => owner === directory)) {
+          await mkdir(join(root, 'src', subpath), { recursive: true });
+          await mkdir(join(root, 'dist', subpath), { recursive: true });
+          exports[`./${subpath}`] = { 'happier-source': `./src/${subpath}/index.ts`, default: `./dist/${subpath}/index.js` };
+          await writeFile(join(root, 'src', subpath, 'index.ts'), `export const ${name} = ${JSON.stringify(name)};`);
+          await writeFile(join(root, 'dist', subpath, 'index.d.ts'), 'export declare const stale: boolean;');
+          await writeFile(join(root, 'dist', subpath, 'index.js'), stale);
+        }
+        await writeFile(join(root, 'package.json'), JSON.stringify({ name: `@happier-dev/${directory}`, type: 'module', exports }));
+      }
+      const manifest = join(ui, 'manifest.mjs');
+      await writeFile(manifest, sources.map(([owner, subpath, name]) => `import { ${name} } from '@happier-dev/${owner}/${subpath}';`).join('\n')
+        + `\nexport const evidence = [${sources.map(([, , name]) => name).join(',')}];`);
+      const { stdout } = await promisify(execFile)(process.execPath, [
+        '--conditions=happier-source', '--import', join(common, 'registerSourceRuntime.mjs'),
+        '--input-type=module', '-e', `
+import { createRequire } from 'node:module';
+const imported = await import(${JSON.stringify(pathToFileURL(manifest).href)});
+const required = createRequire(import.meta.url)(${JSON.stringify(manifest)});
+console.log(JSON.stringify([imported.evidence, required.evidence]));
+`,
+      ], { cwd: ui, env: { ...process.env, NODE_OPTIONS: '', TSX_TSCONFIG_PATH: join(ui, 'tsconfig.json') } });
+      const expected = sources.map(([, , name]) => name);
+      expect(JSON.parse(stdout)).toEqual([expected, expected]);
+      for (const [owner, subpath] of sources) {
+        expect(await readFile(join(fixture, 'packages', owner, 'dist', subpath, 'index.js'), 'utf8')).toBe(stale);
+      }
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('retains importer dependencies and conditions across a host dependency relayout', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-source-import-owner-'));
     try {
       const plugin = join(root, 'installed plugin#owner');
-      const output = join(root, 'runtime');
+      const host = join(root, 'apps/cli');
+      const outputRoot = join(root, 'runtime');
+      const output = join(outputRoot, 'apps/cli');
       for (const directory of [root, plugin]) {
         const dependency = join(directory, 'node_modules', 'fixture-css');
         await mkdir(dependency, { recursive: true });
@@ -28,18 +86,38 @@ describe('CLI source entry ownership', () => {
       await writeFile(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
       await writeFile(join(plugin, 'shape.js'), "import { generate } from 'fixture-css'; export { generate }; export const required = require('fixture-css').generate;");
       await writeFile(join(plugin, 'index.js'), "export async function parse() { const shape = await import('./shape.js'); return [shape.generate, shape.required]; } export async function optional() { return import('fixture-uninstalled'); }");
-      await build({ entryPoints: [join(plugin, 'index.js')], outdir: output, bundle: true,
+      const nested = join(host, 'node_modules/fixture-relayout');
+      await mkdir(nested, { recursive: true });
+      await writeFile(join(nested, 'package.json'), JSON.stringify({ name: 'fixture-relayout', type: 'module',
+        exports: { import: './index.js', require: './index.cjs' } }));
+      await writeFile(join(nested, 'index.js'), "export const value = 'host-import';");
+      await writeFile(join(nested, 'index.cjs'), "module.exports = { value: 'host-require' };");
+      await writeFile(join(host, 'index.js'), `export { parse, optional } from '../../installed plugin#owner/index.js';
+import { value } from 'fixture-relayout';
+export const hostValues = [value, require('fixture-relayout').value];
+export async function lazyHost() { return (await import('fixture-relayout')).value; }`);
+      await mkdir(output, { recursive: true });
+      await symlink(join(root, 'node_modules'), join(outputRoot, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+      await symlink(join(host, 'node_modules'), join(output, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+      await build({ entryPoints: [join(host, 'index.js')], outdir: output, bundle: true,
         splitting: true, format: 'esm', platform: 'node',
         banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
-        plugins: [createWorkspaceSourceResolver({ workspacePackages: new Map(), requireFromProject: createRequire(join(root, 'package.json')) })],
+        plugins: [createWorkspaceSourceResolver({ workspacePackages: new Map(), requireFromProject: createRequire(join(host, 'package.json')) })],
       });
       // Native import observes the emitted graph without Vitest re-resolving it.
-      const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', `
+      const probe = async () => {
+        const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', `
 const m = await import(${JSON.stringify(pathToFileURL(join(output, 'index.js')).href)});
 let missing; try { await m.optional(); } catch (e) { missing = e.code; }
-console.log(JSON.stringify({ parsed: await m.parse(), missing }));
+console.log(JSON.stringify({ parsed: await m.parse(), missing, hostValues: m.hostValues, lazyHost: await m.lazyHost() }));
 `]);
-      expect(JSON.parse(stdout)).toEqual({ parsed: ['plugin-import', 'plugin-require'], missing: 'ERR_MODULE_NOT_FOUND' });
+        expect(JSON.parse(stdout)).toEqual({ parsed: ['plugin-import', 'plugin-require'], missing: 'ERR_MODULE_NOT_FOUND',
+          hostValues: ['host-import', 'host-require'], lazyHost: 'host-import' });
+      };
+      await probe();
+      await cp(nested, join(root, 'node_modules/fixture-relayout'), { recursive: true });
+      await rm(nested, { recursive: true });
+      await probe();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

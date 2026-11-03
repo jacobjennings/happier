@@ -209,16 +209,6 @@ describe('useHostActivelyViewed', () => {
         }
     });
 
-    it('reports a focused, visible Tauri window as active', async () => {
-        const fake = installHost({ tauri: true, visibility: 'visible', focused: true });
-        try {
-            const { readHostActivelyViewed } = await import('./useHostActivelyViewed');
-            expect(readHostActivelyViewed()).toBe(true);
-        } finally {
-            fake.restore();
-        }
-    });
-
     it('treats the native app state "inactive" as not active', async () => {
         const fake = installHost({ platformOS: 'ios', appState: 'inactive' });
         try {

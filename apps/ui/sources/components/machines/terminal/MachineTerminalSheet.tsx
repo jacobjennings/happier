@@ -13,6 +13,8 @@ import { randomUUID } from '@/platform/randomUUID';
 import { useMachine } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 
+import { MachineTerminalGuardWarning } from './MachineTerminalGuardWarning';
+
 export type MachineTerminalSheetTarget = Readonly<{
   serverId: string;
   machineId: string;
@@ -97,6 +99,11 @@ const MachineTerminalShell = React.memo(function MachineTerminalShell(
   const onOpenApproval = useTerminalApprovalOpener(controller);
   return (
     <View style={styles.frame}>
+      <MachineTerminalGuardWarning
+        serverId={props.serverId}
+        machineId={props.machineId}
+        terminalKey={terminalKey}
+      />
       <EmbeddedTerminalPane
         title={t('machineDetailPage.terminalSheetTitle', {
           machine: props.machineName,

@@ -78,6 +78,30 @@ Prefer stable error codes over parsing text. See
 [Diagnostics](/plugins/testing/diagnostics) for the public guard and the
 diagnostic workflow.
 
+In **unreleased 0.3 development source**, an Action's single host confirmation
+can include reviewed input operands alongside its static consequence:
+
+```ts
+confirmation: {
+  title: 'Merge this pull request?',
+  body: 'This merge cannot be undone.',
+  inputFields: [
+    { path: 'skippedRequirements.[].label', title: 'Skipping' },
+  ],
+}
+```
+
+Each path must resolve in the Action's declared input schema. Use dot-separated
+paths and `[]` for array members; a path may belong to only one input union arm.
+Titles accept the same literal or `{ key, fallback }` text as other Action
+declarations. The host reads values from the admitted input bound to this
+confirmation, using its existing approval operand presenter. Missing operands
+add no line. Declared confidential values stay redacted. This works through the
+same native and hosted UI Action path; no plugin dialog or executable text
+template is needed. The public `ActionConfirmationInputField` type is available
+from `@happier-dev/plugin-sdk/actions`. Check the generated API for the target
+SDK/host before using this declaration; older strict declarations reject it.
+
 For a mounted UI that writes Account KV or Collections directly, current 0.3
 development source provides `hostApi.admitAction(action, input, { signal })`.
 Await it before calling your existing domain writer. It returns `false` when
@@ -144,11 +168,21 @@ device, separately for each Account and Home. UI, Agent, MCP and CLI callers use
 the same `plugins.execution_origin.list`, `.set` and `.clear` Actions. List the
 admitted origins, pass one exact `origin` to set, or clear the local preference;
 no Account settings version is required. In 0.3 development, list returns
-`answeringClientId` and eligible `answeringClientIds`; pass an id as `clientId` to address that exact connected app
-from CLI or MCP. Without `clientId`, reads keep their current answering device,
-but set and clear return `client_ambiguous` when several apps can answer. A
-disconnected selected app is unavailable; reconnect and list again to obtain
-its current address. Only the answering device's choice changes.
+`answeringClientId` and eligible `answeringClientIds`; pass an id as `clientId`
+to address that exact connected app from CLI or MCP. Reads, set and clear use
+the same client-choice rule: without `clientId`, use the sole eligible app or
+the app with the unique most recent focus transition observed through the
+existing focus push. Missing or tied focus
+history returns `client_ambiguous` with candidate ids in `details.clients` and
+the `clientId` remedy, before an app executes the Action. A disconnected or
+ineligible exact id returns `client_not_available`; it never selects another
+app. Ids expire on reconnect. Only the answering device's choice changes.
+
+That optional selector also applies to other client-routed host Actions in 0.3
+development. For a contributed client Action, put `clientId` alongside `action`
+and `input` in the host `action.invoke` envelope, not inside the plugin's
+business input. Non-client contributed Actions refuse that selector with
+`client_routing_not_applicable`.
 
 An explicit unavailable Machine remains named and its operations stay blocked.
 Clear it or choose an available Machine to change where effects run. Without an
@@ -304,6 +338,19 @@ A client target is client-local: it is intended to execute in the exact web,
 iOS, or Android process that invoked it. Missing or retired local activation
 must fail unavailable; it must not fall back to a daemon, move to another
 client, or enter a cross-client queue.
+
+An admitted controller invocation in unreleased 0.3 CLI source can also supply
+optional `services.machineConnectorSecrets`. After obtaining a connector token
+inside the Account handler, call
+`write({ token: bytes, subject: { provider, connectorId } })` and return only its
+opaque `{ grants: [{ machineId, installationId, grantRef }] }`. The host captures
+the controller, every receiving Machine and installation, receiver public keys
+and admitted operation. Each receiver gets a separately sealed grant from the
+same token acquisition. The token stays out
+of Action input and results, Saved Secrets and logs. Zero caller-owned bytes
+in `finally`; do not retain the sink or retry a write whose outcome is uncertain.
+Portable UI execution and invocations without that admitted controller omit it.
+See the maintained [Account author fixture](https://github.com/happier-dev/happier/tree/dev/packages/plugin-sdk/fixtures/account-actions).
 
 > **Development status:** The explicit `daemon | client` declaration is part
 > of the current Developer Preview contract, whose implementation remains in

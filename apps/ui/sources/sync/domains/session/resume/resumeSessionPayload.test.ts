@@ -13,6 +13,42 @@ function buildResumeHappySessionRpcParams(
 }
 
 describe('buildResumeHappySessionRpcParams', () => {
+    test('resumes a Global Voice Codex carrier from its canonical executable Agent target', () => {
+        const agentTarget = {
+            kind: 'agent' as const,
+            identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+        };
+        expect(buildResumeHappySessionRpcParams({
+            sessionId: 'voice-carrier', directory: '/tmp/voice', agentTarget,
+        })).toMatchObject({
+            type: 'resume-session', agentTarget,
+            backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+        });
+    });
+
+    test('preserves a configured executable Agent definition in the predecessor Resume target', () => {
+        const agentTarget = {
+            kind: 'agent' as const,
+            identity: { pluginId: 'happier.agent.custom-acp', localId: 'custom-acp' },
+            definitionId: 'voice-codex',
+        };
+        expect(buildResumeHappySessionRpcParams({
+            sessionId: 'voice-carrier', directory: '/tmp/voice', agentTarget,
+        })).toMatchObject({
+            agentTarget,
+            backendTarget: { kind: 'backend', backendId: 'voice-codex', configuredBackendId: 'voice-codex', sourceKind: 'configured' },
+        });
+    });
+
+    test('keeps an externally contributed Agent canonical-only rather than inventing a predecessor target', () => {
+        const agentTarget = { kind: 'agent' as const, identity: { pluginId: 'acme.voice', localId: 'agent' } };
+        const params = buildResumeHappySessionRpcParams({
+            sessionId: 'voice-carrier', directory: '/tmp/voice', agentTarget,
+        });
+        expect(params.agentTarget).toEqual(agentTarget);
+        expect(params).not.toHaveProperty('backendTarget');
+    });
+
     test('preserves explicit consent for continuing a chat in a fresh folder', () => {
         expect(buildResumeHappySessionRpcParams({
             sessionId: 'session-1', directory: '/private/chat',

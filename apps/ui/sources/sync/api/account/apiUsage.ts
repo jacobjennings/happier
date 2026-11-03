@@ -184,7 +184,7 @@ export async function queryUsage(
         };
         return options?.readTransport
             ? await options.readTransport.read('/v2/usage/query', init, { includeAuth: false }, consume)
-            : await consume(await requestUsage('/v2/usage/query', init, { includeAuth: false }));
+            : await consume(await requestUsage('/v2/usage/query', init, { includeAuth: false, recoveryRead: 'unbounded' }));
     };
     // Rich Resource reads use their existing lifecycle's failure/retry owner.
     // Legacy callers retain their established backoff and route translation.
@@ -218,7 +218,7 @@ async function queryLegacyUsage(
             endTime: params.endTime ?? null,
             groupBy: legacyGroupBy,
         }),
-    }, { includeAuth: false });
+    }, { includeAuth: false, recoveryRead: 'unbounded' });
 
     if (!response.ok) {
         if (response.status === 404 && params.sessionId) {

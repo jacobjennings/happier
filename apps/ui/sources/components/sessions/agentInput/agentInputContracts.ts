@@ -221,6 +221,8 @@ export function hasAgentInputCollapsedOptionsPopoverContent(
 
 export type AgentInputExtraActionChip = Readonly<{
     key: string;
+    /** The owning form's missing requirement, presented at the control that can satisfy it. */
+    requirement?: Readonly<{ code: string; fieldPath: string }> | null;
     /**
      * Signals that the reader is reaching for this control, through either the
      * visible chip or the collapsed action menu.

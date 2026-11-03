@@ -17,6 +17,7 @@ type JsonRpcMessageHookFixture = Readonly<{
 
 function createInMemoryJsonRpcProcess(params?: Readonly<{
     hooks?: JsonRpcMessageHookFixture;
+    framing?: 'jsonLines' | 'contentLength';
     maxFrameBytes?: number;
     onFailure?: (error: Error) => void;
 }>) {
@@ -32,10 +33,10 @@ function createInMemoryJsonRpcProcess(params?: Readonly<{
         dispose: async () => undefined,
     };
     const protocol = createJsonRpcProcessClient({
-        process,
         stdout,
         write: process.writeStdin,
         requestTimeoutMs: 25,
+        framing: params?.framing,
         maxFrameBytes: params?.maxFrameBytes,
         onFailure: params?.onFailure,
         ...(params?.hooks ? { hooks: params.hooks } : {}),
@@ -78,6 +79,9 @@ describe('A.13p spawned protocol client runtime', () => {
     it('serializes notifications in transport order without blocking server-request responses', async () => {
         const { stdout, writes, protocol } = createInMemoryJsonRpcProcess();
         const received: number[] = [];
+        const receipts: unknown[] = [];
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
+        protocol.subscribeNotificationReceived(message => { receipts.push(message); });
         let releaseFirst!: () => void;
         const firstBlocked = new Promise<void>((resolve) => {
             releaseFirst = resolve;
@@ -89,19 +93,26 @@ describe('A.13p spawned protocol client runtime', () => {
         });
         protocol.client.registerRequestHandler('host/question', () => ({ accepted: true }));
 
-        stdout.write([
-            '{"jsonrpc":"2.0","method":"host/status","params":{"sequence":1}}',
-            '{"jsonrpc":"2.0","method":"host/status","params":{"sequence":2}}',
-            '{"jsonrpc":"2.0","id":"request-1","method":"host/question","params":{}}',
-            '',
-        ].join('\n'));
+        try {
+            stdout.write([
+                '{"jsonrpc":"2.0","method":"host/status","params":{"sequence":1}}',
+                '{"jsonrpc":"2.0","method":"host/status","params":{"sequence":2}}',
+                '{"jsonrpc":"2.0","id":"request-1","method":"host/question","params":{}}',
+                '',
+            ].join('\n'));
 
-        await expect.poll(() => writes.length).toBe(1);
-        expect(JSON.parse(writes[0] ?? '')).toMatchObject({ id: 'request-1', result: { accepted: true } });
-        expect(received).toEqual([]);
-        releaseFirst();
-        await expect.poll(() => received).toEqual([1, 2]);
-        protocol.dispose();
+            await expect.poll(() => writes.length).toBe(1);
+            expect(JSON.parse(writes[0] ?? '')).toMatchObject({ id: 'request-1', result: { accepted: true } });
+            expect(received).toEqual([]);
+            expect(receipts).toEqual([
+                { method: 'host/status', params: { sequence: 1 }, receivedAtMs: 1000 },
+                { method: 'host/status', params: { sequence: 2 }, receivedAtMs: 1000 },
+            ]);
+            clock.mockReturnValue(2000);
+            releaseFirst();
+            await expect.poll(() => received).toEqual([1, 2]);
+            expect(receipts).toHaveLength(2);
+        } finally { releaseFirst(); protocol.dispose(); clock.mockRestore(); }
     });
 
     it('isolates throwing JSON-RPC notification subscribers from later subscribers', async () => {
@@ -186,7 +197,7 @@ describe('A.13p spawned protocol client runtime', () => {
         protocol.dispose();
     });
 
-    it('reads and writes fragmented JSON-RPC content-length frames', async () => {
+    it('reads and writes fragmented JSON-RPC content-length frames with headers above 8 KiB', async () => {
         const stdout = new PassThrough();
         const writes: Uint8Array[] = [];
         const processHandle: ExecProcessHandleV1 = {
@@ -197,7 +208,6 @@ describe('A.13p spawned protocol client runtime', () => {
             dispose: async () => undefined,
         };
         const protocol = createJsonRpcProcessClient({
-            process: processHandle,
             stdout,
             framing: 'contentLength',
             maxFrameBytes: 256,
@@ -209,15 +219,54 @@ describe('A.13p spawned protocol client runtime', () => {
         const pending = protocol.client.request('fixture/echo', { value: 3 });
         await expect.poll(() => writes.length).toBe(1);
         expect(Buffer.from(writes[0]!).toString('ascii')).toMatch(/^Content-Length: \d+\r\n\r\n/u);
-        const response = encodeContentLengthFrame(new Uint8Array(Buffer.from(
+        const encodedResponse = encodeContentLengthFrame(new Uint8Array(Buffer.from(
             '{"jsonrpc":"2.0","id":1,"result":{"value":3}}',
         )));
+        const headerValueOffset = Buffer.byteLength('Content-Length: ');
+        const response = Buffer.concat([
+            encodedResponse.subarray(0, headerValueOffset),
+            Buffer.from('0'.repeat(9 * 1024), 'ascii'),
+            encodedResponse.subarray(headerValueOffset),
+        ]);
         stdout.write(response.subarray(0, 7));
-        stdout.write(response.subarray(7, 23));
-        stdout.write(response.subarray(23));
+        stdout.write(response.subarray(7, 9 * 1024));
+        stdout.write(response.subarray(9 * 1024));
 
         await expect(pending).resolves.toEqual({ value: 3 });
         protocol.dispose();
+    });
+
+    it.each(['jsonLines', 'contentLength'] as const)('round-trips multi-MiB JSON-RPC payloads without an implicit frame budget (%s)', async (framing) => {
+        const incoming = new PassThrough();
+        const outgoing = new PassThrough();
+        const processHandle: ExecProcessHandleV1 = {
+            pid: 1,
+            exit: new Promise(() => undefined),
+            writeStdin: async () => undefined,
+            kill: () => undefined,
+            dispose: async () => undefined,
+        };
+        const createPeer = (stdout: PassThrough, destination: PassThrough) => createJsonRpcProcessClient({
+            stdout,
+            framing,
+            write: async (value) => {
+                const bytes = typeof value === 'string' ? Buffer.from(value, 'utf8') : Buffer.from(value);
+                destination.write(bytes.subarray(0, 17));
+                destination.write(bytes.subarray(17));
+            },
+        });
+        const caller = createPeer(incoming, outgoing);
+        const responder = createPeer(outgoing, incoming);
+        responder.client.registerRequestHandler('fixture/echo', (params) => params);
+        const payload = { text: 'λ'.repeat(1024 * 1024 + 1) };
+        try {
+            await expect(caller.client.request('fixture/echo', payload)).resolves.toEqual(payload);
+        } finally {
+            caller.dispose();
+            responder.dispose();
+            incoming.destroy();
+            outgoing.destroy();
+        }
     });
 
     it('preserves child JSON-RPC response error code, message, data, and request method', async () => {
@@ -243,11 +292,15 @@ describe('A.13p spawned protocol client runtime', () => {
         protocol.dispose();
     });
 
-    it('rejects pending requests when the JSON-RPC stream ends with a trailing partial frame', async () => {
-        const { stdout, protocol } = createInMemoryJsonRpcProcess();
+    it.each([
+        { framing: 'jsonLines', partial: '{"jsonrpc":"2.0","id":1,"result":' },
+        { framing: 'contentLength', partial: 'Content-Length: 10\r\n' },
+        { framing: 'contentLength', partial: 'Content-Length: 10\r\n\r\n{}' },
+    ] as const)('rejects pending requests when the JSON-RPC $framing stream ends with a trailing partial frame: $partial', async ({ framing, partial }) => {
+        const { stdout, protocol } = createInMemoryJsonRpcProcess({ framing });
 
         const pending = protocol.client.request('child/wait', {});
-        stdout.end('{"jsonrpc":"2.0","id":1,"result":');
+        stdout.end(partial);
 
         await expect(pending).rejects.toMatchObject({
             code: 'PLUGIN_EXEC_CLIENT_PROTOCOL_ERROR',
@@ -414,13 +467,6 @@ describe('A.13p spawned protocol client runtime', () => {
     it('lets request timeout settle while the stdin write remains blocked', async () => {
         const stdout = new PassThrough();
         const protocol = createJsonRpcProcessClient({
-            process: {
-                pid: 1,
-                exit: new Promise(() => undefined),
-                writeStdin: async () => await new Promise<void>(() => undefined),
-                kill: () => undefined,
-                dispose: async () => undefined,
-            },
             stdout,
             write: async () => await new Promise<void>(() => undefined),
             requestTimeoutMs: 1,
@@ -540,7 +586,7 @@ describe('A.13p spawned protocol client runtime', () => {
             kill: () => undefined,
             dispose: async () => undefined,
         };
-        const protocol = createJsonRpcProcessClient({ process, stdout, write: process.writeStdin });
+        const protocol = createJsonRpcProcessClient({ stdout, write: process.writeStdin });
         const pending = Array.from({ length: 300 }, (_, index) => (
             protocol.client.notify('child/status', { index }).catch((error: unknown) => error)
         ));

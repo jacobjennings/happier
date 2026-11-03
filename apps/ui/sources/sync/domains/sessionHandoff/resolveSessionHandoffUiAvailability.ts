@@ -5,7 +5,6 @@ import {
     resolveMachineDaemonTransferDirectPeerDiagnostics,
 } from '@/sync/domains/transfers/runtime/transferRuntime/availability/machineDaemonTransferState';
 import { resolveMachineTransferAvailability } from '@/sync/domains/transfers/runtime/resolveTransferAvailability';
-import { readCachedMachineRpcDirectRoute } from '@/sync/domains/transfers/runtime/transferRouteCache';
 import { readMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
 
 import { resolveSessionHandoffSourceMachineId } from './resolveSessionHandoffSourceMachineId';
@@ -136,27 +135,6 @@ function resolveSessionHandoffDaemonDirectPeerAvailability(input: Readonly<{
         // before surfacing handoff, but do not fail closed purely on coarse idle state.
         return 'unknown';
     }
-    return 'unknown';
-}
-
-export function resolveSessionHandoffRuntimeDirectPeerAvailability(input: Readonly<{
-    serverId?: string | null;
-    sourceMachineId?: string | null;
-    reachableMachineId?: string | null;
-}>): SessionHandoffRuntimeAvailability {
-    const serverId = normalizeNonEmptyString(input.serverId);
-    const sourceMachineId = normalizeNonEmptyString(input.sourceMachineId);
-    if (!serverId || !sourceMachineId) {
-        return 'unknown';
-    }
-
-    const cached = readCachedMachineRpcDirectRoute({
-        serverId,
-        remoteMachineId: sourceMachineId,
-    });
-
-    if (cached.status === 'viable') return 'reachable';
-    if (cached.status === 'unavailable') return 'unavailable';
     return 'unknown';
 }
 

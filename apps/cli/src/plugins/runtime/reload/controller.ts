@@ -12,6 +12,7 @@ import {
     type CurrentGlobalExternalSessionsRouter,
 } from '@/session/external/currentGlobalRouting';
 import { projectPluginFailureText } from '../lifecycle/utils';
+import { createInitializationFailureResult } from './initializationFailure';
 import {
     createReloadControllerTargetedContributionsService,
     type StableTargetedContributionsOwner,
@@ -136,6 +137,8 @@ export type PluginReloadController = Readonly<{
         registry: ResolvedExecutablePluginRuntimeRegistry;
         changedPluginIds: readonly string[];
         durableRevision?: number;
+        /** Re-admits current persisted state after an Account intent change. */
+        admissionRefresh?: true;
         /** Process-local development candidates use source revision currentness, never a fake durable revision. */
         isDevelopmentCandidateCurrent?: () => boolean;
         runningSessionDisposition: PluginRunningSessionDisposition;
@@ -629,25 +632,11 @@ export function createPluginReloadController(params?: Readonly<{
         try {
             registry = await resolveRuntimeRegistry(attemptedGeneration, resolveRuntimeRegistryOverride);
         } catch (error) {
-            const diagnostic = Object.freeze({
-                code: 'plugin_reload_failed' as const,
-                message: projectPluginFailureText(error),
-            });
-            lastResult = {
-                ok: false,
-                generation,
-                attemptedGeneration,
-                requestedPluginIds: Object.freeze([]),
-                changedPluginIds: Object.freeze([]),
-                affectedPluginIds: Object.freeze([]),
-                runningSessionDisposition: null,
-                activeGenerationId: null,
-                registryStatus: 'unavailable',
-                diagnostics: Object.freeze([diagnostic]),
-                diagnosticsByPluginId: Object.freeze({}),
-                registry: null,
-            };
-            notifyReloadListeners(lastResult);
+            const failure = createInitializationFailureResult(lastResult, generation, attemptedGeneration, error);
+            if (failure !== lastResult) {
+                lastResult = failure;
+                notifyReloadListeners(failure);
+            }
             throw error;
         }
 
@@ -688,25 +677,12 @@ export function createPluginReloadController(params?: Readonly<{
             if (error instanceof ColdInitializationSupersededError && activeRegistry) {
                 return createActiveResult(activeRegistry, []);
             }
-            const diagnostic = Object.freeze({
-                code: 'plugin_reload_failed' as const,
-                message: projectPluginFailureText(error),
-            });
-            lastResult = {
-                ok: false,
-                generation,
-                attemptedGeneration,
-                requestedPluginIds: Object.freeze([]),
-                changedPluginIds: Object.freeze([]),
-                affectedPluginIds: Object.freeze([]),
-                runningSessionDisposition: null,
-                activeGenerationId: null,
-                registryStatus: 'unavailable',
-                diagnostics: Object.freeze([diagnostic]),
-                diagnosticsByPluginId: registry.pluginDiagnosticsByPluginId,
-                registry: null,
-            };
-            notifyReloadListeners(lastResult);
+            const failure = createInitializationFailureResult(lastResult, generation, attemptedGeneration, error,
+                registry.pluginDiagnosticsByPluginId);
+            if (failure !== lastResult) {
+                lastResult = failure;
+                notifyReloadListeners(failure);
+            }
             throw error;
         }
         if (!published) {
@@ -763,20 +739,25 @@ export function createPluginReloadController(params?: Readonly<{
             }
 
             const changedPluginIds = normalizePluginIds(adoption.changedPluginIds);
+            const observedDurableRevision = controller.readCurrentDurableRevision();
             if (
                 adoption.durableRevision !== undefined
-                && highestObservedDurableRevision !== null
-                && adoption.durableRevision <= highestObservedDurableRevision
+                && (adoption.durableRevision < observedDurableRevision
+                    || (adoption.durableRevision === highestObservedDurableRevision && adoption.admissionRefresh !== true))
             ) {
                 await adoption.registry.dispose();
                 throw new Error(
                     `Prepared plugin runtime registry durable revision ${adoption.durableRevision} `
-                    + `is not newer than observed revision ${highestObservedDurableRevision}`,
+                    + `is not newer than observed revision ${observedDurableRevision}`,
                 );
             }
-            // Durable currentness does not roll back while cold initialization or
-            // later publication work is pending or fails.
-            if (adoption.durableRevision !== undefined) {
+            // A refresh of an already-known commit must not claim its Machine
+            // adoption: the commit's prepared registry may still be publishing.
+            // A previously unseen revision still advances durable currentness.
+            if (adoption.durableRevision !== undefined && (
+                adoption.admissionRefresh !== true
+                || adoption.durableRevision > observedDurableRevision
+            )) {
                 highestObservedDurableRevision = adoption.durableRevision;
             }
 

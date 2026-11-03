@@ -7,7 +7,7 @@ import { PluginAvailabilityActionHttpPathsV1, PluginAvailabilityCollectionWriter
 import { convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1 } from '@happier-dev/protocol/account/encryptionKeyFingerprintV1';
 import { createAccountScopedCryptoMaterialSnapshotV1 } from '@happier-dev/protocol/crypto/accountScopedCipher';
 import { PluginAccountKvRowError, assertPluginAccountKvExpectedVersionV1, clonePluginAccountKvRowV1, commitPluginAccountKvMutationV1, createEmptyPluginAccountKvRowV1, deletePluginAccountKvEntryV1, listPluginAccountKvEntriesV1, normalizePluginAccountKvLogicalKeyV1, projectPluginAccountKvEntryV1, readPluginAccountKvEntryV1, setPluginAccountKvEntryV1, PluginAccountStorageMutationRequestV1Schema, PluginAccountStorageMutationResponseV1Schema, PluginAccountStorageReadResponseV1Schema, PluginAccountStorageRowV1Schema, PluginAccountStorageUnavailableV1Schema, assertPluginAccountStorageEnvelopeForModeV1, openPluginAccountStoragePrivatePayloadV1, sealPluginAccountStoragePrivatePayloadV1 } from '@happier-dev/protocol/plugins/data/accountKvV1';
-import type { PluginAccountStorageEntryV1, AccountEncryptionCurrentnessResponse, AccountScopedCryptoMaterial, NormalizedPluginAccountCollectionContractV1, PluginCollectionLogicalDecodeFailureReasonV1, PluginCollectionLogicalEncodeFailureReasonV1, PluginAccountCollectionContributionV1, PluginCollectionCandidatePreparationBindingV1, PluginCollectionContractRefV1, PluginDataCollectionsCapabilities, PluginCollectionMutationOperationV1, PluginCollectionMutationRequestMeasurementV1, PluginCollectionMutationRequestV1, PluginCollectionMutationResultV1, PluginCollectionRowV1, PluginCollectionLogicalValueV1, PluginAccountStorageRowV1 } from '@happier-dev/protocol';
+import type { PluginAccountStorageEntryV1, AccountEncryptionCurrentnessResponse, AccountScopedCryptoMaterial, NormalizedPluginAccountCollectionContractV1, PluginCollectionLogicalDecodeFailureReasonV1, PluginAccountCollectionContributionV1, PluginCollectionCandidatePreparationBindingV1, PluginCollectionContractRefV1, PluginDataCollectionsCapabilities, PluginCollectionMutationOperationV1, PluginCollectionMutationRequestMeasurementV1, PluginCollectionMutationRequestV1, PluginCollectionMutationResultV1, PluginCollectionRowV1, PluginCollectionLogicalValueV1, PluginAccountStorageRowV1 } from '@happier-dev/protocol';
 import { PLUGIN_COLLECTION_CANDIDATE_PREPARATION_RETIRE_HTTP_PATH_V1, PLUGIN_COLLECTION_CANDIDATE_PREPARATION_SOURCE_PAGE_HTTP_PATH_V1, PLUGIN_COLLECTION_CANDIDATE_PREPARATION_STAGE_HTTP_PATH_V1, PLUGIN_COLLECTION_GET_HTTP_PATH_V1, PLUGIN_COLLECTION_MUTATION_HTTP_PATH_V1, PLUGIN_COLLECTION_QUERY_HTTP_PATH_V1, PluginCollectionCandidatePreparationBindingV1Schema, PluginCollectionCandidatePreparationErrorV1Schema, PluginCollectionCandidatePreparationRetireRequestV1Schema, PluginCollectionCandidatePreparationRetireResultV1Schema, PluginCollectionCandidatePreparationSourcePageRequestV1Schema, PluginCollectionCandidatePreparationSourcePageResultV1Schema, PluginCollectionCandidatePreparationStageRequestV1Schema, PluginCollectionCandidatePreparationStageResultV1Schema, PluginCollectionGetRequestV1Schema, PluginCollectionGetResultV1Schema, PLUGIN_COLLECTION_FORGET_HTTP_PATH_V1, PluginCollectionForgetRequestV1Schema, PluginCollectionForgetResultV1Schema, PluginCollectionMutationErrorV1Schema, PluginCollectionMutationResultV1Schema, PluginCollectionQueryRequestV1Schema, PluginCollectionQueryResultV1Schema, PluginCollectionReadErrorV1Schema, normalizePluginAccountCollectionContractV1, resolveEffectivePluginCollectionLimitsV1, resolvePluginCollectionIdentityTagV1, splitPluginCollectionCandidatePreparationStageRequestsForKnownLimitsV1 } from '@happier-dev/protocol/plugins/data/collectionsV1';
 import { PLUGIN_COLLECTION_LIMITS_V1 } from '@happier-dev/protocol/plugins/data/collectionLimitsV1';
 import { assertPluginCollectionContentEnvelopeForModeV1 } from '@happier-dev/protocol/plugins/data/collectionsV1';
@@ -16,7 +16,7 @@ import { PluginCollectionRowIdV1Schema } from '@happier-dev/protocol/plugins/dat
 import { compilePluginJsonSchema, createPluginJsonSchemaZodValueAdapter, preparePluginJsonSchema } from '@happier-dev/protocol/plugins/actions/json-schema-validation';
 import { createStoredReadSchema } from '@happier-dev/protocol/json/storedReadSchema';
 import { isValidPluginJsonSchemaValue } from '@happier-dev/protocol/plugins/actions/protocol-composable-schema';
-import { decodePluginCollectionLogicalRowV1, encodePluginCollectionLogicalValueV1, preparePluginCollectionLogicalMutationRequestV1 } from '@happier-dev/protocol/plugins/data/collectionLogicalCodecV1';
+import { decodePluginCollectionLogicalRowV1, encodePluginCollectionLogicalValueV1, preparePluginCollectionLogicalMutationRequestV1, type PluginCollectionLogicalEncodeOutcomeV1 } from '@happier-dev/protocol/plugins/data/collectionLogicalCodecV1';
 import { normalizeStrictJsonValue, sameStrictJsonValue } from '@happier-dev/protocol/json/strictJsonValue';
 import {
     isPluginError,
@@ -52,6 +52,7 @@ import { fetchAccountEncryptionCurrentness } from '@/api/client/connectedService
 import { readObservedAccountEncryptionCurrentness, waitForObservation } from '@/api/client/accountEncryptionCurrentnessObservation';
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { readStoredCredentials, type Credentials, type StoredCredentials } from '@/persistence';
+import { configuration } from '@/configuration';
 import {
     getActiveAccountSettingsSnapshot,
     getActiveAccountSettingsSnapshotLifetimeToken,
@@ -60,7 +61,9 @@ import { requireAccountSettingsEncryptionCredentials } from '@/settings/accountS
 import { resolveAccountSettingsHttpBaseUrl } from '@/settings/accountSettings/resolveAccountSettingsHttpBaseUrl';
 import { resolveAccountSettingsScopeKey } from '@/settings/accountSettings/accountSettingsScopeKey';
 import type { CanonicalPluginManifest } from '@/plugins/manifest/types';
-import { runTracedExternalActionInnerStage, traceExternalActionInnerStage } from '@/daemon/externalActions/externalActionPhase';
+import { serializeCanonicalPluginManifest } from '@/plugins/manifest/serialize';
+import type { AccountPluginWriterClaims } from './accountWriterClaims';
+import { runTracedExternalActionInnerStage, traceExternalActionInnerStage, type ExternalActionInnerDiagnostic } from '@/daemon/externalActions/externalActionPhase';
 
 import type { StablePluginAccountStorageHost } from './storage';
 import {
@@ -90,6 +93,8 @@ export type AccountPluginDataHttpClient = Readonly<{
  * registry; callers can only replace the authenticated Account/system port.
  */
 export type AccountPluginDataStorageHostDependencies = Readonly<{
+    /** The daemon retains the existing claim results across registry/host replacement. */
+    writerClaims?: AccountPluginWriterClaims;
     readCredentials?: () => Promise<StoredCredentials | null>;
     isCurrentAccount?: (credentials: StoredCredentials) => boolean | Promise<boolean>;
     resolveAccountScopeKey?: () => string | null;
@@ -117,8 +122,8 @@ export type AccountPluginDataStorageHostDependencies = Readonly<{
      * and that declares Account-scoped contributions. Only such a plugin
      * claims a release-less Account intent with it; a managed portable
      * install is selected by the present user through its release.
-     * The admitted occurrence owns a stable manifest reference; replacing it
-     * denotes a new declaration, independently of code-byte identity.
+     * Equal declarations rebuilt by reload keep their successful claim;
+     * a changed declaration is admitted independently of code-byte identity.
      */
     resolveReleaseLessDeclaration?: (pluginId: string) => CanonicalPluginManifest | null;
     /** The exact declaring module, loaded by the existing activation/source owner. */
@@ -485,12 +490,13 @@ function parseCollectionError(value: unknown, kind: 'read' | 'mutation'): Plugin
 /**
  * The daemon's translation of the shared Protocol codec's encode failures into
  * this realm's `PluginError` vocabulary. Missing Account crypto material is an
- * Account-availability fact; every other reason is an invalid authored value.
+ * Account-availability fact; the envelope ceiling is a known-no-effect quota
+ * refusal. Malformed values and crypto failures remain invalid authored values.
  */
 function collectionEncodeFailureError(
-    reason: PluginCollectionLogicalEncodeFailureReasonV1,
+    failure: Extract<PluginCollectionLogicalEncodeOutcomeV1, { status: 'failed' }>,
 ): PluginError {
-    switch (reason) {
+    switch (failure.reason) {
         case 'value-schema-invalid':
             return dataError(COLLECTION_INVALID_VALUE_CODE, 'Collection value does not satisfy its admitted schema');
         case 'row-identity-invalid':
@@ -499,6 +505,11 @@ function collectionEncodeFailureError(
             return dataError(COLLECTION_INVALID_VALUE_CODE, 'Collection server-readable projection is invalid');
         case 'private-payload-invalid':
             return dataError(COLLECTION_INVALID_VALUE_CODE, 'Collection private payload is invalid');
+        case 'private-payload-too-large':
+            return dataError('collection_quota_incompatible', 'Collection private envelope exceeds its encoded limit', false, {
+                dimension: failure.dimension,
+                effectiveMaximum: failure.effectiveMaximum,
+            });
         case 'encryption-material-unavailable':
             return dataError(ACCOUNT_DATA_UNAVAILABLE_CODE, 'Account encryption material is unavailable');
     }
@@ -542,7 +553,7 @@ function splitLogicalPut(input: Readonly<{
         material: input.material,
         randomBytes: input.randomBytes,
     });
-    if (encoded.status === 'failed') throw collectionEncodeFailureError(encoded.reason);
+    if (encoded.status === 'failed') throw collectionEncodeFailureError(encoded);
     return {
         kind: 'put',
         rowId: encoded.rowId,
@@ -630,16 +641,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
     const resolveServerFeaturesSnapshot = params.resolveServerFeaturesSnapshot;
     const subscribeChanges = params.subscribeChanges ?? subscribePluginAccountCollectionWatchInvalidation;
     const resolveReleaseLessDeclaration = params.resolveReleaseLessDeclaration ?? (() => null);
-    type WriterClaim = Readonly<{
-        manifest: CanonicalPluginManifest;
-        encodedClaim: string | null;
-        occurrenceId: string | undefined;
-        accountLifetimeToken: number;
-        availabilityChangeKey: string;
-        diagnosticClaimAttemptId?: string;
-        result: Promise<PluginError | null>;
-    }>;
-    const writerClaimsByScope = new Map<string, WriterClaim>();
+    const writerClaimsByScope: AccountPluginWriterClaims = params.writerClaims ?? new Map();
 
     const readKnownCollectionLimits = (): PluginDataCollectionsCapabilities | undefined => {
         try {
@@ -824,6 +826,8 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
         const ensureWriterClaim = async (
             credentials: StoredCredentials,
             operationSignal?: AbortSignal,
+            prepareCollections = true,
+            triggerKind: NonNullable<ExternalActionInnerDiagnostic['collectionPreparationTriggerKind']> = 'collection-operation',
         ): Promise<void> => {
             const manifest = resolveReleaseLessDeclaration(lifecycle.pluginId);
             const scopeKey = currentAccountScopeKey();
@@ -831,6 +835,24 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
             const key = `${scopeKey}\u0000${lifecycle.pluginId}`;
             const availabilityChangeKey = readPluginAccountAvailabilityChangeKey(scopeKey, lifecycle.pluginId);
             let claim = writerClaimsByScope.get(key);
+            // Reload replaces storage hosts and may reparse an unchanged manifest.
+            // Successful admission belongs to the declaration and live Account,
+            // not the executable occurrence. Refusals keep their recovery inputs.
+            while (claim && claim.accountLifetimeToken === lifecycle.accountLifetimeToken
+                && (claim.manifest !== manifest || claim.occurrenceId !== lifecycle.occurrenceId)
+                && (claim.manifest === manifest
+                    || serializeCanonicalPluginManifest(claim.manifest) === serializeCanonicalPluginManifest(manifest))) {
+                const retained = claim;
+                const refusal = await retained.result;
+                await assertBoundCurrent(lifecycle, operationSignal);
+                claim = writerClaimsByScope.get(key);
+                if (claim !== retained) continue;
+                if (refusal === null) {
+                    claim = { ...retained, manifest, occurrenceId: lifecycle.occurrenceId };
+                    writerClaimsByScope.set(key, claim);
+                }
+                break;
+            }
             let availabilityRefused = false;
             while (claim && claim.manifest === manifest
                 && claim.occurrenceId === lifecycle.occurrenceId
@@ -850,12 +872,17 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                 || claim.occurrenceId !== lifecycle.occurrenceId
                 || claim.accountLifetimeToken !== lifecycle.accountLifetimeToken
                 || availabilityRefused) {
-                const encodedClaim = claim?.manifest === manifest ? claim.encodedClaim : serializeRequestBody({ manifest });
+                const encodedClaim = serializeRequestBody({ manifest });
                 // A background publication can start the promise another Action later awaits.
                 // This diagnostic-only id joins those records without exposing claim inputs.
                 const diagnosticClaimAttemptId = process.env.HAPPIER_WEB_LATENCY_TRACE === '1' ? randomUUID() : undefined;
                 traceExternalActionInnerStage('collection.writer_claim.start', {
                     ...(diagnosticClaimAttemptId ? { claimAttemptId: diagnosticClaimAttemptId } : {}),
+                    pluginId: lifecycle.pluginId,
+                    claimOccurrenceId: lifecycle.occurrenceId,
+                    claimProducerPid: process.pid,
+                    claimProducerKind: configuration.isDaemonProcess ? 'daemon' : 'cli',
+                    collectionPreparationTriggerKind: triggerKind,
                     claimAbsent: claim === undefined,
                     declarationChanged: claim !== undefined && claim.manifest !== manifest,
                     occurrenceChanged: claim !== undefined && claim.occurrenceId !== lifecycle.occurrenceId,
@@ -923,7 +950,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                     if (writerClaimsByScope.get(key)?.result === result) writerClaimsByScope.delete(key);
                     return null;
                 });
-                claim = { manifest, encodedClaim, occurrenceId: lifecycle.occurrenceId,
+                claim = { manifest, occurrenceId: lifecycle.occurrenceId, preparesCollections: prepareCollections,
                     accountLifetimeToken: lifecycle.accountLifetimeToken, availabilityChangeKey, result,
                     ...(diagnosticClaimAttemptId ? { diagnosticClaimAttemptId } : {}) };
                 writerClaimsByScope.set(key, claim);
@@ -987,7 +1014,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                 accountLifetimeToken: getActiveAccountSettingsSnapshotLifetimeToken(),
             };
             const context = createBoundRequestContext(lifecycle);
-            await context.ensureWriterClaim(await context.currentCredentials());
+            await context.ensureWriterClaim(await context.currentCredentials(), undefined, true, 'declaration-publication');
         },
         async retireCollectionMigrationCandidate(input): Promise<void> {
             let binding: PluginCollectionCandidatePreparationBindingV1;
@@ -1883,7 +1910,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                     });
                     if (prepared.status === 'failed') {
                         if (prepared.reason !== 'mutation-request-invalid') {
-                            throw collectionEncodeFailureError(prepared.reason);
+                            throw collectionEncodeFailureError(prepared);
                         }
                         throw dataError(COLLECTION_INVALID_VALUE_CODE, 'Collection mutation does not satisfy the wire contract');
                     }

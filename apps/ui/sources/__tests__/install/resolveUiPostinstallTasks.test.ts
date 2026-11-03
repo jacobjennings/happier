@@ -27,14 +27,14 @@ describe('resolveUiPostinstallTasks', () => {
         expect(tasks).toContain('verify-sentry-native-replay-postinit-patch');
         expect(tasks).toContain('verify-expo-router-web-modal-patch');
         expect(tasks).toContain('verify-react-native-enriched-markdown-web-streaming-patch');
-        expect(tasks).not.toEqual(
-            expect.arrayContaining([
-                'setup-skia-web',
-                'vendor-monaco',
-                'vendor-pierre-diffs-worker',
-                'vendor-codemirror-webview-bundle',
-                'vendor-xterm-webview-bundle',
-            ]),
-        );
+        for (const webTask of [
+            'setup-skia-web',
+            'vendor-monaco',
+            'vendor-pierre-diffs-worker',
+            'vendor-codemirror-webview-bundle',
+            'vendor-xterm-webview-bundle',
+        ]) {
+            expect(tasks).not.toContain(webTask);
+        }
     });
 });

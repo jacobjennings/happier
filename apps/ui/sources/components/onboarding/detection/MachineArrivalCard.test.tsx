@@ -67,7 +67,9 @@ describe('MachineArrivalCard', () => {
             );
 
             expect(screen.findByTestId('machine-arrival-card-status:variant:neutral')).toBeTruthy();
-            expect(screen.findByTestId('machine-arrival-card-details')).not.toBeNull();
+            expect(screen.getTextContent()).not.toContain('diagnostic slot');
+            await screen.pressByTestIdAsync('machine-arrival-card-details-toggle');
+            expect(screen.getTextContent()).toContain('diagnostic slot');
 
             await act(async () => {
                 storage.getState().applyMachines([

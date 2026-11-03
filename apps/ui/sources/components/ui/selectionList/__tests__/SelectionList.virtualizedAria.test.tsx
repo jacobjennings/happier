@@ -149,31 +149,6 @@ describe('SelectionList virtualized row ARIA parity (R9 blocker 4)', () => {
         }
     });
 
-    it('exposes the same option testID structure for virtualized rows as the plain path', async () => {
-        legendListState.reset();
-        const root: SelectionListStep = {
-            id: 'root',
-            inputPlaceholder: 'Search',
-            sections: [
-                {
-                    kind: 'static',
-                    id: 'big',
-                    title: 'BIG',
-                    options: makeOptions(60),
-                },
-            ],
-        };
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps(root)} />);
-        // FlashList must be mounted for >50 rows.
-        expect(legendListState.props).not.toBeNull();
-        // Each rendered row carries the canonical option testID.
-        const probe = screen.findByTestId('sl:root:option:opt-0');
-        expect(probe).not.toBeNull();
-        const probeWrapper = screen.findByTestId('sl:root:option-wrapper:opt-0');
-        expect(probeWrapper).not.toBeNull();
-    });
-
     it('applies option accessibility labels to virtualized actionable option rows', async () => {
         legendListState.reset();
         const optionWithA11yName = {

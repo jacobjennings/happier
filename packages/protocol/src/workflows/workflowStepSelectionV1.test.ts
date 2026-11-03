@@ -3,12 +3,46 @@ import { describe, expect, it } from 'vitest';
 import * as selectionOwner from './workflowStepSelectionV1.js';
 import { AgentExecutionTargetV1Schema, CUSTOM_ACP_AGENT_CONTRIBUTION_IDENTITY_V1 } from '../agents/executionTargetV1.js';
 import { buildBackendTargetKeyV2 } from '../backends/targets/backendTargetRefV2.js';
+import { ConnectedServiceBindingsV2Schema } from '../connect/connectedServiceBindings.js';
+import { StrictJsonValueSchema } from '../json/strictJsonValue.js';
 
 const agent = { kind: 'agent' as const, identity: { pluginId: 'happier.agent.claude', localId: 'claude' } };
 const otherAgent = { kind: 'agent' as const, identity: { pluginId: 'happier.agent.codex', localId: 'codex' } };
 const model = { v: 1 as const, ref: { agentTargetKey: 'happier.agent.claude/claude', providerConnectionId: null, modelId: 'model' }, updatedAt: 0 };
 
 describe('workflow step selection', () => {
+  it.each(['profile', 'connected'] as const)('omits absent inherited fields when only %s is supplied to a stored selection', field => {
+    const connectedServices = ConnectedServiceBindingsV2Schema.parse({ v: 2, bindingsByServiceId: {
+      'external.auth/subscription': { source: 'connected', selection: 'profile', profileId: 'origin-account' },
+    } });
+    const { selection } = selectionOwner.resolveWorkflowStepSelectionV1({
+      defaults: { engine: { agentTarget: agent } },
+      roleSelection: { defaultEngine: { agentTargetKey: buildBackendTargetKeyV2(agent) },
+        ...(field === 'profile' ? { defaultProfileId: 'origin-launch' } : { defaultConnectedServices: connectedServices }),
+      },
+    });
+    expect(() => StrictJsonValueSchema.parse(selection)).not.toThrow();
+    expect(selection).not.toHaveProperty(field === 'profile' ? 'connectedServices' : 'profileId');
+    expect(selection).toMatchObject(field === 'profile' ? { profileId: 'origin-launch' } : { connectedServices });
+  });
+
+  it('accepts the full admitted parent binding shape and refuses direct Team custody with a typed error', () => {
+    const brokered = ConnectedServiceBindingsV2Schema.parse({ v: 2, bindingsByServiceId: {
+      'external.auth/subscription': { source: 'team_resource', resourceId: 'team-pool', deliveryMode: 'brokered' },
+    } });
+    const roleSelection = { defaultEngine: { agentTargetKey: buildBackendTargetKeyV2(agent) },
+      defaultConnectedServices: brokered };
+    expect(selectionOwner.resolveWorkflowStepSelectionV1({ defaults: { engine: { agentTarget: agent } }, roleSelection })
+      .selection.connectedServices).toEqual(brokered);
+    const direct = ConnectedServiceBindingsV2Schema.parse({ v: 2, bindingsByServiceId: {
+      'external.auth/subscription': { source: 'team_resource', resourceId: 'team-pool', deliveryMode: 'direct',
+        disclosedMember: { service: { pluginId: 'external.auth', localId: 'subscription' }, accountId: 'member' } },
+    } });
+    expect(() => selectionOwner.resolveWorkflowStepSelectionV1({ defaults: { engine: { agentTarget: agent } },
+      roleSelection: { ...roleSelection, defaultConnectedServices: direct } }))
+      .toThrow(expect.objectContaining({ code: 'execution_run_child_choice_required', name: 'WorkflowStepSelectionErrorV1',
+        refusal: { code: 'execution_run_child_choice_required' } }));
+  });
   it('resolves a strict input-bound engine without mutating the supplied input', () => {
     const inputs = { choice: { engine: { agentTarget: otherAgent, modelSelection: null } } };
     const before = structuredClone(inputs);
@@ -25,11 +59,16 @@ describe('workflow step selection', () => {
       'external.auth/subscription': { source: 'connected' as const, selection: 'profile' as const, profileId: 'origin-profile' },
     } };
     const roleSelection = { defaultEngine: { agentTargetKey: buildBackendTargetKeyV2(agent) },
+      defaultProfileId: 'origin-launch',
       defaultConnectedServices: connectedServices,
       availableAgentTargetKeys: [buildBackendTargetKeyV2(agent), buildBackendTargetKeyV2(otherAgent)] };
     const defaults = { engine: { role: 'judge' } };
     expect(selectionOwner.resolveWorkflowStepSelectionV1({ defaults, roleSelection }).selection.connectedServices)
       .toEqual(connectedServices);
+    expect(selectionOwner.resolveWorkflowStepSelectionV1({ defaults, roleSelection }).selection.profileId)
+      .toBe('origin-launch');
+    expect(selectionOwner.resolveWorkflowStepSelectionV1({ defaults, roleSelection, step: { profileId: null } }).selection.profileId)
+      .toBeNull();
     expect(selectionOwner.resolveWorkflowStepSelectionV1({ defaults, roleSelection, step: { connectedServices: null } }).selection.connectedServices)
       .toBeNull();
     const explicit = { v: 2 as const, bindingsByServiceId: { 'external.auth/subscription': { source: 'native' as const } } };
@@ -40,6 +79,8 @@ describe('workflow step selection', () => {
     expect(selectionOwner.resolveWorkflowStepSelectionV1({ defaults: { engine: { agentTarget: agent, modelSelection: model } }, roleSelection }).selection.connectedServices)
       .toEqual(connectedServices);
     expect(selectionOwner.resolveWorkflowStepSelectionV1({ defaults: { engine: { agentTarget: otherAgent } }, roleSelection }).selection.connectedServices)
+      .toBeUndefined();
+    expect(selectionOwner.resolveWorkflowStepSelectionV1({ defaults: { engine: { agentTarget: otherAgent } }, roleSelection }).selection.profileId)
       .toBeUndefined();
   });
   it.each([
@@ -73,16 +114,13 @@ describe('workflow step selection', () => {
       .toEqual({ permissionMode: 'read-only', conversation: step.conversation });
     expect(() => selectionOwner.resolveWorkflowStepSelectionV1({ defaults, step })).toThrow(/target_unavailable/);
   });
-  it('exports the pure selection owner', () => {
-    expect(selectionOwner).toHaveProperty('resolveWorkflowStepSelectionV1');
-  });
-
   it('inherits per field, preserves explicit null and never mutates its inputs', () => {
     const defaults = { agentTarget: agent, profileId: 'default-profile', permissionMode: 'default' as const, modelSelection: model };
-    const step = { profileId: null, permissionMode: 'read-only' as const };
+    const step = { profileId: null, connectedServices: null, permissionMode: 'read-only' as const };
     const before = structuredClone({ defaults, step });
-    expect(selectionOwner.resolveWorkflowStepSelectionV1({ defaults, step }).selection).toEqual({
-      ...defaults, profileId: null, permissionMode: 'read-only',
+    const { selection } = selectionOwner.resolveWorkflowStepSelectionV1({ defaults, step });
+    expect(StrictJsonValueSchema.parse(selection)).toEqual({
+      ...defaults, profileId: null, connectedServices: null, permissionMode: 'read-only',
     });
     expect({ defaults, step }).toEqual(before);
   });

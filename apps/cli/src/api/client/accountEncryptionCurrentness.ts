@@ -1,4 +1,7 @@
-import axios from 'axios';
+import { type AccountE2eeCustodyHolder } from '@/persistence';
+import { admitCliReportedAccountMode } from './accountModeAdmission';
+import axios from '@/api/client/credentialAxios';
+import { CredentialRequestRedirectError } from '@happier-dev/cli-common/homeTarget';
 import { AccountEncryptionCurrentnessResponseSchema, AccountEncryptionCurrentnessErrorResponseSchema } from '@happier-dev/protocol/account/encryptionMode';
 import type { AccountEncryptionCurrentnessResponse, AccountEncryptionCurrentnessErrorResponse } from '@happier-dev/protocol/account/encryptionMode';
 
@@ -19,9 +22,8 @@ export class AccountEncryptionCurrentnessUnavailableError extends Error {
     readonly recipientEnvelopeReadiness?: AccountEncryptionCurrentnessErrorResponse['recipientEnvelopeReadiness'],
     options?: ErrorOptions,
   ) {
-    // The wrapped transport failure stays reachable as `cause` so the caller
-    // that owns the offline/auth classification (getOrCreateSession) can
-    // classify this preflight exactly as it classifies its own request.
+    // Keep the observation phase and original transport cause together.
+    // A failed read does not establish that the Home is offline.
     super(message, options);
     this.name = 'AccountEncryptionCurrentnessUnavailableError';
   }
@@ -35,6 +37,8 @@ export function isRetryableAccountEncryptionCurrentnessError(error: unknown): bo
 
 type AccountEncryptionCurrentnessRead = Readonly<{
   token: string;
+  /** The in-hand credential behind `token`; without it custody is read for the bearer. */
+  credentials?: AccountE2eeCustodyHolder;
   authorizationHeaders?: Readonly<Record<string, string>>;
   /** Provisioning checks readiness without binding retained historical material. */
   allowCredentialRecovery?: boolean;
@@ -70,6 +74,7 @@ export async function fetchAccountEncryptionCurrentnessFromServer(params: Accoun
   try {
     response = await readCurrentness();
   } catch (error) {
+    if (error instanceof CredentialRequestRedirectError) throw error;
     if (params.signal?.aborted) throw error;
     throw new AccountEncryptionCurrentnessUnavailableError(undefined, undefined, { cause: error });
   }
@@ -119,6 +124,7 @@ export async function fetchAccountEncryptionCurrentnessFromServer(params: Accoun
           response = await readCurrentness();
         }
       } catch (error) {
+        if (error instanceof CredentialRequestRedirectError) throw error;
         params.signal?.throwIfAborted();
         // Preserve the original typed recovery result when proof cannot be completed.
       }
@@ -145,5 +151,6 @@ export async function fetchAccountEncryptionCurrentnessFromServer(params: Accoun
       'Account encryption currentness response is invalid',
     );
   }
+  await admitCliReportedAccountMode(parsed.data.mode, params.credentials ?? { token: params.token });
   return parsed.data;
 }

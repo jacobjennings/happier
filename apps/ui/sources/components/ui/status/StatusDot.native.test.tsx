@@ -46,21 +46,6 @@ vi.mock('react-native', async () => {
     });
 });
 
-const useSharedValueSpy = vi.fn((value: number) => ({ value }));
-const useAnimatedStyleSpy = vi.fn(() => ({ opacity: 1 }));
-
-vi.mock('react-native-reanimated', () => ({
-    __esModule: true,
-    default: { View: 'ReanimatedView' },
-    useAnimatedStyle: (factory: () => unknown) => {
-        useAnimatedStyleSpy();
-        return factory();
-    },
-    useSharedValue: (value: number) => useSharedValueSpy(value),
-    withRepeat: (value: unknown) => value,
-    withTiming: (value: unknown) => value,
-}));
-
 function flattenStyle(style: unknown): Record<string, unknown> {
     if (!style) return {};
     if (Array.isArray(style)) {
@@ -71,10 +56,8 @@ function flattenStyle(style: unknown): Record<string, unknown> {
 }
 
 describe('StatusDot (native)', () => {
-    it('renders a plain View with no Reanimated hooks for a non-pulsing native dot', async () => {
+    it('renders a plain View without reading reduced motion for a non-pulsing native dot', async () => {
         reducedMotionState.reads = 0;
-        useSharedValueSpy.mockClear();
-        useAnimatedStyleSpy.mockClear();
         const { StatusDot } = await import('./StatusDot');
 
         const screen = await renderScreen(React.createElement(StatusDot, {
@@ -87,8 +70,6 @@ describe('StatusDot (native)', () => {
         const dot = screen.findByTestId('status-dot');
         expect(dot).toBeTruthy();
         expect(dot?.type).toBe('View');
-        expect(useSharedValueSpy).not.toHaveBeenCalled();
-        expect(useAnimatedStyleSpy).not.toHaveBeenCalled();
         expect(reducedMotionState.reads).toBe(0);
 
         const style = flattenStyle(dot?.props.style);
@@ -113,8 +94,6 @@ describe('StatusDot (native)', () => {
     });
 
     it('renders a React Native Animated.View for a pulsing native dot', async () => {
-        useSharedValueSpy.mockClear();
-        useAnimatedStyleSpy.mockClear();
         const { StatusDot } = await import('./StatusDot');
         const { Animated } = await import('react-native');
 
@@ -128,8 +107,6 @@ describe('StatusDot (native)', () => {
         const dot = screen.findByTestId('status-dot');
         expect(dot).toBeTruthy();
         expect(dot?.type).toBe('NativeAnimatedView');
-        expect(useSharedValueSpy).not.toHaveBeenCalled();
-        expect(useAnimatedStyleSpy).not.toHaveBeenCalled();
         expect(Animated.timing).toHaveBeenCalledWith(expect.anything(), {
             toValue: 0.3,
             duration: 1000,

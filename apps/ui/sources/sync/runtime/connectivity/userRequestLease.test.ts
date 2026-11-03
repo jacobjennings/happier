@@ -32,23 +32,21 @@ describe('user request lease owner', () => {
         expect(teardown).not.toHaveBeenCalled();
     });
 
-    it('treats pagehide and freeze as hard boundaries', () => {
-        for (const hardBoundary of ['pagehide', 'freeze'] as const) {
-            const owner = createUserRequestLeaseOwner();
-            const release = owner.acquire();
-            const routineTeardown = vi.fn();
-            const hardTeardown = vi.fn();
+    it('treats a hard boundary (pagehide/freeze) as tearing down immediately', () => {
+        const owner = createUserRequestLeaseOwner();
+        const release = owner.acquire();
+        const routineTeardown = vi.fn();
+        const hardTeardown = vi.fn();
 
-            owner.deferRoutineTeardown(routineTeardown);
-            owner.crossHardBoundary(hardTeardown);
+        owner.deferRoutineTeardown(routineTeardown);
+        owner.crossHardBoundary(hardTeardown);
 
-            expect(hardTeardown, hardBoundary).toHaveBeenCalledTimes(1);
-            expect(routineTeardown, hardBoundary).not.toHaveBeenCalled();
-            expect(owner.hasActiveLease(), hardBoundary).toBe(false);
+        expect(hardTeardown).toHaveBeenCalledTimes(1);
+        expect(routineTeardown).not.toHaveBeenCalled();
+        expect(owner.hasActiveLease()).toBe(false);
 
-            release();
-            expect(hardTeardown, hardBoundary).toHaveBeenCalledTimes(1);
-        }
+        release();
+        expect(hardTeardown).toHaveBeenCalledTimes(1);
     });
 
     it('does not let a retired request release a replacement request across a hard boundary', () => {

@@ -22,14 +22,6 @@ function BackArrow() {
 describe('resolvePageBackPlacement', () => {
     const columnMaxWidthPx = 720;
 
-    it('puts back in the gutter when the space left of the content edge fits the control', () => {
-        expect(resolvePageBackPlacement({ paneWidthPx: 1100, columnMaxWidthPx })).toBe('gutter');
-    });
-
-    it('falls back to a line above the title when the column fills the pane', () => {
-        expect(resolvePageBackPlacement({ paneWidthPx: 600, columnMaxWidthPx })).toBe('above-title');
-    });
-
     it('switches exactly where the gutter stops fitting the control', () => {
         const textInset = PAGE_LIST_METRICS.pageTextInsetPx;
         const needed = PAGE_LIST_METRICS.backGutterWidthPx;
@@ -88,6 +80,10 @@ describe('PageHeader back control placement', () => {
     it('keeps back mounted (unseen) until the pane is measured, so no fallback arrow flashes', async () => {
         const screen = await renderHeader();
         expect(screen.root.findAllByType('BackArrow' as never)).toHaveLength(1);
+        const backHosts = screen.root.findAll((node: ReactTestInstance) => typeof node.type === 'string'
+            && (node.props.testID === 'page-header-back-gutter' || node.props.testID === 'page-header-back-line'));
+        expect(backHosts).toHaveLength(1);
+        expect(backHosts[0]?.props.style).toContainEqual({ opacity: 0 });
     });
 
     it('decides back from the split\'s detail width on the first paint, so a wide detail never reserves a line it then drops', async () => {

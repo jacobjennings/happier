@@ -1,82 +1,57 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-type PlatformMock = {
-    OS: string;
-    constants?: { isMacCatalyst?: boolean };
-};
+const platform = vi.hoisted(() => ({
+    OS: 'ios' as string,
+    constants: undefined as { isMacCatalyst?: boolean } | undefined,
+}));
 
-async function loadIsRunningOnMac(params: { platform: PlatformMock }) {
-    vi.doMock('react-native', async () => {
+vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-    return createReactNativeWebMock(
-        {
-            Platform: params.platform,
-        }
-    );
-});
-    vi.doMock('react-native-device-info', () => {
-        throw new Error('react-native-device-info should not be imported');
+    return createReactNativeWebMock({
+        Platform: {
+            get OS() { return platform.OS; },
+            get constants() { return platform.constants; },
+        },
     });
-    const mod = await import('./platform');
-    return mod.isRunningOnMac();
-}
+});
+// Import-graph guard: the subject must never load react-native-device-info (it is
+// unavailable on web builds). Loading it fails this whole file at import time.
+vi.mock('react-native-device-info', () => {
+    throw new Error('react-native-device-info should not be imported');
+});
+
+import { isRunningOnMac } from './platform';
 
 describe('isRunningOnMac', () => {
     beforeEach(() => {
-        vi.resetModules();
+        platform.OS = 'ios';
+        platform.constants = undefined;
     });
 
-    it('does not import react-native-device-info for web builds', async () => {
-        vi.doMock('react-native', async () => {
-    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-    return createReactNativeWebMock(
-        {
-            Platform: {
-                OS: 'web',
-            },
-        }
-    );
-});
-        vi.doMock('react-native-device-info', () => {
-            throw new Error('react-native-device-info should not be imported on web');
-        });
-
-        const mod = await import('./platform');
-        expect(mod.isRunningOnMac()).toBe(false);
+    it('returns false for web builds without importing react-native-device-info', () => {
+        platform.OS = 'web';
+        expect(isRunningOnMac()).toBe(false);
     });
 
-    it('returns false on non-iOS platforms', async () => {
-        const result = await loadIsRunningOnMac({
-            platform: { OS: 'android', constants: { isMacCatalyst: true } },
-        });
-        expect(result).toBe(false);
+    it('returns false on non-iOS platforms', () => {
+        platform.OS = 'android';
+        platform.constants = { isMacCatalyst: true };
+        expect(isRunningOnMac()).toBe(false);
     });
 
-    it('returns true when Platform.constants.isMacCatalyst is true', async () => {
-        const result = await loadIsRunningOnMac({
-            platform: { OS: 'ios', constants: { isMacCatalyst: true } },
-        });
-        expect(result).toBe(true);
+    it('returns true when Platform.constants.isMacCatalyst is true', () => {
+        platform.constants = { isMacCatalyst: true };
+        expect(isRunningOnMac()).toBe(true);
     });
 
-    it('returns false when constants are unavailable', async () => {
-        const result = await loadIsRunningOnMac({
-            platform: { OS: 'ios' },
-        });
-        expect(result).toBe(false);
+    it('returns false when constants or the Catalyst flag are unavailable', () => {
+        expect(isRunningOnMac()).toBe(false);
+        platform.constants = {};
+        expect(isRunningOnMac()).toBe(false);
     });
 
-    it('returns false when isMacCatalyst is explicitly false (even if deviceType is Desktop)', async () => {
-        const result = await loadIsRunningOnMac({
-            platform: { OS: 'ios', constants: { isMacCatalyst: false } },
-        });
-        expect(result).toBe(false);
-    });
-
-    it('returns false when not catalyst and deviceType is not Desktop', async () => {
-        const result = await loadIsRunningOnMac({
-            platform: { OS: 'ios', constants: {} },
-        });
-        expect(result).toBe(false);
+    it('returns false when isMacCatalyst is explicitly false', () => {
+        platform.constants = { isMacCatalyst: false };
+        expect(isRunningOnMac()).toBe(false);
     });
 });

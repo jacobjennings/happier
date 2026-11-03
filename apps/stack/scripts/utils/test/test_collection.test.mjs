@@ -1,64 +1,56 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+
+import { createTempFixture } from '../../testkit/core/temp_fixture.mjs';
 
 import {
   collectStackIntegrationTestFilesFromDirs,
-  collectStackUnitTestFilesFromDirs,
-  STACK_INTEGRATION_INCLUDE_SUFFIXES,
-  STACK_UNIT_EXCLUDE_SUFFIXES,
-  STACK_UNIT_INCLUDE_SUFFIXES,
+  collectStackUnitTestFiles,
 } from './test_collection.mjs';
 
-test('collectStackUnitTestFilesFromDirs collects scripts and tests using unit suffix rules', async () => {
-  const calls = [];
-  const collect = async (options) => {
-    calls.push(options);
-    return [`${options.dir}/file.test.mjs`];
-  };
-
-  const files = await collectStackUnitTestFilesFromDirs({
-    scriptsDir: '/tmp/scripts',
-    testsDir: '/tmp/tests',
-    collect,
+test('explicit unit files select only existing unit files and never fall back to discovery', async (t) => {
+  const fixture = await createTempFixture(t);
+  await mkdir(fixture.path('scripts'));
+  await mkdir(fixture.path('tests'));
+  for (const file of ['scripts/first.test.mjs', 'tests/second.test.mjs', 'tests/unselected.test.mjs', 'tests/flow.integration.test.mjs', 'tests/flow.real.integration.test.mjs', 'outside.test.mjs']) {
+    await writeFile(fixture.path(file), '');
+  }
+  const entry = pathToFileURL(fixture.path('scripts/test_ci.mjs')).href;
+  const selected = await collectStackUnitTestFiles(entry, {
+    files: ['--', 'tests/second.test.mjs', fixture.path('scripts/first.test.mjs'), 'tests/second.test.mjs'],
+    cwd: fixture.root,
   });
-
-  assert.deepEqual(files, ['/tmp/scripts/file.test.mjs', '/tmp/tests/file.test.mjs']);
-  assert.deepEqual(calls, [
-    {
-      dir: '/tmp/scripts',
-      includeSuffixes: STACK_UNIT_INCLUDE_SUFFIXES,
-      excludeSuffixes: STACK_UNIT_EXCLUDE_SUFFIXES,
-    },
-    {
-      dir: '/tmp/tests',
-      includeSuffixes: STACK_UNIT_INCLUDE_SUFFIXES,
-      excludeSuffixes: STACK_UNIT_EXCLUDE_SUFFIXES,
-    },
-  ]);
+  assert.deepEqual(selected.testFiles, [fixture.path('tests/second.test.mjs'), fixture.path('scripts/first.test.mjs')]);
+  for (const file of ['tests/missing.test.mjs', 'tests/flow.integration.test.mjs', 'outside.test.mjs', 'tests', '--unknown']) {
+    await assert.rejects(collectStackUnitTestFiles(entry, { files: [file], cwd: fixture.root }), undefined, file);
+  }
+  const full = await collectStackUnitTestFiles(entry);
+  assert.deepEqual(full.testFiles, [fixture.path('scripts/first.test.mjs'), fixture.path('tests/second.test.mjs'), fixture.path('tests/unselected.test.mjs')]);
 });
 
-test('collectStackIntegrationTestFilesFromDirs collects scripts and tests using integration suffix rules', async () => {
-  const calls = [];
-  const collect = async (options) => {
-    calls.push(options);
-    return [`${options.dir}/file.integration.test.mjs`];
-  };
-
+test('collectStackIntegrationTestFilesFromDirs collects scripts and tests using integration suffix rules', async (t) => {
+  const fixture = await createTempFixture(t);
+  await mkdir(fixture.path('scripts', 'nested'), { recursive: true });
+  await mkdir(fixture.path('tests'));
+  for (const file of [
+    'scripts/nested/flow.integration.test.mjs',
+    'scripts/real.real.integration.test.mjs',
+    'tests/flow.integration.test.mjs',
+    'tests/real.real.integration.test.mjs',
+    'scripts/unit.test.mjs',
+    'tests/unit.test.mjs',
+    'tests/not-a-test.mjs',
+  ]) await writeFile(fixture.path(file), '');
   const files = await collectStackIntegrationTestFilesFromDirs({
-    scriptsDir: '/tmp/scripts',
-    testsDir: '/tmp/tests',
-    collect,
+    scriptsDir: fixture.path('scripts'),
+    testsDir: fixture.path('tests'),
   });
-
-  assert.deepEqual(files, ['/tmp/scripts/file.integration.test.mjs', '/tmp/tests/file.integration.test.mjs']);
-  assert.deepEqual(calls, [
-    {
-      dir: '/tmp/scripts',
-      includeSuffixes: STACK_INTEGRATION_INCLUDE_SUFFIXES,
-    },
-    {
-      dir: '/tmp/tests',
-      includeSuffixes: STACK_INTEGRATION_INCLUDE_SUFFIXES,
-    },
+  assert.deepEqual(files, [
+    fixture.path('scripts/nested/flow.integration.test.mjs'),
+    fixture.path('scripts/real.real.integration.test.mjs'),
+    fixture.path('tests/flow.integration.test.mjs'),
+    fixture.path('tests/real.real.integration.test.mjs'),
   ]);
 });

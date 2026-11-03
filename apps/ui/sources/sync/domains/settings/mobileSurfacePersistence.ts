@@ -59,6 +59,29 @@ export function resolveProjectMobileSurfaceStorageKey(input: Readonly<{
     return scope ? buildRealmQualifiedMobileSurfaceStorageKey('project', scope, workspaceRefId) : null;
 }
 
+/** Resolve a visible census together; exact checkout/realm admission stays with the single-key owner. */
+export function resolveProjectMobileSurfaceStorageKeys(input: Readonly<{
+    workspaceRefs: readonly WorkspaceRefV1[];
+    activeScope: ServerAccountScope | null | undefined;
+    activeServerId: string | null | undefined;
+}>): readonly (string | null)[] {
+    // Candidate selection avoids scanning the full census once per checkout.
+    // Keep every same-id candidate so duplicates and Home aliases still fail
+    // closed through the canonical resolver, with no retained routing cache.
+    const refsById = new Map<string, WorkspaceRefV1[]>();
+    for (const ref of input.workspaceRefs) {
+        const id = normalizeSessionLocalPreferenceIdentityPart(ref.id);
+        if (!id) continue;
+        const candidates = refsById.get(id);
+        if (candidates) candidates.push(ref);
+        else refsById.set(id, [ref]);
+    }
+    return input.workspaceRefs.map(ref => resolveProjectMobileSurfaceStorageKey({
+        workspaceRefs: refsById.get(ref.id.trim()) ?? [], workspaceRefId: ref.id,
+        activeScope: input.activeScope, activeServerId: input.activeServerId, targetServerId: ref.serverId,
+    }));
+}
+
 /**
  * Resolves the current realm key and the one attributable predecessor key as a
  * single persistence decision. The predecessor is reachable only after the

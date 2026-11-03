@@ -13,6 +13,7 @@ import { resolveCliAgentStartContextV1 } from './resolveCliAgentStartContextV1';
 import { createUnavailableActionTransportDeps } from '@/testkit/actionTransportDeps';
 import { writeSessionRoleConfigurationV1ToMetadata, writeSessionRoleIdV1ToMetadata } from '@happier-dev/protocol/prompts/roles/sessionRolesSnapshot';
 import { readSessionWorkspaceWritesV1 } from '@happier-dev/protocol/prompts/roles/resolveRoleSelectionV1';
+import { createRoleSourceReader } from '@/session/roles/roleSources';
 
 // Storage is the test boundary; production callers supply their retained reader.
 function createRoleActionExecutor(params: Parameters<typeof createOwnerRoleActionExecutor>[0]) {
@@ -23,6 +24,86 @@ function createRoleActionExecutor(params: Parameters<typeof createOwnerRoleActio
 }
 
 describe('role Action effects', () => {
+  it.each([false, true])('reads only demanded Role bodies across scaled public edits (inherited snapshots: %s)', async inherited => {
+    const currentRoleId = 'current-role';
+    const requestedRoleId = 'requested-role';
+    const allow = { ...BUILT_IN_ROLES_V1.builder, instructions: 'Current guidance', workspaceWrites: 'allow' as const };
+    const deny = { ...BUILT_IN_ROLES_V1.builder, instructions: 'Requested guidance', workspaceWrites: 'deny' as const };
+    const roles: Readonly<Record<string, typeof allow | typeof deny>> = { [currentRoleId]: allow, [requestedRoleId]: deny };
+    const roleIds = [currentRoleId, requestedRoleId, ...Array.from({ length: 1_000 }, (_, index) => `unrelated-${index}`)];
+    const costs = { pages: 0, bodies: 0 };
+    const row = (artifactId: string) => ({ artifactId, ownerAccountId: 'account', access: 'owner' as const,
+      header: { kind: 'role.v1' }, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1,
+      body: JSON.stringify(roles[artifactId] ?? allow) });
+    // Only Artifact persistence is substituted. The public Action, selected
+    // reader, Role precedence, native policy admission and outbox replay are real.
+    const readRoleSources = createRoleSourceReader({ readPluginRoles: () => [], artifactStore: {
+      read: async artifactId => {
+        if (!roleIds.includes(artifactId)) return null;
+        costs.bodies++;
+        return { ...row(artifactId), revision: { headerVersion: 1, bodyVersion: 1 } };
+      },
+      list: async options => {
+        costs.pages++;
+        const start = Number(options?.cursor ?? 0);
+        const ids = roleIds.slice(start, start + (options.limit ?? roleIds.length));
+        costs.bodies += ids.length;
+        const next = start + ids.length;
+        return { coverage: 'complete', items: ids.map(row), ...(next < roleIds.length ? { nextCursor: String(next) } : {}) };
+      },
+    } });
+    let metadata: Metadata = { ...createTestMetadata(), work: { sessionRolesV1: {
+      roleId: currentRoleId, notes: '', overrides: {}, sessionRoles: inherited ? {
+        [currentRoleId]: { ...allow, roleId: currentRoleId }, [requestedRoleId]: { ...deny, roleId: requestedRoleId },
+      } : {},
+    } } };
+    let nativePolicy: 'allow' | 'deny' = 'allow';
+    const queued: RegisteredSessionStateFieldMutationV1[] = [];
+    const roleActionExecute = createRoleActionExecutor({ sessionId: 'session-1', readSessionMetadata: () => metadata, readRoleSources,
+      prepareWorkspaceWritesPolicy: async policy => { nativePolicy = policy; return { ok: true }; },
+      stageSessionStateMutation: async mutation => {
+        queued.push(mutation);
+        metadata = applyRegisteredSessionStateFieldMutationToMetadata(metadata, mutation);
+      },
+    });
+    const executor = createActionExecutor({ ...createUnavailableActionTransportDeps(), roleActionExecute });
+    const backendTarget = { kind: 'backend', backendId: 'codex' } as const;
+    const agentStartContext = resolveCliAgentStartContextV1({ sessionId: 'session-1', metadata,
+      machineId: 'machine', directory: '/repo', backendTarget, starterDepth: 0, turnDepth: 0,
+      callerPermissionMode: 'default', settings: accountSettingsParse({}), roles: {},
+      appliedChildSelection: { status: 'applied', backendTarget, modelId: 'fixture-model', connectedServices: null },
+    });
+    if (!agentStartContext) throw new Error('Missing admitted fixture Session');
+    const context = { surface: 'agent' as const, authority: 'account_automation' as const,
+      callerPermissionMode: 'default', workspaceWrites: 'allow' as const, agentStartContext };
+    const observedCosts: typeof costs[] = [];
+    const captureCosts = () => { observedCosts.push({ ...costs }); costs.pages = 0; costs.bodies = 0; };
+    expect(await executor.execute('session.role.set', { sessionId: 'session-1', roleId: requestedRoleId }, context))
+      .toEqual({ ok: true, result: { updated: true } });
+    expect({ roleId: readSessionRoleIdV1(metadata), nativePolicy,
+      effectivePolicy: readSessionWorkspaceWritesV1(metadata, { settingsRoles: roles }) })
+      .toEqual({ roleId: requestedRoleId, nativePolicy: 'deny', effectivePolicy: 'deny' });
+    captureCosts();
+    expect(await executor.execute('session.roles.override.set', { sessionId: 'session-1', roleId: currentRoleId,
+      workspaceWrites: 'deny' }, context))
+      .toEqual({ ok: true, result: { updated: true } });
+    expect(metadata.work?.sessionRolesV1?.overrides[currentRoleId]).toMatchObject({
+      workspaceWrites: 'deny',
+    });
+    expect(readSessionWorkspaceWritesV1(writeSessionRoleIdV1ToMetadata(metadata, currentRoleId), { settingsRoles: roles })).toBe('deny');
+    captureCosts();
+    expect(await executor.execute('session.roles.override.set', { sessionId: 'session-1', roleId: requestedRoleId,
+      workspaceWrites: 'allow' }, context)).toMatchObject({ ok: false, errorCode: 'role_policy_denied' });
+    expect(queued).toHaveLength(2);
+    expect(nativePolicy).toBe('deny');
+    captureCosts();
+    expect(await executor.execute('session.notes.set', { sessionId: 'session-1', notes: 'New worker boundary' }, context))
+      .toEqual({ ok: true, result: { updated: true } });
+    expect(metadata.work?.sessionRolesV1?.notes).toBe('New worker boundary');
+    expect(readSessionWorkspaceWritesV1(metadata, { settingsRoles: roles })).toBe('deny');
+    captureCosts();
+    expect(observedCosts).toEqual((inherited ? [0, 0, 0, 0] : [2, 2, 1, 1]).map(bodies => ({ pages: 0, bodies })));
+  });
   it('changes worker-question answering through the role Action without replacing newer role configuration', async () => {
     let metadata: Metadata = { ...createTestMetadata(), work: { sessionRolesV1: {
       roleId: 'builder', inheritedFrom: 'lead', notes: 'Original notes',

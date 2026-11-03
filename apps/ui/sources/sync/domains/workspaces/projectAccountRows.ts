@@ -2,7 +2,7 @@ import { useStoreWithEqualityFn } from 'zustand/traditional';
 import type { StoreApi } from 'zustand/vanilla';
 import type { WorkspaceRefV1 } from '@happier-dev/protocol/workspaces/workspaceRefV1';
 import type { WorkspaceSyncRelationshipV1 } from '@happier-dev/protocol';
-import type { ProjectAccountOrganizationV1, ProjectAccountRowKeyV1 } from '@happier-dev/protocol/projects/projectAccountRowsV1';
+import type { ProjectAccountAuthoringSessionV1, ProjectAccountOrganizationV1, ProjectAccountRowKeyV1 } from '@happier-dev/protocol/projects/projectAccountRowsV1';
 import { areServerAccountScopesEqual, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { readRegisteredStorageState, subscribeRegisteredStorageState } from '@/sync/domains/state/storageStateReaderBridge';
 import { resolveWorkspaceRefById } from './workspaceRefs';
@@ -17,9 +17,13 @@ export type ProjectAccountRowsSnapshot = Readonly<{
     scope: ServerAccountScope;
     status: ProjectAccountRowsStatus;
     coverage: 'unknown' | 'partial' | 'complete';
+    /** When the rows were last read successfully; a failed refresh labels the retained rows with it. */
+    lastReadyAtMs?: number;
     workspaceRefs: readonly WorkspaceRefV1[];
     relationships: readonly WorkspaceSyncRelationshipV1[];
     organizations: readonly ProjectOrganizationRow[];
+    /** Server-owned display relationships; absence retains the older hydrated-Session fallback. */
+    authoringSessionsByPhysicalKey?: Readonly<Record<string, ProjectAccountAuthoringSessionV1>>;
     revisionsByPhysicalKey: Readonly<Record<string, number>>;
 }>;
 
@@ -60,7 +64,10 @@ export function useProjectAccountRows<T>(select?: (rows: ProjectAccountRowsSnaps
 /** The complete opened checkout census, shared by subscriptions and pure projections. */
 export function readProjectAccountWorkspaceRefs(state: Parameters<typeof readCurrentProjectAccountRows>[0]): readonly WorkspaceRefV1[] | undefined {
     const rows = readCurrentProjectAccountRows(state);
-    return rows?.status === 'ready' && rows.coverage === 'complete' ? rows.workspaceRefs : undefined;
+    // The producer retains complete rows only during refresh or a known transient failure;
+    // authority/mode failures revoke that snapshot rather than being cached by this reader.
+    return rows?.coverage === 'complete' && (rows.status === 'ready' || rows.status === 'loading' || rows.status === 'error')
+        ? rows.workspaceRefs : undefined;
 }
 /** Demand only the opened checkout facts; unrelated Project records retain the selected identity. */
 export function useProjectAccountWorkspaceRefs(enabled: boolean): readonly WorkspaceRefV1[] | undefined {

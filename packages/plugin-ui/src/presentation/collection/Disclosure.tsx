@@ -258,15 +258,17 @@ function HappierDisclosureImpl<Motion extends HappierDisclosureMotion>(props: Ha
 
     // Reconcile an in-flight expand whose body changed height after it armed (otherwise the reveal
     // undershoots to the stale height until the timing ends). Once settled, the natural height owns
-    // growth, so a settled body is never re-pinned here.
+    // growth, so a settled body is never re-pinned here. The direction is the effect's own
+    // (`prevExpandedRef`): a layout from before a collapse, or from a body whose content swapped while it
+    // closes, must not turn the closing reveal back into an expand (it would stay mounted at opacity 0).
     if (
-      expanded
+      prevExpandedRef.current
       && heightPinnedRef.current
       && Math.abs(measured - animationTargetRef.current) > HEIGHT_EPSILON
     ) {
       armExpandTiming(measured);
     }
-  }, [expanded, reducedMotion, armExpandTiming]);
+  }, [reducedMotion, armExpandTiming]);
 
   // The header never draws its own row separator (a zero-height line on web/Android); the disclosure
   // owns the single inter-item hairline so separation paints the same everywhere.

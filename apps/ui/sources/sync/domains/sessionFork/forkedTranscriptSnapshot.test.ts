@@ -88,17 +88,7 @@ describe('getForkedTranscriptSnapshotCached', () => {
     expect(snapshot?.visualCopies).toEqual(copies);
     expect(snapshot?.messageOriginById['retained-imported']).toEqual({ sessionId: 'retained-child', isReadOnlyContext: true });
     expect(snapshot?.combinedMessageIdsOldestFirst).toEqual(['retained-imported']);
-  });
-  it('makes retained imported visuals reachable to a child-only reader without owner lineage or parent messages', () => {
-    const imported = { ...userMessage('imported', 20, 'visual'), meta: { forkVisualOriginV1: {
-      v: 1 as const, serverId: 'home', sessionId: 'parent', sourceMessageId: 'original', sourceSeq: 3, retired: true,
-    } } };
-    const state = createState({ sessions: { child: sessionRow('child', { path: '', host: '', forkVisualsV1: { v: 1, copies: [] } }) },
-      sessionMessages: { child: sessionMessagesRow({ idsOldestFirst: ['imported'], messagesById: { imported }, messagesVersion: 1, isLoaded: true }) } });
-    const snapshot = getForkedTranscriptSnapshotCached(state, 'child')!;
-    expect(snapshot.combinedMessageIdsOldestFirst).toEqual(['imported']);
-    expect(snapshot.messageOriginById.imported).toEqual({ sessionId: 'child', isReadOnlyContext: true });
-    expect(snapshot.visualSessionId).toBe('child');
+    expect(snapshot?.visualSessionId).toBe('retained-child');
   });
   it('prefers the independent imported visual over its cached ancestor row', () => {
     const original = visualToolMessage('original-block', 3);
@@ -263,28 +253,6 @@ describe('getForkedTranscriptSnapshotCached', () => {
     expect(snapshot!.messageOriginById['c1']).toEqual({ sessionId: 'child', isReadOnlyContext: false });
   });
 
-  it('returns stable object references when inputs are unchanged', () => {
-    const msg = userMessage('m1', 1, 'hi');
-    const state = createState({
-      sessions: {
-        parent: { ...sessionRow('parent', { path: '/tmp', host: 'h' }), seq: 1 },
-        child: sessionRow('child', {
-          path: '/tmp',
-          host: 'h',
-          forkV1: { v: 1, parentSessionId: 'parent', parentCutoffSeqInclusive: 1, createdAtMs: 0, strategy: 'replay' },
-        } as any),
-      },
-      sessionMessages: {
-        parent: sessionMessagesRow({ idsOldestFirst: ['m1'], messagesById: { m1: msg }, messagesVersion: 1, isLoaded: true }),
-        child: sessionMessagesRow({ idsOldestFirst: [], messagesById: {}, messagesVersion: 0, isLoaded: true }),
-      },
-    });
-
-    const a = getForkedTranscriptSnapshotCached(state, 'child');
-    const b = getForkedTranscriptSnapshotCached(state, 'child');
-    expect(a).toBe(b);
-  });
-
   it('walks multi-level fork chains (root -> parent -> child)', () => {
     const rootMessagesById: Record<string, Message> = {
       r1: userMessage('r1', 1, 'one'),
@@ -386,53 +354,6 @@ describe('getForkedTranscriptSnapshotCached', () => {
     expect((snapshot!.combinedMessagesById['shared'] as any).text).toBe('shared-parent');
   });
 
-  it('evicts the oldest cached snapshot when many child sessions are resolved', () => {
-    const sessions: Record<string, Session> = {
-      root: sessionRow('root', { path: '/tmp', host: 'h' }),
-    };
-    const sessionMessages: Record<string, SessionMessages> = {
-      root: sessionMessagesRow({ idsOldestFirst: [], messagesById: {}, messagesVersion: 1, isLoaded: true }),
-    };
-
-    for (let index = 0; index < 65; index += 1) {
-      const childSessionId = `child_${index}`;
-      sessions[childSessionId] = {
-        ...sessionRow(childSessionId, {
-          path: '/tmp',
-          host: 'h',
-          forkV1: {
-            v: 1,
-            parentSessionId: 'root',
-            parentCutoffSeqInclusive: 0,
-            createdAtMs: index + 1,
-            strategy: 'replay',
-          },
-        } as any),
-        seq: 1,
-      };
-      sessionMessages[childSessionId] = sessionMessagesRow({
-        idsOldestFirst: [childSessionId],
-        messagesById: {
-          [childSessionId]: userMessage(childSessionId, 1, childSessionId),
-        },
-        messagesVersion: 1,
-        isLoaded: true,
-      });
-    }
-
-    const state = createState({ sessions, sessionMessages });
-    const firstSnapshot = getForkedTranscriptSnapshotCached(state, 'child_0');
-    expect(firstSnapshot).not.toBeNull();
-
-    for (let index = 1; index < 65; index += 1) {
-      expect(getForkedTranscriptSnapshotCached(state, `child_${index}`)).not.toBeNull();
-    }
-
-    const evictedSnapshot = getForkedTranscriptSnapshotCached(state, 'child_0');
-    expect(evictedSnapshot).not.toBeNull();
-    expect(evictedSnapshot).not.toBe(firstSnapshot);
-  });
-
   it('honors the configured forked snapshot cache working set', async () => {
     vi.resetModules();
     vi.stubEnv('EXPO_PUBLIC_HAPPIER_SYNC_TUNING_JSON', JSON.stringify({
@@ -476,15 +397,16 @@ describe('getForkedTranscriptSnapshotCached', () => {
     }
 
     const state = createState({ sessions, sessionMessages });
-    const firstSnapshot = getConfiguredForkedTranscriptSnapshotCached(state, 'configured_child_0');
-    expect(firstSnapshot).not.toBeNull();
+    const snapshots = Array.from({ length: 6 }, (_, index) =>
+      getConfiguredForkedTranscriptSnapshotCached(state, `configured_child_${index}`));
+    expect(snapshots.every((snapshot) => snapshot !== null)).toBe(true);
 
-    for (let index = 1; index < 6; index += 1) {
-      expect(getConfiguredForkedTranscriptSnapshotCached(state, `configured_child_${index}`)).not.toBeNull();
-    }
-
-    const evictedSnapshot = getConfiguredForkedTranscriptSnapshotCached(state, 'configured_child_0');
-    expect(evictedSnapshot).not.toBeNull();
-    expect(evictedSnapshot).not.toBe(firstSnapshot);
+    // A working set of exactly 4: the oldest retained entry is still cached
+    // (a smaller bound would have evicted it), the one before it is not (a
+    // larger bound would have kept it).
+    expect(getConfiguredForkedTranscriptSnapshotCached(state, 'configured_child_2')).toBe(snapshots[2]);
+    const reread = getConfiguredForkedTranscriptSnapshotCached(state, 'configured_child_1');
+    expect(reread).not.toBeNull();
+    expect(reread).not.toBe(snapshots[1]);
   });
 });

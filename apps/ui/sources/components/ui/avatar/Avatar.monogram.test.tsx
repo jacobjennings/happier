@@ -1,32 +1,8 @@
-import * as React from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 
-import { installAvatarCommonModuleMocks } from './avatarTestHelpers';
-
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-
-installAvatarCommonModuleMocks({
-    reactNative: async () => {
-        const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-        return createReactNativeWebMock({
-            View: (props: React.ComponentProps<'div'>) => React.createElement('View', props, props.children),
-            Text: (props: React.ComponentProps<'span'>) => React.createElement('Text', props, props.children),
-        });
-    },
-    storage: async () => {
-        const { createStorageModuleStub, createUseSettingMock } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleStub({
-            useSetting: createUseSettingMock({
-                values: {
-                    avatarStyle: 'gradient',
-                    showFlavorIcons: false,
-                },
-            }),
-        });
-    },
-});
 
 const { Avatar } = await import('./Avatar');
 

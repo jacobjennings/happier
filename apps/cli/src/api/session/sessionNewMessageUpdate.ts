@@ -101,6 +101,9 @@ export function handleSessionNewMessageUpdate(params: {
             lastObservedUserMessageSeq: params.lastObservedUserMessageSeq,
         };
     }
+    if (params.update.body.delivery !== 'full') {
+        throw new Error('Session runtime requires full message delivery');
+    }
 
     const rawInputAdmissionReceipt = params.update.body.message.inputAdmissionReceipt;
     const inputAdmissionReceipt = SessionInputAdmissionReceiptV1Schema.safeParse(rawInputAdmissionReceipt);
@@ -126,15 +129,15 @@ export function handleSessionNewMessageUpdate(params: {
         };
     }
 
-    const parsedContent = SessionMessageContentSchema.safeParse((params.update.body as any).message?.content);
+    const parsedContent = SessionMessageContentSchema.safeParse(params.update.body.message.content);
     if (!parsedContent.success) {
-        const rawContent = (params.update.body as any).message?.content;
+        const rawContent = params.update.body.message.content;
         params.debug('[SOCKET] [UPDATE] Ignoring new-message with invalid content envelope', {
             issues: parsedContent.error.issues.map((i) => ({
                 code: i.code,
                 path: i.path,
-                expected: 'expected' in i ? (i as any).expected : undefined,
-                received: 'received' in i ? (i as any).received : undefined,
+                expected: 'expected' in i ? i.expected : undefined,
+                received: 'received' in i ? i.received : undefined,
             })),
             contentShape: summarizeValueShapeForLog(rawContent),
         });

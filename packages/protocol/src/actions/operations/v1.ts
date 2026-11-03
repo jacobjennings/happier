@@ -1,4 +1,7 @@
+import { MachineSudoPasswordPromptV1Schema } from '../../machines/adminAccessV1.js';
+import { MachineAdministratorUsernameV1Schema } from '../../machines/adminAccessV1.js';
 import { lazyZodSchema } from '../../lazyZodSchema.js';
+import { MachineAgentIsolationReadyPreviewV1Schema } from '../../machines/agentIsolationV1.js';
 import { z } from 'zod/mini';
 
 import { SessionForkStrategySchema } from '../../sessions/fork.js';
@@ -10,7 +13,7 @@ import { ProjectCommandSourceV1Schema } from '../../workspaces/projectSetup/proj
 import { LocalServiceManagedServiceActionTargetV1Schema, ProjectServiceDeclarationRefV1Schema } from '../../local/services/actions/v1.js';
 import { createCanonicalJsonSigningInput } from '../../crypto/canonicalJson.js';
 import { ManagedControllerV1Schema } from '../../machines/managed/managedMachineV1.js';
-import { ManagedResourceV1Schema } from '../../machines/managed/providerFactsV1.js';
+import { ManagedResourceV1Schema, MachineProvisionerNativeCauseV1Schema } from '../../machines/managed/providerFactsV1.js';
 import { ActionApprovalRequestCreatedResultSchema, ActionOperationCredentialUseV1Schema } from '../actionExecutionResult.js';
 import { WorkspaceExecutionConfigAddressV1Schema } from '../../workspaces/projectWorkerPreferencesV1.js';
 
@@ -77,6 +80,7 @@ export const ActionOperationReentryDecisionV1Schema = lazyZodSchema(() => z.enum
 export type ActionOperationReentryDecisionV1 = z.infer<typeof ActionOperationReentryDecisionV1Schema>;
 export type ActionOperationReentryPolicyV1 = (
   snapshot: ActionOperationSnapshotV1,
+  input?: unknown,
 ) => ActionOperationReentryDecisionV1;
 export const ActionOperationReentryPolicyV1Schema = lazyZodSchema(() => z.custom<ActionOperationReentryPolicyV1>(
   (value) => typeof value === 'function',
@@ -129,13 +133,34 @@ export const ManagedControllerRequestFailureDetailsV1Schema = lazyZodSchema(() =
   code: z.optional(z.string().check(z.regex(/^[a-z][a-z0-9_-]*$/i), z.maxLength(ACTION_OPERATION_ERROR_CODE_MAX_LENGTH_V1))),
 }));
 export type ManagedControllerRequestFailureDetailsV1 = Readonly<z.infer<typeof ManagedControllerRequestFailureDetailsV1Schema>>;
+/** Interpreter process facts only; native output and submitted plans never cross this seam. */
+export const ManagedNativeFailureDetailsV1Schema = lazyZodSchema(() => z.strictObject({
+  kind: z.literal('managedNative'), nativeCause: MachineProvisionerNativeCauseV1Schema,
+}));
+export type ManagedNativeFailureDetailsV1 = Readonly<z.infer<typeof ManagedNativeFailureDetailsV1Schema>>;
+/** Interpreter process facts only; native output and submitted plans never cross this seam. */
+export const ManagedBootstrapFailureDetailsV1Schema = lazyZodSchema(() => z.strictObject({
+  kind: z.literal('managedBootstrap'),
+  phase: z.enum(['check', 'apply']),
+  response: z.enum(['missing_result', 'invalid_response', 'result']),
+  exitStatus: z.number().check(z.int()),
+  stdoutPresent: z.boolean(),
+  stderrPresent: z.boolean(),
+  resultStatus: z.optional(z.enum(['checked', 'applied', 'plan_changed', 'unsupported', 'unavailable', 'failed', 'cancelled', 'outcome_unknown'])),
+  reason: z.optional(z.string().check(z.regex(/^[a-z][a-z0-9_]*$/i), z.maxLength(ACTION_OPERATION_ERROR_CODE_MAX_LENGTH_V1))),
+}).check(z.refine(value => value.response === 'result'
+  ? value.resultStatus !== undefined
+  : value.resultStatus === undefined && value.reason === undefined)));
+export type ManagedBootstrapFailureDetailsV1 = Readonly<z.infer<typeof ManagedBootstrapFailureDetailsV1Schema>>;
 export const ActionOperationFailureV1Schema = lazyZodSchema(() => z.strictObject({
   errorCode: ActionOperationErrorCodeV1Schema,
   error: z.string().check(z.trim(), z.minLength(1), z.maxLength(ACTION_OPERATION_ERROR_MAX_LENGTH_V1)),
   details: z.optional(z.union([ProjectSetupConsentFailureDetailsV1Schema, ProjectScriptEffectChangedFailureDetailsV1Schema,
-    ProjectWorkerNoAcceptanceFailureDetailsV1Schema, ApprovalStaleFailureDetailsSchema, ManagedControllerRequestFailureDetailsV1Schema])),
+    ProjectWorkerNoAcceptanceFailureDetailsV1Schema, ApprovalStaleFailureDetailsSchema, ManagedControllerRequestFailureDetailsV1Schema, ManagedNativeFailureDetailsV1Schema])),
 }).check(z.refine(failure => !failure.details || (!('kind' in failure.details)
   ? failure.errorCode === 'approval_stale'
+  : failure.details.kind === 'managedNative'
+  ? true
   : failure.details.kind === 'managedControllerRequest'
   ? !failure.details.code || failure.details.code === failure.errorCode
   : failure.details.kind === 'pendingApproval'
@@ -177,7 +202,21 @@ export const ProjectCommandAttachmentV1Schema = lazyZodSchema(() => z.strictObje
 })));
 export type ProjectCommandAttachmentV1 = Readonly<z.infer<typeof ProjectCommandAttachmentV1Schema>>;
 
+/** Existing managed installation decisions retain their exact displayed question. */
+export const ManagedMachineBootstrapApprovalPromptV1Schema = lazyZodSchema(() => z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('auth.approveRemoteProvisioning'), message: ActionOperationProgressLabelV1Schema }),
+  z.strictObject({ kind: z.enum(['ssh.trustHost', 'ssh.replaceHostKey']), message: ActionOperationProgressLabelV1Schema,
+    host: z.string().check(z.trim(), z.minLength(1)), keyType: z.nullable(z.string()),
+    fingerprint: z.string().check(z.trim(), z.minLength(1)), existingFingerprint: z.nullable(z.string()),
+  }),
+  z.strictObject({ kind: z.literal('daemon.replaceRemoteBackgroundServices'), message: ActionOperationProgressLabelV1Schema }),
+]));
 export const ActionOperationDomainRefV1Schema = lazyZodSchema(() => z.discriminatedUnion('kind', [
+    z.strictObject({
+    kind: z.literal('deployment'), serverId: ActionOperationIdentifierV1Schema,
+    environmentId: ActionOperationIdentifierV1Schema, deploymentId: ActionOperationIdentifierV1Schema,
+  }),
+
   z.strictObject({
     kind: z.literal('forkRequest'),
     id: ActionOperationIdentifierV1Schema,
@@ -205,6 +244,24 @@ export const ActionOperationDomainRefV1Schema = lazyZodSchema(() => z.discrimina
     targetMachineId: z.optional(ActionOperationIdentifierV1Schema),
   }),
   ProjectCommandAttachmentV1Schema,
+z.strictObject({
+    kind: z.literal('machineSetup'),
+    serverId: ActionOperationIdentifierV1Schema,
+    machineId: ActionOperationIdentifierV1Schema,
+    preset: z.optional(z.strictObject({ id: ActionOperationIdentifierV1Schema, revision: z.number().check(z.int(), z.nonnegative()) })),
+    managedId: z.optional(ActionOperationIdentifierV1Schema),
+    setupTask: z.optional(z.strictObject({
+      id: ActionOperationIdentifierV1Schema,
+      taskKind: z.enum(['machine.setup.plan.v1', 'machine.setup.apply.v1', 'machine.setup.remove.v1']),
+      prompt: z.optional(MachineSudoPasswordPromptV1Schema),
+    })),
+    terminalId: z.optional(ActionOperationIdentifierV1Schema),
+    terminals: z.optional(z.strictObject({
+      install: z.optional(ActionOperationIdentifierV1Schema),
+      setup: z.optional(ActionOperationIdentifierV1Schema),
+    })),
+    exitCode: z.optional(z.number().check(z.int())),
+  }),
   z.strictObject({
     kind: z.literal('machineEnvironment'),
     serverId: ActionOperationIdentifierV1Schema,
@@ -256,10 +313,11 @@ export type ActionOperationDomainRefV1 = Readonly<z.infer<typeof ActionOperation
 
 const ActionOperationTimestampV1Schema = lazyZodSchema(() => z.number().check(z.int(), z.nonnegative()));
 
-export const ActionOperationObservationV1Schema = lazyZodSchema(() => z.strictObject({
-  kind: z.enum(['outcome_uncertain', 'stop_unconfirmed']),
-  code: ActionOperationErrorCodeV1Schema,
-}));
+export const ActionOperationObservationV1Schema = lazyZodSchema(() => z.union([
+  z.strictObject({ kind: z.enum(['outcome_uncertain', 'stop_unconfirmed']), code: ActionOperationErrorCodeV1Schema }),
+  z.strictObject({ kind: z.literal('review_required'), code: z.literal('agent_isolation_effect_changed'),
+    machineId: ActionOperationIdentifierV1Schema, enabled: z.boolean(), current: MachineAgentIsolationReadyPreviewV1Schema }),
+]));
 export type ActionOperationObservationV1 = Readonly<z.infer<typeof ActionOperationObservationV1Schema>>;
 
 export const ActionOperationSnapshotV1Schema = lazyZodSchema(() => z.strictObject({
@@ -309,6 +367,10 @@ export const ActionOperationSnapshotV1Schema = lazyZodSchema(() => z.strictObjec
   }
   if (terminal && snapshot.observation !== undefined) {
     context.addIssue({ code: 'custom', path: ['observation'], message: 'Unconfirmed observations cannot accompany terminal process evidence.' });
+  }
+  if (snapshot.observation?.kind === 'review_required' && (snapshot.actionId !== 'machines.agentIsolation.set'
+    || snapshot.observation.machineId !== snapshot.scope.machineId)) {
+    context.addIssue({ code: 'custom', path: ['observation'], message: 'Isolation review belongs to its exact Machine operation.' });
   }
   if (snapshot.setupReview && (terminal || snapshot.domainRef?.kind !== 'projectCommand'
     || !canRetainProjectSetupReviewV1(snapshot.actionId)
@@ -430,3 +492,14 @@ export function canAdvanceActionOperationSnapshotV1(current: ActionOperationSnap
   if (['succeeded', 'failed', 'cancelled'].includes(current.state) && incoming.state !== current.state) return false;
   return !(current.state === 'running' && incoming.state === 'accepted');
 }
+
+export const ManagedMachineBootstrapPromptV1Schema = lazyZodSchema(() => z.union([
+  ManagedMachineBootstrapApprovalPromptV1Schema, ManagedMachineBootstrapEstablishPromptV1Schema,
+]));
+
+export const ManagedMachineBootstrapEstablishPromptV1Schema = lazyZodSchema(() => z.strictObject({
+  kind: z.literal('administrator.establish'), promptId: ActionOperationIdentifierV1Schema,
+  administratorUsername: MachineAdministratorUsernameV1Schema, message: ActionOperationProgressLabelV1Schema,
+}));
+
+export type ManagedMachineBootstrapPromptV1 = Readonly<z.infer<typeof ManagedMachineBootstrapPromptV1Schema>>;

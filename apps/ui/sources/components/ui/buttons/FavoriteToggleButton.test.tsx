@@ -1,10 +1,7 @@
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createPassThroughComponent } from '@/dev/testkit/mocks/components';
-import { createUnistylesMock } from '@/dev/testkit/mocks/unistyles';
 import { renderScreen } from '@/dev/testkit';
-import { installNewSessionComponentsCommonModuleMocks } from '@/components/sessions/new/components/newSessionComponentsTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -13,23 +10,31 @@ import { installNewSessionComponentsCommonModuleMocks } from '@/components/sessi
 // behind a tree of paths.
 vi.mock('@/components/ui/icons/Icon', () => ({ Icon: 'Icon' }));
 
-installNewSessionComponentsCommonModuleMocks({
-    reactNative: async () => {
-        const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-        return createReactNativeWebMock({
-            View: createPassThroughComponent('View'),
-            Pressable: createPassThroughComponent('Pressable'),
-        });
-    },
-    unistyles: async () => await createUnistylesMock({
+vi.mock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    const { createPassThroughComponent } = await import('@/dev/testkit/mocks/components');
+    return createReactNativeWebMock({
+        View: createPassThroughComponent('View'),
+        Pressable: createPassThroughComponent('Pressable'),
+    });
+});
+
+vi.mock('react-native-unistyles', async () => {
+    const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
+    return createUnistylesMock({
         theme: {
             colors: {
                 state: { warning: { foreground: '#f59e0b' } },
                 text: { tertiary: '#999' },
             },
         },
-    }),
+    });
 });
+
+function flattenStyle(style: unknown): Record<string, unknown> {
+    if (Array.isArray(style)) return Object.assign({}, ...style.map(flattenStyle));
+    return style !== null && typeof style === 'object' ? (style as Record<string, unknown>) : {};
+}
 
 describe('FavoriteToggleButton', () => {
     it('forwards onToggle with the row identity and stops event propagation so the row onSelect is not triggered', async () => {
@@ -116,8 +121,9 @@ describe('FavoriteToggleButton', () => {
         expect(icon!.props.color).not.toBe('#f59e0b');
     });
 
-    it('survives Pressable invoking the style callback with web-only `hovered` state', async () => {
+    it('lifts an inactive star to full opacity on web hover and dips it while pressed', async () => {
         const { FavoriteToggleButton } = await import('./FavoriteToggleButton');
+        const { motionTokens } = await import('@/components/ui/motion/motionTokens');
 
         const screen = await renderScreen(
             <FavoriteToggleButton
@@ -133,11 +139,31 @@ describe('FavoriteToggleButton', () => {
         const pressable = screen.findByTestId('favorite-toggle-style');
         const styleProp = pressable!.props.style;
 
-        // Pressable's `style` prop is a function on web; it must accept
-        // the (pressed, hovered) callback shape without throwing.
-        expect(typeof styleProp === 'function').toBe(true);
-        expect(() => styleProp({ pressed: false, hovered: true })).not.toThrow();
-        expect(() => styleProp({ pressed: true, hovered: false })).not.toThrow();
-        expect(() => styleProp({ pressed: false, hovered: false })).not.toThrow();
+        // RN-Web passes `hovered` alongside `pressed` to the style callback.
+        expect(typeof styleProp).toBe('function');
+        expect(flattenStyle(styleProp({ pressed: false, hovered: false })).opacity).toBe(0.5);
+        expect(flattenStyle(styleProp({ pressed: false, hovered: true })).opacity).toBe(1);
+        expect(flattenStyle(styleProp({ pressed: true, hovered: false })).opacity).toBe(motionTokens.press.opacity);
+    });
+
+    it('reaches 8 px past the drawn star on every side without enlarging it', async () => {
+        const { FavoriteToggleButton } = await import('./FavoriteToggleButton');
+
+        const screen = await renderScreen(
+            <FavoriteToggleButton
+                id="/x"
+                isFavorite={false}
+                addLabel="Add"
+                removeLabel="Remove"
+                onToggle={() => {}}
+                testID="favorite-toggle-hit"
+            />,
+        );
+
+        const pressable = screen.findByTestId('favorite-toggle-hit');
+        expect(pressable!.props.hitSlop).toEqual({ top: 8, right: 8, bottom: 8, left: 8 });
+        const restingStyle = flattenStyle(pressable!.props.style({ pressed: false, hovered: false }));
+        expect(restingStyle.width).toBe(24);
+        expect(restingStyle.height).toBe(24);
     });
 });

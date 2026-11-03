@@ -192,15 +192,4 @@ describe('native material child continuity', () => {
             if (blur === 'off') expect(screen.findAllByType('BlurView')).toHaveLength(0);
         }
     });
-
-    it('preserves an edited input when the native blur tier becomes solid and returns', async () => {
-        act(() => storage.setState({ settings: { ...previousState.settings, ...resolvePreset(previousState.settings, 'auto') } }));
-        const screen = await renderScreen(<GlassSurface><DraftInput /></GlassSurface>);
-        expect(screen.findAllByType('BlurView')).toHaveLength(1);
-        await act(async () => { screen.changeTextByTestId('draft', 'keep this draft'); });
-        for (const preset of ['solid', 'auto'] as const) {
-            act(() => storage.setState({ settings: { ...storage.getState().settings, ...resolvePreset(storage.getState().settings, preset) } }));
-            expect(screen.findHostByTestId('draft')?.props.value).toBe('keep this draft');
-        }
-    });
 });

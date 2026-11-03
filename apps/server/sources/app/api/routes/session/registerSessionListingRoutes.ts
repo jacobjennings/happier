@@ -21,7 +21,6 @@ import {
     runWithSessionListProjectionFallback,
     V2_ACTIVE_SESSION_LIST_ROW_LIMIT,
 } from "@/app/session/listing/page";
-import { listLegacyV1SessionsForAccount } from "@/app/session/listing/legacy";
 import { listSessionsForAccount, SessionListInvalidCursorError } from "@/app/session/listing/service";
 import { loadSessionLatestFailureSequencesInTx } from "@/app/session/personal/projection";
 import { createV2SessionListServerTiming } from "@/app/session/listing/timing";
@@ -43,6 +42,8 @@ import { readmitSessionRowsWithAdmissionInTx } from "@/app/session/access/sessio
 import { readSessionAccessAuthenticationFromRequest, type SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import { listQueuedExecutionRunPendingTargetsForSessions } from "@/app/session/pending/pendingMessageService";
 import { loadPendingActivationPublicationInTx } from '@/app/session/pending/publishPendingMutation';
+import { readSessionManagedSubtreeSessionIdsInTx, projectSessionRuntimeManagedSubtreeAccess } from '@/app/session/follow/sessionManagerSubtree';
+import { SessionRuntimeManagedSubtreeSnapshotRecordV1Schema } from '@happier-dev/protocol/sessions/listing/response';
 import { PRESENT_USER_REQUIRED_ERROR } from "@/app/api/utils/apiTokenRouteAdmission";
 import { projectSessionManagerForRowsInTx, readmitCapturedSessionManagerReferencesInTx, type SessionManagerContribution } from "@/app/session/awareness/sessionManagerProjection";
 import { projectSessionTurnWaitingHttpResponse } from '@/app/clientCompatibility/sessionTurnWaitingCompatibility';
@@ -113,7 +114,7 @@ async function findV2SessionByIdRowInTx(tx: Tx, params: Readonly<{
 
 
 /** Shared single/batch read; admission, publication and storage policy stay at this owner. */
-export async function readSessionDetail(input: Readonly<{ userId: string; sessionId: string; authentication: SessionAccessAuthentication; accessProjectionVersion?: number; storedContentCompatibility: AccountStoredContentCompatibilityEvaluation }>): Promise<
+export async function readSessionDetail(input: Readonly<{ userId: string; sessionId: string; authentication: SessionAccessAuthentication; accessProjectionVersion?: number; storedContentCompatibility: AccountStoredContentCompatibilityEvaluation; underSessionId?: string }>): Promise<
     | { status: 200; body: z.infer<typeof V2SessionByIdResponseSchema> }
     | { status: 403; body: { error: 'team_authentication_required' } }
     | { status: 404; body: { error: 'Session not found' } }
@@ -135,13 +136,24 @@ export async function readSessionDetail(input: Readonly<{ userId: string; sessio
         } };
     }
 
+    const runtimeManagedSubtree = input.underSessionId !== undefined && authentication.sessionRuntimePrincipal !== undefined;
+    const { sessionRuntimePrincipal: _principal, ...accountAuthentication } = authentication;
+    const viewAccess = (sessionId: string) => projectSessionRuntimeManagedSubtreeAccess({ accountId: userId, sessionId });
+    // The graph/access owner supplies the corpus, including current runtime proof.
+    // This never changes the exact-detail authority of a runtime credential.
+    const readManagedIds = async (tx: Tx) => input.underSessionId === undefined ? null : new Set(
+        await readSessionManagedSubtreeSessionIdsInTx(tx, { accountId: userId, rootSessionId: input.underSessionId,
+            authentication, ...(runtimeManagedSubtree ? { allowSessionRuntimeManagedSubtreeRead: true as const } : {}) }));
+
     const supportsCurrentStoredContent = input.storedContentCompatibility.supportsCurrentProtocol;
     let contributions: readonly SessionManagerContribution[] = [];
     const result = await readSnapshotWithCurrentAdmission(async (tx) => {
+        const managedIds = await readManagedIds(tx);
+        if (managedIds && !managedIds.has(sessionId)) return { kind: "unavailable" } as const;
         const { admission, row: session } = await findV2SessionByIdRowInTx(tx, {
             userId,
             sessionId,
-            authentication,
+            authentication: runtimeManagedSubtree ? accountAuthentication : authentication,
             accessProjectionVersion: input.accessProjectionVersion,
         });
         if (admission.status !== "allowed") return { kind: admission.status } as const;
@@ -168,11 +180,11 @@ export async function readSessionDetail(input: Readonly<{ userId: string; sessio
                     ? {}
                     : { discussionFacts: await readSessionListViewerDiscussionFacts([session], userId, tx),
                         latestFailureSequences: await loadSessionLatestFailureSequencesInTx(tx, [session]) }),
-                hasOtherNamedCollaborator: (await readSessionListOtherNamedCollaboratorFacts([session], userId, tx)).get(session.id),
-                effectiveAccess: admission.access,
+                hasOtherNamedCollaborator: runtimeManagedSubtree ? undefined : (await readSessionListOtherNamedCollaboratorFacts([session], userId, tx)).get(session.id),
+                effectiveAccess: runtimeManagedSubtree ? viewAccess(sessionId) : admission.access,
                 verifiedSessionRuntimePrincipal,
             });
-            const [mappedSession] = await projectSessionManagerForRowsInTx(tx, {
+            const [mappedSession] = runtimeManagedSubtree ? [mappedSessionBase] : await projectSessionManagerForRowsInTx(tx, {
                 accountId: userId,
                 authentication,
                 sessions: [mappedSessionBase],
@@ -181,10 +193,11 @@ export async function readSessionDetail(input: Readonly<{ userId: string; sessio
                 nowMs: Date.now(),
                 captureContributions: rows => { contributions = rows; },
             });
-            if (admission.access.level !== "owner") {
+            if (runtimeManagedSubtree || admission.access.level !== "owner") {
                 return {
                     kind: "found",
-                    payload: V2SessionByIdResponseSchema.parse({ session: mappedSession }),
+                    payload: V2SessionByIdResponseSchema.parse({ session: runtimeManagedSubtree
+                        ? SessionRuntimeManagedSubtreeSnapshotRecordV1Schema.parse(mappedSession) : mappedSession }),
                 } as const;
             }
             const targets = await listQueuedExecutionRunPendingTargetsForSessions({
@@ -211,12 +224,19 @@ export async function readSessionDetail(input: Readonly<{ userId: string; sessio
         }
     }, async (tx, captured) => {
         if (captured.kind !== "found") return captured;
+        const managedIds = await readManagedIds(tx);
+        if (managedIds && !managedIds.has(sessionId)) return { kind: "unavailable" } as const;
         try {
-            const admissions = await readmitSessionRowsWithAdmissionInTx(tx, { accountId: userId, authentication,
+            const admissions = await readmitSessionRowsWithAdmissionInTx(tx, { accountId: userId, authentication: runtimeManagedSubtree ? accountAuthentication : authentication,
                 accessMode: input.accessProjectionVersion === 1 ? "effective_access_v1" : "legacy_owner_or_direct" }, [captured.payload.session]);
             const admission = admissions.get(sessionId);
             if (!admission) return { kind: "unavailable" } as const;
             if (admission.status !== "allowed") return { kind: admission.status } as const;
+            if (runtimeManagedSubtree) {
+                const { share: _share, ...shared } = admission.row;
+                return { ...captured, payload: { session: SessionRuntimeManagedSubtreeSnapshotRecordV1Schema.parse({ ...shared,
+                    effectiveAccess: projectSessionEffectiveAccessV1(viewAccess(sessionId)) }) } };
+            }
             const [session] = await readmitCapturedSessionManagerReferencesInTx(tx, { accountId: userId, authentication,
                 accessMode: input.accessProjectionVersion === 1 ? "effective_access_v1" : "legacy_owner_or_direct", sessions: [admission.row], contributions });
             return { ...captured, payload: { session } };
@@ -255,29 +275,6 @@ export function registerSessionListingRoutes(app: Fastify) {
     }, async (request, reply) => {
         const sessionIds = await inReadSnapshot(tx => listSessionMetadataPrivacyUpgradeIdsInTx(tx, request.userId));
         return reply.header("Cache-Control", "no-store").send({ sessionIds });
-    });
-
-    app.get('/v1/sessions', {
-        preSerialization: projectSessionTurnWaitingHttpResponse,
-        preHandler: app.authenticate,
-        config: {
-            rateLimit: resolveApiHotEndpointRateLimit(process.env, "sessions.list"),
-        },
-    }, async (request, reply) => {
-        try {
-            const payload = await listLegacyV1SessionsForAccount({
-                userId: request.userId,
-                rowRepresentabilityWhere: createSessionMetadataListRepresentabilityWhere(
-                    readAccountStoredContentCompatibilityForHttpRequest(request),
-                ),
-            });
-            if (payload) return reply.send(payload);
-        } catch (error) {
-            if (isSessionMetadataPrivacyUpgradeRequiredError(error)) {
-                return reply.code(409).send(createSessionMetadataPrivacyUpgradeRequiredResponse());
-            }
-            throw error;
-        }
     });
 
     app.get('/v2/sessions/active', {

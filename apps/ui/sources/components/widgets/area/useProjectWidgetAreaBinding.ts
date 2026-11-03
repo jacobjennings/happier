@@ -191,7 +191,7 @@ export function useProjectWidgetAreaBinding(props: ProjectWidgetAreaBindingInput
         const destination: WidgetSurfaceRefV1 = { ...lifetime.scope, owner: { kind: 'project', projectId: read.projectIdentity.projectKey } };
         const isCurrent = () => mounted.current && lifetime.isCurrent() && currentBinding.current.surface === surface
             && currentBinding.current.context === read.providedContext;
-        return registerWidgetAreaLayoutSelectionOwner({ surface: destination, isCurrent,
+        return registerWidgetAreaLayoutSelectionOwner({ surface: destination, displayedSurface: surface ?? undefined, isCurrent, providedContext: read.providedContext,
             read: async (target, signal) => {
                 const { createDefaultActionExecutor } = await import('@/sync/ops/actions/defaultActionExecutor');
                 if (!isCurrent() || signal?.aborted) return { ok: false, errorCode: 'widget_area_scope_retired', error: 'widget_area_scope_retired' };
@@ -202,6 +202,9 @@ export function useProjectWidgetAreaBinding(props: ProjectWidgetAreaBindingInput
             },
             select: target => {
                 if (target.owner.kind !== 'project') return;
+                // An explicitly addressed displayed document is already selected; its owner's
+                // layout id must not become a selection in the recipient's personal Project.
+                if (surface?.artifactId && sameStrictJsonValue(target, surface)) return;
                 if (props.onSelectLayout) props.onSelectLayout(target.owner.layoutId ?? null);
                 else setSelection({ key: selectionKey, initial: props.layoutId, layoutId: target.owner.layoutId });
             },

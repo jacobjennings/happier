@@ -22,24 +22,24 @@ vi.mock('socket.io-client', async (importOriginal) => {
     return (await import(path)).createSocketIoClientBoundary(importOriginal);
 });
 // Unistyles is the UI platform boundary; use its canonical testkit runtime.
-vi.mock('../../../../ui/node_modules/react-native-unistyles/lib/module/index.js', async () => {
+vi.mock('react-native-unistyles', async () => {
     const path = new URL('../../../../ui/sources/dev/testkit/mocks/unistyles.ts', import.meta.url).href;
     const { createUnistylesMock } = await import(path);
     return createUnistylesMock();
 });
-vi.mock('../../../../ui/node_modules/expo-updates/build/index.js', async () => {
+vi.mock('expo-updates', async () => {
     const path = new URL('../../../../ui/sources/dev/testkit/mocks/expoUpdates.ts', import.meta.url).href;
     const { createExpoUpdatesMock } = await import(path);
     return createExpoUpdatesMock();
 });
-vi.mock('../../../../ui/node_modules/@shopify/react-native-skia/lib/module/index.js', async () => {
+vi.mock('@shopify/react-native-skia', async () => {
     const path = new URL('../../../../ui/sources/dev/testkit/mocks/reactNativeSkia.ts', import.meta.url).href;
     const { createReactNativeSkiaMock } = await import(path);
     return createReactNativeSkiaMock();
 });
 // No image is rendered in this RPC composition; mirror the testkit Voice harness's native leaf.
-vi.mock('../../../../ui/node_modules/expo-image/src/index.ts', () => ({ Image: 'Image' }));
-vi.mock('../../../../ui/node_modules/expo-file-system/src/index.ts', async () => {
+vi.mock('expo-image', () => ({ Image: 'Image' }));
+vi.mock('expo-file-system', async () => {
     const path = new URL('../../../../ui/sources/dev/testkit/mocks/expoFileSystem.ts', import.meta.url).href;
     const { createExpoFileSystemFileMock } = await import(path);
     return createExpoFileSystemFileMock().module;

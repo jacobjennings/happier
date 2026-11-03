@@ -15,11 +15,39 @@ to the native server. It is not a package-manager launcher or project binary.
 `contributes.languageServers` references that dependency and declares
 `['--lsp', '--stdio']`. Automatic type acquisition is disabled through its
 initialization options; external-code execution and telemetry are not enabled.
-The Machine host starts the process only after an explicit language query,
-using the existing managed executable resolver, protocol client and supervisor.
-Opening a file alone neither launches this server nor authorizes project code.
+The Machine host starts the process for an explicit language query or when the
+person enters Edit, using the existing managed executable resolver, protocol
+client and supervisor. View and Changes keep on-demand startup. Entering Edit
+shows the server's starting state while initialization completes; it does not
+authorize project code.
 Declaration and acquisition ownership apply equally to external plugins; a
 `systemTools` reference uses the existing declared system-tool owner instead.
+
+The development `lang-web` plugin declares JSON, CSS/SCSS/Less and HTML servers
+from `vscode-langservers-extracted@4.10.0` through the generic
+`managedJavaScriptPackage` dependency source. An explicit dependency install
+uses the existing managed package coordinator, pinned package version and
+`--ignore-scripts`. Launch reads that installed package's exact npm `bin` entry
+and runs it with the existing managed JavaScript runtime's absolute executable.
+It does not execute the npm shell shim, search PATH, install a missing runtime,
+or fetch a package when a file opens. Missing prerequisites use the ordinary
+Install flow. External plugins use this same source and resolver.
+
+The development `lang-markdown` plugin declares native Marksman 2026-02-08
+through the checksum-pinned executable-asset path. Its release supplies Linux
+x64/arm64, universal macOS, and Windows x64 assets; Windows arm64 is unavailable.
+The plugin retains the MIT license notice. It requires no Node or .NET runtime.
+Cross-file Markdown features use an existing Git root or `.marksman.toml`;
+opening a document does not create a project marker.
+
+Project diagnostics run only on an explicit request. When workspace diagnostic
+pull is unavailable, a language-server declaration may supply `projectCheck`
+with its own declared executable, arguments, root-relative `projectFile` and
+output codec. The bundled native TypeScript checker uses `--noEmit --pretty
+false --incremental false -p tsconfig.json`. It shares managed execution,
+cancellation, plugin retirement and Processes custody with the LSP host.
+Diagnostics stream independently of the supervisor's retained output preview;
+no result-count or output-size cap is imposed by the checker.
 
 ## Runtime contract
 
@@ -104,6 +132,14 @@ the predicate code, elapsed ownership waiting and available budget separately.
 Standalone service commands
 keep their existing startup checkpoints and platform defaults. The controller
 and guest CLI must both be updated for this propagation.
+In current development source, macOS install/start/restart select kickstart-only
+only when the native launchd activity reader confirms that the service-owned
+daemon's job is loaded. A surviving process marker alone cannot skip bootstrap.
+This correction requires an updated guest CLI payload and retains GUI placement.
+The command executor requires bootstrap itself to succeed before kickstart. A
+successful job lookup after a bootstrap I/O failure can describe the previous
+job while bootout drains it; it does not prove the new job was admitted. Bootstrap
+therefore uses the existing retry cadence within the containing service deadline.
 The consent prompt ends at the earlier recipe deadline or Home request expiry,
 with `auth_enrollment_timeout` or `auth_request_expired` and a request to Retry
 setup; late consent cannot authorize the expired request. Finite `auth wait`
@@ -188,6 +224,14 @@ Before adding or changing an agent runtime, managed dependency, install, or upda
 - managed JS-runtime dependent
 
 Agent detection, install status, daemon validation, runtime spawning, and UI/managedDependencies must reuse the same source of truth. Agent CLIs should prefer user/system installs by default over Happier-managed installs unless an explicit setting says otherwise.
+
+In 0.3 development, managed Agent installation publishes the providers directory, install
+root and promoted runtime code for separate execution users through the same
+permission publisher as first-party payloads. POSIX runtime directories are
+readable/traversable and executable files remain executable; scratch directories
+and install logs stay private, and publication does not follow symlinks. Existing
+private managed installs need a forced Agent reinstall after the corrected
+daemon payload is loaded; refreshing inventory alone does not change permissions.
 
 In current 0.3 development source, Pi's vendor-managed launcher is a system-install
 candidate declared by its plugin: `PI_CODING_AGENT_DIR/bin/pi`, then
@@ -335,13 +379,30 @@ installer, checksum/version validation and executable resolution.
 Explicit repair uses the admitted `machines.capabilities.install`
 Action with `dep.computer-cua-driver`, sharing the native launch installer's
 retained `tools/computer-cua-driver/current` directory and executable validation.
-Discovery refuses a missing driver with `driver_unavailable`; opening the picker
+Discovery refuses a missing provider with `computer_provider_unavailable`; opening the picker
 does not install software. Installation remains with the admitted capability
 Action and the installable descriptor's required consent.
 The Computer picker and viewer re-read native grants and source/control facts
 after repair; successful installation alone never grants permission or input.
 `daemon/computer/driver/nativeTransport.ts` launches that installed absolute executable
 directly in embedded MCP mode; no system Node, package manager or second launcher is involved.
+The contained Agent Desktop trial adds `computer-agent-desktop` v1.0.2 through
+the same pinned-archive owner, with checksummed Linux, macOS and Windows archives
+for x64 and arm64. Its installed absolute executable speaks CLI JSON envelope
+2.5; it is never launched through npm. Sibling native helpers remain in the
+retained archive. Each selected source has a private temporary ref namespace,
+removed on close. Agent Desktop retains qualified snapshot refs for semantic
+element click/set-value; frame-only screenshots do not replace those refs.
+
+Machine-keyed Account preferences `computerUseByMachineId` enable providers and
+select a default (Cua when absent). The provider resolver admits each Computer
+Action once: explicit provider when supplied, otherwise the default, requiring
+it to be enabled and installed. Enabling installs through the capability Action
+before saving the preference. A missing/disabled explicit provider returns
+`computer_provider_unavailable` with its install hint. The existing driver
+factory consumes that decision; capture sources stamp the producing provider.
+An element action bound to another provider or an obsolete observation returns
+`computer_element_stale`; the agent captures again. Input approval is unchanged.
 Desktop connection/authentication/session variables are forwarded only on Linux.
 An explicit X11 connection receives `DISPLAY`; a selected Wayland connection
 receives its inherited `WAYLAND_DISPLAY`, runtime/session-bus environment and
@@ -354,10 +415,15 @@ raised by that line, and embedded status reflects the host process's Screen Reco
 Accessibility grants). The transport requires `initialize` to report exactly the pinned version. Accessibility-tree reads
 send `full_output: true`; since 0.37.0 the driver's default response omits the structured
 `elements` array and uses lower walk limits.
-On Linux, run the daemon in the intended X11 desktop session, with its `DISPLAY`
-and any required `XAUTHORITY` already set. A headless host needs an explicitly
-started X11 desktop, such as an operator-owned Xvfb fixture; installing the driver
-does not create one. The daemon captures its default display when constructing
+On Linux, run the daemon in the intended desktop session, with its `DISPLAY`
+and any required `XAUTHORITY` already set. When no display resolves, the existing
+Computer desktop owner lazily starts its managed Xvfb/D-Bus/accessibility desktop
+using the installed `virtual-display` recipe prerequisites. Both providers consume
+that same owner and environment; installing a provider does not install the recipe.
+The owner starts installed Openbox, or installed Fluxbox when Openbox is absent,
+with private window-manager configuration. Agent Desktop's native window proof
+requires a running window manager; bare Xvfb is insufficient for its window picker.
+The daemon captures its inherited default display when constructing
 the Computer routes, so exporting `DISPLAY` in a later CLI does not update an
 already-running daemon. The operator must reload that daemon with the intended
 desktop environment. Callers that supply `computer.targets.list.displayId` can
@@ -416,12 +482,24 @@ The vendor-owned, exact-version Mutagen engine follows its existing separate acq
 ## Internal workspace packages
 
 In 0.3 development, `apps/stack/scripts/provision/.bun-version` is the single
-Bun build/provisioning version owner. CI setup reads that file; managed Lima
+Bun build/provisioning version owner, currently 1.4.4. This includes the
+[GHSA-26q8-h657-pf84 TLS trust-store correction](https://github.com/oven-sh/bun/security/advisories/GHSA-26q8-h657-pf84);
+standalone executables compiled with an affected Bun must be rebuilt.
+CI setup reads that file; managed Lima
 readiness and streamed Lima/WSL provisioning consume the same value. Downloaded
 Ubuntu provisioning needs the companion file from the script's same source ref,
 or an explicit `HAPPIER_PROVISION_BUN_VERSION` override. Component builders still
 resolve the selected executable and record its actual version in build identity;
 this pin is not a managed Agent runtime or a change to installed product state.
+The shared `resolveBunCompilerCommand` owner checks the selected executable's actual
+version against this file before every standalone compile, including Prisma migration
+support and directly invoked Bun build runners. Callers that omit `repoRoot` use
+the compiler module's checkout root, independent of their working directory.
+`HAPPIER_BUN_PATH` selects an
+executable, but does not waive the pin. A mismatch fails with the required and
+observed versions; install or select the pinned compiler and rebuild. Isolated
+QA build recipes must acquire the archive for that version rather than reuse an
+unversioned `bun.zip` without checking its contents.
 
 In 0.3 development, `dev-targets host prepare NAME --toolchain` also prepares
 user-local Rust through `packages/iroh-native/scripts/ensure-rust-toolchain.mjs`.
@@ -452,9 +530,9 @@ Published hosts and bundled libraries currently include:
 - `packages/support`
 - `packages/plugin-sdk`
 
-Their `prepack` scripts run `scripts/bundleWorkspaceDeps.mjs`, which delegates to `bundleWorkspacePackagesWithRuntimeDependencies(...)`. That canonical publisher stages each workspace together with its external runtime dependency tree and publishes the internal dependency closure in dependency-first order.
+Their `prepack` scripts run package-local `scripts/bundleWorkspaceDeps.mjs` adapters. The shared publisher stages each workspace with its external runtime dependency tree and publishes the internal dependency closure in dependency-first order. In 0.3 development, Stack prepares its producers before taking publication custody, then calls `scripts/workspaces/syncBundledWorkspacePackages.mjs` for copy verification and repair through the same per-package publisher.
 
-Current 0.3 workspace bundling preserves runtime package-local `imports` declarations and their conditional order, alongside `exports`. Compiled bundled copies omit the development-only `happier-source` condition at every level of both maps, so source-enabled callers still resolve their complete compiled runtime. Authored source tools continue selecting workspace roots through the canonical source resolver. The existing workspace copier and bootstrap sync include exact retained relative import targets outside `dist`; external package targets still use the package's declared dependency closure. Live bundle health checks compare the retained import map and target files, and Stack bundle freshness observes package-root targets so changing only an imported runtime helper requires a refresh.
+Current 0.3 workspace bundling preserves runtime package-local `imports` declarations and their conditional order, alongside `exports`. Compiled bundled copies omit the development-only `happier-source` condition at every level of both maps, so source-enabled callers still resolve their complete compiled runtime. Authored source tools continue selecting workspace roots through the canonical source resolver. The existing workspace copier and bootstrap sync include exact retained relative import targets outside `dist`; external package targets still use the package's declared dependency closure. Live bundle health checks compare the retained import map and target files. Stack uses the canonical copier's content verification for producer outputs, package-root targets, declared resources, vendored dependencies and destination bytes; unchanged repeats copy no bodies and write no destination files.
 
 In 0.3 development, CLI testkit and publisher runtime-tree checks share the
 workspace health owner. Third-party declaration-only targets (`types`, including
@@ -462,7 +540,7 @@ nested export conditions) do not determine runtime health: some published
 dependencies omit those files. Executable targets and dependency versions remain
 required, as do first-party declared output files, including declarations.
 
-Publication has two explicit modes. Live source-dev refreshes keep each physical consumer package directory mounted, publish complete files with `package.json` last, retain prior targets for in-flight module resolvers, and roll back already-published files if a later replacement fails. A consumer workspace symlink or junction is replaced with a private directory rather than publishing through it into producer inputs; failed publication restores the link. Artifact publication is selected by npm `prepack` or `--artifact` and prunes retained targets so obsolete generations cannot enter a tarball. Both modes use the package build owner's content record to admit current `dist` outputs, including source additions and deletions, build inputs, compiler identity, and declared output bytes. Health checks require every current source runtime file to match but deliberately allow extra retained targets in live trees.
+Publication has two explicit modes. Live source-dev refreshes keep each physical consumer package directory mounted, publish complete files with `package.json` last, retain prior targets for in-flight module resolvers, and roll back already-published files if a later replacement fails. The shared publisher replaces a consumer workspace symlink or junction with a private directory rather than publishing through it into producer inputs; failed publication restores the link. Stack's live copier preserves links to the canonical source workspace, while explicit artifact publication detaches them into physical packages. Artifact publication is selected by npm `prepack` or `--artifact` and prunes retained targets so obsolete generations cannot enter a tarball. Both modes use the package build owner's content record to admit current `dist` outputs, including source additions and deletions, build inputs, compiler identity, and declared output bytes. Health checks require every current source runtime file to match but deliberately allow extra retained targets in live trees.
 
 Public npm/SDK publication retains the workspace package-build owner, dependency
 graph admission, captured package inputs, compiler state, currentness records and
@@ -505,6 +583,59 @@ named stack frames and emitted file/line/column locations. This avoids widening
 whole V8 Script source strings for Unicode comments or raw template text. esbuild
 does not escape Unicode regular-expression literals; first-party regex owners
 use equivalent Unicode escapes to keep those source graphs Latin-1-safe.
+
+Retained source CLI/daemon readiness checks the installed dependency publication
+captured in `source-bundle.json` before probing or launching its selected graph.
+In current 0.3 development, new daemon captures also record the installed package
+closure selected by their emitted external imports, including executable sidecars.
+The daemon author-input owner (`source_author_inputs.mjs`) supplies the same
+installed-file walker for this runtime closure, following installed runtime and peer
+dependencies rather than compiler or unrelated workspace module roots. A completed
+dependency refresh outside that closure (for example UI-only wiring or a Metro
+patch) leaves the retained CLI launchable. Runtime file identities use cached
+content digests, so replacing identical files or changing their timestamps during
+an unrelated install does not invalidate the CLI. Author-build identities keep
+their existing metadata proof. Changed or removed closure inputs still
+require reload. Finite build/publication checks retain the installation-wide
+identity; server and Expo preparation are unchanged. Older captures without a
+runtime closure retain the installation-wide launch comparison.
+An unavailable publication record, changed runtime closure, or older capture
+without its publication locators returns `SOURCE_RUNTIME_RELOAD_REQUIRED`, with
+phase `dependencies` and `retryable: false`. Reload the Stack from current source
+to prepare and select a new graph. The refusal preserves the selected runtime;
+it does not automatically restart the Stack. This development-only check reads
+the existing preparation identity on launch demand and adds no background watcher.
+A completed reinstall with the same content identity remains launchable even when
+its install generation changed. Current captures recheck the runtime closure on
+that generation change, since an unchanged dependency manifest can still have a
+different installed layout. Bundle preparation invalidates its retained result
+on a generation change and resolves imports again through their importer.
+Launch waits for an active refresh through the
+dependency preparation owner's existing cancellable lock-release wait, then
+checks the completed content identity. An interrupted, unfinished publication
+remains unavailable and requires explicit reload after dependency repair.
+Reading the selected record for recovery does not perform this check: explicit
+reload can inspect and replace older captures that predate the publication locators.
+The daemon's existing source-launch preflight returns the same refusal before
+starting an Agent child. Its spawn result retains `SPAWN_FAILED` and carries
+`launch_error.code: SOURCE_RUNTIME_RELOAD_REQUIRED` with the reload instruction.
+Existing child-exit diagnostics remain available for failures after launch.
+
+Checkout source-dev Agent launches prepare shared dependencies through
+`syncSharedDepsForDev.mjs`'s canonical publisher, sharing its publication lock
+with Stack preparation and bundled Plugin runtime loading. A stale checkout
+starts publication or waits for the publisher already running; a read-only
+inspection cannot leave the spawn waiting for an unscheduled producer.
+The preflight adds no default process, lock or package-build deadline ahead of
+that owner. Cancellation and explicit caller overrides remain available.
+
+Workspace package fingerprints consume their installed runtime dependency bytes,
+compiler installation and workspace/external type inputs through the existing
+installed-input identity owner. The complete lockfile and workspace policy file
+are installation inputs, rather than inputs to every package build. External
+development and peer dependencies contribute TypeScript and JSON inputs through
+logical dependency paths, so a pnpm JavaScript-only patch relocation with
+identical type inputs does not rebuild unrelated packages.
 
 Retained source daemon bundles also compile bundled Plugin UI graphs through
 `prepareSourcePluginUiArtifacts.mjs`, the same SDK compiler/inventory owner used
@@ -676,6 +807,15 @@ mutation; their existing supervisor resumes them when mutation completes.
 A pending start or foreign Stack's Expo consumer blocks mutation: development warns and continues with installed
 bytes, retrying on the next input change or startup. Explicit skip/disable refresh
 flags and service-mode refresh permission retain their existing semantics.
+A reader waits for an active installer through the existing dependency lock.
+A failed install leaves the readiness marker unchanged and records its safe pnpm
+error code on that attempt. Later readers receive the same typed installation
+failure with its fix-and-retry instruction, rather than a generic unfinished
+installation refusal. A successful retry settles the attempt and publishes
+readiness; a failed attempt never certifies possibly partial installed bytes.
+An interrupted writer without a recorded failure reports the existing unfinished
+installation error with the same preparation remedy.
+
 In 0.3 development, `hstack dev` admits each component's runnable last-green
 output before refreshing current inputs, including with `--no-watch` (one
 background refresh). Server-only admission validates only the server's retained
@@ -1017,6 +1157,10 @@ private, bundle-owned package closure. The source-runtime producer uses the exis
 compiler and workspace materializer with the source condition, without preparing workspace
 `dist` or requiring semantic typechecking. Plugin authoring resolves that physical closure;
 the CLI's source-runtime provenance and published SDK contracts are unchanged.
+Plugin UI preparation fingerprints its resolved executable import graph and
+declared shipped resources, including hosted-static inputs. An unconsumed plugin
+daemon source edit does not recompile its unchanged UI; a consumed UI edit still
+rebuilds that plugin through the same compiler and inventory owner.
 Development TSX subprocesses select `apps/cli/tsconfig.runtime.json` through
 `resolveCliTsxTsconfigPath`. It retains the compiler project's strict options but
 limits path aliases to the CLI's source alias: compiler-only SDK declaration
@@ -1320,10 +1464,14 @@ If a bundled workspace imports another internal workspace at runtime, the host p
 
 ### One module instance for the plugin-shared runtime
 
-Development source bundles resolve external support from the authored importer
-before relocating code into shared chunks. The source resolver retains that
-installed package version and its import/require export conditions, including
-lazy imports; a root-hoisted package cannot replace a plugin-local dependency.
+Development source bundles borrow installed support from their host checkout.
+The source resolver compares the authored importer and host resolutions under
+the same import/require conditions. Matching dependencies remain bare imports,
+so Node resolves them after an install relayout rather than loading a path baked
+into the export. Importer-local dependencies that differ from the host are
+bundled into the source graph, including lazy imports; a root-hoisted package
+cannot replace a plugin-local dependency. Emitted plugin entries share the
+CLI host's package-local lookup tree before falling back to the checkout root.
 Native payloads retain their explicit support closure, while external installed
 plugins bundle dependencies through the existing plugin authoring owner.
 

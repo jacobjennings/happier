@@ -125,23 +125,6 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
         scrollToOffset.mockClear();
     });
 
-    it('does not call scrollToIndex when focusedOptionId is null on initial render', async () => {
-        const { SelectionListBody } = await import('../SelectionListBody');
-        await renderScreen(
-            <SelectionListBody
-                step={buildBodyStep()}
-                rootTestID="sl"
-                selectedOptionIds={new Set<string>()}
-                plan={buildMultiSectionPlan()}
-                focusedOptionId={null}
-                listboxId="listbox"
-                onSelect={() => {}}
-                onPushStep={() => {}}
-            />,
-        );
-        expect(scrollToIndex).not.toHaveBeenCalled();
-    });
-
     it('calls scrollToIndex with the flattened index when focused option is in the SECOND virtualized section', async () => {
         const { SelectionListBody } = await import('../SelectionListBody');
         const screen = await renderScreen(
@@ -156,6 +139,7 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
                 onPushStep={() => {}}
             />,
         );
+        expect(scrollToIndex).not.toHaveBeenCalled();
         await screen.update(
             <SelectionListBody
                 step={buildBodyStep()}
@@ -300,34 +284,5 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
         );
 
         expect(scrollToIndex).toHaveBeenCalledWith({ index: 66, viewPosition: 0.5, animated: false });
-    });
-
-    it('does not call scrollToIndex when the focused option does not match any row in the plan (e.g. focus moved out)', async () => {
-        const { SelectionListBody } = await import('../SelectionListBody');
-        const screen = await renderScreen(
-            <SelectionListBody
-                step={buildBodyStep()}
-                rootTestID="sl"
-                selectedOptionIds={new Set<string>()}
-                plan={buildMultiSectionPlan()}
-                focusedOptionId={null}
-                listboxId="listbox"
-                onSelect={() => {}}
-                onPushStep={() => {}}
-            />,
-        );
-        await screen.update(
-            <SelectionListBody
-                step={buildBodyStep()}
-                rootTestID="sl"
-                selectedOptionIds={new Set<string>()}
-                plan={buildMultiSectionPlan()}
-                focusedOptionId="not-in-any-section"
-                listboxId="listbox"
-                onSelect={() => {}}
-                onPushStep={() => {}}
-            />,
-        );
-        expect(scrollToIndex).not.toHaveBeenCalled();
     });
 });

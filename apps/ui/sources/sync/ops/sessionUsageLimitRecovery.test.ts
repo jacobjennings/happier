@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RPC_ERROR_CODES, RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { createSocketIoAckTimeoutError } from '@happier-dev/protocol/rpcErrors';
 
 const sessionRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
 const machineRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
@@ -463,7 +464,7 @@ describe('sessionUsageLimitRecovery ops', () => {
                 'machine-1': { id: 'machine-1', active: true },
             },
         };
-        sessionRpcWithServerScopeMock.mockRejectedValueOnce(new Error('operation has timed out'));
+        sessionRpcWithServerScopeMock.mockRejectedValueOnce(createSocketIoAckTimeoutError());
         machineRpcWithServerScopeMock.mockResolvedValueOnce({ ok: true, status: 'waiting', sessionId: 'session-1' });
         const { sessionUsageLimitSwitchAccountNow } = await import('./sessionUsageLimitRecovery');
 

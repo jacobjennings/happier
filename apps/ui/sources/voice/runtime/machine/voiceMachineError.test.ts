@@ -10,6 +10,12 @@ import {
 } from './voiceMachineError';
 
 describe('createVoiceMachineError', () => {
+    it('keeps an unavailable Agent selection actionable without a provider Retry', () => {
+        expect(classifyVoiceMachineError(Object.assign(new Error('voice_agent_selection_unavailable'), {
+            code: 'VOICE_AGENT_SELECTION_UNAVAILABLE',
+        }), { kind: 'provider_error' })).toMatchObject({ kind: 'provider_setup_required',
+            reason: 'voice_agent_selection_unavailable', recoveryAction: 'open_settings', presentation: 'error' });
+    });
     it.each(['VOICE_AGENT_TARGET_MACHINE_OFFLINE', 'VOICE_AGENT_TARGET_MACHINE_KEY_UNAVAILABLE', 'daemon_streaming_stt_machine_unreachable'])(
         'keeps the unavailable Machine remedy for %s instead of a generic provider retry', (reason) => {
             expect(resolveVoiceMachineErrorKind(reason, 'provider_error')).toBe('execution_machine_unavailable');
@@ -21,6 +27,14 @@ describe('createVoiceMachineError', () => {
             kind: 'provider_setup_required', reason: 'voice_text_segmentation_unavailable',
             phase: 'preflight', presentation: 'error', recoverable: false,
         });
+    });
+    it('requires a Voice model change when the Session uses unsupported Team credentials', () => {
+        expect(classifyVoiceMachineError(Object.assign(new Error('Voice does not support Team credential models.'), {
+            code: 'VOICE_AGENT_TEAM_MODEL_UNSUPPORTED',
+        }))).toMatchObject({ kind: 'provider_setup_required', phase: 'preflight',
+            recoveryAction: 'open_settings', presentation: 'error', recoverable: false });
+        expect(resolveVoiceMachineErrorKind('VOICE_AGENT_TEAM_MODEL_UNSUPPORTED', 'provider_error'))
+            .toBe('provider_setup_required');
     });
     it('mints complete structured policy for a preflight microphone denial', () => {
         expect(createVoiceMachineError({ kind: 'mic_permission_denied', reason: 'denied' })).toEqual({
@@ -222,6 +236,18 @@ describe('classifyMicSessionFailure', () => {
 });
 
 describe('classifyRealtimeProviderFailure', () => {
+    it.each([
+        ['agent_signed_out', 'authentication_required', 'connect_agent'],
+        ['credential_unavailable', 'provider_auth_invalid', 'review_credentials'],
+        ['credential_access_review_required', 'provider_auth_invalid', 'review_credentials'],
+        ['realtime_agent_update_required', 'provider_setup_required', 'open_settings'],
+        ['update_required', 'update_required', 'update_agent_runtime'],
+    ])('shares the canonical recovery for %s', (code, kind, recoveryAction) => {
+        expect(classifyRealtimeProviderFailure(Object.assign(new Error('private provider detail'), { code })))
+            .toMatchObject({ kind, recoveryAction });
+        expect(resolveVoiceMachineErrorKind(code)).toBe(kind);
+    });
+
     it('classifies permission errors as actionable preflight permission denial', () => {
         const error = Object.assign(new Error('permission_denied'), { name: 'NotAllowedError' });
         expect(classifyRealtimeProviderFailure(error)).toMatchObject({

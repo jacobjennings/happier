@@ -1,0 +1,455 @@
+import type { PreNormalizedActionSpec } from '../definition.js';
+import { PlanStartInputSchema, DelegateStartInputSchema, VoiceAgentStartInputSchema } from '../executionRuns.js';
+import { lazyZodSchema } from '../../../lazyZodSchema.js';
+import { z } from 'zod/mini';
+import { planStartCompletion } from '../executionRunCompletion.js';
+import { EXECUTION_RUN_ACTION_PERMISSION_INPUTS, EXECUTION_RUN_ACTION_PERMISSION_MODE_DESCRIPTION } from '../../executionRunActionPermissionMode.js';
+import { SubagentLifecycleDetailV1Schema, SubagentRefInputV1Schema, SubagentRefV1Schema, SubagentStatusV1Schema } from '../../../sessions/subagents/subagentRefV1.js';
+import { RPC_METHODS } from '../../../rpc/methods.js';
+import { StrictJsonValueSchema } from '../../../json/strictJsonValue.js';
+
+
+export const SubagentListInputSchema = lazyZodSchema(() => z.looseObject({
+  parentSessionId: z.optional(z.string().check(z.trim(), z.minLength(1))),
+  groupId: z.optional(z.nullable(z.string().check(z.trim(), z.minLength(1)))),
+  limit: z.optional(z.number().check(z.int(), z.minimum(1), z.maximum(100))),
+}));
+
+export const SubagentGetInputSchema = lazyZodSchema(() => z.looseObject({
+  id: z.string().check(z.trim(), z.minLength(1)),
+  parentSessionId: z.optional(z.string().check(z.trim(), z.minLength(1))),
+}));
+
+export const SubagentWatchInputSchema = lazyZodSchema(() => z.looseObject({
+  parentSessionId: z.optional(z.string().check(z.trim(), z.minLength(1))),
+  id: z.optional(z.string().check(z.trim(), z.minLength(1))),
+}));
+
+export const SubagentStatusUpdateInputSchema = lazyZodSchema(() => z.looseObject({
+  id: z.string().check(z.trim(), z.minLength(1)),
+  parentSessionId: z.string().check(z.trim(), z.minLength(1)),
+  status: SubagentStatusV1Schema,
+  lifecycleDetail: z.optional(SubagentLifecycleDetailV1Schema),
+  completedAt: z.optional(z.number().check(z.int(), z.nonnegative())),
+}));
+
+export const SubagentCompleteInputSchema = lazyZodSchema(() => z.looseObject({
+  id: z.string().check(z.trim(), z.minLength(1)),
+  parentSessionId: z.string().check(z.trim(), z.minLength(1)),
+  status: z.optional(z.enum(['completed', 'failed', 'aborted'])),
+  lifecycleDetail: z.optional(SubagentLifecycleDetailV1Schema),
+  completedAt: z.optional(z.number().check(z.int(), z.nonnegative())),
+}));
+
+export const SubagentWatchSnapshotOutputSchema = lazyZodSchema(() => z.looseObject({
+  kind: z.literal('snapshot'),
+  subagents: z.array(SubagentRefV1Schema),
+}));
+
+export const SUBAGENT_ACTION_SPECS = Object.freeze([
+  {
+    id: 'subagents.plan.start', executionPlacement: 'session', approval: {result: 'optional',flow: 'deferred'},
+    title: 'Start plan run',
+    sideEffectClass: 'external',
+    safety: 'safe',
+    placements: ['agent_input_chips', 'session_action_menu', 'command_palette', 'slash_command', 'voice_panel'],
+    prompting: { voiceHotPath: true },
+    slash: { tokens: ['/h.plan'] },
+    bindings: { voiceClientToolName: 'startPlan', mcpToolName: 'subagents_plan_start' },
+    inputHints: {
+      title: 'Start a planning run',
+      description: 'Start one or more Happier-managed planning runs using selected Agent backend targets; targets are Agent choices, not parallelism capacity.',
+      fields: [
+        {
+          path: 'backendTargetKeys',
+          title: 'Agent backend targets',
+          description: 'Select Agent backend targets for Happier-managed runs; use repeated launches or Agent-native subagents for homogeneous parallelism capacity, not parallelism capacity in this field.',
+          widget: 'multiselect',
+          required: true,
+          optionsSourceId: 'execution.backends.enabled',
+          maxSelections: 1,
+        },
+        {
+          path: 'instructions',
+          title: 'Instructions',
+          description: 'What you want the planner(s) to do.',
+          widget: 'textarea',
+          required: true,
+        },
+        {
+          path: 'modelId',
+          title: 'Model id',
+          description: 'Optional explicit model applied to every started run. Omit to inherit the applied parent choice for an attached child; independent starts use defaults.',
+          widget: 'text',
+          optionsSourceId: 'agents.models.available',
+        },
+        {
+          path: 'teamCredentialModel',
+          title: 'Team credential model (json)',
+          description: 'Optional exact Team credential resource/model selection from the recipient-safe Team catalog. Mutually exclusive with modelSelection.',
+          widget: 'json',
+          optionsSourceId: 'teams.credential_models.available',
+        },
+        {
+          path: 'secretReferenceOverlay',
+          title: 'Saved Secret overrides (json)',
+          description: 'Optional value-free Saved Secret references for this launch only. Values are resolved by the exact daemon and the selected Profile is not changed.',
+          widget: 'json',
+        },
+        {
+          path: 'configOptions',
+          title: 'Config options (e.g. reasoning effort)',
+          description: 'Optional agent config-option overrides applied to every started run, e.g. {"reasoning_effort":"high"}. Merged canonically; a conflict with sessionConfigOptionOverrides fails.',
+          widget: 'json',
+          optionsSourceId: 'agents.config_options.available',
+        },
+        {
+          path: 'connectedServices',
+          title: 'Connected services (json)',
+          description: 'Optional blanket connected-services selection for every target. Attached omission inherits the parent choice; independent starts use Account defaults. Use "native" to suppress connected accounts. An exact connectedServicesByBackendTargetKey entry overrides it.',
+          widget: 'json',
+          optionsSourceId: 'sessions.spawn.connected_services.available',
+        },
+        {
+          path: 'connectedServicesByBackendTargetKey',
+          title: 'Connected services per target (json)',
+          description: 'Optional connected-services selection per backend target key. Accepts "native", a per-service string ("<service>:group:<id>", "<service>:<profileId>", "<service>:native"), an array, or the full object; omitted targets use the blanket selection, attached inheritance, or independent Account defaults. Enumerate valid selections via the shared session-spawn options source.',
+          widget: 'textarea',
+          optionsSourceId: 'sessions.spawn.connected_services.available',
+        },
+      ],
+    },
+    examples: {
+      voice: { argsExample: '{"backendTargetKeys":["agent:codex"],"instructions":"Plan the changes."}' },
+    },
+	    surfaces: {
+	      ui: true,
+	      voice: true,
+	      agent: true,
+	      mcp: true,
+	      cli: true,
+	      rpc: false,
+	      },
+	    outputSchema: StrictJsonValueSchema,
+	    inputSchema: PlanStartInputSchema,
+	    completion: planStartCompletion,
+	  } satisfies PreNormalizedActionSpec,
+  {
+    id: 'subagents.delegate.start', executionPlacement: 'session', approval: {result: 'optional',flow: 'deferred'},
+    title: 'Start delegate run',
+    sideEffectClass: 'external',
+    safety: 'safe',
+    placements: ['agent_input_chips', 'session_action_menu', 'command_palette', 'slash_command', 'voice_panel'],
+    prompting: { voiceHotPath: true },
+    slash: { tokens: ['/h.delegate'] },
+    bindings: { voiceClientToolName: 'startDelegate', mcpToolName: 'subagents_delegate_start' },
+    inputHints: {
+      title: 'Start a delegation run',
+      description: 'Start one or more Happier-managed delegation runs using selected Agent backend targets; targets are Agent choices, not parallelism capacity.',
+      fields: [
+        {
+          path: 'backendTargetKeys',
+          title: 'Agent backend targets',
+          description: 'Select Agent backend targets for Happier-managed runs; use repeated launches or Agent-native subagents for homogeneous parallelism capacity, not parallelism capacity in this field.',
+          widget: 'multiselect',
+          required: true,
+          optionsSourceId: 'execution.backends.enabled',
+          maxSelections: 1,
+        },
+        {
+          path: 'instructions',
+          title: 'Instructions',
+          description: 'What you want the delegate(s) to do.',
+          widget: 'textarea',
+          required: true,
+        },
+        {
+          path: 'permissionMode',
+          title: 'Permission mode',
+          description: EXECUTION_RUN_ACTION_PERMISSION_MODE_DESCRIPTION,
+          widget: 'select',
+          options: EXECUTION_RUN_ACTION_PERMISSION_INPUTS.map((value) => ({ value, label: value })),
+        },
+        {
+          path: 'modelId',
+          title: 'Model id',
+          description: 'Optional explicit model applied to every started run. Omit to inherit the applied parent choice for an attached child; independent starts use defaults.',
+          widget: 'text',
+          optionsSourceId: 'agents.models.available',
+        },
+        {
+          path: 'teamCredentialModel',
+          title: 'Team credential model (json)',
+          description: 'Optional exact Team credential resource/model selection from the recipient-safe Team catalog. Requires one Agent backend target.',
+          widget: 'json',
+          optionsSourceId: 'teams.credential_models.available',
+        },
+        {
+          path: 'secretReferenceOverlay',
+          title: 'Saved Secret overrides (json)',
+          description: 'Optional value-free Saved Secret references for this launch only. Values are resolved by the exact daemon and the selected Profile is not changed.',
+          widget: 'json',
+        },
+        {
+          path: 'configOptions',
+          title: 'Config options (e.g. reasoning effort)',
+          description: 'Optional agent config-option overrides applied to every started run, e.g. {"reasoning_effort":"high"}. Merged canonically; a conflict with sessionConfigOptionOverrides fails.',
+          widget: 'json',
+          optionsSourceId: 'agents.config_options.available',
+        },
+        {
+          path: 'connectedServices',
+          title: 'Connected services (json)',
+          description: 'Optional blanket connected-services selection for every target. Attached omission inherits the parent choice; independent starts use Account defaults. Use "native" to suppress connected accounts. An exact connectedServicesByBackendTargetKey entry overrides it.',
+          widget: 'json',
+          optionsSourceId: 'sessions.spawn.connected_services.available',
+        },
+        {
+          path: 'connectedServicesByBackendTargetKey',
+          title: 'Connected services per target (json)',
+          description: 'Optional connected-services selection per backend target key. Accepts "native", a per-service string ("<service>:group:<id>", "<service>:<profileId>", "<service>:native"), an array, or the full object; omitted targets use the blanket selection, attached inheritance, or independent Account defaults. Enumerate valid selections via the shared session-spawn options source.',
+          widget: 'textarea',
+          optionsSourceId: 'sessions.spawn.connected_services.available',
+        },
+      ],
+    },
+    examples: {
+      voice: { argsExample: '{"backendTargetKeys":["agent:codex"],"instructions":"Delegate the task."}' },
+    },
+	    surfaces: {
+	      ui: true,
+	      voice: true,
+	      agent: true,
+	      mcp: true,
+	      cli: true,
+	      rpc: false,
+	      },
+	    outputSchema: StrictJsonValueSchema,
+	    inputSchema: DelegateStartInputSchema,
+	  } satisfies PreNormalizedActionSpec,
+  {
+    id: 'voice_agent.start', executionPlacement: 'session', approval: {result: 'optional',flow: 'deferred'},
+    title: 'Start voice agent run',
+    sideEffectClass: 'external',
+    safety: 'safe',
+    placements: ['voice_panel'],
+    slash: { tokens: ['/h.voice'] },
+    bindings: { voiceClientToolName: 'startVoiceAgentRun', mcpToolName: 'voice_agent_start' },
+    inputHints: {
+      title: 'Start a voice agent run',
+      description: 'Start a voice agent execution run (typically used by the voice control plane).',
+      fields: [
+        {
+          path: 'backendTargetKeys',
+          title: 'Agent backend targets',
+          description: 'Select Agent backend targets for the Happier-managed voice agent run; this is not parallelism capacity.',
+          widget: 'multiselect',
+          required: true,
+          optionsSourceId: 'execution.backends.enabled',
+          maxSelections: 1,
+        },
+        {
+          path: 'instructions',
+          title: 'Instructions',
+          description: 'Initial instructions for the voice agent run.',
+          widget: 'textarea',
+          required: true,
+        },
+        {
+          path: 'connectedServices',
+          title: 'Connected services (json)',
+          description: 'Optional blanket connected-services selection for every target. An exact connectedServicesByBackendTargetKey entry overrides it.',
+          widget: 'json',
+          optionsSourceId: 'sessions.spawn.connected_services.available',
+        },
+        {
+          path: 'connectedServicesByBackendTargetKey',
+          title: 'Connected services per target (json)',
+          description: 'Optional per-target override using the exact selected backend target key.',
+          widget: 'json',
+          optionsSourceId: 'sessions.spawn.connected_services.available',
+        },
+      ],
+    },
+    examples: {
+      voice: { argsExample: '{"backendTargetKeys":["agent:codex"],"instructions":"Start the voice assistant for this workspace."}' },
+    },
+    surfaces: {
+      ui: true,
+      voice: true,
+      agent: true,
+      mcp: true,
+      cli: true,
+      rpc: false,
+      },
+    outputSchema: StrictJsonValueSchema,
+    inputSchema: VoiceAgentStartInputSchema,
+  } satisfies PreNormalizedActionSpec,
+  {
+    id: 'sessions.subagents.list', executionPlacement: 'session', approval: {result: 'required'},
+    title: 'List session subagents',
+    description: 'Return bounded provider-neutral subagent projections for a session.',
+    safety: 'safe',
+    placements: [],
+    bindings: { rpcMethod: RPC_METHODS.SESSIONS_SUBAGENTS_LIST },
+    sideEffectClass: 'read',
+    surfaces: {
+      ui: false,
+      voice: false,
+      agent: false,
+      mcp: false,
+      cli: false,
+      rpc: true,
+    },
+    outputSchema: lazyZodSchema(() => z.array(SubagentRefV1Schema)),
+    inputSchema: SubagentListInputSchema,
+    inputHints: {
+      title: 'List session subagents',
+      description: 'Reads a bounded provider-neutral subagent projection snapshot.',
+      fields: [
+        { path: 'parentSessionId', title: 'Parent session id', widget: 'text' },
+        { path: 'groupId', title: 'Group id', widget: 'text' },
+        { path: 'limit', title: 'Limit', widget: 'text' },
+      ],
+    },
+  } satisfies PreNormalizedActionSpec,
+  {
+    id: 'sessions.subagents.get', executionPlacement: 'session', approval: {result: 'required'},
+    title: 'Get session subagent',
+    description: 'Return one provider-neutral subagent projection by id.',
+    safety: 'safe',
+    placements: [],
+    bindings: { rpcMethod: RPC_METHODS.SESSIONS_SUBAGENTS_GET },
+    sideEffectClass: 'read',
+    surfaces: {
+      ui: false,
+      voice: false,
+      agent: false,
+      mcp: false,
+      cli: false,
+      rpc: true,
+    },
+    outputSchema: lazyZodSchema(() => z.nullable(SubagentRefV1Schema)),
+    inputSchema: SubagentGetInputSchema,
+    inputHints: {
+      title: 'Get session subagent',
+      fields: [
+        { path: 'id', title: 'Subagent id', widget: 'text', required: true },
+        { path: 'parentSessionId', title: 'Parent session id', widget: 'text' },
+      ],
+    },
+  } satisfies PreNormalizedActionSpec,
+  {
+    id: 'sessions.subagents.watch', executionPlacement: 'session', approval: {result: 'required'},
+    title: 'Watch session subagents',
+    description: 'Register the bounded host subagent watcher path and return its initial typed projection snapshot.',
+    safety: 'safe',
+    placements: [],
+    bindings: { rpcMethod: RPC_METHODS.SESSIONS_SUBAGENTS_WATCH },
+    sideEffectClass: 'read',
+    surfaces: {
+      ui: false,
+      voice: false,
+      agent: false,
+      mcp: false,
+      cli: false,
+      rpc: true,
+    },
+    outputSchema: SubagentWatchSnapshotOutputSchema,
+    inputSchema: SubagentWatchInputSchema,
+    inputHints: {
+      title: 'Watch session subagents',
+      description: 'Uses the bounded host subagent watcher path and returns the initial snapshot for the RPC caller.',
+      fields: [
+        { path: 'parentSessionId', title: 'Parent session id', widget: 'text' },
+        { path: 'id', title: 'Subagent id', widget: 'text' },
+      ],
+    },
+  } satisfies PreNormalizedActionSpec,
+  {
+    id: 'sessions.subagents.upsert', executionPlacement: 'session', approval: {result: 'optional',flow: 'deferred'},
+    title: 'Record session subagent',
+    description: 'Create or replace a provider-neutral subagent projection with owner-authority enforcement.',
+    safety: 'danger',
+    placements: [],
+    bindings: { rpcMethod: RPC_METHODS.SESSIONS_SUBAGENTS_UPSERT },
+    sideEffectClass: 'write',
+    surfaces: {
+      ui: false,
+      voice: false,
+      agent: false,
+      mcp: false,
+      cli: false,
+      rpc: true,
+    },
+    outputSchema: SubagentRefV1Schema,
+    inputSchema: SubagentRefInputV1Schema,
+    inputHints: { description: 'Add or replace the record of a helper agent working under a session, so it shows in that session\'s work.',
+      title: 'Record session subagent',
+      fields: [
+        { path: 'id', title: 'Subagent id', widget: 'text', required: true },
+        { path: 'parentSessionId', title: 'Parent session id', widget: 'text', required: true },
+        { path: 'origin', title: 'Origin', widget: 'text', required: true },
+        { path: 'kind', title: 'Kind', widget: 'text', required: true },
+        { path: 'status', title: 'Status', widget: 'text' },
+      ],
+    },
+  } satisfies PreNormalizedActionSpec,
+  {
+    id: 'sessions.subagents.updateStatus', executionPlacement: 'session', approval: {result: 'optional',flow: 'deferred'},
+    title: 'Update session subagent status',
+    description: 'Update subagent lifecycle status with owner-authority enforcement.',
+    safety: 'danger',
+    placements: [],
+    bindings: { rpcMethod: RPC_METHODS.SESSIONS_SUBAGENTS_UPDATE_STATUS },
+    sideEffectClass: 'write',
+    surfaces: {
+      ui: false,
+      voice: false,
+      agent: false,
+      mcp: false,
+      cli: false,
+      rpc: true,
+    },
+    outputSchema: SubagentRefV1Schema,
+    inputSchema: SubagentStatusUpdateInputSchema,
+    inputHints: { description: 'Record whether a helper agent under a session is working, done or failed.',
+      title: 'Update session subagent status',
+      fields: [
+        { path: 'id', title: 'Subagent id', widget: 'text', required: true },
+        { path: 'parentSessionId', title: 'Parent session id', widget: 'text', required: true },
+        { path: 'status', title: 'Status', widget: 'text', required: true },
+        { path: 'completedAt', title: 'Completed at', widget: 'text' },
+      ],
+    },
+  } satisfies PreNormalizedActionSpec,
+  {
+    id: 'sessions.subagents.complete', executionPlacement: 'session', approval: {result: 'optional',flow: 'deferred'},
+    title: 'Complete session subagent',
+    description: 'Mark a subagent terminal with owner-authority enforcement.',
+    safety: 'danger',
+    placements: [],
+    bindings: { rpcMethod: RPC_METHODS.SESSIONS_SUBAGENTS_COMPLETE },
+    sideEffectClass: 'write',
+    surfaces: {
+      ui: false,
+      voice: false,
+      agent: false,
+      mcp: false,
+      cli: false,
+      rpc: true,
+    },
+    outputSchema: SubagentRefV1Schema,
+    inputSchema: SubagentCompleteInputSchema,
+    inputHints: {
+      title: 'Complete session subagent',
+      fields: [
+        { path: 'id', title: 'Subagent id', widget: 'text', required: true },
+        { path: 'parentSessionId', title: 'Parent session id', widget: 'text', required: true },
+        { path: 'status', title: 'Terminal status', widget: 'text' },
+        { path: 'completedAt', title: 'Completed at', widget: 'text' },
+      ],
+    },
+  } satisfies PreNormalizedActionSpec,
+] as const);
+

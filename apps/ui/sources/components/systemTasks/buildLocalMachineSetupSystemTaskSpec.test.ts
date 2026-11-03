@@ -79,8 +79,7 @@ describe('buildLocalMachineSetupSystemTaskSpec', () => {
         const { buildLocalMachineSetupSystemTaskSpec } = await import('./buildLocalMachineSetupSystemTaskSpec');
 
         // @ts-expect-error omitting the relay pair must not compile
-        const omitted = () => buildLocalMachineSetupSystemTaskSpec();
-        expect(typeof omitted).toBe('function');
+        void (() => buildLocalMachineSetupSystemTaskSpec());
 
         const params = buildLocalMachineSetupSystemTaskSpec({
             activeRelayUrl: '  https://relay.example.test  ',

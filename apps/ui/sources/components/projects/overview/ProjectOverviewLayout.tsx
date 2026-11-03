@@ -44,6 +44,7 @@ export const ProjectOverviewLayout = React.memo(function ProjectOverviewLayout(
     /** A state that replaces both areas (layout unreadable, attached dashboard unavailable). */
     blocking?: React.ReactNode;
     main: React.ReactNode;
+    /** `null` draws no area at all: no frame and no gap, so the main area takes the page. */
     aside: React.ReactNode;
     /** Phones: the deterministic merged order of both areas, with each area's Add after it. */
     phone?: React.ReactNode;
@@ -78,7 +79,8 @@ export const ProjectOverviewLayout = React.memo(function ProjectOverviewLayout(
               </View>
             ) : (
               <View style={arrangement === 'columns' ? styles.columns : styles.stack}>
-                {(arrangement === 'columns' ? ['main', 'aside'] as const : ['aside', 'main'] as const).map(area => (
+                {(arrangement === 'columns' ? ['main', 'aside'] as const : ['aside', 'main'] as const)
+                  .filter(area => props[area] != null).map(area => (
                   <View key={area} testID={`${testID}.${area}`}
                     style={arrangement === 'columns' ? area === 'main' ? styles.main : styles.aside : undefined}>
                     {props[area]}

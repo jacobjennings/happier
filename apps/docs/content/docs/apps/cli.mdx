@@ -337,6 +337,7 @@ For mutation workflows, `--request-id <id>` supplies the Action request
 identifier. Reusing an identifier is safe only where that Action's own contract
 documents idempotent handling; the CLI does not automatically replay a failed
 mutation.
+Do not reuse a request id after the daemon restarts to mean “the same request.”
 
 ### Friendly command families derived from Actions
 
@@ -660,7 +661,7 @@ use `--yes` for the catalog's recommended defaults.
 If you want to set up a remote machine to run the background service and providers (VPS, home server, dev box):
 
 ```bash
-happier machine setup --ssh user@host
+happier machine enroll --ssh user@host
 ```
 
 Common flags:

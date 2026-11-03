@@ -20,7 +20,18 @@ export function requestFingerprint(request, salt) {
 }
 
 export function networkRouteClass(endpoint, method = 'GET') {
-  const path = new URL(endpoint, 'http://relative.invalid').pathname;
+  const url = new URL(endpoint, 'http://relative.invalid');
+  const path = url.pathname;
+  if (/^\/v[12]\/sessions(?:\/(?:query|active|archived))?$/.test(path)) return 'session-list';
+  if (/^\/v[12]\/sessions\/read-batch$/.test(path)) return 'session-read-batch';
+  if (/^\/v[12]\/sessions\/metadata-upgrades$/.test(path)) return 'metadata-upgrades';
+  if (/^\/v[12]\/sessions\/[^/]+\/(?:messages|turns|transcript|history)(?:\/|$)/.test(path)) return 'transcript';
+  if (/^\/v1\/updates(?:\/|$)/.test(path)) return 'engine-transport';
+  if (path.startsWith('/v2/session-organization')) return ['assignmentSessionIds', 'folderIds', 'tagIds', 'orderScopes'].some(key => url.searchParams.has(key))
+    || ['includeAllFolderAssignments', 'includeAllTagAssignments', 'includeFolders', 'includeTags', 'includeLabels'].some(key => url.searchParams.get(key) === 'false')
+    ? 'organization-scoped' : 'organization-full';
+  if (/\/changes(?:\/|$)/.test(path)) return 'changes';
+  if (/^\/v\d+\/(?:features|auth)(?:\/|$)/.test(path)) return 'features-auth';
   if (/^\/v[12]\/sessions\/[^/]+$/.test(path)) {
     const segment = path.split('/').at(-1);
     // Fixed siblings registered by the current Session route owners, not rows.
@@ -40,16 +51,23 @@ export function summarizeNetwork(input, { startMs = -Infinity, endMs = Infinity 
   const routeClasses = {};
   let duplicateCandidates = 0;
   for (const request of [...requests].sort((a, b) => a.startMs - b.startMs)) {
-    const routeClass = networkRouteClass(request.endpoint, request.method);
+    const routeClass = request.routeClass ?? networkRouteClass(request.endpoint, request.method);
     routeClasses[routeClass] = (routeClasses[routeClass] ?? 0) + 1;
     if (request.endMs === undefined || request.endMs > endMs) dispositions.pendingAtEnd++;
     else if (request.canceled) dispositions.canceled++;
     else if (request.failed) dispositions.failed++;
     else dispositions.completed++;
     if (request.endMs > endMs) dispositions.completedAfterWindow++;
-    const key = `${request.method} ${request.endpoint}`;
-    const row = endpoints.get(key) ?? { endpoint: request.endpoint, method: request.method, count: 0, encodedBytes: 0, failed: 0, duplicateCandidates: 0 };
+    const key = `${request.method} ${request.endpoint} ${routeClass}`;
+    const row = endpoints.get(key) ?? { endpoint: request.endpoint, method: request.method, routeClass, count: 0, encodedBytes: 0,
+      requestBodyBytes: 0, decodedBodyBytes: 0, encodedBodyBytes: 0, encodedResponseBytes: 0, failed: 0, duplicateCandidates: 0 };
     row.count++;
+    for (const [metric, value] of Object.entries({ requestBodyBytes: request.requestBodyBytes,
+      decodedBodyBytes: !request.failed && request.endMs <= endMs ? request.decodedBytes : null,
+      encodedBodyBytes: !request.failed && request.endMs <= endMs ? request.encodedBodyBytes : null,
+      encodedResponseBytes: !request.failed && request.endMs <= endMs ? request.encodedBytes : null })) {
+      row[metric] = sumBytes(row[metric], value);
+    }
     row.encodedBytes += request.endMs <= endMs ? request.encodedBytes ?? 0 : 0;
     row.failed += Number(Boolean(request.failed));
     // Missing POST bodies cannot establish request equality. CDP can omit large
@@ -66,12 +84,57 @@ export function summarizeNetwork(input, { startMs = -Infinity, endMs = Infinity 
   }
   const completed = requests.filter(request => request.endMs <= endMs);
   const encodedBytesCompletedWithinWindow = completed.reduce((sum, request) => sum + (request.encodedBytes ?? 0), 0);
-  const decodedBytes = completed.every(request => Number.isFinite(request.decodedBytes) && request.decodedBytes >= 0)
-    ? completed.reduce((sum, request) => sum + request.decodedBytes, 0) : null;
+  const decodedBytes = completed.filter(request => !request.failed).reduce((sum, request) => sumBytes(sum, request.decodedBytes), 0);
   return { requests: requests.length, duplicateCandidates, dispositions, routeClasses,
     encodedBytes: encodedBytesCompletedWithinWindow, encodedBytesCompletedWithinWindow, decodedBytes,
     encodedBytesObserved: requests.reduce((sum, request) => sum + (request.encodedBytes ?? 0), 0),
     endpoints: [...endpoints.values()].sort((a, b) => b.count - a.count) };
+}
+
+const sumBytes = (left, right) => Number.isFinite(left) && left >= 0 && Number.isFinite(right) && right >= 0 ? left + right : null;
+const socketFamilies = new Set(['update', 'ephemeral', 'rpc-call', 'rpc-request', 'rpc-response', 'rpc-register', 'rpc-registered', 'rpc-error', 'session-alive', 'machine-alive']);
+const socketTypes = new Set(['new-message', 'message-updated', 'transcript-stream-segment', 'transcript-stream-segment-delta', 'session-personal-event', 'new-session', 'update-session', 'delete-session', 'update-machine', 'new-machine', 'delete-machine', 'update-account', 'pending-changed', 'session-organization-changed', 'activity', 'usage', 'machine-activity', 'session-runtime', 'session-list-changed']);
+
+// Socket.IO protocol v5 inside an Engine.IO message. Inspect only the JSON
+// header; never retain args or reconstruct binary attachments as content.
+export function socketFrameClassification(payload, opcode) {
+  const row = (kind, event, type = 'unknown', delivery = 'unspecified') => ({ kind, event, type, delivery });
+  if ([8, 9, 10].includes(opcode)) return row('control', 'websocket', ({ 8: 'close', 9: 'ping', 10: 'pong' })[opcode]);
+  if (opcode !== 1) return row('binary', 'binary');
+  if (payload.startsWith('2')) return row('ping', 'engine', 'ping');
+  if (payload.startsWith('3')) return row('pong', 'engine', 'pong');
+  if (payload.startsWith('40')) return row('connect', 'socket', 'connect');
+  if (payload.startsWith('41')) return row('disconnect', 'socket', 'disconnect');
+  if (/^4(?:3|6\d+-)/.test(payload)) return row('ack', 'socket', 'ack');
+  const match = payload.match(/^4(?:2|5\d+-)(?:\/[^,]*,)?\d*(\[.*)$/s);
+  if (!match) return row('protocol', 'unknown');
+  try {
+    const data = JSON.parse(match[1]);
+    if (!Array.isArray(data) || !socketFamilies.has(data[0])) return row('event', 'unknown');
+    const body = data[1]?.body ?? data[1];
+    const type = body?.t ?? body?.type;
+    return row('event', data[0], socketTypes.has(type) ? type : 'unknown',
+      ['hint', 'full'].includes(body?.delivery) ? body.delivery : 'unspecified');
+  } catch { return row('event', 'unknown'); } // Malformed frames remain measurable in the unknown bucket.
+}
+
+// Flat metrics feed the existing comparison JSON, Markdown and CI summary.
+export function transferCounts(network, sockets) {
+  const counts = { 'transfer.measured': 1 };
+  for (const row of network.endpoints) {
+    const prefix = `transfer.http.${row.method}.${row.routeClass}`;
+    counts[`${prefix}.requests`] = (counts[`${prefix}.requests`] ?? 0) + row.count;
+    for (const metric of ['requestBodyBytes', 'decodedBodyBytes', 'encodedBodyBytes', 'encodedResponseBytes']) {
+      const key = `${prefix}.${metric}`;
+      counts[key] = sumBytes(Object.hasOwn(counts, key) ? counts[key] : 0, row[metric]);
+    }
+  }
+  for (const frame of sockets) {
+    const prefix = `transfer.socket.${frame.direction}.${frame.event}.${frame.type}.${frame.delivery}`;
+    counts[`${prefix}.frames`] = (counts[`${prefix}.frames`] ?? 0) + 1;
+    counts[`${prefix}.payloadBytes`] = (counts[`${prefix}.payloadBytes`] ?? 0) + frame.bytes;
+  }
+  return counts;
 }
 
 // Promoted from PERF10 profile/cpu-modules: sample-weighted self and inclusive
@@ -244,8 +307,10 @@ export function compareRuns(before, after) {
   return [...new Set([...before, ...after].map(key))].map(group => {
     const left = before.filter(run => key(run) === group);
     const right = after.filter(run => key(run) === group);
-    const mean = (runs, metric) => runs.length && runs.every(run => typeof run.counts[metric] === 'number')
-      ? runs.reduce((sum, run) => sum + run.counts[metric], 0) / runs.length : null;
+    const value = (run, metric) => !Object.hasOwn(run.counts, metric) && metric.startsWith('transfer.') && run.counts['transfer.measured'] === 1
+      ? 0 : run.counts[metric];
+    const mean = (runs, metric) => runs.length && runs.every(run => typeof value(run, metric) === 'number')
+      ? runs.reduce((sum, run) => sum + value(run, metric), 0) / runs.length : null;
     const metrics = new Set([...left, ...right].flatMap(run => Object.keys(run.counts)));
     const timing = runs => runs.length >= 5 && runs.every(isUnperturbedTimingRun)
       ? { p50Ms: percentile(runs.map(run => run.durationMs), .5), p95Ms: percentile(runs.map(run => run.durationMs), .95) } : null;

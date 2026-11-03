@@ -203,7 +203,3 @@ export function StorySheetFrame(props: StorySheetFrameProps) {
         </View>
     );
 }
-
-export type StorySheetFrameImperativeApi = Readonly<{
-    close: () => void;
-}>;

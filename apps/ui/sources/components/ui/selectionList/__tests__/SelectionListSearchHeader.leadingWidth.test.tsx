@@ -1,7 +1,9 @@
 import * as React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { act } from 'react-test-renderer';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { setReducedMotionPreferenceOverride } from '@/hooks/ui/useReducedMotionPreference';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -19,75 +21,61 @@ vi.mock('react-native', async () => {
  * value synchronously, so the test sees the resolved style for the current
  * `canPop` state.
  */
+type Screen = Awaited<ReturnType<typeof renderScreen>>;
+
+function readAnimatorWidth(screen: Screen): unknown {
+    const animator = screen.findByTestId('hdr:leading:animator');
+    expect(animator).not.toBeNull();
+    const styles = Array.isArray(animator!.props.style)
+        ? animator!.props.style.flat(Infinity)
+        : [animator!.props.style];
+    return Object.assign({}, ...styles.filter(Boolean)).width;
+}
+
 describe('SelectionListSearchHeader leading slot width animation (R6 Fix 3)', () => {
-    it('exposes a leading-slot animator wrapper with an animated `width` style entry', async () => {
-        const { SelectionListSearchHeader } = await import('../SelectionListSearchHeader');
-        const screen = await renderScreen(
-            <SelectionListSearchHeader
-                value=""
-                onChangeText={() => {}}
-                placeholder="Search"
-                canPop={false}
-                testID="hdr"
-            />,
-        );
-        const animator = screen.findByTestId('hdr:leading:animator');
-        expect(animator).not.toBeNull();
-        const styles = Array.isArray(animator!.props.style)
-            ? animator!.props.style.flat(Infinity)
-            : [animator!.props.style];
-        const merged = Object.assign({}, ...styles.filter(Boolean));
-        expect(typeof merged.width).toBe('number');
-        // Search-icon resting width should be modest (icon + small chrome).
-        expect(merged.width).toBeGreaterThan(0);
-        expect(merged.width).toBeLessThan(60);
+    afterEach(async () => {
+        // A host-wide store: restore it inside act so a still-mounted header rerenders in-band.
+        await act(async () => { setReducedMotionPreferenceOverride(null); });
     });
 
-    it('reports a wider animated width when the back chip is shown', async () => {
+    it.each([
+        // Search-icon resting width is modest (icon + small chrome); the back chip is meaningfully wider.
+        { slot: 'search icon', canPop: false, inRange: (width: number) => width > 0 && width < 60 },
+        { slot: 'back chip', canPop: true, inRange: (width: number) => width >= 60 },
+    ])('mounts the animated leading slot at the $slot resting width', async ({ canPop, inRange }) => {
         const { SelectionListSearchHeader } = await import('../SelectionListSearchHeader');
         const screen = await renderScreen(
             <SelectionListSearchHeader
                 value=""
                 onChangeText={() => {}}
                 placeholder="Search"
-                canPop
+                canPop={canPop}
                 backLabel="Worktrees"
                 onPopStep={() => {}}
                 testID="hdr"
             />,
         );
-        const animator = screen.findByTestId('hdr:leading:animator');
-        expect(animator).not.toBeNull();
-        const styles = Array.isArray(animator!.props.style)
-            ? animator!.props.style.flat(Infinity)
-            : [animator!.props.style];
-        const merged = Object.assign({}, ...styles.filter(Boolean));
-        // Back chip is meaningfully wider than the search icon.
-        expect(typeof merged.width).toBe('number');
-        expect(merged.width).toBeGreaterThanOrEqual(60);
+        const width = readAnimatorWidth(screen);
+        expect(typeof width).toBe('number');
+        expect(inRange(width as number)).toBe(true);
     });
 
     it('snaps to the target width without animation when reduced motion is active', async () => {
+        await act(async () => { setReducedMotionPreferenceOverride(true); });
         const { SelectionListSearchHeader } = await import('../SelectionListSearchHeader');
-        // Render once with canPop false then update to canPop true under
-        // reducedMotion=true and verify the width has changed (snap rather
-        // than mid-tween value).
+        // Render once with canPop false then update to canPop true under the
+        // host reduced-motion preference and verify the width has changed (snap
+        // rather than mid-tween value).
         const screen = await renderScreen(
             <SelectionListSearchHeader
                 value=""
                 onChangeText={() => {}}
                 placeholder="Search"
                 canPop={false}
-                reducedMotion
                 testID="hdr"
             />,
         );
-        const before = screen.findByTestId('hdr:leading:animator');
-        const beforeMerged = Object.assign(
-            {},
-            ...(Array.isArray(before!.props.style) ? before!.props.style.flat(Infinity) : [before!.props.style]).filter(Boolean),
-        );
-        const beforeWidth = beforeMerged.width as number;
+        const beforeWidth = readAnimatorWidth(screen);
         await screen.update(
             <SelectionListSearchHeader
                 value=""
@@ -96,16 +84,10 @@ describe('SelectionListSearchHeader leading slot width animation (R6 Fix 3)', ()
                 canPop
                 backLabel="Worktrees"
                 onPopStep={() => {}}
-                reducedMotion
                 testID="hdr"
             />,
         );
-        const after = screen.findByTestId('hdr:leading:animator');
-        const afterMerged = Object.assign(
-            {},
-            ...(Array.isArray(after!.props.style) ? after!.props.style.flat(Infinity) : [after!.props.style]).filter(Boolean),
-        );
-        const afterWidth = afterMerged.width as number;
+        const afterWidth = readAnimatorWidth(screen) as number;
         expect(afterWidth).not.toBe(beforeWidth);
         expect(afterWidth).toBeGreaterThanOrEqual(60);
     });

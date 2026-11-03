@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { V2SessionByIdResponseSchema } from "@happier-dev/protocol";
+import { SessionCurrentProjectionRecordV1Schema } from "@happier-dev/protocol/sessions/listing/response";
 
 import {
     accountFindUnique,
@@ -273,6 +274,9 @@ describe("sessionRoutes v2 session by id", () => {
             query: { accessProjectionVersion: 1 },
         });
         expect(current.reply.statusCode).toBe(200);
+        // Exact two-stage reader used by the CLI; input comes from the real route/serializer.
+        const currentDetail = V2SessionByIdResponseSchema.parse(JSON.parse(JSON.stringify(current.response)));
+        expect(SessionCurrentProjectionRecordV1Schema.safeParse(currentDetail.session).success).toBe(true);
         expect(current.response).toEqual({
             session: expect.objectContaining({
                 id: "team-only",
@@ -362,6 +366,8 @@ describe("sessionRoutes v2 session by id", () => {
             }),
         });
         expect(txSessionShareFindMany).toHaveBeenCalledOnce();
+        const detail = V2SessionByIdResponseSchema.parse(JSON.parse(JSON.stringify(response)));
+        expect(SessionCurrentProjectionRecordV1Schema.safeParse(detail.session).success).toBe(true);
         expect(txDiscussionFindMany).toHaveBeenCalled();
         expect(sessionShareFindMany).not.toHaveBeenCalled();
         expect(discussionFindMany).not.toHaveBeenCalled();
@@ -417,6 +423,7 @@ describe("sessionRoutes v2 session by id", () => {
             }),
         });
         expect(accountFindUnique).toHaveBeenCalledTimes(FOLLOW_RULE_VIEWER_ACCOUNT_READS);
+        expect(V2SessionByIdResponseSchema.safeParse(JSON.parse(JSON.stringify(response))).success).toBe(true);
     });
 
     it("returns owned session with raw session DEK and share=null", async () => {

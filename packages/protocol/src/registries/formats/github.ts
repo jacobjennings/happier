@@ -21,18 +21,20 @@ function requireHttp<T>(result: RegistryHttpResultV1<T>): T {
 const treeSchema = z.object({ sha: z.string().check(z.minLength(1)), truncated: z.optional(z.boolean()), tree: z.array(z.object({
   path: z.string(), mode: z.string(), type: z.string(), sha: z.string(), size: z.optional(z.number()),
 })) });
-async function readCommit(ctx: RegistryFetchContextV1, source: RegistrySourceV1, version?: string, credentials = source) {
+export async function readRegistryGitHubCommitV1(ctx: RegistryFetchContextV1, source: RegistrySourceV1, version?: string, credentials = source) {
   ctx.signal?.throwIfAborted();
   const repo = readGitHubRepositoryV1(source.url);
   if (!repo) throw new RegistryFetchErrorV1({state:'invalid_source'});
   const base = `https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.repo)}`;
+  // A complete Git object id already resolves an immutable revision. Checking it
+  // through the mutable commit API spends its budget without changing the pin.
+  if (version !== undefined && /^[a-f0-9]{40}$/i.test(version)) return { repo, commit: version, base };
   const commitResult=z.object({sha:z.string().check(z.minLength(1))}).safeParse(requireHttp(await ctx.http.getJson(`${base}/commits/${encodeURIComponent(version ?? source.ref ?? repo.ref ?? 'HEAD')}`, {source:credentials})));
   if(!commitResult.success)throw new RegistryFetchErrorV1({state:'invalid_source'});
   const commit=commitResult.data.sha;
-  if (version !== undefined && /^[a-f0-9]{40}$/i.test(version) && commit !== version) throw new RegistryFetchErrorV1({state:'invalid_source'});
   return {repo, commit, base};
 }
-async function readCommittedTree(ctx: RegistryFetchContextV1, resolved: Awaited<ReturnType<typeof readCommit>>, credentials: RegistrySourceV1) {
+async function readCommittedTree(ctx: RegistryFetchContextV1, resolved: Awaited<ReturnType<typeof readRegistryGitHubCommitV1>>, credentials: RegistrySourceV1) {
   const {repo, commit, base} = resolved;
   const result = await ctx.http.getJson(`${base}/git/trees/${commit}?recursive=1`, {source:credentials});
   const parsedTree=treeSchema.safeParse(requireHttp(result));if(!parsedTree.success)throw new RegistryFetchErrorV1({state:'invalid_source'});
@@ -41,7 +43,7 @@ async function readCommittedTree(ctx: RegistryFetchContextV1, resolved: Awaited<
   return {repo, commit, tree, fetchedAt: result.ok ? result.fetchedAt : 0};
 }
 async function readTree(ctx: RegistryFetchContextV1, source: RegistrySourceV1, version?: string) {
-  return readCommittedTree(ctx, await readCommit(ctx, source, version), source);
+  return readCommittedTree(ctx, await readRegistryGitHubCommitV1(ctx, source, version), source);
 }
 function skillPaths(tree: z.infer<typeof treeSchema>, source: RegistrySourceV1): string[] {
   const root = registryRelativePathV1(source.path ?? readGitHubRepositoryV1(source.url)?.path ?? '');
@@ -104,7 +106,7 @@ return {
         for (const [key,value] of await ctx.git.latest(ctx,group,{source})) result.set(key,value);
         continue;
       }
-      const resolved = await readCommit(ctx,source,undefined,credentials);
+      const resolved = await readRegistryGitHubCommitV1(ctx,source,undefined,credentials);
       const targetPath = (item: RegistryProvenanceV1) => registryRelativePathV1(options?.source.format==='git'
         ? [source.path ?? readGitHubRepositoryV1(source.url)?.path, registryRelativePathV1(item.itemId)].filter(Boolean).join('/')
         : item.ref.kind==='gitTree' ? item.ref.path : '');

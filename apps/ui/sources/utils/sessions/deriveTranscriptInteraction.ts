@@ -4,7 +4,7 @@ import { isSessionActionConfirmationRequest } from '@happier-dev/protocol/sessio
 
 /** Native prompts need a live runtime; host Action decisions retain their approval grant. */
 export function isTranscriptPendingRequestAnswerable(
-    session: Session,
+    session: Pick<Session, 'access' | 'active'>,
     request: Readonly<{ kind: 'permission' | 'user_action'; source?: string }>,
 ): boolean {
     const interaction = deriveTranscriptInteractionFromSession(session);

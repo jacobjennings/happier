@@ -108,11 +108,10 @@ function expectPackedTargetedCliResult(result: PackedCliResult): void {
 }
 
 describe('packed public targeted-contribution conformance', () => {
-  it.each([
-    ['equals form', [`--with-plugin=${contributorFixtureRoot}`]],
-    ['spaced form', ['--with-plugin', contributorFixtureRoot]],
-  ])('exercises the packed target and contributor through the CLI %s', async (_form, prerequisiteArgs) => {
-    expectPackedTargetedCliResult(await runPackedTargetedCliTest(prerequisiteArgs));
+  // Both --with-plugin spellings are parsed by the CLI command owner's own
+  // tests; one packed daemon journey proves the composed CLI path.
+  it('exercises the packed target and contributor through the CLI', async () => {
+    expectPackedTargetedCliResult(await runPackedTargetedCliTest([`--with-plugin=${contributorFixtureRoot}`]));
   }, 180_000);
 
   it('reports only contributors admitted at the target-owned point, not every installed prerequisite', async () => {

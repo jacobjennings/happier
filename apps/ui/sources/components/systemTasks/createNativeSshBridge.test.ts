@@ -3,10 +3,13 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SystemTaskResult, SystemTaskSpec } from '@happier-dev/protocol';
 import { SystemTaskExecutionError } from '@happier-dev/cli-common/systemTasks';
 import type { NativeSshAuthPromptEvent, NativeSshHostKeyPromptEvent, NativeSshModule } from '@happier-dev/ssh-native';
-import type {
-    NativeSshBridgeInterruptionMarker,
-    NativeSshBridgeInterruptionStore,
+import {
+    createNativeSshBridge,
+    readNativeSshBridgeInterruptionKey,
+    type NativeSshBridgeInterruptionMarker,
 } from './createNativeSshBridge';
+import { createNativeSshBridgeInterruptionStore } from './nativeSshBridgeInterruptionStore';
+import { runNativeRemoteSshBootstrapTask } from './remoteSshBootstrap/nativeTask';
 
 function createRemoteBootstrapSpec(overrides: Partial<SystemTaskSpec> = {}): SystemTaskSpec {
     return {
@@ -34,11 +37,8 @@ function createRemoteBootstrapSpec(overrides: Partial<SystemTaskSpec> = {}): Sys
 
 describe('createNativeSshBridge', () => {
     it('rejects non-whitelisted system task kinds before native SSH execution', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         const runBootstrapTask = vi.fn();
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -55,10 +55,10 @@ describe('createNativeSshBridge', () => {
     });
 
     it('validates bootstrap params with the shared remote bootstrap parser before native SSH execution', async () => {
-        const loaded = await import('./remoteSshBootstrap/nativeTask').catch(() => null);
-        expect(loaded).not.toBeNull();
+        const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+        const spec = createRemoteBootstrapSpec();
 
-        await expect(loaded!.runNativeRemoteSshBootstrapTask({
+        await expect(runNativeRemoteSshBootstrapTask({
             taskId: 'task-a',
             nativeModule: {
                 getAvailability: () => ({
@@ -69,39 +69,33 @@ describe('createNativeSshBridge', () => {
                     supportsLoopbackTunnel: false,
                     supportsPersistentHostKeyStorage: false,
                 }),
-                exec: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+                exec,
                 cancelRequest: async () => undefined,
             },
             spec: createRemoteBootstrapSpec({
-            params: {
-                ssh: {
-                    target: 'dev@10.0.0.5',
-                    auth: 'agent',
+                params: {
+                    ...spec.params as Record<string, unknown>,
+                    relay: {
+                        relayUrl: '',
+                        webappUrl: '',
+                    },
                 },
-                relay: {
-                    relayUrl: '',
-                    webappUrl: '',
-                },
-                channel: 'stable',
-                serviceMode: 'user',
-                knownHostsMode: 'app',
-            },
             }),
-        })).rejects.not.toThrow('native_ssh_bootstrap_requires_engine_spike');
+        })).rejects.toMatchObject({
+            code: 'invalid_params',
+            message: expect.stringContaining('relay.relayUrl'),
+        });
+        expect(exec).not.toHaveBeenCalled();
     });
 
-
     it('dedupes in-flight bootstrap work by remote host and task kind', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         let resolveRun: (value: unknown) => void = () => {
             throw new Error('native bootstrap promise was not initialized');
         };
         const runBootstrapTask = vi.fn(async () => new Promise((resolve) => {
             resolveRun = resolve;
         }));
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -118,10 +112,7 @@ describe('createNativeSshBridge', () => {
     });
 
     it('expires completed native SSH task records after the retention window', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -153,19 +144,16 @@ describe('createNativeSshBridge', () => {
     });
 
     it('returns an interrupted result when a previous native bootstrap marker survived process restart', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         const recoveryStore = new Map<string, NativeSshBridgeInterruptionMarker>();
         const runBootstrapTask = vi.fn(async () => ({ machineId: 'machine-a' }));
         const spec = createRemoteBootstrapSpec();
-        const key = loaded!.readNativeSshBridgeInterruptionKey(spec);
+        const key = readNativeSshBridgeInterruptionKey(spec);
         recoveryStore.set(key, {
             taskId: 'native_ssh_task_stale',
             key,
             startedAtMs: 1,
         });
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -198,20 +186,8 @@ describe('createNativeSshBridge', () => {
     });
 
     it('provides a durable interruption store backed by app persistence storage', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         const storedValues = new Map<string, string>();
-        const createStore = (loaded as unknown as {
-            createNativeSshBridgeInterruptionStore?: unknown;
-        }).createNativeSshBridgeInterruptionStore;
-        expect(typeof createStore).toBe('function');
-        const store = (createStore as (storage: {
-            getString: (key: string) => string | undefined;
-            set: (key: string, value: string) => void;
-            delete: (key: string) => void;
-            getAllKeys: () => string[];
-        }) => NativeSshBridgeInterruptionStore)({
+        const store = createNativeSshBridgeInterruptionStore({
             getString: (key) => storedValues.get(key),
             set: (key, value) => {
                 storedValues.set(key, value);
@@ -221,31 +197,27 @@ describe('createNativeSshBridge', () => {
             },
             getAllKeys: () => [...storedValues.keys()],
         });
-        expect(store).toBeTruthy();
 
         const marker = {
             taskId: 'native_ssh_task_a',
             key: 'native-ssh-interrupted:host-a:remote.ssh.bootstrapMachine.v1',
             startedAtMs: 1760000000000,
         };
-        store!.write(marker);
+        store.write(marker);
         storedValues.set('other-key', JSON.stringify({
             taskId: 'ignored',
             key: 'other-key',
             startedAtMs: 1,
         }));
 
-        expect(store!.read(marker.key)).toEqual(marker);
-        expect(store!.list?.()).toEqual([marker]);
-        store!.remove(marker.key);
-        expect(store!.read(marker.key)).toBeNull();
+        expect(store.read(marker.key)).toEqual(marker);
+        expect(store.list?.()).toEqual([marker]);
+        store.remove(marker.key);
+        expect(store.read(marker.key)).toBeNull();
     });
 
     it('maps native task completion through the system-task result contract', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -275,10 +247,7 @@ describe('createNativeSshBridge', () => {
     });
 
     it('preserves stable SystemTaskExecutionError codes in failure results', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -307,13 +276,10 @@ describe('createNativeSshBridge', () => {
     });
 
     it('emits only one terminal result when cancellation races with fail-closed execution', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         let rejectRun: (reason: Error) => void = () => {
             throw new Error('native bootstrap promise was not initialized');
         };
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -341,16 +307,13 @@ describe('createNativeSshBridge', () => {
     });
 
     it('keeps cancelled bootstrap work deduped until the native execution unwinds', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         let rejectRun: (reason: Error) => void = () => {
             throw new Error('native bootstrap promise was not initialized');
         };
         const runBootstrapTask = vi.fn(async () => new Promise((_resolve, reject) => {
             rejectRun = reject;
         }));
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -377,9 +340,6 @@ describe('createNativeSshBridge', () => {
     });
 
     it('routes native host-key prompts through system-task respond', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         const hostKeyListenerRef: { current: ((event: NativeSshHostKeyPromptEvent) => void) | null } = { current: null };
         let resolveRun: (value: unknown) => void = () => {
             throw new Error('native bootstrap promise was not initialized');
@@ -404,7 +364,7 @@ describe('createNativeSshBridge', () => {
                 return { remove: vi.fn() };
             }),
         } satisfies NativeSshModule;
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -454,9 +414,6 @@ describe('createNativeSshBridge', () => {
     });
 
     it('auto-accepts native host keys that match the app trusted-host-key store', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         let hostKeyListener: ((event: NativeSshHostKeyPromptEvent) => void) | null = null;
         const respondToHostKeyPrompt = vi.fn(async () => undefined);
         const nativeModule = {
@@ -494,7 +451,7 @@ describe('createNativeSshBridge', () => {
             delete: vi.fn(),
             clear: vi.fn(),
         };
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -539,9 +496,6 @@ describe('createNativeSshBridge', () => {
     });
 
     it('routes declined native host-key prompts back to the native engine', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         const hostKeyListenerRef: { current: ((event: NativeSshHostKeyPromptEvent) => void) | null } = { current: null };
         const respondToHostKeyPrompt = vi.fn(async () => undefined);
         const nativeModule = {
@@ -563,7 +517,7 @@ describe('createNativeSshBridge', () => {
                 return { remove: vi.fn() };
             }),
         } satisfies NativeSshModule;
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -602,9 +556,6 @@ describe('createNativeSshBridge', () => {
     });
 
     it('includes prompt ids in host-key prompt events so repeated exec prompts do not dedupe in the UI', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         let hostKeyListener: ((event: NativeSshHostKeyPromptEvent) => void) | null = null;
         const nativeModule = {
             getAvailability: () => ({
@@ -625,7 +576,7 @@ describe('createNativeSshBridge', () => {
                 return { remove: vi.fn() };
             }),
         } satisfies NativeSshModule;
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -662,9 +613,6 @@ describe('createNativeSshBridge', () => {
     });
 
     it('routes changed native host keys through the shared replace-host-key prompt', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         let hostKeyListener: ((event: NativeSshHostKeyPromptEvent) => void) | null = null;
         let resolveRun: (value: unknown) => void = () => {
             throw new Error('native bootstrap promise was not initialized');
@@ -689,7 +637,7 @@ describe('createNativeSshBridge', () => {
                 return { remove: vi.fn() };
             }),
         } satisfies NativeSshModule;
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -745,9 +693,6 @@ describe('createNativeSshBridge', () => {
     });
 
     it('persists trusted host keys when the prompt response requests remembering', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         let hostKeyListener: ((event: NativeSshHostKeyPromptEvent) => void) | null = null;
         const respondToHostKeyPrompt = vi.fn(async () => undefined);
         const trustedHostKeyStore = {
@@ -777,7 +722,7 @@ describe('createNativeSshBridge', () => {
                 return { remove: vi.fn() };
             }),
         } satisfies NativeSshModule;
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -821,9 +766,6 @@ describe('createNativeSshBridge', () => {
     });
 
     it('routes native private-key passphrase prompts through generic SSH system-task prompts', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         const authPromptListenerRef: { current: ((event: NativeSshAuthPromptEvent) => void) | null } = { current: null };
         const respondToAuthPrompt = vi.fn(async () => undefined);
         const nativeModule = {
@@ -845,7 +787,7 @@ describe('createNativeSshBridge', () => {
                 return { remove: vi.fn() };
             }),
         } satisfies NativeSshModule;
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -891,9 +833,6 @@ describe('createNativeSshBridge', () => {
     });
 
     it('routes native keyboard-interactive prompts through generic SSH system-task prompts', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         const authPromptListenerRef: { current: ((event: NativeSshAuthPromptEvent) => void) | null } = { current: null };
         const respondToAuthPrompt = vi.fn(async () => undefined);
         const nativeModule = {
@@ -915,7 +854,7 @@ describe('createNativeSshBridge', () => {
                 return { remove: vi.fn() };
             }),
         } satisfies NativeSshModule;
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -961,11 +900,8 @@ describe('createNativeSshBridge', () => {
     });
 
     it('continues shared recipe prompts through system-task respond', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         let capturedPrompt: ((payload: Readonly<{ kind: string; message: string }>) => Promise<unknown>) | null = null;
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],
@@ -1004,9 +940,6 @@ describe('createNativeSshBridge', () => {
     });
 
     it('does not route host-key prompts across task host scopes', async () => {
-        const loaded = await import('./createNativeSshBridge').catch(() => null);
-        expect(loaded).not.toBeNull();
-
         const hostKeyListeners: Array<(event: NativeSshHostKeyPromptEvent) => void> = [];
         const respondToHostKeyPrompt = vi.fn(async () => undefined);
         const nativeModule = {
@@ -1028,7 +961,7 @@ describe('createNativeSshBridge', () => {
                 return { remove: vi.fn() };
             }),
         } satisfies NativeSshModule;
-        const bridge = loaded!.createNativeSshBridge({
+        const bridge = createNativeSshBridge({
             capability: {
                 available: true,
                 supportedTaskKinds: ['remote.ssh.bootstrapMachine.v1'],

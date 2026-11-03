@@ -2,14 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import { installApprovalCommonModuleMocks } from '@/components/approvals/approvalsTestHelpers';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
-import { createAccountTokenForTests } from '@/dev/testkit/harness/homeGovernanceHarness';
-import { createDeferred, flushHookEffects, renderHook } from '@/dev/testkit';
+import { createAccountTokenForTests, waitForHomeGovernance } from '@/dev/testkit/harness/homeGovernanceHarness';
+import { createDeferred, createMachineFixture, flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
+import { useMachineCollection } from '../collection/useMachineCollection';
 import { upsertAndActivateServer, upsertServerProfileOnly } from '@/sync/domains/server/serverRuntime';
 import { setServerProfileIdentityForUrl } from '@/sync/domains/server/serverProfiles';
 import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
-import { useManagedMachineInventory } from './useManagedMachineInventory';
+import { useAdmittedManagedMachineAbsentEnrolledIds, useManagedMachineInventory } from './useManagedMachineInventory';
 import { createDefaultActionExecutor } from '@/sync/ops/actions/defaultActionExecutor';
 import { invalidateAccountEncryptionModeCache } from '@/sync/api/account/apiAccountEncryptionMode';
 import { createArtifactStoreBoundary } from '@/dev/testkit/harness/artifactStoreBoundary';
@@ -21,9 +22,111 @@ import { serveAccountHomes } from '@/dev/testkit/harness/actionHomesHttpHarness'
 import { ManagedMachineV1Schema } from '@happier-dev/protocol/machines/managed/managedMachineV1';
 
 installApprovalCommonModuleMocks();
-afterEach(() => { retireActiveServerAccountScopeLifetime(); resetRuntimeFetch(); invalidateAccountEncryptionModeCache(); vi.restoreAllMocks(); });
+const { t } = await import('@/text');
+afterEach(async () => { await standardCleanup(); retireActiveServerAccountScopeLifetime(); resetRuntimeFetch(); invalidateAccountEncryptionModeCache(); vi.restoreAllMocks(); });
 
 describe('managed Machine inventory', () => {
+    it('never publishes an unpartitioned collection frame on cold or warm route mounts', async () => {
+        const homeId = 'srv_route_collection';
+        const managed = ManagedMachineV1Schema.parse({ id: 'created', homeId, custodianAccountId: 'owner', enrolledMachineId: 'guest',
+            launch: { provider: { pluginId: 'custom.compute', localId: 'vm' }, schemaVersion: 1, name: 'Build box', choices: {} },
+            resource: { contributionRef: { pluginId: 'custom.compute', localId: 'vm' }, schemaVersion: 1, value: { id: 'native' } },
+            allocation: 'bound', creationState: 'active', desired: 'start', desiredWhen: 'now', intentRevision: 1,
+            retention: { kind: 'until-delete' }, wakeOnAcceptedMessage: false,
+            observation: { observedAt: 1, availability: 'present', power: 'running', storage: 'retained' },
+        });
+        const answer = createDeferred<Response>();
+        const homes = await serveAccountHomes({ homes: [
+            { key: 'a', serverUrl: 'https://route-collection.test', serverIdentityId: homeId, accountId: 'owner' },
+        ], route: request => request.path === '/v1/machines/managed/actions/list'
+            ? request.body && typeof request.body === 'object' && 'archived' in request.body && request.body.archived
+                ? Response.json({ machines: [] }) : answer.promise
+            : undefined });
+        const serverId = homes.homes.a!.id;
+        const ids = [serverId];
+        const groups = [{ serverId, serverName: 'Home', accountScope: { serverId, accountId: 'owner' }, status: 'idle' as const,
+            machines: [createMachineFixture({ id: 'guest' })] }];
+        type Frame = ReturnType<typeof useMachineCollection>;
+        const frames: Frame[] = [];
+        function useRouteCollection() {
+            const inventory = useManagedMachineInventory(ids, undefined, undefined, true);
+            const collection = useMachineCollection({ groups, groupedByHome: false,
+                managedByServerId: inventory.machinesByServerId, managedFirstAnswerPending: inventory.firstAnswerPending });
+            frames.push(collection);
+            return collection;
+        }
+        const cold = await renderHook(useRouteCollection);
+        try {
+            expect(frames.length).toBeGreaterThan(0);
+            expect(frames.every(frame => frame.count === 0 && frame.sections.length === 0)).toBe(true);
+            answer.resolve(Response.json({ machines: [managed] }));
+            await waitForHomeGovernance(() => expect(cold.getCurrent().machineCount).toBe(1));
+            const settled = cold.getCurrent();
+            const rows = settled.sections.flatMap(section => section.rows);
+            expect(rows).toHaveLength(1);
+            expect(settled.sections.find(section => section.rows.length > 0)?.title).toBe(t('machines.destinations.created'));
+            expect(rows[0]).toMatchObject({ kind: 'machine', machineId: 'guest', host: null });
+            const requestCount = homes.requests.length;
+            frames.length = 0;
+            const warm = await renderHook(useRouteCollection);
+            try {
+                expect(frames.length).toBeGreaterThan(0);
+                expect(frames.every(frame => (frame.count === 0 && frame.sections.length === 0)
+                    || (frame.machineCount === 1 && frame.sections.some(section => section.title === t('machines.destinations.created') && section.rows.length === 1)))).toBe(true);
+                expect(warm.getCurrent().machineCount).toBe(1);
+                expect(homes.requests.length).toBe(requestCount);
+            } finally { await warm.unmount(); }
+        } finally {
+            answer.resolve(Response.json({ machines: [managed] }));
+            await cold.unmount();
+        }
+    });
+    it('keeps admitted absence visible while a narrower overlapping inventory is still unread', async () => {
+        const absent = ManagedMachineV1Schema.parse({ id: 'removed', homeId: 'srv_absence', custodianAccountId: 'owner', enrolledMachineId: 'ghost',
+            launch: { provider: { pluginId: 'custom.provisioner', localId: 'native' }, schemaVersion: 1, name: 'Guest', choices: {} },
+            controller: { machineId: 'controller', installationId: 'installation' }, allocation: 'confirmed-absent', creationState: 'active',
+            desired: 'delete', desiredWhen: 'now', intentRevision: 1, retention: { kind: 'until-delete' }, wakeOnAcceptedMessage: false });
+        const archived = { ...absent, id: 'archived', enrolledMachineId: 'retired', archivedAt: 1 };
+        const coldRead = createDeferred<Response>();
+        let activeReads = 0;
+        let archiveReads = 0;
+        const target = await upsertAndActivateServer({ serverUrl: 'https://inventory-absence.test', scope: 'tab' });
+        await setServerProfileIdentityForUrl(target.serverUrl, 'srv_absence');
+        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({ token: createAccountTokenForTests('owner') });
+        // Secure storage and HTTP are boundaries; both inventory readers and admission stay real.
+        setRuntimeFetch(async (input, init) => {
+            const path = new URL(String(input)).pathname;
+            if (path === '/v2/account/settings') return Response.json({ content: { t: 'plain', v: {} }, version: 1 });
+            if (path === '/v1/account/encryption') return Response.json({ mode: 'plain', updatedAt: 1 });
+            if (path !== '/v1/machines/managed/actions/list') return Response.json({ error: 'not_found' }, { status: 404 });
+            const body: unknown = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
+            if (body && typeof body === 'object' && 'archived' in body && body.archived) {
+                archiveReads += 1;
+                return Response.json({ machines: [archived] });
+            }
+            return ++activeReads === 1 ? Response.json({ machines: [absent] }) : coldRead.promise;
+        });
+        const serverId = 'srv_absence';
+        const execute = createDefaultActionExecutor().execute;
+        const held = await renderHook(() => useManagedMachineInventory([serverId], undefined, execute, true), { flushOptions: { cycles: 30 } });
+        const narrow = await renderHook(() => useManagedMachineInventory([serverId], undefined, execute), { flushOptions: { cycles: 30 } });
+        const observer = await renderHook(() => useAdmittedManagedMachineAbsentEnrolledIds(serverId,
+            held.getCurrent().bindings.get(serverId), execute));
+        try {
+            expect(held.getCurrent().entries[serverId]?.status).toBe('ready');
+            expect(narrow.getCurrent().entries[serverId]?.status).toBe('loading');
+            expect([...observer.getCurrent()]).toEqual(['ghost']);
+            expect(activeReads + archiveReads).toBe(3);
+            coldRead.resolve(Response.json({ machines: [absent] }));
+            await flushHookEffects({ cycles: 30 });
+            expect([...observer.getCurrent()]).toEqual(['ghost']);
+        } finally {
+            coldRead.resolve(Response.json({ machines: [absent] }));
+            await observer.unmount();
+            await narrow.unmount();
+            await held.unmount();
+        }
+    });
     it('keeps a hydrated same-Home inventory ready while its revalidation is in flight', async () => {
         const target = await upsertAndActivateServer({ serverUrl: 'https://managed-inventory-revalidate.test', scope: 'tab' });
         await setServerProfileIdentityForUrl(target.serverUrl, 'srv_inventory_revalidate');

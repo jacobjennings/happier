@@ -272,6 +272,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
   },
   {
     id: 'teams.members.history.prepare', title: 'Prepare member history encryption',
+    irreversible: true,
     description: 'Ask a person to prepare existing encrypted history through the answering app’s captured encryption owner.',
     executionPlacement: 'client', requiredAuthority: 'present_user', safety: 'danger', sideEffectClass: 'write',
     surfaces: { ui: true, voice: false, agent: true, mcp: true, cli: false, rpc: false }, placements: [],
@@ -285,7 +286,10 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     mcp: id === 'teams.credentials.preparation.get' || id === 'teams.credentials.create'
       || id === 'teams.credentials.entitled.list' || id === 'teams.credentials.delete'
       || id === 'teams.credentials.limits.delete' || id === 'teams.credentials.externalKeys.revoke'
-      || id === 'teams.credentials.externalKeys.revokeAll',
+      || id === 'teams.credentials.externalKeys.revokeAll' || id === 'teams.credentials.update'
+      || id === 'teams.credentials.audience.set' || id === 'teams.credentials.test'
+      || id === 'teams.credentials.limits.upsert' || id === 'teams.credentials.externalKeys.create'
+      || id === 'teams.credentials.externalKeys.authorize',
     id, approval: ['teams.credentials.create', 'teams.credentials.update', 'teams.credentials.audience.set', 'teams.credentials.delete', 'teams.credentials.limits.upsert', 'teams.credentials.limits.delete', 'teams.credentials.externalKeys.revoke', 'teams.credentials.externalKeys.revokeAll'].includes(id) ? { result: 'required', flow: 'deferred' } : { result: 'required' },
     title: {
       'teams.credentials.list': 'List Team credentials',
@@ -365,7 +369,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
   homeDomainActionRow({
     id: 'teams.list', approval: {result: 'required'},
     title: 'List Teams',
-    description: 'Page through the Teams visible in this Home for the authenticated Account.',
+    description: 'List visible Team names and IDs in this Home for the authenticated Account; resolve a Team by name before listing or changing its Groups.',
     safety: 'safe',
     sideEffectClass: 'read',
     cliPath: ['teams', 'list'],
@@ -471,6 +475,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
   }),
   homeDomainActionRow({
     id: 'teams.archive', approval: {result: 'required',flow: 'deferred'},
+    irreversible: true,
     mcp: true,
     title: 'Archive Team',
     description: 'Archive a Team, ending ordinary member access until it is restored. Waiting invitations are permanently revoked.',
@@ -587,6 +592,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
   }),
   homeDomainActionRow({
     id: 'teams.members.remove', approval: {result: 'required',flow: 'deferred'},
+    irreversible: true,
     title: 'Remove Team member',
     description: 'End one membership lifetime. Repeating the request answers unchanged rather than failing.',
     safety: 'danger',
@@ -599,6 +605,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
   }),
   homeDomainActionRow({
     id: 'teams.members.leave', approval: {result: 'required',flow: 'deferred'},
+    irreversible: true,
     title: 'Leave Team',
     description: 'End your own membership lifetime. Directory-managed members and the final active owner of a live Team cannot leave.',
     safety: 'danger',
@@ -958,6 +965,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
   }),
   teamProvisioningActionRow({
     id: 'teams.identity.connections.remove', approval: {result: 'required',flow: 'deferred'},
+    irreversible: true,
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.connections.remove'],
     inputSchema: TEAM_IDENTITY_ACTION_INPUT_SCHEMAS_V1['teams.identity.connections.remove'],
     outputSchema: TEAM_IDENTITY_ACTION_OUTPUT_SCHEMAS_V1['teams.identity.connections.remove'],
@@ -1222,6 +1230,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
   }),
   teamProvisioningActionRow({
     id: 'teams.directory.sources.remove', approval: {result: 'required',flow: 'deferred'},
+    irreversible: true,
     method: 'DELETE',
     path: TEAM_DIRECTORY_ACTION_PATHS_V1['teams.directory.sources.remove'],
     inputSchema: TEAM_DIRECTORY_ACTION_INPUT_SCHEMAS_V1['teams.directory.sources.remove'],

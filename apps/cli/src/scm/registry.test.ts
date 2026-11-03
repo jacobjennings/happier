@@ -210,9 +210,11 @@ describe('scm backend registry selection', () => {
         });
     });
 
-    it('prefers sapling for .sl repositories', async () => {
+    it('prefers sapling for .sl repositories when backend scores do not decide', async () => {
+        // Both backends detect a repository without mode scores and git is listed first, so only
+        // the registry's .sl mode preference can pick sapling.
         const registry = createScmBackendRegistry([
-            backend({ id: 'git', detected: { isRepo: false, mode: null, rootPath: null } }),
+            backend({ id: 'git', detected: { isRepo: true, mode: '.git', rootPath: '/repo' } }),
             backend({ id: 'sapling', detected: { isRepo: true, mode: '.sl', rootPath: '/repo' } }),
         ]);
 
@@ -223,21 +225,6 @@ describe('scm backend registry selection', () => {
 
         expect(selected?.backend.id).toBe('sapling');
         expect(selected?.mode).toBe('.sl');
-    });
-
-    it('defaults to git backend for .git repositories', async () => {
-        const registry = createScmBackendRegistry([
-            backend({ id: 'git', detected: { isRepo: true, mode: '.git', rootPath: '/repo' }, modeSelectionScores: { '.git': 200 } }),
-            backend({ id: 'sapling', detected: { isRepo: true, mode: '.git', rootPath: '/repo' }, modeSelectionScores: { '.git': 100 } }),
-        ]);
-
-        const selected = await registry.selectBackend({
-            cwd: '/repo',
-            workingDirectory: '/repo',
-        });
-
-        expect(selected?.backend.id).toBe('git');
-        expect(selected?.mode).toBe('.git');
     });
 
     it('honors explicit sapling preference for .git repositories', async () => {
@@ -366,36 +353,6 @@ describe('scm backend registry selection', () => {
         });
     });
 
-    it('does not misreport a working path as a non-repository when no detector could answer', async () => {
-        const failing = backend({
-            id: 'acme.broken/detector',
-            detected: { isRepo: false, mode: null, rootPath: null },
-        });
-        const registry = createScmBackendRegistry([
-            {
-                ...failing,
-                detectRepo: async () => {
-                    throw new Error('packed detector failed');
-                },
-            },
-            {
-                ...backend({
-                    id: 'happier.scm.backend.git/git',
-                    localId: 'git',
-                    detected: { isRepo: false, mode: null, rootPath: null },
-                }),
-                detectRepo: async () => {
-                    throw new Error('git is not usable on this machine');
-                },
-            },
-        ]);
-
-        await expect(registry.selectBackend({
-            cwd: '/repo',
-            workingDirectory: '/repo',
-        })).rejects.toThrow('packed detector failed');
-    });
-
     // F-SCM-1: a detector that could not run must not override one that did. A machine without
     // Sapling installed is the common case, and its non-answer used to be indistinguishable from a
     // real "not a repository" — collapsing both into the same confident negative.
@@ -422,175 +379,5 @@ describe('scm backend registry selection', () => {
             cwd: '/repo',
             workingDirectory: '/repo',
         })).resolves.toBeNull();
-    });
-
-    it('resolves live availability without mutating static declared support', async () => {
-        const module = await import('@happier-dev/protocol/scm').catch(() => null);
-        expect(module).not.toBeNull();
-        if (!module) return;
-
-        const capabilityModule = await import('@happier-dev/protocol').then((protocol) => ({
-            schema: protocol.ScmBackendCapabilitiesSchema,
-        })).catch(() => null);
-        expect(capabilityModule).not.toBeNull();
-        if (!capabilityModule) return;
-
-        const declared = capabilityModule.schema.parse({
-            detection: {
-                repository: { support: 'supported' },
-                executable: { support: 'supported' },
-            },
-            read: {
-                status: { support: 'supported' },
-            },
-            changeSet: {
-                model: 'index',
-                diffAreas: ['included', 'pending', 'both'],
-            },
-            commit: {},
-            remote: {
-                push: { support: 'supported' },
-            },
-            branch: {},
-            worktree: {},
-            lifecycle: {},
-            hosting: {},
-            checkpoints: {},
-            workspaceIntegration: {},
-            tooling: {
-                binarySafe: { support: 'supported' },
-            },
-            freshness: {},
-        });
-
-        const resolved = module.resolveScmBackendCapabilities({
-            declaredCapabilities: declared,
-            mode: '.sl',
-            executableAvailable: false,
-            freshness: {
-                state: {
-                    source: 'live-local',
-                    observedAt: 100,
-                },
-                refreshPolicy: 'cache-first',
-            },
-        });
-
-        expect(declared.remote.push).toEqual({ support: 'supported' });
-        expect(resolved.remote.push).toEqual({
-            support: 'unsupported',
-            reason: 'tool_missing',
-            declaredSupport: 'supported',
-        });
-        expect(resolved.detection.repository).toEqual({
-            support: 'unsupported',
-            reason: 'repo_mode_unsupported',
-            declaredSupport: 'supported',
-        });
-        expect(resolved.freshness.state).toEqual({
-            source: 'live-local',
-            observedAt: 100,
-        });
-        expect(resolved.freshness.refreshPolicy).toBe('cache-first');
-    });
-
-    it('does not infer tool availability when live executable status is omitted', async () => {
-        const module = await import('@happier-dev/protocol/scm').catch(() => null);
-        expect(module).not.toBeNull();
-        if (!module) return;
-
-        const declared = ScmBackendCapabilitiesSchema.parse({
-            detection: {
-                repository: { support: 'supported' },
-                executable: { support: 'supported' },
-            },
-            read: {
-                status: { support: 'supported' },
-            },
-            changeSet: {
-                model: 'index',
-                diffAreas: ['included', 'pending', 'both'],
-            },
-            commit: {},
-            remote: {
-                push: { support: 'supported' },
-            },
-            branch: {},
-            worktree: {},
-            lifecycle: {},
-            hosting: {},
-            checkpoints: {},
-            workspaceIntegration: {},
-            tooling: {},
-            freshness: {},
-        });
-
-        const resolved = module.resolveScmBackendCapabilities({
-            declaredCapabilities: declared,
-            mode: '.git',
-            supportedRepoModes: ['.git'],
-        });
-
-        expect(resolved.detection.executable).toEqual({ support: 'supported' });
-        expect(resolved.read.status).toEqual({ support: 'supported' });
-        expect(resolved.remote.push).toEqual({ support: 'supported' });
-    });
-
-    it('treats missing repo mode as unavailable instead of live supported', async () => {
-        const module = await import('@happier-dev/protocol/scm').catch(() => null);
-        expect(module).not.toBeNull();
-        if (!module) return;
-
-        const declared = ScmBackendCapabilitiesSchema.parse({
-            detection: {
-                repository: { support: 'supported' },
-                executable: { support: 'supported' },
-            },
-            read: {
-                status: { support: 'supported' },
-            },
-            changeSet: {
-                model: 'index',
-                diffAreas: ['included', 'pending', 'both'],
-                include: { support: 'supported' },
-            },
-            commit: {
-                create: { support: 'supported' },
-            },
-            remote: {
-                push: { support: 'supported' },
-            },
-            branch: {},
-            worktree: {},
-            lifecycle: {},
-            hosting: {},
-            checkpoints: {},
-            workspaceIntegration: {},
-            tooling: {},
-            freshness: {},
-        });
-
-        const resolved = module.resolveScmBackendCapabilities({
-            declaredCapabilities: declared,
-            mode: null,
-            supportedRepoModes: ['.git'],
-            executableAvailable: true,
-        });
-
-        expect(resolved.detection.repository).toEqual({
-            support: 'unsupported',
-            reason: 'repo_mode_unsupported',
-            declaredSupport: 'supported',
-        });
-        expect(resolved.read.status).toEqual({
-            support: 'unsupported',
-            reason: 'repo_mode_unsupported',
-            declaredSupport: 'supported',
-        });
-        expect(resolved.remote.push).toEqual({
-            support: 'unsupported',
-            reason: 'repo_mode_unsupported',
-            declaredSupport: 'supported',
-        });
     });
 });

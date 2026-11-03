@@ -7,6 +7,74 @@ the server routes that accept/emit these values.
 
 For transport and event shapes, see `protocol.md`. For HTTP endpoints, see `api.md`.
 
+## Managed-resource birth relationship (0.3 development)
+
+Session creation can carry `managedCreation` with the Home, managed-resource and
+controller ids. The Session birth transaction validates the admitted, enrolled
+resource and the creator's controller access, then records `Session.managedCreationId`.
+This relationship is server-visible non-content metadata in both Account modes.
+It contains no title, path, prompt, user text, credentials or creation recipe.
+The encrypted immutable recipe retains its copy for client-side retry comparison;
+that copy is not the server's query index.
+
+The authenticated `/v2/sessions/lookup-managed-birth` read selects only ids for the
+requesting Account and exact resource on this Home, across active and archived
+Sessions. It returns a Session id only for a unique match and does not open or
+return Session bodies. The recorded birth remains independent of controller Moves.
+
+Durable task creation carries the same closed `managedCreation` ids through
+Workflow Run admission. The Run owner validates the relationship and writes
+`AutomationRun.managedCreationId` with the accepted Run. Its existing
+`/v3/automations/runs/workflow-storage` transport accepts `managed-birth.lookup`
+with the exact Home and managed-resource ids, returning only a unique
+Account-owned Run id. Neither the lookup nor the relationship opens accepted
+snapshots, checkpoints, results or Session content. Machine detail can therefore
+show the task's creation scope while Keep has no FIN trigger, and after a
+Stop/Delete rule is cleared. FIN remains the only rule and effect owner.
+
+The additive migrations leave historical rows, including 0.2-created Sessions,
+without these relations. The server cannot backfill encrypted recipes. When no
+unique indexed relation exists, the source remains unresolved unless an existing
+FIN rule names it. The Machine-detail reader never scans Session or Run
+inventories or opens private content to infer a relationship. Missing lookup
+operations are treated as unavailable; malformed responses, authorization
+failures and other lookup failures remain refusals. No read-triggered backfill
+is performed. This is development behavior, not a claim about a published release.
+
+## Automation managed-target relationship (0.3 development)
+
+The Automation definition's outer Workflow V2 recipe may carry `managedTarget`
+as `{ homeId, managedId }` or `null`. The single Account recipe-seal owner derives
+these structural ids from the inline managed Stop/Delete Action. It seals the
+private Workflow and writes the relationship in the same definition CAS.
+The Home stores indexed relationship columns and projects this field on bounded
+definition lists; this applies equally to plain and E2EE Accounts. Names, paths,
+prompts, effect configuration and other private Workflow content remain inside
+the existing content envelope. The relationship selects a candidate; the opened
+recipe remains the authority for the Action and its effect.
+
+An omitted field means unknown, while explicit `null` means known unrelated.
+An authorised client's one-shot Account startup pass selects only unknown rows
+and reseals readable current recipes through the same definition CAS. UI startup
+first consumes its existing feature-admitted Automation page: disabled, missing
+or unavailable Automation support makes no migration request, and a complete
+all-known page proves no work remains. An incomplete or unknown page permits
+the existing exact unknown selector, not an inventory traversal. The daemon's
+existing feature-admitted worker startup remains a separate host adapter to the
+same codec and CAS owner. Committed
+rows are excluded on the next pass, including after a lost acknowledgement or
+crash. Conflicts and locked content remain unknown without a hot retry. Renders,
+subscriptions and polling do not start this backfill. Older recipe writers that
+omit the field preserve the stored relationship ids and mark the index unknown;
+a current seal restores its meaning.
+
+Machine rule reads select the exact target and temporarily include unknown rows
+for the existing private recognizer. Known unrelated definitions are never
+opened. This fallback is removable once no supported writer can omit the field
+and retained readable definitions have been indexed; locked or conflicting rows
+remain unresolved until an authorised startup can backfill them. This does not
+change the independent Session/Run birth relationship or its no-scan contract.
+
 ## Account-mode invariant
 
 A plaintext Account is intentionally and genuinely keyless:
@@ -51,6 +119,14 @@ encryption-currentness admission. Missing or malformed readiness remains unknown
 not inferred from key presence. This endpoint is development-only; it is absent
 from the inspected 0.2.11 stable/preview and current 0.2 predecessor contracts.
 
+Session birth in 0.3 development preserves a failed currentness observation as
+`currentness_unavailable`, with a bounded timeout, network, HTTP-status or invalid-response
+cause. The same detail reaches daemon startup refusal and the public spawn Action;
+it does not establish that the Home is offline. Permanent refusals do not request
+another observation, and no Session-create request is sent without currentness.
+Authentication refusals retain their existing status-based handling. These
+diagnostics carry no response body, request headers or Account identity.
+
 In 0.3 development,
 `packages/sync-client/src/account/accountEncryptionCurrentnessObservation.ts` owns
 the live encryption-identity fact, pending initialization and invalidation state.
@@ -59,12 +135,38 @@ existing admitted Account/Home lifetime and managed socket; UI adapters attach
 the same state owner to the existing focused and concurrent Home sockets.
 Only exact credentials independently authenticated by a live admitted holder
 can borrow that observation; other credentials use their own fresh HTTP read.
+Machine RPC, stream and key-preparation adapters retain that captured request
+binding when admitting a legacy row without an access projection. Reader
+cancellation passes separately through the mode owner, so an abort wrapper does
+not turn one Account identity observation into a mode GET for every Machine.
 When the transport credential loses its last holder, the existing observation
 withdraws its fact and reconnects with a remaining admitted credential; stale
 transport events and HTTP responses cannot publish through that handover.
 Readers outside a subscribed lifetime retain fresh HTTP reads. A disconnected
 or invalidated observation grants no currentness; canceling one reader leaves
 other subscription holders active.
+An explicit nonretryable initialization failure remains unavailable until the
+same invalidation/reconnect owner clears it; repeated borrowers do not repeat
+that failed read. Transient failures retain demand-driven recovery. For a
+predecessor Home whose currentness endpoint is absent (404), mode-only readers
+retain direct `/v1/account/encryption` admission without caching its answer.
+That compatibility read grants no currentness/cursor witness. Denied, malformed
+or temporarily unavailable currentness never takes that fallback.
+
+Development `account-change` wakes may carry the committed `changeKinds` and
+`entityIds` already visible in the Account feed, without private content or
+credential material. Development UI readers admit these routing facts once at
+`homeAccountChange`, retaining coarse handling for missing, empty, unknown and
+Account kinds, including mode, key, credential and Team changes. Domain owners
+filter unrelated wakes without bypassing fresh identity or authority admission.
+Wake ids are not proof that a feed page was consumed and cannot suppress
+blocked-cursor revalidation. The separate `feedPageConsumed` observation means
+detailed planner dispatch occurred, not that a cursor or materialization is
+complete; observed Session records still refresh on advisory Session/share ids.
+Saved Secret changes retain their own catalog and dependent Profile projection.
+Direct `update-account` encryption-currentness pushes, reconnect, observer gaps
+and fresh authority admission retain their existing owners and semantics.
+Older kind-less wakes remain readable.
 
 Ordinary socket loss and resume refreshes (reconnect, foreground, reachable and
 manual) withdraw that settled observation, but do not retire a captured finite
@@ -86,6 +188,18 @@ wait for a socket update. Socket delivery withdraws or changes an identity in
 that dispatch; no TTL, polling interval or additional revocation grace period is
 introduced. Actual HTTP/RPC authentication and captured Home/lifetime checks
 remain independent of the observed identity.
+
+UI storage acquisition defaults to identity usage; final disclosure, sealing,
+mutation and local-only identity/digest operations request fresh authority
+explicitly. Workflow list projection borrows validated caller material from
+that identity, while the server's admitted Run census supplies the content mode,
+recipient envelope and owner witness. The list-only material type carries no
+Account cursor and cannot authorize execution. Pages within one list pass share
+the material read; detail and execution retain their fresh witness resolver.
+Profile projection defers its inner catalog check to the final disclosure after
+Artifact opening. A skill-seed migration obtains fresh authority at its actual
+write callback. These are 0.3 development paths, with no timer, TTL or settled
+authority cache.
 
 After the Account-mode decision, each persisted row or domain envelope remains
 authoritative for its representation until the canonical transition owner rewrites
@@ -948,6 +1062,24 @@ E2EE content uses `project_account_row` (kind byte 34), with an opened
 the envelope purpose and persisted Account mode without opening ciphertext.
 Stored readers drop unknown fields recursively; mutation inputs remain strict.
 
+The accepted checkout row may also hold `authoringSession: {serverId, sessionId}`
+beside its private content envelope in the existing reserved KV value. This is
+server-visible non-content relationship metadata in both Account modes: no
+Session title, path, prompt or user text is copied into it. The original
+checkout's authenticated Account records it at the ordinary post-create
+authoring checkpoint after `work.authoringOriginV1` is confirmed, either from
+Session birth or the older-daemon private checkpoint. A Session launched
+on another Home retains that Home's qualified identity. The relationship grants
+no Session access and establishes no setup readiness.
+
+Only opted-in row reads disclose the relationship; ordinary structural writes
+and Account-mode conversion preserve it. Forget removes it with the checkout.
+Equal recording retries leave the row revision and change feed untouched.
+Scripts selects this id before Session hydration and reads that one Session
+through the existing qualified reader for its private title and time. Rows
+without the relationship retain hydrated owner-metadata discovery. This adds no
+database column, migration, content backfill, inventory scan or idle timer.
+
 The CLI retains its last accepted same-scope Project snapshot when a refresh
 fails transiently, while the refresh itself still returns the failure. Authentication,
 mode, envelope and schema failures withdraw that projection. Before initial loading
@@ -956,6 +1088,24 @@ relationship discovery. Operations that require the installed graph refuse with
 `project_account_rows_unavailable` until the existing snapshot subscription receives
 an accepted snapshot; missing rows never become an empty successful reconciliation
 or a daemon-wide failure.
+
+The UI Project snapshot producer applies the same captured Home/Account boundary.
+Known transient connectivity failures retain the admitted complete rows with the
+existing error status. Authentication, mode/material, malformed-content and
+unclassified read failures retire that runtime and withdraw its opened rows.
+Account-mode reconfiguration also withdraws the snapshot immediately; an older
+source-mode response cannot republish it. This adds no second snapshot cache or
+per-row refresh.
+
+Session membership may use that private census only with same-Home, same-Account
+owner authority. The explicit normalized owner projection from supported legacy
+wire data can supply that proof when its owner id is absent; a present owner id
+must match. Recipient or unknown-authority rows receive neither the private refs
+nor a bound resolver. An admitted public Session `projectKey` remains independent
+of that private inference. Daemon document admission applies the same distinction
+without removing already-readable legacy Session attachments or changing the
+current owner-envelope availability rules. A subjectless global preparation has
+no Session Project context to infer.
 
 One Account-wide graph row serializes relationship changes and ref insertion,
 root changes, and Forget. Mutations compare its revision and the reached ref
@@ -1811,6 +1961,16 @@ server persistence layer.
   `{ t:'encrypted', c:<account-scoped ciphertext> }` for E2EE ownership. The plain
   branch requires no Account key; the encrypted branch requires real compatible
   material.
+- In 0.3 development, persisted layout-1 reads require that explicit envelope.
+  Bare ciphertext is not promoted to owner metadata. The canonical Account
+  ciphertext kind owner distinguishes private Session drafts from Session owner
+  metadata; a draft ciphertext stored in an owner column remains invalid there.
+- In 0.3 development, a layout-1 metadata-only mutation retains the exact stored
+  Agent-state bytes, and the server leaves `agentStateVersion` unchanged when
+  those bytes did not change. Both expected tuple versions remain CAS checks.
+  This prevents unrelated publisher metadata from invalidating an in-flight
+  question original. Real Agent-state changes still advance their version;
+  layout-0 owner migration retains its separate transition contract.
 - In 0.3 development, scoped bulk Session reads can share the exact batch's
   `createOperationAccountCurrentnessSource` through
   `readSessionSnapshotForAuthority`. Each Session still validates its stored
@@ -1823,6 +1983,15 @@ server persistence layer.
   crypto and CAS, not just its initial fetch; disposal refuses further use. A new
   batch obtains a fresh observation.
   This is finite read sharing, with no cross-batch TTL or mode cache.
+- Ordinary Session snapshots, filtered queries and listed-row refreshes use the
+  admitted socket encryption identity for owner metadata and recipient readiness.
+  Their server read paths enforce persisted Account mode before returning Session
+  content. Repeated read passes therefore need no extra currentness GET while the
+  observation remains current. A list identity carries no Account/Settings cursor
+  and is not returned as an exact witness. Unbound listed-row passes retain one
+  shared fresh source; demanded detail, tuple mutation and final local effects
+  keep their exact/fresh admission. Semantic invalidation, retirement and failed
+  reads remain refusals; no timer, TTL or polling replaces those boundaries.
 - Development typed batch reads retain their originating HTTP authority. Truly
   active reads capture the installed socket configuration and retain the HTTP
   owner's existing bounded stored-credential recovery for read-only batch POSTs.
@@ -1868,6 +2037,17 @@ prompts, paths, user text or secrets. These are server-visible hints, not public
 unauthenticated reads, and never replace access, Account-mode, custody or private
 content admission.
 
+The development Session row's optional nullable `projectKey` is one such
+relationship: an opaque Home-local accepted Project anchor. It carries no
+Project name, checkout path, label, branch or repository content. The owning
+CLI publishes it after accepted-workspace registration through the strict
+`mode:'owner'` metadata patch, alongside the existing encrypted/plain metadata
+tuple. The server stores it separately from those content envelopes and includes
+it in authorized owner and recipient row projections. Shared editors and
+owner-migration patches cannot publish it. Omission preserves the prior value;
+null or absence on reads means not yet published. Private Project display and
+checkout facts retain their existing Account-mode envelopes.
+
 The Artifact list/query owner is implementing the first consumed extraction:
 `{ kind: <existing coarse family>, kindHint: <exact header.kind or null> }`.
 The family still comes from Protocol's existing classifier, including the skill
@@ -1883,10 +2063,49 @@ table, index family or schema migration. The wire's coarse projection stays
 coarse; exact selection is an additive `kinds` set at the same list owner and
 occurs before pagination. A hint is only a candidate selector: opened headers
 and bodies still establish the actual domain type and current facts.
+The same endpoint's `browserListed=true` selector excludes only the canonical
+policy's non-listed indexed types. Unknown and indexed-null-kind ordinary
+documents, legacy rows and ambiguous annotated hints remain candidates; private
+header policy decides what is actually listed. This selector discloses no new
+content or approval state, adds no index/schema, and retains the existing grant,
+Account-mode and key-custody admission. It returns the same typed classification
+witness; because its stream already includes legacy candidates, the shared
+reader needs no second legacy pass. Browser subset completion never certifies
+full Account membership or private Inbox membership.
 The existing column's 191-codepoint boundary limits only this optional hint,
 not the private header's type string. Shared extraction omits an unrepresentable
 hint without rejecting or truncating valid private content; a legacy row then
 remains unclassified. Explicit malformed wire hints are still refused.
+
+Approval queue selection additionally uses nullable `Artifact.approvalState`
+and `approvalSessionId` in current 0.3 development source. The shared approval
+header extractor supplies only lifecycle state and the Session id relationship.
+Creation and header transitions commit those hints with the private header's
+revision; opaque header writes without hints invalidate them, while body-only
+writes retain them. Plain writes derive the hints from the opened header.
+Neither hint authorizes a decision: the strict private header/body reader and
+revision-fenced approval transition remain authoritative. Titles, reviewed
+inputs, previews and execution results stay inside their existing envelopes.
+
+The same Artifact list owner applies `approvalStates` and `approvalSessionIds`
+before paging. State selection affects approval families only, so an Inbox
+selection can still include its notice kinds. Inbox acquires open approvals;
+selected Session history discovers its receipt headers through the relationship
+selector and hydrates bodies by exact id. Settled approval Artifacts remain
+durable receipts. A known approval kind with missing state is unclassified:
+readers resolve its private header through the legacy pass, and the existing
+native daemon bootstrap backfills both hints through the header-version CAS.
+Until that pass succeeds, legacy discovery can still read settled headers.
+Reads never repair metadata. The nullable columns and query indexes require the
+current additive provider migrations; this source change alone does not certify
+a loaded Home or a completed PostgreSQL validation run.
+
+Absence from a state-selected queue means no longer matching that state, not
+Artifact deletion. Before reconciling previously matching pending rows away,
+the UI inventory owner refreshes their exact headers through the existing batch
+read and normal content admission. Only exact not-found proves deletion; receipt
+bodies remain demand-driven. This preserves concurrent Session receipt discovery
+without scanning settled history or weakening the existing deletion-race guard.
 
 UI and CLI writers share the Protocol extraction. Their existing metadata-only
 update checks the observed header version and changes neither header/body bytes,
@@ -2553,6 +2772,16 @@ or retired RPC material remains a refusal, including for server-origin reads.
 
 ### Machine metadata + daemon state
 
+- In unreleased 0.3 source, the existing Machine census and exact-row projection
+  carry `recipientWorkPending` and `recipientWorkCursor` for current encrypted
+  Manage holders. The access owner derives pending work through the same
+  verified-binding/envelope predicate as the `action_required` recipient page,
+  using one set query per portable database bind chunk. The cursor is the
+  existing `machineRecipientAccess` Account change cursor, not a new queue or
+  durable progress marker. UI refreshes prepare only pending work or an advanced
+  recipient cursor; the per-Machine pass still rechecks its first page and every
+  conditional key write still verifies current access, binding and content
+  versions. These scheduling facts confer no key-transfer authority.
 - In 0.3 development source, `machines/machinePublishedContentV1.ts` owns one
   share-wide opened-content shape for the custodian and recipients. CLI registration,
   daemon publication, and UI metadata, policy, Runner and Account-conversion
@@ -2648,6 +2877,20 @@ or retired RPC material remains a refusal, including for server-origin reads.
   revalidates current access and invokes the existing Session, operation, terminal
   and service cleanup owners. Unknown inventory coverage or unavailable cleanup is
   reported incomplete; socket invalidation alone never proves process cancellation.
+  The UI consumes `machineRecipientAccess` as an invalidation, then withdraws
+  persistent Machines omitted from the complete access-filtered census even when
+  `Machine.revokedAt` is null. The census owner checks its existing pre-request
+  Machine snapshot and revisions, including omitted rows, before replacing either
+  inventory or display membership; an older read merges instead. Exact Session-bound
+  Machines remain outside ordinary discovery membership.
+- Physical Account erasure in 0.3 development source admits the current direct,
+  Team and Group recipients of its owned Machines and authored grants before
+  lifecycle locking. It captures access before deleting those Machines or grants,
+  then reuses the same `machineRecipientAccess` publisher after their removal.
+  Recipients refresh the census after commit; Home/Team directory changes alone
+  do not invalidate Machine discovery. The Account-erasure owner still removes
+  AccessKey tuples and owned Machines while retaining foreign requester Session
+  history; ordinary grant withdrawal retains its existing AccessKey behavior.
 - The development access projection preserves each audience member's compatibility
   and key recoverability. Current Manage authority permits Team/Group level edits
   independently of a member's readiness. Incompatible Plain members are explained
@@ -2712,9 +2955,14 @@ or retired RPC material remains a refusal, including for server-origin reads.
   wrapping and both content revisions. The entire raw metadata/state must satisfy
   the published-content safety predicate before sealing; retained private bytes
   remain pending until actual safe custodian publication. Current Manage holders
-  service later recipient changes through the existing Machine invalidation and
-  Account-change lifecycles, reusing the Session preparation pass rather than a
-  separate queue.
+  service later recipient changes through the existing AccountChange feed. The
+  canonical Machine access owner publishes the focused
+  `machineRecipientAccess` kind for the affected Machine; clients refresh that
+  Machine and advance recipient preparation only from this fact. Generic
+  `machine` content changes, including metadata and daemon-state revisions, do
+  not imply recipient demand. Owner-envelope, access and mode changes remain
+  direct preparation inputs. The client reuses the Session preparation pass
+  rather than creating a separate queue.
   Background preparation excludes published revoked or replaced Machines even
   when their retained access projection still says Manage/ready. The shared
   preparation owner also rejects an observed retired row before custodian
@@ -3083,6 +3331,14 @@ stamp the admitted person or Agent/session; restore records the restoring actor
 and selected version. Missing metadata means unknown attribution, not the last
 known actor. Header-only edits do not invent a new body save.
 
+Prompt Library's development read adapters retain this opened revision actor.
+`prompt_doc.get` discloses only `provenance.savedBy`, without workspace source
+paths or restore details. Approved Action replay stamps the original admitted
+author rather than relabeling the body as authored by the deciding UI. The
+Instructions footer reads an approver separately from the existing executed
+approval receipt matched to the exact Home, Artifact and body version; it does
+not add an audit ledger or write approval metadata into shared document content.
+
 The owner's persisted Account mode controls this private envelope. Plain mode
 uses the ordinary plain stored-content envelope and the server's existing
 at-rest sealing, without client key material. E2EE uses an independently generated
@@ -3362,17 +3618,25 @@ Move's exact incumbent snapshot/Stop and selected-destination status/Start reuse
 the signed SOURCE packet and original envelope on the existing RPC carrier.
 The root's target and installation stay unchanged. Its private `machine_rpc`
 purpose binds the receiving Machine/installation together with the method and
-input digest; only a Move root admits that recipient selection. The receiver
-rechecks the retained SOURCE proof and current requester access at Home, opens
-the original input with requester material, and compares the exact child and
-current linked refs before effects. A changed service, Machine, effect or revoked
-grant cannot reuse that proof. Private native-preparation HTTP ports expose only
+input digest. The closed reviewed-child owner also admits the existing
+second-opinion model-spawn child and a Section archive's exact member
+`session.stop` child; this is not general cross-Machine execution authority.
+The receiver rechecks the retained SOURCE proof and current requester access at Home, opens
+the original input with requester material, and compares the exact child before
+effects. Move additionally checks its current linked refs. A changed service,
+Machine, effect or revoked grant cannot reuse that proof. Private native-preparation HTTP ports expose only
 the original requester's required Project/metadata reads while that proof remains
 current; they neither lend the custodian's credentials nor mint a new grant.
+For Section archive, the unchanged root retains its captured member selection;
+the signed child names that exact Session, and Home rechecks its Account and
+destination-Machine relationship. Its recipient's read port permits only
+encryption/currentness and exact-member detail observations. Ordinary Stop
+policy and native admission still apply, followed by the ordinary archive
+writer; no bulk writer or borrowed approval is introduced.
 Account and paired-terminal requester custody retain their original provenance
 and authority across the child carrier.
 Plain Accounts remain keyless. This admission extension is development-only and
-does not establish a loaded or released Move capability.
+does not establish loaded-runtime or released verification for these flows.
 
 The installed terminal runtime consumes these same admitted original requester
 ports for an accepted Project standalone shell and an exact own local Session
@@ -3980,6 +4244,80 @@ require a current caller declaration. Release readiness remains gated by mixed-v
 proof and the remaining integration/live checks, not by an operator activation mode or
 legacy socket drainage.
 
+The canonical 0.3 compact list carries document descriptors rather than these full
+documents. Its shared `agentStateDocument: 'redacted'` records the tombstone;
+`'omitted'` means an owner document was not requested and never authorizes clearing
+it. Neither case is encoded as a fake empty document. Full detail and read-batch
+snapshots continue to apply the recipient projection above. See the compact-list
+contract in [API](api.md#live-session-client-03-development-source).
+
+The 0.3 development cold-display extension stores one nullable
+`displayProjectionV1` beside the tuple. Protocol's single semantic projector
+derives a recipient-safe shared leaf and an optional owner-private leaf, rather
+than copying metadata or a UI row wholesale. Shared display uses the existing
+Session content cipher; owner display uses the existing Account cipher with
+the distinct `session_owner_display` purpose (kind 51). Account mode and Session
+mode are checked independently. Both payloads declare their audience and
+purpose. Owner display has the same binding semantics as existing owner
+metadata: Account purpose separation, without Session-ID binding. Shared
+display uses the Session content key that the client already generates before
+create. Both leaves can therefore be prepared before the existing atomic
+create, without reserving an ID or changing its interface. This claims the
+existing owner-metadata privacy contract, not stronger Session binding.
+The outer sidecar links to the metadata layout/revision;
+it has no independent counter. Tuple updates commit it in the same CAS. A
+shared editor cannot submit an owner leaf; the Server can retain the existing
+owner ciphertext only when the prior display and captured owner tuple still
+prove it unchanged. Revision is deliberately not encrypted into each leaf, so
+this retention does not require shared editors to open owner content.
+
+Only the existing owner-recipient decision may return owner display.
+Collaborator, public-link and Session-runtime projections omit that leaf
+structurally. Existing full-metadata socket updates need no duplicate sidecar
+delivery: readers derive the same semantic display from admitted full content.
+Display opening never establishes full-document readiness or authorizes a
+mutation, role, request or Agent target. Missing or invalid display falls back
+to the existing scoped full reader. Fresh Server admission rechecks an owner
+display's mode against the already-read current Account mode, withdrawing an
+incompatible owner leaf without rereading documents or replacing captured
+shared display. UI owner-content opening also matches the actual credential
+material snapshot to the current Account key fingerprint, using the same
+credentials-material owner as Account storage and metadata writes. A fresh
+fingerprint alone cannot prove that old material opened current content.
+Fresh-create adapters and tuple updates use that same semantic projector.
+An ordinary tuple mutation withdraws the display sidecar with a warning if its
+projection or sealing fails. An explicit `ensureDisplayProjection` still fails
+when it cannot produce the required leaves.
+CLI create likewise logs a default-on, content-free warning and submits a null
+display sidecar when display projection or sealing fails. Full shared/owner
+metadata validation and sealing remain outside this fallback and still fail
+the create rather than publishing an incomplete authoritative tuple.
+Missing or unopenable display after an authorized owner full read is repaired
+through the existing tuple writer's explicit `ensureDisplayProjection` intent,
+never a row mount or separate summary writer. The writer preserves unchanged
+full ciphertext, refreshes a conflict from the winner and does not treat an
+ordinary semantic no-op as proof that a missing display exists. Unavailable
+owner material or a refused write leaves the full read usable and maintenance
+deferred. Read-only, shared and Session-key-scoped readers do not gain Account
+write authority.
+
+Ordinary UI full reads return after publication and run display maintenance
+asynchronously through that same tuple writer. Maintenance holds its own scoped
+Home authority until the operation settles; failure is logged and leaves the
+readable full Session intact. Explicit gathered-list maintenance still awaits its
+CAS within the existing operation concurrency budget. CLI owner status retains
+its explicit awaited maintenance.
+
+Ordinary owner sync retains the existing privacy-upgrade discovery lifecycle,
+including archived/offscreen rows. It gathers full snapshots through read-batch
+after publishing list readiness, reuses operation-local fetched parts and keeps
+the existing maintenance concurrency budget. Failure remains pending for the
+next ordinary sync rather than starting a hot retry loop. Recipient-envelope
+rewrap with the same Session key preserves display ciphertext; Account-content
+mode transitions carry the target owner leaf through their existing atomic
+transition. These describe development source; source/composed validation and
+the combined managed-runtime live gate are separate from released availability.
+
 Current development role snapshots remain owner-private throughout this path.
 The metadata writer accepts the canonical `work.sessionRolesV1` produced by the
 role owner, seals it inside the Account-owned work category, and restores that
@@ -4005,11 +4343,26 @@ existing device-local draft supplement. The closed origin contains qualified
 destination facts, never a raw return href or private plugin launch input. Plugin selection retains
 its contribution and instance identity; the current registry admits the reopened surface. Ordinary New session origins are
 distinguished from setup authoring, including when opened from Scripts. Explicit Send carries
-that destination into `work.authoringOriginV1` through the same Session owner
-metadata tuple writer. Editing the launch Machine or folder preserves the
-original qualified Account, Home and workspace destination. Cold materialized
-Temporary computer recovery publishes the retained origin before retiring draft
-and creator custody; a failed publication keeps that recovery retryable. The field remains
+that destination into `work.authoringOriginV1`. When the selected daemon
+advertises the birth-origin capability, the existing private spawn request
+carries the admitted origin into the runner's initial owner metadata at
+`initializeBackendRunSession` → `getOrCreateSession`. The existing envelope
+builder seals it with Account-scoped material for E2EE Accounts and uses the
+explicit plain owner envelope for genuinely keyless Accounts. It never enters
+the recipient-safe shared metadata or server-visible Session creation hints.
+An exact owner read confirms birth persistence before recording the id-only
+checkout relationship; no browser origin PATCH competes with startup publishers.
+Older daemons retain the existing owner metadata tuple checkpoint. A negotiated
+birth handoff with unavailable or unequal origin fails with the typed
+`authoring_origin` phase instead of acquiring another writer.
+Editing the launch Machine or folder preserves the original qualified Account,
+Home and workspace destination. The existing device-local spawn-attempt custody
+retains the writer choice for deferred/recovered ordinary creation; it contains
+no new copy of the origin. Cross-Home creation and recovery bind Session and
+operation custody to the admitted destination Account while retaining draft
+and checkout ownership on the originating Account. Cold materialized Temporary computer recovery uses
+the explicit legacy checkpoint before retiring draft and creator custody; a
+failed publication keeps that recovery retryable. The field remains
 owner-private in both Account encryption modes and does not establish Project
 setup readiness.
 
@@ -4143,9 +4496,15 @@ the current recipient-privacy owner refuses that shape with
 proof that an unupgraded 0.2-created link can reopen. The owner's ordinary initial
 0.3 sync discovers pending shared layout-0 Sessions, including archived/offscreen
 Sessions, and delegates their exact-source upgrade to the existing metadata tuple
-writer. Until that succeeds, the viewer shows that the link is being updated by
-its owner. Public readers never bypass the privacy projection to restore
-whole-metadata disclosure. This upgrade path is development source, not a claim
+writer. Discovery is Account-scoped demand: initial acquisition, recovery,
+explicit refresh and real sharing/access changes request it; unrelated list
+refreshes, agent-state updates and known message-only changes do not. Unknown
+legacy change hints remain conservative. Concurrent demand joins one operation,
+and a sharing change arriving during it retains a follow-up. Membership changes
+that introduce a reader also wake a pending legacy Session's owner through the
+existing share-change publication. Until the upgrade succeeds, the viewer shows
+that the link is being updated by its owner. Public readers never bypass the
+privacy projection to restore whole-metadata disclosure. This upgrade path is development source, not a claim
 that a retained deployment or composed live journey has been validated.
 
 In **development-only, unreleased 0.3**, `storedContentPublicShareOrigin.ts` owns
@@ -4289,6 +4648,16 @@ loaded-stack and native-device validation remain separate evidence.
 Private Account-owned Saved Secret resources in current 0.3 development source do not require
 Teams. Account catalog and source writes remain Account-mode fenced; a Saved Secret resource's
 own stored encryption mode governs its material, including independently converted resources.
+Plugin Account secret creation uses this same resource custody. Its
+`pluginSecretBindingsV1` Settings entries contain only the selected reference and
+cleanup provenance, changed on explicit set, bind, remove or erase. Replacement
+and unbinding clean up unused binding-created resources through the resource
+owner's current reference census; selecting an existing recipient-visible resource
+does not acquire deletion ownership. An unknown binding-write outcome retains the
+resource until the outcome is resolved. Account retirement withdraws cleanup
+authority without changing an acknowledged binding result; the resource remains
+with its owner. Retained Settings-based SavedSecrets stay
+readable through the existing source importer.
 Genuine Team-qualified credential operations retain their feature and authentication checks;
 their composed product activation remains unverified. Brokered Team
 credential use does not publish usable credential bytes to the recipient. Direct delivery does:
@@ -4362,9 +4731,17 @@ forensic erasure or isolation from an Agent with same-user shell access.
 
 Session data-key persistence:
 
-- Each current E2EE Session has one standalone Session data key (DEK). Session
-  content is encrypted once with that DEK; sharing wraps only the DEK for each
-  authorized Account rather than encrypting the transcript again.
+- Each newly created E2EE Session has one standalone Session data key (DEK),
+  including when its creator authenticated with a retained recovery secret. The
+  creator derives the same Account content recipient used by current data-key
+  credentials and seals the fresh Session DEK to it; the recovery secret is not
+  used as the Session key. Session content is encrypted once with that DEK, and
+  sharing wraps only the DEK for each authorized Account rather than encrypting
+  the transcript again.
+- Retained E2EE Sessions that were created directly under an Account secret and
+  have no owner envelope keep their owner-only compatibility reader. That
+  Account-scoped material is not a transferable Session DEK, so those Sessions
+  are not made shareable or silently rekeyed by recipient preparation.
 - `SessionDataKeyEnvelope(sessionId, recipientAccountId)` is the only owner of a
   Session data-key envelope. It holds the Session owner's envelope and every other
   recipient's, so no reader branches on ownership to decide which column to read.
@@ -4502,6 +4879,65 @@ that both the caller and target may currently read and writes through the same
 `SessionDataKeyEnvelope` persistence owner; it does not create Team/Group keys or a
 second preparation store.
 
+Recipient keys reach a later Team or Group member without a manager opening a sheet.
+When a membership or Account transition gives a non-owner read access to an E2EE Session,
+the shared access-transition owner publishes the existing `share` Account change to the
+Session owner. The owner's daemon consumes it from the Account change feed and runs the
+one Session pass, `runSessionRecipientEnvelopePass`, over the per-Session collection. The
+wake names no recipient: the collection's audience census alone decides who is owed, so
+the membership history horizon, removal and recipient readiness keep their owners. An
+offline daemon catches up from its cursor. Delivery is best effort and never holds that
+cursor: a refused or failed pass leaves the recipient `key_pending`, which a manager can
+still resolve from the access editor or member sheet. A member who has no content key
+yet stays pending the same way, because no change fires when their key is set up later.
+
+The daemon delivers only for a Session a key holder chose to share. Before a Team or Group
+share reaches the Home, or at creation for a collective E2EE Session, the key-holding device
+adds `teamShareStatementV1` to the Session's shared metadata, sealed with the Session key.
+The daemon delivers when the key the Home served carries such a statement. It does not
+compare the statement with the Home's current Team audience: the census already excludes
+removed Teams, and an active Home could answer that read however it liked.
+
+Every path that seals a Session key the Home served to someone else first proves the key is
+that Session's. The Protocol predicate `readSessionKeyBoundSharedMetadataV1` accepts only
+bytes that decrypt into this Session's strict layout-1 shared metadata. The CLI opens such
+keys only through `openSessionDataEncryptionKeyForReseal`: the daemon's Team delivery, a
+direct grant, the creation-time recipient pass and the statement writer. The app applies the
+same predicate through `readTransferableSessionDataKey` and
+`isSessionKeyBoundToServedMetadata` on each of its reseal paths: a direct grant, a public
+link, the Team statement writer, the manager's current-Session pass over the recipient
+collection, and membership-history preparation. The current-Session pass opens the key from
+the served Session row, not from the hydrated key map. Each membership-history item carries
+its Session's stored `metadata` and `metadataLayoutVersion`. An item without them, sent by an
+older Home, is not resealed, and neither is an item whose key does not open that metadata.
+The manager sees these Sessions as history this device cannot share (`sessionKeyUnprovenCount`).
+This proves key possession, not who a person is. The Home stores the statement but cannot
+forge it, so a forged wake for a private Session, or a Saved Secret, Workflow or Machine key
+served as a Session key, seals nothing. Layout 0 proves nothing, because that layout accepts
+any record. On the CLI, a layout-0 Session therefore keeps the manager path: a direct grant
+falls back to the recipient's retained envelope, and the CLI error names
+`session.access.layout.update` as the repair. The app moves a layout-0 Session to layout 1
+once, through the same tuple owner as `session.access.layout.update`, before a direct grant
+or its first current-Session pass seals the key. Membership history skips a layout-0 Session
+until its owner's ordinary sync upgrades it. Sessions with no statement also keep the manager
+path, including shares from a device without the key and Sessions shared before this check
+existed.
+
+Two residuals are accepted for 0.3 (`.project/OWNER-RULINGS.md`, 2026-10-31):
+
+- The Home owns Team rosters, so an active Home can add a ghost member to a Session already
+  shared with a Team and receive its key.
+- A statement binds a key, not a Session's identity. While one person Team-shares a
+  Session, or grants it directly, an actively malicious Home can answer with another
+  Session's key and metadata under the shared Session's id. The statement is then written
+  under the other Session's key, and the Home can release that key to a member it added.
+  This needs an active Home and that person's share action, reaches one Session per share,
+  and is not reachable from a database dump. The full fix seals each Session's identity into
+  its metadata, with a backfill for existing Sessions; it is planned after 0.3.
+
+A direct grant wakes every Manage holder through `sessionAccessGrantService.ts`, not only
+the owner.
+
 Fresh Workflow Step Sessions (development) carry the Run's frozen view Team
 through the ordinary creation-time `initialAccess` writer. They omit
 `primaryTeamId` except for `team_required`, which selects the existing Team
@@ -4570,6 +5006,25 @@ The device-local warm cache keeps the row's `encryptionMode` and last settled av
 (enums only, beside the decrypted row metadata it already holds), so a cold reload shows an
 own readable Session as readable; an unsettled row persists nothing, and hydration
 re-derives the fact.
+In 0.3 development source, a successfully opened display can also persist a compact
+display proof: a nonsecret fingerprint of its Home, credential, Account-currentness,
+Session-key, mode, layout and recipient admission, plus its actual opened metadata
+revision. A fresh compact list row must match that admission before reusing the display.
+Last-known display at an older revision remains visible while the batch reader obtains
+the newer revision; its opened revision stays unchanged until that read succeeds.
+An observed remote revision cannot promote retained owner metadata from an older
+revision; any held owner-admission witness must agree. Entries without a matching
+proof hydrate through the existing batch reader. The cache retains compact work and
+activity presentation, not full metadata, Agent state, request addresses or owner
+continuation authority. Its display proof never establishes full-Session readiness;
+mutations and controls still demand the authoritative full snapshot.
+Cold-display cache leaves follow the same compact projection: usage recovery
+keeps display state and authentication-selection kind, not profile or connected
+Account identifiers; fork context keeps only its admitted presentation fields.
+Memory-only request identity and Agent target remain absent from persisted
+display. A rendered consumer that needs these private full-document facts must
+request them through the existing scoped readers rather than infer authority
+from a display leaf.
 Plain Sessions and Plain Accounts require no recipient-key collection: it settles
 `not_required` before any recipient key work and the editor renders no encryption row.
 An unavailable Account-owned layout-1 envelope can still lock a plain Session's
@@ -4731,12 +5186,26 @@ Approved amendment `PLAINTEXT-ACCOUNTS-2026-07-30.7` adds one request-size-bound
 `sessions: assert_empty | migrate` directive to the existing Account transition.
 Each migration item covers exactly one active or archived layout-1 Session and
 carries `sessionId`, expected layout `1`, exact metadata and Agent-state versions,
-the exact expected owner envelope, and the exact target owner envelope. The server
+the exact expected owner envelope, and the exact target owner envelope. The 0.3
+development display extension also accepts optional target `ownerDisplay`, sealed
+under the target Account mode from the already-open full owner document. It uses
+the same owner-display semantic projector and needs no Session key or invented
+shared document. The existing canonical request/signature includes this leaf.
+The server
 uses Account-first lock order and the existing Session tuple CAS/projector, changes
-only the owner envelope plus canonical versions/cursors, completes every Session
+only the owner envelope and its display leaf plus canonical versions/cursors,
+completes every Session
 rewrite before the final Account mutation, and rolls the whole transition back on
 conflict. It does not re-encrypt Session transcripts or change Session mode, keys,
 sharing, lifecycle, or archive state.
+
+That same update preserves validated current shared display bytes and outer
+linkage, replacing the owner leaf or removing it when no producer was supplied.
+An unavailable whole sidecar remains unavailable rather than blocking readable
+full-content migration or its exact replay. Valid current display still requires
+the exact target owner leaf on replay; malformed target envelopes or incompatible
+target Account modes are refused. This is development source, not live release
+certification.
 
 The Session directive has no separate item-count ceiling. The existing canonical
 8 MiB Account-migration request boundary limits the real transport payload, while

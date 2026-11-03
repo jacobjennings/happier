@@ -23,11 +23,13 @@ const PLUGIN_FENCE_PATHS = [
 ] as const;
 const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 const IGNORED_SOURCE_NAMES = [/\.test\./, /\.spec\./, /\.generated\./];
-const RELEASE_WINDOW_COMPATIBILITY_LINES = new Set([
-  'export const DaemonTerminalStreamEventDataSchema = z.object({',
-  'export type DaemonTerminalStreamEventData = z.infer<typeof DaemonTerminalStreamEventDataSchema>;',
-  'DaemonTerminalStreamEventDataSchema,',
-]);
+// The release-window schema is allowed by its declarations, not by their exact text, so rewriting
+// the schema body (for example a Zod helper migration) does not trip the fence.
+const RELEASE_WINDOW_COMPATIBILITY_LINES = [
+  /^export const DaemonTerminalStreamEventDataSchema = /,
+  /^export type DaemonTerminalStreamEventData = /,
+  /^DaemonTerminalStreamEventDataSchema,$/,
+] as const;
 
 export type TerminalCleanupViolation = Readonly<{
   file: string;
@@ -37,7 +39,9 @@ export type TerminalCleanupViolation = Readonly<{
 }>;
 
 function collectSourceFiles(paths: readonly string[]): string[] {
-  const output = execFileSync('rg', ['--files', ...paths], {
+  // Validation workers receive a synced tree without `.git`; keep honouring .gitignore there so
+  // ignored build output (dist, node_modules) never enters the scan.
+  const output = execFileSync('rg', ['--files', '--no-require-git', ...paths], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
   });
@@ -58,7 +62,7 @@ function scan(paths: readonly string[], rule: TerminalCleanupViolation['rule'], 
     return contents.split(/\r?\n/).flatMap((source, index) => {
       if (!pattern.test(source)) return [];
       if (rule === 'legacy-string-path' && repoRelativeFile === 'packages/protocol/src/daemon/terminal.ts'
-        && RELEASE_WINDOW_COMPATIBILITY_LINES.has(source.trim())
+        && RELEASE_WINDOW_COMPATIBILITY_LINES.some((line) => line.test(source.trim()))
         && isTerminalLegacyClientFallbackAllowed({
           currentAppRelease: CURRENT_APP_RELEASE,
           peerByteStreamCapability: 'unknown',

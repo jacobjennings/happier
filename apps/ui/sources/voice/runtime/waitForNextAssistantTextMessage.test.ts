@@ -222,4 +222,18 @@ describe('waitForNextAssistantTextMessage', () => {
     await expect(waitPromise).resolves.toBe('assistant reply');
     expect(readMountedSessionRealtimeTranscriptConsumerSessionIds('waiter-home')).not.toContain('s1');
   });
+
+  it('never speaks a delivered peer report as the assistant reply', async () => {
+    const baseline = captureAssistantTextMessageBaseline('s1');
+    const waitPromise = waitForNextAssistantTextMessage('s1', baseline.baselineIds, baseline.baselineCount);
+    const report = { id: 'r1', kind: 'agent-text', text: 'Subagent findings.', localId: null, createdAt: 1,
+      peer: { name: 'general-purpose', handback: true } } satisfies Message;
+    const assistant = { id: 'a1', kind: 'agent-text', text: 'The fix is ready.', localId: null, createdAt: 2 } satisfies Message;
+    storage.setState({ sessionMessages: { s1: createSessionMessagesFixture({
+      messageIdsOldestFirst: [report.id, assistant.id],
+      messagesById: { [report.id]: report, [assistant.id]: assistant },
+    }) } });
+
+    await expect(waitPromise).resolves.toBe('The fix is ready.');
+  });
 });

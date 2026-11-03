@@ -12,6 +12,7 @@ import { listHappierMcpToolNames, registerHappierMcpResources } from '@/mcp/reso
 import { createActionToolExecutorBridge } from '@/agent/tools/happierTools/createActionToolExecutorBridge';
 import { createChangeTitleToolHandler } from '@/agent/tools/happierTools/createChangeTitleToolHandler';
 import { dispatchBuiltInHappierTool } from '@/agent/tools/happierTools/dispatchBuiltInHappierTool';
+import { cacheMcpToolList } from '@/mcp/server/cacheMcpToolList';
 import type { HappierBuiltInToolDispatchResult } from '@/agent/tools/happierTools/types';
 import { normalizeExecutionRunRpcPayload } from '@/session/services/executionRuns';
 import { registerHappierMcpBuiltInTools, type HappierMcpToolInventory } from '@/mcp/server/registerHappierMcpBuiltInTools';
@@ -252,6 +253,7 @@ export function createHappierMcpServer(
     name: 'Happier MCP',
     version: '1.0.0',
   }, { capabilities: { resources: { subscribe: true } } });
+  cacheMcpToolList(mcp);
 
   // Only the host-only Action-context arm supplies options; every other method
   // keeps the plain two-argument local invocation it has always used rather than
@@ -656,7 +658,12 @@ export function createHappierMcpServer(
     actionsSettings: readActionsSettings(),
     getActionsSettings: readActionsSettings,
     resolveCallerPermissionMode: resolveAgentCallerPermissionMode,
-    resolveActiveTurnPermissionWitness: () => resolveLiveClientActiveTurnPermissionWitness(client),
+    // Action attribution belongs to the complete admitted input, not the
+    // narrower permission/depth view. An installed full reader returning null
+    // means no admitted turn; it must not fall back to a different witness.
+    resolveActiveTurnPermissionWitness: () => client.getActiveTurnAdmissionWitness
+      ? client.getActiveTurnAdmissionWitness()
+      : resolveLiveClientActiveTurnPermissionWitness(client),
     resolveReviewCommentActor: () => {
       const target = resolveLiveClientBackendTarget(client);
       return target ? { kind: 'agent', agentId: resolveExecutionRunPublicBackendId(target), sessionId: client.sessionId } : null;

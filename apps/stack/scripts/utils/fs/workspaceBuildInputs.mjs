@@ -5,6 +5,7 @@ import cliDistBuildManifest from '../../../../../packages/cli-common/cliDistBuil
 import { readWorkspacePackages, workspaceSourcePackageClosure } from '../../../../../packages/cli-common/sourceRuntimeEntries.mjs';
 import { readBundledPluginPackageNames } from '../../../../cli/scripts/build-owned/bundledPluginMembership.ts';
 import { resolveBundledPluginUiProjectionInputPaths } from '../../../../cli/scripts/build-owned/bundledPlugins/projectionPaths.mjs';
+import { readSourcePluginUiGraph } from '../../../../ui/scripts/sourcePluginUiGraph.mjs';
 
 const SOURCE_ROOTS = ['src', 'sources', 'scripts'];
 const TEST_DIRECTORY_NAMES = new Set(['__fixtures__', '__snapshots__', '__tests__', 'fixtures', 'test', 'testkit', 'tests', 'test-support']);
@@ -57,17 +58,41 @@ export function resolveSourcePluginUiBuildInputPaths(repoDir) {
 /** Plugin UI can bundle declared build dependencies as well as runtime ones.
  * Host applications are not plugin source inputs; their test dependencies must
  * not make a CLI-only edit rebuild every UI artifact. */
-export async function readSourcePluginUiBuildInputs({ repoDir, pluginDirectory, compiler = false, packages, includeDirectories = false }) {
+export async function readSourcePluginUiBuildInputs({ repoDir, pluginDirectory, compiler = false, packages, includeDirectories = false,
+  packageInputs = new Map(), resolveSourceImport }) {
   packages ??= await readWorkspacePackages(repoDir);
-  const roots = compiler ? ['@happier-dev/plugin-sdk'] : [`@happier-dev/plugins-${pluginDirectory}`];
-  // Remove host nodes before traversal: a CLI test dependency must not visit
-  // the CLI's bundled-plugin census and pull every sibling into this input set.
-  const sourcePackages = new Map([...packages].filter(([, { root }]) => relative(repoDir, root).split(sep)[0] !== 'apps'));
-  const closure = workspaceSourcePackageClosure(sourcePackages, roots);
-  const files = new Set();
-  for (const name of closure) {
+  const graphKey = `plugin-ui-graph:${compiler ? 'compiler' : pluginDirectory}`;
+  let graph = packageInputs.get(graphKey);
+  if (!graph) {
+    graph = readSourcePluginUiGraph({ repoDir, compiler, pluginDirectory, packages, resolveSourceImport });
+    packageInputs.set(graphKey, graph);
+  }
+  const files = new Set((await graph).filter(path => !isWorkspaceBuildInputIgnoredPath(path)
+    && !path.split('/').some(part => part === 'dist' || part === 'package-dist')
+    && !isGeneratedPluginArtifactPath(path)));
+  const packageRoots = new Set([...packages.values()].map(({ root }) => relative(repoDir, root).split(sep).join('/')));
+  for (const path of [...files]) {
+    let parent = posix.dirname(path);
+    if (includeDirectories) files.add(parent);
+    while (parent !== '.' && !packageRoots.has(parent)) parent = posix.dirname(parent);
+    if (packageRoots.has(parent)) files.add(`${parent}/package.json`);
+  }
+  // Executable inputs come from the resolved UI graph above. Retain shipped
+  // Resources and hosted-static files without treating every daemon source
+  // edit in this plugin as a UI change. Explicitly shipped sources still count.
+  for (const name of compiler ? [] : [`@happier-dev/plugins-${pluginDirectory}`]) {
+    if (!packages.has(name)) continue;
     const { root } = packages.get(name);
-    for (const path of readWorkspaceBuildInputs(root, { excludeGeneratedPluginArtifacts: true, includeDirectories })) {
+    const includeShippedFiles = true;
+    // Publication uses a new pass so additions made while compiling still
+    // invalidate unchanged-input reuse.
+    const key = JSON.stringify([root, includeShippedFiles, includeDirectories]);
+    let inputs = packageInputs.get(key);
+    if (!inputs) {
+      inputs = readWorkspaceBuildInputs(root, { sourceRoots: [], excludeGeneratedPluginArtifacts: true, includeDirectories, includeShippedFiles });
+      packageInputs.set(key, inputs);
+    }
+    for (const path of inputs) {
       files.add(relative(repoDir, join(root, path)).split(sep).join('/'));
     }
   }
@@ -78,9 +103,13 @@ export async function readSourcePluginUiBuildInputs({ repoDir, pluginDirectory, 
     'apps/ui/scripts/prepareSourcePluginUiArtifacts.mjs',
     'apps/ui/scripts/generateBundledPluginUiArtifacts.mjs',
     'apps/cli/scripts/build-owned/bundledPlugins/uiDeclarations.mjs',
+    'apps/stack/scripts/build/build_source_web_ui.mjs',
     'apps/stack/scripts/utils/fs/workspaceBuildInputs.mjs',
+    'packages/cli-common/registerSourceRuntime.mjs',
     'packages/cli-common/sourceRuntimeEntries.mjs',
+    'scripts/workspaces/sourcePluginUiBuildOptions.mjs',
     'scripts/workspaces/buildInputConvergence.mjs',
+    'apps/ui/scripts/sourcePluginUiGraph.mjs',
   ]) files.add(path);
   return [...files].sort();
 }
@@ -120,6 +149,7 @@ export async function readSourceComponentBuildInputs({ repoDir, component }) {
       sourceRoots: component === 'daemon' && path === 'apps/ui' ? ['scripts'] : SOURCE_ROOTS,
       additionalInputPaths: root === repoDir ? ['apps/cli/scripts/buildPublication.mjs',
         'apps/cli/scripts/build-owned/bundledPluginMembership.ts',
+        ...(component === 'expo' ? ['patches'] : []),
         // This collector imports the generator's path owner even when the
         // component closure does not otherwise include CLI tooling.
         'apps/cli/scripts/build-owned/bundledPlugins/projectionPaths.mjs',
@@ -336,9 +366,20 @@ export function resolveWorkspaceBuildInputWatchPaths(packageDir, {
   inputPaths,
 } = {}) {
   const membershipRoots = [...sourceRoots, '.happier-plugin/ui/hosted-web', ...additionalInputPaths];
+  let observedInputs = inputPaths;
+  if (!observedInputs) {
+    try {
+      observedInputs = readWorkspaceBuildInputs(packageDir, { excludeGeneratedPluginManifest, excludeGeneratedPluginArtifacts, includeShippedFiles, includeDirectories: includeShippedFiles, additionalInputPaths, sourceRoots });
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      // A partially edited manifest blocks build admission, not observation of
+      // the correction. Keep source roots and the manifest itself watched.
+      observedInputs = ['package.json'];
+    }
+  }
   return [...new Set([
     ...membershipRoots.map((path) => join(packageDir, path)),
-    ...(inputPaths ?? readWorkspaceBuildInputs(packageDir, { excludeGeneratedPluginManifest, excludeGeneratedPluginArtifacts, includeShippedFiles, includeDirectories: includeShippedFiles, additionalInputPaths, sourceRoots }))
+    ...observedInputs
       .filter((path) => !membershipRoots.some((root) => path.startsWith(`${root}/`)))
       .map((path) => join(packageDir, path)),
   ])].filter((path) => existsSyncImpl(path));

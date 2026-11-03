@@ -29,6 +29,8 @@ export type HappierWidgetGlanceRowColors = Readonly<{
   mutedText: string;
   /** "Needs you": a fact the person must act on. */
   attention: string;
+  /** A failed state word; absent, the row draws it in the text ink. */
+  danger?: string;
   /** Under the pointer or a press, when the row leads somewhere. */
   pressed: string;
   focus: string;
@@ -56,8 +58,8 @@ export type HappierWidgetGlanceRowProps = Readonly<{
   tag?: string | null;
   /** The second line: where it is and what is happening there. */
   fact?: string | null;
-  /** `attention`: the fact needs the person (amber). Healthy state stays quiet. */
-  factTone?: 'quiet' | 'attention';
+  /** `attention`: the fact needs the person (amber); `danger`: it failed. Healthy state stays quiet. */
+  factTone?: 'quiet' | 'attention' | 'danger';
   mono?: boolean;
   trailing?: ReactNode;
   /** Last-known while its source is away. */
@@ -107,7 +109,10 @@ export const HappierWidgetGlanceRow = memo(function HappierWidgetGlanceRow(
             color={
               props.factTone === 'attention'
                 ? colors.attention
-                : colors.secondaryText
+                : props.factTone === 'danger'
+                  ? (colors.danger ?? colors.text)
+                  : colors.secondaryText
+
             }
             style={null}
           >

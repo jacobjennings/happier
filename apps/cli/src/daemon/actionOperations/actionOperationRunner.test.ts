@@ -6,10 +6,22 @@ import { getActionSpec } from '@happier-dev/protocol/actions';
 import { ActionOperationCredentialUseV1Schema } from '@happier-dev/protocol/actions/actionExecutionResult';
 import { ActionOperationSnapshotV1Schema, projectActionOperationSnapshotForV1Reader } from '@happier-dev/protocol/actions/operations/v1';
 import { ActionOperationSnapshotV1Schema as PredecessorSnapshotSchema } from './testFixtures/predecessorActionOperationV1';
+import { createRpcCallError, RPC_ERROR_CODES } from '@happier-dev/protocol/rpcErrors';
 
 const scope = { accountId: 'account-1', machineId: 'machine-1' } as const;
 
 describe('action operation canonical execution observer', () => {
+  it('retains a typed RPC refusal thrown by a managed Action in its terminal operation', async () => {
+    const store = createActionOperationStore();
+    const spec = getActionSpec('machines.managed.power.set');
+    const runner = createActionOperationRunner({ store,
+      resolveAction: () => ({ actionId: spec.id, title: spec.title, operation: spec.operation }) });
+    await expect(runner.observe({ actionId: 'machines.managed.power.set', scope, requestId: 'explicit-stop',
+      input: { homeId: 'home', managedId: 'managed', intent: 'stop', when: 'now' },
+      execute: async () => { throw createRpcCallError({ error: 'Guest refused the activity read', errorCode: RPC_ERROR_CODES.FORBIDDEN }); } }))
+      .rejects.toMatchObject({ rpcErrorCode: RPC_ERROR_CODES.FORBIDDEN });
+    expect(store.list(scope).items).toMatchObject([{ state: 'failed', error: { errorCode: RPC_ERROR_CODES.FORBIDDEN } }]);
+  });
   it('continues an arbitrary tracked Action past its deferred approval receipt', async () => {
     const store = createActionOperationStore();
     let operationNumber = 0;
@@ -71,11 +83,13 @@ describe('action operation canonical execution observer', () => {
       requestId: 'approved-project-request',
       input: { workspaceRefId: 'workspace', cwd: '/project' },
       execute: async (context: Parameters<Parameters<typeof runner.observe>[0]['execute']>[0]) => {
+        // The outer Action executor requests approval before the finite command
+        // owner can publish acceptance of the approved execution.
+        if (++executionCount === 1) return { ok: true as const,
+          result: { kind: 'approval_request_created', artifactId: 'approval-1', actionId: 'projects.script.run' } };
         context.publishOwnerUpdate({ domainRef: { kind: 'projectCommand', purpose: 'script', serverId: 'home',
           machineId: scope.machineId, workspaceRefId: 'workspace', cwd: '/project' } });
-        return ++executionCount === 1
-          ? { ok: true as const, result: { kind: 'approval_request_created', artifactId: 'approval-1', actionId: 'projects.script.run' } }
-          : { ok: true as const, result: terminalResult };
+        return { ok: true as const, result: terminalResult };
       },
     };
 
@@ -83,7 +97,10 @@ describe('action operation canonical execution observer', () => {
       ok: true,
       result: { kind: 'approval_request_created', actionId: 'projects.script.run' },
     });
-    await expect(runner.observe(request)).resolves.toEqual({ ok: true, result: terminalResult });
+    await expect(runner.observe(request)).resolves.toMatchObject({ ok: true, result: {
+      operation: { operationId: 'project-approval-1', domainRef: { kind: 'projectCommand' } },
+    } });
+    await expect(runner.waitForTerminal(scope, 'project-approval-1')).resolves.toMatchObject({ state: 'succeeded', result: terminalResult });
     await expect(runner.observe(request)).resolves.toMatchObject({
       ok: true,
       result: { operation: { state: 'succeeded', result: terminalResult } },

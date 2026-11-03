@@ -1,8 +1,19 @@
 // @vitest-environment jsdom
 import 'fake-indexeddb/auto';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installLocalStorageMock } from '@/auth/storage/tokenStorage.web.testHelpers';
 import { scopedStorageId } from '@/utils/system/storageScope';
+
+import * as switches from '../activeServerSwitch';
+import * as profiles from '../serverProfiles';
+import { setActiveServer } from '../serverRuntime';
+import {
+    bootstrapActiveServerFromWebLocation,
+    commitWebServerUrlOverride,
+    readWebDestinationServerIdFromLocation,
+    readWebServerUrlOverrideFromLocation,
+} from './bootstrapActiveServerFromWebLocation';
+import { resolveWebServerUrlOverrideAction } from './resolveAuthenticatedWebServerUrlOverrideAction';
 
 function randomScope(): string {
     return `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -34,19 +45,6 @@ function stubWebLocation(href: string) {
     });
 }
 
-async function importFreshBootstrap() {
-    vi.resetModules();
-    return await import('./bootstrapActiveServerFromWebLocation');
-}
-
-async function importFreshServerProfiles() {
-    return await import('../serverProfiles');
-}
-
-// Collect the real override/switch graph before case deadlines; each case still reloads its scope.
-await import('./resolveAuthenticatedWebServerUrlOverrideAction');
-await import('../activeServerSwitch');
-
 describe('bootstrapActiveServerFromWebLocation', () => {
     const previousEnv = process.env.EXPO_PUBLIC_HAPPY_SERVER_URL;
     const previousContext = process.env.EXPO_PUBLIC_HAPPY_SERVER_CONTEXT;
@@ -54,12 +52,11 @@ describe('bootstrapActiveServerFromWebLocation', () => {
     const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
     let seededBrowserStorage: ReturnType<typeof installLocalStorageMock> | null = null;
 
-    beforeEach(() => { vi.resetModules(); });
-
     afterEach(() => {
         seededBrowserStorage?.restore();
         seededBrowserStorage = null;
         vi.unstubAllGlobals();
+        profiles.resetServerProfilesRuntimeForTests();
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = previousEnv;
         if (previousContext === undefined) delete process.env.EXPO_PUBLIC_HAPPY_SERVER_CONTEXT;
         else process.env.EXPO_PUBLIC_HAPPY_SERVER_CONTEXT = previousContext;
@@ -75,14 +72,11 @@ describe('bootstrapActiveServerFromWebLocation', () => {
 
         stubWebLocation('http://happier-github-auth-e2ee.localhost:19081/?server=http%3A%2F%2Flocalhost%3A57010');
 
-        const { upsertServerProfile } = await importFreshServerProfiles();
-        await upsertServerProfile({ serverUrl: 'http://localhost:57010', source: 'manual' });
+        await profiles.upsertServerProfile({ serverUrl: 'http://localhost:57010', source: 'manual' });
 
-        const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
         const result = await bootstrapActiveServerFromWebLocation({ scope: 'device' });
 
-        const { getActiveServerUrl } = await importFreshServerProfiles();
-        expect(getActiveServerUrl()).toBe('http://localhost:57010');
+        expect(profiles.getActiveServerUrl()).toBe('http://localhost:57010');
         expect(result?.serverUrl).toBe('http://localhost:57010');
     });
 
@@ -91,8 +85,6 @@ describe('bootstrapActiveServerFromWebLocation', () => {
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'https://canonical.example.test';
         stubWebLocation('https://app.example.test/?server=https%3A%2F%2Fcanonical.example.test');
 
-        const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
-        const profiles = await importFreshServerProfiles();
         expect(profiles.getActiveServerSnapshot().isSelectionExplicit).toBe(false);
 
         await bootstrapActiveServerFromWebLocation({ scope: 'device' });
@@ -110,10 +102,8 @@ describe('bootstrapActiveServerFromWebLocation', () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'https://canonical.example.test';
         stubWebLocation('https://app.example.test/');
-        const profiles = await importFreshServerProfiles();
         const active = profiles.getActiveServerSnapshot();
         expect(active.isSelectionExplicit).toBe(false);
-        const switches = await import('../activeServerSwitch');
 
         const result = target === 'id'
             ? await switches.setActiveServerAndSwitch({ serverId: active.serverId, scope })
@@ -132,13 +122,11 @@ describe('bootstrapActiveServerFromWebLocation', () => {
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'https://retained.example.test';
         stubWebLocation('https://app.example.test/?server=https%3A%2F%2Fnew.example.test');
 
-        const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
         const result = await bootstrapActiveServerFromWebLocation({ scope: 'device' });
-        const { getActiveServerUrl, listServerProfiles } = await importFreshServerProfiles();
 
         expect(result?.serverUrl).toBe('https://new.example.test');
-        expect(getActiveServerUrl()).toBe('https://retained.example.test');
-        expect(listServerProfiles().some((profile) => profile.serverUrl === 'https://new.example.test')).toBe(false);
+        expect(profiles.getActiveServerUrl()).toBe('https://retained.example.test');
+        expect(profiles.listServerProfiles().some((profile) => profile.serverUrl === 'https://new.example.test')).toBe(false);
     });
 
     it('does not choose one of two saved Homes with the same supplied URL', async () => {
@@ -158,20 +146,15 @@ describe('bootstrapActiveServerFromWebLocation', () => {
         }));
         stubWebLocation('https://app.example.test/?server=https%3A%2F%2Fshared.example.test');
 
-        const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
-        const { getActiveServerId, resolveSavedServerProfileByUrl, resolveUniqueServerProfileByUrl } = await importFreshServerProfiles();
-        expect(resolveSavedServerProfileByUrl('https://shared.example.test')).toMatchObject({ kind: 'ambiguous' });
-        expect(resolveUniqueServerProfileByUrl('https://shared.example.test')).toBeNull();
+        expect(profiles.resolveSavedServerProfileByUrl('https://shared.example.test')).toMatchObject({ kind: 'ambiguous' });
+        expect(profiles.resolveUniqueServerProfileByUrl('https://shared.example.test')).toBeNull();
         await bootstrapActiveServerFromWebLocation({ scope: 'device' });
-        expect(getActiveServerId()).toBe('retained');
+        expect(profiles.getActiveServerId()).toBe('retained');
 
         // URL equality cannot select a stable identity when two saved Homes share it.
-        const { setActiveServer } = await import('../serverRuntime');
         await setActiveServer({ serverId: 'first', scope: 'device' });
-        const { getActiveServerUrl } = await importFreshServerProfiles();
-        expect(getActiveServerId()).toBe('srv_first');
-        expect(getActiveServerUrl()).toBe('https://shared.example.test');
-        const { resolveWebServerUrlOverrideAction } = await import('./resolveAuthenticatedWebServerUrlOverrideAction');
+        expect(profiles.getActiveServerId()).toBe('srv_first');
+        expect(profiles.getActiveServerUrl()).toBe('https://shared.example.test');
         expect(resolveWebServerUrlOverrideAction({})).toMatchObject({
             kind: 'switch_server',
             serverUrl: 'https://shared.example.test',
@@ -182,12 +165,18 @@ describe('bootstrapActiveServerFromWebLocation', () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'http://localhost:53288';
         stubWebLocation('https://app.example.test/?server=http%3A%2F%2Fhappier-qa.localhost%3A53288');
-        await importFreshBootstrap();
-        const { upsertServerProfile } = await importFreshServerProfiles();
-        await upsertServerProfile({ serverUrl: 'http://localhost:53288', source: 'manual' });
-        const { resolveWebServerUrlOverrideAction } = await import('./resolveAuthenticatedWebServerUrlOverrideAction');
+        await profiles.upsertServerProfile({ serverUrl: 'http://localhost:53288', source: 'manual' });
         expect(resolveWebServerUrlOverrideAction({ bootstrappedServerUrl: 'http://localhost:53288' })).toEqual({
             kind: 'refresh_auth', serverUrl: 'http://happier-qa.localhost:53288',
+        });
+    });
+
+    it('normalizes legacy `?url=...&auto=1` into the same device-scoped server override flow', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        stubWebLocation('https://app.example.test/server?url=https%3A%2F%2Fstack.example.test&auto=1');
+        expect(resolveWebServerUrlOverrideAction({ bootstrappedServerUrl: null })).toEqual({
+            kind: 'switch_server',
+            serverUrl: 'https://stack.example.test',
         });
     });
 
@@ -197,12 +186,10 @@ describe('bootstrapActiveServerFromWebLocation', () => {
 
         stubWebLocation('http://happier-github-auth-e2ee.localhost:19081/?server=http%3A%2F%2F127.0.0.1%3A57010');
 
-        const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
         const result = await bootstrapActiveServerFromWebLocation({ scope: 'device' });
 
-        const { getActiveServerId, getActiveServerUrl } = await importFreshServerProfiles();
-        expect(getActiveServerId()).toBe('qa-stack.localhost-57010');
-        expect(getActiveServerUrl()).toBe('http://qa-stack.localhost:57010');
+        expect(profiles.getActiveServerId()).toBe('qa-stack.localhost-57010');
+        expect(profiles.getActiveServerUrl()).toBe('http://qa-stack.localhost:57010');
         expect(result?.serverUrl).toBe('http://127.0.0.1:57010');
     });
 
@@ -212,12 +199,10 @@ describe('bootstrapActiveServerFromWebLocation', () => {
 
         stubWebLocation('http://happier-repo-dev-a1cc5e0671.localhost:19081/?server=http%3A%2F%2Fhappier-repo-dev-a1cc5e0671.localhost%3A57010');
 
-        const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
         const result = await bootstrapActiveServerFromWebLocation({ scope: 'device' });
 
-        const { getActiveServerId, getActiveServerUrl } = await importFreshServerProfiles();
-        expect(getActiveServerId()).toBe('localhost-57010');
-        expect(getActiveServerUrl()).toBe('http://happier-repo-dev-a1cc5e0671.localhost:57010');
+        expect(profiles.getActiveServerId()).toBe('localhost-57010');
+        expect(profiles.getActiveServerUrl()).toBe('http://happier-repo-dev-a1cc5e0671.localhost:57010');
         expect(result?.serverUrl).toBe('http://happier-repo-dev-a1cc5e0671.localhost:57010');
     });
 
@@ -227,7 +212,6 @@ describe('bootstrapActiveServerFromWebLocation', () => {
 
         stubWebLocation(`http://happier-github-auth-e2ee.localhost:19081/session/session-1?server=http%3A%2F%2F127.0.0.1%3A57010&serverId=${serverId}&tab=files`);
 
-        const { bootstrapActiveServerFromWebLocation } = await importFreshBootstrap();
         const result = await bootstrapActiveServerFromWebLocation({ scope: 'device' });
 
         expect(result?.serverUrl).toBe('http://127.0.0.1:57010');
@@ -243,15 +227,13 @@ describe('bootstrapActiveServerFromWebLocation', () => {
 
         stubWebLocation(href);
 
-        const { bootstrapActiveServerFromWebLocation, readWebServerUrlOverrideFromLocation, readWebDestinationServerIdFromLocation } = await importFreshBootstrap();
         const override = readWebServerUrlOverrideFromLocation();
         const result = await bootstrapActiveServerFromWebLocation({ scope: 'device' });
 
-        const { getActiveServerUrl } = await importFreshServerProfiles();
         expect(override).toBeNull();
         expect(readWebDestinationServerIdFromLocation()).toBeNull();
         expect(result).toBeNull();
-      expect(getActiveServerUrl()).toBe('https://api.happier.dev');
+      expect(profiles.getActiveServerUrl()).toBe('https://api.happier.dev');
     });
 
     it('removes the URL intent only after the server connection and auth commit succeeds', async () => {
@@ -260,7 +242,6 @@ describe('bootstrapActiveServerFromWebLocation', () => {
         vi.mocked(window.history.replaceState).mockImplementation((_state, _title, url) => {
             events.push(`replace:${String(url)}`);
         });
-        const { commitWebServerUrlOverride } = await importFreshBootstrap();
         await commitWebServerUrlOverride({
             action: {
                 kind: 'switch_server',
@@ -282,7 +263,6 @@ describe('bootstrapActiveServerFromWebLocation', () => {
     it('retains the URL intent when connection or auth commit rejects', async () => {
         stubWebLocation('https://app.example.test/?server=https%3A%2F%2Fstack.example.test');
         const replaceRelativeUrl = window.history.replaceState;
-        const { commitWebServerUrlOverride } = await importFreshBootstrap();
         await expect(commitWebServerUrlOverride({
             action: {
                 kind: 'switch_server',
@@ -299,7 +279,6 @@ describe('bootstrapActiveServerFromWebLocation', () => {
     it('cleans the current route instead of restoring the route captured before auth refresh', async () => {
         const serverUrl = 'https://stack.example.test';
         stubWebLocation(`https://app.example.test/settings/actions/session.spawn_new?server=${encodeURIComponent(serverUrl)}&tab=old#old`);
-        const { commitWebServerUrlOverride, readWebServerUrlOverrideFromLocation } = await importFreshBootstrap();
         const supplied = readWebServerUrlOverrideFromLocation();
         if (!supplied) throw new Error('Expected the genuine URL decoder to admit the supplied Home');
 
@@ -341,7 +320,6 @@ describe('bootstrapActiveServerFromWebLocation', () => {
     ])('does not consume $reason when auth completion arrives later', async ({ href }) => {
         const serverUrl = 'https://stack.example.test';
         stubWebLocation(`https://app.example.test/settings/actions/session.spawn_new?server=${encodeURIComponent(serverUrl)}`);
-        const { commitWebServerUrlOverride, readWebServerUrlOverrideFromLocation } = await importFreshBootstrap();
         const supplied = readWebServerUrlOverrideFromLocation();
         if (!supplied) throw new Error('Expected the genuine URL decoder to admit the supplied Home');
         let completeAuth!: () => void;
@@ -361,7 +339,6 @@ describe('bootstrapActiveServerFromWebLocation', () => {
 
     it('does not clean a supplied intent after its mounted owner cancels the pending commit', async () => {
         stubWebLocation('https://app.example.test/settings/sub-agent?server=https%3A%2F%2Fstack.example.test&panel=delegation#report-back');
-        const { commitWebServerUrlOverride, readWebServerUrlOverrideFromLocation } = await importFreshBootstrap();
         const supplied = readWebServerUrlOverrideFromLocation();
         if (!supplied) throw new Error('Expected the genuine URL decoder to admit the supplied Home');
         const controller = new AbortController();

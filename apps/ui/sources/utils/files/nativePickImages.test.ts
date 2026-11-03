@@ -46,6 +46,18 @@ describe('nativePickImages', () => {
 
         expect(ImagePicker.requestMediaLibraryPermissionsAsync).toHaveBeenCalledTimes(1);
         expect(ImagePicker.launchImageLibraryAsync).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(ImagePicker.requestMediaLibraryPermissionsAsync).mock.invocationCallOrder[0])
+            .toBeLessThan(vi.mocked(ImagePicker.launchImageLibraryAsync).mock.invocationCallOrder[0]!);
+    });
+
+    it('does not open the picker when media library permission is denied', async () => {
+        const ImagePicker = await import('expo-image-picker');
+        vi.mocked(ImagePicker.requestMediaLibraryPermissionsAsync)
+            .mockResolvedValueOnce({ ...grantedMediaLibraryPermission, granted: false });
+
+        const { nativePickImages } = await import('./nativePickImages');
+        await expect(nativePickImages({ multiple: false })).rejects.toThrow();
+        expect(ImagePicker.launchImageLibraryAsync).not.toHaveBeenCalled();
     });
 
     it('returns web File sources when expo-image-picker provides `asset.file`', async () => {

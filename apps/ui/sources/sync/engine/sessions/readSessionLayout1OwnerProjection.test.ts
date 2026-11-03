@@ -5,10 +5,11 @@ import {
     projectLegacySessionAccessCapabilitiesV1,
 } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
+import tweetnacl from 'tweetnacl';
 
 import { encodeBase64 } from '@/encryption/base64';
 import { isDataKeyAuthCredentials, type AuthCredentials } from '@/auth/storage/tokenStorage';
-import { AccountEncryptionCurrentnessResponseSchema } from '@happier-dev/protocol/account/encryptionMode';
+import { createDataKeyAccountEncryptionCurrentnessFixture, createLegacyAccountEncryptionCurrentnessFixture } from '@/dev/testkit/fixtures/accountEncryptionCurrentness';
 
 import { normalizeSessionAccessProjection } from './normalizeSessionAccessProjection';
 
@@ -148,6 +149,7 @@ describe('readSessionLayout1OwnerMetadata', () => {
         expect(readSessionLayout1OwnerMetadata({
             access: normalizeSessionAccessProjection({ share: null }, { allowLegacy: true }),
             accountMode: 'e2ee',
+            accountCurrentness: createLegacyAccountEncryptionCurrentnessFixture({ secret }),
             ownerMetadataEnvelope: sealSessionOwnerMetadataEnvelopeV1({
                 material: { type: 'legacy', secret },
                 ownerMetadata,
@@ -168,6 +170,7 @@ describe('readSessionLayout1OwnerMetadata', () => {
         const params = {
             access: normalizeSessionAccessProjection({ share: null }, { allowLegacy: true }),
             accountMode: 'e2ee' as const, ownerMetadataEnvelope: envelope, credentials,
+            accountCurrentness: createLegacyAccountEncryptionCurrentnessFixture({ secret }),
         };
         const first = readSessionLayout1OwnerMetadata(params);
         expect(first.kind).toBe('owner');
@@ -193,22 +196,24 @@ describe('readSessionLayout1OwnerMetadata', () => {
         changedCredentials.secret = Buffer.from(new Uint8Array(32).fill(8)).toString('base64url');
         expect(readSessionLayout1OwnerMetadata({ ...params, credentials: changedCredentials,
             previousProjection: beforeMutation.kind === 'owner' ? beforeMutation : null,
-        })).toMatchObject({ kind: 'unavailable', reason: 'invalid_ciphertext' });
+        })).toMatchObject({ kind: 'unavailable', reason: 'material_unavailable' });
     });
 
     it.each(['legacy', 'dataKey'] as const)('retains the full owner projection for recaptured %s credentials but not changed authority or mutated original material', kind => {
         const legacyCredentials = { ...credentials };
+        const contentKeyPair = tweetnacl.box.keyPair.fromSecretKey(secret);
         const dataKeyCredentials = {
             token: credentials.token,
-            encryption: { machineKey: encodeBase64(secret, 'base64'),
-                publicKey: encodeBase64(new Uint8Array(32).fill(9), 'base64') },
+            encryption: { machineKey: encodeBase64(contentKeyPair.secretKey, 'base64'),
+                publicKey: encodeBase64(contentKeyPair.publicKey, 'base64') },
         };
         const captured = kind === 'legacy' ? legacyCredentials : dataKeyCredentials;
         const recapture = () => isDataKeyAuthCredentials(captured)
             ? { ...captured, encryption: { ...captured.encryption } }
             : { ...captured };
-        const currentness = AccountEncryptionCurrentnessResponseSchema.parse({ mode: 'e2ee', version: 1, updatedAt: 1,
-            signingKeyFingerprint: null, contentKeyFingerprint: null });
+        const currentness = kind === 'legacy'
+            ? createLegacyAccountEncryptionCurrentnessFixture({ secret })
+            : createDataKeyAccountEncryptionCurrentnessFixture({ machineKey: contentKeyPair.secretKey, publicKey: contentKeyPair.publicKey });
         const params = {
             access: normalizeSessionAccessProjection({ share: null }, { allowLegacy: true }),
             accountMode: 'e2ee' as const, accountCurrentness: currentness,
@@ -244,7 +249,7 @@ describe('readSessionLayout1OwnerMetadata', () => {
         const reopened = project(unchangedRecapture, first);
         expect(reopened.kind).toBe('owner');
         expect(reopened).not.toBe(first);
-        expect(project(captured, first)).toMatchObject({ kind: 'unavailable', reason: 'invalid_ciphertext' });
+        expect(project(captured, first)).toMatchObject({ kind: 'unavailable', reason: 'material_unavailable' });
     });
 
     it.each([
@@ -299,7 +304,7 @@ describe('readSessionLayout1OwnerMetadata', () => {
             credentials: dataKeyCredentials,
         })).toMatchObject({
             kind: 'unavailable',
-            reason: 'invalid_ciphertext',
+            reason: 'material_unavailable',
         });
     });
 

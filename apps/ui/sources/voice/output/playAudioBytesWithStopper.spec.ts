@@ -683,12 +683,11 @@ describe('playAudioBytesWithStopper (web)', () => {
 });
 
 describe('playAudioBytesWithStopper (native)', () => {
-  it.each(['ios', 'android'] as const)('uses the %s playback boundary and releases its audio-session lease', async (platformOs) => {
-    platformOsMock.value = platformOs;
+  it('uses the android Expo Audio playback boundary and releases its audio-session lease', async () => {
+    platformOsMock.value = 'android';
     vi.spyOn(Date, 'now').mockReturnValue(1234);
-    const { start: nativeStart, stop: nativeStop } = encodedNative;
+    const { start: nativeStart } = encodedNative;
     const playbackReady = createDeferred<void>();
-    if (platformOs === 'ios') nativeStart.mockImplementationOnce(async () => { playbackReady.resolve(); });
 
     const createAudioPlayer = vi.fn((source: string) => {
       playbackReady.resolve();
@@ -740,19 +739,13 @@ describe('playAudioBytesWithStopper (native)', () => {
       });
 
       await playbackReady.promise;
-      expect(platformOs === 'ios' ? nativeStart : createAudioPlayer).toHaveBeenCalledTimes(1);
+      expect(createAudioPlayer).toHaveBeenCalledTimes(1);
       expect(typeof registeredStopper).toBe('function');
-      if (platformOs === 'ios') {
-        expect(nativeStart).toHaveBeenCalledWith('file:///tmp/happier-voice-1234.wav');
-        expect(createAudioPlayer).not.toHaveBeenCalled();
-        encodedNative.emit({ status: 'finished' });
-      } else {
-        expect(createAudioPlayer).toHaveBeenCalledWith('file:///tmp/happier-voice-1234.wav', undefined);
-        expect(nativeStart).not.toHaveBeenCalled();
-        (createAudioPlayer.mock.results[0]?.value as { __emit?: (status: any) => void } | undefined)?.__emit?.({
-          didJustFinish: true,
-        });
-      }
+      expect(createAudioPlayer).toHaveBeenCalledWith('file:///tmp/happier-voice-1234.wav', undefined);
+      expect(nativeStart).not.toHaveBeenCalled();
+      (createAudioPlayer.mock.results[0]?.value as { __emit?: (status: any) => void } | undefined)?.__emit?.({
+        didJustFinish: true,
+      });
 
       await promise;
 

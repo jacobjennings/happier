@@ -1,5 +1,5 @@
 import type { JsonValue } from '@happier-dev/plugin-sdk';
-import { readClaudeProviderIdentityValue } from '../../../../protocol/providerIdentity.js';
+import { readClaudeProviderIdentityValue, readClaudeTranscriptProviderSessionId } from '../../../../protocol/providerIdentity.js';
 import { isSidechainSessionHook, isClaudeSidechainRuntimeEvidence } from '../../../hooks/sidechain.js';
 import type {
   AgentSessionHooksService,
@@ -67,7 +67,7 @@ export type ClaudeUnifiedProviderTranscriptPublisherParams = Readonly<{
       historicalReplay: boolean;
       phase?: 'initial_replay';
       orderedSource?: true;
-      projectedTaskResult?: RawJSONLines;
+      projectedTaskResult?: RawJSONLines | null;
     }>,
   ) => void | Promise<void>;
 }>;
@@ -137,7 +137,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function isClaudeUnifiedPrimaryTranscriptRow(row: Readonly<Record<string, unknown>>, providerSessionId: string): boolean {
-  return (readClaudeProviderIdentityValue(row.session_id) ?? readClaudeProviderIdentityValue(row.sessionId)) === providerSessionId
+  return readClaudeTranscriptProviderSessionId(row) === providerSessionId
     && !isClaudeSidechainRuntimeEvidence(row) && !isSidechainSessionHook(row);
 }
 
@@ -442,7 +442,12 @@ export function createClaudeUnifiedProviderTranscriptPublisher(
   async function emitPayload(payload: ClaudeProviderTranscriptPayload): Promise<void> {
     if (disposed) return;
     await params.onPublishPayload?.(payload);
-    await params.ctx.agentRuntime.sessionHooks.publishProviderTranscript(payload);
+    // The ordered native compaction assembler is the canonical event producer.
+    // Retain this boundary for local readiness/manual settlement only; publishing
+    // its raw payload as well would create an attention-bearing duplicate row.
+    if (payload.kind !== 'compact_boundary') {
+      await params.ctx.agentRuntime.sessionHooks.publishProviderTranscript(payload);
+    }
   }
 
   async function observeRawRow(activeBinding: TranscriptBinding, row: RawJSONLines): Promise<void> {
@@ -538,10 +543,12 @@ export function createClaudeUnifiedProviderTranscriptPublisher(
     if (input.phase === 'initial_replay') {
       const row = parseRawJsonLinesObject(input.row);
       if (row) {
-        activeBinding.taskNotificationProjector.project(row);
+        // Replay settles task results through the same ordered projector as live rows.
+        const projectedTaskResult = activeBinding.taskNotificationProjector.project(row);
         await params.onObserveRow?.(row, {
           providerSessionId: activeBinding.providerSessionId, transcriptPath: activeBinding.transcriptPath,
           historicalReplay: true, phase: 'initial_replay',
+          ...(projectedTaskResult ? { projectedTaskResult: projectedTaskResult.message } : {}),
         });
       }
       activeBinding.observedSourceIds.add(input.sourceId);
@@ -568,10 +575,11 @@ export function createClaudeUnifiedProviderTranscriptPublisher(
       providerSessionId: activeBinding.providerSessionId, transcriptPath: activeBinding.transcriptPath,
       historicalReplay: false,
       orderedSource: true,
-      ...(projectedTaskResult ? { projectedTaskResult } : {}),
+      ...(projectedTaskResult ? { projectedTaskResult: projectedTaskResult.message } : {}),
     });
     if (fact) {
-      if (fact.subtype === 'task_notification' || projectedTaskResult) {
+      // The row observer publishes an unlinked hand-back as peer text; it is never a prompt or lifecycle row.
+      if (fact.subtype === 'task_notification' || fact.subtype === 'handback' || projectedTaskResult) {
         activeBinding.observedSourceIds.add(input.sourceId);
         return;
       }
@@ -749,7 +757,6 @@ export function createClaudeUnifiedProviderTranscriptPublisher(
       }
 
       const previousBinding = binding;
-      await releaseSourceFollow(previousBinding);
       const previousHandle = followHandle;
       followHandle = null;
       if (previousHandle) {
@@ -758,6 +765,9 @@ export function createClaudeUnifiedProviderTranscriptPublisher(
           drainTimeoutMs: CLAUDE_UNIFIED_TRANSCRIPT_FINAL_DRAIN_TIMEOUT_MS,
         }, previousBinding);
       }
+      // Stop raw delivery before releasing its ordered source: a buffered row
+      // otherwise reacquires the retired source while SessionStart is rekeying.
+      await releaseSourceFollow(previousBinding);
       if (disposed || binding !== previousBinding) return { status: 'ignored' };
       clearNativeQueuedCommandEvidence(previousBinding.queuedCommandEvidence);
       previousBinding.observedSourceIds.clear();
@@ -849,7 +859,6 @@ export function createClaudeUnifiedProviderTranscriptPublisher(
   async function dispose(options?: Readonly<{ drainTimeoutMs?: number }>): Promise<void> {
     if (disposed) return;
     const handle = followHandle;
-    if (binding) await releaseSourceFollow(binding);
     followHandle = null;
     if (handle) {
       await closeFollowHandle(handle, {
@@ -857,6 +866,7 @@ export function createClaudeUnifiedProviderTranscriptPublisher(
         drainTimeoutMs: normalizeFinalDrainTimeoutMs(options?.drainTimeoutMs),
       });
     }
+    if (binding) await releaseSourceFollow(binding);
     disposed = true;
     if (binding) {
       clearNativeQueuedCommandEvidence(binding.queuedCommandEvidence);

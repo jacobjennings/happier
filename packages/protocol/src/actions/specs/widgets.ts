@@ -71,7 +71,7 @@ const WIDGET_LAYOUT_FRAGMENT_ACTION_COPY = {
 
 // Presentation of the existing Action schemas, not a second value/admission owner.
 const surfaceField = { path: 'surface', title: 'Widget surface', widget: 'json', required: true,
-  description: 'Qualified target with serverId, accountId and owner. For a named area layout, include owner.layoutId; discover layouts with widgets.area.layout.list.' } as const satisfies InputFieldHint;
+  description: 'Qualified target with serverId, accountId and owner. Public profile layouts and presets use owner:{kind:"corePage",pageId:"public-profile",area:"main",layoutId}. For a named area layout, include owner.layoutId; discover layouts with widgets.area.layout.list. Public profile layout edits stay private until reviewed Publish or Apply.' } as const satisfies InputFieldHint;
 const refField = { path: 'ref', title: 'Widget or group', widget: 'json', required: true,
   description: 'Qualified surface and instanceId from widgets.item.list. A group uses its group id as instanceId.' } as const satisfies InputFieldHint;
 const accountField = { path: 'account', title: 'Library Account', widget: 'json', required: true,
@@ -297,11 +297,11 @@ export const WIDGET_INSTANCE_ACTION_SPECS_V1: readonly (PreNormalizedActionSpec 
       } } : {}),
     },
     approval: { result: 'required' }, title: WIDGET_INSTANCE_ACTION_COPY[id][0], description: id === 'widgets.area.layout.reset'
-      ? 'Restore the host-declared area preset immediately and return a guarded Undo for the acknowledged change.'
+      ? 'Reset a Public profile preset or another host-declared area layout immediately and return a guarded Undo for the acknowledged change. Public profile presets include Minimal, Data-rich, Story and Night owl; the layout stays private until reviewed Publish or Apply.'
       : id === 'widgets.area.layout.undo'
-      ? 'Restore the layout preceding a preset Reset only while that Reset remains the current acknowledged revision.'
+      ? 'Undo a Public profile reset or another area preset Reset, restoring the preceding layout only while that Reset remains the current acknowledged revision.'
       : id.startsWith('widgets.area.layout.')
-      ? 'List, select or edit a named area layout through its existing Artifact owner. Create can copy the current layout; host presets cannot be deleted. Metadata mutations require the current revision.'
+      ? `${WIDGET_INSTANCE_ACTION_COPY[id][1]} This includes Public profile layouts and presets (Minimal, Data-rich, Story and Night owl), through their existing Artifact owner. Create can copy the current layout; host presets cannot be deleted. Metadata mutations require the current revision; Public profile layouts stay private until reviewed Publish or Apply.`
       : id === 'widgets.group.create'
       ? 'Group existing widget items in a supported surface. New groups default to Card with hairline dividers; groups cannot nest.'
       : id === 'widgets.group.add'
@@ -319,8 +319,12 @@ export const WIDGET_INSTANCE_ACTION_SPECS_V1: readonly (PreNormalizedActionSpec 
       ? 'Remove the selected widget or explicitly remove a group with all its children. Ungroup preserves children instead.'
       : 'Operate on a qualified widget layout item through its canonical surface owner.',
     safety: read || refresh || select ? 'safe' : 'danger',
+    // Companion keeps only this viewer's placement; shared-content writers retain the danger default.
+    ...(id === 'widgets.item.add' ? { safetyForInput: (input: unknown) =>
+      readWidgetActionSurfaceV1(input)?.owner.kind === 'companion' ? 'safe' as const : 'danger' as const } : {}),
     sideEffectClass: read || refresh ? 'read' : 'write',
     executionPlacement: refresh || select ? 'client' : 'account',
+    executionPlacements: refresh || select ? ['client'] : ['account', 'client'],
     executionPlacementForInput: (input: unknown) => refresh || select
       || readWidgetActionSurfaceV1(input)?.owner.kind === 'companion'
       || (id === 'widgets.item.move' && readWidgetActionDestinationV1(input)?.owner.kind === 'companion')

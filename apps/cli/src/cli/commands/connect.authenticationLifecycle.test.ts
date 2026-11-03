@@ -5,10 +5,10 @@ import { join } from 'node:path';
 import axios from 'axios';
 import type { ResolvedConnectedAccountDescriptorContribution } from '@/plugins/projection/registry/types';
 
-const boundary = vi.hoisted(() => ({ rpc: vi.fn(), prompt: vi.fn(), promptSecret: vi.fn(async () => 'github_pat_secret') }));
+const boundary = vi.hoisted(() => ({ rpc: vi.fn(), prompt: vi.fn(), promptSecret: vi.fn(async () => 'github_pat_secret'), openBrowser: vi.fn(async () => true) }));
 
-// Only persistence credentials, machine RPC and terminal input cross system boundaries.
-// Catalog resolution, command orchestration and daemon-client schemas remain real.
+// Only persistence credentials, machine RPC, terminal input and browser launch cross
+// system boundaries. Catalog resolution, command orchestration and daemon-client schemas remain real.
 vi.mock('@/persistence', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/persistence')>(),
   readStoredCredentials: async () => ({ token: 'test-token', encryption: null }),
@@ -18,6 +18,7 @@ vi.mock('@/session/transport/rpc/machineRpc', async importOriginal => ({
   callMachineRpc: boundary.rpc, callExactMachineRpc: boundary.rpc,
 }));
 vi.mock('@/terminal/prompts/promptInput', () => ({ promptSecretInput: boundary.promptSecret, promptInput: boundary.prompt }));
+vi.mock('@/ui/openBrowser', () => ({ openBrowser: boundary.openBrowser }));
 
 describe('connect authentication consumer lifetime', () => {
   let taskDirectory: string;
@@ -101,7 +102,7 @@ describe('connect authentication consumer lifetime', () => {
 
   it.each([
     { name: 'manual code', pasted: '4/0synthetic-code', allowRaw: true, authorizationState: 'current-attempt', succeeds: true, code: '4/0synthetic-code' },
-    { name: 'matching callback', pasted: 'https://provider.example.test/callback?code=synthetic-code&state=current-attempt&iss=https%3A%2F%2Fissuer.example.test', allowRaw: true, authorizationState: 'current-attempt', succeeds: true, code: 'synthetic-code', issuer: 'https://issuer.example.test' },
+    { name: 'matching callback', pasted: 'https://provider.example.test/callback?code=synthetic-code&state=current-attempt&iss=https%3A%2F%2Fissuer.example.test', allowRaw: true, authorizationState: 'current-attempt', succeeds: true, code: 'synthetic-code', issuer: 'https://issuer.example.test', openBrowser: true },
     { name: 'code and returned state', pasted: 'synthetic-code#current-attempt', allowRaw: true, authorizationState: 'current-attempt', succeeds: true, code: 'synthetic-code' },
     { name: 'manual code without provider permission', pasted: '4/0synthetic-code', allowRaw: false, authorizationState: 'current-attempt', succeeds: false, code: '' },
     { name: 'manual code without current attempt state', pasted: '4/0synthetic-code', allowRaw: true, authorizationState: null, succeeds: false, code: '' },
@@ -111,7 +112,7 @@ describe('connect authentication consumer lifetime', () => {
     { name: 'callback with another attempt state', pasted: 'https://provider.example.test/callback?code=synthetic-code&state=another-attempt', allowRaw: true, authorizationState: 'current-attempt', succeeds: false, code: '' },
     { name: 'code with another attempt state', pasted: 'synthetic-code#another-attempt', allowRaw: true, authorizationState: 'current-attempt', succeeds: false, code: '' },
     { name: 'provider denial with code and state', pasted: 'https://provider.example.test/callback?error=access_denied&code=synthetic-code&state=current-attempt', allowRaw: true, authorizationState: 'current-attempt', succeeds: false, code: '' },
-  ])('consumes provider-declared OAuth paste policy: $name', async ({ pasted, allowRaw, authorizationState, succeeds, code, issuer }) => {
+  ])('consumes provider-declared OAuth paste policy: $name', async ({ pasted, allowRaw, authorizationState, succeeds, code, issuer, openBrowser }) => {
     const registry = await (await import('@/plugins/projection/registry/createResolvedContributionRegistry')).resolveMergedContributionRegistry({ happyHomeDir: taskDirectory });
     const codex = registry.connectedAccountDescriptors?.find((entry) => entry.pluginId === 'happier.agent.codex');
     if (!codex) throw new Error('Canonical Codex contribution is unavailable');
@@ -124,6 +125,8 @@ describe('connect authentication consumer lifetime', () => {
       },
     };
     const commands: unknown[] = [];
+    const authorizationUrl = `https://provider.example.test/authorize${authorizationState ? `?state=${authorizationState}` : ''}`;
+    boundary.openBrowser.mockClear();
     boundary.prompt.mockResolvedValueOnce(pasted);
     boundary.rpc.mockImplementation(async ({ request }: { request: { command: { operation: string } } }) => {
       const command = request.command;
@@ -134,7 +137,7 @@ describe('connect authentication consumer lifetime', () => {
       };
       if (command.operation === 'beginConnect') return {
         status: 'awaitingOAuth', attemptId: 'attempt-paste',
-        authorizationUrl: `https://provider.example.test/authorize${authorizationState ? `?state=${authorizationState}` : ''}`, callbackUrl: 'https://provider.example.test/callback',
+        authorizationUrl, callbackUrl: 'https://provider.example.test/callback',
       };
       if (command.operation === 'completeOAuth') return { status: 'connected', attemptId: 'attempt-paste', account: { service, accountId: 'selected-account' } };
       if (command.operation === 'cancel') return { status: 'cancelled', attemptId: 'attempt-paste' };
@@ -142,13 +145,16 @@ describe('connect authentication consumer lifetime', () => {
     });
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
-      const execution = handleConnectCommand(['openai-codex', '--oauth', '--no-open']);
+      const execution = handleConnectCommand(['openai-codex', '--oauth', ...(openBrowser ? [] : ['--no-open'])]);
       if (succeeds) {
         await execution;
+        // The CLI returns callback facts only; the daemon keeps PKCE custody (no verifier).
         expect(commands).toContainEqual({
           operation: 'completeOAuth', attemptId: 'attempt-paste',
           completion: { code, callbackUrl: 'https://provider.example.test/callback', state: 'current-attempt', ...(issuer ? { iss: issuer } : {}) },
         });
+        if (openBrowser) expect(boundary.openBrowser).toHaveBeenCalledWith(authorizationUrl);
+        else expect(boundary.openBrowser).not.toHaveBeenCalled();
       } else {
         await expect(execution).rejects.toThrow();
         expect(commands).not.toContainEqual(expect.objectContaining({ operation: 'completeOAuth' }));
@@ -186,6 +192,10 @@ describe('connect authentication consumer lifetime', () => {
       const execution = handleConnectCommand(['github', '--token']);
       if (outcome === 'connected') await execution;
       else await expect(execution).rejects.toThrow(outcome === 'lostReply' ? 'machine reply lost' : 'key_rejected');
+      // Manual fields travel only through the machine-owned attempt, and the PAT is never echoed.
+      expect(commands).toContainEqual({ operation: 'beginConnect', service, modeId: 'fine-grained-pat' });
+      expect(commands).toContainEqual({ operation: 'submitManual', attemptId: 'attempt-1', fields: { token: 'github_pat_secret' } });
+      expect(log.mock.calls.flat().join('\n')).not.toContain('github_pat_secret');
       if (outcome === 'lostReply') expect(commands).not.toContainEqual({ operation: 'cancel', attemptId: 'attempt-1' });
       else expect(commands).toContainEqual({ operation: 'cancel', attemptId: 'attempt-1' });
     } finally {

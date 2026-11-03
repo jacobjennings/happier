@@ -7,6 +7,8 @@ import { buildPluginDomainAccountChangeEntityId } from '@happier-dev/protocol/ch
 import { enqueueAccountChangePublication, markAccountChanged } from "@/app/changes/markAccountChanged";
 import { withdrawPublicProfileInTx } from '@/app/account/profile/publicProfileWithdrawal';
 import { readMachineAccessKeySessionBindingsInTx } from "@/app/accessKeys/sessionMachineAccessKeyMutations";
+import { resolveCurrentMachineRecipientAccountIdsInTx } from "@/app/machines/machineAccess";
+import { applyMachineAccessImpactsInTx, captureMachineAccessImpactsInTx } from "@/app/machines/machineAccessEffects";
 import { eventRouter } from "@/app/events/eventRouter";
 import { acquireAccountEncryptionTransitionFenceInTx } from "@/app/encryption/accountEncryptionTransition";
 import {
@@ -607,12 +609,24 @@ async function deleteAccountErasureBlobLocators(
 
 /** Cleanup discovery belongs to its domain owners, not the ordinary status census. */
 async function readAccountErasureScopeInTx(tx: Tx, accountId: string) {
-    const [shares, discussions, ownedSessions, responsibilitySessionIds] = await Promise.all([
+    const [shares, discussions, ownedSessions, responsibilitySessionIds, machines] = await Promise.all([
         readSessionAccessGrantsForAccountErasureInTx(tx, accountId),
         readDiscussionAccessGrantsForAccountErasureInTx(tx, accountId),
         tx.session.findMany({ where: { accountId }, select: { id: true } }),
         readSessionResponsibilityRemovalSessionIdsInTx(tx, accountId),
+        tx.machine.findMany({ where: { OR: [
+            { accountId },
+            { accountGrants: { some: { OR: [{ accountId }, { createdByAccountId: accountId }] } } },
+            { teamGrants: { some: { createdByAccountId: accountId } } },
+            { groupGrants: { some: { createdByAccountId: accountId } } },
+        ] }, select: { id: true } }),
     ]);
+    // Physical deletion cascades owned Machines and received/authored grants.
+    // Admit their current audience before lifecycle locks, even when a foreign
+    // grant creator no longer has access to the Machine it once shared.
+    const machineIds = machines.map(machine => machine.id).sort();
+    const machineAccountIds = [...new Set((await Promise.all(machineIds.map(machineId =>
+        resolveCurrentMachineRecipientAccountIdsInTx(tx, machineId)))).flat())].sort();
     const ownedSessionIds = ownedSessions.map(session => session.id);
     // Deleting an owned Session retires its scoped Automations through their
     // real owner, including review, Run, Follow and managed-wake projections.
@@ -633,11 +647,13 @@ async function readAccountErasureScopeInTx(tx: Tx, accountId: string) {
             accountId: runner.creatorAccountId, machineId: runner.machineId,
         })] : []));
     return {
+        machineIds,
+        machineAccountIds,
         sessionIds: [...new Set([...ownedSessionIds, ...shares.map(share => share.sessionId),
             ...responsibilitySessionIds, ...workflowAudience.sessionIds,
             ...runnerAudiences.flatMap(audience => audience.sessionIds)])].sort(),
         discussionIds: discussions.map(discussion => discussion.id).sort(),
-        accountIds: [...new Set([accountId, ...discussionAudiences.flat(), ...workflowAudience.accountIds,
+        accountIds: [...new Set([accountId, ...machineAccountIds, ...discussionAudiences.flat(), ...workflowAudience.accountIds,
             ...runners.map(runner => runner.creatorAccountId), ...runnerAudiences.flatMap(audience => audience.accountIds)])].sort(),
     };
 }
@@ -673,10 +689,12 @@ export async function deleteAccountForErasure(input: Readonly<{
             const admitted = new Set(previous);
             return ids.some(id => !admitted.has(id));
         };
-        if (grew(current.sessionIds, captured.sessionIds) || grew(current.discussionIds, captured.discussionIds)
+        if (grew(current.machineIds, captured.machineIds)
+            || grew(current.sessionIds, captured.sessionIds) || grew(current.discussionIds, captured.discussionIds)
             || grew(current.accountIds, captured.accountIds)) {
             throw new TransactionReplayRequiredError('transaction-account-audience-changed');
         }
+        return current;
     };
     const capturePreflight = async (tx: Tx) => {
         await fenceAccounts(tx, actor);
@@ -816,7 +834,7 @@ export async function deleteAccountForErasure(input: Readonly<{
         // serializes Session, content and managed-resource publication. Lock an
         // independent administrator in the same ordered audience before reading
         // current authority, so demotion cannot race the physical deletion.
-        await fenceAccounts(tx, continuationActor);
+        const erasureScope = await fenceAccounts(tx, continuationActor);
         const fence = await acquireAccountEncryptionTransitionFenceInTx(
             tx,
             input.accountId,
@@ -882,6 +900,10 @@ export async function deleteAccountForErasure(input: Readonly<{
         }
 
         const machines = await tx.machine.findMany({ where: { accountId: input.accountId }, select: { id: true } });
+        const machineAccessImpacts = await captureMachineAccessImpactsInTx(tx, {
+            machineIds: erasureScope.machineIds,
+            accountIds: erasureScope.machineAccountIds.filter(accountId => accountId !== input.accountId),
+        });
         const erasedMachineBindings = await Promise.all(machines.map(async (machine) => ({
             machineId: machine.id,
             sessionBindings: await readMachineAccessKeySessionBindingsInTx(tx, {
@@ -923,7 +945,18 @@ export async function deleteAccountForErasure(input: Readonly<{
         // Manual responsibility destroys Account custody, not the native resource.
         // The exact recovery facts were reviewed before retirement; no secret escrow survives erasure.
         await tx.managedMachine.deleteMany({ where: { custodianAccountId: input.accountId } });
+        // Apply Account-FK grant withdrawal before computing access effects;
+        // waiting for the terminal Account cascade would lose its before-state.
+        const removedAccountGrants = await tx.machineAccountGrant.deleteMany({ where: { OR: [
+            { accountId: input.accountId }, { createdByAccountId: input.accountId },
+        ] } });
+        const removedTeamGrants = await tx.machineTeamGrant.deleteMany({ where: { createdByAccountId: input.accountId } });
+        const removedGroupGrants = await tx.machineGroupGrant.deleteMany({ where: { createdByAccountId: input.accountId } });
         await tx.machine.deleteMany({ where: { accountId: input.accountId } });
+        await applyMachineAccessImpactsInTx(tx, {
+            impacts: machineAccessImpacts.values(),
+            grantRosterChanged: removedAccountGrants.count + removedTeamGrants.count + removedGroupGrants.count > 0,
+        });
         afterTx(tx, () => {
             for (const binding of erasedMachineBindings) {
                 eventRouter.disconnectMachineAndSessionSockets({

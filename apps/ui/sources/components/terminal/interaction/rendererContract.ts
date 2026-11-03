@@ -1,5 +1,4 @@
 import { resolveTerminalAccessibilityBaseline } from './accessibility';
-import { resolveTerminalImeInput, type TerminalImeEvent } from './ime';
 import { shouldTerminalCaptureKeyboardEvent, type TerminalKeyboardModifiers } from './keyboard';
 import { shouldTerminalCaptureMouse } from './mouse';
 import { readTerminalSelectionSnapshot } from './selection';
@@ -48,19 +47,13 @@ export function buildTerminalRendererInteractionContract(
 export function shouldRendererCaptureKeyboard(input: Readonly<{
     key: string;
     modifiers: TerminalKeyboardModifiers;
-    defaultPrevented?: boolean;
 }>): boolean {
-    return shouldTerminalCaptureKeyboardEvent({
-        terminalFocused: true,
-        key: input.key,
-        modifiers: input.modifiers,
-        defaultPrevented: input.defaultPrevented,
-    });
+    return shouldTerminalCaptureKeyboardEvent(input);
 }
 
+// Renderers deliver only committed IME text (xterm onData); composition phases never reach the host.
 export function resolveRendererCommittedInput(text: string): string {
-    const event: TerminalImeEvent = { phase: 'commit', text };
-    return resolveTerminalImeInput(event);
+    return text;
 }
 
 export function readRendererSelection(input: Readonly<{

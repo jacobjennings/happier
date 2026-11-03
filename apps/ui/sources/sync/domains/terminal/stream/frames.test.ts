@@ -1,8 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
-import { mapLegacyTerminalReadResponse, mapTerminalBytesFrame } from './frames';
+import { mapLegacyTerminalReadResponse, mapTerminalBytesFrame, mapTerminalByteStreamReadResponse } from './frames';
 
 describe('terminal stream frames', () => {
+    it('carries retained bounds separately from page progress even when no gap is emitted', () => {
+        const result = mapTerminalByteStreamReadResponse({ ok: true, terminalId: 'finished', frames: [],
+            nextByteOffset: 200, availableByteOffset: 2500, droppedBeforeByteOffset: 100, done: false });
+        expect(result).toMatchObject({ nextCursor: 200, done: false, outputRetention: {
+            mode: 'byte-offset', retainedFromCursor: 100, availableCursor: 2500, truncated: true,
+        } });
+        expect(mapTerminalByteStreamReadResponse({ ok: true, terminalId: 'complete', frames: [],
+            nextByteOffset: 2500, availableByteOffset: 2500, droppedBeforeByteOffset: 0, done: true }))
+            .toMatchObject({ done: true, outputRetention: { retainedFromCursor: 0, availableCursor: 2500, truncated: false } });
+    });
     it('maps legacy string data into byte frames without treating strings as renderer payloads', () => {
         const result = mapLegacyTerminalReadResponse({
             terminalId: 'term-1',

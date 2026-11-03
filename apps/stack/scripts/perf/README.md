@@ -232,7 +232,7 @@ Round-4 collector details:
   automation overhead. Shared process samples include all clients, not per-lane
   CPU/RSS, peaks or allocated DB backends. Suppressed pings cannot establish
   poll rates; missing operation/constructor counts remain unavailable.
-- Current bundles use schema 5. Comparisons keep schema versions separate as
+- Current development bundles use schema 6. Comparisons keep schema versions separate as
   well as journey/cache/UI/instrumentation mode: legacy unbracketed requests,
   terminal-only telemetry and delayed rotating-log reads cannot be silently
   pooled with corrected captures. Fixed/exact Session route-class metrics are
@@ -288,13 +288,52 @@ CPU profiles; no request bodies, credentials or database rows are collected.
 
 ### Opt-in browser attribution and settled Home
 
+Development schema-6 captures report transfer through this owner. Each journey's
+native start/end bracket is its phase: use separate journey captures for cold,
+warm, settled and busy windows. Requests belong to their start window; responses
+finishing later remain pending at its end. Frames belong to their native timestamp.
+
+`network.json.endpoints` includes request counts and body bytes, decoded body
+bytes, encoded body chunks, and encoded response bytes (including headers), grouped
+by method, sanitized endpoint and route class. Missing evidence is `null`; HEAD,
+204 and 304 bodies are zero. Cached decoded data with zero encoded chunk evidence
+does not establish zero wire-body bytes. The older `encodedBytes` aggregate retains
+its observed-response convention; use the availability-aware transfer fields for
+regression measurements. No raw bodies, headers or query values are saved.
+
+`sockets.json` projects allowlisted event families, payload types and explicit
+`hint`/`full` delivery alongside frame sizes. Unknown names/types stay in an
+`unknown` bucket. Engine ping/pong and WebSocket control frames are separate.
+Binary headers are classified, while binary attachments remain unattributed
+`binary` frames; these are frame counts, not reconstructed logical messages.
+WebSocket bytes are decoded payload bytes, not compressed wire-byte evidence.
+
+`bundle.json.counts` carries `transfer.http.<method>.<route-class>.*` and
+`transfer.socket.<direction>.<family>.<type>.<delivery>.*` into the existing
+comparison JSON/Markdown and CI summary. Absent buckets are zero only when the
+capture has `transfer.measured: 1`; unknown measurements remain `null`.
+These measurements are report-only until PERFCI calibration; this adds no gate.
+
 Pass `--profiling` (or set `"profiling": true` in the journey) to collect a
 full Chrome trace, Long Animation Frames, React Performance Track measures,
 sampling heap profile, root changed-key notifications and a physical socket
-timeline in the same schema-5 bundle. This extends the existing collector;
+timeline in the same schema-6 bundle. This extends the existing collector;
 ordinary timing/counts capture does not enable these diagnostic observers.
 `compare` separates profiling-on/off and backend role sets, and never uses
 heavily instrumented runs for timing percentiles.
+
+`--profiling` also attributes React render causes in the browser probe, in the
+bundle's probe `diagnostics` next to the other diagnostic rows. `updateRoots`
+counts, per window, components that rendered (mounts excluded) under a nearest
+component ancestor that did not render in that commit, keyed by a short
+component path (nearest four named ancestors; generic wrappers skipped).
+`updateCauses` counts `Component :: cause` where the cause is `props`
+(changed props identity), the hooks whose update queue changed (`state#<index>`,
+or `uSES(<getSnapshot source excerpt>)` for external stores), or
+`context:<displayName>{changedKeys}`; `unknown` means none of those changed.
+Only names and a sanitized 90-character source excerpt are recorded, never prop,
+state or context values. The walk is counted in `hookMs`; a failed attribution
+increments `attributionErrors`.
 
 `trace.json.gz` contains sanitized trace events for `devtools.timeline`,
 `disabled-by-default-devtools.timeline`, `v8.execute`, `blink.user_timing` and
@@ -330,7 +369,53 @@ keys without storing values; missing source registration is unavailable, not
 zero notifications. `socket-timeline.json` contains physical WebSocket events,
 Engine.IO ping/pong and Socket.IO frame kinds with the existing native clock
 mapping. Physical connect events alone do not prove a logical root reconnect;
-request starts are in `network.json` and must be joined by time accordingly.
+request starts are in `network.json`.
+The development recorder's `browser-capture.json.socketConnections` supplies
+opaque per-capture connection ids, allowlisted purpose (Account, scoped-RPC,
+other or unknown) and client role, observed transports including probes, upgrade outcome and
+observed lifetime lower bounds. Polling request records and WebSocket frames
+carry `socketConnectionId` for joining those observations. Initial polling opens
+without an Engine.IO id remain unjoined. Arm the recorder before navigation and
+namespace admission to observe purpose; a connection admitted before attachment
+may remain unknown. Raw Engine.IO ids, query values and admission payloads stay
+inside the recorder and are discarded on close. A failed WebSocket probe does
+not establish that its polling connection closed.
+
+Profiling captures also expose `browser-capture.json.socketSetup`. Its
+`producerAvailable` bit reports whether the loaded UI supplied the opt-in scoped
+pool observer; missing instrumentation is unavailable, not zero acquisitions.
+`phases` contains only a phase, epoch timestamp and opaque joins. The UI records
+entry reservation (`acquire`), retiring-entry waits, readiness and connect/admission;
+CDP records successful upgrade, namespace admission (`registered`),
+`rpc-register-sent` and `request-sent`. Namespace admission is distinct from reverse
+method registration, and upgrade need not precede admission or the first RPC.
+Polling reply bodies are not fetched, so a namespace ACK carried only by polling
+has the UI's `connected` marker but no native `registered` marker.
+`poolConnectionId` identifies a logical pooled Socket within one document;
+`socketConnectionId` identifies its observed physical Engine connection. Private
+Engine ids and origins join these inside the recorder, including WebSocket-only
+Engine-open packets, and are discarded on cleanup. A logical Socket can reconnect:
+events with an Engine id join exactly, while earlier events join only one
+unambiguous lifetime and otherwise retain a null physical join. A new document
+cannot reuse the previous document's local ordinal. Arm before the cold action
+and load the current UI observer: late attachment cannot reconstruct an earlier
+acquisition. Compare native handshake/namespace timestamps with the UI's
+`connected` timestamp and the main-thread trace to separate transport progress
+from delayed JavaScript delivery; the subsequent gap to `request-sent` also
+includes Machine admission and crypto preparation. A direct HTTP route is visible
+in network records, not as a Socket.IO request phase. These diagnostics add no
+timer or poll and do no clock or join work without a profiling observer.
+
+In the current development UI, `serverScopedRpcSocketPool` owns both logical
+client leases and pending native acknowledgements. Releasing a client cannot
+idle-retire its still-issued request, including through Socket.IO `timeout()`;
+after the final acknowledgement settles, the existing five-second idle policy
+applies. Explicit pool shutdown/network withdrawal still closes the transport.
+Background-task sockets remain independent one-shots and close after their last
+use. For a settled healthy Home, measure after finite mount reads retire: expect
+zero new scoped acquisitions, recreations, polling or registrations. An aggregate
+WebSocket count without its connection purpose does not identify that producer.
+
 LoAF support is recorded rather than assumed on every browser.
 
 `heap.heapprofile` uses 1 MiB allocation sampling, including objects collected

@@ -270,6 +270,7 @@ const actionConfirmationTranslations = { ca: {
         homeUnavailable: 'Aquesta aprovació pertany a un Home que no està disponible en aquest dispositiu. Torna a connectar aquest Home per decidir.',
         turnedOffTitle: 'Acció desactivada',
         turnedOffMessage: 'Aquesta acció està desactivada, així que no s’ha canviat res. Pots tornar-la a activar a Configuració → Accions.',
+        turnedOffReadMessage: 'Aquesta acció està desactivada, així que no s’ha carregat res. Pots tornar-la a activar a Configuració → Accions.',
         openActionSettings: 'Obre la configuració d’Accions',
     } } as const satisfies Pick<Record<string, ActionConfirmationTranslations>, "ca">;
 
@@ -565,15 +566,21 @@ const ca: typeof en = {
     descriptions: {
         conversation: ({ machine }) => `Pregunta el que vulguis sense interrompre aquesta sessió. S’executa a ${machine} al seu costat; no hi torna res si no ho envies.`,
     },
+    placeholders: {
+        review: 'En què s’han de centrar els revisors?',
+    },
     chips: {
         engineTitle: 'Qui respon',
         addReviewer: 'Afegeix un revisor',
+        reviewer: 'Revisor',
+        reviewerNeeded: 'Afegeix un revisor per començar',
         removeReviewer: ({ name }) => `Treu ${name}`,
         scope: 'Què cal revisar',
         advanced: 'Avançat',
     },
     reportToSession: 'Informa aquesta sessió',
     startsWhenYouSend: ({ count }) => count > 1 ? `${count} revisions comencen quan envies` : 'Comença quan envies',
+    thisFolder: 'aquesta carpeta',
     offline: ({ machine }) => `${machine} està fora de línia. L’agent hi comença; el teu esborrany es queda aquí fins que torni.`,
     menu: {
         askSection: 'Demana a un agent',
@@ -1041,6 +1048,7 @@ const artifactsBrowserTranslations = { ca: {
         },
         proposal: {
             title: 'Edició suggerida',
+            titleBy: ({ who }) => `${who} suggereix una edició`,
             basedOn: ({ n }) => `Basada en la versió ${n}`,
             current: ({ n }) => `Versió ${n} · actual`,
             before: 'Abans',
@@ -1220,6 +1228,8 @@ const ca: BoardsTranslations = {
     meta: {
         needYou: ({ count }) => `${count} et necessita${count === 1 ? '' : 'n'}`,
         items: ({ count }) => (count === 1 ? '1 element' : `${count} elements`),
+        itemsAtLeast: ({ count }) => `${count}+ elements`,
+        needYouAtLeast: ({ count }) => `${count}+ et necessiten`,
         handPicked: 'Triats a mà',
         empty: 'Buit',
         moreSources: ({ count }) => `+ ${count}`,
@@ -1304,10 +1314,22 @@ const ca: BoardsTranslations = {
         empty: 'No hi ha coincidències.',
         noMatch: ({ query }) => `Cap element coincideix amb “${query}”`,
     },
+    /** Candidates an answered filter could not classify: said once under the header, qualifying every count. */
+    undetermined: {
+        sessions: ({ count }) => (count === 1 ? `1 sessió no s'ha pogut comprovar` : `${count} sessions no s'han pogut comprovar`),
+        runs: ({ count }) => (count === 1 ? `1 execució no s'ha pogut comprovar` : `${count} execucions no s'han pogut comprovar`),
+        items: ({ count }) => (count === 1 ? `1 element no s'ha pogut comprovar` : `${count} elements no s'han pogut comprovar`),
+        projectAssociation: 'L\'associació amb el projecte no s\'ha publicat o no la pots veure.',
+        filterFacts: 'No hi ha la informació necessària per a aquest filtre.',
+    },
     empty: {
         title: 'Tria què mostra aquest tauler',
         body: 'Afegeix sessions, fluxos de treball, execucions o màquines a mà, o mostra una secció com Et necessita. Tu els organitzes; el tauler els manté en viu.',
         action: 'Afegeix al tauler',
+        sourcedTitle: 'Ara no hi ha res',
+        sourcedBody: 'Els elements que coincideixin amb l\'origen d\'aquest tauler apareixeran aquí quan arribin. També en pots afegir a mà.',
+        uncheckedTitle: 'Encara no s\'ha confirmat cap coincidència',
+        pendingTitle: 'S\'està comprovant què hi encaixa…',
     },
     widgets: {
         group: 'Ginys',
@@ -1629,6 +1651,30 @@ type MachineParams = Shared_computerUseTranslations.MachineParams;
 type ComputerUseTranslations = Shared_computerUseTranslations.ComputerUseTranslations;
 
 const computerUseTranslations = { ca: {
+        providers: {
+            pageDescription: ({ machine }) => `Com veuen i controlen els agents la pantalla de ${machine}.`,
+            sectionTitle: "Proveïdors",
+            sectionDescription: "Els agents fan servir el predeterminat tret que en demanin un altre d’activat.",
+            offlineDescription: ({ machine }) => `${machine} està fora de línia; ara no es poden activar proveïdors.`,
+            cuaDescription: "Ràpid. Treballa amb el que hi ha a la pantalla.",
+            agentDesktopDescription: "Actua sobre controls amb nom. Més lent, gasta menys tokens.",
+            status: {
+                checking: "Comprovant…",
+                installsOnEnable: "S’instal·la quan l’activis",
+                installing: "Instal·lant…",
+                installed: "Instal·lat",
+                missing: "No instal·lat",
+                failed: "No s’ha pogut instal·lar",
+                unavailable: "No disponible en aquesta màquina",
+            },
+            install: "Instal·la",
+            retry: "Torna-ho a provar",
+            defaultTitle: "Per defecte",
+            makeDefault: "Fes-lo predeterminat",
+            loadFailedTitle: "No es pot carregar la configuració del control de l’ordinador",
+            saveFailed: "No s’ha pogut desar el canvi",
+            summaryPair: ({ first, second }) => `${first} i ${second}`,
+        },
         approval: {
             sectionTitle: 'A l’ordinador',
             act: {
@@ -1813,6 +1859,8 @@ const computerUseTranslations = { ca: {
             pressKey: ({ key }) => `Ha premut ${key}`,
             press: 'Ha premut una tecla',
             pressRunning: 'Prement una tecla',
+            drag: 'Ha arrossegat',
+            wheel: 'Ha desplaçat',
             mayHaveLanded: 'pot haver-se aplicat',
             failed: 'No s’ha completat',
         },
@@ -2607,9 +2655,11 @@ const ca: EntityDragDropTranslations = {
         putUnderDetail: 'Hi informa · totes dues continuen en marxa',
         moveAbove: ({ target }) => `Mou damunt de ${target}`,
         moveBelow: ({ target }) => `Mou sota de ${target}`,
+        moveBefore: ({ target }) => `Mou abans de ${target}`,
+        moveAfter: ({ target }) => `Mou després de ${target}`,
         orderDetail: 'Només canvia l’ordre',
         moveToFolder: ({ folder }) => `Mou a ${folder}`,
-        folderDetail: 'Només la carpeta · no informa a ningú',
+        folderDetail: 'Continua executant-se on és', leaveSectionDetail: 'Surt de la seva secció',
         moveToTopLevel: 'Mou al nivell superior',
         topLevelDetail: 'Fora de la carpeta · res més no canvia',
         cantPutUnder: ({ target }) => `No es pot posar sota ${target}`,
@@ -2654,7 +2704,7 @@ const ca: EntityDragDropTranslations = {
         foldersOff: 'Les carpetes estan desactivades en aquest Home',
         gone: 'Aquest lloc acaba de desaparèixer',
         generic: 'Aquest lloc no ho pot acceptar',
-        otherGroup: 'Pertany a un altre grup',
+        otherGroup: 'Una sessió es queda al projecte on s’executa. Posa-la en una secció',
         cantHold: 'Aquesta fila no pot contenir res',
         fixedItem: 'No es pot moure en aquesta llista',
     },
@@ -5908,6 +5958,7 @@ const machineDetailPageTranslations = { ca: translated({
                 sharing: "Compartició",
                 agents: "Agents",
                 terminal: "Terminal",
+                computer: "Control de l’ordinador",
                 connection: "Connexió",
                 tools: "Eines",
                 doctor: "Diagnòstic",
@@ -6328,8 +6379,8 @@ const machineDetailPageTranslations = { ca: translated({
                 },
                 customSustain: {
                     title: "Durant quant de temps",
-                    body: "Qualsevol nombre enter de minuts, fins a una setmana (10080).",
-                    invalid: "Introdueix un nombre enter de minuts d’1 a 10080.",
+                    body: "Qualsevol nombre enter de minuts, fins a una setmana (10080). Indica una unitat: ms, s, min, h o d.",
+                    invalid: "Introdueix un nombre enter de minuts d’1 a 10080. Indica una unitat: ms, s, min, h o d.",
                 },
                 customCpu: {
                     title: "CPU per sobre de",
@@ -6637,7 +6688,7 @@ const machineDetailPageTranslations = { ca: translated({
                     customTitle: "Suggereix els elements sense ús al cap de",
                 },
                 days: ({ days }) => `${days} ${days === 1 ? 'dia' : 'dies'}`,
-                customDays: { body: "Qualsevol nombre enter de dies, 1 o més.", invalid: "Introdueix un nombre enter de dies, 1 o més." },
+                customDays: { body: "Qualsevol nombre enter de dies, 1 o més. Indica una unitat: ms, s, min, h o d.", invalid: "Introdueix un nombre enter de dies, 1 o més. Indica una unitat: ms, s, min, h o d." },
             },
             scope: {
                 label: "Què es mostra",
@@ -6902,8 +6953,8 @@ const machineDetailPageTranslations = { ca: translated({
                 milliseconds: ({ milliseconds }) => `${milliseconds} ms`,
                 customIdle: {
                     title: "Tancament d’eines inactives",
-                    body: "Introdueix mil·lisegons, segons, minuts o hores; com a mínim 1 segon.",
-                    invalid: "Introdueix una durada d’almenys 1 segon.",
+                    body: "Introdueix mil·lisegons, segons, minuts o hores; com a mínim 1 segon. Indica una unitat: ms, s, min, h o d.",
+                    invalid: "Introdueix una durada d’almenys 1 segon. Indica una unitat: ms, s, min, h o d.",
                 },
                 customBrowsers: {
                     title: "Navegadors simultanis",
@@ -6959,7 +7010,7 @@ const machineDetailPageTranslations = { ca: translated({
                 sustainHelp: "Un pic de compilació no ho activa mai.",
                 cooldownTitle: "Després espera entre passos",
                 cooldownHelp: "Després de cada pas, Happier espera aquest temps i comprova que la memòria ha baixat.",
-                customMinutes: { title: "Quant de temps", body: "Qualsevol nombre enter de minuts, 1 o més, com 3 o 90.", invalid: "Introdueix un nombre enter de minuts, 1 o més." },
+                customMinutes: { title: "Quant de temps", body: "Qualsevol nombre enter de minuts, 1 o més, com 3 min o 1.5 h. Indica una unitat: ms, s, min, h o d.", invalid: "Introdueix un nombre enter de minuts, 1 o més. Indica una unitat: ms, s, min, h o d." },
             },
             ladder: {
                 label: "El que faria la protecció de memòria",
@@ -7061,7 +7112,7 @@ const machineDetailPageTranslations = { ca: translated({
                 graceHelp: "Dona un moment a un procés per acabar per ell mateix.",
                 atOnce: "Immediatament",
                 seconds: ({ seconds }) => `${seconds} s`,
-                customGrace: { title: "Quant esperar", body: "Segons o minuts, com 45 s o 3 min.", invalid: "Introdueix un nombre de segons o minuts, 0 o més." },
+                customGrace: { title: "Quant esperar", body: "Segons o minuts, com 45 s o 3 min. Indica una unitat: ms, s, min, h o d.", invalid: "Introdueix un nombre de segons o minuts, 0 o més. Indica una unitat: ms, s, min, h o d." },
             },
             limits: {
                 title: "Límits i energia",
@@ -7802,7 +7853,7 @@ return { nativePasswordTranslations };
 const Domain_navigationPlacementTranslations = (() => {
 type NavigationPlacementTranslation = Shared_navigationPlacementTranslations.NavigationPlacementTranslation;
 
-const navigationPlacementTranslations = { ca: { customize: 'Personalitza…', title: 'Navegació', description: 'Tria què és visible, va a Més o queda ocult. Arrossega per ordenar. Es desa en aquest dispositiu.', pinned: 'Fixat', overflow: 'Més', hidden: 'Ocult', reset: 'Restableix', appRail: 'Barra esquerra', sessionRail: 'Barra de sessió', workspaceRail: 'Barra de l’espai de treball', sessionTabBar: 'Pestanyes del telèfon', phoneLauncher: 'Dreceres del telèfon' } } satisfies Pick<Record<string, NavigationPlacementTranslation>, "ca">;
+const navigationPlacementTranslations = { ca: { customize: 'Personalitza…', title: 'Navegació', description: 'Tria què és visible, va a Més o queda ocult. Arrossega per ordenar. Es desa en aquest dispositiu.', pinned: 'Fixat', overflow: 'Més', hidden: 'Ocult', reset: 'Restableix', appRail: 'Barra esquerra', sessionRail: 'Barra de sessió', workspaceRail: 'Barra de l’espai de treball', sessionTabBar: 'Pestanyes del telèfon', phoneLauncher: 'Dreceres del telèfon', composer: 'Compositor' } } satisfies Pick<Record<string, NavigationPlacementTranslation>, "ca">;
 
 return { navigationPlacementTranslations };
 })();
@@ -8433,7 +8484,8 @@ const Domain_pluginSettingsPresentationTranslations = (() => {
 const english = Shared_pluginSettingsPresentationTranslations.english;
 
 const pluginSettingsPresentationTranslations = { ca: {
-        rowStatus: { enabled: 'Activat', disabled: 'Desactivat', incompatible: 'No compatible', trustRemoved: 'Confiança retirada', needsAttention: 'Requereix atenció' },
+        enablement: {"account": "Al teu compte", "machine": "En aquesta màquina", "description": "Tots dos han d’estar activats perquè el connector funcioni aquí. Desactivar-lo conserva les dades i connexions.", "accountScope": "Totes les teves màquines", "accountOff": "Desactivat al teu compte, així que no funciona a cap de les teves màquines. Se’n conserven les dades i connexions.", "machineOff": "Desactivat en aquesta màquina. Les altres màquines no es veuen afectades i se’n conserven les dades i connexions."},
+        rowStatus: { enabled: 'Activat', disabled: 'Desactivat', incompatible: 'No compatible', trustRemoved: 'Confiança retirada', needsAttention: 'Requereix atenció', offInAccount: 'Desactivat al compte' },
         developmentPhase: { observing: 'Observant', preparingDependencies: 'Preparant dependències', compiling: 'Compilant', validating: 'Validant', active: 'Actiu', retainedIncumbent: 'Versió anterior activa', unavailable: 'No disponible' },
         developmentDiagnostic: { manifestMissing: 'No hi ha cap manifest del connector en aquesta carpeta. Afegeix .happier-plugin/plugin.json o tria la carpeta del connector.', projectMissing: 'Aquesta carpeta ja no existeix. Treu-la del desenvolupament o tria on és ara el connector.' },
         rowSource: { bundled: 'Inclòs amb Happier', npm: 'Paquet npm', archive: 'Fitxer d’arxiu', localPath: 'Carpeta local', other: 'Font configurada' },
@@ -9069,9 +9121,12 @@ const rolesTranslations = { ca: {
             sectionTitle: 'Rols',
             allRoles: 'Tots els rols',
             inUse: ({ count }) => `${count} en ús`,
-            changed: 'canviat',
-            thisSession: 'aquesta sessió',
+            changedHere: 'Canviat aquí',
+            addedHere: 'Afegit aquí',
             reset: 'Restableix',
+            runsInBackground: "s'executa en segon pla",
+            approvalReviewerFollowsDefault: ({ value }) => `Segueix el teu valor per defecte · ${value}`,
+            approvalReviewerOverride: ({ value }) => `Definit aquí · per defecte: ${value}`,
             newRoleForSession: 'Rol nou per a aquesta sessió',
             changeForSession: 'Canvia per a aquesta sessió',
             editNotes: 'Edita les notes',
@@ -9196,7 +9251,7 @@ const runPageTranslations = { ca: {
         launcher: {
             titles: { review: 'Demana una revisió', plan: 'Demana un pla', delegate: 'Delega una tasca' },
             descriptions: {
-                review: ({ machine }) => `Cada agent revisa pel seu compte els canvis a ${machine}; aquí reps un resultat de cadascun.`,
+                review: ({ folder }) => `Cada agent revisa pel seu compte els canvis a ${folder}; aquí reps un resultat de cadascun.`,
                 plan: ({ machine }) => `L’agent llegeix el codi a ${machine} i proposa un pla aquí. No canvia res.`,
                 delegate: ({ machine }) => `L’agent treballa a ${machine} amb els permisos de sota i en dona compte aquí.`,
             },
@@ -9294,7 +9349,7 @@ type SecretsSettingsCopy = Shared_secretsSettingsTranslations.SecretsSettingsCop
 const en = Shared_secretsSettingsTranslations.en;
 
 const ca: SecretsSettingsCopy = {
-    purpose: "Claus API i tokens per als agents i servidors MCP. Els valors desats no es tornen a mostrar.",
+    purpose: "Claus d'API i tokens per a agents i servidors MCP. Els valors queden ocults tret que algú que gestiona el secret el reveli.",
     yoursTitle: 'Els teus secrets',
     yoursDescription: 'Secrets que has desat o que són teus. Tria’ls allà on Happier demani una clau.',
     sharedWithYouTitle: 'Compartits amb tu',
@@ -9323,6 +9378,27 @@ const ca: SecretsSettingsCopy = {
     storagePlain: 'Gestionat pel Home',
     storagePlainDescription: 'Aquest Home el desa i el pot llegir per lliurar-lo.',
     save: 'Desa el secret',
+    revealValue: "Mostra el valor",
+    hideValue: "Amaga el valor",
+    revealConfirmTitle: ({ name }: { name: string }) => `Vols mostrar «${name}»?`,
+    revealConfirmBody: "El valor es mostra en aquest dispositiu fins que l'amaguis o surtis. Les revelacions i còpies queden registrades a l'historial.",
+    revealConfirm: "Mostra",
+    valueUnavailable: "Desat. Ara mateix no es pot mostrar en aquest dispositiu.",
+    valueRefused: "No s'ha pogut mostrar el valor; no s'ha mostrat res.",
+    copyRefused: "No s'ha pogut copiar el valor. Torna'l a mostrar per provar-ho.",
+    copyUnrecorded: "Potser el valor és al porta-retalls, però aquesta còpia no s'ha pogut registrar.",
+    historyTitle: "Historial de revelacions",
+    historyEmpty: "Ningú ha mostrat aquest valor.",
+    historyUnavailable: "No s'ha pogut carregar l'historial.",
+    historyRevealed: "Mostrat",
+    historyRevealedCopied: "Mostrat i copiat",
+    historyCopyNotConfirmed: "Mostrat · còpia no confirmada",
+    historyNotShown: "No mostrat",
+    historyUnconfirmed: "Revelació no confirmada",
+    historyThisDevice: "Aquest dispositiu",
+    historyOtherDevice: "Un altre dispositiu",
+    historyUnknownActor: "Algú",
+    historyOlder: "Mostra més antics",
 };
 
 const secretsSettingsTranslations = { ca } as const;
@@ -9624,6 +9700,24 @@ const sessionBoardTranslations = { ca: {
                 unpin: 'Treu d’aquesta vista',
                 pinToBoard: 'Fixa al tauler',
                 moveToView: ({ title }) => `Mou a ${title}`,
+                network: 'Accés a la xarxa…',
+            },
+            network: {
+                title: 'Accés a la xarxa',
+                hint: 'Quins llocs pot contactar aquest visual des del navegador que el mostra.',
+                reach: 'Pot contactar',
+                none: 'Cap',
+                sites: 'Llocs concrets',
+                open: 'Qualsevol lloc',
+                sitesLabel: 'Llocs',
+                sitesPlaceholder: 'https://api.example.com',
+                sitesInvalid: ({ sites }) => `No és una adreça de lloc: ${sites}. Usa https://example.com.`,
+                sitesNeeded: 'Afegeix almenys un lloc.',
+                noneConsequence: 'Funciona per si sol i no fa cap petició externa.',
+                sitesConsequence: 'Només pot contactar els llocs que indiquis. El codi i els recursos remots poden canviar.',
+                openConsequence: 'Pot contactar qualsevol lloc, enviar-hi el seu contingut i revelar l’adreça IP de qui el veu. El codi remot pot canviar.',
+                shareOffNote: 'Un enllaç públic es pot compartir igualment sense accés a la xarxa.',
+                failed: 'No s’ha pogut canviar l’accés a la xarxa. Torna-ho a provar.',
             },
             moved: {
                 before: ({ title }) => `${title} s’ha mogut abans.`,
@@ -10841,6 +10935,7 @@ const ca: typeof en = {
         muteFailed: 'No s’ha pogut silenciar',
         truncated: "Resultat escurçat.",
         wokenBy: ({ count }) => (count === 1 ? 'Despertat per una actualització' : `Despertat per ${count} actualitzacions`),
+        updateCount: ({ count }) => (count === 1 ? '1 actualització' : `${count} actualitzacions`),
         notFromYou: 'no és un missatge teu',
     },
     workerFollow: {
@@ -10879,9 +10974,10 @@ const ca: typeof en = {
         expandMap: 'Obre el mapa al costat de la sessió',
     },
     map: {
-        folded: "La feina acabada es plega",
+        folded: ({ names }) => `La feina acabada queda a Llista: ${names}`,
         backgroundRuns: ({ count }) => (count === 1 ? "1 execució en segon pla" : `${count} execucions en segon pla`),
         positionUnder: ({ position, total, parent }) => `${position} de ${total} sota ${parent}`,
+        waitingOn: ({ count }) => `Esperant ${count}`,
     },
     actions: {
         showInTranscript: 'Mostra a la transcripció',
@@ -11574,6 +11670,10 @@ const shareSheetTranslations = { ca: {
         remove: 'Treu l’accés',
         confirmRemove: 'Confirma',
         removedAnnouncement: ({ name }) => `${name} ja no hi té accés`,
+        removeLosesPerson: ({ name }) => `${name} perd l’accés a tots els dispositius.`,
+        removeLosesMembers: ({ name }) => `Els membres de ${name} perden l’accés a tots els dispositius.`,
+        removeKeepsOtherAccess: "L’accés que tinguin per una altra via es manté.",
+        removeKeepsTheirWork: "Els seus propis checkouts, sessions i widgets continuen sent seus.",
         browseAll: 'Mostra-ho tot',
         browsePeople: 'Mostra totes les persones',
         browseTeams: 'Mostra tots els equips',
@@ -13029,7 +13129,7 @@ const voiceMomentsTranslations = { ca: {
         setupClose: 'Tanca',
         needsYouEnded: 'La veu ha acabat. L’aprovació encara és pendent a la Safata.',
         needsYouReview: 'Revisa la sol·licitud',
-        needsYouTapToDecide: 'Llegit en veu alta · decideix aquí, no amb la veu',
+        needsYouTapToDecide: "Llegit en veu alta · toca per decidir aquí",
         briefMe: 'Posa’m al dia',
         briefMeA11y: 'Posa’m al dia: la veu llegeix què et necessita, què ha fallat i què està a punt',
         briefNeedsYou: 'Et necessita',
@@ -13037,7 +13137,7 @@ const voiceMomentsTranslations = { ca: {
         briefReady: 'A punt',
         briefIncomplete: 'Encara no s’ha carregat tota la feina, així que potser no hi és tot.',
         briefCaughtUp: 'Ara mateix res no et necessita.',
-        briefNotSpoken: 'La veu no ho pot llegir ara mateix. La llista és tota aquí.',
+        briefNotSpoken: "La veu no ho pot llegir ara mateix.",
         briefStop: 'Atura',
         continueTitle: 'Continua parlant aquí',
         continueDetail: ({ device }) => `Parlaves des de ${device}`,
@@ -13133,7 +13233,7 @@ const defineVoiceReadinessTranslation = Shared_voiceReadinessTranslations.define
 
 const voiceReadinessTranslations = { ca: defineVoiceReadinessTranslation({
     ready: 'La funció de veu està a punt.',
-    permissionAnnouncement: ({ summary }) => `La sessió de codi necessita permís per a ${summary}. Revisa-ho a la interfície de la sessió per aprovar-ho o denegar-ho.`,
+    permissionAnnouncement: ({ summary }) => `La sessió de codi necessita permís per a ${summary}.`,
     userActionAnnouncement: ({ question }) => `La sessió de codi necessita la teva resposta. ${question}`,
     userActionFallback: 'La sessió de codi necessita la teva resposta. Respon la pregunta perquè pugui continuar.',
     requestedTool: 'l’eina sol·licitada',
@@ -13461,7 +13561,7 @@ const ca: VoiceSettingsPagesCopy = {
       toolsTitle: 'Noms de les eines',
       toolsDescription: 'Com ara «Fitxer editat». Els arguments i els camins de fitxer no es comparteixen mai.',
       permissionsTitle: 'Sol·licituds de permís',
-      permissionsDescription: 'Perquè et digui què et necessita. Continues aprovant amb un toc.',
+      permissionsDescription: "Perquè llegeixi les sol·licituds en veu alta i t’ajudi a respondre-les.",
       devicesTitle: 'Les teves màquines i dispositius',
       devicesDescription: 'Noms i estat en línia, per començar sessions on demanis.',
       liveTitle: 'Mentre parles',
@@ -13546,7 +13646,11 @@ const ca: VoiceSettingsPagesCopy = {
       itMayReadOnly: 'Només llegir',
       itMayReadOnlyDescription: 'Llegeix les teves sessions i fitxers i no canvia res.',
       itMayAsk: 'Preguntar abans',
-      itMayAskDescription: 'Cada canvi et pregunta abans. Un «sí» dit en veu alta no aprova mai; aproves amb un toc.',
+      itMayAskDescription: "Cada canvi et pregunta abans.",
+      approvalsTitle: "Aprovacions",
+      approvalsDescription: "Quan una sessió demana permís mentre parles.",
+      canApproveRequestsTitle: "L’agent de Veu pot aprovar sol·licituds",
+      canApproveRequestsDescription: "Llegeix cada sol·licitud en veu alta i la respon com tu diguis. Desactivat: decideixes cadascuna amb un toc.",
       itMaySafe: 'Canvis segurs',
       itMaySafeDescription: 'Fa pel seu compte els canvis segurs a l’espai de treball i pregunta per la resta.',
       itMayAnything: 'Qualsevol cosa',
@@ -13663,6 +13767,7 @@ const walkthroughSettingsTranslations = { ca: copy({
         model: 'Model de resum',
         modelDescription: 'S’utilitza per a explicacions, guies de canvis i propostes de commits.',
         chooseModel: 'Tria un model',
+        sessionModel: 'Model de la sessió',
         searchModels: 'Cerca models',
         loadModels: "Cerca més models",
         loadFailed: "No s’han pogut carregar els recorreguts desats.",
@@ -13678,6 +13783,7 @@ const walkthroughSettingsTranslations = { ca: copy({
         costPremium: "Cost alt",
         loadingModels: "Carregant models…",
         noModels: "No s’ha trobat cap model",
+        chooseMachineForModels: "Tria primer una màquina per veure’n els models.",
         loadModelsFailed: "No s’han pogut carregar els models. Torna-ho a provar.",
         startFailure: {
             notInstalled: { title: "No està instal·lat en aquesta màquina", next: "Comprova’n l’ordre i el directori de treball i torna-ho a provar." },
@@ -13743,6 +13849,7 @@ const walkthroughTranslations = { ca: {
             saved: walkthroughSavedTranslations.ca,
             progress: walkthroughProgressTranslations.ca,
             eyebrow: 'Recorregut',
+            conversationTitle: 'Conversa del recorregut',
             generated: 'Generat',
             generatedBy: ({ model }) => `Generat · ${model}`,
             generatedA11y: 'Escrit per un model',
@@ -13790,6 +13897,25 @@ const walkthroughTranslations = { ca: {
             nextStop: 'Parada següent',
             done: 'Fet',
             evidence: { displayFailed: 'No s’ha pogut mostrar el codi desat. El fitxer continua a Fitxers.', binary: 'Fitxer binari, descrit a partir de les metadades. Es mostra, no s’analitza.', unavailable: ({ reason }) => `No s’ha pogut llegir (${reason}). Continua a la llista; res d’aquí diu que s’hagi revisat.` },
+            stopNumber: ({ number }) => `Parada ${number}`,
+            receipt: {
+                wrote: 'Ha escrit el recorregut',
+                updated: 'Ha actualitzat el recorregut',
+                savedAnalysis: 'Ha desat l’anàlisi dels canvis',
+                updatedAnalysis: 'Ha actualitzat l’anàlisi dels canvis',
+                stopCount: ({ count }) => (count === 1 ? '1 parada' : `${count} parades`),
+                open: 'Obre el recorregut',
+                openChanges: 'Obre els canvis',
+                stopChanged: ({ number }) => `parada ${number} canviada`,
+                stopsChanged: ({ numbers }) => `parades ${numbers} canviades`,
+                stopsRemoved: ({ count }) => (count === 1 ? '1 parada eliminada' : `${count} parades eliminades`),
+                stopsMergedInto: ({ count, number }) => `${count} parades fusionades a la parada ${number}`,
+                titleEditKept: 's’ha mantingut el teu títol editat',
+                lastChangeUndone: 'últim canvi desfet',
+                undo: 'Desfés',
+                undoing: 'Desfent…',
+                undone: 'Desfet',
+            },
             notice: {
                 stale: 'Hi ha fitxers que han canviat després d’escriure això',
                 refresh: 'Actualitza el recorregut',
@@ -14171,6 +14297,14 @@ const widgetGlanceTranslations = { ca: {
         servicesLoading: 'Carregant els serveis locals',
         servicesReadFailed: 'No s’han pogut llegir els serveis locals. Torna-ho a provar.',
         noMachine: 'Aquesta sessió no té cap màquina a qui preguntar.',
+        appEmptyTitle: 'Res en marxa',
+        appUnlistedTitle: 'Els serveis no apareixen',
+        appUnlistedOffline: ({ machine }: { machine: string }) => `${machine} està fora de línia.`,
+        appUnlistedMany: ({ count }: { count: number }) => `No es pot contactar amb ${count} màquines.`,
+        appEmptyReason: 'Els servidors web que facis servir a les teves màquines apareixeran aquí.',
+        machineOffline: ({ machine }: { machine: string }) => `${machine} està fora de línia: els seus serveis no es mostren.`,
+        machineUnreadable: ({ machine }: { machine: string }) => `No s’han pogut llegir els serveis de ${machine} ara mateix.`,
+        machinesNotListed: ({ count }: { count: number }) => `No es pot accedir a ${count} màquines: els seus serveis no es mostren.`,
         changedCount: ({ count }) => `${count} canviats`,
         moreFiles: ({ count }) => (count === 1 ? '1 fitxer més' : `${count} fitxers més`),
         runningCount: ({ count }) => `${count} en execució`,
@@ -14193,6 +14327,10 @@ const ca: WorkStatusTranslations = {
         finished: 'Acabat',
         idle: 'En repòs',
         offline: 'Sense connexió',
+    },
+    words: {
+        permission: 'Permís',
+        question: 'Pregunta',
     },
 };
 

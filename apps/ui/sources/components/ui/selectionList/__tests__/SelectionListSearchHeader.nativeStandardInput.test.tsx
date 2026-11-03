@@ -41,7 +41,6 @@ describe('SelectionListSearchHeader native input presentation', () => {
 
         expect(screen.findByTestId('hdr:input:mirror')).toBeNull();
         expect(screen.findByTestId('hdr:input:start-ellipsis')).toBeNull();
-        expect(screen.findByTestId('hdr:input:ghost')).toBeNull();
 
         const input = screen.findByTestId('hdr:input');
         expect(input).not.toBeNull();

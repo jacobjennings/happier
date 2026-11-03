@@ -303,6 +303,8 @@ export function projectPluginUiHostPalette(theme: Pick<Theme, 'colors' | 'dark'>
         segmentTrack: colors.segmentedControl.trackBackground,
         segmentThumb: colors.segmentedControl.activeBackground,
         segmentThumbLift: shadowLevelStyle(colors.shadowLevels[1]),
+        // Menus and a field's choices stand on the menu step core's FloatingOverlay draws.
+        menuLift: shadowLevelStyle(colors.shadowLevels[2]),
         // A navigation column's rows on the shell plane: the same chip and hover core rows draw
         // (`HAPPIER_COLLECTION_LIST_ROW_STYLE` over `Item`).
         navigationSelected: colors.surface.elevated,
@@ -311,6 +313,10 @@ export function projectPluginUiHostPalette(theme: Pick<Theme, 'colors' | 'dark'>
         skeleton: colors.surface.skeleton,
         versionControlAdded: colors.versionControl.added.foreground,
         versionControlRemoved: colors.versionControl.removed.foreground,
+        // Find's marks, the same roles core's FindHighlightedText draws (`theme.colors.find`).
+        findMatch: colors.find.matchAll,
+        findMatchCurrent: colors.find.matchCurrent,
+        findMatchCurrentForeground: colors.find.matchCurrentForeground,
         searchFieldRadiusPx: theme.borderRadius.lg,
         searchFieldEdge: resolveThemeControlEdge(theme, 'default') ?? undefined,
     });

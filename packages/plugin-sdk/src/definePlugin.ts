@@ -1,6 +1,7 @@
+import type { MachineRecipeV1, MachineSetupPresetContributionV1 } from './machineSetup.js';
 import { COMPOSER_ATTACHMENT_RUNTIME_REGISTRATION_FIELDS_V1 } from '@happier-dev/protocol/plugins/contributions/composer-attachments';
 import { declaresHostSynthesizedAgentResumeOnlyExternalSources, findAgentResumeOnlyExternalSourceContractIssue } from '@happier-dev/protocol/plugins/contributions/agent-resume-only-sources';
-import { normalizePluginJsonSchema } from '@happier-dev/protocol/plugins/actions/protocol-composable-schema';
+import { isNormalizedPluginJsonSchema, isOwnedProtocolComposableSchema, normalizePluginJsonSchema } from '@happier-dev/protocol/plugins/actions/protocol-composable-schema';
 import type { PluginDefaultPlacement } from './ui/publicContract.js';
 
 import type { ActionContract, ActionHandler, PluginAccountActionHandler } from './actions/contracts.js';
@@ -52,6 +53,7 @@ import type { BackgroundServiceDefinition } from './backgroundServices.js';
 import type { PluginCaptureSourceRuntime, PluginCaptureSourceDeclaration } from './captureSources.js';
 import type { PluginProjectNativeAdapterDefinitionV1 } from './projectNativeAdapters.js';
 import type { MachineProvisionerAuthorDefinitionV1 } from './machineProvisioners.js';
+import type { AccessProviderAuthorDefinitionV1 } from './accessProviders.js';
 import type { EventContribution } from './events.js';
 import type { HookContribution } from './hooks.js';
 import type {
@@ -92,7 +94,7 @@ import type {
     DefinedContributionPointProtocolMap,
     DefinedContributionPoints,
 } from './targetedContributionAuthoring.js';
-import { projectDefinedTargetedContributionPoints } from './targetedContributionAuthoring.js';
+import { isOwnedContributionPointDefinition, projectDefinedTargetedContributionPoints } from './targetedContributionAuthoring.js';
 import type { AgentExternalSessionsContribution } from './externalSessions.js';
 import type { AgentExternalSessionHooksContribution } from './externalSessionHooks.js';
 import type { AgentExternalSessionObservationContribution } from './externalSessionObservation.js';
@@ -913,6 +915,11 @@ export type DefinePluginInput<
             Omit<PluginLanguageServerContributionV1, 'id'>
         >>;
         machineProvisioners?: Readonly<Record<PluginContributionLocalId, MachineProvisionerAuthorDefinitionV1>>;
+        accessProviders?: Readonly<Record<PluginContributionLocalId, AccessProviderAuthorDefinitionV1>>;
+        deploymentTargets?: Readonly<Record<PluginContributionLocalId, import('./deploymentTargets.js').DeploymentTargetAuthorDefinitionV1>>;
+        healthCheckKinds?: Readonly<Record<PluginContributionLocalId, Omit<import('./healthCheckKinds.js').HealthCheckKindContributionV1, 'id'>>>;
+        machineRecipes?: Readonly<Record<PluginContributionLocalId, ReadonlyAuthorDeclaration<Omit<MachineRecipeV1, 'id'>>>>;
+        machineSetupPresets?: Readonly<Record<PluginContributionLocalId, ReadonlyAuthorDeclaration<Omit<MachineSetupPresetContributionV1, 'id'>>>>;
         systemTools?: Readonly<Record<
             PluginContributionLocalId,
             Omit<NonNullable<NonNullable<PluginManifest['contributes']>['systemTools']>[number], 'id'>
@@ -2445,6 +2452,10 @@ const WORKFLOWS_ADAPTER = descriptorFamilyAdapter('workflows');
 const INPUT_TYPES_ADAPTER = descriptorFamilyAdapter('inputTypes');
 const ATMOSPHERE_PICTURES_ADAPTER = descriptorFamilyAdapter('atmospherePictures');
 const REGISTRY_SOURCES_ADAPTER = descriptorFamilyAdapter('registrySources');
+const DEPLOYMENT_TARGETS_ADAPTER = descriptorFamilyAdapter('deploymentTargets');
+const HEALTH_CHECK_KINDS_ADAPTER = descriptorFamilyAdapter('healthCheckKinds');
+const MACHINE_RECIPES_ADAPTER = descriptorFamilyAdapter('machineRecipes');
+const MACHINE_SETUP_PRESETS_ADAPTER = descriptorFamilyAdapter('machineSetupPresets');
 const SKILLS_ADAPTER = descriptorFamilyAdapter('skills');
 const DRAG_SOURCES_ADAPTER = descriptorFamilyAdapter('dragSources');
 const WORK_ITEMS_ADAPTER = descriptorFamilyAdapter('workItems');
@@ -2453,6 +2464,7 @@ const NOTIFICATIONS_ADAPTER = descriptorFamilyAdapter('notifications');
 const MANAGED_DEPENDENCIES_ADAPTER = descriptorFamilyAdapter('managedDependencies');
 const LANGUAGE_SERVERS_ADAPTER = descriptorFamilyAdapter('languageServers');
 const MACHINE_PROVISIONERS_ADAPTER = descriptorFamilyAdapter('machineProvisioners');
+const ACCESS_PROVIDERS_ADAPTER = descriptorFamilyAdapter('accessProviders');
 const SYSTEM_TOOLS_ADAPTER = descriptorFamilyAdapter('systemTools');
 const VOICE_MODEL_PACKS_ADAPTER = descriptorFamilyAdapter('voiceModelPacks');
 const OPENABLE_CONTENT_VIEWERS_ADAPTER = descriptorFamilyAdapter('openableContentViewers');
@@ -2647,6 +2659,10 @@ export const DEFINE_PLUGIN_FAMILY_POLICY_V2 = Object.freeze({
     inputTypes: { classification: 'descriptor-only', authorKey: 'inputTypes', inputShape: 'descriptor', adapter: INPUT_TYPES_ADAPTER },
     atmospherePictures: { classification: 'descriptor-only', authorKey: 'atmospherePictures', inputShape: 'descriptor', adapter: ATMOSPHERE_PICTURES_ADAPTER },
     registrySources: { classification: 'descriptor-only', authorKey: 'registrySources', inputShape: 'descriptor', adapter: REGISTRY_SOURCES_ADAPTER },
+    deploymentTargets: { classification: 'descriptor-only', authorKey: 'deploymentTargets', inputShape: 'descriptor', adapter: DEPLOYMENT_TARGETS_ADAPTER },
+    healthCheckKinds: { classification: 'descriptor-only', authorKey: 'healthCheckKinds', inputShape: 'descriptor', adapter: HEALTH_CHECK_KINDS_ADAPTER },
+    machineRecipes: { classification: 'descriptor-only', authorKey: 'machineRecipes', inputShape: 'descriptor', adapter: MACHINE_RECIPES_ADAPTER },
+    machineSetupPresets: { classification: 'descriptor-only', authorKey: 'machineSetupPresets', inputShape: 'descriptor', adapter: MACHINE_SETUP_PRESETS_ADAPTER },
     skills: { classification: 'descriptor-only', authorKey: 'skills', inputShape: 'descriptor', adapter: SKILLS_ADAPTER },
     dragSources: { classification: 'adapter', authorKey: 'dragSources', inputShape: 'descriptor', adapter: DRAG_SOURCES_ADAPTER },
     workItems: { classification: 'adapter', authorKey: 'workItems', inputShape: 'descriptor', adapter: WORK_ITEMS_ADAPTER },
@@ -2655,6 +2671,7 @@ export const DEFINE_PLUGIN_FAMILY_POLICY_V2 = Object.freeze({
     managedDependencies: { classification: 'descriptor-only', authorKey: 'managedDependencies', inputShape: 'descriptor', adapter: MANAGED_DEPENDENCIES_ADAPTER },
     languageServers: { classification: 'descriptor-only', authorKey: 'languageServers', inputShape: 'descriptor', adapter: LANGUAGE_SERVERS_ADAPTER },
     machineProvisioners: { classification: 'descriptor-only', authorKey: 'machineProvisioners', inputShape: 'descriptor', adapter: MACHINE_PROVISIONERS_ADAPTER },
+    accessProviders: { classification: 'descriptor-only', authorKey: 'accessProviders', inputShape: 'descriptor', adapter: ACCESS_PROVIDERS_ADAPTER },
     systemTools: { classification: 'descriptor-only', authorKey: 'systemTools', inputShape: 'descriptor', adapter: SYSTEM_TOOLS_ADAPTER },
     voiceModelPacks: { classification: 'descriptor-only', authorKey: 'voiceModelPacks', inputShape: 'descriptor', adapter: VOICE_MODEL_PACKS_ADAPTER },
     openableContentViewers: { classification: 'descriptor-only', authorKey: 'openableContentViewers', inputShape: 'descriptor', adapter: OPENABLE_CONTENT_VIEWERS_ADAPTER },
@@ -2876,6 +2893,11 @@ function captureDefinePluginAuthorValue(
     seen = new WeakMap<object, unknown>(),
     path: readonly string[] = [],
 ): unknown {
+    // Protocol already captured and recursively froze this schema. Keep its
+    // admitted identity across author graphs rather than copying and then
+    // re-admitting a complete schema for each plugin definition.
+    if (isNormalizedPluginJsonSchema(value) || isOwnedProtocolComposableSchema(value)
+        || isOwnedContributionPointDefinition(value)) return value;
     // Declaration data is captured here; executable receiver identity remains
     // untouched until the single registration-commit snapshot boundary.
     if (DEFINE_PLUGIN_AUTHOR_ADAPTERS.some((adapter) => (
@@ -2947,33 +2969,42 @@ function definePluginImplementation<
     assertDefinePluginOwnKeys(input);
     const capturedInput = captureDefinePluginAuthorValue(input) as typeof input;
     const authorInput = capturedInput as Readonly<Record<string, unknown>>;
-    const contributes = projectDefinePluginColdContributes(authorInput);
-
-    const manifest = {
-        schemaVersion: 2,
-        id: capturedInput.id,
-        version: capturedInput.version,
-        displayName: capturedInput.displayName ?? capturedInput.id,
-        ...(capturedInput.description === undefined ? {} : { description: capturedInput.description }),
-        ...(capturedInput.engines === undefined ? {} : { engines: capturedInput.engines }),
-        runtime: capturedInput.runtime ?? { apiVersion: 1 },
-        ...(capturedInput.entrypoints === undefined ? {} : { entrypoints: capturedInput.entrypoints }),
-        ...(capturedInput.brand === undefined ? {} : { brand: capturedInput.brand }),
-        ...(capturedInput.executionTarget === undefined ? {} : { executionTarget: capturedInput.executionTarget }),
-        ...(capturedInput.activation === undefined ? {} : { activation: capturedInput.activation }),
-        ...(capturedInput.hostAccess === undefined ? {} : { hostAccess: capturedInput.hostAccess }),
-        ...(capturedInput.secrets === undefined ? {} : { secrets: capturedInput.secrets }),
-        contributes,
-        ...(capturedInput.metadata === undefined ? {} : { metadata: capturedInput.metadata }),
-    } satisfies DefinedPluginManifest;
-    assertAgentRunnerDefinitions(readAuthoredAgentDefinitions(authorInput), manifest.contributes.agents);
-    const daemonDatabases = normalizePluginDaemonDatabaseRuntimeProjection(
+    // Capture author input now, but project descriptor bytes only when a host
+    // requests them. Runtime activation does not consume a manifest projection.
+    let manifest: DefinedPluginManifest | undefined;
+    const readManifest = (): DefinedPluginManifest => {
+        if (manifest !== undefined) return manifest;
+        const contributes = projectDefinePluginColdContributes(authorInput);
+        const projected = {
+            schemaVersion: 2,
+            id: capturedInput.id,
+            version: capturedInput.version,
+            displayName: capturedInput.displayName ?? capturedInput.id,
+            ...(capturedInput.description === undefined ? {} : { description: capturedInput.description }),
+            ...(capturedInput.engines === undefined ? {} : { engines: capturedInput.engines }),
+            runtime: capturedInput.runtime ?? { apiVersion: 1 },
+            ...(capturedInput.entrypoints === undefined ? {} : { entrypoints: capturedInput.entrypoints }),
+            ...(capturedInput.brand === undefined ? {} : { brand: capturedInput.brand }),
+            ...(capturedInput.executionTarget === undefined ? {} : { executionTarget: capturedInput.executionTarget }),
+            ...(capturedInput.activation === undefined ? {} : { activation: capturedInput.activation }),
+            ...(capturedInput.hostAccess === undefined ? {} : { hostAccess: capturedInput.hostAccess }),
+            ...(capturedInput.secrets === undefined ? {} : { secrets: capturedInput.secrets }),
+            contributes,
+            ...(capturedInput.metadata === undefined ? {} : { metadata: capturedInput.metadata }),
+        } satisfies DefinedPluginManifest;
+        assertAgentRunnerDefinitions(readAuthoredAgentDefinitions(authorInput), projected.contributes.agents);
+        manifest = projected;
+        return manifest;
+    };
+    let daemonDatabases: PluginDaemonDatabaseRuntimeProjection | undefined;
+    let collectionMigrations: PluginAccountCollectionMigrationRuntimeProjection | undefined;
+    const readDaemonDatabases = () => daemonDatabases ??= normalizePluginDaemonDatabaseRuntimeProjection(
         authorInput.daemonDatabases,
-        manifest.contributes.daemonDatabases ?? [],
+        readManifest().contributes.daemonDatabases ?? [],
     );
-    const collectionMigrations = normalizePluginAccountCollectionMigrationRuntimeProjection(
+    const readCollectionMigrations = () => collectionMigrations ??= normalizePluginAccountCollectionMigrationRuntimeProjection(
         projectPluginAccountCollectionMigrationRuntimeProjection(authorInput.accountCollections),
-        manifest.contributes.accountCollections ?? [],
+        readManifest().contributes.accountCollections ?? [],
     );
     const actionContracts = projectActionContracts(capturedInput.id, authorInput.actions) as DefinedPlugin<
         TPluginId,
@@ -3013,13 +3044,13 @@ function definePluginImplementation<
     };
 
     return Object.freeze({
-        manifest,
+        get manifest() { return readManifest(); },
         activate,
         activateAccount,
         actionContracts,
         contributionPoints,
-        daemonDatabases,
-        collectionMigrations,
+        get daemonDatabases() { return readDaemonDatabases(); },
+        get collectionMigrations() { return readCollectionMigrations(); },
     });
 }
 

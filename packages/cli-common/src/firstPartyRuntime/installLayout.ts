@@ -6,12 +6,15 @@ import type { FirstPartyComponentId } from './componentCatalog.js';
 import {
   resolveFirstPartyComponentPublicReleaseVariant,
 } from './componentCatalog.js';
+import { FIRST_PARTY_INSTALL_HOME_ENV_KEY, assertValidFirstPartyVersionId } from './installLayoutContract.js';
+export { FIRST_PARTY_INSTALL_HOME_ENV_KEY, InvalidFirstPartyVersionIdError, assertValidFirstPartyVersionId } from './installLayoutContract.js';
 
 export interface FirstPartyInstallLayout {
   componentId: FirstPartyComponentId;
   channel: PublicReleaseRingId;
   installRootName: string;
   installShims: readonly string[];
+  /** Managed installation home; may differ from the private HAPPIER_HOME_DIR. */
   happyHomeDir: string;
   installRoot: string;
   versionsDir: string;
@@ -20,35 +23,19 @@ export interface FirstPartyInstallLayout {
   shimDir: string;
 }
 
-const FIRST_PARTY_VERSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/u;
-const FIRST_PARTY_VERSION_ID_MAX_LENGTH = 200;
-
-export class InvalidFirstPartyVersionIdError extends Error {
-  readonly code = 'FIRST_PARTY_VERSION_ID_INVALID';
-  readonly versionId: string;
-
-  constructor(versionId: string) {
-    super(`Invalid first-party payload version id '${versionId}'. Expected one portable path segment.`);
-    this.name = 'InvalidFirstPartyVersionIdError';
-    this.versionId = versionId;
-  }
-}
-
-export function assertValidFirstPartyVersionId(versionId: string): void {
-  if (
-    versionId.length === 0
-    || versionId.length > FIRST_PARTY_VERSION_ID_MAX_LENGTH
-    || !FIRST_PARTY_VERSION_ID_PATTERN.test(versionId)
-  ) {
-    throw new InvalidFirstPartyVersionIdError(versionId);
-  }
+/** Reuse the canonical home expansion rules without changing daemon-private state. */
+export function resolveFirstPartyInstallHomeDir(processEnv: Readonly<Record<string, string | undefined>> = process.env): string {
+  const override = processEnv[FIRST_PARTY_INSTALL_HOME_ENV_KEY]?.trim();
+  return resolveHappyHomeDirFromEnvironment(override
+    ? { ...processEnv, HAPPIER_HOME_DIR: override }
+    : processEnv);
 }
 
 export function resolveFirstPartyInstallLayout(params: Readonly<{
   componentId: FirstPartyComponentId;
   channel?: PublicReleaseRingId;
   releaseRing?: PublicReleaseRingId;
-  processEnv?: NodeJS.ProcessEnv;
+  processEnv?: Readonly<Record<string, string | undefined>>;
 }>): FirstPartyInstallLayout {
   const processEnv = params.processEnv ?? process.env;
   const channel = params.channel ?? params.releaseRing ?? 'stable';
@@ -56,7 +43,7 @@ export function resolveFirstPartyInstallLayout(params: Readonly<{
     componentId: params.componentId,
     channel,
   });
-  const happyHomeDir = resolveHappyHomeDirFromEnvironment(processEnv);
+  const happyHomeDir = resolveFirstPartyInstallHomeDir(processEnv);
   const installRoot = joinPathForPathShape(happyHomeDir, component.installRootName);
 
   return {
@@ -83,7 +70,7 @@ export function resolveFirstPartyVersionInstallPath(params: Readonly<{
   versionId: string;
   channel?: PublicReleaseRingId;
   releaseRing?: PublicReleaseRingId;
-  processEnv?: NodeJS.ProcessEnv;
+  processEnv?: Readonly<Record<string, string | undefined>>;
 }>): string {
   const layout = resolveFirstPartyInstallLayout({
     componentId: params.componentId,

@@ -105,9 +105,7 @@ export function RelayHostLocalChecklistStep(props: Readonly<{
 
     const liveItems = React.useMemo(() => buildRelayHostLocalChecklistItems({
         runtimeStatus: status ?? null,
-        currentRelayUrl,
-        currentShareableUrl,
-    }), [currentRelayUrl, currentShareableUrl, status]);
+    }), [status]);
 
     const items: readonly PlanChecklistItem[] = React.useMemo(() => liveItems.map((item) => ({
         id: item.id,

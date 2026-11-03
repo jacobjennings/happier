@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
     observePrependOutcome,
-    PREPEND_ANCHOR_ALIGNMENT_TOLERANCE_PX,
-    PREPEND_CORRECTOR_COVERED_RESIDUAL_TOLERANCE_PX,
     type PrependCapturedAnchor,
     type PrependPostCommitObservation,
 } from '@/components/sessions/transcript/viewport/prepend/observePrependOutcome';
@@ -44,10 +42,6 @@ function postCommit(params: Readonly<{
 }
 
 describe('observePrependOutcome', () => {
-    it('exposes the legacy 4px alignment tolerance as the default', () => {
-        expect(PREPEND_ANCHOR_ALIGNMENT_TOLERANCE_PX).toBe(4);
-    });
-
     it('classifies identity-unchanged when no prepend landed (same length, same first item id)', () => {
         const items = [messageItem('m3'), messageItem('m4'), messageItem('m5')];
         const outcome = observePrependOutcome({
@@ -78,54 +72,23 @@ describe('observePrependOutcome', () => {
         expect(outcome).toEqual({ kind: 'unresolvable', reason: 'identity-unchanged' });
     });
 
-    it('classifies mvcp-preserved when the anchor item sits within tolerance of its captured viewport offset', () => {
-        // Two older items (m1, m2) prepended above; anchor m3 moved to index 2.
-        // MVCP shifted scroll so the anchor's viewport offset is preserved: y=900, offset=820 → 80 (captured 80).
-        const items = [messageItem('m1'), messageItem('m2'), messageItem('m3'), messageItem('m4'), messageItem('m5')];
-        const outcome = observePrependOutcome({
-            capturedAnchor: capturedAnchor(),
-            postCommit: postCommit({
-                items,
-                layoutYByIndex: { 0: 0, 1: 450, 2: 900, 3: 1100, 4: 1300 },
-                absoluteScrollOffset: 820,
-                contentHeight: 1500,
-                layoutHeight: 300,
-            }),
-        });
-        expect(outcome.kind).toBe('mvcp-preserved');
-    });
-
-    it('treats an observed offset exactly at the tolerance boundary as preserved', () => {
+    it('treats the default 4px alignment tolerance as preserved and one px beyond as fallback', () => {
         const items = [messageItem('m1'), messageItem('m3')];
-        const outcome = observePrependOutcome({
-            capturedAnchor: capturedAnchor({ capturedDataLength: 1, capturedFirstItemId: 'msg:m3' }),
-            postCommit: postCommit({
-                items,
-                layoutYByIndex: { 0: 0, 1: 500 },
-                // observed = 500 - 416 = 84 → delta = +4 = tolerance → preserved.
-                absoluteScrollOffset: 416,
-                contentHeight: 1000,
-                layoutHeight: 300,
-            }),
-            tolerancePx: 4,
+        const anchor = capturedAnchor({ capturedDataLength: 1, capturedFirstItemId: 'msg:m3' });
+        const observationAtScrollOffset = (absoluteScrollOffset: number) => postCommit({
+            items,
+            layoutYByIndex: { 0: 0, 1: 500 },
+            absoluteScrollOffset,
+            contentHeight: 1000,
+            layoutHeight: 300,
         });
-        expect(outcome.kind).toBe('mvcp-preserved');
-    });
 
-    it('classifies needs-fallback with the single corrective offset when the anchor is misaligned', () => {
-        // Anchor m3 at y=900; viewport should put it back at 80px from top → target 820, but MVCP left it at 0.
-        const items = [messageItem('m1'), messageItem('m2'), messageItem('m3'), messageItem('m4'), messageItem('m5')];
-        const outcome = observePrependOutcome({
-            capturedAnchor: capturedAnchor(),
-            postCommit: postCommit({
-                items,
-                layoutYByIndex: { 0: 0, 1: 450, 2: 900, 3: 1100, 4: 1300 },
-                absoluteScrollOffset: 0,
-                contentHeight: 1500,
-                layoutHeight: 300,
-            }),
-        });
-        expect(outcome).toMatchObject({ kind: 'needs-fallback', targetOffsetY: 820 });
+        // observed = 500 - 416 = 84 → delta = +4 = default tolerance → preserved.
+        expect(observePrependOutcome({ capturedAnchor: anchor, postCommit: observationAtScrollOffset(416) }))
+            .toEqual({ kind: 'mvcp-preserved', observedItemOffsetPx: 84, deltaPx: 4 });
+        // observed = 500 - 415 = 85 → delta = +5 → one corrective write back to 500 - 80.
+        expect(observePrependOutcome({ capturedAnchor: anchor, postCommit: observationAtScrollOffset(415) }))
+            .toMatchObject({ kind: 'needs-fallback', targetOffsetY: 420 });
     });
 
     it('clamps the fallback offset to the maximum scrollable offset', () => {
@@ -142,24 +105,6 @@ describe('observePrependOutcome', () => {
             }),
         });
         expect(outcome).toMatchObject({ kind: 'needs-fallback', targetOffsetY: 1200 });
-    });
-
-    it('honours a custom tolerance parameter', () => {
-        const items = [messageItem('m1'), messageItem('m3')];
-        const observation = postCommit({
-            items,
-            // observed = 500 - 410 = 90 → delta = +10.
-            layoutYByIndex: { 0: 0, 1: 500 },
-            absoluteScrollOffset: 410,
-            contentHeight: 1000,
-            layoutHeight: 300,
-        });
-        const anchor = capturedAnchor({ capturedDataLength: 1, capturedFirstItemId: 'msg:m3' });
-
-        expect(observePrependOutcome({ capturedAnchor: anchor, postCommit: observation, tolerancePx: 16 }).kind)
-            .toBe('mvcp-preserved');
-        expect(observePrependOutcome({ capturedAnchor: anchor, postCommit: observation, tolerancePx: 4 }).kind)
-            .toBe('needs-fallback');
     });
 
     it('resolves the anchor by messageId when the item id changed across re-grouping', () => {
@@ -304,20 +249,6 @@ describe('observePrependOutcome corrector deference (N2d.1)', () => {
         layoutHeight: 300,
     });
 
-    it('classifies mvcp-preserved when the corrector coverage exactly explains the misalignment', () => {
-        const outcome = observePrependOutcome({
-            capturedAnchor: capturedAnchor(),
-            postCommit: staleObservation,
-            correctorCoverage: { appliedDiffTotalPx: 820, eventCount: 1 },
-        });
-        expect(outcome).toEqual({
-            kind: 'mvcp-preserved',
-            observedItemOffsetPx: 900,
-            deltaPx: 820,
-            correctorCovered: true,
-        });
-    });
-
     it('classifies mvcp-preserved when the residual after coverage is within tolerance', () => {
         const outcome = observePrependOutcome({
             capturedAnchor: capturedAnchor(),
@@ -382,11 +313,6 @@ describe('observePrependOutcome corrector deference (N2d.1)', () => {
             correctorCoverage: { appliedDiffTotalPx: Number.NaN, eventCount: 1 },
         });
         expect(outcome).toMatchObject({ kind: 'needs-fallback', targetOffsetY: 820 });
-    });
-
-    it('exposes the corrector-covered residual tolerance', () => {
-        expect(PREPEND_CORRECTOR_COVERED_RESIDUAL_TOLERANCE_PX).toBe(48);
-        expect(PREPEND_CORRECTOR_COVERED_RESIDUAL_TOLERANCE_PX).toBeGreaterThan(PREPEND_ANCHOR_ALIGNMENT_TOLERANCE_PX);
     });
 
     it('classifies mvcp-preserved when the reading caught up and the residual is settle jitter', () => {

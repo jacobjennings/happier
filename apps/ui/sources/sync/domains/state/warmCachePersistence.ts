@@ -13,6 +13,16 @@ import { RuntimeDescriptorV1Schema } from '@happier-dev/protocol/sessions/metada
 import { SessionAccessAccountSummaryV1Schema } from '@happier-dev/protocol/sessions/access/sessionAccessPrincipalV1';
 import { SessionEffectiveAccessV1Schema } from '@happier-dev/protocol/sessions/access/sessionEffectiveAccessV1';
 import { SessionViewerProjectionV1Schema } from '@happier-dev/protocol/sessions/personal/viewer';
+import { SessionWorkspaceLocationV1Schema } from '@happier-dev/protocol/sessions/metadata/sessionWorkspaceLocationV1';
+import { SessionOwnerCompatibilityViewV1Schema } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
+import { SessionAgentActivityHeadlineV1Schema } from '@happier-dev/protocol/sessions/work/agentActivity/agentActivityHeadlineV1';
+import { SessionWorkflowActivityHeadlineV1Schema } from '@happier-dev/protocol/sessions/work/workflow/sessionWorkflowActivityHeadlineV1';
+import { SessionWorkDisplayV1Schema } from '@happier-dev/protocol/sessions/work/state/sessionWorkStatePrimary';
+import { SessionGuardNoticeStateV1Schema } from '@happier-dev/protocol/machines/guard/sessionGuardStateV1';
+import { SessionTerminalControlServiceabilityV1Schema } from '@happier-dev/protocol/sessions/metadata/terminalMetadata';
+import { ExternalAgentObservationSnapshotV1Schema } from '@happier-dev/protocol/sessions/external/externalAgentObservationV1';
+import { SessionUsageLimitRecoveryDisplayV1Schema } from '@happier-dev/protocol/sessions/state/valueSchemas/usageLimitRecovery';
+import { SessionOwnerDisplayV1Schema } from '@happier-dev/protocol';
 import { PendingActivationAuthorizationV1Schema } from '@happier-dev/protocol/sessions/pending/pendingActivationAuthorizationV1';
 import { PluginUiTargetedContributionsV1Schema, type PluginUiTargetedContributionsV1 } from '@happier-dev/protocol/plugins/ui';
 import { z } from 'zod/mini';
@@ -332,6 +342,13 @@ const EMPTY_PLUGIN_UI_PROJECTION_WARM_CACHE_ENTRIES = EMPTY_WARM_CACHE_ENTRIES a
 
 export const SessionListCacheEntryV1Schema = z.object({
     sessionId: z.string().check(z.minLength(1)),
+    // Optional for retained caches: only a freshly admitted compact row can match this
+    // nonsecret display derivation. It never restores full Session/document readiness.
+    displayProof: z.optional(z.object({
+        admissionFingerprint: z.string().check(z.regex(/^[a-f0-9]{64}$/)),
+        metadataVersion: z.number().check(z.int(), z.nonnegative()),
+    })),
+    ownerAccountId: z.optional(z.string()),
     seq: z.optional(z.number().check(z.int(), z.nonnegative())),
     metadataLayoutVersion: z.optional(z.number().check(z.int(), z.nonnegative())),
     metadataVersion: z.number().check(z.int(), z.nonnegative()),
@@ -375,8 +392,22 @@ export const SessionListCacheEntryV1Schema = z.object({
     responsibleAccount: zMini.optional(zMini.nullable(SessionAccessAccountSummaryV1Schema)),
     name: z.optional(z.string()),
     summaryText: z.optional(z.nullable(z.string())),
+    agentActivityHeadline: zMini.optional(zMini.nullable(SessionAgentActivityHeadlineV1Schema)),
+    workDisplay: zMini.optional(zMini.nullable(SessionWorkDisplayV1Schema)),
+    workflowHeadline: zMini.optional(zMini.nullable(SessionWorkflowActivityHeadlineV1Schema)),
+    guardState: zMini.optional(zMini.nullable(SessionGuardNoticeStateV1Schema)),
+    forkV1: SessionOwnerDisplayV1Schema.shape.forkV1,
+    lifecycleState: z.optional(z.string()),
+    sessionUsageLimitRecoveryV1: zMini.optional(zMini.nullable(SessionUsageLimitRecoveryDisplayV1Schema)),
+    externalAgentObservationV1: zMini.optional(zMini.nullable(ExternalAgentObservationSnapshotV1Schema)),
+    readStateV1: zMini.optional(zMini.nullable(SessionOwnerCompatibilityViewV1Schema.shape.readStateV1)),
+    terminalControlServiceabilityV1: zMini.optional(zMini.nullable(SessionTerminalControlServiceabilityV1Schema)),
     path: z.string(),
     projectGroupV1: z.optional(ProjectGroupV1Schema),
+    branch: z.optional(z.nullable(z.string())),
+    projectId: z.optional(z.nullable(z.string())),
+    workspaceId: z.optional(z.nullable(z.string())),
+    sessionWorkspaceLocationV1: zMini.optional(zMini.nullable(SessionWorkspaceLocationV1Schema)),
     homeDir: z.optional(z.nullable(z.string())),
     host: z.optional(z.nullable(z.string())),
     machineId: z.optional(z.nullable(z.string())),
@@ -522,7 +553,7 @@ export const FoundCacheEntryV1Schema = z.discriminatedUnion('kind', [z.strictObj
     result: DaemonMcpServersDetectResponseSchema,
 })]);
 export type FoundCacheEntryV1 = z.infer<typeof FoundCacheEntryV1Schema>;
-const foundCacheListeners = new Set<Readonly<{ key: string | null; listener: () => void }>>();
+const foundCacheListeners = new Map<string | null, Set<() => void>>();
 function foundCacheKey(serverId: string | null | undefined, accountId: string | null | undefined,
     kind: FoundCacheEntryV1['kind'], machineId: string) {
     return buildScopedKey(`found-warm-cache-v1:${kind}:${encodeURIComponent(machineId)}`, serverId, accountId);
@@ -538,13 +569,60 @@ export function saveFoundWarmCacheEntry(serverId: string | null | undefined, acc
     const previous = loadScopedRecord(key, FoundCacheEntryV1Schema);
     if (sameStrictJsonValue(previous, parsed)) return;
     saveScopedRecord(key, parsed);
-    for (const subscription of foundCacheListeners) if (subscription.key === key) subscription.listener();
+    for (const listener of foundCacheListeners.get(key) ?? []) listener();
 }
 export function subscribeFoundWarmCacheEntry(serverId: string | null | undefined, accountId: string | null | undefined,
     kind: FoundCacheEntryV1['kind'], machineId: string, listener: () => void): () => void {
-    const subscription = { key: foundCacheKey(serverId, accountId, kind, machineId), listener };
-    foundCacheListeners.add(subscription);
-    return () => { foundCacheListeners.delete(subscription); };
+    const key = foundCacheKey(serverId, accountId, kind, machineId);
+    const listeners = foundCacheListeners.get(key) ?? new Set<() => void>();
+    listeners.add(listener);
+    foundCacheListeners.set(key, listeners);
+    return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) foundCacheListeners.delete(key);
+    };
+}
+
+/** Held detection count for navigation; updates inspect only the changed Machine's cache entry. */
+export function createFoundMcpServersCountReader(serverId: string, accountId: string, machineIds: readonly string[]) {
+    const ids = [...new Set(machineIds)];
+    const counts = new Map<string, number | null>();
+    let total = 0;
+    let known = 0;
+    let snapshot: number | null = null;
+    const listeners = new Set<() => void>();
+    let disposers: Array<() => void> = [];
+    const update = (id: string) => {
+        const entry = loadFoundWarmCacheEntry(serverId, accountId, 'mcp_server', id);
+        const count = entry?.kind === 'mcp_server' && entry.result.ok ? entry.result.servers.length : null;
+        const previous = counts.get(id);
+        if (previous === count) return;
+        if (previous != null) { total -= previous; known--; }
+        counts.set(id, count);
+        if (count !== null) { total += count; known++; }
+    };
+    const publish = () => {
+        const next = known > 0 ? total : null;
+        if (next === snapshot) return;
+        snapshot = next;
+        for (const listener of listeners) listener();
+    };
+    const refresh = () => { for (const id of ids) update(id); publish(); };
+    refresh();
+    return {
+        getSnapshot: () => { if (listeners.size === 0) refresh(); return snapshot; },
+        subscribe: (listener: () => void) => {
+            if (listeners.size === 0) {
+                disposers = ids.map(id => subscribeFoundWarmCacheEntry(serverId, accountId, 'mcp_server', id, () => { update(id); publish(); }));
+                refresh();
+            }
+            listeners.add(listener);
+            return () => {
+                listeners.delete(listener);
+                if (listeners.size === 0) { for (const off of disposers) off(); disposers = []; }
+            };
+        },
+    };
 }
 
 const USAGE_SUMMARY_WARM_CACHE_PREFIX = 'usage-summary-warm-cache-v1';

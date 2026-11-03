@@ -12,13 +12,12 @@ import * as persistence from '@/persistence';
 import { configuration } from '@/configuration';
 import { V2SessionByIdResponseSchema } from '@happier-dev/protocol/sessions/control/contract';
 import { AccountEncryptionCurrentnessResponseSchema } from '@happier-dev/protocol/account/encryptionMode';
-import { SessionListQueryResponseV1Schema } from '@happier-dev/protocol/sessions/listing/response';
 import { projectSessionAccessCapabilitiesV1 } from '@happier-dev/protocol/sessions/access/sessionEffectiveAccessV1';
 import { readCarrierMutation } from '@/api/artifacts/accountArtifactStore.testkit';
 import { createCliActionDeps } from './createCliActionDeps';
 import { createCliActionExecutor } from './createCliActionExecutor';
 import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
-import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
+import { createSessionRecordFixture, createCompactSessionListRowFixture, createCompactSessionListQueryResponseFixture, createSessionReadBatchResponseFixture } from '@/testkit/backends/sessionFixtures';
 import { createDaemonApprovalExecutionOriginCurrentnessFromCredentials } from '@/daemon/externalActions/daemonExternalActionTargetResolver';
 import { cmdSessionActionsExecute } from '@/cli/commands/session/actions/execute';
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
@@ -40,6 +39,7 @@ import { DiscussionMessageRefV1Schema } from '@happier-dev/protocol/discussions/
 import { AccountNoticeArtifactBodyV1Schema, AccountNoticeArtifactHeaderV1Schema } from '@happier-dev/protocol/activity/usageNoticeArtifactV1';
 import { AppShellActionOutputSchemas } from '@happier-dev/protocol/actions/appShellActionFamily';
 import { ArtifactReadBatchInputV1Schema, ArtifactReadBatchResponseV1Schema } from '@happier-dev/protocol/artifacts/artifactAccessV1';
+import { artifactListResponse } from '@/testkit/http/artifactHome';
 import { getActionSpec } from '@happier-dev/protocol/actions/actionSpecs';
 import { TargetedActionRpcRequestV1Schema } from '@happier-dev/protocol/actions/actionRpcTransport';
 
@@ -101,7 +101,7 @@ describe('Account Artifact Actions through the real CLI host composition', () =>
         if (retireOnList) credentialCurrent = false;
         // The real header inventory omits exact-read exposure facts.
         const headers = [row, ordinary].map(({ body: _body, publicAudience: _audience, ...entry }) => entry);
-        return { status: 200, data: address.searchParams.has('kind') ? { items: headers, hasUnclassified: false } : headers };
+        return { status: 200, data: artifactListResponse(address.toString(), headers) };
       }
       if (address.pathname === `/v1/artifacts/${artifactId}`) return { status: 200, data: row };
       throw new Error(`Unexpected notice read ${address.pathname}`);
@@ -456,12 +456,13 @@ describe('Account Artifact Actions through the real CLI host composition', () =>
       if (new URL(url).pathname === `/v2/sessions/${selectedSessionId}`) return { status: 200,
         data: selectedSession };
       if (new URL(url).pathname === '/v2/sessions' || new URL(url).pathname === '/v2/sessions/active') return { status: 200,
-        data: { sessions: [selectedSession.session], nextCursor: null, hasNext: false } };
+        data: { sessions: [createCompactSessionListRowFixture(selectedSession.session)], nextCursor: null, hasNext: false } };
       if (url.endsWith(`/v1/artifacts/${homeArtifactId}`)) return { status: 200, data: row() };
       throw new Error(`unexpected_get:${url}`);
     });
     http.post.mockImplementation(async (url: string, wire: Record<string, unknown> | Buffer) => {
-      if (new URL(url).pathname === '/v2/sessions/query') return { status: 200, data: SessionListQueryResponseV1Schema.parse({
+      if (new URL(url).pathname === '/v2/sessions/read-batch') return { status: 200, data: createSessionReadBatchResponseFixture({ request: wire, sessions: [selectedSession.session] }) };
+      if (new URL(url).pathname === '/v2/sessions/query') return { status: 200, data: createCompactSessionListQueryResponseFixture({
         sessions: [{ ...selectedSession.session, responsibleAccountId: null, responsibleAccount: null,
           effectiveAccess: { v: 1, level: 'owner', sources: [{ kind: 'owner' }],
             capabilities: projectSessionAccessCapabilitiesV1({ owner: true, grants: [] }) },
@@ -763,7 +764,7 @@ describe('Account Artifact Actions through the real CLI host composition', () =>
     let row: unknown;
     http.get.mockImplementation(async (url: string) => ({ status: 200,
       data: url.endsWith('/v1/account/encryption') ? { mode: 'plain', updatedAt: 1 }
-        : new URL(url).pathname === '/v1/artifacts' ? [row] : row }));
+        : new URL(url).pathname === '/v1/artifacts' ? artifactListResponse(url, [row]) : row }));
     http.post.mockImplementation(async (_url: string, value: Record<string, unknown>) => {
       row = { ...value, ownerAccountId: 'owner', access: 'owner', encryptionMode: 'plain',
         headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };

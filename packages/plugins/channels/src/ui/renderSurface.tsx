@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useConversationProviderDisplayName, useConversationProviderDisplayNameResolver } from './providerDisplayName.js';
 import { useSessionCandidatePages, type SessionCandidate as BindingCreateSessionCandidate } from './useSessionCandidatePages.js';
 import { pluginUiTargetedContributionOperationKey } from '@happier-dev/plugin-sdk/ui';
 import type { AgentPermissionIntentV1 } from '@happier-dev/plugin-sdk/sessions';
@@ -54,7 +55,6 @@ import {
   type PluginUiFocusTarget,
   useExecutePluginAction,
   useLivePluginResource,
-  usePluginBrandDisplayName,
   usePluginBrandDisplayNameResolver,
   usePluginHostApi,
   usePluginTheme,
@@ -2819,7 +2819,7 @@ function ConversationDetail(props: Readonly<{
   const t = props.t;
   const navigation = useChannelsPageNavigation();
   const providerPluginId = connection?.providerPluginId;
-  const providerDisplayName = usePluginBrandDisplayName(providerPluginId)
+  const providerDisplayName = useConversationProviderDisplayName(providerPluginId)
     ?? t('plugins.channels.surface.providerFallback', 'Integration provider');
   const editFocusTarget = usePluginUiFocusTarget();
   const enablementFailure = props.enablementFailure?.bindingId === binding.bindingId
@@ -3262,12 +3262,12 @@ function formatProviderNameList(names: readonly string[]): string {
 }
 
 /**
- * The brand names of the conversation providers installed for this surface, so
+ * The names of the conversation providers installed for this surface, so
  * invitations never name a fixed list and a new provider (email) is never left out.
  */
 function useInstalledProviderNames(): readonly string[] {
   const surface = useSurfaceContext();
-  const resolveProviderName = usePluginBrandDisplayNameResolver();
+  const resolveProviderName = useConversationProviderDisplayNameResolver();
   return React.useMemo(() => {
     const contributions = surface.targetedContributions;
     const operations = contributions === undefined
@@ -3358,7 +3358,7 @@ function ConversationsIndexPage(props: Readonly<{
   t: Translate;
 }>): React.ReactElement {
   const { t } = props;
-  const resolveProviderName = usePluginBrandDisplayNameResolver();
+  const resolveProviderName = useConversationProviderDisplayNameResolver();
   const providerName = React.useCallback(
     (providerPluginId: string) => resolveProviderName(providerPluginId)
       ?? t('plugins.channels.surface.providerFallback', 'Integration provider'),
@@ -3524,7 +3524,6 @@ type BindingCreateAutomationExecution = Readonly<{
   enabled: boolean;
 }>;
 type BindingCreateStage = 'closed' | 'endpoint' | 'principal' | 'target' | 'policies' | 'review';
-type BindingCreateActiveStage = Exclude<BindingCreateStage, 'closed'>;
 type BindingCreateTarget =
   | Readonly<{ kind: 'session'; sessionId: string; label: string }>
   | Readonly<{ kind: 'threadRouter'; label: string }>
@@ -4885,31 +4884,21 @@ function parseBindingCreateAutomationPage(value: unknown): BindingCreateAutomati
   };
 }
 
-function bindingCreateStageTitle(stage: BindingCreateActiveStage, t: Translate): string {
-  switch (stage) {
-    case 'endpoint':
-      return t('plugins.channels.surface.bindingCreateEndpoint', 'Choose a conversation');
-    case 'principal':
-      return t('plugins.channels.surface.bindingCreatePrincipal', 'Choose an allowed sender');
-    case 'target':
-      return t('plugins.channels.surface.bindingCreateTarget', 'Choose a target');
-    case 'policies':
-      return t('plugins.channels.surface.bindingCreatePolicies', 'Policies');
-    case 'review':
-      return t('plugins.channels.surface.bindingCreateReview', 'Review binding');
-  }
-}
-
+/**
+ * A step's one action row: Back leads, Cancel and the step's primary close it. A step whose
+ * choice advances it (picking a conversation) has no primary.
+ */
 function BindingCreateStepActions(props: Readonly<{
   onBack?: () => void;
   onCancel: () => void;
   disabled: boolean;
   backDisabled?: boolean;
+  primary?: React.ReactNode;
   t: Translate;
 }>): React.ReactElement {
   return (
-    <Stack gap="small" testID="channels-binding-create-step-actions">
-      {props.onBack === undefined ? null : (
+    <Row gap="small" align="center" justify="space-between" wrap testID="channels-binding-create-step-actions">
+      {props.onBack === undefined ? <Stack /> : (
         <Button
           title={props.t('plugins.channels.surface.bindingCreateBack', 'Back')}
           variant="plain"
@@ -4917,13 +4906,16 @@ function BindingCreateStepActions(props: Readonly<{
           onPress={props.onBack}
         />
       )}
-      <Button
-        title={props.t('plugins.channels.surface.bindingCreateCancel', 'Cancel')}
-        variant="secondary"
-        disabled={props.disabled}
-        onPress={props.onCancel}
-      />
-    </Stack>
+      <Row gap="small" align="center">
+        <Button
+          title={props.t('plugins.channels.surface.bindingCreateCancel', 'Cancel')}
+          variant={props.primary === undefined ? 'secondary' : 'plain'}
+          disabled={props.disabled}
+          onPress={props.onCancel}
+        />
+        {props.primary}
+      </Row>
+    </Row>
   );
 }
 
@@ -5744,7 +5736,7 @@ function BindingCreateJourney(props: Readonly<{
     [props.connections],
   );
   const currentConnection = availableConnections.find((connection) => connection.connectionId === connectionId);
-  const providerDisplayName = usePluginBrandDisplayName(currentConnection?.providerPluginId)
+  const providerDisplayName = useConversationProviderDisplayName(currentConnection?.providerPluginId)
     ?? props.t('plugins.channels.surface.providerFallback', 'Integration provider');
   // The surface previews the binding the create writer will persist, so the
   // omitted-field policy comes from that one contract owner rather than a
@@ -6466,7 +6458,7 @@ function BindingCreateJourney(props: Readonly<{
 
   // Two bots can share a name across providers ("Happier QA Bot" on Discord and Telegram): each
   // option says which provider it talks through.
-  const resolveConnectionProviderName = usePluginBrandDisplayNameResolver();
+  const resolveConnectionProviderName = useConversationProviderDisplayNameResolver();
   const connectionOptions = availableConnections.map((connection) => {
     const providerName = resolveConnectionProviderName(connection.providerPluginId);
     return {
@@ -6501,11 +6493,7 @@ function BindingCreateJourney(props: Readonly<{
       ) : null}
       {stage === 'closed' ? feedbackContent : (
         <Stack gap="medium" testID="channels-binding-create-flow">
-          <Status
-            testID="channels-binding-create-stage"
-            tone="secondary"
-            label={`${props.t('plugins.channels.surface.bindingCreateCurrentStep', 'Current step')}: ${bindingCreateStageTitle(stage, props.t)}`}
-          />
+          {/* Each step's heading takes focus when the step opens, which names the step once. */}
           {availableConnections.length > 1 ? (
             <Form.Select
               testID="channels-binding-create-connection"
@@ -6525,19 +6513,24 @@ function BindingCreateJourney(props: Readonly<{
                 value={props.t('plugins.channels.surface.bindingCreateEndpoint', 'Choose a conversation')}
                 focusTarget={stageFocusTarget}
               />
-              <Form.TextField
-                testID="channels-binding-create-endpoint-query"
-                label={props.t('plugins.channels.surface.bindingCreateEndpointQuery', 'Conversation search')}
-                value={endpointQuery}
-                onChange={setEndpointQuery}
-                disabled={actionLocked}
-              />
-              <Button
-                title={props.t('plugins.channels.surface.bindingCreateEndpointSearch', 'Search endpoints')}
-                busy={resolveAction.execution.status === 'pending'}
-                disabled={actionLocked || endpointQuery.trim() === ''}
-                onPress={searchEndpoints}
-              />
+              <Row gap="small" align="flex-end">
+                <Stack grow>
+                  <Form.TextField
+                    testID="channels-binding-create-endpoint-query"
+                    label={props.t('plugins.channels.surface.bindingCreateEndpointQuery', 'Conversation search')}
+                    value={endpointQuery}
+                    onChange={setEndpointQuery}
+                    disabled={actionLocked}
+                  />
+                </Stack>
+                <Button
+                  title={props.t('plugins.channels.surface.bindingCreateEndpointSearch', 'Search endpoints')}
+                  variant="secondary"
+                  busy={resolveAction.execution.status === 'pending'}
+                  disabled={actionLocked || endpointQuery.trim() === ''}
+                  onPress={searchEndpoints}
+                />
+              </Row>
               {endpointCandidates.length > 0 ? (
                 <List accessibilityLabel={props.t('plugins.channels.surface.bindingCreateEndpointCandidates', 'Endpoint candidates')}>
                   {endpointCandidates.map((candidate) => (
@@ -6584,19 +6577,24 @@ function BindingCreateJourney(props: Readonly<{
                 value={props.t('plugins.channels.surface.bindingCreatePrincipal', 'Choose an allowed sender')}
                 focusTarget={stageFocusTarget}
               />
-              <Form.TextField
-                testID="channels-binding-create-principal-query"
-                label={props.t('plugins.channels.surface.bindingCreatePrincipalQuery', 'People search')}
-                value={principalQuery}
-                onChange={setPrincipalQuery}
-                disabled={actionLocked}
-              />
-              <Button
-                title={props.t('plugins.channels.surface.bindingCreatePrincipalSearch', 'Search people')}
-                busy={resolveAction.execution.status === 'pending'}
-                disabled={actionLocked || principalQuery.trim() === ''}
-                onPress={searchPrincipals}
-              />
+              <Row gap="small" align="flex-end">
+                <Stack grow>
+                  <Form.TextField
+                    testID="channels-binding-create-principal-query"
+                    label={props.t('plugins.channels.surface.bindingCreatePrincipalQuery', 'People search')}
+                    value={principalQuery}
+                    onChange={setPrincipalQuery}
+                    disabled={actionLocked}
+                  />
+                </Stack>
+                <Button
+                  title={props.t('plugins.channels.surface.bindingCreatePrincipalSearch', 'Search people')}
+                  variant="secondary"
+                  busy={resolveAction.execution.status === 'pending'}
+                  disabled={actionLocked || principalQuery.trim() === ''}
+                  onPress={searchPrincipals}
+                />
+              </Row>
               <BindingPrincipalChoices
                 testID="channels-binding-create-principal-candidates"
                 label={props.t('plugins.channels.surface.bindingCreatePrincipalCandidates', 'Allowed sender candidates')}
@@ -6618,15 +6616,17 @@ function BindingCreateJourney(props: Readonly<{
                   setFeedback(undefined);
                 }}
               />
-              <Button
-                title={props.t('plugins.channels.surface.bindingCreateContinue', 'Continue')}
-                disabled={actionLocked || principalSelection === undefined}
-                onPress={continueFromPrincipal}
-              />
               <BindingCreateStepActions
                 disabled={actionLocked}
                 onBack={backToEndpoint}
                 onCancel={cancelJourney}
+                primary={(
+                  <Button
+                    title={props.t('plugins.channels.surface.bindingCreateContinue', 'Continue')}
+                    disabled={actionLocked || principalSelection === undefined}
+                    onPress={continueFromPrincipal}
+                  />
+                )}
                 t={props.t}
               />
             </Stack>
@@ -6716,7 +6716,7 @@ function BindingCreateJourney(props: Readonly<{
                 }}
                 t={props.t}
               />
-              <Stack gap="small">
+              <Row gap="small" align="center" wrap>
                 <Button
                   title={props.t('plugins.channels.surface.bindingCreateSessionReload', 'Reload Sessions')}
                   variant="plain"
@@ -6751,7 +6751,7 @@ function BindingCreateJourney(props: Readonly<{
                     onPress={() => { void loadAutomationTargets(automationNextCursor); }}
                   />
                 )}
-              </Stack>
+              </Row>
               <BindingCreateStepActions
                 disabled={actionLocked}
                 onBack={backToPrincipal}
@@ -6856,15 +6856,17 @@ function BindingCreateJourney(props: Readonly<{
                 disabled={actionLocked}
                 onChange={(next) => { if (typeof next === 'string') setSenderFeedback(next); }}
               />
-              <Button
-                title={props.t('plugins.channels.surface.bindingCreateReview', 'Review binding')}
-                disabled={actionLocked || !createApprovalAudienceValid}
-                onPress={() => setStage('review')}
-              />
               <BindingCreateStepActions
                 disabled={actionLocked}
                 onBack={backToTarget}
                 onCancel={cancelJourney}
+                primary={(
+                  <Button
+                    title={props.t('plugins.channels.surface.bindingCreateReview', 'Review binding')}
+                    disabled={actionLocked || !createApprovalAudienceValid}
+                    onPress={() => setStage('review')}
+                  />
+                )}
                 t={props.t}
               />
             </Stack>
@@ -7198,20 +7200,22 @@ function BindingCreateJourney(props: Readonly<{
                   ]}
                 />
               </Stack>
-              <Button
-                testID="channels-binding-create-submit"
-                title={pairingRequired
-                  ? props.t('plugins.channels.surface.bindingCreatePairingConfirm', 'Create pairing challenge')
-                  : props.t('plugins.channels.surface.bindingCreateConfirm', 'Link conversation')}
-                busy={createAction.execution.status === 'pending' || pairingAction.execution.status === 'pending'}
-                disabled={actionLocked || feedback === 'created' || (pairingRequired && proofLocationIncomplete)}
-                onPress={pairingRequired ? createPairing : createBinding}
-              />
               <BindingCreateStepActions
                 disabled={actionLocked}
                 backDisabled={feedback === 'created'}
                 onBack={backToPolicies}
                 onCancel={cancelJourney}
+                primary={(
+                  <Button
+                    testID="channels-binding-create-submit"
+                    title={pairingRequired
+                      ? props.t('plugins.channels.surface.bindingCreatePairingConfirm', 'Create pairing challenge')
+                      : props.t('plugins.channels.surface.bindingCreateConfirm', 'Link conversation')}
+                    busy={createAction.execution.status === 'pending' || pairingAction.execution.status === 'pending'}
+                    disabled={actionLocked || feedback === 'created' || (pairingRequired && proofLocationIncomplete)}
+                    onPress={pairingRequired ? createPairing : createBinding}
+                  />
+                )}
                 t={props.t}
               />
             </Stack>
@@ -8178,18 +8182,8 @@ function BindingEditJourney(props: Readonly<{
         {...(headerActions === undefined ? {} : { actions: headerActions })}
         t={props.t}
       />
-      {/* The policies stage announces itself through the focused page title; the
-          sub-steps it opens announce which step the reader is on. */}
-      {stage === 'policies' ? null : <Status
-        tone="secondary"
-        label={`${props.t('plugins.channels.surface.bindingEditCurrentStep', 'Current step')}: ${stage === 'endpoint'
-            ? props.t('plugins.channels.surface.bindingCreateEndpoint', 'Choose a conversation')
-            : stage === 'principal'
-              ? props.t('plugins.channels.surface.bindingCreatePrincipal', 'Choose allowed senders')
-              : stage === 'target'
-                ? props.t('plugins.channels.surface.bindingCreateTarget', 'Choose a target')
-                : props.t('plugins.channels.surface.bindingEditReview', 'Review changes')}`}
-      />}
+      {/* The policies stage announces itself through the focused page title, and each
+          sub-step through its focused heading. */}
       {finalizingDelete ? (
         <Banner
           tone="warning"
@@ -9925,7 +9919,7 @@ function ConnectionListRow(props: Readonly<{
   t: Translate;
 }>): React.ReactElement {
   const status = connectionStatus(props.connection, props.t);
-  const provider = usePluginBrandDisplayName(props.connection.providerPluginId)
+  const provider = useConversationProviderDisplayName(props.connection.providerPluginId)
     ?? props.t('plugins.channels.surface.providerFallback', 'Integration provider');
   const label = connectionLabel(props.connection);
   const continuityDescriptions = connectionContinuityDescriptions(props.connection, props.t);
@@ -10004,7 +9998,7 @@ function ConnectionRow(props: Readonly<{
   const currentDraft = currentConnectionPolicyDraft(draft, props.connection);
   const updateUnavailable = props.connection.deletionState !== 'none';
   const mutationOutcomeUnknown = policyExecution.status === 'outcomeUnknown';
-  const provider = usePluginBrandDisplayName(props.connection.providerPluginId)
+  const provider = useConversationProviderDisplayName(props.connection.providerPluginId)
     ?? props.t('plugins.channels.surface.providerFallback', 'Integration provider');
 
   const sourceChanged = connectionPolicyDraftSourceChanged(currentDraft, props.connection);
@@ -10845,7 +10839,7 @@ function ConnectionTransferProviderButton(props: Readonly<{
   onPress: (operation: ProviderSetupOperation) => Promise<void>;
   t: Translate;
 }>): React.ReactElement {
-  const providerDisplayName = usePluginBrandDisplayName(props.operation.contributor.pluginId)
+  const providerDisplayName = useConversationProviderDisplayName(props.operation.contributor.pluginId)
     ?? props.t('plugins.channels.surface.providerFallback', 'Integration provider');
   const operationKey = pluginUiTargetedContributionOperationKey(props.operation);
   return (
@@ -10941,7 +10935,7 @@ function ConnectionTransferControls(props: Readonly<{
 }>): React.ReactElement | null {
   const hostApi = usePluginHostApi();
   const surface = useSurfaceContext();
-  const resolveProviderDisplayName = usePluginBrandDisplayNameResolver();
+  const resolveProviderDisplayName = useConversationProviderDisplayNameResolver();
   const prepareAction = useExecutePluginAction(
     CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare,
   );
@@ -12588,7 +12582,7 @@ function ProviderSetupButton(props: Readonly<{
   onPress: (operation: ProviderSetupOperation) => Promise<void>;
   t: Translate;
 }>): React.ReactElement {
-  const providerDisplayName = usePluginBrandDisplayName(props.operation.contributor.pluginId)
+  const providerDisplayName = useConversationProviderDisplayName(props.operation.contributor.pluginId)
     ?? props.t('plugins.channels.surface.providerFallback', 'Integration provider');
   const testIdSuffix = `${props.operation.contributor.pluginId}-${props.operation.contributor.contributionId}`;
   // A navigation row: the provider's mark and name open its setup. The
@@ -12653,7 +12647,7 @@ function ProviderSetupPicker(props: Readonly<{
 }>): React.ReactElement | null {
   const hostApi = usePluginHostApi();
   const surface = useSurfaceContext();
-  const resolveProviderDisplayName = usePluginBrandDisplayNameResolver();
+  const resolveProviderDisplayName = useConversationProviderDisplayNameResolver();
   const prepareAction = useExecutePluginAction(CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare);
   const createAction = useExecutePluginAction(CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionCreate);
   // The incumbent generic present-user endpoint Action. The surface only
@@ -14678,7 +14672,7 @@ function SessionConversationRow(props: Readonly<{
 }>): React.ReactElement {
   const { t, row } = props;
   const { binding, connection } = row.presentation;
-  const resolveProviderDisplayName = usePluginBrandDisplayNameResolver();
+  const resolveProviderDisplayName = useConversationProviderDisplayNameResolver();
   const title = bindingEndpointLabel(binding, t);
   const subtitle = connection === undefined
     ? bindingAudienceLabel(binding.endpoint.audience, t)
@@ -14729,7 +14723,7 @@ function SessionConversationLinkControl(props: Readonly<{
   const { t } = props;
   const page = useOpenChannelsPage();
   const [open, setOpen] = React.useState(false);
-  const resolveProviderDisplayName = usePluginBrandDisplayNameResolver();
+  const resolveProviderDisplayName = useConversationProviderDisplayNameResolver();
   const bots = (props.connections ?? []).filter((connection) => connection.deletionState === 'none');
   const label = t('plugins.channels.session.link', 'Link a conversation');
   if (props.connections === null || bots.length <= 1) {

@@ -5,10 +5,16 @@ import * as protocol from '@happier-dev/protocol';
 import {
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
     computeContentPublicKeyFingerprint,
+    createAccountScopedCryptoMaterialSnapshotV1,
+    convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
     decodePlainArtifactStoredContent,
     encodePlainArtifactStoredContent,
     openSessionOwnerMetadataEnvelopeV1,
     sealSessionOwnerMetadataEnvelopeV1,
+    projectSessionDisplayV1,
+    sealSessionSharedDisplayEnvelopeV1Sync,
+    sealSessionOwnerDisplayEnvelopeV1,
+    openSessionOwnerDisplayEnvelopeV1,
     signAccountContentKeyBindingV1,
     sealEncryptedDataKeyEnvelopeV1,
     openEncryptedDataKeyEnvelopeV1,
@@ -38,6 +44,10 @@ describe('buildAccountEncryptionMigrationStorageDirectives', () => {
         secret: Buffer.from(new Uint8Array(32).fill(7)).toString('base64url'),
     };
     const emptyTransitionInventories = {
+        sourceAccountCurrentness: { mode: 'e2ee' as const, version: 1, updatedAt: 1, signingKeyFingerprint: null,
+            contentKeyFingerprint: convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(
+                createAccountScopedCryptoMaterialSnapshotV1({ accountEncryptionMode: 'e2ee',
+                    material: { type: 'legacy', secret: new Uint8Array(32).fill(7) } }).contentPublicKeyFingerprint) },
         readArtifactRecipients: async (artifactId: string) => ({ artifactId,
             ownerAccountId: 'account-a', access: 'owner' as const, encryptionMode: 'plain' as const,
             dataEncryptionKey: null, callerDataEncryptionKey: null, recipients: [] }),
@@ -53,6 +63,52 @@ describe('buildAccountEncryptionMigrationStorageDirectives', () => {
             labels: [],
         },
     };
+
+    it.each(['plain', 'e2ee'] as const)('reseals owner display from full owner content for a %s Account target while retaining Session mode', async (toMode) => {
+        const fromMode = toMode === 'plain' ? 'e2ee' : 'plain';
+        const material = { type: 'legacy' as const, secret: new Uint8Array(32).fill(7) };
+        const ownerMetadata = { v: 1 as const, workspace: { name: 'Retained private title', path: '/private/project' } };
+        const semantic = projectSessionDisplayV1({ sharedMetadata: { v: 1 }, ownerMetadata });
+        const shared = sealSessionSharedDisplayEnvelopeV1Sync({ sessionMode: 'plain', display: semantic.shared });
+        if (!shared.ok || !semantic.owner) throw new Error('Expected canonical display fixture');
+        const owner = sealSessionOwnerDisplayEnvelopeV1({ accountMode: fromMode, display: { v: 1, name: 'Older display' },
+            material, randomBytes: length => new Uint8Array(length).fill(12) });
+        if (!owner.ok) throw new Error('Expected owner display fixture');
+        const sourceOwnerMetadata = fromMode === 'plain' ? { t: 'plain' as const, v: ownerMetadata }
+            : sealSessionOwnerMetadataEnvelopeV1({ material, ownerMetadata, randomBytes: length => new Uint8Array(length).fill(11) });
+        const displayProjectionV1 = { v: 1 as const, metadataLayoutVersion: 1 as const,
+            sourceMetadataVersion: 7, shared: shared.envelope, owner: owner.envelope };
+        const input = { ...emptyTransitionInventories,
+            fromMode, toMode, sourceEncryption: null, targetEncryption: null, machines: [], todos: [], artifacts: [],
+            sourceAccountCurrentness: { mode: fromMode, version: 1, updatedAt: 1, signingKeyFingerprint: null,
+                contentKeyFingerprint: fromMode === 'plain' ? null : convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(
+                    createAccountScopedCryptoMaterialSnapshotV1({ accountEncryptionMode: 'e2ee', material }).contentPublicKeyFingerprint) },
+            sessionSourceCredentials: fromMode === 'plain' ? tokenOnlyCredentials : legacyCredentials,
+            sessionTargetCredentials: toMode === 'plain' ? null : legacyCredentials,
+            sessions: [
+                { id: 'current', metadataLayoutVersion: 1, metadataVersion: 7, agentStateVersion: 8,
+                    ownerMetadata: sourceOwnerMetadata, encryptionMode: 'plain', displayProjectionV1 },
+                { id: 'stale', metadataLayoutVersion: 1, metadataVersion: 8, agentStateVersion: 8,
+                    ownerMetadata: sourceOwnerMetadata, encryptionMode: 'plain', displayProjectionV1 },
+                { id: 'missing', metadataLayoutVersion: 1, metadataVersion: 7, agentStateVersion: 8,
+                    ownerMetadata: sourceOwnerMetadata, encryptionMode: 'plain', displayProjectionV1: null },
+            ],
+        } satisfies Parameters<typeof buildAccountEncryptionMigrationStorageDirectives>[0];
+        const result = await buildAccountEncryptionMigrationStorageDirectives(input);
+        if (result.sessions.action !== 'migrate') throw new Error('Expected Session transition');
+        expect(result.sessions.items[0]).toHaveProperty('ownerDisplay');
+        expect(openSessionOwnerDisplayEnvelopeV1({ accountMode: toMode,
+            envelope: result.sessions.items[0]!.ownerDisplay, material })).toEqual({ ok: true, display: semantic.owner });
+        expect(result.sessions.items[1]).not.toHaveProperty('ownerDisplay');
+        expect(result.sessions.items[2]).not.toHaveProperty('ownerDisplay');
+        if (fromMode === 'e2ee') {
+            await expect(buildAccountEncryptionMigrationStorageDirectives({ ...input, sourceAccountCurrentness: undefined }))
+                .rejects.toThrow('Session owner metadata is unavailable');
+            await expect(buildAccountEncryptionMigrationStorageDirectives({ ...input, sourceAccountCurrentness: {
+                ...input.sourceAccountCurrentness, contentKeyFingerprint: 'aemk1_other-key',
+            } })).rejects.toThrow('Session owner metadata is unavailable');
+        }
+    });
 
     it('preserves complete predecessor Machine blobs and pins the observed DEK in both conversion directions', async () => {
         const targetEncryption = await Encryption.create(new Uint8Array(32).fill(7));

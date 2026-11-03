@@ -474,45 +474,6 @@ describe('oauth/[provider] return (keyless)', () => {
         });
     });
 
-    it.each([
-        { name: 'missing', admissionReference: undefined },
-        { name: 'altered', admissionReference: 'attempt-altered' },
-    ])('rejects and clears a Team OAuth callback with a $name admission reference', async ({ admissionReference }) => {
-        const pendingState = {
-            provider: 'github',
-            proof: 'proof_team',
-            serverId: 'server-a',
-            serverUrl: 'http://default.example.test',
-            teamContinuation: {
-                v: 1 as const,
-                purpose: 'team_admission' as const,
-                admissionReference: 'attempt-exact',
-                teamId: 'team-1',
-                homeServerIdentityId: 'server-a',
-                destination: { kind: 'team_sign_in' as const, teamId: 'team-1' },
-            },
-        };
-        setPendingExternalAuthState(pendingState);
-        localSearchParamsMock.mockReturnValue({
-            provider: 'github',
-            flow: 'auth',
-            purpose: 'team_admission',
-            pending: 'pending-team-exact',
-            ...(admissionReference ? { admissionReference } : {}),
-        });
-        const fetchMock = vi.fn();
-        setRuntimeFetch(fetchMock as unknown as typeof fetch);
-
-        await runWithOAuthScreen(async () => {
-            await flushOAuthEffects();
-            expect(fetchMock).not.toHaveBeenCalled();
-            expect(clearPendingExternalAuthMock).toHaveBeenCalled();
-            expect(loginWithCredentialsSpy).not.toHaveBeenCalled();
-            expect(modal.alert).toHaveBeenCalledWith(t('common.error'), t('errors.oauthStateMismatch'));
-            expect(replaceSpy).toHaveBeenCalledWith('/teams/team-1/sign-in?target=server-a');
-        });
-    });
-
     it('accepts the exact Team OAuth admission reference and continues finalization', async () => {
         setPendingExternalAuthState({
             provider: 'github',

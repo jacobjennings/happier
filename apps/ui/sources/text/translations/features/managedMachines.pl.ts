@@ -149,6 +149,8 @@ export const managedMachines: ManagedMachinesTranslations = {
             billedWhileRunning: "Rozliczana tylko podczas działania.",
             imageDescription: "Od czego startuje. Happier instaluje się na nim.",
             locationDescription: "Im bliżej, tym szybsze pisanie.",
+            network: "Sieć",
+            networkDescription: "Jakie adresy publiczne dostaje. Cena zależy od Twojego wyboru.",
             localLocationDescription: ({ computer }: { computer: string }) => `Gdzie działa na ${computer}.`,
             localSizeDescription: ({ computer }: { computer: string }) => `Jej część zasobów ${computer} podczas działania. Zatrzymanie ją zwalnia.`,
             headroom: ({ computer }: { computer: string }) => `Zostaje dla ${computer}`,
@@ -257,7 +259,8 @@ export const managedMachines: ManagedMachinesTranslations = {
         },
         credential: {
             refused: "Połączenie z provisionerem nie jest już dostępne.",
-            required: "Połącz konto provisionera, aby zobaczyć dostępne maszyny.",
+            required: "Połącz konto, aby zobaczyć, co możesz utworzyć.",
+            choose: "Wybierz konto, aby zobaczyć, co możesz utworzyć.",
         },
         power: {
             pending: ({ provider, state }: { provider: string; state: string }) => `Czekanie, aż ${provider} potwierdzi ${state}…`,
@@ -284,6 +287,8 @@ export const managedMachines: ManagedMachinesTranslations = {
             refused: ({ name }: { name: string }) => `Nie masz uprawnień do zarządzania ${name}.`,
         },
         inspect: {
+            notCreated: "Ta maszyna nie została utworzona",
+            checkFailed: "Nie udało się potwierdzić tej maszyny",
             checkNow: "Sprawdź teraz",
         },
         actions: {

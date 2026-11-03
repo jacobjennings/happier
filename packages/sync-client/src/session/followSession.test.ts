@@ -9,13 +9,30 @@ function connection() {
   return {
     on: (event: string, listener: (data: unknown) => void) => { listeners.set(event, listener); return () => { listeners.delete(event); }; },
     onConnected: (listener: () => void) => { connected = listener; return () => { connected = undefined; }; },
-    update: (kind: string, message: SessionMessageV1) => listeners.get('update')?.({ id: `u${message.seq}`, seq: 1, createdAt: 1, body: { t: kind, sid: 's', message } }),
+    update: (kind: string, message: SessionMessageV1) => listeners.get('update')?.({ id: `u${message.seq}`, seq: 1, createdAt: 1, body: { t: kind, delivery: 'full', sid: 's', message } }),
     sessionUpdate: (body: unknown) => listeners.get('update')?.({ id: 'state', seq: 1, createdAt: 1, body }),
     ephemeral: (data: unknown) => listeners.get('ephemeral')?.(data),
     connect: () => connected?.(),
   };
 }
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+it('refuses a hint on a full-only follower without advancing its materialized sequence', async () => {
+  const wire = connection();
+  const stop = new AbortController();
+  const errors: unknown[] = [];
+  const events: FollowedSessionEvent[] = [];
+  const follower = followSession({ connection: wire, sessionId: 's', afterSeq: 0, content: { mode: 'plain' }, signal: stop.signal,
+    fetchPage: async () => ({ messages: [] }), onEvent: (event) => events.push(event), onError: (error) => errors.push(error) });
+  await tick();
+  wire.sessionUpdate({ t: 'message-updated', sid: 's', delivery: 'hint', message: { id: 'm', seq: 4, localId: null,
+    createdAt: 1, updatedAt: 1, attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true } } });
+  await tick();
+  expect(errors).toHaveLength(1);
+  expect(errors[0]).toMatchObject({ message: 'Session follower requires full message delivery' });
+  expect(follower.lastSeq()).toBe(0);
+  expect(events.filter(event => event.kind === 'message-updated')).toEqual([]);
+  stop.abort();
+});
 it('ignores malformed updates explicitly addressed to another Session and keeps following its own', async () => {
   const wire = connection();
   const stop = new AbortController();
@@ -24,7 +41,7 @@ it('ignores malformed updates explicitly addressed to another Session and keeps 
   const follower = followSession({ connection: wire, sessionId: 's', afterSeq: 0, content: { mode: 'plain' }, signal: stop.signal,
     fetchPage: async () => ({ messages: [] }), onEvent: (event) => events.push(event), onError: (error) => errors.push(error) });
   await tick();
-  wire.sessionUpdate({ t: 'new-message', sid: 'other', message: { content: 'bad' } });
+  wire.sessionUpdate({ t: 'new-message', delivery: 'full' as const, sid: 'other', message: { content: 'bad' } });
   wire.sessionUpdate({ t: 'update-session', id: 'other', agentState: { version: 'bad' } });
   wire.ephemeral({ type: 'transcript-stream-segment', sessionId: 'other', message: { content: 'bad' } });
   wire.update('new-message', row(1));
@@ -32,7 +49,7 @@ it('ignores malformed updates explicitly addressed to another Session and keeps 
   expect(errors).toEqual([]);
   expect(follower.lastSeq()).toBe(1);
   expect(events.at(-1)).toMatchObject({ kind: 'messages', messages: [{ id: 'm1' }] });
-  wire.sessionUpdate({ t: 'new-message', sid: 's', message: { content: 'bad' } });
+  wire.sessionUpdate({ t: 'new-message', delivery: 'full' as const, sid: 's', message: { content: 'bad' } });
   expect(errors).toHaveLength(1);
   stop.abort();
 });

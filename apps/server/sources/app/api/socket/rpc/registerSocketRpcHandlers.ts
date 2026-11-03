@@ -1702,7 +1702,13 @@ export function registerSocketRpcHandlers(params: Readonly<{
                         },
                         ...(requesterDecisionAuthentication ? { authentication: requesterDecisionAuthentication } : {}),
                     }
-                    : { kind: "session.write", sessionId };
+                    : { kind: "session.write", sessionId,
+                        // Native input admission needs an owner proof. Only the
+                        // canonical owner-classified operation can mint it here.
+                        ...(sessionAuthorization.method === SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_START
+                            && sessionAuthorization.authority === "sessionOwner"
+                            ? { authority: "sessionOwner" as const } : {}),
+                    };
                 sessionAccessTargetGuard = createSessionAccessTargetGuard({
                     accountId: actorAccountId,
                     sessionId,

@@ -1,6 +1,7 @@
 import type { EmbeddedTerminalWriteCompleteEvent } from './embeddedTerminalRendererHandle';
 import type { ActionExecutorContext } from '@happier-dev/protocol/actions';
 import type { ActionOperationSnapshotV1 } from '@happier-dev/protocol/actions/operations/v1';
+import type { TerminalOutputRetention } from '@/sync/domains/terminal/stream/model';
 
 export type EmbeddedTerminalPaneStatus = 'idle' | 'connecting' | 'connected' | 'not-open' | 'error' | 'exited';
 
@@ -23,8 +24,13 @@ export type EmbeddedTerminalPaneController = Readonly<{
     operationState?: ActionOperationSnapshotV1['state'] | null;
     /** The existing Stop control is pending or has an accepted request, not settlement. */
     operationStopPending?: boolean;
+    /** What the daemon still retains of this terminal's output; null while unknown (legacy transport, not yet read). */
+    outputRetention?: TerminalOutputRetention | null;
     /** `error` that followed a connected stream: the terminal started, then its connection dropped. */
     connectionLost?: boolean;
+    inputRecoveryAvailable?: boolean;
+    copyInputRecovery?: () => Promise<void>;
+    discardInputRecovery?: () => void;
     detectedUrl: EmbeddedTerminalDetectedUrl;
     onInput: (data: string) => void;
     onPaste: (data: string) => void | Promise<unknown>;

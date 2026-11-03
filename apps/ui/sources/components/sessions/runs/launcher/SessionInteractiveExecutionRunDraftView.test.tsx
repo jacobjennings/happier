@@ -1453,11 +1453,25 @@ describe('SessionInteractiveExecutionRunDraftView — real composer and Action p
     });
     it('names the implicit Reviewer role while leaving an unchosen roleId absent from the start', async () => {
         await mount({ intent: 'review' });
+        await act(async () => chip('execution-run-start-role').onIntent?.());
         const role = await renderChipContent('execution-run-start-role');
-        expect(role.getTextContent()).toContain('Reviewer');
+        // The actual open popover receives new controlled props when its demanded catalog arrives.
+        await vi.waitFor(async () => {
+            const renderContent = chip('execution-run-start-role').collapsedContentPopover?.renderContent;
+            await role.update(<>{typeof renderContent === 'function'
+                ? renderContent({ requestClose: vi.fn(), maxHeight: Dimensions.get('window').height }) : renderContent}</>);
+            expect(role.getTextContent()).toContain('Reviewer');
+        });
         await reviewers();
         await send();
         expect(emittedStarts[0]).not.toHaveProperty('roleId');
+    });
+    it('names the review for what it is on the tab and in its heading, and says where it looks instead of which machine', async () => {
+        await mount({ intent: 'review', roleId: 'second_opinion', heading: 'Second opinion' });
+        const text = screen.getTextContent();
+        expect(text).toContain('Second opinion');
+        expect(text).not.toContain('runPage.launcher.titles.review');
+        expect(text).toContain('runPage.launcher.descriptions.review');
     });
     it('starts Second opinion through the real review Action with its explicit role', async () => {
         await mount({ intent: 'review', roleId: 'second_opinion' });
@@ -1465,14 +1479,17 @@ describe('SessionInteractiveExecutionRunDraftView — real composer and Action p
         // The person can write the question before making that choice.
         expect(composer().canSendMessages).toBe(true);
         expect(input().props.editable).not.toBe(false);
-        expect(input().props.placeholder).toBe(t('session.inputPlaceholder'));
+        expect(input().props.placeholder).toBe(t('agentStart.placeholders.review'));
         await type('Inspect this');
         expect(sendButton().props.disabled).toBe(true);
+        expect(composer().extraActionChips?.find(chip => chip.key === 'execution-run-start-reviewers-add'))
+            .toMatchObject({ requirement: { code: 'reviewer_required', fieldPath: 'engineIds' } });
         const snapshot = readComposerPresentationSnapshot(screen.root.findByType(Reflect.get(AgentInput, 'type')).props.composerRef);
         expect(ComposerSnapshotV1Schema.parse(snapshot).state).toMatchObject({ editable: true, submittable: false });
         await act(async () => { await sendButton().props.onPress(); });
         expect(emittedStarts).toEqual([]);
         await reviewers();
+        expect(composer().extraActionChips?.find(chip => chip.key === 'execution-run-start-reviewers-add')?.requirement).toBeNull();
         await send();
         expect(emittedStarts[0]).toMatchObject({ intent: 'review', roleId: 'second_opinion' });
     });

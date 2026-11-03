@@ -1,4 +1,4 @@
-import { projectClaudeTaskNotificationToolResult } from './taskNotification.js';
+import { projectClaudeTaskLifecycleToolResult } from './taskNotification.js';
 
 import {
     AgentExternalSessionTranscriptRawRecordSchema,
@@ -7,7 +7,7 @@ import {
 import { isRecord, parseTimestampMs } from '@happier-dev/plugin-sdk';
 import { createExternalSessionUnsupportedTranscriptItem } from '@happier-dev/plugin-sdk/sessions/file-stores';
 
-import { classifyClaudeNativeTranscriptRow } from './nativeSemanticProjection.js';
+import { classifyClaudeNativeTranscriptRow, type ClaudeNativePeerSender } from './nativeSemanticProjection.js';
 import { buildClaudeJsonlProviderFactLocalId } from './providerFactIdentity.js';
 import type { RawJSONLines } from './rawJsonLines.js';
 
@@ -69,8 +69,11 @@ function createClaudeAgentSemanticRaw(data: unknown): AgentExternalSessionTransc
     });
 }
 
-function createClaudeAgentMessageRaw(text: string): AgentExternalSessionTranscriptItem['raw'] | null {
-    return createClaudeAgentSemanticRaw({ type: 'message', message: text });
+function createClaudeAgentMessageRaw(
+    text: string,
+    peer?: ClaudeNativePeerSender,
+): AgentExternalSessionTranscriptItem['raw'] | null {
+    return createClaudeAgentSemanticRaw({ type: 'message', message: text, ...(peer ? { peer } : {}) });
 }
 
 function createClaudeAgentEventRaw(
@@ -270,7 +273,7 @@ function projectClaudeJsonlLine(params: Readonly<{
     // File paths stay private paging state; transcript item ids are source-local and recipient-safe.
     const { id: stableId, createdAtMs } = readClaudeJsonlLineIdentity(params);
 
-    const classification = classifyClaudeNativeTranscriptRow(projectClaudeTaskNotificationToolResult(params.lineValue) ?? params.lineValue);
+    const classification = classifyClaudeNativeTranscriptRow(projectClaudeTaskLifecycleToolResult(params.lineValue) ?? params.lineValue);
     const localId = classification.row
         ? buildClaudeJsonlProviderFactLocalId(classification.row, {
             fileRelPath: params.fileRelPath,
@@ -278,7 +281,7 @@ function projectClaudeJsonlLine(params: Readonly<{
         })
         : null;
     if (classification.content.kind === 'peer_message') {
-        const raw = createClaudeAgentMessageRaw(classification.content.text);
+        const raw = createClaudeAgentMessageRaw(classification.content.text, classification.content.peer);
         return raw ? {
             items: [{ id: stableId, localId, createdAtMs, messageRole: 'agent', raw }],
             withheldEveryPart: false,

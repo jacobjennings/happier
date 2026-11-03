@@ -216,9 +216,16 @@ describe('transcriptViewportWriteDiagnostics', () => {
         expect(sink.heldIntents.at(-1)).toMatchObject({ currentOffset: 599 });
     });
 
-    it('supports a lightweight held-intent probe without enabling physical scroll interception', () => {
+    it.each([
+        {
+            state: 'the lightweight held-intent probe is on',
+            enabledKey: 'happier.debug.viewportHeldIntents',
+            heldIntentEvents: ['settle-request'],
+        },
+        { state: 'diagnostics are disabled', enabledKey: null, heldIntentEvents: null },
+    ])('does not intercept physical scroll methods when $state', ({ enabledKey, heldIntentEvents }) => {
         vi.stubGlobal('localStorage', {
-            getItem: (key: string) => key === 'happier.debug.viewportHeldIntents' ? '1' : null,
+            getItem: (key: string) => key === enabledKey ? '1' : null,
         });
         const element = {
             scrollHeight: 1200,
@@ -226,6 +233,8 @@ describe('transcriptViewportWriteDiagnostics', () => {
             scrollBy: vi.fn(),
             scrollTo: vi.fn(),
         };
+        const originalScrollBy = element.scrollBy;
+        const originalScrollTo = element.scrollTo;
 
         recordTranscriptHeldIntentLifecycle({
             event: 'settle-request',
@@ -235,11 +244,11 @@ describe('transcriptViewportWriteDiagnostics', () => {
 
         const sink = (globalThis as Record<string, unknown>).__happierViewportDiagnostics as {
             heldIntents: Array<{ event: string }>;
-        };
-        expect(sink.heldIntents).toEqual([
-            expect.objectContaining({ event: 'settle-request' }),
-        ]);
+        } | undefined;
+        expect(sink?.heldIntents.map((entry) => entry.event) ?? null).toEqual(heldIntentEvents);
         expect(observeTranscriptPhysicalScrollMethods(element)).toBeNull();
+        expect(element.scrollBy).toBe(originalScrollBy);
+        expect(element.scrollTo).toBe(originalScrollTo);
     });
 
     it('attributes physical scroll methods and restores the element on dispose', () => {
@@ -420,21 +429,5 @@ describe('transcriptViewportWriteDiagnostics', () => {
             writes: null,
         });
         expect((globalThis as Record<string, unknown>).__happierViewportDiagnostics).toBeUndefined();
-    });
-
-    it('does not wrap physical scroll methods when diagnostics are disabled', () => {
-        vi.stubGlobal('localStorage', { getItem: () => null });
-        const element = {
-            scrollHeight: 1200,
-            scrollTop: 100,
-            scrollBy: vi.fn(),
-            scrollTo: vi.fn(),
-        };
-        const originalScrollBy = element.scrollBy;
-        const originalScrollTo = element.scrollTo;
-
-        expect(observeTranscriptPhysicalScrollMethods(element)).toBeNull();
-        expect(element.scrollBy).toBe(originalScrollBy);
-        expect(element.scrollTo).toBe(originalScrollTo);
     });
 });

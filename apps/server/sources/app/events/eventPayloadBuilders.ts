@@ -24,6 +24,7 @@ import { serializeMachineKeyBasis } from "@/app/machines/machineSerialization";
 import type { MachineKeyBasisV1 } from "@happier-dev/protocol/machines/machineContentKeyTransitionV1";
 import type { DevcontainerChildProjectionV1 } from "@happier-dev/protocol/machines/managed/devcontainerV1";
 import type { AccountEncryptionCurrentnessResponse } from '@happier-dev/protocol/account/encryptionMode';
+import type { SessionMessageV1 } from '@happier-dev/protocol/sessions/messages/sessionMessagesPageV1';
 
 type UpdateMessagePayloadInput = Readonly<{
     id: string;
@@ -60,7 +61,9 @@ type UpdateMessagePayloadOptions = Readonly<{
     attentionImpact?: SessionMessageAttentionImpact;
 }>;
 
-function serializeUpdateMessage(message: UpdateMessagePayloadInput, options?: UpdateMessagePayloadOptions) {
+type SerializedUpdateMessage = SessionMessageV1 & { localId: string | null; updatedAt: number };
+
+function serializeUpdateMessage(message: UpdateMessagePayloadInput, options?: UpdateMessagePayloadOptions): SerializedUpdateMessage {
     return {
         id: message.id,
         seq: message.seq,
@@ -85,6 +88,10 @@ function serializeUpdateMessage(message: UpdateMessagePayloadInput, options?: Up
         ...projectSessionInputAdmissionReceipt(message.inputAdmissionReceipt),
     };
 }
+
+type FullMessageUpdatePayload<T extends 'new-message' | 'message-updated'> = Omit<UpdatePayload, 'body'> & {
+    body: { t: T; delivery: 'full'; sid: string; id: string; message: SerializedUpdateMessage };
+};
 
 function normalizeSessionEncryptionMode(value: string | null | undefined): "e2ee" | "plain" {
     return value === "plain" ? "plain" : "e2ee";
@@ -168,12 +175,13 @@ export function buildNewMessageUpdate(
     updateSeq: number,
     updateId: string,
     options?: UpdateMessagePayloadOptions,
-): UpdatePayload {
+): FullMessageUpdatePayload<'new-message'> {
     return {
         id: updateId,
         seq: updateSeq,
         body: {
             t: 'new-message',
+            delivery: 'full',
             sid: sessionId,
             // Compatibility: some clients use `id` for sessionId.
             id: sessionId,
@@ -189,12 +197,13 @@ export function buildMessageUpdatedUpdate(
     updateSeq: number,
     updateId: string,
     options?: UpdateMessagePayloadOptions,
-): UpdatePayload {
+): FullMessageUpdatePayload<'message-updated'> {
     return {
         id: updateId,
         seq: updateSeq,
         body: {
             t: 'message-updated',
+            delivery: 'full',
             sid: sessionId,
             // Compatibility: some clients use `id` for sessionId.
             id: sessionId,
@@ -367,6 +376,7 @@ export function buildSessionMetadataRecipientUpdate(
         ...payload.body,
         metadataLayoutVersion: recipientProjection.metadataLayoutVersion,
         ...ownerMetadata,
+        ...(recipientProjection.projectKey !== undefined ? { projectKey: recipientProjection.projectKey } : {}),
     };
     if (agentState === undefined) delete recipientBody.agentState;
     return {

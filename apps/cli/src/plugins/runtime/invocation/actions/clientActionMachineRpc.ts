@@ -1,30 +1,35 @@
 import { RPC_METHODS } from '@happier-dev/protocol/rpc/methods';
+import { RPC_ERROR_CODES, isRpcMethodNotFoundResult } from '@happier-dev/protocol/rpcErrors';
 import { UiContributedActionExecuteResponseV1Schema, type UiContributedActionExecuteRequestV1, type UiContributedActionExecuteResponseV1 } from '@happier-dev/protocol/plugins/actions/clientInvocationV1';
+import { clientActionAmbiguous } from '@happier-dev/protocol/actions/clientDispatchV1';
+import type { SocketRpcAnsweringClientV1, SocketRpcAnsweringClientCandidateV1 } from '@happier-dev/protocol/socketRpc';
 
 type ClientActionMachineRpc = Readonly<{
-  hasConnectedClientRpcHandler(method: string): boolean;
   callConnectedClientRpc(
     method: string,
     params: unknown,
-    options: Readonly<{ timeoutMs: null; signal?: AbortSignal; onIssued(): void }>,
-  ): Promise<Readonly<{ ok: true; result: unknown }> | Readonly<{ ok: false; errorCode?: string; error?: string }>>;
+    options: Readonly<{ timeoutMs: null; signal?: AbortSignal; answeringClient?: SocketRpcAnsweringClientV1; onIssued(): void }>,
+  ): Promise<Readonly<{ ok: true; result: unknown }> | Readonly<{ ok: false; errorCode?: string; error?: string; answeringClients?: readonly SocketRpcAnsweringClientCandidateV1[] }>>;
 }>;
 
-function unavailable(): UiContributedActionExecuteResponseV1 {
+function unavailable(clientId?: string): UiContributedActionExecuteResponseV1 {
   return {
-    ok: false, errorCode: 'plugin_action_client_target_unavailable',
-    error: 'No answering UI client is available', actionHandlerInvocation: 'notStarted',
+    ok: false, errorCode: clientId ? 'client_not_available' : 'plugin_action_client_target_unavailable',
+    error: clientId ? 'The selected clientId is not eligible or is disconnected' : 'No answering UI client is available',
+    actionHandlerInvocation: 'notStarted',
   };
 }
 
 /** Uses the existing machine socket once; an uncertain effect is never retried. */
 export function createClientActionMachineRpcExecutor(
   getMachineClient: () => ClientActionMachineRpc | null | undefined,
-): (request: UiContributedActionExecuteRequestV1, options: Readonly<{ signal?: AbortSignal }>) => Promise<UiContributedActionExecuteResponseV1> {
+): (request: UiContributedActionExecuteRequestV1, options: Readonly<{ signal?: AbortSignal; clientId?: string }>) => Promise<UiContributedActionExecuteResponseV1> {
   return async (request, options) => {
     const client = getMachineClient();
-    if (!client || !client.hasConnectedClientRpcHandler(RPC_METHODS.UI_CONTRIBUTED_ACTION_EXECUTE)) {
-      return unavailable();
+    // Positive reconnect advertisements cannot prove absence. The authenticated
+    // live RPC registry selects the responder; this owner settles its receipt.
+    if (!client) {
+      return unavailable(options.clientId);
     }
     let issued = false;
     const unknownOutcome = (): UiContributedActionExecuteResponseV1 => ({
@@ -34,18 +39,31 @@ export function createClientActionMachineRpcExecutor(
     try {
       const response = await client.callConnectedClientRpc(
         RPC_METHODS.UI_CONTRIBUTED_ACTION_EXECUTE, request,
-        { timeoutMs: null, ...(options.signal ? { signal: options.signal } : {}), onIssued: () => { issued = true; } },
+        { timeoutMs: null, ...(options.signal ? { signal: options.signal } : {}),
+          answeringClient: { requireSingle: true, ...(options.clientId ? { clientId: options.clientId } : {}) },
+          onIssued: () => { issued = true; } },
       );
       if (!response.ok) {
+        if (response.errorCode === RPC_ERROR_CODES.CLIENT_AMBIGUOUS) {
+          const refusal = clientActionAmbiguous(response.answeringClients);
+          return {
+            ok: false, errorCode: refusal.errorCode, error: refusal.error,
+            data: refusal.details,
+            actionHandlerInvocation: 'notStarted',
+          };
+        }
         // Canonical method refusal proves the server routed no handler even
         // when the outbound request had already been issued.
-        return !issued || response.errorCode === 'RPC_METHOD_NOT_AVAILABLE'
-          ? unavailable() : unknownOutcome();
+        return !issued || response.errorCode === RPC_ERROR_CODES.METHOD_NOT_AVAILABLE
+          || response.errorCode === RPC_ERROR_CODES.METHOD_NOT_FOUND
+          || response.errorCode === RPC_ERROR_CODES.CLIENT_NOT_AVAILABLE
+          ? unavailable(options.clientId) : unknownOutcome();
       }
+      if (isRpcMethodNotFoundResult(response.result)) return unavailable(options.clientId);
       const parsed = UiContributedActionExecuteResponseV1Schema.safeParse(response.result);
       return parsed.success ? parsed.data : unknownOutcome();
     } catch {
-      return issued ? unknownOutcome() : unavailable();
+      return issued ? unknownOutcome() : unavailable(options.clientId);
     }
   };
 }

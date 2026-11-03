@@ -41,9 +41,10 @@ export function happierPageRowDividerWidth(): number {
 }
 
 /**
- * Where a row's hairline runs (P7-R2): from the row's text edge — its inset plus, when the row or its
- * section reserves one, the leading column and its gap — to the row's trailing inset. Logical start and
- * end, so a right-to-left page mirrors it. Core page rows and the public list rows both take it here.
+ * Where a row's hairline runs (P7-R2, the W3 frames): from the row's text edge — its inset plus, when the
+ * row or its section reserves one, the leading column and its gap — to the sheet's trailing edge, so a
+ * group separator (content width) still reads lighter than a row seam. Logical start and end, so a
+ * right-to-left page mirrors it. Core page rows and the public list rows both take it here.
  */
 export function happierPageRowDividerInset(input: Readonly<{
   /** The row's own inset from the sheet's edge (`HappierPageSection.rowInsetPx`). */
@@ -51,7 +52,7 @@ export function happierPageRowDividerInset(input: Readonly<{
   /** The leading column plus its gap before the text, or 0 when the row's text starts at its inset. */
   leadingPx?: number;
 }>): Readonly<{ marginStart: number; marginEnd: number }> {
-  return { marginStart: input.rowInsetPx + (input.leadingPx ?? 0), marginEnd: input.rowInsetPx };
+  return { marginStart: input.rowInsetPx + (input.leadingPx ?? 0), marginEnd: 0 };
 }
 
 export type HappierPageSectionTextRender = (input: Readonly<{
@@ -84,7 +85,11 @@ export type HappierPageSectionHeaderProps = Readonly<{
   testID?: string;
 }>;
 
-function DefaultSectionText(props: Readonly<{ role: 'sectionTitle' | 'sectionDescription'; text: string }>) {
+/**
+ * A section title or description in the page-text step and its ink. The children may be rich: a
+ * localized sentence around an inline code chip is set in the same description text.
+ */
+export function HappierPageSectionText(props: Readonly<{ role: 'sectionTitle' | 'sectionDescription'; children: ReactNode }>) {
   const theme = useOptionalHappierUiTheme();
   const typography = useOptionalHappierUiTypography();
   const title = props.role === 'sectionTitle';
@@ -98,13 +103,13 @@ function DefaultSectionText(props: Readonly<{ role: 'sectionTitle' | 'sectionDes
         color === undefined ? null : { color },
       ]}
     >
-      {props.text}
+      {props.children}
     </HappierText>
   );
 }
 
 const renderDefaultSectionText: HappierPageSectionTextRender = (input) => (
-  <DefaultSectionText role={input.role} text={input.text} />
+  <HappierPageSectionText role={input.role}>{input.text}</HappierPageSectionText>
 );
 
 function renderSectionText(
@@ -231,7 +236,7 @@ export type HappierPageSection = Readonly<{
 /**
  * Present while rendering the rows of a page section's sheet. A row that reads
  * it takes the page row anatomy (row insets, the page row title and
- * description steps, a hairline from its text to its trailing inset).
+ * description steps, a hairline from its text to the sheet's trailing edge).
  */
 export const HappierPageSectionContext = createContext<HappierPageSection | null>(null);
 
@@ -329,7 +334,7 @@ export type HappierPageSheetProps = Readonly<{
 
 /**
  * A page section's body: the rows on one sheet, separated by hairlines that
- * run from the rows' text to their trailing inset, each row taking the page row anatomy. Rows may be
+ * run from the rows' text to the sheet's trailing edge, each row taking the page row anatomy. Rows may be
  * grouped ({@link HappierPageSheetGroup}); a light, content-width separator
  * then sits between groups.
  */

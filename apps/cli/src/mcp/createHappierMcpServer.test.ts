@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { artifactListResponse } from '@/testkit/http/artifactHome';
 import fastify from 'fastify';
 import Ajv from 'ajv';
 import { z } from 'zod/mini';
@@ -21,7 +22,8 @@ import { createActionToolExecutorBridge } from '@/agent/tools/happierTools/creat
 import { createDaemonControlApp } from '@/daemon/controlServer';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
 import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
-import { createResolvedContributionRegistry, getResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { getResolvedContributionRegistry } from '@/plugins/projection/registry/builtIn/snapshot';
 import { createAuthoredAdmittedPluginRuntimeFixture } from '@/plugins/testkit/admittedRuntime';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 import { projectExecutablePluginToolCatalog } from '@/plugins/runtime/toolCatalog';
@@ -31,7 +33,6 @@ import { resolveRunnerMcpServers } from '@/mcp/runtime/resolveRunnerMcpServers';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc/methods';
 import { ActionIdSchema } from '@happier-dev/protocol/actions/actionIds';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
-import { createCliActionExecutorHarness } from '@/session/actions/createCliActionExecutorHarness';
 import { buildSessionMetadataEnvelopeFields } from '@/session/metadata/buildSessionMetadataEnvelopeCreateFields';
 import { createActionSettingsProvider } from '@/settings/actionsSettingsProvider';
 import * as daemonControlClient from '@/daemon/controlClient';
@@ -60,8 +61,10 @@ import { registerExecutionRunHandlers } from '@/rpc/handlers/executionRuns';
 import { createSessionRoleContext } from '@/session/roles/sessionRoleContext';
 import { createRoleSourceReader } from '@/session/roles/roleSources';
 import { createScopedRuntimeActionSettingsProvider } from '@/settings/scopedRuntimeActionSettingsProvider';
-import { ExternalActionExecutionAuthorizationV1Schema } from '@happier-dev/protocol/actions/externalActionApi';
+import { ExternalActionExecutionAuthorizationV1Schema, ExternalActionRequestEnvelopeSchema } from '@happier-dev/protocol/actions/externalActionApi';
 import { computeExternalActionRequestEnvelopeDigestV1 } from '@happier-dev/protocol/actions/externalActionExecutionAuthorization';
+import { compileActionCliFields, findCompiledActionCliCommand } from '@/cli/actions/compiledCommands';
+import { parseActionCliInput, composeActionCliInput } from '@/cli/actions/parseCommandInput';
 
 const env = process.env;
 
@@ -86,7 +89,7 @@ async function installAccountCatalogDaemonTransport(params: Readonly<{
   app.get('/v1/account/encryption/currentness', async () => createAccountEncryptionCurrentnessFixture({ mode }));
   if (params.serveAccountCatalog) {
     app.get('/v2/account/settings', async () => ({ content: { t: 'plain', v: {} }, version: 1 }));
-    app.get('/v1/artifacts', async () => []);
+    app.get('/v1/artifacts', async request => artifactListResponse(`http://localhost${request.url}`, []));
     app.get(ACP_CATALOG_ROWS_ROUTE_V1, async () => ({ status: 'absent' }));
   }
   app.get('/v2/sessions/:sessionId', async (_request, reply) => {
@@ -161,7 +164,7 @@ function createProductionSessionDaemonExecutor(credentials: Parameters<typeof cr
         accountId: 'account-1', authentication: { kind: 'account', tokenEpoch: 0 },
         serverIdentityId: 'srv_test-home', machineId: target.machineId, custodianAccountId: 'account-1', installationId: 'fixture-installation',
         actionId: operation.actionId, requestId: operation.requestId, target, accountEncryptionMode: 'plain',
-        requestEnvelopeDigest: computeExternalActionRequestEnvelopeDigestV1({ v: 1, requestId: operation.requestId, target, input: operation.input }),
+        requestEnvelopeDigest: computeExternalActionRequestEnvelopeDigestV1(ExternalActionRequestEnvelopeSchema.parse({ v: 1, requestId: operation.requestId, target, input: operation.input })),
         sessionActionOrigin, sessionActionSource: { machineId: target.machineId, installationId: 'fixture-installation' },
       } }) };
     },
@@ -238,6 +241,8 @@ async function withTitleHost(
   });
   // Home persistence and the daemon are external boundaries. The actual Action
   // policy, title mutation, envelope projection and HTTP CAS remain real.
+  // Imported after the describe's module reset so the harness, Home base-URL scope and Session HTTP owner share one module graph.
+  const { createCliActionExecutorHarness } = await import('@/session/actions/createCliActionExecutorHarness');
   const { executor } = createCliActionExecutorHarness({ token: credentials.token, credentials, sessionId,
     mode: 'plain', ctx: null, serverId: getTestServerBinding().serverId, serverHttpBaseUrl: getTestServerBinding().serverUrl,
     actionsSettingsProvider: { getActionsSettings: () => normalizeActionsSettingsV1(getAccountSettings().actionsSettingsV1) },
@@ -306,7 +311,7 @@ describe('createHappierMcpServer real host admission', () => {
     }));
     app.get('/v1/account/encryption', async () => ({ mode: 'plain', updatedAt: 1 }));
     app.get('/v1/account/encryption/currentness', async () => createAccountEncryptionCurrentnessFixture({ mode: 'plain' }));
-    app.get('/v1/artifacts', async () => []);
+    app.get('/v1/artifacts', async request => artifactListResponse(`http://localhost${request.url}`, []));
     app.get('/v1/artifacts/:artifactId', async (_request, reply) => reply.code(404).send({ error: 'Artifact not found' }));
     const captured: ReturnType<typeof ApprovalRequestV2Schema.parse>[] = [];
     app.post('/v1/artifacts', async request => {
@@ -488,7 +493,7 @@ describe('createHappierMcpServer real host admission', () => {
     }) });
     const readRoleSources = createRoleSourceReader({});
     const sessionRoles = createSessionRoleContext({ readMetadata: () => createTestMetadata(),
-      readOrganization: async () => ({ manager: null, origin: null }), readRoleSources,
+      readOrganization: async () => ({}), readRoleSources,
       // The Session-scoped host consumes only its admitted Role projection.
       readAccountRoleOverrides: () => ({ status: 'ready', overrides: {} }),
     });
@@ -660,6 +665,67 @@ describe('createHappierMcpServer real host admission', () => {
         ok: true, result: { input: { ...validInput, machineId: 'worker' }, calls: 1 },
       });
     } finally { await plugin.dispose(); await daemon.close(); }
+  });
+
+  it('exposes retained remembered-setup consent through native MCP discovery and the declared CLI command', async () => {
+    const sessionId = 'c666666666666666666666670';
+    const daemon = await installAccountCatalogDaemonTransport({ sessionId, readMetadata: () => createTestMetadata() });
+    const runtime = createHappierMcpServer(hostClient(sessionId));
+    try {
+      await withMcpClient(runtime, async client => {
+        const reply = CallToolResultSchema.parse(await client.callTool({ name: 'action_spec_get', arguments: { id: 'projects.prepare' } }));
+        expect(reply.isError).not.toBe(true);
+        const content = reply.content.find(item => item.type === 'text');
+        if (content?.type !== 'text') throw new Error('Missing discovery payload');
+        const discovered = PUBLIC_ACTION_OUTPUT_SCHEMAS['action.spec.get'].parse(JSON.parse(content.text)).actionSpec;
+        expect(discovered).toMatchObject({ id: 'projects.prepare', surfaces: { agent: true, mcp: true, cli: true } });
+        const spec = getActionSpec('projects.prepare');
+        const command = findCompiledActionCliCommand(['project', 'prepare']);
+        expect(command?.actionId).toBe(spec.id);
+        const fields = compileActionCliFields(spec);
+        const input = { workspace: { serverId: 'test-home', workspaceId: 'source-workspace', machineId: 'source', rootPath: '/source' },
+          phase: 'setup', heldOperationId: 'retained-setup', expectedEffectDigest: 'reviewed', consentScope: 'untilChanged' };
+        const parsed = parseActionCliInput({ ...fields, positionals: [] }, ['--input-json', JSON.stringify(input)]);
+        expect(parsed).toMatchObject({ ok: true, canonicalBase: input });
+        if (!parsed.ok) throw new Error(parsed.message);
+        expect(composeActionCliInput({ ...fields, parsed, canonicalSchema: spec.inputSchema,
+          context: { actionId: spec.id, invocationId: 'setup-consent', commandPath: ['project', 'prepare'] } }))
+          .toMatchObject({ ok: true, input });
+      });
+    } finally { await daemon.close(); }
+  });
+
+  it('searches and serializes managed Browser Actions over native MCP', async () => {
+    const sessionId = 'c666666666666666666666671';
+    const daemon = await installAccountCatalogDaemonTransport({ sessionId, readMetadata: () => createTestMetadata() });
+    const runtime = createHappierMcpServer(hostClient(sessionId));
+    try {
+      await withMcpClient(runtime, async client => {
+        const read = async (name: string, input: Record<string, unknown>): Promise<unknown> => {
+          const reply = CallToolResultSchema.parse(await client.callTool({ name, arguments: input }));
+          const content = reply.content.find(item => item.type === 'text');
+          if (content?.type !== 'text') throw new Error('Missing Browser discovery payload');
+          expect(reply.isError, content.text).not.toBe(true);
+          return JSON.parse(content.text);
+        };
+        const search = PUBLIC_ACTION_OUTPUT_SCHEMAS['action.spec.search'].parse(
+          await read('action_spec_search', { query: 'browser', limit: 100 }),
+        );
+        for (const operation of ['snapshot', 'semanticSnapshot', 'click', 'type', 'scroll']) {
+          const id = `browser.automation.${operation}`;
+          expect(search.actionSpecs.map(spec => spec.id)).toContain(id);
+          const definition = await readCompleteActionSpecV1({ actionId: id, read: async input =>
+            PUBLIC_ACTION_OUTPUT_SCHEMAS['action.spec.get'].parse(await read('action_spec_get', input)),
+          });
+          const validate = new Ajv({ strict: false, validateFormats: false }).compile(definition.inputSchema);
+          const input = { v: 1, browserSessionId: sessionId, viewId: 'main', automationRequestId: 'qa-action',
+            actionKind: operation, navigationGeneration: 0, requestedBy: 'agent',
+            requesterRef: { kind: 'session', id: sessionId }, timeoutMs: 10_000 };
+          expect(validate(input), JSON.stringify(validate.errors)).toBe(true);
+          expect(validate({ ...input, actionKind: 'unsupported-browser-operation' })).toBe(false);
+        }
+      });
+    } finally { await daemon.close(); }
   });
 
   it('discovers the callable Workflow validator named by start guidance over native MCP', async () => {
@@ -1065,7 +1131,7 @@ describe('createHappierMcpServer real host admission', () => {
         features: FeaturesResponseSchema.parse({ features: { sessions: { enabled: true } }, capabilities: {} }) }),
       enqueueSessionEventCommitted: async event => {
         committed.push(event);
-        return { persisted: true, localId: 'session-update-original' };
+        return { persisted: true, delivered: true, localId: 'session-update-original' };
       },
     }), {
       authorityScope: 'session', sessionCredentials: { token: 'session-token', encryption: null },
@@ -1296,7 +1362,7 @@ describe('createHappierMcpServer real host admission', () => {
     app.get(ACP_CATALOG_ROWS_ROUTE_V1, async () => ({ status: 'absent' }));
     const readRoleSources = createRoleSourceReader({});
     const sessionRoles = createSessionRoleContext({ readMetadata: () => createTestMetadata(), readRoleSources,
-      readOrganization: async () => ({ manager: null, origin: null }),
+      readOrganization: async () => ({}),
       readAccountRoleOverrides: () => ({ status: 'ready', overrides: {} }),
     });
     // Like ApiSessionClient, this carrier owns the transport on its prototype.

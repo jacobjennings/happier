@@ -28,7 +28,7 @@ it('does not present partial line totals as complete or invent a missing branch'
     expect(screen.getTextContent()).not.toContain('+7836');
     expect(screen.getTextContent()).not.toContain('feature/rail');
     await screen.update(<GitActionRailTooltip scmStatus={null} />);
-    expect(screen.getTextContent()).not.toContain('1234');
+    expect(screen.getTextContent()).not.toContain(new Intl.NumberFormat().format(1234));
 });
 
 it('shows available upstream divergence and omits unknown tracking counts', async () => {

@@ -48,6 +48,28 @@ function fixture() {
 }
 
 describe('process census', () => {
+    it('reads process identity, ownership and counters freshly on every observation', async () => {
+        const { files, boundary } = fixture();
+        const reads: string[] = [];
+        const reader = createProcessCensusReader({ platform: 'linux', selfPid: 42, linuxBoundary: {
+            ...boundary, async readFile(path) { reads.push(path); return boundary.readFile(path); },
+        } });
+        const input = { freshness: 'fresh', scope: 'all' } as const;
+        const first = await reader(input);
+        if (first.status !== 'ok') throw new Error('Initial census unavailable');
+        reads.length = 0;
+        const unchanged = await reader(input);
+        if (unchanged.status !== 'ok') throw new Error('Unchanged census unavailable');
+        expect(unchanged.rows).toEqual(first.rows);
+        expect(reads).toContain('/proc/43/stat');
+        expect(reads).toContain('/proc/43/status');
+        expect(reads).toContain('/proc/43/environ');
+        files.set('/proc/43/stat', stat(43, 430, 'Z').replace(' 12 8 ', ' 13 8 '));
+        const changed = await reader(input);
+        if (changed.status !== 'ok') throw new Error('Changed census unavailable');
+        expect(changed.rows.find(row => row.pid === 43)?.cpuTimeUs).toBe(210000);
+    });
+
     it('walks children of every Linux thread without enumerating peers and fails closed on unreadable discovery', async () => {
         const { files, boundary } = fixture();
         files.set('/proc/43/stat', stat(43, 430).replace(' S 1 ', ' S 44 '));

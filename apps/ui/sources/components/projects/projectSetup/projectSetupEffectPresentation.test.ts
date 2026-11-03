@@ -3,6 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { listReviewedSetupCommands, readProjectSetupReviewPresentation } from './projectSetupEffectPresentation';
 
 describe('safe producer setup review presentation', () => {
+  it('retains additive committed evidence without changing the legacy fileState or admitting unknown fields', () => {
+    const provenance = { file: '.happier/project.json', kind: 'repository', headCommit: 'abc123',
+      fileState: 'unknown', committed: { commit: 'abc123', bytes: 'private' } };
+    expect(readProjectSetupReviewPresentation({ presentation: { bindings: [], provenance } }))
+      .toMatchObject({ provenance: { fileState: 'unknown', committed: { commit: 'abc123' } } });
+    expect(readProjectSetupReviewPresentation({ presentation: { bindings: [], provenance } })?.provenance)
+      .not.toHaveProperty('committed.bytes');
+  });
   it('discloses executable paths and every argument boundary while retaining literal commands verbatim', () => {
     const literal = '  echo "a b" && echo ""  ';
     expect(listReviewedSetupCommands({ commands: [

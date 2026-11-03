@@ -11,6 +11,7 @@ import {
 import type { ExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
 import type { AgentInvocationTurnAdmissionWitness } from '@/plugins/runtime/invocation/services/types';
 import { extractVoiceActionsFromAssistantText } from '@happier-dev/protocol/voice/actions';
+import { listVoiceActionBlockSpecs } from '@happier-dev/protocol/actions/actionSpecs';
 import { canAppendVoiceAgentOutputEventsV1, createVoiceAgentOutputTurnV1, fitVoiceAgentOutputTextV1, ingestVoiceAgentOutputEventV1, VOICE_OUTPUT_INCOMPLETE_TEXT } from '@happier-dev/protocol/voice/outputEvents';
 import { readBackendTargetRefV2 } from '@happier-dev/protocol/backends/targets/backendTargetRefV2';
 import type { BackendTargetRefV1, ProviderBoundModelRef, ExecutionRunResumeHandle, VoiceAssistantAction } from '@happier-dev/protocol';
@@ -41,9 +42,12 @@ import type {
 } from './voiceAgentTypes';
 import type { PermissionIntent } from '@happier-dev/agents';
 import { VoiceAgentError } from './voiceAgentTypes';
+import { toVoiceAgentStartError } from './voiceAgentStartError';
 import { renderSessionInputContextPromptV1 } from '@happier-dev/protocol/sessions/messages/sessionInputPromptContextV1';
 import type { SessionFollowPreparedContext } from '@/agent/runtime/session/follow/sessionFollowContextReconciler';
 import { isSessionProviderInputOutcomeTerminal } from '@/agent/runtime/session/input/providerInputOutcome';
+import { resolveExecutionRunInputAuthority } from '@/agent/executionRuns/policy/executionRunPermissionDecision';
+import { resolveHappierActionPermission } from '@/agent/permissions/happierActionPermission';
 
 export type {
   VoiceAgentCommitResult,
@@ -292,7 +296,7 @@ export class VoiceAgentManager {
   private async prepareSystemAppendBlocks(
     voiceAgent: VoiceAgentInstance,
     stream?: VoiceAgentTurnStreamState,
-  ): Promise<() => void> {
+  ): Promise<Readonly<{ ensureCurrent: () => void; preparedInstructionsFor: VoicePromptPreparation['preparedInstructionsFor'] }>> {
     const backend = voiceAgent.chatBackend;
     const generation = voiceAgent.chatGeneration;
     const ensureCurrent = (): void => {
@@ -303,6 +307,7 @@ export class VoiceAgentManager {
         || voiceAgent.chatGeneration !== generation
         || backend.getRuntimeLifetimeSignal().aborted
         || stream?.cancelled
+        || (stream !== undefined && voiceAgent.activeTurnStream !== stream)
       ) {
         throw new VoiceAgentError('VOICE_AGENT_NOT_FOUND', 'Voice prompt preparation is no longer current');
       }
@@ -333,7 +338,7 @@ export class VoiceAgentManager {
       voiceAgent.disabledActionIds = disabledActionIds;
       voiceAgent.chatSessionSeeded = false;
     }
-    return ensureCurrent;
+    return { ensureCurrent, preparedInstructionsFor: preparation.preparedInstructionsFor };
   }
 
   private async prepareFollowContextForPrompt(
@@ -375,13 +380,25 @@ export class VoiceAgentManager {
    * it could when delivery failures always threw.
    */
   private async deliverPrompt(
+    voiceAgent: VoiceAgentInstance,
     backend: ExecutionRunHostRuntime,
     runtimeId: string,
     prompt: string,
     context?: Parameters<ExecutionRunHostRuntime['deliverInput']>[2],
     followContext?: SessionFollowPreparedContext | null,
     durableUserTranscriptLocalId?: string,
-  ): Promise<void> {
+  ) {
+    // Human Voice turns enter the same admitted-input boundary as other Runs.
+    // Preserve any narrower caller ceiling; never let missing prompt metadata
+    // become a null authority at the native tool/permission bridge.
+    const authority = resolveExecutionRunInputAuthority({
+      permissionMode: voiceAgent.permissionIntent,
+      ...(context && Object.hasOwn(context, 'causalPermissionAuthority')
+        ? { causalPermissionAuthority: context.causalPermissionAuthority } : {}),
+      ...(context?.effectiveCallerPermissionMode !== undefined
+        ? { effectiveCallerPermissionMode: context.effectiveCallerPermissionMode } : {}),
+    });
+    if (!authority.ok) throw Object.assign(new Error(authority.error), { code: authority.errorCode });
     const composedPrompt = renderSessionInputContextPromptV1({
       transformedUserText: prompt,
       ...(followContext ? { sessionFollowUpdates: followContext.updates } : {}),
@@ -413,20 +430,37 @@ export class VoiceAgentManager {
       result = await backend.deliverInput(
         runtimeId,
         { text: composedPrompt },
-        { ...context, localId: localInputId },
+        { ...context, localId: localInputId, causalPermissionAuthority: authority.causalPermissionAuthority,
+          effectiveCallerPermissionMode: authority.effectiveCallerPermissionMode },
       );
     } catch (error) {
       settled = true;
       if (unsubscribe) this.unsubscribeBestEffort(unsubscribe);
       throw error;
     }
-    if (result.status === 'admitted') return;
+    if (result.status === 'admitted') return authority;
     settled = true;
     if (unsubscribe) this.unsubscribeBestEffort(unsubscribe);
     throw new VoiceAgentError(
       result.status === 'unsupported' ? 'VOICE_AGENT_UNSUPPORTED' : 'VOICE_AGENT_START_FAILED',
       result.diagnostic.message ?? `Voice prompt was not admitted (${result.status})`,
     );
+  }
+
+  private assertActionBlockPermissions(
+    actions: readonly VoiceAssistantAction[],
+    authority: Extract<ReturnType<typeof resolveExecutionRunInputAuthority>, { ok: true }>,
+  ): void {
+    if (actions.length === 0) return;
+    const specs = listVoiceActionBlockSpecs();
+    for (const action of actions) {
+      const spec = specs.find(spec => spec.bindings?.voiceClientToolName === action.t);
+      // The original input's admitted mode follows blocks outside the native
+      // transport. MCP exposure and auto-approval do not define Action effects.
+      if (!spec || resolveHappierActionPermission({ spec, permissionMode: authority.effectiveCallerPermissionMode }) === 'denied') {
+        throw Object.assign(new Error('permission_denied'), { code: 'permission_denied' });
+      }
+    }
   }
 
   private subscribeToChatBackend(
@@ -689,7 +723,7 @@ export class VoiceAgentManager {
         voiceAgent.commitSessionId = null;
       }
       if (commitBackend) await this.disposeRuntimeOnce(commitBackend).catch(() => {});
-      throw new VoiceAgentError('VOICE_AGENT_START_FAILED', e instanceof Error ? e.message : 'commit backend unavailable');
+      throw toVoiceAgentStartError(e, resolveExecutionRunRuntimeBackendId(voiceAgent.backendTarget), 'commit backend unavailable');
     }
   }
 
@@ -900,6 +934,7 @@ export class VoiceAgentManager {
       }
 
       const bootstrapMode = params.bootstrapMode ?? 'none';
+      let preparedInstructionsFor: VoicePromptPreparation['preparedInstructionsFor'];
       if (!resume.chatSessionId && bootstrapMode === 'ready_handshake') {
         const shouldDeferInitialContextUntilFirstTurn = params.initialContextMode === 'first_turn';
         instance.clearChatBuffer();
@@ -912,7 +947,7 @@ export class VoiceAgentManager {
           memoryRecallGuidanceEnabled: instance.memoryRecallGuidanceEnabled,
           systemAppendBlocks: instance.systemAppendBlocks,
         });
-        await this.deliverPrompt(instance.chatBackend, instance.chatSessionId, prompt);
+        await this.deliverPrompt(instance, instance.chatBackend, instance.chatSessionId, prompt);
         ensureCurrentStart();
         if (instance.chatBackend.waitForTurnCompletion) {
           await instance.chatBackend.waitForTurnCompletion(this.resolveResponseTimeoutMs(params.bootstrapTimeoutMs));
@@ -925,6 +960,7 @@ export class VoiceAgentManager {
         instance.chatSessionSeeded = !shouldDeferInitialContextUntilFirstTurn;
         // A readiness handshake is not a greeting to the user.
         instance.welcomed = false;
+        preparedInstructionsFor = preparation.preparedInstructionsFor;
       }
 
       ensureCurrentStart();
@@ -935,6 +971,7 @@ export class VoiceAgentManager {
 
       return {
         voiceAgentId,
+        ...(preparedInstructionsFor ? { preparedInstructionsFor } : {}),
         effective: {
           chatModelId: params.chatModelId,
           commitModelId: params.commitModelId,
@@ -955,10 +992,7 @@ export class VoiceAgentManager {
         disposals.push(this.disposeRuntimeOnce(chatBackendForCleanup));
       }
       await Promise.allSettled(disposals);
-      if (e instanceof VoiceAgentError) {
-        throw e;
-      }
-      throw new VoiceAgentError('VOICE_AGENT_START_FAILED', e instanceof Error ? e.message : 'start failed');
+      throw toVoiceAgentStartError(e, resolveExecutionRunRuntimeBackendId(params.backendTarget), 'start failed');
     } finally {
       startSignal.removeEventListener('abort', cancelStart);
       if (this.startingVoiceAgents.get(voiceAgentId) === startOccurrence) {
@@ -1006,7 +1040,7 @@ export class VoiceAgentManager {
 
     voiceAgent.lastUsedAt = this.getNowMs();
 		    const run = (async () => {
-		      const ensureCurrent = await this.prepareSystemAppendBlocks(voiceAgent);
+		      const { ensureCurrent } = await this.prepareSystemAppendBlocks(voiceAgent);
 		      voiceAgent.clearChatBuffer();
           const prompt = voiceAgent.chatSessionSeeded
             ? buildVoiceAgentUserTurnPrompt({ userText: params.userText })
@@ -1026,13 +1060,14 @@ export class VoiceAgentManager {
             prompt,
           );
           ensureCurrent();
-		      await this.deliverPrompt(voiceAgent.chatBackend, voiceAgent.chatSessionId, prompt, undefined, followContext);
+		      const authority = await this.deliverPrompt(voiceAgent, voiceAgent.chatBackend, voiceAgent.chatSessionId, prompt, undefined, followContext);
 		      if (voiceAgent.chatBackend.waitForTurnCompletion) {
 		        await voiceAgent.chatBackend.waitForTurnCompletion(this.resolveResponseTimeoutMs());
 		      }
           voiceAgent.chatSessionSeeded = true;
           voiceAgent.welcomed = true;
 		      const extracted = extractVoiceActionsFromAssistantText(voiceAgent.chatBuffer);
+		      this.assertActionBlockPermissions(extracted.actions, authority);
 		      const assistantText = this.normalizeAssistantTextForActions(extracted.assistantText, extracted.actions);
 		      appendVoiceAgentHistoryTurn(voiceAgent.history, {
 		        userText: params.userText,
@@ -1050,7 +1085,7 @@ export class VoiceAgentManager {
     voiceAgentId: string;
     welcomeText?: string;
     causalPermissionAuthority?: import('@happier-dev/protocol').SessionInputCausalPermissionAuthorityV1;
-  }>): Promise<Readonly<{ assistantText: string }>> {
+  }>): Promise<Readonly<{ assistantText: string; preparedInstructionsFor?: VoicePromptPreparation['preparedInstructionsFor'] }>> {
     const voiceAgent = this.voiceAgents.get(params.voiceAgentId);
     if (!voiceAgent) throw new VoiceAgentError('VOICE_AGENT_NOT_FOUND', 'Voice agent not found');
     if (voiceAgent.lifecycleInFlight || voiceAgent.inFlight || voiceAgent.activeTurnStream) {
@@ -1062,7 +1097,7 @@ export class VoiceAgentManager {
 
     voiceAgent.lastUsedAt = this.getNowMs();
     const run = (async () => {
-      const ensureCurrent = await this.prepareSystemAppendBlocks(voiceAgent);
+      const { ensureCurrent, preparedInstructionsFor } = await this.prepareSystemAppendBlocks(voiceAgent);
       voiceAgent.clearChatBuffer();
       const prompt = buildVoiceAgentBootstrapPrompt({
         verbosity: voiceAgent.verbosity,
@@ -1076,6 +1111,7 @@ export class VoiceAgentManager {
       });
       ensureCurrent();
       await this.deliverPrompt(
+        voiceAgent,
         voiceAgent.chatBackend,
         voiceAgent.chatSessionId,
         prompt,
@@ -1086,11 +1122,12 @@ export class VoiceAgentManager {
       if (voiceAgent.chatBackend.waitForTurnCompletion) {
         await voiceAgent.chatBackend.waitForTurnCompletion(this.resolveResponseTimeoutMs());
       }
+      ensureCurrent();
       const assistantText = extractVoiceActionsFromAssistantText(voiceAgent.chatBuffer).assistantText;
       voiceAgent.clearChatBuffer();
       voiceAgent.chatSessionSeeded = true;
       voiceAgent.welcomed = true;
-      return { assistantText };
+      return { assistantText, ...(preparedInstructionsFor ? { preparedInstructionsFor } : {}) };
     })();
 
     return await this.trackWork(voiceAgent, 'inFlight', run);
@@ -1159,7 +1196,7 @@ export class VoiceAgentManager {
 
     const run = (async () => {
       try {
-        const ensureCurrent = await this.prepareSystemAppendBlocks(voiceAgent, stream);
+        const { ensureCurrent, preparedInstructionsFor } = await this.prepareSystemAppendBlocks(voiceAgent, stream);
         const prompt = voiceAgent.chatSessionSeeded
           ? buildVoiceAgentUserTurnPrompt({ userText: params.userText })
           : buildVoiceAgentSeededUserTurnPrompt({
@@ -1187,7 +1224,8 @@ export class VoiceAgentManager {
         // Follow frontier for content nothing ever consumed.
         if (settleCancelled()) return;
         ensureCurrent();
-        await this.deliverPrompt(
+        const authority = await this.deliverPrompt(
+          voiceAgent,
           voiceAgent.chatBackend,
           voiceAgent.chatSessionId,
           prompt,
@@ -1198,6 +1236,11 @@ export class VoiceAgentManager {
           params.durableUserTranscriptLocalId,
         );
         if (settleCancelled()) return;
+        ensureCurrent();
+        if (preparedInstructionsFor) {
+          stream.preparedInstructionsFor = preparedInstructionsFor;
+          stream.onEventsChanged();
+        }
         if (voiceAgent.chatBackend.waitForTurnCompletion) {
           await voiceAgent.chatBackend.waitForTurnCompletion(this.resolveResponseTimeoutMs());
         }
@@ -1221,6 +1264,7 @@ export class VoiceAgentManager {
         if (settleCancelled()) return;
         const assistantText = voiceAgent.chatBuffer.trim();
         const extracted = extractVoiceActionsFromAssistantText(assistantText);
+        this.assertActionBlockPermissions(extracted.actions, authority);
         const desiredText = this.normalizeAssistantTextForActions(extracted.assistantText, extracted.actions);
         const finalCandidate = { v: 1, kind: 'turn_final', turnId: stream.id, seq: stream.outputSeq, text: desiredText } as const;
         let cleanText = fitVoiceAgentOutputTextV1(stream.outputBudget, finalCandidate, '', VOICE_OUTPUT_INCOMPLETE_TEXT);
@@ -1287,6 +1331,7 @@ export class VoiceAgentManager {
         });
         stream.outputSeq += 1;
       } catch (error: unknown) {
+        stream.preparedInstructionsFor = undefined;
         if (settleCancelled()) return;
         const message = error instanceof Error ? error.message : 'stream_failed';
         const code =
@@ -1320,9 +1365,10 @@ export class VoiceAgentManager {
       throw new VoiceAgentError('VOICE_AGENT_INVALID_CURSOR', 'Turn stream cursor is ahead of produced events');
     }
     if (params.waitForEvents && cursor === stream.events.length && !stream.done) {
+      const preparedInstructionsFor = stream.preparedInstructionsFor;
       await waitForChange({
         subscribe: (wake) => { stream.eventWaiters.add(wake); return () => { stream.eventWaiters.delete(wake); }; },
-        hasChanged: () => cursor < stream.events.length || stream.done,
+        hasChanged: () => cursor < stream.events.length || stream.done || stream.preparedInstructionsFor !== preparedInstructionsFor,
         signal: params.signal,
       });
     }
@@ -1355,6 +1401,7 @@ export class VoiceAgentManager {
       events,
       nextCursor: end,
       done,
+      ...(stream.preparedInstructionsFor && !stream.cancelled ? { preparedInstructionsFor: stream.preparedInstructionsFor } : {}),
       ...(terminalEvent ? { terminalEvent } : {}),
     };
   }
@@ -1401,6 +1448,7 @@ export class VoiceAgentManager {
               maxChars: effectiveMaxChars,
             });
             await this.deliverPrompt(
+              voiceAgent,
               voiceAgent.chatBackend,
               voiceAgent.chatSessionId,
               prompt,
@@ -1427,6 +1475,7 @@ export class VoiceAgentManager {
 		        maxChars: effectiveMaxChars,
 		      });
 		      await this.deliverPrompt(
+            voiceAgent,
             voiceAgent.commitBackend!,
             voiceAgent.commitSessionId!,
             prompt,
@@ -1538,6 +1587,7 @@ export class VoiceAgentManager {
     }
 
     stream.cancelled = true;
+    stream.preparedInstructionsFor = undefined;
     // Prompt and Follow reads belong to this turn, not the retained native
     // Session. Cancel must release them before joining the turn's settlement.
     stream.preparationAbortController.abort();

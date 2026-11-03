@@ -8,6 +8,7 @@ import { computeContentPublicKeyFingerprint } from '../machines/identity/install
 import {
   sealSessionOwnerMetadataEnvelopeV1,
 } from '../sessions/metadata/sessionMetadataEnvelopesV1.js';
+import { sealSessionOwnerDisplayEnvelopeV1 } from '../sessions/metadata/sessionDisplayEnvelopesV1.js';
 import {
   bindReviewCommentEventSensitiveEnvelopeV1,
   buildReviewCommentEventRequestBindingV1,
@@ -621,6 +622,23 @@ describe('account/encryptionMigrate', () => {
     } as const;
     expect(AccountEncryptionMigrateRequestSchema.safeParse(base).success)
       .toBe(true);
+    const ownerDisplay = sealSessionOwnerDisplayEnvelopeV1({ accountMode: 'plain', display: { v: 1, name: 'Retained title' } });
+    if (!ownerDisplay.ok) throw new Error('Expected canonical owner display fixture');
+    const withOwnerDisplay = { ...base, sessions: { action: 'migrate', items: [{ ...base.sessions.items[0], ownerDisplay: ownerDisplay.envelope }] } };
+    expect(AccountEncryptionMigrateRequestSchema.safeParse(withOwnerDisplay).success).toBe(true);
+    const boundDisplay = AccountEncryptionMigrateRequestSchema.parse(withOwnerDisplay);
+    if (boundDisplay.sessions.action !== 'migrate') throw new Error('Expected Session migration fixture');
+    const changedDisplay = sealSessionOwnerDisplayEnvelopeV1({ accountMode: 'plain', display: { v: 1, name: 'Substituted title' } });
+    if (!changedDisplay.ok) throw new Error('Expected canonical changed display fixture');
+    expect(createAccountEncryptionMigrateRequestBindingDigestV1({ accountId: 'account-1', sourceMode: 'e2ee', request: {
+      ...boundDisplay, sessions: { action: 'migrate', items: [{ ...boundDisplay.sessions.items[0]!, ownerDisplay: changedDisplay.envelope }] },
+    } })).not.toEqual(createAccountEncryptionMigrateRequestBindingDigestV1({ accountId: 'account-1', sourceMode: 'e2ee', request: boundDisplay }));
+    const encryptedOwnerDisplay = sealSessionOwnerDisplayEnvelopeV1({ accountMode: 'e2ee', display: { v: 1, name: 'Retained title' },
+      material: { type: 'dataKey', machineKey: new Uint8Array(32).fill(7) }, randomBytes: length => new Uint8Array(length).fill(13) });
+    if (!encryptedOwnerDisplay.ok) throw new Error('Expected canonical encrypted display fixture');
+    expect(AccountEncryptionMigrateRequestSchema.safeParse({ ...withOwnerDisplay,
+      sessions: { action: 'migrate', items: [{ ...base.sessions.items[0], ownerDisplay: encryptedOwnerDisplay.envelope }] },
+    }).success).toBe(false);
     expect(AccountEncryptionMigrateRequestSchema.safeParse({
       ...base,
       sessions: {

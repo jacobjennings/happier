@@ -6,6 +6,30 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./machineSetup": {
+      "happier-source": "./src/machineSetup/index.ts",
+      "types": "./dist/machineSetup/index.d.ts",
+      "import": "./dist/machineSetup/index.js",
+      "default": "./dist/machineSetup/index.js"
+    },
+    "./plugins/registration/staticCapture": {
+      "happier-source": "./src/plugins/registration/staticCapture.ts",
+      "types": "./dist/plugins/registration/staticCapture.d.ts",
+      "import": "./dist/plugins/registration/staticCapture.js",
+      "default": "./dist/plugins/registration/staticCapture.js"
+    },
+    "./plugins/registration/scope": {
+      "happier-source": "./src/plugins/registration/scope.ts",
+      "types": "./dist/plugins/registration/scope.d.ts",
+      "import": "./dist/plugins/registration/scope.js",
+      "default": "./dist/plugins/registration/scope.js"
+    },
+    "./connectedAccounts": {
+      "happier-source": "./src/connectedAccounts/index.ts",
+      "types": "./dist/connectedAccounts/index.d.ts",
+      "import": "./dist/connectedAccounts/index.js",
+      "default": "./dist/connectedAccounts/index.js"
+    },
     "./machineLima": {
       "types": "./machineLima.d.mts",
       "import": "./machineLima.mjs",
@@ -419,6 +443,67 @@
       "types": "./windowsCommandInvocation.d.mts",
       "import": "./windowsCommandInvocation.mjs",
       "default": "./windowsCommandInvocation.mjs"
+    },
+    "./plugins/errors": {
+      "happier-source": "./src/plugins/errors.ts",
+      "types": "./dist/plugins/errors.d.ts",
+      "import": "./dist/plugins/errors.js",
+      "default": "./dist/plugins/errors.js"
+    },
+    "./plugins/ui": {
+      "happier-source": "./src/plugins/ui/index.ts",
+      "types": "./dist/plugins/ui/index.d.ts",
+      "import": "./dist/plugins/ui/index.js",
+      "default": "./dist/plugins/ui/index.js"
+    },
+    "./plugins/registration/contracts": {
+      "happier-source": "./src/plugins/registration/contracts.ts",
+      "types": "./dist/plugins/registration/contracts.d.ts",
+      "import": "./dist/plugins/registration/contracts.js",
+      "default": "./dist/plugins/registration/contracts.js"
+    },
+    "./plugins/registration/actionHandlerInvocation": {
+      "happier-source": "./src/plugins/registration/actionHandlerInvocation.ts",
+      "types": "./dist/plugins/registration/actionHandlerInvocation.d.ts",
+      "import": "./dist/plugins/registration/actionHandlerInvocation.js",
+      "default": "./dist/plugins/registration/actionHandlerInvocation.js"
+    },
+    "./plugins/registration/cleanupTimeout": {
+      "happier-source": "./src/plugins/registration/cleanupTimeout.ts",
+      "types": "./dist/plugins/registration/cleanupTimeout.d.ts",
+      "import": "./dist/plugins/registration/cleanupTimeout.js",
+      "default": "./dist/plugins/registration/cleanupTimeout.js"
+    },
+    "./machines/managed": {
+      "happier-source": "./src/machines/managed/index.ts",
+      "types": "./dist/machines/managed/index.d.ts",
+      "import": "./dist/machines/managed/index.js",
+      "default": "./dist/machines/managed/index.js"
+    },
+    "./plugins/registration": {
+      "happier-source": "./src/plugins/registration/index.ts",
+      "types": "./dist/plugins/registration/index.d.ts",
+      "import": "./dist/plugins/registration/index.js",
+      "default": "./dist/plugins/registration/index.js"
+    },
+    "./plugins/http": {
+      "happier-source": "./src/plugins/http/index.ts",
+      "types": "./dist/plugins/http/index.d.ts",
+      "import": "./dist/plugins/http/index.js",
+      "default": "./dist/plugins/http/index.js"
+    },
+    "./plugins/http/contracts": {
+      "happier-source": "./src/plugins/http/contracts.ts",
+      "types": "./dist/plugins/http/contracts.d.ts",
+      "import": "./dist/plugins/http/contracts.js",
+      "default": "./dist/plugins/http/contracts.js"
+    },
+
+    "./fs/jsonOwnerFileLock": {
+      "happier-source": "./src/fs/jsonOwnerFileLock.ts",
+      "types": "./dist/fs/jsonOwnerFileLock.d.ts",
+      "import": "./dist/fs/jsonOwnerFileLock.js",
+      "default": "./dist/fs/jsonOwnerFileLock.js"
     }
   },
   "scripts": {

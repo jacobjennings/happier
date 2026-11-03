@@ -13,20 +13,10 @@ import {
 
 import {
   createVoiceQaRecordedAudioController,
-  createRecordedAudioQaDaemonMachineResolver,
   resolveRecordedAudioQaTranscriptionMode,
 } from './voiceQaRecordedAudioController';
 
 describe('voiceQaRecordedAudioController target selection', () => {
-  it('selects the explicit daemon target when every explicit target field is present', () => {
-    expect(resolveRecordedAudioQaTranscriptionMode({
-      sessionId: 'qa-session',
-      machineId: 'qa-machine',
-      basePath: '/repo',
-      packId: 'qa-pack',
-    })).toBe('explicit_daemon');
-  });
-
   it('keeps the configured runtime path when the explicit target is incomplete', () => {
     expect(resolveRecordedAudioQaTranscriptionMode({
       sessionId: 'qa-session',
@@ -34,14 +24,6 @@ describe('voiceQaRecordedAudioController target selection', () => {
       basePath: '',
       packId: 'qa-pack',
     })).toBe('configured_runtime');
-  });
-
-  it('binds explicit daemon resolution to the requested QA machine', () => {
-    const resolvers = createRecordedAudioQaDaemonMachineResolver({
-      machineId: 'qa-machine',
-    });
-
-    expect(resolvers.resolveVoiceHomeDaemonMachineId()).toBe('qa-machine');
   });
 
   it('runs the real explicit controller branch on only the requested target without mutating canonical Session or Machine projections', async () => {

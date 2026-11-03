@@ -420,7 +420,11 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
       await expect(result).resolves.toMatchObject({ kind: 'missing' });
       expect(materializeAccount).not.toHaveBeenCalled();
     } else {
-      await expect(result).resolves.toEqual({ kind: 'available', token: 'exact-bound-token' });
+      await expect(result).resolves.toEqual({
+        kind: 'available',
+        token: 'exact-bound-token',
+        account: { service, accountId: 'exact-deployment' },
+      });
     }
   });
 
@@ -464,46 +468,6 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
       provider: githubProvider,
     })).rejects.toThrow('provider-qualified');
     expect(materialize).not.toHaveBeenCalled();
-  });
-
-  it('materializes SCM authentication through the canonical durable purpose binding', async () => {
-    const service = {
-      pluginId: GITHUB_PLUGIN_MANIFEST.id,
-      localId: 'github-account',
-    } as const;
-    const materialize = vi.fn(async () => ({
-      kind: 'httpHeaders' as const,
-      headers: { Authorization: 'Bearer ghp_exact' },
-    }));
-
-    const baseInput = createRuntimeInput();
-    const services = createHostScmHostingProviderRuntimeServices({
-      ...baseInput,
-      resolveConnectedAccountPurposeBindingOwner: () => createAuthenticationBindingOwner(materialize),
-    });
-
-    await expect(runAsHostingProvider(
-      GITHUB_PLUGIN_MANIFEST.id,
-      'github',
-      () => services.resolveScmHostingTokenMaterialization?.({
-        kind: 'scm_hosting_token',
-        providerId: GITHUB_SCM_HOSTING_PROVIDER_ID,
-        host: 'github.com',
-        provider: githubProvider,
-      }),
-    )).resolves.toEqual({
-      kind: 'available',
-      token: 'ghp_exact',
-    });
-    expect(materialize).toHaveBeenCalledWith({
-      account: { service: { pluginId: GITHUB_PLUGIN_MANIFEST.id, localId: 'github-account' }, accountId: 'bound-account' },
-      request: {
-        kind: 'httpHeaders',
-        origin: 'https://github.com',
-        headerNames: ['authorization'],
-      },
-      signal: expect.any(AbortSignal),
-    });
   });
 
   it('rejects an accessor-backed provider identity before cross-plugin credential dispatch', async () => {
@@ -679,12 +643,12 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
     await expect(pending).rejects.toThrow('generation is stale');
   });
 
-  it('executes only inside the exact current hosting-provider generation without exposing a path', async () => {
-    const executeCommand = vi.fn(async () => ({
-      ok: true,
-      stdout: 'ok',
-      stderr: '',
-      exitCode: 0,
+  it('executes only inside the exact current hosting-provider generation', async () => {
+    const release = vi.fn();
+    const resolveExecutable = vi.fn(async () => ({
+      command: process.execPath,
+      args: ['-e', 'process.stdout.write("ok")'],
+      release,
     }));
     const baseInput = createRuntimeInput();
     const input: RuntimeServicesInput = {
@@ -707,6 +671,7 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
       },
     };
     let services!: ReturnType<typeof createHostScmHostingProviderRuntimeServices>;
+    const commandResults: unknown[] = [];
     const registrations = new Map(input.scmHostingProvidersById);
     const originalRegistration = registrations.get(GITHUB_SCM_HOSTING_PROVIDER_ID)!;
     registrations.set(GITHUB_SCM_HOSTING_PROVIDER_ID, {
@@ -717,11 +682,11 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
           pullRequests: {
             getPullRequestAuthProfileKey: () => null,
             async listPullRequests() {
-              await services.executeCommand?.({
-                executable: { kind: 'systemTool', id: 'github-cli' },
-                args: ['--version'],
-                timeoutMs: 1_000,
-              });
+              commandResults.push(await services.executeCommand?.({
+                executable: { kind: 'managedDependency', id: 'forge-cli' },
+                args: [],
+                timeoutMs: 2_000,
+              }));
               return [];
             },
             getPullRequest: async () => null,
@@ -733,13 +698,13 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
     services = createHostScmHostingProviderRuntimeServices({
       ...input,
       scmHostingProvidersById: registrations,
-      executeCommand,
+      managedDependencies: { resolveExecutable },
     });
 
     await expect(services.executeCommand?.({
-      executable: { kind: 'systemTool', id: 'github-cli' },
-      args: ['--version'],
-      timeoutMs: 1_000,
+      executable: { kind: 'managedDependency', id: 'forge-cli' },
+      args: [],
+      timeoutMs: 2_000,
     })).rejects.toThrow('provider-qualified');
 
     const registry = await services.resolveScmHostingProviderRegistry?.();
@@ -753,9 +718,17 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
     });
     const adapter = registry?.getPullRequests(GITHUB_SCM_HOSTING_PROVIDER_ID);
     await expect(adapter?.listPullRequests({ provider: githubProvider, head: 'feature' })).resolves.toEqual([]);
-    expect(executeCommand).toHaveBeenCalledWith(expect.objectContaining({
-      executable: { kind: 'systemTool', id: 'github-cli' },
-    }), undefined);
+    expect(commandResults).toEqual([{ ok: true, stdout: 'ok', stderr: '', exitCode: 0 }]);
+    expect(release).toHaveBeenCalledOnce();
+
+    // A reload publishes a new generation; the adapter bound to the retired one must not run commands.
+    registrations.set(GITHUB_SCM_HOSTING_PROVIDER_ID, {
+      ...registrations.get(GITHUB_SCM_HOSTING_PROVIDER_ID)!,
+      occurrenceId: 'next-generation',
+    });
+    await expect(adapter?.listPullRequests({ provider: githubProvider, head: 'feature' }))
+      .rejects.toThrow('generation is stale');
+    expect(resolveExecutable).toHaveBeenCalledOnce();
   });
 
   it('routes a declared managed dependency through the shared executable and process owners', async () => {
@@ -854,82 +827,6 @@ describe('createHostScmHostingProviderRuntimeServices', () => {
       .resolves.toMatchObject({ kind: 'available', token: 'ghp_second' });
 
     expect(materialize).toHaveBeenCalledTimes(2);
-  });
-
-  it('materializes Bitbucket basic auth through its canonical durable purpose binding', async () => {
-    const service = {
-      pluginId: BITBUCKET_PLUGIN_MANIFEST.id,
-      localId: 'bitbucket-account',
-    } as const;
-    const materialize = vi.fn(async () => ({
-      kind: 'httpHeaders' as const,
-      headers: {
-        Authorization: `Basic ${Buffer.from('alice@example.test:bb-secret').toString('base64')}`,
-      },
-    }));
-    const services = createHostScmHostingProviderRuntimeServices({
-      contributes: {
-        scmHostingProviders: [{
-          id: 'bitbucket',
-          provenance: 'external',
-          source: { kind: 'path' },
-          pluginId: BITBUCKET_PLUGIN_MANIFEST.id,
-          definition: ScmHostingProviderContributionSchema.parse(
-            (BITBUCKET_PLUGIN_MANIFEST.contributes.scmHostingProviders ?? [])[0],
-          ),
-        }],
-        connectedAccountDescriptors: [{
-          provenance: 'external',
-          source: { kind: 'path' },
-          pluginId: BITBUCKET_PLUGIN_MANIFEST.id,
-          definition: PluginConnectedAccountDescriptorContributionV2Schema.parse(
-            (BITBUCKET_PLUGIN_MANIFEST.contributes.connectedAccountDescriptors ?? [])[0],
-          ),
-        }],
-      },
-      scmHostingProvidersById: new Map([[
-        BITBUCKET_SCM_HOSTING_PROVIDER_ID,
-        {
-          pluginId: BITBUCKET_PLUGIN_MANIFEST.id,
-          occurrenceId: 'test-generation',
-          registration: {
-            id: 'bitbucket',
-            adapter: {},
-          },
-        },
-      ]]),
-      resolveConnectedAccountPurposeBindingOwner: () => createAuthenticationBindingOwner(materialize),
-    });
-
-    await expect(runAsHostingProvider(
-      BITBUCKET_PLUGIN_MANIFEST.id,
-      'bitbucket',
-      () => services.resolveScmHostingBasicAuthMaterialization?.({
-        kind: 'scm_hosting_basic_auth',
-        providerId: BITBUCKET_SCM_HOSTING_PROVIDER_ID,
-        host: 'bitbucket.org',
-        provider: {
-          id: BITBUCKET_SCM_HOSTING_PROVIDER_ID,
-          kind: 'bitbucket',
-          displayName: 'Bitbucket',
-          baseUrl: 'https://bitbucket.org',
-          urlSafety: { allowedSchemes: ['https:'] },
-        },
-      }),
-    )).resolves.toEqual({
-      kind: 'available',
-      username: 'alice@example.test',
-      password: 'bb-secret',
-    });
-    expect(materialize).toHaveBeenCalledWith({
-      account: { service: { pluginId: BITBUCKET_PLUGIN_MANIFEST.id, localId: 'bitbucket-account' }, accountId: 'bound-account' },
-      request: {
-        kind: 'httpHeaders',
-        origin: 'https://bitbucket.org',
-        headerNames: ['authorization'],
-      },
-      signal: expect.any(AbortSignal),
-    });
   });
 
   it('routes a registered GitHub REST operation through the canonical purpose binding owner', async () => {

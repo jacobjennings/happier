@@ -43,10 +43,6 @@ function readScmAutoRefreshProjectMinIntervalMs(): number {
     return Math.min(MAX_SCM_AUTO_REFRESH_PROJECT_MIN_INTERVAL_MS, parsed);
 }
 
-export { ATTRIBUTION_INVALIDATION_WINDOW_MS, shouldAttributeChangedPaths } from './sync/attribution';
-export { isSessionPathWithinRepoRoot } from './sync/paths';
-export { collectChangedPaths } from './sync/snapshotDiff';
-
 export class ScmStatusSync {
     // Map project keys to sync instances
     private projectSyncMap = new Map<string, InvalidateSync>();
@@ -140,7 +136,7 @@ export class ScmStatusSync {
             this.projectLastSnapshot.set(projectKey, snapshot);
             this.projectSnapshotSignature.set(projectKey, signature);
             if (signatureChanged) {
-                await clearSearchCacheForProject(this.sessionToProjectKey, projectKey);
+                await clearSearchCacheForProject(this.getProjectSessions(projectKey));
             }
             if (source === 'mutation') {
                 const changedPaths = collectChangedPaths(previousSnapshot, snapshot);
@@ -233,11 +229,7 @@ export class ScmStatusSync {
         snapshot: ScmWorkingSnapshot,
     ): void {
         const state = storage.getState();
-        const existingSnapshot =
-            typeof state.getSessionProjectScmSnapshot === 'function'
-                ? state.getSessionProjectScmSnapshot(sessionId)
-                : null;
-        if (existingSnapshot) return;
+        if (state.getSessionProjectScmSnapshot(sessionId)) return;
         this.publishSnapshotToSession(state, sessionId, snapshot);
     }
 
@@ -247,6 +239,19 @@ export class ScmStatusSync {
     private getSessionSyncKey(sessionId: string, serverId?: string | null): string {
         const exactServerId = serverId?.trim();
         return exactServerId ? `${exactServerId}\u0000${sessionId}` : sessionId;
+    }
+
+    /** The Sessions mapped to a project, decoded from their sync keys (see getSessionSyncKey). */
+    private getProjectSessions(projectKey: string): Array<{ sessionId: string; serverId: string | null }> {
+        const sessions: Array<{ sessionId: string; serverId: string | null }> = [];
+        for (const [sessionSyncKey, key] of this.sessionToProjectKey.entries()) {
+            if (key !== projectKey) continue;
+            const separator = sessionSyncKey.indexOf('\u0000');
+            sessions.push(separator < 0
+                ? { sessionId: sessionSyncKey, serverId: null }
+                : { sessionId: sessionSyncKey.slice(separator + 1), serverId: sessionSyncKey.slice(0, separator) });
+        }
+        return sessions;
     }
 
     private getProjectKeyForSession(sessionId: string, serverId?: string | null): string | null {
@@ -587,7 +592,7 @@ export class ScmStatusSync {
             const signature = buildSnapshotSignature(snapshot);
             const previousSignature = this.projectSnapshotSignature.get(activeProjectKey);
             const signatureChanged = signature !== previousSignature;
-            const scopedSessionIdsMissingSnapshot = signatureChanged || typeof state.getSessionProjectScmSnapshot !== 'function'
+            const scopedSessionIdsMissingSnapshot = signatureChanged
                 ? []
                 : scopeSessionIds.filter((scopedSessionId) => state.getSessionProjectScmSnapshot(scopedSessionId) == null);
             const publishSessionIds = signatureChanged ? scopeSessionIds : scopedSessionIdsMissingSnapshot;
@@ -631,7 +636,7 @@ export class ScmStatusSync {
 
             if (signatureChanged) {
                 this.projectLastSnapshot.set(activeProjectKey, snapshot);
-                await clearSearchCacheForProject(this.sessionToProjectKey, activeProjectKey);
+                await clearSearchCacheForProject(this.getProjectSessions(activeProjectKey));
             }
         } catch (error) {
             const failure = scmFallbackError(error, { method: RPC_METHODS.SCM_STATUS_SNAPSHOT, request: {} });

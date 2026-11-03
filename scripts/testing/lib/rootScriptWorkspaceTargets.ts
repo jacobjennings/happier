@@ -9,7 +9,7 @@ import { parseSharedPackageTestMode, selectSharedPackageTestCommands } from '../
  * the script body or its delegated runner's command inventory, so executor changes are picked up
  * everywhere without editing a second list.
  */
-import { ROOT_TEST_COMMANDS } from '../runRootTests.ts';
+import { resolveFixedRootTestCommands } from '../runRootTests.ts';
 
 export interface WorkspaceScriptTarget {
   /** Workspace package name for `pnpm --filter <name> run <script>` invocations. */
@@ -27,6 +27,8 @@ export interface PnpmInvocationScan {
 
 const HSTACK_SCRIPT_FLAG_RE = /--script=([A-Za-z0-9:._-]+)/g;
 const TEST_FILE_ARGUMENT_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
+/** Node options whose value is the next token (`--import <module>`), not a positional test file. */
+const NODE_OPTIONS_WITH_SEPARATE_VALUE = new Set(['--import']);
 
 function isFlag(token: string): boolean {
   return token.startsWith('-');
@@ -61,11 +63,7 @@ export function scanPnpmInvocations(commandText: string): PnpmInvocationScan {
       continue;
     }
     if (tokens[index] === 'scripts/testing/runRootTests.ts') {
-      const lane = tokens[index + 1];
-      if (lane !== 'unit' && lane !== 'integration') {
-        throw new Error(`Unsupported root test lane: ${lane ?? '<missing>'}`);
-      }
-      for (const command of ROOT_TEST_COMMANDS[lane]) {
+      for (const command of resolveFixedRootTestCommands(tokens[index + 1])) {
         const scan = scanPnpmInvocations(['pnpm', ...command.args].join(' '));
         workspaceTargets.push(...scan.workspaceTargets);
         rootScriptRefs.push(...scan.rootScriptRefs);
@@ -134,7 +132,7 @@ export function scanNodeTestFileArguments(commandText: string): readonly string[
     let runsNodeTestRunner = false;
     while (cursor < tokens.length && isFlag(tokens[cursor]!)) {
       if (tokens[cursor] === '--test') runsNodeTestRunner = true;
-      cursor += 1;
+      cursor += NODE_OPTIONS_WITH_SEPARATE_VALUE.has(tokens[cursor]!) ? 2 : 1;
     }
 
     if (runsNodeTestRunner) {

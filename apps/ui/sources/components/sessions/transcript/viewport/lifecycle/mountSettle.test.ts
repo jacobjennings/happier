@@ -21,31 +21,6 @@ function observeDoneAt(nowMs: number) {
 }
 
 describe('lifecycle mount-settle owner', () => {
-    it('tracks first paint and layout commit separately from stable settle', () => {
-        const coordinator = createTranscriptMountSettlePinCoordinator({ tuning });
-
-        expect(coordinator.getSnapshot()).toEqual({
-            firstListPaint: false,
-            layoutCommitObserved: false,
-            stableSettle: false,
-            isMountSettleActive: true,
-        });
-
-        coordinator.recordFirstListPaint({ sessionId: 'session-a', nowMs: 0 });
-        expect(coordinator.getSnapshot()).toMatchObject({
-            firstListPaint: true,
-            layoutCommitObserved: false,
-            stableSettle: false,
-        });
-
-        coordinator.recordLayoutCommitObserved({ sessionId: 'session-a', nowMs: 10 });
-        expect(coordinator.getSnapshot()).toMatchObject({
-            firstListPaint: true,
-            layoutCommitObserved: true,
-            stableSettle: false,
-        });
-    });
-
     it('waits for initial fill and quiescent metrics before stable settle', () => {
         const coordinator = createTranscriptMountSettlePinCoordinator({ tuning });
         coordinator.recordFirstListPaint({ sessionId: 'session-a', nowMs: 0 });
@@ -141,12 +116,7 @@ describe('lifecycle mount-settle owner', () => {
         coordinator.recordLayoutCommitObserved({ sessionId: 'session-a', nowMs: 0 });
         coordinator.observeMetrics(observeDoneAt(20));
 
-        const sampler = (coordinator as {
-            sample?: (event: Readonly<{ sessionId: string; nowMs: number }>) => void;
-        }).sample;
-        expect(sampler).toBeDefined();
-
-        sampler?.({ sessionId: 'session-a', nowMs: 121 });
+        coordinator.sample({ sessionId: 'session-a', nowMs: 121 });
 
         expect(coordinator.getSnapshot().stableSettle).toBe(true);
 
@@ -195,13 +165,15 @@ describe('lifecycle mount-settle owner', () => {
             ...observeDoneAt(110),
             sessionId: 'session-b',
         });
+        expect(coordinator.getSnapshot().stableSettle).toBe(false);
 
-        expect(coordinator.getSnapshot()).toEqual({
-            firstListPaint: false,
-            layoutCommitObserved: false,
-            stableSettle: false,
-            isMountSettleActive: true,
+        // session-b has not painted or committed layout yet, so a full quiet window alone must not settle it.
+        coordinator.observeMetrics({
+            ...observeDoneAt(400),
+            sessionId: 'session-b',
         });
+        expect(coordinator.getSnapshot().stableSettle).toBe(false);
+        expect(coordinator.nextSettleCheckDelayMs(400)).toBeNull();
     });
 
     it('resets readiness when unmounted', () => {
@@ -210,14 +182,15 @@ describe('lifecycle mount-settle owner', () => {
         coordinator.recordLayoutCommitObserved({ sessionId: 'session-a', nowMs: 0 });
         coordinator.observeMetrics(observeDoneAt(100));
 
-        coordinator.reset({ reason: 'unmount' });
+        expect(coordinator.getSnapshot().stableSettle).toBe(true);
 
-        expect(coordinator.getSnapshot()).toEqual({
-            firstListPaint: false,
-            layoutCommitObserved: false,
-            stableSettle: false,
-            isMountSettleActive: true,
-        });
+        coordinator.reset({ reason: 'unmount' });
+        expect(coordinator.getSnapshot().stableSettle).toBe(false);
+
+        // After remount the same session must paint and commit layout again before it can settle.
+        coordinator.observeMetrics(observeDoneAt(400));
+        expect(coordinator.getSnapshot().stableSettle).toBe(false);
+        expect(coordinator.nextSettleCheckDelayMs(400)).toBeNull();
     });
 
 });

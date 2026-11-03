@@ -14,8 +14,11 @@ import { readSessionOwnerMetadataView } from '../readSessionOwnerMetadataView';
 import { toAwarenessRuntimeInput } from '../attention/runtimePresentation';
 import { readSessionContentAvailability } from '../encryptedContentAvailability';
 import { readSessionUsageLimitRecoveryFromMetadata } from '@happier-dev/protocol/sessions/state/valueSchemas/usageLimitRecovery';
+import { readSessionListPresentationRuntime, readSessionListPresentationOwnerMetadata, readSessionListPresentationOwnerMetadataField, readSessionListPresentationDisplay, readSessionListPresentationPendingFlags,
+    readSessionListPresentationPendingObservedAt, type SessionListPresentationSource } from '../listing/sessionListRenderableSessionProjection';
 
 export type UiSessionAwarenessOptions = Readonly<{
+    presentationSource?: SessionListPresentationSource;
     /** Status/count consumers need the same classification without constructing the display title. */
     includeTitle?: boolean;
     /** Summary consumers do not display or reuse the private folder. */
@@ -28,7 +31,7 @@ export type UiSessionAwarenessOptions = Readonly<{
 }>;
 
 function readUiSessionContentAvailability(
-    session: Session | SessionListRenderableSession,
+    session: Session | SessionListRenderableSession | ReturnType<typeof readSessionListPresentationDisplay>,
 ): SessionContentAvailabilityInputV1 {
     const availability = readSessionContentAvailability(session);
     if (session.encryptionMode === 'plain' && availability === 'ready') return { mode: 'plain' };
@@ -55,22 +58,23 @@ export function createUiSessionAwarenessInput(
     nowMs: number,
     options: UiSessionAwarenessOptions = {},
 ): ProjectSessionAwarenessV1Input {
+    const source = options.presentationSource;
     const hydrated = 'agentState' in session;
-    const ownerMetadata = hydrated ? readSessionOwnerMetadataView(session) : null;
-    const ownerWork = ownerMetadata?.work;
+    const ownerMetadata = source ? readSessionListPresentationOwnerMetadata(source) : hydrated ? readSessionOwnerMetadataView(session) : null;
+    const ownerWork = source ? readSessionListPresentationOwnerMetadataField(source, 'work') : ownerMetadata?.work;
     const statusReason = ownerWork && typeof ownerWork === 'object' && 'statusReason' in ownerWork
         && typeof ownerWork.statusReason === 'string' ? ownerWork.statusReason : undefined;
     const presentationMetadata = hydrated ? readSessionListRenderableSourceMetadata(session) : null;
     const hasReadableMetadata = !('metadataUnavailable' in session && session.metadataUnavailable === true);
     const metadata = hasReadableMetadata
-        ? hydrated ? presentationMetadata : session.metadata
+        ? source ? source.metadata : hydrated ? presentationMetadata : session.metadata
         : null;
-    const pending = hydrated ? derivePendingRequestFlagsFromSession(session, []) : session;
+    const pending = source ? readSessionListPresentationPendingFlags(source) : hydrated ? derivePendingRequestFlagsFromSession(session, []) : session;
     const hasPendingPermissionRequests = options.hasPendingPermissionRequests ?? pending.hasPendingPermissionRequests;
     const hasPendingUserActionRequests = options.hasPendingUserActionRequests ?? pending.hasPendingUserActionRequests;
     const hasPendingOptionsEvidence = options.hasPendingPermissionRequests !== undefined
         && options.hasPendingUserActionRequests !== undefined;
-    const hasPendingProjectionEvidence = hydrated
+    const hasPendingProjectionEvidence = source ? source.pendingObserved : hydrated
         ? (
             typeof session.pendingPermissionRequestCount === 'number'
             && typeof session.pendingUserActionRequestCount === 'number'
@@ -78,21 +82,26 @@ export function createUiSessionAwarenessInput(
         : typeof session.hasPendingPermissionRequests === 'boolean'
             && typeof session.hasPendingUserActionRequests === 'boolean';
     const controlState = readSessionTerminalControlServiceabilityStateV1(
-        hydrated ? ownerMetadata?.terminal?.controlServiceabilityV1 : metadata?.terminalControlServiceabilityV1,
+        source ? source.metadataFromRow ? source.row.metadata?.terminalControlServiceabilityV1 ?? ownerMetadata?.terminal?.controlServiceabilityV1
+            : ownerMetadata?.terminal?.controlServiceabilityV1
+            : hydrated ? ownerMetadata?.terminal?.controlServiceabilityV1 : metadata?.terminalControlServiceabilityV1,
     );
-    const workflowHeadline = hydrated ? ownerMetadata?.sessionWorkflowActivityHeadlineV1 : null;
+    const workflowHeadline = source && !source.metadataFromRow ? ownerMetadata?.sessionWorkflowActivityHeadlineV1
+        : hydrated ? ownerMetadata?.sessionWorkflowActivityHeadlineV1 : null;
     const workflow = workflowHeadline == null ? null : SessionWorkflowActivityHeadlineV1Schema.safeParse(workflowHeadline);
     const fork = hasReadableMetadata
-        ? hydrated ? presentationMetadata?.forkV1 : session.forkV1
+        ? source ? source.metadataFromRow ? source.row.forkV1 : readSessionListPresentationOwnerMetadataField(source, 'forkV1')
+            : hydrated ? presentationMetadata?.forkV1 : session.forkV1
         : undefined;
     const components = toAwarenessRuntimeInput({
-        ...session,
+        ...(source ? readSessionListPresentationRuntime(source) : session),
         hasPendingPermissionRequests,
         hasPendingUserActionRequests,
-        hasPendingUserMessages: options.hasPendingUserMessages ?? (session.pendingCount ?? 0) > 0,
+        hasPendingUserMessages: options.hasPendingUserMessages ?? (source?.lifecycle.pendingCount ?? session.pendingCount ?? 0) > 0,
         optimisticThinkingAt: session.optimisticThinkingAt ?? options.optimisticPendingUserMessageAt,
         controlServiceability: controlState === 'unknown' ? null : controlState,
-        pendingRequestObservedAt: options.pendingRequestObservedAt ?? (hydrated ? deriveLatestPendingRequestObservedAtFromSession(session, []) : session.pendingRequestObservedAt),
+        pendingRequestObservedAt: options.pendingRequestObservedAt ?? (source ? readSessionListPresentationPendingObservedAt(source)
+            : hydrated ? deriveLatestPendingRequestObservedAtFromSession(session, []) : session.pendingRequestObservedAt),
     });
     const lifecycle = { ...components.lifecycle,
         processTerminalState: metadata?.lifecycleState === 'stopped' ? 'stopped' as const : null };
@@ -104,12 +113,17 @@ export function createUiSessionAwarenessInput(
         ...components,
         lifecycle,
         runtimeIssue: session.lastRuntimeIssue,
-        usageLimitRecovery: hydrated ? readSessionUsageLimitRecoveryFromMetadata(metadata)
+        usageLimitRecovery: source?.metadataFromRow ? source.row.metadata?.sessionUsageLimitRecoveryV1 ?? null
+            : source ? readSessionUsageLimitRecoveryFromMetadata(metadata)
+            : hydrated ? readSessionUsageLimitRecoveryFromMetadata(metadata)
             : hasReadableMetadata ? session.metadata?.sessionUsageLimitRecoveryV1 ?? null : null,
-        content: readUiSessionContentAvailability(session),
+        content: readUiSessionContentAvailability(source ? readSessionListPresentationDisplay(source) : session),
         statusReason,
-        work: hydrated ? metadata ? readSessionWorkStateV1FromMetadata(metadata) : null : session.workState,
-        workflowHeadline: hydrated ? workflow?.success ? workflow.data : null : session.workflowHeadline,
+        work: source ? metadata ? source.metadataFromRow ? source.row.workDisplay
+            : readSessionWorkStateV1FromMetadata(metadata) : null
+            : hydrated ? metadata ? session.workDisplay !== undefined ? session.workDisplay : readSessionWorkStateV1FromMetadata(metadata) : null : session.workDisplay,
+        workflowHeadline: source ? metadata ? source.metadataFromRow ? source.row.workflowHeadline : workflow?.success ? workflow.data : null : null
+            : hydrated ? workflow?.success ? workflow.data : null : session.workflowHeadline,
         // A no-folder session's private folder is not a workspace to show or reuse.
         workspace: options.includeWorkspace !== false && metadata && readSessionDirectoryKind(metadata) !== 'managed'
             ? { path: metadata.path, machineId: metadata.machineId ?? undefined }

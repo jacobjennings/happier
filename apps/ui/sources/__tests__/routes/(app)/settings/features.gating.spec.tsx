@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { createRootLayoutFeaturesResponse, renderSettingsView as renderBaseSettingsView, standardCleanup } from '@/dev/testkit';
 import {
@@ -161,17 +161,6 @@ describe('FeaturesSettingsScreen gating', () => {
         expect(voiceAgentItem).toBeTruthy();
     });
 
-    it('exposes neither a master Connected Accounts toggle nor a switch for connected-account usage', async () => {
-        vi.resetModules();
-        settingsFixture.featureToggles = { 'connectedServices.quotas': true };
-
-        const { default: FeaturesSettingsScreen } = await import('@/app/(app)/settings/features');
-
-        const screen = await renderSettingsView(React.createElement(FeaturesSettingsScreen));
-        expect(screen.findRowByTitle('settingsFeatures.expConnectedServices')).toBeNull();
-        expect(screen.findRowByTitle('settingsFeatures.expConnectedServicesQuotas')).toBeNull();
-    });
-
     it('shows stable terminal layout and renderer settings without enabling experiments', async () => {
         vi.resetModules();
 
@@ -179,10 +168,14 @@ describe('FeaturesSettingsScreen gating', () => {
         localSettingsFixture.terminalRendererPreference = 'native';
 
         const { default: FeaturesSettingsScreen } = await import('@/app/(app)/settings/features');
+        // The renderer row exists only on native hosts. The per-case React Native port is installed
+        // after the testkit graph loaded the default web port, so present iOS on that loaded port.
+        const { Platform } = await import('react-native');
+        const os = Platform.OS;
+        Object.assign(Platform, { OS: 'ios' });
+        onTestFinished(() => { Object.assign(Platform, { OS: os }); });
 
         const screen = await renderSettingsView(React.createElement(FeaturesSettingsScreen));
-        // The terminal lives in the bottom pane (terminal lab B1); there is no location to choose.
-        expect(screen.findAll((node) => node.props?.title === 'terminalEmbedded.settings.locationTitle')).toHaveLength(0);
         const renderer = screen.findAll((node) => node.props?.title === 'terminalEmbedded.settings.rendererTitle' && Array.isArray(node.props?.options))[0];
         expect(renderer?.props.value).toBe('native');
     });

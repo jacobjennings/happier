@@ -11,7 +11,7 @@ import {
     resolveEffectiveWindowsRemoteSessionLaunchMode,
 } from '@/sync/domains/session/spawn/windowsRemoteSessionLaunchMode';
 import { WINDOWS_REMOTE_SESSION_LAUNCH_MODE_OPTIONS } from '@/sync/domains/session/spawn/windowsRemoteSessionLaunchModeOptions';
-import { useSetting, useSettings } from '@/sync/domains/state/storage';
+import { useSetting } from '@/sync/domains/state/storage';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 import { sync } from '@/sync/sync';
 import { t } from '@/text';
@@ -32,7 +32,6 @@ export const MachineWindowsLaunchSection = React.memo(function MachineWindowsLau
     const metadata = machine.metadata;
     const isWindowsMachine = metadata?.platform === 'win32';
     const stopExecution = useMountedActionExecution(machineServerId);
-    const settings = useSettings();
     const windowsRemoteSessionLaunchModeDefault = useSetting('sessionWindowsRemoteSessionLaunchMode');
     const [isUpdatingWindowsConsoleMode, setIsUpdatingWindowsConsoleMode] = React.useState(false);
     const [openWindowsRemoteSessionLaunchModeMenu, setOpenWindowsRemoteSessionLaunchModeMenu] = React.useState(false);
@@ -40,7 +39,7 @@ export const MachineWindowsLaunchSection = React.memo(function MachineWindowsLau
     const windowsRemoteSessionLaunchModeOverrideEnabled = isWindowsMachine && machineWindowsRemoteSessionLaunchMode !== undefined;
     const effectiveWindowsRemoteSessionLaunchMode = resolveEffectiveWindowsRemoteSessionLaunchMode({
         machineMetadata: metadata,
-        settings,
+        settings: { sessionWindowsRemoteSessionLaunchMode: windowsRemoteSessionLaunchModeDefault },
     }).mode;
 
     const updateMachineWindowsRemoteSessionLaunchMode = React.useCallback(async (mode: 'hidden' | 'windows_terminal' | 'console' | null) => {

@@ -4,9 +4,10 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join, posix, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { execPnpm } from '../../../../../scripts/workspaces/execPnpmCommand.mjs';
+import { resolvePnpmCommandInvocation } from '../../../../../scripts/workspaces/execPnpmCommand.mjs';
+import { run } from '../proc/proc.mjs';
 import { resolveRemoteValidationPreparationEnv } from './validation_env.mjs';
-import { assertDependenciesReady, inspectDependencyRefresh, SCRIPTLESS_DEPENDENCY_INSTALL_MODE, withDependencyConsumption, withDependencyRefresh } from '../proc/dependency_refresh.mjs';
+import { adoptDependencyInstallation, assertDependenciesReady, inspectDependencyRefresh, isDependencyRefreshDisabled, withDependencyConsumption, withDependencyRefresh } from '../proc/dependency_refresh.mjs';
 import { ensureUiPostinstallOutputs } from '../proc/ui_postinstall.mjs';
 import { resolvePackageManagerCachePaths } from '../proc/package_manager_cache.mjs';
 import { isYarnWorkspace } from '../proc/workspace_package_manifests.mjs';
@@ -33,7 +34,7 @@ function resolveInitialInstallEnv(env) {
   return resolved;
 }
 
-async function installInitialDependencies({ repoDir, env }) {
+async function installInitialDependencies({ repoDir, env, stdio = 'inherit' }) {
   const installEnv = resolveInitialInstallEnv(env);
   for (const path of [
     installEnv.XDG_CACHE_HOME,
@@ -43,19 +44,25 @@ async function installInitialDependencies({ repoDir, env }) {
   ]) {
     if (path) await mkdir(path, { recursive: true });
   }
-  execPnpm(REMOTE_INITIAL_DEPENDENCY_INSTALL_ARGS, {
+  const invocation = resolvePnpmCommandInvocation(REMOTE_INITIAL_DEPENDENCY_INSTALL_ARGS, { preferPath: true });
+  await run(invocation.command, invocation.args, {
     cwd: repoDir,
     env: installEnv,
-    preferPath: true,
-    stdio: 'inherit',
+    stdio,
+    captureFailureDiagnostic: true,
   });
 }
 
-async function prepareInitialUiOutputs({ repoDir, env, force }) {
+async function prepareInitialUiOutputs({ repoDir, env, force, stdio = 'inherit', quiet = false }) {
   const installEnv = resolveInitialInstallEnv(env);
-  const runPnpm = (args, postinstallEnv = installEnv) => execPnpm(args, { cwd: repoDir, env: postinstallEnv, preferPath: true, stdio: 'inherit' });
+  const runPnpm = async (args, postinstallEnv = installEnv) => {
+    const invocation = resolvePnpmCommandInvocation(args, { preferPath: true });
+    await run(invocation.command, invocation.args, {
+      cwd: repoDir, env: postinstallEnv, stdio, captureFailureDiagnostic: true,
+    });
+  };
   await ensureUiPostinstallOutputs(join(repoDir, 'apps', 'ui'), repoDir, {
-    force, env: installEnv,
+    force, env: installEnv, quiet,
     runPostinstall: async (postinstallEnv) => runPnpm(['--filter', '@happier-dev/app', 'run', '--silent', 'postinstall:real'], postinstallEnv),
     restoreDependencies: async () => runPnpm(['install', '--force', ...REMOTE_INITIAL_DEPENDENCY_INSTALL_ARGS.slice(1)]),
   });
@@ -68,21 +75,11 @@ async function prepareInitialUiOutputs({ repoDir, env, force }) {
 export async function adoptInstalledDependencies({
   repoDir = resolve(process.cwd()),
   env = process.env,
-  withDependencyRefresh: withDependencyRefreshImpl = withDependencyRefresh,
 } = {}) {
-  const readiness = await inspectDependencyRefresh({ installDir: repoDir, componentDir: join(repoDir, 'apps', 'stack'), env });
-  if (readiness.workerPnpmModules !== null) {
-    // Worker adoption only reuses proven bytes. Recheck inside read custody so
-    // a tree replaced while waiting can never reach a no-op writer refresh.
-    return await withDependencyConsumption({ installDir: repoDir, env }, async readEnv => {
-      await assertDependenciesReady({ installDir: repoDir, componentDir: join(repoDir, 'apps', 'stack'), env: readEnv });
-      return { refreshed: false, reason: 'up-to-date' };
-    });
-  }
   if (!existsSync(join(repoDir, 'node_modules'))) {
     throw new Error(`[local] cannot adopt dependencies at ${repoDir}: node_modules is missing`);
   }
-  return await withDependencyRefreshImpl(
+  return await adoptDependencyInstallation(
     {
       installDir: repoDir,
       componentDir: join(repoDir, 'apps', 'stack'),
@@ -93,7 +90,6 @@ export async function adoptInstalledDependencies({
         await ensureServerGeneratedProviderOutputs(join(repoDir, 'apps', 'server'), repoDir, { env: readyEnv });
       },
     },
-    async () => {},
   );
 }
 
@@ -120,8 +116,7 @@ export async function bootstrapRemoteDependencies({
   const sourceToolsOnly = toolsOnly || validationKind === 'source-test' || validationKind === 'typecheck';
   // Only an affirmative worker placement permits dependency mutation.
   if (executionPlacement !== 'remote') {
-    await assertDependenciesReady({ installDir: repoDir, componentDir, env,
-      ...(sourceToolsOnly ? { installMode: SCRIPTLESS_DEPENDENCY_INSTALL_MODE } : {}) });
+    await assertDependenciesReady({ installDir: repoDir, componentDir, env });
     if (!sourceToolsOnly && /^apps\/stack(?:\/|$)/u.test(componentPath)) {
       const { ensureWorkspacePackagesBuiltForComponent } = await loadDependencyOwner();
       await ensureWorkspacePackagesBuiltForComponent(componentDir, { env });
@@ -152,12 +147,12 @@ export async function bootstrapRemoteDependencies({
     // release it before requesting an actual installation or output repair.
     try {
       await withDependencyConsumption({ installDir: repoDir, env, signal }, async readEnv => {
-        await assertDependenciesReady({ installDir: repoDir, componentDir, env: readEnv,
-          installMode: SCRIPTLESS_DEPENDENCY_INSTALL_MODE });
+        await assertDependenciesReady({ installDir: repoDir, componentDir, env: readEnv });
       });
       return { refreshed: false, reason: 'up-to-date' };
     } catch (error) {
-      if (error?.code !== 'HAPPIER_DEPENDENCIES_NEED_REFRESH') throw error;
+      if (!['HAPPIER_DEPENDENCIES_NEED_REFRESH', 'HAPPIER_DEPENDENCY_REFRESH_FAILED'].includes(error?.code)
+        || isDependencyRefreshDisabled(env)) throw error;
     }
     // Source validation does not consume the Stack owner's compiled closure.
     // Typecheck compilers read published declarations and prepare their own
@@ -165,7 +160,7 @@ export async function bootstrapRemoteDependencies({
     // The readiness verifier and postinstall tools resolve source directly;
     // retain patched dependency preparation without publishing workspace dist.
     return await withDependencyRefreshImpl(
-      { installDir: repoDir, componentDir, env, installMode: SCRIPTLESS_DEPENDENCY_INSTALL_MODE, onDependenciesReady,
+      { installDir: repoDir, componentDir, env, onDependenciesReady,
         waitForPendingStart: true, signal },
       installAndPrepare,
     );
@@ -181,7 +176,7 @@ export async function bootstrapRemoteDependencies({
   const dependencyOwnerReady = dependencyOwnerEntrypoints.every((entrypoint) => packageExists(entrypoint));
   if (!dependencyOwnerReady) {
     await withDependencyRefreshImpl(
-      { installDir: repoDir, componentDir, env, installMode: SCRIPTLESS_DEPENDENCY_INSTALL_MODE, onDependenciesReady },
+      { installDir: repoDir, componentDir, env, onDependenciesReady },
       installAndPrepare,
     );
     const { ensureWorkspacePackagesBuiltByName } = await loadWorkspaceBuildOwner();

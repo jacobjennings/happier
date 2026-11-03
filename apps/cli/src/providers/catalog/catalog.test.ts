@@ -278,6 +278,18 @@ function compatibilityMap(modelIds: readonly string[]) {
 }
 
 describe('provider catalog host assembly', () => {
+  it('keeps source effort facts but offers them only to an Agent that applies them', () => {
+    const connection = resolvedConnection();
+    const input = { agentTargetKey: 'agent_a', connection,
+      providerSettings: settings(connection, [{ id: 'manual', addedAt: 1, reasoningEffortLevels: ['low', 'high', 'max'] }]),
+      runtimeState: runtimeState(), catalogRuntimeKey: currentCatalogKey };
+    const efforts = (support?: boolean) => assembleProviderConnectionCatalog({ ...input,
+      ...(support === undefined ? {} : { agentSupportsReasoningEffort: support }) }).rows
+      .find(row => row.descriptor.id === 'manual')?.descriptor.modelOptions?.[0]?.options?.map(option => option.value);
+    expect(efforts()).toEqual(['low', 'high', 'max']);
+    expect(efforts(false)).toBeUndefined();
+    expect(efforts(true)).toEqual(['low', 'high', 'max']);
+  });
   it('projects only declared and configured Gateway slots from actual model-purpose facts through the strict picker consumer', () => {
     const initial = managedResolvedConnection();
     if (initial.deployment.kind !== 'managedLocal') throw new Error('Expected managed fixture');
@@ -468,6 +480,8 @@ describe('provider catalog host assembly', () => {
     expect(assembled.rows.some((row) => row.ref.modelId === 'old-only')).toBe(false);
     expect(assembled.rows.find((row) => row.ref.modelId === 'current-only')?.presentation.loadState).toBe('unloaded');
     expect(assembled.staleRows.find((row) => row.ref.modelId === 'gone')?.presentation.loadState).toBe('unknown');
+    expect(assembled.staleRows.find((row) => row.ref.modelId === 'gone')?.presentation.catalog)
+      .toEqual({ stale: true, staleAt: 10 });
   });
 
   it('does not resurrect an obsolete probe snapshot when there is no current authorized catalog key', () => {
@@ -492,7 +506,7 @@ describe('provider catalog host assembly', () => {
       connection,
       providerSettings: settings(connection),
       runtimeState: runtimeState({
-        catalogs: [catalogRecord({ stale: true, models: [{ id: 'probe-stale' }] })],
+        catalogs: [catalogRecord({ stale: true, models: [{ id: 'probe-stale' }], staleModels: [{ id: 'gone' }] })],
         loads: [{
           key: {
             machineId: 'machine_a',
@@ -513,6 +527,8 @@ describe('provider catalog host assembly', () => {
     const row = assembled.rows.find((candidate) => candidate.ref.modelId === 'probe-stale');
     expect(row?.presentation.endpointHealth?.status).toBe('available');
     expect(row?.presentation.catalog).toEqual({ stale: true, observedAt: 10, staleAt: 20 });
+    expect(assembled.staleRows.find(candidate => candidate.ref.modelId === 'gone')?.presentation.catalog)
+      .toEqual({ stale: true, staleAt: 10 });
     expect(assembled.rows.every(
       (candidate) => candidate.presentation.loadState === 'unknown',
     )).toBe(true);

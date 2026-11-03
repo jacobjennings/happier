@@ -89,6 +89,18 @@ function setWorkingTextAnimation(enabled: boolean) {
 }
 
 describe('nullable static session presentation', () => {
+    it('carries canonical blocked-input recovery through localized Session presentation', async () => {
+        const { getSessionStatus, presentSessionAwarenessV1 } = await import('./sessionUtils');
+        const blocked = createSessionListRenderableSessionFixture({ encryptionMode: 'plain', active: true,
+            presence: 'online', activeAt: 1_000, pendingCount: 3, pendingBlockedCount: 3,
+            hasPendingPermissionRequests: false, hasPendingUserActionRequests: false });
+        const status = getSessionStatus(blocked, 1_001);
+        expect(status).toMatchObject({ state: 'action_required', actionRequiredReason: 'blocked_input',
+            bucket: 'needs_you', statusText: 'status.actionRequired' });
+        expect(presentSessionAwarenessV1(status.awareness)).toMatchObject({
+            state: 'action_required', actionRequiredReason: 'blocked_input', statusText: 'status.actionRequired',
+        });
+    });
     it('uses Protocol stopped state and static request chrome from the same canonical status', async () => {
         const { getSessionStatus } = await import('./sessionUtils');
         const stopped = createSessionListRenderableSessionFixture({ encryptionMode: 'plain', active: false,
@@ -806,6 +818,35 @@ describe('getSessionStatus', () => {
         expect(status.state).toBe('background_active');
         expect(status.isPulsing).toBe(false);
         expect(status.awareness?.runtime).toBe('background_active');
+    });
+
+    it('keeps delayed background observations in Working with an awaiting-updates label', async () => {
+        const { getSessionStatus, presentSessionAwarenessV1 } = await import('./sessionUtils');
+        const now = 1_000_000;
+        const session = createBaseSession({
+            active: true,
+            presence: 'online',
+            activeAt: now - 300_000,
+            thinking: false,
+            latestTurnStatus: 'completed',
+            latestTurnStatusObservedAt: now - 300_000,
+            runtimeActivityState: 'active',
+            runtimeActivityActiveCount: 2,
+            runtimeActivityObservedAt: now - 300_000,
+        });
+        const status = getSessionStatus(session, now, { workingTextMode: 'static' });
+        expect(status).toMatchObject({
+            state: 'background_active', bucket: 'working', statusText: 'status.awaitingUpdates',
+            isPulsing: false, awareness: { runtime: 'background_active', freshness: 'stale' },
+        });
+        expect(presentSessionAwarenessV1(status.awareness)).toMatchObject({
+            state: 'background_active', statusText: 'status.awaitingUpdates',
+        });
+        expect(getSessionStatus({ ...session, activeAt: now, runtimeActivityObservedAt: now }, now,
+            { workingTextMode: 'static' })).toMatchObject({
+            state: 'background_active', bucket: 'working', statusText: 'status.backgroundActive',
+            awareness: { freshness: 'live' },
+        });
     });
 
     it('keeps offline precedence over provider runtime activity', async () => {
@@ -2225,6 +2266,15 @@ describe('a no-folder session', () => {
         expect(getSessionAvatarId(first)).not.toBe(getSessionAvatarId(second));
         expect(getSessionAvatarId(first)).not.toContain('session-directories');
         expect(getSessionSubtitle(first)).toBe('MacBook Pro');
+    });
+
+    it('never prints the hydrating placeholder as a machine name: the Session keeps the host it published', async () => {
+        const { getSessionSubtitle } = await import('./sessionUtils');
+        // The presence shell a heartbeat leaves for a machine this device never read (another Home, offline).
+        const { buildMachineActivityPlaceholder } = await import('@/sync/domains/machines/machineActivity');
+        storage.setState({ machines: { 'machine-a': buildMachineActivityPlaceholder({ id: 'machine-a', active: false, activeAt: 1 }) } });
+        const session = createBaseSession({ id: 'chat-3', metadata: { ...managedMetadata, host: 'studio.local' } });
+        expect(getSessionSubtitle(session)).toBe('studio.local');
     });
 });
 

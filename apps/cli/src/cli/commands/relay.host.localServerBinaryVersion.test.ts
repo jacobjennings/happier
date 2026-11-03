@@ -6,6 +6,7 @@ import { reloadConfiguration } from '../../configuration';
 import { createEnvKeyScope } from '../../testkit/env/envScope';
 import { createTempDir, removeTempDir } from '../../testkit/fs/tempDir';
 import { captureConsoleLogAndMuteStdout } from '../../testkit/logger/captureOutput';
+import { commandRegistry } from '../commandRegistry';
 
 let mockedPreparedPayloadRoot = '';
 let mockedPreparedVersionId = 'preview-release-0.2.1';
@@ -63,7 +64,6 @@ describe('happier relay host install local server-binary version tracking', () =
     let envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
 
     beforeEach(async () => {
-        vi.resetModules();
         resolvedLocalInstallVersion = null;
         envScope = createEnvKeyScope(['HAPPIER_HOME_DIR']);
         home = await createTempDir('happier-relay-local-version-home-');
@@ -100,8 +100,6 @@ describe('happier relay host install local server-binary version tracking', () =
         process.exitCode = undefined;
 
         try {
-            const { commandRegistry } = await import('../commandRegistry');
-
             await commandRegistry.relay({
                 args: ['relay', 'host', 'install', '--server-binary', join(serverPayloadRoot, 'bin', 'happier-server'), '--yes', '--json'],
                 rawArgv: ['node', 'hprev', 'relay', 'host', 'install', '--server-binary', join(serverPayloadRoot, 'bin', 'happier-server'), '--yes', '--json'],

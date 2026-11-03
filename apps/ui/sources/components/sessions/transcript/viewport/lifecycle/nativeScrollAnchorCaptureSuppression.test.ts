@@ -3,45 +3,23 @@ import { describe, expect, it } from 'vitest';
 import { resolveNativeScrollObservationAnchorCaptureSuppression } from './nativeScrollAnchorCaptureSuppression';
 
 describe('resolveNativeScrollObservationAnchorCaptureSuppression', () => {
-    it('suppresses anchor capture for passive native movement without trusted momentum attribution', () => {
-        expect(resolveNativeScrollObservationAnchorCaptureSuppression({
-            nativeMomentumScrollActive: false,
-            shouldSuppressNativeAnchorCapture: true,
-            trustedDragSessionActive: false,
-        })).toBe(true);
-    });
-
-    it('never suppresses anchor capture when the observation is allowed to refresh anchors', () => {
-        expect(resolveNativeScrollObservationAnchorCaptureSuppression({
-            nativeMomentumScrollActive: false,
-            shouldSuppressNativeAnchorCapture: false,
-            trustedDragSessionActive: false,
-        })).toBe(false);
-        expect(resolveNativeScrollObservationAnchorCaptureSuppression({
-            nativeMomentumScrollActive: true,
-            shouldSuppressNativeAnchorCapture: false,
-            trustedDragSessionActive: true,
-        })).toBe(false);
-    });
-
-    it('preserves anchor capture when active momentum carries trusted drag attribution', () => {
-        expect(resolveNativeScrollObservationAnchorCaptureSuppression({
-            nativeMomentumScrollActive: true,
-            shouldSuppressNativeAnchorCapture: true,
-            trustedDragSessionActive: true,
-        })).toBe(false);
-    });
-
-    it('requires both active momentum and trusted drag attribution to preserve passive movement anchor capture', () => {
-        expect(resolveNativeScrollObservationAnchorCaptureSuppression({
-            nativeMomentumScrollActive: true,
-            shouldSuppressNativeAnchorCapture: true,
-            trustedDragSessionActive: false,
-        })).toBe(true);
-        expect(resolveNativeScrollObservationAnchorCaptureSuppression({
-            nativeMomentumScrollActive: false,
-            shouldSuppressNativeAnchorCapture: true,
-            trustedDragSessionActive: true,
-        })).toBe(true);
-    });
+    // Passive native movement must not overwrite the saved reading anchor, unless active momentum
+    // still carries trusted drag attribution; observations allowed to refresh anchors never suppress.
+    it.each([
+        { momentum: false, suppress: true, trustedDrag: false, expected: true },
+        { momentum: true, suppress: true, trustedDrag: false, expected: true },
+        { momentum: false, suppress: true, trustedDrag: true, expected: true },
+        { momentum: true, suppress: true, trustedDrag: true, expected: false },
+        { momentum: false, suppress: false, trustedDrag: false, expected: false },
+        { momentum: true, suppress: false, trustedDrag: true, expected: false },
+    ])(
+        'returns $expected for suppress=$suppress, momentum=$momentum, trusted drag=$trustedDrag',
+        ({ expected, momentum, suppress, trustedDrag }) => {
+            expect(resolveNativeScrollObservationAnchorCaptureSuppression({
+                nativeMomentumScrollActive: momentum,
+                shouldSuppressNativeAnchorCapture: suppress,
+                trustedDragSessionActive: trustedDrag,
+            })).toBe(expected);
+        },
+    );
 });

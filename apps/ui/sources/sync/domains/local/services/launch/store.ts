@@ -5,6 +5,19 @@ import type {
 } from './types';
 
 const selectedTargets = new WeakMap<LocalServiceLauncherState['targetsById'], readonly LocalServiceLaunchTarget[]>();
+// Receipt order is not a presentation change. Retain only the admitted daemon timestamp,
+// so a newer equal reply can reject an older differing reply without notifying rows.
+const snapshotTimes = new WeakMap<LocalServiceLauncherState, number>();
+
+export function readLocalServiceLauncherSnapshotTime(state: LocalServiceLauncherState): number | null {
+    return snapshotTimes.get(state) ?? state.updatedAt;
+}
+
+function carrySnapshotTime(previous: LocalServiceLauncherState, next: LocalServiceLauncherState): LocalServiceLauncherState {
+    const time = readLocalServiceLauncherSnapshotTime(previous);
+    if (time !== null) snapshotTimes.set(next, time);
+    return next;
+}
 
 function targetKey(target: LocalServiceLaunchTarget): string {
     return JSON.stringify(target);
@@ -48,13 +61,13 @@ export function applyLocalServiceLauncherRefreshStarted(
         };
     }
 
-    return {
+    return carrySnapshotTime(state, {
         ...state,
         machineId: input.machineId,
         sessionId: input.sessionId ?? state.sessionId,
         refreshStatus: 'refreshing',
         refreshError: null,
-    };
+    });
 }
 
 /** The keyed collection owner, shared by native snapshots and Project binding projection. */
@@ -89,13 +102,16 @@ export function applyLocalServiceLauncherSnapshot(
 ): LocalServiceLauncherState {
     // Reads and Action responses share this owner. A delayed earlier read cannot
     // replace the native facts already published by a newer response.
-    if (state.machineId === snapshot.machineId && state.sessionId === (snapshot.sessionId ?? null)
-        && state.updatedAt !== null && snapshot.updatedAt < state.updatedAt) return state;
+    const sameScope = state.machineId === snapshot.machineId && state.sessionId === (snapshot.sessionId ?? null);
+    const receivedAt = readLocalServiceLauncherSnapshotTime(state);
+    if (sameScope && receivedAt !== null && snapshot.updatedAt < receivedAt) return state;
     const collection = reconcileLocalServiceLauncherTargets(state, snapshot.targets);
-    if (state.machineId === snapshot.machineId && state.sessionId === (snapshot.sessionId ?? null)
-        && state.updatedAt === snapshot.updatedAt && state.refreshStatus === 'idle' && state.refreshError === null && collection === state) return state;
+    if (sameScope && state.refreshStatus === 'idle' && state.refreshError === null && collection === state) {
+        snapshotTimes.set(state, snapshot.updatedAt);
+        return state;
+    }
 
-    return {
+    const next: LocalServiceLauncherState = {
         machineId: snapshot.machineId,
         sessionId: snapshot.sessionId ?? null,
         updatedAt: snapshot.updatedAt,
@@ -104,6 +120,8 @@ export function applyLocalServiceLauncherSnapshot(
         targetIds: collection.targetIds,
         targetsById: collection.targetsById,
     };
+    snapshotTimes.set(next, snapshot.updatedAt);
+    return next;
 }
 
 export function failLocalServiceLauncherRefresh(
@@ -112,6 +130,7 @@ export function failLocalServiceLauncherRefresh(
         machineId: string;
         sessionId?: string;
         reasonCode: string;
+        stale?: true;
     }>,
 ): LocalServiceLauncherState {
     if (state.machineId !== null && state.machineId !== input.machineId) {
@@ -126,13 +145,26 @@ export function failLocalServiceLauncherRefresh(
         };
     }
 
-    return {
+    let staleTargets: Map<string, LocalServiceLaunchTarget> | null = null;
+    if (input.stale) {
+        for (const [id, target] of state.targetsById) {
+            if (target.state === 'stale' && target.actions.length === 0) continue;
+            if (!staleTargets) staleTargets = new Map(state.targetsById);
+            staleTargets.set(id, { ...target, state: 'stale', actions: [] });
+        }
+    }
+    const targetsById = staleTargets ?? state.targetsById;
+    const sessionId = input.sessionId ?? state.sessionId;
+    if (state.machineId === input.machineId && state.sessionId === sessionId
+        && state.refreshStatus === 'error' && state.refreshError === input.reasonCode && targetsById === state.targetsById) return state;
+    return carrySnapshotTime(state, {
         ...state,
         machineId: input.machineId,
-        sessionId: input.sessionId ?? state.sessionId,
+        sessionId,
         refreshStatus: 'error',
         refreshError: input.reasonCode,
-    };
+        targetsById,
+    });
 }
 
 export function selectLocalServiceLaunchTargets(
@@ -157,7 +189,7 @@ export function snapshotFromLocalServiceLauncherState(
         v: 1,
         machineId: state.machineId,
         ...(state.sessionId ? { sessionId: state.sessionId } : {}),
-        updatedAt: state.updatedAt,
+        updatedAt: readLocalServiceLauncherSnapshotTime(state)!,
         targets: [...selectLocalServiceLaunchTargets(state)],
     };
 }

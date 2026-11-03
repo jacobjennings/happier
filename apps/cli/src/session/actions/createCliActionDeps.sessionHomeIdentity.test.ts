@@ -9,6 +9,44 @@ import { createCliActionDeps } from './createCliActionDeps';
 afterEach(() => vi.restoreAllMocks());
 
 describe('Session Action Home identity admission', () => {
+  it.each([true, false])('clears reviewer override %s back to the Account default without redundant writes', async enabled => {
+    const sessionId = 'c111111111111111111111111';
+    const credentials = { token: 'token', encryption: null };
+    const session = createSessionRecordFixture({ id: sessionId, encryptionMode: 'plain', metadataLayoutVersion: 1, share: null,
+      metadata: JSON.stringify({ v: 1 }),
+      ownerMetadata: createPlainSessionOwnerMetadataEnvelopeV1({ v: 1, workspace: { path: '/repo', host: 'host' } }) });
+    vi.spyOn(axios, 'get').mockImplementation(async url => {
+      if (String(url).endsWith('/v1/account/encryption/currentness')) return { status: 200, data: {
+        mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1 } };
+      if (String(url).endsWith(`/v2/sessions/${sessionId}`)) return { status: 200, data: { session } };
+      throw new Error(`Unexpected HTTP read: ${url}`);
+    });
+    const patch = vi.spyOn(axios, 'patch').mockImplementation(async (_url, body) => {
+      const mutation = SessionMetadataOwnerPatchV1Schema.parse(body);
+      session.ownerMetadata = mutation.ownerMetadata;
+      session.metadata = mutation.sharedMetadata.ciphertext;
+      session.metadataVersion += 1;
+      return { status: 200, data: { success: true, metadataLayoutVersion: 1,
+        sharedMetadata: { version: session.metadataVersion }, agentState: { version: 1 } } };
+    });
+    const executor = createActionExecutor(createCliActionDeps({ token: credentials.token, credentials,
+      sessionId: 'cli-global', mode: 'plain', ctx: null }));
+    const context = { surface: 'cli', authority: 'present_user' } as const;
+    const write = (value: boolean | null) => executor.execute('session.approval_reviewer.set', { sessionId, enabled: value }, context);
+    const read = () => {
+      const owner = session.ownerMetadata;
+      if (!owner || owner.t !== 'plain') throw new Error('Expected plain owner metadata');
+      return owner.v.runtime;
+    };
+    expect(await write(enabled)).toMatchObject({ ok: true });
+    expect(read()?.approvalReviewerEnabled).toBe(enabled);
+    expect(await write(null)).toMatchObject({ ok: true });
+    expect(read() ?? {}).not.toHaveProperty('approvalReviewerEnabled');
+    const writes = patch.mock.calls.length;
+    expect(await write(null)).toMatchObject({ ok: true });
+    expect(patch.mock.calls).toHaveLength(writes);
+  });
+
   it.each(['memory-profile', 'srv_memory_home', 'foreign-home', undefined])('admits only the bound Home for %s', async serverId => {
     const sessionId = 'c111111111111111111111111';
     const home = 'https://session-home.test';

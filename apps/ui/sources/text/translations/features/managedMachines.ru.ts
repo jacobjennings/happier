@@ -149,6 +149,8 @@ export const managedMachines: ManagedMachinesTranslations = {
             billedWhileRunning: "Оплачивается, только пока работает.",
             imageDescription: "С чего она начинается. Happier устанавливается поверх.",
             locationDescription: "Чем ближе, тем быстрее отклик при вводе.",
+            network: "Сеть",
+            networkDescription: "Какие публичные адреса она получит. Цена зависит от вашего выбора.",
             localLocationDescription: ({ computer }: { computer: string }) => `Где она работает на ${computer}.`,
             localSizeDescription: ({ computer }: { computer: string }) => `Её доля ресурсов ${computer}, пока она работает. Остановка освобождает её.`,
             headroom: ({ computer }: { computer: string }) => `Остаётся для ${computer}`,
@@ -257,7 +259,8 @@ export const managedMachines: ManagedMachinesTranslations = {
         },
         credential: {
             refused: "Подключение к провайдеру машин больше недоступно.",
-            required: "Подключите аккаунт провайдера машин, чтобы увидеть доступные машины.",
+            required: "Подключите аккаунт, чтобы увидеть, что можно создать.",
+            choose: "Выберите аккаунт, чтобы увидеть, что можно создать.",
         },
         power: {
             pending: ({ provider, state }: { provider: string; state: string }) => `Ожидание подтверждения ${state} от ${provider}…`,
@@ -284,6 +287,8 @@ export const managedMachines: ManagedMachinesTranslations = {
             refused: ({ name }: { name: string }) => `У вас нет прав на управление ${name}.`,
         },
         inspect: {
+            notCreated: "Эта машина не была создана",
+            checkFailed: "Не удалось проверить эту машину",
             checkNow: "Проверить сейчас",
         },
         actions: {

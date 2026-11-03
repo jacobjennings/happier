@@ -242,27 +242,45 @@ describe('Expo native host — real Range resume (FIND-010)', () => {
     expect(files.has(`${PACK_DIR}/removed.bin`)).toBe(false);
   });
 
-  it('resumes from a surviving scratch partial with an HTTP Range request', async () => {
-    const { fs, files } = createMemFs();
-    const full = new Uint8Array(Array.from({ length: 10 }, (_, i) => i + 1));
-    const manifest = makeManifest(full);
+  it('verifies transferred bytes with the native incremental hasher when the binary provides one', async () => {
+    const { installOptionalNativeModuleForTests } = await import('@/dev/expoModulesCoreStub');
+    let nativeHashedBytes = 0;
+    class Sha256 {
+      private readonly hash = createHash('sha256');
+      update(chunk: Uint8Array) { nativeHashedBytes += chunk.byteLength; this.hash.update(chunk); }
+      digestHex() { return this.hash.digest('hex'); }
+    }
+    const restore = installOptionalNativeModuleForTests('HappierCryptoWorker', { Sha256 });
+    try {
+      const { fs, files } = createMemFs();
+      const full = new Uint8Array(Array.from({ length: 10 }, (_, i) => i + 1));
+      const host = createExpoModelPackInstallerHost({ download: createMemNativeDownload(fs, (async () => streamResponse(full, 200)) as typeof fetch), fs });
+      await installModelPackWithHost({ host, packId: 'resume', manifest: makeManifest(full), signal: new AbortController().signal });
 
-    // A prior interrupted attempt left a 4-byte partial in the STABLE scratch dir.
-    files.set('file:///docs/happier/voice/modelPacks/.resume.scratch/model.bin', full.slice(0, 4));
-    seedResumePlan(files, manifest);
+      expect(nativeHashedBytes).toBe(full.length);
+      expect(Array.from(files.get(`${PACK_DIR}/model.bin`)!)).toEqual(Array.from(full));
+    } finally {
+      restore();
+    }
+  });
 
-    let observedRange: string | null = null;
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
-      observedRange = (init?.headers as Record<string, string> | undefined)?.Range ?? null;
-      const start = observedRange ? Number(observedRange.replace('bytes=', '').replace('-', '')) : 0;
-      return streamResponse(full.slice(start), 206);
-    });
-
-    const host = createExpoModelPackInstallerHost({ download: createMemNativeDownload(fs, fetchImpl as any), fs });
-    await installModelPackWithHost({ host, packId: 'resume', manifest, signal: new AbortController().signal });
-
-    expect(observedRange).toBe('bytes=4-');
-    expect(Array.from(files.get(`${PACK_DIR}/model.bin`)!)).toEqual(Array.from(full));
+  it('rejects a transferred file whose native digest does not match the manifest', async () => {
+    const { installOptionalNativeModuleForTests } = await import('@/dev/expoModulesCoreStub');
+    class Sha256 {
+      update() {}
+      digestHex() { return '0'.repeat(64); }
+    }
+    const restore = installOptionalNativeModuleForTests('HappierCryptoWorker', { Sha256 });
+    try {
+      const { fs, files } = createMemFs();
+      const full = new Uint8Array([1, 2, 3, 4]);
+      const host = createExpoModelPackInstallerHost({ download: createMemNativeDownload(fs, (async () => streamResponse(full, 200)) as typeof fetch), fs });
+      await expect(installModelPackWithHost({ host, packId: 'resume', manifest: makeManifest(full), signal: new AbortController().signal }))
+        .rejects.toThrow('model_pack_sha256_mismatch');
+      expect(files.has(`${PACK_DIR}/model.bin`)).toBe(false);
+    } finally {
+      restore();
+    }
   });
 
   it('appends chunks incrementally rather than rewriting the whole staged file (LB-L1)', async () => {

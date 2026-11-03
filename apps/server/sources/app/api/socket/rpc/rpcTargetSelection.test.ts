@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { selectRpcTarget } from "./rpcTargetSelection";
+import type { Socket } from 'socket.io';
+import { registerUiFocusSocketEvent } from '../registerUiFocusSocketEvent';
 
 function createCandidate(id: string) {
     return {
@@ -10,6 +12,33 @@ function createCandidate(id: string) {
 }
 
 describe("selectRpcTarget", () => {
+    it('uses the latest pushed focus fact, but never overrides an exact client or breaks ties', () => {
+        const clock = vi.spyOn(Date, 'now');
+        const candidate = (id: string) => {
+            let receive!: (input: unknown) => void;
+            const socket = { ...createCandidate(id), connected: true,
+                data: { clientType: 'user-scoped', clientPurpose: 'sync' } as Record<string, unknown>,
+                on: (_event: string, listener: typeof receive) => { receive = listener; } };
+            registerUiFocusSocketEvent(socket as unknown as Socket);
+            return { socket, focus: (focused: boolean) => receive({ computer: true, focused }) };
+        };
+        try {
+            const older = candidate('client-a');
+            const latest = candidate('client-b');
+            clock.mockReturnValue(10);
+            older.focus(true);
+            older.focus(false);
+            clock.mockReturnValue(20);
+            latest.focus(true);
+            const targets = [latest.socket, older.socket];
+            expect(selectRpcTarget({ targets, answeringClient: { requireSingle: true } }))
+                .toMatchObject({ type: 'target', target: latest.socket });
+            expect(selectRpcTarget({ targets, answeringClient: { requireSingle: true, clientId: older.socket.id } }))
+                .toMatchObject({ type: 'target', target: older.socket });
+            older.focus(true);
+            expect(selectRpcTarget({ targets, answeringClient: { requireSingle: true } })).toMatchObject({ type: 'ambiguous' });
+        } finally { clock.mockRestore(); }
+    });
     it('selects only the exact answering client and never substitutes a disconnected selection', () => {
         const first = createCandidate('client-a');
         const selected = createCandidate('client-b');
@@ -23,7 +52,8 @@ describe("selectRpcTarget", () => {
         const first = createCandidate('client-a');
         const second = createCandidate('client-b');
         expect(selectRpcTarget({ targets: [first, second], answeringClient: { requireSingle: true } }))
-            .toEqual({ type: 'ambiguous', clientIds: ['client-a', 'client-b'] });
+            .toEqual({ type: 'ambiguous', clientIds: ['client-a', 'client-b'],
+                clients: [{ id: 'client-a', deviceLabel: null }, { id: 'client-b', deviceLabel: null }] });
         expect(selectRpcTarget({ targets: [first, second] })).toMatchObject({ type: 'target', target: first });
         expect(selectRpcTarget({ targets: [first, second], excludedSocketId: first.id, answeringClient: { requireSingle: true } }))
             .toMatchObject({ type: 'target', target: second });

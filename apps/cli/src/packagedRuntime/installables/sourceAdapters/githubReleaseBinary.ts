@@ -11,12 +11,14 @@ import {
   extractGitHubReleaseAsset,
   promoteManagedCurrentInstall,
   resolveHappyHomeDirFromEnvironment,
+  resolveManagedToolsRoot,
   selectManagedDependencyReleaseAsset,
 } from '@happier-dev/cli-common/agents';
 import { extractReleasePayloadRootFromArchive } from '@happier-dev/cli-common/firstPartyRuntime';
 import { removeHappierTempDirAsync } from '@happier-dev/cli-common/tempDirs';
 import { ExecFileTerminationError, resolveWindowsCommandOnPath } from '@happier-dev/cli-common/process';
-import { fetchGitHubLatestRelease, GitHubReleaseRateLimitError } from '@happier-dev/release-runtime/github';
+import { GitHubReleaseRateLimitError } from '@happier-dev/release-runtime/github';
+import { fetchGitHubLatestRelease } from '@/capabilities/cliUpdate/githubReleaseLookup';
 import { ArchiveExtractionTimeoutError } from '@happier-dev/release-runtime/archiveExtraction';
 
 import { configuration } from '@/configuration';
@@ -49,7 +51,7 @@ type GitHubReleaseBinaryInstallPolicy = Readonly<{
 
 const currentReleaseRuntime = () => ({ platform: process.platform, arch: process.arch });
 
-const githubFetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined;
+const githubFetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch : undefined;
 
 function primaryCommand(descriptor: InstallableDependencyDescriptor): string {
   const command = descriptor.binary.commands[0]?.trim();
@@ -60,7 +62,7 @@ function primaryCommand(descriptor: InstallableDependencyDescriptor): string {
 }
 
 function managedInstallDir(descriptor: InstallableDependencyDescriptor, env?: NodeJS.ProcessEnv): string {
-  return join(env ? resolveHappyHomeDirFromEnvironment(env) : configuration.happyHomeDir, 'tools', descriptor.key);
+  return join(resolveManagedToolsRoot(env ?? { ...process.env, HAPPIER_HOME_DIR: configuration.happyHomeDir }), descriptor.key);
 }
 
 function managedBinPath(descriptor: InstallableDependencyDescriptor, env?: NodeJS.ProcessEnv): string {

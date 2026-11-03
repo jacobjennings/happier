@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { View } from 'react-native';
 import { usePathname } from '@/components/appShell/workspace/destinationRoute';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { destinationRowTestId, useColumnDestinations } from '@/components/appShell/destinations/ColumnDestinationRows';
 import { Icon } from '@/components/ui/icons/Icon';
@@ -14,16 +14,57 @@ import { t } from '@/text';
 
 import { ProjectsAddMenu } from './ProjectsAddMenu';
 import { ProjectsListItemMenu } from './ProjectsListItemMenu';
-import { useProjectsListModel } from './useProjectsListModel';
+import { useProjectsListModel, type ProjectsListModel } from './useProjectsListModel';
+import { getStorage } from '@/sync/domains/state/storageStore';
+import { readCurrentProjectAccountRows } from '@/sync/store/domains/projectAccountRows';
 import { ProjectsTree, ProjectsTreeSkeletonRows } from './ProjectsTree';
 import { ProjectHideUndoNotice } from './ProjectHideUndoNotice';
-import { ProjectOpenResolutionCard, isProjectRowsPending, openProjectCandidate, useProjectRowsRetry } from './ProjectOpenResolution';
+import { ProjectOpenResolutionCard, ProjectRowsStaleLine, isProjectRowsPending, openProjectCandidate, useProjectRowsRetry } from './ProjectOpenResolution';
 import { ProjectActionApprovalNotice } from './ProjectActionApprovalNotice';
 import { useProjectRowCreationActions } from './ProjectSaveAsSourceSheet';
 import { buildProjectsTreeRows, type ProjectsTreeRow } from './projectsTreeRows';
-import { workspaceAddressFromRefV1, type WorkspaceAddressV1 } from '@happier-dev/protocol/workspaces';
+import { useProjectsTreeCheckoutFactsSource } from './useProjectsTreeCheckoutFacts';
+import { workspaceAddressFromRefV1, type WorkspaceAddressV1, type WorkspaceRefV1 } from '@happier-dev/protocol/workspaces';
 
 const NO_KEYS: ReadonlySet<string> = new Set();
+
+type ColumnMenuInputs = Readonly<{
+    refsById: ReadonlyMap<string, WorkspaceRefV1>;
+    projectRefByKey: ReadonlyMap<string, ProjectsListModel['groups']['projectGroups'][number]>;
+    model: ProjectsListModel;
+    creation: ReturnType<typeof useProjectRowCreationActions>;
+}>;
+
+/** Pin presentation subscribes per row; user intents resolve the current checkout and handlers. */
+function ProjectsColumnRowMenu({ row, inputs }: Readonly<{ row: ProjectsTreeRow; inputs: React.RefObject<ColumnMenuInputs> }>) {
+    const id = row.workspaceAddress?.workspaceId;
+    const pinned = getStorage()(state => id !== undefined && readCurrentProjectAccountRows(state) !== null
+        && state.pinnedWorkspaceRefIds.includes(id));
+    const readRef = () => row.workspaceAddress ? inputs.current.refsById.get(JSON.stringify(row.workspaceAddress)) ?? null : null;
+    const ref = readRef();
+    const project = row.kind === 'project' ? inputs.current.projectRefByKey.get(row.key) ?? null : null;
+    if (!ref && !project) return null;
+    const actOnRef = (action: (ref: WorkspaceRefV1) => unknown) => {
+        const current = readRef();
+        if (current) return action(current);
+    };
+    return (
+        <ProjectsListItemMenu
+            workspaceRef={ref}
+            pinAction={ref ? pinned ? 'unpin' : 'pin' : null}
+            onTogglePinned={() => { void actOnRef(ref => inputs.current.model.togglePinned(ref.id)); }}
+            onRename={() => { void actOnRef(inputs.current.model.renameProject); }}
+            onReset={() => { void actOnRef(inputs.current.model.resetProjectName); }}
+            onRemove={() => { void actOnRef(inputs.current.model.removeProject); }}
+            onNewSession={() => actOnRef(inputs.current.creation.newSession)}
+            onSaveAsSource={() => actOnRef(inputs.current.creation.saveSource)}
+            onHideProject={project ? () => {
+                const current = inputs.current.projectRefByKey.get(row.key);
+                if (current) void inputs.current.model.setProjectHidden(current.projectKey, true);
+            } : null}
+        />
+    );
+}
 
 /** The project a `/projects/<id>…` route has open, or `null` on the index. */
 function readOpenProjectId(pathname: string): string | null {
@@ -42,14 +83,12 @@ function readOpenProjectId(pathname: string): string | null {
  * "+" adds one. It reads the same model as the Projects page, so the column and the page never disagree.
  */
 export const ProjectsColumn = React.memo(function ProjectsColumn() {
-    const { theme } = useUnistyles();
     const pathname = usePathname();
     const model = useProjectsListModel();
-    const { newSession, saveSource } = useProjectRowCreationActions(model);
+    const creation = useProjectRowCreationActions(model);
     const placed = useColumnDestinations('projects');
     const rowsRetry = useProjectRowsRetry();
     const openId = readOpenProjectId(pathname);
-    const { setProjectHidden, pinnedIdSet, togglePinned, renameProject, resetProjectName, removeProject } = model;
 
     const [expandedKeys, setExpandedKeys] = React.useState<ReadonlySet<string>>(NO_KEYS);
     const [collapsedKeys, setCollapsedKeys] = React.useState<ReadonlySet<string>>(NO_KEYS);
@@ -57,9 +96,16 @@ export const ProjectsColumn = React.memo(function ProjectsColumn() {
         [...model.groups.projectGroups, ...model.groups.hiddenProjectGroups].flatMap((group) => group.items.map((ref) => [JSON.stringify(workspaceAddressFromRefV1(ref)), ref] as const)),
     ), [model.groups.hiddenProjectGroups, model.groups.projectGroups]);
     const projects = model.treeProjects;
+    // Structural rows only: a checkout's live facts are read by its Project's own tree section, so a fact
+    // change never re-renders this column or the other rows.
     const rows = React.useMemo(
         () => buildProjectsTreeRows({ projects, openRefId: openId, expandedKeys, collapsedKeys }),
         [collapsedKeys, expandedKeys, openId, projects],
+    );
+    const factsSource = useProjectsTreeCheckoutFactsSource(model.checkoutRefs);
+    const live = React.useMemo(
+        () => ({ source: factsSource, projects, openRefId: openId, expandedKeys, collapsedKeys }),
+        [collapsedKeys, expandedKeys, factsSource, openId, projects],
     );
     const toggle = React.useCallback((key: string) => {
         const open = rows.find((row) => row.key === key)?.expanded === true;
@@ -74,26 +120,9 @@ export const ProjectsColumn = React.memo(function ProjectsColumn() {
     const projectRefByKey = React.useMemo(() => new Map(
         [...model.groups.projectGroups, ...model.groups.hiddenProjectGroups].flatMap((group) => group.items[0] ? [[group.projectKey.projectKey, group] as const] : []),
     ), [model.groups.hiddenProjectGroups, model.groups.projectGroups]);
-    const renderRowMenu = React.useCallback((row: ProjectsTreeRow) => {
-        const ref = row.workspaceAddress ? refsById.get(JSON.stringify(row.workspaceAddress)) ?? null : null;
-        const project = row.kind === 'project' ? projectRefByKey.get(row.key) ?? null : null;
-        if (!ref && !project) return null;
-        return (
-            <ProjectsListItemMenu
-                theme={theme}
-                workspaceRef={ref}
-                pinAction={ref ? (pinnedIdSet.has(ref.id) ? 'unpin' : 'pin') : null}
-                onTogglePinned={togglePinned}
-                onRename={renameProject}
-                onReset={resetProjectName}
-                onRemove={removeProject}
-                onNewSession={newSession}
-                onSaveAsSource={saveSource}
-                // A Project row hides the whole Project; a checkout row under it keeps its own actions.
-                onHideProject={project ? () => { void setProjectHidden(project.projectKey, true); } : null}
-            />
-        );
-    }, [newSession, saveSource, pinnedIdSet, projectRefByKey, refsById, removeProject, renameProject, resetProjectName, setProjectHidden, theme, togglePinned]);
+    const menuInputs = React.useRef<ColumnMenuInputs>({ refsById, projectRefByKey, model, creation });
+    menuInputs.current = { refsById, projectRefByKey, model, creation };
+    const renderRowMenu = React.useCallback((row: ProjectsTreeRow) => <ProjectsColumnRowMenu row={row} inputs={menuInputs} />, []);
     // Saved-not-open Sources after the tree and the "+" composition: one owner for every Projects entrance.
     const { addSources, saved, cloneRepository } = model;
     const [hiddenOpen, setHiddenOpen] = React.useState(false);
@@ -163,10 +192,16 @@ export const ProjectsColumn = React.memo(function ProjectsColumn() {
                             onRetry={rowsRetry}
                         />
                     </View>
+                ) : model.staleRows ? (
+                    // A failed refresh over the rows below: they stay at full strength, labeled as of the last read.
+                    <View style={collectionListStyles.stateLine}>
+                        <ProjectRowsStaleLine testID="projects-column:stale" asOf={model.staleRows.asOf} />
+                    </View>
                 ) : null}
                 <ProjectsTree
                     testID="projects-column:tree"
                     rows={rows}
+                    live={live}
                     onToggle={toggle}
                     onOpenRef={openRef}
                     hrefForRef={hrefForRef}

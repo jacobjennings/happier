@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { ApprovalRequestV2Schema } from './approvalRequestV1.js';
 import {
@@ -6,11 +6,14 @@ import {
   buildApprovalRequestArtifactHeaderV1,
   buildExecutionRunHostActionApprovalArtifactHeaderV1,
   buildTargetActionApprovalArtifactHeaderV1,
+  deriveManagedDeleteApprovalSubjectKeyV1,
   listApprovalArtifactsV1,
+  managedDeleteApprovalIndexedKindV1,
 } from './approvalArtifactHeaderV1.js';
 import { ExecutionRunHostActionApprovalRequestV1Schema } from './executionRunHostActionApprovalRequestV1.js';
 import { TargetActionApprovalRequestV1Schema } from './targetActionApprovalRequestV1.js';
 import { listArtifactHeadersV1 } from '../artifacts/artifactListSelectionV1.js';
+import { deriveArtifactStoredKindV1 } from '../artifacts/artifactKindV1.js';
 
 describe('approval Artifact header correspondence', () => {
   const builtIn = ApprovalRequestV2Schema.parse({
@@ -74,6 +77,22 @@ describe('approval Artifact header correspondence', () => {
     decision: { kind: 'approve', decidedAtMs: 2 },
   });
 
+  it('indexes Project Start source custody before hydration, and verifies supplied index facts against the body', () => {
+    const workspace = { serverId: 'home', machineId: 'source', workspaceId: 'checkout', rootPath: '/source' };
+    const start = ApprovalRequestV2Schema.parse({ ...builtIn, actionId: 'localServices.launcher.start',
+      executionOriginV1: { ...builtIn.executionOriginV1, actionId: 'localServices.launcher.start', machineId: 'worker' },
+      actionArgs: { machineId: 'worker', targetId: 'web', workspace,
+        declaration: { workspaceRefId: workspace.workspaceId, selection: { kind: 'manifest', name: 'web' } } } });
+    const header = buildApprovalRequestArtifactHeaderV1(start);
+    expect(header.approvalSubjectKey).toEqual(expect.stringMatching(/^project-service-start:/));
+    expect(approvalArtifactBodyMatchesHeaderV1(header, JSON.stringify(start))?.family).toBe('built_in');
+    expect(approvalArtifactBodyMatchesHeaderV1({ ...header, approvalSubjectKey: 'project-service-start:other' }, JSON.stringify(start))).toBeNull();
+    expect(approvalArtifactBodyMatchesHeaderV1({ ...header, approvalSubjectKey: { machineId: 'source' } }, JSON.stringify(start))).toBeNull();
+    const { approvalSubjectKey: _index, ...previousHeader } = header;
+    expect(approvalArtifactBodyMatchesHeaderV1(previousHeader, JSON.stringify(start))?.family).toBe('built_in');
+    expect(buildApprovalRequestArtifactHeaderV1({ ...start, actionArgs: { ...start.actionArgs as object, declaration: undefined } }).approvalSubjectKey).toBeUndefined();
+  });
+
   it('resumes a bounded approval page and filters plugin approvals through their canonical Action id', async () => {
     const rows = [
       { artifactId: 'built-in', updatedAt: 2, header: buildApprovalRequestArtifactHeaderV1(builtIn), body: JSON.stringify(builtIn) },
@@ -130,6 +149,32 @@ describe('approval Artifact header correspondence', () => {
     });
     expect(result.items.map(item => item.artifactId)).toEqual(['selected']);
     expect(bodyReads).toBe(1);
+  });
+
+  it('projects managed Delete identity into the exact server index while retaining body authority', async () => {
+    const request = ApprovalRequestV2Schema.parse({ ...builtIn, status: 'open', decision: undefined,
+      actionId: 'machines.managed.delete', actionArgs: { homeId: 'home', managedId: 'managed', intent: 'delete',
+        when: 'now', expectedRevision: 4, reviewedDependencies: true },
+      executionOriginV1: { ...builtIn.executionOriginV1, actionId: 'machines.managed.delete' },
+    });
+    const header = buildApprovalRequestArtifactHeaderV1(request);
+    const subjectKey = deriveManagedDeleteApprovalSubjectKeyV1({ homeId: 'home', managedId: 'managed' });
+    expect(header).toMatchObject({ kind: 'approval_request.v1', approvalSubjectKey: subjectKey });
+    expect(deriveArtifactStoredKindV1(header)).toBe(`v1:other:${managedDeleteApprovalIndexedKindV1(subjectKey)}`);
+    expect(approvalArtifactBodyMatchesHeaderV1(header, JSON.stringify(request)))
+      .toEqual({ family: 'built_in', request });
+    expect(approvalArtifactBodyMatchesHeaderV1({ ...header, approvalSubjectKey: `${subjectKey}-other` }, JSON.stringify(request)))
+      .toBeNull();
+    const readPage = vi.fn(async () => ({ items: [{ artifactId: 'managed-delete', header,
+      body: JSON.stringify(request), updatedAt: 2 }] }));
+    await expect(listApprovalArtifactsV1({ status: 'open', actionId: 'machines.managed.delete', subjectKey,
+      readPage, read: async () => null })).resolves.toMatchObject({
+      items: [{ artifactId: 'managed-delete', status: 'open', actionId: 'machines.managed.delete' }],
+      queryPlan: { kind: 'bounded_approval_artifact_header_scan', boundedBy: 'exact approval subject key' },
+    });
+    expect(readPage).toHaveBeenCalledWith(expect.objectContaining({
+      indexedKinds: [managedDeleteApprovalIndexedKindV1(subjectKey)], includeBody: true,
+    }));
   });
 
   const host = ExecutionRunHostActionApprovalRequestV1Schema.parse({

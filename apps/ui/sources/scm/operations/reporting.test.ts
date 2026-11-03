@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { reportSessionScmOperation, reportWorkspaceScmOperation, trackBlockedScmOperation } from './reporting';
 import type { ScmOperationOutcome } from '@happier-dev/protocol/scm';
+import { projectManager } from '@/sync/runtime/orchestration/projectManager';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 describe('reportSessionScmOperation', () => {
     it('appends operation log entry and captures sanitized telemetry', () => {
@@ -55,60 +57,30 @@ describe('reportSessionScmOperation', () => {
         expect(JSON.stringify(capture.mock.calls)).not.toContain('private diagnostics');
     });
 
-    it('does not include sensitive detail contents in telemetry props', () => {
+    it('sends telemetry without detail contents or the raw SCM error, and codes a success as none', () => {
         const capture = vi.fn();
+        const state = { appendSessionProjectScmOperation: vi.fn() };
 
         reportSessionScmOperation({
-            state: {
-                appendSessionProjectScmOperation: vi.fn(),
-            },
-            sessionId: 'session-2',
-            operation: 'commit',
-            status: 'success',
-            detail: 'abc123def456',
-            surface: 'files',
-            tracking: { capture },
-            now: 456,
+            state, sessionId: 'session-2', operation: 'commit', status: 'success',
+            detail: 'abc123def456', surface: 'files', tracking: { capture },
         });
-
-        expect(capture).toHaveBeenCalledWith(
-            'scm_operation_result',
-            expect.objectContaining({
-                error_code: 'none',
-                error_category: 'none',
-            })
-        );
-        expect(capture).toHaveBeenCalledWith(
-            'scm_operation_result',
-            expect.not.objectContaining({
-                detail: expect.anything(),
-                path: expect.anything(),
-            })
-        );
-    });
-
-    it('never includes raw SCM error in telemetry when explicitly provided', () => {
-        const capture = vi.fn();
-
         reportSessionScmOperation({
-            state: {
-                appendSessionProjectScmOperation: vi.fn(),
-            },
-            sessionId: 'session-3',
-            operation: 'commit',
-            status: 'failed',
-            detail: 'Source control command failed',
-            errorCode: 'COMMAND_FAILED',
-            rawError: 'fatal: unable to write new index file',
-            surface: 'files',
-            tracking: { capture },
-            now: 789,
+            state, sessionId: 'session-3', operation: 'commit', status: 'failed',
+            detail: 'Source control command failed', errorCode: 'COMMAND_FAILED',
+            rawError: 'fatal: unable to write new index file', surface: 'files', tracking: { capture },
         });
 
-        expect(capture).toHaveBeenCalledWith(
-            'scm_operation_result',
-            expect.not.objectContaining({ raw_error: expect.anything() })
-        );
+        expect(capture.mock.calls).toEqual([
+            ['scm_operation_result', {
+                operation: 'commit', status: 'success', surface: 'files', error_code: 'none', error_category: 'none',
+                has_path: false, has_detail: true, detail_length: 12,
+            }],
+            ['scm_operation_result', {
+                operation: 'commit', status: 'failed', surface: 'files', error_code: 'COMMAND_FAILED', error_category: 'command',
+                has_path: false, has_detail: true, detail_length: 29,
+            }],
+        ]);
     });
 });
 
@@ -148,6 +120,15 @@ describe('reportWorkspaceScmOperation', () => {
                 surface: 'files',
             }),
         );
+    });
+
+    it('retains the canonical outcome in the shared workspace operation log', () => {
+        projectManager.clear();
+        projectManager.addSession(createSessionFixture({ id: 's1', metadata: { machineId: 'm1', path: '/repo', host: 'h' } }));
+        const scope = projectManager.getProjectForSession('s1')!.key;
+        const outcome: ScmOperationOutcome = { v: 1, kind: 'outcome_unknown', errorCode: 'COMMAND_OUTCOME_UNKNOWN', reconciliation: { kind: 'remote_ref', remote: 'origin' }, nextActions: [{ kind: 'refresh' }] };
+        reportWorkspaceScmOperation({ state: { appendWorkspaceScmOperation: (target, entry) => { projectManager.appendWorkspaceScmOperation(target, entry); } }, scope, operation: 'push', status: 'failed', surface: 'update', outcome });
+        expect(projectManager.getWorkspaceScmOperationLog(scope)[0]).toMatchObject({ outcome });
     });
 });
 

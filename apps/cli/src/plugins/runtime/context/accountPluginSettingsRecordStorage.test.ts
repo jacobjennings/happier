@@ -58,6 +58,29 @@ const settingsModel = createStablePluginSettingsModel({ pluginId: 'example.tasks
 describe('Account plugin Settings record storage', () => {
     afterEach(() => clearActiveAccountSettingsSnapshot());
 
+    it.each(['beforeRead', 'duringRecord', 'duringMode'] as const)(
+        'fails closed when asynchronous captured authority retires %s', async phase => {
+            let current = true;
+            const get = vi.fn(async (url: string) => {
+                const mode = url.endsWith('/encryption');
+                if ((phase === 'duringRecord' && !mode) || (phase === 'duringMode' && mode)) current = false;
+                return { status: 200, data: mode ? { mode: 'plain', updatedAt: 1 }
+                    : { status: 'present', revision: 4,
+                        content: { t: 'plain', v: { v: 1, values: { theme: 'private' } } } } };
+            });
+            const adapter = createAccountPluginSettingsRecordStorage({
+                readCredentials: async () => plainCredentials,
+                isCurrentAccount: async () => current,
+                resolveBaseUrl: () => 'https://captured.example',
+                http: { get, post: vi.fn() },
+            });
+            const access = await adapter.bindOperation();
+            if (phase === 'beforeRead') current = false;
+            await expect(access.readRecord(settingsModel)).resolves.toEqual({ status: 'unavailable' });
+            expect(get).toHaveBeenCalledTimes(phase === 'beforeRead' ? 0 : phase === 'duringRecord' ? 1 : 2);
+        },
+    );
+
     it.each(['plain', 'e2ee'] as const)('drops retired Settings carrier fields on %s stored reads', async mode => {
         const credentials = mode === 'plain' ? plainCredentials : e2eeCredentials;
         const payload = { v: 1, values: { theme: 'dark', authorData: { retained: true } }, retired: true };

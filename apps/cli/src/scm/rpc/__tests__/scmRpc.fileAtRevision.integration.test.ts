@@ -10,8 +10,8 @@ import { createTestGitRpcManager, runGit } from './testRpcHarness';
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-describe('SCM base-revision read through registered RPC and Action', () => {
-    it('returns committed binary bytes and hash, preserves areas and caller admission', async () => {
+describe('SCM base-revision read through the registered RPC', () => {
+    it('returns committed binary bytes and hash, resolves areas, and bounds size and missing blobs', async () => {
         const root = mkdtempSync(join(tmpdir(), 'happier-file-revision-rpc-')); roots.push(root);
         runGit(root, ['init']);
         runGit(root, ['config', 'user.name', 'Revision Reader']);

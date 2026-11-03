@@ -16,6 +16,7 @@ import { ConnectedServiceMark } from '@/components/settings/connectedServices/Co
 import type { VoiceServiceMark as VoiceServiceMarkIdentity } from '@happier-dev/plugin-sdk/voice';
 import { resolvePluginUiIconName } from '@/components/plugins/surfaces/iconToken/resolvePluginUiIconToken';
 import { projectPluginUiHostPalette } from '@/components/plugins/surfaces/pluginUiThemeProjection';
+import type { VoiceReadinessTone } from '@/voice/settings/pipeline/VoiceReadinessGlyph';
 
 export const VOICE_SERVICE_OFF_ID = '__off__';
 
@@ -45,7 +46,7 @@ export type VoiceServiceTile = Readonly<{
    * Readiness in a few words. `detail` is the full prerequisite: assistive tech reads it on the tile;
    * the selected service's card above the gallery explains it on screen.
    */
-  status: Readonly<{ tone: 'ready' | 'needs_you'; text: string; detail?: string }> | null;
+  status: Readonly<{ tone: VoiceReadinessTone; text: string; detail?: string }> | null;
   selected: boolean;
   disabled: boolean;
   badge?: string;

@@ -305,6 +305,26 @@ export async function normalizeAccountSettingsHistoryClientV1(input: Readonly<{
   const currentness = await ports.readCurrentness();
   const settingsVersion = currentness.settingsVersion;
   if (settingsVersion === undefined) return ports.unavailable(0, 'Settings currentness unavailable');
+  const readList = async () => {
+    const response = await ports.request('/v2/account/settings/history', { method: 'GET' });
+    await assertCurrent(ports);
+    if (response.status < 200 || response.status >= 300) ports.unavailable(response.status, 'History inventory unavailable');
+    return AccountSettingsV2HistoryListResponseSchema.parse(response.data).snapshots;
+  };
+  const inventory = await readList();
+  // No historical content consumes destination authority when inventory is
+  // empty. Keep fresh head/crypto and inventory confirmation; explicit source
+  // transfer witnesses still follow the full authority path below.
+  if (inventory.length === 0 && input.expectedProfileTransferRevision === undefined) {
+    if (input.checkpoint) input.checkpoint.completed = undefined;
+    await ports.readCurrentness();
+    const latest = await readList();
+    // An empty final inventory leaves no historical content to normalize even
+    // when the Settings head/crypto inputs moved, just as in the full path.
+    return latest.length === 0
+      ? { status: 'complete' }
+      : { status: 'cleanup-pending', versions: latest.map(snapshot => snapshot.version).sort((a, b) => a - b) };
+  }
   const destination = await captureAccountSettingsHistoryDestinationAuthorityV1({ ...input, currentness });
   const inputs = { currentness: historyCurrentnessInputs(currentness), destination };
   if ((input.expectedProfileTransferRevision === undefined
@@ -324,13 +344,6 @@ export async function normalizeAccountSettingsHistoryClientV1(input: Readonly<{
     }
   }
   if (input.checkpoint) input.checkpoint.completed = undefined;
-  const readList = async () => {
-    const response = await ports.request('/v2/account/settings/history', { method: 'GET' });
-    await assertCurrent(ports);
-    if (response.status < 200 || response.status >= 300) ports.unavailable(response.status, 'History inventory unavailable');
-    return AccountSettingsV2HistoryListResponseSchema.parse(response.data).snapshots;
-  };
-  const inventory = await readList();
   if (input.expectedProfileTransferRevision !== undefined
     && input.expectedProfileTransferRevision !== destination.expectedProfileTransferRevision) {
     return { status: 'cleanup-pending', versions: inventory.map(snapshot => snapshot.version).sort((a, b) => a - b) };

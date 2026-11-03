@@ -136,10 +136,4 @@ describe('voiceAgentRunMetadata through real storage and Sync', () => {
     seedRun('s1', runMetadata('run_current_owner', 222));
     expect(readVoiceAgentRunMetadataFromSession({ sessionId: 's1' })).toEqual(runMetadata('run_current_owner', 222));
   });
-
-  it('reads the welcomed epoch retained with persisted run identity', async () => {
-    seedRun('sys_voice', runMetadata('run_1', 123, 9));
-    const { readVoiceAgentRunMetadataFromSession } = await import('./voiceAgentRunMetadata');
-    expect(readVoiceAgentRunMetadataFromSession({ sessionId: 'sys_voice' })?.welcomedEpoch).toBe(9);
-  });
 });

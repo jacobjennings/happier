@@ -3,21 +3,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const platform = vi.hoisted(() => ({ OS: 'web' }));
 const desktopHostKindMock = vi.hoisted(() => vi.fn<() => 'tauri' | 'electron' | null>());
 const invokeDesktopHostMock = vi.hoisted(() => vi.fn());
-const nativeStore = vi.hoisted(() => ({
-    read: vi.fn(),
-    write: vi.fn(),
-    remove: vi.fn(),
-}));
+const secureStore = vi.hoisted(() => {
+    const values = new Map<string, string>();
+    return { values, getItemAsync: vi.fn(async (key: string) => values.get(key) ?? null) };
+});
 
 vi.mock('react-native', () => ({ Platform: platform }));
 vi.mock('@/utils/platform/desktopHost', () => ({
     desktopHostKind: desktopHostKindMock,
     invokeDesktopHost: invokeDesktopHostMock,
 }));
-vi.mock('./nativeSecureStoreWithDevFallback', () => ({
-    readNativeSecureStoreString: nativeStore.read,
-    writeNativeSecureStoreString: nativeStore.write,
-    removeNativeSecureStoreString: nativeStore.remove,
+vi.mock('expo-secure-store', () => ({
+    getItemAsync: secureStore.getItemAsync,
+    setItemAsync: async (key: string, value: string) => {
+        secureStore.values.set(key, value);
+    },
+    deleteItemAsync: async (key: string) => {
+        secureStore.values.delete(key);
+    },
 }));
 
 import {
@@ -48,9 +51,8 @@ beforeEach(() => {
     platform.OS = 'web';
     desktopHostKindMock.mockReset().mockReturnValue(null);
     invokeDesktopHostMock.mockReset();
-    nativeStore.read.mockReset();
-    nativeStore.write.mockReset();
-    nativeStore.remove.mockReset();
+    secureStore.values.clear();
+    secureStore.getItemAsync.mockClear();
     installLocalStorage();
 });
 
@@ -73,7 +75,8 @@ describe.each(['tauri', 'electron'] as const)('%s Desktop secure storage', (host
             [READ_COMMAND, { key: 'scope:key' }],
             [REMOVE_COMMAND, { key: 'scope:key' }],
         ]);
-        expect(nativeStore.read).not.toHaveBeenCalled();
+        expect(secureStore.getItemAsync).not.toHaveBeenCalled();
+        expect(secureStore.values.size).toBe(0);
     });
 
     it('migrates an exact legacy localStorage key only after native write and readback verification', async () => {
@@ -203,11 +206,13 @@ it('keeps browser web on origin localStorage without invoking a desktop host', a
 
 it('keeps native mobile on the existing native secure store', async () => {
     platform.OS = 'ios';
-    nativeStore.read.mockResolvedValue('native');
+    const { values } = installLocalStorage();
+    secureStore.values.set('key', 'native');
     await expect(readDeviceLocalStorageString('key')).resolves.toBe('native');
     await writeDeviceLocalStorageString('key', 'value');
+    expect(secureStore.values.get('key')).toBe('value');
     await removeDeviceLocalStorageString('key');
-    expect(nativeStore.write).toHaveBeenCalledWith('key', 'value');
-    expect(nativeStore.remove).toHaveBeenCalledWith('key');
+    expect(secureStore.values.has('key')).toBe(false);
+    expect(values.size).toBe(0);
     expect(invokeDesktopHostMock).not.toHaveBeenCalled();
 });

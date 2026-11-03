@@ -1,18 +1,14 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 import { describe, expect, it } from 'vitest';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
-import { createTestRpcManager, runGit } from './testRpcHarness';
+import { createGitWorkspace, createTestRpcManager, runGit } from './testRpcHarness';
 
 describe('scm rpc change discard (git)', () => {
-    function createGitWorkspace(): string {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-scm-discard-git-'));
-        runGit(workspace, ['init']);
-        runGit(workspace, ['config', 'user.email', 'test@example.com']);
-        runGit(workspace, ['config', 'user.name', 'Test User']);
+    function createCommittedWorkspace(): string {
+        const workspace = createGitWorkspace('happier-scm-discard-git-');
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
         runGit(workspace, ['add', 'a.txt']);
         runGit(workspace, ['commit', '-m', 'init']);
@@ -20,7 +16,7 @@ describe('scm rpc change discard (git)', () => {
     }
 
     it('discards pending modifications to a tracked file', async () => {
-        const workspace = createGitWorkspace();
+        const workspace = createCommittedWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'changed\n');
 
         const { call } = createTestRpcManager({ workingDirectory: workspace });
@@ -37,7 +33,7 @@ describe('scm rpc change discard (git)', () => {
     });
 
     it('removes untracked files when discarded', async () => {
-        const workspace = createGitWorkspace();
+        const workspace = createCommittedWorkspace();
         writeFileSync(join(workspace, 'b.txt'), 'tmp\n');
 
         const { call } = createTestRpcManager({ workingDirectory: workspace });

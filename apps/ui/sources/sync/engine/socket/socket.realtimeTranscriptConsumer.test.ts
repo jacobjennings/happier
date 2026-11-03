@@ -74,6 +74,7 @@ function buildPlainNewMessageUpdate(
     createdAt: 2_000,
     body: {
       t: 'new-message',
+      delivery: 'full' as const,
       sid: sessionId,
       message: {
         id: messageId,

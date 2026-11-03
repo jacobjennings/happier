@@ -107,16 +107,6 @@ describe('TerminalConnectScreen approval render', () => {
         expect(screen.findByTestId('terminal-connect-reject')).toBeTruthy();
     });
 
-    it('renders the approval actions for an authenticated terminal-connect link', async () => {
-        const Screen = (await import('@/app/(app)/terminal/connect')).default;
-
-        const screen = await renderScreen(<Screen />);
-        await act(async () => {});
-
-        expect(screen.findByTestId('terminal-connect-surface-card')).toBeTruthy();
-        expect(screen.findByTestId('terminal-connect-approve')).toBeTruthy();
-        expect(screen.findByTestId('terminal-connect-reject')).toBeTruthy();
-    });
     it('replaces the displayed request when a second desktop link arrives on the same route', async () => {
         const Screen = (await import('@/app/(app)/terminal/connect')).default;
         const screen = await renderScreen(<Screen />);

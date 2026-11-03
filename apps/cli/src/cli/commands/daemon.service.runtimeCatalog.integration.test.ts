@@ -132,43 +132,6 @@ describe('happier daemon service', () => {
     });
   });
 
-  it('prints default-following service paths when the target mode env is set', async () => {
-    const envScope = createEnvKeyScope([
-      'HAPPIER_DAEMON_SERVICE_PLATFORM',
-      'HAPPIER_DAEMON_SERVICE_USER_HOME_DIR',
-      'HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR',
-      'HAPPIER_DAEMON_SERVICE_INSTANCE_ID',
-      'HAPPIER_DAEMON_SERVICE_TARGET_MODE',
-    ]);
-
-    await withTempDir('happier-daemon-service-default-target-', async (tmp) => {
-      envScope.patch({
-        HAPPIER_DAEMON_SERVICE_PLATFORM: 'linux',
-        HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: tmp,
-        HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: join(tmp, '.happier'),
-        HAPPIER_DAEMON_SERVICE_INSTANCE_ID: 'cloud',
-        HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'default-following',
-      });
-
-      const output = captureStdoutJsonOutput<{ ok: boolean; targetMode?: string; paths?: { unitPath?: string } }>();
-      try {
-        await commandRegistry.service({
-          args: ['service', 'paths', '--json'],
-          rawArgv: [],
-          terminalRuntime: null,
-        });
-
-        const parsed = output.json();
-        expect(parsed.ok).toBe(true);
-        expect(parsed.targetMode).toBe('default-following');
-        expect(parsed.paths?.unitPath).toBe(join(tmp, '.config', 'systemd', 'user', 'happier-daemon.default.service'));
-      } finally {
-        output.restore();
-        envScope.restore();
-      }
-    });
-  });
-
   it('humanizes plain-text service paths target labels', async () => {
     const envScope = createEnvKeyScope([
       'HAPPIER_DAEMON_SERVICE_PLATFORM',
@@ -240,47 +203,6 @@ describe('happier daemon service', () => {
         // Dry-run: do not write to disk
         const { existsSync } = await import('node:fs');
         expect(existsSync(join(tmp, '.config', 'systemd', 'user', 'happier-daemon.default.service'))).toBe(false);
-      } finally {
-        output.restore();
-        envScope.restore();
-      }
-    });
-  });
-
-  it('prints a default-following install plan in --dry-run --json when the target mode env is set', async () => {
-    const envScope = createEnvKeyScope([
-      'HAPPIER_DAEMON_SERVICE_PLATFORM',
-      'HAPPIER_DAEMON_SERVICE_USER_HOME_DIR',
-      'HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR',
-      'HAPPIER_DAEMON_SERVICE_INSTANCE_ID',
-      'HAPPIER_DAEMON_SERVICE_TARGET_MODE',
-    ]);
-
-    await withTempDir('happier-daemon-service-default-install-', async (tmp) => {
-      envScope.patch({
-        HAPPIER_DAEMON_SERVICE_PLATFORM: 'linux',
-        HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: tmp,
-        HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: join(tmp, '.happier'),
-        HAPPIER_DAEMON_SERVICE_INSTANCE_ID: 'cloud',
-        HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'default-following',
-      });
-
-      const output = captureStdoutJsonOutput<{
-        ok: boolean;
-        plan?: { files?: Array<{ path: string; content: string }> };
-      }>();
-      try {
-        await commandRegistry.service({
-          args: ['service', 'install', '--dry-run', '--json'],
-          rawArgv: [],
-          terminalRuntime: null,
-        });
-
-        const parsed = output.json();
-        expect(parsed.ok).toBe(true);
-        expect(parsed.plan?.files?.[0]?.path).toBe(join(tmp, '.config', 'systemd', 'user', 'happier-daemon.default.service'));
-        expect(parsed.plan?.files?.[0]?.content).toContain('Environment=HAPPIER_DAEMON_SERVICE_TARGET_MODE=default-following');
-        expect(parsed.plan?.files?.[0]?.content).not.toContain('Environment=HAPPIER_ACTIVE_SERVER_ID=');
       } finally {
         output.restore();
         envScope.restore();

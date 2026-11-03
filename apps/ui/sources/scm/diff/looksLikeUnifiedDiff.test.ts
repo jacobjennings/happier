@@ -18,21 +18,16 @@ describe('looksLikeUnifiedDiff', () => {
         expect(looksLikeUnifiedDiff('@@ -1,1 +1,1 @@\n-foo\n+bar\n')).toBe(true);
     });
 
-    it('returns false for binary placeholders', () => {
-        expect(looksLikeUnifiedDiff('Binary files a/a.png and b/a.png differ')).toBe(false);
-    });
-
-    it('returns false for binary diffs that include diff headers (e.g. git emits Binary files lines)', () => {
-        expect(
-            looksLikeUnifiedDiff(
-                [
-                    'diff --git a/src/image.png b/src/image.png',
-                    'new file mode 100644',
-                    'index 0000000..e69de29',
-                    'Binary files /dev/null and b/src/image.png differ',
-                    '',
-                ].join('\n'),
-            ),
-        ).toBe(false);
+    it.each([
+        ['a bare binary placeholder', 'Binary files a/a.png and b/a.png differ'],
+        ['a binary diff with git headers', [
+            'diff --git a/src/image.png b/src/image.png',
+            'new file mode 100644',
+            'index 0000000..e69de29',
+            'Binary files /dev/null and b/src/image.png differ',
+            '',
+        ].join('\n')],
+    ])('returns false for %s', (_label, diff) => {
+        expect(looksLikeUnifiedDiff(diff)).toBe(false);
     });
 });

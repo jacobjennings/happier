@@ -94,6 +94,7 @@ export const HOME_GOVERNANCE_ACTION_SPECS = Object.freeze([
   }),
   homeDomainActionRow({
     id: 'home.public_profiles.handle_reclaim', approval: { result: 'required', flow: 'deferred' },
+    irreversible: true,
     title: 'Reclaim a public-profile handle',
     description: 'Reclaim the reviewed Account username with an audited reason and owner notice. Any publication restriction remains.',
     safety: 'danger', sideEffectClass: 'danger', cliPath: ['home', 'public-profiles', 'handle-reclaim'],
@@ -153,6 +154,7 @@ export const HOME_GOVERNANCE_ACTION_SPECS = Object.freeze([
   }),
   homeDomainActionRow({
     id: 'home.governance.claim', approval: {result: 'required'},
+    irreversible: true,
     title: 'Claim this Home',
     description: 'Become the first owner of an ownerless Home with the one-time code printed by `happier-server --print-home-claim-code`. Every refusal reads the same.',
     safety: 'danger',
@@ -259,6 +261,7 @@ export const HOME_GOVERNANCE_ACTION_SPECS = Object.freeze([
   }),
   homeDomainActionRow({
     id: 'home.accounts.signOutEverywhere', approval: {result: 'required'},
+    irreversible: true,
     title: 'Sign a Home Account out everywhere',
     description: 'End every signed-in session of one Account. API tokens stay valid until the Account is disabled.',
     safety: 'danger',

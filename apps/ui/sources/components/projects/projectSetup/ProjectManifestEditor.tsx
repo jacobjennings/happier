@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { View, type StyleProp, type ViewStyle } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { HappierPageHeader, happierPageTextMetrics } from '@happier-dev/plugin-ui/presentation';
+import { HAPPIER_PAGE_METRICS, HappierPageHeader, happierPageTextMetrics } from '@happier-dev/plugin-ui/presentation';
 import type {
   ProjectManifestFileSnapshot,
   ProjectManifestDiagnostic,
@@ -20,6 +20,8 @@ import { KeyboardAwareScreen } from '@/components/ui/keyboardAvoidance/KeyboardA
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { renderPageHeaderText } from '@/components/ui/layout/PageHeader';
 import { useLayoutMaxWidth } from '@/components/ui/layout/layout';
+import { PageContentColumn } from '@/components/ui/lists/PageContentColumn';
+import { useProjectPageBack } from '@/components/projects/detail/projectPageBack';
 import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { PagePinnedBar } from '@/components/ui/layout/PagePinnedBar';
 import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
@@ -36,7 +38,7 @@ import {
 } from './projectManifestEditorModel';
 import type { ProjectManifestActionClient } from './projectManifestActionClient';
 import { getProjectManifestImportSelection } from './projectManifestImportSelection';
-import { ProjectManifestForm } from './ProjectManifestForm';
+import { ProjectManifestForm, type ProjectManifestFormSection } from './ProjectManifestForm';
 import type { ProjectDefinitionInspection } from './useProjectDefinitionInspection';
 import { useProjectManifestEditorSnapshot } from './useProjectManifestEditorSnapshot';
 
@@ -123,6 +125,15 @@ function ProjectManifestEditorLeaf(
   const machineName = (machine ? getMachineSentenceName(machine) : null) ?? props.workspace.machineId;
   const { theme } = useUnistyles();
   const [rawResetKey, setRawResetKey] = React.useState(0);
+  // Phone (lab EDITp): the Form lists its sections and pushes one in place; Back keeps the draft.
+  const [section, setSection] = React.useState<ProjectManifestFormSection | null>(null);
+  const raw = snapshot.mode === 'raw' || snapshot.draft.status !== 'valid';
+  // Inside a Project the phone bar owns Back: it closes a pushed section first, then the editor. Elsewhere
+  // (and on wider layouts, where the header keeps its own arrow) the editor draws its own way back.
+  const barHostsBack = useProjectPageBack(phone, () => {
+    if (!raw && section) setSection(null);
+    else props.onBack();
+  }) && phone;
   const tabs = React.useMemo(
     () => [
       {
@@ -175,7 +186,8 @@ function ProjectManifestEditorLeaf(
     </View>
   );
   const content = (
-    <View testID="project-manifest-editor" style={styles.editor}>
+    // Every block on the page (banner, section) starts its own section gap below the one before it.
+    <View testID="project-manifest-editor" style={raw ? styles.fill : null}>
       <HappierPageHeader
         title={t('projects.scripts.editor.title')}
         description={
@@ -190,7 +202,7 @@ function ProjectManifestEditorLeaf(
         showTitle
         columnMaxWidthPx={columnMaxWidth}
         renderText={renderPageHeaderText}
-        renderBack={(style) => (
+        renderBack={barHostsBack ? undefined : (style) => (
           <View style={style as StyleProp<ViewStyle>}>
             <IconButton
               testID="project-manifest-editor.back"
@@ -282,7 +294,10 @@ function ProjectManifestEditorLeaf(
           ]}
         />
       ) : null}
-      {snapshot.mode === 'raw' || snapshot.draft.status !== 'valid' ? (
+      {raw ? (
+        // The code sits in the page column with the sheets' edge and fills the page below the header;
+        // it scrolls itself.
+        <PageContentColumn testID="project-manifest-editor.rawColumn" style={styles.rawColumn}>
         <View testID="project-manifest-editor.raw" style={styles.raw}>
           <CodeEditor
             resetKey={`${rawResetKey}`}
@@ -294,6 +309,7 @@ function ProjectManifestEditorLeaf(
             onChange={(bytes) => model.setRaw(bytes)}
           />
         </View>
+        </PageContentColumn>
       ) : (
         <ProjectManifestForm
           model={model}
@@ -303,20 +319,29 @@ function ProjectManifestEditorLeaf(
           commands={props.commands}
           tools={props.tools}
           machineName={machineName}
+          section={section}
+          onSectionChange={setSection}
+          sectionBack={!barHostsBack}
         />
       )}
     </View>
   );
-  // The screen resizes above the native keyboard. Actions are siblings of the scroll, never
-  // scrolled off with the focused section, and both views retain the same model/draft.
+  // The editor is a page of its own on every host: the JSON view fills it, the Form scrolls in it. On a
+  // phone the screen resizes above the native keyboard and the actions are siblings of the scroll, never
+  // scrolled off with the focused section; both views retain the same model/draft.
+  const page = (
+    <ItemList fill={raw} keyboardAware={phone} keyboardShouldPersistTaps="handled" testID="project-manifest-editor.scroll">
+      {content}
+    </ItemList>
+  );
   return phone ? (
-    <KeyboardAwareScreen style={styles.phone}>
-      <ItemList keyboardAware keyboardShouldPersistTaps="handled" testID="project-manifest-editor.phoneScroll">{content}</ItemList>
+    <KeyboardAwareScreen style={styles.page}>
+      {page}
       <PagePinnedBar testID="project-manifest-editor.phoneActions" style={styles.phoneActions}>
         {actions}
       </PagePinnedBar>
     </KeyboardAwareScreen>
-  ) : content;
+  ) : <View style={styles.page}>{page}</View>;
 }
 
 function describeDiagnostic(
@@ -335,8 +360,8 @@ function describeDiagnostic(
 }
 
 const styles = StyleSheet.create(() => ({
-  editor: { gap: 16 },
-  phone: { flex: 1, minHeight: 0 },
+  fill: { flexGrow: 1 },
+  page: { flex: 1, minHeight: 0 },
   phoneActions: { alignItems: 'flex-end' },
   headerNote: { ...Typography.default(), ...happierPageTextMetrics('pageDescription') },
   headerActions: {
@@ -345,6 +370,9 @@ const styles = StyleSheet.create(() => ({
     gap: 8,
     flexWrap: 'wrap',
   },
-  raw: { minHeight: 420, borderRadius: 14, overflow: 'hidden' },
+  rawColumn: { flexGrow: 1, paddingTop: HAPPIER_PAGE_METRICS.sectionGapPx, paddingHorizontal: HAPPIER_PAGE_METRICS.sheetInsetPx },
+  // Below the header the code fills the page (the code surface draws its own frame); a short window still
+  // shows a readable block of it.
+  raw: { flexGrow: 1, minHeight: HAPPIER_PAGE_METRICS.readingClipHeightPx },
   mono: { ...Typography.mono(), ...happierPageTextMetrics('rowDescription') },
 }));

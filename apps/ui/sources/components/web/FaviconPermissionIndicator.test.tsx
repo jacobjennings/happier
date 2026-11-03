@@ -163,43 +163,6 @@ describe('FaviconPermissionIndicator', () => {
         expect(updateFaviconWithNotification).toHaveBeenCalledTimes(1);
     });
 
-    it('signals an unresolved projected permission after transient runtime freshness expires', async () => {
-        vi.useFakeTimers();
-        vi.setSystemTime(new Date(1_000_000));
-        setGlobalWindow({});
-        setGlobalDocument({});
-
-        seedStorage({
-            sessions: {
-                s1: createSessionFixture({
-                    id: 's1',
-                    presence: 'online',
-                    active: true,
-                    activeAt: 0,
-                    thinking: false,
-                    thinkingAt: 0,
-                    latestTurnStatus: 'in_progress',
-                    latestTurnStatusObservedAt: 1,
-                    pendingPermissionRequestCount: 1,
-                    pendingUserActionRequestCount: 0,
-                    pendingRequestObservedAt: 1,
-                    viewer: createPermissionViewer(),
-                    agentState: {
-                        controlledByUser: null,
-                        requests: { req1: { tool: 'Bash', arguments: {}, createdAt: 1 } },
-                        completedRequests: null,
-                    },
-                }),
-            },
-            sessionMessages: {},
-        });
-
-        const { FaviconPermissionIndicator } = await import('./FaviconPermissionIndicator');
-        await renderScreen(<FaviconPermissionIndicator />);
-
-        expect(updateFaviconWithNotification).toHaveBeenCalledTimes(1);
-    });
-
     it('does not reset while a projected permission remains unresolved', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date(1_000));

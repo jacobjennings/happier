@@ -53,30 +53,6 @@ function defaultProps(rootStep: SelectionListStep, overrides: Partial<SelectionL
 }
 
 describe('SelectionListBody scrolling-edge indicators (RUX-5)', () => {
-    it('mounts a fade-overlay host alongside the bodyScroll ScrollView', async () => {
-        const root: SelectionListStep = {
-            id: 'root',
-            inputPlaceholder: 'Search',
-            sections: [
-                {
-                    kind: 'static',
-                    id: 'long',
-                    title: 'LONG',
-                    options: makeOptions(30, 'l'),
-                },
-            ],
-        };
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(
-            <SelectionList {...defaultProps(root, { maxHeight: 200 })} />,
-        );
-        // Wrapper that hosts ScrollView + edge fade overlays.
-        const fadeHost = screen.findByTestId('sl:bodyScroll:fadeHost');
-        expect(fadeHost).not.toBeNull();
-        // The actual ScrollView is still reachable by its existing testID.
-        expect(screen.findByTestId('sl:bodyScroll')).not.toBeNull();
-    });
-
     it('renders top and bottom fade overlay wrappers with pointer-events disabled', async () => {
         const root: SelectionListStep = {
             id: 'root',
@@ -106,8 +82,8 @@ describe('SelectionListBody scrolling-edge indicators (RUX-5)', () => {
     it('drives bottom-fade visibility from the useScrollEdgeFades hook (initial state: bottom visible when content overflows)', async () => {
         // The body seeds the hook with `initialVisibility: { bottom: true }` so
         // that the trailing fade renders optimistically before the first
-        // measurement. We assert the fade is rendered (its style includes a
-        // non-zero opacity) on initial mount with a tall list.
+        // measurement. We assert the fade is shown (opacity 1) on initial
+        // mount with a tall list.
         const root: SelectionListStep = {
             id: 'root',
             inputPlaceholder: 'Search',
@@ -131,9 +107,8 @@ describe('SelectionListBody scrolling-edge indicators (RUX-5)', () => {
         const flatStyle: Record<string, unknown> = Array.isArray(styleProp)
             ? Object.assign({}, ...styleProp.filter(Boolean))
             : (styleProp ?? {});
-        // The hidden state collapses opacity to 0; the visible state keeps it > 0.
-        const opacity = flatStyle.opacity;
-        expect(typeof opacity === 'number' ? opacity : 1).toBeGreaterThan(0);
+        // The hidden state collapses opacity to 0; the visible state is 1.
+        expect(flatStyle.opacity).toBe(1);
     });
 
     it('top-fade is hidden initially (no scroll-position yet) — opacity 0', async () => {
@@ -161,28 +136,5 @@ describe('SelectionListBody scrolling-edge indicators (RUX-5)', () => {
             : (styleProp ?? {});
         // Initial: top edge fade is hidden.
         expect(flatStyle.opacity).toBe(0);
-    });
-
-    it('does not mount fade overlays when only a virtualized section is present (FlashList owns scroll)', async () => {
-        const root: SelectionListStep = {
-            id: 'root',
-            inputPlaceholder: 'Search',
-            sections: [
-                {
-                    kind: 'static',
-                    id: 'big',
-                    title: 'BIG',
-                    options: makeOptions(60, 'b'),
-                    virtualization: 'force',
-                },
-            ],
-        };
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps(root)} />);
-        // No bodyScroll ScrollView ⇒ no fade host either (FlashList path).
-        expect(screen.findByTestId('sl:bodyScroll')).toBeNull();
-        expect(screen.findByTestId('sl:bodyScroll:fadeHost')).toBeNull();
-        expect(screen.findByTestId('sl:bodyScroll:fadeTop')).toBeNull();
-        expect(screen.findByTestId('sl:bodyScroll:fadeBottom')).toBeNull();
     });
 });

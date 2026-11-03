@@ -2,35 +2,24 @@ import React from 'react';
 import renderer from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
-import { installMediaCommonModuleMocks } from './mediaTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-installMediaCommonModuleMocks({
-    reactNative: async () => {
-        const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-        return createReactNativeWebMock({
-            View: ({ children, ...props }: any) => React.createElement('View', props, children),
-        });
-    },
-    unistyles: async () => {
-        const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
-        return createUnistylesMock({
-            theme: { colors: { text: '#111' } },
-        });
-    },
+vi.mock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeWebMock({
+        View: ({ children, ...props }: any) => React.createElement('View', props, children),
+    });
+});
+
+vi.mock('react-native-unistyles', async () => {
+    const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
+    return createUnistylesMock();
 });
 
 vi.mock('@/components/ui/text/Text', () => ({
     Text: ({ children, ...props }: any) => React.createElement('Text', props, children),
-}));
-
-vi.mock('@/components/ui/code/tokenization/simpleSyntaxTokenizer', () => ({
-    tokenizeSimpleSyntaxText: () => [
-        { type: 'keyword', text: 'const' },
-        { type: 'default', text: ' x = 1' },
-    ],
 }));
 
 describe('SimpleSyntaxHighlighter', () => {

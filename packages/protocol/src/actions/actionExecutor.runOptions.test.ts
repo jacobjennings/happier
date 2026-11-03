@@ -86,6 +86,112 @@ const START_CONTEXT = {
 } as const;
 const START_TARGET_KEY = buildBackendTargetKeyV2({ kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } });
 
+it.each([
+  { actionId: 'execution.run.start', surface: 'ui' },
+  { actionId: 'review.start', surface: 'cli' },
+  { actionId: 'subagents.plan.start', surface: 'agent' },
+  { actionId: 'subagents.delegate.start', surface: 'plugin' },
+  { actionId: 'voice_agent.start', surface: 'mcp' },
+] as const)(
+  'inherits Session selections per concrete child through $actionId on $surface', async ({ actionId, surface }) => {
+    const target = parseBackendTargetKeyV2(START_TARGET_KEY);
+    const connectedServices = { v: 2 as const, bindingsByServiceId: {
+      'happier.agent.codex/openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'session-account' },
+    } };
+    const context = { ...START_CONTEXT, baseline: { ...START_CONTEXT.baseline, configuration: {
+      agentTarget: target, profileId: 'session-launch', connectedServices,
+    } } };
+    const received: ReturnType<typeof ExecutionRunStartRequestSchema.parse>[] = [];
+    const deps = createDeps({ resolveAgentStartContext: async () => context,
+      reviewEnginesList: async () => ({ items: [{ targetKey: START_TARGET_KEY, label: 'Codex' }] }),
+      executionRunStart: async (_sessionId, input) => {
+        received.push(ExecutionRunStartRequestSchema.parse(input));
+        return { runId: 'run_1', callId: 'call_1', sidechainId: 'call_1' };
+      } });
+    const input = actionId === 'execution.run.start' ? { ...RUN_START_BASE, modelSelection: {
+      agentTargetKey: START_TARGET_KEY, providerConnectionId: null, modelId: 'chosen-model',
+    } } : { sessionId: 's1', instructions: 'Do the work', modelId: 'chosen-model',
+      [actionId === 'review.start' ? 'engineIds' : 'backendTargetKeys']: [START_TARGET_KEY] };
+    const result = await createActionExecutor(deps).execute(actionId, input, { ...RUN_DISPATCHER_CALLER, surface,
+      actionCaller: context.caller, agentStartContext: context });
+    expect(result).toMatchObject({ ok: true });
+    expect(received).toMatchObject([{ connectedServices, launchProfileId: 'session-launch' }]);
+    expect(received[0]?.modelSelection?.modelId ?? received[0]?.modelId).toBe('chosen-model');
+  },
+);
+
+it('returns a typed no-Run refusal for inherited direct Team custody at the public start boundary', async () => {
+  const context = { ...START_CONTEXT, baseline: { ...START_CONTEXT.baseline, configuration: {
+    agentTarget: parseBackendTargetKeyV2(START_TARGET_KEY), connectedServices: { v: 2 as const, bindingsByServiceId: {
+      'happier.agent.codex/openai-codex': { source: 'team_resource' as const, resourceId: 'resource', deliveryMode: 'direct' as const,
+        disclosedMember: { service: { pluginId: 'happier.agent.codex', localId: 'openai-codex' }, accountId: 'member' } },
+    } },
+  } } };
+  const deps = createDeps({ resolveAgentStartContext: async () => context });
+  expect(await createActionExecutor(deps).execute('execution.run.start', { ...RUN_START_BASE,
+    modelSelection: { agentTargetKey: START_TARGET_KEY, providerConnectionId: null, modelId: 'model' },
+  }, { ...RUN_DISPATCHER_CALLER, actionCaller: context.caller, agentStartContext: context })).toMatchObject({
+    ok: false, errorCode: 'execution_run_child_choice_required', details: {
+      executionRunStart: { runCreation: 'noRunCreated' }, childChoice: { parentRouteCompatibility: 'incompatible' },
+    },
+  });
+  expect(deps.executionRunStart).not.toHaveBeenCalled();
+});
+
+it('does not turn an omitted attached Review selection into an explicit Account-default choice', async () => {
+  const connectedServices = { v: 2 as const, bindingsByServiceId: {
+    'happier.agent.codex/openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'session-account' },
+  } };
+  const context = { ...START_CONTEXT, baseline: { ...START_CONTEXT.baseline, configuration: {
+    agentTarget: parseBackendTargetKeyV2(START_TARGET_KEY), connectedServices,
+  } } };
+  const received: ReturnType<typeof ExecutionRunStartRequestSchema.parse>[] = [];
+  const deps = createDeps({ resolveAgentStartContext: async () => context,
+    reviewEnginesList: async () => ({ items: [{ targetKey: START_TARGET_KEY, label: 'Codex' }] }),
+    executionRunStart: async (_id, input) => {
+      received.push(ExecutionRunStartRequestSchema.parse(input));
+      return { runId: 'run_1', callId: 'call_1', sidechainId: 'call_1' };
+    } });
+  expect(await createActionExecutor(deps).execute('review.start', {
+    sessionId: 's1', engineIds: [START_TARGET_KEY], instructions: 'Review',
+  }, { ...RUN_DISPATCHER_CALLER, actionCaller: context.caller, agentStartContext: context })).toMatchObject({ ok: true });
+  expect(received).toMatchObject([{ connectedServices }]);
+  expect(received[0]).not.toHaveProperty('childSelection');
+});
+
+it.each([false, true])('keeps mixed-Agent fan-out inheritance local to each child: native=%s', async native => {
+  const target = parseBackendTargetKeyV2(START_TARGET_KEY);
+  const otherKey = 'agent:external.agent/worker';
+  const connectedServices = { v: 2 as const, bindingsByServiceId: {
+    'happier.agent.codex/openai-codex': { source: 'connected' as const, selection: 'group' as const,
+      groupId: 'session-pool', profileId: 'active-member' },
+  } };
+  const context = { ...START_CONTEXT, baseline: { ...START_CONTEXT.baseline, configuration: {
+    agentTarget: target, connectedServices, profileId: 'session-launch',
+  } } };
+  const received: ReturnType<typeof ExecutionRunStartRequestSchema.parse>[] = [];
+  const deps = createDeps({ resolveAgentStartContext: async () => context, executionRunStart: async (_id, input) => {
+    received.push(ExecutionRunStartRequestSchema.parse(input));
+    return { runId: 'run_1', callId: 'call_1', sidechainId: 'call_1' };
+  } });
+  const result = await createActionExecutor(deps).execute('subagents.delegate.start', {
+    sessionId: 's1', instructions: 'Do the work', modelId: 'chosen-model', backendTargetKeys: [START_TARGET_KEY, otherKey],
+    ...(native ? { connectedServicesByBackendTargetKey: { [START_TARGET_KEY]: null } } : {}),
+  }, { ...RUN_DISPATCHER_CALLER, actionCaller: context.caller, agentStartContext: context });
+  expect(result).toMatchObject({ ok: true });
+  expect(received).toHaveLength(2);
+  const own = received.find(input => buildBackendTargetKeyV2(input.backendTarget) === START_TARGET_KEY);
+  expect(own).toMatchObject({ launchProfileId: 'session-launch', connectedServices: native ? null : {
+    v: 2, bindingsByServiceId: { 'happier.agent.codex/openai-codex': {
+      source: 'connected', selection: 'group', groupId: 'session-pool',
+    } },
+  } });
+  if (!native) expect(own?.connectedServices?.bindingsByServiceId['happier.agent.codex/openai-codex']).not.toHaveProperty('profileId');
+  const other = received.find(input => buildBackendTargetKeyV2(input.backendTarget) === otherKey);
+  expect(other).not.toHaveProperty('connectedServices');
+  expect(other).not.toHaveProperty('launchProfileId');
+});
+
 it('admits a scalar review engine and qualified Team selection through canonical target identity', async () => {
   const deps = createDeps({ reviewEnginesList: async () => ({ items: [{ value: 'claude', label: 'Claude' }] }),
     executionRunCheckProtocolV2: async () => ({ ok: true, exactMachineId: 'm1' }) });
@@ -200,7 +306,7 @@ it('round-trips the contributed Agent option into session creation and a direct 
     creationKey: 'contributed-option-roundtrip',
     executionTarget: { serverId: 'server-1', machineId: 'm1' },
     directory: { kind: 'path', path: '/workspace' },
-    organizationPlacement: { folderId: null, tagIds: [] },
+    organizationPlacement: { sectionId: null, tagIds: [] },
     agentTarget: target,
   }, { ...UI_CALLER, authority: 'present_user' });
   expect(spawnResult.ok, JSON.stringify(spawnResult)).toBe(true);
@@ -610,7 +716,7 @@ describe('createActionExecutor run options parity (model + effort)', () => {
       ok: false,
       errorCode: 'action_failed',
       error: 'server lookup failed',
-      details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } },
+      details: { executionRunStart: { v: 1, runCreation: 'noRunCreated', errorClass: 'Error' } },
     });
     expect(executionRunStart).not.toHaveBeenCalled();
   });

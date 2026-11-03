@@ -102,15 +102,23 @@ describe('ImagePreviewCache', () => {
         expect(cleanup).toHaveBeenCalledOnce();
     });
     it('evicts least-recently used entries when maxEntries is exceeded', () => {
-        const cleanup = vi.fn();
-        const cache = new ImagePreviewCache({ maxEntries: 1, maxTotalBytes: 1_000_000, now: () => 1_000 });
-        cache.set({ sessionId: 's1', signature: 'sig1', filePath: 'a.png' }, { status: 'loaded', uri: 'blob:a', cleanup });
-        expect(cache.get({ sessionId: 's1', signature: 'sig1', filePath: 'a.png' })?.status).toBe('loaded');
+        const cleanupA = vi.fn();
+        const cleanupB = vi.fn();
+        const cache = new ImagePreviewCache({ maxEntries: 2, maxTotalBytes: 1_000_000, now: () => 1_000 });
+        const a = { sessionId: 's1', signature: 'sig1', filePath: 'a.png' };
+        const b = { sessionId: 's1', signature: 'sig1', filePath: 'b.png' };
+        const c = { sessionId: 's1', signature: 'sig1', filePath: 'c.png' };
+        cache.set(a, { status: 'loaded', uri: 'blob:a', cleanup: cleanupA });
+        cache.set(b, { status: 'loaded', uri: 'blob:b', cleanup: cleanupB });
+        // Reading `a` makes it the most recently used, so `b` (inserted later) is the one evicted.
+        expect(cache.get(a)?.status).toBe('loaded');
 
-        cache.set({ sessionId: 's1', signature: 'sig1', filePath: 'b.png' }, { status: 'loaded', uri: 'blob:b' });
-        expect(cache.get({ sessionId: 's1', signature: 'sig1', filePath: 'a.png' })).toBeNull();
-        expect(cache.get({ sessionId: 's1', signature: 'sig1', filePath: 'b.png' })?.status).toBe('loaded');
-        expect(cleanup).toHaveBeenCalledTimes(1);
+        cache.set(c, { status: 'loaded', uri: 'blob:c' });
+        expect(cache.get(b)).toBeNull();
+        expect(cache.get(a)?.status).toBe('loaded');
+        expect(cache.get(c)?.status).toBe('loaded');
+        expect(cleanupB).toHaveBeenCalledTimes(1);
+        expect(cleanupA).not.toHaveBeenCalled();
     });
 
     it('evicts entries to satisfy maxTotalBytes', () => {

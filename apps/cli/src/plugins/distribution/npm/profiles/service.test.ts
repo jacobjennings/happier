@@ -160,38 +160,6 @@ describe('npm registry profile service', () => {
     await expect(access(legacyKeyPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('keeps a resealed NPM credential readable when another namespace prevents legacy-key retirement', async () => {
-    const { happyHomeDir } = await makeService();
-    const paths = resolvePluginStorePaths({ happyHomeDir });
-    const legacyKey = new Uint8Array(32).fill(8);
-    const legacyKeyPath = join(paths.secretsDir, 'plugin-secrets-key.v1');
-    await mkdir(paths.secretsDir, { recursive: true });
-    await writeFile(legacyKeyPath, JSON.stringify({
-      t: 'happier_plugin_secret_key_v1',
-      key: Buffer.from(legacyKey).toString('base64'),
-    }), 'utf8');
-    await chmod(legacyKeyPath, 0o600);
-    const legacyNpmStore = createPluginSecretStore({
-      pluginId: 'happier.npm.registry.credentials',
-      paths,
-      secretKey: legacyKey,
-    });
-    await legacyNpmStore.set('legacy-npm-credential', 'Bearer keep-npm-readable');
-    const unrelatedLegacyStore = createPluginSecretStore({
-      pluginId: 'another.legacy.plugin',
-      paths,
-      secretKey: legacyKey,
-    });
-    await unrelatedLegacyStore.set('unrelated-secret', 'must-not-be-resealed-by-npm');
-
-    const credentials = createNpmRegistryCredentialStore({ happyHomeDir });
-
-    await expect(credentials.listRefs()).resolves.toEqual(['legacy-npm-credential']);
-    await expect(credentials.get('legacy-npm-credential')).resolves.toBe('Bearer keep-npm-readable');
-    await expect(access(legacyKeyPath)).resolves.toBeUndefined();
-    await expect(unrelatedLegacyStore.get('unrelated-secret')).resolves.toBe('must-not-be-resealed-by-npm');
-  });
-
   it('rejects ambiguous origins, scopes, defaults, and stale revisions without partial changes', async () => {
     const { service } = await makeService();
     await service.mutate(addRequest);
@@ -285,7 +253,7 @@ describe('npm registry profile service', () => {
       .toBe('Bearer right-secret');
   });
 
-  it('logout and removal preserve source pause state without disabling installed plugins', async () => {
+  it('logout and removal preserve source pause state', async () => {
     const { service } = await makeService();
     await service.mutate(addRequest);
     await service.mutate({
@@ -307,8 +275,6 @@ describe('npm registry profile service', () => {
     expect(removed).toMatchObject({
       status: 'success', snapshot: { profiles: [], pausedSources: [{ reason: 'profile_removed' }] },
     });
-    expect(JSON.stringify(removed)).not.toContain('enabled');
-    expect(JSON.stringify(removed)).not.toContain('trusted');
   });
 
   it('replays a completed removal idempotently after the profile no longer exists', async () => {

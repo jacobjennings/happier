@@ -66,6 +66,8 @@ export type NewSessionMachineSelectionContentProps<TMachine extends MachineDispl
     onToggleFavorite?: (machine: TMachine) => void;
     showFavorites?: boolean;
     showRecent?: boolean;
+    /** Domains that own availability keep canonical row order rather than launch prioritization. */
+    disableOfflineMachines?: boolean;
     showSearch?: boolean;
     searchPlacement?: 'header' | 'favorites' | 'all';
     testIdPrefix?: string;
@@ -132,6 +134,7 @@ export function NewSessionMachineSelectionContent<TMachine extends MachineDispla
         onToggleFavorite: props.onToggleFavorite,
         showFavorites: props.showFavorites ?? true,
         showRecent: props.showRecent ?? true,
+        disableOfflineMachines: props.disableOfflineMachines,
         showSearch: props.showSearch ?? true,
         showCliGlyphs: props.showCliGlyphs ?? true,
         autoDetectCliGlyphs: props.autoDetectCliGlyphs ?? true,

@@ -4,6 +4,8 @@ import { z } from 'zod/mini';
 import { VoiceAssistantActionSchema } from '../../voice/actions.js';
 import { VoiceAgentOutputEventV1Schema } from '../../voice/outputEvents.js';
 import { PendingLocalIdSchema } from '../../sessions/pending/pendingLocalId.js';
+import { ExecutionRunPreparedInstructionsForSchema } from './runPrimitives.js';
+export { ExecutionRunPreparedInstructionsForSchema } from './runPrimitives.js';
 
 export {
   ExecutionRunTurnStreamReadRequestSchema,
@@ -108,6 +110,8 @@ export const ExecutionRunTurnStreamReadResponseSchema = lazyZodSchema(() => z.lo
   events: z.array(ExecutionRunTurnStreamEventSchema),
   nextCursor: z.number().check(z.int(), z.minimum(0)),
   done: z.boolean(),
+  /** Successful supported prompt delivery for this exact stream, never a start-time claim. */
+  preparedInstructionsFor: z.optional(ExecutionRunPreparedInstructionsForSchema),
 }));
 export type ExecutionRunTurnStreamReadResponse = z.infer<typeof ExecutionRunTurnStreamReadResponseSchema>;
 

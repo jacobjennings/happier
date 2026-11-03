@@ -13,7 +13,20 @@ const plugin = definePlugin({
         id: 'account-storage', capability: 'storage.account',
         reason: 'Read and write personal values in this Account.', scope: { enabled: true },
     }], optional: [] },
+    settings: {
+        preferences: { title: 'Preferences', target: { kind: 'plugin' }, scope: 'account',
+            fields: [{ id: 'endpoint', title: 'Endpoint', schema: { type: 'string' }, default: 'https://default.example' }],
+        },
+    },
     actions: {
+        'read-settings': { title: 'Read personal settings', surfaces: ['plugin', 'cli', 'agent', 'mcp', 'ui', 'voice'], placementBindings: [],
+            execution, inputSchema: input, dangerLevel: 'safe',
+            run: async ({ key }, context) => {
+                const reader = context.services.settings.forScope({ kind: 'account' });
+                const snapshot = await reader.snapshot({ signal: context.signal });
+                return { value: snapshot.values[key] ?? null, readerMethods: Object.keys(reader).sort() };
+            },
+        },
         source: { title: 'Read a Machine source', surfaces: ['plugin', 'cli', 'agent', 'mcp', 'ui'], placementBindings: [],
             execution, inputSchema: input, dangerLevel: 'safe',
             run: async ({ key }, context) => context.services.actions.execute({ pluginId: 'acme.account-source-provider', localId: 'read' }, { key }),

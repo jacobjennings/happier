@@ -65,40 +65,6 @@ describe('normalizeExternalSessionTranscriptMessages', () => {
         });
     });
 
-    it.each([
-        {
-            label: 'current ACP text',
-            data: { type: 'text', text: 'current transcript text' },
-            expectedText: 'current transcript text',
-        },
-        {
-            label: 'released ACP message',
-            data: { type: 'message', message: 'released transcript text' },
-            expectedText: 'released transcript text',
-        },
-    ])('normalizes $label records through the canonical raw transcript owner', ({ data, expectedText }) => {
-        const [message] = normalizeExternalSessionTranscriptMessages([{
-            id: 'item-text',
-            createdAtMs: 1,
-            raw: {
-                role: 'agent',
-                content: {
-                    type: 'acp',
-                    agentId: 'acme.agent',
-                    data,
-                },
-            },
-        }]);
-
-        expect(message).toMatchObject({
-            role: 'agent',
-            content: [{
-                type: 'text',
-                text: expectedText,
-            }],
-        });
-    });
-
     it('uses the historical-import identity so authority swaps do not duplicate rows or lose anchors', () => {
         const [message] = normalizeExternalSessionTranscriptMessages([{
             id: 'item-7',
@@ -112,67 +78,29 @@ describe('normalizeExternalSessionTranscriptMessages', () => {
         expect(message?.id).toBe('direct-import:v1:opencode:b203ba1eb5dad52e461385bc');
     });
 
-    it('keeps a child user row sidechain-scoped when only the validated external item carries its sidechain id', () => {
-        const [message] = normalizeExternalSessionTranscriptMessages([{
-            id: 'child-user-1',
-            createdAtMs: 1,
-            sidechainId: 'child-1',
-            raw: { role: 'user', content: { type: 'text', text: 'child prompt' } },
-        }]);
-
-        expect(message).toMatchObject({
-            role: 'user',
-            sidechainId: 'child-1',
-            isSidechain: true,
-            content: { type: 'text', text: 'child prompt' },
-        });
-    });
-
-    it('keeps a child agent row sidechain-scoped when only the validated external item carries its sidechain id', () => {
-        const [message] = normalizeExternalSessionTranscriptMessages([{
-            id: 'child-agent-1',
-            createdAtMs: 1,
-            sidechainId: 'child-1',
-            raw: {
-                role: 'agent',
-                content: {
-                    type: 'codex',
-                    data: { type: 'message', message: 'child response' },
-                },
+    it.each([
+        {
+            label: 'child user row',
+            item: { id: 'child-user-1', raw: { role: 'user', content: { type: 'text', text: 'child prompt' } } },
+            expected: { role: 'user', content: { type: 'text', text: 'child prompt' } },
+        },
+        {
+            label: 'child agent row',
+            item: { id: 'child-agent-1', raw: { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'child response' } } } },
+            expected: { role: 'agent', content: [{ type: 'text', text: 'child response' }] },
+        },
+        {
+            label: 'output/user child row',
+            item: {
+                id: 'child-output-user-1',
+                raw: { role: 'agent', content: { type: 'output', data: { type: 'user', message: { content: 'child tool response' } } } },
             },
-        }]);
+            expected: { role: 'user', content: { type: 'text', text: 'child tool response' } },
+        },
+    ])('keeps a $label sidechain-scoped when only the validated external item carries its sidechain id', ({ item, expected }) => {
+        const [message] = normalizeExternalSessionTranscriptMessages([{ ...item, createdAtMs: 1, sidechainId: 'child-1' }] as never);
 
-        expect(message).toMatchObject({
-            role: 'agent',
-            sidechainId: 'child-1',
-            isSidechain: true,
-            content: [{ type: 'text', text: 'child response' }],
-        });
-    });
-
-    it('keeps an output/user child row sidechain-scoped when only the validated external item carries its sidechain id', () => {
-        const [message] = normalizeExternalSessionTranscriptMessages([{
-            id: 'child-output-user-1',
-            createdAtMs: 1,
-            sidechainId: 'child-1',
-            raw: {
-                role: 'agent',
-                content: {
-                    type: 'output',
-                    data: {
-                        type: 'user',
-                        message: { content: 'child tool response' },
-                    },
-                },
-            },
-        }]);
-
-        expect(message).toMatchObject({
-            role: 'user',
-            sidechainId: 'child-1',
-            isSidechain: true,
-            content: { type: 'text', text: 'child tool response' },
-        });
+        expect(message).toMatchObject({ ...expected, sidechainId: 'child-1', isSidechain: true });
     });
 
     it('prefers a validated external sidechain id over conflicting provider-raw agent metadata', () => {

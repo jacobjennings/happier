@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -112,6 +113,17 @@ async function prepareCliSourceNativeCustody(repoDir, env) {
   }
 }
 
+// The atmosphere worklet core is replica-owned (excluded from the source
+// mirror): UI source tests import it, and its only producer is the checkout's
+// own esbuild generator, which needs the replica's installed dependencies and
+// rewrites the file only when its bytes change. Older checkouts lack it.
+async function prepareUiAtmosphereCore(repoDir) {
+  const generator = resolve(repoDir, 'apps/ui/tools/atmosphere/buildAtmosphereRenderers.mjs');
+  if (!existsSync(generator)) return;
+  const { buildAtmosphereRenderers } = await import(pathToFileURL(generator).href);
+  await buildAtmosphereRenderers({ web: false });
+}
+
 function resolveComponentDir(repoDir, componentRelativeDir) {
   const repositoryRoot = resolve(repoDir);
   const raw = String(componentRelativeDir ?? '.').trim() || '.';
@@ -153,6 +165,7 @@ export async function prepareRemoteValidationWorkspace({
     if (normalizedComponentPath === 'apps/cli' && requiredTools.split(/\s+/u).includes('go')) {
       await prepareCliSourceNativeCustody(repoDir, env);
     }
+    if (normalizedComponentPath === 'apps/ui') await prepareUiAtmosphereCore(repoDir);
     return { ok: true, built: [], skipped: ['workspace-source-test'] };
   }
   if (validationKind === 'typecheck') {

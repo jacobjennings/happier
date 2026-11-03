@@ -39,6 +39,26 @@ describe('root route identity ownership', () => {
     it('lets the phone Home route show the Atmosphere wallpaper instead of painting an opaque sheet over it', () => {
         expect(createRootStackRouteOptions('auto')['home']).toMatchObject({
             contentStyle: { backgroundColor: 'transparent' }, headerStyle: { backgroundColor: 'transparent' },
+            // The picture runs to the top edge, under the Back control, instead of starting below an empty band.
+            headerTransparent: true,
         });
+    });
+    it.each([
+        ['automations/index', 'navigation.automations'],
+        ['automations/[id]', 'navigation.automation'],
+        ['automations/new', 'navigation.newAutomation'],
+        ['automations/edit', 'automations.edit.title'],
+        ['automations/settings', 'automations.settings.title'],
+    ] as const)('declares the central header title for %s', (name, title) => {
+        expect(createRootStackRouteOptions('auto')[name]).toMatchObject({ headerShown: true, headerTitle: title });
+    });
+    it('hides the shell header on terminal connect', () => {
+        expect(createRootStackRouteOptions('auto')['terminal/connect']).toMatchObject({ headerShown: false });
+    });
+    it('opens settings as a non-animated app-shell destination, never as a modal', () => {
+        const settings = createRootStackRouteOptions('auto')['settings'];
+        expect(settings).toMatchObject({ headerShown: false, animation: 'none' });
+        expect(settings.presentation).toBeUndefined();
+        expect(settings.webModalStyle).toBeUndefined();
     });
 });

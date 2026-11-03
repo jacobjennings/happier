@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -28,13 +28,6 @@ function bundledPluginGeneratorSource(): string {
   return generator;
 }
 
-function sourceFilesUnder(path: string): readonly string[] {
-  return readdirSync(resolve(repoRoot, path), { recursive: true, withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
-    .map((entry) => relative(repoRoot, resolve(entry.parentPath, entry.name)))
-    .sort();
-}
-
 describe('bundled voice runtime contract ownership', () => {
   it('keeps the UI host and public leaves on UI-owned or public SDK contracts', () => {
     const hostBridge = source('apps/ui/sources/voice/registry/createBundledRealtimeProviderRuntime.ts');
@@ -43,19 +36,13 @@ describe('bundled voice runtime contract ownership', () => {
     const xaiRuntime = source('packages/plugins/xai/src/ui/voice/runtime.ts');
     const codexRuntime = source('packages/plugins/codex/src/ui/voice/runtime.ts');
     const elevenLabsPackage = source('packages/plugins/elevenlabs/package.json');
-    const uiPackage = source('apps/ui/package.json');
 
-    expect(hostBridge).not.toContain("from '@happier-dev/bundled-voice-runtime-contract'");
     expect(hostBridge).toContain("from '@happier-dev/plugin-sdk/voice/client'");
     expect(elevenLabsRuntime).toContain("from '@happier-dev/plugin-sdk/voice/client'");
     expect(openAiRuntime).toContain("from '@happier-dev/plugin-sdk/voice/client'");
-    expect(openAiRuntime).not.toContain("from '@happier-dev/bundled-voice-runtime-contract'");
     expect(xaiRuntime).toContain("from '@happier-dev/plugin-sdk/voice/client'");
-    expect(xaiRuntime).not.toContain("from '@happier-dev/bundled-voice-runtime-contract'");
     expect(codexRuntime).toContain("from '@happier-dev/plugin-sdk/voice/client'");
-    expect(codexRuntime).not.toContain("from '@happier-dev/bundled-voice-runtime-contract'");
     expect(elevenLabsPackage).toContain('"@happier-dev/plugin-sdk": "0.0.0"');
-    expect(uiPackage).not.toContain('"@happier-dev/bundled-voice-runtime-contract"');
   });
 
   it('keeps ActionSpec input-schema projection at the UI host-owned Protocol boundary', () => {
@@ -64,31 +51,6 @@ describe('bundled voice runtime contract ownership', () => {
     );
 
     expect(runtimeHost).not.toContain("import { defineSchema } from '@happier-dev/plugin-sdk';");
-  });
-
-  it('keeps provider production leaves independent from host presentation and diagnostic envelopes', () => {
-    const providerIds = [
-      'codex',
-      'elevenlabs',
-      'google',
-      'openai',
-      'openai-compat',
-      'xai',
-    ] as const;
-
-    for (const providerId of providerIds) {
-      const productionFiles = sourceFilesUnder(
-        `packages/plugins/${providerId}/src`,
-      );
-      for (const productionFile of productionFiles) {
-        expect(source(productionFile), productionFile).not.toContain(
-          "from '@happier-dev/bundled-voice-runtime-contract'",
-        );
-      }
-      expect(source(`packages/plugins/${providerId}/package.json`)).not.toContain(
-        '"@happier-dev/bundled-voice-runtime-contract"',
-      );
-    }
   });
 
   it('does not widen controller input or retain the ElevenLabs duplicate owner', () => {

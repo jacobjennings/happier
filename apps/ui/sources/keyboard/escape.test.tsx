@@ -22,6 +22,35 @@ function EscapeLayerProbe(props: Readonly<{ onEscape: (event: unknown) => boolea
 }
 
 describe('useEscapeLayer', () => {
+    it('yields a claimed native-widget Escape to its target without dismissing or restoring the pane', async () => {
+        const container = document.createElement('div');
+        document.body.append(container);
+        const root = createRoot(container);
+        const closePane = vi.fn();
+        const nativeDismiss = vi.fn();
+        const focus = vi.fn();
+        function Layers() {
+            useEscapeLayer({ priority: ESCAPE_LAYER_PRIORITIES.overlay, allowEditableTarget: true, onEscape: closePane });
+            useEscapeLayer({ priority: ESCAPE_LAYER_PRIORITIES.composerSuggestions, allowEditableTarget: true,
+                focusReturnRef: { current: { focus } }, onEscape: () => 'defer-to-target' });
+            return <input />;
+        }
+        try {
+            await act(async () => root.render(<Layers />));
+            const input = container.querySelector('input')!;
+            input.addEventListener('keydown', nativeDismiss);
+            const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+            input.dispatchEvent(event);
+            expect(nativeDismiss).toHaveBeenCalledOnce();
+            expect(closePane).not.toHaveBeenCalled();
+            expect(focus).not.toHaveBeenCalled();
+            expect(event.defaultPrevented).toBe(false);
+        } finally {
+            await act(async () => root.unmount());
+            container.remove();
+        }
+    });
+
     it('orders nested layers inside their root, preserving a later unrelated modal above them', async () => {
         const container = document.createElement('div');
         document.body.append(container);
@@ -96,6 +125,7 @@ describe('useEscapeLayer', () => {
         const windowAddEventListener = Object.getOwnPropertyDescriptor(window, 'addEventListener');
         const windowRemoveEventListener = Object.getOwnPropertyDescriptor(window, 'removeEventListener');
         const documentAddEventListener = vi.spyOn(document, 'addEventListener');
+        const documentRemoveEventListener = vi.spyOn(document, 'removeEventListener');
 
         Object.defineProperty(window, 'addEventListener', {
             configurable: true,
@@ -112,6 +142,21 @@ describe('useEscapeLayer', () => {
             });
 
             expect(documentAddEventListener).toHaveBeenCalledWith('keydown', expect.any(Function), true);
+            const target = container.querySelector('[data-testid="escape-target"]');
+            expect(target).toBeInstanceOf(HTMLInputElement);
+            const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+            target!.dispatchEvent(event);
+            expect(onEscape).toHaveBeenCalledOnce();
+            expect(event.defaultPrevented).toBe(true);
+
+            const registration = documentAddEventListener.mock.calls.find(([type, , capture]) => type === 'keydown' && capture === true);
+            expect(registration).toBeDefined();
+            await act(async () => { root.render(null); });
+            expect(documentRemoveEventListener).toHaveBeenCalledWith('keydown', registration![1], true);
+            const afterUnmount = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+            document.dispatchEvent(afterUnmount);
+            expect(onEscape).toHaveBeenCalledOnce();
+            expect(afterUnmount.defaultPrevented).toBe(false);
         } finally {
             if (windowAddEventListener) {
                 Object.defineProperty(window, 'addEventListener', windowAddEventListener);
@@ -120,6 +165,7 @@ describe('useEscapeLayer', () => {
                 Object.defineProperty(window, 'removeEventListener', windowRemoveEventListener);
             }
             documentAddEventListener.mockRestore();
+            documentRemoveEventListener.mockRestore();
             await act(async () => {
                 root.unmount();
             });

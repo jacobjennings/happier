@@ -24,17 +24,19 @@ describe('happier doctor repair', () => {
     handleServiceRepairCliCommandMock.mockReset();
   });
 
-  it('delegates doctor repair to the canonical service repair flow', async () => {
+  // `--help` after `repair` belongs to the repair command, not to doctor's own help page.
+  it.each(['--json', '--help'])('delegates doctor repair %s to the canonical service repair flow', async (flag) => {
     await handleDoctorCliCommand({
-      args: ['doctor', 'repair', '--json'],
-      rawArgv: ['node', 'happier', 'doctor', 'repair', '--json'],
+      args: ['doctor', 'repair', flag],
+      rawArgv: ['node', 'happier', 'doctor', 'repair', flag],
       terminalRuntime: null,
     });
 
     expect(handleServiceRepairCliCommandMock).toHaveBeenCalledWith({
-      argv: ['repair', '--json'],
+      argv: ['repair', flag],
       commandPath: 'happier doctor',
     });
+    expect(runDoctorCommandMock).not.toHaveBeenCalled();
   });
 
   it('keeps non-repair doctor invocations on the doctor command path', async () => {

@@ -82,26 +82,6 @@ describe('resolvePaneLayout', () => {
         })).toEqual({ main: 'docked', kind: 'twoPane', right: 'docked', details: 'overlay' });
     });
 
-    it('docks right and overlays details when both are open and still do not fit three panes', () => {
-        expect(resolvePaneLayout({
-            containerWidthPx: 980,
-            deviceType: 'tablet',
-            multiPaneEnabled: true,
-            rightOpen: true,
-            detailsOpen: true,
-        })).toEqual({ main: 'docked', kind: 'twoPane', right: 'docked', details: 'overlay' });
-    });
-
-    it('docks right in twoPane when only right is open', () => {
-        expect(resolvePaneLayout({
-            containerWidthPx: 920,
-            deviceType: 'tablet',
-            multiPaneEnabled: true,
-            rightOpen: true,
-            detailsOpen: false,
-        })).toEqual({ main: 'docked', kind: 'twoPane', right: 'docked', details: 'hidden' });
-    });
-
     it('docks details in twoPane when only details is open and it fits', () => {
         expect(resolvePaneLayout({
             containerWidthPx: 980,
@@ -179,16 +159,16 @@ describe('resolvePaneLayout', () => {
         })).toEqual({ main: 'docked', kind: 'overlayStack', right: 'hidden', details: 'overlay' });
     });
 
-    it('avoids overlayStack when preferred three-pane widths do not fit but mins do', () => {
+    it('docks all three panes at their minimums when no preferred width fits but the minimums do', () => {
         expect(resolvePaneLayout({
-            containerWidthPx: 980,
+            containerWidthPx: 1000,
             deviceType: 'tablet',
             multiPaneEnabled: true,
             rightOpen: true,
             detailsOpen: true,
-            rightPreferredPx: 560,
-            detailsPreferredPx: 700,
-        })).toEqual({ main: 'docked', kind: 'twoPane', right: 'docked', details: 'overlay' });
+            rightPreferredPx: 600,
+            detailsPreferredPx: 600,
+        })).toEqual({ main: 'docked', kind: 'threePane', right: 'docked', details: 'docked' });
     });
 
     it('allows threePane with a relaxed main minimum when both panes are open', () => {

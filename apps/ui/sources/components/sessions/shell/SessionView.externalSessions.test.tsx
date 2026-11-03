@@ -482,7 +482,8 @@ vi.mock('@/hooks/server/connectedServices/useProviderAccountUsageSnapshots', asy
   },
   };
 });
-vi.mock('@/utils/platform/responsive', () => ({
+vi.mock('@/utils/platform/responsive', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/utils/platform/responsive')>(),
   getDeviceType: () => 'tablet',
   useDeviceType: () => 'tablet',
   useHeaderHeight: () => 0,
@@ -683,6 +684,16 @@ let shellCredentials: import('@/auth/storage/tokenStorage').AuthCredentials | nu
 let wireSession: ReturnType<typeof SessionCurrentProjectionRecordV1Schema.parse> | null = null;
 let wireMachine: FetchedMachineRow | null = null;
 const { composerStructuredMentionsFromReferences, placePositionlessComposerReferences } = await import('@/components/sessions/composer/composerScopeAdapters');
+
+/** The Session header composes its own controls around the resolved right element, so search the whole tree. */
+function findHeaderRightElementChild(element: unknown, matches: (child: any) => boolean): any {
+  for (const child of React.Children.toArray((element as any)?.props?.children)) {
+    if (matches(child)) return child;
+    const nested = findHeaderRightElementChild(child, matches);
+    if (nested) return nested;
+  }
+  return undefined;
+}
 
 function syncShellStorageStore() {
   const shellStorageStore = shellStorageStoreState.current;
@@ -2948,8 +2959,7 @@ describe('SessionView (direct sessions)', () => {
       isConnected: false,
     }));
     const latestHeaderProps = chatHeaderPropsSpy.mock.calls.at(-1)?.[0];
-    const externalStatus = React.Children.toArray(latestHeaderProps?.rightElement?.props?.children)
-      .find((child: any) => child?.props?.testID === 'session-header-external-agent-status-working') as any;
+    const externalStatus = findHeaderRightElementChild(latestHeaderProps?.rightElement, (child: any) => child?.props?.testID === 'session-header-external-agent-status-working');
     expect(externalStatus?.props?.accessibilityLabel).toBe('status.workingExternally');
     expect(chatListPropsSpy.mock.calls.at(-1)?.[0]?.externalControlFooter)
       .toEqual(expect.objectContaining({
@@ -3036,8 +3046,7 @@ describe('SessionView (direct sessions)', () => {
     await renderSessionViewAndSettle();
 
     const latestHeaderProps = chatHeaderPropsSpy.mock.calls.at(-1)?.[0];
-    const externalStatus = React.Children.toArray(latestHeaderProps?.rightElement?.props?.children)
-      .find((child: any) => child?.props?.testID?.startsWith('session-header-external-agent-status-'));
+    const externalStatus = findHeaderRightElementChild(latestHeaderProps?.rightElement, (child: any) => child?.props?.testID?.startsWith('session-header-external-agent-status-'));
     expect(externalStatus).toBeUndefined();
   });
 
@@ -3064,8 +3073,7 @@ describe('SessionView (direct sessions)', () => {
     await renderSessionViewAndSettle();
 
     const latestHeaderProps = chatHeaderPropsSpy.mock.calls.at(-1)?.[0];
-    const externalStatus = React.Children.toArray(latestHeaderProps?.rightElement?.props?.children)
-      .find((child: any) => child?.props?.testID === 'session-header-external-agent-status-unknown') as any;
+    const externalStatus = findHeaderRightElementChild(latestHeaderProps?.rightElement, (child: any) => child?.props?.testID === 'session-header-external-agent-status-unknown');
     expect(externalStatus?.props?.accessibilityLabel).toBe('status.externalStatusUnknown');
     expect(machineExternalSessionStatusGetSpy).not.toHaveBeenCalled();
   });

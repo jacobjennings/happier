@@ -38,6 +38,44 @@ const listings = [
 ] as const;
 
 describe('file-browser failures across the scoped network boundary', () => {
+    it.each([
+        [{ ok: false, error: "ENOENT: no such file or directory, scandir '/private/project'" }, 'ENOENT', 'errors.fileNotFound'],
+        [{ ok: false, error: "EACCES: permission denied, scandir '/private/project'" }, 'EACCES', 'errors.permissionDenied'],
+        [{ ok: false, error: "EPERM: operation not permitted, scandir 'C:\\private\\project'" }, 'EPERM', 'errors.permissionDenied'],
+        [{ ok: false, error: 'private daemon diagnostic', errorCode: 'ENOENT' }, 'ENOENT', 'errors.fileNotFound'],
+        [{ ok: false, error: 'ENOENT: misleading diagnostic', errorCode: 'EACCES' }, 'EACCES', 'errors.permissionDenied'],
+        [{ ok: false, error: 'ENOENT: misleading diagnostic', errorCode: 'future_filesystem_failure' }, 'future_filesystem_failure', 'errors.operationFailed'],
+    ] as const)('carries a daemon listing failure code through the tree without its diagnostic path (%j)', async (failure, code, reasonKey) => {
+        const { useWorkspaceRepositoryTreeBrowser } = await import('@/hooks/workspaces/files/useWorkspaceRepositoryTreeBrowser');
+        boundary.setRpcResponder(async request => {
+            const decoded = await socketRpcCodec.decodeRequestParams({ mode: 'plain' }, request.payload, `${request.targetId}:${request.method}`);
+            return socketRpcCodec.encodeResponse({ mode: 'plain' }, failure, decoded.callId);
+        });
+        for (const [, list] of listings) {
+            expect(await list(home.id)).toMatchObject({ ok: false, error: code, errorCode: code });
+        }
+        const requestsBeforeTree = boundary.requests.length;
+        const scope = { serverId: home.id, machineId: 'machine-1', rootPath: `/listing-failure-${code}` };
+        const hook = await renderHook(() => useWorkspaceRepositoryTreeBrowser({ scope, enabled: true }));
+        try {
+            await vi.waitFor(() => expect(hook.getCurrent().rootLoading).toBe(false));
+            expect(hook.getCurrent().rootError).toBe(code);
+            expect(resolveFilesystemErrorReason(hook.getCurrent().rootError)).toBe(t(reasonKey));
+            expect(boundary.requests.length - requestsBeforeTree).toBe(1);
+        } finally {
+            await hook.unmount();
+        }
+    });
+
+    it.each(listings)('does not infer an OS code from arbitrary %s diagnostic text', async (_name, list) => {
+        const failure = { ok: false, error: 'Could not read a file named ENOENT:notes' };
+        boundary.setRpcResponder(async request => {
+            const decoded = await socketRpcCodec.decodeRequestParams({ mode: 'plain' }, request.payload, `${request.targetId}:${request.method}`);
+            return socketRpcCodec.encodeResponse({ mode: 'plain' }, failure, decoded.callId);
+        });
+        expect(await list(home.id)).toEqual(failure);
+    });
+
     it('retires a stuck tree read on disable and loads again when reopened', async () => {
         const { useWorkspaceRepositoryTreeBrowser } = await import('@/hooks/workspaces/files/useWorkspaceRepositoryTreeBrowser');
         const { SOCKET_RPC_EVENTS } = await import('@happier-dev/protocol/socketRpc');

@@ -7,7 +7,9 @@ import type { ProjectMemoryDemandV1 } from '@happier-dev/protocol/workspaces/pro
 import type { WorkspaceAddressV1 } from '@happier-dev/protocol/workspaces/workspaceRefV1';
 
 import { IconButton } from '@/components/ui/buttons/IconButton';
-import { Icon } from '@/components/ui/icons/Icon';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
+import { WidgetGlanceRow } from '@/components/widgets/glance/WidgetGlanceRow';
+
 import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { Item } from '@/components/ui/lists/Item';
 import { StatusPill } from '@/components/ui/status/StatusPill';
@@ -55,7 +57,16 @@ export type ProjectScriptRowProps = Readonly<{
   idleText: string;
   pending: boolean;
   failureCode: string | null;
+  /** What the failure says when the script's own environment explains it (plan 24); generic otherwise. */
+  failureText?: string | null;
+  /** The selected native environment's name: its pending review and preparation say so. */
+  environmentName?: string | null;
   compact: boolean;
+  /**
+   * The Overview widget's row: drawn with the shared widget glance row like its sibling widgets (run
+   * mark, name, how it last went on one line). It has no Run control; a row with a run opens its output.
+   */
+  glance?: boolean;
   showDivider?: boolean;
   /** Where this checkout sends portable runs by default (its worker preference), for the Run on check. */
   defaultChoice?: ProjectExecutionChoiceV1 | null;
@@ -102,8 +113,10 @@ export const ProjectScriptRow = React.memo(function ProjectScriptRow(
   const source = useServerScopedMachine(props.workspace.serverId, props.workspace.machineId);
   // The actual target, never the operation's custody Machine.
   const targetName = (target ? getMachineSentenceName(target) : null) ?? attachment?.machineId ?? null;
-  const presentation = presentProjectRun(props.operation, targetName, props.idleText);
+  const presentation = presentProjectRun(props.operation, targetName, props.idleText, props.environmentName ?? null);
   const stop = useActionOperationStopControl(props.operation);
+  // A Run held for the setup review leaves that decision to the Setup card; the row says what it waits for.
+  const waitsForSetup = presentation.live && Boolean(props.operation?.snapshot.setupReview);
   const [expanded, setExpanded] = React.useState(false);
   // A failed operation carries the same strict refusal as an immediate Run failure: one parser.
   const operationError = props.operation?.snapshot.error;
@@ -129,14 +142,14 @@ export const ProjectScriptRow = React.memo(function ProjectScriptRow(
     : workerRefusal
     ? t('projectWorkers.empty')
     : props.failureCode
-    ? t('projects.scripts.run.refused', { reason: props.failureCode })
+    ? props.failureText ?? t('projects.scripts.run.refused', { reason: props.failureCode })
     : stop.pending || stop.stopRequested
       ? t('projects.scripts.run.stopping')
       // A live run an agent started from a Session says so (lab `s-agent` PANE); Stop stays one owner.
       : presentation.live && props.operation?.snapshot.scope.sessionId
         ? `${presentation.text} · ${t('projects.scripts.byAgent')}`
-        : presentation.text;
-  const tone = props.failureCode ? 'danger' : presentation.tone;
+        : waitsForSetup ? t('projects.scripts.run.waitsForSetup') : presentation.text;
+  const tone = props.failureCode ? 'danger' : waitsForSetup ? 'quiet' : presentation.tone;
   // Output opens as the host's bottom terminal tab named after the script and its actual Machine
   // (plan 21 §8); hosts without one (phone, widgets) open the operation detail.
   const output = useProjectCommandOutputOpener();
@@ -155,14 +168,30 @@ export const ProjectScriptRow = React.memo(function ProjectScriptRow(
   // Desktop page rows open into their output; phone and compact rows open it directly (the host's
   // bottom terminal tab where it has one, otherwise the operation detail).
   const discloses = !phone && !props.compact;
-  const opens = discloses || Boolean(props.operation);
+  // The phone row's press is its disclosure: only the Run control sits right of the status (lab PAGEp).
+  const showsCaret = !phone && (discloses || Boolean(props.operation));
+  const glyph = props.failureCode ? 'failed' : waitsForSetup ? 'idle' : presentation.glyph;
+
+  if (props.glance) {
+    return (
+      <WidgetGlanceRow
+        testID={props.testID}
+        mark={<RunGlyph glyph={glyph} size={ICON_SIZE.sm} />}
+        title={props.name}
+        fact={statusText || null}
+        factTone={tone}
+        trailing={presentation.live && presentation.startedAt ? <RunClock startedAt={presentation.startedAt} /> : null}
+        onPress={props.operation ? openDetail : null}
+      />
+    );
+  }
 
   const header = (headerProps?: Readonly<Record<string, unknown>>) => (
     <Item
       {...headerProps}
       testID={props.testID}
       icon={
-        <RunGlyph glyph={props.failureCode ? 'failed' : presentation.glyph} />
+        <RunGlyph glyph={glyph} />
       }
       title={props.name}
       titleAccessory={
@@ -183,7 +212,7 @@ export const ProjectScriptRow = React.memo(function ProjectScriptRow(
             tone={tone}
             testID={`${props.testID}.status`}
           />
-          {presentation.tail && !props.compact ? (
+          {presentation.tail && !props.compact && !phone ? (
             <Text
               testID={`${props.testID}.tail`}
               numberOfLines={1}
@@ -204,8 +233,9 @@ export const ProjectScriptRow = React.memo(function ProjectScriptRow(
           {presentation.live && presentation.startedAt ? (
             <RunClock startedAt={presentation.startedAt} />
           ) : null}
-          {opens ? (
+          {showsCaret ? (
             <Icon
+              testID={`${props.testID}.caret`}
               name="caret-right"
               size={14}
               color={theme.colors.text.tertiary}
@@ -271,10 +301,12 @@ export const ProjectScriptRow = React.memo(function ProjectScriptRow(
   ) : null;
   const notices = <>{refusal}{managedNotice}</>;
 
-  const outputBody = expanded && props.operation && attachment?.terminalId ? (
+  // A refusal is newer than the run the row still holds; that run's output is history, not what just happened.
+  const outputBody = props.failureCode ? null : expanded && props.operation && attachment?.terminalId ? (
     <ProjectCommandOutputPane
       operation={props.operation}
       operationStopPending={stop.pending || stop.stopRequested}
+      ownerStatesExit
       title={props.name}
       {...(output.opensInTerminal ? { onOpenInTerminal: openDetail } : { onOpenDetail: openDetail })}
     />

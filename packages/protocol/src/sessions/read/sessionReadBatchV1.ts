@@ -9,6 +9,8 @@ import { SessionTurnsProjectionV1Schema, type SessionTurnsProjectionV1 } from '.
 export type SessionReadBatchRequestV1 = {
   sessionIds: string[];
   accessProjectionVersion?: 1;
+  /** List-document hydration remains confined to the current managed subtree. */
+  underSessionId?: string;
   includeSnapshot: boolean;
   includeTurns?: boolean;
   includeMessages: boolean;
@@ -18,6 +20,7 @@ export type SessionReadBatchRequestV1 = {
 export const SessionReadBatchRequestV1Schema: z.ZodMiniType<SessionReadBatchRequestV1> = lazyZodSchema(() => z.strictObject({
   sessionIds: z.array(z.string().check(z.minLength(1))),
   accessProjectionVersion: z.optional(z.literal(1)),
+  underSessionId: z.optional(z.string().check(z.minLength(1))),
   includeSnapshot: z._default(z.boolean(), true),
   /** Omission keeps the full snapshot contract; context-only readers explicitly omit turns. */
   includeTurns: z.optional(z.boolean()),
@@ -26,6 +29,9 @@ export const SessionReadBatchRequestV1Schema: z.ZodMiniType<SessionReadBatchRequ
   message: 'At least one Session read part is required',
 })).check(z.refine(value => value.includeTurns !== true || value.includeSnapshot, {
   message: 'Session turns require a snapshot demand',
+})).check(z.refine(value => value.underSessionId === undefined
+  || (value.includeSnapshot && value.includeTurns === false && !value.includeMessages), {
+  message: 'Managed-subtree demand requires snapshot-only reads without turns',
 })));
 type SessionReadFailureV1 = {
   status: 400 | 401 | 403 | 404 | 409 | 426 | 429 | 500 | 503;

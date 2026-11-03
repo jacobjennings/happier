@@ -192,7 +192,10 @@ describe('mounted canonical Work reads', () => {
             if (!result.ok) throw new Error('Expected a readable mounted Work projection');
             expect(AppShellActionOutputSchemas['session.work.get'].parse(result.result)).toEqual(result.result);
             expect(result).toMatchObject({ ok: true, result: { status: 'ready', summary: projection.summary,
-                items: expect.arrayContaining([expect.objectContaining({ key: 'run:run-a', title: 'Review', status: projection.workflows[0]!.status }),
+                items: expect.arrayContaining([expect.objectContaining({ key: 'run:run-a', title: 'Review', status: {
+                    bucket: projection.workflows[0]!.status.bucket, tone: projection.workflows[0]!.status.tone,
+                    word: projection.workflows[0]!.status.word,
+                } }),
                     expect.objectContaining({ key: projection.projectCommands[0]!.key,
                         open: projection.projectCommands[0]!.open })]) } });
             const serialized = JSON.stringify(result);

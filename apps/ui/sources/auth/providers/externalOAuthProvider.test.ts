@@ -5,7 +5,12 @@ import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch'
 import { resetEndpointSupervisorPoolForTests } from '@/sync/runtime/connectivity/endpointSupervisorPool';
 import { resetServerReachabilitySupervisors } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
 import { createExternalOAuthProvider } from './externalOAuthProvider';
-import type { ExternalOAuthEndpointRequest } from './types';
+import type { ExternalAuthStartInput, ExternalOAuthEndpointRequest } from './types';
+
+vi.mock('@/text', async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock({
+    translate: (key: string, params?: Record<string, unknown>) =>
+        typeof params?.provider === 'string' ? `${key}:${params.provider}` : key,
+}));
 
 function jsonResponse(params: { ok: boolean; status: number; body: unknown }): Response {
     return Response.json(params.body, { status: params.status });
@@ -43,6 +48,14 @@ afterEach(async () => {
 });
 
 describe('createExternalOAuthProvider', () => {
+    it('provides the default restore notice for provider_already_linked redirects only', () => {
+        const provider = createProvider();
+        expect(provider.getRestoreRedirectNotice?.({ reason: 'provider_already_linked' })).toEqual({
+            title: 'connect.externalAuthVerifiedTitle:GitHub',
+            body: 'connect.externalAuthVerifiedBody:GitHub',
+        });
+    });
+
     it('targets an injected Account Directory endpoint and requests the restricted purpose', async () => {
         const requestAtEndpoint = vi.fn<ExternalOAuthEndpointRequest>(async () => jsonResponse({
             ok: true,
@@ -179,19 +192,6 @@ describe('createExternalOAuthProvider', () => {
         )).rejects.toThrow('external-auth-unavailable');
     });
 
-    it('returns the external auth URL when params endpoint is successful', async () => {
-        stubFetch(async () => ({
-            ok: true,
-            status: 200,
-            body: { url: 'https://oauth.example.test/signup' },
-        }));
-
-        const provider = createProvider();
-        await expect(provider.getExternalAuthUrl({ mode: 'keyless', proofHash: 'abc123' })).resolves.toBe(
-            'https://oauth.example.test/signup',
-        );
-    });
-
     it('includes the proofHash query param when building the params request', async () => {
         let capturedUrl: string | null = null;
         stubFetch(async (url) => {
@@ -287,47 +287,31 @@ describe('createExternalOAuthProvider', () => {
         )).rejects.toThrow('external-auth-unavailable');
     });
 
-    it('includes the publicKey query param when building keyed params requests', async () => {
-        let capturedUrl: string | null = null;
-        stubFetch(async (url) => {
-            capturedUrl = url;
-            return {
-                ok: true,
-                status: 200,
-                body: { url: 'https://oauth.example.test/login' },
-            };
-        });
+    it.each([
+        { label: 'publicKey', input: { mode: 'keyed', publicKey: 'pk1' }, present: ['publicKey=pk1'] },
+        { label: 'proofHash and publicKey', input: { mode: 'keyed', proofHash: 'abc123', publicKey: 'pk1' }, present: ['proofHash=abc123', 'publicKey=pk1'] },
+    ] satisfies ReadonlyArray<{ label: string; input: ExternalAuthStartInput; present: string[] }>)(
+        'includes the $label query params when building keyed params requests',
+        async ({ input, present }) => {
+            let capturedUrl: string | null = null;
+            stubFetch(async (url) => {
+                capturedUrl = url;
+                return {
+                    ok: true,
+                    status: 200,
+                    body: { url: 'https://oauth.example.test/login' },
+                };
+            });
 
-        const provider = createProvider();
-        await expect(provider.getExternalAuthUrl({ mode: 'keyed', publicKey: 'pk1' })).resolves.toBe(
-            'https://oauth.example.test/login',
-        );
-        expect(capturedUrl).toContain('/v1/auth/external/github/params');
-        expect(capturedUrl).toContain('publicKey=pk1');
-        expect(capturedUrl).not.toContain('mode=keyed');
-    });
-
-    it('includes the proofHash query param when building keyed params requests with proofHash', async () => {
-        let capturedUrl: string | null = null;
-        stubFetch(async (url) => {
-            capturedUrl = url;
-            return {
-                ok: true,
-                status: 200,
-                body: { url: 'https://oauth.example.test/login' },
-            };
-        });
-
-        const provider = createProvider();
-        await expect(provider.getExternalAuthUrl({ mode: 'keyed', proofHash: 'abc123', publicKey: 'pk1' })).resolves.toBe(
-            'https://oauth.example.test/login',
-        );
-        expect(capturedUrl).toContain('/v1/auth/external/github/params');
-        expect(capturedUrl).toContain('proofHash=abc123');
-        expect(capturedUrl).toContain('publicKey=pk1');
-        expect(capturedUrl).not.toContain('mode=keyed');
-        expect(capturedUrl).not.toContain('mode=keyless');
-    });
+            const provider = createProvider();
+            await expect(provider.getExternalAuthUrl(input)).resolves.toBe('https://oauth.example.test/login');
+            expect(capturedUrl).toContain('/v1/auth/external/github/params');
+            for (const fact of present) expect(capturedUrl).toContain(fact);
+            // A legacy Home's keyed query never carries a mode marker.
+            expect(capturedUrl).not.toContain('mode=keyed');
+            expect(capturedUrl).not.toContain('mode=keyless');
+        },
+    );
 
     it('throws config HappyError when external OAuth is not configured', async () => {
         stubFetch(async () => ({
@@ -372,38 +356,23 @@ describe('createExternalOAuthProvider', () => {
         );
     });
 
-    it('maps connect params 400 failures into config HappyError payloads', async () => {
+    it.each([
+        { status: 400, error: 'provider_disabled', kind: 'config' as const },
+        { status: 401, error: 'unauthorized', kind: 'auth' as const },
+    ])('maps connect params $status failures into $kind HappyError payloads', async ({ status, error, kind }) => {
         stubFetch(async () => ({
             ok: false,
-            status: 400,
-            body: { error: 'provider_disabled' },
+            status,
+            body: { error },
         }));
 
         const provider = createProvider();
         await expect(provider.getConnectUrl({ token: 't', secret: 's' })).rejects.toEqual(
             expect.objectContaining({
                 name: 'HappyError',
-                kind: 'config',
-                status: 400,
-                message: 'provider_disabled',
-            } satisfies Partial<HappyError>),
-        );
-    });
-
-    it('maps connect params 401 failures into auth HappyError payloads', async () => {
-        stubFetch(async () => ({
-            ok: false,
-            status: 401,
-            body: { error: 'unauthorized' },
-        }));
-
-        const provider = createProvider();
-        await expect(provider.getConnectUrl({ token: 't', secret: 's' })).rejects.toEqual(
-            expect.objectContaining({
-                name: 'HappyError',
-                kind: 'auth',
-                status: 401,
-                message: 'unauthorized',
+                kind,
+                status,
+                message: error,
             } satisfies Partial<HappyError>),
         );
     });
@@ -436,15 +405,63 @@ describe('createExternalOAuthProvider', () => {
     );
 
     it.each([
-        { label: 'empty replacement token', body: { success: true, token: '' } },
-        { label: 'blank replacement token', body: { success: true, token: '   ' } },
-    ])('rejects successful finalize responses with incomplete credential material ($label)', async ({ body }) => {
-        stubFetch(async () => ({ ok: true, status: 200, body }));
+        { label: 'empty replacement token', response: { ok: true, status: 200, body: { success: true, token: '' } } },
+        { label: 'blank replacement token', response: { ok: true, status: 200, body: { success: true, token: '   ' } } },
+        { label: 'string success payload', response: { ok: true, status: 200, body: { success: 'yes' } } },
+        { label: 'numeric success payload', response: { ok: true, status: 200, body: { success: 1 } } },
+        { label: 'missing success field', response: { ok: true, status: 200, body: {} } },
+        { label: 'unexpected server status', response: { ok: false, status: 500, body: { error: 'internal' } } },
+    ])('fails a server-answered finalize without re-sending the one-shot grant ($label)', async ({ response }) => {
+        const fetchMock = stubFetch(async () => response);
 
         const provider = createProvider();
         await expect(
             provider.finalizeConnect({ token: 't', secret: 's' }, { pending: 'pending-1', username: 'octocat' }),
         ).rejects.toThrow('Failed to finalize');
+        expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/finalize'))).toHaveLength(1);
+    });
+
+    it.each([
+        { label: 'replacement credential', body: { success: true, token: 'replacement-token' }, expected: { token: 'replacement-token' } },
+        // Predecessor Homes confirm the connect without minting a replacement credential.
+        { label: 'predecessor success without a replacement token', body: { success: true }, expected: {} },
+    ])('finalizes a server-confirmed connect once ($label)', async ({ body, expected }) => {
+        const fetchMock = stubFetch(async () => ({ ok: true, status: 200, body }));
+
+        await expect(
+            createProvider().finalizeConnect({ token: 't', secret: 's' }, { pending: 'pending-1', username: 'octocat' }),
+        ).resolves.toEqual(expected);
+        expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/finalize'))).toHaveLength(1);
+    });
+
+    it.each([408, 429])('retries a finalize the server declined to process (HTTP %i)', async (status) => {
+        let attempts = 0;
+        const fetchMock = stubFetch(async () => {
+            attempts += 1;
+            return attempts === 1
+                ? { ok: false, status, body: { error: 'try_again' } }
+                : { ok: true, status: 200, body: { success: true } };
+        });
+
+        await expect(
+            createProvider().finalizeConnect({ token: 't', secret: 's' }, { pending: 'pending-1', username: 'octocat' }),
+        ).resolves.toEqual({});
+        expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/finalize'))).toHaveLength(2);
+    });
+
+    it('retries a finalize the server never answered', async () => {
+        let attempts = 0;
+        const fetchMock = stubFetch(async () => {
+            attempts += 1;
+            if (attempts === 1) throw new TypeError('Failed to fetch');
+            return { ok: true, status: 200, body: { success: true } };
+        });
+
+        const provider = createProvider();
+        await expect(
+            provider.finalizeConnect({ token: 't', secret: 's' }, { pending: 'pending-1', username: 'octocat' }),
+        ).resolves.toEqual({});
+        expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/finalize'))).toHaveLength(2);
     });
 
     it.each([
@@ -466,5 +483,26 @@ describe('createExternalOAuthProvider', () => {
                 message: error,
             } satisfies Partial<HappyError>),
         );
+    });
+
+    it.each([
+        { label: 'malformed success body', response: { ok: true, status: 200, body: { success: false } } },
+        { label: 'string success payload', response: { ok: true, status: 200, body: { success: 'yes' } } },
+        { label: 'numeric success payload', response: { ok: true, status: 200, body: { success: 1 } } },
+        { label: 'missing success field', response: { ok: true, status: 200, body: {} } },
+        { label: 'unexpected server status', response: { ok: false, status: 500, body: { error: 'internal' } } },
+    ])('fails a server-answered disconnect without re-sending it ($label)', async ({ response }) => {
+        const fetchMock = stubFetch(async () => response);
+
+        const provider = createProvider();
+        await expect(provider.disconnect({ token: 't', secret: 's' })).rejects.toThrow('Failed to disconnect');
+        expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
+    });
+
+    it('resolves a server-confirmed disconnect once', async () => {
+        const fetchMock = stubFetch(async () => ({ ok: true, status: 200, body: { success: true } }));
+
+        await expect(createProvider().disconnect({ token: 't', secret: 's' })).resolves.toBeUndefined();
+        expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
     });
 });

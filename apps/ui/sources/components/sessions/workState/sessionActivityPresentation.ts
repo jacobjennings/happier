@@ -1,4 +1,4 @@
-import { readSessionWorkStatePrimaryItemV1 } from '@happier-dev/protocol/sessions/work/state/sessionWorkStatePrimary';
+import { projectSessionWorkDisplayV1, type SessionWorkDisplayV1 } from '@happier-dev/protocol/sessions/work/state/sessionWorkStatePrimary';
 import type { SessionWorkflowActivityHeadlineV1, SessionWorkflowRunHeadlineV1 } from '@happier-dev/protocol/sessions/work/workflow/sessionWorkflowActivityHeadlineV1';
 import type { SessionWorkflowRunSnapshotV1 } from '@happier-dev/protocol/sessions/work/workflow/sessionWorkflowRunSnapshotV1';
 import type { WorkflowRunStateV1 } from '@happier-dev/protocol/workflows/workflowProgressV1';
@@ -33,7 +33,7 @@ import type { SessionWorkStateSnapshot } from '@/sync/domains/session/workState/
  * booleans), NOT the full `Session`.
  *
  * Critically, goal/task/todo primary selection is delegated to the protocol resolver
- * `readSessionWorkStatePrimaryItemV1`, so this module honors the published identity
+ * `projectSessionWorkDisplayV1`, so this module honors the published identity
  * and never reimplements the work-state priority list. Workflow priority is a
  * UI presentation choice layered ON TOP of normalized contracts — it does not mutate protocol
  * `primaryItemId` semantics, and it never parses Claude-native events.
@@ -130,7 +130,7 @@ type WorkflowComposerTranslate = Readonly<{
 }>;
 
 export type ResolveSessionActivityPresentationInput = Readonly<{
-    workStateSnapshot: SessionWorkStateSnapshot | null;
+    workStateSnapshot: SessionWorkStateSnapshot | SessionWorkDisplayV1 | null;
     workflowHeadline: SessionWorkflowActivityHeadlineV1 | null;
     loadedWorkflowRunsById?: ReadonlyMap<string, SessionWorkflowRunSnapshotV1>;
     /**
@@ -249,8 +249,9 @@ export function resolveSessionActivityStatusBadgePresentation(
     const activeRuns = resolveActiveWorkflowRunHeadlines(input.workflowHeadline);
     const primaryRun = activeRuns[0] ?? null;
     const managed = input.managedWorkflowRuns ?? NO_MANAGED_WORKFLOW_RUNS;
-    const primaryItem = readSessionWorkStatePrimaryItemV1(input.workStateSnapshot?.items ?? [], input.workStateSnapshot?.primaryItemId);
-    const activeGoal = input.workStateSnapshot?.items.find((item) => item.kind === 'goal' && item.status === 'active') ?? null;
+    const workDisplay = projectSessionWorkDisplayV1(input.workStateSnapshot);
+    const primaryItem = workDisplay?.primaryItem;
+    const activeGoal = workDisplay?.hasActiveGoal === true;
 
     // 2. Managed attention. It is the only workflow signal that is actionable
     // rather than informational, so it outranks progress of either kind.

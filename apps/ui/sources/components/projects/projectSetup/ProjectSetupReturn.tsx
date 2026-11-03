@@ -1,18 +1,15 @@
 import * as React from 'react';
-import { View, useWindowDimensions } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { StoredPluginUiNewSessionSeedOriginV1Schema, type PluginUiNewSessionSeedOriginV1 } from '@happier-dev/protocol/plugins/ui';
-import type { WorkspaceAddressV1 } from '@happier-dev/protocol/workspaces/workspaceRefV1';
 import { resolveWorkspacePathBasenameV1 } from '@happier-dev/protocol/workspaces/workspaceRefResolutionV1';
 
 import { readProjectSessionAuthoringOrigin } from '@/components/projects/detail/projectRouteState';
 import { projectPageGlyph, projectPageLabel } from '@/components/projects/shell/ProjectShellHeader';
 import { resolveWorkspaceRefDisplayName } from '@/components/projects/resolveWorkspaceRefDisplayName';
-import { SessionListIdentity } from '@/components/sessions/shell/SessionListIdentity';
 import { HAPPIER_PAGE_METRICS, happierPageTextMetrics } from '@happier-dev/plugin-ui/presentation';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
-import { isMobileLayoutWidth } from '@/components/sessions/layout/isMobileLayoutWidth';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { Icon } from '@/components/ui/icons/Icon';
@@ -20,15 +17,12 @@ import { PageHeader } from '@/components/ui/layout/PageHeader';
 import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { storage } from '@/sync/domains/state/storage';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { useSessionSelector, useServerScopedMachine } from '@/sync/store/hooks';
-import { selectProjectLastAuthoringSessionId } from '@/sync/store/selectProjectLastAuthoringSessionId';
 import { useServerCredentialAccountScopeBinding } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { t } from '@/text';
 import { getMachineSentenceName } from '@/utils/sessions/machineDisplayNames';
-import { getSessionName } from '@/utils/sessions/sessionUtils';
-import { formatAsOfTime } from '@/utils/time/formatAsOfTime';
+export { ProjectSetupAuthoredLine } from './ProjectSetupAuthoredLine';
 
 import { useProjectSetupReturnInspection } from './useProjectSetupReturnInspection';
 import { projectSetupReadinessLine } from './projectSetupReadinessLine';
@@ -221,9 +215,6 @@ const styles = StyleSheet.create(() => ({
   eyebrow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: HAPPIER_PAGE_METRICS.pageTextInsetPx, paddingTop: HAPPIER_PAGE_METRICS.pageHeaderPaddingTopPx },
   eyebrowText: { ...Typography.default('regular'), ...happierPageTextMetrics('meta') },
   footnote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, paddingTop: 12, paddingHorizontal: HAPPIER_PAGE_METRICS.pageTextInsetPx, width: '100%', alignSelf: 'center' },
-  authored: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8 },
-  authoredSession: { ...Typography.default('semiBold') },
-  authoredText: { ...Typography.default('regular'), ...happierPageTextMetrics('meta'), flex: 1, minWidth: 0 },
   footnoteText: { ...Typography.default('regular'), ...happierPageTextMetrics('meta'), flex: 1, minWidth: 0 },
   actions: {
     flexDirection: 'row',
@@ -232,82 +223,3 @@ const styles = StyleSheet.create(() => ({
     flexWrap: 'wrap',
   },
 }));
-
-/** The latest Session started from setup authoring for this exact checkout, as one primitive key. */
-function useProjectLastAuthoringSessionId(workspace: WorkspaceAddressV1): string | null {
-  const { binding } = useServerCredentialAccountScopeBinding(workspace.serverId);
-  const accountId = binding?.isCurrent() ? binding.accountId : null;
-  return storage((state) => selectProjectLastAuthoringSessionId(state, workspace, accountId));
-}
-
-/**
- * Back on Scripts after setup authoring (lab `s-setup` RESULT): which Session last authored this
- * checkout's project file and when, with the way to its changes. It states provenance only; setup
- * readiness stays on the Setup row's own operation.
- */
-export const ProjectSetupAuthoredLine = React.memo(function ProjectSetupAuthoredLine(
-  props: Readonly<{ workspace: WorkspaceAddressV1; compact?: boolean }>,
-) {
-  const sessionId = useProjectLastAuthoringSessionId(props.workspace);
-  if (!sessionId) return null;
-  return <ProjectSetupAuthoredLineBody sessionId={sessionId} compact={props.compact === true} />;
-});
-
-function ProjectSetupAuthoredLineBody(props: Readonly<{ sessionId: string; compact: boolean }>) {
-  const { theme } = useUnistyles();
-  const session = storage((state) => state.sessions[props.sessionId] ?? null);
-  const origin = React.useMemo(
-    () => (session ? readProjectSessionAuthoringOrigin(readSessionOwnerMetadataView(session)) : null),
-    [session],
-  );
-  const changesOrigin = React.useMemo(() => (origin ? { ...origin, page: 'changes' as const } : null), [origin]);
-  const changes = useProjectAuthoringReturn(changesOrigin);
-  // Phones keep the provenance line alone (lab `s-setup` RESULTp); Changes is a tab away there.
-  const { width } = useWindowDimensions();
-  const compact = props.compact || isMobileLayoutWidth(width);
-  if (!session) return null;
-  const sessionName = getSessionName(session);
-  const text = t('projects.authoring.lastSession', {
-    session: sessionName,
-    time: formatAsOfTime(session.updatedAt),
-  });
-  // The Session's name carries the line (lab RESULT); every locale places it, so emphasize it where it falls.
-  const at = text.indexOf(sessionName);
-  return (
-    <ItemGroup surface="none">
-    <View
-      testID="project-setup-authored"
-      style={[styles.authored, { backgroundColor: theme.colors.surface.inset }]}
-    >
-      {/* Who authored it: the Session's own Agent mark, as every Session row draws it. */}
-      <SessionListIdentity
-        session={session}
-        display="agentLogo"
-        serverId={origin?.workspace.serverId ?? null}
-        color={theme.colors.text.secondary}
-        avatarSize={14}
-        agentLogoSize={14}
-        connected
-      />
-      <Text style={[styles.authoredText, { color: theme.colors.text.secondary }]} numberOfLines={compact ? 1 : 2}>
-        {at < 0 ? text : (
-          <>
-            {text.slice(0, at)}
-            <Text style={[styles.authoredText, styles.authoredSession, { color: theme.colors.text.primary }]}>{sessionName}</Text>
-            {text.slice(at + sessionName.length)}
-          </>
-        )}
-      </Text>
-      {!compact && changes.destination.kind === 'ready' ? (
-        <RoundButton
-          testID="project-setup-authored.changes"
-          size="small"
-          display="inverted"
-          title={t('projects.authoring.reviewChanges')}
-          onPress={() => { changes.onReturnToProject(); }}
-        />
-      ) : null}
-    </View>
-    </ItemGroup>
-  );
-}

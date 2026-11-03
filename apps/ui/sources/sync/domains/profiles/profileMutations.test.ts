@@ -81,6 +81,7 @@ describe('createEmptyCustomProfile', () => {
             defaultPersistenceModeByTargetKey: { 'agent:happier.agent.claude/claude': 'persisted' as const },
             compatibilityByTargetKey: { 'agent:happier.agent.claude/claude': true },
             authMode: 'machineLogin', requiresMachineLoginTargetKey: 'agent:happier.agent.claude/claude',
+            codingPromptBehaviorV1: { v: 1, sessionTitleUpdates: 'initial' as const, responseOptions: 'disabled' as const },
             createdAt: 1, updatedAt: 1,
         });
         const original = structuredClone(legacy);
@@ -90,18 +91,4 @@ describe('createEmptyCustomProfile', () => {
         expect(legacy).toEqual(original);
     });
 
-    it('keeps retained prompt behavior with its legacy source when no approved clone representation exists', () => {
-        const legacy = AIBackendProfileSchema.parse({
-            id: 'remote-dev-profile', name: 'Remote Dev Profile',
-            environmentVariables: [],
-            defaultPermissionModeByTargetKey: {},
-            defaultPersistenceModeByTargetKey: {},
-            compatibilityByTargetKey: {},
-            createdAt: 1, updatedAt: 1,
-            codingPromptBehaviorV1: { v: 1, sessionTitleUpdates: 'initial' as const, responseOptions: 'disabled' as const },
-        });
-        expect(() => convertBuiltInProfileToCustom(legacy)).toThrowError('legacy-creation-unsupported');
-        expect(() => duplicateProfileForEdit(legacy, { copySuffix: 'Copy' })).toThrowError('legacy-creation-unsupported');
-        expect(legacy.codingPromptBehaviorV1).toEqual({ v: 1, sessionTitleUpdates: 'initial', responseOptions: 'disabled' });
-    });
 });

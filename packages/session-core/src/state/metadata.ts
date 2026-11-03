@@ -42,19 +42,19 @@ const StoredModelOptionSchema = lazyZodSchema(() => z.object({
     id: z.string(),
     name: z.string(),
     description: z.optional(z.string()),
+    category: z.optional(z.string()),
     type: z.string(),
     currentValue: z.union([z.string(), z.number(), z.boolean(), z.null()]),
     options: z.optional(z.array(StoredOptionChoiceSchema)),
-    overridesWhenOn: z.optional(AgentModelOptionOverrideRuleReadSchema),
-}));
-
-const StoredConfigOptionSchema = lazyZodSchema(() => z.extend(StoredModelOptionSchema, {
     groups: z.optional(z.array(z.object({
         id: z.string(),
         name: z.string(),
         options: z.array(StoredOptionChoiceSchema),
     }))),
+    overridesWhenOn: z.optional(AgentModelOptionOverrideRuleReadSchema),
 }));
+
+const StoredConfigOptionSchema = StoredModelOptionSchema;
 
 // This retained carrier also custodians native descriptor/facet/override bags.
 // Project its closed typed leaves, not the entire passthrough metadata tree.
@@ -185,12 +185,14 @@ const MetadataObjectSchema = lazyZodSchema(() => z.looseObject({
         agentId: z.string(),
         updatedAt: z.number(),
         configOptions: z.array(StoredConfigOptionSchema),
+        modelConfigOptionId: z.optional(z.string()),
     })),
     sessionConfigOptionsV1: z.optional(z.object({
         v: z.literal(1),
         agentId: z.string(),
         updatedAt: z.number(),
         configOptions: z.array(StoredConfigOptionSchema),
+        modelConfigOptionId: z.optional(z.string()),
     })),
     sessionRollbackRangesV1: z.optional(createSessionRollbackRangesV1Schema(zMini)),
     /**
@@ -271,13 +273,13 @@ const MetadataObjectSchema = lazyZodSchema(() => z.looseObject({
         parentCutoffSeqInclusive: z.number(),
         createdAtMs: z.number(),
         strategy: z.string(),
-        requestId: z.optional(z.string()),
+        requestId: z.optional(z.nullable(z.string())),
         filesNotCopied: z.optional(createStoredReadSchema(SessionForkFilesNotCopiedV1Schema)),
         visualCopies: z.optional(z.array(createStoredReadSchema(SessionForkVisualCopyV1Schema))),
         agentHint: z.optional(z.object({
             agentId: z.optional(z.string()),
             backendMode: z.optional(z.string()),
-            agentSessionId: z.optional(z.string()),
+            agentSessionId: z.optional(z.nullable(z.string())),
         })),
     })),
     forkVisualsV1: z.optional(createStoredReadSchema(SessionForkVisualsV1Schema)),

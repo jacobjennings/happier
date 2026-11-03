@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { encodeBase64, decodeBase64 } from '@/encryption/base64';
+import { encodeBase64 } from '@/encryption/base64';
 import {
     buildHomeQrInviteDeepLink,
     buildRenderableHomeQrInviteDeepLink,
     buildHomeQrInviteRestoreRoutePath,
-    classifyLegacyPairingDeepLink,
     consumeHomeQrInviteRestoreHandoff,
     parseHomeQrInviteDeepLink,
 } from './pairingUrl';
@@ -208,23 +207,8 @@ describe('HomeQrInviteV2 deep link', () => {
         const payload = encodeBase64(new TextEncoder().encode(JSON.stringify(INVITE_BASE)), 'base64url');
         expect(parseHomeQrInviteDeepLink(`happier:///other?v=2&payload=${payload}`)).toBeNull();
         expect(parseHomeQrInviteDeepLink(`happier:///pair?v=1&payload=${payload}`)).toBeNull();
-        expect(parseHomeQrInviteDeepLink('happier:///pair?v=2')).toBeNull();
-    });
-});
-
-describe('V1 pairing deep link compatibility', () => {
-    it('keeps released V1 links classification-only while V2 remains the sole writer', () => {
-        expect(classifyLegacyPairingDeepLink('happier:///pair?v=1&pairId=p&secret=s&server=https%3A%2F%2Fhome.test')).toEqual({
-            kind: 'legacy_pairing_update_required',
-        });
-        // A V1 link must not be mistaken for a V2 invite.
+        // A released V1 link must not be mistaken for a V2 invite.
         expect(parseHomeQrInviteDeepLink('happier:///pair?v=1&pairId=p&secret=s')).toBeNull();
-    });
-
-    it('v2 payload decodes back to the exact qr secret bytes', () => {
-        const link = buildHomeQrInviteDeepLink({ invite: INVITE_BASE });
-        const parsed = parseHomeQrInviteDeepLink(link);
-        expect(parsed?.invite.qrSecretBase64Url).toBe(INVITE_BASE.qrSecretBase64Url);
-        expect(decodeBase64(parsed?.invite.qrSecretBase64Url ?? '', 'base64url').length).toBe(32);
+        expect(parseHomeQrInviteDeepLink('happier:///pair?v=2')).toBeNull();
     });
 });

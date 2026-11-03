@@ -8,6 +8,30 @@ export const CURRENT_SESSION_PRESENTATION_UNBIND_RPC_METHOD = 'session.presentat
 export const CURRENT_SESSION_PRESENTATION_APPLY_RPC_METHOD = 'session.presentation.apply' as const;
 
 export const RPC_METHODS = {
+  DAEMON_DEPLOYMENT_CHILD: 'daemon.deployments.child.v1',
+  DAEMON_SERVICE_HEALTH_DELIVER: 'daemon.serviceHealth.deliver.v1',
+  MACHINES_SERVICE_LOGS_READ: 'machines.services.logs.read',
+
+  MACHINES_SERVICE_CONTROL: 'machines.services.control',
+
+  MACHINES_SERVICE_UNWATCH: 'machines.services.unwatch',
+
+  MACHINES_SERVICE_WATCH: 'machines.services.watch',
+
+  MACHINES_SERVICE_DETAIL: 'machines.services.detail',
+
+  MACHINES_SERVICE_DISCOVERY: 'machines.services.discovery',
+
+  MACHINES_SERVICE_EXEC: 'machines.services.exec',
+
+  MACHINES_SERVICE_LIST: 'machines.services.list',
+
+  MACHINES_REACHABILITY_CONFIGURE: 'machines.reachability.configure',
+
+  MACHINES_REACHABILITY_INSPECT: 'machines.reachability.inspect',
+  MACHINE_SETUP_REMOVE: 'machines.setup.remove',
+  MACHINE_SETUP_PLAN: 'machines.setup.plan',
+
   USAGE_SOURCES_DISCOVER: 'usage.sources.discover',
   USAGE_SOURCES_GET: 'usage.sources.get',
   USAGE_SOURCES_CONSENT_SET: 'usage.sources.consent.set',
@@ -168,6 +192,7 @@ export const RPC_METHODS = {
   MACHINES_GUARD_IDLE_STOP_KEEP_RUNNING: 'machines.guard.idleStop.keepRunning',
   MACHINES_GUARD_SESSION_CEILING_SET: 'machines.guard.sessionCeiling.set',
   DAEMON_GUARD_WATCH: 'daemon.guard.watch',
+  DAEMON_GUARD_ACTIVITY_WATCH: 'daemon.guard.activity.watch',
   MACHINES_VITALS_HISTORY_GET: 'machines.vitals.history.get',
   DAEMON_VITALS_WATCH: 'daemon.vitals.watch',
   MACHINES_PROCESSES_LIST: 'machines.processes.list',
@@ -456,6 +481,9 @@ export const RPC_METHODS = {
   RENAME_PATH: 'renamePath',
   DELETE_PATH: 'deletePath',
   COPY_PATH: 'copyPath',
+  DAEMON_FILESYSTEM_READ_FILE: 'daemon.filesystem.readFile',
+  DAEMON_FILESYSTEM_WRITE_FILE: 'daemon.filesystem.writeFile',
+  DAEMON_FILESYSTEM_GET_DIRECTORY_TREE: 'daemon.filesystem.getDirectoryTree',
   DAEMON_FILESYSTEM_CREATE_DIRECTORY: 'daemon.filesystem.createDirectory',
   DAEMON_FILESYSTEM_RENAME: 'daemon.filesystem.rename',
   DAEMON_FILESYSTEM_DELETE: 'daemon.filesystem.delete',
@@ -552,6 +580,7 @@ export const RPC_METHODS = {
   BUGREPORT_COLLECT_DIAGNOSTICS: 'bugreport.collectDiagnostics',
   BUGREPORT_GET_LOG_TAIL: 'bugreport.getLogTail',
   BUGREPORT_UPLOAD_ARTIFACT: 'bugreport.uploadArtifact',
+
 } as const;
 
 export const SESSION_RPC_METHODS = {

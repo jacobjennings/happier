@@ -10,6 +10,14 @@ import {
     SESSION_TRANSCRIPT_PUBLICATION_SELECT,
 } from '@/app/session/sessionTranscriptPublicationPolicy';
 import { verifyCurrentMaterializedRunnerPrincipalInTx } from '@/app/ephemeralRunner/materializedRunnerPrincipalCurrentness';
+import { projectSessionAccessCapabilitiesV1 } from '@happier-dev/protocol/sessions/access/sessionEffectiveAccessV1';
+import type { EffectiveSessionAccess } from '@/app/session/access/sessionAccess';
+
+/** A proved runtime subtree grants shared observation, never hosting Account authority. */
+export function projectSessionRuntimeManagedSubtreeAccess(input: Readonly<{ accountId: string; sessionId: string }>): EffectiveSessionAccess {
+    return { ...input, level: 'view', sources: [], relationshipKinds: [], audienceContext: null,
+        capabilities: projectSessionAccessCapabilitiesV1({ owner: false, grants: [{ accessLevel: 'view', canApprovePermissions: false }] }) };
+}
 
 /** Structural reachability is not an access grant. Only readable IDs leave this owner. */
 export async function readSessionManagedSubtreeSessionIdsInTx(tx: Tx, input: Readonly<{
@@ -17,7 +25,7 @@ export async function readSessionManagedSubtreeSessionIdsInTx(tx: Tx, input: Rea
     rootSessionId: string;
     authentication: SessionAccessAuthentication;
     collectiveAccessSnapshot?: SessionCollectiveAccessSnapshot;
-    /** Only the list owner requests a read of this runtime's own tree. */
+    /** Only list and list-document demand owners request a read of this runtime's own tree. */
     allowSessionRuntimeManagedSubtreeRead?: true;
 }>): Promise<string[]> {
     let authentication = input.authentication;

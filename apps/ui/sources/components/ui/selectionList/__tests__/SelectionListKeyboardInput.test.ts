@@ -120,7 +120,11 @@ describe('SelectionListKeyboardInput (R14 extracted)', () => {
         expect(dispatched.shiftKey).toBe(true);
     });
 
-    it('escalates to onRequestClose when Escape is consumed AND stack is at root AND input is empty', () => {
+    it.each([
+        { state: 'the stack is at root and the input is empty', canPopStep: false, inputValue: '', closes: 1 },
+        { state: 'the stack can still pop', canPopStep: true, inputValue: '', closes: 0 },
+        { state: 'the input still has a value to clear', canPopStep: false, inputValue: 'pending', closes: 0 },
+    ])('escalates a consumed Escape to onRequestClose only when $state allows it', ({ canPopStep, inputValue, closes }) => {
         const keyboard = makeKeyboardStub(true);
         const onRequestClose = vi.fn();
         const handler = createSelectionListKeyPressHandler({
@@ -128,44 +132,12 @@ describe('SelectionListKeyboardInput (R14 extracted)', () => {
             isComposing: false,
             focusedOptionId: null,
             onActivate: vi.fn(),
-            canPopStep: false,
-            inputValue: '',
+            canPopStep,
+            inputValue,
             onRequestClose,
         });
         handler({ key: 'Escape' });
-        expect(onRequestClose).toHaveBeenCalledTimes(1);
-    });
-
-    it('does NOT escalate Escape to onRequestClose while the stack can still pop', () => {
-        const keyboard = makeKeyboardStub(true);
-        const onRequestClose = vi.fn();
-        const handler = createSelectionListKeyPressHandler({
-            keyboard,
-            isComposing: false,
-            focusedOptionId: null,
-            onActivate: vi.fn(),
-            canPopStep: true,
-            inputValue: '',
-            onRequestClose,
-        });
-        handler({ key: 'Escape' });
-        expect(onRequestClose).not.toHaveBeenCalled();
-    });
-
-    it('does NOT escalate Escape to onRequestClose while the input still has a value to clear', () => {
-        const keyboard = makeKeyboardStub(true);
-        const onRequestClose = vi.fn();
-        const handler = createSelectionListKeyPressHandler({
-            keyboard,
-            isComposing: false,
-            focusedOptionId: null,
-            onActivate: vi.fn(),
-            canPopStep: false,
-            inputValue: 'pending',
-            onRequestClose,
-        });
-        handler({ key: 'Escape' });
-        expect(onRequestClose).not.toHaveBeenCalled();
+        expect(onRequestClose).toHaveBeenCalledTimes(closes);
     });
 
     it('FR3-7: dispatches Shift+Tab to the hook even while the event reports composing=true (IME-exempt)', () => {

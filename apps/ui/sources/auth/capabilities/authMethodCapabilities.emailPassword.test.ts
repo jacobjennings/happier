@@ -46,7 +46,10 @@ describe('email/password auth-entry projection', () => {
             { action: 'provision', mode: 'either' },
         ]));
 
-        expect(capabilities.authenticationActions.every((row) => row.execution.kind === 'email_password')).toBe(true);
+        expect(capabilities.authenticationActions.map((row) => row.execution)).toEqual([
+            { kind: 'email_password', action: 'login', mode: 'either' },
+            { kind: 'email_password', action: 'provision', mode: 'either' },
+        ]);
         expect(capabilities.keyedProvisionProviderIds).toEqual([]);
         expect(capabilities.keylessLoginMethodIds).toEqual([]);
         expect(capabilities.configuredKeylessProviderIds).toEqual([]);

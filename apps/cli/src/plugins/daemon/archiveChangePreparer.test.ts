@@ -46,6 +46,7 @@ async function createArchiveFixture(params?: Readonly<{
   speech?: boolean;
   scm?: boolean;
   hostedWeb?: boolean;
+  contributes?: Readonly<Record<string, unknown>>;
 }>): Promise<Readonly<{
   archivePath: string;
   archiveDigestSha256: `sha256:${string}`;
@@ -94,7 +95,7 @@ async function createArchiveFixture(params?: Readonly<{
             scope: { access: [...(params.optionalSessionsAccess ?? ['read'])], projectIds: ['project-a'] },
           }] : [],
         },
-        contributes: params?.action || params?.hostedWeb ? {
+        contributes: params?.contributes ?? (params?.action || params?.hostedWeb ? {
           ...(params?.action ? {
             actions: [{
               id: 'roundtrip',
@@ -165,7 +166,7 @@ async function createArchiveFixture(params?: Readonly<{
             kind: 'packed-forge',
             capabilities: ['detect'],
           }],
-        } : {},
+        } : {}),
       }),
     },
     {
@@ -319,6 +320,24 @@ async function startArchiveServer(bytes: Buffer | (() => Buffer), expectedPath?:
 }
 
 describe('createDaemonArchivePluginChangePreparer', () => {
+  it('returns the typed attributed Settings refusal from archive staging without publishing', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-archive-settings-home-'));
+    roots.push(happyHomeDir);
+    const fixture = await createArchiveFixture({ contributes: { settings: [{
+      id: 'preferences', title: 'Preferences', scope: 'daemon', target: { kind: 'plugin' },
+      fields: [{ id: 'enabled', title: 'Enabled', schema: { type: 'boolean' }, default: 'private-settings-value' }],
+    }] } });
+    const service = createDaemonPluginChangeService({ prepare: createDaemonArchivePluginChangePreparer({
+      happyHomeDir, runtimeLifecycle: { prepare: async () => { throw new Error('Invalid candidate must not publish'); } },
+    }) });
+    try {
+      const result = await service.requestPluginChange({ kind: 'installArchive', locator: fixture.archivePath });
+      expect(result).toMatchObject({ kind: 'failed', code: 'PLUGIN_SETTINGS_DEFAULT_INVALID',
+        message: expect.stringContaining("Plugin 'acme.archive-candidate' Settings 'preferences' field 'enabled'") });
+      expect(JSON.stringify(result)).not.toContain('private-settings-value');
+      expect((await createPluginRegistryStateStore({ happyHomeDir }).read()).plugins).toEqual({});
+    } finally { await service.shutdown(); }
+  });
   it('omits the retained archive query from failed acquisition diagnostics', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-archive-query-failure-home-'));
     roots.push(happyHomeDir);
@@ -373,7 +392,10 @@ describe('createDaemonArchivePluginChangePreparer', () => {
       optionalSessionsAccess: ['read', 'write'],
     });
     let servedBytes = await readFile(initial.archivePath);
-    const pathAndQuery = '/download?project=acme%20tools&asset=plugin.tgz&asset=portable';
+    // Secret-looking query parameters select the user's resource: they are
+    // retained verbatim for review, trust, and updates rather than redacted.
+    const pathAndQuery = '/download?project=acme%20tools&asset=plugin.tgz&asset=portable'
+      + '&opaqueGrant=opaque-private-secret&token=private-archive-secret';
     const origin = await startArchiveServer(() => servedBytes, pathAndQuery);
     const locator = `http://127.0.0.1:${origin.port}${pathAndQuery}`;
     const reloadController = createPluginReloadController({ happyHomeDir });
@@ -401,6 +423,13 @@ describe('createDaemonArchivePluginChangePreparer', () => {
       ),
     });
     const begun = await service.requestPluginChange({ kind: 'installArchive', locator });
+    expect(begun).toMatchObject({
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall',
+      review: {
+        source: { kind: 'archive', locator, integrity: initial.integrity },
+        updateChannel: { kind: 'archive', locator },
+      },
+    });
     if (begun.kind !== 'reviewRequired') throw new Error('Expected initial archive review');
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
@@ -422,6 +451,9 @@ describe('createDaemonArchivePluginChangePreparer', () => {
         manifestVersion: '1.2.4',
         trust: { distribution: { source: { canonicalUrl: locator }, integrity: update.integrity } },
       },
+    });
+    await expect(store.readSnapshot()).resolves.toMatchObject({
+      admittedIntegrityByPluginId: { 'acme.archive-candidate': update.integrity },
     });
     servedBytes = await readFile(widened.archivePath);
     await expect(service.requestPluginChange(resolution.request)).resolves.toMatchObject({
@@ -905,64 +937,6 @@ describe('createDaemonArchivePluginChangePreparer', () => {
       optionalSelections: [],
     })).resolves.toEqual({ kind: 'conflict', pluginId: 'acme.archive-candidate' });
     await prepared.cleanup();
-  });
-
-  it('computes remote archive integrity and retains the full user-selected URL for review and updates', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-archive-change-home-'));
-    roots.push(happyHomeDir);
-    const fixture = await createArchiveFixture();
-    const bytes = await readFile(fixture.archivePath);
-    const origin = await startArchiveServer(bytes);
-    const archivePathAndQuery = [
-      '/plugins/archive-candidate.tgz?download=1',
-      'download=selector-private-secret',
-      'opaqueGrant=opaque-private-secret',
-      'token=private-archive-secret',
-    ].join('&');
-    const archiveUrl = `http://127.0.0.1:${origin.port}${archivePathAndQuery}`;
-    const reviewArchiveUrl = archiveUrl;
-    const service = createDaemonPluginChangeService({
-      prepare: createDaemonArchivePluginChangePreparer({
-        happyHomeDir,
-        runtimeLifecycle: {
-          prepare: async () => ({
-            abort: async () => undefined,
-            adopt: async () => undefined,
-          }),
-        },
-      }),
-      createPendingChangeId: () => 'pending-remote-archive',
-    });
-
-    const begun = await service.requestPluginChange({ kind: 'installArchive', locator: archiveUrl });
-    expect(begun).toMatchObject({
-      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
-      review: {
-        source: { kind: 'archive', locator: reviewArchiveUrl, integrity: fixture.integrity },
-        updateChannel: { kind: 'archive', locator: reviewArchiveUrl },
-      },
-    });
-    if (begun.kind !== 'reviewRequired') throw new Error('Expected remote archive installation review');
-    const committed = await service.decidePluginChange({
-      pendingChangeId: begun.pendingChangeId,
-      decision: 'installAndTrust',
-    });
-    expect(committed).toMatchObject({ kind: 'committed', appliedGeneration: null, pendingSurfaces: [] });
-    expect(origin.observedUrls).toEqual([archivePathAndQuery]);
-    expect((await createPluginRegistryStateStore({ happyHomeDir }).read()).plugins['acme.archive-candidate'])
-      .toMatchObject({
-        source: { kind: 'archive', locator: reviewArchiveUrl },
-        install: { trust: { distribution: {
-          kind: 'archive',
-          source: { kind: 'remoteUrl', canonicalUrl: reviewArchiveUrl },
-          integrity: fixture.integrity,
-        } } },
-      });
-    await expect(createPluginRegistryStateStore({ happyHomeDir }).readSnapshot()).resolves.toMatchObject({
-      admittedIntegrityByPluginId: {
-        'acme.archive-candidate': fixture.integrity,
-      },
-    });
   });
 
   it('persists selected host resources and reports transaction adoption ambiguity as outcomeUnknown', async () => {

@@ -145,7 +145,7 @@ export function createAgentSessionRealtimeService(input: Readonly<{
   applicationAttemptId: string;
   signal: AbortSignal;
   sessionRpc: SessionRpc;
-  onStarted(handle: AgentSessionRealtimeHandle): void;
+  onStarted(handle: AgentSessionRealtimeHandle, preparedInstructionsFor?: SessionAddress): void;
 }>): PluginVoiceAgentSessionRealtimeService {
   const selection = Object.freeze({
     v: 1 as const,
@@ -595,7 +595,14 @@ export function createAgentSessionRealtimeService(input: Readonly<{
         }
         if (parsed.data.status !== 'started') return { status: parsed.data.status };
         watchTerminal();
-        input.onStarted(handle);
+        const preparedInstructionsFor = parsed.data.preparedInstructionsFor;
+        if (preparedInstructionsFor?.sessionId === input.conversationSessionAddress.sessionId) {
+          // The authenticated RPC route owns the Home identity; daemon-local
+          // profile names in a receipt cannot retarget this presentation fact.
+          input.onStarted(handle, input.conversationSessionAddress);
+        } else {
+          input.onStarted(handle);
+        }
         return Object.freeze({
           status: 'started' as const,
           transport: parsed.data.transport,

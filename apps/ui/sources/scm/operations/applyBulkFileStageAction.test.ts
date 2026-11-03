@@ -1,40 +1,43 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { storage } from '@/sync/domains/state/storage';
+import { projectManager } from '@/sync/runtime/orchestration/projectManager';
 import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
-import { installScmOperationsCommonModuleMocks } from './scmOperationsTestHelpers';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createWritableScmSnapshot, installScmOperationsCommonModuleMocks } from './scmOperationsTestHelpers';
 
 const sessionScmChangeInclude = vi.hoisted(() => vi.fn());
 const sessionScmChangeExclude = vi.hoisted(() => vi.fn());
 const sessionScmRepositoryRemoveIndexLock = vi.hoisted(() => vi.fn());
-const invalidateFromMutationAndAwait = vi.hoisted(() => vi.fn(async () => {}));
-const withSessionProjectScmOperationLock = vi.hoisted(() => vi.fn(async (input: any) => {
-    await input.run();
-    return { started: true, message: '' };
-}));
-const evaluateScmOperationPreflight = vi.hoisted(() => vi.fn(() => ({ allowed: true, message: '' })));
+const machineRpc = vi.hoisted(() => vi.fn());
 
+// The SCM write facade and the Machine RPC transport (the post-write status read) are the system boundaries;
+// the operation lock, preflight policy, repository refresh and operation log run for real.
 vi.mock('@/sync/ops', () => ({
     sessionScmChangeInclude,
     sessionScmChangeExclude,
     sessionScmRepositoryRemoveIndexLock,
 }));
-
-vi.mock('@/scm/scmStatusSync', () => ({
-    scmStatusSync: {
-        invalidateFromMutationAndAwait,
-    },
-}));
-
-vi.mock('@/scm/operations/withOperationLock', () => ({
-    withSessionProjectScmOperationLock,
-}));
-
-vi.mock('@/scm/core/operationPolicy', () => ({
-    evaluateScmOperationPreflight,
-}));
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', async () => {
+    const { createServerScopedMachineRpcBoundaryMock } = await import('@/dev/testkit/mocks/serverScopedRpc');
+    return createServerScopedMachineRpcBoundaryMock(machineRpc);
+});
 
 installScmOperationsCommonModuleMocks();
+
+/** A writable `/repo` Session whose status read answers with a refreshed head, so a completed write is observable. */
+function seedWritableSession() {
+    const machine = createMachineFixture({ id: 'machine-1' });
+    const base = createSessionFixture();
+    storage.setState({
+        machines: { [machine.id]: machine },
+        sessions: { s1: createSessionFixture({ id: 's1', metadata: { ...base.metadata!, machineId: machine.id, path: '/repo' } }) },
+    });
+    machineRpc.mockImplementation(async (params: { method: string }) => params.method === RPC_METHODS.SCM_STATUS_SNAPSHOT
+        ? { success: true, snapshot: createWritableScmSnapshot({ branch: { head: 'refreshed', upstream: 'origin/refreshed', ahead: 0, behind: 0, detached: false } }) }
+        : { success: false, errorCode: 'BACKEND_UNAVAILABLE', error: `unexpected ${params.method}` });
+}
 
 describe('applyBulkFileStageAction', () => {
     const initialStorageState = storage.getState();
@@ -66,12 +69,14 @@ describe('applyBulkFileStageAction', () => {
 
     beforeEach(() => {
         storage.setState(initialStorageState, true);
+        projectManager.clear();
         sessionScmChangeInclude.mockReset();
         sessionScmChangeExclude.mockReset();
         sessionScmRepositoryRemoveIndexLock.mockReset();
-        invalidateFromMutationAndAwait.mockReset();
-        withSessionProjectScmOperationLock.mockClear();
-        evaluateScmOperationPreflight.mockClear();
+        machineRpc.mockReset();
+    });
+    afterEach(async () => {
+        (await import('@/scm/scmStatusSync')).scmStatusSync.stop('s1');
     });
 
     it('marks atomic commit selection paths without invoking SCM RPC operations', async () => {
@@ -119,15 +124,16 @@ describe('applyBulkFileStageAction', () => {
         expect(storage.getState().getSessionProjectScmCommitSelectionPaths('same', 'a')).toEqual([]);
     });
 
-    it('invokes a single include/exclude RPC for non-atomic strategies', async () => {
+    it('stages deduplicated paths with one include RPC, then records it and refreshes the repository', async () => {
+        seedWritableSession();
         sessionScmChangeInclude.mockResolvedValueOnce({ success: true });
 
         const { applyBulkFileStageAction } = await import('./applyBulkFileStageAction');
 
         await applyBulkFileStageAction({
             sessionId: 's1',
-            sessionPath: '/tmp',
-            snapshot: null,
+            sessionPath: '/repo',
+            snapshot: createWritableScmSnapshot(),
             scmWriteEnabled: true,
             commitStrategy: 'git_staging',
             stage: true,
@@ -135,12 +141,14 @@ describe('applyBulkFileStageAction', () => {
             surface: 'files',
         });
 
-        expect(sessionScmChangeInclude).toHaveBeenCalledTimes(1);
-        expect(sessionScmChangeInclude).toHaveBeenCalledWith('s1', { paths: ['a.txt', 'b.txt'] });
-        expect(invalidateFromMutationAndAwait).toHaveBeenCalledTimes(1);
+        expect(sessionScmChangeInclude.mock.calls).toEqual([['s1', { paths: ['a.txt', 'b.txt'] }]]);
+        expect(storage.getState().getSessionProjectScmOperationLog('s1')[0]).toMatchObject({ operation: 'stage', status: 'success' });
+        expect(storage.getState().getSessionProjectScmSnapshot('s1')?.branch.head).toBe('refreshed');
+        expect(storage.getState().getSessionProjectScmInFlightOperation('s1')).toBeNull();
     });
 
     it('confirms stale index-lock recovery and retries a bulk stage operation once', async () => {
+        seedWritableSession();
         const modalConfirm = vi.mocked((await import('@/modal')).Modal.confirm);
         modalConfirm.mockResolvedValueOnce(true);
         sessionScmChangeInclude
@@ -161,7 +169,7 @@ describe('applyBulkFileStageAction', () => {
         await applyBulkFileStageAction({
             sessionId: 's1',
             sessionPath: '/repo',
-            snapshot: null,
+            snapshot: createWritableScmSnapshot(),
             scmWriteEnabled: true,
             commitStrategy: 'git_staging',
             stage: true,
@@ -176,6 +184,7 @@ describe('applyBulkFileStageAction', () => {
             confirmationToken: expect.any(String),
         });
         expect(sessionScmChangeInclude).toHaveBeenCalledTimes(2);
-        expect(invalidateFromMutationAndAwait).toHaveBeenCalledTimes(1);
+        expect(storage.getState().getSessionProjectScmOperationLog('s1')[0]).toMatchObject({ operation: 'stage', status: 'success' });
+        expect(storage.getState().getSessionProjectScmSnapshot('s1')?.branch.head).toBe('refreshed');
     });
 });

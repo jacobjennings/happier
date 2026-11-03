@@ -11,8 +11,8 @@ import { encryptSessionPayload } from '@/session/transport/encryption/sessionEnc
 import { EXTERNAL_ACTION_EFFECT_ACTION_HEADER, ExternalActionExecutionAuthorizationV1Schema, ExternalActionRequestEnvelopeSchema } from '@happier-dev/protocol/actions/externalActionApi';
 import { computeExternalActionRequestEnvelopeDigestV1 } from '@happier-dev/protocol/actions/externalActionExecutionAuthorization';
 import { AccountSettingsV2GetResponseSchema } from '@happier-dev/protocol/account/settings/accountSettingsApiV2';
-import { createAccountEncryptionCurrentnessFixture, createSessionNotificationContextFixture, createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
-import { SessionListQueryResponseV1Schema, SessionRuntimeManagedSubtreeListResponseV1Schema } from '@happier-dev/protocol/sessions/listing/response';
+import { createAccountEncryptionCurrentnessFixture, createSessionNotificationContextFixture, createSessionRecordFixture, createSessionRuntimeManagedSubtreeRecordFixture, createCompactSessionListRowFixture, createCompactSessionListQueryResponseFixture, createSessionReadBatchResponseFixture } from '@/testkit/backends/sessionFixtures';
+import { SessionRuntimeManagedSubtreeListResponseV1Schema } from '@happier-dev/protocol/sessions/listing/response';
 import { SESSION_LIST_PAGE_MAX_LIMIT, SessionListQueryV1Schema, type SessionListQueryV1 } from '@happier-dev/protocol/sessions/listing/query';
 import { normalizeSessionListFilterV1 } from '@happier-dev/protocol/sessions/listFilter/sessionListFilterV1';
 import { projectSessionAccessCapabilitiesV1 } from '@happier-dev/protocol/sessions/access/sessionEffectiveAccessV1';
@@ -53,19 +53,25 @@ describe('CLI Session target composition', () => {
 
   it('resolves restricted native targets only through the server-proved own subtree', async () => {
     const credentials = { token: 'restricted-runtime', encryption: null };
-    const { viewer: _viewer, ...parent } = createSessionNotificationContextFixture(sessionId);
-    const { viewer: _childViewer, ...child } = createSessionNotificationContextFixture(managerId);
+    const parent = createSessionRuntimeManagedSubtreeRecordFixture({ id: sessionId, encryptionMode: 'plain' });
+    const child = createSessionRuntimeManagedSubtreeRecordFixture({ id: managerId, encryptionMode: 'plain', manager: { sessionId } });
     let detached = false;
     const queries: SessionListQueryV1[] = [];
     vi.spyOn(axios, 'get').mockImplementation(async () => { throw new Error('No Account or foreign detail authority'); });
     vi.spyOn(axios, 'post').mockImplementation(async (url, body) => {
+      if (String(url).endsWith('/v2/sessions/read-batch')) {
+        expect(body).toMatchObject({ underSessionId: sessionId });
+        return { status: 200, data: createSessionReadBatchResponseFixture({ request: body, sessions: [
+          parent, ...(!detached ? [child] : []),
+        ] }) };
+      }
       expect(String(url)).toBe(`${home}/v2/sessions/query`);
       const query = SessionListQueryV1Schema.parse(body);
       queries.push(query);
       expect(query.underSessionId).toBe(sessionId);
       return { status: 200, data: SessionRuntimeManagedSubtreeListResponseV1Schema.parse({ sessions: query.storage === 'archived' ? [] : [
-        { ...parent, encryptionMode: 'plain', metadata: '{}' },
-        ...(!detached ? [{ ...child, encryptionMode: 'plain', metadata: '{}', manager: { sessionId } }] : []),
+        createCompactSessionListRowFixture(parent),
+        ...(!detached ? [createCompactSessionListRowFixture(child)] : []),
       ], nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false }) };
     });
     const sessionList = createRestrictedCurrentSessionListActionDependency({ credentials, sessionId,
@@ -202,9 +208,10 @@ describe('CLI Session target composition', () => {
         return homeGet(url, config);
       });
       vi.spyOn(axios, 'post').mockImplementation(async (url, body) => {
+        if (String(url).endsWith('/v2/sessions/read-batch')) return { status: 200, data: createSessionReadBatchResponseFixture({ request: body, sessions: [child] }) };
         expect(String(url)).toBe(`${home}/v2/sessions/query`);
         const query = SessionListQueryV1Schema.parse(body);
-        return { status: 200, data: SessionListQueryResponseV1Schema.parse({
+        return { status: 200, data: createCompactSessionListQueryResponseFixture({
           sessions: query.storage === 'active' ? [child] : [], nextCursor: null, hasNext: false,
           attentionNextCursor: null, attentionHasNext: false,
         }) };
@@ -302,12 +309,13 @@ describe('CLI Session target composition', () => {
       const key = { kind: 'workspace-ref', serverId: context.serverId, id: ref.id };
       const previewQueries: SessionListQueryV1[] = [];
       vi.spyOn(axios, 'post').mockImplementation(async (url, body) => {
+        if (String(url).endsWith('/v2/sessions/read-batch')) return { status: 200, data: createSessionReadBatchResponseFixture({ request: body, sessions: [candidate] }) };
         if (String(url).endsWith('/v1/account/project-rows/list')) return { status: 200,
           data: { status: 'listed', coverage: 'complete', rows: [{ key, revision: 0, content: { t: 'plain', v: { key, value: ref } } }] } };
         if (String(url).endsWith('/v2/sessions/query')) {
           previewQueries.push(SessionListQueryV1Schema.parse(body));
           return { status: 200,
-          data: SessionListQueryResponseV1Schema.parse({ sessions: [candidate], nextCursor: null, hasNext: false,
+          data: createCompactSessionListQueryResponseFixture({ sessions: [candidate], nextCursor: null, hasNext: false,
             attentionNextCursor: null, attentionHasNext: false }) };
         }
         throw new Error(`Unexpected Project/Session read: ${url}`);
@@ -455,15 +463,16 @@ describe('CLI Session target composition', () => {
     const rows = Array.from({ length: 1000 }, (_, index) => {
       const id = `c${String(index).padStart(23, '0')}`;
       return { ...createSessionNotificationContextFixture(id), ...session, id,
-        manager: index < 50 ? { sessionId } : null };
+        manager: index < 50 ? { sessionId } : undefined };
     });
     const queries: SessionListQueryV1[] = [];
     vi.spyOn(axios, 'post').mockImplementation(async (url, body) => {
+      if (String(url).endsWith('/v2/sessions/read-batch')) return { status: 200, data: createSessionReadBatchResponseFixture({ request: body, sessions: rows }) };
       expect(String(url)).toBe(`${home}/v2/sessions/query`);
       const query = SessionListQueryV1Schema.parse(body);
       queries.push(query);
       expect(query).toMatchObject({ underSessionId: sessionId, includeInactive: true, scope: 'all_accessible' });
-      return { status: 200, data: SessionListQueryResponseV1Schema.parse({
+      return { status: 200, data: createCompactSessionListQueryResponseFixture({
         sessions: query.storage === 'active' ? rows.filter(row => row.manager?.sessionId === query.underSessionId) : [],
         nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false,
       }) };
@@ -495,14 +504,15 @@ describe('CLI Session target composition', () => {
     });
     const cursor = encodeV2SessionListCursorV2({ sessionId: childId, meaningfulActivityAt: 1 });
     vi.spyOn(axios, 'post').mockImplementation(async (url, body) => {
+      if (String(url).endsWith('/v2/sessions/read-batch')) return { status: 200, data: createSessionReadBatchResponseFixture({ request: body, sessions: [child, grandchild, archivedChild] }) };
       expect(String(url)).toBe(`${home}/v2/sessions/query`);
       expect(body).toMatchObject({ underSessionId: sessionId, includeInactive: true, scope: 'all_accessible' });
       const query = SessionListQueryV1Schema.parse(body);
-      if (query.storage === 'archived') return { status: 200, data: SessionListQueryResponseV1Schema.parse({
+      if (query.storage === 'archived') return { status: 200, data: createCompactSessionListQueryResponseFixture({
         sessions: [archivedChild], nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false,
       }) };
       const next = query.cursor === cursor;
-      return { status: 200, data: SessionListQueryResponseV1Schema.parse({ sessions: [next ? grandchild : child],
+      return { status: 200, data: createCompactSessionListQueryResponseFixture({ sessions: [next ? grandchild : child],
         nextCursor: next ? null : cursor, hasNext: !next, attentionNextCursor: null, attentionHasNext: false }) };
     });
     const executor = createActionExecutor(deps);
@@ -544,12 +554,13 @@ describe('CLI Session target composition', () => {
       const cursor = encodeV2SessionListCursorV2({ sessionId: ids[0], meaningfulActivityAt: 1 });
       const attentionCursor = encodeV2SessionListCursorV2({ sessionId: ids[2], meaningfulActivityAt: 1 });
       vi.spyOn(axios, 'post').mockImplementation(async (url, body) => {
+        if (String(url).endsWith('/v2/sessions/read-batch')) return { status: 200, data: createSessionReadBatchResponseFixture({ request: body, sessions: rows }) };
         expect(String(url)).toBe(`${home}/v2/sessions/query`);
         expect(body).toMatchObject({ underSessionId: sessionId, includeInactive: true, scope: 'all_accessible' });
         const query = SessionListQueryV1Schema.parse(body);
         const attention = query.attentionCursor === attentionCursor;
         const next = query.cursor === cursor;
-        return { status: 200, data: SessionListQueryResponseV1Schema.parse({
+        return { status: 200, data: createCompactSessionListQueryResponseFixture({
           sessions: [rows[attention ? 2 : next ? 1 : 0]],
           nextCursor: attention || next && coverage !== 'repeated_cursor' ? null : cursor,
           hasNext: !attention && (!next || coverage === 'repeated_cursor'),
@@ -594,9 +605,10 @@ describe('CLI Session target composition', () => {
         const currentGet = vi.mocked(axios.get).getMockImplementation()!;
         vi.mocked(axios.get).mockImplementation(async (url, config) => String(url).endsWith(`/v2/sessions/${childId}`)
           ? { status: 200, data: { session: child } } : currentGet(url, config));
-        vi.spyOn(axios, 'post').mockImplementation(async (url) => {
+        vi.spyOn(axios, 'post').mockImplementation(async (url, body) => {
+          if (String(url).endsWith('/v2/sessions/read-batch')) return { status: 200, data: createSessionReadBatchResponseFixture({ request: body, sessions: [child] }) };
           expect(String(url)).toBe(`${home}/v2/sessions/query`);
-          return { status: 200, data: SessionListQueryResponseV1Schema.parse({ sessions: [child],
+          return { status: 200, data: createCompactSessionListQueryResponseFixture({ sessions: [child],
             nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false }) };
         });
         const receiver = createActionExecutor(deps);

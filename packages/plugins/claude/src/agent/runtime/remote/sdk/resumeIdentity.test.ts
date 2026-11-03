@@ -9,8 +9,140 @@ import {
     createTerminalHostFixture,
 } from '../../engine.testkit.js';
 import { createClaudeAgentSdkResumeIdentityOwner } from './resumeIdentity.js';
+import { createDeferred } from '../../../../../../../../apps/cli/src/testkit/async/deferred.js';
 
 describe('createClaudeAgentSdkResumeIdentityOwner', () => {
+    it.each(['acquire', 'onError', 'drain', 'healthy'] as const)('settles the replacement candidate after a retired drain completes (%s)', async phase => {
+        const follows: TranscriptFileFollowInputV1[] = [];
+        const drains: string[] = [];
+        const denied = Object.assign(new Error('Current candidate access denied'), { code: 'EACCES' });
+        const stale = Object.assign(new Error('Retired candidate access denied'), { code: 'EACCES' });
+        const pendingDrain = createDeferred();
+        const drainEntered = createDeferred();
+        const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, {
+            transcripts: {
+                append: vi.fn(async () => undefined),
+                defineSource: vi.fn(async () => ({ id: 'unused', dispose: vi.fn(async () => undefined) })),
+                fileFollow: { follow: vi.fn(async (input: TranscriptFileFollowInputV1) => {
+                    follows.push(input);
+                    const previous = input.path.endsWith('/previous.jsonl');
+                    if (!previous && phase === 'acquire') throw denied;
+                    return { id: input.path, close: async () => {}, drainNow: async () => {
+                        drains.push(input.path);
+                        if (previous) { drainEntered.resolve(); await pendingDrain.promise; throw stale; }
+                        if (phase === 'drain') throw denied;
+                    } };
+                }) },
+            },
+        });
+        const owner = createClaudeAgentSdkResumeIdentityOwner({ ctx, onProviderSessionId: () => {}, onTranscriptPromoted: async () => {} });
+        const start = (id: string) => owner.observeSessionHook(id, { hook_event_name: 'SessionStart', session_id: id,
+            transcript_path: `/tmp/${id}.jsonl` }, 'local_terminal');
+        try {
+            await start('previous');
+            const settlement = owner.settleCurrentCandidate();
+            const result = phase === 'healthy' ? expect(settlement).resolves.toBeUndefined() : expect(settlement).rejects.toBe(denied);
+            await drainEntered.promise;
+            await start('current');
+            await owner.observeSessionHook('current', { hook_event_name: 'UserPromptSubmit', session_id: 'current', prompt: 'Local context' }, 'local_terminal');
+            if (phase === 'onError') await follows[1]?.onError?.(denied);
+            pendingDrain.resolve();
+            await result;
+            expect(drains).toEqual(phase === 'acquire' ? ['/tmp/previous.jsonl'] : ['/tmp/previous.jsonl', '/tmp/current.jsonl']);
+        } finally { pendingDrain.resolve(); await owner.dispose(); }
+    });
+
+    it('retains unexpected proof read failures until matched proof or candidate retirement', async () => {
+        const follows: TranscriptFileFollowInputV1[] = [];
+        const promotions: string[] = [];
+        const denied = Object.assign(new Error('Proof access denied'), { code: 'EACCES' });
+        const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, {
+            transcripts: {
+                append: vi.fn(async () => undefined),
+                defineSource: vi.fn(async () => ({ id: 'unused', dispose: vi.fn(async () => undefined) })),
+                fileFollow: { follow: vi.fn(async (input: TranscriptFileFollowInputV1) => {
+                    follows.push(input);
+                    return { id: 'proof-follow', drainNow: async () => {}, close: async () => {} };
+                }) },
+            },
+        });
+        const owner = createClaudeAgentSdkResumeIdentityOwner({ ctx, nowMs: () => 10_000,
+            onProviderSessionId: () => {}, onTranscriptPromoted: async promotion => { promotions.push(promotion.providerSessionId); } });
+        const start = (id: string) => owner.observeSessionHook(id, { hook_event_name: 'SessionStart',
+            session_id: id, transcript_path: `/tmp/${id}.jsonl` }, 'local_terminal');
+        try {
+            await start('first');
+            const first = follows[0];
+            if (!first) throw new Error('Missing transcript follow');
+            for (const code of ['ENOENT', 'ENOTDIR']) {
+                await first.onError?.(Object.assign(new Error('Transcript not present'), { code }));
+                await expect(owner.settleCurrentCandidate()).resolves.toBeUndefined();
+            }
+            await first.onError?.(denied);
+            await expect(owner.settleCurrentCandidate()).rejects.toBe(denied);
+            await expect(owner.settleCurrentCandidate()).rejects.toBe(denied);
+            await start('current');
+            await first.onError?.(denied);
+            await expect(owner.settleCurrentCandidate()).resolves.toBeUndefined();
+            const current = follows[1];
+            if (!current) throw new Error('Missing current transcript follow');
+            await owner.observeSessionHook('current', { hook_event_name: 'UserPromptSubmit', session_id: 'current',
+                prompt: 'Local context' }, 'local_terminal');
+            await current.onError?.(denied);
+            await expect(owner.settleCurrentCandidate()).rejects.toBe(denied);
+            await current.onLine({ line: JSON.stringify({ type: 'user', sessionId: 'current',
+                timestamp: new Date(10_000).toISOString(), message: { role: 'user', content: 'Local context' } }),
+                sourcePath: current.path, sequence: 1 });
+            await expect(owner.settleCurrentCandidate()).resolves.toBeUndefined();
+            await current.onError?.(denied);
+            await expect(owner.settleCurrentCandidate()).resolves.toBeUndefined();
+            expect(promotions).toEqual(['current']);
+        } finally { await owner.dispose(); }
+    });
+
+    it.each([
+        { origin: 'sdk' as const, hookSessionId: 'native-current', sidechain: false, expectedPromotions: [] },
+        { origin: 'local_terminal' as const, hookSessionId: 'native-current', sidechain: false, expectedPromotions: ['native-current'] },
+        { origin: 'local_terminal' as const, hookSessionId: 'native-other', sidechain: false, expectedPromotions: [] },
+        { origin: 'local_terminal' as const, hookSessionId: 'native-current', sidechain: true, expectedPromotions: [] },
+    ])('admits unsubmitted $origin prompt proof only for the primary candidate ($hookSessionId, sidechain=$sidechain)', async ({ origin, hookSessionId, sidechain, expectedPromotions }) => {
+        const follows: TranscriptFileFollowInputV1[] = [];
+        const promotions: string[] = [];
+        const ctx = createPluginContextFixture(createTerminalHostFixture().service, createEventsFixture().service, {
+            transcripts: {
+                append: vi.fn(async () => undefined),
+                defineSource: vi.fn(async () => ({ id: 'unused', dispose: vi.fn(async () => undefined) })),
+                fileFollow: { follow: vi.fn(async (input: TranscriptFileFollowInputV1) => {
+                    follows.push(input);
+                    return { id: 'native-file', drainNow: async () => {}, close: async () => {} };
+                }) },
+            },
+        });
+        const owner = createClaudeAgentSdkResumeIdentityOwner({ ctx, nowMs: () => 10_000,
+            onProviderSessionId: () => {},
+            onTranscriptPromoted: async promotion => { promotions.push(promotion.providerSessionId); },
+        });
+        try {
+            await owner.observeSessionHook('native-current', { hook_event_name: 'SessionStart',
+                session_id: 'native-current', transcript_path: '/tmp/native-current.jsonl' }, origin);
+            const payload = { hook_event_name: 'UserPromptSubmit', session_id: hookSessionId,
+                prompt: 'Locally typed context', ...(sidechain ? { agent_id: 'child-agent' } : {}) };
+            await owner.observeSessionHook(hookSessionId, payload, origin);
+            expect(promotions).toEqual([]);
+            const follow = follows[0];
+            if (!follow) throw new Error('Missing authenticated transcript follow');
+            const row = { line: JSON.stringify({ type: 'user', sessionId: 'native-current',
+                timestamp: new Date(10_000).toISOString(),
+                message: { role: 'user', content: 'Locally typed context' } }),
+                sourcePath: follow.path, sequence: 1 };
+            await follow.onLine(row);
+            await owner.observeSessionHook(hookSessionId, payload, origin);
+            await follow.onLine(row);
+            expect(promotions).toEqual(expectedPromotions);
+            expect(follows).toHaveLength(1);
+        } finally { await owner.dispose(); }
+    });
+
     it('does not promote an accepted hook that precedes its authenticated transcript candidate', async () => {
         const follows: TranscriptFileFollowInputV1[] = [];
         const promotions: string[] = [];

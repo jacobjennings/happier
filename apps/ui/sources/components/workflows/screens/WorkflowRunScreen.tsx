@@ -1,12 +1,13 @@
 import * as React from 'react';
 import { useManagedMachineInventory } from '@/components/settings/machines/managed/useManagedMachineInventory';
 import { resolveWorkStatusTone } from '@/components/work/status/resolveWorkStatusTone';
-import { View, type StyleProp, type ViewStyle } from 'react-native';
-import { useDestinationFocus, useDestinationInstanceKey, useDestinationParams, useDestinationRouter, useDestinationVisibility } from '@/components/appShell/workspace/DestinationInstanceHost';
+import { View } from 'react-native';
+import { useDestinationInstanceKey, useDestinationParams, useDestinationRouter, useDestinationVisibility } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { PageHeader } from '@/components/ui/layout/PageHeader';
 import { NavigationBackChromeProvider, useNavigationBackControl } from '@/components/ui/layout/NavigationBackChrome';
 import { Stack } from '@/components/appShell/workspace/destinationRoute';
 import { DefaultBackButton } from '@/components/navigation/Header';
+import { usePageBackControl } from '@/components/ui/layout/usePageBackControl';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -323,12 +324,8 @@ export function WorkflowRunScreen(props: Readonly<{
     // A hosted destination has no Expo header: its Back belongs in the page header's own slot, on
     // the title line, rather than trailing among the header actions (the Workflow editor does the same).
     const hosted = useDestinationInstanceKey() !== null && props.embedded !== true;
-    const focused = useDestinationFocus();
     const inheritedBack = useNavigationBackControl();
-    const { theme } = useUnistyles();
-    const pageBack = React.useCallback(({ style }: Readonly<{ style: StyleProp<ViewStyle> }>) => (
-        focused ? <View style={style}><DefaultBackButton testID="workflow-run-back" tintColor={theme.colors.text.primary} onPress={onBack} /></View> : null
-    ), [focused, onBack, theme.colors.text.primary]);
+    const pageBack = usePageBackControl('workflow-run-back', onBack);
     const options = React.useMemo(() => hosted ? { headerTitle: title } : { headerTitle: title, headerLeft }, [headerLeft, hosted, title]);
     return <>
         {props.embedded ? null : <Stack.Screen options={options} />}

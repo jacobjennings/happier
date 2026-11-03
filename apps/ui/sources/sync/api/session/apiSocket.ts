@@ -1,4 +1,5 @@
 import { attachManagedSessionHumanPresenceSocket } from '@/sync/domains/session/humanPresence/attachManagedSessionHumanPresenceSocket';
+import { attachManagedSessionConsumptionSocket } from '@/sync/runtime/attachManagedSessionConsumptionSocket';
 import { notifyExecutionRunActivityReconnect } from '@/sync/runtime/executionRuns/executionRunActivityBus';
 import type { Socket } from 'socket.io-client';
 import {
@@ -57,20 +58,18 @@ import {
 } from '@/sync/domains/server/url/serverUrlCanonical';
 import {
     type ManagedConnectionState,
-    createManagedConnectionSupervisor,
-    DEFAULT_MANAGED_CONNECTION_POLICY,
     type ManagedConnectionSupervisor,
     type ManagedConnectionTransport,
     type TransportDisconnectEvent,
 } from '@happier-dev/connection-supervisor';
 import {
     invalidateServerReachabilitySupervisor,
-    reportServerUnreachable,
     reportServerRestarting,
     startServerReachabilitySupervisor,
     stopServerReachabilitySupervisor,
     subscribeServerReachabilityState,
 } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
+import { createSocketConnectionSupervisor } from '@/sync/runtime/connectivity/createSocketConnectionSupervisor';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { createNotAuthenticatedError } from '@/sync/runtime/connectivity/authErrors';
 import { registerExternalSessionStatusDemandTransport } from '@/sync/runtime/orchestration/externalSessions/externalSessionStatusDemandCoordinator';
@@ -92,6 +91,7 @@ import {
 } from '@/sync/domains/machines/reachability/machineReachability';
 import { subscribeHomeCredentialChange } from '@/sync/runtime/orchestration/homeAccountChange';
 import { userRequestLeaseOwner } from '@/sync/runtime/connectivity/userRequestLease';
+import { SERVER_PEER_LIVENESS_WINDOW_MS } from '@/sync/runtime/connectivity/serverReachabilityTuning';
 import { resolveAuthCredentialsScopeKey } from '@/auth/storage/resolveAuthCredentialsScopeKey';
 import { runAdmittedMachineRpcRead, type MachineRpcReadAdmission } from '@/sync/runtime/orchestration/serverScopedRpc/machineRpcReadAdmission';
 import { createSocketAccountEncryptionObservation, invalidateAccountEncryptionModeCache } from '@/sync/api/account/apiAccountEncryptionMode';
@@ -296,6 +296,7 @@ class ApiSocket {
     private liveStreamTransport: ReturnType<typeof createMachineLiveStreamSocketTransport> | null = null;
     private messageHandlers: Map<string, Set<SyncSocketMessageHandler>> = new Map();
     private reconnectedListeners: Set<() => void> = new Set();
+    private sessionConsumptionAdmittedListeners = new Set<(event: Readonly<{ serverId: string; sessionIds: readonly string[] }>) => void>();
     private statusListeners: Set<(status: 'disconnected' | 'connecting' | 'connected' | 'error') => void> = new Set();
     private connectionStateListeners: Set<(state: ManagedConnectionState) => void> = new Set();
     private errorListeners: Set<(error: Error | null) => void> = new Set();
@@ -318,6 +319,7 @@ class ApiSocket {
     private runtimeOriginUnsubscribe: (() => void) | null = null;
     private socketTransport: ManagedConnectionTransport | null = null;
     private scopedConnectionSupervisor: ManagedConnectionSupervisor | null = null;
+    private activeConnectionSupervisor: ManagedConnectionSupervisor | null = null;
     private detachSocketTransportListeners: Array<() => void> = [];
     // Inbound machine-scoped reverse-RPC handlers, keyed by the FULL prefixed method
     // (`<machineId>:<method>`). The daemon for `<machineId>` calls this method over its machine
@@ -361,8 +363,7 @@ class ApiSocket {
             const config = this.config;
             if (config.isCurrent?.() === false) return;
             if (!this.scopedConnectionSupervisor) {
-                this.scopedConnectionSupervisor = createManagedConnectionSupervisor({
-                    ...DEFAULT_MANAGED_CONNECTION_POLICY,
+                this.scopedConnectionSupervisor = createSocketConnectionSupervisor({
                     createTransport: () => { this.ensureSocketTransport(true); return this.socketTransport!; },
                     probeReadiness: async () => {
                         if (this.config !== config || config.isCurrent?.() === false) return { status: 'auth_failed' };
@@ -496,17 +497,22 @@ class ApiSocket {
         });
     }
 
-    disconnect() {
+    disconnect(options?: Readonly<{ preserveHttpRequests?: boolean }>) {
         if (this.accountEncryptionObservation) {
-            this.accountEncryptionObservation.dispose();
+            this.accountEncryptionObservation.dispose('transport-withdrawal');
             this.accountEncryptionObservation = null;
         } else if (this.socketClientType === 'user-scoped') {
-            invalidateAccountEncryptionModeCache({ serverId: this.config?.serverId });
+            invalidateAccountEncryptionModeCache({ serverId: this.config?.serverId, reason: 'transport-withdrawal' });
         }
         const scopedSupervisor = this.scopedConnectionSupervisor;
         this.scopedConnectionSupervisor = null;
         void scopedSupervisor?.stop();
-        this.requestConfigurationAbortController.abort('socket-disconnected');
+        const activeSupervisor = this.activeConnectionSupervisor;
+        this.activeConnectionSupervisor = null;
+        void activeSupervisor?.stop();
+        // Manual Retry withdraws socket observations, not an issued mutation's
+        // authority. Configuration replacement/logout still retire all requests.
+        if (!options?.preserveHttpRequests) this.requestConfigurationAbortController.abort('socket-disconnected');
         const previousServerUrl = this.reachabilityServerUrl;
         const previousToken = this.reachabilityToken;
         this.reachabilityUnsubscribe?.();
@@ -595,6 +601,11 @@ class ApiSocket {
     onReconnected = (listener: () => void) => {
         this.reconnectedListeners.add(listener);
         return () => this.reconnectedListeners.delete(listener);
+    };
+
+    onSessionConsumptionAdmitted = (listener: (event: Readonly<{ serverId: string; sessionIds: readonly string[] }>) => void) => {
+        this.sessionConsumptionAdmittedListeners.add(listener);
+        return () => { this.sessionConsumptionAdmittedListeners.delete(listener); };
     };
 
     onStatusChange = (listener: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => void) => {
@@ -707,6 +718,7 @@ class ApiSocket {
             waitForResultOnCancel?: boolean;
             requestId?: string;
             readAdmission?: MachineRpcReadAdmission;
+            decodeResult?: (raw: unknown) => R;
         },
     ): Promise<R> {
         const releaseRequestLease = userRequestLeaseOwner.acquire();
@@ -739,13 +751,14 @@ class ApiSocket {
             const controller = this.requestConfigurationAbortController;
             const capturedToken = config.token;
             const machineContext = capturedEncryption?.getMachineEncryptionContext(machineId) ?? capturedMachine ?? config;
-            const { readAdmission, ...rpcOptions } = options ?? {};
+            const { readAdmission, decodeResult, ...rpcOptions } = options ?? {};
             const assertCurrent = () => {
                 if (this.config !== config || config.token !== capturedToken || this.requestConfigurationAbortController !== controller || controller.signal.aborted
                     || !isMachineCurrent()) throw new StaleServerGenerationError();
             };
             return await runAdmittedMachineRpcRead({
                 admission: readAdmission,
+                decodeResult,
                 signal: options?.signal,
                 binding: {
                     key: JSON.stringify([config.serverId, config.endpoint, config.runtimeOrigin ?? null, config.carrier ?? null,
@@ -1240,7 +1253,7 @@ class ApiSocket {
             const requestKey = canDedupe
                 // Intentionally exclude `snapshot.generation` from the de-dupe key so concurrent callers still share
                 // a single in-flight fetch even if the active server generation changes while bootstrapping.
-                ? `${serverId ?? ''}:${method}:${url}:tk:${getOrCreateTokenCacheKey(credentialsToken)}`
+                ? `${serverId ?? ''}:${method}:${url}:read:${requestOptions.recoveryRead ?? 'unbounded'}:tk:${getOrCreateTokenCacheKey(credentialsToken)}`
                 : null;
 
             let result: RequestResult;
@@ -1367,15 +1380,6 @@ class ApiSocket {
         }
     }
 
-    private invalidateReachabilityAfterSocketTransportFailure(error: unknown): void {
-        const config = this.config;
-        if (!config) return;
-        if (config.request) return;
-        void invalidateServerReachabilitySupervisor({ serverUrl: config.endpoint, token: config.token }).catch(() => {
-            reportServerUnreachable(config.endpoint, error, config.token);
-        });
-    }
-
     private handleReachabilityStateChange(state: ManagedConnectionState): void {
         if (!this.config) {
             return;
@@ -1385,34 +1389,53 @@ class ApiSocket {
             if (this.hasConnectedOnce) {
                 this.pendingReconnectNotification = true;
             }
+            const supervisor = this.activeConnectionSupervisor;
+            this.activeConnectionSupervisor = null;
+            void supervisor?.stop();
             void this.socketTransport?.disconnect({ intentional: true });
             return;
         }
 
+        const previousTransport = this.socketTransport;
         try {
-            this.ensureSocketTransport();
+            if (this.activeConnectionSupervisor) this.ensureSocketTransport();
         } catch (error) {
             this.setError(error instanceof Error ? error : new Error(String(error)));
             this.updateStatus('error');
             return;
         }
 
-        if (!this.socketTransport || this.socketTransport.isConnected()) {
-            return;
+        if (previousTransport !== this.socketTransport && this.activeConnectionSupervisor) {
+            const supervisor = this.activeConnectionSupervisor;
+            this.activeConnectionSupervisor = null;
+            void supervisor.stop();
         }
 
-        const transport = this.socketTransport;
         const config = this.config;
-        this.updateStatus('connecting');
-        void transport.connect().catch((error) => {
-            if (this.socketTransport !== transport || this.config !== config
-                || config?.isCurrent?.() === false || this.currentConnectionState.phase !== 'online') return;
+        if (!this.activeConnectionSupervisor) {
+            // Home readiness proves HTTP, not the socket subscription. Keep real
+            // dial demand/backoff at the existing transport supervisor, so a
+            // healthy ping cannot consume or reset a failed socket's retry.
+            const supervisor = createSocketConnectionSupervisor({
+                createTransport: () => {
+                    this.ensureSocketTransport(true);
+                    return this.socketTransport!;
+                },
+                onStateChange: (socketState) => {
+                    if (this.activeConnectionSupervisor !== supervisor || this.config !== config || config.isCurrent?.() === false) return;
+                    if (socketState.lastErrorMessage) this.setError(new Error(socketState.lastErrorMessage));
+                    if (socketState.phase === 'connecting') this.updateStatus('connecting');
+                    else if (socketState.phase === 'online') this.updateStatus('connected');
+                    else this.updateStatus(socketState.phase === 'auth_failed' ? 'error' : 'disconnected');
+                },
+            });
+            this.activeConnectionSupervisor = supervisor;
+        }
+        const activeSupervisor = this.activeConnectionSupervisor;
+        void activeSupervisor.start().catch((error: unknown) => {
+            if (this.activeConnectionSupervisor !== activeSupervisor || this.config !== config || config.isCurrent?.() === false) return;
             this.setError(error instanceof Error ? error : new Error(String(error)));
             this.updateStatus('error');
-            // A dial failure settles the adapter's connect promise before a
-            // connected transport can emit onError. Re-enter the same Home
-            // revalidation path so its fresh online verdict can dial again.
-            this.invalidateReachabilityAfterSocketTransportFailure(error);
         });
     }
 
@@ -1453,7 +1476,7 @@ class ApiSocket {
         for (const detach of this.detachSocketTransportListeners.splice(0)) {
             detach();
         }
-        this.accountEncryptionObservation?.dispose();
+        this.accountEncryptionObservation?.dispose('transport-withdrawal');
         this.accountEncryptionObservation = null;
         void this.socketTransport?.disconnect({ intentional: true });
         void this.socketTransport?.destroy();
@@ -1463,6 +1486,7 @@ class ApiSocket {
 
         const { socket, transport } = createHappierSocket({
             endpoint: transportEndpoint,
+            connectTimeoutMs: SERVER_PEER_LIVENESS_WINDOW_MS,
             token: this.config.token,
             ...socketRole,
             clientPurpose: 'sync',
@@ -1503,6 +1527,7 @@ class ApiSocket {
                 homeCarrierEndpointId: homeCarrier?.endpointId ?? null,
                 request: createServerFetchAtEndpoint({ endpointUrl: transportConfig.endpoint,
                     credentials, serverId: transportConfig.serverId, runtimeOrigin: transportConfig.runtimeOrigin,
+                    recoverStoredCredentials: true,
                     ...(homeCarrier ? { homeCarrier } : {}),
                 }),
                 isCurrent: () => this.socket === socket && this.config === transportConfig
@@ -1512,6 +1537,7 @@ class ApiSocket {
                     && ((transportConfig.homeCarrier ?? getActiveServerHomeCarrier())?.endpointId ?? null) === (homeCarrier?.endpointId ?? null),
             }) : null;
         this.accountEncryptionObservation = accountEncryptionObservation;
+        const consumptionServerId = transportConfig.serverId ?? getActiveServerSnapshot().serverId;
 
         this.detachSocketTransportListeners = [
             detachInboundRequests,
@@ -1521,6 +1547,15 @@ class ApiSocket {
             ...(accountScoped ? [attachManagedSessionHumanPresenceSocket({
                 serverId: this.config.serverId ?? getActiveServerSnapshot().serverId,
                 token: this.config.token, socket, transport,
+            })] : []),
+            ...(accountScoped ? [attachManagedSessionConsumptionSocket({
+                serverId: consumptionServerId,
+                socket, transport,
+                onLiveConsumptionAdmitted: sessionIds => {
+                    if (this.socket !== socket || this.config !== transportConfig || transportConfig.isCurrent?.() === false) return;
+                    const event = { serverId: consumptionServerId, sessionIds };
+                    for (const listener of this.sessionConsumptionAdmittedListeners) listener(event);
+                },
             })] : []),
             transport.onConnected(() => {
                 if (this.socket !== socket || this.config !== transportConfig || transportConfig?.isCurrent?.() === false) return;
@@ -1563,7 +1598,6 @@ class ApiSocket {
                     return;
                 }
                 this.pendingReconnectNotification = true;
-                this.invalidateReachabilityAfterSocketTransportFailure(event.error ?? new Error(event.reason ?? 'socket disconnect'));
             }),
             transport.onError((error: unknown) => {
                 if (this.socket !== socket || this.config !== transportConfig || transportConfig?.isCurrent?.() === false) return;
@@ -1571,7 +1605,7 @@ class ApiSocket {
                 if (accountEncryptionObservation) accountEncryptionObservation.disconnected();
                 else if (accountScoped) invalidateAccountEncryptionModeCache({ serverId: transportConfig.serverId, reason: 'transport-withdrawal' });
                 this.setError(error instanceof Error ? error : new Error(String(error)));
-                this.invalidateReachabilityAfterSocketTransportFailure(error);
+                this.updateStatus('error');
             }),
             () => statusDemandTransport?.dispose(),
         ];
@@ -1872,7 +1906,7 @@ class ApiSocket {
             case 'online':
                 if (this.socketTransport?.isConnected() === true) {
                     this.updateStatus('connected');
-                } else if (this.currentStatus === 'disconnected') {
+                } else if (this.currentStatus === 'disconnected' && !this.activeConnectionSupervisor) {
                     this.updateStatus('connecting');
                 }
                 return;

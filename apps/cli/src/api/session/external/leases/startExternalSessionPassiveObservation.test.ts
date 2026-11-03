@@ -3,7 +3,7 @@ import {
     accountSettingsParse,
     createPlainSessionOwnerMetadataEnvelopeV1,
     SessionOwnerMetadataV1Schema,
-    V2SessionListResponseSchema,
+    V2SessionRecordSchema,
 } from '@happier-dev/protocol';
 
 import {
@@ -349,8 +349,7 @@ describe('startExternalSessionPassiveObservation', () => {
         });
         const ownerMetadataEnvelope =
             createPlainSessionOwnerMetadataEnvelopeV1(ownerMetadata);
-        const rawSessions = V2SessionListResponseSchema.parse({
-            sessions: [{
+        const rawSessions = [V2SessionRecordSchema.parse({
                 id: 'session-layout-1',
                 seq: 1,
                 createdAt: 1_000,
@@ -369,10 +368,7 @@ describe('startExternalSessionPassiveObservation', () => {
                 agentState: null,
                 agentStateVersion: 1,
                 dataEncryptionKey: null,
-            }],
-            hasNext: false,
-            nextCursor: null,
-        }).sessions;
+            })];
         const resolveLinkInput = vi.fn(async ({ sessionId }: { sessionId: string }) => (
             resolvedInput(sessionId)
         ));

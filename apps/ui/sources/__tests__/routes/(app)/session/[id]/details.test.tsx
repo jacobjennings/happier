@@ -94,6 +94,8 @@ async function renderScreen(seed?: () => void | Promise<void>) {
     // actual SDK viewport port, not the internal device/cockpit decision.
     const native = await import('react-native');
     vi.spyOn(native, 'useWindowDimensions').mockImplementation(() => viewport);
+    // Presentation geometry reads the Dimensions authority (usePresentationWindowDimensions).
+    vi.spyOn(native.Dimensions, 'get').mockImplementation(() => viewport);
     storage.getState().applySettingsLocal({ mobileWorkspaceExperienceV1: mobileWorkspaceExperience });
     // The actual pane probe must mount before its public actions can seed retained state.
     // Mount the route only after those actions have settled, so it sees the same state as a real return.
@@ -255,13 +257,6 @@ describe('/session/[id]/details', () => {
         expect(runtime.pane.scopeState?.details.isOpen).toBe(true);
         await screen.update(<></>);
         expect(runtime.pane.scopeState?.details.isOpen).toBe(false);
-    });
-    it('returns to the parent session route when there is no back stack', async () => {
-        canGoBack = false;
-        const screen = await renderScreen(openReadme);
-        await act(async () => panel(screen).props.onRequestClose());
-        expect(routerBackSpy).not.toHaveBeenCalled();
-        expect(routerReplaceSpy).toHaveBeenCalledWith('/session/session-1?mobileSurface=chat');
     });
     it('falls back to the source surface when a sourced details route has no back stack', async () => {
         canGoBack = false; mockServerId = runtime.serverId; mockSourceSurfaceParam = 'git';

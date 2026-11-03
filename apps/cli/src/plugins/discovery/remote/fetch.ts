@@ -9,7 +9,6 @@ import { awaitPluginAcquisition } from '@/plugins/distribution/acquisitionLifeti
 import {
   openRemoteAcquisition,
   type OpenedRemoteAcquisition,
-  type RemoteAcquisitionAddressResolver,
   type RemoteAcquisitionDestinationPolicy,
 } from './acquisition';
 
@@ -50,11 +49,6 @@ const REMOTE_PLUGIN_ACQUISITION_POLICY: RemoteAcquisitionDestinationPolicy = Obj
   privateNetwork: 'followCallerDestination',
 });
 
-export type RemoteFetchNetworkBoundary = Readonly<{
-  fetchImpl?: typeof fetch;
-  resolveAddresses?: RemoteAcquisitionAddressResolver;
-}>;
-
 function assertResponseContentLengthWithinLimit(params: Readonly<{
   response: Response;
   maxBytes: number | null;
@@ -74,7 +68,6 @@ async function openRemoteResponse(params: Readonly<{
   signal?: AbortSignal;
   maxBytes: number | null;
   errorLabel: string;
-  network: RemoteFetchNetworkBoundary;
 }>): Promise<OpenedRemoteAcquisition> {
   const opened = await openRemoteAcquisition({
     url: params.url,
@@ -83,8 +76,6 @@ async function openRemoteResponse(params: Readonly<{
     timeoutMs: params.timeoutMs,
     signal: params.signal,
     errorLabel: params.errorLabel,
-    ...(params.network.fetchImpl ? { fetchImpl: params.network.fetchImpl } : {}),
-    ...(params.network.resolveAddresses ? { resolveAddresses: params.network.resolveAddresses } : {}),
   });
 
   try {
@@ -168,31 +159,6 @@ export async function readRemoteJsonResponseWithLimits<T>(params: Readonly<{
   }
 }
 
-export async function fetchRemoteJsonWithLimits<T>(params: Readonly<{
-  url: string;
-  accept?: string;
-  timeoutMs?: number | null;
-  signal?: AbortSignal;
-  maxBytes?: number | null;
-  errorLabel: string;
-  network?: RemoteFetchNetworkBoundary;
-}>): Promise<T> {
-  const timeoutMs = params.timeoutMs === undefined ? resolvePluginRemoteFetchTimeoutMs() : params.timeoutMs;
-  const maxBytes = params.maxBytes === undefined ? resolvePluginRemoteCatalogMaxBytes() : params.maxBytes;
-  if (maxBytes !== null && (!Number.isSafeInteger(maxBytes) || maxBytes < 1)) throw new Error('Invalid remote JSON acquisition budget');
-  const opened = await openRemoteResponse({
-    url: params.url, accept: params.accept ?? 'application/json', timeoutMs,
-    signal: params.signal, maxBytes, errorLabel: params.errorLabel, network: params.network ?? {},
-  });
-  try {
-    return await readRemoteJsonResponseWithLimits<T>({
-      response: opened.response, signal: opened.signal, maxBytes, errorLabel: params.errorLabel,
-    });
-  } finally {
-    await opened.dispose().catch(() => undefined);
-  }
-}
-
 export async function downloadRemoteFileWithLimits(params: Readonly<{
   url: string;
   destinationPath: string;
@@ -201,7 +167,6 @@ export async function downloadRemoteFileWithLimits(params: Readonly<{
   signal?: AbortSignal;
   maxBytes?: number | null;
   errorLabel: string;
-  network?: RemoteFetchNetworkBoundary;
 }>): Promise<void> {
   const timeoutMs = params.timeoutMs === undefined ? resolvePluginRemoteFetchTimeoutMs() : params.timeoutMs;
   const maxBytes = params.maxBytes === undefined ? resolvePluginRemoteArchiveMaxBytes() : params.maxBytes;
@@ -213,7 +178,6 @@ export async function downloadRemoteFileWithLimits(params: Readonly<{
     signal: params.signal,
     maxBytes,
     errorLabel: params.errorLabel,
-    network: params.network ?? {},
   });
 
   try {

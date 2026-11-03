@@ -25,7 +25,7 @@
  */
 
 import * as React from 'react';
-import { Text, View } from 'react-native';
+import { View } from 'react-native';
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 
@@ -142,18 +142,18 @@ function fireWrapperLayout(
     fireOnLayout(wrapper as { props: Record<string, unknown> }, height);
 }
 
-describe('SelectionListAnimatedHeight', () => {
-    it('renders children inside an animated wrapper', async () => {
-        const { SelectionListAnimatedHeight } = await import('../SelectionListAnimatedHeight');
-        const screen = await renderScreen(
-            <SelectionListAnimatedHeight stepKey="step-a" testID="anim">
-                <Text testID="step-a-content">Step A</Text>
-            </SelectionListAnimatedHeight>,
-        );
-        expect(screen.findByTestId('anim')).not.toBeNull();
-        expect(screen.findByTestId('step-a-content')).not.toBeNull();
-    });
+/** The wrapper's explicit height, or undefined when it follows natural layout. */
+function wrapperHeight(screen: { findByTestId(id: string): unknown }, rootTestId: string): unknown {
+    const wrapper = screen.findByTestId(rootTestId) as { props: { style?: unknown } } | null;
+    if (!wrapper) throw new Error(`expected wrapper testID ${rootTestId}`);
+    const style = wrapper.props.style;
+    const flat = Array.isArray(style)
+        ? style.reduce<Record<string, unknown>>((acc, s) => Object.assign(acc, s ?? {}), {})
+        : (style as Record<string, unknown> | undefined) ?? {};
+    return flat.height;
+}
 
+describe('SelectionListAnimatedHeight', () => {
     it('does not mount a measure mirror of its children', async () => {
         const { SelectionListAnimatedHeight } = await import('../SelectionListAnimatedHeight');
         const screen = await renderScreen(
@@ -241,7 +241,7 @@ describe('SelectionListAnimatedHeight', () => {
         expect(animationControls.timingCalls.length).toBe(0);
     });
 
-    it('snaps height immediately when reducedMotion is true (no withTiming animation to the incoming height)', async () => {
+    it('snaps to the incoming height and releases the pin at once when reduced motion is on', async () => {
         setReducedMotionPreferenceOverride(true);
         const { SelectionListAnimatedHeight } = await import('../SelectionListAnimatedHeight');
         const screen = await renderScreen(
@@ -252,6 +252,8 @@ describe('SelectionListAnimatedHeight', () => {
         fireWrapperLayout(screen, 'anim', 480);
         animationControls.timingCalls = [];
 
+        animationControls.sharedValueWrites = [];
+
         await screen.update(
             <SelectionListAnimatedHeight stepKey="step-b" testID="anim" measuredContentHeight={280}>
                 <View testID="step-b-content" style={{ height: 280 }} />
@@ -259,6 +261,9 @@ describe('SelectionListAnimatedHeight', () => {
         );
 
         expect(animationControls.timingCalls.length).toBe(0);
+        expect(animationControls.sharedValueWrites.at(-1)?.value).toBe(280);
+        const height = wrapperHeight(screen, 'anim');
+        expect(height === undefined || height === 'auto').toBe(true);
     });
 
     it('releases pinned height back to auto after the height animation completes (deferred via release buffer)', async () => {
@@ -289,14 +294,8 @@ describe('SelectionListAnimatedHeight', () => {
                 vi.advanceTimersByTime(400);
             });
 
-            const wrapper = screen.findByTestId('anim');
-            expect(wrapper).not.toBeNull();
-            const style = (wrapper as unknown as { props: { style?: unknown } }).props.style;
-            const flat = Array.isArray(style)
-                ? style.reduce<Record<string, unknown>>((acc, s) => Object.assign(acc, s ?? {}), {})
-                : (style as Record<string, unknown> | undefined) ?? {};
             // 'height' may be omitted entirely OR may be the string 'auto'.
-            const height = (flat as { height?: unknown }).height;
+            const height = wrapperHeight(screen, 'anim');
             expect(height === undefined || height === 'auto').toBe(true);
         } finally {
             vi.useRealTimers();
@@ -356,74 +355,38 @@ describe('SelectionListAnimatedHeight', () => {
         expect(animationControls.cancelCount).toBeGreaterThan(cancelsBeforeUnmount);
     });
 
-    it('does not call setState via late timing callback after unmount (no React warnings)', async () => {
-        const { SelectionListAnimatedHeight } = await import('../SelectionListAnimatedHeight');
-        const screen = await renderScreen(
-            <SelectionListAnimatedHeight stepKey="step-a" testID="anim" measuredContentHeight={480}>
-                <View testID="step-a-content" style={{ height: 480 }} />
-            </SelectionListAnimatedHeight>,
-        );
-        fireWrapperLayout(screen, 'anim', 480);
-
-        await screen.update(
-            <SelectionListAnimatedHeight stepKey="step-b" testID="anim" measuredContentHeight={280}>
-                <View testID="step-b-content" style={{ height: 280 }} />
-            </SelectionListAnimatedHeight>,
-        );
-
-        expect(animationControls.pendingTimingCallbacks.length).toBeGreaterThan(0);
-
-        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    it.each([
+        ['one transition', ['step-b']],
+        ['a transition interrupted by a second one', ['step-b', 'step-c']],
+    ] as const)('schedules no pin release from a timing callback that lands after unmount (%s)', async (_name, nextSteps) => {
+        vi.useFakeTimers();
         try {
-            // Unmount BEFORE flushing the queued timing callback.
+            const { SelectionListAnimatedHeight } = await import('../SelectionListAnimatedHeight');
+            const screen = await renderScreen(
+                <SelectionListAnimatedHeight stepKey="step-a" testID="anim" measuredContentHeight={480}>
+                    <View testID="step-a-content" style={{ height: 480 }} />
+                </SelectionListAnimatedHeight>,
+            );
+            fireWrapperLayout(screen, 'anim', 480);
+            for (const [index, stepKey] of nextSteps.entries()) {
+                await screen.update(
+                    <SelectionListAnimatedHeight stepKey={stepKey} testID="anim" measuredContentHeight={280 + index * 80}>
+                        <View testID={`${stepKey}-content`} />
+                    </SelectionListAnimatedHeight>,
+                );
+            }
+            expect(animationControls.pendingTimingCallbacks.length).toBe(nextSteps.length);
+
+            // Unmount BEFORE the queued timing callbacks land.
             await screen.update(<></>);
+            const timersAfterUnmount = vi.getTimerCount();
+            for (const callback of animationControls.pendingTimingCallbacks.splice(0)) callback();
 
-            // Now flush the late callbacks: must not throw, must not warn.
-            expect(() => {
-                const cbs = animationControls.pendingTimingCallbacks.splice(0);
-                for (const cb of cbs) cb();
-            }).not.toThrow();
-
-            expect(errorSpy).not.toHaveBeenCalled();
+            // A late callback that still scheduled the deferred release would
+            // add its timer here and later set state on the unmounted wrapper.
+            expect(vi.getTimerCount()).toBe(timersAfterUnmount);
         } finally {
-            errorSpy.mockRestore();
-        }
-    });
-
-    it('does not call setState after unmount when a second animation is interrupted by the unmount', async () => {
-        const { SelectionListAnimatedHeight } = await import('../SelectionListAnimatedHeight');
-        const screen = await renderScreen(
-            <SelectionListAnimatedHeight stepKey="step-a" testID="anim" measuredContentHeight={480}>
-                <View testID="step-a-content" style={{ height: 480 }} />
-            </SelectionListAnimatedHeight>,
-        );
-        fireWrapperLayout(screen, 'anim', 480);
-
-        await screen.update(
-            <SelectionListAnimatedHeight stepKey="step-b" testID="anim" measuredContentHeight={280}>
-                <View testID="step-b-content" style={{ height: 280 }} />
-            </SelectionListAnimatedHeight>,
-        );
-
-        // Rapid second swap (simulating user clicking another step before
-        // the first animation completed).
-        await screen.update(
-            <SelectionListAnimatedHeight stepKey="step-c" testID="anim" measuredContentHeight={360}>
-                <View testID="step-c-content" style={{ height: 360 }} />
-            </SelectionListAnimatedHeight>,
-        );
-
-        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-        try {
-            await screen.update(<></>);
-            // Flush ALL late callbacks (from both animations).
-            expect(() => {
-                const cbs = animationControls.pendingTimingCallbacks.splice(0);
-                for (const cb of cbs) cb();
-            }).not.toThrow();
-            expect(errorSpy).not.toHaveBeenCalled();
-        } finally {
-            errorSpy.mockRestore();
+            vi.useRealTimers();
         }
     });
 

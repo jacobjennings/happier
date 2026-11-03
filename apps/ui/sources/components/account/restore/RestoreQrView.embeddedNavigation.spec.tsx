@@ -5,6 +5,7 @@ import type { IModal } from '@/modal';
 import type { ActiveServerSwitchResult } from '@/sync/domains/server/activeServerSwitch';
 
 import { renderScreen } from '@/dev/testkit';
+import { t } from '@/text';
 // Resolve the real component graph during collection, not inside the first timed assertion.
 import './RestoreQrView';
 
@@ -111,18 +112,14 @@ describe('RestoreQrView known-target requester QR', () => {
         const { RestoreQrView } = await import('./RestoreQrView');
         const screen = await renderScreen(<RestoreQrView embedded entryIntent="enter_home" />);
 
-        expect(screen.getTextContent()).not.toContain(
-            'Anyone with this temporary link can add a device before it expires. Share it only with your own device.',
-        );
+        expect(screen.getTextContent()).not.toContain(t('connect.pairingLinkSecurityWarning'));
         expect(screen.findByTestId('restore-requester-link-value')).toBeNull();
         expect(screen.findByTestId('restore-copy-requester-link')).toBeNull();
 
         const details = screen.findByTestId('restore-requester-link-details');
         expect(details?.props.accessibilityState).toMatchObject({ expanded: false });
         await act(async () => details?.props.onPress());
-        expect(screen.getTextContent()).toContain(
-            'Anyone with this temporary link can add a device before it expires. Share it only with your own device.',
-        );
+        expect(screen.getTextContent()).toContain(t('connect.pairingLinkSecurityWarning'));
         expect(screen.findByTestId('restore-requester-link-value')?.props.children)
             .toBe('happier:///pair?v=2&payload=opaque-secret');
         await act(async () => screen.findByTestId('restore-requester-link-copy')?.props.action());
@@ -135,7 +132,7 @@ describe('RestoreQrView known-target requester QR', () => {
         const screen = await renderScreen(<RestoreQrView embedded entryIntent="enter_home" />);
 
         expect(screen.findByTestId('restore-requester-qr')?.findAllByType('QRCode')).toHaveLength(0);
-        expect(screen.getTextContent()).toContain("This invite carries extra connection details, so it can't be shown as a QR code.");
+        expect(screen.getTextContent()).toContain(t('connect.pairingQrTooLargeBody'));
         await act(async () => screen.findByTestId('restore-requester-link-details')?.props.onPress());
         expect(screen.findByTestId('restore-requester-link-value')?.props.children)
             .toBe('happier:///pair?v=2&payload=opaque-secret');
@@ -149,7 +146,7 @@ describe('RestoreQrView known-target requester QR', () => {
 
         expect(screen.findByTestId('restore-requester-link-details')).toBeNull();
         expect(screen.findByTestId('restore-requester-link')).toBeNull();
-        expect(screen.getTextContent()).toContain('This Home was added. Your focused Home is unchanged.');
+        expect(screen.getTextContent()).toContain(t('connect.homeAddedPreservedFocusBody'));
     });
 
     it('locks route removal only after trusted completion reaches credential adoption', async () => {

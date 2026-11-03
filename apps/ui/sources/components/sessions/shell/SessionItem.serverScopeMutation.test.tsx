@@ -5,7 +5,9 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 
 import { createMachineFixture, createPlainAccountEncryptionCurrentnessFixture, createRootLayoutFeaturesResponse, createSessionFixture, pressTestInstanceAsync, renderScreen as renderCanonicalScreen, standardCleanup } from '@/dev/testkit';
 import { installSessionOpsNetworkBoundary } from '@/dev/testkit/harness/sessionOpsNetworkBoundary';
+import { observeMachinePresenceForTest } from '@/dev/testkit/harness/machinePresence';
 import { restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
 import { createSessionMetadataHttpBoundary } from '@/dev/testkit/harness/sessionMetadataHttpBoundary';
 import { createSessionReadBatchFetchBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
@@ -18,6 +20,7 @@ import {
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
 import {
     SESSION_ACTION_ARCHIVE_ID,
+    SESSION_ACTION_DELETE_ID,
     SESSION_ACTION_MARK_READ_ID,
     SESSION_ACTION_MARK_UNREAD_ID,
     SESSION_ACTION_MOVE_TO_FOLDER_ID,
@@ -54,14 +57,6 @@ vi.mock('@/components/ui/status/StatusDot', () => ({
 
 vi.mock('@/hooks/session/useNavigateToSession', () => ({
     useNavigateToSession: () => vi.fn(),
-}));
-
-vi.mock('@/utils/platform/responsive', () => ({
-    useIsTablet: () => false,
-}));
-
-vi.mock('@/hooks/ui/useHappyAction', () => ({
-    useHappyAction: (fn: any) => [false, fn],
 }));
 
 const modalConfirmSpy = vi.fn(async () => true);
@@ -101,6 +96,7 @@ vi.doUnmock('@/sync/domains/state/storage');
 vi.doUnmock('@/hooks/session/useDraft');
 vi.doUnmock('@/agents/registry/registryUiBehavior');
 const network = await installSessionOpsNetworkBoundary();
+const { getSessionStatus } = await import('@/utils/sessions/sessionUtils');
 await loadSyncSingletonForTests();
 const { storage } = await import('@/sync/domains/state/storage');
 let previousState: ReturnType<typeof storage.getState>;
@@ -115,7 +111,7 @@ async function renderScreen(element: React.ReactElement<ModelBackedSessionItemTe
         const homeUrl = `https://${props.serverId.replaceAll('_', '-')}.test`;
         const home = await network.addHome(homeUrl, 'row-account');
         const session = createSessionFixture({ ...props.session, serverId: home.id,
-            metadata: { path: '/repo', host: 'tester.local', machineId: 'machine-row', name: 'Scoped row' },
+            metadata: { ...('agentState' in props.session ? props.session.metadata : undefined), path: '/repo', host: 'tester.local', machineId: 'machine-row', name: 'Scoped row' },
         });
         const sessionHttp = createSessionMetadataHttpBoundary(() => ({ [session.id]: session }));
         account = await restoreServerAccountForTest({ serverUrl: homeUrl, accountId: 'row-account', request: createSessionReadBatchFetchBoundary(async (input, init) => {
@@ -128,6 +124,10 @@ async function renderScreen(element: React.ReactElement<ModelBackedSessionItemTe
             if (url.pathname === '/v1/machines/read-batch' && method === 'POST') return createMachineReadBatchResponseFixture(init?.body,
                 id => id === 'machine-row' ? createPlainMachineRowFixture({ id, accountId: 'row-account' }) : null);
             if (url.pathname.startsWith('/v1/machines/')) return Response.json({ machine: { id: 'machine-row', dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER } });
+            if (method === 'DELETE' && url.pathname === `/v1/sessions/${session.id}`) {
+                mutationRequests.push({ url: url.href, method, token: new Headers(init?.headers).get('authorization'), body: null });
+                return Response.json({ success: true });
+            }
             if (method === 'POST' && (url.pathname.endsWith('/archive') || url.pathname.endsWith('/read-state'))) {
                 mutationRequests.push({ url: url.href, method, token: new Headers(init?.headers).get('authorization'), body: init?.body ? JSON.parse(String(init.body)) : null });
                 mutationOrder.push(url.pathname.endsWith('/archive') ? 'archive' : 'read-state');
@@ -140,33 +140,129 @@ async function renderScreen(element: React.ReactElement<ModelBackedSessionItemTe
             return sessionHttp.handle(input, init) ?? Response.json({}, { status: 404 });
         }) });
         storage.getState().applyMachines([createMachineFixture({ id: 'machine-row' })], true, { sourceServerId: home.id });
+        observeMachinePresenceForTest({ serverId: home.id, accountId: 'row-account' }, ['machine-row']);
         storage.getState().applySessions([session]);
         return renderCanonicalScreen(React.cloneElement(element, { ...props, session, serverId: home.id }));
     }
     return renderCanonicalScreen(element);
 }
 
-function expectStopRequest(sessionId: string) {
-    expect(network.requests.filter((request) => request.method === RPC_METHODS.STOP_SESSION)).toEqual([
-        expect.objectContaining({ serverUrl: account!.home.serverUrl, targetId: 'machine-row', payload: { sessionId }, token: account!.credentials.token }),
-    ]);
+async function expectStopRequest(sessionId: string) {
+    await vi.waitFor(() => expect({
+        requests: network.requests.filter((request) => request.method === RPC_METHODS.STOP_SESSION),
+        alerts: modalAlertSpy.mock.calls,
+    }).toEqual({
+        requests: [expect.objectContaining({ serverUrl: account!.home.serverUrl, targetId: 'machine-row', payload: { sessionId }, token: account!.credentials.token })],
+        alerts: [],
+    }));
 }
 
-function expectArchiveRequests(sessionId: string, count = 1) {
+async function expectArchiveRequests(sessionId: string, count = 1) {
+    await vi.waitFor(() => {
     expect(mutationRequests.filter((request) => request.url.endsWith('/archive'))).toEqual(Array.from({ length: count }, () => ({
         url: `${account!.home.serverUrl}/v2/sessions/${sessionId}/archive`, method: 'POST', token: `Bearer ${account!.credentials.token}`, body: null,
     })));
     expect(storage.getState().sessions[sessionId]?.archivedAt).toBe(1);
+    });
 }
 
 async function importSessionItem() {
     const { SessionItem } = await import('./SessionItem');
     return createModelBackedSessionItemTestComponent(SessionItem, {
-        resolveRowViewModelOverrides: () => ({ hideInactiveSessions }),
+        resolveRowViewModelOverrides: (props) => ({ hideInactiveSessions, sessionStatus: getSessionStatus(props.session) }),
     });
 }
 
 describe('SessionItem server-scoped mutations', () => {
+    it('deletes an archived row through its native menu, confirmation and exact-Home Action transport', async () => {
+        const SessionItem = await importSessionItem();
+        const screen = await renderScreen(<SessionItem
+            session={createSessionFixture({ id: 'sess_archived_delete', active: false, activeAt: 0, presence: 0, archivedAt: 42,
+                metadata: { path: '/repo', host: 'tester.local' } })}
+            serverId="server_a" selected={false} variant="default" compact={false}
+        />);
+        const menu = screen.root.findAll(node => String(node.type) === 'ContextMenu').find(node =>
+            Array.isArray(node.props.items) && node.props.items.some((item: { id?: string }) => item.id === SESSION_ACTION_DELETE_ID));
+        expect(menu).toBeTruthy();
+        await act(async () => { menu!.props.onSelect(SESSION_ACTION_DELETE_ID); });
+        await vi.waitFor(() => expect(mutationRequests.filter(request => request.method === 'DELETE')).toEqual([{
+            url: `${account!.home.serverUrl}/v1/sessions/sess_archived_delete`, method: 'DELETE',
+            token: `Bearer ${account!.credentials.token}`, body: null,
+        }]));
+        expect(modalConfirmSpy).toHaveBeenCalledWith('sessionInfo.deleteSession', expect.any(String), expect.objectContaining({ destructive: true }));
+        expect(modalAlertSpy).not.toHaveBeenCalled();
+    });
+
+    it.each(['active', 'preserved terminal', 'lost access'] as const)(
+        'does not delete when the current row changes to %s while confirmation is open', async (change) => {
+            const SessionItem = await importSessionItem();
+            const sessionId = 'sess_archived_changed';
+            const screen = await renderScreen(<SessionItem
+                session={createSessionFixture({ id: sessionId, active: false, activeAt: 0, presence: 0, archivedAt: 42 })}
+                serverId="server_a" selected={false} variant="default" compact={false}
+            />);
+            const menu = screen.root.findAll(node => String(node.type) === 'ContextMenu').find(node =>
+                Array.isArray(node.props.items) && node.props.items.some((item: { id?: string }) => item.id === SESSION_ACTION_DELETE_ID));
+            expect(menu).toBeTruthy();
+            modalConfirmSpy.mockImplementationOnce(async () => {
+                const current = storage.getState().sessions[sessionId]!;
+                const changed = createSessionFixture({ ...current,
+                    metadataVersion: current.metadataVersion + 1,
+                    ...(change === 'active' ? { active: true, activeAt: Date.now(), presence: 'online' } : {}),
+                    ...(change === 'preserved terminal' ? { metadata: { ...current.metadata,
+                        path: '/repo', host: 'tester.local', terminal: { controlServiceabilityV1: {
+                            v: 1, state: 'recoverable_unservable', observedAt: Date.now(), retired: false,
+                        } },
+                    } } : {}),
+                    ...(change === 'lost access' ? { access: null } : {}),
+                });
+                storage.getState().applyServerScopedSessionListRows(account!.home.id,
+                    [buildSessionListRenderableFromSession(changed)], { source: 'archived', mode: 'append' });
+                expect(storage.getState().sessions[sessionId]!.active).toBe(false);
+                return true;
+            });
+            await act(async () => { menu!.props.onSelect(SESSION_ACTION_DELETE_ID); });
+            await vi.waitFor(() => expect(modalAlertSpy).toHaveBeenCalled());
+            expect(mutationRequests.filter(request => request.method === 'DELETE')).toEqual([]);
+        },
+    );
+
+    it('warns that an offline managed archived row keeps its machine folder', async () => {
+        const SessionItem = await importSessionItem();
+        const screen = await renderScreen(<SessionItem
+            session={createSessionFixture({ id: 'sess_archived_managed', active: false, activeAt: 0, presence: 0, archivedAt: 42,
+                metadata: { path: '/managed', host: 'tester.local', machineId: 'machine-row', sessionDirectoryV1: { v: 1, kind: 'managed' } } })}
+            serverId="server_a" selected={false} variant="default" compact={false}
+        />);
+        storage.getState().applyMachines([createMachineFixture({ id: 'machine-row', active: false, activeAt: 0 })], true,
+            { sourceServerId: account!.home.id });
+        observeMachinePresenceForTest({ serverId: account!.home.id, accountId: 'row-account' }, ['machine-row']);
+        const menu = screen.root.findAll(node => String(node.type) === 'ContextMenu').find(node =>
+            Array.isArray(node.props.items) && node.props.items.some((item: { id?: string }) => item.id === SESSION_ACTION_DELETE_ID));
+        expect(menu).toBeTruthy();
+        modalConfirmSpy.mockResolvedValueOnce(false);
+        await act(async () => { menu!.props.onSelect(SESSION_ACTION_DELETE_ID); });
+        await vi.waitFor(() => expect(modalConfirmSpy).toHaveBeenCalledWith('sessionInfo.deleteSession',
+            expect.stringContaining('sessionDirectoryRecovery.offlineDelete'), expect.objectContaining({ destructive: true })));
+        expect(mutationRequests.filter(request => request.method === 'DELETE')).toEqual([]);
+    });
+
+    it('keeps an archived session when the delete confirmation is declined', async () => {
+        const SessionItem = await importSessionItem();
+        const screen = await renderScreen(<SessionItem
+            session={createSessionFixture({ id: 'sess_archived_cancel', active: false, activeAt: 0, presence: 0, archivedAt: 42 })}
+            serverId="server_a" selected={false} variant="default" compact={false}
+        />);
+        const menu = screen.root.findAll(node => String(node.type) === 'ContextMenu').find(node =>
+            Array.isArray(node.props.items) && node.props.items.some((item: { id?: string }) => item.id === SESSION_ACTION_DELETE_ID));
+        expect(menu).toBeTruthy();
+        modalConfirmSpy.mockResolvedValueOnce(false);
+        await act(async () => { menu!.props.onSelect(SESSION_ACTION_DELETE_ID); });
+        expect(modalConfirmSpy).toHaveBeenCalled();
+        expect(mutationRequests.filter(request => request.method === 'DELETE')).toEqual([]);
+        expect(modalAlertSpy).not.toHaveBeenCalled();
+    });
+
     it('stops directly through the shared Action policy without a local confirmation', async () => {
         const SessionItem = await importSessionItem();
         const screen = await renderScreen(<SessionItem
@@ -179,7 +275,7 @@ describe('SessionItem server-scoped mutations', () => {
             Array.isArray(node.props.items) && node.props.items.some((item: { id?: string }) => item.id === SESSION_ACTION_STOP_ID));
         expect(menu).toBeTruthy();
         await act(async () => { await menu!.props.onSelect(SESSION_ACTION_STOP_ID); });
-        expectStopRequest('sess_direct_stop');
+        await expectStopRequest('sess_direct_stop');
         expect(modalConfirmSpy).not.toHaveBeenCalled();
         expect(modalAlertSpy).not.toHaveBeenCalled();
     });
@@ -195,7 +291,7 @@ describe('SessionItem server-scoped mutations', () => {
         mutationRequests.length = 0;
         mutationOrder.length = 0;
         rejectFirstArchive = false;
-        modalConfirmSpy.mockClear();
+        modalConfirmSpy.mockReset().mockResolvedValue(true);
         modalAlertSpy.mockClear();
         storage.setState({ sessions: {}, sessionListRowsByServerId: {}, machines: {}, machineListByServerId: {} });
     });
@@ -256,8 +352,8 @@ describe('SessionItem server-scoped mutations', () => {
         expect(modalConfirmSpy).not.toHaveBeenCalled();
         expect(modalAlertSpy).not.toHaveBeenCalled();
 
-        expectStopRequest('sess_1');
-        expectArchiveRequests('sess_1');
+        await expectStopRequest('sess_1');
+        await expectArchiveRequests('sess_1');
         expect(mutationOrder).toEqual(['stop', 'archive']);
     });
 
@@ -311,7 +407,7 @@ describe('SessionItem server-scoped mutations', () => {
         expect(modalConfirmSpy).not.toHaveBeenCalled();
         expect(modalAlertSpy).not.toHaveBeenCalled();
 
-        expectArchiveRequests('sess_2');
+        await expectArchiveRequests('sess_2');
         expect(mutationOrder).toEqual(['archive']);
         expect(network.requests.filter((request) => request.method === RPC_METHODS.STOP_SESSION)).toEqual([]);
     });
@@ -366,8 +462,8 @@ describe('SessionItem server-scoped mutations', () => {
 
         expect(modalConfirmSpy).not.toHaveBeenCalled();
         expect(modalAlertSpy).not.toHaveBeenCalled();
-        expectStopRequest('sess_stale_inactive');
-        expectArchiveRequests('sess_stale_inactive', 2);
+        await expectStopRequest('sess_stale_inactive');
+        await expectArchiveRequests('sess_stale_inactive', 2);
         expect(mutationOrder).toEqual(['archive', 'stop', 'archive']);
     });
 
@@ -422,8 +518,8 @@ describe('SessionItem server-scoped mutations', () => {
         expect(modalConfirmSpy).not.toHaveBeenCalled();
         expect(modalAlertSpy).not.toHaveBeenCalled();
 
-        expectStopRequest('sess_3');
-        expectArchiveRequests('sess_3');
+        await expectStopRequest('sess_3');
+        await expectArchiveRequests('sess_3');
         expect(mutationOrder).toEqual(['stop', 'archive']);
     });
 
@@ -479,8 +575,8 @@ describe('SessionItem server-scoped mutations', () => {
         expect(modalConfirmSpy).not.toHaveBeenCalled();
         expect(modalAlertSpy).not.toHaveBeenCalled();
 
-        expectStopRequest('sess_active_archive');
-        expectArchiveRequests('sess_active_archive');
+        await expectStopRequest('sess_active_archive');
+        await expectArchiveRequests('sess_active_archive');
         expect(mutationOrder).toEqual(['stop', 'archive']);
     });
 
@@ -536,8 +632,8 @@ describe('SessionItem server-scoped mutations', () => {
         expect(modalConfirmSpy).not.toHaveBeenCalled();
         expect(modalAlertSpy).not.toHaveBeenCalled();
 
-        expectStopRequest('sess_4');
-        expectArchiveRequests('sess_4');
+        await expectStopRequest('sess_4');
+        await expectArchiveRequests('sess_4');
         expect(mutationOrder).toEqual(['stop', 'archive']);
     });
 

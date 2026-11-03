@@ -145,6 +145,8 @@ import { actionOperationSelectors } from '@/sync/domains/actionOperations/action
 import type { UploadedAttachment } from '@/components/sessions/attachments/uploadAttachmentDraftsToSession';
 import type { NewSessionDraft } from '@/sync/domains/state/persistence';
 import { persistCreatedSessionAuthoringOrigin } from '@/components/sessions/new/modules/newSessionAuthoringOrigin';
+import { supportsMachineOperationProtocolCapabilityV1 } from '@happier-dev/protocol/machines/operationProtocolCapabilitiesV1';
+import { readSpawnAttemptCustodyState } from '@/sync/domains/session/spawn/spawnAttemptNonceStore';
 import type { ManagedMachineSelectionDraft, ManagedMachineAcquisitionDraft } from '@/sync/domains/state/newSessionManagedMachineDraft';
 import { managedMachineCreationIntent } from '@/sync/domains/state/newSessionManagedMachineDraft';
 import { getSessionDraftSnapshot } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
@@ -931,6 +933,8 @@ export function useCreateNewSession(params: Readonly<{
                                         sessionId,
                                         serverId: capturedTargetScope.serverId,
                                         origin: current.authoringOrigin,
+                                        // Runner activation does not carry the ordinary Machine spawn input.
+                                        originPersistence: 'legacy-checkpoint',
                                         shouldContinue: () => authoringOriginLifetime?.isCurrent() === true,
                                         updateSessionMetadataWithRetry: sync.patchSessionMetadataWithRetry,
                                     });
@@ -1580,7 +1584,11 @@ export function useCreateNewSession(params: Readonly<{
                         sourceContext: current.sourceContext ?? null,
                         secretReferenceOverlay,
                     });
-                const spawnInput = { ...authoredSpawnInput, ...(managedCreation ? { managedCreation } : {}) };
+                const birthOrigin = current.authoringOrigin && supportsMachineOperationProtocolCapabilityV1(
+                    current.selectedMachine?.operationProtocolCapabilities, 'sessionSpawnAuthoringOrigin',
+                ) ? current.authoringOrigin : undefined;
+                const spawnInput = { ...authoredSpawnInput, ...(managedCreation ? { managedCreation } : {}),
+                    ...(birthOrigin ? { authoringOrigin: birthOrigin } : {}) };
                 // Readiness and strict input construction may refuse before dispatch.
                 // Publish spawning only after those synchronous admissions succeed.
                 launchAttempt = markNewSessionLaunchAttemptSpawning(launchAttempt);
@@ -1623,6 +1631,8 @@ export function useCreateNewSession(params: Readonly<{
                                 : '',
                             userAttemptId: launchAttempt.attemptId,
                             seedNonce: launchAttempt.spawnNonce,
+                            ...(current.authoringOrigin ? { authoringOriginPersistence: birthOrigin
+                                ? 'daemon-birth' as const : 'legacy-checkpoint' as const } : {}),
                             executeAction: async (input, context) => {
                                 try {
                                     return await (hostSpawnExecutorRef.current ?? executeSessionSpawnNewAction)(input, context);
@@ -2013,10 +2023,16 @@ export function useCreateNewSession(params: Readonly<{
                         // retained retry must not replay a completed built-in action.
                         postSpawnFailurePhase = 'uploading_attachments';
                         if (current.authoringOrigin) {
+                            const custodyState = manualActionCustody ? null : readSpawnAttemptCustodyState(executionAccountScope);
+                            const retained = custodyState?.status === 'valid' ? Object.values(custodyState.attempts).filter(
+                                attempt => attempt.userAttemptId === launchAttempt.attemptId && attempt.machineId === selectedMachineId,
+                            ) : [];
                             await persistCreatedSessionAuthoringOrigin({
                                 sessionId: createdSessionId,
                                 serverId: resolvedTargetServerId,
                                 origin: current.authoringOrigin,
+                                originPersistence: manualActionCustody?.authoringOriginPersistence
+                                    ?? (retained.length === 1 ? retained[0]?.authoringOriginPersistence : undefined) ?? 'unknown',
                                 shouldContinue: () => authoringOriginLifetime?.isCurrent() === true && isLaunchScopeStillActive(),
                                 updateSessionMetadataWithRetry: sync.patchSessionMetadataWithRetry,
                             });

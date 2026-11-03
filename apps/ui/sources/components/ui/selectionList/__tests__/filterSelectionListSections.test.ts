@@ -30,13 +30,11 @@ const sections: ReadonlyArray<SelectionListSectionDescriptor> = [
 ];
 
 describe('filterSelectionListSections', () => {
-    it('returns the input untouched when the query is empty', () => {
-        const out = filterSelectionListSections(sections, '');
-        expect(out).toBe(sections);
-    });
-
-    it('returns the input untouched when the query is whitespace only', () => {
-        const out = filterSelectionListSections(sections, '   ');
+    it.each([
+        { query: '', label: 'empty' },
+        { query: '   ', label: 'whitespace only' },
+    ])('returns the input untouched when the query is $label', ({ query }) => {
+        const out = filterSelectionListSections(sections, query);
         expect(out).toBe(sections);
     });
 
@@ -54,26 +52,22 @@ describe('filterSelectionListSections', () => {
         expect(asStatic(out[0]).options).toHaveLength(2);
     });
 
-    it('drops sections that have no matching option', () => {
-        const out = filterSelectionListSections(sections, 'feature');
-        expect(out.map((s) => s.id)).toEqual(['existing']);
-        expect(asStatic(out[0]).options).toHaveLength(1);
-        expect(asStatic(out[0]).options[0].id).toBe('wt-1');
+    it.each([
+        { query: 'feature', sectionIds: ['existing'], optionIds: [['wt-1']] },
+        // Matches across both sections: the original section order is kept.
+        { query: 'e', sectionIds: ['quick', 'existing'], optionIds: [['new-worktree', 'use-current'], ['wt-1', 'wt-2']] },
+        { query: 'zzz-nope', sectionIds: [], optionIds: [] },
+    ])('drops sections without a matching option and keeps section order for "$query"', ({ query, sectionIds, optionIds }) => {
+        const out = filterSelectionListSections(sections, query);
+        expect(out.map((s) => s.id)).toEqual(sectionIds);
+        // Option order inside a section is the ranker's decision; this owner decides membership.
+        expect(out.map((s) => asStatic(s).options.map((o) => o.id).sort())).toEqual(optionIds);
     });
 
-    it('preserves the original section order', () => {
-        const out = filterSelectionListSections(sections, 'e'); // matches across both
-        expect(out.map((s) => s.id)).toEqual(['quick', 'existing']);
-    });
-
-    it('returns empty array when nothing matches', () => {
-        const out = filterSelectionListSections(sections, 'zzz-nope');
-        expect(out).toEqual([]);
-    });
-
-    it('does not mutate the input options arrays', () => {
-        const before = asStatic(sections[0]).options;
+    it('does not mutate the input sections or their options', () => {
+        const before = structuredClone(sections);
         filterSelectionListSections(sections, 'current');
-        expect(asStatic(sections[0]).options).toBe(before);
+        filterSelectionListSections(sections, 'e');
+        expect(sections).toEqual(before);
     });
 });

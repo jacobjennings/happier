@@ -6,23 +6,22 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ScmBackend } from './types';
 import {
-    assertPortableWorkspaceEntriesWithScmWorkspace,
-    assertPortableWorkspaceTransferEntriesWithScmWorkspace,
-    classifyPortableWorkspacePathWithScmWorkspace,
-    classifyPortableWorkspaceTransferEntryWithScmWorkspace,
-    createWorkspaceCheckoutWithScmWorkspace,
-    isAdministrativeWorkspacePathWithScmWorkspace,
-    inspectWorkspaceLocationWithScmWorkspace,
-    materializeWorkspaceCheckoutWithScmWorkspace,
     realizeWorkspaceCheckoutWithScmWorkspace,
     realizeWorkspaceCheckoutWithScmWorkspaceSource,
-    reconcilePostMaterializationWithScmWorkspace,
+} from './workspace/workspaceCheckoutOperations';
+import { inspectWorkspaceLocationWithScmWorkspace } from './workspace/workspaceLocationInspection';
+import {
+    assertPortableWorkspaceEntriesWithScmWorkspace,
+    classifyPortableWorkspacePathWithScmWorkspace,
+    isAdministrativeWorkspacePathWithScmWorkspace,
+} from './workspace/workspacePortability';
+import { reconcilePostMaterializationWithScmWorkspace } from './workspace/workspacePostMaterialization';
+import {
+    assertPortableWorkspaceTransferEntriesWithScmWorkspace,
     resolveWorkspaceReplicationSourceInputsWithScmWorkspace,
-    resolveWorkspaceTransferWithScmWorkspace,
     resolveWorkspaceTransferRootWithScmWorkspace,
-    resolveWorkspaceTransferMetadataWithScmWorkspace,
-    resolveWorkspaceTransferEntriesWithScmWorkspace,
-} from './workspace';
+    resolveWorkspaceTransferWithScmWorkspace,
+} from './workspace/workspaceTransferResolution';
 import { createScmBackendRegistry } from './registry';
 
 function createTestBackend(input: {
@@ -389,6 +388,7 @@ describe('scm workspace integration', () => {
                 sourcePath: '/repo/.git/HEAD',
             },
         ]);
+        const resolveWorkspaceTransferMetadata = vi.fn(async () => ({ branchName: 'main' }));
         const registry = createScmBackendRegistry([
             createTestBackend({
                 id: 'git',
@@ -396,11 +396,12 @@ describe('scm workspace integration', () => {
                 workspaceIntegration: {
                     inspectWorkspaceLocation: async () => null,
                     resolveWorkspaceTransferEntries,
+                    resolveWorkspaceTransferMetadata,
                 },
             }),
         ]);
 
-        await expect(resolveWorkspaceTransferEntriesWithScmWorkspace({
+        await expect(resolveWorkspaceTransferWithScmWorkspace({
             sourcePath: '/repo/packages/app',
             workspaceTransfer: {
                 strategy: 'transfer_snapshot',
@@ -408,14 +409,15 @@ describe('scm workspace integration', () => {
                 ignoredIncludeGlobs: ['dist/**'],
             },
             registry,
-        })).resolves.toEqual([
-            {
+        })).resolves.toEqual({
+            entries: [{
                 relativePath: '.git/HEAD',
                 sourcePath: '/repo/.git/HEAD',
-            },
-        ]);
+            }],
+            metadata: { branchName: 'main' },
+        });
 
-        expect(resolveWorkspaceTransferEntries).toHaveBeenCalledWith({
+        const expectedLegacyHookInput = {
             context: expect.objectContaining({
                 cwd: '/repo/packages/app',
                 detection: expect.objectContaining({
@@ -427,7 +429,9 @@ describe('scm workspace integration', () => {
                 includeIgnoredMode: 'include_selected',
                 ignoredIncludeGlobs: ['dist/**'],
             },
-        });
+        };
+        expect(resolveWorkspaceTransferEntries).toHaveBeenCalledWith(expectedLegacyHookInput);
+        expect(resolveWorkspaceTransferMetadata).toHaveBeenCalledWith(expectedLegacyHookInput);
     });
 
     it('passes only the host-owned artifact directory to finite SCM transfer preparation', async () => {
@@ -461,74 +465,6 @@ describe('scm workspace integration', () => {
         expect(resolveWorkspaceTransferEntries).toHaveBeenCalledWith(expect.objectContaining({
             artifactDirectory: '/daemon/staging',
         }));
-    });
-
-    it('prefers a backend-owned workspace transfer realization hook before legacy transfer hooks', async () => {
-        const resolveWorkspaceTransfer = vi.fn(async () => ({
-            entries: [{
-                relativePath: '.git/HEAD',
-                sourcePath: '/repo/.git/HEAD',
-            }],
-            metadata: {
-                branchName: 'main',
-            },
-        }));
-        const resolveWorkspaceTransferEntries = vi.fn(async () => []);
-        const resolveWorkspaceTransferMetadata = vi.fn(async () => null);
-        const registry = createScmBackendRegistry([
-            createTestBackend({
-                id: 'git',
-                detectionRootPath: '/repo',
-                workspaceIntegration: {
-                    inspectWorkspaceLocation: async () => null,
-                    resolveWorkspaceTransfer,
-                    resolveWorkspaceTransferEntries,
-                    resolveWorkspaceTransferMetadata,
-                },
-            }),
-        ]);
-
-        await expect(resolveWorkspaceTransferEntriesWithScmWorkspace({
-            sourcePath: '/repo/packages/app',
-            workspaceTransfer: {
-                strategy: 'transfer_snapshot',
-                includeIgnoredMode: 'include_selected',
-                ignoredIncludeGlobs: ['dist/**'],
-            },
-            registry,
-        })).resolves.toEqual([{
-            relativePath: '.git/HEAD',
-            sourcePath: '/repo/.git/HEAD',
-        }]);
-
-        await expect(resolveWorkspaceTransferMetadataWithScmWorkspace({
-            sourcePath: '/repo/packages/app',
-            workspaceTransfer: {
-                strategy: 'transfer_snapshot',
-                includeIgnoredMode: 'include_selected',
-                ignoredIncludeGlobs: ['dist/**'],
-            },
-            registry,
-        })).resolves.toEqual({
-            branchName: 'main',
-        });
-
-        expect(resolveWorkspaceTransfer).toHaveBeenCalledTimes(2);
-        expect(resolveWorkspaceTransfer).toHaveBeenCalledWith({
-            context: expect.objectContaining({
-                cwd: '/repo/packages/app',
-                detection: expect.objectContaining({
-                    rootPath: '/repo',
-                }),
-            }),
-            workspaceTransfer: {
-                strategy: 'transfer_snapshot',
-                includeIgnoredMode: 'include_selected',
-                ignoredIncludeGlobs: ['dist/**'],
-            },
-        });
-        expect(resolveWorkspaceTransferEntries).not.toHaveBeenCalled();
-        expect(resolveWorkspaceTransferMetadata).not.toHaveBeenCalled();
     });
 
     it('fails closed when a bounded policy overlay would be ignored by legacy split transfer hooks', async () => {
@@ -571,6 +507,8 @@ describe('scm workspace integration', () => {
                 branchName: 'main',
             },
         }));
+        const resolveWorkspaceTransferEntries = vi.fn(async () => []);
+        const resolveWorkspaceTransferMetadata = vi.fn(async () => null);
         const registry = createScmBackendRegistry([
             createTestBackend({
                 id: 'git',
@@ -578,6 +516,8 @@ describe('scm workspace integration', () => {
                 workspaceIntegration: {
                     inspectWorkspaceLocation: async () => null,
                     resolveWorkspaceTransfer,
+                    resolveWorkspaceTransferEntries,
+                    resolveWorkspaceTransferMetadata,
                     isAdministrativeWorkspacePath: ({ relativePath }) => relativePath.startsWith('.git/'),
                 },
             }),
@@ -602,6 +542,21 @@ describe('scm workspace integration', () => {
         });
 
         expect(resolveWorkspaceTransfer).toHaveBeenCalledTimes(1);
+        expect(resolveWorkspaceTransfer).toHaveBeenCalledWith({
+            context: expect.objectContaining({
+                cwd: '/repo/packages/app',
+                detection: expect.objectContaining({
+                    rootPath: '/repo',
+                }),
+            }),
+            workspaceTransfer: {
+                strategy: 'transfer_snapshot',
+                includeIgnoredMode: 'include_selected',
+                ignoredIncludeGlobs: ['dist/**'],
+            },
+        });
+        expect(resolveWorkspaceTransferEntries).not.toHaveBeenCalled();
+        expect(resolveWorkspaceTransferMetadata).not.toHaveBeenCalled();
     });
 
     it('returns null when the workspace-integration transfer hook reports no transfer', async () => {
@@ -781,7 +736,7 @@ describe('scm workspace integration', () => {
             }),
         ]);
 
-        await expect(materializeWorkspaceCheckoutWithScmWorkspace({
+        await expect(realizeWorkspaceCheckoutWithScmWorkspace({
             sourcePath: '/repo/packages/app',
             targetPath: '/repo/.worktrees/feature-auth',
             checkoutCreation: {
@@ -791,7 +746,12 @@ describe('scm workspace integration', () => {
                 branchMode: 'new',
             },
             registry,
-        })).resolves.toBe(true);
+        })).resolves.toEqual({
+            kind: 'git_worktree',
+            targetPath: '/repo/.worktrees/feature-auth',
+            branchName: 'feature-auth',
+            created: true,
+        });
 
         expect(materializeWorkspaceCheckout).toHaveBeenCalledWith({
             context: expect.objectContaining({
@@ -864,7 +824,7 @@ describe('scm workspace integration', () => {
             }),
         ]);
 
-        await expect(createWorkspaceCheckoutWithScmWorkspace({
+        await expect(realizeWorkspaceCheckoutWithScmWorkspace({
             sourcePath: '/repo/packages/app',
             checkoutCreation: {
                 kind: 'git_worktree',
@@ -960,7 +920,7 @@ describe('scm workspace integration', () => {
             }),
         ]);
 
-        await expect(createWorkspaceCheckoutWithScmWorkspace({
+        await expect(realizeWorkspaceCheckoutWithScmWorkspace({
             sourcePath: '/repo/packages/app',
             checkoutCreation: {
                 kind: 'git_worktree',
@@ -1015,7 +975,7 @@ describe('scm workspace integration', () => {
             }),
         ]);
 
-        await expect(materializeWorkspaceCheckoutWithScmWorkspace({
+        await expect(realizeWorkspaceCheckoutWithScmWorkspace({
             sourcePath: '/repo/packages/app',
             targetPath: '/repo/.worktrees/feature-auth',
             checkoutCreation: {
@@ -1025,7 +985,12 @@ describe('scm workspace integration', () => {
                 branchMode: 'new',
             },
             registry,
-        })).resolves.toBe(true);
+        })).resolves.toEqual({
+            kind: 'git_worktree',
+            targetPath: '/repo/.scm/feature-auth',
+            branchName: 'feature-auth',
+            created: true,
+        });
 
         expect(realizeWorkspaceCheckout).toHaveBeenCalledWith({
             context: expect.objectContaining({
@@ -1157,71 +1122,37 @@ describe('scm workspace integration', () => {
         });
     });
 
-    it('rejects git and sapling admin transfer entries through the authoritative SCM registry', async () => {
+    it('applies shared path classification to transfer entries when the backend declares no transfer-entry classifier', async () => {
+        const classifyPortableWorkspacePath = vi.fn(({ relativePath }: { relativePath: string }) =>
+            relativePath.startsWith('.backend/admin/') ? 'non_portable' as const : 'unknown' as const);
         const registry = createScmBackendRegistry([
             createTestBackend({
                 id: 'git',
                 detectionRootPath: '/repo',
                 workspaceIntegration: {
                     inspectWorkspaceLocation: async () => null,
-                    classifyPortableWorkspacePath: ({ relativePath }) => (
-                        relativePath === '.git'
-                        || relativePath.startsWith('.git/')
-                        || relativePath === '.sl'
-                        || relativePath.startsWith('.sl/')
-                    ) ? 'non_portable' : 'unknown',
-                },
-            }),
-        ]);
-
-        await expect(assertPortableWorkspaceTransferEntriesWithScmWorkspace({
-            entries: [{
-                relativePath: '.git/worktrees/feature/HEAD',
-                sourcePath: '/repo/.git/worktrees/feature/HEAD',
-            }],
-            registry,
-        })).rejects.toThrow('non-portable workspace path: .git/worktrees/feature/HEAD');
-
-        await expect(assertPortableWorkspaceTransferEntriesWithScmWorkspace({
-            entries: [{
-                relativePath: '.sl/store',
-                sourcePath: '/repo/.sl/store',
-            }],
-            registry,
-        })).rejects.toThrow('non-portable workspace path: .sl/store');
-    });
-
-    it('surfaces transfer-entry path classification through the shared workspace-integration seam', () => {
-        const classifyPortableWorkspaceTransferEntry = vi.fn(() => 'unknown' as const);
-        const classifyPortableWorkspacePath = vi.fn(({ relativePath }: { relativePath: string }) => relativePath === '.backend/private'
-            ? 'non_portable' as const
-            : 'portable' as const);
-        const registry = createScmBackendRegistry([
-            createTestBackend({
-                id: 'sapling',
-                detectionRootPath: '/repo',
-                workspaceIntegration: {
-                    inspectWorkspaceLocation: async () => null,
-                    classifyPortableWorkspaceTransferEntry,
                     classifyPortableWorkspacePath,
                 },
             }),
         ]);
 
-        expect(classifyPortableWorkspaceTransferEntryWithScmWorkspace({
-            entry: {
-                relativePath: '.backend/private',
-                sourcePath: '/repo/.backend/private',
-            },
+        await expect(assertPortableWorkspaceTransferEntriesWithScmWorkspace({
+            entries: [{
+                relativePath: 'README.md',
+                sourcePath: '/repo/README.md',
+            }],
             registry,
-        })).toBe('non_portable');
+        })).resolves.toBeUndefined();
 
-        expect(classifyPortableWorkspaceTransferEntry).toHaveBeenCalledWith({
-            relativePath: '.backend/private',
-            sourcePath: '/repo/.backend/private',
-        });
+        await expect(assertPortableWorkspaceTransferEntriesWithScmWorkspace({
+            entries: [{
+                relativePath: '.backend/admin/HEAD',
+                sourcePath: '/repo/.backend/admin/HEAD',
+            }],
+            registry,
+        })).rejects.toThrow('non-portable workspace path: .backend/admin/HEAD');
         expect(classifyPortableWorkspacePath).toHaveBeenCalledWith({
-            relativePath: '.backend/private',
+            relativePath: '.backend/admin/HEAD',
         });
     });
 

@@ -9,7 +9,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
-import { createCurrentSessionProjectionRecordFixture, createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
+import { createCompactSessionListRowFixture, createCurrentSessionProjectionRecordFixture, createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
 
 const { mockAxiosGet, mockAxiosPost } = vi.hoisted(() => ({
   mockAxiosGet: vi.fn(),
@@ -30,12 +30,8 @@ describe('resolveSessionIdOrPrefix', () => {
     mockAxiosGet.mockReset();
     mockAxiosPost.mockReset();
     mockAxiosPost.mockResolvedValue({
-      status: 404,
-      data: {
-        statusCode: 404,
-        error: 'Not Found',
-        message: 'Route POST:/v2/sessions/lookup-by-tags not found',
-      },
+      status: 200,
+      data: { sessions: [] },
       headers: {},
     });
   });
@@ -85,7 +81,7 @@ describe('resolveSessionIdOrPrefix', () => {
       mockAxiosGet.mockImplementation(async (url: string) => {
         const parsed = new URL(url);
         if (parsed.pathname === '/v2/sessions' || parsed.pathname === '/v2/sessions/archived') {
-          return { status: 200, data: { sessions: legacyRows, nextCursor: null, hasNext: false } };
+          return { status: 200, data: { sessions: legacyRows.map(createCompactSessionListRowFixture), nextCursor: null, hasNext: false } };
         }
         const row = parsed.searchParams.get('accessProjectionVersion') === '1'
           ? rows.find((entry) => parsed.pathname === `/v2/sessions/${entry.id}`)
@@ -100,7 +96,7 @@ describe('resolveSessionIdOrPrefix', () => {
         return {
           status: 200,
           data: {
-            sessions: query.storage === storage ? rows : [],
+            sessions: query.storage === storage ? rows.map(createCompactSessionListRowFixture) : [],
             nextCursor: null,
             hasNext: false,
             attentionNextCursor: null,
@@ -375,7 +371,7 @@ describe('resolveSessionIdOrPrefix', () => {
     }
   });
 
-  it('uses the authenticated owner view for exact layout-v1 tags when the indexed route is unavailable', async () => {
+  it('reports unsupported indexed lookup without scanning private owner metadata', async () => {
     const { reloadConfiguration } = await import('@/configuration');
     const originalServerUrl = process.env.HAPPIER_SERVER_URL;
     const originalWebappUrl = process.env.HAPPIER_WEBAPP_URL;
@@ -398,6 +394,10 @@ describe('resolveSessionIdOrPrefix', () => {
     process.env.HAPPIER_SERVER_URL = 'http://example.test';
     process.env.HAPPIER_WEBAPP_URL = 'http://example.test';
     reloadConfiguration();
+
+    mockAxiosPost.mockResolvedValue({ status: 404, data: {
+      statusCode: 404, error: 'Not Found', message: 'Route POST:/v2/sessions/lookup-by-tags not found',
+    } });
 
     mockAxiosGet.mockImplementation(async (urlRaw: string) => {
       const url = String(urlRaw);
@@ -436,11 +436,9 @@ describe('resolveSessionIdOrPrefix', () => {
         accountEncryptionMode: 'plain',
       });
 
-      expect(res).toEqual({
-        ok: true,
-        sessionId: 'session-from-layout-v1-owner',
-      });
+      expect(res).toEqual({ ok: false, code: 'unsupported' });
       expect(mockAxiosPost).toHaveBeenCalledOnce();
+      expect(mockAxiosGet).toHaveBeenCalledTimes(1);
     } finally {
       if (originalServerUrl === undefined) delete process.env.HAPPIER_SERVER_URL;
       else process.env.HAPPIER_SERVER_URL = originalServerUrl;
@@ -479,7 +477,7 @@ describe('resolveSessionIdOrPrefix', () => {
         return {
           status: 200,
           data: {
-            sessions: [createSessionRecordFixture({ id: 'sess_integration_run_start_123' })],
+            sessions: [createCompactSessionListRowFixture(createSessionRecordFixture({ id: 'sess_integration_run_start_123' }))],
             nextCursor: null,
             hasNext: false,
           },
@@ -527,7 +525,7 @@ describe('resolveSessionIdOrPrefix', () => {
         return {
           status: 200,
           data: {
-            sessions: [createSessionRecordFixture({ id: 'sess_integration_archived_123' })],
+            sessions: [createCompactSessionListRowFixture(createSessionRecordFixture({ id: 'sess_integration_archived_123' }))],
             nextCursor: null,
             hasNext: false,
           },
@@ -586,7 +584,7 @@ describe('resolveSessionIdOrPrefix', () => {
         return {
           status: 200,
           data: {
-            sessions: [createSessionRecordFixture({ id: 'sess_dup_123' })],
+            sessions: [createCompactSessionListRowFixture(createSessionRecordFixture({ id: 'sess_dup_123' }))],
             nextCursor: null,
             hasNext: false,
           },
@@ -597,7 +595,7 @@ describe('resolveSessionIdOrPrefix', () => {
         return {
           status: 200,
           data: {
-            sessions: [createSessionRecordFixture({ id: 'sess_dup_123' })],
+            sessions: [createCompactSessionListRowFixture(createSessionRecordFixture({ id: 'sess_dup_123' }))],
             nextCursor: null,
             hasNext: false,
           },
@@ -641,7 +639,7 @@ describe('resolveSessionIdOrPrefix', () => {
       .mockResolvedValueOnce({
         status: 200,
         data: {
-          sessions: [createSessionRecordFixture({ id: 'cancelx-session' })],
+          sessions: [createCompactSessionListRowFixture(createSessionRecordFixture({ id: 'cancelx-session' }))],
           nextCursor: null,
           hasNext: false,
         },

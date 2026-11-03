@@ -13,6 +13,7 @@ import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
+import { usePageListBottomPadding } from '@/components/ui/lists/pageListBottomPadding';
 import { useTeamGroups } from '@/hooks/teams/useTeamGroups';
 import { t } from '@/text';
 
@@ -20,6 +21,7 @@ import { TeamSection } from '../TeamSection';
 import type { TeamSectionContext } from '../teamSectionContext';
 import { groupManagementLabel } from '../teamLabels';
 import { teamReadFailureLabel } from '../teamMutationPresentation';
+import { useTeamReadFailureAction } from '../useTeamReadFailureAction';
 import { teamGroupCreatePath, teamGroupDetailPath } from '../teamsRoutes';
 
 const GROUP_CHUNK_SIZE = 12;
@@ -68,7 +70,9 @@ const GroupsList = React.memo(function GroupsList(props: Readonly<{
     header?: React.ReactNode;
 }>) {
     const { theme } = useUnistyles();
+    const bottomPadding = usePageListBottomPadding();
     const router = useRouter();
+    const readFailureAction = useTeamReadFailureAction();
     const { context } = props;
     const [showArchived, setShowArchived] = React.useState(false);
 
@@ -176,11 +180,7 @@ const GroupsList = React.memo(function GroupsList(props: Readonly<{
                 <AttentionBanner
                     testID="team-groups-unavailable"
                     title={teamReadFailureLabel(active.error!)}
-                    action={active.error?.retryable ? {
-                        label: t('teams.unavailable.retry'),
-                        onPress: () => void active.reload(),
-                        testID: 'team-groups-retry',
-                    } : undefined}
+                    action={readFailureAction(active.error!, { onPress: () => void active.reload(), testIDPrefix: 'team-groups' })}
                 />
             ));
         } else if (active.hasMore && active.rows.length > 0) {
@@ -246,11 +246,7 @@ const GroupsList = React.memo(function GroupsList(props: Readonly<{
                         <AttentionBanner
                             testID="team-groups-archived-unavailable"
                             title={teamReadFailureLabel(archived.error!)}
-                            action={archived.error?.retryable ? {
-                                label: t('teams.unavailable.retry'),
-                                onPress: () => void archived.reload(),
-                                testID: 'team-groups-archived-retry',
-                            } : undefined}
+                            action={readFailureAction(archived.error!, { onPress: () => void archived.reload(), testIDPrefix: 'team-groups-archived' })}
                         />
                 ));
             } else if (archived.hasMore && archived.rows.length > 0) {
@@ -289,7 +285,7 @@ const GroupsList = React.memo(function GroupsList(props: Readonly<{
                 backgroundColor: theme.colors.surface.base,
                 ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
             }}
-            contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
+            contentContainerStyle={{ paddingBottom: bottomPadding }}
             initialNumToRender={6}
             maxToRenderPerBatch={4}
             windowSize={7}

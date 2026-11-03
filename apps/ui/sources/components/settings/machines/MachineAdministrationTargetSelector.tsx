@@ -32,6 +32,7 @@ import { t } from '@/text';
 import { lockedMachineName, resolveMachineDisplayNames, unnamedMachineName } from '@/utils/sessions/machineDisplayNames';
 import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
 import { fireAndForget } from '@/utils/system/fireAndForget';
+import { linkMachineActivity } from '@/sync/domains/machines/machineActivity';
 
 type MachineAdministrationPickerMachine = ServerScopedMachinePresentation & Readonly<{
     target: MachineAdministrationTargetV1;
@@ -219,6 +220,7 @@ function buildPickerGroups(
             target: row.candidate.target,
             candidate: row.candidate,
         };
+        linkMachineActivity(row.machine, machine);
         const existing = groups.get(row.serverId);
         if (existing) {
             existing.machines.push(machine);
@@ -479,6 +481,8 @@ function MachineTargetChipList(props: Readonly<{
         : undefined), [resolveCandidatePresentation]);
     // Its rows are virtualized, so they cannot give the popover a natural width: the list asks for the
     // popover's full width, where a long hostname and its id suffix read whole.
+    // Administration owns admission, including last-known draft choices, and keeps its canonical
+    // order instead of applying launch-only presence reprioritization while the list is open.
     return (
         <View style={MACHINE_CHIP_LIST_STYLE}>
         <NewSessionMachineSelectionContent<MachineAdministrationPickerMachine>
@@ -493,6 +497,7 @@ function MachineTargetChipList(props: Readonly<{
             resolveMachinePresentation={resolveMachinePresentation}
             showFavorites={false}
             showRecent={false}
+            disableOfflineMachines={false}
             showSearch={false}
             showCliGlyphs={false}
             autoDetectCliGlyphs={false}

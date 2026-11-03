@@ -5,7 +5,7 @@ import { createElement, StrictMode, Suspense } from 'react';
 // Instrument tests do not need the root fixture/catalog import graph.
 import { renderHook } from '../hooks/renderHook';
 import { standardCleanup } from '../cleanup/standardCleanup';
-import { countStoreNotifications, countTransportRequests, createRenderCommitCounter, useRenderCommitCounter } from './counts';
+import { countReadBorrowers, countStoreNotifications, countTransportRequests, createRenderCommitCounter, useRenderCommitCounter } from './counts';
 import { installTimerCensus } from './timerCensus';
 
 afterEach(() => {
@@ -15,6 +15,25 @@ afterEach(() => {
 });
 
 describe('performance count instruments', () => {
+    it('leaves the platform clock intact across repeated fake-clock census cleanup', () => {
+        const platformClock = { setTimeout, setInterval, clearTimeout, clearInterval, queueMicrotask, Date };
+        for (let pass = 0; pass < 3; pass += 1) {
+            vi.useFakeTimers();
+            const census = installTimerCensus();
+            const timer = setTimeout(() => {}, 20);
+            clearTimeout(timer);
+            census.stop();
+            vi.restoreAllMocks();
+            vi.useRealTimers();
+            expect({ setTimeout, setInterval, clearTimeout, clearInterval, queueMicrotask, Date }).toEqual(platformClock);
+        }
+        // A later real-clock test also restores mocks. Retired census spies must
+        // not reinstall the old fake-clock functions after fake mode has ended.
+        vi.restoreAllMocks();
+        vi.useRealTimers();
+        expect({ setTimeout, setInterval, clearTimeout, clearInterval, queueMicrotask, Date }).toEqual(platformClock);
+    });
+
     it('counts hook renders and commits independently of the mount baseline', async () => {
         const counter = createRenderCommitCounter();
         const hook = await renderHook(({ value }: { value: number }) => {
@@ -91,6 +110,28 @@ describe('performance count instruments', () => {
         expect(transport.read()).toEqual({});
     });
 
+    it('counts borrower provenance before a queued read and retains cardinalities without arguments', async () => {
+        const held: Array<() => void> = [];
+        const reads = countReadBorrowers((ids: readonly string[], _secret: string) => new Promise<readonly string[]>(resolve => {
+            held.push(() => resolve(ids));
+        }), ids => ids);
+        function initiateRead() { return reads.request(['private-session', 'private-session', 'another-session'], 'private-token'); }
+        const pending = [initiateRead(), initiateRead()];
+        const observed = reads.read();
+        expect(observed.reduce((count, borrower) => count + borrower.calls, 0)).toBe(2);
+        expect(observed.reduce((count, borrower) => count + borrower.idCount, 0)).toBe(4);
+        expect(observed.every(borrower => borrower.provenance[0]?.method === 'initiateRead')).toBe(true);
+        expect(observed[0]?.provenance[0]).toMatchObject({ source: 'apps/ui/sources/dev/testkit/performance/counts.test.tsx' });
+        expect(JSON.stringify(observed)).not.toMatch(/private-session|another-session|private-token/);
+        for (const release of held) release();
+        expect(await Promise.all(pending)).toEqual([
+            ['private-session', 'private-session', 'another-session'],
+            ['private-session', 'private-session', 'another-session'],
+        ]);
+        reads.reset();
+        expect(reads.read()).toEqual([]);
+    });
+
     it('censuses live timers, preserves scheduling, and keeps unattributed timers visible', () => {
         vi.useFakeTimers();
         const census = installTimerCensus(stack => stack.includes('namedConsumer') ? 'relative age' : null);
@@ -104,7 +145,11 @@ describe('performance count instruments', () => {
         ]);
         vi.advanceTimersByTime(20);
         expect(fired).toHaveBeenCalledTimes(1);
+        expect(census.readFires()).toEqual({ timeout: 1, interval: 0 });
         expect(census.read()).toEqual([{ kind: 'interval', delayMs: 50, consumer: null }]);
+        vi.advanceTimersByTime(130);
+        expect(fired).toHaveBeenCalledTimes(4);
+        expect(census.readFires()).toEqual({ timeout: 1, interval: 3 });
         clearInterval(orphan);
         expect(census.read()).toEqual([]);
         const cancelled = setTimeout(fired, 20);

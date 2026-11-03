@@ -4,7 +4,52 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { readStoragePathIdentity } from './trash/removeStoragePath';
 import { classifyPath } from './protection/protectedPaths';
-import { createStoragePathComparator, storagePathContains, storagePathsEqual } from './storagePath';
+import { createStoragePathComparator, createStoragePathIndex, storagePathContains, storagePathsEqual } from './storagePath';
+
+it.each(['linux', 'darwin', 'win32'] as const)('indexes native ancestry with the canonical comparator on %s', platform => {
+    const paths = platform === 'win32' ? [
+        'C:\\Users\\Alice\\project', 'c:/users/alice/project/nested', 'C:\\Users\\Alice\\project2',
+        'C:\\Users\\Alice\\project\\nested\\cache', 'D:\\Users\\Alice\\project', '\\\\server\\share\\project', 'c:/USERS/ALICE/PROJECT',
+    ] : ['/people/alice/project', '/people/alice/project/nested', '/people/alice/project2',
+        '/people/alice/project/nested/cache', '/people/alice/other', '/people/Alice/project'];
+    const items = paths.map((path, index) => ({ path, index }));
+    const index = createStoragePathIndex(items, item => item.path, platform);
+    const compare = createStoragePathComparator(platform);
+    for (const path of [...paths, ...paths.map(path => `${path}/child`), platform === 'win32' ? 'c:/users/alice' : '/people/alice',
+        platform === 'win32' ? '\\\\SERVER/share' : '/', platform === 'win32' ? 'C:\\' : '/unrelated']) {
+        expect(index.exact(path)).toEqual(items.find(item => compare.equal(item.path, path)));
+        expect(index.ancestors(path)).toEqual(items.filter(item => compare.contains(item.path, path)));
+        expect(index.descendants(path)).toEqual(items.filter(item => !compare.equal(item.path, path) && compare.contains(path, item.path)));
+        expect(index.hasAncestor(path)).toBe(items.some(item => compare.contains(item.path, path)));
+        expect(index.hasDescendant(path)).toBe(items.some(item => compare.contains(path, item.path)));
+        expect(index.overlaps(path)).toBe(items.some(item => compare.contains(item.path, path) || compare.contains(path, item.path)));
+    }
+});
+
+it('keeps empty ancestry reads empty', () => {
+    const index = createStoragePathIndex<string>([], path => path);
+    const path = join(tmpdir(), 'absent-storage-item');
+    expect(index.exact(path)).toBeUndefined();
+    expect(index.ancestors(path)).toEqual([]);
+    expect(index.descendants(path)).toEqual([]);
+    expect(index.hasAncestor(path)).toBe(false);
+    expect(index.hasDescendant(path)).toBe(false);
+    expect(index.overlaps(path)).toBe(false);
+});
+
+it.skipIf(process.platform === 'win32')('indexes byte paths and UTF-8 ancestors without merging a replacement spelling', () => {
+    const raw = Buffer.concat([Buffer.from('/projects/'), Buffer.from([0xff])]);
+    const path = `bytes:${raw.toString('base64')}`;
+    const child = `bytes:${Buffer.concat([raw, Buffer.from('/cache')]).toString('base64')}`;
+    const paths = [child, '/projects', raw.toString('utf8'), path, '/projects2'];
+    const index = createStoragePathIndex(paths, path => path);
+    const compare = createStoragePathComparator();
+    for (const candidate of [...paths, '/']) {
+        expect(index.exact(candidate)).toBe(paths.find(path => compare.equal(path, candidate)));
+        expect(index.ancestors(candidate)).toEqual(paths.filter(path => compare.contains(path, candidate)));
+        expect(index.descendants(candidate)).toEqual(paths.filter(path => !compare.equal(path, candidate) && compare.contains(candidate, path)));
+    }
+});
 
 it.each(['linux', 'darwin', 'win32'] as const)('keeps per-read comparisons equivalent on %s', platform => {
     const compare = createStoragePathComparator(platform);

@@ -3,6 +3,7 @@ import { readMachineOnlineGraceMsFromEnv } from '@/utils/sessions/machineUtils';
 import { createServerAccountScope, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { resolveServerProfileScopeIdForIdentifier, type ProfileScopeResolver } from '@/sync/domains/server/serverProfiles';
 import type { SessionMachineReachability } from './resolveSessionMachineReachability';
+import { readMachineActivity } from '@/sync/domains/machines/machineActivity';
 
 export type MachineReachabilityScope = ServerAccountScope;
 
@@ -196,9 +197,10 @@ export function resolveMachineReachability(
     if (observedSinceWithdrawal && !observedSinceWithdrawal.has(machine.id)) return 'unknown';
     const graceMs = readMachineOnlineGraceMsFromEnv();
     const previous = derivedReachability.get(machine);
-    const activeAt = machine.activeAt;
+    const activity = readMachineActivity(machine);
+    const activeAt = activity.activeAt;
     if (previous && previous.serverId === normalized.serverId && previous.accountId === normalized.accountId
-        && previous.machineId === machine.id && previous.active === machine.active && previous.activeAt === activeAt
+        && previous.machineId === machine.id && previous.active === activity.active && previous.activeAt === activeAt
         && previous.revokedAt === machine.revokedAt && previous.observation === observation
         && previous.graceMs === graceMs
         && Number.isFinite(nowMs) && nowMs >= previous.evaluatedAtMs
@@ -208,11 +210,11 @@ export function resolveMachineReachability(
             || Math.max(0, nowMs - activeAt) <= graceMs)) {
         return previous.reachable ? 'reachable' : 'unreachable';
     }
-    const reachable = isMachineReachableV1({ machine, nowMs, graceMs, requestOutcome });
+    const reachable = isMachineReachableV1({ machine: { active: activity.active, activeAt, revokedAt: machine.revokedAt }, nowMs, graceMs, requestOutcome });
     if (Number.isFinite(nowMs)) {
         derivedReachability.set(machine, {
             serverId: normalized.serverId, accountId: normalized.accountId, machineId: machine.id,
-            active: machine.active, activeAt, revokedAt: machine.revokedAt, observation,
+            active: activity.active, activeAt, revokedAt: machine.revokedAt, observation,
             graceMs, evaluatedAtMs: nowMs, reachable,
         });
     }
@@ -261,3 +263,8 @@ export function clearMachineRequestReachabilityForTest(): void {
     if (!changed) return;
     publishReachabilityChange(null);
 }
+
+// Each test starts with fresh observations: a prior test's Socket teardown must
+// not leave its Home unknown. Vitest's setup runs this only once this module loads.
+(globalThis as unknown as { [key: symbol]: Map<string, () => void> | undefined })[Symbol.for('happier.vitest.testResets')]
+    ?.set('machineRequestReachability', clearMachineRequestReachabilityForTest);

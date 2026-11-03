@@ -25,7 +25,7 @@ import {
   widgetSetupFieldsForCandidate,
   type WidgetSurfaceContext,
 } from '@/components/widgets/surface/widgetSurfaceSetup';
-import type { WidgetCandidate } from '@/components/widgets/widgetCatalog';
+import { resolveWidgetInstanceTitle, type WidgetCandidate } from '@/components/widgets/widgetCatalog';
 import { getPreferredLanguage, t } from '@/text';
 import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
@@ -37,7 +37,8 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { WidgetGroupFrame } from './WidgetGroupFrame';
 import { readWidgetGroupTitle } from './widgetGroupTitle';
-import { resolveWidgetGroupCells, resolveWidgetGroupColumns } from '@happier-dev/plugin-ui/presentation';
+import { resolveWidgetGroupCells } from '@happier-dev/plugin-ui/components';
+import { resolveWidgetGroupColumns } from '@happier-dev/plugin-ui/presentation';
 import { resolveWidgetGroupWidthChoices, WIDGET_GROUP_ICON } from './widgetGroupMenu';
 import { buildWidgetGroupInputsCandidate } from './widgetGroupInputs';
 import { isPublicProfileWidgetSurfaceV1 } from '@happier-dev/protocol/widgets';
@@ -58,10 +59,7 @@ function describeFragmentChildren(
       ),
     );
     return {
-      title:
-        child.instance.displayName ??
-        candidate?.title ??
-        t('sessionBoard.item.pluginUnavailable.title'),
+      title: resolveWidgetInstanceTitle(child.instance, candidate),
       mark: candidate?.icon ?? 'squares-four',
     };
   });
@@ -239,7 +237,7 @@ export function WidgetGroupFragmentPreview(props: Readonly<{
       renderChild={(id) => {
         const entry = children[Number(id)];
         if (!entry) return null;
-        const title = entry.child.instance.displayName ?? entry.candidate?.title ?? t('sessionBoard.item.pluginUnavailable.title');
+        const title = resolveWidgetInstanceTitle(entry.child.instance, entry.candidate);
         const size = entry.child.size;
         const footprint = size ? getWidgetSizeFootprintV1(props.scope.owner.kind, size) : undefined;
         return (

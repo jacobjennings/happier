@@ -8,13 +8,15 @@ import {
     createDeferred,
     createPlainAccountEncryptionCurrentnessFixture,
     createSessionFixture,
+    countStoreNotifications,
     registerStandardCleanupTarget,
     renderHook,
     standardCleanup,
 } from '@/dev/testkit';
-import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createSessionListRenderableSessionFixture, createSessionViewerFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import {
     projectLegacySessionAccessCapabilitiesV1,
+    buildSessionMessageObservationFactsV1,
     type SessionListQueryV1,
     type V2SessionRecord,
 } from '@happier-dev/protocol';
@@ -23,10 +25,10 @@ import { storage } from '@/sync/domains/state/storageStore';
 import { useServerCredentialAccountScopes } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { disposeIrohHomeTunnelRuntime, getIrohHomeTunnelRuntime } from '@/sync/runtime/nativeIrohTunnels/runtime';
 import { createSessionListQueryHomeController } from '@/sync/domains/session/listing/sessionListQueryController';
-import { SessionListQueryResponseV1Schema } from '@happier-dev/protocol/sessions/listing/response';
+import type { RuntimeFetch } from '@/utils/system/runtimeFetch';
 import { subscribeSessionListQueryHomeInvalidation } from '@/sync/domains/session/listing/sessionListQueryInvalidation';
 import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
-import { createSessionReadBatchFetchBoundary } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
+import { createCompactSessionListFetchBoundary, createSessionListSourceFixture } from '@/dev/testkit/harness/sessionReadBatchHttpBoundary';
 
 const secureStore = vi.hoisted(() => new Map<string, string>());
 type TelemetrySocket = Socket & Readonly<{ dispatch: (event: string, payload: unknown) => void }>;
@@ -35,6 +37,11 @@ const socketState = vi.hoisted(() => ({
     failForToken: null as string | null,
 }));
 let restoreLocalStorage: (() => void) | null = null;
+
+function compactFetch(request: RuntimeFetch, options?: Parameters<typeof createCompactSessionListFetchBoundary>[1]): RuntimeFetch {
+    return createCompactSessionListFetchBoundary(async (path, init) =>
+        new URL(path).pathname === '/v2/sessions/read-batch' ? undefined : request(path, init), options);
+}
 
 vi.mock('expo-secure-store', () => ({
     getItemAsync: async (key: string) => secureStore.get(key) ?? null,
@@ -105,28 +112,200 @@ afterEach(async () => {
 });
 
 describe('concurrent session cache telemetry', () => {
+    it('waits for a blocked head before continuing and coalesces demand during the continuation', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_MULTI_SERVER_CONCURRENT = '1';
+        restoreLocalStorage = installLocalStorageMock().restore;
+        const secondaryOrigin = 'https://continuation-b.example.test';
+        const headStarted = createDeferred<void>();
+        const headGate = createDeferred<void>();
+        const continuationStarted = createDeferred<void>();
+        const continuationGate = createDeferred<void>();
+        const cursors: Array<string | null> = [];
+        const boundary = createCompactSessionListFetchBoundary(async path => {
+            const url = new URL(path);
+            if (url.pathname === '/v2/sessions/read-batch') return undefined;
+            if (url.pathname === '/v1/auth/ping') return Response.json({ ok: true });
+            if (url.pathname === '/v1/features') return Response.json({ features: {}, capabilities: {} });
+            if (url.pathname.includes('/encryption')) return Response.json(createPlainAccountEncryptionCurrentnessFixture());
+            if (url.pathname === '/v1/machines') return Response.json([]);
+            if (url.pathname === '/v2/sessions/active' || url.pathname === '/v2/sessions/attention') return Response.json({ sessions: [], nextCursor: null, hasNext: false });
+            if (url.pathname === '/v2/sessions') {
+                if (url.origin !== secondaryOrigin) return Response.json({ sessions: [], nextCursor: null, hasNext: false });
+                const cursor = url.searchParams.get('cursor');
+                cursors.push(cursor);
+                if (cursor === 'second-page') {
+                    continuationStarted.resolve();
+                    await continuationGate.promise;
+                    return sessionPage('continuation-second', 'third-page');
+                }
+                if (cursor === 'third-page') return sessionPage('continuation-third', null);
+                headStarted.resolve();
+                await headGate.promise;
+                return sessionPage('continuation-head', 'second-page');
+            }
+            throw new Error(`Unexpected request: ${url.pathname}`);
+        });
+        vi.stubGlobal('fetch', vi.fn(boundary));
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const runtime = await import('@/sync/domains/server/serverRuntime');
+        const active = await runtime.upsertAndActivateServer({ serverUrl: 'https://continuation-a.example.test', scope: 'tab' });
+        const secondary = await profiles.upsertServerProfile({ serverUrl: secondaryOrigin, name: 'Continuation B' });
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const token = `header.${Buffer.from(JSON.stringify({ sub: 'continuation-account' })).toString('base64url')}.signature`;
+        await TokenStorage.setCredentialsForServerUrl(secondaryOrigin, { serverId: secondary.id }, { token });
+        await profiles.saveHomeViewState({
+            version: 1, groups: [{ id: 'continuation-group', name: 'Continuation', serverIds: [active.id, secondary.id] }],
+            activeTargetKind: 'group', activeTargetId: 'continuation-group',
+        });
+        try {
+            cache.startConcurrentSessionCacheSync();
+            await vi.waitFor(() => expect(cursors).toEqual([null]));
+            await headStarted.promise;
+            expect(cache.readConcurrentOrdinarySessionListLifecycle(secondary.id).fetchInFlight).toBe(true);
+            let firstDemandSettled = false;
+            const firstDemand = cache.loadNextConcurrentOrdinarySessionListPage(secondary.id).then(() => { firstDemandSettled = true; });
+            // Let the public promise settle if it incorrectly drops the demand;
+            // the external head response remains gated independently.
+            await new Promise<void>(resolve => setTimeout(resolve, 0));
+            expect(firstDemandSettled).toBe(false);
+            expect(cursors).toEqual([null]);
+            headGate.resolve();
+            await vi.waitFor(() => expect(cursors).toEqual([null, 'second-page']));
+            await continuationStarted.promise;
+            const secondDemand = cache.loadNextConcurrentOrdinarySessionListPage(secondary.id);
+            const thirdDemand = cache.loadNextConcurrentOrdinarySessionListPage(secondary.id);
+            continuationGate.resolve();
+            await Promise.all([firstDemand, secondDemand, thirdDemand]);
+            expect(cursors).toEqual([null, 'second-page']);
+            expect(storage.getState().ordinarySessionListMembershipByServerId[secondary.id])
+                .toEqual(['continuation-head', 'continuation-second']);
+            expect(cache.readConcurrentOrdinarySessionListLifecycle(secondary.id).frontier)
+                .toMatchObject({ nextCursor: 'third-page', hasNext: true });
+        } finally {
+            headGate.resolve();
+            continuationGate.resolve();
+            cache.stopConcurrentSessionCacheSync();
+        }
+    });
+
+    it('projects durable hints into only their Home row and targets unknown rows without reloading the list', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_MULTI_SERVER_CONCURRENT = '1';
+        restoreLocalStorage = installLocalStorageMock().restore;
+        let listReads = 0;
+        let exactReads = 0;
+        const unknownRead = createDeferred<void>();
+        const viewer = createSessionViewerFixture({ readState: { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null } });
+        const rows = [sessionRow('hint-0', { viewer })];
+        vi.stubGlobal('fetch', vi.fn(createCompactSessionListFetchBoundary(async (input) => {
+            const url = new URL(String(input));
+            if (url.pathname === '/v2/sessions/read-batch') return null;
+            if (url.pathname === '/v1/auth/ping') return Response.json({ ok: true });
+            if (url.pathname === '/v1/features') return Response.json({ features: {}, capabilities: {} });
+            if (url.pathname.includes('/encryption')) return Response.json(createPlainAccountEncryptionCurrentnessFixture());
+            if (url.pathname === '/v2/sessions/active' || url.pathname === '/v2/sessions/attention') return Response.json({ sessions: [], nextCursor: null, hasNext: false });
+            if (url.pathname === '/v1/machines') return Response.json([]);
+            if (url.pathname === '/v2/sessions') {
+                listReads += 1;
+                return Response.json({ sessions: rows, nextCursor: null, hasNext: false });
+            }
+            if (url.pathname === '/v2/sessions/hint-unknown') {
+                exactReads += 1;
+                await unknownRead.promise;
+                return Response.json({ session: sessionRow('hint-unknown', { seq: 12, updatedAt: 300 }) });
+            }
+            throw new Error(`Unexpected request: ${url.pathname}`);
+        })));
+        const syncBridge = await loadSyncSingletonForTests();
+        registerStandardCleanupTarget({ unmount: syncBridge.dispose });
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const runtime = await import('@/sync/domains/server/serverRuntime');
+        const active = await runtime.upsertAndActivateServer({ serverUrl: 'https://hints-a.example.test', scope: 'tab' });
+        const secondary = await profiles.upsertServerProfile({ serverUrl: 'https://hints-b.example.test', name: 'Hints B' });
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const token = `header.${Buffer.from(JSON.stringify({ sub: 'hints-account' })).toString('base64url')}.signature`;
+        await TokenStorage.setCredentialsForServerUrl(secondary.serverUrl, { serverId: secondary.id }, { token });
+        await profiles.saveHomeViewState({ version: 1, groups: [{ id: 'hints', name: 'Hints', serverIds: [active.id, secondary.id] }],
+            activeTargetKind: 'group', activeTargetId: 'hints' });
+        cache.startConcurrentSessionCacheSync();
+        await vi.waitFor(() => expect(storage.getState().concurrentSessionListCacheByServerId[secondary.id]?.listObservation?.phase).toBe('ready'), { timeout: 15_000 });
+        await cache.refreshConcurrentMachineList(secondary.id);
+        storage.getState().applyServerScopedSessionListRows(secondary.id, Array.from({ length: 999 }, (_, i) =>
+            createSessionListRenderableSessionFixture({ id: `hint-${i + 1}`, lastViewedSessionSeq: 1 })), { source: 'ordinary', mode: 'append' });
+        storage.getState().applyServerScopedSessionListRows(active.id, [createSessionListRenderableSessionFixture({ id: 'hint-0' })], { source: 'ordinary', mode: 'append' });
+        const before = storage.getState().sessionListRowsByServerId;
+        const readsBefore = listReads;
+        const { syncPerformanceTelemetry } = await import('@/sync/runtime/syncPerformanceTelemetry');
+        syncPerformanceTelemetry.configure({ enabled: true });
+        syncPerformanceTelemetry.reset();
+        const hint = (id: string, seq: number, createdAt: number) => ({
+            id: `update-${seq}`, seq: 900, createdAt,
+            body: { t: 'new-message', sid: id, delivery: 'hint', message: buildSessionMessageObservationFactsV1({
+                id: `message-${seq}`, seq, localId: null, createdAt,
+                content: { t: 'plain', v: { role: 'assistant', content: { type: 'text', text: 'not transferred' } } },
+                attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true },
+            }) },
+        });
+        const socket = socketState.byUrl.get(secondary.serverUrl)!;
+        socket.dispatch('update', hint('hint-0', 9, 200));
+        expect(storage.getState().sessionListRowsByServerId[secondary.id]['hint-0']).toMatchObject({ seq: 9, updatedAt: 200, meaningfulActivityAt: 200, hasUnreadMessages: false, viewer });
+        expect(storage.getState().sessionListRowsByServerId[secondary.id]['hint-999']).toBe(before[secondary.id]['hint-999']);
+        expect(storage.getState().sessionListRowsByServerId[active.id]['hint-0']).toBe(before[active.id]['hint-0']);
+        const revision = hint('hint-0', 9, 250);
+        socket.dispatch('update', { ...revision, body: { ...revision.body, t: 'message-updated' } });
+        expect(storage.getState().sessionListRowsByServerId[secondary.id]['hint-0']).toMatchObject({ seq: 9, updatedAt: 250 });
+        const notifications = countStoreNotifications(storage);
+        socket.dispatch('update', { ...revision, body: { ...revision.body, t: 'message-updated' } });
+        expect(notifications.read()).toHaveLength(0);
+        notifications.stop();
+        const neutral = hint('hint-0', 10, 1_000);
+        socket.dispatch('update', { ...neutral, body: { ...neutral.body, message: { ...neutral.body.message,
+            attentionImpact: { affectsUnread: false, affectsMeaningfulActivity: false } } } });
+        expect(storage.getState().sessionListRowsByServerId[secondary.id]['hint-0']).toMatchObject({ seq: 10, updatedAt: 1_000, meaningfulActivityAt: 250, hasUnreadMessages: false });
+        socket.dispatch('update', hint('hint-1', 2, 200));
+        expect(storage.getState().sessionListRowsByServerId[secondary.id]['hint-1']).toMatchObject({ seq: 2, hasUnreadMessages: true });
+        socket.dispatch('update', hint('hint-unknown', 12, 300));
+        socket.dispatch('update', hint('hint-unknown', 12, 300));
+        await vi.waitFor(() => expect(exactReads).toBe(1));
+        unknownRead.resolve();
+        await vi.waitFor(() => expect(storage.getState().sessionListRowsByServerId[secondary.id]['hint-unknown']?.seq).toBe(12));
+        expect(listReads).toBe(readsBefore);
+        expect(exactReads).toBe(1);
+        expect(syncPerformanceTelemetry.snapshot().events.find(event => event.name === 'sync.concurrent.refresh.socket')).toBeUndefined();
+        expect(storage.getState().sessions['hint-unknown']).toBeUndefined();
+    });
+
+
+
     it('reconciles retained pages through exact access reads after a secondary Home Account change', async () => {
         process.env.EXPO_PUBLIC_HAPPY_MULTI_SERVER_CONCURRENT = '1';
         const localStorageHandle = installLocalStorageMock();
         restoreLocalStorage = localStorageHandle.restore;
         let accessWithdrawn = false;
-        let failRetainedRead = true;
+        let failRetainedRead = false;
         const exactReads: string[] = [];
         const cursors: Array<string | null> = [];
         const teamRow = sessionRow('team-withdrawn', {
+            metadataLayoutVersion: 1,
+            share: { accessLevel: 'view', canApprovePermissions: false },
+            responsibleAccountId: null, responsibleAccount: null,
+            metadata: JSON.stringify({ v: 1, summary: { text: 'Shared team Session', updatedAt: 1 } }),
             effectiveAccess: {
                 v: 1, level: 'view', sources: [{ kind: 'team', teamId: 'withdrawal-team', requiredByTeamPolicy: false }],
                 capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view' }),
             },
         });
-        vi.stubGlobal('fetch', vi.fn(createSessionReadBatchFetchBoundary(async (input: RequestInfo | URL) => {
+        const continuationPage = createSessionListSourceFixture({
+            sessions: [teamRow, sessionRow('still-admitted'), sessionRow('temporarily-unavailable')],
+            nextCursor: 'third-page', hasNext: true,
+        });
+        vi.stubGlobal('fetch', compactFetch(vi.fn(async (input: RequestInfo | URL) => {
             const url = new URL(String(input));
             if (url.pathname === '/v1/auth/ping') return Response.json({ ok: true });
             if (url.pathname === '/v1/features') return Response.json({ features: {}, capabilities: {} });
             if (url.pathname.includes('/encryption')) return Response.json(createPlainAccountEncryptionCurrentnessFixture());
-            if (url.pathname === '/v2/sessions/active') return Response.json({ sessions: [], nextCursor: null, hasNext: false });
+            if (url.pathname === '/v2/sessions/active' || url.pathname === '/v2/sessions/attention') return Response.json({ sessions: [], nextCursor: null, hasNext: false });
             if (url.pathname === '/v2/sessions/query') {
-                return Response.json(SessionListQueryResponseV1Schema.parse({
+                return Response.json(createSessionListSourceFixture({
                     sessions: [{ ...teamRow, responsibleAccountId: null, responsibleAccount: null,
                         viewer: {
                             latestFailureSeq: null,
@@ -141,7 +320,7 @@ describe('concurrent session cache telemetry', () => {
                 const cursor = url.searchParams.get('cursor');
                 cursors.push(cursor);
                 return cursor
-                    ? Response.json({ sessions: [teamRow, sessionRow('still-admitted'), sessionRow('temporarily-unavailable')], nextCursor: 'third-page', hasNext: true })
+                    ? Response.json(continuationPage)
                     : sessionPage('current-head', 'second-page');
             }
             if (url.pathname.startsWith('/v2/sessions/')) {
@@ -149,11 +328,12 @@ describe('concurrent session cache telemetry', () => {
                 exactReads.push(id);
                 if (id === 'team-withdrawn' && accessWithdrawn) return Response.json({ error: 'Session not found' }, { status: 404 });
                 if (id === 'temporarily-unavailable' && failRetainedRead) return Response.json({ error: 'session_read_unavailable' }, { status: 503 });
-                return Response.json({ session: sessionRow(id, { seq: 2, updatedAt: 2 }) });
+                return Response.json({ session: id === 'team-withdrawn' ? teamRow
+                    : sessionRow(id, { seq: accessWithdrawn ? 2 : 1, updatedAt: accessWithdrawn ? 2 : 1 }) });
             }
             if (url.pathname === '/v1/machines') return Response.json([]);
             throw new Error(`Unexpected request: ${url.pathname}`);
-        })));
+        }), { preferExactSnapshot: true }));
         const syncBridge = await loadSyncSingletonForTests();
         registerStandardCleanupTarget({ unmount: syncBridge.dispose });
         const profiles = await import('@/sync/domains/server/serverProfiles');
@@ -197,6 +377,9 @@ describe('concurrent session cache telemetry', () => {
         await controller.update({ query, selected: true, online: false, supported: true });
         const disposeQueryInvalidation = subscribeSessionListQueryHomeInvalidation(() => new Map([[secondary.id, controller]]));
         registerStandardCleanupTarget({ unmount: () => { disposeQueryInvalidation(); controller.dispose(); } });
+        // Cold compact display reads precede the access-change operation under test.
+        exactReads.length = 0;
+        failRetainedRead = true;
         accessWithdrawn = true;
         const socket = socketState.byUrl.get(secondary.serverUrl);
         expect(socket).toBeDefined();
@@ -236,7 +419,7 @@ describe('concurrent session cache telemetry', () => {
         const token = (accountId: string) => `header.${Buffer.from(JSON.stringify({ sub: accountId })).toString('base64url')}.signature`;
         const oldToken = token('auth-account-b');
         const replacementToken = token('auth-account-b-replacement');
-        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        vi.stubGlobal('fetch', compactFetch(vi.fn(async (input: RequestInfo | URL) => {
             const url = new URL(String(input));
             if (url.pathname === '/v1/auth/ping') return Response.json({ ok: true });
             if (url.pathname === '/v1/features') return Response.json({ features: {}, capabilities: {} });
@@ -245,7 +428,7 @@ describe('concurrent session cache telemetry', () => {
             if (url.pathname === '/v2/sessions') return sessionPage('auth-row', null);
             if (url.pathname === '/v1/machines') return Response.json([]);
             throw new Error(`Unexpected request: ${url.pathname}`);
-        }));
+        })));
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const runtime = await import('@/sync/domains/server/serverRuntime');
         const active = await runtime.upsertAndActivateServer({ serverUrl: 'https://auth-a.example.test', scope: 'tab' });
@@ -312,7 +495,7 @@ describe('concurrent session cache telemetry', () => {
         const originalToken = token('binding-account-b');
         const replacementToken = token('binding-account-next');
         let blockReplacement = false;
-        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        vi.stubGlobal('fetch', compactFetch(vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
             const url = new URL(String(input));
             if (url.pathname === '/v1/auth/ping') return Response.json({ ok: true });
             if (url.pathname === '/v1/features') return Response.json({ features: {}, capabilities: {} });
@@ -329,7 +512,7 @@ describe('concurrent session cache telemetry', () => {
             }
             if (url.pathname === '/v1/machines') return Response.json([]);
             throw new Error(`Unexpected request: ${url.pathname}`);
-        }));
+        })));
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const runtime = await import('@/sync/domains/server/serverRuntime');
         const active = await runtime.upsertAndActivateServer({ serverUrl: 'https://binding-a.example.test', scope: 'tab' });
@@ -408,7 +591,7 @@ describe('concurrent session cache telemetry', () => {
                 async releaseHomeTunnel() {},
             },
         });
-        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        vi.stubGlobal('fetch', compactFetch(vi.fn(async (input: RequestInfo | URL) => {
             const url = new URL(String(input));
             if (url.pathname === '/v1/auth/ping') return Response.json({ ok: true });
             if (url.pathname === '/v1/features') return Response.json({ features: {}, capabilities: {} });
@@ -420,7 +603,7 @@ describe('concurrent session cache telemetry', () => {
             }
             if (url.pathname === '/v1/machines') return Response.json([]);
             throw new Error(`Unexpected request: ${url.pathname}`);
-        }));
+        })));
         try {
             const profiles = await import('@/sync/domains/server/serverProfiles');
             const runtime = await import('@/sync/domains/server/serverRuntime');
@@ -491,7 +674,7 @@ describe('concurrent session cache telemetry', () => {
         restoreLocalStorage = localStorageHandle.restore;
         let recovered = false;
         let ordinaryReads = 0;
-        vi.stubGlobal('fetch', vi.fn(createSessionReadBatchFetchBoundary(async (input: RequestInfo | URL) => {
+        vi.stubGlobal('fetch', compactFetch(vi.fn(async (input: RequestInfo | URL) => {
             const url = new URL(String(input));
             if (url.pathname === '/v1/auth/ping') return Response.json({ ok: true });
             if (url.pathname === '/v1/features') return Response.json({ features: {}, capabilities: {} });
@@ -506,7 +689,7 @@ describe('concurrent session cache telemetry', () => {
             }
             if (url.pathname === '/v1/machines') return Response.json([]);
             throw new Error(`Unexpected request: ${url.pathname}`);
-        })));
+        }), { preferExactSnapshot: true }));
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const runtime = await import('@/sync/domains/server/serverRuntime');
         const reachability = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
@@ -571,7 +754,7 @@ describe('concurrent session cache telemetry', () => {
         const replacement = createDeferred<Response>();
         const requestedCursors: Array<string | null> = [];
         let failRefresh = false;
-        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        vi.stubGlobal('fetch', compactFetch(vi.fn(async (input: RequestInfo | URL) => {
             const url = new URL(String(input));
             if (url.pathname === '/v1/auth/ping') return Response.json({ ok: true });
             if (url.pathname === '/v1/features') return Response.json({ features: {}, capabilities: {} });
@@ -588,7 +771,7 @@ describe('concurrent session cache telemetry', () => {
             }
             if (url.pathname === '/v1/machines') return Response.json([]);
             throw new Error(`Unexpected request: ${url.pathname}`);
-        }));
+        })));
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const runtime = await import('@/sync/domains/server/serverRuntime');
         const active = await runtime.upsertAndActivateServer({ serverUrl: 'https://refresh-a.example.test', scope: 'tab' });
@@ -651,7 +834,7 @@ describe('concurrent session cache telemetry', () => {
             if (url.pathname.includes('/encryption')) return Response.json(createPlainAccountEncryptionCurrentnessFixture());
             if (url.pathname === '/v2/sessions/active') return Response.json({ sessions: [], nextCursor: null, hasNext: false });
             if (url.pathname === '/v2/sessions/query') {
-                return Response.json(SessionListQueryResponseV1Schema.parse({
+                return Response.json(createSessionListSourceFixture({
                     sessions: [{ ...sessionRow('query-only', {
                         encryptionMode: 'e2ee',
                         dataEncryptionKey: 'unopenable-envelope',
@@ -678,7 +861,7 @@ describe('concurrent session cache telemetry', () => {
             if (url.pathname === '/v1/machines') return Response.json([]);
             throw new Error(`Unexpected request: ${url.pathname}`);
         });
-        vi.stubGlobal('fetch', fetchSpy);
+        vi.stubGlobal('fetch', compactFetch(fetchSpy));
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const runtime = await import('@/sync/domains/server/serverRuntime');
@@ -768,7 +951,7 @@ describe('concurrent session cache telemetry', () => {
             }
             throw new Error(`Unexpected request: ${url}`);
         });
-        vi.stubGlobal('fetch', fetchSpy);
+        vi.stubGlobal('fetch', compactFetch(fetchSpy));
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const runtime = await import('@/sync/domains/server/serverRuntime');

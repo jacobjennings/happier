@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { createPlainArtifactHomeFixture } from '@/dev/testkit/harness/artifactStoreBoundary';
 import { createPromptLibraryCatalogBoundary } from '@/dev/testkit/harness/promptLibraryCatalogBoundary';
+import { installBrowserRuntimeForTests } from '@/dev/testkit/harness/browserRuntimeHarness';
 import { InjectedAuthProvider } from '@/auth/context/AuthContext';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { MainAppTabStateProvider } from '@/components/navigation/mobile/chrome/MainAppTabStateProvider';
@@ -63,4 +64,21 @@ it('still follows the root own legacy Session/message link with its exact Home a
     route.global = { ...route.local };
     await renderRoot();
     expect(route.replace).toHaveBeenCalledWith('/session/session-a/message/message-a?serverId=named-home&jumpChildId=child-a');
+});
+
+it.each([
+    ['follows it from the web root', '/', ['/session/session-a']],
+    ['does not collapse it from a non-root web path', '/session/session-a/message/message-a', []],
+])('%s for a legacy Session deep link', async (_label, pathname, expectedReplaces) => {
+    // The browser location is the boundary that tells a Root link from a deeper web route.
+    const browser = await installBrowserRuntimeForTests({ url: `https://root-route-params.test${pathname}` });
+    try {
+        route.local = { id: 'session-a' };
+        route.global = { ...route.local };
+        await renderRoot();
+        expect(route.replace.mock.calls.map(([href]) => href)).toEqual(expectedReplaces);
+    } finally {
+        await standardCleanup();
+        browser.restore();
+    }
 });

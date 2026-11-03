@@ -77,19 +77,8 @@ describe('resolveInstalledPluginUpdate', () => {
       .toThrowError(expect.objectContaining({ code: 'plugin_update_pinned' }));
   });
 
-  it('resolves allowed updates from the trusted npm channel alone — no curated binding required', () => {
-    // Curation is discovery/recommendation only: the trust record's exact npm
-    // origin/package/profile is the whole update channel.
-    const resolution = resolveInstalledPluginUpdate('acme.example', npmRecord('allowed'));
-    expect(resolution.kind).toBe('npm');
-    if (resolution.kind === 'npm') {
-      expect(resolution.request.packageName).toBe('@acme/example');
-      expect(resolution.request.registryOrigin).toBe('https://registry.example.test');
-    }
-  });
-
-  it('uses the trusted canonical local path for development updates', () => {
-    const record: PluginStateRecord = {
+  function localPathRecord(devWatch: boolean): PluginStateRecord {
+    return {
       ...npmRecord('allowed'),
       source: {
         kind: 'path',
@@ -98,7 +87,7 @@ describe('resolveInstalledPluginUpdate', () => {
         installPolicy: 'link',
         resolvedPath: '/tmp/source',
         manifestPath: '/tmp/source/.happier-plugin/plugin.json',
-        devWatch: true,
+        ...(devWatch ? { devWatch: true } : {}),
       },
       install: {
         mode: 'link',
@@ -115,9 +104,17 @@ describe('resolveInstalledPluginUpdate', () => {
         },
       },
     };
+  }
 
-    expect(() => resolveInstalledPluginUpdate('acme.example', record)).toThrow(
-      "Development plugin 'acme.example' advances through its registered source observer",
-    );
+  it('updates a linked path install from the trusted canonical path, not the stale source locator', () => {
+    expect(resolveInstalledPluginUpdate('acme.example', localPathRecord(false))).toEqual({
+      kind: 'path',
+      request: { kind: 'installPath', locator: '/canonical/source' },
+    });
+  });
+
+  it('refuses development updates so they advance only through the registered source observer', () => {
+    expect(() => resolveInstalledPluginUpdate('acme.example', localPathRecord(true)))
+      .toThrowError(expect.objectContaining({ code: 'plugin_development_update_requires_reload' }));
   });
 });

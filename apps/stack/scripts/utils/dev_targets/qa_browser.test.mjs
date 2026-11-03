@@ -12,7 +12,7 @@ import test from 'node:test';
 import { rootCertificates } from 'node:tls';
 import { createServer } from 'node:http';
 import { createServer as createSocketServer } from 'node:net';
-import { resolveQaBrowserUrl, runQaBrowserSession, runQaBrowserWorker, stopQaBrowsers, stopStackQaBrowsers } from './qa_browser.mjs';
+import { resolveQaBrowserUrl, runQaBrowserSession as runRealQaBrowserSession, runQaBrowserWorker, stopQaBrowsers, stopStackQaBrowsers } from './qa_browser.mjs';
 import { buildRemoteQaBrowserStopCommand, resolveRemoteStackStatePaths } from './remote_commands.mjs';
 import { runCaptureResult, spawnProc, killProcessTree } from '../proc/proc.mjs';
 import { createTempFixture } from '../../testkit/core/temp_fixture.mjs';
@@ -20,6 +20,181 @@ import { resolveMutagenSessionName } from './mutagen_project.mjs';
 import { captureDevTargetSyncFixture } from '../../testkit/core/dev_target_sync.mjs';
 import { writeFakeBin } from '../../testkit/core/fake_bin_harness.mjs';
 import { parseVoiceWavContainer } from '../../../../../packages/tests/src/testkit/voice/voiceWavParser.mjs';
+
+// CDP WebSocket is an external boundary. Keep the pool, executor and lifetime real.
+class AnsweringCdpSocket extends EventTarget {
+  constructor() { super(); queueMicrotask(() => this.dispatchEvent(new Event('open'))); }
+  send(data) {
+    const command = JSON.parse(data);
+    queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', {
+      data: JSON.stringify({ id: command.id, result: { product: 'fixture' } }),
+    })));
+  }
+  close() {}
+}
+function runQaBrowserSession(input, boundaries = {}) {
+  return runRealQaBrowserSession(input, { WebSocketImpl: AnsweringCdpSocket, ...boundaries });
+}
+
+for (const fault of ['not connected', 'connected but silent', 'HTTP pending', 'CDP refused', 'forward exited']) {
+  test(`browser acquisition retires ${fault} before handing out its one replacement`, { timeout: 10_000 }, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const signals = new EventEmitter();
+    const events = [];
+    let starts = 0;
+    let dropForward;
+    let firstProbe;
+    const probing = new Promise(resolve => { firstProbe = resolve; });
+    let ready;
+    const completion = runQaBrowserSession({
+      target: { name: 'absent', platform: 'posix', ssh: 'absent', repoDir: '/mirror', cliHomeDir: '/fixture' },
+      stackName: 'agent-qa-browser', stackBaseDir: '/fixture', sessionName: 'attach-admission',
+      url: new URL('fixture', 'http:' + '//localhost').href,
+      onReady(value) { events.push(`ready:${starts}`); ready = value; signals.emit('SIGINT'); },
+    }, {
+      signalSource: signals, capture: captureReadyRemote,
+      spawnProcess(label, _command, _args, _env, options) {
+        if (label.startsWith('browser-forward:')) return { completion: new Promise(resolve => { dropForward = resolve; }) };
+        const attempt = ++starts;
+        events.push(`start:${attempt}`);
+        let finish;
+        const child = { stdin: new PassThrough(), completion: new Promise(resolve => { finish = resolve; }) };
+        child.stdin.on('data', () => { events.push(`retired:${attempt}`); finish({ code: 0 }); });
+        setImmediate(() => options.onLine({ stream: 'stdout', line: 'HSTACK_QA_BROWSER={"port":40201,"debuggerPath":"/devtools/browser/fixture","pid":12,"proxyPort":40202}' }));
+        return child;
+      },
+      stopProcess: async () => {},
+      fetchImpl: async (_url, { signal }) => {
+        if (starts === 1 && (fault === 'HTTP pending' || fault === 'forward exited')) {
+          firstProbe();
+          if (fault === 'forward exited') queueMicrotask(() => dropForward({ code: 255 }));
+          return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+        }
+        return { ok: true, json: async () => ({ webSocketDebuggerUrl: 'fixture' }) };
+      },
+      WebSocketImpl: class extends AnsweringCdpSocket {
+        constructor() {
+          super();
+          this.attempt = starts;
+          firstProbe();
+        }
+        send(data) {
+          if (this.attempt !== 1) return super.send(data);
+          if (fault === 'CDP refused') queueMicrotask(() => this.dispatchEvent(new Event('error')));
+          // Reproduce a connected endpoint whose protocol dispatcher never answers.
+        }
+        addEventListener(type, listener, options) {
+          if (starts === 1 && fault === 'not connected' && type === 'open') return;
+          return super.addEventListener(type, listener, options);
+        }
+      },
+    });
+    try {
+      await Promise.race([probing, completion]);
+      await new Promise(setImmediate);
+      if (fault !== 'CDP refused' && fault !== 'forward exited') assert.equal(ready, undefined, 'HTTP discovery alone must not admit a browser');
+      t.mock.timers.tick(30_000);
+      await new Promise(setImmediate);
+      await completion;
+      assert.equal(starts, 2);
+      assert.deepEqual(events, ['start:1', 'retired:1', 'start:2', 'ready:2', 'retired:2']);
+      assert.equal(ready.target, 'absent');
+    } finally { signals.emit('SIGINT'); await completion; }
+  });
+}
+
+for (const cleanupCode of [0, 1]) {
+  test(`unresponsive acquisition stops after one replacement; retirement exit ${cleanupCode}`, { timeout: 10_000 }, async t => {
+    const signals = new EventEmitter();
+    let starts = 0;
+    let retired = 0;
+    let advertised = false;
+    const failure = await runQaBrowserSession({
+      target: { name: 'absent', platform: 'posix', ssh: 'absent', repoDir: '/mirror', cliHomeDir: '/fixture' },
+      stackName: 'agent-qa-browser', stackBaseDir: '/fixture', sessionName: 'failed-attach',
+      url: new URL('fixture', 'http:' + '//localhost').href,
+      onReady() { advertised = true; },
+    }, {
+      signalSource: signals, capture: captureReadyRemote,
+      spawnProcess(label, _command, _args, _env, options) {
+        if (label.startsWith('browser-forward:')) return { completion: new Promise(() => {}) };
+        starts++;
+        let finish;
+        const child = { stdin: new PassThrough(), completion: new Promise(resolve => { finish = resolve; }) };
+        child.stdin.on('data', () => { retired++; finish({ code: cleanupCode }); });
+        setImmediate(() => options.onLine({ stream: 'stdout', line: 'HSTACK_QA_BROWSER={"port":40201,"debuggerPath":"/devtools/browser/fixture","pid":12,"proxyPort":40202}' }));
+        return child;
+      },
+      stopProcess: async () => {},
+      fetchImpl: async () => ({ ok: true, json: async () => ({ webSocketDebuggerUrl: 'fixture' }) }),
+      WebSocketImpl: class extends AnsweringCdpSocket {
+        send() { queueMicrotask(() => this.dispatchEvent(new Event('error'))); }
+      },
+    }).then(() => null, error => error);
+    assert.equal(advertised, false);
+    assert.equal(starts, cleanupCode === 0 ? 2 : 1);
+    assert.equal(retired, starts);
+    if (cleanupCode === 0) assert.equal(failure?.code, 'qa-browser-cdp-unavailable');
+    else assert.match(failure?.message ?? '', /retirement.*unconfirmed/);
+  });
+}
+
+test('cancelling CDP acquisition retires its worker without replacement', { timeout: 10_000 }, async () => {
+  const signals = new EventEmitter();
+  let starts = 0;
+  let retired = false;
+  let socketClosed = false;
+  await runQaBrowserSession({
+    target: { name: 'absent', platform: 'posix', ssh: 'absent', repoDir: '/mirror', cliHomeDir: '/fixture' },
+    stackName: 'agent-qa-browser', stackBaseDir: '/fixture', sessionName: 'cancel-attach',
+    url: new URL('fixture', 'http:' + '//localhost').href,
+    onReady() { assert.fail('cancelled acquisition must not publish readiness'); },
+  }, {
+    signalSource: signals, capture: captureReadyRemote,
+    spawnProcess(label, _command, _args, _env, options) {
+      if (label.startsWith('browser-forward:')) return { completion: new Promise(() => {}) };
+      starts++;
+      let finish;
+      const child = { stdin: new PassThrough(), completion: new Promise(resolve => { finish = resolve; }) };
+      child.stdin.on('data', () => { retired = true; finish({ code: 0 }); });
+      setImmediate(() => options.onLine({ stream: 'stdout', line: 'HSTACK_QA_BROWSER={"port":40201,"debuggerPath":"/devtools/browser/fixture","pid":12,"proxyPort":40202}' }));
+      return child;
+    },
+    stopProcess: async () => {},
+    fetchImpl: async () => ({ ok: true, json: async () => ({ webSocketDebuggerUrl: 'fixture' }) }),
+    WebSocketImpl: class extends AnsweringCdpSocket {
+      send() { signals.emit('SIGINT'); }
+      close() { socketClosed = true; }
+    },
+  });
+  assert.equal(starts, 1);
+  assert.equal(retired, true);
+  assert.equal(socketClosed, true);
+});
+
+test('managed control EOF retires its browser without requiring a later signal', { timeout: 10_000 }, async t => {
+  const port = await fakeChromeCommandLine(t);
+  const input = new PassThrough();
+  const signals = new EventEmitter();
+  let announceReady;
+  const ready = new Promise(resolve => { announceReady = resolve; });
+  const closed = [];
+  const completion = runQaBrowserWorker({ sessionName: 'control-eof', input,
+    env: { ...process.env, HAPPIER_REMOTE_EXEC_CONTROL_STDIN: '1' }, writeReady: announceReady,
+  }, { signalSource: signals, capture: async (_command, args) => {
+    if (args.includes('open')) {
+      await writeFile(join(args[args.indexOf('--profile') + 1], 'DevToolsActivePort'), `${port}\n/devtools/browser/fixture-browser\n`);
+    } else closed.push(args[args.indexOf('--session') + 1]);
+    return { ok: true, exitCode: 0, out: '', err: '' };
+  } });
+  t.signal.addEventListener('abort', () => signals.emit('SIGINT'), { once: true });
+  t.after(async () => { signals.emit('SIGINT'); await completion; });
+  const browser = await ready;
+  input.end();
+  await completion;
+  assert.ok(closed.includes(browser.session), 'control loss must close the serving browser');
+  await assert.rejects(access(browser.profile), { code: 'ENOENT' });
+});
 
 test('source control refuses a missing mirror before dispatching its browser helper', async t => {
   const { root } = await createTempFixture(t, { prefix: 'hstack-browser-missing-mirror-' });
@@ -168,7 +343,7 @@ test('browser cleanup reuses SSH and recovers a refused channel before dispatchi
   assert.deepEqual(transports, [false], 'ambiguous loss after dispatch must not replay retirement');
 });
 
-for (const ownerSignal of ['SIGINT', 'SIGKILL']) test(`${ownerSignal} owner exit closes detached browser beyond executor cancellation grace`, { skip: process.platform === 'win32', timeout: 20000 }, async t => {
+for (const ownerSignal of ['SIGINT', 'SIGKILL']) test(`${ownerSignal} owner exit closes detached browser beyond executor cancellation grace`, { skip: process.platform === 'win32' }, async t => {
   const fixture = await createTempFixture(t, { prefix: 'hstack-qa-browser-cancel-', registerCleanup: false });
   const { root } = fixture;
   const chromePort = await fakeChromeCommandLine(t);
@@ -197,7 +372,9 @@ else setTimeout(()=>fs.writeFileSync(${JSON.stringify(closeMarker)},'closed'),25
   const script = `
 import assert from 'node:assert/strict';
 import { access } from 'node:fs/promises';
-import { runQaBrowserSession } from ${JSON.stringify(new URL('./qa_browser.mjs', import.meta.url).href)};
+import { runQaBrowserSession as runRealQaBrowserSession } from ${JSON.stringify(new URL('./qa_browser.mjs', import.meta.url).href)};
+${AnsweringCdpSocket.toString()}
+${runQaBrowserSession.toString()}
 import { runCaptureResult, spawnProc, killProcessTree } from ${JSON.stringify(new URL('../proc/proc.mjs', import.meta.url).href)};
 ${captureReadyRemote.toString()}
 let ready, resolveTunnel;
@@ -433,6 +610,66 @@ test('QA browser launches under a long remote scratch path without exceeding the
   }
 });
 
+test('QA browser IPC names fit macOS and Linux for incident and arbitrarily long lane names', { skip: process.platform === 'win32' }, async t => {
+  const { root } = await createTempFixture(t, { prefix: 'hstack-qa-browser-ipc-', parentDir: '/tmp' });
+  const chromePort = await fakeChromeCommandLine(t);
+  for (const sessionName of ['runnable-now-1102-recovered', 'lane-'.repeat(300)]) {
+    const signals = new EventEmitter();
+    const opened = new Set();
+    const closed = new Set();
+    await runQaBrowserWorker({ sessionName, input: new PassThrough(),
+      writeReady: () => signals.emit('SIGINT') }, {
+      signalSource: signals,
+      // agent-browser is the external process boundary. Apply both native
+      // sun_path capacities (including the terminating NUL), then bind for real.
+      capture: async (_command, args, options) => {
+        const session = args[args.indexOf('--session') + 1];
+        assert.equal(options.env.AGENT_BROWSER_SESSION, session);
+        const socketPath = join(root, `${session}.sock`);
+        for (const capacity of [104, 108]) {
+          assert.ok(Buffer.byteLength(socketPath) < capacity, `IPC path must fit sun_path[${capacity}]`);
+        }
+        if (args.includes('open')) {
+          const socket = createSocketServer();
+          await new Promise((resolve, reject) => {
+            socket.once('error', reject);
+            socket.listen(socketPath, resolve);
+          });
+          await new Promise(resolve => socket.close(resolve));
+          opened.add(session);
+          await writeFile(join(args[args.indexOf('--profile') + 1], 'DevToolsActivePort'), `${chromePort}\n/devtools/browser/fixture-browser\n`);
+        } else closed.add(session);
+        return { ok: true, exitCode: 0, out: '', err: '' };
+      },
+    });
+    assert.equal(opened.size, 2, 'discovery and serving browsers retain separate IPC identities');
+    assert.deepEqual(closed, opened, 'cleanup must reuse exactly the launched IPC identities');
+  }
+});
+
+test('QA browser preserves its launch error when cleanup also fails', async () => {
+  const signals = new EventEmitter();
+  let profile;
+  try {
+    await assert.rejects(runQaBrowserWorker({ sessionName: 'launch-failure', input: new PassThrough() }, {
+      signalSource: signals,
+      capture: async (_command, args) => {
+        if (args.includes('open')) {
+          profile = args[args.indexOf('--profile') + 1];
+          return { ok: false, exitCode: 1, err: 'original launch failure' };
+        }
+        return { ok: false, exitCode: 1, err: 'secondary cleanup failure' };
+      },
+    }), error => {
+      assert.match(error.message, /QA browser launch failed: original launch failure/);
+      assert.match(error.cause?.message ?? '', /secondary cleanup failure/);
+      return true;
+    });
+  } finally {
+    if (profile) await rm(profile, { recursive: true, force: true });
+  }
+});
+
 test('closing a browser during CDP readiness interrupts the wait and retires its worker', async () => {
   const signalSource = new EventEmitter();
   let resolveExited;
@@ -459,10 +696,8 @@ test('closing a browser during CDP readiness interrupts the wait and retires its
   await session;
 });
 
-test('QA browser CDP readiness can complete beyond the former default cutoff', async (t) => {
+test('healthy browser admission answers CDP without replacing its worker', async () => {
   const signalSource = new EventEmitter();
-  let clock = Date.now();
-  t.mock.method(Date, 'now', () => clock);
   let resolveExited;
   const child = { stdin: new PassThrough(), completion: new Promise(resolve => { resolveExited = resolve; }) };
   child.stdin.on('data', () => resolveExited({ code: 0 }));
@@ -479,56 +714,197 @@ test('QA browser CDP readiness can complete beyond the former default cutoff', a
     },
     stopProcess: async () => { resolveExited({ code: 0 }); },
     fetchImpl: async () => {
-      if (probes++ === 0) { clock += 2 * 60 * 60_000; return { ok: false }; }
+      probes++;
       return { ok: true, json: async () => ({ webSocketDebuggerUrl: 'ws://localhost/devtools/browser/fixture' }) };
     },
   });
   assert.equal(ready.localFallback, false);
   assert.equal(ready.target, 'absent');
-  assert.equal(probes, 2);
+  assert.equal(probes, 1);
 });
 
-test('QA browser restores a dropped SSH forward while retaining its worker and CDP address', async () => {
+for (const recoveryEnd of ['cancellation', 'worker exit']) {
+test(`QA browser backs off dropped SSH forwards, restores its bindings, and settles after ${recoveryEnd}`, async t => {
+  // Clock and SSH are external boundaries; retry and browser lifetime stay real.
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const signalSource = new EventEmitter();
   let finishWorker;
   const worker = { stdin: new PassThrough(), completion: new Promise(resolve => { finishWorker = resolve; }) };
   worker.stdin.on('data', () => finishWorker({ code: 0 }));
   const forwards = [];
+  let workerStarts = 0;
+  let abortedReadinessProbes = 0;
   let dropForward;
   let ready;
+  let resolveReady;
+  const readiness = new Promise(resolve => { resolveReady = resolve; });
+  let recovered = false;
   const result = runQaBrowserSession({ target: { name: 'absent', platform: 'posix', ssh: 'absent', repoDir: '/mirror', cliHomeDir: '/fixture' },
     stackName: 'agent-qa-browser', sessionName: 'restore-forward', stackBaseDir: '/fixture', url: 'http://localhost:3025',
-    onReady: value => { ready = value; dropForward({ code: 255 }); },
+    onReady: value => { ready = value; resolveReady(); },
   }, { signalSource, capture: captureReadyRemote,
     spawnProcess: (label, _command, args, _env, options) => {
       if (!label.startsWith('browser-forward:')) {
+        workerStarts++;
         setImmediate(() => options.onLine({ stream: 'stdout', line: 'HSTACK_QA_BROWSER={"port":40201,"debuggerPath":"/devtools/browser/fixture","pid":12,"proxyPort":40202}' }));
         return worker;
       }
       const child = { completion: new Promise(resolve => { dropForward = resolve; }) };
-      forwards.push({ args, child });
+      forwards.push({ args, child, startedAt: Date.now() });
+      // The old remote SSH peer can still hold its reverse listener after the
+      // client loses transport. A replacement can exit before CDP works.
+      if (forwards.length === 2) setImmediate(() => dropForward({ code: 255 }));
       return child;
     },
     stopProcess: async () => { dropForward({ code: 0 }); },
-    fetchImpl: async url => {
+    fetchImpl: async (url, { signal }) => {
       if (forwards.length === 2) {
+        return await new Promise((_, reject) => signal.addEventListener('abort', () => {
+          abortedReadinessProbes++;
+          reject(signal.reason);
+        }, { once: true }));
+      }
+      if (forwards.length === 3) {
         assert.equal(url, `${ready.cdpHttpUrl}/json/version`, 'automation retains the same CDP endpoint');
         assert.equal(worker.stdin.readableLength, 0, 'transport recovery must not close the browser worker');
-        signalSource.emit('SIGINT');
+        recovered = true;
       }
       return { ok: true, json: async () => ({ webSocketDebuggerUrl: 'ws://localhost/devtools/browser/fixture' }) };
     },
   });
-  await result;
-  assert.equal(forwards.length, 2);
-  assert.deepEqual(forwards[1].args, forwards[0].args, 'both SOCKS and CDP bindings survive recovery');
+  try {
+    await readiness;
+    dropForward({ code: 255 });
+    await new Promise(setImmediate);
+    assert.equal(forwards.length, 1, 'transport failure must not hot-spawn another SSH process');
+    t.mock.timers.tick(4_999);
+    await new Promise(setImmediate);
+    assert.equal(forwards.length, 1);
+    t.mock.timers.tick(1);
+    await new Promise(setImmediate);
+    assert.equal(forwards.length, 2);
+    // Let the replacement's SSH-exit event settle before advancing its delay.
+    await new Promise(setImmediate);
+    t.mock.timers.tick(9_999);
+    await new Promise(setImmediate);
+    assert.equal(forwards.length, 2, 'a failed replacement grows the existing retry delay');
+    t.mock.timers.tick(1);
+    await new Promise(setImmediate);
+    assert.equal(recovered, true, 'a genuine reconnection restores CDP health');
+    assert.deepEqual(forwards.map(forward => forward.startedAt), [0, 5_000, 15_000]);
+    dropForward({ code: 255 });
+    await new Promise(setImmediate);
+    assert.equal(forwards.length, 3);
+    t.mock.timers.tick(4_999);
+    await new Promise(setImmediate);
+    assert.equal(forwards.length, 3);
+    t.mock.timers.tick(1);
+    await new Promise(setImmediate);
+    assert.equal(forwards.length, 4, 'successful readiness resets the recovery delay');
+    assert.deepEqual(forwards.map(forward => forward.startedAt), [0, 5_000, 15_000, 20_000]);
+    dropForward({ code: 255 });
+    await new Promise(setImmediate);
+  } finally {
+    if (recoveryEnd === 'worker exit') finishWorker({ code: 0 });
+    else signalSource.emit('SIGINT');
+    await result;
+  }
+  t.mock.timers.tick(60_000);
+  await new Promise(setImmediate);
+  assert.equal(forwards.length, 4);
+  assert.equal(workerStarts, 1, 'forward recovery must never replay the browser payload');
+  assert.equal(abortedReadinessProbes, 1, 'a failed recovery attempt must release its pending HTTP probe');
+  for (const forward of forwards.slice(1)) {
+    assert.deepEqual(forward.args, forwards[0].args, 'both SOCKS and CDP bindings survive recovery');
+  }
+});
+}
+
+test('admitted browser survives pending recovery beyond acquisition window and settles worker exit', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const signals = new EventEmitter();
+  let finishWorker, dropForward, announceReady, announceProbe;
+  let closed = false;
+  const worker = { stdin: new PassThrough(), completion: new Promise(resolve => { finishWorker = resolve; }) };
+  worker.stdin.on('data', () => { closed = true; finishWorker({ code: 0 }); });
+  const ready = new Promise(resolve => { announceReady = resolve; });
+  const probing = new Promise(resolve => { announceProbe = resolve; });
+  let forwards = 0;
+  const result = runQaBrowserSession({
+    target: { name: 'absent', platform: 'posix', ssh: 'absent', repoDir: '/mirror', cliHomeDir: '/fixture' },
+    stackName: 'fixture', stackBaseDir: '/fixture', sessionName: 'worker-exit', url: 'http://app.localhost:19364',
+    onReady: announceReady,
+  }, { signalSource: signals, capture: captureReadyRemote,
+    spawnProcess: (label, _command, _args, _env, options) => {
+      if (!label.startsWith('browser-forward:')) {
+        setImmediate(() => options.onLine({ stream: 'stdout', line: 'HSTACK_QA_BROWSER={"port":40201,"debuggerPath":"/devtools/browser/fixture","pid":12,"proxyPort":40202}' }));
+        return worker;
+      }
+      forwards++;
+      return { completion: new Promise(resolve => { dropForward = resolve; }) };
+    },
+    stopProcess: async () => dropForward({ code: 0 }),
+    fetchImpl: async (_url, { signal }) => {
+      if (forwards === 1) return { ok: true, json: async () => ({ webSocketDebuggerUrl: 'ws://fixture' }) };
+      announceProbe();
+      return await new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    },
+  });
+  void result.catch(() => {});
+  try {
+    await ready;
+    dropForward({ code: 255 });
+    await new Promise(setImmediate);
+    t.mock.timers.tick(5_000);
+    await probing;
+    t.mock.timers.tick(30_000);
+    await new Promise(setImmediate);
+    assert.equal(closed, false, 'admission timeout must never retire a browser already held by a lane');
+    finishWorker({ code: 0 });
+    await assert.doesNotReject(result, 'a successful worker exit must not become an HTTP AbortError');
+    assert.equal(forwards, 2);
+  } finally {
+    signals.emit('SIGINT');
+    await result.catch(() => {});
+  }
+});
+
+test('QA browser reports an unavailable authentication refusal without retrying its forward', async () => {
+  const signals = new EventEmitter();
+  let finishWorker;
+  const worker = { stdin: new PassThrough(), completion: new Promise(resolve => { finishWorker = resolve; }) };
+  worker.stdin.on('data', () => finishWorker({ code: 0 }));
+  let finishForward, diagnose;
+  let forwards = 0;
+  const failure = await runQaBrowserSession({
+    target: { name: 'absent', platform: 'posix', ssh: 'absent', repoDir: '/mirror', cliHomeDir: '/fixture' },
+    stackName: 'fixture', stackBaseDir: '/fixture', sessionName: 'refused', url: 'http://app.localhost:19364',
+    onReady: () => {
+      diagnose?.({ stream: 'stderr', line: 'Host key verification failed.' });
+      finishForward({ code: 255 });
+    },
+  }, { signalSource: signals, capture: captureReadyRemote,
+    spawnProcess: (label, _command, _args, _env, options) => {
+      if (!label.startsWith('browser-forward:')) {
+        setImmediate(() => options.onLine({ stream: 'stdout', line: 'HSTACK_QA_BROWSER={"port":40201,"debuggerPath":"/devtools/browser/fixture","pid":12,"proxyPort":40202}' }));
+        return worker;
+      }
+      forwards++;
+      diagnose = options.onLine;
+      if (forwards > 1) setImmediate(() => signals.emit('SIGINT'));
+      return { completion: new Promise(resolve => { finishForward = resolve; }) };
+    },
+    stopProcess: async () => finishForward({ code: 0 }),
+    fetchImpl: async () => ({ ok: true, json: async () => ({ webSocketDebuggerUrl: 'ws://fixture' }) }),
+  }).then(() => null, error => error);
+  assert.equal(failure?.code, 'ssh-authentication-failed');
+  assert.match(failure.message, /unavailable/);
+  assert.equal(forwards, 1, 'a classified non-retryable refusal settles without another SSH spawn');
 });
 
 test('QA browser exits when its SSH forward dies during a pending CDP health request', async () => {
   const signalSource = new EventEmitter();
-  let finishWorker;
-  const worker = { stdin: new PassThrough(), completion: new Promise(resolve => { finishWorker = resolve; }) };
-  worker.stdin.on('data', () => finishWorker({ code: 0 }));
+  let workers = 0;
   let finishForward;
   const tunnel = { exitCode: null, completion: new Promise(resolve => { finishForward = resolve; }) };
   let requested;
@@ -541,6 +917,10 @@ test('QA browser exits when its SSH forward dies during a pending CDP health req
   }, { signalSource, capture: captureReadyRemote,
     spawnProcess: (label, _command, _args, _env, options) => {
       if (label.startsWith('browser-forward:')) return tunnel;
+      workers++;
+      let finishWorker;
+      const worker = { stdin: new PassThrough(), completion: new Promise(resolve => { finishWorker = resolve; }) };
+      worker.stdin.on('data', () => finishWorker({ code: 0 }));
       setImmediate(() => options.onLine({ stream: 'stdout', line: 'HSTACK_QA_BROWSER={"port":40201,"debuggerPath":"/devtools/browser/fixture","pid":12,"proxyPort":40202}' }));
       return worker;
     },
@@ -563,7 +943,8 @@ test('QA browser exits when its SSH forward dies during a pending CDP health req
     const observed = await Promise.race([result,
       new Promise(resolve => { timer = setTimeout(() => resolve({ outcome: 'pending' }), 300); })]);
     assert.equal(observed.outcome, 'failed', 'a dead forward must close its owner without waiting for HTTP');
-    assert.match(observed.error.message, /SSH forward exited/);
+    assert.equal(observed.error.code, 'qa-browser-cdp-unavailable');
+    assert.equal(workers, 2, 'both failed forwards retire their worker, with only one replacement');
     assert.equal(ready, false);
   } finally {
     clearTimeout(timer);
@@ -572,37 +953,67 @@ test('QA browser exits when its SSH forward dies during a pending CDP health req
   }
 });
 
-test('QA browser does not resurrect a deliberately terminated SSH forward', async () => {
-  const signalSource = new EventEmitter();
-  let finishWorker;
+// A forward is transport, not the browser's cancellation authority. The
+// 20:47Z owner continuation requires the same browser to survive its loss.
+for (const ended of [{ code: 0 }, { code: null, signal: 'SIGTERM' }]) {
+test(`QA browser retains its worker and restores clean/signaled forward loss (${ended.signal ?? ended.code})`, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const signals = new EventEmitter();
+  let finishWorker, finishForward, announceReady, announceRecovered;
   const worker = { stdin: new PassThrough(), completion: new Promise(resolve => { finishWorker = resolve; }) };
   worker.stdin.on('data', () => finishWorker({ code: 0 }));
-  let forwards = 0;
-  let endForward;
-  const session = runQaBrowserSession({ target: { name: 'absent', platform: 'posix', ssh: 'absent', repoDir: '/mirror', cliHomeDir: '/fixture' },
-    stackName: 'agent-qa-browser', sessionName: 'intentional-stop', stackBaseDir: '/fixture', url: 'http://localhost:3025',
-    onReady: () => {
-      // A real owned OpenSSH forward stopped by SIGTERM on this controller
-      // completed with code 0 rather than a transport-loss exit 255.
-      endForward({ code: 0, signal: null });
-    },
-  }, { signalSource, capture: captureReadyRemote,
-    spawnProcess: (label, _command, _args, _env, options) => {
+  const ready = new Promise(resolve => { announceReady = resolve; });
+  const recovered = new Promise(resolve => { announceRecovered = resolve; });
+  const bindings = [];
+  let workers = 0;
+  const session = runQaBrowserSession({
+    stackName: 'agent-qa-browser', stackBaseDir: '/fixture',
+    sessionName: 'forward-loss', url: 'http://127.0.0.1:19364/',
+    target: { name: 'absent', platform: 'posix', ssh: 'absent', repoDir: '/mirror', cliHomeDir: '/fixture' },
+    onReady: announceReady,
+  }, {
+    signalSource: signals,
+    capture: async (command, args) => captureDevTargetSyncFixture(command, args)
+      ?? { ok: true, exitCode: 0, out: '', err: '' },
+    spawnProcess: (label, _command, args, _env, options) => {
       if (!label.startsWith('browser-forward:')) {
+        workers++;
         setImmediate(() => options.onLine({ stream: 'stdout', line: 'HSTACK_QA_BROWSER={"port":40201,"debuggerPath":"/devtools/browser/fixture","pid":12,"proxyPort":40202}' }));
         return worker;
       }
-      forwards++;
-      if (forwards > 1) setImmediate(() => signalSource.emit('SIGINT'));
-      return { completion: new Promise(resolve => { endForward = resolve; }) };
+      bindings.push(args);
+      const child = { completion: new Promise(resolve => { finishForward = resolve; }) };
+      if (bindings.length === 2) setImmediate(() => finishForward(ended));
+      return child;
     },
-    stopProcess: async () => endForward({ code: 0 }),
-    fetchImpl: async () => ({ ok: true, json: async () => ({ webSocketDebuggerUrl: 'ws://localhost/devtools/browser/fixture' }) }),
+    stopProcess: async () => finishForward({ code: 0 }),
+    fetchImpl: async (_url, { signal }) => {
+      if (bindings.length === 2) return await new Promise((_, reject) =>
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      if (bindings.length === 3) announceRecovered();
+      return { ok: true, json: async () => ({ webSocketDebuggerUrl: 'fixture' }) };
+    },
   });
-  const failure = await session.then(() => null, error => error);
-  assert.ok(failure instanceof Error, 'an intentional foreground termination closes its owner');
-  assert.equal(forwards, 1, 'Stack retirement must not create replacement listeners');
+  try {
+    await ready;
+    finishForward(ended);
+    await new Promise(setImmediate);
+    t.mock.timers.tick(5_000);
+    await new Promise(setImmediate);
+    // The replacement exits in its own immediate; let its retry delay settle.
+    await new Promise(setImmediate);
+    t.mock.timers.tick(10_000);
+    await recovered;
+    await new Promise(setImmediate);
+    assert.equal(workers, 1, 'forward recovery preserves the existing browser worker');
+    assert.equal(bindings.length, 3, 'replacement loss before readiness also restores the route');
+    for (const args of bindings.slice(1)) assert.deepEqual(args, bindings[0]);
+  } finally {
+    signals.emit('SIGINT');
+    await session;
+  }
 });
+}
 
 test('GPU QA browser uses headed Chromium in the existing profile and SIGINT cleanup lifecycle', { skip: process.platform === 'win32' }, async t => {
   const { root } = await createTempFixture(t, { prefix: 'hstack-qa-gpu-' });

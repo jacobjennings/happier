@@ -36,6 +36,9 @@ import { VoiceTranscriptNotePayloadSchema } from '@/voice/transcript/voiceTransc
 import { resolveVoiceContinuationNoteText } from '@/voice/transcript/voiceTranscriptNotePresentation';
 import { transcriptMarkdownTextStyle } from '@/components/sessions/transcript/transcriptMarkdownTypography';
 import { StructuredFindText, type StructuredFindTextBlock, type StructuredFindProjectionContext } from './structuredFindText';
+import { ScmDiffSummaryGenerateOutputSchema } from '@happier-dev/protocol/scm/diffSummary';
+import { readScmDiffSummaryPublicationReceipt } from '@/sync/domains/scm/diffSummary/publicationReceipt';
+import { ScmResultReceiptCard, projectScmResultReceiptFindText } from '@/components/sessions/files/walkthrough/ScmResultReceiptCard';
 
 export type StructuredMessageKind =
     | 'file_review_note.v1'
@@ -52,7 +55,8 @@ export type StructuredMessageKind =
     | 'execution_run_completion.v1'
     | 'voice_agent_turn.v1'
     | 'session_synopsis.v1'
-    | 'session_summary_shard.v1';
+    | 'session_summary_shard.v1'
+    | 'scm_diff_summary.v1';
 
 export type StructuredMessageRendererParams = Readonly<{
     sessionId: string;
@@ -123,12 +127,13 @@ const structuredMessageRegistryEntries: readonly (StructuredMessageRegistryEntry
     {
         kind: 'participant_message.v1',
         schema: ParticipantMessageV1Schema,
+        usesSessionMessages: true,
         render: (payload, params) => renderUserTextStructuredCard(params, (messageText) => (
             <ParticipantMessageCard payload={payload} messageText={messageText} />
         )),
         projectFindText: (payload, params) => {
             const text = readStructuredUserMessageText(params.message);
-            return text ? projectParticipantMessageFindText(payload, text) : null;
+            return text ? projectParticipantMessageFindText(payload, text, params.sessionMessages) : null;
         },
     },
     {
@@ -223,6 +228,24 @@ const structuredMessageRegistryEntries: readonly (StructuredMessageRegistryEntry
         // Retained 0.2 rows have no effective-engine fact; do not infer one from the current lead.
         render: (payload, params) => <WorkerUpdateCard update={legacyCompletionUpdate(payload, params.sessionId)} serverId={params.serverId} navigationEnabled={params.interaction.permissionDisabledReason !== 'public'} />,
         projectFindText: (payload, params) => projectWorkerUpdateFindText(legacyCompletionUpdate(payload, params.sessionId ?? ''), { canInspect: payload.canInspect && params.canNavigate === true }),
+    },
+    {
+        kind: 'scm_diff_summary.v1',
+        schema: ScmDiffSummaryGenerateOutputSchema,
+        // Only a saved publication is a receipt (it carries `scmResultUpdate` beside the payload);
+        // baselines, refusals and discussion keep the ordinary prose path.
+        render: (payload, params) => {
+            const receipt = readScmDiffSummaryPublicationReceipt(payload, params.message.meta?.scmResultUpdate);
+            return receipt ? (
+                <ScmResultReceiptCard receipt={receipt} sessionId={params.sessionId} serverId={params.serverId}
+                    canNavigate={params.interaction.permissionDisabledReason !== 'public'}
+                    canControl={params.interaction.canSendMessages === true} />
+            ) : null;
+        },
+        projectFindText: (payload, params) => {
+            const receipt = readScmDiffSummaryPublicationReceipt(payload, params.message.meta?.scmResultUpdate);
+            return receipt ? projectScmResultReceiptFindText(receipt) : null;
+        },
     },
     {
         kind: 'voice_agent_turn.v1',

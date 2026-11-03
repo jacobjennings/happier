@@ -113,7 +113,7 @@ const restoreHarnessModuleLoader = await warmLocalVoiceEngineHarnessGraph();
 afterAll(() => restoreHarnessModuleLoader());
 
 describe('local voice engine real-producer barge-in', () => {
-    registerLocalVoiceEngineHarnessHooks({ resetModulesBetweenTests: false });
+    registerLocalVoiceEngineHarnessHooks();
 
     afterEach(async () => {
         vi.restoreAllMocks();

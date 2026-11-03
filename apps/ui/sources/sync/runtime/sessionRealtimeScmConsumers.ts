@@ -1,4 +1,4 @@
-import type { ScmWorkingSnapshot, Session } from '@/sync/domains/state/storageTypes';
+import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import { readSessionWorkspaceContext } from '@/sync/domains/session/readSessionWorkspaceContext';
 import type { SessionRealtimeScmScope } from '@/sync/domains/session/realtime/sessionRealtimeVisibility';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
@@ -7,7 +7,7 @@ import { isSessionPathWithinRepoRoot } from '@/scm/sync/paths';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 
 type SessionRealtimeScmScopeState = Readonly<{
-  sessions?: Record<string, Pick<Session, 'id' | 'metadata' | 'metadataLayoutVersion' | 'ownerMetadataView'>>;
+  sessions?: Readonly<Record<string, Readonly<{ metadata?: unknown; metadataLayoutVersion?: number; ownerMetadataView?: unknown }>>>;
   getProjectForSession?: (sessionId: string) => { key?: { machineId?: string | null; path?: string | null } } | null;
   getSessionProjectScmSnapshot?: (sessionId: string) => ScmWorkingSnapshot | null;
 }>;
@@ -25,6 +25,7 @@ type MountedScmConsumerResetListener = () => void;
 let nextConsumerId = 1;
 const mountedScmConsumerScopes = new Map<number, SessionRealtimeScmScope>();
 const mountedScmConsumerResetListeners = new Set<MountedScmConsumerResetListener>();
+const mountedScmConsumerChangeListeners = new Set<() => void>();
 let mountedScmConsumerResetVersion = 0;
 
 function normalizeText(value: unknown): string | null {
@@ -36,7 +37,7 @@ function normalizeText(value: unknown): string | null {
 function readMachineScopeId(
   state: SessionRealtimeScmScopeState,
   sessionId: string,
-  session: Pick<Session, 'metadata' | 'metadataLayoutVersion' | 'ownerMetadataView'>,
+  session: Readonly<{ metadata?: unknown; metadataLayoutVersion?: number; ownerMetadataView?: unknown }>,
 ): string | null {
   const workspaceContext = readSessionWorkspaceContext(state, sessionId);
   return normalizeText(workspaceContext.projectMachineId)
@@ -111,9 +112,17 @@ export function registerSessionRealtimeScmConsumerScope(scope: SessionRealtimeSc
     ...scope,
     needsMutationTranscript: true,
   });
+  for (const listener of mountedScmConsumerChangeListeners) listener();
   return () => {
-    mountedScmConsumerScopes.delete(consumerId);
+    if (mountedScmConsumerScopes.delete(consumerId)) {
+      for (const listener of mountedScmConsumerChangeListeners) listener();
+    }
   };
+}
+
+export function subscribeMountedSessionRealtimeScmConsumerScopes(listener: () => void): () => void {
+  mountedScmConsumerChangeListeners.add(listener);
+  return () => { mountedScmConsumerChangeListeners.delete(listener); };
 }
 
 export function readMountedSessionRealtimeScmConsumerScopes(): SessionRealtimeScmScope[] {
@@ -134,9 +143,11 @@ export function subscribeMountedSessionRealtimeScmConsumerScopeResets(
 }
 
 export function clearMountedSessionRealtimeScmConsumerScopes(): void {
+  const hadConsumers = mountedScmConsumerScopes.size > 0;
   mountedScmConsumerScopes.clear();
   mountedScmConsumerResetVersion += 1;
   for (const listener of mountedScmConsumerResetListeners) {
     listener();
   }
+  if (hadConsumers) for (const listener of mountedScmConsumerChangeListeners) listener();
 }

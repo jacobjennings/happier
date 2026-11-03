@@ -9,8 +9,11 @@ export async function executeCapturedMachineAction<Result>(input: Readonly<{
 }>): Promise<Result> {
   const spec = getActionSpec(input.actionId);
   await input.assertCurrent();
-  const result = await input.invoke(spec.sideEffectClass === 'read' ? {} : { timeoutMs: null });
-  // Reads disclose current facts; effects retain only the actual transport result, never a replay or invented receipt.
-  if (spec.sideEffectClass === 'read') await input.assertCurrent();
-  return result;
+  try {
+    return await input.invoke(spec.sideEffectClass === 'read' ? {} : { timeoutMs: null });
+  } finally {
+    // A refusal can contain Account facts too. Reads revalidate both response
+    // and exception paths; acknowledged effects retain their settled result.
+    if (spec.sideEffectClass === 'read') await input.assertCurrent();
+  }
 }

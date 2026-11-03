@@ -11,6 +11,7 @@ import { isArtifactOnlyHomeAccountChange, subscribeHomeAccountChange } from '@/s
 import { awaitActionApprovalResult, createActionApprovalContinuation, type ActionApprovalRegistration } from '@/components/approvals/actionApprovalContinuation';
 import { classifyHomeActionOutcome } from '@/sync/ops/home/homeActionOutcome';
 import { homeDomainFailureCode } from '@/sync/api/home/homeDomainActions';
+import { isManagedMachineResourceAbsent } from './managedMachineResource';
 
 const execute = createFrontDoorActionExecute();
 const EMPTY_ROWS: readonly ManagedMachineV1[] = [];
@@ -31,10 +32,24 @@ export type ManagedMachineInventoryEntry = Readonly<{
 type InventoryReader = ReturnType<typeof createInventoryReader>;
 // Demand, not a row or a naming registry, owns the read. The last reader leaving
 // or retiring its credential binding removes the projection and its Home observer.
-const demandedInventories = new WeakMap<InventoryExecute, Map<string, InventoryReader>>();
+type InventoryDemand = { readers: Map<string, InventoryReader>; observers: Set<() => void> };
+const demandedInventories = new WeakMap<InventoryExecute, InventoryDemand>();
+
+function inventoryDemand(executeAction: InventoryExecute): InventoryDemand {
+    let demand = demandedInventories.get(executeAction);
+    if (!demand) {
+        demand = { readers: new Map(), observers: new Set() };
+        demandedInventories.set(executeAction, demand);
+    }
+    return demand;
+}
+
+function inventoryKey(serverId: string, accountId: string | undefined, homeId: string | null | undefined, managedId: string | undefined, includeArchived: boolean): string {
+    return JSON.stringify([serverId, accountId, homeId, managedId, includeArchived]);
+}
 
 function createInventoryReader(serverId: string, accountId: string, homeId: string, managedId: string | undefined,
-    includeArchived: boolean, executeAction: InventoryExecute, remove: () => void, retained?: ManagedMachineInventoryEntry) {
+    includeArchived: boolean, executeAction: InventoryExecute, remove: () => void, onPublished: () => void, retained?: ManagedMachineInventoryEntry) {
     const consumers = new Map<() => void, ServerCredentialAccountScopeBinding>();
     let entry: ManagedMachineInventoryEntry = { accountId, homeId, managedId, includeArchived,
         machines: retained?.machines ?? EMPTY_ROWS, ...(retained?.asOf !== undefined ? { asOf: retained.asOf } : {}), status: 'loading' };
@@ -46,6 +61,7 @@ function createInventoryReader(serverId: string, accountId: string, homeId: stri
     const publish = (next: ManagedMachineInventoryEntry) => {
         entry = next;
         for (const listener of consumers.keys()) listener();
+        onPublished();
     };
     const refresh = () => {
         if (!isCurrent()) return;
@@ -96,7 +112,7 @@ function createInventoryReader(serverId: string, accountId: string, homeId: stri
                         // previous recovery rows visibly stale until the second ordinary read settles.
                         const active = result.machines;
                         if (active.some(machine => machine.homeId !== homeId)) throw new Error('managed_response_invalid');
-                        publish({ ...entry, machines:
+                        publish({ ...entry, asOf: Date.now(), machines:
                             [...new Map([...active, ...entry.machines.filter(machine => machine.archivedAt !== undefined)]
                                 .map(machine => [machine.id, machine])).values()] });
                         const archived = await read({ homeId, archived: true });
@@ -157,6 +173,32 @@ function createInventoryReader(serverId: string, accountId: string, homeId: stri
     };
 }
 
+/** Observe only admitted resource absence, without starting or retaining list demand. */
+export function useAdmittedManagedMachineAbsentEnrolledIds(serverId: string, binding: ServerCredentialAccountScopeBinding | null | undefined,
+    executeAction: InventoryExecute = execute): ReadonlySet<string> {
+    const demand = React.useMemo(() => inventoryDemand(executeAction), [executeAction]);
+    const scopedServerId = resolveServerProfileScopeIdForIdentifier(serverId) || serverId;
+    const homeId = getServerProfileById(scopedServerId)?.serverIdentityId;
+    const subscribe = React.useCallback((listener: () => void) => {
+        demand.observers.add(listener);
+        return () => { demand.observers.delete(listener); };
+    }, [demand]);
+    const snapshot = React.useCallback(() => {
+        if (!binding?.isCurrent() || !homeId) return '[]';
+        for (const includeArchived of [false, true]) {
+            const reader = demand.readers.get(inventoryKey(scopedServerId, binding.accountId, homeId, undefined, includeArchived));
+            const entry = reader?.isCurrent() ? reader.get() : undefined;
+            // A cold narrower reader has no admitted empty census. Keep using the
+            // already-demanded receipt until that reader actually answers.
+            if (entry?.asOf !== undefined) return JSON.stringify(entry.machines.flatMap(machine =>
+                machine.archivedAt === undefined && machine.enrolledMachineId && isManagedMachineResourceAbsent(machine) ? [machine.enrolledMachineId] : []).sort());
+        }
+        return '[]';
+    }, [binding, demand, homeId, scopedServerId]);
+    const absentIds = React.useSyncExternalStore(subscribe, snapshot, () => '[]');
+    return React.useMemo(() => new Set(JSON.parse(absentIds) as string[]), [absentIds]);
+}
+
 /** A demanded projection of the canonical server inventory, with no persisted UI resource state. */
 export function useManagedMachineInventory(serverIds: readonly string[], managedId?: string,
     executeAction: InventoryExecute = execute, includeArchived = false) {
@@ -176,9 +218,9 @@ export function useManagedMachineInventory(serverIds: readonly string[], managed
         reads.current.clear();
     }, []);
     React.useEffect(() => {
-        const keys = new Map(ids.map(serverId => [serverId, JSON.stringify([
+        const keys = new Map(ids.map(serverId => [serverId, inventoryKey(
             serverId, bindings.get(serverId)?.accountId, getServerProfileById(serverId)?.serverIdentityId, managedId, includeArchived,
-        ])]));
+        )]));
         for (const [serverId, read] of reads.current) {
             if (read.binding === bindings.get(serverId) && read.binding.isCurrent() && read.reader.isCurrent()
                 && read.key === keys.get(serverId) && read.executeAction === executeAction) continue;
@@ -188,8 +230,9 @@ export function useManagedMachineInventory(serverIds: readonly string[], managed
             const binding = bindings.get(serverId);
             const homeId = getServerProfileById(serverId)?.serverIdentityId;
             if (!binding?.isCurrent() || !homeId || reads.current.has(serverId)) continue;
-            let inventories = demandedInventories.get(executeAction);
-            if (!inventories) { inventories = new Map(); demandedInventories.set(executeAction, inventories); }
+            const demand = inventoryDemand(executeAction);
+            const inventories = demand.readers;
+            const notify = () => { if (!managedId) for (const observer of demand.observers) observer(); };
             const key = keys.get(serverId)!;
             let reader = inventories.get(key);
             if (!reader?.isCurrent()) {
@@ -198,7 +241,7 @@ export function useManagedMachineInventory(serverIds: readonly string[], managed
                     && (current.includeArchived ?? false) === includeArchived ? current : undefined;
                 const ownedInventories = inventories;
                 reader = createInventoryReader(serverId, binding.accountId, homeId, managedId, includeArchived, executeAction,
-                    () => { if (ownedInventories.get(key) === reader) ownedInventories.delete(key); }, retained);
+                    () => { if (ownedInventories.get(key) === reader) { ownedInventories.delete(key); notify(); } }, notify, retained);
                 inventories.set(key, reader);
             }
             const ownedReader = reader;
@@ -231,8 +274,17 @@ export function useManagedMachineInventory(serverIds: readonly string[], managed
         )]),
     ), [machinesByServerId]);
 
-    const loading = ids.some(serverId => getServerProfileById(serverId)?.serverIdentityId
-        && ((!accountScopes.has(serverId) || accountScopes.get(serverId)?.resolution.kind === 'resolving')
-            || (bindings.has(serverId) && (!currentEntries[serverId] || currentEntries[serverId]?.status === 'loading'))));
-    return { entries: currentEntries, machinesByServerId, machinesByEnrolledMachineIdByServerId, refresh: refreshAll, bindings, accountScopes, loading };
+    let loading = false;
+    let firstAnswerPending = false;
+    for (const serverId of ids) {
+        const pending = getServerProfileById(serverId)?.serverIdentityId
+            && ((!accountScopes.has(serverId) || accountScopes.get(serverId)?.resolution.kind === 'resolving')
+                || (bindings.has(serverId) && (!currentEntries[serverId] || currentEntries[serverId]?.status === 'loading')));
+        if (!pending) continue;
+        loading = true;
+        // Active membership admits the collection even while archive recovery is
+        // pending. Refreshes keep that receipt; terminal failures settle the wait.
+        if (currentEntries[serverId]?.asOf === undefined) firstAnswerPending = true;
+    }
+    return { entries: currentEntries, machinesByServerId, machinesByEnrolledMachineIdByServerId, refresh: refreshAll, bindings, accountScopes, loading, firstAnswerPending };
 }

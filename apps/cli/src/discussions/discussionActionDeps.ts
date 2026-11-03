@@ -1,3 +1,6 @@
+import { ActionExecuteFailureSchema } from '@happier-dev/protocol/actions/actionExecutionResult';
+import { bindDiscussionDraftReply } from './bindDiscussionDraftReply';
+import { type ActionExecuteFailure } from '@happier-dev/protocol/actions/actionExecutionResult';
 import axios, { type Method } from 'axios';
 import { randomUUID } from 'node:crypto';
 import { ApprovalRequestOriginV1Schema } from '@happier-dev/protocol/approvals/approvalRequestV1';
@@ -45,7 +48,8 @@ import { openResourceBinaryContent } from '@/api/encryption/resourceBinaryConten
 import { encodeBase64 } from '@/api/encryption';
 import { Readable } from 'node:stream';
 import { DISCUSSION_UPLOAD_CONTENT_TYPE_V1, DISCUSSION_UPLOAD_PATH_V1 } from '@happier-dev/transfers';
-import { prepareDiscussionAttachmentUpload, type DiscussionAttachmentSourceReader } from './discussionAttachmentUpload';
+import { createDiscussionAttachmentFileReader, prepareDiscussionAttachmentUpload, type DiscussionAttachmentSourceReader } from './discussionAttachmentUpload';
+import type { DiscussionAttachmentSourceV1 } from '@happier-dev/protocol/discussions/attachments';
 import type { DiscussionMessageContentV1 } from '@happier-dev/protocol/discussions/content';
 
 function failure(code: string) {
@@ -109,7 +113,7 @@ export function createDiscussionAutonomousCheckInReader(options: Parameters<type
  */
 export function createDiscussionActionDeps(options: Readonly<{
   credentials: StoredCredentials;
-  /** Invoking-host capture only; public Action operands never choose a local path. */
+  /** Process-local byte capture for callers such as the UI that already selected a file. */
   readAttachmentSource?: DiscussionAttachmentSourceReader;
   serverHttpBaseUrl?: string;
   resolveServerFeaturesSnapshot?: () => CliServerFeaturesSnapshot | undefined | Promise<CliServerFeaturesSnapshot | undefined>;
@@ -121,7 +125,7 @@ export function createDiscussionActionDeps(options: Readonly<{
   /** Exact accepted Workflow custody, supplied only by its host publication owner. */
   postWorkflowMessage?: (request: Readonly<{ discussionId: string; request: import('@happier-dev/protocol/discussions/api').DiscussionPostRequestV1 }>,
     options: Readonly<{ signal?: AbortSignal; context: ActionExecutorContext;
-      content: import('@happier-dev/protocol/discussions/content').DiscussionMessageContentV1 }>) => Promise<import('@happier-dev/protocol/discussions/api').DiscussionAgentPostResponseV1>;
+      content: import('@happier-dev/protocol/discussions/content').DiscussionMessageContentV1 }>) => Promise<import('@happier-dev/protocol/discussions/api').DiscussionAgentPostResponseV1 | ActionExecuteFailure>;
 }> & ExternalActionHomeBinding & DiscussionActionFixedHome): DiscussionActionDeps {
   if ((options.serverId === undefined) !== (options.serverHttpBaseUrl === undefined)
     || (options.serverId !== undefined && !options.serverId.trim())
@@ -198,11 +202,17 @@ export function createDiscussionActionDeps(options: Readonly<{
 
   const discussionAction = async ({ actionId, input, context, signal }: Parameters<NonNullable<ActionExecutorDeps['discussionAction']>>[0],
     openedAttachment?: OpenedDiscussionAttachment): Promise<unknown> => {
-    if (context.serverId && context.serverId !== serverId) return failure('server_target_mismatch');
+    if (context.serverId && !areServerProfileIdentifiersEquivalent(context.serverId, serverId,
+      id => id === serverId || id === options.serverIdentityId ? options.serverIdentityId : null)) return failure('server_target_mismatch');
     const parsed = DISCUSSION_ACTION_INPUT_SCHEMAS_V1[actionId].safeParse(input);
     if (!parsed.success) return failure('discussion_invalid_content');
     if (signal?.aborted) return failure('cancelled');
     const isPost = actionId === 'discussion.post' || actionId === 'discussion.reply';
+    if ((actionId === 'discussion.create' || isPost) && 'attachmentSources' in parsed.data
+      && parsed.data.attachmentSources !== undefined
+      && (context.externalActionCredential || context.externalActionExecutionAuthorization)) {
+      return failure('discussion_attachment_upload_authority_unavailable');
+    }
     const agentOrigin = context.surface === 'agent' || context.actionCaller?.kind === 'session';
     const workflowReturn = context.discussionReplyReturn && 'kind' in context.discussionReplyReturn
       ? context.discussionReplyReturn : undefined;
@@ -213,9 +223,10 @@ export function createDiscussionActionDeps(options: Readonly<{
     const origin = ApprovalRequestOriginV1Schema.safeParse(context.approvalOrigin);
     const publicationOptions = { ...(signal ? { signal } : {}),
       // Original caller defaults are host-only, not part of the private RPC ABI.
-      ...(context.approvedActionReplay ? { approvedActionReplay: { artifactId: context.approvedActionReplay.artifactId } } : {}) };
+      ...(context.approvedActionReplay?.artifactId ? { approvedActionReplay: { artifactId: context.approvedActionReplay.artifactId } } : {}) };
     const omittedLocalId = (purpose: Parameters<typeof deriveApprovedDiscussionMutationLocalId>[0]['purpose']) =>
-      context.approvedActionReplay ? deriveApprovedDiscussionMutationLocalId({ artifactId: context.approvedActionReplay.artifactId, purpose }) : randomUUID();
+      context.approvedActionReplay && context.actionRequestId
+        ? deriveApprovedDiscussionMutationLocalId({ requestId: context.actionRequestId, purpose }) : randomUUID();
     if (agentOrigin && !(isPost && options.postWorkflowMessage && workflowReturn) && (isPost || actionId === 'discussion.create')
       && (!admittedSessionId || (context.defaultSessionId !== undefined && context.defaultSessionId !== admittedSessionId)
         || (context.approvalOrigin !== undefined && (!origin.success || origin.data.sessionId !== admittedSessionId))
@@ -243,7 +254,8 @@ export function createDiscussionActionDeps(options: Readonly<{
 
     const { authorizationFor, rawRequest, request, getSummary } = createTransport({ actionId, context, signal });
     async function writeMutation(bound: ReturnType<typeof bindDiscussionActionHttpRequestV1>, operation: 'create' | 'post' | 'reply',
-      body: unknown, content: DiscussionMessageContentV1, key: ResourceDataKey, discussionId?: string): Promise<unknown> {
+      body: unknown, content: DiscussionMessageContentV1, key: ResourceDataKey, discussionId?: string,
+      sources?: readonly DiscussionAttachmentSourceV1[]): Promise<unknown> {
       const references = readDiscussionAttachmentReferencesV1(content);
       if (references.length === 0) return await request(bound, body);
       if (context.externalActionExecutionAuthorization || context.externalActionCredential) {
@@ -251,7 +263,7 @@ export function createDiscussionActionDeps(options: Readonly<{
       }
       const uploadRequest = operation === 'create' ? body : body && typeof body === 'object' ? { ...body, discussionId } : body;
       const prepared = prepareDiscussionAttachmentUpload({ operation, request: uploadRequest, key, references,
-        readAttachmentSource: options.readAttachmentSource, signal });
+        readAttachmentSource: sources ? createDiscussionAttachmentFileReader({ references, sources }) : options.readAttachmentSource, signal });
       return await request({ method: 'POST', path: DISCUSSION_UPLOAD_PATH_V1, body: prepared.metadata }, prepared.metadata,
         { body: prepared.body, contentType: DISCUSSION_UPLOAD_CONTENT_TYPE_V1 });
     }
@@ -389,19 +401,20 @@ export function createDiscussionActionDeps(options: Readonly<{
         });
         let value;
         if (agentOrigin) {
-          if (readDiscussionAttachmentReferencesV1(firstMessage.content).length) return failure('discussion_attachment_source_unavailable');
+          if (readDiscussionAttachmentReferencesV1(firstMessage.content).length && !args.attachmentSources) return failure('discussion_attachment_source_unavailable');
           if (!options.postAgentMessage || !admittedSessionId) return failure('discussion_post_denied');
           const toolCallId = origin.success ? origin.data.toolCallId : context.actionRequestId;
           let response;
           try {
             response = DiscussionAgentCreateResponseV1Schema.parse(await options.postAgentMessage(DiscussionAgentCreateRequestV1Schema.parse({
               v: 1, operation: 'create', sessionId: admittedSessionId, request: body,
+              ...(args.attachmentSources ? { attachmentSources: args.attachmentSources } : {}),
               ...(context.runtimeRunId ? { runId: context.runtimeRunId } : {}), ...(toolCallId ? { toolCallId } : {}),
             }), publicationOptions));
           } catch { return failure('outcome_unknown'); }
           if (!response.ok) return failure(response.error);
           value = response.value;
-        } else value = DiscussionCreateResponseV1Schema.parse(await writeMutation(bound, 'create', body, firstMessage.content, key));
+        } else value = DiscussionCreateResponseV1Schema.parse(await writeMutation(bound, 'create', body, firstMessage.content, key, undefined, args.attachmentSources));
         // The create transaction already includes every chosen grant. Key
         // delivery then uses the admitted resource census, never a fake one.
         if (key.mode === 'e2ee' && participants?.some(participant => participant.kind === 'account')) {
@@ -479,19 +492,25 @@ export function createDiscussionActionDeps(options: Readonly<{
         if (options.postWorkflowMessage && workflowReturn) {
           if (readDiscussionAttachmentReferencesV1(args.content).length) return failure('discussion_attachment_source_unavailable');
           let response;
-          try { response = DiscussionAgentPostResponseV1Schema.parse(await options.postWorkflowMessage({
-            discussionId: args.discussionId, request: postRequest }, { context, content: args.content, ...(signal ? { signal } : {}) })); }
+          try {
+            const raw = await options.postWorkflowMessage({ discussionId: args.discussionId, request: postRequest },
+              { context, content: args.content, ...(signal ? { signal } : {}) });
+            const refusal = ActionExecuteFailureSchema.safeParse(raw);
+            if (refusal.success) return failure(refusal.data.errorCode);
+            response = DiscussionAgentPostResponseV1Schema.parse(raw);
+          }
           catch { return failure('outcome_unknown'); }
           if (!response.ok) return failure(response.error);
           value = response.value;
         } else if (agentOrigin) {
-          if (readDiscussionAttachmentReferencesV1(args.content).length) return failure('discussion_attachment_source_unavailable');
+          if (readDiscussionAttachmentReferencesV1(args.content).length && !args.attachmentSources) return failure('discussion_attachment_source_unavailable');
           if (!options.postAgentMessage || !admittedSessionId) return failure('discussion_post_denied');
           const toolCallId = origin.success ? origin.data.toolCallId : context.actionRequestId;
           let response;
           try {
             response = DiscussionAgentPostResponseV1Schema.parse(await options.postAgentMessage(DiscussionAgentPostRequestV1Schema.parse({
               v: 1, sessionId: admittedSessionId, discussionId: args.discussionId, request: postRequest,
+              ...(args.attachmentSources ? { attachmentSources: args.attachmentSources } : {}),
               ...(context.discussionReplyReturn ? { replyReturn: context.discussionReplyReturn } : {}),
               ...(context.runtimeRunId ? { runId: context.runtimeRunId } : {}), ...(toolCallId ? { toolCallId } : {}),
             }), publicationOptions));
@@ -499,7 +518,7 @@ export function createDiscussionActionDeps(options: Readonly<{
           if (!response.ok) return failure(response.error);
           value = response.value;
         } else value = DiscussionPostResponseV1Schema.parse(await writeMutation(bound,
-          actionId === 'discussion.reply' ? 'reply' : 'post', postRequest, args.content, key, args.discussionId));
+          actionId === 'discussion.reply' ? 'reply' : 'post', postRequest, args.content, key, args.discussionId, args.attachmentSources));
         return DiscussionPostResultV1Schema.parse({ ...envelope, message: projectMessage(key, args.discussionId, value.message), messageSeq: value.messageSeq });
       }
       if (actionId === 'discussion.rename') {
@@ -536,7 +555,18 @@ export function createDiscussionActionDeps(options: Readonly<{
       return failure('outcome_unknown');
     }
   };
-  return { discussionAction, readAttachmentContext: async input => {
+  const preparedDiscussionAction = Object.assign(discussionAction, {
+    prepareInput: async ({ actionId, input, context, readAnswerPolicy }: Parameters<NonNullable<NonNullable<ActionExecutorDeps['discussionAction']>['prepareInput']>>[0]) => {
+      const bound = await bindDiscussionDraftReply({ actionId, input, context, serverId, serverIdentityId: options.serverIdentityId,
+        discussionAction, readAnswerPolicy, credentials: options.credentials, serverHttpBaseUrl: serverUrl });
+      if ('failure' in bound) return bound.failure;
+      if (bound.actionId !== 'discussion.post' && bound.actionId !== 'discussion.reply') return failure('invalid_parameters');
+      return { actionId: bound.actionId, input: bound.input,
+        ...(bound.context.actionRequestId ? { actionRequestId: bound.context.actionRequestId } : {}),
+        ...(bound.context.discussionReplyReturn ? { discussionReplyReturn: bound.context.discussionReplyReturn } : {}) };
+    },
+  });
+  return { discussionAction: preparedDiscussionAction, readAttachmentContext: async input => {
     const { getSummary } = createTransport({ actionId: 'discussion.attachment.read',
       context: { surface: 'cli', authority: 'account_automation', serverId }, signal: input.signal });
     return await openKey(await getSummary(input.discussionId));

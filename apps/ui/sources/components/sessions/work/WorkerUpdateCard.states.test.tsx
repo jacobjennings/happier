@@ -134,9 +134,9 @@ describe('WorkerUpdateCard states (lab cards-T1/T2)', () => {
         expect(answersIn(cards[2])).toHaveLength(1);
         // A request the worker has moved past is told in the past tense, not as a live ask.
         const stateWord = (card: typeof cards[number]) => card.findAll(node => node.props.testID === 'worker-update-state' && typeof node.type === 'string')[0]?.props.children;
-        expect(stateWord(cards[0])).toBe(t('sessionWork.workerUpdate.state.neededYou'));
-        expect(stateWord(cards[1])).toBe(t('sessionWork.workerUpdate.state.needsYou'));
-        expect(stateWord(cards[2])).toBe(t('sessionWork.workerUpdate.state.needsYou'));
+        expect(stateWord(cards[0])).toBe(`${t('sessionWork.workerUpdate.state.neededYou')} · Worker question`);
+        expect(stateWord(cards[1])).toBe(`${t('sessionWork.workerUpdate.state.needsYou')} · Worker question`);
+        expect(stateWord(cards[2])).toBe(`${t('sessionWork.workerUpdate.state.needsYou')} · Worker question`);
         expect(screen.getTextContent()).toContain('First result');
         expect(screen.getTextContent()).toContain('Later result');
         expect(screen.getTextContent()).toContain('different command');
@@ -180,7 +180,7 @@ describe('WorkerUpdateCard states (lab cards-T1/T2)', () => {
             headline: 'Checkout UI retry states', canInspect: true, transcriptPointer: { kind: 'session', sessionId: worker.id },
         }, serverId);
 
-        expect(card.findHostByTestId('worker-update-state')?.props.children).toBe(t('sessionWork.workerUpdate.state.needsYou'));
+        expect(card.findHostByTestId('worker-update-state')?.props.children).toBe(`${t('sessionWork.workerUpdate.state.needsYou')} · Checkout UI retry states`);
         expect(card.findByTestId('worker-update-answers')).not.toBeNull();
         // No pane host around this card: Peek is not offered where it could not open.
         expect(card.findByTestId('worker-update-peek')).toBeNull();
@@ -207,6 +207,19 @@ describe('WorkerUpdateCard states (lab cards-T1/T2)', () => {
         expect(card.findByTestId('permission-prompt-card')).toBeNull();
         expect(card.findAllHostsByTestId('worker-update-inspect')).toHaveLength(1);
         expect(card.findAllHostsByTestId('worker-update-action:review')).toHaveLength(0);
+    });
+
+    it('uses the shared translated outcome without repeating the worker title and keeps a custom summary', async () => {
+        const serverId = getActiveServerSnapshot().serverId;
+        const worker = createSessionFixture({ id: 'worker-headline', serverId,
+            metadata: { name: 'Review the rollback plan', path: '/project', host: 'qa' } });
+        storage.getState().applySessions([worker]);
+        const update: WorkerUpdateV1 = { v: 1, workerKind: 'session', workerId: worker.id,
+            ownerState: 'settled', wake: 'finished', headline: 'Review the rollback plan · settled', canInspect: false };
+        const card = await renderCard(update, serverId);
+        expect(card.findHostByTestId('worker-update-state')?.props.children).toBe(t('sessionWork.workerUpdate.state.settled'));
+        await card.update(<WorkerUpdateCard update={{ ...update, headline: '2 findings' }} serverId={serverId} />);
+        expect(card.findHostByTestId('worker-update-state')?.props.children).toBe(`${t('sessionWork.workerUpdate.state.settled')} · 2 findings`);
     });
 
     it('gives a workflow run that needs you one primary Review, to the exact step in its Home', async () => {

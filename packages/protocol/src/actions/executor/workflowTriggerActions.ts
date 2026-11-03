@@ -166,6 +166,11 @@ async function automationRows(automations: Pick<WorkflowTriggerAutomationOperati
   } while (cursor);
   return rows;
 }
+function managedTargetRows(automations: Pick<WorkflowTriggerAutomationOperations, 'list'>,
+  managedTarget: Readonly<{ homeId: string; managedId: string }>) {
+  // Only the temporary, explicitly unindexed rows need the predecessor private recognizer.
+  return automationRows(automations, { managedTarget, includeUnindexedManagedTargets: true });
+}
 async function scopedRows(automations: Pick<WorkflowTriggerAutomationOperations, 'list'>, sessionId: string | null = null,
   filter: Readonly<Partial<AutomationDefinitionListRequest>> = {}) {
   return (await automationRows(automations, { ...filter, ...(sessionId ? { scopeSessionId: sessionId } : {}) }))
@@ -462,8 +467,10 @@ export function createWorkflowTriggerActions(deps: WorkflowTriggerActionsDepende
         row = await pauseLegacy(row, caller);
         return { sets: [await projection(row, await deps.convertLegacy(row, caller))] };
       }
-      const all = 'scope' in input && input.scope === 'account_all';
-      const rows = all ? await automationRows(deps.automations, {}) : (await scopedRows(deps.automations, null, 'workflow' in input
+      const managedTarget = 'managedTarget' in input ? input.managedTarget : null;
+      const all = managedTarget !== null || ('scope' in input && input.scope === 'account_all');
+      const rows = managedTarget ? await managedTargetRows(deps.automations, managedTarget)
+        : all ? await automationRows(deps.automations, {}) : (await scopedRows(deps.automations, null, 'workflow' in input
         ? { workflowDefinitionId: input.workflow } : { scope: 'account_inline' })).filter((row) => 'workflow' in input
         ? row.workflowDefinitionId === input.workflow : row.workflowDefinitionId == null);
       // Pages can overlap while the Account changes. Hydrate each Automation once,
@@ -758,7 +765,7 @@ export function createWorkflowTriggerActions(deps: WorkflowTriggerActionsDepende
           || current.controller.installationId !== input.machine.controller.installationId) refuse('target_unavailable');
       };
       await assertCurrent();
-      for (const summary of await automationRows(deps.automations, {})) {
+      for (const summary of await managedTargetRows(deps.automations, { homeId: input.machine.homeId, managedId: input.machine.id })) {
         input.signal?.throwIfAborted();
         if (summary.workflowDefinitionId != null || summary.triggers.length !== 1) continue;
         const row = await deps.automations.get(summary.id);

@@ -25,8 +25,154 @@ import { runWithRequesterSessionCurrentnessCheckpoint } from "@/daemon/sessionEn
 import { createUnavailableActionTransportDeps } from '@/testkit/actionTransportDeps';
 import { ProviderConnectionIdSchema } from '@happier-dev/protocol';
 import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { ApprovalRequestV2Schema, type ApprovalRequestV2 } from '@happier-dev/protocol/approvals/approvalRequestV1';
+import { decideApprovalRequestTransition } from '@happier-dev/protocol/approvals/approvalRequestTransition';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); resetActiveAccountSettingsSnapshotForTests(); });
+
+it.each(['unchanged', 'catalog-edited-before-approval', 'connection-edited', 'catalog-raced'] as const)(
+  'approves a Gateway hub update through the real Account executor and HTTP catalog store: %s', async scenario => {
+    const credentials = { token: 'gateway-approval-http-fixture', encryption: null };
+    let catalog = DEFAULT_PROVIDER_CONNECTIONS_CATALOG_V1;
+    let revision = 7;
+    let raceNextWrite = false;
+    let commitCompetingEdit: (() => Promise<void>) | undefined;
+    let writes = 0;
+    let boundaryError: unknown;
+    const server = createServer(async (request, response) => {
+      response.setHeader('Content-Type', 'application/json');
+      try {
+        if (request.url === '/v1/account/encryption/currentness') {
+          response.end(JSON.stringify({ mode: 'plain', version: 1, settingsVersion: 4,
+            signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1 }));
+        } else if (request.url === '/v1/account/entity-rows/provider-connections' && request.method === 'GET') {
+          response.end(JSON.stringify({ status: 'present', revision, content: { t: 'plain', v: catalog } }));
+        } else if (request.url === '/v1/account/entity-rows/provider-connections' && request.method === 'POST') {
+          let body = '';
+          for await (const chunk of request) body += String(chunk);
+          const mutation = ProviderConnectionsRowMutationV1Schema.parse(JSON.parse(body));
+          writes++;
+          if (raceNextWrite) {
+            raceNextWrite = false;
+            if (!commitCompetingEdit) throw new Error('Missing competing catalog Action');
+            await commitCompetingEdit();
+          }
+          if (mutation.expectedRevision !== revision) {
+            response.end(JSON.stringify({ status: 'conflict', revision }));
+          } else {
+            if (mutation.content?.t !== 'plain') throw new Error('Expected Plain catalog fixture');
+            catalog = mutation.content.v;
+            revision++;
+            response.end(JSON.stringify({ status: 'updated', revision, cursor: revision }));
+          }
+        } else {
+          throw new Error(`Unexpected Gateway approval HTTP request: ${request.method} ${request.url}`);
+        }
+      } catch (error) {
+        boundaryError = error;
+        response.statusCode = 500;
+        response.end(JSON.stringify({ error: 'invalid-fixture-request' }));
+      }
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      await runWithServerHttpBaseUrl(base, async () => {
+        const snapshot = { source: 'network' as const, settings: accountSettingsParse({}), rawSettings: {},
+          settingsVersion: 4, loadedAtMs: 1, settingsSecretsReadKeys: [], scopeKey: resolveAccountSettingsScopeKey(credentials) };
+        const operationContext = createInvocationSavedSecretOperationContextV1({ credentials, snapshot,
+          serverHttpBaseUrl: base, isCurrent: async () => true });
+        let approval: ApprovalRequestV2 | null = null;
+        const executor = createActionExecutor({ ...createUnavailableActionTransportDeps(),
+          isApprovalExecutionOriginCurrent: async () => true,
+          approvalsCreate: async ({ request }) => {
+            approval = ApprovalRequestV2Schema.parse(request);
+            return { artifactId: 'gateway-hub-approval' };
+          },
+          approvalsGet: async () => approval && structuredClone(approval),
+          approvalsUpdate: async ({ request }) => {
+            if (!approval) throw new Error('Missing Gateway approval');
+            const next = ApprovalRequestV2Schema.parse(request);
+            const transition = decideApprovalRequestTransition(approval, next);
+            if (!transition.ok) return transition;
+            approval = structuredClone(next);
+            return { ok: true };
+          },
+          providerActionExecute: createCliProviderActionExecuteV1({ credentials, operationContext,
+            serverId: 'gateway-home', serverHttpBaseUrl: base,
+            callMachineAction: async () => { throw new Error('Account hub update must not invoke Machine RPC'); } }),
+        });
+        const invocation = { surface: 'cli' as const, serverId: 'gateway-home', authority: 'present_user' as const,
+          actionCaller: { kind: 'host' as const }, actionRequestId: 'gateway-hub-request' };
+        commitCompetingEdit = async () => {
+          expect(await executor.execute('providers.models.source_visibility.set', {
+            action: 'setConnectionVisibility', connectionId: 'pc_hub_approval', shown: false,
+          }, { ...invocation, presentUserConfirmation: { actionId: 'providers.models.source_visibility.set' } }))
+            .toMatchObject({ ok: true });
+        };
+        const creation = await executor.execute('providers.connections.create_contribution', {
+          action: 'createContribution', connectionId: 'pc_hub_approval',
+          contributionKey: 'happier.provider.cliproxyapi/cliproxyapi', displayName: 'Approval Gateway',
+          savedSecretId: null, enable: false, deployment: { kind: 'managedLocal', purposeBindingDefaults: {} },
+        }, { ...invocation, presentUserConfirmation: { actionId: 'providers.connections.create_contribution' } });
+        expect(creation, JSON.stringify(creation)).toMatchObject({ ok: true });
+        const created = catalog.connections[0]!;
+        expect(created).toMatchObject({ revision: 1, deployment: { kind: 'managedLocal' } });
+        expect(await executor.execute('providers.connections.update', {
+          action: 'update', connectionId: created.id, expectedRevision: created.revision,
+          gatewayPlacement: { kind: 'machine', machineId: 'hub-machine' },
+        }, invocation)).toMatchObject({ ok: true, result: { kind: 'approval_request_created' } });
+        expect(writes).toBe(1);
+        if (scenario === 'connection-edited') {
+          expect(await executor.execute('providers.connections.update', {
+            action: 'update', connectionId: created.id, expectedRevision: created.revision, displayName: 'Concurrent name',
+          }, { ...invocation, presentUserConfirmation: { actionId: 'providers.connections.update' } })).toMatchObject({ ok: true });
+        }
+        if (scenario === 'catalog-edited-before-approval') await commitCompetingEdit();
+        raceNextWrite = scenario === 'catalog-raced';
+        const decided = await executor.execute('approval.request.decide', {
+          artifactId: 'gateway-hub-approval', decision: 'approve',
+        }, invocation);
+        expect(boundaryError).toBeUndefined();
+        const applied = scenario === 'unchanged' || scenario === 'catalog-edited-before-approval';
+        expect(decided).toMatchObject({ ok: true, result: { execution: applied ? { ok: true }
+          : { ok: false, errorCode: scenario === 'connection-edited' ? 'provider_connection_changed' : 'provider_catalog_conflict' } } });
+        const observed = await executor.execute('providers.connections.describe', { connectionId: created.id }, invocation);
+        expect(observed).toMatchObject({ ok: true, result: { connections: [applied
+          ? { connectionId: created.id, revision: 2, gatewayPlacement: { kind: 'machine', machineId: 'hub-machine' } }
+          : { connectionId: created.id, revision: scenario === 'connection-edited' ? 2 : 1 }] } });
+        expect(catalog.connections[0]?.gatewayPlacement).toEqual(applied ? { kind: 'machine', machineId: 'hub-machine' } : undefined);
+        if (scenario === 'catalog-raced' || scenario === 'catalog-edited-before-approval') {
+          expect(catalog.modelPickerVisibilityByConnectionId?.[created.id]).toBe(false);
+        }
+        // One admitted effect; a refused CAS must settle without retrying the mutation.
+        expect(writes).toBe(scenario === 'catalog-raced' || scenario === 'catalog-edited-before-approval' ? 3 : 2);
+      });
+    } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+  },
+);
+
+it('does no source or history GETs for repeated post-cutover catalog reads', async () => {
+  const credentials = { token: 'provider-cutover-cost', encryption: null };
+  setActiveAccountSettingsSnapshot({ source: 'network', settings: accountSettingsParse({}), rawSettings: {},
+    settingsVersion: 7, loadedAtMs: 1, settingsSecretsReadKeys: [], scopeKey: resolveAccountSettingsScopeKey(credentials) });
+  const reads: string[] = [];
+  vi.spyOn(axios, 'get').mockImplementation(async url => {
+    const path = new URL(String(url)).pathname;
+    reads.push(path);
+    if (path === '/v1/account/encryption/currentness') return { status: 200, data: { mode: 'plain', version: 1,
+      settingsVersion: 7, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1 } };
+    if (path === '/v1/account/entity-rows/provider-connections') return { status: 200, data: {
+      status: 'present', revision: 1, content: { t: 'plain', v: DEFAULT_PROVIDER_CONNECTIONS_CATALOG_V1 } } };
+    if (path === '/v2/account/settings') return { status: 200, data: { version: 7, content: { t: 'plain', v: {} } } };
+    if (path === '/v2/account/settings/history') return { status: 200, data: { snapshots: [] } };
+    return emptyAccountSettingsHistoryCaptureResponse(path) ?? { status: 404, data: {} };
+  });
+  const store = createCliProviderConnectionsStore({ credentials });
+  for (let index = 0; index < 25; index++) expect(await store.readCatalog()).toMatchObject({ status: 'ready' });
+  expect(reads.filter(path => path.startsWith('/v2/account/settings'))).toEqual([]);
+  expect(reads.filter(path => path === '/v1/account/entity-rows/provider-connections')).toHaveLength(25);
+});
 
 it.each([
   { revision: 4, custody: 'daemon' }, { revision: 'absent', custody: 'daemon' },
@@ -185,9 +331,8 @@ it.each(['readCatalogForMutation', 'readCatalog', 'prepare', 'refresh'] as const
   expect(profileReadsAtRow).toBe(1);
   if (method === 'readCatalog' || method === 'readCatalogForMutation') {
     expect(method === 'readCatalog' ? admissionProfileReads : profileReads).toBe(1);
-    // History owns an independent preparation because it can outlive first-ready
-    // publication. Recheck disclosure afterwards, irrespective of catalog count.
-    expect(profileReads).toBe(method === 'readCatalog' ? 3 : 1);
+    // Post-cutover reads have no source/history maintenance preparation.
+    expect(profileReads).toBe(1);
   }
   f.retire();
   if (method === 'prepare' || method === 'refresh') {
@@ -199,6 +344,10 @@ it.each(['readCatalogForMutation', 'readCatalog', 'prepare', 'refresh'] as const
 
 it.each([false, true])('requires fresh requester authority before history cleanup within a catalog read (revoked=%s)', async revoked => {
   const f = await createProjectSessionRuntimeFixture();
+  await f.bootstrap.savedSecretOperationContext.commitProviderConnectionsCatalog({ expectedSettingsVersion: 0, catalog: {
+    status: 'ready', revision: 1, catalog: DEFAULT_PROVIDER_CONNECTIONS_CATALOG_V1,
+    cleanup: { status: 'cleanup-pending', reason: 'history-incomplete' },
+  } });
   const get = vi.mocked(axios.get).getMockImplementation()!;
   let writes = 0;
   vi.mocked(axios.get).mockImplementation(async (url, options) => {
@@ -232,6 +381,10 @@ it.each([false, true])('requires fresh requester authority before history cleanu
 
 it('keeps one history read checkpoint after public catalog readiness has returned', async () => {
   const f = await createProjectSessionRuntimeFixture();
+  await f.bootstrap.savedSecretOperationContext.commitProviderConnectionsCatalog({ expectedSettingsVersion: 0, catalog: {
+    status: 'ready', revision: 1, catalog: DEFAULT_PROVIDER_CONNECTIONS_CATALOG_V1,
+    cleanup: { status: 'cleanup-pending', reason: 'history-incomplete' },
+  } });
   const get = vi.mocked(axios.get).getMockImplementation()!;
   let profileReads = 0;
   let historyReads = 0;
@@ -260,7 +413,7 @@ it('keeps one history read checkpoint after public catalog readiness has returne
     return history ?? get(url, options);
   });
   try {
-    expect(await prepareProviderConnectionsCatalogForCli({
+    expect(await refreshProviderConnectionsCatalogForCli({
       expectedScopeKey: f.bootstrap.savedSecretOperationContext.readSnapshot()!.scopeKey!,
       operationContext: f.bootstrap.savedSecretOperationContext,
     })).toMatchObject({ status: 'ready' });
@@ -320,7 +473,9 @@ it.each([['cold', false], ['cold', true], ['reobserve', false], ['joined-equal',
   let observedRevision = revision;
   const credentials = { token: 'provider-cold-demand', encryption: null };
   const scopeKey = resolveAccountSettingsScopeKey(credentials);
-  setActiveAccountSettingsSnapshot({ source: 'network', settings: accountSettingsParse({}), rawSettings: {},
+  let raw: Readonly<Record<string, unknown>> = { providerSettingsV1: { ...DEFAULT_PROVIDER_CONNECTIONS_CATALOG_V1, defaultsByAgentTargetKey: {} } };
+  let settingsVersion = 4;
+  setActiveAccountSettingsSnapshot({ source: 'network', settings: accountSettingsParse(raw), rawSettings: raw,
     settingsVersion: 4, loadedAtMs: 1, settingsSecretsReadKeys: [], scopeKey,
     ...(mode !== 'cold' ? { providerConnectionsCatalog: { status: 'ready' as const, revision: 6, catalog: DEFAULT_PROVIDER_CONNECTIONS_CATALOG_V1 } } : {}),
   });
@@ -344,7 +499,7 @@ it.each([['cold', false], ['cold', true], ['reobserve', false], ['joined-equal',
       return { status: 200, data: { status: 'present', revision: observedRevision,
         content: { t: 'plain', v: DEFAULT_PROVIDER_CONNECTIONS_CATALOG_V1 } } };
     }
-    if (path === '/v2/account/settings') return { status: 200, data: { version: 4, content: { t: 'plain', v: {} } } };
+    if (path === '/v2/account/settings') return { status: 200, data: { version: settingsVersion, content: { t: 'plain', v: raw } } };
     if (path === '/v2/account/settings/history') {
       enterHistory(); await historyReleased;
       return { status: 200, data: { snapshots: [] } };
@@ -352,6 +507,14 @@ it.each([['cold', false], ['cold', true], ['reobserve', false], ['joined-equal',
     const history = emptyAccountSettingsHistoryCaptureResponse(path);
     if (history) return history;
     throw new Error(`Unexpected cold Provider HTTP boundary: ${path}`);
+  });
+  vi.spyOn(axios, 'post').mockImplementation(async (url, body) => {
+    expect(new URL(String(url)).pathname).toBe('/v2/account/settings');
+    const mutation = AccountSettingsV2UpdateRequestSchema.parse(body);
+    if (!mutation.content || mutation.content.t !== 'plain') throw new Error('Plain fixture requires Plain settings');
+    raw = mutation.content.v;
+    settingsVersion++;
+    return { status: 200, data: { success: true, version: settingsVersion } };
   });
   let admitted: Awaited<ReturnType<typeof prepareProviderConnectionsCatalogForCli>> | undefined;
   // Existing active current readers no longer own optional maintenance. Start
@@ -365,8 +528,14 @@ it.each([['cold', false], ['cold', true], ['reobserve', false], ['joined-equal',
     .then(catalog => { admitted = catalog; return catalog; });
   await rowEntered;
   const publications: (number | 'absent')[] = [];
-  const unsubscribe = subscribeActiveAccountSettingsSnapshot((_previous, next) => {
-    if (next?.providerConnectionsCatalog?.status === 'ready') publications.push(next.providerConnectionsCatalog.revision);
+  const unsubscribe = subscribeActiveAccountSettingsSnapshot((previous, next) => {
+    // Source contraction also publishes a genuine preference change. Count
+    // newly admitted row revisions, not all Account publications carrying it.
+    if (next?.providerConnectionsCatalog?.status === 'ready'
+      && (previous?.providerConnectionsCatalog?.status !== 'ready'
+        || previous.providerConnectionsCatalog.revision !== next.providerConnectionsCatalog.revision)) {
+      publications.push(next.providerConnectionsCatalog.revision);
+    }
   });
   const readers = mode === 'repeated-reobserve' ? Array.from({ length: 12 }, () =>
     refreshProviderConnectionsCatalogForCli({ expectedScopeKey: scopeKey })) : [];

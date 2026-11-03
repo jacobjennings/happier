@@ -1187,10 +1187,11 @@ stored-content declaration. Availability comes from
 `effectiveAccess.capabilities`; answering Agent questions uses Send authority.
 
 In 0.3 development, `POST /v2/sessions/read-batch` accepts
-`{sessionIds, accessProjectionVersion?: 1, includeSnapshot?: boolean, includeMessages?: boolean}`, defaulting
+`{sessionIds, accessProjectionVersion?: 1, includeSnapshot?: boolean, includeTurns?: boolean, includeMessages?: boolean, underSessionId?: string}`, defaulting
 to snapshots enabled and messages disabled. Snapshot demand returns each detail
 using the same optional access-projection selection as the single reader, plus
-its turns after successful detail admission. Message demand returns the ordinary first page with
+its turns after successful detail admission. Shell/document readers set
+`includeTurns: false` to omit that independent demand. Message demand returns the ordinary first page with
 `scope=all&roles=user,agent,event` and the message owner's default page size and
 cursors. At least one demand must be enabled; the application HTTP body limit
 owns request size. Snapshot and message demands can be sent separately so slow
@@ -1202,9 +1203,19 @@ missing Sessions retain the same non-disclosing result; component failures do
 not discard other admitted components. Plain/encrypted framing, publication,
 fresh access admission and client opening stay with the existing Session readers.
 Unexpected component failures return `503 session_read_unavailable`; database
-admission failures retain the canonical database error code. This Account-client
-transport does not admit restricted credentials. Existing single readers keep
-their routes. The one-way 0.3 component upgrade boundary requires no 0.2 batch
+admission failures retain the canonical database error code. Ordinary Account
+clients retain their existing access checks. Restricted credentials require a
+verified existing signed snapshot-preparation purpose and captured grants for
+every requested operand; a raw PAT is not sufficient. Those reads explicitly
+request snapshots with turns and messages disabled.
+
+Optional `underSessionId` bounds snapshot-only demand to the current readable
+managed subtree. Every requested ID must be admitted both at capture and before
+publication. A Session-runtime principal must bind that root to its own Session;
+its returned snapshots contain the shared View projection, never owner-private
+metadata or viewer facts. This does not grant descendant exact-detail access or
+transcript access. Existing single readers keep their routes. The one-way 0.3
+component upgrade boundary requires no 0.2 batch
 fallback or negotiation; 0.2-created retained Session data remains readable.
 This batches HTTP transport; storage snapshots and database work remain per
 Session, with queuing owned by the existing database pool and snapshot reader.
@@ -1219,6 +1230,50 @@ delay beyond its dispatch microtask. Invalidation separates successor joins
 without cancelling incumbents. Reservations retain neither settled results nor
 authorization: each borrower still owns currentness, fresh-witness and opening
 checks, and only the final physical-read borrower leaving cancels acquisition.
+
+Current 0.3 Session list routes return the separate compact
+`V2SessionListRow` contract. `documents: 'omitted'` means the metadata,
+owner-metadata and Agent-state documents are absent; the list query does not
+select those large columns. Rows retain the admitted scalar projections,
+document revisions, metadata layout, storage mode and viewer key envelope.
+`metadataAudience` identifies the admitted owner/shared projection;
+`agentStateDocument: 'redacted'` preserves the shared recipient's authoritative
+Agent-state tombstone without confusing it with an omitted owner document.
+Detail, lookup-by-tag and snapshot-batch reads retain the full record contract.
+
+The 0.3 development cold-display extension adds nullable `displayProjectionV1` on
+that same Session row: `{v: 1, sourceMetadataVersion, metadataLayoutVersion: 1,
+shared, owner?}`. The shared leaf uses the Session's explicit content mode; the
+optional owner leaf independently uses the owner's Account content mode. Only
+the existing owner-recipient projection returns the owner leaf. Public links,
+collaborators and Session-runtime principals receive shared display only, even
+when another part of their existing read authority is broader. A missing,
+stale, mode-incompatible or unopenable display requires the existing authorized
+full-read fallback, not an empty document. Owner display uses Account purpose
+separation without Session-ID binding, matching existing owner metadata; shared
+display uses the Session key generated before create. The create interface and
+ID allocation are unchanged. Fresh-create adapters use the same semantic
+projector as tuple updates. After an authorized owner full read, missing display
+is repaired through that tuple writer's `ensureDisplayProjection` intent and
+existing CAS; refusal preserves the readable full result. CLI status activates
+this only for the existing admitted present-user host invocation with the same
+captured read/content token; signed, custom, automation and Session/RPC readers
+do not borrow broader Account write authority. Ordinary owner sync
+gathers retained upgrade IDs after list readiness, reusing full parts already
+fetched by that operation. This is development source, not released availability
+or completed live acceptance.
+
+An observed list revision is not proof that a client has opened that document.
+Warm reuse also requires the same Home, Account/credential, mode, key and
+audience. Readers gather changed or missing demanded snapshots into the existing
+read-batch transport with turns and messages disabled. A compact refresh never
+replaces a full document with an empty value or advances its stored revision.
+This is the canonical all-component 0.3 wire contract; historical layout-0 data
+continues through the existing full readers and metadata privacy upgrade.
+The full-detail HTTP boundary validates the current Protocol record directly;
+it does not normalize older component wire shapes into current authority.
+Historical stored metadata and Agent-state strings still use their existing
+post-read plain/E2EE codecs.
 
 Automatic transport selects `action` for an E2EE Session without a content
 credential, and otherwise selects a session-scoped viewer socket. Failure to
@@ -1280,17 +1335,59 @@ Session-list Action: any exact viewer folder assignment AND any viewer tag
 assignment, with no descendant expansion. Unknown ids produce an empty match,
 and existing cursor/access predicates remain in effect.
 `GET /v2/changes?after=...&sessionId=...` provides exact Session/share revision
-invalidation through the existing Account feed. Its cursor advances over the
-raw page even when no matching rows are visible; `410 cursor-gone` requires a
-snapshot rebuild. The separate `sessionAccessSessionId` probe cannot be combined
-with `sessionId` (`400 invalid_params`).
+invalidation through the existing Account feed. Optional comma-separated `kinds`
+selects change domains at the same query owner. A full selected page retains its
+last row cursor; a short or empty selected page advances through the captured
+Account cursor. `410 cursor-gone` requires a snapshot rebuild. The separate
+`sessionAccessSessionId` probe cannot be combined with `sessionId` or `kinds`
+(`400 invalid_params`). See the [change-feed contract](protocol.md#session-changes-03-development-source).
 
 ## Endpoint catalog
+### Automation definitions (0.3 development)
+
+`GET /v3/automations` returns a bounded, cursor-paged public definition list;
+private recipes and trigger envelopes require `GET /v3/automations/:id`.
+Structured selections use the same query owner through authenticated,
+present-user `POST /v3/automations/query`. A managed-target request carries
+`{ managedTarget: { homeId, managedId } }`. It selects only Account-owned,
+non-deleted definitions for that exact relationship. The temporary
+`includeUnindexedManagedTargets: true` option also admits rows whose relationship
+is unknown, so the current client can apply the existing private recognizer
+during backfill. `managedTargetUnindexed: true` selects only unknown rows for
+the one-shot authenticated client startup migration. These selectors cannot be
+combined with Workflow, Session or Account-inline scope selectors.
+The structured POST is read-only and shares the GET list handler; migration
+writes use the separate recipe-only PATCH CAS. UI startup reuses its existing
+feature-admitted list response, skips a complete all-known page, and issues the
+unknown selector only when that page is incomplete or contains an unknown row.
+
+List/detail `managedTarget` is optional and nullable: omitted means unknown,
+`null` means indexed and unrelated, and an id pair identifies a candidate.
+Current writers derive the outer recipe field while sealing the private
+Workflow; create/update/reconcile persist it through the existing definition CAS.
+Older writers that omit it retain the relationship ids but leave its index
+unknown. A current authorised client backfills readable recipes automatically,
+without an operator step or read-driven write. The strict structured query
+requires a matching development Home; unsupported requests remain unavailable
+and never fall back to an unrestricted list. See
+[the encryption boundary](encryption.md#automation-managed-target-relationship-03-development).
+
 ### Sessions
 - `GET /v1/sessions`
 - `GET /v2/sessions/active?limit=...`
 - `GET /v2/sessions?cursor=cursor_v1_<id>&limit=...&changedSince=...`
 - `POST /v1/sessions` (create or load by `tag`)
+- `POST /v2/sessions/lookup-managed-birth` (0.3 development) — closed
+  `{ homeId, managedId }` request; returns `{ sessionId: string | null }` for a
+  unique Account-owned birth across active and archived Sessions. It reads only
+  relationship ids. Layout-1 creation accepts the optional `managedCreation`
+  carrier described in [Encryption](encryption.md#managed-resource-birth-relationship-03-development).
+- `POST /v3/automations/runs/workflow-storage` with
+  `{ operation: 'managed-birth.lookup', homeId, managedId }` (0.3 development) —
+  returns `{ runId: string | null }` for a unique Account-owned durable Workflow
+  birth. The exact indexed read returns no Run body. Run admission accepts the
+  same optional closed managed-creation carrier as Session birth; Keep writes
+  no FIN trigger and clearing a rule preserves the relationship.
 - `GET /v1/sessions/:sessionId/messages`
 - `DELETE /v1/sessions/:sessionId`
 - `POST /v2/sessions/responsibility/set` (development source) — desired-state assignment of the one
@@ -1417,6 +1514,17 @@ composed flow; missing or disabled support fails closed as `discussions_unavaila
 This is an in-progress 0.3 development contract, not a public release or a claim of completed
 package, database-reconciliation or loaded-runtime validation.
 
+Discussion AccountChange hints use the closed shape
+`{v:1, discussions:true, changes:{readState?:true, resource?:true}}`, with at least
+one flag. Private cursor writes emit `readState`; messages, access, proposal decisions
+and other resource writes emit `resource`. The AccountChange publication owner unions
+flags when coalescing the same Account/Discussion row. Only a validated readState-only
+hint for the captured Account avoids list/attention queries: the client refreshes that
+Discussion's summary and prunes read occurrences locally, preserving open decisions.
+Mixed, missing or malformed hints retain resource refresh. Because coalesced rows are
+retained, an earlier resource flag remains conservative; this is not a guarantee that
+every later cursor write can avoid resource refresh.
+
 The development `attachment` content part carries the shared file/folder payload,
 with private leaf references and explicit relative paths/empty directories. A byte
 upload is an alternate representation of the existing create/post/reply operation:
@@ -1457,6 +1565,13 @@ same current grant, stored-envelope, source-admission and client key-opening own
 ordinary reads, and never advance the private read cursor. These closed inputs move
 together with their consumers in undeployed 0.3; there is no older-development paging
 fallback for an exact lookup.
+
+Mounted Discussion lists refresh the changed id's summary and patch its row and known
+placement, retaining hydrated pages. Unknown membership or an order change beyond the
+loaded frontier still uses the owning list query. Doc-scoped discovery remains the root
+membership authority; an exact root reread or a dropped scoped root rechecks source
+admission through the thread's access-loss owner. A source refusal withdraws retained
+thread content as well as its list row; a transport outage does not imply revocation.
 
 For an existing Discussion's invitations and prospective grants, physical deletion
 of the anchored Session/original message is not an admission failure: no original
@@ -1597,6 +1712,14 @@ Reading never settles that proposal; its existing accept/decline disposition doe
 Independent Doc access is rechecked before returning source-bearing content, and unavailable
 coverage is explicit. This endpoint adds neither stored Inbox notices nor a person-request
 model; existing approval requests keep their own reader.
+
+For a changed Discussion, the same endpoint accepts optional `discussionId` and
+`afterCursor`. The latter requires exact-id selection and is the inclusive oldest
+occurrence of the globally loaded window; ordinary `cursor` remains its exclusive
+older-page bound. Selection and unavailable-key coverage are narrowed before message
+materialization, with the same current grant and source admission. The client replaces
+only that Discussion's occurrences and keeps the global continuation cursor and other
+loaded entries. An exact response's continuation pages only that id, not the global list.
 
 `discussions/changes.ts` publishes first-class `AccountChange` hints to the current resource
 audience after commit. Private cursor changes invalidate and refresh the acting Account only.
@@ -1759,13 +1882,17 @@ or completed runtime delivery validation.
 
 - In 0.3 development, `GET /v2/account/session-follows` and
   `GET /v2/sessions/:destinationSessionId/follows/sessions` accept optional
-  `cursor`, positive integer `limit`, and `source` (a JSON-encoded existing
-  `FollowSourceRefV1`, excluding rules). The public `follow.list` Action uses
-  `{ direction: 'following', receiver, source?, cursor?, limit? }` and encodes
+  `cursor`, positive integer `limit`, `source` (a JSON-encoded existing
+  `FollowSourceRefV1`, excluding rules), and `sourceKinds` (a JSON-encoded nonempty
+  array of `session`, `discussion`, `execution_run` or `workflow_run`). The public `follow.list` Action uses
+  `{ direction: 'following', receiver, source?, sourceKinds?, cursor?, limit? }` and encodes
   that query through its canonical transport. A Session source selects its own
   explicit Follow and execution-run Follows belonging to that exact Session;
   Discussion, execution-run and workflow-run references select only that exact
-  source. No Session inventory or content matching is involved.
+  source. Kind selection restricts that result before pagination; it is a set,
+  so reordering or repeating kinds does not change a cursor's selection.
+  Kind-selected reads do not acquire the unrelated private rule census.
+  No Session inventory or content matching is involved.
   Selection and candidate paging happen in SQL before source admission and
   projection; every returned row is freshly readmitted. A short or empty page
   can still carry `continuation` when candidates lose access or cannot project.
@@ -1775,7 +1902,7 @@ or completed runtime delivery validation.
   so their candidate position cannot disclose an omitted source identity;
   clients treat them as opaque strings. This uses the existing server key,
   independently of the Account's plain/E2EE mode. Omitting `limit` returns all currently admitted
-  matching rows, preserving the unfiltered default when `source` is omitted.
+  matching rows, preserving the unfiltered default when both selectors are omitted.
   The selector extends the undeployed V1 contract and must not be silently
   ignored by an older server.
 - `GET /v2/sessions/:sessionId/follow` returns `{ follow, capabilities: { manageFollow } }`, where
@@ -2224,6 +2351,27 @@ list, lookup and upsert schemas exclude the namespace entirely. Every Board muta
 rechecks the actor's current `editSessionRecords` capability in the committing
 transaction.
 
+In 0.3 development, actual readable host-record mutations publish an independent
+AccountChange `account` entity, `session-record:<physical-record-id>`, with strict
+`{v:1,sessionRecords:{sessionId,address}}` routing. Later transcript writes cannot
+overwrite that record's retained change. Catalog-owned actor scopes remain
+actor-private; Session-owner records use the current Session recipient and
+transcript-publication policies. Board mutations have no second broad Session
+publisher. The existing content-free Account socket wake optionally carries
+`sessionSystemRecords` targets before catch-up, including on secondary Homes:
+`[]` explicitly excludes record/access changes, an addressed target refreshes
+matching observations, and a target without an address revalidates the Session's
+records and access. Missing/unknown routing stays conservative. Closed, known
+transcript, metadata, Agent-state, Activity and Turn row-fact hints do not refetch
+visual records. The canonical hint parser accepts the HTTP projection's typed
+pending-Run targets alongside those facts; pending targets alone and unknown
+fields do not establish that records are unchanged. Encryption transitions and
+access changes retain full revalidation. The released/predecessor revisionless
+workflow reader still refreshes from ordinary Session row changes, independently
+of physical-record invalidation. Addressed record Account wakes
+do not refresh private Account catalogs; mixed Artifact or Saved Secret changes
+retain their ordinary Profile-catalog relevance.
+
 In 0.3 development, the same list route accepts the exclusive query
 `owner=host&namespace=surface&kind=item.v1&projection=count` and returns strict
 `{count}` after the ordinary current-Session read authorization. One aggregate
@@ -2550,6 +2698,10 @@ Artifact bytes and grants. See the
   separate string `coverage` describes actual readable completeness. A completed
   legacy fallback can therefore return `coverage:'complete'` together with
   partial `kindCoverage`, without hiding a genuinely unreadable source.
+  Exact-kind HTTP pages must carry that typed `coverage` witness even when
+  `hasUnclassified` is false; a missing witness is invalid, not complete empty
+  membership. Already-admitted local projections use the same pure selection
+  policy without manufacturing a new server-classification witness.
   An already-complete exact list needs one header query and no repair request.
   Omitting selectors preserves the array response.
   Rows expose coarse nullable `kind` and, when canonically classified,

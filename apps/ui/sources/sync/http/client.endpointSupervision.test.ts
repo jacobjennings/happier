@@ -25,6 +25,73 @@ afterEach(async () => {
 });
 
 describe('serverFetch endpoint supervision', () => {
+    it.each(['canonical', 'legacy'] as const)('suppresses stale maintenance evidence through %s HTTP after supervision restarts', async transport => {
+        vi.useFakeTimers();
+        const domain = createDeferred<Response>();
+        setRuntimeFetch(async input => String(input).endsWith('/resource') ? domain.promise : new Response(null, { status: 200 }));
+        const pool = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
+        const { acquireEndpointSupervisor } = await import('@/sync/runtime/connectivity/endpointSupervisorPool');
+        const endpoint = await acquireEndpointSupervisor({ serverId: getActiveServerSnapshot().serverId, endpoint: 'https://api.example.test', tokenOverride: token });
+        try {
+            const { createServerFetchAtEndpoint } = await import('./client');
+            const { runtimeFetchWithServerReachability } = await import('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch');
+            const pending = transport === 'canonical'
+                ? createServerFetchAtEndpoint({ endpointUrl: 'https://api.example.test', credentials: { token }, superviseReachability: true })('/resource')
+                : runtimeFetchWithServerReachability({ serverUrl: 'https://api.example.test', token, url: 'https://api.example.test/resource', init: {} });
+            await vi.advanceTimersByTimeAsync(0);
+            const previous = pool.peekServerReachabilityScope('https://api.example.test', token);
+            await pool.startServerReachabilitySupervisor({ serverUrl: 'https://api.example.test', token,
+                runtimeOrigin: 'https://replacement-transport.example.test' });
+            expect(pool.peekServerReachabilityScope('https://api.example.test', token)?.generation).not.toBe(previous?.generation);
+            domain.resolve(new Response(null, { status: 503, headers: { 'Retry-After': '2' } }));
+            await expect(pending).resolves.toHaveProperty('status', 503);
+            expect(pool.peekServerReachabilityState('https://api.example.test', token)?.phase).toBe('online');
+            expect(endpoint.supervisor.getState().phase).toBe('online');
+        } finally { await endpoint.release({ immediate: true }); }
+    });
+    it.each(['canonical', 'legacy'] as const)('keeps unqualified service failures operation-scoped through %s HTTP', async transport => {
+        vi.useFakeTimers();
+        let response = new Response(null, { status: 503 });
+        setRuntimeFetch(async input => String(input).endsWith('/resource') ? response : new Response(null, { status: 200 }));
+        const { acquireEndpointSupervisor } = await import('@/sync/runtime/connectivity/endpointSupervisorPool');
+        const { peekServerReachabilityState } = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
+        const endpoint = await acquireEndpointSupervisor({ serverId: getActiveServerSnapshot().serverId, endpoint: 'https://api.example.test', tokenOverride: token });
+        const { createServerFetchAtEndpoint } = await import('./client');
+        const { runtimeFetchWithServerReachability } = await import('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch');
+        const request = transport === 'canonical'
+            ? createServerFetchAtEndpoint({ endpointUrl: 'https://api.example.test', credentials: { token }, superviseReachability: true })
+            : (path: string, init?: RequestInit) => runtimeFetchWithServerReachability({ serverUrl: 'https://api.example.test', token,
+                url: `https://api.example.test${path}`, init: init ?? {} });
+        try {
+            for (const status of [403, 500, 503]) {
+                response = new Response(null, { status });
+                await expect(request('/resource')).resolves.toHaveProperty('status', status);
+                expect(peekServerReachabilityState('https://api.example.test', token)?.phase).toBe('online');
+                expect(endpoint.supervisor.getState().phase).toBe('online');
+                await expect(request('/unrelated-write', { method: 'POST' })).resolves.toHaveProperty('status', 200);
+            }
+        } finally { await endpoint.release({ immediate: true }); }
+    });
+
+    it.each(['canonical', 'legacy'] as const)('publishes qualified maintenance evidence through %s HTTP', async transport => {
+        vi.useFakeTimers();
+        setRuntimeFetch(async input => String(input).endsWith('/resource')
+            ? new Response(null, { status: 503, headers: { 'Retry-After': '2' } }) : new Response(null, { status: 200 }));
+        const { acquireEndpointSupervisor } = await import('@/sync/runtime/connectivity/endpointSupervisorPool');
+        const { peekServerReachabilityState } = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
+        const endpoint = await acquireEndpointSupervisor({ serverId: getActiveServerSnapshot().serverId, endpoint: 'https://api.example.test', tokenOverride: token });
+        try {
+            const { createServerFetchAtEndpoint } = await import('./client');
+            const { runtimeFetchWithServerReachability } = await import('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch');
+            const pending = transport === 'canonical'
+                ? createServerFetchAtEndpoint({ endpointUrl: 'https://api.example.test', credentials: { token }, superviseReachability: true })('/resource')
+                : runtimeFetchWithServerReachability({ serverUrl: 'https://api.example.test', token,
+                    url: 'https://api.example.test/resource', init: {} });
+            await expect(pending).resolves.toHaveProperty('status', 503);
+            expect(peekServerReachabilityState('https://api.example.test', token)).toMatchObject({ phase: 'offline', nextRetryAt: Date.now() + 2000 });
+            expect(endpoint.supervisor.getState().phase).toBe('offline');
+        } finally { await endpoint.release({ immediate: true }); }
+    });
     it('dispatches a canonically ready actual bearer even when the facade credential was rejected', async () => {
         vi.useFakeTimers();
         setRuntimeFetch(async (input, init) => new Response(null, {
@@ -93,19 +160,19 @@ describe('serverFetch endpoint supervision', () => {
         await endpoint.release({ immediate: true });
     });
 
-    it('keeps explicit Home restart evidence even on an internal-error response', async () => {
+    it('keeps explicit Home restart evidence without a retry-after header', async () => {
         vi.useFakeTimers();
         setRuntimeFetch(async (input) => String(input).endsWith('/v1/sessions')
-            ? new Response(null, { status: 500, headers: { 'X-Happier-Retry-Reason': 'server_restarting', 'Retry-After': '2' } })
+            ? new Response(null, { status: 503, headers: { 'X-Happier-Retry-Reason': 'server_restarting' } })
             : new Response(null, { status: 200 }));
         const { acquireEndpointSupervisor } = await import('@/sync/runtime/connectivity/endpointSupervisorPool');
         const { peekServerReachabilityState } = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
         const endpoint = await acquireEndpointSupervisor({ serverId: getActiveServerSnapshot().serverId, endpoint: 'https://api.example.test', tokenOverride: token });
         try {
             const { serverFetch } = await import('./client');
-            await expect(serverFetch('/v1/sessions')).resolves.toHaveProperty('status', 500);
+            await expect(serverFetch('/v1/sessions')).resolves.toHaveProperty('status', 503);
             await vi.advanceTimersByTimeAsync(0);
-            expect(peekServerReachabilityState('https://api.example.test', token)).toMatchObject({ phase: 'offline', nextRetryAt: Date.now() + 2000 });
+            expect(peekServerReachabilityState('https://api.example.test', token)).toMatchObject({ phase: 'offline', reason: 'server_restarting' });
         } finally { await endpoint.release({ immediate: true }); }
     });
 

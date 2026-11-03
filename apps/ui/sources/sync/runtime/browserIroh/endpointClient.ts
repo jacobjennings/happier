@@ -19,7 +19,6 @@
  */
 
 import { BROWSER_IROH_WORKER_ASSET, browserIrohAssetUrl } from './assets';
-import { resolveBrowserIrohHostDecision, type BrowserIrohHostDecision } from './hostEligibility';
 import {
     attachBrowserIrohPageLifecycleRelease,
     type BrowserIrohPageLifecycle,
@@ -408,23 +407,4 @@ export function createBrowserIrohEndpointClient(
             detachPageLifecycle = null;
         },
     };
-}
-
-export type BrowserIrohEndpointAvailability =
-    | Readonly<{ available: true; client: BrowserIrohEndpointClient }>
-    | Readonly<{ available: false; decision: BrowserIrohHostDecision }>;
-
-/**
- * The one per-tab entry point. Resolving availability is a pure host-capability
- * decision: it constructs no worker, opens no port, and fetches no asset. Only a
- * later call on the returned client does that.
- */
-export function resolveBrowserIrohEndpointClient(
-    connect: ConnectWorker,
-    decision: BrowserIrohHostDecision = resolveBrowserIrohHostDecision(),
-): BrowserIrohEndpointAvailability {
-    if (!decision.eligible) {
-        return { available: false, decision };
-    }
-    return { available: true, client: createBrowserIrohEndpointClient(connect) };
 }

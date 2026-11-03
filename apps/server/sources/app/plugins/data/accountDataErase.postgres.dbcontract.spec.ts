@@ -226,7 +226,7 @@ describe.skipIf(getDbProviderFromEnv(process.env, 'postgres') !== 'postgres')('A
         }
     });
 
-    it.each(['owned-discussion', 'foreign-discussion', 'authored-session'] as const)(
+    it.each(['owned-discussion', 'foreign-discussion', 'authored-session', 'owned-machine', 'authored-machine'] as const)(
         'physically erases an Account with %s cleanup outside its status audience', async shape => {
             const suffix = randomUUID();
             const accountId = `erased-${suffix}`;
@@ -239,8 +239,16 @@ describe.skipIf(getDbProviderFromEnv(process.env, 'postgres') !== 'postgres')('A
             ] });
             let discussionId: string | undefined;
             let sessionId: string | undefined;
+            let machineId: string | undefined;
             try {
-                if (shape === 'authored-session') {
+                if (shape === 'owned-machine' || shape === 'authored-machine') {
+                    const machine = await db.machine.create({ data: {
+                        id: `machine-${suffix}`, accountId: shape === 'owned-machine' ? accountId : ownerId, metadata: '{}',
+                    } });
+                    machineId = machine.id;
+                    await db.machineAccountGrant.create({ data: { machineId, accountId: recipientId,
+                        createdByAccountId: accountId, accessLevel: 'view' } });
+                } else if (shape === 'authored-session') {
                     const session = await db.session.create({ data: {
                         accountId: ownerId, tag: suffix, encryptionMode: 'plain', metadata: '{}',
                     } });
@@ -264,7 +272,11 @@ describe.skipIf(getDbProviderFromEnv(process.env, 'postgres') !== 'postgres')('A
                 }
                 expect(await deleteAccountForErasure({ accountId })).toEqual({ status: 'deleted' });
                 expect(await db.account.findUnique({ where: { id: accountId } })).toBeNull();
-                if (sessionId) {
+                if (machineId) {
+                    expect(await db.machine.findUnique({ where: { id: machineId }, select: { accountId: true } }))
+                        .toEqual(shape === 'owned-machine' ? null : { accountId: ownerId });
+                    expect(await db.machineAccountGrant.count({ where: { machineId } })).toBe(0);
+                } else if (sessionId) {
                     expect(await db.session.findUniqueOrThrow({ where: { id: sessionId }, select: { accountId: true } }))
                         .toEqual({ accountId: ownerId });
                     expect(await db.sessionShare.findUniqueOrThrow({ where: {
@@ -281,8 +293,10 @@ describe.skipIf(getDbProviderFromEnv(process.env, 'postgres') !== 'postgres')('A
                         .toEqual([{ accountId: recipientId, createdByAccountId: ownerId, accessLevel: 'view' }]);
                 }
                 expect(await db.accountChange.count({ where: { accountId: recipientId,
-                    kind: sessionId ? 'session' : 'discussion', entityId: sessionId ?? discussionId } })).toBeGreaterThan(0);
+                    kind: machineId ? 'machineRecipientAccess' : sessionId ? 'session' : 'discussion',
+                    entityId: machineId ?? sessionId ?? discussionId } })).toBeGreaterThan(0);
             } finally {
+                if (machineId) await db.machine.deleteMany({ where: { id: machineId } });
                 if (discussionId) await db.discussion.deleteMany({ where: { id: discussionId } });
                 if (sessionId) await db.session.deleteMany({ where: { id: sessionId } });
                 await db.account.deleteMany({ where: { id: { in: [accountId, ownerId, recipientId] } } });

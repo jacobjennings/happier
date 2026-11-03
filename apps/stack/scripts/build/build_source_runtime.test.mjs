@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { chmod, cp, mkdtemp, mkdir, writeFile, readFile, realpath, rename, symlink, rm, access, readdir, stat, utimes } from 'node:fs/promises';
 import fs, { existsSync, readFileSync, watch } from 'node:fs';
 import { runInNewContext } from 'node:vm';
+import { createHash } from 'node:crypto';
 import { withPatchedProcessEnv } from '../testkit/core/env_scope.mjs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
@@ -655,7 +656,10 @@ test('source plugin UI preparation isolates manifest evaluation and syntax failu
   const outputPath = fixture.path('consumer/inventory.js');
   const artifactStoreDir = fixture.path('consumer/artifacts');
   const { prepareSourcePluginUiInventory } = await import('./build_source_web_ui.mjs');
-  const { resolveBundledPluginUiArtifactsRetainedRoots } = await import('../../../ui/scripts/generateBundledPluginUiArtifacts.mjs');
+  const { resolveBundledPluginUiArtifactsRetainedRoots, resolveBundledPluginUiArtifactsOutputPath } = await import('../../../ui/scripts/generateBundledPluginUiArtifacts.mjs');
+  // A source capture can inherit the checkout's producer inventory. This case
+  // starts cold; warm retained-graph recovery is exercised below instead.
+  await rm(resolveBundledPluginUiArtifactsOutputPath(repoRoot), { force: true });
   let attempt = 0;
   const prepare = async () => {
     const chunks = [];
@@ -756,9 +760,23 @@ test('source plugin UI preparation isolates cold failure, retains green bytes an
 
 test('source plugin UI preparation reuses unchanged plugins and rebuilds only changed inputs', async t => {
   await import('../../../../packages/cli-common/registerSourceRuntime.mjs');
-  const { prepareSourcePluginUiArtifacts } = await import('../../../ui/scripts/prepareSourcePluginUiArtifacts.mjs');
   const { resolveBundledPluginUiArtifactsInputPaths } = await import('../../../ui/scripts/generateBundledPluginUiArtifacts.mjs');
   const { fixture, repoRoot, plugins, entry } = await createSourcePluginUiFixture(t, ['alpha', 'beta']);
+  // This test changes plugin inputs while holding compiler inputs constant.
+  // Bundle the real compiler into the fixture: unrelated shared-checkout tool
+  // edits must not turn a zero-work case into a legitimate compiler rebuild.
+  const compilerRoot = fixture.path('compiler');
+  const compilerPath = join(compilerRoot, 'apps/ui/scripts/prepareSourcePluginUiArtifacts.mjs');
+  const sourceRepo = fileURLToPath(new URL('../../../../', import.meta.url));
+  await mkdir(dirname(compilerPath), { recursive: true });
+  await symlink(join(sourceRepo, 'node_modules'), join(compilerRoot, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+  await createRequire(import.meta.url)('esbuild').build({
+    entryPoints: [join(sourceRepo, 'apps/ui/scripts/prepareSourcePluginUiArtifacts.mjs')],
+    outfile: compilerPath, bundle: true, platform: 'node', format: 'esm', packages: 'external',
+    conditions: ['happier-source'], logLevel: 'silent',
+    banner: { js: "import { createRequire as fixtureCreateRequire } from 'node:module'; const require = fixtureCreateRequire(import.meta.url);" },
+  });
+  const { prepareSourcePluginUiArtifacts } = await import(pathToFileURL(compilerPath));
   const betaPackagePath = join(repoRoot, 'packages/plugins/beta/package.json');
   const betaPackage = JSON.parse(await readFile(betaPackagePath, 'utf8'));
   betaPackage.devDependencies = { '@happier-dev/cli': '0.0.0', '@fixture/ui-helper': '0.0.0' };
@@ -768,6 +786,16 @@ test('source plugin UI preparation reuses unchanged plugins and rebuilds only ch
   await writeFile(join(helperRoot, 'package.json'), JSON.stringify({ name: '@fixture/ui-helper', version: '0.0.0' }));
   await writeFile(join(helperRoot, 'src/value.ts'), 'export const value = "v1";');
   const compiled = [];
+  const originalWriteFile = fs.promises.writeFile;
+  t.mock.method(fs.promises, 'writeFile', (path, ...args) => {
+    const match = String(path).startsWith(fixture.path('preparation-')) && String(path).match(/[\\/](alpha|beta)\.json$/u);
+    if (match) {
+      compiled.push(match[1]);
+    }
+    return originalWriteFile(path, ...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   for (const { directory } of plugins) {
     await writeFile(entry(directory), `import {value} from "fixture-ui-${directory}"; export function renderSurface(){return value;}`);
     await writeFile(join(repoRoot, 'packages/plugins', directory, 'src/value.ts'), 'export const value = "v1";');
@@ -781,9 +809,6 @@ test('source plugin UI preparation reuses unchanged plugins and rebuilds only ch
       if (specifier === '@fixture/ui-helper') return join(helperRoot, 'src/value.ts');
       if (!specifier.startsWith('fixture-ui-')) return undefined;
       const directory = specifier.slice('fixture-ui-'.length);
-      // This real compiler callback resolves fixture source files. Observing
-      // it proves which artifacts esbuild consumed without mocking the SDK.
-      compiled.push(directory);
       return join(repoRoot, 'packages/plugins', directory, 'src/value.ts');
     } });
   await prepare();
@@ -810,7 +835,7 @@ test('source plugin UI preparation reuses unchanged plugins and rebuilds only ch
   }
   await writeFile(join(repoRoot, 'packages/plugins/alpha/src/notImported.ts'), 'export const unused = true;');
   await prepare();
-  assert.deepEqual(compiled, ['alpha'], 'a changed declared input still enters the canonical compiler');
+  assert.deepEqual(compiled, [], 'an unconsumed plugin source addition must compile zero unchanged UI graphs');
   assert.deepEqual(resolveBundledPluginUiArtifactsInputPaths(outputPath).slice(1), firstPaths,
     'recompiled identical byte graphs must reuse their content paths');
   assert.deepEqual((await Promise.all(firstPaths.map(path => stat(path)))).map(value => value.mtimeMs), firstStats.map(value => value.mtimeMs));
@@ -1216,6 +1241,32 @@ async function installSourcePreparationInputs(repoDir, component) {
   ]) if (!existsSync(join(repoDir, path))) await writeFile(join(repoDir, path), contents);
 }
 
+test('source exports keep host dependency resolution through nested-to-hoisted relayouts', async t => {
+  const fixture = await createTempFixture(t, { prefix: 'hstack-export-dependency-relayout-', registerCleanup: false });
+  t.after(async () => { await makeFixtureWritable(fixture.root); await fixture.cleanup(); });
+  const repoDir = await createReloadDaemonRepo(fixture,
+    'import runtime from "relayout-package"; console.log(runtime.value);');
+  const nested = join(repoDir, 'apps/cli/node_modules/relayout-package');
+  await mkdir(nested);
+  await mkdir(join(repoDir, 'node_modules'), { recursive: true });
+  await writeFile(join(nested, 'package.json'), JSON.stringify({ name: 'relayout-package', main: 'index.cjs' }));
+  await writeFile(join(nested, 'index.cjs'), 'exports.value = 1;');
+  const native = process.platform === 'linux' ? await installSourceAdmissionFixture(fixture.root) : null;
+  const env = { ...process.env, ...native?.env };
+  const build = native?.build ?? buildSourceRuntimeBundle;
+  const runtime = await build({ repoDir, outputDir: fixture.path('export'), component: 'daemon', env });
+  const launch = async () => (await promisify(execFile)(process.execPath, [runtime.entrypoint], { env })).stdout.trim();
+  const pluginLaunch = async () => (await promisify(execFile)(process.execPath, ['--input-type=module', '-e', `
+import { createRequire } from 'node:module';
+console.log(createRequire(${JSON.stringify(resolve(runtime.runtimeDir, '../../packages/plugins/probe/dist/index.js'))})('relayout-package').value);
+`], { env })).stdout.trim();
+  assert.equal(await launch(), '1');
+  assert.equal(await pluginLaunch(), '1', 'plugin entries must share the host lookup chain before relayout');
+  await rename(nested, join(repoDir, 'node_modules/relayout-package'));
+  assert.equal(await launch(), '1', 'the built CLI must resolve the hoisted dependency without rebuilding');
+  assert.equal(await pluginLaunch(), '1', 'plugin entries must fall back to the hoisted tree after relayout');
+});
+
 async function createReloadDaemonRepo(fixture, source) {
   const repoDir = fixture.path('repo');
   const cliDir = join(repoDir, 'apps/cli');
@@ -1523,7 +1574,15 @@ async function reloadFixtureGraph(t, source) {
   const daemon = { identity: 'candidate', runtimeDir, cliDir: runtimeDir, entrypoint: join(runtimeDir, 'src/index.mjs') };
   await writeFile(daemon.entrypoint, source);
   await writeFile(join(candidateRoot, 'source-bundle.json'), JSON.stringify(daemon));
-  const old = { entrypoint: '/incumbent/daemon.mjs' };
+  const incumbentRoot = fixture.path('incumbent');
+  const incumbentRuntimeDir = join(incumbentRoot, 'apps/cli');
+  const old = { entrypoint: join(incumbentRuntimeDir, 'src/index.mjs') };
+  await mkdir(dirname(old.entrypoint), { recursive: true });
+  await writeFile(old.entrypoint, 'export {};');
+  await writeFile(join(incumbentRoot, 'source-bundle.json'), JSON.stringify({
+    identity: 'incumbent', component: 'daemon', runtimeDir: incumbentRuntimeDir,
+    cliDir: incumbentRuntimeDir, entrypoint: old.entrypoint,
+  }));
   const selectedPath = join(sourceRoot, 'selected-daemon.json');
   await writeFile(selectedPath, JSON.stringify(old));
   const runtimePath = join(stackBaseDir, 'stack.runtime.json');
@@ -1533,6 +1592,217 @@ async function reloadFixtureGraph(t, source) {
   t.after(async () => { await pending.dispose(); await makeFixtureWritable(fixture.root); await fixture.cleanup(); });
   return { fixture, stackBaseDir, selectedPath, runtimePath, runtime, old, daemon, pending };
 }
+
+async function installCoherenceRuntimeBundle(fixture, {
+  name, component, sharedDigest, sharedPath = 'packages/protocol/src/shared.ts',
+}) {
+  const bundleRoot = fixture.path(`stacks/source-bundles/${name}`);
+  const runtimeDir = join(bundleRoot, 'apps', component === 'daemon' ? 'cli' : 'server');
+  const entrypoint = join(runtimeDir, component === 'daemon' ? 'src/index.mjs' : 'sources/main.mjs');
+  await mkdir(dirname(entrypoint), { recursive: true });
+  await writeFile(entrypoint, component === 'daemon' ? 'export {};' : reloadHttpServerSource);
+  const built = {
+    identity: name,
+    component,
+    runtimeDir,
+    entrypoint,
+    ...(component === 'daemon'
+      ? { cliDir: runtimeDir }
+      : { serverDir: runtimeDir, dbProvider: 'sqlite', env: { HAPPIER_DB_PROVIDER: 'sqlite' }, migration: { mode: 'disabled' } }),
+  };
+  await writeFile(join(bundleRoot, 'source-bundle.json'), JSON.stringify({
+    ...built,
+    sourceInputDigests: { [sharedPath]: sharedDigest },
+    inputIdentity: `${name}-inputs`,
+  }));
+  return built;
+}
+
+test('source startup refuses selected server and daemon bundles with conflicting shared inputs', async t => {
+  const fixture = await createTempFixture(t, { prefix: 'hstack-source-selected-skew-' });
+  const stackBaseDir = fixture.path('stacks/qa');
+  const sourceRoot = join(stackBaseDir, 'source-runtime');
+  await mkdir(sourceRoot, { recursive: true });
+  const server = await installCoherenceRuntimeBundle(fixture, {
+    name: 'server-current', component: 'server', sharedDigest: 'current',
+  });
+  const daemon = await installCoherenceRuntimeBundle(fixture, {
+    name: 'daemon-stale', component: 'daemon', sharedDigest: 'stale',
+  });
+  await writeFile(join(sourceRoot, 'selected-server.json'), JSON.stringify({ entrypoint: server.entrypoint }));
+  await writeFile(join(sourceRoot, 'selected-daemon.json'), JSON.stringify({ entrypoint: daemon.entrypoint }));
+
+  await assert.rejects(
+    buildSourceRuntimeBundle({ stackBaseDir, component: 'server', reuseSelected: true,
+      requireCoherentSelection: true }),
+    error => error?.code === 'source_runtime_input_skew'
+      && error.components?.server === 'server-current'
+      && error.components?.daemon === 'daemon-stale'
+      && error.message.includes('--restart'),
+  );
+});
+
+test('source startup ignores non-protocol input drift between otherwise reusable selections', async t => {
+  const fixture = await createTempFixture(t, { prefix: 'hstack-source-non-protocol-drift-' });
+  const stackBaseDir = fixture.path('stacks/qa');
+  const sourceRoot = join(stackBaseDir, 'source-runtime');
+  await mkdir(sourceRoot, { recursive: true });
+  const server = await installCoherenceRuntimeBundle(fixture, {
+    name: 'server-current', component: 'server', sharedDigest: 'older', sharedPath: 'apps/bootstrap/package.json',
+  });
+  const daemon = await installCoherenceRuntimeBundle(fixture, {
+    name: 'daemon-current', component: 'daemon', sharedDigest: 'newer', sharedPath: 'apps/bootstrap/package.json',
+  });
+  await writeFile(join(sourceRoot, 'selected-server.json'), JSON.stringify({ entrypoint: server.entrypoint }));
+  await writeFile(join(sourceRoot, 'selected-daemon.json'), JSON.stringify({ entrypoint: daemon.entrypoint }));
+
+  assert.equal((await buildSourceRuntimeBundle({ stackBaseDir, component: 'server', reuseSelected: true,
+    requireCoherentSelection: true })).identity, 'server-current');
+});
+
+test('daemon-only startup ignores an inactive stale local server selection', async t => {
+  const fixture = await createTempFixture(t, { prefix: 'hstack-source-split-placement-' });
+  const stackBaseDir = fixture.path('stacks/qa');
+  const sourceRoot = join(stackBaseDir, 'source-runtime');
+  await mkdir(sourceRoot, { recursive: true });
+  const server = await installCoherenceRuntimeBundle(fixture, {
+    name: 'inactive-server', component: 'server', sharedDigest: 'stale',
+  });
+  const daemon = await installCoherenceRuntimeBundle(fixture, {
+    name: 'local-daemon', component: 'daemon', sharedDigest: 'current',
+  });
+  await writeFile(join(sourceRoot, 'selected-server.json'), JSON.stringify({ entrypoint: server.entrypoint }));
+  await writeFile(join(sourceRoot, 'selected-daemon.json'), JSON.stringify({ entrypoint: daemon.entrypoint }));
+
+  assert.equal((await buildSourceRuntimeBundle({ stackBaseDir, component: 'daemon', reuseSelected: true })).identity,
+    'local-daemon');
+});
+
+test('plain source start reuses a coherent older pinned pair while current protocol source has moved', async t => {
+  const fixture = await createTempFixture(t, { prefix: 'hstack-source-coherent-last-green-' });
+  const repoDir = fixture.path('repo');
+  const protocolPath = join(repoDir, 'packages/protocol/src/shared.ts');
+  const stackBaseDir = fixture.path('stacks/qa');
+  const sourceRoot = join(stackBaseDir, 'source-runtime');
+  await mkdir(dirname(protocolPath), { recursive: true });
+  await mkdir(sourceRoot, { recursive: true });
+  await writeFile(protocolPath, 'export const version = "current";');
+  const server = await installCoherenceRuntimeBundle(fixture, {
+    name: 'server-last-green', component: 'server', sharedDigest: 'older-pinned',
+  });
+  const daemon = await installCoherenceRuntimeBundle(fixture, {
+    name: 'daemon-last-green', component: 'daemon', sharedDigest: 'older-pinned',
+  });
+  await writeFile(join(sourceRoot, 'selected-server.json'), JSON.stringify({ entrypoint: server.entrypoint }));
+  await writeFile(join(sourceRoot, 'selected-daemon.json'), JSON.stringify({ entrypoint: daemon.entrypoint }));
+
+  const selected = await buildSourceRuntimeBundle({ repoDir, stackBaseDir, component: 'server',
+    preparation: { prepareInBackground() {} }, requireCoherentSelection: true });
+  assert.equal(selected.identity, 'server-last-green');
+});
+
+test('deferred source restart publishes the server before its matching daemon companion', async t => {
+  const fixture = await createTempFixture(t, { prefix: 'hstack-source-deferred-companion-' });
+  const stackBaseDir = fixture.path('stacks/qa');
+  const sourceRoot = join(stackBaseDir, 'source-runtime');
+  await mkdir(sourceRoot, { recursive: true });
+  const staleDaemon = await installCoherenceRuntimeBundle(fixture, {
+    name: 'daemon-stale', component: 'daemon', sharedDigest: 'stale',
+  });
+  const currentServer = await installCoherenceRuntimeBundle(fixture, {
+    name: 'server-current', component: 'server', sharedDigest: 'current',
+  });
+  const currentDaemon = await installCoherenceRuntimeBundle(fixture, {
+    name: 'daemon-current', component: 'daemon', sharedDigest: 'current',
+  });
+  await writeFile(join(sourceRoot, 'selected-daemon.json'), JSON.stringify({ entrypoint: staleDaemon.entrypoint }));
+
+  const serverPending = await beginPendingSourceStart({ stackBaseDir });
+  t.after(() => serverPending.dispose());
+  const serverAdmission = await admitSourceRuntimeReload({
+    stackBaseDir, components: { server: currentServer }, pending: serverPending,
+  });
+  await serverAdmission.activate();
+  assert.equal(
+    JSON.parse(await readFile(join(sourceRoot, 'selected-server.json'), 'utf8')).entrypoint,
+    currentServer.entrypoint,
+  );
+
+  const daemonPending = await beginPendingSourceStart({ stackBaseDir });
+  t.after(() => daemonPending.dispose());
+  const daemonAdmission = await admitSourceRuntimeReload({
+    stackBaseDir, components: { daemon: currentDaemon }, pending: daemonPending,
+  });
+  await daemonAdmission.activate();
+  assert.equal(
+    JSON.parse(await readFile(join(sourceRoot, 'selected-daemon.json'), 'utf8')).entrypoint,
+    currentDaemon.entrypoint,
+  );
+  assert.equal(
+    (await buildSourceRuntimeBundle({ stackBaseDir, component: 'server', reuseSelected: true })).identity,
+    'server-current',
+  );
+});
+
+test('fresh source restart converges when protocol source changes between server and daemon captures',
+  { timeout: 90000 }, async t => {
+  const fixture = await createTempFixture(t, { prefix: 'hstack-source-reload-converges-', registerCleanup: false });
+  t.after(async () => { await makeFixtureWritable(fixture.root); await fixture.cleanup(); });
+  const repoDir = await createReloadDaemonRepo(fixture, 'export const ready = true;');
+  const stackBaseDir = fixture.path('stacks/qa');
+  const serverDir = join(repoDir, 'apps/server');
+  await Promise.all(['sources', 'scripts', 'node_modules'].map(path => mkdir(join(serverDir, path), { recursive: true })));
+  await writeFile(join(serverDir, 'package.json'), JSON.stringify({
+    name: '@happier-dev/server', type: 'module', dependencies: { '@happier-dev/protocol': 'workspace:*' },
+  }));
+  await writeFile(join(serverDir, 'tsconfig.json'), '{}');
+  await writeFile(join(serverDir, 'sources/main.light.ts'), reloadHttpServerSource);
+  await writeFile(join(serverDir, 'scripts/migrate.sqlite.deploy.ts'), 'export async function runSqliteMigrationDeploy() {}');
+  await symlink(dirname(createRequire(import.meta.url).resolve('esbuild/package.json')), join(serverDir, 'node_modules/esbuild'),
+    process.platform === 'win32' ? 'junction' : 'dir');
+  const cliManifestPath = join(repoDir, 'apps/cli/package.json');
+  await writeFile(cliManifestPath, JSON.stringify({
+    ...JSON.parse(await readFile(cliManifestPath, 'utf8')),
+    dependencies: { '@happier-dev/protocol': 'workspace:*' },
+  }));
+  const protocolPath = join(repoDir, 'packages/protocol/src/shared.ts');
+  await mkdir(dirname(protocolPath), { recursive: true });
+  await writeFile(join(repoDir, 'packages/protocol/package.json'), JSON.stringify({
+    name: '@happier-dev/protocol', type: 'module', exports: { '.': { 'happier-source': './src/shared.ts' } },
+  }));
+  const sharedProtocolSource = 'export const version = "shared-capture";';
+  await writeFile(protocolPath, sharedProtocolSource);
+  await Promise.all(Array.from({ length: 700 }, (_, index) => writeFile(
+    join(dirname(protocolPath), `shared-${index}-${'x'.repeat(96)}.ts`),
+    `export const shared${index} = ${index};`,
+  )));
+  await writeFile(join(repoDir, 'package.json'), JSON.stringify({ workspaces: ['apps/*', 'packages/*'] }));
+  await writeFile(join(repoDir, 'pnpm-workspace.yaml'), 'packages:\n  - apps/*\n  - packages/*\n');
+  await installSourcePreparationInputs(repoDir, 'server');
+  await writeFile(join(repoDir, 'pnpm-workspace.yaml'), 'packages:\n  - apps/*\n  - packages/*\n');
+
+  let changed = false;
+  await prepareSourceRuntimeReload({ stackName: 'qa', stackBaseDir, repoDir, args: ['--no-ui'], onHost: true,
+    env: { ...process.env, HAPPIER_STACK_SERVER_COMPONENT: 'happier-server-light', HAPPIER_STACK_DAEMON: '1' },
+    onPhase: phase => {
+      if (!changed && phase.phase === 'preparing' && phase.component === 'daemon') {
+        changed = true;
+        fs.writeFileSync(protocolPath, 'export const version = "daemon-capture";');
+      }
+    } });
+
+  assert.equal(changed, true);
+  const sourceRoot = join(stackBaseDir, 'source-runtime');
+  const selected = await Promise.all(['server', 'daemon'].map(async component => {
+    const selection = JSON.parse(await readFile(join(sourceRoot, `selected-${component}.json`), 'utf8'));
+    return JSON.parse(await readFile(resolve(dirname(selection.entrypoint), '../../../source-bundle.json'), 'utf8'));
+  }));
+  assert.equal(selected[0].sourceInputDigests['packages/protocol/src/shared.ts'],
+    selected[1].sourceInputDigests['packages/protocol/src/shared.ts']);
+  assert.equal(selected[0].sourceInputDigests['packages/protocol/src/shared.ts'],
+    createHash('sha256').update(sharedProtocolSource).digest('hex'),
+    'both components consume the one shared Protocol capture taken before either build');
+});
 
 test('completed source runtime lookup keeps publication custody through adoption', async t => {
   const graph = await reloadFixtureGraph(t, 'export {};');

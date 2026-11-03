@@ -308,6 +308,7 @@ export function useFilePageCodeIntelligence(
         { ...target, path: location.path } as WorkspaceFileOpenTarget,
         {
           intent: 'preview',
+          rootPath: input.scope?.rootPath,
           anchor: {
             kind: 'fileLine',
             startLine: location.range.start.line + 1,
@@ -315,7 +316,7 @@ export function useFilePageCodeIntelligence(
         },
       );
     },
-    [opener],
+    [opener, input.scope?.rootPath],
   );
 
   const showProblems = React.useCallback(() => {
@@ -935,7 +936,7 @@ function createDiagnosticsByLineReader(
     projection = next;
     forPath = currentPath;
     const byLine = new Map<number, CodeLineDiagnosticRange[]>();
-    for (const item of selectCodeDiagnostics(next, currentPath).items) {
+    for (const item of selectCodeDiagnostics(next, currentPath, { currentOnly: true }).items) {
       const { start, end } = item.range;
       for (let line = start.line; line <= end.line; line++) {
         const list = byLine.get(line + 1) ?? [];
@@ -1000,6 +1001,7 @@ function FileCodeIntelligenceCardLayer(
     const diagnostics = selectCodeDiagnostics(
       controller.getDiagnosticsProjection(),
       props.filePath,
+      { currentOnly: true },
     ).items;
     const diagnostic = position
       ? (diagnostics.find(

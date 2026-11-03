@@ -14,6 +14,29 @@ function snapshot(): ProjectAccountRowsSnapshot {
 function store() { return createStore<ProjectAccountRowsDomain>()((set, get) => createProjectAccountRowsDomain({ set, get })); }
 
 describe('Project Account row projection', () => {
+    it('PF4 publishes no equal census and retains 149 checkout identities when one row changes', () => {
+        const state = store();
+        state.getState().activateProjectAccountRowsScope(scope);
+        const initial = { ...snapshot(), workspaceRefs: Array.from({ length: 150 }, (_, index) => ({
+            id: `ref-${index}`, serverId: scope.serverId, machineId: 'machine-a', rootPath: `/repo-${index}`, createdAtMs: 1,
+        })) };
+        state.getState().applyProjectAccountRowsForScope(scope, initial);
+        const before = state.getState();
+        let notifications = 0;
+        const dispose = state.subscribe(() => { notifications++; });
+        for (let index = 0; index < 5; index++) state.getState().applyProjectAccountRowsForScope(scope, structuredClone(initial));
+        expect(state.getState()).toBe(before);
+        expect(notifications).toBe(0);
+        const next = structuredClone(initial);
+        next.workspaceRefs[42].rootPath = '/changed';
+        state.getState().applyProjectAccountRowsForScope(scope, next);
+        expect(notifications).toBe(1);
+        expect(state.getState().projectAccountRows).not.toBe(before.projectAccountRows);
+        const refs = state.getState().projectAccountRows!.workspaceRefs;
+        expect(refs.filter((row, index) => row === before.projectAccountRows!.workspaceRefs[index])).toHaveLength(149);
+        expect(refs[42].rootPath).toBe('/changed');
+        dispose();
+    });
     it('selects the atmosphere only from the requested Project in the active Account/Home', () => {
         const state = store();
         state.getState().activateProjectAccountRowsScope(scope);
@@ -108,6 +131,25 @@ describe('Project Account row projection', () => {
         expect(state.getState().projectAccountRows?.workspaceRefs).toBe(ready.projectAccountRows?.workspaceRefs);
         expect(state.getState().projectAccountRows?.coverage).toBe('complete');
         unsubscribe();
+    });
+    it.each([
+        { status: 'loading', coverage: 'partial' },
+        { status: 'error', coverage: 'complete' },
+        { status: 'locked', coverage: 'complete' },
+        { status: 'refused', coverage: 'complete' },
+    ] as const)('keeps $status/$coverage census metadata when cached row data changes', ({ status, coverage }) => {
+        const state = store();
+        state.getState().activateProjectAccountRowsScope(scope);
+        state.getState().applyProjectAccountRowsForScope(scope, { ...snapshot(), coverage });
+        state.getState().setProjectAccountRowsStatusForScope(scope, status);
+        const previous = state.getState().projectAccountRows!;
+        state.getState().applyProjectAccountRowsForScope(scope, { ...snapshot(),
+            workspaceRefs: previous.workspaceRefs.map((ref, index) => index === 0 ? { ...ref, lastOpenedAtMs: 42 } : ref),
+        }, 'projection');
+        const next = state.getState().projectAccountRows!;
+        expect(next).toMatchObject({ status, coverage, lastReadyAtMs: previous.lastReadyAtMs });
+        expect(next.workspaceRefs[0]?.lastOpenedAtMs).toBe(42);
+        expect(next.workspaceRefs[1]).toBe(previous.workspaceRefs[1]);
     });
     it('projects pins from stable Project anchors and preserves independent ref identities when only organization changes', () => {
         const state = store();

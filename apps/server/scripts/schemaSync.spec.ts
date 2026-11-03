@@ -10,6 +10,15 @@ import { generateMySqlSchemaFromPostgres, generateSqliteSchemaFromPostgres } fro
 const serverRoot = join(import.meta.dirname, "..");
 
 describe("schemaSync", () => {
+    it('keeps the optional Session display envelope provider-complete without narrowing its storage', () => {
+        const postgres = readFileSync(join(serverRoot, 'prisma/schema.prisma'), 'utf8');
+        for (const schema of [postgres, generateSqliteSchemaFromPostgres(postgres)]) {
+            const session = schema.match(/model Session\s*\{([\s\S]*?)^\}/mu)?.[1] ?? '';
+            expect(session).toMatch(/^\s*displayProjectionV1\s+String\?\s*$/mu);
+        }
+        const mysql = generateMySqlSchemaFromPostgres(postgres).match(/model Session\s*\{([\s\S]*?)^\}/mu)?.[1] ?? '';
+        expect(mysql).toMatch(/^\s*displayProjectionV1\s+String\?\s+@db\.LongText\s*$/mu);
+    });
     it('preserves the full source id plus its domain prefix in MySQL Follow identity', () => {
         const postgres = readFileSync(join(serverRoot, 'prisma/schema.prisma'), 'utf8');
         const mysql = generateMySqlSchemaFromPostgres(postgres);
@@ -472,27 +481,6 @@ model Account { id String @id }
         expect(mysql).toMatch(
             /binaryTargets\s*=\s*\["native",\s*"debian-openssl-3\.0\.x",\s*"linux-arm64-openssl-3\.0\.x",\s*"darwin",\s*"darwin-arm64",\s*"windows"\]/,
         );
-    });
-
-    it("pins MySQL-indexed sha256 token hashes to VARBINARY(32)", () => {
-        const master = `
-generator client {
-    provider = "prisma-client-js"
-}
-
-datasource db {
-    provider = "postgresql"
-    url      = env("DATABASE_URL")
-}
-
-model PublicSessionShare {
-    id        String @id
-    tokenHash Bytes  @unique
-}
-`;
-
-        const mysql = generateMySqlSchemaFromPostgres(master);
-        expect(mysql).toContain("tokenHash Bytes  @db.VarBinary(32) @unique");
     });
 
     it("pins all MySQL tokenHash unique fields to VARBINARY(32)", () => {

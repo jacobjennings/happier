@@ -89,35 +89,6 @@ describe('Session settings (prompt personalization)', () => {
         }));
     });
 
-    it('updates the usage limit recovery resume prompt mode', async () => {
-        sessionSettingsEntryState.settingsState.usageLimitRecoverySettingsV1 = {
-            v: 1,
-            mode: 'auto_wait',
-            promptMode: 'standard',
-            resumePromptMode: 'standard',
-        };
-
-        const mod = await import('@/app/(app)/settings/session/provider-limits');
-        const ProviderLimitsSettingsScreen = mod.default;
-        const screen = await renderSettingsView(React.createElement(ProviderLimitsSettingsScreen));
-
-        const resumePrompt = resumePromptChoice(screen);
-        expect(resumePrompt.props.title).toBe('settingsSession.usageLimitRecovery.resumePromptTitle');
-        expect(resumePrompt.props.rightElement.props.activeTabId).toBe('standard');
-        expect(resumePrompt.props.rightElement.props.tabs.map((tab: any) => tab.id)).toEqual(['standard', 'custom', 'off']);
-
-        await act(async () => {
-            resumePrompt.props.rightElement.props.onSelectTab('off');
-        });
-
-        await vi.waitFor(() => expect(storage.getState().settings.usageLimitRecoverySettingsV1).toEqual({
-            v: 1,
-            mode: 'auto_wait',
-            promptMode: 'standard',
-            resumePromptMode: 'off',
-        }));
-    });
-
     it('selects the custom resume prompt mode while preserving the saved custom text', async () => {
         sessionSettingsEntryState.settingsState.usageLimitRecoverySettingsV1 = {
             v: 1,
@@ -131,8 +102,13 @@ describe('Session settings (prompt personalization)', () => {
         const ProviderLimitsSettingsScreen = mod.default;
         const screen = await renderSettingsView(React.createElement(ProviderLimitsSettingsScreen));
 
+        const resumePrompt = resumePromptChoice(screen);
+        expect(resumePrompt.props.title).toBe('settingsSession.usageLimitRecovery.resumePromptTitle');
+        expect(resumePrompt.props.rightElement.props.activeTabId).toBe('standard');
+        expect(resumePrompt.props.rightElement.props.tabs.map((tab: any) => tab.id)).toEqual(['standard', 'custom', 'off']);
+
         await act(async () => {
-            resumePromptChoice(screen).props.rightElement.props.onSelectTab('custom');
+            resumePrompt.props.rightElement.props.onSelectTab('custom');
         });
 
         await vi.waitFor(() => expect(storage.getState().settings.usageLimitRecoverySettingsV1).toEqual({

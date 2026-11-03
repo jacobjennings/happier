@@ -12,8 +12,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+
+import { createBaseCliRuntimeSmokeFixtureFiles, createMinisignTestSigner } from '../testing/releaseArtifactFixtures.mjs';
 
 const repoRoot = resolve(new URL('../..', import.meta.url).pathname);
 const scriptPath = resolve(repoRoot, 'scripts/pipeline/github/promote-rolling-release.mjs');
@@ -48,10 +50,15 @@ function fixture({ missingRolling = false } = {}) {
   const archiveStage = join(root, 'archive-stage');
   const archiveRoot = join(archiveStage, archiveStem);
   mkdirSync(archiveRoot, { recursive: true });
-  writeExecutable(
-    join(archiveRoot, 'happier'),
-    '#!/bin/sh\nprintf \'%s\\n\' \'1.2.3-preview.4\'\n',
-  );
+  // verify-artifacts always attests the base CLI runtime, even with --skip-smoke.
+  for (const [relativePath, contents] of Object.entries(createBaseCliRuntimeSmokeFixtureFiles('1.2.3-preview.4'))) {
+    mkdirSync(dirname(join(archiveRoot, relativePath)), { recursive: true });
+    writeExecutable(join(archiveRoot, relativePath), contents);
+  }
+  // Archive admission accepts only producer modes; shared builders may run with a group-writable umask.
+  for (const entry of readdirSync(archiveStage, { recursive: true, withFileTypes: true })) {
+    if (entry.isDirectory()) chmodSync(join(entry.parentPath, entry.name), 0o755);
+  }
   execFileSync(
     process.execPath,
     [
@@ -64,8 +71,12 @@ function fixture({ missingRolling = false } = {}) {
   );
   const archive = readFileSync(join(source, archiveName));
   const checksumsName = 'checksums-happier-v1.2.3-preview.4.txt';
-  writeFileSync(join(source, checksumsName), `${sha256(archive)}  ${archiveName}\n`);
-  writeFileSync(join(source, `${checksumsName}.minisig`), 'signature\n');
+  const checksums = `${sha256(archive)}  ${archiveName}\n`;
+  const signer = createMinisignTestSigner();
+  const publicKey = join(root, 'release-test.pub');
+  writeFileSync(publicKey, signer.publicKeyFile);
+  writeFileSync(join(source, checksumsName), checksums);
+  writeFileSync(join(source, `${checksumsName}.minisig`), signer.sign(checksums));
   writeFileSync(join(rolling, 'old-asset'), 'old\n');
 
   const log = join(root, 'gh.log');
@@ -96,10 +107,6 @@ function fixture({ missingRolling = false } = {}) {
     writeFileSync(release1Name, 'Previous CLI Preview');
   }
 
-  writeExecutable(
-    join(bin, 'minisign'),
-    '#!/bin/sh\nexit 0\n',
-  );
   writeExecutable(
     join(bin, 'gh'),
     `#!/bin/sh
@@ -389,10 +396,11 @@ exit 2
     backupRef,
     release1Tag,
     release77Tag,
+    publicKey,
   };
 }
 
-function args() {
+function args(publicKey = 'scripts/release/installers/happier-release.pub') {
   return [
     scriptPath,
     '--source-tag', 'cli-v1.2.3-preview.4',
@@ -402,7 +410,7 @@ function args() {
     '--notes', 'Current version: 1.2.3-preview.4',
     '--prerelease', 'true',
     '--repo', 'test/test',
-    '--public-key', 'scripts/release/installers/happier-release.pub',
+    '--public-key', publicKey,
   ];
 }
 
@@ -420,7 +428,7 @@ test('rolling promotion removes an abandoned staging draft from an older target 
   try {
     writeFileSync(testFixture.staleOtherDraftState, '1');
     writeFileSync(testFixture.staleOtherRefState, oldSha);
-    execFileSync(process.execPath, args(), {
+    execFileSync(process.execPath, args(testFixture.publicKey), {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -441,7 +449,7 @@ test('rolling promotion removes an abandoned staging draft from an older target 
 test('rolling promotion retries a read-only asset audit without retaining partial bytes', () => {
   const testFixture = fixture();
   try {
-    const result = spawnSync(process.execPath, args(), {
+    const result = spawnSync(process.execPath, args(testFixture.publicKey), {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -461,7 +469,7 @@ test('rolling promotion retries a read-only asset audit without retaining partia
 test('rolling promotion rejects a corrupt channel alias after download recovery without replacing its predecessor', () => {
   const testFixture = fixture();
   try {
-    const result = spawnSync(process.execPath, args(), {
+    const result = spawnSync(process.execPath, args(testFixture.publicKey), {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -486,7 +494,7 @@ for (const phase of ['immutable', 'staged', 'published']) {
   test(`rolling promotion retries a truncated ${phase} asset read with a complete fresh download`, () => {
     const testFixture = fixture();
     try {
-      const result = spawnSync(process.execPath, args(), {
+      const result = spawnSync(process.execPath, args(testFixture.publicKey), {
         cwd: repoRoot,
         env: {
           ...process.env,
@@ -518,7 +526,7 @@ for (const [error, attempts] of [
   test(`rolling promotion leaves predecessor unchanged when asset reads fail: ${error}`, () => {
     const testFixture = fixture();
     try {
-      const result = spawnSync(process.execPath, args(), {
+      const result = spawnSync(process.execPath, args(testFixture.publicKey), {
         cwd: repoRoot,
         env: {
           ...process.env,
@@ -552,7 +560,7 @@ test('existing rolling replacement stages privately, restores after publish fail
       PATH: `${testFixture.bin}:${process.env.PATH ?? ''}`,
       HAPPIER_TEST_FAIL_UPLOAD_NUMBER: '2',
     };
-    const failed = spawnSync(process.execPath, args(), {
+    const failed = spawnSync(process.execPath, args(testFixture.publicKey), {
       cwd: repoRoot,
       env,
       encoding: 'utf8',
@@ -569,7 +577,7 @@ test('existing rolling replacement stages privately, restores after publish fail
 
     writeFileSync(testFixture.uploadCounter, '0');
     writeFileSync(testFixture.log, '');
-    const failedSwitch = spawnSync(process.execPath, args(), {
+    const failedSwitch = spawnSync(process.execPath, args(testFixture.publicKey), {
       cwd: repoRoot,
       env: {
         ...env,
@@ -589,7 +597,7 @@ test('existing rolling replacement stages privately, restores after publish fail
 
     writeFileSync(testFixture.uploadCounter, '0');
     writeFileSync(testFixture.log, '');
-    execFileSync(process.execPath, args(), {
+    execFileSync(process.execPath, args(testFixture.publicKey), {
       cwd: repoRoot,
       env: { ...env, HAPPIER_TEST_FAIL_UPLOAD_NUMBER: '0' },
       encoding: 'utf8',
@@ -613,7 +621,8 @@ test('existing rolling replacement stages privately, restores after publish fail
         'checksums-happier-v1.2.3-preview.4.txt',
         'checksums-happier-v1.2.3-preview.4.txt.minisig',
         testFixture.aliasName,
-      ],
+        testFixture.archiveName,
+      ].sort(),
     );
     for (const name of readdirSync(testFixture.staging)) {
       const sourceName = name === testFixture.aliasName ? testFixture.archiveName : name;
@@ -624,7 +633,7 @@ test('existing rolling replacement stages privately, restores after publish fail
     }
 
     writeFileSync(testFixture.log, '');
-    execFileSync(process.execPath, args(), {
+    execFileSync(process.execPath, args(testFixture.publicKey), {
       cwd: repoRoot,
       env: { ...env, HAPPIER_TEST_FAIL_UPLOAD_NUMBER: '0' },
       encoding: 'utf8',
@@ -643,7 +652,7 @@ test('rolling promotion rejects an immutable tag whose SHA differs from the auth
     const mismatchedSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const result = spawnSync(
       process.execPath,
-      args().map((arg, index, all) => (all[index - 1] === '--target-sha' ? mismatchedSha : arg)),
+      args(testFixture.publicKey).map((arg, index, all) => (all[index - 1] === '--target-sha' ? mismatchedSha : arg)),
       {
         cwd: repoRoot,
         env: {
@@ -669,7 +678,7 @@ test('rolling promotion rejects an immutable tag whose SHA differs from the auth
 test('a non-404 predecessor read failure aborts before any release or tag mutation', () => {
   const testFixture = fixture();
   try {
-    const result = spawnSync(process.execPath, args(), {
+    const result = spawnSync(process.execPath, args(testFixture.publicKey), {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -698,7 +707,7 @@ test('a transport failure while confirming deletion is not accepted as successfu
       PATH: `${testFixture.bin}:${process.env.PATH ?? ''}`,
       HAPPIER_TEST_FAIL_DELETE_CONFIRM_READ: '1',
     };
-    const result = spawnSync(process.execPath, args(), {
+    const result = spawnSync(process.execPath, args(testFixture.publicKey), {
       cwd: repoRoot,
       env,
       encoding: 'utf8',
@@ -709,7 +718,7 @@ test('a transport failure while confirming deletion is not accepted as successfu
     assert.match(readFileSync(testFixture.log, 'utf8'), /-X DELETE repos\/test\/test\/releases\/1/);
 
     writeFileSync(testFixture.log, '');
-    execFileSync(process.execPath, args(), { cwd: repoRoot, env, encoding: 'utf8' });
+    execFileSync(process.execPath, args(testFixture.publicKey), { cwd: repoRoot, env, encoding: 'utf8' });
     assert.equal(existsSync(testFixture.backupRef), false);
     assert.equal(existsSync(testFixture.stagingRef), false);
   } finally {
@@ -727,7 +736,7 @@ test('retry restores a predecessor stranded under the deterministic backup tag b
     );
     writeFileSync(testFixture.backupRef, oldSha);
     writeFileSync(testFixture.channelRef, targetSha);
-    const result = spawnSync(process.execPath, args(), {
+    const result = spawnSync(process.execPath, args(testFixture.publicKey), {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -749,7 +758,7 @@ test('retry restores a predecessor stranded under the deterministic backup tag b
 test('an initially missing rolling release retries one private draft before publishing the complete replacement', () => {
   const testFixture = fixture({ missingRolling: true });
   try {
-    const failed = spawnSync(process.execPath, args(), {
+    const failed = spawnSync(process.execPath, args(testFixture.publicKey), {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -770,7 +779,7 @@ test('an initially missing rolling release retries one private draft before publ
 
     writeFileSync(testFixture.uploadCounter, '0');
     writeFileSync(testFixture.log, '');
-    execFileSync(process.execPath, args(), {
+    execFileSync(process.execPath, args(testFixture.publicKey), {
       cwd: repoRoot,
       env: {
         ...process.env,

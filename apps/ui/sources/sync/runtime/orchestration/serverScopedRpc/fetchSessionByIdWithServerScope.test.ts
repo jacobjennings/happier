@@ -411,7 +411,7 @@ describe('fetchSessionByIdWithServerScope', () => {
             sessionId: 'session-1',
             activeCredentials: {
                 token: 'active-token',
-                secret: 'active-secret',
+                secret: Buffer.from(ACCOUNT_SECRET).toString('base64'),
             },
             activeEncryption,
             sessionDataKeys: new Map(),
@@ -425,7 +425,8 @@ describe('fetchSessionByIdWithServerScope', () => {
                 includeMetadataTupleMutationSnapshot: true,
             }),
         );
-        expect(result.metadataTupleMutationSnapshot).toBe(snapshot);
+        expect(result.metadataTupleMutationSnapshot).toEqual({ ...snapshot,
+            displayProjectionV1Availability: { shared: false, owner: false } });
         expect(result.metadataTupleWriterContext).not.toHaveProperty(
             'credentials',
         );

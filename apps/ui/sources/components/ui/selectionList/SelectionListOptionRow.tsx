@@ -741,8 +741,8 @@ export function PlanSuccessRows(
   // Single column returns the SAME tree it always did — not a parallel
   // "simple" branch, but literally the rows with nothing wrapped around
   // them. That identity is what guarantees mobile and every existing
-  // consumer are untouched by this variant, and it is asserted directly in
-  // `SelectionListOptionRow.columns.test.tsx`.
+  // consumer are untouched by this variant; the public render tests in
+  // `SelectionList.columns.test.tsx` assert that one column draws no column rows.
   if (columnCount <= 1) {
     // At one column the option wrapper is the row, so it needs the popup-
     // wide index directly. `rowIndexOffset` is absent outside `grid` mode

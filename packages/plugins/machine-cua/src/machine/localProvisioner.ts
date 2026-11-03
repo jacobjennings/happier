@@ -1,7 +1,9 @@
+import { projectMachineProvisionerSelectionV1 } from '@happier-dev/plugin-sdk/machine-provisioners';
 import { PluginError } from '@happier-dev/plugin-sdk';
 import type { ManagedServices } from '@happier-dev/plugin-sdk/managed-services';
 import type { MachineProvisionerAcquireResultV1, MachineProvisionerObservationV1, MachineProvisionerOptionsResultV1,
-    MachineProvisionerPowerResultV1, MachineProvisionerNativeIntentV1 } from '@happier-dev/plugin-sdk/machine-provisioners';
+    MachineProvisionerPowerResultV1, MachineProvisionerNativeIntentV1,
+    MachineProvisionerProcessConfigV1 } from '@happier-dev/plugin-sdk/machine-provisioners';
 import { createCuaLocalSandbox } from './localSandbox.js';
 import { createCuaLocalSpace } from './localSpace.js';
 import { createCuaNativeFacts } from './nativeFacts.js';
@@ -82,8 +84,10 @@ export function createCuaLocalProvisioner(native: CuaNativeClient, localId: CuaL
             const parsed = CuaLocalLaunchV1Schema.safeParse(input);
             if (!parsed.success) return { kind: 'rejected', code: 'invalid_request' };
             const launch = parsed.data;
-            const choices = await this.options({ runtimeId: launch.runtimeId, imageId: launch.imageId, size: launch.size });
-            if (!choices.choices.some((choice) => choice.available && choice.launch)) return { kind: 'rejected', code: 'invalid_request' };
+            const options = await this.options({ runtimeId: launch.runtimeId, imageId: launch.imageId, size: launch.size });
+            const selected = projectMachineProvisionerSelectionV1({ options, launchSchema: CuaLocalLaunchV1Schema.jsonSchema,
+                selection: { size: options.dimensions.size[0]?.id, image: launch.imageId, location: launch.runtimeId } });
+            if (selected.kind !== 'ready') return { kind: 'rejected', code: 'invalid_request' };
             const recovery = localAcquireOperation(localId, launch, managedId);
             try {
                 const created = await leaf.create(launch, name, launch.size.diskBytes, signal);
@@ -95,8 +99,8 @@ export function createCuaLocalProvisioner(native: CuaNativeClient, localId: CuaL
         async bootstrap(input: unknown) {
             const value = await running(input);
             if (value.runtimeId === 'gvisor') {
-                throw new PluginError({ code: 'cua_guest_daemon_hold_unqualified',
-                    message: 'This Cua runtime does not provide a qualified foreground guest daemon hold.' });
+                throw new PluginError({ code: 'cua_guest_daemon_hold_unavailable',
+                    message: 'This Cua runtime cannot own detached guest daemon startup.' });
             }
             if (value.runtimeId !== 'runc') return { kind: 'native' as const, transport: { contributionRef, schemaVersion: 1 } };
             const homeDir = await guestShellHome(value.sandboxId);
@@ -132,17 +136,17 @@ export function createCuaLocalProvisioner(native: CuaNativeClient, localId: CuaL
             return this.destroy(value);
         },
         async exec(input: unknown, argv: readonly string[], inputBytes?: Uint8Array, timeoutMs?: number | null,
-            processConfig?: Readonly<{ environment: Readonly<Record<string, string>> }>, managedServices?: ManagedServices) {
+            processConfig?: MachineProvisionerProcessConfigV1, managedServices?: ManagedServices) {
             const value = await running(input);
             if (processConfig) {
                 const homeDir = inputBytes === undefined && value.runtimeId === 'runc' && managedServices !== undefined
                     ? await guestShellHome(value.sandboxId) : undefined;
                 if (homeDir === undefined || managedServices === undefined || processConfig.environment.HOME !== homeDir
                     || processConfig.environment.HAPPIER_HOME_DIR !== `${homeDir}/.happier`) {
-                    throw new PluginError({ code: 'cua_guest_daemon_hold_unqualified',
-                        message: 'This Cua runtime does not provide a qualified foreground guest daemon hold.' });
+                    throw new PluginError({ code: 'cua_guest_daemon_hold_unavailable',
+                        message: 'This Cua runtime cannot own detached guest daemon startup.' });
                 }
-                await native.configureGuestProcess(value.sandboxId, argv, signal);
+                await native.configureGuestProcess(value.sandboxId, processConfig.detachedDaemonStartArgv, signal);
                 return { kind: 'process-configured' as const };
             }
             return native.execGuest(value.sandboxId, argv, inputBytes, signal, timeoutMs);

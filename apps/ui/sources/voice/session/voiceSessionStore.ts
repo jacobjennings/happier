@@ -11,6 +11,7 @@ import type { ServerAccountScope, ServerAccountScopeLifetime } from '@/sync/doma
 import { areServerAccountScopesEqual } from '@/sync/domains/scope/serverAccountScope';
 import type { VoiceConversationScopeMetadata } from '@/voice/persistence/voiceConversationScopeMetadata';
 import type { VoiceIdleTarget } from '@/voice/runtime/voiceTargetStore';
+import { createSpokenActionConfirmation, type SpokenActionConfirmation } from '@/voice/tools/spokenActionConfirmation';
 
 type VoiceSessionConversationContext = Readonly<{
   accountScope: ServerAccountScope;
@@ -34,6 +35,7 @@ const DEFAULT_SNAPSHOT: VoiceSessionSnapshot = {
 let cachedCanonicalSnapshot: VoiceSessionSnapshot = DEFAULT_SNAPSHOT;
 let attemptSequence = 0;
 let activeAttemptId: string | null = null;
+let spokenActionConfirmation: SpokenActionConfirmation | null = null;
 let presentedAttemptId: string | null = null;
 let activeAttemptStartedAt: number | null = null;
 let lastAttemptSnapshot: VoiceSessionSnapshot = DEFAULT_SNAPSHOT;
@@ -99,6 +101,8 @@ function reconcileAttemptId(snapshot: VoiceSessionSnapshot, binding?: VoiceSessi
     && previousActive
     && (snapshot.sessionId !== lastAttemptSnapshot.sessionId || snapshot.adapterId !== lastAttemptSnapshot.adapterId);
   if (active && (!previousActive || sessionChanged)) {
+    spokenActionConfirmation?.clear();
+    spokenActionConfirmation = createSpokenActionConfirmation();
     activeAttemptId = `voice-attempt:${++attemptSequence}`;
     presentedAttemptId = activeAttemptId;
     activeAttemptStartedAt = Date.now();
@@ -110,6 +114,8 @@ function reconcileAttemptId(snapshot: VoiceSessionSnapshot, binding?: VoiceSessi
     firstSuccessInputs = null;
     setEndedAttempt(null);
   } else if (!active) {
+    spokenActionConfirmation?.clear();
+    spokenActionConfirmation = null;
     arrivedAttemptId = null;
     if (previousActive) {
       setEndedAttempt(snapshot.status === 'disconnected' && !snapshot.errorCode && !snapshot.errorPresentation
@@ -177,11 +183,14 @@ const SNAPSHOT_FIELDS = {
   micMuted: true,
   errorCode: true,
   errorMessage: true,
+  errorConnectedServiceDiagnostic: true,
   errorRecoveryAction: true,
   errorPresentation: true,
   presentationState: true,
   reconnectRetryAvailable: true,
   inUseVoice: true,
+  preparedInstructionsFor: true,
+  recoveryTarget: true,
 } satisfies Record<keyof VoiceSessionSnapshot, true>;
 const SNAPSHOT_KEYS = Object.keys(SNAPSHOT_FIELDS) as Array<keyof VoiceSessionSnapshot>;
 
@@ -205,11 +214,14 @@ function normalizeVoiceSessionSnapshot(snapshot: VoiceSessionSnapshot): VoiceSes
     // Ensure optional error fields clear when omitted from a later snapshot.
     errorCode: snapshot.errorCode,
     errorMessage: snapshot.errorMessage,
+    errorConnectedServiceDiagnostic: snapshot.errorConnectedServiceDiagnostic,
     errorRecoveryAction: snapshot.errorRecoveryAction,
     errorPresentation: snapshot.errorPresentation,
     presentationState: snapshot.presentationState,
     reconnectRetryAvailable: snapshot.reconnectRetryAvailable,
     inUseVoice: snapshot.status === 'connected' ? snapshot.inUseVoice : undefined,
+    preparedInstructionsFor: snapshot.status === 'connected' ? snapshot.preparedInstructionsFor : undefined,
+    recoveryTarget: snapshot.recoveryTarget,
   };
 }
 
@@ -332,6 +344,11 @@ export function getVoiceSessionAttemptId(): string | null {
   return activeAttemptId;
 }
 
+/** One non-persisted read-back binding belongs to the existing live call. */
+export function getVoiceSessionSpokenActionConfirmation(): SpokenActionConfirmation | null {
+  return spokenActionConfirmation;
+}
+
 /** The existing attempt identity remains addressable through its terminal presentation. */
 export function getVoiceSessionPresentedAttemptId(): string | null {
   return presentedAttemptId;
@@ -383,6 +400,8 @@ export function subscribeToVoiceSessionSnapshot(listener: () => void): () => voi
 }
 
 export function resetVoiceSessionStoreForTests(): void {
+  spokenActionConfirmation?.clear();
+  spokenActionConfirmation = null;
   cachedCanonicalSnapshot = DEFAULT_SNAPSHOT;
   attemptSequence = 0;
   activeAttemptId = null;

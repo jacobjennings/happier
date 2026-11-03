@@ -4,8 +4,6 @@ import type { RelayHostLocalChecklistItem, RelayHostLocalChecklistRuntimeStatus 
 
 export function buildRelayHostLocalChecklistItems(params: Readonly<{
     runtimeStatus: RelayHostLocalChecklistRuntimeStatus | null;
-    currentRelayUrl: string | null;
-    currentShareableUrl: string | null;
 }>): readonly RelayHostLocalChecklistItem[] {
     const status = params.runtimeStatus;
     const installed = status?.installed === true;

@@ -230,6 +230,8 @@ export function useMachineTerminalSession(params: Readonly<{
     }, [clearActiveTerminalStream, scheduleAutoRetry]);
     const {
         detectedUrl,
+        outputRetention,
+        syncOutputRetention,
         clearTerminalOutput,
         hydrateTerminalRendererIfNeeded,
         replaceSurfaceState,
@@ -326,6 +328,10 @@ export function useMachineTerminalSession(params: Readonly<{
         onPaste,
         onResize,
         onReady: notifyTransportReady,
+        flushPendingInput,
+        inputRecoveryAvailable,
+        readInputRecovery,
+        discardInputRecovery,
     } = useEmbeddedTerminalTransportHandlers({
         machineId: params.machineId,
         readOnly: params.readOnly,
@@ -397,7 +403,7 @@ export function useMachineTerminalSession(params: Readonly<{
     }, []);
 
     const copySelection = React.useCallback((request?: Readonly<{
-        source: 'user-selection' | 'remote-osc52';
+        source: 'user-selection' | 'remote-osc52' | 'input-recovery';
         text: string;
     }>) => {
         if (request?.source === 'remote-osc52') return;
@@ -406,6 +412,11 @@ export function useMachineTerminalSession(params: Readonly<{
             : '');
         if (text) void setClipboardStringSafe(text);
     }, [params.terminalRef]);
+
+    const copyInputRecovery = React.useCallback(async () => {
+        const text = readInputRecovery();
+        if (text) copySelection({ source: 'input-recovery', text });
+    }, [copySelection, readInputRecovery]);
 
     React.useEffect(() => {
         return () => {
@@ -542,6 +553,8 @@ export function useMachineTerminalSession(params: Readonly<{
                 replayMode,
             });
             terminalIdRef.current = ensured.terminalId;
+            syncOutputRetention(ensured.terminalId, cachedSurfaceState.terminalId === ensured.terminalId
+                ? cachedSurfaceState.outputRetention ?? null : null);
             cursorRef.current = replayPlan.initialCursor.value;
             cursorModeRef.current = replayPlan.initialCursor.mode;
             replaceCachedPreviewOnReplayRef.current = replayPlan.replacePreviewOnReplay;
@@ -582,6 +595,7 @@ export function useMachineTerminalSession(params: Readonly<{
                 signal: interest.signal,
             });
             terminalStreamCarrierRef.current = carrier;
+            flushPendingInput();
             terminalRendererAckDeliveryRef.current = createTerminalRendererAckDelivery({
                 send: carrier.acknowledge,
                 onDiagnostic: reportTerminalRendererAckDeliveryDiagnostic,
@@ -697,6 +711,7 @@ export function useMachineTerminalSession(params: Readonly<{
                 // A successful ensure does not prove that its stream can be
                 // read. Reset recovery only after transport actually recovers.
                 if (autoRetryAttemptRef.current > 0) resetAutoRetryState();
+                syncOutputRetention(terminalId, read.outputRetention ?? null);
 
                 if (read.mode === 'legacy-event-cursor') {
                     terminalCreditStateRef.current = null;
@@ -844,6 +859,7 @@ export function useMachineTerminalSession(params: Readonly<{
         byteStreamEnabled,
         embeddedTerminalRendererId,
         clearActiveTerminalStream,
+        flushPendingInput,
         hydrateTerminalRendererIfNeeded,
         initialTerminalSize,
         latestTerminalSizeRef,
@@ -865,6 +881,7 @@ export function useMachineTerminalSession(params: Readonly<{
         replaceCachedPreviewWithReplay,
         resetAutoRetryState,
         scheduleAutoRetry,
+        syncOutputRetention,
         setDetectedUrl,
         syncDetectedUrl,
         updateSurfaceState,
@@ -1029,7 +1046,14 @@ export function useMachineTerminalSession(params: Readonly<{
         error,
         exitCode,
         exitSignal,
+        outputRetention: admission.lifetime?.isCurrent()
+            && areServerAccountScopesEqual(attachmentScopeRef.current, admission.lifetime.scope)
+            && (!params.readOnly || params.attachedTerminalId === terminalIdRef.current)
+            && outputRetention?.terminalId === terminalIdRef.current ? outputRetention.value : null,
         connectionLost: status === 'error' && everConnectedRef.current,
+        inputRecoveryAvailable,
+        copyInputRecovery,
+        discardInputRecovery,
         detectedUrl,
         onInput,
         onPaste,

@@ -2,7 +2,7 @@ import * as React from 'react';
 import { describe, expect, it } from 'vitest';
 import { HappierDataMetric, HappierDataRows, RankedRows, StackedSeriesChart } from '@happier-dev/plugin-ui/presentation';
 import { normalizeUsageQuery } from '@happier-dev/protocol/inputs/usageQuery';
-import { resolveUsagePageAggregation } from '@happier-dev/protocol/usage/resolveUsagePageAggregation';
+import { resolveUsageComparisonQuery, resolveUsagePageAggregation } from '@happier-dev/protocol/usage/resolveUsagePageAggregation';
 import { projectUsagePageCost, resolveUsageCostForSelection, repriceUsageAnalyticsResponse, type UsageAnalyticsContribution } from '@happier-dev/protocol';
 import { allocateUsageOutcomes } from '@happier-dev/protocol/usage/usageOutcomeAllocation';
 import { summarizeUsageWork } from './usageWorkPresentation';
@@ -65,7 +65,8 @@ describe('one selected money basis across Usage bodies', () => {
   it('does not reaggregate unchanged comparison contributions on a source-progress render', async () => {
     const props = mountedCosts();
     const query = normalizeUsageQuery({ ...props.query, period: { startMs: day, endMs: 2 * day } });
-    const priorQuery = normalizeUsageQuery({ ...query, period: { startMs: 0, endMs: day } });
+    // The page reads the canonical preceding-range query (totals only, no charts or insights).
+    const priorQuery = resolveUsageComparisonQuery(query)!;
     const slice = resolveUsagePageAggregation({ queries: [query], accounting: [
       { query, status: 'available', value: props.slice.accounting! },
       { query: priorQuery, status: 'available', value: props.slice.accounting! },
@@ -165,17 +166,6 @@ describe('one selected money basis across Usage bodies', () => {
     await distinct.pressByTestIdAsync('coverage.showAll.toggle');
     expect(distinct.findByType(HappierDataRows).props.rows).toHaveLength(10);
   });
-  it('opens every source row with a capital, including the generic accounting source whose label is a lower-case fragment', async () => {
-    const props = mountedCosts();
-    const source = { path: 'native' as const, status: 'unknown' as const, eventCount: 0, captureKind: 'measured' as const, asOfMs: 100 };
-    const slice = resolveUsagePageAggregation({ queries: [props.query],
-      accounting: [{ query: props.query, status: 'available', value: { ...props.slice.accounting!, coverage: { status: 'partial' as const,
-        reasons: [], missingDimensions: [], range: { startMs: 0, endMs: day, complete: false }, ranked: [],
-        sources: [{ ...source, source: 'runtime' }, { ...source, source: 'runtime' }] } } }] }).results[0]!;
-    const screen = await renderScreen(<UsageSourceCoverageWidget {...props} id="usage_source_coverage" testID="coverage" slice={slice} />);
-    const title = String(screen.findByType(HappierDataRows).props.rows[0][0]);
-    expect(title).toBe(`${t('usage.board.page.sourceAccounting').charAt(0).toLocaleUpperCase()}${t('usage.board.page.sourceAccounting').slice(1)} ×2`);
-  });
   it.each([7, 30].flatMap(days => (['auto', 'reported', 'estimated', 'api_equivalent'] as const)
     .map(costBasis => ({ days, costBasis, olderUnpriced: false }))).concat([
       { days: 30, costBasis: 'auto', olderUnpriced: true },
@@ -254,7 +244,8 @@ describe('one selected money basis across Usage bodies', () => {
     const query = normalizeUsageQuery({ ...props.query, period: { startMs: day, endMs: 2 * day }, metric: 'tokens' });
     const accounting = { ...props.slice.accounting!, totals: { ...props.slice.accounting!.totals,
       tokens: { ...tokens, total: 22_804, input: 22_804 } } };
-    const priorQuery = normalizeUsageQuery({ ...query, period: { startMs: 0, endMs: day } });
+    // The page reads the canonical preceding-range query (totals only, no charts or insights).
+    const priorQuery = resolveUsageComparisonQuery(query)!;
     const previous = { ...accounting, totals: { ...accounting.totals,
       tokens: { ...tokens, total: previousTokens, input: previousTokens } } };
     const slice = resolveUsagePageAggregation({ queries: [query], accounting: [
@@ -392,7 +383,8 @@ describe('one selected money basis across Usage bodies', () => {
       tokens: { ...tokens, input: 25, total: 25 } } };
     const previous = { ...accounting, totals: { ...accounting.totals,
       tokens: { ...tokens, input: previousTokens, total: previousTokens } } };
-    const priorQuery = normalizeUsageQuery({ ...query, period: { startMs: 0, endMs: day } });
+    // The page reads the canonical preceding-range query (totals only, no charts or insights).
+    const priorQuery = resolveUsageComparisonQuery(query)!;
     const slice = resolveUsagePageAggregation({ queries: [query], accounting: [
       { query, status: 'available', value: accounting }, { query: priorQuery, status: 'available', value: previous },
     ] }).results[0]!;

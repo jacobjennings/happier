@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { FeaturesResponseSchema, AccountProfileResponseSchema, AccountSettingsSchema } from '@happier-dev/protocol';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolveAgentCliOverrideEnvKey } from '@happier-dev/cli-common/agents/resolution';
 import { tmpdir } from 'node:os';
@@ -6,12 +7,11 @@ import { join } from 'node:path';
 import axios from 'axios';
 import { afterEach, expect, it, vi } from 'vitest';
 import { getCurrentTest } from 'vitest/suite';
-import { FeaturesResponseSchema, AccountProfileResponseSchema, AccountSettingsSchema } from '@happier-dev/protocol';
 import { emptyPromptLibraryRecordV1 } from '@happier-dev/protocol/prompts/library/promptLibraryCatalogV1';
 import { AccountSettingsV2GetResponseSchema } from '@happier-dev/protocol/account/settings/accountSettingsApiV2';
 import { PromptLibraryCatalogKeyV1Schema, PromptLibraryRowsListResponseV1Schema } from '@happier-dev/protocol/prompts/library/promptLibraryRowsV1';
 import { ExecutionRunStartRequestSchema } from '@happier-dev/protocol/execution/runs/startRequest';
-import { ExecutionRunStartResponseSchema } from '@happier-dev/protocol/execution/runs/responseSchemas';
+import { ExecutionRunStartResponseSchema, ExecutionRunStartFailureDetailsV1Schema } from '@happier-dev/protocol/execution/runs/responseSchemas';
 import { readBackendTargetRefV2 } from '@happier-dev/protocol/backends/targets/backendTargetRefV2';
 import { ProviderBoundModelRefSchema } from '@happier-dev/protocol/providers/selection/v1';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc/methods';
@@ -49,7 +49,7 @@ import { normalizeExecutionRunRpcPayload } from '@/session/services/executionRun
 import { logger } from '@/ui/logger';
 import type { NativeAgentSessionInteractionHostBinding, NativeAgentSessionRunToolBindingRequest } from '@/agent/runtime/registry/engineRegistryTypes';
 import { setActiveAccountSettingsSnapshot, resetActiveAccountSettingsSnapshotForTests,
-  getActiveAccountSettingsSnapshotLifetimeToken } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+  getActiveAccountSettingsSnapshotLifetimeToken, getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { resolveAccountSettingsScopeKey } from '@/settings/accountSettings/accountSettingsScopeKey';
 import { prepareActiveAccountRoleOverrides } from '@/settings/prompts/hydratePromptLibraryCatalog';
 import { createActionSettingsProvider } from '@/settings/actionsSettingsProvider';
@@ -81,6 +81,15 @@ import { ExternalActionExecutionAuthorizationRequestV1Schema, ExternalActionExec
 import { computeExternalActionRequestEnvelopeDigestV1 } from '@happier-dev/protocol/actions/externalActionExecutionAuthorization';
 import { SessionAutoFollowPreferencesResponseSchema, SESSION_FOLLOW_HTTP_PATHS_V1 } from '@happier-dev/protocol/sessions/follow/api';
 import { DEFAULT_SESSION_AUTO_FOLLOW_PREFERENCES_V1, DEFAULT_SESSION_FOLLOW_CREATION_POLICIES_V1 } from '@happier-dev/protocol/sessions/follow/accountFollow';
+import { artifactListResponse, artifactReadResponse } from '@/testkit/http/artifactHome';
+import { ARTIFACT_PLAIN_DATA_KEY_MARKER, encodePlainArtifactStoredContent } from '@happier-dev/protocol/storage/artifactStoredContent';
+import { createSessionRoleContext } from '@/session/roles/sessionRoleContext';
+import { createRoleSourceReader } from '@/session/roles/roleSources';
+import { readPluginRoleSources } from '@/plugins/projection/registry/roles';
+import { createCredentialedAccountArtifactStore } from '@/api/artifacts/accountArtifactStore';
+import { createExecutionRunAccountSettingsSnapshotResolver } from '@/api/machine/resolveExecutionRunAccountSettingsSnapshot';
+import { readAccountRoleOverridesFromSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { applyRunnerMcpSessionContext } from '@/mcp/runtime/applyRunnerMcpSessionContext';
 
 const transport = vi.hoisted(() => ({ app: null as unknown }));
 // Only HTTP listener/transport is substituted. Real daemon composition, ingress,
@@ -179,14 +188,24 @@ it.each(['session_close', 'planned_refresh_then_stop'] as const)('admits Session
   const settingsResponse = AccountSettingsV2GetResponseSchema.parse({ version: 1, content: { t: 'plain', v: {} } });
   const promptLibraryRows = PromptLibraryRowsListResponseV1Schema.parse({ status: 'listed',
     rows: PromptLibraryCatalogKeyV1Schema.options.map(key => ({ key, revision: 1,
-      content: { t: 'plain', v: emptyPromptLibraryRecordV1(key) } })) });
+      content: { t: 'plain', v: key === 'role-overrides' ? { key, value: { v: 1, overrides: {
+        second_opinion: { roleId: 'second_opinion', instructionsOverride: 'OWNER_SECOND_OPINION_INSTRUCTIONS',
+          engine: { agentTargetKey: 'agent:acme.snapshot/parent', modelId: 'snapshot-native-review' } },
+      } } } : emptyPromptLibraryRecordV1(key) } })) });
   const currentness = AccountEncryptionCurrentnessResponseSchema.parse({ mode: 'plain', version: 1,
     settingsVersion: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1 });
   const homeHttpReads: string[] = [];
   const homeHttpFailures: string[] = [];
+  let roleArtifactsAvailable = true;
+  const unreadableRole = {
+    id: 'unreadable-role', ownerAccountId: 'snapshot-account', access: 'owner', publicAudience: 'none', encryptionMode: 'plain',
+    header: encodePlainArtifactStoredContent({ kind: 'role.v1', name: 'Unreadable Role' }),
+    body: encodePlainArtifactStoredContent({ body: '{}' }), dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+    headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1,
+  };
   const serverFeatures = { status: 'ready' as const, features: FeaturesResponseSchema.parse({ features: { providers: { enabled: true } },
     capabilities: { serverIdentity: { serverIdentityId: 'srv_snapshot_home' } } }) };
-  vi.spyOn(axios, 'get').mockImplementation(async url => {
+  vi.spyOn(axios, 'get').mockImplementation(async (url, options) => {
     const path = new URL(String(url)).pathname;
     homeHttpReads.push(path);
     if (path === '/v1/account/profile') return { status: 200, data: AccountProfileResponseSchema.parse({ id: 'snapshot-account' }) };
@@ -205,7 +224,8 @@ it.each(['session_close', 'planned_refresh_then_stop'] as const)('admits Session
     if (path === '/v1/account/entity-rows/provider-connections') return { status: 200, data: {
       status: 'present', revision: 1, content: { t: 'plain', v: fixture.providerCatalog } } };
     if (path === '/v2/account/settings/history') return { status: 200, data: { snapshots: [] } };
-    if (path === '/v1/artifacts') return { status: 200, data: [] };
+    if (path === '/v1/artifacts') return { status: 200, data: artifactListResponse(
+      axios.getUri({ url: String(url), params: options?.params }), roleArtifactsAvailable ? [] : [unreadableRole]) };
     homeHttpFailures.push('GET ' + path);
     throw new Error('Unexpected Home HTTP read: ' + path);
   });
@@ -215,6 +235,7 @@ it.each(['session_close', 'planned_refresh_then_stop'] as const)('admits Session
     serverId: configuration.activeServerId, machineId: 'snapshot-machine', rootPath: home, createdAtMs: 1 });
   vi.spyOn(axios, 'post').mockImplementation(async (url, body) => {
     const path = new URL(String(url)).pathname;
+    if (path === '/v1/artifacts/read') return artifactReadResponse(body, id => id === unreadableRole.id ? unreadableRole : null);
     if (path.endsWith('/execution-authorization')) {
       const request = ExternalActionExecutionAuthorizationRequestV1Schema.parse(body);
       const actionId = decodeURIComponent(path.split('/').at(-2)!);
@@ -262,7 +283,8 @@ it.each(['session_close', 'planned_refresh_then_stop'] as const)('admits Session
   const accountScopeKey = resolveAccountSettingsScopeKey(credentials);
   const preparedOverrides = await prepareActiveAccountRoleOverrides({ credentials, scopeKey: accountScopeKey,
     lifetimeToken: getActiveAccountSettingsSnapshotLifetimeToken() });
-  expect(preparedOverrides, JSON.stringify({ homeHttpReads, homeHttpFailures })).toEqual({ status: 'ready', overrides: {} });
+  expect(preparedOverrides, JSON.stringify({ homeHttpReads, homeHttpFailures })).toMatchObject({ status: 'ready',
+    overrides: { second_opinion: { roleId: 'second_opinion' } } });
   const actionsSettingsProvider = createActionSettingsProvider({ scopeKey: accountScopeKey });
   const daemon = await startDaemonSessionControlRuntime({ machineId: 'snapshot-machine', serverId: configuration.activeServerId,
     serverBaseUrl: configuration.apiServerUrl, credentials, api: await ApiClient.create(credentials),
@@ -341,6 +363,8 @@ it.each(['session_close', 'planned_refresh_then_stop'] as const)('admits Session
     overrides: { getBackendTarget: () => readBackendTargetRefV2(backendTarget),
       ...createSnapshotSessionPendingTransport(),
       enqueueSessionEventCommitted: async () => ({ persisted: true, delivered: true }),
+      // Host structured completions are committed replies; the online Session acknowledges delivery.
+      enqueueAgentMessageCommitted: async () => ({ persisted: true, delivered: true }),
       setExecutionRunWorkerUpdateSource: source => { composition.manager = source; } } });
   const controls: Partial<SessionRuntimeControls> = {};
   const permissions = new ProviderEnforcedPermissionHandler(session, { logPrefix: '[Snapshot Parent]' });
@@ -354,9 +378,10 @@ it.each(['session_close', 'planned_refresh_then_stop'] as const)('admits Session
     expect(request.method).toBe(`${sessionId}:${SESSION_RPC_METHODS.EXECUTION_RUN_BROKER_AUTHORITY_RESOLVE_V1}`);
     return await rpc.handleRequest({ method: request.method, params: request.request, callerAuthority: 'present_user' });
   });
+  let ownerCredentialsAvailable = true;
   const register = () => registerSessionClientRuntimeHandlers({ rpcHandlerManager: rpc, token,
     serverId: configuration.activeServerId, serverUrl: configuration.apiServerUrl,
-    readOwnerAccountCredentials: async () => credentials, metadataPath: home, metadata, sessionId, session, actionsSettingsProvider,
+    readOwnerAccountCredentials: async () => ownerCredentialsAvailable ? credentials : null, metadataPath: home, metadata, sessionId, session, actionsSettingsProvider,
     getServerFeaturesSnapshot: () => serverFeatures,
     getSessionMetadata: () => metadata, get sessionRuntimeControls() { return parentControls; }, getCurrentWorkspaceWrites: () => 'allow',
     waitForAppliedChildSelectionReader: async signal => await waitForParentControls?.(signal) ?? false,
@@ -591,6 +616,81 @@ it.each(['session_close', 'planned_refresh_then_stop'] as const)('admits Session
           executionRunStart: { runCreation: 'noRunCreated' } } });
       applySessionRuntimeControls(controls, { readPermissionHandler: () => permissions, readAppliedChildSelection: async () => ({ status: 'applied', backendTarget,
         modelId: 'parent-applied-model', connectedServices: null }) });
+      // A public role start must use this Session's captured Account, even when
+      // another Account is focused. Real registration, role policy and installed
+      // plugin execution remain composed; only Home/native boundaries are fixtures.
+      const roleSnapshot = createExecutionRunAccountSettingsSnapshotResolver({ machineId: 'snapshot-machine',
+        serverHttpBaseUrl: configuration.apiServerUrl, readCredentials: async () => ownerCredentialsAvailable ? credentials : null,
+        isOwnerCurrent: () => ownerCredentialsAvailable, onSettings: () => {} });
+      await roleSnapshot();
+      cleanups.push(async () => await roleSnapshot.dispose());
+      const roleOperation = roleSnapshot.readOperationContext();
+      if (!roleOperation) throw new Error('Missing captured Session Role owner');
+      const sessionRoles = createSessionRoleContext({ readMetadata: () => metadata,
+        readOrganization: async () => ({ manager: null, origin: null }),
+        readRoleSources: createRoleSourceReader({ accountId: 'snapshot-account',
+          artifactStore: createCredentialedAccountArtifactStore(credentials),
+          readPluginRoles: () => readPluginRoleSources(fixture.registry.contributes),
+          readRawAccountSettings: async () => roleOperation.readSnapshot()?.rawSettings ?? {},
+        }),
+        readAccountRoleOverrides: () => {
+          const snapshot = roleOperation.readSnapshot();
+          return snapshot ? readAccountRoleOverridesFromSnapshot(snapshot) : { status: 'unavailable', reason: 'scope-retired' };
+        },
+        prepareAccountRoleOverrides: async signal => { await prepareActiveAccountRoleOverrides({ credentials,
+          scopeKey: accountScopeKey, lifetimeToken: getActiveAccountSettingsSnapshotLifetimeToken(), signal, operationContext: roleOperation }); },
+        readOperationContext: () => roleOperation,
+        readDefaultEngine: () => ({ agentTargetKey: 'agent:acme.snapshot/parent' }),
+      });
+      applyRunnerMcpSessionContext(session, { getSessionRoleContext: () => sessionRoles });
+      const focusedSnapshot = { scopeKey: 'unrelated-focused-account', source: 'network' as const,
+        settings: AccountSettingsSchema.parse({}), rawSettings: {}, settingsVersion: 99, loadedAtMs: Date.now(), settingsSecretsReadKeys: [] };
+      setActiveAccountSettingsSnapshot(focusedSnapshot);
+      const secondOpinionRequest = ExecutionRunStartRequestSchema.parse({ intent: 'review', roleId: 'second_opinion', backendTarget,
+          instructions: 'second-opinion-role-fixture', modelId: 'snapshot-native-review', permissionMode: 'read_only',
+          retentionPolicy: 'ephemeral', runClass: 'bounded', ioMode: 'request_response' });
+      const secondOpinionStarted = await rpc.handleRequest({
+        method: sessionId + ':' + SESSION_RPC_METHODS.EXECUTION_RUN_START, callerAuthority: 'present_user',
+        params: secondOpinionRequest,
+      });
+      expect(secondOpinionStarted, JSON.stringify(secondOpinionStarted)).toMatchObject({ runId: expect.any(String) });
+      const secondOpinionRunId = ExecutionRunStartResponseSchema.parse(secondOpinionStarted).runId;
+      await composition.manager?.waitForTerminal(secondOpinionRunId);
+      expect(composition.manager?.getPublic(secondOpinionRunId)).toMatchObject({ status: 'succeeded', intent: 'task' });
+      expect(composition.manager?.getLatestToolResult(secondOpinionRunId)).toMatchObject({ verdict: 'agree', risks: [] });
+      expect(composition.manager?.get(secondOpinionRunId)?.instructions).toContain('OWNER_SECOND_OPINION_INSTRUCTIONS');
+      expect(await readFile(join(home, 'native-inputs.jsonl'), 'utf8')).toContain('OWNER_SECOND_OPINION_INSTRUCTIONS');
+      expect(getActiveAccountSettingsSnapshot()).toBe(focusedSnapshot);
+      const runIdsBeforeRefusal = composition.manager?.listPublic().map(run => run.runId);
+      roleArtifactsAvailable = false;
+      const unavailableSource = await rpc.handleRequest({
+        method: sessionId + ':' + SESSION_RPC_METHODS.EXECUTION_RUN_START, callerAuthority: 'present_user',
+        params: secondOpinionRequest,
+      });
+      expect(normalizeExecutionRunRpcPayload(unavailableSource, { executionRunStart: true }), JSON.stringify({ unavailableSource, homeHttpFailures })).toMatchObject({
+        ok: false, code: 'role_source_incomplete', details: { executionRunStart: { runCreation: 'noRunCreated',
+          refusal: { code: 'role_source_incomplete', phase: 'agent_start_context' } } },
+      });
+      roleArtifactsAvailable = true;
+      ownerCredentialsAvailable = false;
+      const refusedRoleStart = await rpc.handleRequest({
+        method: sessionId + ':' + SESSION_RPC_METHODS.EXECUTION_RUN_START, callerAuthority: 'present_user',
+        params: secondOpinionRequest,
+      });
+      // Credential retirement is refused by Account governance before Role
+      // admission. Keep that producer's typed code rather than relabeling it.
+      expect(refusedRoleStart).toMatchObject({ ok: false, errorCode: 'provider_authorization_changed',
+        details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } } });
+      expect(ExecutionRunStartFailureDetailsV1Schema.parse(Reflect.get(refusedRoleStart as object, 'details')))
+        .toEqual(Reflect.get(refusedRoleStart as object, 'details'));
+      expect(normalizeExecutionRunRpcPayload(refusedRoleStart, { executionRunStart: true })).toMatchObject({
+        ok: false, code: 'provider_authorization_changed', details: { executionRunStart: { runCreation: 'noRunCreated' } },
+      });
+      expect(composition.manager?.listPublic().map(run => run.runId)).toEqual(runIdsBeforeRefusal);
+      ownerCredentialsAvailable = true;
+      setActiveAccountSettingsSnapshot({ scopeKey: accountScopeKey, source: 'network',
+        settings: AccountSettingsSchema.parse({}), rawSettings: {}, settingsVersion: 1, loadedAtMs: Date.now(), settingsSecretsReadKeys: [],
+        providerConnectionsCatalog: { status: 'ready', revision: 1, catalog: fixture.providerCatalog } });
       const reviewStarted = await rpc.handleRequest({
         method: sessionId + ':' + SESSION_RPC_METHODS.EXECUTION_RUN_START, callerAuthority: 'present_user',
         params: ExecutionRunStartRequestSchema.parse({ intent: 'review', backendTarget,
@@ -601,8 +701,7 @@ it.each(['session_close', 'planned_refresh_then_stop'] as const)('admits Session
       expect(reviewStarted, JSON.stringify(reviewStarted)).toMatchObject({ runId: expect.any(String) });
       const reviewRunId = ExecutionRunStartResponseSchema.parse(reviewStarted).runId;
       await composition.manager?.waitForTerminal(reviewRunId);
-      const reviewRun = composition.manager?.getPublic(reviewRunId);
-      expect(reviewRun, JSON.stringify(reviewRun)).toMatchObject({ status: 'succeeded' });
+      expect(composition.manager?.getPublic(reviewRunId)).toMatchObject({ status: 'succeeded' });
       const reviewAction = await rpc.handleRequest({
         method: sessionId + ':' + SESSION_RPC_METHODS.EXECUTION_RUN_ACTION, callerAuthority: 'present_user',
         params: { runId: reviewRunId, actionId: 'reviews.comments.create' },

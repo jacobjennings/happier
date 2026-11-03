@@ -19,8 +19,6 @@ export type XtermWriteQueue = Readonly<{
     enqueue: (chunk: XtermQueuedWrite) => boolean;
     flush: () => void;
     clear: () => void;
-    pendingBytes: () => number;
-    pendingCount: () => number;
 }>;
 
 export type CreateXtermWriteQueueParams = Readonly<{
@@ -83,7 +81,5 @@ export function createXtermWriteQueue(params: CreateXtermWriteQueueParams): Xter
             isWriting = false;
             epoch += 1;
         },
-        pendingBytes: () => pendingBytes,
-        pendingCount: () => pending.length + (isWriting ? 1 : 0),
     };
 }

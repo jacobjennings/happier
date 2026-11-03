@@ -8,6 +8,23 @@ import {
 import { createSessionStateFieldMetadataUpdater } from './publishField.js';
 
 describe('summaryTextBinding', () => {
+  it('seeds a native title once and preserves an explicit title without publishing timestamp-only changes', () => {
+    const nativeTitle = createSessionStateFieldMetadataUpdater('display.title', {
+      title: 'Request to Reply OK', updatedAt: 200, staleBehavior: 'drop', preserveExistingValue: true,
+    });
+    const seeded = nativeTitle({});
+    expect(seeded).toEqual({ summary: { text: 'Request to Reply OK', updatedAt: 200 } });
+    expect(nativeTitle(seeded)).toBe(seeded);
+    const renamed = createSessionStateFieldMetadataUpdater('display.title', {
+      title: 'My chosen title', updatedAt: 300,
+    })(seeded);
+    const laterNativeTitle = createSessionStateFieldMetadataUpdater('display.title', {
+      title: 'Later native title', updatedAt: 400, staleBehavior: 'drop', preserveExistingValue: true,
+    });
+    expect(laterNativeTitle(renamed)).toBe(renamed);
+    expect(renamed).toEqual({ summary: { text: 'My chosen title', updatedAt: 300 } });
+  });
+
   describe.each(['binding', 'metadata updater'] as const)('zero-time title arbitration through %s', (entryPoint) => {
     const writeTitle = (metadata: SessionMetadata) => entryPoint === 'binding'
       ? summaryTextBinding.write(metadata, {
@@ -88,6 +105,21 @@ describe('summaryTextBinding', () => {
         updatedAt: 5,
       },
     });
+  });
+
+  it.each(['plain', 'timestamped'] as const)('bumps a stale manual title through the %s field binding', shape => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10);
+    try {
+      const updater = createSessionStateFieldMetadataUpdater('display.title', shape === 'plain'
+        ? 'Manual rename' : { title: 'Manual rename', updatedAt: 10 });
+      const current = { summary: { text: 'Current', updatedAt: 20 } };
+      const renamed = updater(current);
+      expect(renamed).toEqual({ summary: { text: 'Manual rename', updatedAt: 21 } });
+      expect(updater(renamed)).toBe(renamed);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('bumps explicit local title writes when the candidate timestamp is stale', () => {

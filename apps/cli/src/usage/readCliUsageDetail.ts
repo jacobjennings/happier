@@ -10,7 +10,7 @@ import type { UsageCoachRemedySession } from '@happier-dev/protocol/usage/coach/
 import { getUsageQueryKey, type UsageQuery } from '@happier-dev/protocol/inputs/usageQuery';
 import type { UsageAccountingSourceSnapshot } from '@happier-dev/protocol/usage/resolveUsagePageAggregation';
 import type { StoredCredentials } from '@/persistence';
-import { fetchSessionById, fetchSessionsPage, fetchSessionTurnsProjection } from '@/session/transport/http/sessionsHttp';
+import { fetchSessionById, fetchSessionListPage, fetchSessionTurnsProjection } from '@/session/transport/http/sessionsHttp';
 import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { resolveExactSessionOrCredentialCryptoContext, tryDecryptSessionOwnerMetadataView, openSessionMessageContent } from '@/session/transport/encryption/sessionEncryptionContext';
 import { readSessionAgentState } from '@/session/actions/cliActionDeps/sessionStateReaders';
@@ -43,7 +43,7 @@ export async function readCliUsageDetail(input: Readonly<{
                     let cursor: string | undefined;
                     do {
                         await input.assertCurrent();
-                        const page = await fetchSessionsPage({ token: input.credentials.token, archivedOnly, cursor,
+                        const page = await fetchSessionListPage({ token: input.credentials.token, archivedOnly, cursor,
                             resolveAuthorizationHeaders: input.resolveHeaders, signal: input.signal });
                         await input.assertCurrent();
                         candidates.push(...page.sessions.map(session => ({ id: session.id })));

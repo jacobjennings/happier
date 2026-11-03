@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SessionUsageLimitRecoveryV1Schema } from '../state/valueSchemas/usageLimitRecovery.js';
+import { SessionUsageLimitRecoveryV1Schema, projectSessionUsageLimitRecoveryDisplayV1, readSessionUsageLimitRecoveryFromMetadata } from '../state/valueSchemas/usageLimitRecovery.js';
 
 import {
   SESSION_AWARENESS_OPTIMISTIC_PENDING_INPUT_MS,
@@ -50,6 +50,10 @@ describe('projectSessionAwarenessV1 — operational semantics', () => {
       resetAtMs: NOW - 1, nextCheckAtMs: null, attemptCount: 1, maxAttempts: 3, lastProbeError: null,
       selectedAuth: { kind: 'native' } });
     const base = input({ runtimeIssue: issue, usageLimitRecovery: recovery, lifecycle: { latestTurnStatus: 'failed' } });
+    const display = projectSessionUsageLimitRecoveryDisplayV1(recovery);
+    expect(projectSessionAwarenessV1({ ...base, usageLimitRecovery: display })).toEqual(projectSessionAwarenessV1(base));
+    expect(projectSessionUsageLimitRecoveryDisplayV1(display)).toBe(display);
+    expect(readSessionUsageLimitRecoveryFromMetadata({ sessionUsageLimitRecoveryV1: display })).toBeNull();
     for (const status of ['waiting', 'checking', 'paused', 'exhausted'] as const) {
       expect(projectSessionAwarenessV1({ ...base, usageLimitRecovery: { ...recovery, status } }).operational.primary).toBe('usage_limited');
     }

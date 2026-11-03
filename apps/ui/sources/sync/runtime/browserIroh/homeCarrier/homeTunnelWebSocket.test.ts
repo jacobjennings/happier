@@ -238,6 +238,8 @@ describe('browserIroh/homeCarrier/homeTunnelWebSocket handshake', () => {
         const fake = createFakeHomeTunnelStream();
         const probe = connect(fake);
 
+        // The carrier never claims a direct path, before or after the upgrade.
+        expect(probe.socket.observedPath).toBe('unknown');
         const request = new TextDecoder().decode(await completeUpgrade(fake));
         await waitFor(() => probe.opened() > 0, 'onopen');
 
@@ -249,17 +251,6 @@ describe('browserIroh/homeCarrier/homeTunnelWebSocket handshake', () => {
         // A 16-byte nonce, base64 encoded, per RFC 6455.
         expect(/sec-websocket-key:\s*(\S+)/i.exec(request)?.[1]).toHaveLength(24);
         expect(probe.socket.readyState).toBe(BrowserIrohHomeTunnelWebSocket.OPEN);
-        expect(probe.socket.observedPath).toBe('relay');
-    });
-
-    it('never reports a direct path, before or after the upgrade', async () => {
-        const fake = createFakeHomeTunnelStream();
-        const probe = connect(fake);
-
-        expect(probe.socket.observedPath).toBe('unknown');
-        await completeUpgrade(fake);
-        await waitFor(() => probe.opened() > 0, 'onopen');
-
         expect(probe.socket.observedPath).toBe('relay');
     });
 

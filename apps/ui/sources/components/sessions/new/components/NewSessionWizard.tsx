@@ -638,7 +638,7 @@ export const NewSessionWizard = React.memo(function NewSessionWizard(props: NewS
         {
             backgroundColor: materialColor(canvasBackgroundColor, 'transparent'),
             justifyContent: shouldBottomAnchor ? 'flex-end' : 'center',
-            // On the web the card's corner-controls row (`NewSessionWizardWebDismissal`) is the top inset.
+            // On the web the card's corner-controls row (`NewSessionWebDismissal`) is the top inset.
             ...(shouldBottomAnchor || Platform.OS === 'web' ? { paddingTop: 0 } : {}),
         },
     ];

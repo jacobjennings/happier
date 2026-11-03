@@ -217,36 +217,6 @@ describe('SelectionList — columned rows through the virtualized body', () => {
         }
     });
 
-    it('numbers the grid cells in reading order after grouping', async () => {
-        const screen = await renderColumnedVirtualizedList({
-            rootStep: makeStep(makeOptions(5), 'force'),
-        });
-
-        // Grid coordinates are recomputed over the GROUPED items in this
-        // renderer, so a column-major fill or a per-row restart shows up as soon
-        // as the second visual row is read. (A columned pane is a grid, so the
-        // option-only `aria-posinset`/`aria-setsize` are replaced by the row and
-        // column indices — the same reading-order claim in grid vocabulary.)
-        const rows = columnRows(screen);
-        const rowIndexOf = (id: string): unknown => {
-            const wrapper = screen.findByTestId(`sl:root:option-wrapper:${id}`);
-            const row = rows.find((candidate) => isDescendantOf(wrapper!, candidate));
-            return row?.props['aria-rowindex'];
-        };
-        const coordinates = ['m-0', 'm-1', 'm-2', 'm-3', 'm-4'].map((id) => [
-            rowIndexOf(id),
-            screen.findByTestId(`sl:root:option-wrapper:${id}`)?.props['aria-colindex'],
-        ]);
-        // Row 1 is the section header row, so the option rows start at 2.
-        expect(coordinates).toEqual([[2, 1], [2, 2], [3, 1], [3, 2], [4, 1]]);
-        expect(screen.findByTestId('sl:body')?.props['aria-rowcount']).toBe(4);
-        expect(screen.findByTestId('sl:section:models:header')?.props.role)
-            .toBe('columnheader');
-        // Option-only metadata must be gone, not merely unread.
-        expect(screen.findByTestId('sl:root:option:m-4')?.props['aria-posinset']).toBeUndefined();
-        expect(screen.findByTestId('sl:root:option:m-4')?.props['aria-setsize']).toBeUndefined();
-    });
-
     it('is the DECLARED columns config that pulls a lone section onto the flat path', async () => {
         const { SelectionList } = await import('../SelectionList');
         const screen = await renderScreen(
@@ -299,6 +269,11 @@ describe('SelectionList — grid ARIA through a virtualized columned list', () =
         // the section header, which is a row of the grid in its own right.
         expect(body?.props['aria-rowcount']).toBe(4);
         expect(body?.props['aria-colcount']).toBe(2);
+        expect(screen.findByTestId('sl:section:models:header')?.props.role).toBe('columnheader');
+        // A columned pane is a grid: the option-only `aria-posinset`/`aria-setsize`
+        // are replaced by row and column indices, gone rather than merely unread.
+        expect(screen.findByTestId('sl:root:option:m-4')?.props['aria-posinset']).toBeUndefined();
+        expect(screen.findByTestId('sl:root:option:m-4')?.props['aria-setsize']).toBeUndefined();
 
         const rows = visualRows(screen);
         expect(rows.map((row) => row.props.role)).toEqual(['row', 'row', 'row']);

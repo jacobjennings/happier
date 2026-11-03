@@ -38,7 +38,7 @@ function runSession(
 }
 
 export const roleActions = {
-    setApprovalReviewer: (sessionId: string, enabled: boolean, scope?: SessionRoleActionScope) => runSession('session.approval_reviewer.set', sessionId, { enabled }, scope),
+    setApprovalReviewer: (sessionId: string, enabled: boolean | null, scope?: SessionRoleActionScope) => runSession('session.approval_reviewer.set', sessionId, { enabled }, scope),
     create: (role: RoleArtifactV1) => run('roles.create', { role }),
     update: (roleId: string, role: RoleArtifactV1, expectedRevision: RoleArtifactRevision) =>
         run('roles.update', { roleId, role, expectedRevision }),

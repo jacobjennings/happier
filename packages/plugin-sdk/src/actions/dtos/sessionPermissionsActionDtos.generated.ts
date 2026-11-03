@@ -22,7 +22,7 @@ export type SessionPermissionsActionInputById = {
     };
     readonly "session.approval_reviewer.set": {
         sessionId: string;
-        enabled: boolean;
+        enabled: boolean | null;
     };
     readonly "session.permission.remote.pending.list": {
         sessionId: string;

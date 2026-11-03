@@ -12,15 +12,24 @@ export type SessionMessageApplyCoalescerConfig = Readonly<{
 
 type TimerHandle = () => void;
 
-type SessionMessageApplyOptions = Readonly<{
+export type SessionMessageApplyCallbacks = Readonly<{
+    applyBatch: (sessionId: string, messages: NormalizedMessage[]) => void;
+    onBatchApplied?: (sessionId: string, messages: NormalizedMessage[]) => void;
+    /** Only committed rows carry this hook; stream checkpoints must not advance durable currentness. */
+    onDurableBatchApplied?: (sessionId: string, messages: NormalizedMessage[]) => void;
+}>;
+
+export type SessionMessageApplyOptions = Readonly<{
     deferLeadingBatch?: boolean;
     shouldContinue?: () => boolean;
+    callbacks?: SessionMessageApplyCallbacks;
 }>;
 
 type QueuedMessage = Readonly<{
     message: NormalizedMessage;
     deferredLeadingBatch: boolean;
     shouldContinue: () => boolean;
+    callbacks: SessionMessageApplyCallbacks;
 }>;
 
 type SessionQueueState = {
@@ -70,7 +79,8 @@ export function createSessionMessageApplyCoalescer(params: Readonly<{
     function createQueuedMessages(messages: readonly NormalizedMessage[], options?: SessionMessageApplyOptions): QueuedMessage[] {
         const shouldContinue = options?.shouldContinue ?? (() => true);
         const deferredLeadingBatch = options?.deferLeadingBatch === true;
-        return messages.map((message) => ({ message, deferredLeadingBatch, shouldContinue }));
+        const callbacks = options?.callbacks ?? params;
+        return messages.map((message) => ({ message, deferredLeadingBatch, shouldContinue, callbacks }));
     }
 
     function takeCurrentMessages(entries: readonly QueuedMessage[]): NormalizedMessage[] {
@@ -81,6 +91,20 @@ export function createSessionMessageApplyCoalescer(params: Readonly<{
             }
         }
         return messages;
+    }
+
+    function applyOriginatingEntries(sessionId: string, entries: readonly QueuedMessage[]): void {
+        const current = entries.filter(entry => entry.shouldContinue());
+        const first = current[0];
+        if (!first) return;
+        const messages = current.map(entry => entry.message);
+        // Surviving entries share this session's one current Home carrier. Preserve one store
+        // publication while retaining the originating Home authority, not the latest socket event.
+        first.callbacks.applyBatch(sessionId, messages);
+        first.callbacks.onBatchApplied?.(sessionId, messages);
+        const durable = current.filter(entry => entry.callbacks.onDurableBatchApplied && entry.shouldContinue());
+        durable[0]?.callbacks.onDurableBatchApplied?.(sessionId, durable.map(entry => entry.message));
+        markStreamingMessagesAppliedForSessionUiTelemetry({ sessionId, messages, source: 'socketMessage' });
     }
 
     function clearFlushTimer(state: SessionQueueState): void {
@@ -104,13 +128,7 @@ export function createSessionMessageApplyCoalescer(params: Readonly<{
                 'sync.socket.messages.coalesce.immediate',
                 { messages: messages.length },
                 () => {
-                    params.applyBatch(sessionId, messages);
-                    params.onBatchApplied?.(sessionId, messages);
-                    markStreamingMessagesAppliedForSessionUiTelemetry({
-                        sessionId,
-                        messages,
-                        source: 'socketMessage',
-                    });
+                    applyOriginatingEntries(sessionId, createQueuedMessages(messages, options));
                 },
             );
             return;
@@ -123,13 +141,7 @@ export function createSessionMessageApplyCoalescer(params: Readonly<{
                 'sync.socket.messages.coalesce.immediate',
                 { messages: batch.length },
                 () => {
-                    params.applyBatch(sessionId, batch);
-                    params.onBatchApplied?.(sessionId, batch);
-                    markStreamingMessagesAppliedForSessionUiTelemetry({
-                        sessionId,
-                        messages: batch,
-                        source: 'socketMessage',
-                    });
+                    applyOriginatingEntries(sessionId, createQueuedMessages(batch, options));
                 },
             );
         }
@@ -179,13 +191,7 @@ export function createSessionMessageApplyCoalescer(params: Readonly<{
             { messages: batch.length, remaining: state.queued.length },
             () => {
                 if (currentMessages.length === 0) return;
-                params.applyBatch(sessionId, currentMessages);
-                params.onBatchApplied?.(sessionId, currentMessages);
-                markStreamingMessagesAppliedForSessionUiTelemetry({
-                    sessionId,
-                    messages: currentMessages,
-                    source: 'socketMessage',
-                });
+                applyOriginatingEntries(sessionId, batch);
             },
         );
 
@@ -201,8 +207,10 @@ export function createSessionMessageApplyCoalescer(params: Readonly<{
         }
 
         // Coalescing is disabled (or window is zero): drain synchronously in bounded batches.
-        const remainingMessages = takeCurrentMessages(state.queued.splice(0, state.queued.length));
-        applyImmediate(sessionId, remainingMessages, maxBatchSize);
+        const remaining = state.queued.splice(0, state.queued.length);
+        for (let index = 0; index < remaining.length; index += maxBatchSize) {
+            applyOriginatingEntries(sessionId, remaining.slice(index, index + maxBatchSize));
+        }
         queues.delete(sessionId);
     }
 

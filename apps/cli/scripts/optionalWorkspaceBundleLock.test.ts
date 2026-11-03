@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -6,12 +6,32 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
 import { WORKSPACE_BUNDLE_LOCK_BUSY_ERROR_CODE, withWorkspaceBundleLock } from '../../../scripts/workspaces/workspaceBundleLock.mjs';
+import { findRepoRoot as findSdkRepoRoot } from '../../../packages/plugin-sdk/scripts/vendoredWorkspaceDeclarations.mjs';
 import {
+  findRepoRoot,
   resolveCliSharedDepsBuildLockPath,
   withOptionalCliSharedDepsBuildLock,
 } from './optionalWorkspaceBundleLock.mjs';
 
 describe('optionalWorkspaceBundleLock', () => {
+  it('root discovery selects the pnpm workspace rather than a nested Yarn project', () => {
+    const root = mkdtempSync(join(tmpdir(), 'happier-pnpm-root-'));
+    try {
+      const nested = join(root, 'apps', 'cli', 'scripts');
+      mkdirSync(nested, { recursive: true });
+      for (const name of ['package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']) {
+        writeFileSync(join(root, name), '');
+      }
+      writeFileSync(join(root, 'apps', 'package.json'), '{}');
+      writeFileSync(join(root, 'apps', 'yarn.lock'), '');
+      writeFileSync(join(root, 'apps', 'pnpm-lock.yaml'), '');
+      expect(findRepoRoot(nested)).toBe(root);
+      expect(findSdkRepoRoot(nested)).toBe(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('uses the canonical CLI shared-dependency publication lock path', () => {
     const repoRoot = join(tmpdir(), 'happier-lock-path');
 

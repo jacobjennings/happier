@@ -107,17 +107,9 @@ describe('Popover: content-sized and centred on its anchor (tooltips)', () => {
         expect(visualLeft).toBeGreaterThanOrEqual(0);
     });
 
-    it('flips an explicit side that cannot fit to the opposite side when asked to', async () => {
-        // A top tooltip on a control at the very top of the window has 4px above it.
-        const anchor = { left: 400, top: 10, width: 28, height: 28 };
-        const { style } = await renderCentredPopover(anchor, { width: 64, height: 28 }, { placement: 'top', flip: true });
-
-        // Bottom placement pins `top` below the anchor: 10 + 28 + 6.
-        expect(readNumber(style, 'top') + Number(style.paddingTop ?? 0)).toBe(44);
-        expect(style.bottom).toBeUndefined();
-    });
-
     it('keeps explicit-side popovers reachable near the window edge by default', async () => {
+        // A top tooltip on a control at the very top of the window has 4px above it, so it flips:
+        // bottom placement pins `top` below the anchor: 10 + 28 + 6.
         const { style } = await renderCentredPopover({ left: 400, top: 10, width: 28, height: 28 }, { width: 64, height: 28 });
         expect(readNumber(style, 'top') + Number(style.paddingTop ?? 0)).toBe(44);
         expect(style.bottom).toBeUndefined();

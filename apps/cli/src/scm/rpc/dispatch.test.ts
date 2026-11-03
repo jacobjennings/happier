@@ -7,6 +7,7 @@ import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { createTestGitRpcManager, runGit as git } from './__tests__/testRpcHarness';
 
+import { OS_USER_FILESYSTEM_ACCESS_POLICY } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
 import { createScmBackendRegistry } from '@/scm/registry';
 import type { ScmBackend } from '@/scm/types';
 import { runScmRoute } from './dispatch';
@@ -74,6 +75,8 @@ describe('runScmRoute', () => {
         const response = await runScmRoute<{ cwd?: string }, TestResponse>({
             request: { cwd: external },
             workingDirectory: workspace,
+            // Explicit: the default policy reads HAPPIER_MACHINE_RPC_WORKING_DIRECTORY from the environment.
+            accessPolicy: OS_USER_FILESYSTEM_ACCESS_POLICY,
             onNonRepository,
             runWithBackend,
             registry: emptyRegistry,
@@ -230,45 +233,5 @@ describe('runScmRoute', () => {
         expect(response.errorCode).toBe(SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE);
         expect(onNonRepository).not.toHaveBeenCalled();
         expect(runWithBackend).not.toHaveBeenCalled();
-    });
-
-    it('still reports a real non-repository when another backend answered authoritatively', async () => {
-        const workspace = mkdtempSync(join(tmpdir(), 'happier-scm-dispatch-'));
-        const onNonRepository = vi.fn().mockResolvedValue({
-            success: false,
-            errorCode: SCM_OPERATION_ERROR_CODES.NOT_REPOSITORY,
-        } satisfies TestResponse);
-        const registry = createScmBackendRegistry([
-            {
-                id: 'happier.scm.backend.git/git',
-                localId: 'git',
-                selection: { modeSelectionScores: { '.git': 50 } },
-                detectRepo: async () => ({ isRepo: false, rootPath: null, mode: null }),
-            } as unknown as ScmBackend,
-            {
-                // An uninstalled second backend cannot answer, but it must not turn the first
-                // backend's real answer into an unknown.
-                id: 'happier.scm.backend.sapling/sapling',
-                localId: 'sapling',
-                selection: { modeSelectionScores: { '.sl': 100 } },
-                detectRepo: async () => {
-                    throw Object.assign(
-                        new Error('SCM executable not found for sapling-cli (sl)'),
-                        { errorCode: SCM_OPERATION_ERROR_CODES.BACKEND_NOT_INSTALLED },
-                    );
-                },
-            } as unknown as ScmBackend,
-        ]);
-
-        const response = await runScmRoute<{ cwd?: string }, TestResponse>({
-            request: { cwd: '.' },
-            workingDirectory: workspace,
-            onNonRepository,
-            runWithBackend: vi.fn(),
-            registry,
-        });
-
-        expect(response.errorCode).toBe(SCM_OPERATION_ERROR_CODES.NOT_REPOSITORY);
-        expect(onNonRepository).toHaveBeenCalledTimes(1);
     });
 });

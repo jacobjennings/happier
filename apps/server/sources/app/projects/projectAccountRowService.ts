@@ -1,9 +1,7 @@
 import {
     PROJECT_ACCOUNT_ROWS_KV_PREFIX_V1,
     ProjectAccountRowChangeHintV1Schema,
-    ProjectAccountRowContentV1Schema,
     ProjectAccountRowMutationRequestV1Schema,
-    StoredProjectAccountRowContentV1Schema,
     assertProjectAccountRowContentForModeV1,
     assertProjectAccountRowPayloadBindingV1,
     buildProjectAccountRowPhysicalKeyV1,
@@ -24,28 +22,10 @@ import {
     listReservedAccountScopedKvRowsInTx,
     mutateReservedAccountScopedKvRowInTx,
     readReservedAccountScopedKvRowInTx,
-    type ReservedAccountScopedKvRowDomain,
 } from '@/app/kv/reservedAccountScopedKvRow';
 import { inTx, transactionResult, type Tx } from '@/storage/inTx';
 import { readUserKvMutationConflict } from '@/app/kv/kvMutate';
-
-function domainForKey(key?: ProjectAccountRowKeyV1): ReservedAccountScopedKvRowDomain<ProjectAccountRowContentV1> {
-    const parse = (input: unknown, stored: boolean): ProjectAccountRowContentV1 | null => {
-        const parsed = (stored ? StoredProjectAccountRowContentV1Schema : ProjectAccountRowContentV1Schema).safeParse(input);
-        if (!parsed.success) return null;
-        if (key && parsed.data.t === 'plain') {
-            try { assertProjectAccountRowPayloadBindingV1(key, parsed.data.v); }
-            catch { return null; }
-        }
-        return parsed.data;
-    };
-    return {
-        label: 'Project Account row',
-        parseStoredEnvelope: value => parse(value, true),
-        parseCandidateEnvelope: value => parse(value, false),
-        assertEnvelopeForMode: (content, mode) => { assertProjectAccountRowContentForModeV1(content, mode); },
-    };
-}
+import { projectAccountRowFromStorage, projectAccountRowStorageDomain } from './projectAccountRowStorage';
 
 /** Publishes only the changed row identity/revision through the incumbent change stream. */
 export async function markProjectAccountRowChangedInTx(tx: Tx, input: Readonly<{ accountId: string; key: ProjectAccountRowKeyV1; revision: number }>): ReturnType<typeof markAccountChanged> {
@@ -55,12 +35,12 @@ export async function markProjectAccountRowChangedInTx(tx: Tx, input: Readonly<{
     });
 }
 
-export async function readProjectAccountRowInTx(tx: Tx, input: Readonly<{ accountId: string; key: ProjectAccountRowKeyV1 }>): Promise<ProjectAccountRowReadResponseV1> {
+export async function readProjectAccountRowInTx(tx: Tx, input: Readonly<{ accountId: string; key: ProjectAccountRowKeyV1; includeAuthoringSession?: true }>): Promise<ProjectAccountRowReadResponseV1> {
     const result = await readReservedAccountScopedKvRowInTx(tx, {
-        accountId: input.accountId, physicalKey: buildProjectAccountRowPhysicalKeyV1(input.key), domain: domainForKey(input.key),
+        accountId: input.accountId, physicalKey: buildProjectAccountRowPhysicalKeyV1(input.key), domain: projectAccountRowStorageDomain(input.key),
     });
     if (result.status !== 'present') return result;
-    return { status: 'present', row: { key: input.key, revision: result.revision, content: result.envelope } };
+    return { status: 'present', row: projectAccountRowFromStorage({ ...input, revision: result.revision, envelope: result.envelope }) };
 }
 
 /** A complete selected census; selected invalid retained content refuses rather than disappearing. */
@@ -72,7 +52,7 @@ export async function listProjectAccountRowsInTx(tx: Tx, input: Readonly<{ accou
         return `${PROJECT_ACCOUNT_ROWS_KV_PREFIX_V1}${family}/${input.serverId ? `${encodeURIComponent(input.serverId)}/` : ''}`;
     });
     const result = await listReservedAccountScopedKvRowsInTx(tx, {
-        accountId: input.accountId, physicalPrefix: PROJECT_ACCOUNT_ROWS_KV_PREFIX_V1, domain: domainForKey(),
+        accountId: input.accountId, physicalPrefix: PROJECT_ACCOUNT_ROWS_KV_PREFIX_V1, domain: projectAccountRowStorageDomain(),
         ...(input.kinds !== undefined || input.serverId !== undefined ? { physicalPrefixes } : {}),
     });
     if (result.status !== 'listed') return result;
@@ -80,13 +60,15 @@ export async function listProjectAccountRowsInTx(tx: Tx, input: Readonly<{ accou
     for (const row of result.rows) {
         const key = parseProjectAccountRowPhysicalKeyV1(row.physicalKey);
         if (!key) return { status: 'invalid-stored-content' };
+        if (key.kind !== 'workspace-ref' && row.envelope?.authoringSession) return { status: 'invalid-stored-content' };
         if (row.envelope?.t === 'plain') {
             try { assertProjectAccountRowPayloadBindingV1(key, row.envelope.v); }
             catch { return { status: 'invalid-stored-content' }; }
         }
         if (!kinds.includes(key.kind)) continue;
         if (input.serverId && key.kind !== 'relationship-graph' && key.serverId !== input.serverId) continue;
-        rows.push({ key, revision: row.revision, content: row.envelope });
+        rows.push(projectAccountRowFromStorage({ key, revision: row.revision, envelope: row.envelope,
+            includeAuthoringSession: input.includeAuthoringSession }));
     }
     return { status: 'listed', rows, coverage: 'complete' };
 }
@@ -123,7 +105,7 @@ export async function mutateProjectAccountRows(input: Readonly<{ accountId: stri
                 const identity = buildProjectAccountRowPhysicalKeyV1(key);
                 const cached = current.get(identity);
                 if (cached) return cached;
-                const row = await readProjectAccountRowInTx(tx, { accountId: input.accountId, key });
+                const row = await readProjectAccountRowInTx(tx, { accountId: input.accountId, key, includeAuthoringSession: true });
                 if (row.status !== 'present' && row.status !== 'absent' && row.status !== 'deleted') abort(row);
                 current.set(identity, row);
                 return row;
@@ -163,9 +145,13 @@ export async function mutateProjectAccountRows(input: Readonly<{ accountId: stri
             const rows: ProjectAccountRowV1[] = [];
             let resolveCursor = () => 0;
             for (const mutation of request.mutations) {
+                const previous = current.get(buildProjectAccountRowPhysicalKeyV1(mutation.key));
+                const authoringSession = previous?.status === 'present' ? previous.row.authoringSession : undefined;
                 const result = await mutateReservedAccountScopedKvRowInTx(tx, {
                     accountId: input.accountId, physicalKey: buildProjectAccountRowPhysicalKeyV1(mutation.key),
-                    expectedRevision: mutation.expectedRevision, envelope: mutation.content, domain: domainForKey(mutation.key),
+                    expectedRevision: mutation.expectedRevision, envelope: mutation.content === null ? null : {
+                        ...mutation.content, ...(authoringSession ? { authoringSession } : {}),
+                    }, domain: projectAccountRowStorageDomain(mutation.key),
                     markChanged: ({ tx, revision }) => markProjectAccountRowChangedInTx(tx, { accountId: input.accountId, key: mutation.key, revision }),
                 });
                 if (result.status === 'conflict') abort({ ...result, key: mutation.key });

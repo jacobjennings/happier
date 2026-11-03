@@ -18,7 +18,7 @@ type NativeScrollFactsObservationDispatch = (
     event: NativeScrollFactsObservedEvent
 ) => TranscriptViewportLifecycleTransition;
 
-export type NativeScrollFactsObservationDecision =
+type NativeScrollFactsObservationDecision =
     | Readonly<{
         movement: NativeScrollMovement;
         trustedUserMovement: boolean;
@@ -29,7 +29,7 @@ export type NativeScrollFactsObservationDecision =
         type: 'ignore';
     }>;
 
-export function resolveNativeScrollFactsObservationDecision(params: Readonly<{
+function resolveNativeScrollFactsObservationDecision(params: Readonly<{
     distanceFromLiveTailPx: number;
     isTrusted: boolean;
     movedAwayFromLiveTail: boolean;

@@ -14,7 +14,7 @@ import {
 } from './DaemonSpeechPcmCapture';
 import type { DaemonSpeechStreamSender } from './DaemonSpeechStreamSender';
 import type { DaemonVoiceInferenceClient } from './DaemonVoiceInferenceClient';
-import { daemonSpeechStreamDiagnostics } from './daemonSpeechStreamDiagnostics';
+import { daemonSpeechStreamDiagnostics, type DaemonSpeechStreamStartStep } from './daemonSpeechStreamDiagnostics';
 
 export type DaemonStreamingSttController = SttController & Readonly<{
     setMuted: (muted: boolean) => Promise<void>;
@@ -32,7 +32,7 @@ export type DaemonStreamingSttControllerDeps = Readonly<{
     createClient?: () => DaemonStreamingSttClient;
     createPcmCapture?: (options: DaemonSpeechPcmCaptureOptions) => DaemonSpeechPcmCapture;
     endpointController?: TurnEndpointController;
-    recordStartFailure?: (error: unknown) => void;
+    recordStartFailure?: (error: unknown, context: Readonly<{ step: DaemonSpeechStreamStartStep }>) => void;
 }>;
 
 type ActiveDaemonStreamingStt = {
@@ -264,17 +264,20 @@ export function createDaemonStreamingSttController(
         }
 
         let handle: ActiveDaemonStreamingStt | null = null;
+        let startStep: DaemonSpeechStreamStartStep = 'create_sender';
         try {
             const sender = await createClient().createStreamingSttSender({ sessionId, packId, language, signal });
             if (signal?.aborted) {
                 await sender.cancel().catch(() => {});
                 return;
             }
+            startStep = 'sender_start';
             await sender.start();
             if (signal?.aborted) {
                 await sender.cancel().catch(() => {});
                 return;
             }
+            startStep = 'capture_start';
             const capture = createPcmCapture({
                 micSession,
                 capturePurpose,
@@ -376,7 +379,7 @@ export function createDaemonStreamingSttController(
             if (signal?.aborted) {
                 return;
             }
-            recordStartFailure(error);
+            recordStartFailure(error, { step: startStep });
             const failure = createVoiceMachineError({
                 kind: 'provider_error',
                 reason: resolveDaemonStreamingSttStartErrorReason(error),

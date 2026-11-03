@@ -76,9 +76,7 @@ import {
 import {
     readCurrentCommittedPluginGenerations,
 } from '@/plugins/store/registry/generationStore';
-import {
-    resolveMergedContributionRegistry,
-} from '@/plugins/projection/registry/createResolvedContributionRegistry';
+import { resolveMergedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import {
     createManagedPluginSourceCustody,
 } from '@/plugins/runtime/lifecycle/contributions/runtimeIdentity.testkit';
@@ -1648,6 +1646,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                         interactions: unavailable.interactions,
                         targetedContributions: unavailable.targetedContributions,
                         composerContent: unavailable.composerContent,
+                        backgroundServices: unavailable.backgroundServices,
                     },
                 });
 
@@ -1696,10 +1695,17 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                     happyHomeDir,
                     expectedVersion: 'H',
                 });
-            const pinnedRequests: Array<Readonly<{
+            const httpRequests: Array<Readonly<{
                 url: string;
                 headers: Readonly<Record<string, string>>;
             }>> = [];
+            vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>(async (input, init) => {
+                httpRequests.push(Object.freeze({
+                    url: input instanceof Request ? input.url : String(input),
+                    headers: Object.freeze(Object.fromEntries(new Headers(init?.headers).entries())),
+                }));
+                return new Response('allowed', { status: 200 });
+            }));
             const resolvedHRegistry =
                 await resolveExecutablePluginRuntimeRegistry({
                 happyHomeDir,
@@ -1712,29 +1718,6 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                     currentGlobalFollowOwner,
                 currentGlobalExternalSessionsRouter:
                     reloadController.currentGlobalExternalSessions,
-                networkDependencies: {
-                    resolveNetworkAddresses: async () =>
-                        Object.freeze(['93.184.216.34']),
-                    openPinnedStream: async (request) => {
-                        pinnedRequests.push(Object.freeze({
-                            url: request.url,
-                            headers: request.headers,
-                        }));
-                        const body = new TextEncoder().encode('allowed');
-                        let delivered = false;
-                        return Object.freeze({
-                            status: 200,
-                            headers: Object.freeze({}),
-                            contentLength: body.byteLength,
-                            read: async () => {
-                                if (delivered) return null;
-                                delivered = true;
-                                return body;
-                            },
-                            cancel() {},
-                        });
-                    },
-                },
                 resolveExternalSessionCurrentMachineId: () =>
                     'machine-current-global-routing',
             });
@@ -1974,6 +1957,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                         targetedContributions:
                             unavailable.targetedContributions,
                         composerContent: unavailable.composerContent,
+                        backgroundServices: unavailable.backgroundServices,
                     },
                 });
             const originalGlobalFetch = globalThis.fetch;
@@ -2014,7 +1998,7 @@ describe('retained Agent composed daemon-service routing (integration)', () => {
                 }),
             );
             expect(terminalFetch).not.toHaveBeenCalled();
-            expect(pinnedRequests).toEqual([
+            expect(httpRequests).toEqual([
                 expect.objectContaining({
                     url: 'https://policy.example.test/allowed',
                     headers: {

@@ -44,6 +44,25 @@ vi.mock('@/daemon/startDaemon', () => ({
     startDaemon: startDaemonMock,
 }));
 
+// The real ownership evaluation runs unless a case substitutes the owner it reports.
+const ownerEvaluation = vi.hoisted(() => ({ next: null as null | (() => Promise<unknown>) }));
+vi.mock('@/daemon/ownership/evaluateCurrentDaemonOwner', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/daemon/ownership/evaluateCurrentDaemonOwner')>();
+    return {
+        ...actual,
+        evaluateCurrentDaemonOwner: (...args: Parameters<typeof actual.evaluateCurrentDaemonOwner>) => {
+            const substitute = ownerEvaluation.next;
+            return substitute
+                ? substitute() as ReturnType<typeof actual.evaluateCurrentDaemonOwner>
+                : actual.evaluateCurrentDaemonOwner(...args);
+        },
+    };
+});
+
+import { reloadConfiguration } from '@/configuration';
+import { writeSettings } from '@/persistence';
+import { resolveDaemonServiceLaunchdLabel } from '@/daemon/service/plan';
+import { writeInstalledLinuxDaemonService } from '@/daemon/service/installedDaemonServices.testkit';
 import { handleDaemonCliCommand } from './daemon';
 import { captureConsoleText } from '@/testkit/logger/captureOutput';
 
@@ -59,8 +78,8 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
         inspectDaemonMock.mockImplementation(async () => ({ status: 'not-running' }));
         startDaemonMock.mockReset();
         vi.restoreAllMocks();
-        vi.doUnmock('@/daemon/ownership/evaluateCurrentDaemonOwner');
-        vi.resetModules();
+        ownerEvaluation.next = null;
+        reloadConfiguration();
     });
 
     it('fails closed when a different relay owner already owns the relay', async () => {
@@ -205,9 +224,7 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
         const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
             throw new Error(`exit:${code ?? ''}`);
         }) as never);
-        vi.resetModules();
-        vi.doMock('@/daemon/ownership/evaluateCurrentDaemonOwner', () => ({
-            evaluateCurrentDaemonOwner: vi.fn(async () => ({
+        ownerEvaluation.next = async () => ({
                 kind: 'compatible' as const,
                 owner: {
                     status: 'running' as const,
@@ -219,12 +236,10 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
                     serviceManaged: false,
                     startupSource: 'manual' as const,
                 },
-            })),
-        }));
-        const { handleDaemonCliCommand: handleDaemonCliCommandWithMockedOwnership } = await import('./daemon');
+            });
 
         try {
-            await expect(handleDaemonCliCommandWithMockedOwnership({
+            await expect(handleDaemonCliCommand({
                 args: ['daemon', 'start-sync'],
             } as never)).rejects.toThrow(/exit:0/);
         } finally {
@@ -245,10 +260,7 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
             const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
                 throw new Error(`exit:${code ?? ''}`);
             }) as never);
-            vi.resetModules();
-            const { resolveDaemonServiceLaunchdLabel } = await import('@/daemon/service/plan');
-            vi.doMock('@/daemon/ownership/evaluateCurrentDaemonOwner', () => ({
-                evaluateCurrentDaemonOwner: vi.fn(async () => ({
+            ownerEvaluation.next = async () => ({
                     kind: 'compatible' as const,
                     owner: {
                         status: 'running' as const,
@@ -268,12 +280,10 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
                         serviceManaged: true,
                         startupSource: 'background-service' as const,
                     },
-                })),
-            }));
-            const { handleDaemonCliCommand: handleWithMockedOwnership } = await import('./daemon');
+                });
             const output = captureConsoleText();
             try {
-                await expect(handleWithMockedOwnership({
+                await expect(handleDaemonCliCommand({
                     args: ['daemon', 'start-sync', '--takeover'],
                 } as never)).rejects.toThrow(/exit:0/);
             } finally {
@@ -333,11 +343,7 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
                     // As the installed default-following unit sets it for its daemon.
                     HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'default-following',
                 });
-                vi.resetModules();
-                const [{ writeSettings }, { writeInstalledLinuxDaemonService }] = await Promise.all([
-                    import('@/persistence'),
-                    import('@/daemon/service/installedDaemonServices.testkit'),
-                ]);
+                reloadConfiguration();
                 const profile = (id: string) => ({
                     id,
                     name: id,
@@ -367,15 +373,14 @@ describe('handleDaemonCliCommand: daemon start-sync', () => {
                     serverUrl: `https://${params.pinnedServerId}.example.test`,
                 });
                 // A daemon process reads the selected server once, at startup, from these settings.
-                (await import('@/configuration')).reloadConfiguration();
-                const { handleDaemonCliCommand: handleWithServiceEnv } = await import('./daemon');
+                reloadConfiguration();
 
                 const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
                     throw new Error(`exit:${code ?? ''}`);
                 }) as never);
                 const output = captureConsoleText();
                 try {
-                    await handleWithServiceEnv({ args: ['daemon', 'start-sync', '--takeover'] } as never).catch(() => undefined);
+                    await handleDaemonCliCommand({ args: ['daemon', 'start-sync', '--takeover'] } as never).catch(() => undefined);
                 } finally {
                     output.restore();
                 }

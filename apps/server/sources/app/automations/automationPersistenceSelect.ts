@@ -54,6 +54,7 @@ export const automationTriggerListItemSelect = {
 export const automationListItemSelect = {
     id: true, accountId: true, name: true, description: true, enabled: true,
     workflowDefinitionId: true, scopeSessionId: true,
+    managedTargetHomeId: true, managedTargetManagedId: true, managedTargetIndexed: true,
     targetType: true, templateCiphertext: true, templateVersion: true, lastRunAt: true,
     createdAt: true, updatedAt: true,
     assignments: {

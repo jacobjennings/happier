@@ -1,3 +1,4 @@
+import type { ActionExecutorContext } from '@happier-dev/protocol/actions/executor/types';
 import { z } from 'zod/mini';
 import axios from 'axios';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc/methods';
@@ -25,6 +26,8 @@ import { readApprovedDiscussionPublication, type ApprovedDiscussionSourceActionE
 import { WorkflowInvocationGetResultV1Schema } from '@happier-dev/protocol/workflows/actionsV1';
 import { projectWorkflowDiscussionResultContentV1 } from '@happier-dev/protocol/workflows/workflowDiscussionPublicationV1';
 import { areServerProfileIdentifiersEquivalent } from '@happier-dev/protocol/features/payload/capabilities/serverIdentityCapabilities';
+import { uploadDiscussionAgentAttachments } from './uploadDiscussionAgentAttachments';
+import { DiscussionAgentPublisherPublicationV1Schema } from '@happier-dev/protocol/discussions/api';
 
 /** Host-owned causal root shared by the active Session RPC and bound MCP host. */
 export function readDiscussionAgentPublisherSourceSession(
@@ -59,7 +62,7 @@ function prepareDiscussionAgentPublication(params: Readonly<{
 }>): DiscussionAgentPublisherInputV1 | null {
   const sourceSession = params.sourceSession;
   if (!sourceSession?.sourceInputId || !sourceSession.sourceTurnId) return null;
-  const { v: _version, sessionId: _sessionId, sourceSession: _authoredSource, ...input } = params.request;
+  const { v: _version, sessionId: _sessionId, sourceSession: _authoredSource, attachmentSources: _sources, ...input } = params.request;
   if ('operation' in input) return { ...input, sourceSession };
   const { replyReturn: _authoredReturn, ...publication } = input;
   const addressing = params.discussionAddressing;
@@ -78,6 +81,8 @@ function prepareDiscussionAgentPublication(params: Readonly<{
   return { ...publication, sourceSession };
 }
 
+const approvedActionReplaySchema = z.strictObject({ artifactId: z.string().check(z.trim(), z.minLength(1)) });
+
 /** Private payload on the incumbent owner-only Session RPC transport. */
 export const DiscussionAgentPublisherRequestV1Schema = z.union([
   z.strictObject({
@@ -86,7 +91,7 @@ export const DiscussionAgentPublisherRequestV1Schema = z.union([
   }),
   z.strictObject({
     request: asHostProtocolZod(PublisherRequestV1Schema),
-    approvedActionReplay: z.strictObject({ artifactId: z.string().check(z.trim(), z.minLength(1)) }),
+    approvedActionReplay: approvedActionReplaySchema,
   }),
   // Without an executing approval, only the server-validated original reply
   // can outlive its turn. Ordinary posts/create require the active witness.
@@ -96,6 +101,15 @@ export const DiscussionAgentPublisherRequestV1Schema = z.union([
   }),
 ]);
 export type DiscussionAgentPublisherPrivateRequestV1 = z.infer<typeof DiscussionAgentPublisherRequestV1Schema>;
+
+/** The private Session RPC carries recorded approvals, not other host replay context. */
+export function prepareApprovedDiscussionAgentPublication(params: Readonly<{
+  request: DiscussionAgentPublisherRequestV1;
+  replay: NonNullable<ActionExecutorContext['approvedActionReplay']>;
+}>): DiscussionAgentPublisherPrivateRequestV1 | null {
+  const replay = approvedActionReplaySchema.safeParse({ artifactId: params.replay.artifactId });
+  return replay.success ? { request: params.request, approvedActionReplay: replay.data } : null;
+}
 
 /** An Account RPC caller may name an original, but cannot author its terminal result. */
 async function verifyTerminalDiscussionReturn(params: Readonly<{
@@ -196,6 +210,8 @@ async function verifyTerminalDiscussionReturn(params: Readonly<{
 export function createDiscussionAgentPublisher(params: Readonly<{
   serverId: string;
   serverUrl: string;
+  /** Machine captured by the owning Session's transport composition. */
+  machineId?: string | null;
   /** Canonical Home of this exact Session transport; not its routing profile. */
   getServerIdentityId?: () => string | null | undefined;
   readOwnerAccountCredentials: () => Promise<StoredCredentials | null>;
@@ -216,11 +232,22 @@ export function createDiscussionAgentPublisher(params: Readonly<{
         ? 'discussions_unavailable' : 'discussion_post_denied');
     };
     const reportStage = (next: 'discussion_reply_custody' | 'discussion_reply_result') => { stage = next; };
+    let publicationHomeId = params.getServerIdentityId?.();
     const publish = async (publication: DiscussionAgentPublisherPublicationInputV1, signal?: AbortSignal) => {
       stage = 'discussion_publication';
       // A thrown/lost append acknowledgement remains outcome-unknown to the caller.
       try {
-        const result = await params.session.postAgentDiscussionMessage(publication, signal ? { signal } : undefined);
+        const sources = parsed.success ? parsed.data.request.attachmentSources : undefined;
+        let result;
+        if (sources?.length) {
+          const credentials = await params.readOwnerAccountCredentials();
+          const homeId = publicationHomeId;
+          if (!credentials || !homeId || !params.machineId || signal?.aborted) return denied();
+          result = await uploadDiscussionAgentAttachments({ publication: DiscussionAgentPublisherPublicationV1Schema.parse({
+            ...publication, v: 1, sessionId: params.session.sessionId,
+          }), sources, credentials, serverUrl: params.serverUrl, serverIdentityId: homeId, machineId: params.machineId,
+            ...(signal ? { signal } : {}) });
+        } else result = await params.session.postAgentDiscussionMessage(publication, signal ? { signal } : undefined);
         if (!result.ok) context?.reportAdmissionDenial?.(stage);
         return result;
       } catch (error) {
@@ -259,6 +286,7 @@ export function createDiscussionAgentPublisher(params: Readonly<{
         });
         if (!approved || (await params.readOwnerAccountCredentials())?.token !== credentials.token || signal?.aborted) return denied();
         const { terminalReturn, draftReview, serverIdentityId, ...reviewedOrigin } = approved;
+        publicationHomeId = serverIdentityId;
         if (terminalReturn) {
           if (!serverIdentityId) return denied();
           const verified = await verifyTerminalDiscussionReturn({ request: parsed.data.request, credentials,
@@ -267,7 +295,7 @@ export function createDiscussionAgentPublisher(params: Readonly<{
           if (verified === 'unavailable') return refused('discussions_unavailable');
           if (!verified) return denied();
         }
-        const { runId: _authoredRun, toolCallId: _authoredTool, sourceSession: _authoredSource, ...reviewedRequest } = parsed.data.request;
+        const { runId: _authoredRun, toolCallId: _authoredTool, sourceSession: _authoredSource, attachmentSources: _sources, ...reviewedRequest } = parsed.data.request;
         if (approved.replyReturn) {
           if ('operation' in reviewedRequest) return denied();
           const { v: _version, sessionId: _sessionId, replyReturn: _return, ...input } = reviewedRequest;
@@ -288,7 +316,7 @@ export function createDiscussionAgentPublisher(params: Readonly<{
       // denial. Preserve the transport failure for normal outcome reconciliation.
       return publication ? await publish(publication, signal) : denied();
     }
-    const { v: _version, sessionId: _sessionId, sourceSession: _authoredSource, ...request } = parsed.data.request;
+    const { v: _version, sessionId: _sessionId, sourceSession: _authoredSource, attachmentSources: _sources, ...request } = parsed.data.request;
     if (!activePublication) {
       stage = 'discussion_reply_custody';
       const serverIdentityId = params.getServerIdentityId?.();

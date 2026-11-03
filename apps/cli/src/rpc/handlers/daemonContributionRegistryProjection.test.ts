@@ -55,7 +55,7 @@ import { configuration } from '@/configuration';
 import type { RpcHandler, RpcHandlerRegistrar } from '@/api/rpc/types';
 import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import { loadBundledPluginLocatorResult } from '@/plugins/projection/registry/builtIn/locators';
-import { projectLoadedPluginContributes } from '@/plugins/projection/registry/resolvePluginContributions';
+import { projectLoadedPluginContributes } from '@/plugins/projection/registry/fullProjection';
 import { BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS } from '@/plugins/projection/registry/sources/generatedBundledPluginManifests';
 import { buildPluginContributionRegistry } from '@/plugins/projection/registry/normalize/package';
 import { readCanonicalPluginManifest } from '@/plugins/manifest/normalize';
@@ -164,6 +164,8 @@ function createRuntimeRegistry(
     );
     const currentContributes = { ...contributes, occurrenceIdsByPluginId };
     return {
+        generation: managedServicesFixture.registry.generation,
+        targetActionInvocations: managedServicesFixture.registry.targetActionInvocations,
         contributes: currentContributes,
         declarationContributes: currentContributes,
         projectManagedServices: managedServicesFixture.registry.projectManagedServices,
@@ -1009,13 +1011,8 @@ describe('daemon contribution registry projection rpc handler', () => {
         expect(handler).toEqual(expect.any(Function));
         const raw = await handler!({ machineId: 'machine-1' });
 
-        expect(activateContributionsOnDemand).toHaveBeenNthCalledWith(1, [
-            { pluginId: 'acme.scm', family: 'scmHostingProviders', localId: 'forge-cloud' },
-            { pluginId: 'acme.scm', family: 'scmHostingProviders', localId: 'forge-enterprise' },
-        ]);
-        expect(activateContributionsOnDemand).toHaveBeenNthCalledWith(2, [
-            { pluginId: 'acme.scm', family: 'scmBackends', localId: 'stacked' },
-        ]);
+        // SCM registrations project from admitted release facts; describing never activates a plugin.
+        expect(activateContributionsOnDemand).not.toHaveBeenCalled();
         expect(raw).toMatchObject({
             protocolVersion: 1,
             projection: {

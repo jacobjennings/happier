@@ -3,7 +3,7 @@ import * as React from 'react';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
 import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
-import { getSessionName } from '@/utils/sessions/sessionUtils';
+import { sessionDisplayTitle } from '@/utils/sessions/sessionDisplayTitle';
 
 import { useSessionWorkOpeners } from './useSessionWorkOpeners';
 import { projectSessionWorkMap } from './workMapProducer';
@@ -20,7 +20,7 @@ export function useSessionWorkMap(params: Readonly<{
     /** A list-only Work tab keeps its openers without building unseen map nodes. */
     active?: boolean;
 }>) {
-    const leadTitle = params.session ? getSessionName(params.session, params.serverId) : '';
+    const leadTitle = params.session ? sessionDisplayTitle(params.session, params.serverId) : '';
     const leadAgentId = params.session ? readSessionPresentationAgentId(params.session) : null;
     const { sessionId, projection, active = true } = params;
     const openers = useSessionWorkOpeners(params);

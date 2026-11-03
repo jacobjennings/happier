@@ -93,6 +93,7 @@ describe('WelcomeDecisionPanel on a phone (the Homes doorway)', () => {
         const { screenPromise } = renderPanel();
         const screen = await screenPromise;
         expect(screen.findByTestId('welcome-doorway-scan')).toBeFalsy();
+        expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
         await screen.unmount();
     });
 

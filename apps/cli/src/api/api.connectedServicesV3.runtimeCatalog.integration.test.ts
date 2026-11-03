@@ -28,12 +28,6 @@ vi.mock('@/ui/logger', () => ({
   },
 }));
 
-vi.mock('./configuration', () => ({
-  configuration: {
-    apiServerUrl: 'https://api.example.com',
-  },
-}));
-
 function createAxiosResponseError(params: Readonly<{
   status: number;
   data?: unknown;

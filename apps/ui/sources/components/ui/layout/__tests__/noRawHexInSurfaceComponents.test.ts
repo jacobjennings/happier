@@ -7,7 +7,7 @@ import ts from 'typescript';
 
 /**
  * L0-4 (RU2 capstone, audit PLG-1) — closure guard: no hardcoded hex colors in
- * the four capstone surfaces' component trees. Colors must come from the
+ * the surface component trees listed in SURFACE_TREES. Colors must come from the
  * unistyles `theme` tokens so every theme profile (incl. dark) renders
  * correctly. `BadgeGrid` was the only violator at audit time; this test keeps
  * it (and every sibling) fixed.
@@ -44,7 +44,7 @@ function collectSourceFiles(root: string): string[] {
 }
 
 describe('no hardcoded hex colors in capstone surface components (L0-4 closure)', () => {
-    it('every color in the four surfaces comes from theme tokens', () => {
+    it('every color in the listed surface trees comes from theme tokens', () => {
         const violations: string[] = [];
         for (const tree of SURFACE_TREES) {
             for (const file of collectSourceFiles(resolve(SOURCES_ROOT, tree))) {

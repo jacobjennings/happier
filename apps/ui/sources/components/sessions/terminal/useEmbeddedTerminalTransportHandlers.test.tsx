@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
-import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
+import { createDeferred, flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
 import type { TerminalStreamCarrier } from '@/sync/domains/terminal/stream/model';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -76,6 +76,37 @@ describe('useEmbeddedTerminalTransportHandlers', () => {
         await hook.unmount();
         expect(carrierSendInputSpy).not.toHaveBeenCalled();
         expect(modalConfirmSpy).not.toHaveBeenCalled();
+    });
+
+    it.each(['input', 'resize'] as const)('ignores a retired attachment’s %s failure while retaining current failures', async operation => {
+        const { useEmbeddedTerminalTransportHandlers } = await import('./useEmbeddedTerminalTransportHandlers');
+        const terminalIdRef = { current: 'original' };
+        const terminalStreamCarrierRef = createTerminalStreamCarrierRef();
+        const pending = createDeferred<undefined>();
+        carrierSendInputSpy.mockImplementationOnce(() => pending.promise);
+        const hook = await renderHook(() => useEmbeddedTerminalTransportHandlers({
+            machineId: 'machine', terminalIdRef, terminalStreamCarrierRef, onInputError: onInputErrorSpy,
+        }));
+        await act(async () => {
+            if (operation === 'input') hook.getCurrent().onInput('old');
+            else hook.getCurrent().onResize(100, 30);
+        });
+        await flushHookEffects({ runOnlyPendingTimers: true });
+        expect(carrierSendInputSpy).toHaveBeenCalledTimes(1);
+        if (operation === 'input') terminalIdRef.current = 'replacement';
+        else terminalStreamCarrierRef.current = createTerminalStreamCarrierRef().current;
+        const failure = Object.assign(new Error('terminal_not_found'), { code: 'terminal_not_found' });
+        await act(async () => pending.reject(failure));
+        expect(onInputErrorSpy).not.toHaveBeenCalled();
+        if (operation === 'input') act(() => hook.getCurrent().discardInputRecovery());
+        carrierSendInputSpy.mockRejectedValueOnce(failure);
+        await act(async () => {
+            if (operation === 'input') hook.getCurrent().onInput('current');
+            else hook.getCurrent().onResize(120, 40);
+        });
+        await flushHookEffects({ runOnlyPendingTimers: true });
+        expect(onInputErrorSpy).toHaveBeenCalledExactlyOnceWith(failure);
+        await hook.unmount();
     });
 
     it('keeps buffered input until machine and terminal ids are available', async () => {

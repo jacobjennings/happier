@@ -173,8 +173,6 @@ export type SelectionListSearchHeaderProps = Readonly<{
     onPopStep?: () => void;
     /** Optional overlay rendered to the right of the input (e.g. esc chip). */
     rightAdornment?: React.ReactNode;
-    /** Override the reduced-motion preference (test/escape hatch). */
-    reducedMotion?: boolean;
     testID?: string;
     inputTestID?: string;
     style?: StyleProp<ViewStyle>;
@@ -264,8 +262,7 @@ export type SelectionListSearchHeaderProps = Readonly<{
 export function SelectionListSearchHeader(props: SelectionListSearchHeaderProps): React.ReactElement {
     const { theme } = useUnistyles();
     const styles = stylesheet;
-    const detectedReducedMotion = useReducedMotionPreference();
-    const reducedMotion = props.reducedMotion ?? detectedReducedMotion;
+    const reducedMotion = useReducedMotionPreference();
 
     // Attention shake: each `attentionNonce` increment plays one brief
     // left/right wobble of the whole header row (transform-only, native-driven),

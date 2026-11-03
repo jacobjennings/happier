@@ -100,6 +100,7 @@ import { readAccountEncryptionModeOnce } from './client/accountEncryptionMode';
 import { resolveConnectedServicesServerApiTimeoutMs } from './client/connectedServicesServerApiTimeout';
 import { SessionCreationPlacementError } from './session/sessionCreationPlacementError';
 import {
+  addSessionInitialAccessTeamShareStatement,
   buildSessionInitialAccessCreateFields,
   materializeSessionInitialAccessCreateFields,
   prepareSessionInitialAccessDataKeyEnvelopes,
@@ -579,7 +580,7 @@ export class ApiClient {
       serverFeaturesSnapshot,
     } = encryptionModeResolution;
     const initialAccessCreateFields = buildSessionInitialAccessCreateFields(opts, serverFeaturesSnapshot);
-    const creationMetadata = opts.metadata;
+    const creationMetadata = addSessionInitialAccessTeamShareStatement(opts.metadata, initialAccessCreateFields, desiredSessionEncryptionMode);
     const encryptionContext = desiredSessionEncryptionMode === 'e2ee'
       ? resolveSessionEncryptionContext(this.credential)
       : null;
@@ -828,7 +829,8 @@ export class ApiClient {
           fields: initialAccessCreateFields,
           sessionId: raw.id,
           sessionEncryptionMode,
-          resolveSessionDataKey: () => responseEncryptionContext.encryptionVariant === 'dataKey' ? sessionEncryptionKey : null,
+          credentials: this.credential,
+          session: raw,
           token: this.credential.token,
           serverHttpBaseUrl: serverBaseUrl,
           ...(opts.signal ? { signal: opts.signal } : {}),
@@ -1553,9 +1555,10 @@ export class ApiClient {
       serverId,
       serverHttpBaseUrl: resolveServerHttpBaseUrl(),
       capturedHomeIdentity: resolveServerProfileHomeIdentityId(serverId),
-      resolveServerFeaturesSnapshot: () => this.getCachedServerFeaturesSnapshot?.(),
+      // Ordinary runners own their connection snapshot; daemon clients may inject theirs.
+      resolveServerFeaturesSnapshot: () => client.getServerFeaturesSnapshot(),
     });
-    return new ApiSessionClient(this.credential.token, session, {
+    const client: ApiSessionClient = new ApiSessionClient(this.credential.token, session, {
       transport: createAccountSessionClientTransport(this.credential.token),
       metadataAuthority: sessionOptions.metadataAuthority
         ?? { kind: 'owner', credentials: this.credential, readCurrentCredentials: readStoredCredentials },
@@ -1586,6 +1589,7 @@ export class ApiClient {
       initialRegisteredSessionStateFieldMutations: sessionOptions.initialRegisteredSessionStateFieldMutations,
       durableMutationDeliveryInitiallyActive: sessionOptions.durableMutationDeliveryInitiallyActive,
     });
+    return client;
   }
 
   machineSyncClient(

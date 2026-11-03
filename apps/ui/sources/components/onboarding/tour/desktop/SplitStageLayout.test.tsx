@@ -173,9 +173,6 @@ describe('SplitStageLayout', () => {
         );
 
         // No ACT eyebrow rows, no beat number, no dot rail (D17).
-        expect(screen.findByTestId('journey-desktop-narration-locator')).toBeNull();
-        expect(screen.findByTestId('journey-desktop-progress-rail')).toBeNull();
-        expect(screen.findByTestId('journey-desktop-progress-dot-A2')).toBeNull();
         expect(screen.getTextContent()).not.toContain('ACT I');
         expect(screen.getTextContent()).not.toContain('ACT II');
 

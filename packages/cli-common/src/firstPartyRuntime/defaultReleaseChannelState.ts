@@ -5,9 +5,8 @@ import { dirname } from 'node:path';
 import { normalizePublicReleaseRingId, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
 import { joinPathForPathShape } from '../path/pathShape.js';
-import { resolveHappyHomeDirFromEnvironment } from '../agents/resolveHappyHomeDir.js';
 import type { FirstPartyComponentId } from './componentCatalog.js';
-import { resolveFirstPartyInstallLayout } from './installLayout.js';
+import { resolveFirstPartyInstallHomeDir, resolveFirstPartyInstallLayout } from './installLayout.js';
 import { readInstalledVersionMarkersSync } from './versionMarkers.js';
 
 const DEFAULT_MANAGED_RELEASE_CHANNEL: PublicReleaseRingId = 'stable';
@@ -18,9 +17,9 @@ export function shouldPersistDefaultManagedReleaseChannel(componentId: FirstPart
 }
 
 export function resolveDefaultManagedReleaseChannelStatePath(params: Readonly<{
-    processEnv?: NodeJS.ProcessEnv;
+    processEnv?: Readonly<Record<string, string | undefined>>;
 }> = {}): string {
-    const happyHomeDir = resolveHappyHomeDirFromEnvironment(params.processEnv ?? process.env);
+    const happyHomeDir = resolveFirstPartyInstallHomeDir(params.processEnv ?? process.env);
     return joinPathForPathShape(happyHomeDir, 'default-cli-release-channel.json');
 }
 
@@ -31,7 +30,7 @@ function normalizeDefaultManagedReleaseChannelPayload(raw: string): PublicReleas
 }
 
 export function readDefaultManagedReleaseChannelSync(params: Readonly<{
-    processEnv?: NodeJS.ProcessEnv;
+    processEnv?: Readonly<Record<string, string | undefined>>;
 }> = {}): PublicReleaseRingId {
     const statePath = resolveDefaultManagedReleaseChannelStatePath(params);
     try {
@@ -42,7 +41,7 @@ export function readDefaultManagedReleaseChannelSync(params: Readonly<{
 }
 
 export async function readDefaultManagedReleaseChannel(params: Readonly<{
-    processEnv?: NodeJS.ProcessEnv;
+    processEnv?: Readonly<Record<string, string | undefined>>;
 }> = {}): Promise<PublicReleaseRingId> {
     const statePath = resolveDefaultManagedReleaseChannelStatePath(params);
     try {
@@ -54,7 +53,7 @@ export async function readDefaultManagedReleaseChannel(params: Readonly<{
 
 export async function writeDefaultManagedReleaseChannel(params: Readonly<{
     releaseChannel: PublicReleaseRingId;
-    processEnv?: NodeJS.ProcessEnv;
+    processEnv?: Readonly<Record<string, string | undefined>>;
 }>): Promise<Readonly<{ releaseChannel: PublicReleaseRingId; statePath: string }>> {
     const releaseChannel = normalizePublicReleaseRingId(params.releaseChannel) || DEFAULT_MANAGED_RELEASE_CHANNEL;
     const statePath = resolveDefaultManagedReleaseChannelStatePath(params);
@@ -74,7 +73,7 @@ export async function resolveDefaultReleaseChannelAfterInstall(params: Readonly<
   componentId: FirstPartyComponentId;
   installedChannel: PublicReleaseRingId;
   selectAsDefault: boolean;
-  processEnv?: NodeJS.ProcessEnv;
+  processEnv?: Readonly<Record<string, string | undefined>>;
 }>): Promise<PublicReleaseRingId> {
   if (params.selectAsDefault || !shouldPersistDefaultManagedReleaseChannel(params.componentId)) {
     return params.installedChannel;

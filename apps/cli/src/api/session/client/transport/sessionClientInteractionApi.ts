@@ -124,7 +124,7 @@ function createMaterializedPendingQueueUpdate(params: {
         seq: 0,
         createdAt,
         body: {
-            t: 'new-message',
+            t: 'new-message', delivery: 'full' as const,
             sid: sessionId,
             message: {
                 id: syntheticMessageId,

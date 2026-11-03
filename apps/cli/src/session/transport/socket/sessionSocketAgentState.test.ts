@@ -204,7 +204,7 @@ describe('waitForIdleViaSocket', () => {
       seq: 1,
       createdAt: Date.now(),
       body: {
-        t: 'new-message',
+        t: 'new-message', delivery: 'full' as const,
         sid: 'sess-1',
         message: {
           id: 'msg-1',
@@ -295,7 +295,7 @@ describe('waitForIdleViaSocket', () => {
       seq: 3,
       createdAt: Date.now(),
       body: {
-        t: 'new-message',
+        t: 'new-message', delivery: 'full' as const,
         sid: 'sess-1',
         message: {
           id: 'msg-successor-task-started',
@@ -409,7 +409,7 @@ describe('waitForIdleViaSocket', () => {
       seq: 2,
       createdAt: Date.now(),
       body: {
-        t: 'new-message',
+        t: 'new-message', delivery: 'full' as const,
         sid: 'sess-1',
         message: {
           id: 'msg-successor-task-started-after-claim',
@@ -500,7 +500,7 @@ describe('waitForIdleViaSocket', () => {
       seq: 1,
       createdAt: Date.now(),
       body: {
-        t: 'new-message',
+        t: 'new-message', delivery: 'full' as const,
         sid: 'sess-1',
         message: {
           id: 'msg-stale-ready',
@@ -531,7 +531,7 @@ describe('waitForIdleViaSocket', () => {
       seq: 2,
       createdAt: Date.now(),
       body: {
-        t: 'new-message',
+        t: 'new-message', delivery: 'full' as const,
         sid: 'sess-1',
         message: {
           id: 'msg-task-started',
@@ -559,7 +559,7 @@ describe('waitForIdleViaSocket', () => {
       seq: 3,
       createdAt: Date.now(),
       body: {
-        t: 'new-message',
+        t: 'new-message', delivery: 'full' as const,
         sid: 'sess-1',
         message: {
           id: 'msg-task-complete',
@@ -617,7 +617,7 @@ describe('waitForIdleViaSocket', () => {
       seq: 1,
       createdAt: Date.now(),
       body: {
-        t: 'new-message',
+        t: 'new-message', delivery: 'full' as const,
         sid: 'sess-1',
         message: {
           id: 'msg-stale-ready',
@@ -644,7 +644,7 @@ describe('waitForIdleViaSocket', () => {
       seq: 2,
       createdAt: Date.now(),
       body: {
-        t: 'new-message',
+        t: 'new-message', delivery: 'full' as const,
         sid: 'sess-1',
         message: {
           id: 'msg-agent-message',
@@ -716,7 +716,7 @@ describe('waitForIdleViaSocket', () => {
       seq: 1,
       createdAt: Date.now(),
       body: {
-        t: 'new-message',
+        t: 'new-message', delivery: 'full' as const,
         sid: 'sess-1',
         message: {
           id: 'msg-agent-text',
@@ -740,7 +740,7 @@ describe('waitForIdleViaSocket', () => {
       seq: 2,
       createdAt: Date.now(),
       body: {
-        t: 'new-message',
+        t: 'new-message', delivery: 'full' as const,
         sid: 'sess-1',
         message: {
           id: 'msg-ready-after-agent-text',
@@ -861,7 +861,7 @@ describe('waitForIdleViaSocket', () => {
       seq: 1,
       createdAt: Date.now(),
       body: {
-        t: 'new-message',
+        t: 'new-message', delivery: 'full' as const,
         sid: 'sess-1',
         message: {
           id: 'msg-1',

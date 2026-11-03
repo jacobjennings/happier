@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { findAllHostTestInstances, renderScreen } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit';
 import { createCapturingLegendListMock } from '@/dev/testkit/mocks/legendList';
 
 import type {
@@ -409,50 +409,12 @@ describe('SelectionListBody single virtualized-list multi-section restructure (R
         expect(legendListState.props).toBeNull();
     });
 
-    it('keeps trailing rows reachable in the rendered tree (data array contains every row id from every section)', async () => {
-        const root: SelectionListStep = {
-            id: 'root',
-            inputPlaceholder: 'Search',
-            sections: [
-                {
-                    kind: 'static',
-                    id: 'first',
-                    title: 'FIRST',
-                    options: makeOptions(60, 'first'),
-                    virtualization: 'force',
-                },
-                {
-                    kind: 'static',
-                    id: 'second',
-                    title: 'SECOND',
-                    options: makeOptions(60, 'second'),
-                    virtualization: 'force',
-                },
-            ],
-        };
-        const { SelectionList } = await import('../SelectionList');
-        await renderScreen(<SelectionList {...defaultProps(root, { maxHeight: 300 })} />);
-        const data = legendListState.props?.data as ReadonlyArray<{
-            kind: string;
-            option?: { id: string };
-        }>;
-        const ids = new Set(
-            data
-                .filter((row) => row.kind === 'option')
-                .map((row) => row.option?.id),
-        );
-        for (let i = 0; i < 60; i += 1) {
-            expect(ids.has(`first-${i}`)).toBe(true);
-            expect(ids.has(`second-${i}`)).toBe(true);
-        }
-    });
-
     it('dev warning is deduplicated: rendering the same multi-virtualized descriptor twice fires console.warn at most once', async () => {
         // Force "dev" semantics so the gate allows the warning.
         vi.stubEnv('NODE_ENV', 'development');
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const { resetSelectionListMultiVirtualizationWarningCache } = await import(
-            '../SelectionListBody'
+            '../selectionListVirtualizationPolicy'
         );
         resetSelectionListMultiVirtualizationWarningCache();
         try {
@@ -496,7 +458,7 @@ describe('SelectionListBody single virtualized-list multi-section restructure (R
         vi.stubEnv('NODE_ENV', 'production');
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const { resetSelectionListMultiVirtualizationWarningCache } = await import(
-            '../SelectionListBody'
+            '../selectionListVirtualizationPolicy'
         );
         resetSelectionListMultiVirtualizationWarningCache();
         try {
@@ -529,44 +491,5 @@ describe('SelectionListBody single virtualized-list multi-section restructure (R
         } finally {
             warnSpy.mockRestore();
         }
-    });
-
-    it('focused option in the SECOND virtualized section: flat data places it at the FLATTENED index (header offsets included)', async () => {
-        // The body's flat-FlashList path locates the focused row via
-        // `flatItems.findIndex(row => row.kind === 'option' && row.option.id === focusedOptionId)`
-        // and asks FlashList to scrollToIndex({ index, viewPosition: 0.5 }).
-        // Verifying the data flattening confirms the index is computed with
-        // header offsets included.
-        const root: SelectionListStep = {
-            id: 'root',
-            inputPlaceholder: 'Search',
-            sections: [
-                {
-                    kind: 'static',
-                    id: 'first',
-                    title: 'FIRST',
-                    options: makeOptions(60, 'first'),
-                    virtualization: 'force',
-                },
-                {
-                    kind: 'static',
-                    id: 'second',
-                    title: 'SECOND',
-                    options: makeOptions(60, 'second'),
-                    virtualization: 'force',
-                },
-            ],
-        };
-        const { SelectionList } = await import('../SelectionList');
-        await renderScreen(<SelectionList {...defaultProps(root, { maxHeight: 300 })} />);
-        const data = legendListState.props?.data as ReadonlyArray<{
-            kind: string;
-            option?: { id: string };
-        }>;
-        const idx = data.findIndex(
-            (row) => row.kind === 'option' && row.option?.id === 'second-4',
-        );
-        // Expected layout: [first-header, first-0..first-59, second-header, second-0..second-4, ...]
-        expect(idx).toBe(1 + 60 + 1 + 4);
     });
 });

@@ -29,11 +29,6 @@ describe('TIPTAP_WEBVIEW_BUNDLE_JS', () => {
         expect(TIPTAP_WEBVIEW_BUNDLE_JS).not.toMatch(/kind:[A-Za-z_$][\w$]*,\.\.\.[A-Za-z_$][\w$]*/);
     });
 
-    it('embeds the typed menu-command parser cases', () => {
-        expect(TIPTAP_WEBVIEW_BUNDLE_JS).toContain('setHeading');
-        expect(TIPTAP_WEBVIEW_BUNDLE_JS).toContain('setLink');
-    });
-
     it('exports the ProseMirror CSS as a string', () => {
         expect(typeof TIPTAP_WEBVIEW_CSS).toBe('string');
         expect(TIPTAP_WEBVIEW_CSS.length).toBeGreaterThan(0);

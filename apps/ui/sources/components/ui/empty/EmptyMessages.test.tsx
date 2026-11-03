@@ -1,5 +1,3 @@
-import * as React from 'react';
-
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
@@ -63,7 +61,7 @@ describe('EmptyMessages', () => {
         expect(screen.findByTestId('session-empty-messages')).not.toBeNull();
     });
 
-    it('does not project empty metadata fields as raw text children of the native View', async () => {
+    it('leaves an empty metadata field out of the identity line instead of an empty segment', async () => {
         const { EmptyMessages } = await import('./EmptyMessages');
         const session = {
             ...buildSession(),
@@ -71,8 +69,8 @@ describe('EmptyMessages', () => {
         } satisfies Session;
 
         const screen = await renderScreen(<EmptyMessages session={session} />);
-        const children = screen.findByTestId('session-empty-messages')?.props.children;
+        const identity = screen.findHostByTestId('session-empty-messages.identity');
 
-        expect(React.Children.toArray(children)).not.toContain('');
+        expect(identity?.children.join('')).toBe('leeroy-mbp · components.emptyMessages.created');
     });
 });

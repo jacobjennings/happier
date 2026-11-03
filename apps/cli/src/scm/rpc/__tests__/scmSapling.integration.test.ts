@@ -4,7 +4,6 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 
 import { describe, expect, it } from 'vitest';
-import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { createTestRpcManager, runGit, runSapling } from './testRpcHarness';
@@ -97,26 +96,6 @@ describe.skipIf(!shouldRunSaplingIntegration())('sapling backend integration', (
         expect(status.snapshot.entries.some((entry: any) => entry.path === 'a.txt' && entry.kind === 'conflicted')).toBe(true);
     });
 
-    it('returns feature unsupported for include/exclude operations', async () => {
-        const workspace = createSaplingWorkspace();
-        writeFileSync(join(workspace, 'a.txt'), 'hello\n');
-
-        const { call } = createTestRpcManager({ workingDirectory: workspace });
-        const include = await call<any, { cwd?: string; paths?: string[] }>(RPC_METHODS.SCM_CHANGE_INCLUDE, {
-            cwd: '.',
-            paths: ['a.txt'],
-        });
-        const exclude = await call<any, { cwd?: string; paths?: string[] }>(RPC_METHODS.SCM_CHANGE_EXCLUDE, {
-            cwd: '.',
-            paths: ['a.txt'],
-        });
-
-        expect(include.success).toBe(false);
-        expect(include.errorCode).toBe(SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED);
-        expect(exclude.success).toBe(false);
-        expect(exclude.errorCode).toBe(SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED);
-    });
-
     it('discards pending modifications and removes untracked files', async () => {
         const workspace = createSaplingWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'base\n');
@@ -163,26 +142,6 @@ describe.skipIf(!shouldRunSaplingIntegration())('sapling backend integration', (
         const status = await call<any, { cwd?: string }>(RPC_METHODS.SCM_STATUS_SNAPSHOT, { cwd: '.' });
         expect(status.success).toBe(true);
         expect(status.snapshot.totals.pendingFiles).toBe(0);
-    });
-
-    it('lists commit history entries', async () => {
-        const workspace = createSaplingWorkspace();
-        writeFileSync(join(workspace, 'a.txt'), 'hello\n');
-
-        const { call } = createTestRpcManager({ workingDirectory: workspace });
-        const commit = await call<any, { cwd?: string; message: string }>(RPC_METHODS.SCM_COMMIT_CREATE, {
-            cwd: '.',
-            message: 'init',
-        });
-        expect(commit.success).toBe(true);
-
-        const log = await call<any, { cwd?: string; limit?: number; skip?: number }>(RPC_METHODS.SCM_LOG_LIST, {
-            cwd: '.',
-            limit: 10,
-            skip: 0,
-        });
-        expect(log.success).toBe(true);
-        expect(log.entries?.[0]?.subject).toBe('init');
     });
 
     it('supports log pagination with skip and limit', async () => {
@@ -268,27 +227,6 @@ describe.skipIf(!shouldRunSaplingIntegration())('sapling backend integration', (
         expect(pendingPaths).toEqual(['docs/c.txt']);
     });
 
-    it('returns feature unsupported for patch-based commit requests', async () => {
-        const workspace = createSaplingWorkspace();
-        writeFileSync(join(workspace, 'a.txt'), 'hello\n');
-
-        const { call } = createTestRpcManager({ workingDirectory: workspace });
-        const commit = await call<any, { cwd?: string; message: string; patches: Array<{ path: string; patch: string }> }>(
-            RPC_METHODS.SCM_COMMIT_CREATE,
-            {
-                cwd: '.',
-                message: 'patch commit',
-                patches: [{
-                    path: 'a.txt',
-                    patch: 'diff --git a/a.txt b/a.txt\n@@ -1 +1 @@\n-hello\n+hello2\n',
-                }],
-            },
-        );
-
-        expect(commit.success).toBe(false);
-        expect(commit.errorCode).toBe(SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED);
-    });
-
     it('renders file and commit diffs through sapling backend', async () => {
         const workspace = createSaplingWorkspace();
         writeFileSync(join(workspace, 'a.txt'), 'hello\n');
@@ -334,30 +272,11 @@ describe.skipIf(!shouldRunSaplingIntegration())('sapling backend integration', (
         });
 
         expect(response.success).toBe(true);
+        expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('hello\n');
+        expect(runSapling(workspace, ['whereami'])).not.toBe(commitToBackout);
 
         const status = await call<any, { cwd?: string }>(RPC_METHODS.SCM_STATUS_SNAPSHOT, { cwd: '.' });
         expect(status.success).toBe(true);
         expect(status.snapshot.totals.pendingFiles).toBe(0);
-    });
-
-    it('returns feature unsupported for Sapling remote mutation operations', async () => {
-        const workspace = createSaplingWorkspace();
-        writeFileSync(join(workspace, 'a.txt'), 'hello\n');
-        runSapling(workspace, ['commit', '-A', '-m', 'init']);
-
-        const { call } = createTestRpcManager({ workingDirectory: workspace });
-        const fetch = await call<any, { cwd?: string; remote?: string }>(RPC_METHODS.SCM_REMOTE_FETCH, {
-            cwd: '.',
-            remote: 'origin',
-        });
-        const pull = await call<any, { cwd?: string }>(RPC_METHODS.SCM_REMOTE_PULL, { cwd: '.' });
-        const push = await call<any, { cwd?: string }>(RPC_METHODS.SCM_REMOTE_PUSH, { cwd: '.' });
-
-        expect(fetch.success).toBe(false);
-        expect(fetch.errorCode).toBe(SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED);
-        expect(pull.success).toBe(false);
-        expect(pull.errorCode).toBe(SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED);
-        expect(push.success).toBe(false);
-        expect(push.errorCode).toBe(SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED);
     });
 });

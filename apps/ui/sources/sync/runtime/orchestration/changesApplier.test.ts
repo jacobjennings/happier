@@ -1,9 +1,11 @@
+import { InvalidateSync } from '@/utils/sessions/sync';
+import { createDeferred } from '@/dev/testkit';
 import { describe, expect, it, vi } from 'vitest';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { applyPlannedChangeActions } from './changesApplier';
 import { planSyncActionsFromChanges, type PlannedChangeActions } from './changesPlanner';
 import type { ApiChangeEntry } from '@/sync/api/types/apiTypes';
-import { TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol/changes';
+import { buildConnectedServicesAccountChangeV1, TEAMS_ACCOUNT_CHANGE_ENTITY_ID_V1 } from '@happier-dev/protocol/changes';
 
 const credentials: AuthCredentials = { token: 't', secret: 's' };
 
@@ -72,6 +74,70 @@ function buildChange(params: {
 }
 
 describe('changesApplier', () => {
+    it('drains a retired real queue wait without admitting queued actions or a safe checkpoint', async () => {
+        // The deferred reply is the HTTP boundary; the planner, queue and applier stay real.
+        const reply = createDeferred<void>();
+        const started = createDeferred<void>();
+        const queue = new InvalidateSync(async () => { started.resolve(); await reply.promise; });
+        const controller = new AbortController();
+        let current = true;
+        let profileReads = 0;
+        const changes = [buildChange({ cursor: 8, kind: 'account' })];
+        const apply = applyPlannedChangeActions({
+            planned: planSyncActionsFromChanges(changes), credentials,
+            shouldContinue: () => current, concurrencyLimit: 1,
+            isSessionMessagesLoaded: () => false,
+            invalidate: {
+                settings: () => queue.invalidateAndAwait({ signal: controller.signal }),
+                profile: async () => { profileReads++; },
+            },
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+        try {
+            await started.promise;
+            current = false;
+            controller.abort();
+            await expect(apply).resolves.toMatchObject({
+                status: 'partial', safeAdvanceCursor: null, processedChanges: 0, blockedCursor: '8',
+            });
+            expect(profileReads).toBe(0);
+        } finally {
+            reply.resolve();
+            await queue.awaitQueue();
+            await apply;
+        }
+    });
+
+    it('materializes a connected-service page once without Settings reads and preserves the next settings-only refresh', async () => {
+        const reads = { settings: 0, profile: 0, savedSecretResources: 0 };
+        const apply = (changes: ApiChangeEntry[]) => applyPlannedChangeActions({
+            planned: planSyncActionsFromChanges(changes),
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: {
+                settings: async () => { reads.settings++; },
+                profile: async () => { reads.profile++; },
+                savedSecretResources: async () => { reads.savedSecretResources++; },
+            },
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+        const changes = Array.from({ length: 27 }, (_, index) => buildChange({
+            cursor: index + 1,
+            ...buildConnectedServicesAccountChangeV1({ pluginId: 'acme.accounts', localId: `service-${index}` }),
+        }));
+        expect(await apply(changes)).toMatchObject({ status: 'complete', safeAdvanceCursor: '27' });
+        expect(reads).toEqual({ settings: 0, profile: 1, savedSecretResources: 1 });
+        expect(await apply([buildChange({ cursor: 28, kind: 'account', hint: { settingsVersion: 9 } })]))
+            .toMatchObject({ status: 'complete', safeAdvanceCursor: '28' });
+        expect(reads).toEqual({ settings: 1, profile: 2, savedSecretResources: 1 });
+    });
+
     it('checkpoints a hydrated session when its history reader deliberately defers newer content', async () => {
         let deferred = false;
         const result = await applyPlannedChangeActions({
@@ -941,6 +1007,30 @@ describe('changesApplier', () => {
         expect(invalidateMessagesForSession).toHaveBeenCalledWith('s2');
         expect(invalidateScmStatusForSession).toHaveBeenCalledTimes(1);
         expect(invalidateScmStatusForSession).toHaveBeenCalledWith('s2');
+    });
+
+    it('refreshes the exact changed Artifact ids once before checkpointing', async () => {
+        const refreshArtifacts = vi.fn(async (_artifactIds: readonly string[]) => {});
+        const changes = [
+            buildChange({ cursor: 1, kind: 'artifact', entityId: 'artifact-b' }),
+            buildChange({ cursor: 2, kind: 'artifact', entityId: 'artifact-a' }),
+            buildChange({ cursor: 3, kind: 'artifact', entityId: 'artifact-b' }),
+        ];
+
+        const result = await applyPlannedChangeActions({
+            planned: planSyncActionsFromChanges(changes),
+            credentials,
+            isSessionMessagesLoaded: () => false,
+            invalidate: { artifacts: refreshArtifacts },
+            invalidateMessagesForSession: async () => {},
+            invalidateScmStatusForSession: () => {},
+            applyTodoSocketUpdates: async () => {},
+            kvBulkGet: async () => ({ values: [] }),
+        });
+
+        expect(refreshArtifacts).toHaveBeenCalledOnce();
+        expect(refreshArtifacts).toHaveBeenCalledWith(['artifact-a', 'artifact-b']);
+        expect(result).toMatchObject({ status: 'complete', safeAdvanceCursor: '3' });
     });
 
     it('invalidates todos for refresh-feature KV plan', async () => {

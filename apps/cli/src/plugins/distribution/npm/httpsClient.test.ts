@@ -236,7 +236,7 @@ describe('createNpmRegistryHttpsClient', () => {
     const client = createNpmRegistryHttpsClient({
       registryOrigin: 'https://registry.example.test',
       authorizationHeader: 'Bearer boundary-secret',
-      lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+      lookup: async () => [{ address: '93.184.216.34', family: 4 }, { address: '93.184.216.35', family: 4 }],
       request: requestBoundary({ responses: [response('{"ok":true}')], seen }),
     });
 
@@ -245,8 +245,16 @@ describe('createNpmRegistryHttpsClient', () => {
     })).resolves.toEqual({ ok: true });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.headers).toMatchObject({ accept: 'application/json', authorization: 'Bearer boundary-secret' });
-    const pinnedLookup = seen[0]?.lookup;
-    expect(pinnedLookup).toBeTypeOf('function');
+    // The connection may only reach the answers that were assessed, whatever name the socket layer asks for.
+    const pinnedLookup = seen[0]!.lookup!;
+    const lookupAll = await new Promise<unknown>((resolve, reject) => {
+      pinnedLookup('rebound.example.test', { all: true }, (error, addresses) => error ? reject(error) : resolve(addresses));
+    });
+    expect(lookupAll).toEqual([{ address: '93.184.216.34', family: 4 }, { address: '93.184.216.35', family: 4 }]);
+    const lookupOne = await new Promise<unknown>((resolve, reject) => {
+      pinnedLookup('rebound.example.test', {}, (error, address, family) => error ? reject(error) : resolve({ address, family }));
+    });
+    expect(lookupOne).toEqual({ address: '93.184.216.34', family: 4 });
   });
 
   it('omits TLS SNI for IPv4 and bracketed IPv6 registry literals while retaining DNS hostnames', async () => {

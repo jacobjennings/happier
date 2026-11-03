@@ -5,13 +5,13 @@ import { buildBackendTargetKeyV2, convertBackendTargetRefV2ToV1, parseBackendTar
 import { isLegacyConfiguredAcpFlavorCarrier } from '@happier-dev/protocol/backends/targets/compat/customAcp';
 import type { AccountProfile, ActionExecutorContext, ActionExecutorDeps, BackendTargetRefV2 } from '@happier-dev/protocol';
 import axios from 'axios';
-import type { z } from 'zod/mini';
 import type { configuration } from '@/configuration';
 import { DaemonProviderModelProjectionResponseV1Schema } from '@happier-dev/protocol/rpc/providers';
 import { AgentModelsProbeObservationSchema, AgentSessionModesProbeObservationSchema,
   AgentConfigOptionsProbeObservationSchema, projectProbedConfigOptionDefinitions } from '@happier-dev/protocol/capabilities';
 import type { ActionExecuteFailure } from '@happier-dev/protocol/actions/actionExecutionResult';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc/methods';
+import { DaemonContributionRegistryProjectionDescribeResponseSchema } from '@happier-dev/protocol/daemon/contributionRegistryProjection';
 import type { DaemonProviderModelProjectionResponseV1 } from '@happier-dev/protocol/rpc/providers';
 import type { connectedServiceProfileKey, legacyCustomAcpCompat } from '@happier-dev/agents';
 
@@ -49,11 +49,8 @@ import {
   type SessionStoredContentCryptoContext,
 } from '@/session/transport/encryption/sessionEncryptionContext';
 
-import {
-  normalizeLimit,
-  readSessionModelsState,
-  readSessionModesState,
-} from './sessionStateReaders';
+import { normalizeLimit } from './sessionStateReaders';
+import { createMachineInventoryProbe } from './probeMachineInventory';
 
 type ModelInventoryItem = Readonly<{
   id: string;
@@ -344,6 +341,7 @@ async function probeActionConfigOptionsBestEffort(params: Readonly<{
 }
 
 export function createCliActionInventoryDeps(params: Readonly<{
+  machineRecipesRead?: ActionExecutorDeps['machineRecipesRead'];
   localMachineId?: string;
   token: string;
   serverId?: string;
@@ -379,6 +377,7 @@ export function createCliActionInventoryDeps(params: Readonly<{
   ActionExecutorDeps,
   | 'pathsListRecent'
   | 'machinesList'
+  | 'machineRecipesRead'
   | 'serversList'
   | 'reviewEnginesList'
   | 'agentsBackendsList'
@@ -410,7 +409,7 @@ export function createCliActionInventoryDeps(params: Readonly<{
         resolveTransportForSession: params.resolveTransportForSession ?? (async (id) => {
           const { resolveSessionTransportContext } = await import("@/session/services/resolveSessionTransportContext");
           return params.credentials
-          ? resolveSessionTransportContext({ credentials: params.credentials, idOrPrefix: id }) : { ok: false };
+          ? resolveSessionTransportContext({ reason: 'session-action', credentials: params.credentials, idOrPrefix: id }) : { ok: false };
         }),
       });
       metadataReaders.set(normalizedSessionId, read);
@@ -433,48 +432,7 @@ export function createCliActionInventoryDeps(params: Readonly<{
     });
   };
 
-  // Machine-scoped discovery uses the same native producer for direct lists
-  // and dependent options. The MCP process is not the selected Machine's
-  // credential/runtime environment, even when both processes share a host.
-  const probeMachineInventory = async <T extends { agentId?: string; source?: 'static' | 'dynamic' | 'unavailable'; runtimeDescriptorV1Accepted?: boolean }>(input: Readonly<{
-    args: Parameters<ActionExecutorDeps['agentsModelsList']>[0];
-    context?: ActionExecutorContext;
-    agentId: string;
-    backendTarget: BackendTargetRefV2 | null;
-    method: 'probeModels' | 'probeConfigOptions';
-    schema: z.ZodMiniType<T>;
-  }>): Promise<T | ActionExecuteFailure | null> => {
-    if (!params.callMachineAction || !input.args.machineId) return null;
-    const { transportTimeoutMs, ...probe } = input.args.probe ?? {};
-    const signal = input.args.signal ?? input.context?.signal;
-    try {
-      const response = await params.callMachineAction({ machineId: input.args.machineId,
-        serverId: input.args.serverId ?? input.context?.serverId ?? params.serverId, method: RPC_METHODS.CAPABILITIES_INVOKE,
-        request: { id: `cli.${input.agentId}`, method: input.method, params: {
-          ...probe,
-          ...(input.backendTarget ? { backendTarget: convertBackendTargetRefV2ToV1(input.backendTarget) } : {}),
-        } }, context: input.context,
-        effectActionId: input.method === 'probeModels' ? 'agents.models.list' : 'agents.config_options.list',
-        ...(signal ? { signal } : {}),
-        ...(transportTimeoutMs === undefined ? {} : { timeoutMs: transportTimeoutMs }),
-      });
-      if (!response || typeof response !== 'object' || !('ok' in response)) return null;
-      if (response.ok === false) {
-        const error = 'error' in response ? response.error : null;
-        const errorCode = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
-          ? error.code.trim() || 'agent_inventory_probe_failed' : 'agent_inventory_probe_failed';
-        return { ok: false, errorCode, error: errorCode };
-      }
-      if (response.ok !== true || !('result' in response)) return null;
-      const observation = input.schema.safeParse(response.result);
-      if (!observation.success || observation.data.agentId && observation.data.agentId !== input.agentId
-        || input.method === 'probeModels' && input.args.probe?.runtimeDescriptorV1 && observation.data.runtimeDescriptorV1Accepted !== true) return null;
-      return { ...observation.data, source: observation.data.source ?? 'dynamic' };
-    } catch {
-      signal?.throwIfAborted();
-      return null;
-    }
-  };
+  const probeMachineInventory = createMachineInventoryProbe(params);
 
   const acpServerHttpBaseUrl = params.savedSecretOperationContext?.serverHttpBaseUrl
     ?? params.serverHttpBaseUrl ?? resolveServerHttpBaseUrl();
@@ -570,6 +528,28 @@ export function createCliActionInventoryDeps(params: Readonly<{
   });
 
   return {
+    machineRecipesRead: params.machineRecipesRead ?? (async (args, context) => {
+      const unavailable = { ok: false as const, errorCode: 'unavailable', error: 'unavailable' };
+      if (!params.callMachineAction) return unavailable;
+      try {
+        const raw = await params.callMachineAction({ machineId: args.machineId, serverId: args.homeId,
+          method: RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE,
+          request: { machineId: args.machineId, selection: 'machineRecipes',
+            ...(args.recipeRefs === undefined ? {} : { recipeRefs: args.recipeRefs }) }, context,
+          ...(context.signal ? { signal: context.signal } : {}),
+        });
+        context.signal?.throwIfAborted();
+        const response = DaemonContributionRegistryProjectionDescribeResponseSchema.safeParse(raw);
+        const family = response.success ? response.data.projection.familiesById.machineRecipes : undefined;
+        return family?.family === 'machineRecipes' && response.success
+          ? { entries: Object.values(family.entriesById),
+            ...(response.data.machineRecipeTarget === undefined ? {} : { target: response.data.machineRecipeTarget }) }
+          : unavailable;
+      } catch {
+        context.signal?.throwIfAborted();
+        return unavailable;
+      }
+    }),
     pathsListRecent: async (args) => {
       const currentPath = await readCurrentSessionValue('path');
       const currentMachineId = await readCurrentSessionValue('machineId');
@@ -700,7 +680,8 @@ export function createCliActionInventoryDeps(params: Readonly<{
       const usesConfiguredCompatBackend = backendTarget?.sourceKind === 'configured' || Boolean(backendTarget?.configuredBackendId);
       const usesMachineProbe = Boolean(args.machineId);
       const captured = usesConfiguredCompatBackend && !usesMachineProbe ? await readAcpInventorySnapshot(args.signal) : null;
-      const modelState = usesMachineProbe ? null : readSessionModelsState(await readSessionMetadataForId(params.sessionId));
+      const modelState = usesMachineProbe ? null : (await import('./sessionControlStateReaders'))
+        .readSessionModelsState(await readSessionMetadataForId(params.sessionId));
       const provider = typeof modelState?.provider === 'string' ? modelState.provider.trim() : '';
       const availableModels = Array.isArray(modelState?.availableModels) ? modelState.availableModels : [];
       const shouldUseSessionMetadataModels = Boolean(
@@ -1020,6 +1001,7 @@ export function createCliActionInventoryDeps(params: Readonly<{
         context, effectActionId: 'sessions.spawn.mcp_servers.preview', timeoutMs: null, signal: context?.signal }), args.limit);
     },
     sessionModesList: async ({ sessionId }) => {
+      const { readSessionModesState } = await import('./sessionControlStateReaders');
       const sessionModes = readSessionModesState(await readSessionMetadataForId(sessionId));
       const items = Array.isArray(sessionModes?.availableModes)
         ? sessionModes.availableModes

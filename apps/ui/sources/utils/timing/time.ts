@@ -1,4 +1,4 @@
-import { shouldRetryError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
+import { isServerFetchReadSupersededError, shouldRetryError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
 
 export async function delay(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -84,6 +84,7 @@ export function createBackoff(
             try {
                 return await callback();
             } catch (e) {
+                if (isServerFetchReadSupersededError(e)) continue;
                 currentFailureCount++;
                 if (!shouldRetry(e, currentFailureCount)) {
                     throw e;

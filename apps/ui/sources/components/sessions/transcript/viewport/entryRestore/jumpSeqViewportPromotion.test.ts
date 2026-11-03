@@ -54,28 +54,20 @@ describe('resolveJumpSeqViewportPromotion anchor validity', () => {
         expect(result.status === 'promote' && (result.state.anchor as { seq?: number } | null)?.seq).toBe(329);
     });
 
-    it('drops a far-from-target anchor (wrong-space capture) but keeps the released classification', () => {
+    it.each([
+        { requireRestorableAnchor: true },
+        { requireRestorableAnchor: undefined },
+    ])('drops a far-from-target anchor as a wrong-space capture (requireRestorableAnchor: $requireRestorableAnchor)', ({ requireRestorableAnchor }) => {
         const result = resolveJumpSeqViewportPromotion({
             ...baseParams,
             metrics: createMetrics(),
-            requireRestorableAnchor: true,
+            requireRestorableAnchor,
             resolveAnchorSeq: (anchor) => (anchor as { seq?: number } | null)?.seq ?? null,
             stampAnchor: () => anchorWithSeq(410),
         });
 
         // A wrong-space capture must not promote at all (neither anchor nor viewport
         // classification) and must keep the pending promotion armed for a later capture.
-        expect(result.status).toBe('wrong-space-anchor');
-    });
-
-    it('classifies a far anchor as wrong-space even when a restorable anchor is not required', () => {
-        const result = resolveJumpSeqViewportPromotion({
-            ...baseParams,
-            metrics: createMetrics(),
-            resolveAnchorSeq: (anchor) => (anchor as { seq?: number } | null)?.seq ?? null,
-            stampAnchor: () => anchorWithSeq(410),
-        });
-
         expect(result.status).toBe('wrong-space-anchor');
     });
 });

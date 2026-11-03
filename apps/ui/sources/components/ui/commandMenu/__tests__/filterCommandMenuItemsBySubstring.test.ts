@@ -44,11 +44,6 @@ describe('filterCommandMenuItemsBySubstring', () => {
         expect(result.map((r) => r.id)).toEqual(['hr']);
     });
 
-    it('preserves input order', () => {
-        const result = filterCommandMenuItemsBySubstring(ITEMS, 'heading');
-        expect(result).toEqual([ITEMS[0], ITEMS[1]]);
-    });
-
     it('returns empty array when nothing matches', () => {
         const result = filterCommandMenuItemsBySubstring(ITEMS, 'nonexistent');
         expect(result).toEqual([]);

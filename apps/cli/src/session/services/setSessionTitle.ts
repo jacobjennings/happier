@@ -36,10 +36,7 @@ export async function setSessionTitle(params: Readonly<{
       : {}),
     idOrPrefix: params.idOrPrefix,
     fieldId: 'display.title',
-    value: {
-      title: params.title,
-      staleBehavior: 'bump-if-value-changed',
-    },
+    value: params.title,
     metadataReason: 'cli-session-title-set',
     currentness: params.currentness,
   });

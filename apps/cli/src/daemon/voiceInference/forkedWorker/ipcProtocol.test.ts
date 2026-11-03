@@ -49,6 +49,33 @@ describe('voice inference worker ipc protocol', () => {
     expect(decoded).toEqual([frame]);
   });
 
+  it('carries append PCM as raw bytes after the header, not base64 in JSON', () => {
+    const pcm16Bytes = Buffer.from(Array.from({ length: 640 }, (_, index) => index % 256));
+    const frame: VoiceInferenceWorkerFrame = {
+      kind: 'stt_stream_append', id: 'append-1', sessionId: 'worker-stream-1', seq: 7, pcm16Bytes,
+    };
+
+    const encoded = encodeVoiceInferenceWorkerFrame(frame);
+    expect(encoded.byteLength).toBeLessThan(640 + 4 + 120);
+    expect(encoded.includes(Buffer.from(pcm16Bytes))).toBe(true);
+
+    // Reassembly across arbitrary chunk boundaries preserves the raw bytes.
+    const decoder = createVoiceInferenceWorkerFrameDecoder();
+    expect(decoder.push(encoded.subarray(0, 9))).toEqual([]);
+    const [decoded] = decoder.push(encoded.subarray(9));
+    expect(decoded).toMatchObject({ kind: 'stt_stream_append', id: 'append-1', seq: 7 });
+    expect(Buffer.from((decoded as { pcm16Bytes: Uint8Array }).pcm16Bytes).equals(pcm16Bytes)).toBe(true);
+    expect(parseVoiceInferenceWorkerRequestFrame(decoded)).toMatchObject({ kind: 'stt_stream_append' });
+  });
+
+  it('applies the frame ceiling to an append frame including its raw PCM', () => {
+    const frame: VoiceInferenceWorkerFrame = {
+      kind: 'stt_stream_append', id: 'a', sessionId: 's', seq: 0, pcm16Bytes: Buffer.alloc(512),
+    };
+    expect(() => encodeVoiceInferenceWorkerFrame(frame, 256)).toThrow(/too_large/);
+    expect(createVoiceInferenceWorkerFrameDecoder(1_024).push(encodeVoiceInferenceWorkerFrame(frame, 1_024))).toHaveLength(1);
+  });
+
   it('reassembles a frame split across multiple byte chunks', () => {
     const frame: VoiceInferenceWorkerFrame = { kind: 'abort', id: 'abort-1', targetId: 'request-1' };
     const encoded = encodeVoiceInferenceWorkerFrame(frame);
@@ -110,21 +137,12 @@ describe('voice inference worker ipc protocol', () => {
   });
 
   it('accepts a frame exactly at the custom ceiling but rejects one byte over on encode (M2)', () => {
-    const small: VoiceInferenceWorkerFrame = { kind: 'abort', id: 'abort-1', targetId: 'request-1' };
-    const encoded = encodeVoiceInferenceWorkerFrame(small, 64);
-    expect(createVoiceInferenceWorkerFrameDecoder(64).push(encoded)).toEqual([small]);
-
-    const big: VoiceInferenceWorkerFrame = {
-      kind: 'result',
-      id: 'tts',
-      result: {
-        kind: 'synthesize',
-        output: { codec: 'wav', mimeType: 'audio/wav' },
-        bytesBase64: 'a'.repeat(64),
-        name: null,
-      },
-    };
-    expect(() => encodeVoiceInferenceWorkerFrame(big, 32)).toThrow(/too_large/);
+    const frame: VoiceInferenceWorkerFrame = { kind: 'abort', id: 'abort-é', targetId: 'request-1' };
+    const payloadBytes = Buffer.byteLength(JSON.stringify(frame), 'utf8');
+    const encoded = encodeVoiceInferenceWorkerFrame(frame, payloadBytes);
+    expect(createVoiceInferenceWorkerFrameDecoder(payloadBytes).push(encoded)).toEqual([frame]);
+    expect(() => encodeVoiceInferenceWorkerFrame(frame, payloadBytes - 1)).toThrow(/too_large/);
+    expect(() => createVoiceInferenceWorkerFrameDecoder(payloadBytes - 1).push(encoded)).toThrow(/too_large/);
   });
 
   describe('response frame schema validation (L4)', () => {
@@ -252,7 +270,7 @@ describe('voice inference worker ipc protocol', () => {
           id: 'p',
           sessionId: 'worker-stream-1',
           seq: 0,
-          pcm16Base64: 'AAA=',
+          pcm16Bytes: Buffer.from([0, 0]),
         }),
       ).toMatchObject({ kind: 'stt_stream_append' });
       expect(

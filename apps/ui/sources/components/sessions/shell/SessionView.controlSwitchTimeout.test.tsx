@@ -188,7 +188,8 @@ vi.mock('@/components/sessions/attachments/AttachmentFilePicker', () => ({
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
   useFeatureEnabled: useFeatureEnabledSpy,
 }));
-vi.mock('@/utils/platform/responsive', () => ({
+vi.mock('@/utils/platform/responsive', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/utils/platform/responsive')>(),
   getDeviceType: () => 'tablet',
   useDeviceType: () => 'tablet',
   useHeaderHeight: () => 0,
@@ -855,7 +856,8 @@ describe('SessionView (control switch timeout)', () => {
 
     if (disabled) expect(sessionUsageLimitWaitResumeEnableSpy).not.toHaveBeenCalled();
     else expect(sessionUsageLimitWaitResumeEnableSpy).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: 's1', issueFingerprint: 'usage-limit:agent:1700000000000',
+      // The recovery is armed for this exact failure (agent, turn, occurrence and reset).
+      sessionId: 's1', issueFingerprint: `usage-limit:unknown-agent:unknown-turn:1700000000000:${futureResetAtMs}`,
     }));
     expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'errors.operationFailed', undefined);
     expect(getWarningActionBannerProps().actionTestID).toBe('session-usageLimit-recovery-enable');

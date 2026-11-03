@@ -15,15 +15,3 @@ export function createScmWorkspaceIntegrationCheckoutMaterializationRequest(inpu
         workspaceIntegrationMetadata: input.workspaceIntegrationMetadata,
     };
 }
-
-export function resolveScmWorkspaceIntegrationCheckoutMaterializationSourcePath(
-    input: ScmWorkspaceIntegrationCheckoutMaterializationRequest,
-): string | undefined {
-    return input.sourcePath;
-}
-
-export function resolveScmWorkspaceIntegrationCheckoutMaterializationPreviousTargetPath(
-    input: ScmWorkspaceIntegrationCheckoutMaterializationRequest,
-): string | undefined {
-    return input.previousTargetPath;
-}

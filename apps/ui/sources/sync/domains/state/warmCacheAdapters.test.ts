@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { SESSION_LIST_DOCUMENT_ADMISSION, admitOpenedSessionListDisplayMetadata,
+    hasCurrentSessionListDisplayMetadata } from '@/sync/domains/session/sessionDocumentAdmission';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import {
     buildMachineDisplayCacheEntryFromRenderable,
     buildMachineDisplayCacheEntriesFromRenderables,
@@ -8,11 +11,12 @@ import {
     buildSessionListRenderableFromCacheEntry,
     buildSessionListCacheEntryFromRenderable,
     buildSessionListCacheEntriesFromRenderables,
+    readSessionListWarmCacheDisplay,
     SESSION_LIST_WARM_CACHE_MAX_ENTRIES,
 } from './warmCacheAdapters';
 import { SessionListCacheEntryV1Schema, type SessionListCacheEntryV1 } from './warmCachePersistence';
 import { readSessionDirectoryKind } from '@happier-dev/protocol/sessions/metadata/directory';
-import { createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createSessionFixture, createSessionListRenderableSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 function makeWindowRenderable(id: string, meaningfulActivityAt: number): SessionListRenderableSession {
     return {
@@ -47,8 +51,129 @@ describe('warmCacheAdapters', () => {
         expect(buildSessionListCacheEntryFromRenderable(changed, entry)).not.toBe(entry);
     });
 
+    it('persists a distinct compact-display proof only for an opened readable projection', () => {
+        const row = createSessionListRenderableSessionFixture({ metadata: { path: '/private', name: 'Opened display' },
+            metadataVersion: 3, agentStateVersion: 2, encryptionMode: 'plain', encryptedContentAvailability: 'ready',
+            [SESSION_LIST_DOCUMENT_ADMISSION]: { scope: 'private-credential-material-must-not-be-serialized', encryptionMode: 'plain',
+                metadataLayoutVersion: 0, dataEncryptionKey: null, metadataAudience: 'owner' } });
+        row[SESSION_LIST_DOCUMENT_ADMISSION] = admitOpenedSessionListDisplayMetadata(row[SESSION_LIST_DOCUMENT_ADMISSION]!, row);
+        const entry = buildSessionListCacheEntryFromRenderable(row);
+        const persisted = SessionListCacheEntryV1Schema.parse(JSON.parse(JSON.stringify(entry)));
+        expect(persisted).toHaveProperty('displayProof', expect.objectContaining({ metadataVersion: 3 }));
+        expect(persisted.displayProof).not.toHaveProperty('agentStateVersion');
+        expect(buildSessionListCacheEntryFromRenderable({ ...row, metadata: null,
+            encryptedContentAvailability: 'encrypted_content_unavailable' })).not.toHaveProperty('displayProof');
+        expect(buildSessionListCacheEntryFromRenderable({ ...row, encryptionMode: 'e2ee',
+            encryptedContentAvailability: undefined })).not.toHaveProperty('displayProof');
+        expect(JSON.stringify(persisted)).not.toContain('sessionListDocumentAdmission');
+        expect(JSON.stringify(persisted)).not.toContain('private-credential-material');
+        const admission = row[SESSION_LIST_DOCUMENT_ADMISSION]!;
+        const versions = { id: row.id, metadataVersion: row.metadataVersion, agentStateVersion: row.agentStateVersion };
+        expect(readSessionListWarmCacheDisplay(persisted, admission, versions)?.metadata?.name).toBe('Opened display');
+        for (const foreign of [
+            { ...admission, scope: 'other-account-currentness' },
+            { ...admission, metadataAudience: 'shared' as const },
+            { ...admission, dataEncryptionKey: 'replacement-envelope' },
+            { ...admission, metadataLayoutVersion: 1 },
+            { ...admission, encryptionMode: 'e2ee' as const },
+        ]) expect(readSessionListWarmCacheDisplay(persisted, foreign, versions)).toBeUndefined();
+        expect(readSessionListWarmCacheDisplay(persisted, admission, { ...versions, id: 'another-session' })).toBeUndefined();
+        expect(readSessionListWarmCacheDisplay({ ...persisted, metadataVersion: 4 }, admission, versions)).toBeUndefined();
+        expect(readSessionListWarmCacheDisplay({ ...persisted, displayProof: undefined }, admission, versions)).toBeUndefined();
+        const untitled = SessionListCacheEntryV1Schema.parse(JSON.parse(JSON.stringify(
+            buildSessionListCacheEntryFromRenderable({ ...row, metadata: { path: '' } }))));
+        expect(readSessionListWarmCacheDisplay(untitled, admission, versions)?.metadata).not.toBeNull();
+        expect(readSessionListWarmCacheDisplay(untitled, admission, versions)).toBeDefined();
+    });
+
+    it('keeps proved last-known display at its actual revision while a different remote revision hydrates', () => {
+        const row = createSessionListRenderableSessionFixture({ metadata: { path: '/private', name: 'Last-known title' },
+            metadataVersion: 3, encryptionMode: 'plain', encryptedContentAvailability: 'ready' });
+        row[SESSION_LIST_DOCUMENT_ADMISSION] = admitOpenedSessionListDisplayMetadata({ scope: 'same-authorized-home',
+            encryptionMode: 'plain', metadataLayoutVersion: 0, dataEncryptionKey: null, metadataAudience: 'owner' }, row);
+        const persisted = SessionListCacheEntryV1Schema.parse(JSON.parse(JSON.stringify(buildSessionListCacheEntryFromRenderable(row))));
+        for (const observedMetadataVersion of [2, 4]) {
+            const restored = readSessionListWarmCacheDisplay(persisted, row[SESSION_LIST_DOCUMENT_ADMISSION]!,
+                { id: row.id, metadataVersion: observedMetadataVersion });
+            expect(restored?.metadata?.name).toBe('Last-known title');
+            expect(restored?.metadataVersion).toBe(3);
+            expect(restored?.[SESSION_LIST_DOCUMENT_ADMISSION]?.openedMetadataVersion).toBe(3);
+            expect(restored && hasCurrentSessionListDisplayMetadata({ ...restored, metadataVersion: observedMetadataVersion })).toBe(false);
+            expect(restored).not.toHaveProperty('agentState');
+        }
+    });
+
+    it('restores admitted shared display with only a readable summary', () => {
+        const row = createSessionListRenderableSessionFixture({ metadata: { path: '', summaryText: 'Shared summary' } });
+        const restored = buildSessionListRenderableFromCacheEntry(SessionListCacheEntryV1Schema.parse(
+            JSON.parse(JSON.stringify(buildSessionListCacheEntryFromRenderable(row)))));
+        expect(restored.metadata?.summaryText).toBe('Shared summary');
+    });
+
+    it('preserves a cleared usage-limit recovery display across cache serialization', () => {
+        const row = createSessionListRenderableSessionFixture({ metadata: { path: '/repo', sessionUsageLimitRecoveryV1: null } });
+        const persisted = SessionListCacheEntryV1Schema.parse(JSON.parse(JSON.stringify(buildSessionListCacheEntryFromRenderable(row))));
+        expect(persisted).toHaveProperty('sessionUsageLimitRecoveryV1', null);
+        expect(buildSessionListRenderableFromCacheEntry(persisted).metadata).toHaveProperty('sessionUsageLimitRecoveryV1', null);
+    });
+
+    it('roundtrips canonical activity and lifecycle display facts without memory-only authority', () => {
+        const source = createSessionFixture({ metadata: { path: '/repo', host: 'home', lifecycleState: 'running',
+            sessionAgentActivityHeadlineV1: { v: 1, backendId: 'codex', updatedAt: 1, activeEntries: [] },
+            sessionWorkflowActivityHeadlineV1: { v: 1, backendId: 'codex', updatedAt: 1, activeRuns: [] },
+            sessionGuardStateV1: { v: 1, kind: 'stopping', stopAt: 5, rule: 'idle_sessions' },
+            sessionWorkStateV1: { v: 1, backendId: 'codex', updatedAt: 1, primaryItemId: 'task', items: [
+                { id: 'task', kind: 'task', origin: 'vendor', status: 'blocked', title: 'Current task', updatedAt: 1, statusReason: 'blocked' },
+                { id: 'goal', kind: 'goal', origin: 'vendor', status: 'active', title: 'Active goal', updatedAt: 1 },
+                { id: 'history', kind: 'task', origin: 'vendor', status: 'complete', title: 'Private completed history', updatedAt: 1 },
+            ] },
+            forkV1: { v: 1, parentSessionId: 'parent', parentCutoffSeqInclusive: 1, createdAtMs: 1, strategy: 'replay',
+                requestId: 'private-fork-request', agentHint: { agentSessionId: 'private-native-session' } },
+            readStateV1: { v: 1, sessionSeq: 1, pendingActivityAt: 2, updatedAt: 3 },
+            terminal: { controlServiceabilityV1: { v: 1, state: 'recoverable_unservable', observedAt: 1 } },
+        } });
+        const row = buildSessionListRenderableFromSession(source);
+        const entry = SessionListCacheEntryV1Schema.parse(JSON.parse(JSON.stringify(buildSessionListCacheEntryFromRenderable(row))));
+        const restored = buildSessionListRenderableFromCacheEntry(entry);
+        expect(restored.agentActivityHeadline).toEqual(row.agentActivityHeadline);
+        expect(restored.workflowHeadline).toEqual(row.workflowHeadline);
+        expect(restored.guardState).toEqual(row.guardState);
+        expect(restored.forkV1).toEqual({ v: 1, parentSessionId: 'parent', parentCutoffSeqInclusive: 1,
+            createdAtMs: 1, strategy: 'replay' });
+        expect(JSON.stringify(entry)).not.toContain('private-fork-request');
+        expect(JSON.stringify(entry)).not.toContain('private-native-session');
+        expect(restored.workDisplay).toEqual({ v: 1,
+            primaryItem: { id: 'task', kind: 'task', status: 'blocked', title: 'Current task', statusReason: 'blocked' },
+            hasActiveGoal: true });
+        expect(JSON.stringify(entry)).not.toContain('Private completed history');
+        expect(entry).not.toHaveProperty('workState');
+        expect(restored.metadata?.lifecycleState).toBe(row.metadata?.lifecycleState);
+        expect(restored.metadata?.readStateV1).toEqual(row.metadata?.readStateV1);
+        expect(restored.metadata?.terminalControlServiceabilityV1).toEqual(row.metadata?.terminalControlServiceabilityV1);
+        expect(entry).not.toHaveProperty('agentTargetKey');
+        expect(entry).not.toHaveProperty('workerQuestionHandling');
+        expect(entry).not.toHaveProperty('currentRequestRef');
+        expect(entry).not.toHaveProperty('lockedDisplayTitle');
+    });
+    it('retains last observed branch across a cold restore and clears it with unavailable private metadata', () => {
+        for (const branch of ['feature/actual', null]) {
+            const row = createSessionListRenderableSessionFixture({ metadata: { path: '/repo', branch }, metadataVersion: 2 });
+            const entry = buildSessionListCacheEntryFromRenderable(row);
+            const persisted = SessionListCacheEntryV1Schema.parse(JSON.parse(JSON.stringify(entry)));
+            expect(buildSessionListRenderableFromCacheEntry(persisted).metadata).toHaveProperty('branch', branch);
+            expect(buildSessionListCacheEntryFromRenderable({ ...row }, entry)).toBe(entry);
+            const contracted = buildSessionListCacheEntryFromRenderable({ ...row, metadata: null, metadataVersion: 3,
+                encryptedContentAvailability: 'encrypted_content_unavailable' }, entry);
+            expect(contracted).not.toHaveProperty('branch');
+            expect(buildSessionListRenderableFromCacheEntry(contracted).metadata).toBeNull();
+        }
+    });
     it('compares admitted nested hydration fields without serializing unchanged rows', () => {
-        const row = createSessionListRenderableSessionFixture({ rollbackEligibleTurnStarts: [1, 2] });
+        const row = createSessionListRenderableSessionFixture({ rollbackEligibleTurnStarts: [1, 2],
+            metadata: { path: '/admitted' }, encryptionMode: 'plain', encryptedContentAvailability: 'ready',
+            [SESSION_LIST_DOCUMENT_ADMISSION]: { scope: 'fingerprinted-scope', encryptionMode: 'plain',
+                metadataLayoutVersion: 0, dataEncryptionKey: null, metadataAudience: 'owner' } });
+        row[SESSION_LIST_DOCUMENT_ADMISSION] = admitOpenedSessionListDisplayMetadata(row[SESSION_LIST_DOCUMENT_ADMISSION]!, row);
         const previous = buildSessionListCacheEntryFromRenderable(row);
         const machine = { id: 'build', updatedAt: 20, active: false, activeAt: 10,
             metadataVersion: 3, metadata: { agentInventory: { checkedAt: 12, installedAgentIds: ['codex'] } } };

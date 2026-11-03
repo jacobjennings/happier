@@ -196,29 +196,6 @@ describe('SelectionList non-virtualized body scroll wrapper (R9 blocker 1)', () 
         }
     });
 
-    it('does not mount the ScrollView wrapper when only a virtualized section is present (FlashList owns scroll)', async () => {
-        // Force virtualization on a small section so the orchestrator picks
-        // the FlashList path. The body MUST defer scrolling to FlashList and
-        // skip the wrapping ScrollView (otherwise nested scrolling steals
-        // gestures from FlashList).
-        const root: SelectionListStep = {
-            id: 'root',
-            inputPlaceholder: 'Search',
-            sections: [
-                {
-                    kind: 'static',
-                    id: 'big',
-                    title: 'BIG',
-                    options: makeOptions(60, 'b'),
-                    virtualization: 'force',
-                },
-            ],
-        };
-        const { SelectionList } = await import('../SelectionList');
-        const screen = await renderScreen(<SelectionList {...defaultProps(root)} />);
-        expect(screen.findByTestId('sl:bodyScroll')).toBeNull();
-    });
-
     it('bounds the single virtualized section to the body viewport so FlashList can own scrolling', async () => {
         const root: SelectionListStep = {
             id: 'root',

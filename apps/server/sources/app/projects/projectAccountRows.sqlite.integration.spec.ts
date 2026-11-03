@@ -29,6 +29,40 @@ describe('Project Account rows (SQLite integration)', () => {
     afterEach(async () => { await db.account.deleteMany(); });
     afterAll(async () => { await harness?.close(); });
 
+    it('records an exact checkout authoring relation once, opts in disclosure, preserves edits and clears on Forget', async () => {
+        const account = await db.account.create({ data: { encryptionMode: 'plain' } });
+        const outsider = await db.account.create({ data: { encryptionMode: 'plain' } });
+        const key = refKey('authored');
+        const session = { serverId: 'other-home', sessionId: 'authored-session' };
+        await withAuthenticatedTestApp(registerProjectAccountRowRoutes, async app => {
+            const send = async (operation: string, payload: unknown, accountId = account.id) => app.inject({
+                method: 'POST', url: `/v1/account/project-rows/${operation}`, headers: { 'x-test-user-id': accountId }, payload,
+            });
+            expect((await send('mutate', { mutations: [mutation(key, 'absent', refValue(key.id)), mutation(graphKey, 'absent', { relationships: [] })], expectedRefs: [], topologyChange: true })).json().status).toBe('updated');
+            expect((await send('authoring-session', { key, session })).json()).toEqual({ status: 'recorded', row: {
+                key, revision: 1, content: plain(key, refValue(key.id)), authoringSession: session,
+            } });
+            const before = await db.account.findUniqueOrThrow({ where: { id: account.id } });
+            const changes = await db.accountChange.count({ where: { accountId: account.id } });
+            const stored = await db.userKVStore.findUniqueOrThrow({ where: { accountId_key: { accountId: account.id, key: buildProjectAccountRowPhysicalKeyV1(key) } } });
+            expect((await send('authoring-session', { key, session })).json().row.revision).toBe(1);
+            expect(await db.userKVStore.findUniqueOrThrow({ where: { accountId_key: { accountId: account.id, key: stored.key } } })).toEqual(stored);
+            expect((await db.account.findUniqueOrThrow({ where: { id: account.id } })).seq).toBe(before.seq);
+            expect(await db.accountChange.count({ where: { accountId: account.id } })).toBe(changes);
+            expect((await send('read', { key })).json().row).toEqual({ key, revision: 1, content: plain(key, refValue(key.id)) });
+            expect((await send('read', { key, includeAuthoringSession: true })).json().row.authoringSession).toEqual(session);
+            expect((await send('list', { includeAuthoringSession: true })).json().rows.find((row: { key: ProjectAccountRowKeyV1 }) => row.key.kind === 'workspace-ref').authoringSession).toEqual(session);
+            expect((await send('authoring-session', { key, session }, outsider.id)).json()).toEqual({ status: 'absent' });
+            expect((await send('authoring-session', { key, session: { ...session, title: 'private' } })).statusCode).toBe(400);
+            expect((await send('mutate', { mutations: [{ ...mutation(key, 1, refValue(key.id, 'renamed')), authoringSession: session }], expectedRefs: [], topologyChange: false })).statusCode).toBe(400);
+            const edited = (await send('mutate', { mutations: [mutation(key, 1, refValue(key.id, 'renamed'))], expectedRefs: [], topologyChange: false })).json();
+            expect(edited.rows[0]).toEqual({ key, revision: 2, content: plain(key, refValue(key.id, 'renamed')) });
+            expect((await send('read', { key, includeAuthoringSession: true })).json().row.authoringSession).toEqual(session);
+            expect((await send('mutate', { mutations: [{ key, expectedRevision: 2, content: null }, mutation(graphKey, 0, { relationships: [] })], expectedRefs: [], topologyChange: true })).json().status).toBe('updated');
+            expect((await send('authoring-session', { key, session })).json()).toEqual({ status: 'absent' });
+        });
+    });
+
     it('serializes stale relationship creation against Forget and rolls back every losing row', async () => {
         const account = await db.account.create({ data: { encryptionMode: 'plain' } });
         await withAuthenticatedTestApp(registerProjectAccountRowRoutes, async app => {
@@ -132,6 +166,14 @@ describe('Project Account rows (SQLite integration)', () => {
             const send = async (value: unknown, expectedRevision: number | 'absent') => (await app.inject({ method: 'POST', url: '/v1/account/project-rows/mutate', headers: { 'x-test-user-id': account.id }, payload: { mutations: [{ key, expectedRevision, content: value }], expectedRefs: [], topologyChange: false } })).json();
             expect(await send(content, 'absent')).toMatchObject({ status: 'updated' });
             expect((await app.inject({ method: 'POST', url: '/v1/account/project-rows/read', headers: { 'x-test-user-id': account.id }, payload: { key } })).json()).toEqual({ status: 'present', row: { key, revision: 0, content } });
+            const checkoutKey = refKey('encrypted-checkout');
+            await db.userKVStore.create({ data: { accountId: account.id, key: buildProjectAccountRowPhysicalKeyV1(checkoutKey), version: 0,
+                value: new TextEncoder().encode(JSON.stringify(content)) } });
+            const session = { serverId: 'other-home', sessionId: 'encrypted-authoring-session' };
+            expect((await app.inject({ method: 'POST', url: '/v1/account/project-rows/authoring-session', headers: { 'x-test-user-id': account.id },
+                payload: { key: checkoutKey, session } })).json()).toEqual({ status: 'recorded', row: { key: checkoutKey, revision: 1, content, authoringSession: session } });
+            expect((await app.inject({ method: 'POST', url: '/v1/account/project-rows/read', headers: { 'x-test-user-id': account.id },
+                payload: { key: checkoutKey } })).json()).toEqual({ status: 'present', row: { key: checkoutKey, revision: 1, content } });
             expect(await send(plain(key, { hidden: true }), 0)).toMatchObject({ status: 'account-mode-mismatch' });
             await db.account.update({ where: { id: account.id }, data: { encryptionMode: 'plain' } });
             expect((await app.inject({ method: 'POST', url: '/v1/account/project-rows/list', headers: { 'x-test-user-id': account.id }, payload: {} })).json()).toEqual({ status: 'account-mode-mismatch' });

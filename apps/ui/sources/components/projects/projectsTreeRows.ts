@@ -2,6 +2,7 @@ import { formatPathRelativeToHome } from '@/utils/sessions/formatPathRelativeToH
 import type { WorkspaceAddressV1 } from '@happier-dev/protocol/workspaces/workspaceRefV1';
 import type { ProjectSourceV1 } from '@happier-dev/protocol/projects/sources/projectSourceV1';
 import { readSourceTeamId } from './sources/projectSourceGroups';
+import { shallow } from 'zustand/vanilla/shallow';
 
 /**
  * The Projects tree's rows (plan 10 §2/§8, lab p-projects TREE/RULES): one Project's accepted
@@ -286,6 +287,45 @@ function folderName(rootPath: string): string {
 }
 
 /**
+ * Observed checkout facts folded into a Project built without them (`buildProjectsTreeProjects` yields
+ * folder labels, no branch and no attention). The one owner of how a fact reads on a row: the
+ * tree's Project sections and the phone list both call it with the facts they subscribed to.
+ */
+export function applyProjectsTreeCheckoutFacts(
+    project: ProjectsTreeProject,
+    factsOf: (checkout: ProjectsTreeCheckout, index: number) => ProjectsTreeCheckoutFacts | null,
+): ProjectsTreeProject {
+    let newFromSession = false;
+    const checkouts = project.checkouts.map((checkout, index): ProjectsTreeCheckout => {
+        const facts = factsOf(checkout, index);
+        if (!facts) return checkout;
+        if (facts.newFromSession) newFromSession = true;
+        return {
+            ...checkout,
+            label: facts.branch ?? checkout.label,
+            branch: facts.branch,
+            isWorktree: facts.isWorktree,
+            attention: facts.attention,
+        };
+    });
+    return { ...project, newFromSession, checkouts };
+}
+
+/** Share unchanged presentation values with the preceding projection, keyed by exact checkout address. */
+function retainProjectsTreeProject(previous: ProjectsTreeProject | undefined, next: ProjectsTreeProject): ProjectsTreeProject {
+    if (!previous) return next;
+    const previousCheckouts = new Map(previous.checkouts.map(checkout => [projectsTreeCheckoutKey(checkout), checkout]));
+    const checkouts = next.checkouts.map(checkout => {
+        const prior = previousCheckouts.get(projectsTreeCheckoutKey(checkout));
+        if (!prior) return checkout;
+        // The key proves every address field equal; reuse that nested identity for the shallow comparison.
+        return shallow(prior, checkout.workspaceAddress ? { ...checkout, workspaceAddress: prior.workspaceAddress } : checkout) ? prior : checkout;
+    });
+    const retained = { ...next, checkouts: shallow(previous.checkouts, checkouts) ? previous.checkouts : checkouts };
+    return shallow(previous, retained) ? previous : retained;
+}
+
+/**
  * The Project projection's groups (`projectProjectListV1`, in their order) as tree input: a Project is
  * named after its checkout the person sees first; each checkout keeps its exact ref.
  */
@@ -301,8 +341,11 @@ export function buildProjectsTreeProjects<TRef extends Readonly<{
     sources?: readonly Pick<ProjectSourceV1, 'id' | 'name' | 'audience'>[];
     teamName?: (teamId: string) => string | null;
     checkoutFacts?: (ref: TRef) => ProjectsTreeCheckoutFacts | null;
+    /** The preceding output of this producer; unchanged Projects and checkouts keep their identities. */
+    previousProjects?: ProjectsTreeProject[];
 }>): ProjectsTreeProject[] {
-    return input.groups.flatMap((group) => {
+    const previousByKey = new Map(input.previousProjects?.map(project => [project.key, project]));
+    const projects = input.groups.flatMap((group) => {
         const first = group.items[0];
         if (!first) return [];
         const sourceIds = new Set(group.items.flatMap(ref => ref.source ? [ref.source.sourceId] : []));
@@ -310,33 +353,34 @@ export function buildProjectsTreeProjects<TRef extends Readonly<{
             ? input.sources?.find(candidate => sourceIds.has(candidate.id)) ?? null
             : null;
         const teamId = source ? readSourceTeamId(source) : null;
-        let newFromSession = false;
+        const factsByRef = group.items.map(ref => input.checkoutFacts?.(ref) ?? null);
         const checkouts = group.items.map((ref): ProjectsTreeCheckout => {
             const machine = input.machine(ref.machineId);
-            const facts = input.checkoutFacts?.(ref) ?? null;
-            if (facts?.newFromSession) newFromSession = true;
             return {
                 refId: ref.id,
                 ...(ref.serverId ? { workspaceAddress: { serverId: ref.serverId, workspaceId: ref.id,
                     machineId: ref.machineId, rootPath: ref.rootPath } } : {}),
                 machineId: ref.machineId,
                 machineName: machine.name,
-                label: facts?.branch ?? folderName(ref.rootPath),
-                branch: facts?.branch ?? null,
-                isWorktree: facts?.isWorktree ?? null,
+                label: folderName(ref.rootPath),
+                branch: null,
+                isWorktree: null,
                 path: formatPathRelativeToHome(ref.rootPath, machine.homeDir ?? undefined),
-                attention: facts?.attention ?? null,
+                attention: null,
                 offline: machine.online === null ? undefined : !machine.online,
             };
         });
-        return [{
+        const project: ProjectsTreeProject = {
             key: group.projectKey.projectKey,
             name: first.label?.trim() ? input.projectName(first) : source?.name ?? input.projectName(first),
             teamLabel: teamId ? input.teamName?.(teamId) ?? null : null,
-            newFromSession,
+            newFromSession: false,
             checkouts,
-        }];
+        };
+        return [retainProjectsTreeProject(previousByKey.get(project.key),
+            applyProjectsTreeCheckoutFacts(project, (_checkout, index) => factsByRef[index] ?? null))];
     });
+    return input.previousProjects && shallow(input.previousProjects, projects) ? input.previousProjects : projects;
 }
 
 /**

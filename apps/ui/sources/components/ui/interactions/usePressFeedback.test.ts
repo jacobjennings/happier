@@ -1,18 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderHook } from '@/dev/testkit';
 import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { setReducedMotionPreferenceOverride } from '@/hooks/ui/useReducedMotionPreference';
 
 import { usePressFeedback } from './usePressFeedback';
 
-const motion = vi.hoisted(() => ({ reduced: false }));
 const timingCalls = vi.hoisted(() => [] as Array<Readonly<{ value: unknown; duration: unknown }>>);
-
-// The host accessibility preference is the boundary; its watch is process-global,
-// so the test drives the reactive read directly (as the voice control suite does).
-vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
-    useReducedMotionPreference: () => motion.reduced,
-}));
 
 // The canonical Reanimated stub lands every animation on its target at once, which
 // hides whether an acknowledgement was immediate or eased. Recording `withTiming`
@@ -31,8 +25,11 @@ vi.mock('react-native-reanimated', async () => {
 
 describe('usePressFeedback', () => {
     beforeEach(() => {
-        motion.reduced = false;
         timingCalls.length = 0;
+    });
+
+    afterEach(() => {
+        setReducedMotionPreferenceOverride(null);
     });
 
     it('scales down on press-in and settles back on release, acknowledging faster than it settles', async () => {
@@ -51,7 +48,7 @@ describe('usePressFeedback', () => {
     });
 
     it('acknowledges immediately as an opacity change, never spatial motion, when reduced motion is preferred', async () => {
-        motion.reduced = true;
+        setReducedMotionPreferenceOverride(true);
         const hook = await renderHook(() => usePressFeedback());
 
         hook.getCurrent().onPressIn();
@@ -78,7 +75,7 @@ describe('usePressFeedback', () => {
     });
 
     it('drops the glyph scale but keeps its opacity acknowledgement when reduced motion is preferred', async () => {
-        motion.reduced = true;
+        setReducedMotionPreferenceOverride(true);
         const hook = await renderHook(() => usePressFeedback({ glyph: true }));
 
         hook.getCurrent().onPressIn();

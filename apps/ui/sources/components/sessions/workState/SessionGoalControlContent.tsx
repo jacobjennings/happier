@@ -8,7 +8,8 @@ import { Text, TextInput } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { readSessionWorkStateFromMetadata } from '@/sync/domains/session/workState/readSessionWorkState';
 import type { SessionWorkStateItem } from '@/sync/domains/session/workState/sessionWorkStateTypes';
-import { useSessionMetadata } from '@/sync/domains/state/storage';
+import { useSessionSelector } from '@/sync/domains/state/storage';
+import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 
 import { GoalBudgetDisclosure } from './GoalBudgetDisclosure';
 import { SessionGoalContinuationSection } from './SessionGoalContinuationSection';
@@ -426,10 +427,12 @@ const styles = StyleSheet.create(() => ({
  */
 export const SessionGoalValueRow = React.memo(function SessionGoalValueRow(props: Readonly<{
     sessionId: string;
+    serverId?: string | null;
     entry: SessionGoalControlEntry;
     testID?: string;
 }>) {
-    const metadata = useSessionMetadata(props.sessionId);
+    const metadata = useSessionSelector(props.sessionId, props.serverId,
+        session => session ? readSessionOwnerMetadataView(session) : null);
     const goal = React.useMemo(
         () => resolveEditableGoalItem(readSessionWorkStateFromMetadata(metadata)),
         [metadata],

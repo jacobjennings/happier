@@ -6,19 +6,11 @@ import { createScmBackendSettingsRegistry } from '@/scm/settings/scmBackendSetti
 describe('scmBackendSettingsRegistry', () => {
     const registry = createScmBackendSettingsRegistry(createScmContributionCatalog(null));
 
-    it('registers git and sapling backend settings plugins', () => {
-        const plugins = registry.listPlugins();
-        expect(plugins.map((plugin) => plugin.backendId).sort()).toEqual(['git', 'sapling']);
-    });
-
-    it('returns plugin by backend id', () => {
+    it('registers git and sapling backend settings plugins and returns them by backend id', () => {
+        expect(registry.listPlugins().map((plugin) => plugin.backendId).sort()).toEqual(['git', 'sapling']);
         expect(registry.getPlugin('git')?.title).toBe('Git');
         expect(registry.getPlugin('sapling')?.title).toBe('Sapling');
         expect(registry.getPlugin('unknown')).toBeNull();
-    });
-
-    it('validates plugin registry uniqueness', () => {
-        expect(() => registry.assertRegistryValid()).not.toThrow();
     });
 
     it('does not grant first-party Git settings policy to an external same-local-id backend', () => {

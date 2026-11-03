@@ -54,9 +54,12 @@ export function runSidechainsPhase(params: Readonly<{
         const isChainTail = (messageId: string | null): boolean =>
             messageId != null && existingSidechain[existingSidechain.length - 1]?.id === messageId;
 
-        // Process and add new sidechain messages
-        if (msg.role === 'agent' && msg.content[0]?.type === 'sidechain') {
-            // This is the sidechain root - create a user message
+        // Pending commits real user anchors into Run sidechains. Native subagent
+        // roots carry the same person-message projection as an agent prompt record.
+        const userText = msg.role === 'user' ? msg.content.text
+            : msg.role === 'agent' && msg.content[0]?.type === 'sidechain' ? msg.content[0].prompt
+                : null;
+        if (userText !== null) {
             const mid = allocateId();
             const userMsg: ReducerMessage = {
                 id: mid,
@@ -65,12 +68,14 @@ export function runSidechainsPhase(params: Readonly<{
                 localId: msg.localId ?? null,
                 role: 'user',
                 createdAt: msg.createdAt,
-                text: msg.content[0].prompt,
+                text: userText,
                 tool: null,
                 event: null,
                 meta: msg.meta,
+                ...(msg.structuredPresentation !== undefined ? { structuredPresentation: msg.structuredPresentation } : {}),
             };
             state.messages.set(mid, userMsg);
+            state.messageIds.set(msg.id, mid);
             insertChild(userMsg);
             setSidechainThinkingMergeCursor(state, sidechainId, null, 'sidechain-root');
         } else if (msg.role === 'agent') {
@@ -115,6 +120,8 @@ export function runSidechainsPhase(params: Readonly<{
                         last &&
                         last.role === 'agent' &&
                         !last.isThinking &&
+                        !last.peer &&
+                        !c.peer &&
                         typeof last.text === 'string' &&
                         last.meta &&
                         typeof (last.meta as any).happierSidechainStreamKey === 'string' &&
@@ -137,6 +144,7 @@ export function runSidechainsPhase(params: Readonly<{
                             createdAt: msg.createdAt,
                             text: c.text,
                             isThinking: false,
+                            ...(c.peer ? { peer: c.peer } : {}),
                             tool: null,
                             event: null,
                             meta: msg.meta,

@@ -24,17 +24,6 @@ vi.mock('@/modal', async () => {
     }).module;
 });
 
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: ({ children }: { children?: React.ReactNode }) => React.createElement('ItemGroup', null, children),
-}));
-
-vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: Record<string, unknown>) => React.createElement('Item', props),
-}));
-
-vi.mock('@/components/ui/forms/Switch', () => ({
-    Switch: (props: Record<string, unknown>) => React.createElement('Switch', props),
-}));
 installTerminalRouteCommonModuleMocks({
     text: async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -183,7 +172,9 @@ describe('machine managed installables projection', () => {
             });
             // Install runs through the front-door `machines.capabilities.install` Action, which asks for
             // its confirmation first and then reaches the machine RPC.
-            await vi.waitFor(() => expect(testState.invoke).toHaveBeenCalled());
+            await vi.waitFor(() => expect(testState.invoke).toHaveBeenCalledWith('machine-1', expect.objectContaining({
+                id: 'dep.antigravity.localharness', method: 'install',
+            })));
             expect(testState.confirm).toHaveBeenCalledTimes(1);
 
             await screen.unmount();

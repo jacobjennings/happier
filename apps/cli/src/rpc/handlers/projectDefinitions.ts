@@ -14,6 +14,7 @@ import { registerActionSpecRpcHandlers, type ActionSpecRpcRegistrar } from './re
 import type { RpcActionExecutor } from './_actionDispatchAdapter';
 import { isServerProfileHomeIdentity } from '@/server/serverProfiles';
 import type { ProjectSetupInspection } from '@/workspaces/projectSetup/projectSetupPreparation';
+import { projectSetupInspectionFailure } from '@/workspaces/projectSetup/projectSetupInspectionFailure';
 import { isReviewedServiceMoveChild } from '@/api/externalActionExecutionAuthorization';
 import { logger } from '@/ui/logger';
 
@@ -126,7 +127,7 @@ export function createProjectDefinitionAction(params: Readonly<{
     if (params.inspectSetup) {
       try { setup = await phase('setup_readiness', () => params.inspectSetup!({ workspace, root, context,
         ...('reviewSetupConsent' in parsed.data && parsed.data.reviewSetupConsent ? { reviewSetupConsent: true as const } : {}) })); }
-      catch { context.signal?.throwIfAborted(); }
+      catch (error) { setup = projectSetupInspectionFailure(error, context.signal); }
     }
     context.signal?.throwIfAborted();
     return { definition, detection, ...facts, ...setup };

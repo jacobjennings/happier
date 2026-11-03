@@ -105,6 +105,12 @@ export async function inspectWorkerDiskBudget({ repoDir, cacheBaseDir, commandCl
   return { admitted, commandClass, filesystems, reason: admitted ? 'ready' : 'worker write filesystem exhausted' };
 }
 
+async function reapWorkerScratch(repoDir, scratchRoot, procRoot, ownerUid) {
+  const result = directory(scratchRoot) ? reapHistoricalTempRoots(scratchRoot, procRoot, { ownerUid })
+    : { reclaimedBytes: 0, reclaimedRoots: 0, retainedRoots: 0, observationUnavailable: null };
+  return result;
+}
+
 export async function admitWorkerDiskBudget({ repoDir, cacheBaseDir, commandClass, scratchRoot = tmpdir(), procRoot = '/proc', ownerUid = process.getuid(), observeFilesystem = observeWorkerFilesystem, maintenance = false }) {
   const options = { repoDir, cacheBaseDir, commandClass, scratchRoot, observeFilesystem };
   const initial = await inspectWorkerDiskBudget(options);
@@ -115,7 +121,7 @@ export async function admitWorkerDiskBudget({ repoDir, cacheBaseDir, commandClas
   if ((!initial.admitted || maintenance) && process.platform === 'linux') {
     const steps = [
       ['runtime-build', () => reapRuntimeBuildStaging(cacheBaseDir, scratchRoot, procRoot, ownerUid)],
-      ['scratch', () => directory(scratchRoot) ? reapHistoricalTempRoots(scratchRoot, procRoot, { ownerUid }) : { reclaimedBytes: 0, reclaimedRoots: 0 }],
+      ['scratch', () => reapWorkerScratch(repoDir, scratchRoot, procRoot, ownerUid)],
     ];
     for (const [kind, run] of steps) {
       reclamation.push({ kind, ...await run() });

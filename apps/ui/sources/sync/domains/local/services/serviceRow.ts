@@ -12,6 +12,13 @@ import { localServiceListenerGroupKey } from '@happier-dev/protocol/local/servic
 import { normalizeWorkspaceRootPathV1 } from '@happier-dev/protocol/workspaces/workspaceRefResolutionV1';
 import { hasUncertainLocalServiceNativeCustodyV1, isLocalServiceStateRunningV1 } from '@happier-dev/protocol/local/services/launcher/v1';
 
+/** What the Project definition says a declared service runs and which file that command comes from. */
+export type DeclaredServiceFacts = Readonly<{ command: string | null; badge: string | null }>;
+export type DescribeServiceDeclaration = (
+    declaration: NonNullable<LocalServiceLaunchTarget['declaration']>,
+    target: LocalServiceLaunchTarget,
+) => DeclaredServiceFacts | null;
+
 export type ServiceRowScope = 'thisSession' | 'workspace' | 'machine' | 'suggestion';
 export type ServiceRowStatus = 'loading' | 'running' | 'starting' | 'stopping' | 'stale' | 'stopped' | 'failed' | 'unavailable';
 
@@ -71,10 +78,14 @@ const SOURCE_LABEL_KEYS: Readonly<Record<LocalServiceLaunchTarget['source'], Tra
     recent: 'localServices.source.recent',
 };
 
-function resolveStatus(target: LocalServiceLaunchTarget): ServiceRowStatus {
+function resolveStatus(target: LocalServiceLaunchTarget, inventoryRow: LocalServiceInventoryRow | undefined): ServiceRowStatus {
+    if (target.state === 'stale') return 'stale';
+    // Binding hydration can withhold controls without erasing the supervisor's
+    // observed failure. Uncertain native custody retains its distinct state.
+    if (target.source === 'managed_service' && target.serviceState === 'failed'
+        && !hasUncertainLocalServiceNativeCustodyV1(target)) return 'failed';
     if (target.unavailableReason === 'project_service_binding_pending') return 'loading';
     if (target.unavailableReason === 'project_service_binding_unavailable') return 'unavailable';
-    if (target.state === 'stale') return 'stale';
     // Available means the script can be launched, never that a listener is running. Older
     // launcher snapshots may omit sourceClass; source already establishes this distinction.
     if (target.source === 'package_script') return 'stopped';
@@ -83,7 +94,6 @@ function resolveStatus(target: LocalServiceLaunchTarget): ServiceRowStatus {
     if (target.source === 'managed_service') {
         if (hasUncertainLocalServiceNativeCustodyV1(target)) return 'unavailable';
         if (target.serviceState === 'stopped') return 'stopped';
-        if (target.serviceState === 'failed') return 'failed';
         if (target.serviceState === 'stopping') return 'stopping';
         // A declaration nobody has started is stopped (Ready to start); the feed's placeholder
         // `unavailable` describes the launcher row, not a broken service.
@@ -91,13 +101,23 @@ function resolveStatus(target: LocalServiceLaunchTarget): ServiceRowStatus {
     }
     switch (target.state) {
         case 'available':
-            return 'running';
+            // Launcher availability is not generally liveness. Scanned targets carry
+            // the daemon's listening observation even before inventory metadata arrives;
+            // managed targets carry their native lifetime (or an observed inventory binding).
+            return target.source === 'inventory_entry'
+                || (target.source === 'managed_service' && (isLocalServiceStateRunningV1(target.serviceState) || inventoryRow?.state === 'listening'))
+                ? 'running' : 'unavailable';
         case 'starting':
             return 'starting';
         case 'unavailable':
             // A managed_* stopped reason reads as stopped; everything else as unavailable.
             return target.unavailableReason?.includes('stopped') ? 'stopped' : 'unavailable';
     }
+}
+
+/** Whether this target's Services row offers Start (the same decision the row's primary action makes). */
+export function canStartLocalService(target: LocalServiceLaunchTarget): boolean {
+    return resolvePrimaryAction(target)?.kind === 'start';
 }
 
 function resolvePrimaryAction(target: LocalServiceLaunchTarget): ServiceRow['primaryAction'] {
@@ -331,6 +351,11 @@ export function buildLocalServiceRows(input: Readonly<{
     rowIdsByTargetId?: ReadonlyMap<string, string>;
     sessionId: string | null;
     scope: 'workspace' | 'machine';
+    /**
+     * The Project definition's own words for a declared service (the Scripts presentation owner's
+     * command and source file). The feed carries a command only for a literal one.
+     */
+    describeDeclaration?: DescribeServiceDeclaration;
 }>): readonly ServiceRow[] {
     const inventoryById = new Map<string, LocalServiceInventoryRow>();
     for (const row of input.inventoryRows) {
@@ -339,8 +364,9 @@ export function buildLocalServiceRows(input: Readonly<{
     const mapped = input.launchTargets.map((target, index) => {
         const inventoryId = inventoryIdFromTarget(target);
         const inventoryRow = inventoryId ? inventoryById.get(inventoryId) : undefined;
-        const status = resolveStatus(target);
-        const processLabel = readProcessLabel(inventoryRow, target);
+        const status = resolveStatus(target, inventoryRow);
+        const declared = target.declaration ? input.describeDeclaration?.(target.declaration, target) ?? null : null;
+        const processLabel = readProcessLabel(inventoryRow, target) ?? declared?.command ?? null;
         // The inventory's numeric port is the authority; the target's subtitle is the fallback.
         const portLabel = (inventoryRow ? resolveLocalServicePortLabel(inventoryRow) : null)
             ?? resolveLocalServiceLaunchTargetPortLabel(target);
@@ -364,7 +390,7 @@ export function buildLocalServiceRows(input: Readonly<{
                 ?? executableName(processLabel),
             addressLabel,
             sourceLabel: SOURCE_LABEL_KEYS[target.source],
-            sourceBadge: resolveSourceBadge(target),
+            sourceBadge: declared?.badge ?? resolveSourceBadge(target),
             addressNote: resolveAddressNote(target, Boolean(addressLabel || portLabel || readHost(inventoryRow))),
             status,
             // A declaration that offers Start has no refusal to explain yet: its feed placeholder
@@ -476,16 +502,14 @@ export function groupLocalServiceRowsBySection(rows: readonly ServiceRow[]): Rea
 }
 
 /**
- * Actual running user services: a listener the scan observed, or a supervised service whose actual
- * lifetime is running regardless of readiness (a queue worker has no listener). Openable access and startable suggestions
- * are not evidence, so the header's count never contradicts the "Running" group it sits above.
+ * Count the same liveness projection the rows render. Inventory enriches and groups rows;
+ * a delayed metadata snapshot must not veto the daemon launcher observation a row already shows.
+ * Access-only targets and startable suggestions are classified by the row owner above, not here.
  */
 export function selectLocalServiceRunningCount(rows: readonly ServiceRow[]): number {
-    const running = new Set<string>();
+    let running = 0;
     for (const row of rows) {
-        if (row.internal) continue;
-        if (row.listeningListenerKey) running.add(row.listeningListenerKey);
-        else if (row.target.source === 'managed_service' && isLocalServiceStateRunningV1(row.target.serviceState) && row.status === 'running') running.add(row.id);
+        if (!row.internal && row.status === 'running') running++;
     }
-    return running.size;
+    return running;
 }

@@ -19,7 +19,9 @@ describe('userInteractionDiagnostics', () => {
         resetUserInteractionDiagnosticsForTests();
         addBreadcrumbIfEnabledMock.mockReset();
 
-        recordLargeTextInputDiagnostic({
+        // A caller that forwards its whole input state must not leak the draft text:
+        // the breadcrumb projects an explicit metadata allowlist.
+        const eventWithDraftText = {
             phase: 'web-change',
             platform: 'web',
             surface: 'agentInput',
@@ -30,7 +32,9 @@ describe('userInteractionDiagnostics', () => {
             pendingTextLength: TEXT_INPUT_LARGE_TEXT_VALUE_LENGTH_LIMIT + 1,
             durationMs: 12.75,
             nowMs: 1_000,
-        });
+            text: 'SECRET draft text',
+        } as const;
+        recordLargeTextInputDiagnostic(eventWithDraftText);
         recordLargeTextInputDiagnostic({
             phase: 'web-change',
             platform: 'web',
@@ -83,31 +87,6 @@ describe('userInteractionDiagnostics', () => {
         });
 
         expect(addBreadcrumbIfEnabledMock).not.toHaveBeenCalled();
-    });
-
-    it('captures refresh failures with action metadata only', async () => {
-        const { captureRefreshFailureDiagnostic } = await import('./userInteractionDiagnostics');
-        captureExceptionIfEnabledMock.mockReset();
-        const error = new Error('refresh failed');
-
-        captureRefreshFailureDiagnostic(error, {
-            action: 'pull_to_refresh',
-            screen: 'machine_detail',
-            durationMs: 25.2,
-        });
-
-        expect(captureExceptionIfEnabledMock).toHaveBeenCalledWith(error, {
-            tags: {
-                'happier.ui.action': 'pull_to_refresh',
-                'happier.ui.diagnostic': 'refresh_failure',
-                'happier.ui.screen': 'machine_detail',
-            },
-            extra: {
-                action: 'pull_to_refresh',
-                durationMs: 25.2,
-                screen: 'machine_detail',
-            },
-        });
     });
 
     it('records refresh action start, success, and failure without swallowing errors', async () => {

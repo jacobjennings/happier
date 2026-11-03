@@ -6,10 +6,7 @@ import { VirtualizedList } from '@/components/ui/lists/virtualized/VirtualizedLi
 import type { VirtualizedListRef } from '@/components/ui/lists/virtualized/virtualizedListTypes';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 
-import {
-    SELECTION_LIST_VIRTUALIZATION_THRESHOLD,
-    SELECTION_LIST_VIRTUALIZED_ROW_ESTIMATED_HEIGHT_PX,
-} from './_constants';
+import { SELECTION_LIST_VIRTUALIZED_ROW_ESTIMATED_HEIGHT_PX } from './_constants';
 import { PlanOptionRow } from './SelectionListOptionRow';
 import { SelectionListSectionHeader } from './SelectionListSectionHeader';
 import { renderSelectionListAccessory } from './renderSelectionListAccessory';
@@ -22,7 +19,6 @@ import type {
     SelectionListOption,
     SelectionListSection,
     SelectionListStep,
-    SelectionListVirtualizationMode,
 } from './_types';
 import { useSelectionListVirtualizedFocusReveal } from './useSelectionListVirtualizedFocusReveal';
 
@@ -67,22 +63,11 @@ export type SelectionListVirtualizedSectionProps = Readonly<{
     onPushStep: (step: SelectionListStep) => void;
     optionPositionById?: ReadonlyMap<string, number>;
     optionSetSize?: number;
-    /**
-     * Override the descriptor's virtualization hint. Prop wins; descriptor
-     * falls back when undefined; if both are undefined the default `'auto'`
-     * applies.
-     */
-    virtualization?: SelectionListVirtualizationMode;
     showsVerticalScrollIndicator?: boolean;
     /** See `SelectionListBodyProps.virtualizedViewportHeight`. */
     viewportHeight?: number;
     /** The body-owned popup pattern; only listbox sections become groups. */
     a11yPattern?: SelectionListA11yPattern;
-    /**
-     * Override the threshold (test/escape hatch). Defaults to
-     * `SELECTION_LIST_VIRTUALIZATION_THRESHOLD`.
-     */
-    threshold?: number;
     /**
      * `grid`-pattern row identity, from the body's shared row model. All three
      * are absent in `listbox` mode (and in a bare harness), where this section
@@ -100,50 +85,19 @@ export type SelectionListVirtualizedSectionProps = Readonly<{
     rowIndexOffset?: number;
 }>;
 
-function resolveVirtualizationMode(
-    propValue: SelectionListVirtualizationMode | undefined,
-    sectionValue: SelectionListVirtualizationMode | undefined,
-): SelectionListVirtualizationMode {
-    if (propValue !== undefined) return propValue;
-    if (sectionValue !== undefined) return sectionValue;
-    return 'auto';
-}
-
-function shouldVirtualize(
-    mode: SelectionListVirtualizationMode,
-    rowCount: number,
-    threshold: number,
-): boolean {
-    if (mode === 'force') return true;
-    if (mode === 'never') return false;
-    return rowCount > threshold;
-}
-
 /**
- * Renders a single SelectionList section, switching between a plain
- * `ItemGroup` + mapped `Item` rows path and a virtualized `virtualized list` path
- * based on the descriptor's `virtualization` hint and row count.
- *
- * Threshold (default 50) is owned by `_constants.ts` per the plan's
- * Phase 0.5 decision. Threshold is overridable for tests/escape hatches but
- * production consumers should rely on the default.
- *
- * Why a wrapper (rather than always using virtualized list): per the React Native
- * skill and Phase 0.5 audit, virtualized list carries non-trivial setup cost and
- * requires a measurable parent; below the threshold the simpler mapped path
- * is the right default and avoids virtualization side-effects (recycler
- * focus juggling, intermittent layout thrash) for small lists where they
- * are not needed.
+ * Renders one virtualization-eligible SelectionList section through a
+ * virtualized list. Eligibility (descriptor hint plus the
+ * `SELECTION_LIST_VIRTUALIZATION_THRESHOLD` row count) is decided once by the
+ * body's virtualization policy and the dynamic-section renderer, which mounts
+ * this component only for eligible sections; smaller sections render as
+ * mapped rows there.
  */
 export function SelectionListVirtualizedSection(
     props: SelectionListVirtualizedSectionProps,
 ): React.ReactElement {
     const styles = stylesheet;
     const reducedMotion = useReducedMotionPreference();
-    const mode = resolveVirtualizationMode(props.virtualization, props.section.virtualization);
-    const threshold = props.threshold ?? SELECTION_LIST_VIRTUALIZATION_THRESHOLD;
-    const rowCount = props.section.options.length;
-    const useVirtualization = shouldVirtualize(mode, rowCount, threshold);
 
     const sectionTestId = selectionListTestId(
         props.rootTestID,
@@ -220,43 +174,10 @@ export function SelectionListVirtualizedSection(
         reducedMotion,
     });
 
-    if (useVirtualization) {
-        return (
-            <View
-                testID={sectionTestId}
-                style={[styles.container, styles.virtualizedHost, props.viewportHeight === undefined ? null : { height: props.viewportHeight }]}
-                {...(sectionGroupA11y ?? {})}
-                {...(sectionGroupA11y === null ? {} : { role: 'group' as const })}
-            >
-                <SelectionListSectionHeader
-                    testID={headerTestId}
-                    title={props.section.title}
-                    rightAccessory={renderSelectionListAccessory(props.section.rightAccessory)}
-                    count={props.section.count}
-                    action={props.section.action}
-                    {...(headerGridRow === undefined ? {} : { gridRow: headerGridRow })}
-                />
-                <VirtualizedList
-                    ref={virtualizedListRef}
-                    testID={selectionListTestId(sectionTestId, 'virtualized')}
-                    data={props.section.options as SelectionListOption[]}
-                    keyExtractor={(option: SelectionListOption) => option.id}
-                    renderItem={({ item }: { item: SelectionListOption }) => renderRow(item)}
-                    getItemType={(option: SelectionListOption) => (option.openStep ? 'drilldown' : 'option')}
-                    estimatedItemSize={SELECTION_LIST_VIRTUALIZED_ROW_ESTIMATED_HEIGHT_PX}
-                    recycleItems={false}
-                    keyboardShouldPersistTaps="handled"
-                    showsVerticalScrollIndicator={props.showsVerticalScrollIndicator === true}
-                    onLayout={onViewportLayout}
-                />
-            </View>
-        );
-    }
-
     return (
         <View
             testID={sectionTestId}
-            style={styles.container}
+            style={[styles.container, styles.virtualizedHost, props.viewportHeight === undefined ? null : { height: props.viewportHeight }]}
             {...(sectionGroupA11y ?? {})}
             {...(sectionGroupA11y === null ? {} : { role: 'group' as const })}
         >
@@ -266,9 +187,21 @@ export function SelectionListVirtualizedSection(
                 rightAccessory={renderSelectionListAccessory(props.section.rightAccessory)}
                 count={props.section.count}
                 action={props.section.action}
-                    {...(headerGridRow === undefined ? {} : { gridRow: headerGridRow })}
+                {...(headerGridRow === undefined ? {} : { gridRow: headerGridRow })}
             />
-            {props.section.options.map((option) => renderRow(option))}
+            <VirtualizedList
+                ref={virtualizedListRef}
+                testID={selectionListTestId(sectionTestId, 'virtualized')}
+                data={props.section.options as SelectionListOption[]}
+                keyExtractor={(option: SelectionListOption) => option.id}
+                renderItem={({ item }: { item: SelectionListOption }) => renderRow(item)}
+                getItemType={(option: SelectionListOption) => (option.openStep ? 'drilldown' : 'option')}
+                estimatedItemSize={SELECTION_LIST_VIRTUALIZED_ROW_ESTIMATED_HEIGHT_PX}
+                recycleItems={false}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={props.showsVerticalScrollIndicator === true}
+                onLayout={onViewportLayout}
+            />
         </View>
     );
 }

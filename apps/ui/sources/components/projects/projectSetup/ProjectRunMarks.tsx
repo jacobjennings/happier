@@ -16,7 +16,11 @@ import {
 } from './projectScriptPresentation';
 
 /** A finite run's status mark: the one glyph every Scripts row, Machine work row and tool line shows. */
-export function RunGlyph(props: Readonly<{ glyph: ProjectRunGlyph }>) {
+export function RunGlyph(props: Readonly<{
+  glyph: ProjectRunGlyph;
+  /** A widget glance row's mark column draws every state at its one small step. */
+  size?: number;
+}>) {
   const { theme } = useUnistyles();
   if (props.glyph === 'running')
     return <ActivitySpinner size="small" color={theme.colors.text.secondary} />;
@@ -41,7 +45,8 @@ export function RunGlyph(props: Readonly<{ glyph: ProjectRunGlyph }>) {
           ? theme.colors.text.tertiary
           : theme.colors.text.secondary;
   // Not run yet is a quiet ring, never mistaken for a checkbox (lab: a small tertiary ring).
-  return <Icon name={name} size={props.glyph === 'idle' ? 16 : 18} color={color} />;
+  return <Icon name={name} size={props.size ?? (props.glyph === 'idle' ? 16 : 18)} color={color} />;
+
 }
 
 /** A live run's elapsed clock ("1:42"), in its own leaf so only it re-renders every second. */

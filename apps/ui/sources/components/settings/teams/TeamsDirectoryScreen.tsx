@@ -1,7 +1,5 @@
 import * as React from 'react';
 import { Redirect, useLocalSearchParams, useNavigation, useRouter } from '@/components/appShell/workspace/destinationRoute';
-import { Platform } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { EmptyState } from '@/components/ui/empty/EmptyState';
@@ -14,15 +12,14 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemLoadStateRows } from '@/components/ui/lists/ItemLoadStateRows';
 import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
-import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
-import { VirtualizedList } from '@/components/ui/lists/virtualized';
+import { VirtualizedItemList } from '@/components/ui/lists/VirtualizedItemList';
 import { teamAddressKey, type TeamAddress } from '@/sync/domains/teams/teamAddress';
 import { t } from '@/text';
 
 import { TeamRow } from './TeamRow';
 import { teamCredentialCreatePath, teamDetailPath, teamsCreatePath, type TeamCredentialSourceHint } from './teamsRoutes';
 import type { TeamsDirectoryRow, TeamsDirectoryUnavailableHome } from './teamsDirectoryViewState';
-import { teamsUnavailableHomeReason, teamsUnavailableHomeStateKind } from './teamsDirectoryViewState';
+import { teamsUnavailableHomeReason, teamsUnavailableHomeSettingsAction, teamsUnavailableHomeStateKind } from './teamsDirectoryViewState';
 import { TeamsCollectionAddButton } from './collection/TeamsCollectionRail';
 import {
     readLastVisitedTeamsCollectionTeam,
@@ -52,6 +49,7 @@ const UnavailableHomes = React.memo(function UnavailableHomes(props: Readonly<{
     testIDPrefix?: string;
     retryTestID?: string;
 }>) {
+    const router = useRouter();
     if (props.homes.length === 0) return null;
 
     const prefix = props.testIDPrefix ?? 'teams-home-unavailable';
@@ -79,7 +77,7 @@ const UnavailableHomes = React.memo(function UnavailableHomes(props: Readonly<{
                         testID: index === 0 ? props.retryTestID ?? 'teams-directory-retry' : `${prefix}:${home.serverId}:retry`,
                         label: t('teams.unavailable.retry'),
                         onPress: props.onRetry,
-                    } : undefined}
+                    } : teamsUnavailableHomeSettingsAction(home, () => router.push('/settings/actions'))}
                 />
             ))}
         </ItemGroup>
@@ -196,7 +194,6 @@ const TeamsCollectionLanding = React.memo(function TeamsCollectionLanding(props:
 const TeamsDirectoryPage = React.memo(function TeamsDirectoryPage(props: Readonly<{
     sourceHint: TeamCredentialSourceHint | null;
 }>) {
-    const { theme } = useUnistyles();
     const router = useRouter();
     const { sourceHint } = props;
     const [query, setQuery] = React.useState('');
@@ -220,49 +217,41 @@ const TeamsDirectoryPage = React.memo(function TeamsDirectoryPage(props: Readonl
     );
 
     return (
-        <ListPresentationProvider value="page">
-            <VirtualizedList
-                testID="teams-directory-virtualized-list"
-                data={rows}
-                keyExtractor={(item) => item.key}
-                renderItem={renderRow}
-                ListHeaderComponent={(
-                    <>
-                        <PageHeader
-                            testID="teams-directory-header"
-                            title={sourceHint ? t('teams.credentials.create.title') : t('teams.title')}
-                            description={sourceHint ? t('teams.directory.chooseTeamToShare') : t('teams.pages.directory')}
-                            actions={collection.showCreateTeam && sourceHint === null ? (
-                                <TeamsCollectionAddButton
-                                    canCreate={collection.canCreateTeam}
-                                    onPress={() => router.push(teamsCreatePath() as never)}
-                                />
-                            ) : undefined}
-                        />
-                        {collection.searchable ? (
-                            <CompactSearchField
-                                testID="teams-directory-search"
-                                value={query}
-                                onChangeText={setQuery}
-                                placeholder={t('teams.directory.searchLoadedPlaceholder')}
-                                placement="page"
+        <VirtualizedItemList
+            testID="teams-directory-virtualized-list"
+            data={rows}
+            keyExtractor={(item) => item.key}
+            renderItem={renderRow}
+            ListHeaderComponent={(
+                <>
+                    <PageHeader
+                        testID="teams-directory-header"
+                        title={sourceHint ? t('teams.credentials.create.title') : t('teams.title')}
+                        description={sourceHint ? t('teams.directory.chooseTeamToShare') : t('teams.pages.directory')}
+                        actions={collection.showCreateTeam && sourceHint === null ? (
+                            <TeamsCollectionAddButton
+                                canCreate={collection.canCreateTeam}
+                                onPress={() => router.push(teamsCreatePath() as never)}
                             />
-                        ) : null}
-                    </>
-                )}
-                style={{
-                    flex: 1,
-                    backgroundColor: theme.colors.surface.base,
-                    ...(Platform.OS === 'web' ? { minHeight: 0 } : {}),
-                }}
-                contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 34 : 16 }}
-                initialNumToRender={6}
-                maxToRenderPerBatch={4}
-                windowSize={7}
-                estimatedItemSize={120}
-                maintainVisibleContentPosition
-            />
-        </ListPresentationProvider>
+                        ) : undefined}
+                    />
+                    {collection.searchable ? (
+                        <CompactSearchField
+                            testID="teams-directory-search"
+                            value={query}
+                            onChangeText={setQuery}
+                            placeholder={t('teams.directory.searchLoadedPlaceholder')}
+                            placement="page"
+                        />
+                    ) : null}
+                </>
+            )}
+            initialNumToRender={6}
+            maxToRenderPerBatch={4}
+            windowSize={7}
+            estimatedItemSize={120}
+            maintainVisibleContentPosition
+        />
     );
 });
 

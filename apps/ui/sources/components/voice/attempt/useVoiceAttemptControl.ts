@@ -38,11 +38,11 @@ import { useNavigationFocusReturn } from '@/utils/navigation/useNavigationFocusR
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { t, tLoose } from '@/text';
 import { resolveVoiceServiceTitle } from '@/voice/registry/voiceProviderPresentation';
-import { translateVoiceReadiness } from '@/voice/settings/panels/voiceProviderReadinessPresentation';
 import { useVoiceExecutionMachinePresentation } from '@/voice/credentials/useExecutionMachinePresentation';
 import { normalizeNonEmptyString } from '@/voice/shared/normalizeNonEmptyString';
 import { resolveVoiceBindingBySessionId } from '@/voice/binding/resolveVoiceBindingBySessionId';
 import { resolveVoiceConversationNavigationAddress } from '@/voice/binding/resolveVoiceConversationNavigationAddress';
+import { isVoiceConversationCustodySessionMetadata } from '@/voice/persistence/voiceConversationSystemSessionLookup';
 import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
 import { useVoiceSetupDismissed } from '@/voice/settings/setup/useVoiceSetupItem';
 import { resolveVoiceMarkEvent, type VoiceMarkEvent } from '@/components/voice/presence/resolveVoiceMarkPose';
@@ -57,11 +57,12 @@ import { resolveVoiceAdapterSurfaceCapabilities } from '@/voice/session/voiceAda
 import type { VoiceHeldInput } from '@/voice/runtime/controller/VoiceConversationController';
 import { useFocusedSessionAddress } from '@/sync/domains/session/sessionSurfaceVisibility';
 import { resolveVoiceIdleTarget, useVoiceTargetStore, type VoiceStartIntent } from '@/voice/runtime/voiceTargetStore';
-import { isVoiceMachineErrorKind } from '@/voice/runtime/machine/voiceMachineError';
-import { resolveVoiceMachineErrorTranslationKey } from '@/voice/runtime/machine/voiceMachineErrorCopy';
+import { resolveAgentCatalogTitle } from '@/agents/backendCatalog/agentCatalogProjection';
 import { useMountedActionExecution } from '@/components/approvals/useMountedActionExecution';
 import { VoiceConversationActionOutputSchemas, type VoiceConversationActionId } from '@happier-dev/protocol/actions/voiceConversationActionFamily';
 import { createFrontDoorUiActionExecutor, type UiActionOperation } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
+import { projectVoiceAttemptPresentation } from './projectVoiceAttemptPresentation';
+import type { VoiceAttemptPresentation } from '@happier-dev/protocol/voice/attemptPresentation';
 
 import {
     resolveVoiceAttemptControl,
@@ -101,6 +102,8 @@ export const VOICE_ATTEMPT_IDLE_TARGET_GLOBAL: VoiceAttemptIdleTarget = Object.f
 export const VOICE_ATTEMPT_IDLE_TARGET_DEFAULT: VoiceAttemptIdleTarget = Object.freeze({ kind: 'default' });
 
 export type VoiceAttemptControlProjection = VoiceAttemptControl & Readonly<{
+    /** Sanitized read-only public seam, produced from this exact host model. */
+    publicPresentation?: VoiceAttemptPresentation;
     statusWord: string;
     statusLabel: string;
     elapsedStartedAt: number | null;
@@ -133,17 +136,25 @@ export type VoiceAttemptControlProjection = VoiceAttemptControl & Readonly<{
     micStateLabel: string;
     /** The sheet caption selected from recovery and microphone status facts. */
     captionLabel: string;
+    /**
+     * The one sentence for a machine error, whatever its presentation: the caption of a failed
+     * attempt and the glance subtitle read it, never their own translation. Omitted by static previews.
+     */
+    failureMessage?: string | null;
     /** The presented service, including an active attempt that outlives a settings selection. Omitted by static previews. */
     serviceTitle?: string;
     /**
-     * The admitted Session target, retained for the same Account's clean ended moment (null in
-     * global mode or after dismissal). Presentation never substitutes the caller's next idle target.
+     * The person-facing admitted Session target, retained for the same Account's clean ended moment.
+     * Global mode and hidden Voice carriers have no displayed target; request/navigation addresses
+     * keep their exact custody independently. Never substitutes the caller's next idle target.
      */
     targetSessionAddress?: SessionAddress | null;
     /** Exact request owner, independent of whether navigation exposes a conversation or History. */
     pendingRequestSessionAddress?: SessionAddress | null;
     /** Applied voice from the current admitted attempt; never the next saved preference. */
     inUseVoice?: import('@happier-dev/protocol/actions/voiceConversationActionFamily').VoiceConversationInUseVoice | null;
+    /** Render Speaks from only for this admitted carrier fact, using its exact Session's display name. */
+    preparedInstructionsFor?: SessionAddress | null;
     onPrimaryAction: () => void | Promise<boolean>;
     /** Starts the caller's idle target when idle; ends the running attempt otherwise. Never re-targets. */
     onToggle: () => void;
@@ -210,7 +221,8 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
                 ...operation,
                 ...(navigation ? { openRoute: (route: string) => navigation.navigate(() => router.push(route as never)) } : {}),
             });
-            return VoiceConversationActionOutputSchemas[actionId].parse(result).status === 'completed';
+            const output = VoiceConversationActionOutputSchemas[actionId].parse(result);
+            return 'status' in output && output.status === 'completed';
         } catch (error) {
             fireAndForget(Promise.reject(error), { tag });
             return false;
@@ -303,7 +315,7 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
     const activeServerSnapshot = useActiveServerSnapshot();
     const voiceExecutionMachine = useVoiceExecutionMachinePresentation();
     const connectedServicesRegistry = useProjectedConnectedServicesRegistry();
-    const agentRuntime = capabilities?.agentRuntime ?? null;
+    const agentRuntime = expectedAttempt ? snap.recoveryTarget?.agentRuntime ?? null : capabilities?.agentRuntime ?? null;
     /*
      * `resolveVoiceAdapterSurfaceCapabilities` freezes a new capability object on every call, so a
      * stable identity built from the two ids the recovery target actually reads is the same value
@@ -333,6 +345,11 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
         : null;
     const recoverySessionServerId = normalizeNonEmptyString(recoverySession?.serverId);
     const runtimeRecoveryTarget = React.useMemo<VoiceAttemptRecoveryRuntimeTarget | null>(() => {
+        if (expectedAttempt) return resolveVoiceAttemptRecoveryRuntimeTarget({
+            agentRuntime: snap.recoveryTarget?.agentRuntime ?? null,
+            serverId: snap.recoveryTarget?.serverId,
+            machineId: snap.recoveryTarget?.machineId,
+        });
         return resolveVoiceAttemptRecoveryRuntimeTarget({ agentRuntime: agentRuntimeIdentity,
             serverId: recoveryBindingScope === 'session' ? capturedAttemptTarget?.serverId ?? recoverySessionServerId : activeServerSnapshot.serverId,
             machineId: recoveryBindingScope === 'session' ? recoverySessionOwnerMetadata?.machineId : voiceExecutionMachine.machineId });
@@ -344,6 +361,8 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
         recoverySessionOwnerMetadata,
         recoverySessionServerId,
         voiceExecutionMachine.machineId,
+        snap.recoveryTarget,
+        expectedAttempt,
     ]);
     const providerEntry = voiceProviderRegistry.get(providerId);
     const localizePluginText = useProjectedPluginLocalizedTextResolver();
@@ -418,9 +437,12 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
         : capturedAttemptTarget;
     const targetServerId = presentedTarget?.serverId ?? null;
     const targetSessionId = presentedTarget?.sessionId ?? null;
+    const targetSession = useSession(targetSessionId ?? '', targetServerId);
+    const hiddenTarget = targetSession !== null
+        && isVoiceConversationCustodySessionMetadata(readSessionOwnerMetadataView(targetSession));
     const targetSessionAddress = React.useMemo<SessionAddress | null>(
-        () => targetSessionId && targetServerId ? { serverId: targetServerId, sessionId: targetSessionId } : null,
-        [targetServerId, targetSessionId],
+        () => !hiddenTarget && targetSessionId && targetServerId ? { serverId: targetServerId, sessionId: targetSessionId } : null,
+        [hiddenTarget, targetServerId, targetSessionId],
     );
     const subscribeBindingSources = React.useCallback((notify: () => void) => {
         const unsubscribeSessions = storage.subscribe(notify);
@@ -495,7 +517,7 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
     const openConversationSessionAddress = openConversationTarget?.address ?? null;
     const openConversationSessionId = openConversationSessionAddress?.sessionId ?? null;
     const canOpenConversation = openConversationTarget !== null;
-    const pendingRequestSessionAddress = targetSessionAddress ?? activeOpenConversationTarget?.requestAddress ?? null;
+    const pendingRequestSessionAddress = presentedTarget ?? activeOpenConversationTarget?.requestAddress ?? null;
 
     const firstSuccessAttemptId = React.useSyncExternalStore(
         subscribeToVoiceSessionEndedAttempt,
@@ -518,6 +540,8 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
     const presentedSession = useSession(pendingRequestSessionAddress?.sessionId ?? openConversationSessionId ?? snapSessionId ?? '',
         pendingRequestSessionAddress?.serverId ?? openConversationSessionAddress?.serverId ?? recoverySessionServerId);
     const sessionStatus = useSessionStatus(presentedSession, { subscribeToSession: false, workingTextMode: 'static' });
+    const presentedSessionIsHidden = presentedSession !== null
+        && isVoiceConversationCustodySessionMetadata(readSessionOwnerMetadataView(presentedSession));
     const elapsedStartedAt = getVoiceSessionAttemptStartedAt();
     // Hold is not inferred from commitInput or mute: the capture-input owner must admit the gesture.
     const canHoldToTalk = snap.status === 'connected' && snap.canHoldToTalk === true;
@@ -564,6 +588,7 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
          */
         setupOffered: !setupDismissed && (bindingScope === 'global' || startSessionId !== null),
         sessionStatus,
+        hiddenSession: presentedSessionIsHidden,
     }), [
         bindingScope,
         setupDismissed,
@@ -572,6 +597,8 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
         startSessionId,
         sessionStatus?.state,
         sessionStatus?.statusText,
+        sessionStatus?.actionRequiredReason,
+        presentedSessionIsHidden,
         snap.canStop,
         snap.canCommitInput,
         snap.micMuted,
@@ -588,14 +615,16 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
     const statusPresentation = resolveVoiceSurfaceStatusPresentation(surfaceState);
     const statusOverride = presentedEnded
         ? t('voicePresence.ended')
-        : control.statusCell === 'working' || control.statusCell === 'needs_you'
-        ? sessionStatus?.statusText ?? null
         // A muted conversation says so: its mode may still read "Listening", which would invite talking.
         : control.muted && VOICE_CONVERSING_SURFACE_STATES.has(surfaceState)
         ? t('voicePresence.muted')
         : null;
     const statusLabel = statusOverride ?? t(statusPresentation.labelKey);
-    const statusWord = statusOverride ?? t(statusPresentation.wordKey ?? statusPresentation.labelKey);
+    const statusWord = presentedEnded ? t('voicePresence.ended') : (
+        control.statusCell === 'working' || control.statusCell === 'needs_you'
+            ? t(`workStatus.buckets.${control.statusCell}`)
+            : statusOverride ?? t(statusPresentation.wordKey ?? statusPresentation.labelKey)
+    );
     const canStop = control.canStop;
     const canStart = control.canStart;
     const canMute = control.canMute;
@@ -652,18 +681,31 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
     }, [executeControl, expectedAttempt]);
 
     /*
-     * One label per recovery action for every placement (R12b), owned by the recovery resolver. A
-     * blocked microphone is always "Allow"; setup still owed with no runtime recovery is "Set up".
+     * A signed-out Agent names itself and the machine it is signed out on only when both are exact:
+     * the recovery target already derives them, so the sentence and its Set up CTA agree. Anywhere
+     * else the kind's generic sentence and the Connect label stand.
      */
-    const recoveryPresentation = !control.recoveryAvailable
-        ? null
-        : surfaceState === 'permission_required'
-            ? { label: t('voicePresence.recovery.allow'), icon: 'microphone' as const }
-            : recovery
-                ? { label: t(recovery.labelKey), icon: recovery.icon }
-                : { label: t('voicePresence.recovery.setUp'), icon: 'gear' as const };
-    const recoveryLabel = recoveryPresentation?.label ?? null;
-    const recoveryIcon = recoveryPresentation?.icon ?? null;
+    const agentTitle = React.useMemo(
+        () => agentRuntimeIdentity ? resolveAgentCatalogTitle(agentRuntimeIdentity.localId) : null,
+        [agentRuntimeIdentity],
+    );
+    const agentMachineLabel = expectedAttempt ? snap.recoveryTarget?.machineLabel ?? null : runtimeRecoveryTarget?.machineId === voiceExecutionMachine.machineId
+        ? voiceExecutionMachine.machineLabel
+        : null;
+    /*
+     * One label per recovery action for every placement (R12b), owned by the recovery resolver. A
+     * blocked microphone is always "Allow"; setup still owed with no runtime recovery is "Set up";
+     * a Connect that opens the exact Agent's own settings is "Set up <Agent>".
+     */
+    const publicPresentation = React.useMemo(() => projectVoiceAttemptPresentation({
+        control, attemptId: expectedAttempt, ended: presentedEnded !== null,
+        errorCode: snap.errorCode, errorMessage: snap.errorMessage, recoveryAction, recoveryContext,
+        errorConnectedServiceDiagnostic: snap.errorConnectedServiceDiagnostic,
+        serviceTitle, agentTitle, agentMachineLabel,
+    }), [control, expectedAttempt, presentedEnded, snap.errorCode, snap.errorMessage, snap.errorConnectedServiceDiagnostic, recoveryAction,
+        recoveryContext, serviceTitle, agentTitle, agentMachineLabel]);
+    const recoveryLabel = publicPresentation.recovery?.label ?? null;
+    const recoveryIcon = publicPresentation.recovery?.icon ?? null;
     const micStateLabel = surfaceState === 'permission_required' ? statusLabel : t(
         control.muted
             ? 'voiceSurface.a11y.microphoneMuted'
@@ -677,9 +719,8 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
      * (the same machine-error copy the Voice section shows), so no presenter falls back to the
      * last line said as if the call were fine.
      */
-    const failureReason = surfaceState === 'error' && isVoiceMachineErrorKind(snap.errorCode)
-        ? translateVoiceReadiness(resolveVoiceMachineErrorTranslationKey(snap.errorCode, snap.errorMessage), { service: serviceTitle })
-        : null;
+    const failureMessage = publicPresentation.failureMessage;
+    const failureReason = surfaceState === 'error' ? failureMessage : null;
     const captionLabel = surfaceState === 'permission_required'
         ? t('voicePresence.captions.blocked')
         : surfaceState === 'error'
@@ -717,6 +758,7 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
     return React.useMemo(
         () => ({
             ...control,
+            publicPresentation,
             statusWord,
             statusLabel,
             elapsedStartedAt,
@@ -738,9 +780,11 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
             recoveryIcon,
             micStateLabel,
             captionLabel,
+            failureMessage,
             onPrimaryAction,
             serviceTitle,
             inUseVoice: snap.status === 'connected' ? snap.inUseVoice ?? null : null,
+            preparedInstructionsFor: snap.status === 'connected' ? snap.preparedInstructionsFor ?? null : null,
             targetSessionAddress,
             pendingRequestSessionAddress,
             openConversationSessionId,
@@ -750,10 +794,12 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
         }),
         [
             control,
+            publicPresentation,
             statusWord,
             serviceTitle,
             snap.status,
             snap.inUseVoice,
+            snap.preparedInstructionsFor,
             targetSessionAddress,
             pendingRequestSessionAddress,
             statusLabel,
@@ -781,6 +827,7 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
             recoveryIcon,
             micStateLabel,
             captionLabel,
+            failureMessage,
         ],
     );
 }

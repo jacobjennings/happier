@@ -1,3 +1,4 @@
+import { REGISTRY_INPUT_FIELDS } from './registryInputHints.js';
 import { z } from 'zod/mini';
 import { readRecord } from '../../inputs/inputRecords.js';
 import { REGISTRY_ACTION_INPUT_SCHEMAS_V1 as inputs,REGISTRY_ACTION_OUTPUT_SCHEMAS_V1 as outputs,type RegistryActionIdV1 } from '../../registries/registryActionsV1.js';
@@ -23,17 +24,7 @@ function registrySpec<TId extends RegistryActionIdV1>(id:TId,title:string,option
     // Account-owned registries also execute on the captured Account's daemon.
     originalExecution:{accountRoot:'allowed'},
     surfaces:{ui:true,cli:true,agent:true,mcp:true,voice:false,rpc:true},bindings:{rpcMethod:id,mcpToolName:id.replaceAll('.','_')},
-    inputSchema:inputs[id],outputSchema:outputs[id],inputHints:{fields:id.startsWith('registries.sources.') ? [
-      {path:'sourceId',title:'Registry',widget:'text'},
-      {path:'title',title:'Name',widget:'text'},
-      {path:'url',title:'Address',widget:'url',required:id==='registries.sources.create' || id==='registries.sources.detect'},
-      {path:'kinds',title:'Contains',widget:'multiselect',options:[
-        {value:'skill',label:'Skills'},{value:'mcpServer',label:'MCP servers'},{value:'agent',label:'Agents'},{value:'plugin',label:'Plugins'},
-      ]},
-      {path:'enabled',title:'Enabled',widget:'boolean'},
-      {path:'token',title:'Saved Secret',widget:'json'},
-      {path:'npmRegistryProfileId',title:'npm profile',widget:'text'},
-    ]:[]},projectObservationInput:observation,projectObservationOutput:observation,
+    inputSchema:inputs[id],outputSchema:outputs[id],inputHints:{fields:REGISTRY_INPUT_FIELDS[id]},projectObservationInput:observation,projectObservationOutput:observation,
     approvalPresentation:{summary:()=>null,projectInput:raw=>inputs[id].parse(raw),retainInputOnSettlement:true},
     cli:{acceptsServerId:true,commands:[{path:id.split('.'),visibility:'canonical'}]},
   };

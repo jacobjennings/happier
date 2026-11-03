@@ -6,6 +6,7 @@ import type { FindController } from '@happier-dev/plugin-ui/presentation';
 import {
   createDeferred,
   createSessionAccessFixture,
+  createSessionFixture,
   flattenTestStyle,
   flushHookEffects,
   renderScreen,
@@ -32,6 +33,8 @@ import {
 const runSessionHandoffPickerFlowMock = vi.hoisted(() => vi.fn());
 const createDefaultActionExecutorMock = vi.hoisted(() => vi.fn());
 const openSessionForkStrategyFlowMock = vi.hoisted(() => vi.fn());
+const clipboardMock = vi.hoisted(() => vi.fn(async () => true));
+vi.mock('expo-clipboard', () => ({ setStringAsync: clipboardMock }));
 const modalAlertMock = vi.hoisted(() => vi.fn());
 const modalPromptMock = vi.hoisted(() => vi.fn(async () => null as string | null));
 const resolveSessionTargetServerIdMock = vi.hoisted(() => vi.fn());
@@ -494,6 +497,8 @@ describe('SessionHeaderActionMenu handoff', () => {
     createDefaultActionExecutorMock.mockReset();
     openSessionForkStrategyFlowMock.mockReset();
     modalAlertMock.mockReset();
+    clipboardMock.mockReset();
+    clipboardMock.mockResolvedValue(true);
     modalPromptMock.mockReset();
     modalPromptMock.mockResolvedValue(null);
     resolveSessionTargetServerIdMock.mockReset();
@@ -575,6 +580,44 @@ describe('SessionHeaderActionMenu handoff', () => {
     for (const binding of voiceSessionBindingStore.getState().list()) {
       voiceSessionBindingStore.getState().unbind(binding.conversationSessionId);
     }
+  });
+
+  it('offers list pinning and copies the current owner information from the header', async () => {
+    const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
+    const session = createSessionFixture({ id: 'header-information', serverId: 'server_a', metadataLayoutVersion: 1,
+      metadata: { path: '/workspace', host: 'host' },
+      ownerMetadataView: { path: '/workspace', host: 'host', runtimeDescriptorV1: { v: 1, agentId: 'codex', agent: {} },
+        nativeResumeIdentityV1: { v: 1, vendorResumeId: 'old-id' } },
+    });
+    const screen = await renderScreen(<SessionHeaderActionMenu sessionId={session.id} session={session} />);
+    storageState.current.sessions[session.id] = { ...session, ownerMetadataView: { ...session.ownerMetadataView,
+      nativeResumeIdentityV1: { v: 1, vendorResumeId: 'current-id' }, sessionLogPath: '/tmp/session.log' } };
+    const dropdown = screen.findByType('DropdownMenu' as React.ElementType);
+    expect(dropdown.props.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'ui.session.pin' }),
+      expect.objectContaining({ id: 'session.copyDebugInformation' }),
+    ]));
+    await act(async () => {
+      dropdown.props.onSelect('session.copyDebugInformation');
+      await Promise.all(fireAndForgetMock.mock.calls.map(([promise]) => promise));
+    });
+    expect(clipboardMock).toHaveBeenCalledWith([
+      'Happier session ID: header-information',
+      'agentInput.agent.codex session ID: current-id',
+      'Happier logs: /tmp/session.log',
+    ].join('\n'));
+  });
+
+  it('reports clipboard refusal from the header information action', async () => {
+    clipboardMock.mockResolvedValue(false);
+    const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
+    const session = createSessionFixture({ id: 'header-copy-refused', serverId: 'server_a' });
+    const screen = await renderScreen(<SessionHeaderActionMenu sessionId={session.id} session={session} />);
+    await act(async () => {
+      screen.findByType('DropdownMenu' as React.ElementType).props.onSelect('session.copyDebugInformation');
+      await Promise.all(fireAndForgetMock.mock.calls.map(([promise]) => promise));
+    });
+    expect(modalAlertMock).toHaveBeenCalledWith('common.error', 'sessionInfo.failedToCopyMetadata');
   });
 
   it('opens Find in chat on the exact mounted session surface without keyboard preferences', async () => {
@@ -664,13 +707,11 @@ describe('SessionHeaderActionMenu handoff', () => {
     const dropdown = screen.findByType('DropdownMenu' as any);
     expect(dropdown.props.items.map((item: { id: string }) => item.id)).toContain('header.openCompanion');
     await act(async () => { dropdown.props.onSelect('header.openCompanion'); });
-    expect(revealAfterMutation).toHaveBeenCalledWith(expect.objectContaining({
-      applied: expect.objectContaining({ visible: true, collapsed: false }),
-    }));
+    expect(revealAfterMutation).not.toHaveBeenCalled();
     expect(sessionActionsModuleState.routerPushSpy).not.toHaveBeenCalled();
   });
 
-  it('hands a first show to the exact mounted reveal owner after the preference applies', async () => {
+  it('keeps an unbound first show from reaching its reveal owner', async () => {
     const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
     const { SessionCompanionRevealPortProvider } = await import(
       '@/components/sessions/companion/presentation/SessionCompanionRevealPort'
@@ -713,11 +754,8 @@ describe('SessionHeaderActionMenu handoff', () => {
     if (!companionButton) throw new Error('Expected the direct Companion action');
     act(() => companionButton.props.onPress());
 
-    expect(mutateSessionCompanionPreferenceMock).toHaveBeenCalledTimes(1);
-    expect(revealAfterMutation).toHaveBeenCalledTimes(1);
-    expect(revealAfterMutation).toHaveBeenCalledWith(expect.objectContaining({
-      applied: expect.objectContaining({ visible: true }),
-    }));
+    expect(mutateSessionCompanionPreferenceMock).not.toHaveBeenCalled();
+    expect(revealAfterMutation).not.toHaveBeenCalled();
     expect(sessionActionsModuleState.routerPushSpy).not.toHaveBeenCalled();
   });
 
@@ -808,7 +846,7 @@ describe('SessionHeaderActionMenu handoff', () => {
     if (!companionButton) throw new Error('Expected the direct Companion action');
     act(() => companionButton.props.onPress());
 
-    expect(mutateSessionCompanionPreferenceMock).toHaveBeenCalledTimes(1);
+    expect(mutateSessionCompanionPreferenceMock).not.toHaveBeenCalled();
     expect(openFullSurface).not.toHaveBeenCalled();
   });
 

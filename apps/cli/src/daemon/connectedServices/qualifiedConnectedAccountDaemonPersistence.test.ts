@@ -20,7 +20,7 @@ import {
 } from '@happier-dev/protocol';
 import type {
   ConnectedAccountDeviceTransactionSnapshot,
-} from '@/plugins/runtime/connectedAccounts/authenticationAttemptOwner';
+} from '@happier-dev/cli-common/connectedAccounts';
 import {
   commitActiveAccountSettingsSnapshot,
   resetActiveAccountSettingsSnapshotForTests,
@@ -1116,6 +1116,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
           },
         },
         metadata: { displayName: 'Person', scopes: ['read'] },
+        health: { v: 1, status: 'connected', reconnectRequired: false, lastRefreshSuccessAt: 123 },
       }));
     const readConfiguration = vi.fn(async () =>
       QualifiedConnectedAccountConfigurationSnapshotV4Schema.parse({
@@ -1210,6 +1211,7 @@ describe('createQualifiedConnectedAccountDaemonPersistence', () => {
           v: { v: 1, values: { accessToken: 'access-1' } },
         },
         metadata: { displayName: 'Person', scopes: [] },
+        health: { v: 1, status: 'connected', reconnectRequired: false, lastRefreshSuccessAt: 456 },
       });
     const readCredential = vi.fn()
       .mockResolvedValueOnce(oldCredential)

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PROMPT_LIBRARY_ROWS_ROUTE_V1, PromptLibraryCatalogKeyV1Schema } from '@happier-dev/protocol/prompts/library/promptLibraryRowsV1';
 import { PROFILE_ROWS_ROUTE_V1, PROFILE_REFERENCE_GUARD_ROUTE_V1, ProfileRecordV1Schema } from '@happier-dev/protocol/profiles/profileRecordV1';
 import { PROFILE_TRANSFER_ROUTE_V1 } from '@happier-dev/protocol/profiles/profileTransferV1';
@@ -30,6 +30,21 @@ const readArtifact = async (ref: { artifactId: string }): Promise<PromptLibraryS
 describe('qualified UI Voice prompt preparation', () => {
     let fixture: Awaited<ReturnType<typeof createPlainArtifactHomeFixture>> | undefined;
     afterEach(() => fixture?.dispose());
+
+    it('records a closed outer refusal when a captured Account context has retired', async () => {
+        fixture = await createPlainArtifactHomeFixture('https://private-disposed-voice.example');
+        const account = await captureLazyActionAccountContext(fixture.home.id);
+        await TokenStorage.removeCredentialsForServerUrl(fixture.home.serverUrl, { serverId: fixture.home.id });
+        const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+        try {
+            await expect(resolveUiVoicePromptStackBlocks({ serverId: account.serverId, accountContext: account }))
+                .rejects.toMatchObject({ status: 'preparation_pending', reason: 'unavailable' });
+            expect(logged).toHaveBeenCalledWith('[voicePromptStack] preparation refused ' + JSON.stringify({
+                step: 'prepare', code: 'action_account_scope_changed', errorClass: 'Error',
+            }));
+            expect(JSON.stringify(logged.mock.calls)).not.toContain('private');
+        } finally { account.dispose(); logged.mockRestore(); }
+    });
 
     it('composes explicit bound four-layer inputs without borrowing ambient Account settings', async () => {
         expect(await resolveUiVoicePromptStackBlocks({ accountEntries: [entry('account')], profileEntries: [entry('profile')],
@@ -178,6 +193,7 @@ describe('qualified UI Voice prompt preparation', () => {
             return null;
         } });
         const account = await captureLazyActionAccountContext(fixture.home.id);
+        const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
         try {
             for (const id of ['private-first', 'private-second']) await account.createArtifactDocument({ artifactId: id,
                 header: { v: 1, kind: 'prompt_doc.v2', title: id },
@@ -191,7 +207,11 @@ describe('qualified UI Voice prompt preparation', () => {
             expect(account.accountLifetime.isCurrent()).toBe(false);
             expect(error).toBeInstanceOf(PromptStackPreparationError);
             expect(error).toMatchObject({ status: 'preparation_pending', reason: 'unavailable', admittedEntries: [] });
-        } finally { account.dispose(); }
+            expect(logged).toHaveBeenCalledWith('[voicePromptStack] preparation refused ' + JSON.stringify({
+                step: 'resolve_currentness', code: 'action_account_scope_changed', errorClass: 'Error',
+            }));
+            expect(JSON.stringify(logged.mock.calls)).not.toContain('Private');
+        } finally { account.dispose(); logged.mockRestore(); }
     });
 
     it('prepares the exact bound Home Profile Project and Session, suppressing inherited entries and memory before body reads', async () => {

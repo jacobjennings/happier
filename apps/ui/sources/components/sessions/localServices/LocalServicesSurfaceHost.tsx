@@ -16,14 +16,11 @@ import type { LocalServicePreviewPlatform } from '@/sync/domains/local/services/
 import type { PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
 
 import { DetectedLocalServicesPane } from './DetectedLocalServicesPane';
-import type { ServiceRow } from '@/sync/domains/local/services/serviceRow';
+import type { DescribeServiceDeclaration, ServiceRow } from '@/sync/domains/local/services/serviceRow';
 import type { ServiceRowOpenHandler } from './ServiceRowView';
 import { useLocalServiceEntryActions } from './useLocalServiceEntryActions';
 import { useLocalServiceLiveFeeds } from './useLocalServiceLiveFeeds';
-import {
-    useLocalServiceCapabilityDisabledReasons,
-    useLocalServicePublicPreviewFeatureEnabled,
-} from './useLocalServicePublicPreviewFeature';
+import { useLocalServicePresentationFeatures } from './useLocalServicePublicPreviewFeature';
 
 export type LocalServicesSurfaceHostProps = Readonly<{
     machineId?: string | null;
@@ -52,6 +49,8 @@ export type LocalServicesSurfaceHostProps = Readonly<{
     onAddService?: () => void;
     /** The placement owner's per-row "Runs on" control (plan 32), hosted in each row's expansion. */
     renderServicePlacement?: (row: ServiceRow) => React.ReactNode;
+    /** The Project definition's command and source file for a declared service. */
+    describeDeclaration?: DescribeServiceDeclaration;
     testID: string;
 }>;
 
@@ -64,10 +63,9 @@ export function LocalServicesSurfaceHost(props: LocalServicesSurfaceHostProps): 
     // The header line and the offline state name the machine and read its presence: one summary,
     // primitives only, so presence heartbeats that change nothing re-render nothing.
     const machine = useMachinePresenceSummary(serverId, machineId);
-    const publicPreviewFeatureEnabled = useLocalServicePublicPreviewFeatureEnabled(serverId);
     // Resolved once for the whole surface: the server names which prerequisite is unmet, and the
     // rows render it instead of one generic sentence for eleven different causes (audit P1-3).
-    const publicPreviewCapabilityDisabledReasons = useLocalServiceCapabilityDisabledReasons(serverId);
+    const { publicPreviewFeatureEnabled, publicPreviewCapabilityDisabledReasons } = useLocalServicePresentationFeatures(serverId);
     const feeds = useLocalServiceLiveFeeds({
         machineId,
         serverId,
@@ -144,6 +142,7 @@ export function LocalServicesSurfaceHost(props: LocalServicesSurfaceHostProps): 
             presentation={props.presentation}
             onAddService={props.onAddService}
             renderServicePlacement={props.renderServicePlacement}
+            describeDeclaration={props.describeDeclaration}
             viewerAccountId={entryActions.viewerAccountId}
             effectReview={entryActions.review}
             testID={props.testID}

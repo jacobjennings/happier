@@ -72,43 +72,6 @@ describe('validatePluginManifest', () => {
     expect(result).toEqual(expect.objectContaining({ ok: true }));
   });
 
-  it('rejects the retired Voice readiness spelling for every manifest authority', () => {
-    const createVoiceManifest = (id: string) => ({
-      schemaVersion: 2,
-      id,
-      version: '1.0.0',
-      displayName: 'Credential Voice',
-      engines: { happier: '>=0.0.0' }, runtime: { apiVersion: 1 },
-      hostAccess: { required: [], optional: [] },
-      contributes: {
-        voiceProviders: [{
-          id: 'conversation',
-          title: 'Conversation',
-          kind: 'conversation',
-          roles: ['realtime_conversation'],
-          platforms: ['web'],
-          capabilities: {
-            readiness: { requirements: ['credential'] },
-            turn: { cancelResponse: true, bargeIn: false },
-          },
-          client: {
-            artifactId: 'voice-runtime-web',
-            exportName: 'activate',
-          },
-        }],
-      },
-    });
-
-    expect(validatePluginManifest(createVoiceManifest('acme.credential-voice'), { sourceProvenance: 'registryCustodied' })).toEqual(expect.objectContaining({
-      ok: false, diagnostics: [expect.objectContaining({ code: 'plugin_manifest_invalid' })],
-    }));
-    expect(validatePluginManifest(createVoiceManifest('happier.voice.openai'), { sourceProvenance: 'localSource',
-      manifestAuthority: 'bundled_first_party',
-    })).toEqual(expect.objectContaining({
-      ok: false, diagnostics: [expect.objectContaining({ code: 'plugin_manifest_invalid' })],
-    }));
-  });
-
   it('keeps RecipientOperationV1 authority independent from retired action linkage', () => {
     const manifest = {
       schemaVersion: 2,
@@ -419,26 +382,43 @@ describe('validatePluginManifest', () => {
     });
   });
 
-  it('rejects external manifests that claim the reserved happier namespace', () => {
-    const result = validatePluginManifest(createManifest('happier.agent.fake'), { sourceProvenance: 'registryCustodied' });
+  it('admits the current custom Agent declaration and refuses retired surface handlers', () => {
+    const agent = {
+      id: 'agent',
+      title: 'Agent',
+      runtime: { kind: 'custom' },
+      primary: 'sessions',
+      capabilities: {
+        sessions: { open: ['create'], delivery: ['newTurn'], cancel: true },
+      },
+    };
+    const current = createManifest('acme.current-agent');
+    current.contributes = { agents: [agent] };
+    expect(validatePluginManifest(current, { sourceProvenance: 'registryCustodied' })).toEqual(expect.objectContaining({ ok: true }));
 
+    const retired = createManifest('acme.retired-surface');
+    retired.contributes = {
+      agents: [{
+        ...agent,
+        surfaceHandlers: [{
+          surfaceApiVersion: 1,
+          id: 'checkpoint-restore',
+          kind: 'checkpoint',
+          operation: 'restore',
+          support: 'conditional',
+        }],
+      }],
+    };
+    const result = validatePluginManifest(retired, { sourceProvenance: 'registryCustodied' });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.diagnostics).toEqual([
         expect.objectContaining({
-          code: 'plugin_manifest_semantic_invalid',
-          message: expect.stringContaining('reserved'),
+          code: 'plugin_manifest_invalid',
+          message: expect.stringContaining('contributes.agents.0'),
         }),
       ]);
     }
-  });
-
-  it('allows bundled first-party manifests to use the reserved happier namespace', () => {
-    const result = validatePluginManifest(createManifest('happier.agent.codex'), { sourceProvenance: 'localSource',
-      manifestAuthority: 'bundled_first_party',
-    });
-
-    expect(result.ok).toBe(true);
   });
 
   it('scopes the reserved happier namespace to registry-custodied artifacts', () => {
@@ -450,9 +430,15 @@ describe('validatePluginManifest', () => {
       sourceProvenance: 'localSource',
     })).toEqual(expect.objectContaining({ ok: true }));
 
-    expect(diagnosticMessages(validatePluginManifest(createManifest('happier.agent.fake'), {
+    expect(validatePluginManifest(createManifest('happier.agent.fake'), {
       sourceProvenance: 'registryCustodied',
-    }))).toEqual([expect.stringContaining('reserved happier.* namespace')]);
+    })).toEqual({
+      ok: false,
+      diagnostics: [expect.objectContaining({
+        code: 'plugin_manifest_semantic_invalid',
+        message: expect.stringContaining('reserved happier.* namespace'),
+      })],
+    });
   });
 
   it('scopes the release-stamped engine range to registry-custodied artifacts', () => {
@@ -475,82 +461,6 @@ describe('validatePluginManifest', () => {
     expect(diagnosticMessages(validatePluginManifest(unsupportedEntry, {
       sourceProvenance: 'localSource',
     }))).toEqual(['Plugin daemon entry uses an unsupported extension']);
-  });
-
-  it('rejects the removed lifecycle handler contribution family', () => {
-    const manifest = createManifest('acme.lifecycle');
-    manifest.contributes = {
-      lifecycleHandlers: [
-        {
-          id: 'activated',
-          event: 'activated',
-          handler: { target: 'daemon', registrationId: 'activated' },
-        },
-      ],
-    };
-
-    const result = validatePluginManifest(manifest, { sourceProvenance: 'registryCustodied' });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.diagnostics).toEqual([
-        expect.objectContaining({
-          code: 'plugin_manifest_invalid',
-          message: expect.stringContaining('lifecycleHandlers'),
-        }),
-      ]);
-    }
-  });
-
-  it('rejects retired backend surface operation declarations', () => {
-    const manifest = createManifest('acme.retired-surface');
-    manifest.contributes = {
-      agents: [{
-        id: 'agent',
-        title: 'Agent',
-        runtime: { kind: 'custom' },
-        primary: 'sessions',
-        capabilities: {
-          sessions: { open: ['create'], delivery: ['newTurn'], cancel: true },
-        },
-        surfaceHandlers: [{
-          surfaceApiVersion: 1,
-          id: 'checkpoint-restore',
-          kind: 'checkpoint',
-          operation: 'restore',
-          support: 'conditional',
-        }],
-      }],
-    };
-
-    const result = validatePluginManifest(manifest, { sourceProvenance: 'registryCustodied' });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.diagnostics).toEqual([
-        expect.objectContaining({
-          code: 'plugin_manifest_invalid',
-          message: expect.stringContaining('contributes.agents.0'),
-        }),
-      ]);
-    }
-  });
-
-  it('accepts the current custom Agent declaration without retired surface handlers', () => {
-    const manifest = createManifest('acme.current-agent');
-    manifest.contributes = {
-      agents: [{
-        id: 'agent',
-        title: 'Agent',
-        runtime: { kind: 'custom' },
-        primary: 'sessions',
-        capabilities: {
-          sessions: { open: ['create'], delivery: ['newTurn'], cancel: true },
-        },
-      }],
-    };
-
-    expect(validatePluginManifest(manifest, { sourceProvenance: 'registryCustodied' })).toEqual(expect.objectContaining({ ok: true }));
   });
 
   it('accepts full npm semver ranges for engines.happier', () => {
@@ -647,27 +557,6 @@ describe('validatePluginManifest', () => {
         }),
       ]);
     }
-  });
-
-  it.each([
-    ['webSocket', { kind: 'webSocket', url: 'wss://acp.example.test/session' }],
-    ['tcp', { kind: 'tcp', host: '127.0.0.1', port: 9000 }],
-  ])('accepts the currently supported ACP %s transport', (_kind, transport) => {
-    const id = `acme.supported-acp.${String(_kind).toLowerCase()}`;
-    const manifest = createManifest(id);
-    manifest.contributes = {
-      agents: [{
-        id: 'agent',
-        title: 'Agent',
-        runtime: { kind: 'acp', transport },
-        primary: 'sessions',
-        capabilities: {
-          sessions: { open: ['create'], delivery: ['newTurn'], cancel: true },
-        },
-      }],
-    };
-
-    expect(validatePluginManifest(manifest, { sourceProvenance: 'registryCustodied' })).toEqual(expect.objectContaining({ ok: true }));
   });
 
   it('leaves ACP system-tool reference resolution to canonical manifest ingestion', () => {

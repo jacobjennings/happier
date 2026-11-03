@@ -126,10 +126,7 @@ type ExpoConfigLike = Readonly<{
     }>;
 }>;
 
-function readWebStorageValue(readWebStorage?: (key: string) => string | null): string | null {
-    if (readWebStorage) {
-        return readWebStorage(WEB_STORAGE_KEY);
-    }
+function readWebStorageValue(): string | null {
     try {
         if (typeof window === 'undefined') return null;
         return window.localStorage?.getItem(WEB_STORAGE_KEY) ?? null;
@@ -193,7 +190,6 @@ function readRatio(obj: Record<string, unknown>, key: keyof SyncTuning): number 
 
 export function loadSyncTuning(opts?: {
     env?: Record<string, string | undefined>;
-    readWebStorage?: (key: string) => string | null;
     readExpoConfig?: () => unknown;
 }): SyncTuning {
     const defaults: SyncTuning = {
@@ -285,7 +281,7 @@ export function loadSyncTuning(opts?: {
         automationRunsMaxEntriesPerAutomation: 200,
     };
 
-    const webObj = parseJsonObject(readWebStorageValue(opts?.readWebStorage));
+    const webObj = parseJsonObject(readWebStorageValue());
     const expoConfigObj = parseJsonObject(readExpoConfigValue(opts?.readExpoConfig));
     const envObj = parseJsonObject(opts?.env ? opts.env[ENV_KEY] : STATIC_EXPO_PUBLIC_HAPPIER_SYNC_TUNING_JSON);
 

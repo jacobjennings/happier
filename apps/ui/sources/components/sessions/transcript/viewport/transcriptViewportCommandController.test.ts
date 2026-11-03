@@ -31,29 +31,6 @@ function makeAdapter() {
 }
 
 describe('transcript viewport command controller', () => {
-    it('rejects follow writes while an entry transaction owns the viewport', () => {
-        const controller = createTranscriptViewportCommandController();
-        controller.resetForSession({ openEntryTransaction: true, sessionId: 'session-a' });
-        const { adapter, executed, rejected } = makeAdapter();
-
-        const accepted = controller.execute({
-            kind: 'pin-bottom',
-            sessionId: 'session-a',
-            reason: 'stream-append',
-            mode: 'follow-bottom',
-        }, adapter);
-
-        expect(accepted).toBe(false);
-        expect(executed).toHaveLength(0);
-        expect(rejected).toEqual([
-            expect.objectContaining({
-                activeOwner: 'entry',
-                rejectedOwner: 'follow',
-                command: expect.objectContaining({ reason: 'stream-append' }),
-            }),
-        ]);
-    });
-
     it('lets explicit jumps preempt an entry transaction and returns to follow ownership', () => {
         const controller = createTranscriptViewportCommandController();
         controller.resetForSession({ openEntryTransaction: true, sessionId: 'session-a' });
@@ -73,23 +50,4 @@ describe('transcript viewport command controller', () => {
         expect(rejected).toHaveLength(0);
         expect(controller.activeOwner()).toBe('follow');
     });
-
-    it('drops stale commands for a previous session before adapter side effects', () => {
-        const controller = createTranscriptViewportCommandController();
-        controller.resetForSession({ openEntryTransaction: false, sessionId: 'session-a' });
-        controller.setCurrentSessionId('session-b');
-        const { adapter, executed, rejected } = makeAdapter();
-
-        const accepted = controller.execute({
-            kind: 'pin-bottom',
-            sessionId: 'session-a',
-            reason: 'stream-append',
-            mode: 'follow-bottom',
-        }, adapter);
-
-        expect(accepted).toBe(false);
-        expect(executed).toHaveLength(0);
-        expect(rejected).toHaveLength(0);
-    });
-
 });

@@ -32,12 +32,24 @@ function createRuntime(
 }
 
 describe('createSessionClientUpdateRuntime', () => {
+  it('does not treat bodyless observations as materialized or accepted runtime messages', () => {
+    const emit = vi.fn();
+    const observeCommittedUserMessageSeq = vi.fn();
+    const runtime = createRuntime({ emit, observeCommittedUserMessageSeq });
+    runtime.handleUpdate({ id: 'hint', seq: 1, createdAt: 1,
+      body: { t: 'message-updated', delivery: 'hint', sid: 'session-1', message: { id: 'm', seq: 8,
+        localId: 'local', messageRole: 'user', createdAt: 1, updatedAt: 2,
+        attentionImpact: { affectsUnread: true, affectsMeaningfulActivity: true } } } }, { source: 'session-scoped' });
+    expect(observeCommittedUserMessageSeq).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+    expect(runtime.getLastObservedMessageSeq()).toBe(0);
+  });
   it('re-observes an original without consuming its IDs or frontier when its authenticated Home is temporarily unavailable', () => {
     let serverIdentityId: string | null | undefined;
     const emit = vi.fn();
     const runtime = createRuntime({ getServerIdentityId: () => serverIdentityId, emit });
     const update = { id: 'home-update', seq: 1, createdAt: 1_000,
-      body: { t: 'new-message', sid: 'session-1', message: {
+      body: { t: 'new-message', delivery: 'full' as const, sid: 'session-1', message: {
         id: 'home-message', localId: 'home-original', seq: 7, createdAt: 1_000, updatedAt: 1_000, messageRole: 'user',
         inputAdmissionReceipt: { v: 1, issuer: 'authenticatedAccount', actorAccountId: 'person', sessionRelationship: 'owner' },
         content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'Preserve this original' } } },
@@ -96,7 +108,7 @@ describe('createSessionClientUpdateRuntime', () => {
     const update = {
       id: 'update-1', seq: 1, createdAt: 1_000,
       body: {
-        t: 'new-message', sid: 'session-1',
+        t: 'new-message', delivery: 'full' as const, sid: 'session-1',
         message: {
           id: 'message-1', seq: 4, localId: 'local-1', createdAt: 1_000, updatedAt: 1_000,
           content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'observe me' } } },

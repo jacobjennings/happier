@@ -46,13 +46,13 @@ describe('Home-backed transcript Action waits', () => {
       rows = [{ id: 'row-1', seq: 1, localId: null, createdAt: 1, updatedAt: 1,
         content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'appended' } } } }];
       const emittedAt = performance.now();
-      update({ t: 'new-message', sid: 'session-1', message: rows[0] });
+      update({ t: 'new-message', delivery: 'full' as const, sid: 'session-1', message: rows[0] });
       await expect(first).resolves.toMatchObject({ ok: true, items: [{ seq: 1 }], nextCursor: '1' });
       const socketToActionMs = performance.now() - emittedAt;
       console.info('WAKE_TIMING', JSON.stringify({ socketToActionMs }));
       expect(socketToActionMs).toBeLessThan(1000);
       // A revision between Action calls must survive on the retained lease.
-      update({ t: 'message-updated', sid: 'session-1', message: { ...rows[0], updatedAt: 2 } });
+      update({ t: 'message-updated', delivery: 'full' as const, sid: 'session-1', message: { ...rows[0], updatedAt: 2 } });
       await new Promise<void>((resolve) => setImmediate(resolve));
       await expect(follow('1')).resolves.toMatchObject({ ok: true, items: [],
         changes: [{ kind: 'revision', messageId: 'row-1', seq: 1 }] });
@@ -60,7 +60,7 @@ describe('Home-backed transcript Action waits', () => {
       const second = follow('1');
       await baseline;
       rows.push({ ...rows[0]!, id: 'row-2', seq: 2 });
-      update({ t: 'new-message', sid: 'session-1', message: rows[1] });
+      update({ t: 'new-message', delivery: 'full' as const, sid: 'session-1', message: rows[1] });
       const secondResult = await second;
       expect(secondResult).toMatchObject({ ok: true, items: [{ seq: 2 }], nextCursor: '2' });
       if (!secondResult.ok) throw new Error('Second follow failed');

@@ -39,6 +39,59 @@ const privateAuthorityPaths = new Set(['/v1/account/entity-rows/provider-connect
   '/v1/account/entity-rows/connected-metadata/acknowledgements', '/v1/account/entity-rows/remote-hosts', NOTIFICATION_CHANNELS_ROUTE_V1]);
 
 describe('Account Settings history destination capture', () => {
+  it('reads no destination catalogs for a confirmed empty history, but normalizes history when it exists', async () => {
+    let hasHistory = false;
+    let catalogReads = 0;
+    let openedSnapshots = 0;
+    let listReads = 0;
+    let appearOnConfirmation = false;
+    let settingsVersion = 7;
+    let moveEmptyHead = false;
+    const input = { destinationAuthority: { activeTransferredRoots: [] }, ports: {
+      isCurrent: () => true,
+      readCurrentness: async () => AccountEncryptionCurrentnessResponseSchema.parse({ mode: 'plain', version: 1,
+        signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1, settingsVersion }),
+      resolveTransferMaterial: () => null,
+      unavailable: (_status: number, message: string): never => { throw new Error(message); },
+      openSnapshot: (content: AccountSettingsStoredContentEnvelope): AccountSettingsPersistedObject => {
+        openedSnapshots++;
+        if (content.t !== 'plain') throw new Error('Expected Plain snapshot');
+        return content.v;
+      },
+      resealSnapshot: (raw: AccountSettingsPersistedObject): AccountSettingsStoredContentEnvelope => ({ t: 'plain', v: raw }),
+      request: async (path: string) => {
+        if (path === '/v2/account/settings/history') {
+          listReads++;
+          if (moveEmptyHead) settingsVersion++;
+          if (appearOnConfirmation && listReads === 2) hasHistory = true;
+          return { status: 200, data: { snapshots: hasHistory ? [{
+            version: 6, createdAt: '2026-01-01T00:00:00.000Z', contentKind: 'plain', byteLength: 20 }] : [] } };
+        }
+        if (path === '/v2/account/settings/history/6') return { status: 200, data: { version: 6,
+          createdAt: '2026-01-01T00:00:00.000Z', content: { t: 'plain', v: { preferredLanguage: 'de' } } } };
+        catalogReads++;
+        if (path === PROFILE_TRANSFER_ROUTE_V1) return { status: 200, data: { status: 'absent' } };
+        if (path === PROMPT_LIBRARY_ROWS_ROUTE_V1) return { status: 200, data: { status: 'listed', rows: [] } };
+        if (privateAuthorityPaths.has(path)) return { status: 404, data: { error: 'not_found' } };
+        throw new Error(`Unexpected history request: ${path}`);
+      },
+    } };
+    expect(await normalizeAccountSettingsHistoryClientV1(input)).toEqual({ status: 'complete' });
+    expect(catalogReads).toBe(0);
+    moveEmptyHead = true;
+    expect(await normalizeAccountSettingsHistoryClientV1(input)).toEqual({ status: 'complete' });
+    expect(catalogReads).toBe(0);
+    moveEmptyHead = false;
+    listReads = 0;
+    appearOnConfirmation = true;
+    expect(await normalizeAccountSettingsHistoryClientV1(input)).toEqual({ status: 'cleanup-pending', versions: [6] });
+    expect(catalogReads).toBe(0);
+    appearOnConfirmation = false;
+    expect(await normalizeAccountSettingsHistoryClientV1(input)).toEqual({ status: 'complete' });
+    expect(catalogReads).toBeGreaterThan(0);
+    expect(openedSnapshots).toBe(1);
+  });
+
   it('does not mark a completed history scan pending when only the Account event cursor advances', async () => {
     let accountVersion = 1;
     const input = { destinationAuthority: { activeTransferredRoots: [] }, ports: {

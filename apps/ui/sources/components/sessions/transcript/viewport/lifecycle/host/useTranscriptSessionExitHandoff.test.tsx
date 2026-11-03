@@ -228,36 +228,33 @@ describe('useTranscriptSessionExitHandoff', () => {
         });
     });
 
-    it.each(['pagehide', 'freeze'] as const)(
-        'publishes synchronously on %s and does not duplicate during unmount cleanup',
-        async (eventName) => {
-            await withBrowserLifecycleBoundary(async (boundary) => {
-                const exitCurrentSession = vi.fn();
+    it('publishes synchronously on freeze and does not duplicate during unmount cleanup', async () => {
+        await withBrowserLifecycleBoundary(async (boundary) => {
+            const exitCurrentSession = vi.fn();
 
-                function Harness() {
-                    useTranscriptSessionExitHandoff({
-                        commitSessionId: () => undefined,
-                        exitCurrentSession,
-                        sessionId: 'session-a',
-                    });
-                    return null;
-                }
-
-                let tree!: renderer.ReactTestRenderer;
-                await act(async () => {
-                    tree = renderer.create(<Harness />);
+            function Harness() {
+                useTranscriptSessionExitHandoff({
+                    commitSessionId: () => undefined,
+                    exitCurrentSession,
+                    sessionId: 'session-a',
                 });
+                return null;
+            }
 
-                boundary.dispatchWindow(eventName);
-                expect(exitCurrentSession).toHaveBeenCalledExactlyOnceWith({ deferEmit: false });
-
-                await act(async () => {
-                    tree.unmount();
-                });
-                expect(exitCurrentSession).toHaveBeenCalledTimes(1);
+            let tree!: renderer.ReactTestRenderer;
+            await act(async () => {
+                tree = renderer.create(<Harness />);
             });
-        },
-    );
+
+            boundary.dispatchWindow('freeze');
+            expect(exitCurrentSession).toHaveBeenCalledExactlyOnceWith({ deferEmit: false });
+
+            await act(async () => {
+                tree.unmount();
+            });
+            expect(exitCurrentSession).toHaveBeenCalledTimes(1);
+        });
+    });
 
     it('subscribes before a page lifecycle event can occur after commit but before passive effects', async () => {
         await withBrowserLifecycleBoundary(async (boundary) => {

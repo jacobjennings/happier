@@ -119,6 +119,7 @@ import { AgentEvent, NormalizedMessage, UsageData } from "../raw/index.js";
 import { createTracer, traceMessages, TracerState } from "./reducerTracer.js";
 import { AgentState } from '../state/index.js';
 import { MessageMeta } from "../messages/messageMetaTypes.js";
+import type { TranscriptPeerSenderV1 } from '@happier-dev/protocol';
 import { compareToolCalls } from "../tools/toolComparison.js";
 import { runMessageToEventConversion } from "./phases/messageToEventConversion.js";
 import { runAgentStatePermissionsPhase } from "./phases/agentStatePermissions.js";
@@ -258,6 +259,7 @@ export type ReducerMessage = {
     role: 'user' | 'agent';
     text: string | null;
     isThinking?: boolean;
+    peer?: TranscriptPeerSenderV1;
     event: AgentEvent | null;
     tool: ToolCall | null;
     meta?: MessageMeta;
@@ -1038,6 +1040,7 @@ function convertReducerMessageToMessage(
             kind: 'agent-text',
             text: reducerMsg.text,
             ...(reducerMsg.isThinking && { isThinking: true }),
+            ...(reducerMsg.peer && { peer: reducerMsg.peer }),
             meta: reducerMsg.meta,
             ...(reducerMsg.structuredPresentation !== undefined
                 ? { structuredPresentation: reducerMsg.structuredPresentation }

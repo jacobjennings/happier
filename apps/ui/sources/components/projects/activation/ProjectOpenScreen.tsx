@@ -19,7 +19,10 @@ import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { KeyboardStickyFooter } from '@/components/ui/keyboardAvoidance/KeyboardStickyFooter';
+import { NavigationBackChromeProvider, useNavigationBackControl } from '@/components/ui/layout/NavigationBackChrome';
 import { PageHeader } from '@/components/ui/layout/PageHeader';
+import { usePageBackControl } from '@/components/ui/layout/usePageBackControl';
+import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { PagePinnedBar } from '@/components/ui/layout/PagePinnedBar';
 import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { Item } from '@/components/ui/lists/Item';
@@ -283,8 +286,10 @@ const ProjectOpenForm = React.memo(function ProjectOpenForm(
   const cancel = () => {
     open.cancel();
     if (props.onClose) props.onClose();
-    else router.back();
+    else safeRouterBack({ router, fallbackHref: '/projects' });
   };
+  const inheritedBack = useNavigationBackControl();
+  const pageBack = usePageBackControl('projects.open.back', cancel);
   // What Open would send: the stored draft, or the draft with the shown default once the rows are complete.
   const effectiveDraft = draft && defaultsPending && rowsCensusComplete ? buildProjectOpenDraft(choiceBase) : draft;
   const submit = () => {
@@ -435,13 +440,15 @@ const ProjectOpenForm = React.memo(function ProjectOpenForm(
           containerStyle={dialog ? styles.choicesInset : undefined}
         >
           {dialog ? null : (
-            <PageHeader
-              title={t('projects.open.title')}
-              description={t('projects.open.purpose')}
-              alwaysShowTitle
-              // A pushed page leaves through navigation's standard Back (lab OPENp "‹ Projects"); Cancel belongs to the
-              // dialog's footer and to modal sheets, never to this page's header.
-            />
+            // A pushed page leaves through Back (lab OPENp "‹ Projects"); Cancel belongs to the dialog's footer and to
+            // modal sheets, never to this page's header. Where the footer is the phone's, this Back is its cancel.
+            <NavigationBackChromeProvider control={twoPanes ? inheritedBack : pageBack}>
+              <PageHeader
+                title={t('projects.open.title')}
+                description={t('projects.open.purpose')}
+                alwaysShowTitle
+              />
+            </NavigationBackChromeProvider>
           )}
           <ProjectOpenSubjectSection
             subject={subject}

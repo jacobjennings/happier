@@ -270,6 +270,7 @@ const actionConfirmationTranslations = { ja: {
         homeUnavailable: 'この承認は、このデバイスでは利用できない Home に属しています。判断するには、その Home を再接続してください。',
         turnedOffTitle: 'アクションはオフです',
         turnedOffMessage: 'このアクションはオフになっているため、何も変更されませんでした。設定 → アクションで再びオンにできます。',
+        turnedOffReadMessage: 'このアクションはオフになっているため、何も読み込まれませんでした。設定 → アクションで再びオンにできます。',
         openActionSettings: 'アクションの設定を開く',
     } } as const satisfies Pick<Record<string, ActionConfirmationTranslations>, "ja">;
 
@@ -565,15 +566,21 @@ const ja: typeof en = {
     descriptions: {
         conversation: ({ machine }) => `このセッションを止めずに何でも聞けます。${machine} で横に並んで動き、あなたが送らない限り何も戻りません。`,
     },
+    placeholders: {
+        review: 'レビュアーに重点的に見てほしい点は？',
+    },
     chips: {
         engineTitle: '応答するエージェント',
         addReviewer: 'レビュアーを追加',
+        reviewer: 'レビュアー',
+        reviewerNeeded: '開始するにはレビュアーを追加',
         removeReviewer: ({ name }) => `${name} を外す`,
         scope: 'レビュー対象',
         advanced: '詳細',
     },
     reportToSession: 'このセッションに報告',
     startsWhenYouSend: ({ count }) => count > 1 ? `送信すると ${count} 件のレビューが始まります` : '送信すると始まります',
+    thisFolder: 'このフォルダ',
     offline: ({ machine }) => `${machine} はオフラインです。エージェントはそこで始まります。戻るまで下書きはここに残ります。`,
     menu: {
         askSection: 'エージェントに依頼',
@@ -1041,6 +1048,7 @@ const artifactsBrowserTranslations = { ja: {
         },
         proposal: {
             title: '編集の提案',
+            titleBy: ({ who }) => `${who} が編集を提案しています`,
             basedOn: ({ n }) => `バージョン ${n} に基づく`,
             current: ({ n }) => `バージョン ${n} · 最新`,
             before: '変更前',
@@ -1220,6 +1228,8 @@ const ja: BoardsTranslations = {
     meta: {
         needYou: ({ count }) => `${count} 件が対応待ち`,
         items: ({ count }) => `${count} 件`,
+        itemsAtLeast: ({ count }) => `${count}+ 件`,
+        needYouAtLeast: ({ count }) => `${count}+ 件が対応待ち`,
         handPicked: '手動で選択',
         empty: '空',
         moreSources: ({ count }) => `+ ${count}`,
@@ -1304,10 +1314,22 @@ const ja: BoardsTranslations = {
         empty: '一致するものはありません。',
         noMatch: ({ query }) => `「${query}」に一致するものはありません`,
     },
+    /** Candidates an answered filter could not classify: said once under the header, qualifying every count. */
+    undetermined: {
+        sessions: ({ count }) => `${count} 件のセッションを確認できませんでした`,
+        runs: ({ count }) => `${count} 件の実行を確認できませんでした`,
+        items: ({ count }) => `${count} 件の項目を確認できませんでした`,
+        projectAssociation: 'プロジェクトとの関連付けが公開されていないか、あなたには表示されません。',
+        filterFacts: 'このフィルターに必要な情報を取得できません。',
+    },
     empty: {
         title: 'このボードに表示するものを選びましょう',
         body: 'セッション、ワークフロー、実行、マシンを手動で追加するか、「対応待ち」のようなセクションを表示します。配置はあなた次第。ボードがライブに保ちます。',
         action: 'ボードに追加',
+        sourcedTitle: 'いまは何もありません',
+        sourcedBody: 'このボードのソースに一致する項目は、届き次第ここに表示されます。手動で追加することもできます。',
+        uncheckedTitle: '一致はまだ確認されていません',
+        pendingTitle: '一致する項目を確認しています…',
     },
     widgets: {
         group: 'ウィジェット',
@@ -1629,6 +1651,30 @@ type MachineParams = Shared_computerUseTranslations.MachineParams;
 type ComputerUseTranslations = Shared_computerUseTranslations.ComputerUseTranslations;
 
 const computerUseTranslations = { ja: {
+        providers: {
+            pageDescription: ({ machine }) => `エージェントが ${machine} の画面を見て操作する方法。`,
+            sectionTitle: "プロバイダー",
+            sectionDescription: "エージェントは、オンの別のプロバイダーを指定しない限りデフォルトを使います。",
+            offlineDescription: ({ machine }) => `${machine} はオフラインのため、今はプロバイダーをオンにできません。`,
+            cuaDescription: "高速。画面に表示された内容で操作します。",
+            agentDesktopDescription: "名前の付いたコントロールを操作します。低速ですが、トークンが少なく済みます。",
+            status: {
+                checking: "確認中…",
+                installsOnEnable: "オンにするとインストールされます",
+                installing: "インストール中…",
+                installed: "インストール済み",
+                missing: "未インストール",
+                failed: "インストールできませんでした",
+                unavailable: "このマシンでは利用できません",
+            },
+            install: "インストール",
+            retry: "再試行",
+            defaultTitle: "デフォルト",
+            makeDefault: "デフォルトにする",
+            loadFailedTitle: "コンピューター操作の設定を読み込めません",
+            saveFailed: "変更を保存できませんでした",
+            summaryPair: ({ first, second }) => `${first}、${second}`,
+        },
         approval: {
             sectionTitle: 'コンピュータ上で',
             act: {
@@ -1813,6 +1859,8 @@ const computerUseTranslations = { ja: {
             pressKey: ({ key }) => `${key} を押しました`,
             press: 'キーを押しました',
             pressRunning: 'キーを押しています',
+            drag: 'ドラッグしました',
+            wheel: 'スクロールしました',
             mayHaveLanded: '反映された可能性があります',
             failed: '完了しませんでした',
         },
@@ -2605,9 +2653,11 @@ const ja: EntityDragDropTranslations = {
         putUnderDetail: 'このセッションに報告 · どちらも動き続けます',
         moveAbove: ({ target }) => `${target} の上に移動`,
         moveBelow: ({ target }) => `${target} の下に移動`,
+        moveBefore: ({ target }) => `${target} の前に移動`,
+        moveAfter: ({ target }) => `${target} の後に移動`,
         orderDetail: '並び順だけが変わります',
         moveToFolder: ({ folder }) => `${folder} に移動`,
-        folderDetail: 'フォルダーのみ · 誰にも報告しません',
+        folderDetail: '実行場所は変わりません', leaveSectionDetail: 'セクションから外れます',
         moveToTopLevel: '最上位に移動',
         topLevelDetail: 'フォルダーから出すだけ · ほかは変わりません',
         cantPutUnder: ({ target }) => `${target} の下には置けません`,
@@ -2652,7 +2702,7 @@ const ja: EntityDragDropTranslations = {
         foldersOff: 'この Home ではフォルダーがオフです',
         gone: 'その場所はなくなりました',
         generic: 'この場所には置けません',
-        otherGroup: '別のグループに属しています',
+        otherGroup: 'セッションは実行中のプロジェクトに残ります。代わりにセクションに入れてください',
         cantHold: 'この行には何も入れられません',
         fixedItem: 'このリストでは移動できません',
     },
@@ -5903,6 +5953,7 @@ const machineDetailPageTranslations = { ja: translated({
                 sharing: "共有",
                 agents: "エージェント",
                 terminal: "ターミナル",
+                computer: "コンピューター操作",
                 connection: "接続",
                 tools: "ツール",
                 doctor: "診断",
@@ -6323,8 +6374,8 @@ const machineDetailPageTranslations = { ja: translated({
                 },
                 customSustain: {
                     title: "継続時間",
-                    body: "1 週間 (10080) までの整数の分数。",
-                    invalid: "1 から 10080 までの整数の分数を入力してください。",
+                    body: "1 週間 (10080) までの整数の分数。 単位を付けてください: ms、s、min、h、d。",
+                    invalid: "1 から 10080 までの整数の分数を入力してください。 単位を付けてください: ms、s、min、h、d。",
                 },
                 customCpu: {
                     title: "CPU がこの値超",
@@ -6632,7 +6683,7 @@ const machineDetailPageTranslations = { ja: translated({
                     customTitle: "未使用の項目を提案するまでの期間",
                 },
                 days: ({ days }) => `${days} 日`,
-                customDays: { body: "1 以上の整数の日数。", invalid: "1 以上の整数の日数を入力してください。" },
+                customDays: { body: "1 以上の整数の日数。 単位を付けてください: ms、s、min、h、d。", invalid: "1 以上の整数の日数を入力してください。 単位を付けてください: ms、s、min、h、d。" },
             },
             scope: {
                 label: "表示する範囲",
@@ -6897,8 +6948,8 @@ const machineDetailPageTranslations = { ja: translated({
                 milliseconds: ({ milliseconds }) => `${milliseconds} ms`,
                 customIdle: {
                     title: "アイドル状態のツールを閉じる",
-                    body: "ミリ秒、秒、分、時間で入力してください。最短は1秒です。",
-                    invalid: "1秒以上の時間を入力してください。",
+                    body: "ミリ秒、秒、分、時間で入力してください。最短は1秒です。 単位を付けてください: ms、s、min、h、d。",
+                    invalid: "1秒以上の時間を入力してください。 単位を付けてください: ms、s、min、h、d。",
                 },
                 customBrowsers: {
                     title: "ブラウザの同時実行数",
@@ -6954,7 +7005,7 @@ const machineDetailPageTranslations = { ja: translated({
                 sustainHelp: "ビルド中の一時的なスパイクでは動作しません。",
                 cooldownTitle: "ステップ間の待機時間",
                 cooldownHelp: "各ステップのあと、Happier はこの時間待ってメモリが減ったかを確認します。",
-                customMinutes: { title: "時間", body: "1 以上の整数の分数。例: 3 や 90。", invalid: "1 以上の整数の分数を入力してください。" },
+                customMinutes: { title: "時間", body: "1 以上の整数の分数。例: 3 min、1.5 h。 単位を付けてください: ms、s、min、h、d。", invalid: "1 以上の整数の分数を入力してください。 単位を付けてください: ms、s、min、h、d。" },
             },
             ladder: {
                 label: "メモリガードの動作内容",
@@ -7056,7 +7107,7 @@ const machineDetailPageTranslations = { ja: translated({
                 graceHelp: "プロセスが自力で終了するための猶予を与えます。",
                 atOnce: "すぐに",
                 seconds: ({ seconds }) => `${seconds} 秒`,
-                customGrace: { title: "待機時間", body: "秒または分。例: 45 秒や 3 分。", invalid: "0 以上の秒数または分数を入力してください。" },
+                customGrace: { title: "待機時間", body: "秒または分。例: 45 秒や 3 分。 単位を付けてください: ms、s、min、h、d。", invalid: "0 以上の秒数または分数を入力してください。 単位を付けてください: ms、s、min、h、d。" },
             },
             limits: {
                 title: "上限と電源",
@@ -7797,7 +7848,7 @@ return { nativePasswordTranslations };
 const Domain_navigationPlacementTranslations = (() => {
 type NavigationPlacementTranslation = Shared_navigationPlacementTranslations.NavigationPlacementTranslation;
 
-const navigationPlacementTranslations = { ja: { customize: 'カスタマイズ…', title: 'ナビゲーション', description: '表示、「その他」、非表示を選択します。ドラッグして並べ替え。このデバイスに保存されます。', pinned: '固定', overflow: 'その他', hidden: '非表示', reset: 'リセット', appRail: '左レール', sessionRail: 'セッションレール', workspaceRail: 'ワークスペースレール', sessionTabBar: 'スマートフォンのタブバー', phoneLauncher: 'スマートフォンのショートカット' } } satisfies Pick<Record<string, NavigationPlacementTranslation>, "ja">;
+const navigationPlacementTranslations = { ja: { customize: 'カスタマイズ…', title: 'ナビゲーション', description: '表示、「その他」、非表示を選択します。ドラッグして並べ替え。このデバイスに保存されます。', pinned: '固定', overflow: 'その他', hidden: '非表示', reset: 'リセット', appRail: '左レール', sessionRail: 'セッションレール', workspaceRail: 'ワークスペースレール', sessionTabBar: 'スマートフォンのタブバー', phoneLauncher: 'スマートフォンのショートカット', composer: '入力欄' } } satisfies Pick<Record<string, NavigationPlacementTranslation>, "ja">;
 
 return { navigationPlacementTranslations };
 })();
@@ -8426,7 +8477,8 @@ const Domain_pluginSettingsPresentationTranslations = (() => {
 const english = Shared_pluginSettingsPresentationTranslations.english;
 
 const pluginSettingsPresentationTranslations = { ja: {
-        rowStatus: { enabled: '有効', disabled: '無効', incompatible: '非対応', trustRemoved: '信頼を取り消し済み', needsAttention: '要確認' },
+        enablement: {"account": "アカウントで有効", "machine": "このマシンで有効", "description": "ここでプラグインを実行するには両方を有効にしてください。無効にしてもデータと接続は保持されます。", "accountScope": "すべてのマシン", "accountOff": "アカウントで無効のため、どのマシンでも実行されません。データと接続は保持されます。", "machineOff": "このマシンで無効です。他のマシンには影響せず、データと接続は保持されます。"},
+        rowStatus: { enabled: '有効', disabled: '無効', incompatible: '非対応', trustRemoved: '信頼を取り消し済み', needsAttention: '要確認', offInAccount: 'アカウントで無効' },
         developmentPhase: { observing: '監視中', preparingDependencies: '依存関係を準備中', compiling: 'コンパイル中', validating: '検証中', active: '有効', retainedIncumbent: '以前のバージョンが稼働中', unavailable: '利用不可' },
         developmentDiagnostic: { manifestMissing: 'このフォルダーにはプラグインのマニフェストがありません。.happier-plugin/plugin.json を追加するか、プラグインのフォルダーを選択してください。', projectMissing: 'このフォルダーはもうありません。開発から削除するか、プラグインの現在の場所を選択してください。' },
         rowSource: { bundled: 'Happier に同梱', npm: 'npm パッケージ', archive: 'アーカイブファイル', localPath: 'ローカルフォルダ', other: '設定済みのソース' },
@@ -9058,9 +9110,12 @@ const rolesTranslations = { ja: {
             sectionTitle: 'ロール',
             allRoles: 'すべてのロール',
             inUse: ({ count }) => `${count} 件使用中`,
-            changed: '変更済み',
-            thisSession: 'このセッション',
+            changedHere: 'ここで変更',
+            addedHere: 'ここで追加',
             reset: 'リセット',
+            runsInBackground: 'バックグラウンドで実行',
+            approvalReviewerFollowsDefault: ({ value }) => `デフォルト設定に従う · ${value}`,
+            approvalReviewerOverride: ({ value }) => `ここで設定 · デフォルト: ${value}`,
             newRoleForSession: 'このセッション用の新しいロール',
             changeForSession: 'このセッションだけ変更',
             editNotes: 'メモを編集',
@@ -9185,7 +9240,7 @@ const runPageTranslations = { ja: {
         launcher: {
             titles: { review: 'レビューを依頼', plan: 'プランを依頼', delegate: 'タスクを任せる' },
             descriptions: {
-                review: ({ machine }) => `各エージェントが ${machine} の変更を個別にレビューし、それぞれの結果がここに届きます。`,
+                review: ({ folder }) => `各エージェントが ${folder} の変更を個別にレビューし、それぞれの結果がここに届きます。`,
                 plan: ({ machine }) => `エージェントが ${machine} のコードを読み、ここにプランを提案します。何も変更しません。`,
                 delegate: ({ machine }) => `エージェントが下の権限で ${machine} 上で作業し、ここに報告します。`,
             },
@@ -9283,7 +9338,7 @@ type SecretsSettingsCopy = Shared_secretsSettingsTranslations.SecretsSettingsCop
 const en = Shared_secretsSettingsTranslations.en;
 
 const ja: SecretsSettingsCopy = {
-    purpose: "エージェントとMCPサーバー用のAPIキーとトークン。保存した値は再表示されません。",
+    purpose: "エージェントと MCP サーバー用の API キーとトークン。シークレットを管理する人が表示しない限り、値は非表示のままです。",
     yoursTitle: '自分のシークレット',
     yoursDescription: '保存した、または所有しているシークレットです。Happier がキーを求める場所で選べます。',
     sharedWithYouTitle: '共有されたシークレット',
@@ -9312,6 +9367,27 @@ const ja: SecretsSettingsCopy = {
     storagePlain: 'Home で管理',
     storagePlainDescription: 'この Home が保存し、配信のために読み取れます。',
     save: 'シークレットを保存',
+    revealValue: "値を表示",
+    hideValue: "値を隠す",
+    revealConfirmTitle: ({ name }: { name: string }) => `「${name}」を表示しますか？`,
+    revealConfirmBody: "値は、隠すかページを離れるまでこのデバイスに表示されます。表示とコピーは履歴に記録されます。",
+    revealConfirm: "表示",
+    valueUnavailable: "保存済み。現在このデバイスでは表示できません。",
+    valueRefused: "値を表示できなかったため、何も表示されていません。",
+    copyRefused: "値をコピーできませんでした。もう一度表示してからお試しください。",
+    copyUnrecorded: "値はクリップボードにある可能性がありますが、このコピーは記録できませんでした。",
+    historyTitle: "表示履歴",
+    historyEmpty: "この値を表示した人はいません。",
+    historyUnavailable: "履歴を読み込めませんでした。",
+    historyRevealed: "表示",
+    historyRevealedCopied: "表示してコピー",
+    historyCopyNotConfirmed: "表示 · コピー未確認",
+    historyNotShown: "表示されず",
+    historyUnconfirmed: "表示未確認",
+    historyThisDevice: "このデバイス",
+    historyOtherDevice: "別のデバイス",
+    historyUnknownActor: "誰か",
+    historyOlder: "以前の履歴を表示",
 };
 
 const secretsSettingsTranslations = { ja } as const;
@@ -9613,6 +9689,24 @@ const sessionBoardTranslations = { ja: {
                 unpin: 'このビューから外す',
                 pinToBoard: 'ボードにピン留め',
                 moveToView: ({ title }) => `${title}に移動`,
+                network: 'ネットワークアクセス…',
+            },
+            network: {
+                title: 'ネットワークアクセス',
+                hint: 'このビジュアルを表示するブラウザーから接続できるサイトです。',
+                reach: '接続先',
+                none: 'なし',
+                sites: '指定したサイト',
+                open: 'すべてのサイト',
+                sitesLabel: 'サイト',
+                sitesPlaceholder: 'https://api.example.com',
+                sitesInvalid: ({ sites }) => `サイトのアドレスではありません: ${sites}。https://example.com の形式で入力してください。`,
+                sitesNeeded: 'サイトを1つ以上追加してください。',
+                noneConsequence: '単独で動作し、外部へのリクエストは行いません。',
+                sitesConsequence: '一覧にあるサイトにのみ接続できます。リモートのコードやアセットは変更される場合があります。',
+                openConsequence: 'あらゆるサイトに接続し、内容を送信し、閲覧者のIPアドレスを知らせる可能性があります。リモートのコードは変更される場合があります。',
+                shareOffNote: '公開リンクは、ネットワークアクセスをオフにして共有することもできます。',
+                failed: 'ネットワークアクセスを変更できませんでした。もう一度お試しください。',
             },
             moved: {
                 before: ({ title }) => `${title}を前に移動しました。`,
@@ -10829,6 +10923,7 @@ const ja: typeof en = {
         muteFailed: 'ミュートできませんでした',
         truncated: "結果を短縮しました。",
         wokenBy: ({ count }) => (count === 1 ? '更新により再開' : `${count} 件の更新により再開`),
+        updateCount: ({ count }) => (count === 1 ? '1 件の更新' : `${count} 件の更新`),
         notFromYou: 'あなたからのメッセージではありません',
     },
     workerFollow: {
@@ -10867,9 +10962,10 @@ const ja: typeof en = {
         expandMap: 'セッションの横にマップを開く',
     },
     map: {
-        folded: "完了した作業は折りたたまれます",
+        folded: ({ names }) => `完了した作業はリストに残ります: ${names}`,
         backgroundRuns: ({ count }) => (count === 1 ? "バックグラウンド実行 1 件" : `${count} 件のバックグラウンド実行`),
         positionUnder: ({ position, total, parent }) => `${parent} の下 ${position} / ${total}`,
+        waitingOn: ({ count }) => `${count} 件を待機中`,
     },
     actions: {
         showInTranscript: '会話記録に表示',
@@ -11539,6 +11635,10 @@ const shareSheetTranslations = { ja: {
         remove: 'アクセスを削除',
         confirmRemove: '削除を確定',
         removedAnnouncement: ({ name }) => `${name} のアクセスを削除しました`,
+        removeLosesPerson: ({ name }) => `${name} はすべてのデバイスでアクセスできなくなります。`,
+        removeLosesMembers: ({ name }) => `${name} のメンバーはすべてのデバイスでアクセスできなくなります。`,
+        removeKeepsOtherAccess: "別の方法で共有されたアクセスはそのまま残ります。",
+        removeKeepsTheirWork: "本人のチェックアウト、セッション、ウィジェットはそのまま残ります。",
         browseAll: 'すべて表示',
         browsePeople: 'すべての人を表示',
         browseTeams: 'すべてのチームを表示',
@@ -12993,7 +13093,7 @@ const voiceMomentsTranslations = { ja: {
         setupClose: '閉じる',
         needsYouEnded: '音声は終了しました。承認はまだ受信箱で待っています。',
         needsYouReview: 'リクエストを確認',
-        needsYouTapToDecide: '読み上げ済み · 声ではなくここで決めてください',
+        needsYouTapToDecide: "読み上げ済み · ここでタップして決定",
         briefMe: '要点を教えて',
         briefMeA11y: '要点を教えて：対応が必要なもの、失敗したもの、準備できたものを音声が読み上げます',
         briefNeedsYou: '対応が必要',
@@ -13001,7 +13101,7 @@ const voiceMomentsTranslations = { ja: {
         briefReady: '準備完了',
         briefIncomplete: 'まだ読み込まれていない作業があるため、すべてではない可能性があります。',
         briefCaughtUp: '今は対応が必要なものはありません。',
-        briefNotSpoken: '今は音声で読み上げられません。一覧はここにすべてあります。',
+        briefNotSpoken: "今は音声で読み上げられません。",
         briefStop: '停止',
         continueTitle: 'ここで話を続ける',
         continueDetail: ({ device }) => `${device}で話していました`,
@@ -13097,7 +13197,7 @@ const defineVoiceReadinessTranslation = Shared_voiceReadinessTranslations.define
 
 const voiceReadinessTranslations = { ja: defineVoiceReadinessTranslation({
     ready: '音声機能を利用できます。',
-    permissionAnnouncement: ({ summary }) => `コーディングセッションには${summary}の許可が必要です。セッション画面で確認し、許可または拒否してください。`,
+    permissionAnnouncement: ({ summary }) => `コーディングセッションには${summary}の許可が必要です。`,
     userActionAnnouncement: ({ question }) => `コーディングセッションにはあなたの回答が必要です。${question}`,
     userActionFallback: 'コーディングセッションにはあなたの回答が必要です。続行できるよう質問に回答してください。',
     requestedTool: '要求されたツール',
@@ -13425,7 +13525,7 @@ const ja: VoiceSettingsPagesCopy = {
       toolsTitle: 'ツール名',
       toolsDescription: '「ファイルを編集」など。引数やファイルパスは共有しません。',
       permissionsTitle: '許可のリクエスト',
-      permissionsDescription: '対応が必要なことを伝えるためです。承認はこれまでどおりタップで行います。',
+      permissionsDescription: "リクエストを読み上げ、返答を手伝います。",
       devicesTitle: 'マシンとデバイス',
       devicesDescription: '頼んだ場所でセッションを開始するための名前とオンライン状態。',
       liveTitle: '話している間',
@@ -13510,7 +13610,11 @@ const ja: VoiceSettingsPagesCopy = {
       itMayReadOnly: '読み取りのみ',
       itMayReadOnlyDescription: 'セッションとファイルを読むだけで、何も変更しません。',
       itMayAsk: '先に確認',
-      itMayAskDescription: '変更のたびに先に確認します。声の「はい」では承認されず、タップで承認します。',
+      itMayAskDescription: "変更の前に確認します。",
+      approvalsTitle: "承認",
+      approvalsDescription: "話している間にセッションが許可を求めたとき。",
+      canApproveRequestsTitle: "音声エージェントにリクエストの承認を任せる",
+      canApproveRequestsDescription: "リクエストを読み上げ、あなたの指示どおりに応答します。オフにすると、毎回タップで決めます。",
       itMaySafe: '安全な変更',
       itMaySafeDescription: 'ワークスペースの安全な変更は自分で行い、それ以外は確認します。',
       itMayAnything: 'すべて',
@@ -13627,6 +13731,7 @@ const walkthroughSettingsTranslations = { ja: copy({
         model: '要約モデル',
         modelDescription: '説明、ウォークスルー、コミット案の作成に使います。',
         chooseModel: 'モデルを選択',
+        sessionModel: 'セッションのモデル',
         searchModels: 'モデルを検索',
         loadModels: "他のモデルを探す",
         loadFailed: "保存したウォークスルーを読み込めませんでした。",
@@ -13642,6 +13747,7 @@ const walkthroughSettingsTranslations = { ja: copy({
         costPremium: "高コスト",
         loadingModels: "モデルを読み込み中…",
         noModels: "モデルが見つかりません",
+        chooseMachineForModels: "まずマシンを選ぶと、そのモデルが表示されます。",
         loadModelsFailed: "モデルを読み込めませんでした。もう一度お試しください。",
         startFailure: {
             notInstalled: { title: "このマシンにインストールされていません", next: "コマンドと作業ディレクトリを確認して、もう一度お試しください。" },
@@ -13707,6 +13813,7 @@ const walkthroughTranslations = { ja: {
             saved: walkthroughSavedTranslations.ja,
             progress: walkthroughProgressTranslations.ja,
             eyebrow: 'ウォークスルー',
+            conversationTitle: 'ウォークスルーの会話',
             generated: '生成',
             generatedBy: ({ model }) => `生成 · ${model}`,
             generatedA11y: 'モデルが作成',
@@ -13754,6 +13861,25 @@ const walkthroughTranslations = { ja: {
             nextStop: '次のストップ',
             done: '完了',
             evidence: { displayFailed: '保存されたコードを表示できませんでした。ファイルは「ファイル」に残ります。', binary: 'バイナリファイル。メタデータから説明しています。表示のみで分析はしていません。', unavailable: ({ reason }) => `読み込めませんでした（${reason}）。一覧には残ります。レビュー済みとは扱いません。` },
+            stopNumber: ({ number }) => `ストップ ${number}`,
+            receipt: {
+                wrote: 'ウォークスルーを作成しました',
+                updated: 'ウォークスルーを更新しました',
+                savedAnalysis: '変更の分析を保存しました',
+                updatedAnalysis: '変更の分析を更新しました',
+                stopCount: ({ count }) => (count === 1 ? '1 ストップ' : `${count} ストップ`),
+                open: 'ウォークスルーを開く',
+                openChanges: '変更を開く',
+                stopChanged: ({ number }) => `ストップ ${number} を変更`,
+                stopsChanged: ({ numbers }) => `ストップ ${numbers} を変更`,
+                stopsRemoved: ({ count }) => (count === 1 ? '1 ストップを削除' : `${count} ストップを削除`),
+                stopsMergedInto: ({ count, number }) => `${count} ストップをストップ ${number} に統合`,
+                titleEditKept: '編集したタイトルは保持',
+                lastChangeUndone: '直前の変更を取り消し',
+                undo: '元に戻す',
+                undoing: '元に戻しています…',
+                undone: '元に戻しました',
+            },
             notice: {
                 stale: '作成後にファイルが変更されました',
                 refresh: 'ウォークスルーを更新',
@@ -14135,6 +14261,14 @@ const widgetGlanceTranslations = { ja: {
         servicesLoading: 'ローカルサービスを読み込んでいます',
         servicesReadFailed: 'ローカルサービスを読み込めませんでした。もう一度お試しください。',
         noMachine: 'このセッションには問い合わせるマシンがありません。',
+        appEmptyTitle: '実行中のものはありません',
+        appUnlistedTitle: 'サービスを表示できません',
+        appUnlistedOffline: ({ machine }: { machine: string }) => `${machine} はオフラインです。`,
+        appUnlistedMany: ({ count }: { count: number }) => `${count} 台のマシンに接続できません。`,
+        appEmptyReason: 'マシンで実行している Web サーバーがここに表示されます。',
+        machineOffline: ({ machine }: { machine: string }) => `${machine} はオフラインです。サービスは表示されていません。`,
+        machineUnreadable: ({ machine }: { machine: string }) => `${machine} のサービスを今は読み取れませんでした。`,
+        machinesNotListed: ({ count }: { count: number }) => `${count} 台のマシンに接続できません。サービスは表示されていません。`,
         changedCount: ({ count }) => `${count} 件変更`,
         moreFiles: ({ count }) => `ほか ${count} ファイル`,
         runningCount: ({ count }) => `${count} 件実行中`,
@@ -14157,6 +14291,10 @@ const ja: WorkStatusTranslations = {
         finished: '完了',
         idle: 'アイドル',
         offline: 'オフライン',
+    },
+    words: {
+        permission: '許可',
+        question: '質問',
     },
 };
 

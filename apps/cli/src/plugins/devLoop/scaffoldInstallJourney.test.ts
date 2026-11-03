@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { executePluginDevLoopAction } from './actions';
 import { buildPluginInstallApprovalPreview } from './installApprovalPreview';
-import { createPluginInstallationReviewFixture } from '@/plugins/testkit/pluginInstallationReviewFixture';
+import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
 
 const daemonBoundary = vi.hoisted(() => ({
   ensureRunning: vi.fn(async () => undefined),

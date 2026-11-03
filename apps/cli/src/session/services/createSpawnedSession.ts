@@ -139,6 +139,7 @@ export type CreateSpawnedSessionParams = Readonly<import('@happier-dev/protocol'
   sessionCreationCorrespondence?: SessionCreationCorrespondenceV1;
   /** Informational origin persisted only by the fresh canonical creator. */
   placementOrigin?: MachinePoolSelectionOriginV1;
+  authoringOrigin?: import('@happier-dev/protocol/plugins/ui').PluginUiNewSessionSeedOriginV1;
   organizationPlacement?: SessionOrganizationPlacementV1;
   initialAccess?: import('@happier-dev/protocol').SessionInitialAccessDraftV1;
   initialTriggers?: readonly import('@happier-dev/protocol').SessionInitialTriggerAdmissionV1[];
@@ -612,6 +613,7 @@ async function dispatchCommittedSpawn(args: Readonly<{
 }>): Promise<unknown> {
   const {
     placementOrigin: _creationOwnedPlacementOrigin,
+    authoringOrigin: _creationOwnedAuthoringOrigin,
     initialAccess: _creationOwnedInitialAccess,
     initialTriggers: _creationOwnedInitialTriggers,
     manager: _creationOwnedManager,
@@ -988,6 +990,7 @@ export async function createSpawnedSession(
     ...(params.initialTriggers !== undefined ? { initialTriggers: params.initialTriggers } : {}),
     ...(params.manager !== undefined ? { manager: params.manager } : {}),
     ...(params.initialSessionRolesV1 !== undefined ? { initialSessionRolesV1: params.initialSessionRolesV1 } : {}),
+    ...(params.authoringOrigin !== undefined ? { authoringOrigin: params.authoringOrigin } : {}),
     ...(params.primaryTeamId !== undefined ? { primaryTeamId: params.primaryTeamId } : {}),
     ...(params.teamCredentialBindings !== undefined ? { teamCredentialBindings: params.teamCredentialBindings } : {}),
     spawnNonce,

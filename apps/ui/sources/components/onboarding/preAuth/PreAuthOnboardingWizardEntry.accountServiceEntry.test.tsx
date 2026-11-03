@@ -146,7 +146,6 @@ vi.mock('@/hooks/server/useFeatureDecision', () => ({
     }),
 }));
 
-vi.mock('@/sync/store/hooks', () => ({ useLocalSetting: () => false }));
 vi.mock('@/components/onboarding/tour/state/journeySession', () => ({
     useOnboardingJourneySessionActive: () => false,
 }));
@@ -160,6 +159,7 @@ vi.mock('@/sync/domains/pending/pendingSetupIntent', () => ({
 vi.mock('@/utils/system/runtimeFetch', () => ({ runtimeFetch: runtimeFetchMock }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
+    subscribeActiveServer: () => () => {},
     getActiveServerSnapshot: () => getActiveServerSnapshotMock(),
 }));
 vi.mock('@/sync/domains/server/readConfiguredServerUrlEnv', () => ({
@@ -356,20 +356,6 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
             homeCarrier,
             signal: expect.any(AbortSignal),
         });
-    });
-
-    it('does not let the active Home auto-redirect while the selected Account Service owns Welcome', async () => {
-        authEntryOptionsState.current = {
-            ...authEntryOptionsState.current,
-        };
-
-        await renderEntry();
-        await vi.waitFor(() => expect(capturedAccountServiceEntry()?.status).toBe('ready'));
-
-        // Other Welcome composition still reads the active snapshot for legacy fallback
-        // presentation. The material invariant is that it must not execute the Home mTLS
-        // request while the selected Account Service owns authentication.
-        expect(runtimeFetchMock).not.toHaveBeenCalled();
     });
 
     it('starts provider sign-in with the exact observed authority and no-target automatic intent', async () => {

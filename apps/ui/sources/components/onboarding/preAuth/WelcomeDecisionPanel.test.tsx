@@ -321,7 +321,6 @@ describe('WelcomeDecisionPanel', () => {
         const screen = await screenPromise;
 
         expect(screen.findByTestId('welcome-decision-panel')).toBeTruthy();
-        expect(screen.findAllByTestId('welcome-private-key-copy')).toHaveLength(0);
         expect(screen.findByTestId('welcome-primary-start-title')).toBeTruthy();
         expect(screen.findByTestId('welcome-primary-start-subtitle')).toBeTruthy();
         expect(screen.findByTestId('welcome-primary-start-icon')).toBeTruthy();
@@ -355,7 +354,7 @@ describe('WelcomeDecisionPanel', () => {
         expect(callbacks.onChangeRelay).toHaveBeenCalledTimes(1);
     });
 
-    it('uses provider signup without rendering anonymous private-key copy', async () => {
+    it('uses provider signup as the New here action', async () => {
         const { callbacks, screenPromise } = renderPanel({
             authenticationActions: [{
                 method: { id: 'github', enabledActions: [{ id: 'provision', mode: 'keyed' }] },
@@ -365,7 +364,6 @@ describe('WelcomeDecisionPanel', () => {
         });
         const screen = await screenPromise;
 
-        expect(screen.findAllByTestId('welcome-private-key-copy')).toHaveLength(0);
         expect(screen.findByTestId('welcome-primary-start')).toBeTruthy();
 
         await screen.pressByTestIdAsync('welcome-primary-start');
@@ -375,7 +373,7 @@ describe('WelcomeDecisionPanel', () => {
         }));
     });
 
-    it('uses keyless provider login without rendering anonymous private-key copy', async () => {
+    it('makes keyless provider login the primary action without a New here entry', async () => {
         const { callbacks, screenPromise } = renderPanel({
             authenticationActions: [{
                 method: { id: 'github', enabledActions: [{ id: 'login', mode: 'keyless' }] },
@@ -385,7 +383,6 @@ describe('WelcomeDecisionPanel', () => {
         });
         const screen = await screenPromise;
 
-        expect(screen.findAllByTestId('welcome-private-key-copy')).toHaveLength(0);
         expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
 
         await screen.pressByTestIdAsync('welcome-provider-primary');
@@ -411,7 +408,7 @@ describe('WelcomeDecisionPanel', () => {
         }));
     });
 
-    it('uses mTLS login without rendering anonymous private-key copy', async () => {
+    it('makes mTLS login the primary action without a New here entry', async () => {
         const { callbacks, screenPromise } = renderPanel({
             authenticationActions: [{
                 method: { id: 'mtls', enabledActions: [{ id: 'login', mode: 'keyless' }] },
@@ -421,7 +418,6 @@ describe('WelcomeDecisionPanel', () => {
         });
         const screen = await screenPromise;
 
-        expect(screen.findAllByTestId('welcome-private-key-copy')).toHaveLength(0);
         expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
 
         await screen.pressByTestIdAsync('welcome-mtls-primary');
@@ -441,7 +437,6 @@ describe('WelcomeDecisionPanel', () => {
         expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
         expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
         expect(screen.findByTestId('welcome-use-different-home')).toBeTruthy();
-        expect(screen.findAllByTestId('welcome-private-key-copy')).toHaveLength(0);
 
         await screen.pressByTestIdAsync('welcome-scan-existing-home');
         expect(callbacks.onOpenRestore).toHaveBeenCalledTimes(1);
@@ -459,7 +454,6 @@ describe('WelcomeDecisionPanel', () => {
 
         expect(screen.findByTestId('welcome-auth-blocked')).toBeTruthy();
         expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
-        expect(screen.findAllByTestId('welcome-private-key-copy')).toHaveLength(0);
 
         await screen.pressByTestIdAsync('welcome-use-different-home');
         await screen.pressByTestIdAsync('welcome-auth-blocked-retry');
@@ -482,22 +476,6 @@ describe('WelcomeDecisionPanel', () => {
         expect(retryServerCheck).toHaveBeenCalledTimes(1);
     });
 
-    it('routes scan-capable devices through the canonical restore surface with paste fallback', async () => {
-        const callbacks = {
-            onContinueWithHomeAuthentication: vi.fn(),
-            onOpenRestore: vi.fn(),
-            onChangeRelay: vi.fn(),
-        };
-        const rerendered = await renderScreen(<WelcomeDecisionPanel
-            authEntryOptions={baseOptions}
-            {...callbacks}
-            canScanQr
-        />);
-        await rerendered.pressByTestIdAsync('welcome-scan-existing-home');
-
-        expect(callbacks.onOpenRestore).toHaveBeenCalledTimes(1);
-    });
-
     it('keeps paste-based Home entry available when camera capability is not reported', async () => {
         const callbacks = {
             onContinueWithHomeAuthentication: vi.fn(),
@@ -506,7 +484,8 @@ describe('WelcomeDecisionPanel', () => {
         };
         const screen = await renderScreen(<WelcomeDecisionPanel authEntryOptions={baseOptions} {...callbacks} />);
 
-        expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
+        expect(screen.findByTestId('welcome-scan-existing-home-title')?.props.children)
+            .toBe('Enter URL manually');
     });
 
     it('keeps paste-based Home entry available when the caller cannot scan', async () => {
@@ -565,7 +544,6 @@ describe('WelcomeDecisionPanel', () => {
         // Named-account methods augment the exact Home methods instead of replacing them.
         expect(screen.findByTestId('welcome-primary-start')).toBeTruthy();
         expect(screen.findByTestId('welcome-login-provider')).toBeTruthy();
-        expect(screen.findAllByTestId('welcome-private-key-copy')).toHaveLength(0);
         // Direct QR entry stays available.
         expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
         expect(screen.findByTestId('welcome-use-different-home')).toBeTruthy();
@@ -626,7 +604,6 @@ describe('WelcomeDecisionPanel', () => {
         expect(screen.findByTestId('welcome-account-service-key')?.props.accessibilityLabel)
             .toBe('Use a key');
         expect(screen.findByTestId('welcome-primary-start')).toBeTruthy();
-        expect(screen.findAllByTestId('welcome-private-key-copy')).toHaveLength(0);
         // Direct QR entry stays available.
         expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
         expect(screen.findByTestId('welcome-use-different-home')).toBeTruthy();

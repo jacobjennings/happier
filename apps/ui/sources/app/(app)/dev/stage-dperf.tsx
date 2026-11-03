@@ -11,8 +11,6 @@ import { isDevRouteEnabled } from '@/auth/routing/devRoutePolicy';
 import { installDemoFirewall, uninstallDemoFirewall } from '@/demoMode/guards/demoFirewall';
 import { clearDemoWorld, seedDemoWorld } from '@/demoMode/seed/seedDemoWorld';
 
-export { isDevRouteEnabled } from '@/auth/routing/devRoutePolicy';
-
 // The perf-cadence loop cycles these two frames (the D23 budget rig). Every
 // registered frame is still individually capturable via `?frame=<id>` so the
 // journey-beat pixel matrix (incl. the nine feature beats) can be shot here.

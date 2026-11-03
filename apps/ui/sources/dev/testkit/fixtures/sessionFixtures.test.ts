@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import { SessionListQueryResponseV1Schema } from '@happier-dev/protocol/sessions/listing/response';
+import { createCompactSessionListRowFixture } from '../harness/sessionReadBatchHttpBoundary';
 import { projectSessionOwnerCompatibilityViewV1 } from '@happier-dev/protocol/sessions/metadata/sessionMetadataSchemasV1';
 import { createLockedEncryptedSessionByIdResponseFixture, createPlainSessionByIdResponseFixture, createPlainSessionCurrentProjectionRecordFixture, createSessionDataKeyFixture, createSessionFixture, createSessionOwnerViewerFixture } from './sessionFixtures';
 
@@ -30,11 +31,15 @@ it('preserves Session runtime facts without disclosing recipient owner metadata'
     const session = createSessionFixture({
         metadata: { ...createSessionFixture().metadata!, profileId: 'work' },
         agentState: { controlledByUser: true }, pendingCount: 2, pendingVersion: 3,
+        seq: 4, archivedAt: 123, lastViewedSessionSeq: 4, unreadSince: null,
     });
     const owner = createPlainSessionByIdResponseFixture(session).session;
     expect(owner.agentState).toBe(JSON.stringify(session.agentState));
     expect(owner.pendingCount).toBe(2);
     expect(owner.pendingVersion).toBe(3);
+    expect(owner.archivedAt).toBe(123);
+    expect(owner.lastViewedSessionSeq).toBe(4);
+    expect(owner.unreadSince).toBeNull();
     expect(owner.ownerMetadata?.t).toBe('plain');
 
     const recipient = createPlainSessionByIdResponseFixture(createSessionFixture({
@@ -57,7 +62,7 @@ it('keeps an owner without a read row quiet and derives unread only from an expl
     expect(unread.readState).toEqual({ state: 'tracking', lastViewedSessionSeq: 2, unreadSince: 3 });
     expect(unread.attention.reasons).toContain('unread');
     const page = SessionListQueryResponseV1Schema.parse({ sessions: [{
-        ...createPlainSessionCurrentProjectionRecordFixture({ seq: session.seq }), viewer: unread,
+        ...createCompactSessionListRowFixture(createPlainSessionCurrentProjectionRecordFixture({ seq: session.seq })), viewer: unread,
     }], nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false });
     expect(page.sessions[0]?.viewer).toEqual(unread);
 });

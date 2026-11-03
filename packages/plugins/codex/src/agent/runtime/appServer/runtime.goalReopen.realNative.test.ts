@@ -8,7 +8,7 @@ import type { ExecService, PluginProcessHandle, PluginProcessResult } from '@hap
 import type { AgentSessionGoalControlContext, AgentSessionRuntimeContext, AgentSessionRuntimeEvent } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import { createCodexAgentRuntime } from '../engine.js';
-import { connectCodexUnixWebSocketJsonRpc } from './client/unixWebSocket.js';
+import { connectManagedJsonRpcTestClient, createManagedJsonRpcTestClient } from '../../../../../../../apps/cli/src/testkit/process/managedJsonRpc';
 
 // These opt-in probes own every native process/Home and use a local model stub.
 // Only the SDK Exec/OS and host-publication boundaries are substituted.
@@ -52,6 +52,7 @@ describe.skipIf(!nativeBinary || process.platform === 'win32')('real native Code
     ].join('\n'));
     const children: PluginProcessHandle[] = [];
     let controlOccurrence = 0;
+    let disableControlGoals = false;
     const launch = (args: readonly string[], processEnv: Readonly<Record<string, string>> = env): PluginProcessHandle => {
       const child = spawn(nativeBinary!, [...args], { cwd: root, env: processEnv, stdio: ['pipe', 'pipe', 'pipe'] });
       const stdout: Buffer[] = [];
@@ -78,13 +79,15 @@ describe.skipIf(!nativeBinary || process.platform === 'win32')('real native Code
       systemTools: { resolve: async () => ({ executable: { kind: 'systemTool', id: 'codex-cli' }, executablePath: nativeBinary }) },
       run: async (request: { args: readonly string[] }) => await launch(request.args).wait(),
       spawn: async (request: { args: readonly string[]; env: Record<string, string> }) => launch(request.args, request.env),
-      clients: { spawn: async (request: { maxFrameBytes: number; requestTimeoutMs: number }) => {
+      clients: { connectJsonRpc: (request: { endpoint: { socketPath: string }; maxFrameBytes?: number; requestTimeoutMs?: number }, options?: { signal?: AbortSignal }) => connectManagedJsonRpcTestClient({ cwd: root, socketPath: request.endpoint.socketPath, maxFrameBytes: request.maxFrameBytes, requestTimeoutMs: request.requestTimeoutMs, signal: options?.signal }), spawn: async (request: { maxFrameBytes: number; requestTimeoutMs: number }) => {
         // Use a separate, owned native process for each ordinary control client.
         // Unix IPC replaces stdio only at the OS boundary in this probe.
         const socketPath = join(root, `control-${++controlOccurrence}.sock`);
-        const processHandle = launch(['app-server', '--listen', `unix://${socketPath}`]);
+        const processHandle = launch(['app-server', '--listen', `unix://${socketPath}`,
+          ...(disableControlGoals ? ['--disable', 'goals'] : [])]);
         await expect.poll(async () => await stat(socketPath).then(() => true, () => false)).toBe(true);
-        const connection = await connectCodexUnixWebSocketJsonRpc({ socketPath,
+        const connection = await createManagedJsonRpcTestClient({ cwd: root, command: nativeBinary!, environment: env,
+          args: ['app-server', 'proxy', '--sock', socketPath],
           maxFrameBytes: request.maxFrameBytes, requestTimeoutMs: request.requestTimeoutMs });
         return { client: connection.client, wait: () => connection.wait(),
           dispose: async () => { await connection.dispose(); await processHandle.dispose(); } };
@@ -124,22 +127,34 @@ describe.skipIf(!nativeBinary || process.platform === 'win32')('real native Code
       const threadId = events.find(event => event.kind === 'provider-session-id')?.providerSessionId;
       if (!threadId) throw new Error('Native thread identity unavailable');
       const control = { signal, services: { exec }, session: { id: context.session.id, cwd: root,
-        activity: 'inactive', providerSessionId: threadId, connectedAccounts: [] }, goalSource: publisher } as unknown as AgentSessionGoalControlContext;
-      await expect(runtime.sessions.goals.set({ objective: 'Retained B', status: 'paused' },
+        activity: 'inactive', providerSessionId: threadId, connectedAccounts: [], launchEnvironment: request.launchEnvironment }, goalSource: publisher } as unknown as AgentSessionGoalControlContext;
+      await expect(active.goals!.set({ objective: 'Retained B', status: 'paused' },
         { ...control, session: { ...control.session, activity: 'active' } })).resolves.toMatchObject({ status: 'applied' });
       await active.dispose(); active = undefined;
       await expect(runtime.sessions.goals.set({ objective: 'Retained B', status: 'paused' }, control)).resolves.toMatchObject({ status: 'applied' });
       await expect(runtime.sessions.goals.get(control)).resolves.toMatchObject({ status: 'applied' });
       const retained = snapshots.at(-1)?.items;
       expect(retained).toMatchObject([{ title: 'Retained B', status: 'paused', tokenBudget: null }]);
+      // Native 0.162.1 returns -32600 for disabled Goals even with a valid,
+      // persisted thread. It is unsupported, not a transient control failure.
+      disableControlGoals = true;
+      try {
+        for (const operation of ['get', 'set', 'clear'] as const) {
+          const result = operation === 'set'
+            ? await runtime.sessions.goals.set({ status: 'paused' }, control)
+            : await runtime.sessions.goals[operation](control);
+          expect(result).toMatchObject({ status: 'unsupported', diagnostic: { code: 'codex_goals_disabled',
+            details: { stage: `thread/goal/${operation}`, errorCode: '-32600' } } });
+        }
+      } finally { disableControlGoals = false; }
       snapshots.length = 0;
       active = await runtime.sessions.open({ ...request, kind: 'resume', providerSessionId: threadId }, context);
       expect(diagnostics).toMatchObject([{ threadId, kind: 'present', goalThreadId: threadId }]);
       expect(snapshots.length).toBeGreaterThan(0);
       for (const snapshot of snapshots) expect(snapshot.items).toEqual(retained);
-      await expect(runtime.sessions.goals.get({ ...control, session: { ...control.session, activity: 'active' } })).resolves.toMatchObject({ status: 'applied' });
+      await expect(active.goals!.get({ ...control, session: { ...control.session, activity: 'active' } })).resolves.toMatchObject({ status: 'applied' });
       for (const snapshot of snapshots) expect(snapshot.items).toEqual(retained);
-      await expect(runtime.sessions.goals.set({ objective: 'Changed C', status: 'paused' }, control)).resolves.toMatchObject({ status: 'applied' });
+      await expect(active.goals!.set({ objective: 'Changed C', status: 'paused' }, { ...control, session: { ...control.session, activity: 'active' } })).resolves.toMatchObject({ status: 'applied' });
       expect(snapshots.at(-1)?.items).toMatchObject([{ title: 'Changed C', status: 'paused' }]);
       await active.dispose(); active = undefined;
       await expect(runtime.sessions.goals.clear(control)).resolves.toMatchObject({ status: 'applied' });

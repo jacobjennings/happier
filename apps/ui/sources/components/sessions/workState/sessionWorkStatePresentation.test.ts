@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { projectSessionWorkDisplayV1 } from '@happier-dev/protocol/sessions/work/state/sessionWorkStatePrimary';
+import type { SessionWorkStateItemV1 } from '@happier-dev/protocol/sessions/work/state/sessionWorkStateV1';
 
 import {
     formatSessionWorkStateBadgeLabel,
@@ -7,9 +9,13 @@ import {
 
 const translate = (key: string, params?: Record<string, unknown>) => `${key}:${params?.title ?? ''}`;
 
+function workDisplayPrimary(item: SessionWorkStateItemV1) {
+    return projectSessionWorkDisplayV1({ items: [item] })?.primaryItem ?? null;
+}
+
 describe('sessionWorkStatePresentation', () => {
     it('keeps the badge hidden when editable goals are unavailable and no work state exists', () => {
-        const presentation = (resolveSessionWorkStateStatusBadgePresentation as any)({
+        const presentation = resolveSessionWorkStateStatusBadgePresentation({
             primaryItem: null,
             activeStatusBadgeKey: 'work-state',
             editableGoal: false,
@@ -20,7 +26,7 @@ describe('sessionWorkStatePresentation', () => {
     });
 
     it('keeps a transient editable goal badge anchor when /goal opens without existing work state', () => {
-        const presentation = (resolveSessionWorkStateStatusBadgePresentation as any)({
+        const presentation = resolveSessionWorkStateStatusBadgePresentation({
             primaryItem: null,
             activeStatusBadgeKey: 'work-state',
             editableGoal: true,
@@ -36,15 +42,15 @@ describe('sessionWorkStatePresentation', () => {
     });
 
     it('uses quiet emphasis for ordinary active work state so it stays visible without badge chrome', () => {
-        const presentation = (resolveSessionWorkStateStatusBadgePresentation as any)({
-            primaryItem: {
+        const presentation = resolveSessionWorkStateStatusBadgePresentation({
+            primaryItem: workDisplayPrimary({
                 id: 'goal:thread-1',
                 kind: 'goal',
                 origin: 'vendor',
                 status: 'active',
                 title: 'Ship the release',
                 updatedAt: 10,
-            },
+            }),
             activeStatusBadgeKey: null,
             editableGoal: true,
             translate,
@@ -59,15 +65,15 @@ describe('sessionWorkStatePresentation', () => {
     });
 
     it('uses prominent emphasis for blocked work state that needs attention', () => {
-        const presentation = (resolveSessionWorkStateStatusBadgePresentation as any)({
-            primaryItem: {
+        const presentation = resolveSessionWorkStateStatusBadgePresentation({
+            primaryItem: workDisplayPrimary({
                 id: 'goal:thread-1',
                 kind: 'goal',
                 origin: 'vendor',
                 status: 'blocked',
                 title: 'Ship the release',
                 updatedAt: 10,
-            },
+            }),
             activeStatusBadgeKey: null,
             editableGoal: true,
             translate,
@@ -82,7 +88,7 @@ describe('sessionWorkStatePresentation', () => {
     });
 
     it('formats budget-limited goal badges distinctly from generic blocked goal badges', () => {
-        expect(formatSessionWorkStateBadgeLabel({
+        expect(formatSessionWorkStateBadgeLabel(workDisplayPrimary({
             id: 'goal:thread-1',
             kind: 'goal',
             origin: 'vendor',
@@ -90,32 +96,32 @@ describe('sessionWorkStatePresentation', () => {
             statusReason: 'budgetLimited',
             title: 'Ship budget display',
             updatedAt: 20,
-        }, translate)).toBe('session.workState.badge.goalBudgetLimited:');
+        }), translate)).toBe('session.workState.badge.goalBudgetLimited:');
     });
 
     // QA-CHIP-4: a cleared (cancelled) goal must NOT fall through to the active "Goal: <title>" label.
     // It should produce no badge so a cleared goal disappears (mirrors happy showing only active goals).
     it('returns no badge label for a cancelled (cleared) goal', () => {
-        expect(formatSessionWorkStateBadgeLabel({
+        expect(formatSessionWorkStateBadgeLabel(workDisplayPrimary({
             id: 'goal:claude',
             kind: 'goal',
             origin: 'vendor',
             status: 'cancelled',
             title: 'Count grains of sand',
             updatedAt: 30,
-        }, translate)).toBeNull();
+        }), translate)).toBeNull();
     });
 
     it('yields no status badge presentation for a cancelled goal as the primary item', () => {
-        const presentation = (resolveSessionWorkStateStatusBadgePresentation as any)({
-            primaryItem: {
+        const presentation = resolveSessionWorkStateStatusBadgePresentation({
+            primaryItem: workDisplayPrimary({
                 id: 'goal:claude',
                 kind: 'goal',
                 origin: 'vendor',
                 status: 'cancelled',
                 title: 'Count grains of sand',
                 updatedAt: 30,
-            },
+            }),
             activeStatusBadgeKey: null,
             editableGoal: true,
             translate,

@@ -50,6 +50,11 @@ const AGENT_CATALOG_LABEL_TOOL_NAMES: ReadonlySet<string> = new Set(
     id, getActionSpec(id).bindings?.voiceClientToolName ?? '',
   ]).filter(Boolean),
 );
+const ACCOUNT_REQUEST_READ_TOOL_NAMES: ReadonlySet<string> = new Set(
+  (['approval.request.list', 'approval.request.get'] as const).flatMap(id => [
+    id, getActionSpec(id).bindings?.voiceClientToolName ?? '',
+  ]).filter(Boolean),
+);
 
 /**
  * Action and current-UI command execution cross an authority boundary before
@@ -236,10 +241,22 @@ function projectActionResultForProvider(value: unknown): Readonly<{
   };
 }
 
+function projectAccountRequestForProvider(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const record = value as Readonly<Record<string, unknown>>;
+  const request = record.request;
+  if (!request || typeof request !== 'object' || Array.isArray(request)) return value;
+  const { status, actionId, summary } = request as Readonly<Record<string, unknown>>;
+  // Request sharing admits its presentation and state. Voice still forces
+  // raw tool-argument redaction, including previews and stored effect results.
+  return { ...record, request: { status, actionId, summary } };
+}
+
 export function isVoiceToolResultBlockedByPrivacy(
   toolName: string,
   prefs: VoiceToolResultRedactionPrefs,
 ): boolean {
+  if (prefs?.sharePermissionRequests !== true && ACCOUNT_REQUEST_READ_TOOL_NAMES.has(toolName)) return true;
   if (prefs?.shareDeviceInventory !== true && isInventoryPrivacyVoiceToolName(toolName)) return true;
   if (prefs?.shareRecentMessages !== true && isRecentMessagesPrivacyVoiceToolName(toolName)) return true;
   return false;
@@ -261,7 +278,7 @@ export function redactVoiceToolResultForProvider(
     return projectActionResultForProvider(value);
   }
   return redactVoiceToolResultValueWithClassification(
-    value,
+    ACCOUNT_REQUEST_READ_TOOL_NAMES.has(toolName) ? projectAccountRequestForProvider(value) : value,
     prefs,
     toolName === CURRENT_UI_CONTEXT_READ_TOOL_NAME || AGENT_CATALOG_LABEL_TOOL_NAMES.has(toolName),
   );

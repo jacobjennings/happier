@@ -18,7 +18,7 @@ import { RawRecordSchema } from '@happier-dev/session-core/raw';
 import { StrictSessionStoredMessageContentEnvelopeSchema } from '@happier-dev/protocol/sessions/messages/sessionStoredMessageContent';
 import { readSessionMessageProvenanceV1 } from '@happier-dev/protocol/sessions/messages/sessionInputAdmission';
 import { PendingRequestedActionV1Schema } from '@happier-dev/protocol/sessions/pending/pendingRequestedActionV1';
-import { createSessionFixture, createSessionListRenderableSessionFixture, createSessionMessagesFixture, createSessionViewerFixture, createToolCallMessageFixture, renderHook, standardCleanup } from '@/dev/testkit';
+import { createDeferred, createSessionFixture, createSessionListRenderableSessionFixture, createSessionMessagesFixture, createSessionViewerFixture, createToolCallMessageFixture, renderHook, standardCleanup, waitForTestEvent } from '@/dev/testkit';
 import type { Message } from '@happier-dev/session-core/messages';
 import { createMachineFixture, createMachineReadBatchResponseFixture, createPlainMachineRowFixture, createReadyMachineAgentInventoryFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { configureConnectedServerSocketBoundary, installDisconnectedServerSocketBoundary } from '@/dev/testkit/harness/serverAccountConnectionHarness';
@@ -119,6 +119,7 @@ async function mountCurrentUiContext(wireResult: Readonly<Record<string, boolean
   const { CurrentUiContextProvider, useOptionalCurrentUiContextReader, usePublishCurrentUiContext } = await import('@/components/appShell/currentUiContext/CurrentUiContextProvider');
   const { useCurrentUiContextVoiceToolPort } = await import('@/components/appShell/currentUiContext/currentUiContextVoiceToolPort');
   const { AppShellPluginUiProjectionProvider, useAppShellPluginUiProjection } = await import('@/components/appShell/plugins/AppShellPluginUiProjection');
+  const { usePluginUiProjectionCurrentness } = await import('@/sync/domains/plugins/ui/usePluginUiProjectionCurrentness');
   const { PluginProjectionV2Schema, PluginProjectedActionV2Schema, formatQualifiedPluginActionId,
     DaemonPluginActionSchemasReadResponseSchema, DaemonPluginStructuredMessageActionExecuteResponseSchema } = await import('@happier-dev/protocol');
   // These are daemon-authored declarations, consumed by the real normalizer,
@@ -154,12 +155,16 @@ async function mountCurrentUiContext(wireResult: Readonly<Record<string, boolean
   clearDaemonMergedProjectionCacheForTests();
   resetMachineProjectionReadsForTests();
   storage.getState().applyMachines([storage.getState().machines.m1], true);
+  const { observeMachinePresenceForTest } = await import('@/dev/testkit/harness/machinePresence');
+  observeMachinePresenceForTest(account.scope, ['m1']);
   const enrichment = { entity: { kind: 'plugin', label: 'PLUGIN_LABEL_SENTINEL' }, commands: [{
     title: 'Open issue #124', command: { kind: 'executeAction' as const,
       action: { pluginId: 'acme.triage', localId: 'refresh-issues' },
       input: { repository: 'acme/widgets', privateQuery: 'must-remain-local' } },
   }] };
   function Publication() {
+    // The presented Machine surface owns acquisition; AppShell only observes it.
+    usePluginUiProjectionCurrentness({ machineId: 'm1', serverId: homeA });
     usePublishCurrentUiContext(enrichment);
     return null;
   }
@@ -174,14 +179,17 @@ async function mountCurrentUiContext(wireResult: Readonly<Record<string, boolean
   const { reader, port } = mounted.getCurrent();
   if (!reader) throw new Error('Canonical Current UI owner did not mount');
   if (!port) throw new Error('Canonical Current UI Voice port did not mount');
-  await vi.waitFor(() => {
+  await waitForTestEvent(mounted.subscribe, mounted.getCurrent, value => (
+    value.port?.listCurrentContributedActionDefinitions?.().some(action => action.id === formatQualifiedPluginActionId({ pluginId: 'acme.triage', localId: 'refresh-issues' })) === true
+  ));
+  {
     const { projection: current } = mounted.getCurrent();
     expect(mounted.getCurrent().port?.listCurrentContributedActionDefinitions?.(), JSON.stringify({
       phase: current.phase, reason: current.unavailableReasonCode, interactionEnabled: current.interactionEnabled,
       machineId: current.machineId, actionIds: Object.keys(current.pluginUiProjection?.actionsById ?? {}),
       daemonMethods: daemonRpc.mock.calls.map(([request]) => request.method),
     })).toEqual(expect.arrayContaining([expect.objectContaining({ id: formatQualifiedPluginActionId({ pluginId: 'acme.triage', localId: 'refresh-issues' }) })]));
-  });
+  }
   const commandId = reader.readCurrentUiContext()?.commands[0]?.id;
   return { port: mounted.getCurrent().port!, reader, commandId };
 }
@@ -429,6 +437,7 @@ async function createElevenLabsToolHarness() {
       version: () => ({ apiVersion: PLUGIN_UI_HOST_API_VERSION_V1, wireVersion: PLUGIN_UI_HOST_API_WIRE_VERSION_V1, methods: [] }),
       context: async () => unavailableUi(), watchContext: unavailableUi,
       widgetArea: async () => unavailableUi(),
+      actionControl: async () => unavailableUi(),
       readEntityDragItem: async () => unavailableUi(),
       updateEntityDragDrop: async () => unavailableUi(),
       watchEntityDragDrop: async () => unavailableUi(),
@@ -660,8 +669,8 @@ describe('voice tool handlers', () => {
     const first = harness.deliver('provider-a', 'first');
     const duplicate = harness.deliver('provider-a', 'first');
     const sibling = harness.deliver('provider-b', 'second');
-    await vi.waitFor(() => expect(pendingEnqueue).toHaveBeenCalledTimes(2));
     await Promise.all([first, duplicate, sibling]);
+    expect(pendingEnqueue).toHaveBeenCalledTimes(2);
     expect(harness.directEffect).not.toHaveBeenCalled();
     expect(harness.sent.filter((event) => event.type === 'client_tool_result').map((event) => event.tool_call_id))
       .toEqual(expect.arrayContaining(['provider-a', 'provider-a', 'provider-b']));
@@ -682,8 +691,8 @@ describe('voice tool handlers', () => {
     };
     const harness = await createElevenLabsToolHarness();
     const delivery = harness.deliver('provider-approval', 'requires approval');
-    await vi.waitFor(() => expect(artifactCreateRequests).toHaveBeenCalledTimes(1));
     await delivery;
+    expect(artifactCreateRequests).toHaveBeenCalledTimes(1);
     expect(pendingEnqueue).not.toHaveBeenCalled();
     expect(harness.directEffect).not.toHaveBeenCalled();
     const result = harness.sent.find((event) => event.tool_call_id === 'provider-approval');
@@ -693,15 +702,17 @@ describe('voice tool handlers', () => {
   });
 
   it('rejects real ElevenLabs conflicting duplicates without assigning the first result to the conflicting callback', async () => {
+    const enqueueStarted = createDeferred<void>();
     let release!: (value: Response) => void;
     let requestInit!: RequestInit;
     pendingEnqueue.mockImplementationOnce(async request => {
       requestInit = request.init;
-      return await new Promise<Response>((resolve) => { release = resolve; });
+      return await new Promise<Response>((resolve) => { release = resolve; enqueueStarted.resolve(); });
     });
     const harness = await createElevenLabsToolHarness();
     const first = harness.deliver('provider-conflict', 'first');
-    await vi.waitFor(() => expect(pendingEnqueue).toHaveBeenCalledTimes(1));
+    await enqueueStarted.promise;
+    expect(pendingEnqueue).toHaveBeenCalledTimes(1);
     const conflict = harness.deliver('provider-conflict', 'different effect');
     await Promise.all([first, conflict]);
     expect(harness.failures).toEqual([expect.objectContaining({ code: 'response_conflict' })]);
@@ -714,15 +725,17 @@ describe('voice tool handlers', () => {
   });
 
   it('settles real ElevenLabs cancelled callbacks and cannot deliver late results or replay them on a new connection', async () => {
+    const enqueueStarted = createDeferred<void>();
     let release!: (value: Response) => void;
     let requestInit!: RequestInit;
     pendingEnqueue.mockImplementationOnce(async request => {
       requestInit = request.init;
-      return await new Promise<Response>((resolve) => { release = resolve; });
+      return await new Promise<Response>((resolve) => { release = resolve; enqueueStarted.resolve(); });
     });
     const harness = await createElevenLabsToolHarness();
     const delivery = harness.deliver('provider-cancelled', 'pending message');
-    await vi.waitFor(() => expect(pendingEnqueue).toHaveBeenCalledTimes(1));
+    await enqueueStarted.promise;
+    expect(pendingEnqueue).toHaveBeenCalledTimes(1);
     await harness.close();
     await delivery;
     const resultsAtClose = harness.sent.length;
@@ -1041,6 +1054,7 @@ describe('voice tool handlers', () => {
     expect(pendingEnqueue).not.toHaveBeenCalled();
     expect(invocations).toEqual([]);
     const { createDefaultActionExecutor } = await import('@/sync/ops/actions/defaultActionExecutor');
+    state.settings.voice.canApproveRequests = false;
     expect(await createDefaultActionExecutor().execute('approval.request.decide', {
       artifactId: result.artifactId, decision: 'approve',
     }, { surface: 'voice', serverId: homeA, authority: 'present_user' }))
@@ -1830,7 +1844,7 @@ describe('voice tool handlers', () => {
         ...current.config,
         agent: {
           ...current.config.agent,
-          transcript: { persistenceMode: 'persistent', epoch: 2 },
+          transcript: { persistenceMode: 'persistent' },
         },
       },
     };
@@ -1842,7 +1856,8 @@ describe('voice tool handlers', () => {
     }));
 
     expect(result).toMatchObject(expected);
-    expect(state.settings.voice.providers.local_conversation.config.agent.transcript.epoch).toBe(2);
+    const { readPersistentVoiceTranscriptEpoch } = await import('@/voice/persistence/voiceTranscriptMemory');
+    expect(await readPersistentVoiceTranscriptEpoch()).toBe(0);
     if (serverId) {
       expect(result.artifactId).toEqual(expect.any(String));
       expect(artifactCreateRequests).toHaveBeenCalled();
@@ -1851,7 +1866,7 @@ describe('voice tool handlers', () => {
     }
   });
 
-  it('increments agent transcript epoch for a direct UI reset when persistence is enabled', async () => {
+  it('advances transcript memory for an approved direct UI reset without writing preferences', async () => {
     const current = state.settings.voice.providers.local_conversation;
     state.settings.voice.providers.local_conversation = {
       ...current,
@@ -1871,10 +1886,9 @@ describe('voice tool handlers', () => {
       presentUserConfirmation: { actionId: 'ui.voice_global.reset' },
     });
     expect(result).toMatchObject({ ok: true });
-    await vi.waitFor(() => expect(account.persistedSettings.voice.providers.local_conversation?.config).toMatchObject({
-      agent: { transcript: { epoch: 3 } },
-    }));
-    expect(storage.getState().settings.voice.providers.local_conversation?.config).toMatchObject({ agent: { transcript: { epoch: 3 } } });
+    const { readPersistentVoiceTranscriptEpoch } = await import('@/voice/persistence/voiceTranscriptMemory');
+    expect(await readPersistentVoiceTranscriptEpoch()).toBe(1);
+    expect(account.writes).toHaveLength(0);
   });
   it('teleports the voice agent to the resolved session root', async () => {
     const { writeVoiceConversationScopeMetadata } = await import('@/voice/persistence/voiceConversationScopeMetadata');
@@ -1900,9 +1914,10 @@ describe('voice tool handlers', () => {
       initializeSessionId: 'carrier-1',
       existingSession: { id: 'carrier-1', active: true, metadata: writeVoiceConversationScopeMetadata({
         path: '/repo', host: 'voice.test', machineId: 'machine-1', flavor: 'claude',
+        permissionMode: 'read-only', connectedServices: { v: 2, bindingsByServiceId: {} },
         ...buildSystemSessionMetadataV1({ key: 'voice_conversation', hidden: true }),
         agentRuntimeCapabilitiesV1: { localControl: { supported: true } },
-      }, { kind: 'session_root', sessionRootId: 's1' }) },
+      } satisfies NonNullable<ReturnType<typeof createSessionFixture>['metadata']>, { kind: 'session_root', sessionRootId: 's1' }) },
       sessions: [createSessionFixture({ id: 's1', active: true, activeAt: Date.now(), metadata: {
         path: '/repo', host: 'voice.test', machineId: 'machine-1', flavor: 'claude',
         agentRuntimeCapabilitiesV1: { localControl: { supported: true } },
@@ -1946,10 +1961,11 @@ describe('voice tool handlers', () => {
     }
   });
 
-  describe('question answers and person approval', () => {
+  describe('question answers with Voice request approval turned off', () => {
   beforeEach(() => {
-    // A prompt waiver must never turn spoken content into person authority.
+    // An Action waiver cannot override the person's Voice opt-out.
     // The default approval/replay path is composed in defaultActionExecutor.planMode.test.ts.
+    state.settings.voice.canApproveRequests = false;
     state.settings.actionsSettingsV1 = { v: 1, approvalWaivedSurfaces: { 'session.user_action.answer': ['voice'] } };
   });
 
@@ -2224,6 +2240,53 @@ describe('voice tool handlers', () => {
     expect(serialized).not.toContain('private connected-service');
   });
 
+  it.each(['session_stop_failed', 'session_stop_requested'] as const)(
+    'reports an unconfirmed Session Stop as a Voice tool failure (%s)', (code) => {
+      const serialized = serializeVoiceActionExecuteResult('session.stop', {
+        ok: true,
+        result: {
+          sessionId: 's1', stopped: false, success: false, code,
+          message: 'Session stop incomplete: private host diagnostic',
+        },
+      });
+
+      expect(JSON.parse(serialized)).toMatchObject({
+        ok: false, actionId: 'session.stop', errorCode: code, errorMessage: code,
+      });
+      expect(serialized).not.toContain('private host diagnostic');
+    },
+  );
+
+  it('preserves a confirmed Session Stop in the Voice tool result', () => {
+    const result = { sessionId: 's1', stopped: true, success: true };
+    expect(JSON.parse(serializeVoiceActionExecuteResult('session.stop', { ok: true, result })))
+      .toEqual({ ok: true, ...result });
+  });
+
+  it.each(['session_stop', 'action_execute'] as const)(
+    'carries the daemon Stop refusal through the real Voice front door (%s)', async toolName => {
+      const previous = daemonRpc.getMockImplementation();
+      daemonRpc.mockImplementation(async request => {
+        if (request.method === RPC_METHODS.STOP_SESSION) {
+          return { status: 'incomplete', reason: 'missing_topology_proof' };
+        }
+        if (!previous) throw new Error('Voice daemon boundary is unavailable');
+        return previous(request);
+      });
+      const tools = createVoiceToolHandlers({ resolveSessionId: () => 's1' });
+      const input = { sessionId: 's1', serverId: homeA, stopIntent: 'lifecycle_control' };
+      const parameters = toolName === 'action_execute' ? { actionId: 'session.stop', input } : input;
+
+      const result = JSON.parse(await tools[toolName]!(parameters, { serverId: homeA }));
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'session_stop_failed' });
+      // A topology refusal is terminal for this invocation; reporting it must
+      // not retry Stop against a replacement runner or another authority.
+      expect(daemonRpc.mock.calls.filter(([request]) => request.method === RPC_METHODS.STOP_SESSION))
+        .toHaveLength(1);
+    },
+  );
+
   it('does not serialize a partial tracked-set Action result as full success', () => {
     const serialized = serializeVoiceActionExecuteResult('session.target.tracked.set', {
       ok: true,
@@ -2309,7 +2372,8 @@ describe('voice tool handlers', () => {
         groups: [{ id: 'voice-tool-homes', name: 'Voice tool Homes', serverIds: [homeA, homeB] }],
         activeTargetKind: 'group', activeTargetId: 'voice-tool-homes',
       }), { scope: 'device' });
-      await vi.waitFor(() => expect(isSessionListQueryHomeOnline(homeB)).toBe(true));
+      await waitForTestEvent(storage.subscribe, () => isSessionListQueryHomeOnline(homeB), Boolean);
+      expect(isSessionListQueryHomeOnline(homeB)).toBe(true);
       const otherRaw = await tools.listSessions(
         { view: 'summary', limit: 10, includeLastMessagePreview: false },
         { serverId: homeB },
@@ -2647,12 +2711,21 @@ describe('voice tool reset Account authority', () => {
         homeServerIdentityId: 'srv_voice-settings-account', displayName: 'Voice Settings Home' }, source: 'manual' });
       const { createArtifactStoreBoundary } = await import('@/dev/testkit/harness/artifactStoreBoundary');
       const artifacts = createArtifactStoreBoundary({ ownerAccountId: () => account?.scope.accountId ?? null, encryptionMode: 'plain' });
+      const approvalCreated = createDeferred<void>();
+      artifacts.afterNextCreate(async () => { approvalCreated.resolve(); });
       const settingsRequest = account.request.getMockImplementation();
       if (!settingsRequest) throw new Error('Account HTTP boundary missing');
-      account.request.mockImplementation((url, init) => {
+      account.request.mockImplementation(async (url, init) => {
         const parsed = new URL(String(url));
-        return artifacts.handle(`${parsed.pathname}${parsed.search}`, init) ?? settingsRequest(url, init);
+        const response = await (artifacts.handle(`${parsed.pathname}${parsed.search}`, init) ?? settingsRequest(url, init));
+        return response;
       });
+      const { VOICE_TRANSCRIPT_MEMORY_KEY, readPersistentVoiceTranscriptEpoch } = await import('@/voice/persistence/voiceTranscriptMemory');
+      const { encodeBase64StoredJsonContentEnvelope } = await import('@/sync/encryption/base64StoredJsonContent');
+      await account.kv.handleFetch('https://fixture.test/v1/kv', { method: 'POST', body: JSON.stringify({ mutations: [{
+        key: VOICE_TRANSCRIPT_MEMORY_KEY, version: -1,
+        value: encodeBase64StoredJsonContentEnvelope({ t: 'plain', v: { v: 1, epoch: 2 } }),
+      }] }) });
       const { createVoiceToolHandlers } = await import('./handlers');
       const tools = createVoiceToolHandlers({ resolveSessionId: () => null });
       const { getActionSpec, isVoicePromptHotPathSpec } = await import('@happier-dev/protocol');
@@ -2665,21 +2738,22 @@ describe('voice tool reset Account authority', () => {
       pendingReset = tools.action_execute({ actionId: 'ui.voice_global.reset', input: {} },
         { serverId: account.scope.serverId, effectId: 'voice-reset-test', signal: controller.signal });
       const { ApprovalRequestSchema } = await import('@happier-dev/protocol');
-      const approval = await vi.waitFor(() => {
+      await approvalCreated.promise;
+      const approval = (() => {
         const row = artifacts.list().find((candidate) => {
           const body = artifacts.readPlainBody(candidate.id);
           return body !== null && ApprovalRequestSchema.safeParse(JSON.parse(body)).success;
         });
         expect(row).toBeDefined();
         return row!;
-      });
+      })();
       const request = ApprovalRequestSchema.parse(JSON.parse(artifacts.readPlainBody(approval.id) ?? 'null'));
       expect(request).toMatchObject({ v: 2, status: 'open', actionId: 'ui.voice_global.reset', executionOriginV1: {
         authority: 'account_automation', surface: 'voice', serverId: account.scope.serverId,
         serverIdentityId: 'srv_voice-settings-account', accountId: account.scope.accountId, requestId: 'voice-reset-test',
       } });
       expect(account.writes).toHaveLength(0);
-      expect(account.persistedSettings.voice.providers.local_conversation?.config).toMatchObject({ agent: { transcript: { epoch: 2 } } });
+      expect(await readPersistentVoiceTranscriptEpoch()).toBe(2);
       const { createDefaultActionExecutor } = await import('@/sync/ops/actions/defaultActionExecutor');
       const decision = await createDefaultActionExecutor().execute('approval.request.decide',
         { artifactId: approval.id, decision: 'approve' }, { surface: 'ui', serverId: account.scope.serverId });
@@ -2689,11 +2763,8 @@ describe('voice tool reset Account authority', () => {
       expect(readHappierActionToolResultCandidates(result)).toContainEqual({ ok: true, result: expect.objectContaining({
         kind: 'approval_request_created', actionId: 'ui.voice_global.reset', artifactId: approval.id,
       }) });
-      await vi.waitFor(() => expect(account?.persistedSettings.voice.providers.local_conversation?.config).toMatchObject({
-        agent: { transcript: { persistenceMode: 'persistent', epoch: 3 } },
-      }));
-      expect(account.writes).toHaveLength(1);
-      expect(account.settings.voiceSettingsV1.providers.local_conversation?.config).toMatchObject({ agent: { transcript: { epoch: 3 } } });
+      expect(await readPersistentVoiceTranscriptEpoch()).toBe(3);
+      expect(account.writes).toHaveLength(0);
       expect(JSON.parse(artifacts.readPlainBody(approval.id) ?? 'null')).toMatchObject({ status: 'executed' });
     } finally {
       controller.abort();

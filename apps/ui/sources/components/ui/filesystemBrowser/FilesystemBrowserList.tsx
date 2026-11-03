@@ -19,6 +19,9 @@ type FilesystemBrowserListNode = FilesystemBrowserListProps['nodes'][number];
 
 export const FilesystemBrowserList = React.memo(function FilesystemBrowserList(props: FilesystemBrowserListProps): React.ReactElement {
     const { theme } = useUnistyles();
+    // A supplied empty-state node is the root's voice only while it is rendered, i.e. with no rows listed.
+    // Once rows are shown, a failed refresh is named by the line header above them.
+    const emptyStateOwnsRoot = props.listEmpty != null && props.nodes.length === 0;
     const showRootLoadingHeader = props.rootLoading && props.showInlineLoadingHeader !== false && !props.listEmpty;
     const keyExtractor = React.useCallback((node: FilesystemBrowserListNode) => `${node.type}:${node.path}`, []);
     const statusHeader = React.useMemo(() => (
@@ -37,7 +40,7 @@ export const FilesystemBrowserList = React.memo(function FilesystemBrowserList(p
                     {props.loadingLabel}
                 </Text>
             </View>
-        ) : props.rootError && !props.listEmpty ? (
+        ) : props.rootError && !emptyStateOwnsRoot ? (
             <SurfaceStateCard
                 testID={props.listHeaderTestID}
                 size="line"
@@ -48,7 +51,7 @@ export const FilesystemBrowserList = React.memo(function FilesystemBrowserList(p
                 action={{ label: props.inlineRetryLabel, onPress: props.retryRoot }}
             />
         ) : null
-    ), [props.inlineRetryLabel, props.listEmpty, props.listHeaderTestID, props.loadingLabel, props.retryRoot, props.rootError, props.rootErrorReason, showRootLoadingHeader, theme.colors.text.secondary]);
+    ), [emptyStateOwnsRoot, props.inlineRetryLabel, props.listHeaderTestID, props.loadingLabel, props.retryRoot, props.rootError, props.rootErrorReason, showRootLoadingHeader, theme.colors.text.secondary]);
     const listHeaderComponent = React.useMemo(() => props.listHeader
         ? <>{props.listHeader}{statusHeader}</> : statusHeader, [props.listHeader, statusHeader]);
     const latestProps = React.useRef(props);

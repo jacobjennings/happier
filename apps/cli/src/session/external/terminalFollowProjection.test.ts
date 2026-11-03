@@ -318,6 +318,28 @@ describe('createExternalSessionTerminalFollowProjector', () => {
     ]);
   });
 
+  it('carries the sender of peer-delivered agent text and ignores a malformed sender', async () => {
+    const projected: AgentSessionRuntimeEvent[] = [];
+    const publish = createExternalSessionTerminalFollowProjector({
+      sessionId: 'session-1',
+      agentId: 'claude',
+      projectRuntimeEvent: async (event) => {
+        projected.push(AgentSessionRuntimeEventSchema.parse(event));
+        return { projected: true as const };
+      },
+    });
+    const peerItem = (id: string, peer: Readonly<Record<string, string | number | boolean | null>>) => ({ id, localId: `${id}-fact`, timestampMs: 12, kind: 'agent' as const,
+      data: { role: 'agent', content: { type: 'acp', agentId: 'claude', data: { type: 'message', message: 'Tests are blocked.', peer } } } });
+    await publish({ kind: 'data', phase: 'initial_replay', fromCursor: null, nextCursor: 'cursor-1',
+      items: [peerItem('teammate', { name: 'pr4', handback: false }), peerItem('malformed', { name: 7 })] });
+
+    expect(projected).toEqual([
+      expect.objectContaining({ kind: 'transcript-message-committed', role: 'assistant', messageId: 'teammate-fact',
+        text: 'Tests are blocked.', peer: { name: 'pr4', handback: false } }),
+      expect.not.objectContaining({ peer: expect.anything() }),
+    ]);
+  });
+
   it('prefers the top-level sidechainId over a nested provider body value', async () => {
     const projected: AgentSessionRuntimeEvent[] = [];
     const publish = createExternalSessionTerminalFollowProjector({

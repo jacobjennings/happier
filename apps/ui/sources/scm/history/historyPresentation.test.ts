@@ -25,7 +25,11 @@ describe('historyPresentation', () => {
         const now = new Date('2026-04-10T12:00:00.000Z');
         vi.setSystemTime(now);
 
-        expect(formatScmHistoryTimestampAccessibilityLabel(now.getTime() - 60_000)).toBeTruthy();
+        const earlier = now.getTime() - 60_000;
+        const much = Date.UTC(2025, 0, 2, 3, 4, 5);
+        expect(formatScmHistoryTimestampAccessibilityLabel(earlier)).toBe(new Date(earlier).toLocaleString());
+        expect(formatScmHistoryTimestampAccessibilityLabel(much)).toBe(new Date(much).toLocaleString());
+        expect(formatScmHistoryTimestampAccessibilityLabel(much)).not.toBe(formatScmHistoryTimestampAccessibilityLabel(earlier));
     });
 
     it('returns an empty label for invalid timestamps', () => {

@@ -75,7 +75,6 @@ vi.mock('@/sync/domains/plugins/availability/projection', () => ({
     }),
 }));
 
-vi.mock('./PluginDetailActionsSection', () => ({ PluginDetailActionsSection: 'PluginDetailActionsSection' }));
 vi.mock('./PluginDetailContributionsSection', () => ({ PluginDetailContributionsSection: 'PluginDetailContributionsSection' }));
 vi.mock('./PluginDetailDiagnosticsSection', () => ({ PluginDetailDiagnosticsSection: 'PluginDetailDiagnosticsSection' }));
 vi.mock('./PluginDetailGenericSettingsSection', () => ({ PluginDetailGenericSettingsSection: 'PluginDetailGenericSettingsSection' }));
@@ -87,7 +86,6 @@ vi.mock('./PluginDetailInvocationLogsSection', () => ({
     PluginDetailInvocationLogsSection: 'PluginDetailInvocationLogsSection',
     PluginDetailInvocationLogsUnavailableSection: 'PluginDetailInvocationLogsUnavailableSection',
 }));
-vi.mock('./PluginDetailSummaryGrid', () => ({ PluginDetailSummaryGrid: 'PluginDetailSummaryGrid' }));
 vi.mock('../machines/PluginMachineMatrixSection', () => ({ PluginMachineMatrixSection: 'PluginMachineMatrixSection' }));
 vi.mock('../PluginAccountDataEraseRecoverySection', () => ({ PluginAccountDataEraseRecoverySection: 'PluginAccountDataEraseRecoverySection' }));
 vi.mock('./PluginDetailLeaveActions', () => ({ PluginDetailLeaveActions: 'PluginDetailLeaveActions' }));

@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import * as profiles from '../serverProfiles';
+import { ALL_HOMES_SELECTION_TARGET_ID } from './allHomesSelectionTarget';
+import * as selection from './homeViewSelectionState';
 import type { ServerSelectionGroup } from './serverSelectionTypes';
 
 function randomScope(): string {
@@ -42,7 +45,7 @@ describe('updateEffectiveHomeViewState', () => {
 
     afterEach(() => {
         vi.unstubAllGlobals();
-        vi.resetModules();
+        profiles.resetServerProfilesRuntimeForTests();
         if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
     });
@@ -50,8 +53,6 @@ describe('updateEffectiveHomeViewState', () => {
     it('evaluates a device updater against the latest persisted state inside the Web Lock', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         stubWebRuntime('https://origin.example.test');
-        const profiles = await import('../serverProfiles');
-        const selection = await import('./homeViewSelectionState');
         const homeA = await profiles.upsertServerProfile({ serverUrl: 'https://a.example.test', name: 'A' });
         const homeB = await profiles.upsertServerProfile({ serverUrl: 'https://b.example.test', name: 'B' });
         const originalGroup = { id: 'original', name: 'Original', serverIds: [homeA.id], presentation: 'grouped' as const };
@@ -80,9 +81,6 @@ describe('updateEffectiveHomeViewState', () => {
     it('keeps an explicit All Homes target for the device and for a tab', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         stubWebRuntime('https://origin.example.test');
-        const profiles = await import('../serverProfiles');
-        const selection = await import('./homeViewSelectionState');
-        const { ALL_HOMES_SELECTION_TARGET_ID } = await import('./allHomesSelectionTarget');
         const homeA = await profiles.upsertServerProfile({ serverUrl: 'https://a.example.test', name: 'A' });
         await profiles.upsertServerProfile({ serverUrl: 'https://b.example.test', name: 'B' });
         await profiles.saveHomeViewState({
@@ -121,8 +119,6 @@ describe('updateEffectiveHomeViewState', () => {
     it('keeps the latest device groups while a tab updater changes only its session target', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         stubWebRuntime('https://origin.example.test');
-        const profiles = await import('../serverProfiles');
-        const selection = await import('./homeViewSelectionState');
         const homeA = await profiles.upsertServerProfile({ serverUrl: 'https://a.example.test', name: 'A' });
         const homeB = await profiles.upsertServerProfile({ serverUrl: 'https://b.example.test', name: 'B' });
         const originalGroup = { id: 'original', name: 'Original', serverIds: [homeA.id], presentation: 'grouped' as const };
@@ -159,8 +155,6 @@ describe('updateEffectiveHomeViewState', () => {
     it('persists a browser tab\'s group edit device-wide while activating it only in that tab', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         stubWebRuntime('https://origin.example.test');
-        const profiles = await import('../serverProfiles');
-        const selection = await import('./homeViewSelectionState');
         const homeA = await profiles.upsertServerProfile({ serverUrl: 'https://a.example.test', name: 'A' });
         const homeB = await profiles.upsertServerProfile({ serverUrl: 'https://b.example.test', name: 'B' });
         const existingGroup = { id: 'existing', name: 'Existing', serverIds: [homeA.id], presentation: 'grouped' as const };

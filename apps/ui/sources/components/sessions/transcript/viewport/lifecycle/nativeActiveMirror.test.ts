@@ -26,55 +26,19 @@ const dragEffect = (
 });
 
 describe('native active mirror apply effects', () => {
-    it('returns no momentum apply effects when none match the current session', () => {
-        expect(resolveNativeMomentumActiveMirrorApplyEffects({
-            effects: [],
-            sessionId: 'session-a',
-        })).toEqual([]);
-
-        expect(resolveNativeMomentumActiveMirrorApplyEffects({
-            effects: [
-                momentumEffect({ sessionId: 'session-b' }),
-                dragEffect(),
-            ],
-            sessionId: 'session-a',
-        })).toEqual([]);
-    });
-
-    it('returns current-session momentum mirror effects in order', () => {
-        const effects = [
-            momentumEffect({ active: true }),
-            momentumEffect({ active: false }),
-        ];
-
-        expect(resolveNativeMomentumActiveMirrorApplyEffects({
-            effects,
-            sessionId: 'session-a',
-        })).toEqual(effects);
-    });
-
-    it('returns no drag apply effects when none match the current session', () => {
-        expect(resolveNativeDragActiveMirrorApplyEffects({
-            effects: [],
-            sessionId: 'session-a',
-        })).toEqual([]);
-
-        expect(resolveNativeDragActiveMirrorApplyEffects({
-            effects: [
-                dragEffect({ sessionId: 'session-b' }),
-                momentumEffect(),
-            ],
-            sessionId: 'session-a',
-        })).toEqual([]);
-    });
-
-    it('returns current-session drag mirror effects in order', () => {
-        const effects = [
-            dragEffect({ active: true }),
-            dragEffect({ active: false }),
-        ];
-
-        expect(resolveNativeDragActiveMirrorApplyEffects({
+    it.each([
+        {
+            effects: [momentumEffect({ active: true }), momentumEffect({ active: false })],
+            mirror: 'momentum',
+            resolve: resolveNativeMomentumActiveMirrorApplyEffects,
+        },
+        {
+            effects: [dragEffect({ active: true }), dragEffect({ active: false })],
+            mirror: 'drag',
+            resolve: resolveNativeDragActiveMirrorApplyEffects,
+        },
+    ])('returns current-session $mirror mirror effects in order', ({ effects, resolve }) => {
+        expect(resolve({
             effects,
             sessionId: 'session-a',
         })).toEqual(effects);

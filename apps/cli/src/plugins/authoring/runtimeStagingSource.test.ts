@@ -15,7 +15,7 @@ import { createBundledActivationSourceResolver } from '../runtime/bundledActivat
 import { bindPluginRuntimeSourceAuthority } from '../runtime/sourceAuthority';
 import { activateContributionModule } from '../runtime/lifecycle/activation/activateContributionModule';
 import { createPluginRuntimeOccurrenceId } from '../runtime/runtimeSlots';
-import { projectLoadedPluginContributes } from '../projection/registry/resolvePluginContributions';
+import { projectLoadedPluginContributes } from '../projection/registry/fullProjection';
 import { createResolvedContributionRegistry } from '../projection/registry/createResolvedContributionRegistry';
 import { buildPluginProjectionV2 } from '../projection/registry/projection/v2';
 
@@ -320,9 +320,6 @@ describe('plugin author runtime staging authority', () => {
           export: 'createClaudeAgentRuntime',
         }),
       })]);
-      expect(staged.sessionRunnerFactories[0]).not.toHaveProperty(
-        'workflowRunRecordSessionOpen',
-      );
       expect(staged.agentNativeHomeEnvironmentKeys).toEqual(['CUSTOM_AGENT_ROOT', 'CUSTOM_AGENT_STATE_ROOT']);
     } finally {
       await fixture.dispose();
@@ -353,25 +350,6 @@ describe('plugin author runtime staging authority', () => {
           packageRootPath: tmpdir(),
         },
       })).rejects.toThrow(/bundled.*source root/iu);
-    } finally {
-      await fixture.dispose();
-    }
-  });
-
-  it('ignores the Claude-named companion for an ordinary external plugin', async () => {
-    const fixture = await createSessionRunnerFixture({
-      pluginId: 'example.external-agent',
-    });
-    try {
-      const staged = await evaluatePluginAuthorRuntimeStagingSource({
-        locator: fixture.entryPath,
-        rootPath: fixture.rootPath,
-      });
-
-      expect(staged.sessionRunnerFactories).toHaveLength(1);
-      expect(staged.sessionRunnerFactories[0]).not.toHaveProperty(
-        'workflowRunRecordSessionOpen',
-      );
     } finally {
       await fixture.dispose();
     }

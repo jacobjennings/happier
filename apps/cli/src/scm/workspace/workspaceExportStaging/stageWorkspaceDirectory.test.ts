@@ -60,7 +60,7 @@ describe('stageWorkspaceDirectory', () => {
             stagingRoot,
             relativePath: '../outside',
         })).rejects.toThrow(/workspace root/i);
-        await expect(access(join(stagingRoot.workspaceDirectory, 'outside'))).rejects.toThrow();
+        await expect(access(join(stagingRoot.workspaceDirectory, '..', 'outside'))).rejects.toThrow();
     });
 
     it('rejects paths that already resolve to a symlink', async () => {

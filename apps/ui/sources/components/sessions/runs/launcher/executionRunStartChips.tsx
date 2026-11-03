@@ -32,6 +32,7 @@ export function createExecutionRunStartContentChip(params: Readonly<{
     title: string;
     testID: string;
     disabled?: boolean;
+    requirement?: AgentInputExtraActionChip['requirement'];
     /** Shared visible/keyboard/hover/overflow demand signal; never evaluated while closed and untouched. */
     onIntent?: () => void;
     /** The chip draws its glyph alone (the reviewers' "+", the route's glyph beside the start's foot); `title` and `label` still name it. */
@@ -42,8 +43,9 @@ export function createExecutionRunStartContentChip(params: Readonly<{
 }>): AgentInputExtraActionChip {
     return {
         key: params.key,
+        requirement: params.requirement,
         onIntent: params.onIntent,
-        stabilityKey: `${params.label}:${params.disabled === true}:${params.revision ?? ''}`,
+        stabilityKey: `${params.label}:${params.disabled === true}:${params.requirement?.code ?? ''}:${params.requirement?.fieldPath ?? ''}:${params.revision ?? ''}`,
         collapsedContentPopover: {
             title: params.title,
             label: params.label,
